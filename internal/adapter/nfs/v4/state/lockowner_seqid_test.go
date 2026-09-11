@@ -57,29 +57,42 @@ func TestUnlockFile_ZeroSeqidOnV40IsRejected(t *testing.T) {
 	}
 }
 
-// TestUnlockFile_ZeroSeqidWithSkipStillBypasses pins that the v4.1 skip — the
-// per-op flag the handler threads in — still bypasses owner sequencing for
-// seqid 0 exactly as today: no validation, the LOCKU succeeds.
+// TestUnlockFile_ZeroSeqidWithSkipStillBypasses pins that the v4.1 skip — a
+// session client (EXCHANGE_ID flow, MinorVersion 1) as the op's caller — still
+// bypasses owner sequencing for seqid 0 exactly as today: no validation, the
+// LOCKU succeeds.
 func TestUnlockFile_ZeroSeqidWithSkipStillBypasses(t *testing.T) {
 	lm := lock.NewManager()
 	sm := NewStateManager(90 * time.Second)
 	sm.SetLockManager(lm)
 	defer sm.Shutdown()
 
-	clientID, fileHandle, openStateid, openSeqid := setupClientAndOpenState(t, sm)
+	// The open state must belong to the v4.1 session client: the LOCKU caller
+	// client ID is both the bearer check and the skip derivation seam.
+	v41ClientID := registerConfirmedV41Client(t, sm, "v41-skip-owner")
+	fileHandle := []byte("/export:test-file-001")
+	openRes, err := sm.OpenFile(v41ClientID, []byte("v41-open-owner"), 0, fileHandle,
+		types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
+	if err != nil {
+		t.Fatalf("OpenFile failed: %v", err)
+	}
+	if err := sm.ConfirmOpenV41(&openRes.Stateid, v41ClientID); err != nil {
+		t.Fatalf("ConfirmOpenV41 failed: %v", err)
+	}
 
-	lockRes, err := sm.LockNew(context.Background(), clientID, []byte("v41-skip-owner"), 0, openStateid, openSeqid+1, fileHandle, types.WRITE_LT, 0, 50, false, 0)
+	// LOCK #1 via open_to_lock_owner with the session client as caller.
+	lockRes, err := sm.LockNew(context.Background(), v41ClientID, []byte("v41-lock-owner"), 0, &openRes.Stateid, 1, fileHandle, types.WRITE_LT, 0, 50, false, v41ClientID)
 	if err != nil {
 		t.Fatalf("LockNew failed: %v", err)
 	}
-	res2, err := sm.LockExisting(context.Background(), &lockRes.Stateid, 1, fileHandle, types.WRITE_LT, 100, 50, false, 0)
+	res2, err := sm.LockExisting(context.Background(), &lockRes.Stateid, 1, fileHandle, types.WRITE_LT, 100, 50, false, v41ClientID)
 	if err != nil {
 		t.Fatalf("LockExisting failed: %v", err)
 	}
 
-	// With the skip requested (the v4.1 session path), seqid 0 bypasses owner
-	// sequencing and the LOCKU succeeds.
-	if _, err := sm.UnlockFile(&res2.Stateid, 0, types.WRITE_LT, 0, 50, 0); err != nil {
+	// With the v4.1 session client as caller, seqid 0 bypasses owner sequencing
+	// and the LOCKU succeeds.
+	if _, err := sm.UnlockFile(&res2.Stateid, 0, types.WRITE_LT, 0, 50, v41ClientID); err != nil {
 		t.Fatalf("LOCKU with lock seqid 0 under the v4.1 skip must succeed: %v", err)
 	}
 }

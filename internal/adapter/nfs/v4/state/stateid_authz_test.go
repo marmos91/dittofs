@@ -198,7 +198,8 @@ func TestFreeStateid_CrossClientDelegation(t *testing.T) {
 }
 
 // TestLockExisting_V41Seqid0 is the negative control for the LockExisting
-// stateid seqid=0 bypass (manager.go). A v4.1 client sends stateid seqid=0;
+// stateid seqid=0 bypass. A v4.1 session client (the op's caller client ID
+// names a MinorVersion-1 record) sends stateid seqid=0 with owner seqid=0;
 // before the fix `0 < lockState.Stateid.Seqid` always returned
 // NFS4ERR_OLD_STATEID, making every additional LOCK fail.
 func TestLockExisting_V41Seqid0(t *testing.T) {
@@ -207,14 +208,15 @@ func TestLockExisting_V41Seqid0(t *testing.T) {
 	sm.SetLockManager(lm)
 	defer sm.Shutdown()
 
+	v41ClientID := registerConfirmedV41Client(t, sm, "lockexisting-seqid0")
 	fh := []byte("fh-lockexisting-seqid0")
-	lockStateid := newLockedFile(t, sm, 0, fh)
+	lockStateid := newLockedFileV41(t, sm, v41ClientID, fh)
 
 	// v4.1 client: stateid seqid=0, owner seqid=0 (slot table provides replay
 	// protection). Extend the lock with a second byte range via LockExisting.
 	v41Stateid := lockStateid
 	v41Stateid.Seqid = 0
-	result, err := sm.LockExisting(context.Background(), &v41Stateid, 0, fh, types.WRITE_LT, 200, 100, false, 0)
+	result, err := sm.LockExisting(context.Background(), &v41Stateid, 0, fh, types.WRITE_LT, 200, 100, false, v41ClientID)
 	if err != nil {
 		t.Fatalf("LockExisting with v4.1 stateid seqid=0: %v", err)
 	}
@@ -234,22 +236,47 @@ func TestUnlockFile_V41Seqid0(t *testing.T) {
 	defer sm.Shutdown()
 
 	fh := []byte("fh-locku-seqid0")
-	lockStateid := newLockedFile(t, sm, 0, fh)
+	v41ClientID := registerConfirmedV41Client(t, sm, "locku-seqid0")
+	lockStateid := newLockedFileV41(t, sm, v41ClientID, fh)
 
 	// Advance lockState.Stateid.Seqid to >=2 via a successful LockExisting so
 	// the LOCKU below is unambiguously after a seqid increment.
 	v41Lock := lockStateid
 	v41Lock.Seqid = 0
-	if _, err := sm.LockExisting(context.Background(), &v41Lock, 0, fh, types.WRITE_LT, 200, 100, false, 0); err != nil {
+	if _, err := sm.LockExisting(context.Background(), &v41Lock, 0, fh, types.WRITE_LT, 200, 100, false, v41ClientID); err != nil {
 		t.Fatalf("LockExisting setup: %v", err)
 	}
 
 	// v4.1 LOCKU: stateid seqid=0, owner seqid=0.
 	unlockStateid := lockStateid
 	unlockStateid.Seqid = 0
-	if _, err := sm.UnlockFile(&unlockStateid, 0, types.WRITE_LT, 0, 100, 0); err != nil {
+	if _, err := sm.UnlockFile(&unlockStateid, 0, types.WRITE_LT, 0, 100, v41ClientID); err != nil {
 		t.Fatalf("UnlockFile with v4.1 stateid seqid=0: %v", err)
 	}
+}
+
+// newLockedFileV41 creates a confirmed open and a lock for the v4.1 session
+// client, the v4.1 counterpart of newLockedFile: the open is confirmed via the
+// session-client path and the LOCK caller is the session client itself, so the
+// per-owner sequencing skip derives from it.
+func newLockedFileV41(t *testing.T, sm *StateManager, clientID uint64, fh []byte) types.Stateid4 {
+	t.Helper()
+	openResult, err := sm.OpenFile(clientID, []byte("open-owner"), 1, fh,
+		types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	if err := sm.ConfirmOpenV41(&openResult.Stateid, clientID); err != nil {
+		t.Fatalf("ConfirmOpenV41: %v", err)
+	}
+	lockResult, err := sm.LockNew(context.Background(), clientID, []byte("lock-owner"), 0, &openResult.Stateid, 2, fh, types.WRITE_LT, 0, 100, false, clientID)
+	if err != nil {
+		t.Fatalf("LockNew: %v", err)
+	}
+	if lockResult.Denied != nil {
+		t.Fatalf("LockNew unexpectedly denied")
+	}
+	return lockResult.Stateid
 }
 
 // TestExchangeID_Case2_PrincipalMismatch is the negative control for the

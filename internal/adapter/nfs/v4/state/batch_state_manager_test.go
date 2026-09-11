@@ -15,10 +15,11 @@ import (
 // Finding 1 — LockNew must not leak lock-owner / lock-state on bad seqid
 // ============================================================================
 
-// TestLockNew_BadLockSeqidDoesNotLeakState verifies that a LOCK with an
-// invalid lock seqid is rejected BEFORE the lock-owner is registered, so no
-// orphaned lock-owner is left in sm.lockOwners.
-func TestLockNew_BadLockSeqidDoesNotLeakState(t *testing.T) {
+// TestLockNew_BrandNewOwnerOpensSequenceAtRequestSeqid pins the initial-seqid
+// rule for a brand-new lock-owner: the sequence opens at whatever seqid the
+// request carries (the same rule nfsd applies to a stateowner it has never
+// seen), and the lock-owner is registered with no orphaned state either way.
+func TestLockNew_BrandNewOwnerOpensSequenceAtRequestSeqid(t *testing.T) {
 	lm := lock.NewManager()
 	sm := NewStateManager(90 * time.Second)
 	sm.SetLockManager(lm)
@@ -27,23 +28,41 @@ func TestLockNew_BadLockSeqidDoesNotLeakState(t *testing.T) {
 
 	ownerData := []byte("new-owner")
 
-	// Bad lock seqid for a brand-new lock-owner: only nextSeqID(0)==1 is valid.
-	_, err := sm.LockNew(context.Background(), clientID, ownerData, 99, openStateid, openSeqid+1, fileHandle, types.WRITE_LT, 0, 100, false, 0)
-	if err == nil {
-		t.Fatal("expected ErrBadSeqid for bad lock seqid on brand-new owner")
+	// A brand-new lock-owner opens its sequence at the request's seqid.
+	res, err := sm.LockNew(context.Background(), clientID, ownerData, 99, openStateid, openSeqid+1, fileHandle, types.WRITE_LT, 0, 100, false, 0)
+	if err != nil {
+		t.Fatalf("LockNew on brand-new owner with seqid 99 failed: %v", err)
+	}
+	if res.Denied != nil {
+		t.Fatal("expected no conflict on brand-new owner")
 	}
 
-	// The lock-owner must NOT have been registered.
+	// The lock-owner must be registered, seeded at the request's seqid.
 	loKey := makeLockOwnerKey(clientID, ownerData)
-	if _, exists := sm.lockOwners[loKey]; exists {
-		t.Error("lock owner must not be registered after bad seqid rejection")
+	owner := sm.lockOwners[loKey]
+	if owner == nil {
+		t.Fatal("lock owner must be registered after LockNew")
+	}
+	if owner.LastSeqID != 99 {
+		t.Errorf("LastSeqID = %d, want 99 (the seqid the sequence opened with)", owner.LastSeqID)
+	}
+
+	// The sequence is now strict: LOCK at 1 is not the next seqid (100) nor a
+	// replay, and must be rejected.
+	_, err = sm.LockExisting(context.Background(), &res.Stateid, 1, fileHandle, types.WRITE_LT, 200, 100, false, 0)
+	stateErr, ok := err.(*NFS4StateError)
+	if !ok {
+		t.Fatalf("LOCK at wrong seqid after the sequence opened: got %v, want NFS4StateError", err)
+	}
+	if stateErr.Status != types.NFS4ERR_BAD_SEQID {
+		t.Errorf("status = %d, want NFS4ERR_BAD_SEQID (%d)", stateErr.Status, types.NFS4ERR_BAD_SEQID)
 	}
 }
 
 // TestLockNew_BadLockSeqidDoesNotLeakLockState verifies that no LockState is
-// appended to the open-state when a bad lock seqid is rejected. A subsequent
-// valid LOCK must therefore allocate a fresh lock state (seqid starts at 1)
-// rather than reuse a leaked one.
+// appended to the open-state when a bad seqid is rejected for an EXISTING
+// lock-owner. A subsequent valid LOCK must therefore allocate a fresh lock
+// state (seqid starts at 1) rather than reuse a leaked one.
 func TestLockNew_BadLockSeqidDoesNotLeakLockState(t *testing.T) {
 	lm := lock.NewManager()
 	sm := NewStateManager(90 * time.Second)
@@ -58,27 +77,39 @@ func TestLockNew_BadLockSeqidDoesNotLeakLockState(t *testing.T) {
 
 	ownerData := []byte("new-owner")
 
-	// Bad seqid rejection.
-	if _, err := sm.LockNew(context.Background(), clientID, ownerData, 99, openStateid, openSeqid+1, fileHandle, types.WRITE_LT, 0, 100, false, 0); err == nil {
-		t.Fatal("expected ErrBadSeqid for bad lock seqid")
-	}
-
-	if len(openState.LockStates) != 0 {
-		t.Fatalf("open state must have no lock states after bad seqid, got %d", len(openState.LockStates))
-	}
-
-	// A valid follow-up LOCK (seqid=1) must now succeed cleanly.
+	// Brand-new lock-owner opens its sequence at the request's seqid.
 	res, err := sm.LockNew(context.Background(), clientID, ownerData, 1, openStateid, openSeqid+1, fileHandle, types.WRITE_LT, 0, 100, false, 0)
+	if err != nil {
+		t.Fatalf("LockNew on brand-new owner failed: %v", err)
+	}
+	if len(openState.LockStates) != 1 {
+		t.Fatalf("open state must have one lock state after LockNew, got %d", len(openState.LockStates))
+	}
+
+	// Bad seqid rejection for the now-EXISTING lock-owner: LOCK at 99 is
+	// neither the next seqid (2) nor a replay, and must be rejected before any
+	// state is inserted, so no second lock state leaks.
+	if _, err := sm.LockNew(context.Background(), clientID, ownerData, 99, &res.Stateid, 2, fileHandle, types.WRITE_LT, 200, 100, false, 0); err == nil {
+		t.Fatal("expected ErrBadSeqid for bad lock seqid on existing owner")
+	}
+
+	if len(openState.LockStates) != 1 {
+		t.Fatalf("open state must have no new lock states after bad seqid, got %d", len(openState.LockStates))
+	}
+
+	// A valid follow-up LOCK (the next seqids) must now succeed cleanly. The
+	// open stateid is unchanged by LOCK, so it is still the open's current one.
+	res2, err := sm.LockNew(context.Background(), clientID, ownerData, 2, &openState.Stateid, openSeqid+2, fileHandle, types.WRITE_LT, 300, 100, false, 0)
 	if err != nil {
 		t.Fatalf("valid LockNew after rejection failed: %v", err)
 	}
-	if res.Denied != nil {
+	if res2.Denied != nil {
 		t.Fatal("expected no conflict for valid LOCK after rejection")
 	}
-	// First successful lock state advances seqid 1 -> 2; a leaked-then-reused
-	// state would have shown a higher value.
-	if res.Stateid.Seqid != 2 {
-		t.Errorf("lock stateid seqid = %d, want 2 (fresh state)", res.Stateid.Seqid)
+	// The follow-up LOCK reuses the same lock state (second byte range): its
+	// seqid advanced 2 -> 3; a leaked-then-recreated state would reset it.
+	if res2.Stateid.Seqid != 3 {
+		t.Errorf("lock stateid seqid = %d, want 3 (same state reused)", res2.Stateid.Seqid)
 	}
 }
 

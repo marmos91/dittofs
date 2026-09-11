@@ -462,10 +462,16 @@ func (sm *StateManager) OpenFile(
 	ownerKey := makeOwnerKey(clientID, ownerData)
 	owner, ownerExists := sm.openOwners[ownerKey]
 
+	// The per-owner seqid is validated like any other value on a v4.0 client;
+	// only a v4.1 session client skips owner sequencing (the slot table provides
+	// replay protection there, and the handler zeroes the seqid it sends).
+	// Derived from the client ID this op already carries: the effective client
+	// names a registered record whose MinorVersion discriminates the flows.
+	skipOwnerSeqid := sm.v41ClientLocked(clientID) != nil
+
 	if ownerExists {
 		// Existing owner: validate seqid
-		// seqid=0 is the v4.1 bypass convention: slot table provides replay protection
-		if seqid != 0 {
+		if !skipOwnerSeqid {
 			validation := owner.ValidateSeqID(seqid)
 			switch validation {
 			case SeqIDReplay:
@@ -835,9 +841,12 @@ func (sm *StateManager) ConfirmOpen(stateid *types.Stateid4, seqid uint32, calle
 	// its seqid (RFC 7530 Section 9.1.7).
 	defer func() { owner.consumeSeqidOnError(seqid, err) }()
 
-	// Validate seqid on the owner
-	// seqid=0 is the v4.1 bypass convention: slot table provides replay protection
-	if seqid != 0 {
+	// Validate seqid on the owner. The per-owner seqid is validated like any
+	// other value on a v4.0 client; only a v4.1 session client skips owner
+	// sequencing (the slot table provides replay protection there, and the
+	// handler zeroes the seqid it sends). Derived from the caller client ID
+	// this op already carries.
+	if sm.v41ClientLocked(callerClientID) == nil {
 		validation := owner.ValidateSeqID(seqid)
 		switch validation {
 		case SeqIDReplay:
@@ -972,9 +981,12 @@ func (sm *StateManager) CloseFile(stateid *types.Stateid4, seqid uint32, callerC
 	// every later CLOSE and LOCK for this owner with NFS4ERR_BAD_SEQID.
 	defer func() { owner.consumeSeqidOnError(seqid, err) }()
 
-	// Validate seqid on the owner
-	// seqid=0 is the v4.1 bypass convention: slot table provides replay protection
-	if seqid != 0 {
+	// Validate seqid on the owner. The per-owner seqid is validated like any
+	// other value on a v4.0 client; only a v4.1 session client skips owner
+	// sequencing (the slot table provides replay protection there, and the
+	// handler zeroes the seqid it sends). Derived from the caller client ID
+	// this op already carries.
+	if sm.v41ClientLocked(callerClientID) == nil {
 		validation := owner.ValidateSeqID(seqid)
 		switch validation {
 		case SeqIDReplay:
@@ -1102,9 +1114,12 @@ func (sm *StateManager) DowngradeOpen(stateid *types.Stateid4, seqid uint32, new
 	// its seqid (RFC 7530 Section 9.1.7), the NFS4ERR_INVAL rejections included.
 	defer func() { owner.consumeSeqidOnError(seqid, err) }()
 
-	// Validate seqid on the owner
-	// seqid=0 is the v4.1 bypass convention: slot table provides replay protection
-	if seqid != 0 {
+	// Validate seqid on the owner. The per-owner seqid is validated like any
+	// other value on a v4.0 client; only a v4.1 session client skips owner
+	// sequencing (the slot table provides replay protection there, and the
+	// handler zeroes the seqid it sends). Derived from the caller client ID
+	// this op already carries.
+	if sm.v41ClientLocked(callerClientID) == nil {
 		validation := owner.ValidateSeqID(seqid)
 		switch validation {
 		case SeqIDReplay:
