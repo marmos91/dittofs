@@ -382,7 +382,10 @@ func (s *Store) packRuns(ctx context.Context, sh *shard, id FileID, rs []*runSta
 	// One semaphore for the whole file: it bounds the blocks in flight across
 	// every run, so peak carve RAM stays cap(sem) x (CarveBlockSize + one
 	// overhang chunk) for the submitted blocks, plus one further block the
-	// carver has packed ahead of the window.
+	// carver has packed ahead of the window, plus the pass-level read buffer
+	// (one max chunk) and the carver's accumulator (one max chunk). One Box
+	// call fed a full read buffer emits one block per CarveBlockSize, so a
+	// multi-GiB file's peak is bounded by the same window, not by file size.
 	sem := make(chan struct{}, s.cfg.CarveUploadConcurrency)
 
 	// disp overlaps successive blocks' CommitBlock (upload + commit) while packing

@@ -24,7 +24,9 @@ func allChunks(t testing.TB, o Options, data []byte) []Chunk {
 		if err != nil {
 			t.Fatalf("Box: %v", err)
 		}
-		if want := int64(end - off); tiled != want {
+		// A non-final feed can retain a below-boundary tail (tiled < fed); the
+		// Drain below covers retained bytes, so only over-tiling is a defect.
+		if want := int64(end - off); tiled > want {
 			t.Fatalf("Box tiled %d bytes of a %d-byte feed", tiled, want)
 		}
 		off = end
@@ -196,24 +198,35 @@ func TestCarver_DrainEmitsTrailingPartial(t *testing.T) {
 
 // TestCarver_ChunkNeverSpansStreams pins the gap rule: final=true resets the
 // boundary search, so the bytes before the gap and after it are chunked
-// independently — feeding the two halves separately cuts identically to one
-// contiguous feed.
+// independently — cutting the two halves as separate streams must reproduce
+// the concatenation of each half cut alone.
 func TestCarver_ChunkNeverSpansStreams(t *testing.T) {
 	data := randomBlob(t, 512<<10, 13)
-	want := allChunks(t, Options{Params: smallParams}, data)
-	wantHashes := make([]Hash, len(want))
-	for i, ch := range want {
-		wantHashes[i] = ch.Hash
+	split := 200<<10 + 123
+
+	// Oracle: each half cut alone, with a final Box that ends its stream.
+	want := make([]Hash, 0, 64)
+	for _, half := range [][]byte{data[:split], data[split:]} {
+		cv := New(Options{Params: smallParams})
+		blocks, _, err := cv.Box(context.Background(), half, int64(0), true)
+		if err != nil {
+			t.Fatalf("Box: %v", err)
+		}
+		for _, b := range append(blocks, cv.Drain()...) {
+			for _, ch := range b.Chunks {
+				want = append(want, ch.Hash)
+			}
+		}
 	}
 
-	// Split at a point that would otherwise be mid-chunk: two streams, a final
-	// Box on each, one Drain at the end.
-	split := 200<<10 + 123
+	// A fresh chunker per stream, and an empty accumulator, so a chunk never
+	// spans the hole between two streams: one Carver, final Box on each half,
+	// one Drain at the end.
 	ctx := context.Background()
 	cv := New(Options{Params: smallParams})
 	var got []Hash
-	for i, parts := range [][]byte{data[:split], data[split:]} {
-		blocks, _, err := cv.Box(ctx, parts, int64(0), i == 1)
+	for _, half := range [][]byte{data[:split], data[split:]} {
+		blocks, _, err := cv.Box(ctx, half, int64(0), true)
 		if err != nil {
 			t.Fatalf("Box: %v", err)
 		}
@@ -228,8 +241,8 @@ func TestCarver_ChunkNeverSpansStreams(t *testing.T) {
 			got = append(got, ch.Hash)
 		}
 	}
-	if !slices.Equal(wantHashes, got) {
-		t.Fatalf("split feed cut %d chunks vs %d — a chunk spanned the stream gap", len(got), len(wantHashes))
+	if !slices.Equal(want, got) {
+		t.Fatalf("split feed cut %d chunks vs %d — a chunk spanned the stream gap", len(got), len(want))
 	}
 }
 
