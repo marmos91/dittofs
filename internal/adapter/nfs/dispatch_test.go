@@ -6,7 +6,8 @@ import (
 	"encoding/binary"
 	"testing"
 
-	mount "github.com/marmos91/dittofs/internal/adapter/nfs/mount/handlers"
+	mount "github.com/marmos91/dittofs/internal/adapter/nfs/mount"
+	mount_handlers "github.com/marmos91/dittofs/internal/adapter/nfs/mount/handlers"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/stretchr/testify/assert"
@@ -164,30 +165,6 @@ func TestNFSDispatchTable_Completeness(t *testing.T) {
 	}
 }
 
-// TestMountDispatchTable_Completeness verifies all 6 Mount procedures are registered.
-func TestMountDispatchTable_Completeness(t *testing.T) {
-	expectedProcs := map[uint32]string{
-		mount.MountProcNull:    "NULL",
-		mount.MountProcMnt:     "MNT",
-		mount.MountProcDump:    "DUMP",
-		mount.MountProcUmnt:    "UMNT",
-		mount.MountProcUmntAll: "UMNTALL",
-		mount.MountProcExport:  "EXPORT",
-	}
-
-	assert.Equal(t, len(expectedProcs), len(MountDispatchTable),
-		"Mount dispatch table should have exactly %d procedures", len(expectedProcs))
-
-	for procNum, expectedName := range expectedProcs {
-		entry, ok := MountDispatchTable[procNum]
-		require.True(t, ok, "Mount dispatch table missing procedure %d (%s)", procNum, expectedName)
-		assert.Equal(t, expectedName, entry.Name,
-			"Mount procedure %d should be named %q, got %q", procNum, expectedName, entry.Name)
-		assert.NotNil(t, entry.Handler,
-			"Mount procedure %d (%s) handler should not be nil", procNum, expectedName)
-	}
-}
-
 // ============================================================================
 // Version Negotiation Tests
 // ============================================================================
@@ -237,13 +214,29 @@ func makeTestCall(xid, program, version, procedure uint32) *rpc.RPCCallMessage {
 
 // TestDispatch_VersionNegotiation tests the consolidated Dispatch entry point
 // for correct version negotiation behavior across all supported programs.
+// mountStub provides the real mount dispatcher with a nil protocol handler:
+// version checks run before the handler is invoked, so the stub serves the
+// Mount rejection cases the same way nil V4Handler serves the NFSv4 case.
+func mountStub() MountDispatcher {
+	return mountDispatcherFunc(func(ctx context.Context, call *rpc.RPCCallMessage, data []byte, clientAddr string) ([]byte, error) {
+		return mount.DispatchMount(ctx, call, data, clientAddr, nil, nil)
+	})
+}
+
+type mountDispatcherFunc func(ctx context.Context, call *rpc.RPCCallMessage, data []byte, clientAddr string) ([]byte, error)
+
+func (f mountDispatcherFunc) DispatchMount(ctx context.Context, call *rpc.RPCCallMessage, data []byte, clientAddr string) ([]byte, error) {
+	return f(ctx, call, data, clientAddr)
+}
+
 func TestDispatch_VersionNegotiation(t *testing.T) {
 	ctx := context.Background()
 	clientAddr := "10.0.0.1:12345"
 
 	// Minimal deps with nil handlers -- sufficient for version rejection tests
-	// since the version check happens before handler dispatch.
-	deps := &DispatchDeps{}
+	// since the version check happens before handler dispatch. Mount gets the
+	// real dispatcher stub because its version check lives in the mount package.
+	deps := &DispatchDeps{MountHandler: mountStub()}
 
 	tests := []struct {
 		name        string
@@ -319,7 +312,7 @@ func TestDispatch_VersionNegotiation(t *testing.T) {
 			name:        "Mount_MNT_v1_rejected_with_PROG_MISMATCH",
 			program:     rpc.ProgramMount,
 			version:     1,
-			procedure:   mount.MountProcMnt,
+			procedure:   mount_handlers.MountProcMnt,
 			wantStat:    rpc.RPCProgMismatch,
 			wantLow:     rpc.MountVersion3,
 			wantHigh:    rpc.MountVersion3,
@@ -397,7 +390,7 @@ func TestDispatch_Mount_Non_MNT_v1_not_version_rejected(t *testing.T) {
 	// UMNT with v1 should NOT be rejected at the version check level.
 	// The handler may fail on parsing the empty data, but that is a handler
 	// error, not a version rejection.
-	call := makeTestCall(0x5678, rpc.ProgramMount, 1, mount.MountProcUmnt)
+	call := makeTestCall(0x5678, rpc.ProgramMount, 1, mount_handlers.MountProcUmnt)
 
 	_, rpcReply, _ := Dispatch(ctx, call, []byte{}, clientAddr, deps)
 
@@ -413,7 +406,7 @@ func TestDispatch_Mount_NULL_v1_accepted(t *testing.T) {
 	clientAddr := "10.0.0.1:12345"
 	deps := &DispatchDeps{}
 
-	call := makeTestCall(0x9ABC, rpc.ProgramMount, 1, mount.MountProcNull)
+	call := makeTestCall(0x9ABC, rpc.ProgramMount, 1, mount_handlers.MountProcNull)
 
 	replyData, rpcReply, err := Dispatch(ctx, call, []byte{}, clientAddr, deps)
 	require.NoError(t, err)

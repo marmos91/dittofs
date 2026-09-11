@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/middleware"
-	mount "github.com/marmos91/dittofs/internal/adapter/nfs/mount/handlers"
+	mount_handlers "github.com/marmos91/dittofs/internal/adapter/nfs/mount/handlers"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
 	nfs "github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -93,8 +93,8 @@ type DispatchDeps struct {
 	// This is an interface to avoid importing pkg/adapter/nfs from internal/adapter/nfs.
 	V4Handler V4Dispatcher
 
-	// MountHandler is the Mount protocol procedure handler.
-	MountHandler *mount.Handler
+	// MountHandler dispatches Mount protocol procedure calls.
+	MountHandler MountDispatcher
 
 	// NLMHandler dispatches NLM (Network Lock Manager) procedure calls.
 	NLMHandler NLMDispatcher
@@ -115,6 +115,13 @@ type V4Dispatcher interface {
 	// DispatchV4 dispatches an NFSv4 procedure call.
 	// Returns the reply data and any error.
 	DispatchV4(ctx context.Context, call *rpc.RPCCallMessage, data []byte, clientAddr string) ([]byte, error)
+}
+
+// MountDispatcher is the interface for Mount procedure dispatch.
+type MountDispatcher interface {
+	// DispatchMount dispatches a Mount procedure call.
+	// Returns the reply data and any error.
+	DispatchMount(ctx context.Context, call *rpc.RPCCallMessage, data []byte, clientAddr string) ([]byte, error)
 }
 
 // NLMDispatcher is the interface for NLM procedure dispatch.
@@ -242,15 +249,14 @@ func dispatchNFSv3Procedure(ctx context.Context, call *rpc.RPCCallMessage, data 
 	return result.Data, err
 }
 
-// dispatchMount routes Mount protocol calls.
-// MNT procedure requires v3; other procedures accept v1/v2/v3 (macOS uses v1 for UMNT).
-// Returns PROG_MISMATCH for MNT with non-v3 version.
+// dispatchMount routes Mount protocol calls via the mount package dispatcher.
+// MNT procedure requires v3 (like dispatchNLM/dispatchNSM, the version check
+// runs here before delegating); other procedures accept v1/v2/v3.
+//
+// The authoritative MNT version check for live traffic is the one in
+// pkg/adapter/nfs/dispatch.go — this copy serves only this test-only router.
 func dispatchMount(ctx context.Context, call *rpc.RPCCallMessage, data []byte, clientAddr string, deps *DispatchDeps) ([]byte, []byte, error) {
-	// Mount protocol version handling:
-	// - MNT requires v3 (returns v3 file handle format)
-	// - Other procedures (NULL, DUMP, UMNT, UMNTALL, EXPORT) are version-agnostic
-	// macOS umount uses mount v1 for UMNT, so we accept v1/v2/v3 for those procedures
-	if call.Procedure == mount.MountProcMnt && call.Version != rpc.MountVersion3 {
+	if call.Procedure == mount_handlers.MountProcMnt && call.Version != rpc.MountVersion3 {
 		logger.Warn("Unsupported Mount version for MNT",
 			"requested", call.Version,
 			"supported", rpc.MountVersion3,
@@ -264,19 +270,13 @@ func dispatchMount(ctx context.Context, call *rpc.RPCCallMessage, data []byte, c
 		return nil, mismatchReply, nil
 	}
 
-	procedure, ok := MountDispatchTable[call.Procedure]
-	if !ok {
-		logger.Debug("Unknown Mount procedure", "procedure", call.Procedure)
+	if deps.MountHandler == nil {
+		logger.Debug("Mount handler not available", "client", clientAddr)
 		return []byte{}, nil, nil
 	}
 
-	handlerCtx := middleware.ExtractMountHandlerContext(ctx, call, clientAddr, false)
-
-	result, err := procedure.Handler(handlerCtx, deps.MountHandler, deps.Registry, data)
-	if result == nil {
-		return nil, nil, err
-	}
-	return result.Data, nil, err
+	result, err := deps.MountHandler.DispatchMount(ctx, call, data, clientAddr)
+	return result, nil, err
 }
 
 // dispatchNLM routes NLM (Network Lock Manager) calls. NLM v4 only.
@@ -389,37 +389,8 @@ type nfsProcedure struct {
 // version routing in Dispatch().
 var NfsDispatchTable map[uint32]*nfsProcedure
 
-// mountProcedureHandler defines the signature for Mount procedure handlers.
-//
-// **Return Values:**
-//
-// Handlers return (*HandlerResult, error) where:
-//   - HandlerResult: Contains XDR-encoded response and status code
-//   - error: System-level failures only
-//
-// **Context Handling:**
-//
-// Like NFS handlers, Mount handlers receive a MountHandlerContext with a Go context
-// for cancellation support.
-type mountProcedureHandler func(
-	ctx *mount.MountHandlerContext,
-	handler *mount.Handler,
-	reg *runtime.Runtime,
-	data []byte,
-) (*HandlerResult, error)
-
-// mountProcedure contains metadata about a Mount procedure for dispatch.
-type mountProcedure struct {
-	Name    string
-	Handler mountProcedureHandler
-}
-
-// MountDispatchTable maps Mount procedure numbers to their handlers.
-var MountDispatchTable map[uint32]*mountProcedure
-
-// init initializes the procedure dispatch tables.
+// init initializes the NFSv3 procedure dispatch table.
 // This is called once at package initialization time.
 func init() {
 	initNFSDispatchTable()
-	initMountDispatchTable()
 }
