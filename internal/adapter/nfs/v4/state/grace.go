@@ -386,3 +386,138 @@ type ClientSnapshot struct {
 	// ClientAddr is the client's network address.
 	ClientAddr string
 }
+
+func (sm *StateManager) StartGracePeriod(expectedClientIDs []uint64) {
+	sm.mu.Lock()
+	gp := NewGracePeriodState(sm.graceDuration, func() {
+		logger.Info("NFSv4 grace period ended")
+	})
+	sm.gracePeriod = gp
+	sm.mu.Unlock()
+
+	// StartGrace handles its own locking
+	gp.StartGrace(expectedClientIDs)
+}
+
+// IsInGrace returns true if the server is currently in a grace period.
+
+func (sm *StateManager) IsInGrace() bool {
+	sm.mu.RLock()
+	gp := sm.gracePeriod
+	sm.mu.RUnlock()
+
+	if gp == nil {
+		return false
+	}
+	return gp.IsInGrace()
+}
+
+// GraceStatus returns structured information about the grace period.
+// Returns a zero GraceStatusInfo if no grace period has been configured.
+
+func (sm *StateManager) GraceStatus() GraceStatusInfo {
+	sm.mu.RLock()
+	gp := sm.gracePeriod
+	sm.mu.RUnlock()
+
+	if gp == nil {
+		return GraceStatusInfo{}
+	}
+	return gp.Status()
+}
+
+// ForceEndGrace immediately ends the grace period.
+// No-op if no grace period is active.
+
+func (sm *StateManager) ForceEndGrace() {
+	sm.mu.RLock()
+	gp := sm.gracePeriod
+	sm.mu.RUnlock()
+
+	if gp == nil {
+		return
+	}
+	gp.ForceEnd()
+}
+
+// ReclaimComplete marks a client as having finished reclaiming state.
+//
+// oneFS selects which of the two RECLAIM_COMPLETE scopes the client is
+// retiring (RFC 8881 Section 18.51.3). A global reclaim (oneFS false) covers
+// every lock the client held on the previous server instance. A file
+// system-specific reclaim (oneFS true) covers only the file system named by
+// the current filehandle, and only because that file system is migrating. A
+// client may legitimately issue both forms in either order, so the two do not
+// deduplicate against each other.
+//
+// Section 18.51.4 scopes the duplicate to "once for each server instance or
+// occasion of the transition of a file system", so only the global reclaim is
+// tracked here: it returns NFS4ERR_COMPLETE_ALREADY on a second global call.
+// No file system ever migrates here, and Section 18.51.3 requires that a
+// file system-specific reclaim naming a file system that is not migrating
+// "returns NFS4_OK and is otherwise ignored".
+//
+// The first global call succeeds whether or not a grace period is running:
+// RECLAIM_COMPLETE outside grace is not an error, it just has nothing to
+// reclaim. When a grace period is running, it also retires the client from the
+// reclaim roster so the window can end early.
+
+func (sm *StateManager) ReclaimComplete(clientID uint64, oneFS bool) error {
+	// ponytail: no per-file-system reclaim set, because nothing here migrates
+	// and an ignored call needs no bookkeeping; add one keyed by file system
+	// if migration ever lands, and refuse the second call per file system.
+	if oneFS {
+		return nil
+	}
+
+	sm.mu.Lock()
+	gp := sm.gracePeriod
+	// Resolve the durable recovery key for this client (v4.1 = co_ownerid,
+	// v4.0 = nfs_client_id4 string) so the boot-loaded string roster early-exits
+	// and the reclaim-done marker is persisted.
+	recoveryKey := sm.recoveryKeyForClientLocked(clientID)
+
+	// A caller with no record has nothing to deduplicate against, so it is let
+	// through: RECLAIM_COMPLETE is SEQUENCE-gated, so a live session always
+	// resolves to a record, and an unknown client ID is refused by the session
+	// lookup before it reaches here.
+	if record := sm.clientRecordLocked(clientID); record != nil {
+		if record.ReclaimComplete {
+			sm.mu.Unlock()
+			return ErrCompleteAlready
+		}
+		record.ReclaimComplete = true
+	}
+	if recoveryKey != "" {
+		sm.recordReclaimCompleteLocked(clientID, recoveryKey)
+	}
+	sm.mu.Unlock()
+
+	if gp != nil {
+		if recoveryKey != "" {
+			gp.ClientReclaimedByString(recoveryKey)
+		}
+		gp.ClientReclaimed(clientID)
+	}
+	return nil
+}
+
+// CheckGraceForNewState returns NFS4ERR_GRACE if the server is in a grace period
+// and the operation would create new state. Returns nil if the operation is allowed.
+//
+// This should be called before any new state-creating operation (OPEN with
+// CLAIM_NULL, LOCK). Operations that use existing state (READ, WRITE, RENEW,
+// CLOSE) should NOT call this.
+//
+// NOTE: LOCK operations will also need to check this.
+
+func (sm *StateManager) CheckGraceForNewState() error {
+	if sm.IsInGrace() {
+		return ErrGrace
+	}
+	return nil
+}
+
+// GetConfirmedClientIDs returns a list of all confirmed client IDs.
+// Used for saving client state before shutdown so the grace period
+// can identify which clients need to reclaim on restart.

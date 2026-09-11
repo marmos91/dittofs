@@ -1,11 +1,14 @@
 package state
 
 import (
+	"bytes"
+	"context"
 	"crypto/rand"
 	"fmt"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
+	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // Session represents an NFSv4.1 session per RFC 8881 Section 2.10.
@@ -111,3 +114,406 @@ func (s *Session) HasInFlightRequests() bool {
 	}
 	return s.ForeChannelSlots.HasInFlightRequests()
 }
+
+func (sm *StateManager) CreateSession(
+	clientID uint64,
+	sequenceID uint32,
+	flags uint32,
+	foreAttrs, backAttrs types.ChannelAttrs,
+	cbProgram uint32,
+	cbSecParms []types.CallbackSecParms4,
+	principal ...string,
+) (*CreateSessionResult, []byte, error) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	// Case 1: Unknown client (or an ID a v4.0 record owns: the two flows draw
+	// from one sequence, so a CREATE_SESSION can never reach a SETCLIENTID
+	// record, but the version filter keeps that invariant explicit)
+	record := sm.v41ClientLocked(clientID)
+	if record == nil {
+		return nil, nil, ErrStaleClientID
+	}
+
+	// An unconfirmed record not confirmed within a lease period is gone, so its
+	// client ID no longer resolves (RFC 8881 Section 18.35.4). Checked here as
+	// well as in the reaper so the client ID stops working the moment the lease
+	// has passed rather than at the next sweep.
+	if !record.Confirmed && time.Since(record.CreatedAt) > sm.leaseDuration {
+		logger.Debug("CREATE_SESSION: unconfirmed client record expired",
+			"client_id", fmt.Sprintf("0x%x", clientID),
+			"age", time.Since(record.CreatedAt).String())
+		sm.purgeV41Client(record)
+		return nil, nil, ErrStaleClientID
+	}
+
+	// Confirming a record is where its principal is bound, so a confirmation
+	// from another principal is a client-ID collision rather than the expected
+	// confirmation, and nothing on the server changes (RFC 8881 Section
+	// 18.36.3). A record already confirmed skips the confirmation phase
+	// entirely, which is why a later principal change is allowed.
+	if !record.Confirmed && principalHijacks(record.Principal, firstOrEmpty(principal)) {
+		logger.Debug("CREATE_SESSION: confirmation attempted by another principal",
+			"client_id", fmt.Sprintf("0x%x", clientID))
+		return nil, nil, ErrClientIDInUse
+	}
+
+	// Case 2: Replay (same seqid)
+	if sequenceID == record.SequenceID {
+		if record.CachedCreateSessionRes == nil {
+			return nil, nil, ErrSeqMisordered
+		}
+		return nil, record.CachedCreateSessionRes, nil
+	}
+
+	// Case 4: Misordered (not seqid+1)
+	if sequenceID != record.SequenceID+1 {
+		return nil, nil, ErrSeqMisordered
+	}
+
+	// Case 3: New request (seqid == record.SequenceID + 1)
+
+	// A channel budget from which no COMPOUND could ever be sent must be
+	// rejected before any session state is allocated: accepting it would arm a
+	// slot table, a reply cache, and a lease for a channel that can never carry
+	// traffic, which is the resource leak the conformance suite's TOOSMALL rows
+	// probe. Negotiation itself only clamps downward from the server max and
+	// has no floor, so the floor check runs ahead of it.
+	if err := channelAttrsTooSmall(foreAttrs); err != nil {
+		return nil, nil, err
+	}
+	if err := channelAttrsTooSmall(backAttrs); err != nil {
+		return nil, nil, err
+	}
+
+	// Unknown flag bits draw NFS4ERR_INVAL because that is the answer the
+	// conformance suite expects (CSESS15); RFC 8881 Section 18.36.3 defines
+	// exactly three flag bits (PERSIST, CONN_BACK_CHAN, CONN_RDMA) and does
+	// not specify handling for unrecognized ones, so returning INVAL instead
+	// of silently masking is a deliberate choice: masking would let a client
+	// believe it negotiated PERSIST or RDMA support it did not get. An
+	// extension that adds a new flag bit (RFC 8178 sanctions adding bits to
+	// flag fields) must extend this check.
+	const knownFlags = uint32(types.CREATE_SESSION4_FLAG_PERSIST |
+		types.CREATE_SESSION4_FLAG_CONN_BACK_CHAN |
+		types.CREATE_SESSION4_FLAG_CONN_RDMA)
+	if flags&^knownFlags != 0 {
+		return nil, nil, &NFS4StateError{
+			Status:  types.NFS4ERR_INVAL,
+			Message: fmt.Sprintf("unknown CREATE_SESSION flag bits 0x%08x", flags&^knownFlags),
+		}
+	}
+
+	// Check per-client session limit
+	if len(sm.sessionsByClientID[clientID]) >= sm.maxSessionsPerClient {
+		return nil, nil, ErrTooManySessions
+	}
+
+	// Negotiate channel attributes
+	foreLimits := DefaultForeLimits()
+	foreLimits.MaxSlots = sm.foreMaxSlots
+	negotiatedFore := negotiateChannelAttrs(foreAttrs, foreLimits)
+	negotiatedBack := negotiateChannelAttrs(backAttrs, DefaultBackLimits())
+
+	// Compute response flags: clear PERSIST, set CONN_BACK_CHAN if requested
+	responseFlags := flags & ^uint32(types.CREATE_SESSION4_FLAG_PERSIST)
+	// Also clear CONN_RDMA (we don't support RDMA)
+	responseFlags = responseFlags & ^uint32(types.CREATE_SESSION4_FLAG_CONN_RDMA)
+
+	// Create session
+	session, err := NewSession(clientID, negotiatedFore, negotiatedBack, responseFlags, cbProgram)
+	if err != nil {
+		return nil, nil, &NFS4StateError{
+			Status:  types.NFS4ERR_SERVERFAULT,
+			Message: fmt.Sprintf("failed to create session: %v", err),
+		}
+	}
+
+	// Store session in maps
+	sm.sessionsByID[session.SessionID] = session
+	sm.sessionsByClientID[clientID] = append(sm.sessionsByClientID[clientID], session)
+
+	// First CREATE_SESSION confirms the client
+	if !record.Confirmed {
+		// A record established by the client-restart case replaces the confirmed
+		// record it superseded, which is destroyed here now that the session is
+		// created (RFC 8881 Section 18.36.3).
+		sm.collapseSupersededLocked(record)
+
+		record.Confirmed = true
+		record.Lease = NewLeaseState(record.ClientID, sm.leaseDuration, nil)
+		record.LastRenewal = time.Now()
+
+		// Persist a durable client-recovery record. v4.1 has no
+		// nfs_client_id4 string; the stable identity is co_ownerid, so the
+		// record is keyed by its string form. Best-effort under sm.mu.
+		sm.persistClientRecoveryLocked(record.ClientID, v41RecoveryKey(record.OwnerID), record.Verifier, record.Principal)
+	}
+
+	// Increment sequence ID
+	record.SequenceID++
+
+	result := &CreateSessionResult{
+		SessionID:        session.SessionID,
+		SequenceID:       record.SequenceID,
+		Flags:            responseFlags,
+		ForeChannelAttrs: negotiatedFore,
+		BackChannelAttrs: negotiatedBack,
+	}
+
+	// Encode and cache the XDR response under the same sm.mu critical section
+	// as the seqid bump. This guarantees a retransmit matching record.SequenceID
+	// always finds CachedCreateSessionRes populated (RFC 8881 Section 18.36),
+	// closing the replay window that would otherwise return NFS4ERR_SEQ_MISORDERED.
+	res := &types.CreateSessionRes{
+		Status:           types.NFS4_OK,
+		SessionID:        result.SessionID,
+		SequenceID:       result.SequenceID,
+		Flags:            result.Flags,
+		ForeChannelAttrs: result.ForeChannelAttrs,
+		BackChannelAttrs: result.BackChannelAttrs,
+	}
+	var buf bytes.Buffer
+	if err := res.Encode(&buf); err != nil {
+		return nil, nil, &NFS4StateError{
+			Status:  types.NFS4ERR_SERVERFAULT,
+			Message: fmt.Sprintf("failed to encode CREATE_SESSION response: %v", err),
+		}
+	}
+	cached := make([]byte, buf.Len())
+	copy(cached, buf.Bytes())
+	record.CachedCreateSessionRes = cached
+	result.EncodedRes = cached
+
+	logger.Info("CREATE_SESSION: session created",
+		"client_id", fmt.Sprintf("0x%x", clientID),
+		"session_id", session.SessionID.String(),
+		"fore_slots", negotiatedFore.MaxRequests)
+
+	return result, nil, nil
+}
+
+// CacheCreateSessionResponse stores the full XDR-encoded CREATE_SESSION response
+// bytes on the client record for replay detection.
+//
+// The normal CREATE_SESSION path no longer needs this: CreateSession already
+// encodes and caches the response atomically with the sequence-ID bump (see
+// above), which is what closes the replay window. This method remains as an
+// explicit override for the rare caller that wants to replace the cached bytes.
+// Thread-safe: acquires sm.mu.Lock.
+
+func (sm *StateManager) CacheCreateSessionResponse(clientID uint64, responseBytes []byte) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	record := sm.v41ClientLocked(clientID)
+	if record == nil {
+		return
+	}
+
+	cached := make([]byte, len(responseBytes))
+	copy(cached, responseBytes)
+	record.CachedCreateSessionRes = cached
+}
+
+// DestroySession removes a session from the state manager.
+// Returns ErrBadSession if the session is not found, or ErrDelay if
+// the session has in-flight requests.
+// Thread-safe: acquires sm.mu.Lock.
+
+func (sm *StateManager) DestroySession(sessionID types.SessionId4) error {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	return sm.destroySessionLocked(sessionID, false, "client_request")
+}
+
+// ForceDestroySession removes a session from the state manager, bypassing
+// the in-flight request check. Used by admin eviction.
+// Thread-safe: acquires sm.mu.Lock.
+
+func (sm *StateManager) ForceDestroySession(sessionID types.SessionId4) error {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	return sm.destroySessionLocked(sessionID, true, "admin_evict")
+}
+
+// destroySessionLocked removes a session. Caller must hold sm.mu.
+// If force is false, returns ErrDelay when the session has in-flight requests.
+
+func (sm *StateManager) destroySessionLocked(sessionID types.SessionId4, force bool, reason string) error {
+	session, exists := sm.sessionsByID[sessionID]
+	if !exists {
+		return ErrBadSession
+	}
+
+	// Check for in-flight requests (unless force-destroying)
+	if !force && session.HasInFlightRequests() {
+		return ErrDelay
+	}
+
+	// Stop backchannel sender before removing session (prevents orphan goroutines)
+	sm.stopBackchannelSender(sessionID)
+
+	// Remove from sessionsByID
+	delete(sm.sessionsByID, sessionID)
+
+	// Remove from sessionsByClientID
+	sessions := sm.sessionsByClientID[session.ClientID]
+	for i, s := range sessions {
+		if s.SessionID == sessionID {
+			sm.sessionsByClientID[session.ClientID] = append(sessions[:i], sessions[i+1:]...)
+			break
+		}
+	}
+	// Clean up empty slice
+	if len(sm.sessionsByClientID[session.ClientID]) == 0 {
+		delete(sm.sessionsByClientID, session.ClientID)
+	}
+
+	// Clean up connection bindings for this session.
+	// Lock ordering: sm.mu (held by caller) before connMu.
+	sm.connMu.Lock()
+	for _, b := range sm.connBySession[sessionID] {
+		delete(sm.connByID, b.ConnectionID)
+	}
+	delete(sm.connBySession, sessionID)
+	sm.connMu.Unlock()
+
+	logger.Info("Session destroyed",
+		"session_id", session.SessionID.String(),
+		"client_id", fmt.Sprintf("0x%x", session.ClientID),
+		"reason", reason)
+
+	return nil
+}
+
+// GetSession returns the session for the given session ID, or nil if not found.
+// Thread-safe: acquires sm.mu.RLock.
+
+func (sm *StateManager) GetSession(sessionID types.SessionId4) *Session {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	return sm.sessionsByID[sessionID]
+}
+
+// ListSessionsForClient returns a copy of the session slice for the given client.
+// Thread-safe: acquires sm.mu.RLock.
+
+func (sm *StateManager) ListSessionsForClient(clientID uint64) []*Session {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	sessions := sm.sessionsByClientID[clientID]
+	if len(sessions) == 0 {
+		return nil
+	}
+
+	result := make([]*Session, len(sessions))
+	copy(result, sessions)
+	return result
+}
+
+// StartSessionReaper starts a background goroutine that periodically sweeps
+// for expired client leases and unconfirmed clients, destroying their sessions.
+//
+// Callers (typically the NFS adapter startup path) MUST invoke this after
+// constructing the StateManager, passing a context that is cancelled on
+// shutdown. If not started, expired/unconfirmed v4.1 clients will never be reaped.
+//
+// The reaper runs every 30 seconds and checks:
+//   - Clients with expired leases: destroys all sessions, purges client
+//   - Unconfirmed clients older than the lease duration: purges client
+//
+// Stops when ctx is cancelled.
+
+func (sm *StateManager) StartSessionReaper(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				sm.reapExpiredSessions()
+			}
+		}
+	}()
+}
+
+// reapExpiredSessions checks for and cleans up expired/unconfirmed v4.1 clients.
+// Thread-safe: acquires sm.mu.Lock.
+
+func (sm *StateManager) reapExpiredSessions() {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	now := time.Now()
+
+	// Collect client IDs to purge (avoid modifying map during iteration)
+	var toPurge []*ClientRecord
+
+	for _, record := range sm.clientsByID {
+		if record.MinorVersion != 1 {
+			continue
+		}
+		// Check lease expiry for confirmed clients
+		if record.Lease != nil && record.Lease.IsExpired() {
+			logger.Info("Session reaper: lease expired",
+				"client_id", fmt.Sprintf("0x%x", record.ClientID),
+				"client_addr", record.ClientAddr)
+
+			// Defer all session teardown to purgeV41Client, which stops each
+			// session's backchannel sender before deleting it. Deleting the
+			// sessions here would empty sessionsByClientID and leak the senders.
+			toPurge = append(toPurge, record)
+			continue
+		}
+
+		// Check for unconfirmed clients that timed out. A record not confirmed
+		// within a lease period is removed (RFC 8881 Section 18.35.4).
+		if !record.Confirmed && now.Sub(record.CreatedAt) > sm.leaseDuration {
+			logger.Info("Session reaper: unconfirmed client timed out",
+				"client_id", fmt.Sprintf("0x%x", record.ClientID),
+				"client_addr", record.ClientAddr,
+				"age", now.Sub(record.CreatedAt).String())
+			toPurge = append(toPurge, record)
+		}
+	}
+
+	// Purge collected records
+	for _, record := range toPurge {
+		sm.purgeV41Client(record)
+	}
+
+	// Clean up orphaned connection bindings (connections referencing sessions
+	// that no longer exist). This handles edge cases where a session was
+	// destroyed but the connection was not yet unbound.
+	sm.connMu.Lock()
+	for connID, binding := range sm.connByID {
+		if _, exists := sm.sessionsByID[binding.SessionID]; !exists {
+			delete(sm.connByID, connID)
+			sm.removeConnFromSessionLocked(connID, binding.SessionID)
+		}
+	}
+	sm.connMu.Unlock()
+}
+
+// ============================================================================
+// Connection Binding
+// ============================================================================
+
+// BindConnToSession associates a TCP connection with a session.
+//
+// Per RFC 8881 Section 18.34, the server:
+//   - Validates the session exists
+//   - Negotiates the channel direction (generous policy)
+//   - Silently unbinds the connection from a previous session if needed
+//   - Enforces a per-session connection limit (NFS4ERR_RESOURCE)
+//   - Ensures at least one fore-channel connection remains (NFS4ERR_INVAL)
+//
+// Thread-safe: acquires sm.mu.RLock then sm.connMu.Lock.
