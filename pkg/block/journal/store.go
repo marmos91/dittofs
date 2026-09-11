@@ -241,6 +241,12 @@ type Store struct {
 	// remote-resident rather than POSIX holes.
 	coldMu sync.Mutex
 	coldFD *os.File
+	// coldBroken marks a cold log whose tail tore and whose rollback also
+	// failed: a torn tail ends replay, so any append put behind it would be
+	// lost for good (a range the caller went on to evict would read as zeros
+	// after restart). No append is attempted while set — a demotion the store
+	// cannot keep is refused, which the caller already treats as fail-closed.
+	coldBroken bool
 
 	// bgCancel stops the background loops started by Open — the dead-ratio
 	// repack and the dirty-age commit. Close cancels it and waits on bgWG so

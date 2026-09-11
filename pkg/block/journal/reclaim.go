@@ -256,12 +256,20 @@ func (s *Store) evictSegment(sh *shard, seg *segmentMeta) (freed int64, err erro
 	var entries []coldEntry
 	for id, fi := range sh.index {
 		for k := range fi.ivs {
-			if fi.ivs[k].loc.SegmentID == seg.id && !fi.ivs[k].cold {
+			iv := &fi.ivs[k]
+			// A dirty (unsynced) interval is never evicted: nothing was uploaded,
+			// so there is no copy to fetch back and demoting it would turn the
+			// sole copy into zeros. This segment was sealed on the physical record
+			// counter (every record fsynced remotely), but a partial overwrite of
+			// one of its records re-marks the surviving fragment dirty in place —
+			// the record counter stays equal while an interval is dirty, so the
+			// interval check is the one that keeps the sole copy local.
+			if iv.loc.SegmentID == seg.id && !iv.cold && iv.synced {
 				entries = append(entries, coldEntry{
 					id:      id,
-					fileOff: fi.ivs[k].fileOff,
-					length:  fi.ivs[k].length,
-					version: fi.ivs[k].version,
+					fileOff: iv.fileOff,
+					length:  iv.length,
+					version: iv.version,
 					// Copied off the interval being replaced, so it dates the content.
 					provenance: coldFromData,
 				})
@@ -304,7 +312,7 @@ func (s *Store) evictSegment(sh *shard, seg *segmentMeta) (freed int64, err erro
 			continue
 		}
 		for k := range fi.ivs {
-			if fi.ivs[k].loc.SegmentID == seg.id && !fi.ivs[k].cold {
+			if fi.ivs[k].loc.SegmentID == seg.id && !fi.ivs[k].cold && fi.ivs[k].synced {
 				fi.ivs[k].cold = true
 			}
 		}

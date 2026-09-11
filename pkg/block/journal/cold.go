@@ -204,6 +204,12 @@ func (s *Store) appendCold(entries []coldEntry) error {
 	}
 	s.coldMu.Lock()
 	defer s.coldMu.Unlock()
+	// A broken log has no appendable tail: replay ends at the tear, so putting
+	// entries behind it would lose them for good. The caller (demote) surfaces
+	// this as a refused demotion, which every caller treats as fail-closed.
+	if s.coldBroken {
+		return fmt.Errorf("journal: cold log unusable after a failed tail rollback")
+	}
 	if s.coldFD == nil {
 		_, statErr := os.Stat(s.coldPath())
 		created := errors.Is(statErr, os.ErrNotExist)
@@ -250,10 +256,26 @@ func (s *Store) appendCold(entries []coldEntry) error {
 	}
 	tail := st.Size()
 	if _, err := s.coldFD.Write(buf); err != nil {
-		return errors.Join(fmt.Errorf("journal: append cold log: %w", err), s.coldFD.Truncate(tail))
+		// The rollback itself can fail (ENOSPC on the metadata write): if it
+		// does, the log keeps a torn tail and every entry a later append puts
+		// behind it would be lost for good. Mark the log broken so no later
+		// append rides after the tear; a restart replays exactly what fsynced.
+		terr := s.coldFD.Truncate(tail)
+		if terr != nil {
+			s.coldBroken = true
+			return errors.Join(fmt.Errorf("journal: append cold log: %w", err),
+				fmt.Errorf("journal: cold log marked unusable: rollback failed: %w", terr))
+		}
+		return errors.Join(fmt.Errorf("journal: append cold log: %w", err), terr)
 	}
 	if err := s.coldFD.Sync(); err != nil {
-		return errors.Join(fmt.Errorf("journal: fsync cold log: %w", err), s.coldFD.Truncate(tail))
+		terr := s.coldFD.Truncate(tail)
+		if terr != nil {
+			s.coldBroken = true
+			return errors.Join(fmt.Errorf("journal: fsync cold log: %w", err),
+				fmt.Errorf("journal: cold log marked unusable: rollback failed: %w", terr))
+		}
+		return errors.Join(fmt.Errorf("journal: fsync cold log: %w", err), terr)
 	}
 	return nil
 }
