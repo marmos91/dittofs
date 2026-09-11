@@ -326,7 +326,7 @@ func (r *recoveryState) replayRecords(m *segmentMeta, sh, id uint64, recs []reco
 			version: rec.header.Version,
 			recOff:  rec.segOff,
 			synced:  synced,
-			loc: SegmentLocation{
+			loc: segmentLocation{
 				SegmentID: id,
 				Offset:    payloadOff,
 				Length:    int64(rec.header.PayloadLen),

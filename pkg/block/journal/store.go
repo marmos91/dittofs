@@ -1165,8 +1165,6 @@ func (s *Store) JournalVersion() uint64 { return s.version.Load() }
 // more conservative. Reads are a single atomic load on the reclaim path.
 func (s *Store) SetPinVersion(v uint64) { s.pinVersion.Store(v) }
 
-// PinVersion reports the current pin watermark (0 = no live snapshot).
-func (s *Store) PinVersion() uint64 { return s.pinVersion.Load() }
 
 // RestoreToVersion rewinds every file to its point-in-time view as of the global
 // LSN watermark V and re-materializes that view durably at the log head, so a
@@ -1270,7 +1268,7 @@ func (s *Store) RestoreToVersion(ctx context.Context, v uint64) error {
 						version: rec.header.Version,
 						synced:  rec.header.Flags&flagSynced != 0,
 						recOff:  rec.segOff,
-						loc: SegmentLocation{
+						loc: segmentLocation{
 							SegmentID: seg.id,
 							Offset:    rec.segOff + recordHeaderSize + int64(len(rec.fileID)),
 							Length:    int64(rec.header.PayloadLen),

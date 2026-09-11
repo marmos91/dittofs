@@ -22,8 +22,8 @@ func coveringSeg(fi *fileIndex, off int64) (uint64, bool) {
 // a higher-version one must not supersede it. This is the recovery/repack
 // out-of-order case (WriteAt itself assigns versions monotonically).
 func TestInsertNewestWinsByVersion(t *testing.T) {
-	locHi := SegmentLocation{SegmentID: 1, Offset: 100, Length: 10}
-	locLo := SegmentLocation{SegmentID: 2, Offset: 200, Length: 4}
+	locHi := segmentLocation{SegmentID: 1, Offset: 100, Length: 10}
+	locLo := segmentLocation{SegmentID: 2, Offset: 200, Length: 4}
 
 	// v5 then v3: the later-indexed older write loses the overlap.
 	var a fileIndex
@@ -51,12 +51,12 @@ func TestInsertNewestWinsByVersion(t *testing.T) {
 // segment offset so the surviving fragment still points at the right bytes.
 func TestInsertPartialOverlapSplitsLocation(t *testing.T) {
 	var fi fileIndex
-	fi.insert(interval{fileOff: 0, length: 10, version: 5, loc: SegmentLocation{SegmentID: 1, Offset: 100, Length: 10}})
-	fi.insert(interval{fileOff: 8, length: 7, version: 3, loc: SegmentLocation{SegmentID: 2, Offset: 200, Length: 7}})
+	fi.insert(interval{fileOff: 0, length: 10, version: 5, loc: segmentLocation{SegmentID: 1, Offset: 100, Length: 10}})
+	fi.insert(interval{fileOff: 8, length: 7, version: 3, loc: segmentLocation{SegmentID: 2, Offset: 200, Length: 7}})
 
 	want := []interval{
-		{fileOff: 0, length: 10, version: 5, loc: SegmentLocation{SegmentID: 1, Offset: 100, Length: 10}},
-		{fileOff: 10, length: 5, version: 3, loc: SegmentLocation{SegmentID: 2, Offset: 202, Length: 5}},
+		{fileOff: 0, length: 10, version: 5, loc: segmentLocation{SegmentID: 1, Offset: 100, Length: 10}},
+		{fileOff: 10, length: 5, version: 3, loc: segmentLocation{SegmentID: 2, Offset: 202, Length: 5}},
 	}
 	if len(fi.ivs) != len(want) {
 		t.Fatalf("ivs=%+v want %+v", fi.ivs, want)
