@@ -1,14 +1,16 @@
 // Package blockstore defines the unified content-addressed block storage
 // contract DittoFS uses across every storage tier. It is the
-// single source of truth for FileChunk, BlockState, ContentHash, BlockSize
+// single source of truth for FileChunk, BlockState, ContentHash, BlockSize,
 // the Store interface, the minimal Meta struct, the error sentinels
-// (ErrStopWalk, ErrFutureFormat
-// ErrChunkNotFound, …), and the on-disk format-version convention.
+// (ErrStopWalk, ErrFutureFormat, ErrChunkNotFound, …), and the on-disk
+// format-version convention.
 //
 // # Interface roles
 //
 // One hash-keyed interface replaces the earlier v0.15 split
-// (LocalStore: 22 methods, RemoteStore: 12 methods):
+// (LocalStore: 22 methods, RemoteStore: 12 methods) — the concrete split
+// itself now lives on pkg/block/remote.RemoteStore (block-keyed) and
+// pkg/block/local (payload-keyed):
 //
 //   - Store — the unified surface for content-addressed CRUD
 //     (Put / Get / GetRange / Has / Delete / Head / Walk). Idempotent
@@ -65,7 +67,9 @@
 // a record whose layout moved to a sibling key decodes cleanly into a file
 // with the right size and no content, and the store then serves zeros. Boot
 // treats the refusal as fatal for the whole daemon rather than skipping the
-// share, so a downgraded box cannot come up looking healthy.
+// share — matching both sentinels, block.ErrFutureFormat and
+// journal.ErrFutureFormat, so a downgraded box cannot come up looking
+// healthy.
 //
 // The reverse direction — state OLDER than the build — is a migration, not a
 // refusal, and runs automatically at share startup. It is one-way: once it
@@ -87,7 +91,8 @@
 //
 //   - ErrStopWalk — Walk callback early-exit signal.
 //   - ErrFutureFormat — a store refused on-disk state written by a
-//     newer release than this build can read.
+//     newer release than this build can read. The journal side-log
+//     names live on journal.ErrFutureFormat; boot matches both.
 //   - ErrChunkNotFound — content-addressed chunk is absent
 //     from the store (local or remote).
 //   - ErrChunkContentMismatch — recomputed BLAKE3 disagreed with the
@@ -102,7 +107,7 @@
 //
 //   - local: the payload-keyed LocalStore interface + the *fs.FSStore
 //     implementation.
-//   - remote: the block-keyed RemoteStore contract, its backend
+//   - remote: the block-keyed [remote.RemoteStore] contract, its backend
 //     implementations (s3, memory), and Passthrough, the forwarding
 //     base the compression / encryption decorators embed.
 //   - blockstoretest: conformance suites — BlockStoreConformance for
