@@ -23,9 +23,11 @@ import (
 	"time"
 )
 
-// errFutureFormat is returned when a journal directory was written by a newer
+// ErrFutureFormat is returned when a journal directory was written by a newer
 // layout than this build reads: opening it would serve stored ranges as holes.
-var errFutureFormat = errors.New("journal: on-disk format is from a newer release")
+// Boot guards match it to stop the daemon rather than run with the share
+// silently absent.
+var ErrFutureFormat = errors.New("journal: on-disk format is from a newer release")
 
 const (
 	// formatVersion is the layout this build reads and writes. Bump it whenever
@@ -52,7 +54,7 @@ type formatStamp struct {
 // checkFormat verifies that this build understands the journal directory's
 // on-disk layout, and brings the stamp up to what this build may write. An
 // unstamped directory predates stamping and is adopted; a stamp above
-// formatVersion fails with errFutureFormat.
+// formatVersion fails with ErrFutureFormat.
 //
 // A stamp *below* formatVersion is raised, not left alone. The stamp has to
 // describe what the directory may now contain, and this build starts writing
@@ -80,7 +82,7 @@ func checkFormat(dir string) error {
 	}
 	if st.Version > formatVersion {
 		return fmt.Errorf("%w: %s is at format version %d, this build reads up to %d",
-			errFutureFormat, dir, st.Version, formatVersion)
+			ErrFutureFormat, dir, st.Version, formatVersion)
 	}
 	if st.Version < formatVersion {
 		return writeFormat(dir)

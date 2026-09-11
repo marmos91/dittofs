@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 )
 
 // stampPath is where the journal keeps its on-disk format marker, relative to a
@@ -66,8 +66,8 @@ func TestOpenRefusesFutureFormat(t *testing.T) {
 		_ = s.Close()
 		t.Fatal("New on a future-format directory succeeded, want refusal")
 	}
-	if !errors.Is(err, block.ErrFutureFormat) {
-		t.Fatalf("New error = %v, want it to wrap block.ErrFutureFormat", err)
+	if !errors.Is(err, journal.ErrFutureFormat) {
+		t.Fatalf("New error = %v, want it to wrap journal.ErrFutureFormat", err)
 	}
 }
 
