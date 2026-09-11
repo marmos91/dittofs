@@ -23,7 +23,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/journal"
-	"github.com/marmos91/dittofs/pkg/block/local/fs"
 	"github.com/marmos91/dittofs/pkg/config"
 	"github.com/marmos91/dittofs/pkg/controlplane/api"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
@@ -880,8 +879,7 @@ func handleFormatMismatch(err error, stderr *os.File) bool {
 	if err == nil {
 		return false
 	}
-	if !errors.Is(err, block.ErrFutureFormat) && !errors.Is(err, journal.ErrFutureFormat) &&
-		!errors.Is(err, fs.ErrLegacyLocalFormat) {
+	if !errors.Is(err, block.ErrFutureFormat) && !errors.Is(err, journal.ErrFutureFormat) {
 		return false
 	}
 	_, _ = fmt.Fprintln(stderr, formatMismatchDirective(err))

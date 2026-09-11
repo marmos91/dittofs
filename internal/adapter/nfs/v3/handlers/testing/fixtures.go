@@ -12,7 +12,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers"
 	"github.com/marmos91/dittofs/pkg/block/engine"
-	"github.com/marmos91/dittofs/pkg/block/local/fs"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
@@ -59,7 +59,7 @@ type HandlerTestFixture struct {
 	// LocalStore is the block store's local tier. Exposed so tests can assert
 	// that a payload's bytes actually left the disk, which is the precondition
 	// every reclamation path shares.
-	LocalStore *fs.FSStore
+	LocalStore *journal.Store
 
 	// ShareName is the name of the test share.
 	ShareName string
@@ -108,7 +108,7 @@ func NewHandlerFixtureWithStore(
 
 	// Create local store, syncer, and block store engine
 	tmpDir := t.TempDir()
-	localStore, err := fs.NewWithOptions(tmpDir, 0, metaStore, fs.FSStoreOptions{})
+	localStore, err := journal.Open(filepath.Join(tmpDir, "journal"), journal.Config{})
 	if err != nil {
 		t.Fatalf("Failed to create local store: %v", err)
 	}

@@ -1,6 +1,9 @@
 # RFC: splitting the block data flow into journal, carver and syncer
 
-**Status:** proposed, open for comment. Nothing here is built.
+**Status:** partially landed. Lane H (journal hygiene sweep) and lane C
+(pkg/block/carver) are merged; the Flush+Run+AfterFile seam (lane F) and the
+full layout+tests pass (lane L) are still open — see
+`.planning/2026-09-11-step3-execution-PLAN.md` for the lane order.
 **Discussion:** https://github.com/marmos91/dittofs/discussions/2234
 **Detail:** `.planning/2026-09-01-block-dataflow-MASTER-PLAN.md` (plan),
 `.planning/2026-09-01-journal-library-design-PLAN.md` (design),

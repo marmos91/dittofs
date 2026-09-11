@@ -77,13 +77,13 @@ func TestColdReadThenDeleteReclaimsLocal(t *testing.T) {
 	if err := bs.DrainAllUploads(ctx); err != nil {
 		t.Fatalf("DrainAllUploads: %v", err)
 	}
-	t.Logf("after carve: local DiskUsed=%d", bs.LocalStats().DiskUsed)
+	t.Logf("after carve: local DiskUsed=%d", bs.LocalStats().DiskBytes)
 
 	// Evict the synced local tier: bytes now live only on the remote.
 	if _, err := bs.DrainLocalSynced(ctx); err != nil {
 		t.Fatalf("DrainLocalSynced: %v", err)
 	}
-	t.Logf("after evict: local DiskUsed=%d", bs.LocalStats().DiskUsed)
+	t.Logf("after evict: local DiskUsed=%d", bs.LocalStats().DiskBytes)
 
 	// Cold read the whole file: hydrates the covering chunks back into the
 	// local journal.
@@ -94,7 +94,7 @@ func TestColdReadThenDeleteReclaimsLocal(t *testing.T) {
 	if len(res.Data) != fileSize {
 		t.Fatalf("cold read returned %d bytes, want %d", len(res.Data), fileSize)
 	}
-	t.Logf("after cold read (hydrate): local DiskUsed=%d", bs.LocalStats().DiskUsed)
+	t.Logf("after cold read (hydrate): local DiskUsed=%d", bs.LocalStats().DiskBytes)
 
 	// Unlink: the file-removal contract must reclaim the local tier eagerly —
 	// with no further eviction pass.
@@ -102,7 +102,7 @@ func TestColdReadThenDeleteReclaimsLocal(t *testing.T) {
 		t.Fatalf("Delete: %v", err)
 	}
 	_ = handle
-	afterDelete := bs.LocalStats().DiskUsed
+	afterDelete := bs.LocalStats().DiskBytes
 	t.Logf("after delete: local DiskUsed=%d", afterDelete)
 
 	// The file's bytes must be gone (a read now zero-fills).

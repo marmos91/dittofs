@@ -11,6 +11,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 )
 
 // inFlightKey returns the deterministic per-block dedup key used by
@@ -198,7 +199,7 @@ func (m *RemoteSync) hydrateChunk(ctx context.Context, fb *block.FileChunk, data
 		}
 		off, data = off+lo, data[lo:hi]
 	}
-	return m.local.Hydrate(ctx, fb.ID[:i], int64(off), data, span.At)
+	return m.local.Hydrate(ctx, journal.FileID(fb.ID[:i]), int64(off), data, span.At)
 }
 
 // clampSpan converts an absolute hydrate span into offsets within a chunk's

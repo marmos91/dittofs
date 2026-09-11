@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block/local/fs"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 	metamem "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
@@ -45,7 +45,7 @@ func TestDirtyExpiryFromConfig(t *testing.T) {
 }
 
 // The parse is only half the knob: the value has to survive the trip through
-// FSStoreOptions into the journal's config, and nothing observable would change
+// journal.Config, and nothing observable would change
 // if that assignment were dropped. This drives the whole path from the config
 // map an operator edits down to the fsync, using only exported API: a write
 // that never asks for durability must reach the durable watermark on its own
@@ -59,12 +59,12 @@ func TestDirtyExpiryFromConfig_ReachesTheJournal(t *testing.T) {
 	mds := metamem.NewMemoryMetadataStoreWithDefaults()
 	t.Cleanup(func() { _ = mds.Close() })
 
-	store, err := CreateLocalStoreFromConfig(ctx, "fs", cfg, "dirty-expire", nil, mds, false)
+	store, err := CreateLocalStoreFromConfig(ctx, "fs", cfg, "dirty-expire", nil, mds)
 	if err != nil {
 		t.Fatalf("CreateLocalStoreFromConfig: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	fsStore := store.(*fs.FSStore)
+	fsStore := store.(*journal.Store)
 
 	const payloadID = "unfsynced"
 	payload := []byte("never committed by the client")

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
@@ -20,8 +21,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/encryption"
 	"github.com/marmos91/dittofs/pkg/block/encryption/keyprovider"
 	"github.com/marmos91/dittofs/pkg/block/engine"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/block/local"
-	"github.com/marmos91/dittofs/pkg/block/local/fs"
 	localmemory "github.com/marmos91/dittofs/pkg/block/local/memory"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
@@ -308,17 +309,6 @@ func mergeLocalStoreDefaults(defaults *LocalStoreDefaults, config *ShareConfig, 
 	return &merged
 }
 
-// legacyLocalOnlyMigrator is the local-store surface the shares service drives
-// to finish an async pre-journal local-only migration in the background.
-// Implemented by the journal-backed fs store; other backends never satisfy it,
-// so the drive block is a no-op for them.
-type legacyLocalOnlyMigrator interface {
-	MigratedFromLegacyLocalOnly() bool
-	LegacyPendingPayloads() []string
-	MaterializeLegacyPayload(payloadID string) error
-	FinishLegacyMigration() error
-}
-
 // createBlockStoreForShare creates and starts a per-share BlockStore.
 func (s *Service) createBlockStoreForShare(
 	ctx context.Context,
@@ -350,7 +340,7 @@ func (s *Service) createBlockStoreForShare(
 	// so the journal opens clean, and the bytes are re-materialized from the
 	// remote via a cold seed below. A local-only share passes false so the
 	// guardrail refuses to open a legacy dir (its bytes are the sole copy).
-	localStore, err := CreateLocalStoreFromConfig(ctx, localCfg.Type, localCfg, config.Name, effectiveDefaults, fileChunkStore, remoteConfigured)
+	localStore, err := CreateLocalStoreFromConfig(ctx, localCfg.Type, localCfg, config.Name, effectiveDefaults, fileChunkStore)
 	if err != nil {
 		return fmt.Errorf("failed to create local store: %w", err)
 	}
@@ -492,53 +482,6 @@ func (s *Service) createBlockStoreForShare(
 		return err
 	}
 
-	// A local-only share (no remote to re-fetch from) that carried a complete
-	// pre-journal layout re-ingests its bytes from the surviving append logs in
-	// the BACKGROUND — AddShare must not block on O(total-bytes) work. Reads that
-	// arrive before a payload is drained fault it in per-payload (never zero-
-	// fill). When every payload is drained the archived legacy dirs are deleted;
-	// a crash before then leaves them on disk and the next open resumes. The
-	// final rollup is done here (outside any metadata txn — the coordinator is
-	// non-reentrant), never from inside a read.
-	if m, ok := localStore.(legacyLocalOnlyMigrator); ok && m.MigratedFromLegacyLocalOnly() {
-		shareName := config.Name
-		go func() {
-			// Detached from the AddShare context, which may be cancelled once the
-			// call returns; the store's own close gate stops the drain on shutdown.
-			bgCtx := context.Background()
-			pending := m.LegacyPendingPayloads()
-			started := time.Now()
-			lastLog := started
-			logger.Info("legacy local-only migration: re-ingesting archived append logs",
-				"share", shareName, "payloads_total", len(pending))
-			for i, payloadID := range pending {
-				if err := m.MaterializeLegacyPayload(payloadID); err != nil {
-					logger.Error("legacy local-only migration: materialize failed; leaving archive for retry on next start",
-						"share", shareName, "payload", payloadID, "error", err)
-					return
-				}
-				if time.Since(lastLog) >= migrationProgressInterval {
-					lastLog = time.Now()
-					logger.Info("legacy local-only migration: re-ingesting archived append logs",
-						"share", shareName, "payloads_done", i+1, "payloads_total", len(pending),
-						"elapsed", time.Since(started).Round(time.Second))
-				}
-			}
-			if err := bs.DrainRollups(bgCtx); err != nil {
-				logger.Error("legacy local-only migration: rollup drain failed; leaving archive for retry on next start",
-					"share", shareName, "error", err)
-				return
-			}
-			if err := m.FinishLegacyMigration(); err != nil {
-				logger.Error("legacy local-only migration: cleanup of archived legacy dirs failed",
-					"share", shareName, "error", err)
-				return
-			}
-			logger.Info("migrated pre-journal local-only layout: re-ingested bytes from append logs and removed the archive",
-				"share", shareName)
-		}()
-	}
-
 	// Thread the inline metrics recorder into the new store's eviction/
 	// backpressure path. nil when the runtime has not yet installed a handle
 	// (startup share-loading precedes metrics.New); SetMetrics back-fills
@@ -568,10 +511,10 @@ func (s *Service) createBlockStoreForShare(
 	// fail reads with ErrDiskFull once the working set exceeds it. Warn the
 	// operator at startup (no behavior change) so the misconfiguration is
 	// visible before it bites a client.
-	if config.RetentionPolicy == block.RetentionPin && remoteStore != nil && bs.LocalStats().MaxDisk > 0 {
+	if config.RetentionPolicy == block.RetentionPin && remoteStore != nil && bs.MaxLocalBytes() > 0 {
 		logger.Warn("pinned share with a bounded local tier: reads will fail with ErrDiskFull once the working set exceeds the local tier — raise local_store_size or drop the pin",
 			"share", config.Name,
-			"local_store_size", bs.LocalStats().MaxDisk)
+			"local_store_size", bs.MaxLocalBytes())
 	}
 
 	logger.Info("Per-share BlockStore initialized",
@@ -1020,7 +963,6 @@ func CreateLocalStoreFromConfig(
 	shareName string,
 	defaults *LocalStoreDefaults,
 	fileChunkStore block.EngineFileChunkStore,
-	migrateLegacy bool,
 ) (local.LocalStore, error) {
 	config, err := cfg.GetConfig()
 	if err != nil {
@@ -1033,8 +975,8 @@ func CreateLocalStoreFromConfig(
 	}
 
 	// Remote-cache backpressure window (how long a write stalls for the
-	// syncer to drain before ErrDiskFull). Threaded into FSStoreOptions
-	// below; zero defers to the FSStore default.
+	// journal to evict before ErrDiskFull). Threaded into journal.Config
+	// below; zero defers to the journal default.
 	var backpressureMaxWait time.Duration
 	if defaults != nil {
 		backpressureMaxWait = defaults.BackpressureMaxWait
@@ -1051,26 +993,18 @@ func CreateLocalStoreFromConfig(
 
 	// Append is mandatory on the local tier — the use_append_log opt-out
 	// flag was deleted with the legacy path-keyed writer. Budgets still
-	// surface through FSStoreOptions to fs.NewWithOptions; invalid values
+	// surface through journal.Config to journal.Open; invalid values
 	// are warned and ignored.
-	var fsOpts fs.FSStoreOptions
-	fsOpts.BackpressureMaxWait = backpressureMaxWait
-	// A remote-backed share may carry a pre-journal blobs/+logs/ layout from an
-	// upgrade; archive it aside so the journal opens clean (the caller then cold-
-	// seeds from the surviving manifest). A local-only share has no remote to
-	// re-fetch from, so it takes the async log-only migration path instead: the
-	// bytes are re-ingested from the surviving append logs when they are complete
-	// (no compacted log), and the guardrail stays fatal otherwise.
-	fsOpts.MigrateLegacyLayout = migrateLegacy
-	fsOpts.MigrateLegacyLocalOnly = !migrateLegacy
+	var jcfg journal.Config
+	jcfg.EvictMaxWait = backpressureMaxWait
+	// max_log_bytes no longer gates writes; it only feeds the Stats size hint,
+	// so it threads into the journal as a hint the Stats snapshot echoes.
+	var maxLogBytes int64
 	// Local-cache size-hint default. Precedence (lowest first):
-	// FSStore internal default < global/deduced default (plumbed via
-	// LocalStoreDefaults.MaxLogBytes) < per-store config["max_log_bytes"].
-	// max_log_bytes no longer gates writes; it only feeds the Stats size hint.
-	// Seed fsOpts.MaxLogBytes from the global/deduced default here; the
-	// per-store config branch below overrides it when present.
+	// global/deduced default (plumbed via LocalStoreDefaults.MaxLogBytes) <
+	// per-store config["max_log_bytes"].
 	if defaults != nil && defaults.MaxLogBytes > 0 {
-		fsOpts.MaxLogBytes = defaults.MaxLogBytes
+		maxLogBytes = defaults.MaxLogBytes
 	}
 	if v, ok := config["max_log_bytes"]; ok {
 		if n, ok := v.(float64); ok && n > 0 {
@@ -1085,13 +1019,14 @@ func CreateLocalStoreFromConfig(
 			if n > float64(math.MaxInt64) || n != math.Trunc(n) {
 				logger.Warn("config: max_log_bytes is out of range or non-integer; keeping default", "value", n)
 			} else {
-				fsOpts.MaxLogBytes = int64(n)
+				maxLogBytes = int64(n)
 			}
 		} else {
 			logger.Warn("block store config has max_log_bytes but it is invalid or non-positive; ignoring", "value", v)
 		}
 	}
-	fsOpts.DirtyExpiry = dirtyExpiryFromConfig(config)
+	jcfg.DirtyExpiry = dirtyExpiryFromConfig(config)
+	jcfg.MaxLogBytes = maxLogBytes
 	// chunk_size sets the FastCDC Min for this share's carve chunker (#1569) —
 	// the dominant knob for effective chunk size and thus random-read
 	// amplification. Avg/Max are derived (4x/8x Min) unless chunk_max overrides
@@ -1116,7 +1051,7 @@ func CreateLocalStoreFromConfig(
 			if err := cp.Validate(); err != nil {
 				logger.Warn("block store config chunk_size produced invalid chunker params; keeping default", "error", err)
 			} else {
-				fsOpts.ChunkParams = cp
+				jcfg.ChunkParams = cp
 			}
 		} else {
 			logger.Warn("block store config has chunk_size but it is invalid or non-positive; ignoring", "value", v)
@@ -1140,21 +1075,19 @@ func CreateLocalStoreFromConfig(
 			return nil, fmt.Errorf("fs local store path must be absolute, got %q", basePath)
 		}
 		sanitized := sanitizeShareName(shareName)
-		// The FSStore creates `blocks/` (CAS) and `logs/` (append log) as
-		// siblings under its baseDir. A previous layout produced a doubled
-		// `shares/{name}/blocks/blocks/...` path. Existing pre-v0.16 installs
-		// migrate via `dfs migrate-to-cas` (which uses share-root as its
-		// state-dir, already aligned with deriveLocalStoreDir).
+		// The journal roots at `journal/` under the share dir (its own layout
+		// convention). Existing pre-v0.16 installs migrated via `dfs
+		// migrate-to-cas` (which uses share-root as its state-dir, already
+		// aligned with deriveLocalStoreDir).
 		shareDir := filepath.Join(expanded, "shares", sanitized)
 		if err := os.MkdirAll(shareDir, 0755); err != nil {
 			return nil, fmt.Errorf("failed to create share directory: %w", err)
 		}
 
-		// The SyncedHashStore and LocalChunkIndex are derived from this same
-		// fileChunkStore backend inside NewWithOptions. There is no longer a
-		// rollup worker pool (the journal carves dirty ranges directly), so the
-		// former RollupStore guard and StartRollup call are gone.
-		store, err := fs.NewWithOptions(shareDir, maxDisk, fileChunkStore, fsOpts)
+		// There is no longer a rollup worker pool (the journal carves dirty
+		// ranges directly), so the former RollupStore guard and StartRollup
+		// call are gone.
+		store, err := openJournalStore(shareDir, maxDisk, maxLogBytes, jcfg)
 		if err != nil {
 			return nil, err
 		}
@@ -1176,6 +1109,23 @@ func CreateLocalStoreFromConfig(
 // block.DurabilityReporter type-default; this lets an operator flip it).
 type durableOverrideSetter interface {
 	SetDurable(bool)
+}
+
+// openJournalStore opens (or recovers) the share's journal at its own layout
+// root (journal/ under the share dir — the journal's own convention) and wires
+// the resolved budgets in. The local tier is *journal.Store directly: no
+// adapter layer between the composition code and the store.
+//
+// max_disk threads into Config.MaxLocalBytes (0 defers to Open's free-space
+// default); max_log_bytes threads as the Stats size hint only — it does not
+// gate writes. applyDurableOverride (at the call site) applies config["durable"]
+// to the returned store via its SetDurable.
+func openJournalStore(shareDir string, maxDisk, maxLogBytes int64, cfg journal.Config) (*journal.Store, error) {
+	cfg.MaxLocalBytes = maxDisk
+	cfg.MaxLogBytes = maxLogBytes
+	// slog.SetDefault routes the configured process logger here.
+	cfg.Logger = slog.Default()
+	return journal.Open(filepath.Join(shareDir, "journal"), cfg)
 }
 
 // applyDurableOverride reads an optional "durable" bool from the per-store

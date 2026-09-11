@@ -7,7 +7,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
-	"github.com/marmos91/dittofs/pkg/block/local/fs"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
@@ -16,11 +16,11 @@ import (
 // CloneWholeFile takes materializeLocalClone rather than the manifest-only
 // reflink. The engine's own tests cover the remote-backed path; this fixture is
 // the only way to reach the local-only one.
-func newLocalOnlyTestEngine(t *testing.T, coord *fakeCoordinator, ms *metadatamemory.MemoryMetadataStore) (*engine.Store, *fs.FSStore) {
+func newLocalOnlyTestEngine(t *testing.T, coord *fakeCoordinator, ms *metadatamemory.MemoryMetadataStore) (*engine.Store, *journal.Store) {
 	t.Helper()
-	localStore, err := fs.NewWithOptions(t.TempDir(), 100*1024*1024, ms, fs.FSStoreOptions{})
+	localStore, err := journal.Open(t.TempDir(), journal.Config{MaxLocalBytes: 100 * 1024 * 1024})
 	if err != nil {
-		t.Fatalf("fs.NewWithOptions failed: %v", err)
+		t.Fatalf("journal.Open failed: %v", err)
 	}
 	syncedHashStore, ok := metadata.Store(ms).(metadata.SyncedHashStore)
 	if !ok {

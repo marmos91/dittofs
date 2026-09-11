@@ -15,6 +15,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/block/local"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -238,7 +239,7 @@ func findStaleSizes(ctx context.Context, metadataStore metadata.Store, localStor
 		g.Go(func() error {
 			var found []staleSize
 			for _, id := range batch {
-				journalSize, ok := localStore.FileSize(gctx, id)
+				journalSize, ok := localStore.FileSize(gctx, journal.FileID(id))
 				if !ok || journalSize < 0 {
 					continue
 				}
@@ -289,7 +290,12 @@ func reconcileMetadataSizeFromJournal(ctx context.Context, metadataStore metadat
 	if localStore == nil {
 		return nil
 	}
-	stale, err := findStaleSizes(ctx, metadataStore, localStore, localStore.ListFiles(ctx))
+	ids := localStore.ListFiles(ctx)
+	files := make([]string, 0, len(ids))
+	for _, id := range ids {
+		files = append(files, string(id))
+	}
+	stale, err := findStaleSizes(ctx, metadataStore, localStore, files)
 	if err != nil {
 		return err
 	}

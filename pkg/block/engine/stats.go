@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/local"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 )
 
 // BlockStoreStats holds comprehensive block store statistics for a Store.
@@ -76,17 +76,17 @@ func (bs *Store) Stats() (*block.Stats, error) {
 		return nil, err
 	}
 	defer bs.closeMu.RUnlock()
-	// FileCount comes from the same Stats snapshot; listing every payload ID
-	// just to take its length would walk (and lock) the whole local index a
-	// second time for a number already in hand.
-	localStats := bs.local.Stats()
-	used := uint64(localStats.DiskUsed)
-	total := uint64(localStats.MaxDisk)
+	// FileCount comes from the same FileCount() point read; listing every
+	// payload ID just to take its length would walk (and lock) the whole local
+	// index a second time for a number already in hand.
+	js := bs.local.Stats()
+	used := uint64(js.DiskBytes)
+	total := uint64(bs.MaxLocalBytes())
 	avail := uint64(0)
 	if total > used {
 		avail = total - used
 	}
-	count := uint64(localStats.FileCount)
+	count := uint64(bs.local.FileCount())
 	avg := uint64(0)
 	if count > 0 {
 		avg = used / count
@@ -124,7 +124,7 @@ func (bs *Store) getStats(withBlockCounts bool) BlockStoreStats {
 		return BlockStoreStats{}
 	}
 
-	localStats := bs.local.Stats()
+	js := bs.local.Stats()
 
 	cacheStats := bs.loadCache().Stats()
 
@@ -146,12 +146,12 @@ func (bs *Store) getStats(withBlockCounts bool) BlockStoreStats {
 		// FileCount is the cheap local-only count here; the full-stats path
 		// (withBlockCounts) overwrites it with the authoritative distinct-payload
 		// count from the metadata so it reflects rolled-up files too (#1374).
-		FileCount:           localStats.FileCount,
-		LocalDiskUsed:       localStats.DiskUsed,
-		LocalDiskMax:        localStats.MaxDisk,
-		LocalMemUsed:        localStats.MemUsed,
-		LocalMemMax:         0, // retained for compatibility; FSStore no longer tracks a mem budget
-		AppendLogLimitBytes: localStats.MaxLogBytes,
+		FileCount:           bs.local.FileCount(),
+		LocalDiskUsed:       js.DiskBytes,
+		LocalDiskMax:        bs.MaxLocalBytes(),
+		LocalMemUsed:        0, // retained for wire compatibility; the journal tracks no in-memory buffer
+		LocalMemMax:         0, // retained for wire compatibility; always 0 since the mem budget was removed
+		AppendLogLimitBytes: js.MaxLogBytes,
 
 		ReadBufferEntries:   cacheStats.Entries,
 		ReadBufferUsed:      cacheStats.CurBytes,
@@ -241,11 +241,28 @@ func (bs *Store) classifyBlocks(ctx context.Context, stats *BlockStoreStats, blo
 // LocalStats returns a snapshot of local store statistics. A closed store
 // reports empty stats rather than racing the local teardown Close performs
 // under closeMu.Lock (no error return to surface ErrStoreClosed).
-func (bs *Store) LocalStats() local.Stats {
+func (bs *Store) LocalStats() journal.Stats {
 	bs.closeMu.RLock()
 	defer bs.closeMu.RUnlock()
 	if bs.closed {
-		return local.Stats{}
+		return journal.Stats{}
 	}
 	return bs.local.Stats()
+}
+
+// MaxLocalBytes reports the local tier's effective disk cap (0 = uncapped).
+// It is resolved by the store itself (an explicit config value, or the
+// free-space default journal.Open derives), so the cap is a store fact, not
+// an engine guess. A closed store reports 0.
+func (bs *Store) MaxLocalBytes() int64 {
+	bs.closeMu.RLock()
+	defer bs.closeMu.RUnlock()
+	if bs.closed {
+		return 0
+	}
+	type capper interface{ MaxLocalBytes() int64 }
+	if c, ok := bs.local.(capper); ok {
+		return c.MaxLocalBytes()
+	}
+	return 0
 }

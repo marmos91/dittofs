@@ -25,7 +25,7 @@ func (bs *Store) Flush(ctx context.Context, payloadID string) (*block.FlushResul
 	}
 	defer bs.closeMu.RUnlock()
 	// Durability barrier: fsync the deferred writes first.
-	if err := bs.local.Commit(ctx, payloadID); err != nil {
+	if err := bs.local.Commit(ctx, journal.FileID(payloadID)); err != nil {
 		return nil, err
 	}
 	// A durable local store already makes the payload crash-safe at this point,
@@ -235,7 +235,7 @@ func (bs *Store) DiscardLocalContent(ctx context.Context, payloadID string) erro
 		return err
 	}
 	defer bs.closeMu.RUnlock()
-	if err := bs.local.Truncate(ctx, payloadID, 0); err != nil {
+	if err := bs.local.Truncate(ctx, journal.FileID(payloadID), 0); err != nil {
 		return err
 	}
 	// The read cache is keyed by content hash, so it cannot serve the dropped
@@ -305,7 +305,7 @@ func (bs *Store) ResetLocalState(ctx context.Context) error {
 	// purely through the restored manifest + remote (there is no append-log
 	// overlay to clear anymore — the journal IS the local tier).
 	for _, payloadID := range bs.local.ListFiles(ctx) {
-		if err := bs.local.Delete(ctx, payloadID); err != nil {
+		if err := bs.local.Delete(ctx, journal.FileID(payloadID)); err != nil {
 			return err
 		}
 	}

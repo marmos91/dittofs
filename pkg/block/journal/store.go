@@ -81,6 +81,11 @@ type Config struct {
 	// synchronous durability point. Zero falls back to the default via
 	// withDefaults; negative disables the loop entirely.
 	DirtyExpiry time.Duration
+	// MaxLogBytes is the append-log size hint the caller resolved from config
+	// (a Stats size hint only — it does not gate writes; the journal carves and
+	// evicts on its own age/size/disk budget). Zero leaves it unset and Stats
+	// reports no hint.
+	MaxLogBytes int64
 	// Logger receives the store's advisory warnings: recovery degradation,
 	// eviction backpressure, failed repack integrity checks. Nil discards
 	// them — the journal never reaches the process logger on its own, so
@@ -169,6 +174,10 @@ type Stats struct {
 	Writes        int64
 	Reads         int64
 	ColdReads     int64
+	// MaxLogBytes is the append-log size hint the caller resolved from config
+	// (a Stats size hint only — it does not gate writes; see Config.MaxLogBytes
+	// and Open's hint resolution). Zero means no hint was configured.
+	MaxLogBytes int64
 }
 
 // Store is the per-share local cache. All exported methods are safe for
@@ -235,6 +244,10 @@ type Store struct {
 	verifyReads atomic.Bool
 
 	closed atomic.Bool
+
+	// durable is the operator-overridable durability report (config["durable"]);
+	// the journal substrate is durable, so Open stores the true default.
+	durable atomic.Bool
 
 	// coldMu guards the cold log's append handle (see cold.go). The log records
 	// every cold interval so a restart still knows those ranges are
@@ -327,6 +340,7 @@ func Open(dir string, cfg Config) (*Store, error) {
 		log:       log,
 		shardMask: uint64(cfg.ShardCount - 1),
 	}
+	s.durable.Store(true) // the journal substrate is durable; config["durable"] may flip it
 
 	ids, err := scanSegmentIDs(dir)
 	if err != nil {
@@ -814,6 +828,7 @@ func (s *Store) Stats() Stats {
 		Writes:        s.writes.Load(),
 		Reads:         s.reads.Load(),
 		ColdReads:     s.coldReads.Load(),
+		MaxLogBytes:   s.cfg.MaxLogBytes,
 	}
 	for _, sh := range s.shards {
 		sh.mu.Lock()

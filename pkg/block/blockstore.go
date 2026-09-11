@@ -53,8 +53,8 @@ type Meta struct {
 //   - the compression / encryption decorators, which forward this surface
 //     inward through remote.Passthrough
 //
-// The local tier does NOT implement this interface: pkg/block/local/fs.FSStore
-// is payload-keyed (WriteAt / ReadAt / Hydrate / Commit) and satisfies
+// The local tier does NOT implement this interface: *journal.Store is
+// payload-keyed (WriteAt / ReadAt / Hydrate / Commit) and satisfies
 // pkg/block/local.LocalStore instead.
 //
 // All methods take ctx context.Context as the first argument and MUST

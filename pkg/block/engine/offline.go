@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 )
 
 // OfflineReadiness reports whether a share could keep serving reads with its
@@ -59,7 +60,7 @@ func (o OfflineReadiness) Safe() bool { return o.Known && o.RemoteOnlyBytes == 0
 type coldRangeReporter interface {
 	ColdExtents(ctx context.Context) (bytes int64, extents int64, err error)
 	ColdSeeded() bool
-	DataExtents(ctx context.Context, payloadID string, size int64) ([][2]uint64, error)
+	DataExtents(ctx context.Context, id journal.FileID, size int64) ([][2]uint64, error)
 }
 
 // manifestLister is the manifest surface the cross-check reads: which files the
@@ -217,7 +218,7 @@ func manifestShortfall(ctx context.Context, index coldRangeReporter, chunks mani
 		if len(placed) == 0 {
 			continue
 		}
-		described, err := index.DataExtents(ctx, id, end)
+		described, err := index.DataExtents(ctx, journal.FileID(id), end)
 		if err != nil {
 			return 0, 0, err
 		}

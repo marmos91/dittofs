@@ -9,7 +9,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
-	"github.com/marmos91/dittofs/pkg/block/local/fs"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
@@ -23,13 +23,13 @@ import (
 
 // hydrateFixture builds an engine over a memory metadata store and a memory
 // remote, and hands back the local tier so a test can force eviction.
-func hydrateFixture(t *testing.T, share, name string) (*engine.Store, *fs.FSStore, metadata.Store, string) {
+func hydrateFixture(t *testing.T, share, name string) (*engine.Store, *journal.Store, metadata.Store, string) {
 	t.Helper()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	bs := newEngineWithRemote(t, ms, remotememory.New())
 	root := createShare(t, ms, share)
 	pid, _ := createRealFile(t, ms, share, name, root)
-	local, ok := bs.Local().(*fs.FSStore)
+	local, ok := bs.Local().(*journal.Store)
 	if !ok {
 		t.Fatalf("local tier is %T, not the journal-backed store the eviction path needs", bs.Local())
 	}
@@ -64,7 +64,7 @@ func manifestRefs(t *testing.T, ms metadata.Store, pid string) []block.ChunkRef 
 
 // evictAll drops every evictable local segment so the next read of those bytes
 // must resolve a manifest row and fetch from the remote.
-func evictAll(t *testing.T, local *fs.FSStore) {
+func evictAll(t *testing.T, local *journal.Store) {
 	t.Helper()
 	res, err := local.Evict(context.Background(), 1<<30)
 	if err != nil {

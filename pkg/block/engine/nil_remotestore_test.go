@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/block/local"
-	"github.com/marmos91/dittofs/pkg/block/local/fs"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
@@ -16,9 +16,9 @@ func newNilRemoteStoreEnv(t *testing.T) (*RemoteSync, local.LocalStore, func()) 
 	t.Helper()
 	tmpDir := t.TempDir()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	bc, err := fs.NewWithOptions(tmpDir, 0, ms, fs.FSStoreOptions{})
+	bc, err := journal.Open(tmpDir, journal.Config{})
 	if err != nil {
-		t.Fatalf("fs.NewWithOptions() error = %v", err)
+		t.Fatalf("journal.Open() error = %v", err)
 	}
 	// nil remoteStore = local-only mode
 	m := NewRemoteSync(bc, nil, ms, DefaultConfig())
@@ -46,7 +46,7 @@ func TestNilRemoteStoreFlush(t *testing.T) {
 	for i := range data {
 		data[i] = byte(i % 256)
 	}
-	if err := bc.WriteAt(ctx, payloadID, 0, data); err != nil {
+	if err := bc.WriteAt(ctx, journal.FileID(payloadID), 0, data); err != nil {
 		t.Fatalf("WriteAt failed: %v", err)
 	}
 

@@ -9,7 +9,6 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block/chunker"
 	"github.com/marmos91/dittofs/pkg/block/journal"
-	"github.com/marmos91/dittofs/pkg/block/local/fs"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
@@ -108,12 +107,12 @@ func (g *gatedSink) PreserveClobberedRow(ctx context.Context, id journal.FileID,
 func newChunkedCarveFixture(t *testing.T, rbs *remotememory.Store, carveBytes int64, params chunker.Params) *carveFixture {
 	t.Helper()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	local, err := fs.NewWithOptions(t.TempDir(), 0, ms, fs.FSStoreOptions{
+	local, err := journal.Open(t.TempDir(), journal.Config{
 		CarveBlockSize: carveBytes,
 		ChunkParams:    params,
 	})
 	if err != nil {
-		t.Fatalf("fs.NewWithOptions: %v", err)
+		t.Fatalf("journal.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = local.Close() })
 

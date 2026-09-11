@@ -15,7 +15,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/pkg/block/engine"
-	"github.com/marmos91/dittofs/pkg/block/local/fs"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	memorymeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
@@ -35,7 +35,7 @@ type ioTestFixture struct {
 	shareName  string
 	// localStore and localDir are the local tier and its directory, so a test can
 	// observe the bytes a payload actually occupies on disk.
-	localStore *fs.FSStore
+	localStore *journal.Store
 	localDir   string
 }
 
@@ -48,7 +48,7 @@ func newIOTestFixture(t *testing.T, shareName string) *ioTestFixture {
 
 	// Create local store, syncer, and block store engine
 	tmpDir := t.TempDir()
-	localStore, err := fs.NewWithOptions(tmpDir, 0, metaStore, fs.FSStoreOptions{})
+	localStore, err := journal.Open(tmpDir, journal.Config{})
 	if err != nil {
 		t.Fatalf("create local store: %v", err)
 	}
@@ -1696,7 +1696,7 @@ func TestRemove_ReclaimsLocalPayloadBytes(t *testing.T) {
 	payload := bytes.Repeat([]byte{0xAB}, 4<<20)
 	fx.writeContent(t, fh, payload)
 
-	if size, ok := fx.localStore.FileSize(ctxBg, payloadID); !ok || size != int64(len(payload)) {
+	if size, ok := fx.localStore.FileSize(ctxBg, journal.FileID(payloadID)); !ok || size != int64(len(payload)) {
 		t.Fatalf("local tier holds %d bytes (present=%v) before REMOVE, want %d", size, ok, len(payload))
 	}
 	if before := localDirBytes(t, fx.localDir); before < int64(len(payload)) {
@@ -1711,7 +1711,7 @@ func TestRemove_ReclaimsLocalPayloadBytes(t *testing.T) {
 		t.Fatalf("REMOVE status = %d, want NFS4_OK", result.Status)
 	}
 
-	if size, ok := fx.localStore.FileSize(ctxBg, payloadID); ok {
+	if size, ok := fx.localStore.FileSize(ctxBg, journal.FileID(payloadID)); ok {
 		t.Fatalf("payload %q still holds %d live bytes in the local tier after REMOVE", payloadID, size)
 	}
 }
@@ -1752,7 +1752,7 @@ func TestRename_ReclaimsClobberedPayloadBytes(t *testing.T) {
 	if survivorPayload == victimPayload {
 		t.Fatalf("test setup: both files share payload %q, the assertions below cannot discriminate", victimPayload)
 	}
-	if size, ok := fx.localStore.FileSize(ctxBg, victimPayload); !ok || size != int64(len(victimBytes)) {
+	if size, ok := fx.localStore.FileSize(ctxBg, journal.FileID(victimPayload)); !ok || size != int64(len(victimBytes)) {
 		t.Fatalf("local tier holds %d bytes (present=%v) for the victim before RENAME, want %d", size, ok, len(victimBytes))
 	}
 
@@ -1765,10 +1765,10 @@ func TestRename_ReclaimsClobberedPayloadBytes(t *testing.T) {
 		t.Fatalf("RENAME status = %d, want NFS4_OK", result.Status)
 	}
 
-	if size, ok := fx.localStore.FileSize(ctxBg, victimPayload); ok {
+	if size, ok := fx.localStore.FileSize(ctxBg, journal.FileID(victimPayload)); ok {
 		t.Fatalf("clobbered payload %q still holds %d live bytes in the local tier after RENAME", victimPayload, size)
 	}
-	if _, ok := fx.localStore.FileSize(ctxBg, survivorPayload); !ok {
+	if _, ok := fx.localStore.FileSize(ctxBg, journal.FileID(survivorPayload)); !ok {
 		t.Fatalf("renamed file's payload %q was dropped from the local tier by RENAME", survivorPayload)
 	}
 }

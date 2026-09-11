@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/block/local"
 	"github.com/marmos91/dittofs/pkg/block/local/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -70,7 +71,7 @@ func buildReconcileFixture(tb testing.TB, n int) (*badgerstore.BadgerMetadataSto
 		require.NoError(tb, store.UpdateAttrs(ctx, f))
 		require.NoError(tb, store.SetParent(ctx, h, dir))
 		require.NoError(tb, store.SetChild(ctx, dir, name, h))
-		require.NoError(tb, local.WriteAt(ctx, payload, 0, make([]byte, 8)))
+		require.NoError(tb, local.WriteAt(ctx, journal.FileID(payload), 0, make([]byte, 8)))
 		ids[i] = payload
 	}
 	return store, local, ids
@@ -86,10 +87,15 @@ func TestFindStaleSizesReportsOnlyLaggingFiles(t *testing.T) {
 
 	// Grow one file's journal extent past its recorded metadata size, and add a
 	// payload the metadata store has never heard of.
-	require.NoError(t, local.WriteAt(ctx, ids[2], 8, make([]byte, 24)))
-	require.NoError(t, local.WriteAt(ctx, "payload-orphan", 0, make([]byte, 16)))
+	require.NoError(t, local.WriteAt(ctx, journal.FileID(ids[2]), 8, make([]byte, 24)))
+	require.NoError(t, local.WriteAt(ctx, journal.FileID("payload-orphan"), 0, make([]byte, 16)))
 
-	stale, err := findStaleSizes(ctx, store, local, local.ListFiles(ctx))
+	resident := local.ListFiles(ctx)
+	files := make([]string, 0, len(resident))
+	for _, id := range resident {
+		files = append(files, string(id))
+	}
+	stale, err := findStaleSizes(ctx, store, local, files)
 	require.NoError(t, err)
 	require.Len(t, stale, 1)
 	require.Equal(t, ids[2], stale[0].id)
@@ -105,7 +111,7 @@ type enrichedOnly struct{ metadata.Store }
 func scanSerialEnriched(ctx context.Context, store metadata.Store, localStore local.LocalStore, files []string) (int, error) {
 	n := 0
 	for _, id := range files {
-		journalSize, ok := localStore.FileSize(ctx, id)
+		journalSize, ok := localStore.FileSize(ctx, journal.FileID(id))
 		if !ok {
 			continue
 		}
@@ -133,7 +139,11 @@ func BenchmarkShareStartSizeScan(b *testing.B) {
 	const files = 5000
 	ctx := context.Background()
 	store, local, _ := buildReconcileFixture(b, files)
-	list := local.ListFiles(ctx)
+	resident := local.ListFiles(ctx)
+	list := make([]string, 0, len(resident))
+	for _, id := range resident {
+		list = append(list, string(id))
+	}
 
 	b.Run("enriched-serial", func(b *testing.B) {
 		b.ReportAllocs()
@@ -185,7 +195,7 @@ func TestFindStaleSizesCoversEveryChunk(t *testing.T) {
 	// expected hits across the list however it ends up chunked.
 	want := map[string]uint64{}
 	for i := 0; i < files; i += 4 {
-		require.NoError(t, local.WriteAt(ctx, ids[i], 8, make([]byte, 8)))
+		require.NoError(t, local.WriteAt(ctx, journal.FileID(ids[i]), 8, make([]byte, 8)))
 		want[ids[i]] = 16
 	}
 

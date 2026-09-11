@@ -10,6 +10,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/block/local"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -411,12 +412,12 @@ func (bs *Store) Local() local.LocalStore { return bs.local }
 // which would leave the range reading as a hole full of zeros.
 func (bs *Store) DurableExtent(ctx context.Context, payloadID metadata.PayloadID) (int64, bool) {
 	reporter, ok := bs.local.(interface {
-		DurableExtent(ctx context.Context, payloadID string) (int64, bool)
+		DurableExtent(ctx context.Context, id journal.FileID) (int64, bool)
 	})
 	if !ok {
 		return 0, false
 	}
-	return reporter.DurableExtent(ctx, string(payloadID))
+	return reporter.DurableExtent(ctx, journal.FileID(string(payloadID)))
 }
 
 // LocalDurable reports whether the engine's local store survives a process
@@ -464,7 +465,14 @@ func (bs *Store) RemoteStore() remote.RemoteStore { return bs.remote }
 // journal. Callers needing every payload (including fully-carved-and-evicted
 // ones) should enumerate the authoritative metadata via the fileChunk store's
 // EnumeratePayloads instead.
-func (bs *Store) ListFiles() []string { return bs.local.ListFiles(context.Background()) }
+func (bs *Store) ListFiles() []string {
+	ids := bs.local.ListFiles(context.Background())
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, string(id))
+	}
+	return out
+}
 
 // EvictLocal drops a file's local cached bytes. In the journal model the local
 // tier is segment-oriented and self-evicts under storage pressure; there is no

@@ -19,9 +19,8 @@ import (
 // The FileChunkStore interface is narrowed to 6 methods. The backend
 // retains the legacy GetFileChunk + ListFileChunks helpers as
 // concrete methods on the struct (not on the public interface) for
-// engine-internal callers (engine/{fetch,dedup,syncer,engine}.go,
-// blockstore/local/fs/{recovery,manage,fs}.go) that consume them via
-// a wider engine-internal interface.
+// engine-internal callers (engine/{fetch,dedup,syncer,engine}.go)
+// that consume them via a wider engine-internal interface.
 //
 // Thread Safety: All operations are protected by the store's mutex.
 //

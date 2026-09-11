@@ -28,7 +28,13 @@ type carveFanoutLocal struct {
 	carved   map[string]int // FileID -> completed count
 }
 
-func (f *carveFanoutLocal) ListFiles(context.Context) []string { return f.files }
+func (f *carveFanoutLocal) ListFiles(context.Context) []journal.FileID {
+	out := make([]journal.FileID, 0, len(f.files))
+	for _, id := range f.files {
+		out = append(out, journal.FileID(id))
+	}
+	return out
+}
 
 func (f *carveFanoutLocal) Carve(_ context.Context, opts journal.CarveOptions) (journal.CarveResult, error) {
 	f.inFlight.Add(1)

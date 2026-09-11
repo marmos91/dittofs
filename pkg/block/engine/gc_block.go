@@ -72,8 +72,8 @@ type BlockGCReclaimer struct {
 // idempotency token: once cleared, GetLocator reports the hash unsynced on any
 // re-visit and this reclaimer is a no-op, so DecrLiveChunkCount can never run
 // twice for the same hash. The marker is the token because EVICTION drops a
-// chunk's local-index entry WITHOUT decrementing (pkg/block/local/fs/eviction.go
-// dropBlobIndexEntries), so under the old local-index token an evicted-then-
+// chunk's local-index entry WITHOUT decrementing (the local tier's blob-index
+// drop, retired with the journal switchover), so under the old local-index token an evicted-then-
 // orphaned chunk looked "already reclaimed", its decrement was skipped, and its
 // block leaked forever. The marker is untouched by eviction.
 //

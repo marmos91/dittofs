@@ -5,6 +5,7 @@ import (
 	"sort"
 
 	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 )
 
 // DataExtents returns the sorted, non-overlapping byte ranges [start, end)
@@ -34,7 +35,7 @@ func (bs *Store) DataExtents(ctx context.Context, payloadID string, fileSize uin
 	}
 
 	// (a) Bytes the local journal tier knows (dirty or evicted/cold).
-	ext, err := bs.local.DataExtents(ctx, payloadID, int64(fileSize))
+	ext, err := bs.local.DataExtents(ctx, journal.FileID(payloadID), int64(fileSize))
 	if err != nil {
 		return nil, err
 	}

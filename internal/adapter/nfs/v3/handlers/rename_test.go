@@ -9,6 +9,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers"
 	handlertesting "github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers/testing"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -458,7 +459,7 @@ func TestRename_ReclaimsClobberedPayloadBytes(t *testing.T) {
 	require.NotEqual(t, victimPayload, survivorPayload,
 		"test setup: both files share a payload, the assertions below cannot discriminate")
 
-	size, ok := fx.LocalStore.FileSize(ctxBg, victimPayload)
+	size, ok := fx.LocalStore.FileSize(ctxBg, journal.FileID(victimPayload))
 	require.True(t, ok, "victim payload absent from the local tier before RENAME")
 	require.Equal(t, int64(len(victimBytes)), size)
 
@@ -471,11 +472,11 @@ func TestRename_ReclaimsClobberedPayloadBytes(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, types.NFS3OK, resp.Status)
 
-	leaked, stillThere := fx.LocalStore.FileSize(ctxBg, victimPayload)
+	leaked, stillThere := fx.LocalStore.FileSize(ctxBg, journal.FileID(victimPayload))
 	assert.Falsef(t, stillThere,
 		"clobbered payload %q still holds %d live bytes in the local tier after RENAME", victimPayload, leaked)
 
-	_, survived := fx.LocalStore.FileSize(ctxBg, survivorPayload)
+	_, survived := fx.LocalStore.FileSize(ctxBg, journal.FileID(survivorPayload))
 	assert.Truef(t, survived,
 		"renamed file's payload %q was dropped from the local tier by RENAME", survivorPayload)
 }

@@ -16,7 +16,7 @@ import (
 	"math/rand/v2"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/local/fs"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
@@ -53,11 +53,11 @@ const writeBenchSeedChunkSize = 8 * 1024 * 1024
 func newWriteBenchEngine(tb testing.TB) *Store {
 	tb.Helper()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	localStore, err := fs.NewWithOptions(tb.TempDir(), 0, ms, fs.FSStoreOptions{
+	localStore, err := journal.Open(tb.TempDir(), journal.Config{
 		MaxLogBytes: writeBenchLogBudget,
 	})
 	if err != nil {
-		tb.Fatalf("fs.NewWithOptions: %v", err)
+		tb.Fatalf("journal.Open: %v", err)
 	}
 	rem := remotememory.New()
 	syncer := NewRemoteSync(localStore, rem, ms, DefaultConfig())

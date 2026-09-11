@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block/local/fs"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/health"
@@ -63,11 +63,11 @@ func buildHealthTestEngine(t *testing.T) (*Store, *fakeRemoteStore) {
 
 	tmpDir := t.TempDir()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	localStore, err := fs.NewWithOptions(tmpDir, 100*1024*1024, ms, fs.FSStoreOptions{
+	localStore, err := journal.Open(tmpDir, journal.Config{MaxLocalBytes: 100 * 1024 * 1024,
 		MaxLogBytes: 128 * 1024 * 1024,
 	})
 	if err != nil {
-		t.Fatalf("fs.NewWithOptions() error = %v", err)
+		t.Fatalf("journal.Open() error = %v", err)
 	}
 	// No rollup pool: the journal chunks at carve time, driven by the syncer.
 

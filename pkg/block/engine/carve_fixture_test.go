@@ -13,7 +13,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/encryption/keyprovider"
-	"github.com/marmos91/dittofs/pkg/block/local/fs"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
@@ -43,13 +43,13 @@ func newEncryptionProvider(t *testing.T) keyprovider.KeyProvider {
 // so Flush/SyncNow(carve) on this ID drains the fixture's dirty ranges.
 const carveFixturePayload = "share/p1"
 
-// carveFixture wires a journal-backed *fs.FSStore, a memory metadata store (the
+// carveFixture wires a journal-backed *journal.Store, a memory metadata store (the
 // blockCommitter: Transactor + SyncedHashStore), and the
 // provided block-keyed remote into a RemoteSync with the carve substrate fully
 // active (ManualSync — no background dispatcher racing assertions). carveBytes
 // sizes the block target.
 type carveFixture struct {
-	local  *fs.FSStore
+	local  *journal.Store
 	ms     *metadatamemory.MemoryMetadataStore
 	remote remote.RemoteBlockStore
 	syncer *RemoteSync
@@ -66,9 +66,9 @@ func newCarveFixture(t *testing.T, rbs remote.RemoteStore, carveBytes int64) *ca
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	// carveBytes reaches the carve loop through the local store: the journal owns
 	// the loop, so this is the only route to it.
-	local, err := fs.NewWithOptions(t.TempDir(), 0, ms, fs.FSStoreOptions{CarveBlockSize: carveBytes})
+	local, err := journal.Open(t.TempDir(), journal.Config{CarveBlockSize: carveBytes})
 	if err != nil {
-		t.Fatalf("fs.NewWithOptions: %v", err)
+		t.Fatalf("journal.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = local.Close() })
 

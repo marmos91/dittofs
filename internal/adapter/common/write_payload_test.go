@@ -5,31 +5,23 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block/engine"
-	"github.com/marmos91/dittofs/pkg/block/local/fs"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
 // newTestEngine constructs an engine.Store backed by an on-disk
-// FSStore rooted at a temp dir, mirroring the engine package's test
+// journal.Store rooted at a temp dir, mirroring the engine package's test
 // helper. Used here instead of a mock because *engine.Store is a
 // concrete struct and the helper under test takes it directly.
-//
-// The FSStore is constructed with an inline SyncedHashStore + a tight
-// stabilization window, and StartRollup is
-// invoked so AppendWrite-staged bytes flow through the
-// rollup → CAS chunk → FileChunk-row pipeline that the engine's CAS
-// read path consumes.
 func newTestEngine(t *testing.T) *engine.Store {
 	t.Helper()
 
 	tmpDir := t.TempDir()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	localStore, err := fs.NewWithOptions(tmpDir, 100*1024*1024, ms, fs.FSStoreOptions{
-		MaxLogBytes: 128 * 1024 * 1024,
-	})
+	localStore, err := journal.Open(tmpDir, journal.Config{MaxLocalBytes: 100 * 1024 * 1024})
 	if err != nil {
-		t.Fatalf("fs.NewWithOptions failed: %v", err)
+		t.Fatalf("journal.Open failed: %v", err)
 	}
 
 	syncer := engine.NewRemoteSync(localStore, nil, ms, engine.DefaultConfig())

@@ -11,7 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
-	"github.com/marmos91/dittofs/pkg/block/local/fs"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
@@ -372,13 +372,13 @@ func newCopyTestEngineWithMS(t *testing.T, coord *fakeCoordinator, ms *metadatam
 // newCopyTestEngineWithLocal is newCopyTestEngineWithMS with the journal-backed
 // local tier handed back too, for the assertions that are about what the index
 // describes rather than what the manifest holds.
-func newCopyTestEngineWithLocal(t *testing.T, coord *fakeCoordinator, ms *metadatamemory.MemoryMetadataStore) (*engine.Store, *fs.FSStore) {
+func newCopyTestEngineWithLocal(t *testing.T, coord *fakeCoordinator, ms *metadatamemory.MemoryMetadataStore) (*engine.Store, *journal.Store) {
 	t.Helper()
 
 	tmpDir := t.TempDir()
-	localStore, err := fs.NewWithOptions(tmpDir, 100*1024*1024, ms, fs.FSStoreOptions{})
+	localStore, err := journal.Open(tmpDir, journal.Config{MaxLocalBytes: 100 * 1024 * 1024})
 	if err != nil {
-		t.Fatalf("fs.NewWithOptions failed: %v", err)
+		t.Fatalf("journal.Open failed: %v", err)
 	}
 
 	// Wire a remote store so HasRemoteStore() is true: the O(1) manifest-row

@@ -33,14 +33,15 @@ func TestStats_UsedSizeMatchesDiskUsed(t *testing.T) {
 	}
 
 	localStats := bs.local.Stats()
+	// DiskBytes is the journal's physical-footprint figure; UsedSize maps onto it.
 	stats, err := bs.Stats()
 	if err != nil {
 		t.Fatalf("Stats() failed: %v", err)
 	}
 
 	// Verify UsedSize is wired to local DiskUsed.
-	if stats.UsedSize != uint64(localStats.DiskUsed) {
-		t.Fatalf("UsedSize=%d does not match localStats.DiskUsed=%d", stats.UsedSize, localStats.DiskUsed)
+	if stats.UsedSize != uint64(localStats.DiskBytes) {
+		t.Fatalf("UsedSize=%d does not match localStats.DiskBytes=%d", stats.UsedSize, localStats.DiskBytes)
 	}
 
 	// Verify ContentCount reflects the file count.

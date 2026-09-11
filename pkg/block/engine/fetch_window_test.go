@@ -72,7 +72,7 @@ func TestFetchBlock_StagesEveryChunkInBlock(t *testing.T) {
 				// Poison the destination so an unhydrated range fails loudly
 				// instead of matching a zero-filled read.
 				got := bytes.Repeat([]byte{0xAA}, chunkSize)
-				n, st, err := loc.ReadAt(ctx, payloadID, want.offset, got)
+				n, st, err := loc.ReadAt(ctx, journal.FileID(payloadID), want.offset, got)
 				if err != nil {
 					t.Fatalf("local ReadAt at %d: %v", want.offset, err)
 				}
@@ -98,7 +98,7 @@ type alwaysColdLocal struct {
 	local.LocalStore
 }
 
-func (alwaysColdLocal) ReadAt(_ context.Context, _ string, _ int64, dst []byte) (int, journal.ReadState, error) {
+func (alwaysColdLocal) ReadAt(_ context.Context, _ journal.FileID, _ int64, dst []byte) (int, journal.ReadState, error) {
 	return len(dst), journal.ReadState{Cold: true}, nil
 }
 

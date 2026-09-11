@@ -5,7 +5,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/local/fs"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
@@ -16,14 +16,14 @@ import (
 // append-log bytes reach CAS + the FileChunk manifest is via an explicit
 // DrainRollups. This reproduces the snapshot race where a snapshot is
 // taken before the async rollup catches up.
-func newDrainResetFixture(t *testing.T) (*Store, *fs.FSStore) {
+func newDrainResetFixture(t *testing.T) (*Store, *journal.Store) {
 	t.Helper()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	localStore, err := fs.NewWithOptions(t.TempDir(), 100*1024*1024, ms, fs.FSStoreOptions{
+	localStore, err := journal.Open(t.TempDir(), journal.Config{MaxLocalBytes: 100 * 1024 * 1024,
 		MaxLogBytes: 128 * 1024 * 1024,
 	})
 	if err != nil {
-		t.Fatalf("fs.NewWithOptions: %v", err)
+		t.Fatalf("journal.Open: %v", err)
 	}
 	// Chunking + manifest population now happen at CARVE, which needs a wired
 	// remote block sink (there is no local-only rollup). ManualSync keeps

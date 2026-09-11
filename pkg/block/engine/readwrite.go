@@ -7,6 +7,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -37,7 +38,7 @@ func (bs *Store) GetSize(ctx context.Context, payloadID string) (uint64, error) 
 		return 0, err
 	}
 	defer bs.closeMu.RUnlock()
-	if size, found := bs.local.FileSize(ctx, payloadID); found {
+	if size, found := bs.local.FileSize(ctx, journal.FileID(payloadID)); found {
 		return uint64(size), nil
 	}
 	return bs.syncer.GetFileSize(ctx, payloadID)
@@ -50,7 +51,7 @@ func (bs *Store) Exists(ctx context.Context, payloadID string) (bool, error) {
 		return false, err
 	}
 	defer bs.closeMu.RUnlock()
-	if _, found := bs.local.FileSize(ctx, payloadID); found {
+	if _, found := bs.local.FileSize(ctx, journal.FileID(payloadID)); found {
 		return true, nil
 	}
 	return bs.syncer.Exists(ctx, payloadID)
@@ -83,7 +84,7 @@ func (bs *Store) WriteAt(ctx context.Context, payloadID string, currentBlocks []
 	if len(data) == 0 {
 		return currentBlocks, nil
 	}
-	if err := bs.local.WriteAt(ctx, payloadID, int64(offset), data); err != nil {
+	if err := bs.local.WriteAt(ctx, journal.FileID(payloadID), int64(offset), data); err != nil {
 		return currentBlocks, err
 	}
 	// Cache invalidation lives in common.WriteToBlockStore (post-txn)
@@ -233,7 +234,7 @@ func (bs *Store) Truncate(ctx context.Context, payloadID string, currentBlocks [
 		}
 	}
 
-	if err := bs.local.Truncate(ctx, payloadID, int64(newSize)); err != nil {
+	if err := bs.local.Truncate(ctx, journal.FileID(payloadID), int64(newSize)); err != nil {
 		return currentBlocks, fmt.Errorf("local truncate failed: %w", err)
 	}
 
@@ -328,7 +329,7 @@ func (bs *Store) PunchHole(ctx context.Context, payloadID string, currentBlocks 
 		if n > zeroChunk {
 			n = zeroChunk
 		}
-		if err := bs.local.WriteAt(ctx, payloadID, int64(pos), zeros[:n]); err != nil {
+		if err := bs.local.WriteAt(ctx, journal.FileID(payloadID), int64(pos), zeros[:n]); err != nil {
 			return currentBlocks, fmt.Errorf("zero punched range %s [%d,%d): %w", payloadID, pos, pos+n, err)
 		}
 		pos += n
@@ -364,7 +365,7 @@ func (bs *Store) Delete(ctx context.Context, payloadID string, blocks []block.Ch
 		return err
 	}
 	defer bs.closeMu.RUnlock()
-	if err := bs.local.Delete(ctx, payloadID); err != nil {
+	if err := bs.local.Delete(ctx, journal.FileID(payloadID)); err != nil {
 		return fmt.Errorf("local delete failed: %w", err)
 	}
 	// Resolve the manifest to reap. The file-removal path (NFS REMOVE, SMB

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/adapter/common"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 )
 
 // TestFlushRelaxed_CrashBeforeMetadataFsync_SizeReconciled is THE merge gate for
@@ -67,7 +68,7 @@ func TestFlushRelaxed_CrashBeforeMetadataFsync_SizeReconciled(t *testing.T) {
 			if got := fx.getFile(ctx, "acked.bin").Size; got != 0 {
 				t.Fatalf("precondition: metadata.Size = %d, want 0 (test must model a stale size)", got)
 			}
-			if js, ok := fx.bs.Local().FileSize(ctx, string(pid)); !ok || js != int64(n) {
+			if js, ok := fx.bs.Local().FileSize(ctx, journal.FileID(string(pid))); !ok || js != int64(n) {
 				t.Fatalf("precondition: journal FileSize = (%d, %v), want (%d, true) — data not journal-durable", js, ok, n)
 			}
 

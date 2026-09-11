@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/local/fs"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 	metamem "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
@@ -30,8 +30,8 @@ func (f *fakeBlockStoreConfig) GetConfig() (map[string]any, error) {
 
 // TestCreateLocalStoreFromConfig_AppendLogMandatory exercises the config
 // wiring: append is mandatory on the local tier. CreateLocalStoreFromConfig
-// must build an FSStore via NewWithOptions and return a store whose write
-// path succeeds.
+// must build a *journal.Store rooted at journal/ under the share dir and
+// return a store whose write path succeeds.
 func TestCreateLocalStoreFromConfig_AppendLogMandatory(t *testing.T) {
 	ctx := context.Background()
 	tmp := t.TempDir()
@@ -46,15 +46,15 @@ func TestCreateLocalStoreFromConfig_AppendLogMandatory(t *testing.T) {
 	mds := metamem.NewMemoryMetadataStoreWithDefaults()
 	t.Cleanup(func() { _ = mds.Close() })
 
-	store, err := CreateLocalStoreFromConfig(ctx, "fs", cfg, "test-share", nil, mds, false)
+	store, err := CreateLocalStoreFromConfig(ctx, "fs", cfg, "test-share", nil, mds)
 	if err != nil {
 		t.Fatalf("CreateLocalStoreFromConfig: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
 
-	fsStore, ok := store.(*fs.FSStore)
+	fsStore, ok := store.(*journal.Store)
 	if !ok {
-		t.Fatalf("returned store type = %T, want *fs.FSStore", store)
+		t.Fatalf("returned store type = %T, want *journal.Store", store)
 	}
 
 	// WriteAt must succeed — the journal-backed store accepts writes immediately.
@@ -63,7 +63,7 @@ func TestCreateLocalStoreFromConfig_AppendLogMandatory(t *testing.T) {
 	}
 
 	// Sanity check: the share root was created at the expected location.
-	// The FSStore opens the journal under `journal/` inside the share dir.
+	// The journal opens under `journal/` inside the share dir.
 	expectedShareDir := filepath.Join(tmp, "shares", "test-share")
 	if _, statErr := statDir(expectedShareDir); statErr != nil {
 		t.Errorf("share dir %q not created: %v", expectedShareDir, statErr)
@@ -87,14 +87,14 @@ func TestCreateLocalStoreFromConfig_InvalidTypesIgnored(t *testing.T) {
 	mds := metamem.NewMemoryMetadataStoreWithDefaults()
 	t.Cleanup(func() { _ = mds.Close() })
 
-	store, err := CreateLocalStoreFromConfig(ctx, "fs", cfg, "bad-types", nil, mds, false)
+	store, err := CreateLocalStoreFromConfig(ctx, "fs", cfg, "bad-types", nil, mds)
 	if err != nil {
 		t.Fatalf("CreateLocalStoreFromConfig: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
 
 	// Defaults still produce a working write path.
-	fsStore := store.(*fs.FSStore)
+	fsStore := store.(*journal.Store)
 	if err := fsStore.WriteAt(ctx, "p", 0, []byte("x")); err != nil {
 		t.Fatalf("WriteAt under invalid-types config: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestCreateLocalStoreFromConfig_RollupSurvivesCallerCancel(t *testing.T) {
 	mds := metamem.NewMemoryMetadataStoreWithDefaults()
 	t.Cleanup(func() { _ = mds.Close() })
 
-	store, err := CreateLocalStoreFromConfig(ctx, "fs", cfg, "cancel-share", nil, mds, false)
+	store, err := CreateLocalStoreFromConfig(ctx, "fs", cfg, "cancel-share", nil, mds)
 	if err != nil {
 		t.Fatalf("CreateLocalStoreFromConfig: %v", err)
 	}
@@ -140,9 +140,9 @@ func TestCreateLocalStoreFromConfig_RollupSurvivesCallerCancel(t *testing.T) {
 	// while the store lives on. The rollup pool must NOT die with it.
 	cancel()
 
-	fsStore, ok := store.(*fs.FSStore)
+	fsStore, ok := store.(*journal.Store)
 	if !ok {
-		t.Fatalf("CreateLocalStoreFromConfig returned %T, want *fs.FSStore", store)
+		t.Fatalf("CreateLocalStoreFromConfig returned %T, want *journal.Store", store)
 	}
 	const payloadID = "cancel-payload"
 	// 256 KiB of dedup-resistant content — comfortably past the chunker's

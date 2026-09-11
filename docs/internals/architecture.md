@@ -266,14 +266,13 @@ in the remote store, so immediately evictable) while a client write is born
 *dirty* (must be carved before it can be evicted). The journal is keyed by
 `(payloadID, offset)`, not by content hash.
 
-`*fs.FSStore` (`pkg/block/local/fs/`) is now a **thin adapter** over
-`*journal.Store`: it bridges the `string`↔`journal.FileID` keyspace and the
-`local.LocalStore` admin surface, and forwards the data-plane calls. The
-journal owns its own segment layout, carve, eviction, and local garbage
-collection. Only `BackpressureMaxWait` and `ChunkParams` remain load-bearing
-knobs; the old rollup/append-log options (`max_log_bytes`, `rollup_workers`,
-`stabilization_ms`, `orphan_log_min_age_seconds`) are vestigial — the journal
-carves on its own age/size gate.
+`*journal.Store` (`pkg/block/journal/`) IS the live per-file byte cache — the
+composition layer holds it directly (no adapter between them). The journal
+owns its own segment layout, carve, eviction, and local garbage collection.
+Only `BackpressureMaxWait` (as `Config.EvictMaxWait`) and `ChunkParams` remain
+load-bearing knobs; the old rollup/append-log options (`max_log_bytes`,
+`rollup_workers`, `stabilization_ms`, `orphan_log_min_age_seconds`) are
+vestigial — the journal carves on its own age/size gate.
 
 ### Carve: local → remote
 
@@ -285,8 +284,7 @@ shard internally. Carving a file FastCDC-chunks its dirty ranges (min 1 MiB /
 avg 4 MiB / max 16 MiB by default), BLAKE3-hashes each chunk, and — via the
 engine-supplied `BlockSink` — dedups against remote-durable chunks, seals each
 chunk (compression/encryption), frames the survivors into a packed block
-(4 MiB by default, `journal.Config.CarveBlockSize`, settable through
-`fs.FSStoreOptions`), uploads the block with one `PutBlock`, and
+(4 MiB by default, `journal.Config.CarveBlockSize`), uploads the block with one `PutBlock`, and
 commits the block record, per-chunk synced markers, and per-file FileChunk
 manifest rows in a single metadata transaction (`metadata.DefaultCommitBlock`).
 `PutBlock` runs before the commit, so a crash in between leaves an orphan block
@@ -350,12 +348,12 @@ store. Reclaiming remote block objects by refcount stays with the engine's
 block-GC sweep (see [Garbage Collection](#garbage-collection-mark-sweep)),
 whose per-remote serialization is what makes a decrement safe.
 
-### Per-`FSStore` surface
+### Per-share `journal.Store` surface
 
 Per the per-share block-store invariants (in `CLAUDE.md`), all journal state —
 segments, interval index, carve/eviction machinery, disk budget — lives inside
-the per-share `*journal.Store` behind `*FSStore`. No global state is shared
-across shares; local storage directories are always isolated.
+the per-share `*journal.Store` the composition layer holds directly. No global
+state is shared across shares; local storage directories are always isolated.
 
 ## Block Lifecycle (three-state)
 
@@ -1553,12 +1551,12 @@ Two consequences worth knowing:
 ### Pre-v0.16 `.blk` -> CAS: migrate with dittofs <= v0.21
 
 The offline `.blk`->CAS tool (`migrate-to-cas`) shipped through v0.21 and has
-been removed. `newFSStore` still probes each share for the legacy `.blk` layout
-on open (a `.cas-migrated-v1` sentinel from an old run short-circuits the probe)
-and returns `block.ErrLegacyLayoutDetected`; the boot guard in
-`cmd/dfs/commands/start.go` unwraps it, prints a directive to migrate with an
-earlier release, and exits 78 (`EX_CONFIG`). Unlike the standalone-CAS case
-above, this one still refuses at boot rather than at read time.
+been removed. The journal format stamp (`cmd/dfs/commands/start.go`'s
+`handleFormatMismatch`) refuses a directory a newer release wrote and exits 78
+(`EX_CONFIG`); the pre-journal blobs/+logs/ guard was deleted with
+`pkg/block/local/fs` — no production stores exist in field, so opening such a
+directory as an empty journal is accepted. Unlike the standalone-CAS case
+above, this one is a read-time answer, not a boot refusal.
 
 See [the migration guide](../guide/block-store-migration.md) for the operator
 runbook.

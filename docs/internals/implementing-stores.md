@@ -53,7 +53,7 @@ Implement a custom local store when you need:
 - **Custom eviction**: Access-pattern-aware eviction beyond simple LRU
 - **Encryption at rest**: Hardware-accelerated encryption for local blocks
 
-**Reference implementation**: `pkg/block/local/fs/` (filesystem-backed local store)
+**Reference implementation**: `pkg/block/journal/` (filesystem-backed local store)
 
 ### Remote Store Use Cases
 
@@ -504,11 +504,10 @@ the carve pass in [the architecture doc](architecture.md#carve-local--remote));
 
 ### Reference Implementation
 
-The filesystem-backed store `*fs.FSStore` (`pkg/block/local/fs/`) is a thin
-adapter over `*journal.Store`: it bridges the `string`↔`journal.FileID`
-keyspace and forwards the data-plane calls; the journal owns segment layout,
-carve, eviction, and local GC. The in-memory store (`pkg/block/local/memory/`)
-is the other reference. There is no separate append-log or rollup tier and no
+The filesystem-backed store `*journal.Store` (`pkg/block/journal/`) IS the
+per-file byte cache the composition layer holds directly — no adapter. The
+in-memory store (`pkg/block/local/memory/`) is the other reference. There is
+no separate append-log or rollup tier and no
 `metadata.RollupStore` contract — those were removed when the journal replaced
 the two-tier local design.
 
@@ -908,7 +907,7 @@ Users can then create your store via CLI:
 
 - **Interface Definitions**: `pkg/block/local/local.go`, `pkg/block/remote/remote.go`
 - **Reference Implementations**:
-  - Local: `pkg/block/local/fs/`, `pkg/block/local/memory/`
+  - Local: `pkg/block/journal/`, `pkg/block/local/memory/`
   - Remote: `pkg/block/remote/s3/`, `pkg/block/remote/memory/`
   - Metadata: `pkg/metadata/store/memory/`, `pkg/metadata/store/badger/`, `pkg/metadata/store/sqlite/`, `pkg/metadata/store/postgres/` (the SQL pair share `pkg/metadata/store/sql/`)
 - **Conformance Tests**: `pkg/block/blockstoretest/` (block stores), `pkg/metadata/storetest/` (metadata stores)

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 )
 
 // fakeColdReporter stands in for the local tier's residency surface so the
@@ -27,7 +28,7 @@ func (f *fakeColdReporter) ColdExtents(ctx context.Context) (int64, int64, error
 }
 func (f *fakeColdReporter) ColdSeeded() bool { return f.seeded }
 
-func (f *fakeColdReporter) DataExtents(context.Context, string, int64) ([][2]uint64, error) {
+func (f *fakeColdReporter) DataExtents(context.Context, journal.FileID, int64) ([][2]uint64, error) {
 	return nil, nil
 }
 
@@ -154,9 +155,9 @@ type stubIndex struct {
 
 func (s *stubIndex) ColdExtents(context.Context) (int64, int64, error) { return 0, 0, nil }
 func (s *stubIndex) ColdSeeded() bool                                  { return s.seeded }
-func (s *stubIndex) DataExtents(_ context.Context, id string, size int64) ([][2]uint64, error) {
+func (s *stubIndex) DataExtents(_ context.Context, id journal.FileID, size int64) ([][2]uint64, error) {
 	var out [][2]uint64
-	for _, e := range s.described[id] {
+	for _, e := range s.described[string(id)] {
 		if e[0] >= uint64(size) {
 			continue
 		}

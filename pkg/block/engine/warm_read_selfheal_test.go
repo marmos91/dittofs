@@ -11,7 +11,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
-	"github.com/marmos91/dittofs/pkg/block/local/fs"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
@@ -25,11 +25,11 @@ import (
 func buildSelfHealEngine(t *testing.T, ms metadata.Store, mem *remotememory.Store) (*engine.Store, string) {
 	t.Helper()
 	dir := t.TempDir()
-	localStore, err := fs.NewWithOptions(dir, 100*1024*1024, ms, fs.FSStoreOptions{
+	localStore, err := journal.Open(filepath.Join(dir, "journal"), journal.Config{MaxLocalBytes: 100 * 1024 * 1024,
 		MaxLogBytes: 128 * 1024 * 1024,
 	})
 	if err != nil {
-		t.Fatalf("fs.NewWithOptions: %v", err)
+		t.Fatalf("journal.Open: %v", err)
 	}
 	// Durable tier: verify warm reads per-record so on-disk corruption is caught.
 	localStore.SetVerifyReads(true)

@@ -12,7 +12,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
-	localfs "github.com/marmos91/dittofs/pkg/block/local/fs"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -30,17 +30,17 @@ var _ remote.RemoteStore = keepOpenRemote{}
 
 // openOfflineEngine builds a journal-backed engine over dir. Called twice per
 // case with the same dir and metadata store, so the second call is a restart.
-func openOfflineEngine(t *testing.T, dir string, ms metadata.Store, mem *remotememory.Store) (*engine.Store, *localfs.FSStore) {
+func openOfflineEngine(t *testing.T, dir string, ms metadata.Store, mem *remotememory.Store) (*engine.Store, *journal.Store) {
 	t.Helper()
 	shs, ok := ms.(metadata.SyncedHashStore)
 	if !ok {
 		t.Fatalf("metadata store %T does not implement metadata.SyncedHashStore", ms)
 	}
-	local, err := localfs.NewWithOptions(dir, 100*1024*1024, ms, localfs.FSStoreOptions{
+	local, err := journal.Open(dir, journal.Config{MaxLocalBytes: 100 * 1024 * 1024,
 		MaxLogBytes: 128 * 1024 * 1024,
 	})
 	if err != nil {
-		t.Fatalf("fs.NewWithOptions: %v", err)
+		t.Fatalf("journal.Open: %v", err)
 	}
 	syncer := engine.NewRemoteSync(local, mem, ms, engine.DefaultConfig())
 	syncer.SetSyncedHashStore(shs)
@@ -186,7 +186,7 @@ func TestOfflineReadiness_LostIntervalIsNotSafe(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ColdExtents: %v", err)
 			}
-			described, err := local.DataExtents(ctx, pid, fileSize)
+			described, err := local.DataExtents(ctx, journal.FileID(pid), fileSize)
 			if err != nil {
 				t.Fatalf("DataExtents: %v", err)
 			}
@@ -305,7 +305,7 @@ func TestOfflineReadiness_CloneIsRemoteOnly(t *testing.T) {
 
 	// The copy alone describes nothing: it is a manifest operation, and the seed
 	// below is the separate post-commit step that gives the index its account.
-	described, err := local.DataExtents(ctx, dst, size)
+	described, err := local.DataExtents(ctx, journal.FileID(dst), size)
 	if err != nil {
 		t.Fatalf("DataExtents: %v", err)
 	}
@@ -316,7 +316,7 @@ func TestOfflineReadiness_CloneIsRemoteOnly(t *testing.T) {
 	if err := bs.SeedColdRefs(ctx, dst, copied); err != nil {
 		t.Fatalf("SeedColdRefs: %v", err)
 	}
-	described, err = local.DataExtents(ctx, dst, size)
+	described, err = local.DataExtents(ctx, journal.FileID(dst), size)
 	if err != nil {
 		t.Fatalf("DataExtents after the seed: %v", err)
 	}

@@ -571,7 +571,7 @@ func dittofsWaitSettled(ctx context.Context) error {
 // dittofsEvictSegmentBytes is the granularity at which eviction actually frees
 // local disk. The journal reclaims whole segments and refuses any segment still
 // holding an unsynced record, so one straggler keeps its entire segment resident.
-// pkg/block/local/fs leaves Config.SegmentSize unset, so the bench share runs on
+// The bench leaves Config.SegmentSize unset, so the bench share runs on
 // the journal's own default.
 const dittofsEvictSegmentBytes int64 = 256 << 20
 

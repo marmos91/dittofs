@@ -6,20 +6,20 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block/engine"
-	"github.com/marmos91/dittofs/pkg/block/local/fs"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
 // localOnlyPair is newLocalOnlyEngine but hands back the local store too, so the
 // test can drive the journal directly the way a replayed journal would arrive.
-func localOnlyPair(t *testing.T, ms metadata.Store) (*engine.Store, *fs.FSStore) {
+func localOnlyPair(t *testing.T, ms metadata.Store) (*engine.Store, *journal.Store) {
 	t.Helper()
-	localStore, err := fs.NewWithOptions(t.TempDir(), 100*1024*1024, ms, fs.FSStoreOptions{
+	localStore, err := journal.Open(t.TempDir(), journal.Config{MaxLocalBytes: 100 * 1024 * 1024,
 		MaxLogBytes: 128 * 1024 * 1024,
 	})
 	if err != nil {
-		t.Fatalf("fs.NewWithOptions: %v", err)
+		t.Fatalf("journal.Open: %v", err)
 	}
 	syncedHashStore, ok := ms.(metadata.SyncedHashStore)
 	if !ok {

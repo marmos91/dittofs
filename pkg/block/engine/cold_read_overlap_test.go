@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 	memorylocal "github.com/marmos91/dittofs/pkg/block/local/memory"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 )
@@ -89,7 +90,7 @@ func TestEnsureAvailable_StraddlerDoesNotShadowLaterRow(t *testing.T) {
 				// Poison the destination so an unhydrated range fails the compare
 				// instead of hiding in zeros.
 				got := bytes.Repeat([]byte{0xAA}, len(want))
-				_, st, err := loc.ReadAt(ctx, payloadID, int64(straddlerOff), got)
+				_, st, err := loc.ReadAt(ctx, journal.FileID(payloadID), int64(straddlerOff), got)
 				if err != nil {
 					t.Fatalf("local ReadAt after fetch: %v", err)
 				}

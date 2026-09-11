@@ -315,7 +315,7 @@ func (s *Service) EvictBlockStore(ctx context.Context, shareName string, opts Ev
 		}
 
 		if !opts.ReadBufferOnly {
-			beforeDisk := bs.LocalStats().DiskUsed
+			beforeDisk := bs.LocalStats().DiskBytes
 
 			files := bs.ListFiles()
 			for _, payloadID := range files {
@@ -338,7 +338,7 @@ func (s *Service) EvictBlockStore(ctx context.Context, shareName string, opts Ev
 			// The raw delta can go negative if a concurrent write grows DiskUsed
 			// mid-eviction; max with the non-negative drained count keeps
 			// BytesFreed honest and never negative.
-			result.BytesFreed += max(beforeDisk-bs.LocalStats().DiskUsed, drained)
+			result.BytesFreed += max(beforeDisk-bs.LocalStats().DiskBytes, drained)
 		}
 	}
 

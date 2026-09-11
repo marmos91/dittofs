@@ -68,7 +68,11 @@ func (m *RemoteSync) carveDispatcher(ctx context.Context) {
 // still serialize on the journal's internal carve lock, so the concurrency here
 // overlaps distinct shards' upload latency.
 func (m *RemoteSync) carvePass(ctx context.Context) {
-	files := m.local.ListFiles(ctx)
+	ids := m.local.ListFiles(ctx)
+	files := make([]string, 0, len(ids))
+	for _, id := range ids {
+		files = append(files, string(id))
+	}
 	if len(files) == 0 {
 		return
 	}

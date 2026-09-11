@@ -12,11 +12,10 @@
 //     entrypoint.
 //
 // There is no append-log conformance entrypoint. The local tier
-// (*fs.FSStore) is not hash-keyed — it exposes the payload-keyed
+// (*journal.Store) is not hash-keyed — it exposes the payload-keyed
 // local.LocalStore surface (WriteAt / ReadAt / Hydrate / Commit) and so
 // implements neither block.Store nor RemoteBlockStore. It is covered by
-// its own package-local tests in pkg/block/local/fs and by the journal
-// suites, not by anything here.
+// the journal suites and its own package tests, not by anything here.
 //
 // Each scenario uses a factory that returns a fresh (store, cleanup)
 // pair per subtest, so subtests do not share state and teardown is

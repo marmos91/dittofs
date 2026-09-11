@@ -1,7 +1,6 @@
 // Package memory is a pure in-memory local.LocalStore used by tests and
-// ephemeral configs. Since the Wall-A switchover it is a per-file byte cache
-// (payloadID+offset keyed), mirroring the journal's shape without disk,
-// segments, or eviction.
+// ephemeral configs. It is a per-file byte cache (FileID+offset keyed),
+// mirroring the journal's shape without disk, segments, or eviction.
 package memory
 
 import (
@@ -66,7 +65,8 @@ func (s *MemoryStore) writeLocked(payloadID string, offset int64, data []byte) i
 }
 
 // WriteAt buffers a dirty write.
-func (s *MemoryStore) WriteAt(_ context.Context, payloadID string, offset int64, data []byte) error {
+func (s *MemoryStore) WriteAt(_ context.Context, id journal.FileID, offset int64, data []byte) error {
+	payloadID := string(id)
 	if offset < 0 {
 		return block.ErrInvalidOffset
 	}
@@ -87,7 +87,8 @@ func (s *MemoryStore) WriteAt(_ context.Context, payloadID string, offset int64,
 // no per-range version to compare it against, and this store never evicts, so
 // the cold read that carries a meaningful mark does not arise here. Give the
 // buffer an interval index if a memory-local share ever needs the gate.
-func (s *MemoryStore) Hydrate(_ context.Context, payloadID string, offset int64, data []byte, _ uint64) error {
+func (s *MemoryStore) Hydrate(_ context.Context, id journal.FileID, offset int64, data []byte, _ uint64) error {
+	payloadID := string(id)
 	if offset < 0 {
 		return block.ErrInvalidOffset
 	}
@@ -104,7 +105,8 @@ func (s *MemoryStore) Hydrate(_ context.Context, payloadID string, offset int64,
 // Memory never evicts, so Cold is always false. The flat buffer cannot record
 // which bytes were written, so Hole is reported only for the part of the window
 // past the buffer's end — interior holes are indistinguishable from zeros here.
-func (s *MemoryStore) ReadAt(_ context.Context, payloadID string, offset int64, dst []byte) (int, journal.ReadState, error) {
+func (s *MemoryStore) ReadAt(_ context.Context, id journal.FileID, offset int64, dst []byte) (int, journal.ReadState, error) {
+	payloadID := string(id)
 	if offset < 0 {
 		return 0, journal.ReadState{}, block.ErrInvalidOffset
 	}
@@ -131,10 +133,11 @@ func (s *MemoryStore) ReadAt(_ context.Context, payloadID string, offset int64, 
 }
 
 // Commit is a no-op: memory has no durable substrate.
-func (s *MemoryStore) Commit(context.Context, string) error { return nil }
+func (s *MemoryStore) Commit(context.Context, journal.FileID) error { return nil }
 
 // FileSize reports the data high-water mark.
-func (s *MemoryStore) FileSize(_ context.Context, payloadID string) (int64, bool) {
+func (s *MemoryStore) FileSize(_ context.Context, id journal.FileID) (int64, bool) {
+	payloadID := string(id)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	f := s.files[payloadID]
@@ -146,7 +149,8 @@ func (s *MemoryStore) FileSize(_ context.Context, payloadID string) (int64, bool
 
 // DataExtents returns the single written region clamped to fileSize. Conservative
 // over-reporting is RFC-safe.
-func (s *MemoryStore) DataExtents(_ context.Context, payloadID string, fileSize int64) ([][2]uint64, error) {
+func (s *MemoryStore) DataExtents(_ context.Context, id journal.FileID, fileSize int64) ([][2]uint64, error) {
+	payloadID := string(id)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	f := s.files[payloadID]
@@ -164,7 +168,8 @@ func (s *MemoryStore) DataExtents(_ context.Context, payloadID string, fileSize 
 }
 
 // Truncate shrinks a file to newSize; growing is a no-op.
-func (s *MemoryStore) Truncate(_ context.Context, payloadID string, newSize int64) error {
+func (s *MemoryStore) Truncate(_ context.Context, id journal.FileID, newSize int64) error {
+	payloadID := string(id)
 	if newSize < 0 {
 		return block.ErrInvalidOffset
 	}
@@ -179,7 +184,8 @@ func (s *MemoryStore) Truncate(_ context.Context, payloadID string, newSize int6
 }
 
 // Delete drops all of a file's cached ranges.
-func (s *MemoryStore) Delete(_ context.Context, payloadID string) error {
+func (s *MemoryStore) Delete(_ context.Context, id journal.FileID) error {
+	payloadID := string(id)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if f := s.files[payloadID]; f != nil {
@@ -190,12 +196,12 @@ func (s *MemoryStore) Delete(_ context.Context, payloadID string) error {
 }
 
 // ListFiles returns every payloadID with local data.
-func (s *MemoryStore) ListFiles(context.Context) []string {
+func (s *MemoryStore) ListFiles(context.Context) []journal.FileID {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make([]string, 0, len(s.files))
+	out := make([]journal.FileID, 0, len(s.files))
 	for id := range s.files {
-		out = append(out, id)
+		out = append(out, journal.FileID(id))
 	}
 	return out
 }
@@ -309,14 +315,21 @@ func (s *MemoryStore) Close() error {
 }
 
 // Stats reports coarse in-memory usage.
-func (s *MemoryStore) Stats() local.Stats {
+func (s *MemoryStore) Stats() journal.Stats {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var used int64
 	for _, f := range s.files {
 		used += int64(len(f.buf))
 	}
-	return local.Stats{DiskUsed: used, FileCount: len(s.files)}
+	return journal.Stats{DiskBytes: used}
+}
+
+// FileCount reports the number of files with a local entry.
+func (s *MemoryStore) FileCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.files)
 }
 
 // Durable reports crash survival. In-memory storage is volatile → false default.
@@ -331,4 +344,4 @@ func (s *MemoryStore) WriteVersion() uint64 { return 0 }
 
 // Invalidate is a no-op: the memory store has no durable tier to demote and no
 // remote copy to fall back to, so there is nothing a read could fetch instead.
-func (s *MemoryStore) Invalidate(_ context.Context, _ string, _, _ int64) error { return nil }
+func (s *MemoryStore) Invalidate(_ context.Context, _ journal.FileID, _, _ int64) error { return nil }

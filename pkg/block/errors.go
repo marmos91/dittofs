@@ -141,8 +141,8 @@ var (
 	ErrFileChunkNotFound = errors.New("file chunk not found")
 
 	// ErrUnknownHash is returned by FileChunkStore.AddRef when no
-	// FileChunk row exists for the given hash. The LRU hit path
-	// (Opt 1 — see pkg/block/local/fs/rollup.go) MUST
+	// FileChunk row exists for the given hash. The read-through hit path
+	// (pkg/block/engine fetch) MUST
 	// fall back to the full Put path on this sentinel; the LRU may
 	// be ahead of the metadata store after a crash (RAM-only LRU
 	// see), or the hash may not be present yet.

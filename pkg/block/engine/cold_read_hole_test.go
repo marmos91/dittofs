@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 	memorylocal "github.com/marmos91/dittofs/pkg/block/local/memory"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
@@ -106,7 +107,7 @@ func TestEnsureAvailable_ChunkAfterHoleIsFetched(t *testing.T) {
 
 			// Poison the destination so an unhydrated range fails instead of hiding in zeros.
 			got := bytes.Repeat([]byte{0xAA}, chunkSize)
-			n, st, err := loc.ReadAt(ctx, payloadID, holeEnd, got)
+			n, st, err := loc.ReadAt(ctx, journal.FileID(payloadID), holeEnd, got)
 			if err != nil {
 				t.Fatalf("local ReadAt after fetch: %v", err)
 			}

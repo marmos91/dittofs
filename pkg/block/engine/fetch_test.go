@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/block/local"
 	memorylocal "github.com/marmos91/dittofs/pkg/block/local/memory"
 	"github.com/marmos91/dittofs/pkg/block/remote"
@@ -46,7 +47,7 @@ func newFailingPutLocal() *failingPutLocal {
 // for the test to close `release` (with a safety timeout so a buggy test does
 // not wedge the suite), then returns the sentinel error. The cold-fetch path
 // persists via journal Hydrate (payloadID+offset), not the old hash-keyed Put.
-func (f *failingPutLocal) Hydrate(_ context.Context, _ string, _ int64, _ []byte, _ uint64) error {
+func (f *failingPutLocal) Hydrate(_ context.Context, _ journal.FileID, _ int64, _ []byte, _ uint64) error {
 	f.puts.Add(1)
 	f.once.Do(func() { close(f.entered) })
 	select {

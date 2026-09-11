@@ -42,7 +42,7 @@ func (bs *Store) readAtInternal(ctx context.Context, payloadID string, data []by
 		return 0, nil
 	}
 
-	n, st, err := bs.local.ReadAt(ctx, payloadID, int64(offset), data)
+	n, st, err := bs.local.ReadAt(ctx, journal.FileID(payloadID), int64(offset), data)
 	if err != nil {
 		var corrupt *journal.CorruptRangeError
 		if errors.As(err, &corrupt) {
@@ -80,7 +80,7 @@ func (bs *Store) healCorruptWarmRead(ctx context.Context, payloadID string, data
 		return 0, fmt.Errorf("warm read integrity failure for %s at offset %d (local-only, no remote to heal from): %w",
 			payloadID, offset, block.ErrIntegrityCheckFailed)
 	}
-	if err := bs.local.Invalidate(ctx, payloadID, corrupt.Offset, corrupt.Len); err != nil {
+	if err := bs.local.Invalidate(ctx, journal.FileID(payloadID), corrupt.Offset, corrupt.Len); err != nil {
 		return 0, fmt.Errorf("demote corrupt range for %s at offset %d: %w", payloadID, offset, err)
 	}
 	if err := bs.ensureAndReadFromLocal(ctx, payloadID, data, offset); err != nil {
@@ -119,7 +119,7 @@ func (bs *Store) ensureAndReadFromLocal(ctx context.Context, payloadID string, d
 		if err := bs.syncer.EnsureAvailable(ctx, payloadID, offset, uint32(len(dest))); err != nil {
 			return fmt.Errorf("manifest reconcile for %s at offset %d failed: %w", payloadID, offset, err)
 		}
-		_, st, err := bs.local.ReadAt(ctx, payloadID, int64(offset), dest)
+		_, st, err := bs.local.ReadAt(ctx, journal.FileID(payloadID), int64(offset), dest)
 		if err != nil {
 			return fmt.Errorf("read after hydrate failed: %w", err)
 		}
