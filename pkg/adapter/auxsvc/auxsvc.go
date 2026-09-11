@@ -56,7 +56,9 @@ type Service interface {
 	Start(ctx context.Context) error
 
 	// Stop tears the service down. It must be idempotent and block until the
-	// service's background goroutines have exited.
+	// service's background goroutines have exited. Stop may also be called
+	// before or concurrently with Start (a live disable can race an in-flight
+	// start), so implementations must tolerate that ordering.
 	Stop(ctx context.Context) error
 }
 
@@ -122,17 +124,24 @@ func (g *Group) Start(s Service) error {
 
 	if err := s.Start(baseCtx); err != nil {
 		g.mu.Lock()
-		delete(g.running, name)
-		g.removeFromOrderLocked(name)
+		// Roll back only our own entry: the reservation may have been stolen
+		// by a StopOne mid-flight and the name re-reserved by another Start,
+		// whose entry must survive.
+		if cur, ok := g.running[name]; ok && cur == s {
+			delete(g.running, name)
+			g.removeFromOrderLocked(name)
+		}
 		g.mu.Unlock()
 		return fmt.Errorf("auxsvc: start %q: %w", name, err)
 	}
 	// StopAll may have raced the shutdown while s.Start was in flight: it
 	// clears the base context and would never tear down a service tracked
-	// afterwards, so roll the reservation back and stop the service here.
+	// afterwards. A StopOne can also have stolen the reservation mid-flight,
+	// leaving the name absent from running — either way the caller decided
+	// this service should not run, so roll back our entry and stop it here.
 	g.mu.Lock()
-	raced := g.baseCtx == nil
-	if raced {
+	raced := g.baseCtx == nil || g.running[name] != s
+	if raced && g.running[name] == s {
 		delete(g.running, name)
 		g.removeFromOrderLocked(name)
 	}

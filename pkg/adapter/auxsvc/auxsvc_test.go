@@ -50,7 +50,6 @@ type blockingService struct {
 	startEntered chan struct{}
 
 	started   atomic.Bool
-	startCtx  context.Context
 	stopCalls atomic.Int32
 }
 
@@ -62,7 +61,6 @@ func (b *blockingService) Stop(ctx context.Context) error {
 }
 
 func (b *blockingService) Start(ctx context.Context) error {
-	b.startCtx = ctx
 	b.started.Store(true)
 	// Signal entry, then park until the test releases the Start call; the
 	// injected error (if any) is returned after the park, so a failure can be
@@ -175,14 +173,51 @@ func TestGroup_StartRacingStopAllDoesNotLeakService(t *testing.T) {
 	if g.IsRunning("slow") {
 		t.Fatal("service must not stay tracked after the group stopped")
 	}
-	if got := blocking.stopCalls.Load(); got < 1 {
-		t.Fatalf("Stop called %d times after raced shutdown, want at least 1", got)
+	if got := blocking.stopCalls.Load(); got != 2 {
+		t.Fatalf("Stop called %d times after raced shutdown, want 2 (StopAll snapshot + raced rollback)", got)
 	}
 	// The raced path can Stop a second time when StopAll's snapshot already
 	// included the reservation (it does here): Service.Stop must be idempotent.
 	// The group is shut down: a fresh reconcile no-ops.
 	if g.Ready() {
 		t.Fatal("StopAll should have cleared the base context")
+	}
+}
+
+func TestGroup_StartReservationStolenByStopOneNotLeaked(t *testing.T) {
+	g := NewGroup()
+	g.SetBaseContext(context.Background())
+
+	// StopOne deletes the reservation while the Start is parked in s.Start;
+	// the successfully-started service must not leak: it is either re-tracked
+	// or stopped, never left serving outside the group.
+	blocking := &blockingService{name: "slow", release: make(chan struct{}), startEntered: make(chan struct{})}
+	startDone := make(chan error, 1)
+	go func() { startDone <- g.Start(blocking) }()
+	<-blocking.startEntered // parked inside s.Start, reservation is in the map
+
+	if err := g.StopOne("slow"); err != nil {
+		t.Fatalf("StopOne during in-flight Start: %v", err)
+	}
+	close(blocking.release)
+
+	err := <-startDone
+	if err == nil {
+		// The Start believed it succeeded; the group must not have silently
+		// dropped it from tracking.
+		if !g.IsRunning("slow") {
+			t.Fatal("successful Start whose reservation was stolen must stay tracked, not leak")
+		}
+	} else {
+		// The Start reported the theft as a failure; it must have stopped the
+		// service it had already bound.
+		if got := blocking.stopCalls.Load(); got < 1 {
+			t.Fatalf("failed Start must stop the service it started, Stop calls = %d", got)
+		}
+		if g.IsRunning("slow") {
+			t.Fatal("failed Start must not leave the service tracked")
+		}
+		_ = err
 	}
 }
 
