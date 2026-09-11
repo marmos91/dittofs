@@ -11,28 +11,32 @@ import (
 	"time"
 )
 
-// captureWarnings opens the store with a Config.Logger writing into a buffer
-// and returns an accessor for what was logged.
-func captureWarnings(t *testing.T) (Config, func() string) {
+// captureWarnings returns a *slog.Logger writing into a buffer and an accessor
+// for what was logged.
+func captureWarnings(t *testing.T) (*slog.Logger, func() string) {
 	t.Helper()
 	var buf bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	t.Cleanup(func() {})
-	return Config{Logger: log}, buf.String
+	return log, buf.String
 }
 
 // reopen closes s and opens a fresh Store over the same directory, exercising
-// the recovery path.
+// the recovery path. cfg's non-zero fields override s's config; zero fields
+// keep s's values.
 func reopen(t *testing.T, s *Store, cfg Config) *Store {
 	t.Helper()
 	dir := s.dir
-	if cfg.Logger == nil {
-		cfg = s.cfg
+	merged := s.cfg
+	if cfg.Logger != nil {
+		merged.Logger = cfg.Logger
+	}
+	if cfg.Clock != nil {
+		merged.Clock = cfg.Clock
 	}
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	r, err := Open(dir, cfg)
+	r, err := Open(dir, merged)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
@@ -246,9 +250,9 @@ func TestMissingIdxRebuilt(t *testing.T) {
 		t.Fatalf("remove sealed .idx: %v", err)
 	}
 
-	cfg, warned := captureWarnings(t)
+	logger, warned := captureWarnings(t)
 
-	r := reopen(t, s, cfg)
+	r := reopen(t, s, Config{Logger: logger})
 	if !strings.Contains(warned(), "missing .idx sidecar") {
 		t.Fatalf("expected a Warn for the missing .idx")
 	}
@@ -378,9 +382,9 @@ func TestSealedSegmentWithNoValidRecords(t *testing.T) {
 		t.Fatalf("chtimes: %v", err)
 	}
 
-	cfg, warned := captureWarnings(t)
+	logger, warned := captureWarnings(t)
 
-	r, err := Open(dir, Config{ShardCount: 1, Logger: cfg.Logger})
+	r, err := Open(dir, Config{ShardCount: 1, Logger: logger})
 	if err != nil {
 		t.Fatalf("reopen over damaged sealed segment: %v", err)
 	}

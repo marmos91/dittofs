@@ -8,6 +8,7 @@ package fs
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -160,6 +161,7 @@ func NewWithOptions(dir string, maxDisk int64, fileChunkStore block.EngineFileCh
 		ChunkParams:    opts.ChunkParams,
 		DirtyExpiry:    opts.DirtyExpiry,
 		CarveBlockSize: opts.CarveBlockSize,
+		Logger:         slog.Default(), // slog.SetDefault routes the configured process logger here
 	}
 	// Open checks the format stamp before touching the journal: a directory a
 	// newer release wrote would otherwise read as holes wherever the newer
