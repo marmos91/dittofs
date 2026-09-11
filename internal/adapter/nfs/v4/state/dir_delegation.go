@@ -105,7 +105,7 @@ func (sm *StateManager) GrantDirDelegation(clientID uint64, dirFH []byte, notifM
 	// keeps changing. See GrantDelegation.
 	if lm := sm.lockManagerFor(fhCopy); lm != nil {
 		// See GrantDelegation comment: NFS delegations lack share context at this layer.
-		lockDeleg := lock.NewDelegation(lock.DelegTypeRead, nfsClientIdentity(clientID), "", true)
+		lockDeleg := lock.NewDelegation(lock.DelegTypeRead, NFSLockClientIdentity(clientID), "", true)
 		lockDeleg.NotificationMask = notifMask
 
 		// sm.mu is released across the manager call (see acquireLock in manager.go).

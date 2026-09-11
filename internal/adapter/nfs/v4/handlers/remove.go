@@ -7,6 +7,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -167,8 +168,22 @@ func (h *Handler) handleRemove(ctx *types.CompoundContext, reader io.Reader) *ty
 		"target", target,
 		"client", ctx.ClientAddr)
 
-	// Directory change notifications are now handled by MetadataService via
-	// DirChangeNotifier -> LockManager -> BreakCallbacks (unified path).
+	// Notify directory delegation holders on the parent about the removed
+	// entry. Best-effort: the remove is already committed and the client has
+	// its answer, so a notification failure is logged, not surfaced. A removed
+	// entry that was itself a delegated directory gets a recall below, not an
+	// entry notification.
+	if h.StateManager != nil {
+		var originClientID uint64
+		if ctx.SessionClientID != 0 {
+			originClientID = ctx.SessionClientID
+		}
+		h.StateManager.NotifyDirChange(ctx.CurrentFH, state.DirNotification{
+			Type:           types.NOTIFY4_REMOVE_ENTRY,
+			EntryName:      target,
+			OriginClientID: originClientID,
+		})
+	}
 
 	// If the removed entry was a directory, revoke any NFS4 directory delegations on it.
 	// This is NFS4-specific cleanup (not a directory change notification).

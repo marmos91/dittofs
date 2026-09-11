@@ -5,6 +5,7 @@ import (
 	"io"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -148,8 +149,20 @@ func (h *Handler) handleLink(ctx *types.CompoundContext, reader io.Reader) *type
 		"newname", newName,
 		"client", ctx.ClientAddr)
 
-	// Directory change notifications are now handled by MetadataService via
-	// DirChangeNotifier -> LockManager -> BreakCallbacks (unified path).
+	// Notify directory delegation holders on the target directory about the
+	// new link. Best-effort: the link is already committed and the client has
+	// its answer, so a notification failure is logged, not surfaced.
+	if h.StateManager != nil {
+		var originClientID uint64
+		if ctx.SessionClientID != 0 {
+			originClientID = ctx.SessionClientID
+		}
+		h.StateManager.NotifyDirChange(dirHandle, state.DirNotification{
+			Type:           types.NOTIFY4_ADD_ENTRY,
+			EntryName:      newName,
+			OriginClientID: originClientID,
+		})
+	}
 
 	// Encode LINK4resok
 	var buf bytes.Buffer

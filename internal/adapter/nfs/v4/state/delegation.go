@@ -111,9 +111,6 @@ type DirNotification struct {
 	// NewName is the new name for RENAME notifications (EntryName is the old name).
 	NewName string
 
-	// NewDirFH is the destination directory handle for cross-directory RENAME.
-	NewDirFH []byte
-
 	// OriginClientID is the client ID that caused this notification.
 	// Used for conflict-based recall: if a different client modifies the
 	// directory, the delegation is recalled from other holders.
@@ -320,7 +317,7 @@ func (sm *StateManager) GrantDelegation(clientID uint64, fileHandle []byte, dele
 		// The client identity matches the one v4 byte-range lock owners carry
 		// (see acquireLock), so break paths that exclude by client can tell a
 		// client's own delegation from another client's.
-		lockDeleg := lock.NewDelegation(lmDelegType, nfsClientIdentity(clientID), "", false)
+		lockDeleg := lock.NewDelegation(lmDelegType, NFSLockClientIdentity(clientID), "", false)
 
 		// The manager's grant path is cross-protocol, and sm.mu serializes every
 		// client's state operation server-wide, so the mutex is released across
