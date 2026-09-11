@@ -8,6 +8,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // sparseTestHandler builds a Handler with no runtime registry. That is enough to
@@ -113,6 +114,47 @@ func TestHandleReadPlus_Validation(t *testing.T) {
 			t.Fatalf("status = %d, want ISDIR", res.Status)
 		}
 	})
+}
+
+// SEEK on a non-regular filehandle: pins the per-file-type error SEEK owes a
+// client (see seekTypeError for the RFC derivation). SEEK is a v4.2-only op, so
+// RFC 5661/7862's NFS4ERR_WRONG_TYPE is available — unlike READ/READ_PLUS, whose
+// handler also serves v4.0 compounds where that status does not exist.
+// Collapsing every non-regular type to NFS4ERR_ISDIR tells a client a FIFO is a
+// directory.
+func TestSeekNonRegularType(t *testing.T) {
+	fx := newIOTestFixture(t, "/export")
+
+	cases := []struct {
+		name     string
+		fileType metadata.FileType
+		want     uint32
+	}{
+		{"directory", metadata.FileTypeDirectory, types.NFS4ERR_ISDIR},
+		{"symlink", metadata.FileTypeSymlink, types.NFS4ERR_SYMLINK},
+		{"fifo", metadata.FileTypeFIFO, types.NFS4ERR_WRONG_TYPE},
+		{"socket", metadata.FileTypeSocket, types.NFS4ERR_WRONG_TYPE},
+		{"blockdev", metadata.FileTypeBlockDevice, types.NFS4ERR_WRONG_TYPE},
+		{"chardev", metadata.FileTypeCharDevice, types.NFS4ERR_WRONG_TYPE},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var handle metadata.FileHandle
+			if tc.fileType == metadata.FileTypeDirectory {
+				handle = fx.createDirectory(t, fx.rootHandle, "seekdir_"+tc.name)
+			} else {
+				handle = fx.createNonRegular(t, "seekobj_"+tc.name, tc.fileType)
+			}
+
+			ctx := newRealFSContext(0, 0)
+			ctx.CurrentFH = handle
+			res := fx.handler.handleSeek(ctx, encSeekArgs(&anonymousStateid, 0, types.NFS4_CONTENT_DATA))
+			if got := res.Status; got != tc.want {
+				t.Errorf("SEEK status = %d, want %d", got, tc.want)
+			}
+		})
+	}
 }
 
 // encodeReadPlusResok / hole encoding shape check (no runtime needed).
