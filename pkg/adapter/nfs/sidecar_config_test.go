@@ -57,17 +57,15 @@ func TestSidecarConfigConcurrentApplyRead(t *testing.T) {
 	}
 
 	// One reader spinning the exact reads the sysreg transition and the
-	// portmapper start path perform (snapshot under configMu, like the fixed
-	// production readers).
+	// portmapper start path perform (the production snapshotSidecarConfig
+	// helper, so removing configMu from startPortmapper's or
+	// systemRegMappings's snapshots turns this hammer -race red).
 	go func() {
 		defer wg.Done()
 		for i := 0; i < iterations; i++ {
 			_ = a.isPortmapperEnabled()
-			_ = a.isUDPEnabled()
+			_, _, _ = a.snapshotSidecarConfig()
 			_ = a.registerWithSystemEnabled()
-			a.configMu.Lock()
-			_ = a.config.Portmapper.Port
-			a.configMu.Unlock()
 		}
 	}()
 

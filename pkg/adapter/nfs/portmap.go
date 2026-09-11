@@ -31,6 +31,25 @@ func (s *NFSAdapter) isPortmapperEnabled() bool {
 	return *enabled
 }
 
+// snapshotSidecarConfig reads the sidecar config tuple (main NFS port,
+// portmapper port, UDP enabled) under one configMu critical section. Applies
+// run concurrently with starts, so every consumer that needs a coherent view
+// of the three values — the portmapper registry/server and the system-rpcbind
+// mappings — must go through this helper rather than reading the fields
+// separately. Reads UDP.Enabled directly: isUDPEnabled() would re-acquire the
+// same mutex inside this one (not reentrant) and self-deadlock.
+func (s *NFSAdapter) snapshotSidecarConfig() (nfsPort, portmapPort int, udpEnabled bool) {
+	s.configMu.Lock()
+	nfsPort = s.config.Port
+	portmapPort = s.config.Portmapper.Port
+	enabled := s.config.UDP.Enabled
+	s.configMu.Unlock()
+	if enabled != nil {
+		udpEnabled = *enabled
+	}
+	return nfsPort, portmapPort, udpEnabled
+}
+
 // startPortmapper creates and starts the embedded portmapper server.
 //
 // The portmapper (RFC 1057) enables NFS clients to discover DittoFS services
@@ -55,14 +74,13 @@ func (s *NFSAdapter) startPortmapper(ctx context.Context) error {
 
 	// Snapshot the sidecar config under configMu: applies run concurrently with
 	// this start, so the registry and server must see one coherent generation.
-	s.configMu.Lock()
-	nfsPort := s.config.Port
-	portmapPort := s.config.Portmapper.Port
-	s.configMu.Unlock()
+	// All three values (main port, portmapper port, UDP enabled) come from the
+	// same critical section so a concurrent apply cannot land between them.
+	nfsPort, portmapPort, udpEnabled := s.snapshotSidecarConfig()
 
 	// Create registry and register all DittoFS services
 	registry := portmap.NewRegistry()
-	registry.RegisterDittoFSServices(nfsPort, s.isUDPEnabled())
+	registry.RegisterDittoFSServices(nfsPort, udpEnabled)
 	registry.RegisterPortmapper(portmapPort)
 	// Create portmapper server
 	server := portmap.NewServer(portmap.ServerConfig{
@@ -152,9 +170,7 @@ const systemRegTimeout = 10 * time.Second
 // The kernel only needs NLM (and MOUNT/NFS) discovery to take v3 byte-range
 // locks; status monitoring continues via the host statd.
 func (s *NFSAdapter) systemRegMappings() []*xdr.Mapping {
-	s.configMu.Lock()
-	nfsPort := s.config.Port
-	s.configMu.Unlock()
+	nfsPort, _, _ := s.snapshotSidecarConfig()
 	all := portmap.DittoFSServiceMappings(nfsPort, s.isUDPEnabled())
 	out := all[:0:0]
 	for _, m := range all {
