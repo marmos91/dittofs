@@ -14,6 +14,8 @@ import (
 
 // Share state: cached shares, share security descriptors, durable-handle
 // seeding, and the share-change callback.
+// notifyOpenFileModified emits a FileActionModified notification for the
+// handle, taking the parent path and stream name from one name snapshot.
 func (h *Handler) notifyOpenFileModified(openFile *OpenFile, filter uint32) {
 	name := openFile.Name()
 	h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(name.Path), notifyStreamName(name.FileName), FileActionModified, filter)

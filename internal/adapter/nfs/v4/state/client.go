@@ -863,17 +863,9 @@ func (sm *StateManager) RemoveClient(clientID uint64) {
 		"client_id_str", record.ClientIDString)
 }
 
-// removeClientOpenStateLocked drops every open-owner belonging to clientID
-// together with its open states, its lock states, and the locks those hold in
-// the unified lock manager.
-//
-// It scans sm.openOwners by ClientID rather than walking the record's
-// OpenOwners map: that map is only populated on the v4.0 path, and it goes
-// stale even there because freeOpenStateidLocked removes owners from
-// sm.openOwners without removing them from it.
-//
-// Caller must hold sm.mu.
-
+// GetConfirmedClientIDs returns a list of all confirmed client IDs.
+// Used for saving client state before shutdown so the grace period
+// can identify which clients need to reclaim on restart.
 func (sm *StateManager) GetConfirmedClientIDs() []uint64 {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
@@ -917,24 +909,38 @@ func (sm *StateManager) SaveClientState() []ClientSnapshot {
 // Open File Operations
 // ============================================================================
 
-// OpenFile implements the state management side of OPEN.
+// renewPrincipalAllowed reports whether principal may renew record's lease.
 //
-// It looks up or creates an OpenOwner for (clientID, ownerData), validates
-// the seqid, and either creates a new OpenState or updates an existing one
-// (share_access/share_deny accumulation for same file).
+// RFC 7530 Section 16.28.5 names exactly two permitted callers: the principal
+// that established the client ID via SETCLIENTID_CONFIRM, and any principal
+// that currently has an OPEN file on the server under that client ID. A RENEW
+// from anyone else MUST be rejected with NFS4ERR_ACCESS.
 //
-// Grace period rules:
-//   - CLAIM_NULL (new open): blocked with NFS4ERR_GRACE during grace period
-//   - CLAIM_PREVIOUS (reclaim): allowed during grace period, blocked with
-//     NFS4ERR_NO_GRACE outside grace period
+// This does not put the lease out of a stranger's reach, and is not meant to.
+// Section 9.5 has DELEGPURGE, LOCK, LOCKT, OPEN and RELEASE_LOCKOWNER renew
+// every lease of the client whose clientid they carry, with no principal
+// restriction -- ValidateAndRenewClient does that on the OPEN path. The
+// restriction is scoped to the one operation whose only effect is the renewal.
 //
-// Per RFC 7530 Section 9.1.7:
-//   - First OPEN for a new owner creates unconfirmed state + sets OPEN4_RESULT_CONFIRM
-//   - Subsequent OPENs from a confirmed owner do not set CONFIRM
-//   - Same owner + same file => OR the share_access and share_deny bits
+// The second caller is what keeps a multi-user mount working: one client ID
+// covers every user on the client, and the RFC expects a lease held on behalf
+// of all of them to be renewable by any of them.
 //
-// Caller must NOT hold sm.mu.
-
+// One caller is admitted that the RFC does not name: a record with no
+// principal recorded. SETCLIENTID under AUTH_NONE stores no identity, and there
+// is nothing to compare a later RENEW against.
+//
+// Root gets no exemption. It would have to be an exemption for the string
+// "uid:0" rather than for a verified machine credential, because Principal()
+// renders a GSS-resolved uid and a client-asserted AUTH_SYS uid identically and
+// RENEW carries no filehandle for an export's sec= policy to judge -- so it
+// would hand any AUTH_SYS peer claiming uid 0 the lease of a client established
+// under Kerberos. Nothing needs it: the Linux client renews under the same
+// machine credential it established the client ID with, so the equality above
+// already matches, and a client that falls back to a state owner's credential
+// is covered by the open-holder scan below.
+//
+// Caller must hold sm.mu.
 func renewPrincipalAllowed(record *ClientRecord, principal string) bool {
 	if record.Principal == "" || principal == record.Principal {
 		return true
@@ -997,11 +1003,11 @@ func (sm *StateManager) RenewLease(clientID uint64, principal ...string) error {
 // Lock Manager Integration
 // ============================================================================
 
-// SetLockManager sets the static unified lock manager for byte-range conflict
-// detection. Init-only: must be called during construction, before any goroutine
-// serves requests, so lock-free reads in lockManagerFor are safe. Primarily used
-// by tests; production uses SetLockManagerResolver.
-
+// RenewV41Lease renews the lease for a v4.1 client by updating LastRenewal.
+// Called by the SEQUENCE handler on every successful validation, per
+// RFC 8881 Section 8.1.3 (implicit lease renewal).
+//
+// Thread-safe: acquires sm.mu.Lock.
 func (sm *StateManager) RenewV41Lease(clientID uint64) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -1066,25 +1072,3 @@ func (sm *StateManager) GetStatusFlags(session *Session) uint32 {
 }
 
 // ============================================================================
-// NFSv4.1 Session Management
-// ============================================================================
-
-// CreateSession implements the CREATE_SESSION algorithm per RFC 8881 Section 18.36.
-//
-// The algorithm uses the client's sequence ID to detect replays:
-//   - sequenceID == record.SequenceID: replay -- return cached response
-//   - sequenceID == record.SequenceID + 1: new request -- create session
-//   - otherwise: misordered -- return error
-//
-// On success, returns the CreateSessionResult and nil cached bytes. The encoded
-// XDR response is also cached on the client record under sm.mu in the same
-// critical section as the sequence-ID bump, so a concurrent retransmit that
-// matches record.SequenceID always observes a populated cache (RFC 8881
-// Section 18.36 replay requirement) — there is no window where the seqid has
-// advanced but the cache is still nil.
-// On replay, returns nil result and the cached XDR response bytes.
-// On error, returns an appropriate NFS4StateError.
-//
-// The first successful CREATE_SESSION confirms the client and starts its lease.
-//
-// Caller must NOT hold sm.mu.

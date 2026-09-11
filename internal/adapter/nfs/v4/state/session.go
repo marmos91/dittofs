@@ -115,6 +115,25 @@ func (s *Session) HasInFlightRequests() bool {
 	return s.ForeChannelSlots.HasInFlightRequests()
 }
 
+// CreateSession implements the CREATE_SESSION algorithm per RFC 8881 Section 18.36.
+//
+// The algorithm uses the client's sequence ID to detect replays:
+//   - sequenceID == record.SequenceID: replay -- return cached response
+//   - sequenceID == record.SequenceID + 1: new request -- create session
+//   - otherwise: misordered -- return error
+//
+// On success, returns the CreateSessionResult and nil cached bytes. The encoded
+// XDR response is also cached on the client record under sm.mu in the same
+// critical section as the sequence-ID bump, so a concurrent retransmit that
+// matches record.SequenceID always observes a populated cache (RFC 8881
+// Section 18.36 replay requirement) — there is no window where the seqid has
+// advanced but the cache is still nil.
+// On replay, returns nil result and the cached XDR response bytes.
+// On error, returns an appropriate NFS4StateError.
+//
+// The first successful CREATE_SESSION confirms the client and starts its lease.
+//
+// Caller must NOT hold sm.mu.
 func (sm *StateManager) CreateSession(
 	clientID uint64,
 	sequenceID uint32,
@@ -502,18 +521,3 @@ func (sm *StateManager) reapExpiredSessions() {
 	}
 	sm.connMu.Unlock()
 }
-
-// ============================================================================
-// Connection Binding
-// ============================================================================
-
-// BindConnToSession associates a TCP connection with a session.
-//
-// Per RFC 8881 Section 18.34, the server:
-//   - Validates the session exists
-//   - Negotiates the channel direction (generous policy)
-//   - Silently unbinds the connection from a previous session if needed
-//   - Enforces a per-session connection limit (NFS4ERR_RESOURCE)
-//   - Ensures at least one fore-channel connection remains (NFS4ERR_INVAL)
-//
-// Thread-safe: acquires sm.mu.RLock then sm.connMu.Lock.

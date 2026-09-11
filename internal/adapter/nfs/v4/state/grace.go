@@ -387,6 +387,17 @@ type ClientSnapshot struct {
 	ClientAddr string
 }
 
+// StartGracePeriod creates and starts a grace period for server restart recovery.
+//
+// The NFS adapter should call this on startup if there were previous clients
+// (loaded from a saved client state file). During the grace period:
+//   - OPEN with CLAIM_NULL returns NFS4ERR_GRACE
+//   - OPEN with CLAIM_PREVIOUS is allowed (reclaim)
+//   - RENEW, CLOSE, READ/WRITE with existing stateids work normally
+//
+// The grace period ends automatically after graceDuration, or early if
+// all expectedClientIDs have reclaimed. If expectedClientIDs is empty,
+// the grace period is skipped entirely.
 func (sm *StateManager) StartGracePeriod(expectedClientIDs []uint64) {
 	sm.mu.Lock()
 	gp := NewGracePeriodState(sm.graceDuration, func() {
@@ -517,7 +528,3 @@ func (sm *StateManager) CheckGraceForNewState() error {
 	}
 	return nil
 }
-
-// GetConfirmedClientIDs returns a list of all confirmed client IDs.
-// Used for saving client state before shutdown so the grace period
-// can identify which clients need to reclaim on restart.

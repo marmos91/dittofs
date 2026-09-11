@@ -111,6 +111,10 @@ func (ls *LeaseState) RemainingTime() time.Duration {
 	return ls.Duration - elapsed
 }
 
+// SetLockManager sets the static unified lock manager for byte-range conflict
+// detection. Init-only: must be called during construction, before any goroutine
+// serves requests, so lock-free reads in lockManagerFor are safe. Primarily used
+// by tests; production uses SetLockManagerResolver.
 func (sm *StateManager) SetLockManager(lm lock.LockManager) {
 	sm.lockManager = lm
 }
@@ -184,18 +188,3 @@ func (sm *StateManager) SetGracePeriodDuration(d time.Duration) {
 		sm.graceDuration = d
 	}
 }
-
-// LockNew implements the LOCK operation for a new lock-owner.
-//
-// This is the "open_to_lock_owner4" path where the client provides an open stateid
-// and creates a new lock-owner and lock stateid.
-//
-// Per RFC 7530 Section 16.10:
-//  1. Validate the open stateid and open-owner seqid
-//  2. Validate open mode compatibility with lock type
-//  3. Find or create the lock-owner
-//  4. Find or create the lock state (one per lock-owner + open-state pair)
-//  5. Acquire the lock via the unified lock manager
-//  6. Update state on success
-//
-// Caller must NOT hold sm.mu.

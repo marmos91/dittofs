@@ -349,7 +349,7 @@ func (h *Handler) setFileInfoFromStore(
 		// follow-up BasicInfo call mutates only FileAttributes (attrib=NORMAL)
 		// while sending zero timestamps, and asserts the previously-set values
 		// survive. Without sticky state the attribute-change path auto-bumps
-		// LastWriteTime (set_info.go) and ChangeTime (metadata file_modify.go),
+		// LastWriteTime (set_info_file.go) and ChangeTime (metadata file_modify.go),
 		// clobbering the explicit values. We reuse the existing freeze mechanism
 		// (Frozen* flags + Frozen* pointers): an explicit set freezes the field
 		// to the value just written, so the field==0 re-pin block above and the
@@ -1819,8 +1819,3 @@ func buildFrozenAttrs(openFile *OpenFile) *metadata.SetAttrs {
 	}
 	return attrs
 }
-
-// parseSDOptsForShare resolves the Security Descriptor parse options for the
-// share that owns openFile. Returns Windows-canonical defaults
-// (CanonicalizeAutoInherited=true) when the share lookup fails — the safe
-// fallback per MS-DTYP §2.5.3.4.2. Refs #514 T4.

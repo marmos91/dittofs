@@ -12,6 +12,12 @@ import (
 
 // SET_INFO security descriptors: SD parsing, DACL/SACL merge, and the
 // security-access gate.
+// parseSDOptsForShare resolves the Security Descriptor parse options for the
+// named share. Callers pass the share the operation targets: the open file's
+// share from SET_INFO, or the tree's share from CREATE where no OpenFile
+// exists yet. Returns Windows-canonical defaults
+// (CanonicalizeAutoInherited=true) when the share lookup fails — the safe
+// fallback per MS-DTYP §2.5.3.4.2.
 func (h *Handler) parseSDOptsForShare(shareName string) ParseSDOptions {
 	opts := ParseSDOptions{CanonicalizeAutoInherited: true}
 	if h.Registry == nil {

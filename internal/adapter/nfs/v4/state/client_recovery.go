@@ -411,6 +411,16 @@ func (sm *StateManager) LoadClientRecovery(ctx context.Context, armGrace bool) i
 	return len(expectedStrings)
 }
 
+// removeClientOpenStateLocked drops every open-owner belonging to clientID
+// together with its open states, its lock states, and the locks those hold in
+// the unified lock manager.
+//
+// It scans sm.openOwners by ClientID rather than walking the record's
+// OpenOwners map: that map is only populated on the v4.0 path, and it goes
+// stale even there because freeOpenStateidLocked removes owners from
+// sm.openOwners without removing them from it.
+//
+// Caller must hold sm.mu.
 func (sm *StateManager) removeClientOpenStateLocked(clientID uint64) {
 	for key, owner := range sm.openOwners {
 		if owner.ClientID != clientID {

@@ -508,6 +508,8 @@ func (sm *StateManager) setCBPathUp(clientID uint64, up bool) {
 	}
 }
 
+// SetMaxConnectionsPerSession sets the maximum number of connections per session.
+// A value of 0 means unlimited (no limit enforced).
 func (sm *StateManager) SetMaxConnectionsPerSession(max int) {
 	sm.connMu.Lock()
 	defer sm.connMu.Unlock()

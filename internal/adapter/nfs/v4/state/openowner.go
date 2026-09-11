@@ -374,6 +374,23 @@ func nextSeqID(current uint32) uint32 {
 	return current + 1
 }
 
+// OpenFile implements the state management side of OPEN.
+//
+// It looks up or creates an OpenOwner for (clientID, ownerData), validates
+// the seqid, and either creates a new OpenState or updates an existing one
+// (share_access/share_deny accumulation for same file).
+//
+// Grace period rules:
+//   - CLAIM_NULL (new open): blocked with NFS4ERR_GRACE during grace period
+//   - CLAIM_PREVIOUS (reclaim): allowed during grace period, blocked with
+//     NFS4ERR_NO_GRACE outside grace period
+//
+// Per RFC 7530 Section 9.1.7:
+//   - First OPEN for a new owner creates unconfirmed state + sets OPEN4_RESULT_CONFIRM
+//   - Subsequent OPENs from a confirmed owner do not set CONFIRM
+//   - Same owner + same file => OR the share_access and share_deny bits
+//
+// Caller must NOT hold sm.mu.
 func (sm *StateManager) OpenFile(
 	clientID uint64,
 	ownerData []byte,
@@ -1046,13 +1063,16 @@ func (sm *StateManager) CloseFile(stateid *types.Stateid4, seqid uint32, callerC
 	}, nil
 }
 
-// hasOutstandingLocksLocked reports whether any byte-range lock derived from
-// openState is still held in the lock manager. Not the same question as whether
-// openState has lock stateids: one stays valid after LOCKU frees its last range
-// (RFC 7530 Section 9.1.4.4), so that count never drops back to zero.
+// DowngradeOpen implements the OPEN_DOWNGRADE operation's state management.
 //
-// Caller must hold sm.mu.
-
+// Per RFC 7530 Section 16.19:
+//   - Validates the stateid
+//   - Validates the seqid on the owner
+//   - Verifies new access <= existing (can only remove bits, not add)
+//   - Updates ShareAccess and ShareDeny
+//   - Increments the stateid seqid
+//
+// Caller must NOT hold sm.mu.
 func (sm *StateManager) DowngradeOpen(stateid *types.Stateid4, seqid uint32, newShareAccess, newShareDeny uint32, callerClientID uint64) (result *OpenSeqResult, err error) {
 	// A special stateid names no state at all, and RFC 7530 Section 9.1.4.3
 	// admits one only on READ, WRITE and SETATTR. stateidMissError documents
@@ -1174,40 +1194,3 @@ func (sm *StateManager) GetOpenState(other [types.NFS4_OTHER_SIZE]byte) *OpenSta
 	defer sm.mu.RUnlock()
 	return sm.openStateByOther[other]
 }
-
-// ============================================================================
-// Lease Operations (, Task 4)
-// ============================================================================
-
-// renewPrincipalAllowed reports whether principal may renew record's lease.
-//
-// RFC 7530 Section 16.28.5 names exactly two permitted callers: the principal
-// that established the client ID via SETCLIENTID_CONFIRM, and any principal
-// that currently has an OPEN file on the server under that client ID. A RENEW
-// from anyone else MUST be rejected with NFS4ERR_ACCESS.
-//
-// This does not put the lease out of a stranger's reach, and is not meant to.
-// Section 9.5 has DELEGPURGE, LOCK, LOCKT, OPEN and RELEASE_LOCKOWNER renew
-// every lease of the client whose clientid they carry, with no principal
-// restriction -- ValidateAndRenewClient does that on the OPEN path. The
-// restriction is scoped to the one operation whose only effect is the renewal.
-//
-// The second caller is what keeps a multi-user mount working: one client ID
-// covers every user on the client, and the RFC expects a lease held on behalf
-// of all of them to be renewable by any of them.
-//
-// One caller is admitted that the RFC does not name: a record with no
-// principal recorded. SETCLIENTID under AUTH_NONE stores no identity, and there
-// is nothing to compare a later RENEW against.
-//
-// Root gets no exemption. It would have to be an exemption for the string
-// "uid:0" rather than for a verified machine credential, because Principal()
-// renders a GSS-resolved uid and a client-asserted AUTH_SYS uid identically and
-// RENEW carries no filehandle for an export's sec= policy to judge -- so it
-// would hand any AUTH_SYS peer claiming uid 0 the lease of a client established
-// under Kerberos. Nothing needs it: the Linux client renews under the same
-// machine credential it established the client ID with, so the equality above
-// already matches, and a client that falls back to a state owner's credential
-// is covered by the open-holder scan below.
-//
-// Caller must hold sm.mu.

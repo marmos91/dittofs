@@ -129,6 +129,16 @@ func negotiateDirection(clientDir uint32) (ConnectionDirection, uint32) {
 	}
 }
 
+// BindConnToSession associates a TCP connection with a session.
+//
+// Per RFC 8881 Section 18.34, the server:
+//   - Validates the session exists
+//   - Negotiates the channel direction (generous policy)
+//   - Silently unbinds the connection from a previous session if needed
+//   - Enforces a per-session connection limit (NFS4ERR_RESOURCE)
+//   - Ensures at least one fore-channel connection remains (NFS4ERR_INVAL)
+//
+// Thread-safe: acquires sm.mu.RLock then sm.connMu.Lock.
 func (sm *StateManager) BindConnToSession(connectionID uint64, sessionID types.SessionId4, clientDir uint32) (*BindConnResult, error) {
 	// Validate session exists under sm.mu.RLock
 	sm.mu.RLock()
@@ -331,6 +341,3 @@ func (sm *StateManager) IsConnectionDraining(connectionID uint64) bool {
 	}
 	return false
 }
-
-// SetMaxConnectionsPerSession sets the maximum number of connections per session.
-// A value of 0 means unlimited (no limit enforced).

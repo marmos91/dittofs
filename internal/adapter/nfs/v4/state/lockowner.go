@@ -239,6 +239,12 @@ func validateOpenModeForLock(openState *OpenState, lockType uint32) error {
 	return nil
 }
 
+// hasOutstandingLocksLocked reports whether any byte-range lock derived from
+// openState is still held in the lock manager. Not the same question as whether
+// openState has lock stateids: one stays valid after LOCKU frees its last range
+// (RFC 7530 Section 9.1.4.4), so that count never drops back to zero.
+//
+// Caller must hold sm.mu.
 func (sm *StateManager) hasOutstandingLocksLocked(openState *OpenState) bool {
 	for _, lockState := range openState.LockStates {
 		if lockState.LockOwner == nil {
@@ -296,17 +302,20 @@ func (sm *StateManager) dropLockOwnerIfUnreferencedLocked(lockOwner *LockOwner) 
 	delete(sm.lockOwners, lockOwner.Key())
 }
 
-// DowngradeOpen implements the OPEN_DOWNGRADE operation's state management.
+// LockNew implements the LOCK operation for a new lock-owner.
 //
-// Per RFC 7530 Section 16.19:
-//   - Validates the stateid
-//   - Validates the seqid on the owner
-//   - Verifies new access <= existing (can only remove bits, not add)
-//   - Updates ShareAccess and ShareDeny
-//   - Increments the stateid seqid
+// This is the "open_to_lock_owner4" path where the client provides an open stateid
+// and creates a new lock-owner and lock stateid.
+//
+// Per RFC 7530 Section 16.10:
+//  1. Validate the open stateid and open-owner seqid
+//  2. Validate open mode compatibility with lock type
+//  3. Find or create the lock-owner
+//  4. Find or create the lock state (one per lock-owner + open-state pair)
+//  5. Acquire the lock via the unified lock manager
+//  6. Update state on success
 //
 // Caller must NOT hold sm.mu.
-
 func (sm *StateManager) LockNew(
 	ctx context.Context,
 	lockClientID uint64, lockOwnerData []byte, lockSeqid uint32,
@@ -1139,9 +1148,3 @@ func parseConflictOwner(ownerID string, denied *LOCK4denied) {
 // ============================================================================
 // NFSv4.1 Lease and Status
 // ============================================================================
-
-// RenewV41Lease renews the lease for a v4.1 client by updating LastRenewal.
-// Called by the SEQUENCE handler on every successful validation, per
-// RFC 8881 Section 8.1.3 (implicit lease renewal).
-//
-// Thread-safe: acquires sm.mu.Lock.

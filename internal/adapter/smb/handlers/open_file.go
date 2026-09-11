@@ -12,8 +12,28 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// Open-file state: the OpenFile type, its accessors and frozen-timestamp
-// gates, the handle-op tracker, and the share-mode/delete-conflict checks.
+// OpenFile represents an open file handle created by the CREATE command.
+// It links the SMB2 FileID to the underlying metadata handle and payload ID,
+// tracks directory enumeration state, delete-on-close flags, and oplock level.
+// Stored in a sync.Map keyed by the 16-byte FileID.
+//
+// Concurrency: SMB clients legitimately pipeline operations on the same handle
+// (e.g. WRITE + QUERY_INFO; multi-channel sessions can also dispatch concurrent
+// QUERY_DIRECTORY on the same FileID). The exported mutable fields below are
+// guarded by `mu` — read-locked when surfacing state to the wire (QUERY_INFO,
+// override application) and write-locked when mutating (enumeration cursor,
+// freeze/thaw, delayed-write arm/flush). Hold the lock around the full
+// read-modify-write region; release before any I/O to the metadata store to
+// keep the critical section bounded. Atomic-typed fields
+// (NotifyOverflowed/NotifyMaxBufferSize/NotifyCompletionFilter) and immutable
+// fields (FileID/TreeID/SessionID/MetadataHandle/CreateOptions) are safe to
+// access without the mutex.
+//
+// PayloadID and the name triple are NOT immutable: the first WRITE on a file
+// created empty caches the payload the metadata store allocated,
+// SET_REPARSE_POINT and COPYCHUNK replace it, and SET_INFO rename rewrites the
+// name/path/parent triple. Reach the payload through GetPayloadID /
+// SetPayloadID and the triple through Name / SetName.
 type OpenFile struct {
 	// mu guards the mutable fields listed in the struct comment above. Held
 	// across QueryDirectory enumeration R-M-W, freeze/thaw bookkeeping in
@@ -395,6 +415,10 @@ type OpenFile struct {
 // parent, and parent directory handle. SET_INFO rename replaces all three at
 // once, so they are published and read as one immutable value.
 
+// handleOpTracker tracks in-flight operations on a FileID via a WaitGroup.
+// Created lazily by AcquireOpenFile; AcquireOpenFile adds and ReleaseOpenFile
+// calls Done. WaitAndDeleteOpenFile waits for the WaitGroup to drain before
+// removing the OpenFile from the map.
 type handleOpTracker struct {
 	wg sync.WaitGroup
 }
@@ -532,10 +556,15 @@ func (h *Handler) forgetReplayState(fileID [16]byte) {
 	}
 }
 
-// ReleaseAllLocksForSession releases all byte-range locks held by a session.
-// This is called during LOGOFF or connection cleanup to ensure locks are released
-// even if CLOSE was not called for all open files.
-
+// isFileDeletePending reports whether any existing open on the same file
+// (identified by its metadata handle) has DeletePending set. Per MS-FSA
+// 2.1.5.1.2 and MS-SMB2 3.3.5.9: a subsequent open on a delete-pending
+// file MUST fail with STATUS_DELETE_PENDING. The check runs BEFORE oplock
+// break dispatch so the holder's oplock remains intact.
+//
+// Required by smbtorture smb2.oplock.doc: tree1 opens with Batch oplock,
+// sets delete-on-close; tree2's open must return STATUS_DELETE_PENDING
+// without triggering a break.
 func (h *Handler) isFileDeletePending(fileHandle metadata.FileHandle) bool {
 	pending := false
 	h.files.Range(func(_, value any) bool {
@@ -803,13 +832,11 @@ func (h *Handler) lookupCaseInsensitive(
 	return metaSvc.LookupCaseInsensitive(authCtx, parentHandle, name)
 }
 
-// adsBaseName extracts the base file name from a potentially ADS-qualified
-// parent-relative name. For "file.txt:stream" it returns "file.txt"; for
-// "file.txt" (not a stream) it returns "".
-//
-// Stream names cannot contain a path separator (rejected at CREATE), so this
-// operates on a single name component, never a path.
-
+// checkShareDeleteConflict checks if any other open handle on the same file
+// lacks FILE_SHARE_DELETE in its ShareAccess. MS-FSA 2.1.5.15.12
+// ("FileRenameInformation") states no share-mode check; requiring all other
+// opens to permit delete sharing follows Samba `can_rename`. Returns true if a conflict
+// exists (rename should be blocked with STATUS_SHARING_VIOLATION).
 func (h *Handler) checkShareDeleteConflict(renameFile *OpenFile) bool {
 	const fileShareDelete = uint32(0x04) // FILE_SHARE_DELETE
 
@@ -847,12 +874,22 @@ func (h *Handler) checkShareDeleteConflict(renameFile *OpenFile) bool {
 	return false
 }
 
-// logRenameConflictHolder emits (at Debug) the full identity of the open handle
-// that tripped a rename share-mode gate, alongside the renamer. Fields chosen to
-// answer "is this a legitimate live sibling, or a stale/cross-connection leak?":
-// session/tree locate the owning connection, ShareAccess/DesiredAccess show why
-// it conflicted, IsDurable/DeletePending flag reconnect/teardown stubs. #1652.
-
+// checkParentDirRenameConflict applies the destination-parent share-mode rule
+// from MS-FSA 2.1.5.15.12 ("FileRenameInformation"): the rename opens the destination directory
+// with DesiredAccess FILE_ADD_FILE|SYNCHRONIZE and ShareAccess
+// FILE_SHARE_READ|FILE_SHARE_WRITE. Linking a new name into a directory is
+// therefore a WRITE against that directory, not a delete of it, so an existing
+// open conflicts only when it denies write sharing, or already holds DELETE
+// access — which the rename's withheld share-delete is incompatible with. A
+// holder that merely lacks FILE_SHARE_DELETE does not conflict; nothing in the
+// rename asks to delete the destination parent.
+//
+// Only the renamer's own handle is excluded, by FileID. Another open on the
+// renamer's own session still counts, because the implicit open is a fresh
+// open evaluated against the whole open list.
+//
+// Caller passes the destination parent handle (same as source parent for a
+// same-directory rename). Returns true on conflict.
 func (h *Handler) checkParentDirRenameConflict(renamer *OpenFile, dstParent metadata.FileHandle) bool {
 	if len(dstParent) == 0 {
 		return false
@@ -965,10 +1002,3 @@ func (h *Handler) hasOpenHandleOnFile(targetMeta metadata.FileHandle, excludeFil
 	})
 	return conflict
 }
-
-// hasReadAccess reports whether the given access mask includes read access.
-// Checks FILE_READ_DATA, FILE_EXECUTE, GENERIC_READ, GENERIC_ALL, and
-// MAXIMUM_ALLOWED. FILE_EXECUTE is treated as read access because the
-// canonical SMB clients (Samba, Windows) allow READ on a handle opened with
-// only FILE_EXECUTE — execution implies read, and the smb2.read.access
-// torture test exercises that path.
