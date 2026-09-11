@@ -252,6 +252,9 @@ func dispatchNFSv3Procedure(ctx context.Context, call *rpc.RPCCallMessage, data 
 // dispatchMount routes Mount protocol calls via the mount package dispatcher.
 // MNT procedure requires v3 (like dispatchNLM/dispatchNSM, the version check
 // runs here before delegating); other procedures accept v1/v2/v3.
+//
+// The authoritative MNT version check for live traffic is the one in
+// pkg/adapter/nfs/dispatch.go — this copy serves only this test-only router.
 func dispatchMount(ctx context.Context, call *rpc.RPCCallMessage, data []byte, clientAddr string, deps *DispatchDeps) ([]byte, []byte, error) {
 	if call.Procedure == mount_handlers.MountProcMnt && call.Version != rpc.MountVersion3 {
 		logger.Warn("Unsupported Mount version for MNT",

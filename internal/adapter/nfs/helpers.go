@@ -1,7 +1,6 @@
 package nfs
 
 import (
-	mount "github.com/marmos91/dittofs/internal/adapter/nfs/mount/handlers"
 	nfs "github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers"
 	"github.com/marmos91/dittofs/internal/logger"
 )
@@ -28,13 +27,7 @@ type rpcRequest interface {
 		*nfs.SymlinkRequest |
 		*nfs.ReadLinkRequest |
 		*nfs.MknodRequest |
-		*nfs.CommitRequest |
-		*mount.MountRequest |
-		*mount.NullRequest |
-		*mount.UmountRequest |
-		*mount.DumpRequest |
-		*mount.UmountAllRequest |
-		*mount.ExportRequest
+		*nfs.CommitRequest
 }
 
 type rpcResponse interface {
@@ -59,13 +52,7 @@ type rpcResponse interface {
 		*nfs.SymlinkResponse |
 		*nfs.ReadLinkResponse |
 		*nfs.MknodResponse |
-		*nfs.CommitResponse |
-		*mount.MountResponse |
-		*mount.NullResponse |
-		*mount.UmountResponse |
-		*mount.DumpResponse |
-		*mount.UmountAllResponse |
-		*mount.ExportResponse
+		*nfs.CommitResponse
 	Encode() ([]byte, error)
 	GetStatus() uint32
 }

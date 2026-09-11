@@ -146,7 +146,6 @@ func handleRequest[Req any, Resp mountResponse](
 		return &MountResult{Data: encoded}, err
 	}
 
-	status := resp.GetStatus()
 	encoded, err := resp.Encode()
 	if err != nil {
 		logger.Debug("Error encoding response", "error", err)
@@ -158,7 +157,6 @@ func handleRequest[Req any, Resp mountResponse](
 		return &MountResult{Data: encodedErr}, err
 	}
 
-	_ = status
 	return &MountResult{Data: encoded}, nil
 }
 
@@ -283,6 +281,9 @@ func handleMountExport(
 // DispatchMount routes a Mount procedure call: MNT requires v3 (returns v3
 // file handle format); the other procedures are version-agnostic (macOS
 // umount uses mount v1 for UMNT). Unknown procedures return an empty response.
+//
+// The authoritative MNT version check for live traffic is the one in
+// pkg/adapter/nfs/dispatch.go — this copy serves only direct API/test callers.
 func DispatchMount(
 	ctx context.Context,
 	call *rpc.RPCCallMessage,
