@@ -111,9 +111,6 @@ type DirNotification struct {
 	// NewName is the new name for RENAME notifications (EntryName is the old name).
 	NewName string
 
-	// NewDirFH is the destination directory handle for cross-directory RENAME.
-	NewDirFH []byte
-
 	// OriginClientID is the client ID that caused this notification.
 	// Used for conflict-based recall: if a different client modifies the
 	// directory, the delegation is recalled from other holders.
