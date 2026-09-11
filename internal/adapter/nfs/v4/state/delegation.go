@@ -320,7 +320,7 @@ func (sm *StateManager) GrantDelegation(clientID uint64, fileHandle []byte, dele
 		// The client identity matches the one v4 byte-range lock owners carry
 		// (see acquireLock), so break paths that exclude by client can tell a
 		// client's own delegation from another client's.
-		lockDeleg := lock.NewDelegation(lmDelegType, nfsClientIdentity(clientID), "", false)
+		lockDeleg := lock.NewDelegation(lmDelegType, NFSLockClientIdentity(clientID), "", false)
 
 		// The manager's grant path is cross-protocol, and sm.mu serializes every
 		// client's state operation server-wide, so the mutex is released across

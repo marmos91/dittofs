@@ -92,11 +92,14 @@ func makeLockOwnerKey(clientID uint64, ownerData []byte) lockOwnerKey {
 // other protocols (e.g. SMB) sharing the unified lock map.
 const lockManagerOwnerIDPrefix = "nfs4:"
 
-// nfsClientIdentity builds the LockManager client identity for an NFSv4 client.
-// Every row this StateManager puts in the unified lock map — byte-range locks
-// and delegations alike — carries it, so break paths that exclude by client can
-// tell a client's own state from another client's.
-func nfsClientIdentity(clientID uint64) string {
+// NFSLockClientIdentity builds the LockManager client identity for an NFSv4
+// client. Every row this StateManager puts in the unified lock map — byte-range
+// locks and delegations alike — carries it, so break paths that exclude by
+// client can tell a client's own state from another client's. The v4 handlers
+// build the same identity for the auth context's LockClientID, so the metadata
+// layer's originator exclusion recognizes the delegation holder's own
+// mutations.
+func NFSLockClientIdentity(clientID uint64) string {
 	return fmt.Sprintf("%s%d", lockManagerOwnerIDPrefix, clientID)
 }
 
@@ -648,7 +651,7 @@ func (sm *StateManager) acquireLock(ctx context.Context, lockState *LockState, l
 	// Build the protocol-agnostic lock owner
 	owner := lock.LockOwner{
 		OwnerID:   lockState.LockOwner.LockManagerOwnerID(),
-		ClientID:  nfsClientIdentity(lockState.LockOwner.ClientID),
+		ClientID:  NFSLockClientIdentity(lockState.LockOwner.ClientID),
 		ShareName: "",
 	}
 
@@ -873,7 +876,7 @@ func (sm *StateManager) TestLock(
 	// same client identity an actual LOCK would, so LOCKT reports the client's
 	// own delegation as free rather than as a conflict it would never hit.
 	testLock := &lock.UnifiedLock{
-		Owner:  lock.LockOwner{OwnerID: ownerID, ClientID: nfsClientIdentity(clientID)},
+		Owner:  lock.LockOwner{OwnerID: ownerID, ClientID: NFSLockClientIdentity(clientID)},
 		Offset: offset,
 		Length: length,
 		Type:   mappedType,
@@ -1000,7 +1003,7 @@ func (sm *StateManager) UnlockFile(
 	if lm := sm.lockManagerFor(lockState.FileHandle); lm != nil {
 		owner := lock.LockOwner{
 			OwnerID:   lockOwner.LockManagerOwnerID(),
-			ClientID:  nfsClientIdentity(lockOwner.ClientID),
+			ClientID:  NFSLockClientIdentity(lockOwner.ClientID),
 			ShareName: "",
 		}
 
