@@ -41,6 +41,8 @@ func StatusFor(code merrs.ErrorCode) Status {
 		return StatusNotADirectory
 	case merrs.ErrInvalidArgument:
 		return StatusInvalidParameter
+	case merrs.ErrCrossShare:
+		return StatusNotSameDevice
 	case merrs.ErrIOError:
 		return StatusUnexpectedIOError
 	case merrs.ErrNoSpace:

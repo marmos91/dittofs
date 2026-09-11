@@ -33,6 +33,8 @@ func StatusFor(code merrs.ErrorCode) uint32 {
 		return NFS4ERR_NOTDIR
 	case merrs.ErrInvalidArgument:
 		return NFS4ERR_INVAL
+	case merrs.ErrCrossShare:
+		return NFS4ERR_XDEV
 	case merrs.ErrIOError:
 		return NFS4ERR_IO
 	case merrs.ErrNoSpace:

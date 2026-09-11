@@ -101,6 +101,14 @@ const (
 	// files_object_id_idx; runtime coordinator wraps both into
 	// engine.ErrObjectIDConflict.
 	ErrConflict
+
+	// ErrCrossShare indicates a two-handle operation named handles from two
+	// different shares. One condition, one code: NFS surfaces EXDEV from its
+	// handler-level LINK/RENAME checks, so the store-layer guard
+	// (requireSameShare) answers with this code and the protocol mappers lift
+	// it to NFS3ErrXDev / NFS4ERR_XDEV / StatusNotSameDevice — not the
+	// generic invalid-parameter error that masked the condition over SMB.
+	ErrCrossShare
 )
 
 // String returns a human-readable name for the error code.
@@ -158,6 +166,8 @@ func (e ErrorCode) String() string {
 		return "ConnectionLimitReached"
 	case ErrConflict:
 		return "Conflict"
+	case ErrCrossShare:
+		return "CrossShare"
 	default:
 		return fmt.Sprintf("Unknown(%d)", e)
 	}

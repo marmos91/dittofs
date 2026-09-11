@@ -275,7 +275,7 @@ func requireSameShare(a, b FileHandle, what, path string) error {
 	}
 	if shareA != shareB {
 		return &StoreError{
-			Code:    ErrInvalidArgument,
+			Code:    ErrCrossShare,
 			Message: "cannot " + what + " across shares",
 			Path:    path,
 		}

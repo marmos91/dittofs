@@ -92,3 +92,39 @@ func TestMove_RejectsCrossShareDestination(t *testing.T) {
 	_, err = svc.Lookup(authCtx, dstRoot, "stolen.txt")
 	require.Error(t, err, "no entry may be created in the foreign share")
 }
+
+// TestRequireSameShare_CrossShareCode pins the error code the store-layer
+// cross-share guard returns. One condition, one code: NFS surfaces EXDEV from
+// its handler-level checks, so the store guard must answer with a code the
+// protocol mappers lift to EXDEV/STATUS_NOT_SAME_DEVICE — not the generic
+// invalid-parameter error that masks the cross-share condition over SMB.
+// Asserts on both exported callers (CreateHardLink, Move) so a refactor that
+// bypasses the shared guard fails here.
+func TestRequireSameShare_CrossShareCode(t *testing.T) {
+	t.Parallel()
+
+	store := memory.NewMemoryMetadataStoreWithDefaults()
+	svc := metadata.New()
+	linkRoot := newShareOnStore(t, svc, store, "/code-a")
+	moveRoot := newShareOnStore(t, svc, store, "/code-b")
+	authCtx := mkCtx(0, 0)
+
+	file, _, err := svc.CreateFile(authCtx, moveRoot, "pinned.txt", &metadata.FileAttr{Mode: 0o644})
+	require.NoError(t, err)
+	fileHandle, err := metadata.EncodeFileHandle(file)
+	require.NoError(t, err)
+
+	_, err = svc.CreateHardLink(authCtx, linkRoot, "stolen.txt", fileHandle)
+	require.Error(t, err, "hard link across shares must be rejected")
+	var linkErr *metadata.StoreError
+	require.ErrorAs(t, err, &linkErr, "hard link cross-share rejection must be a StoreError")
+	require.Equal(t, metadata.ErrCrossShare, linkErr.Code,
+		"hard link across shares must answer ErrCrossShare, got %v", linkErr.Code)
+
+	_, _, err = svc.Move(authCtx, moveRoot, "pinned.txt", linkRoot, "moved.txt")
+	require.Error(t, err, "move across shares must be rejected")
+	var moveErr *metadata.StoreError
+	require.ErrorAs(t, err, &moveErr, "move cross-share rejection must be a StoreError")
+	require.Equal(t, metadata.ErrCrossShare, moveErr.Code,
+		"move across shares must answer ErrCrossShare, got %v", moveErr.Code)
+}
