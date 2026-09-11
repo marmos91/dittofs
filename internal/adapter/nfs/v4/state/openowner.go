@@ -957,7 +957,7 @@ func (sm *StateManager) CloseFile(stateid *types.Stateid4, seqid uint32, callerC
 		// (RFC 7530 §9.1.7) rather than returning NFS4ERR_BAD_STATEID.
 		// The cached reply belongs to the owner that sent the original CLOSE, so
 		// it is only replayed to that owner's client; see checkStateidOwner.
-		if owner, ok := sm.closedOwnerByOther[stateid.Other]; ok && seqid != 0 &&
+		if owner, ok := sm.closedOwnerByOther[stateid.Other]; ok &&
 			checkStateidOwner(callerClientID, owner.ClientID) == nil {
 			if owner.ValidateSeqID(seqid) == SeqIDReplay && owner.LastResult != nil {
 				return nil, &ReplayError{Status: owner.LastResult.Status, Data: owner.LastResult.Data}

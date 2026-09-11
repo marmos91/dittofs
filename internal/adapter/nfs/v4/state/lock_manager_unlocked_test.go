@@ -104,7 +104,7 @@ func TestLockNew_LockManagerCalledWithoutStateMutex(t *testing.T) {
 
 	clientID, fileHandle, openStateid, openSeqid := setupClientAndOpenState(t, sm)
 
-	res, err := sm.LockNew(context.Background(), clientID, []byte("owner-a"), 1, openStateid, openSeqid, fileHandle, types.WRITE_LT, 0, 100, false, 0)
+	res, err := sm.LockNew(context.Background(), clientID, []byte("owner-a"), 1, openStateid, openSeqid+1, fileHandle, types.WRITE_LT, 0, 100, false, clientID)
 	if err == nil {
 		t.Fatalf("LOCK committed against state freed while the lock manager was called: %+v", res)
 	}
@@ -128,7 +128,7 @@ func TestUnlockFile_LockManagerCalledWithoutStateMutex(t *testing.T) {
 
 	clientID, fileHandle, openStateid, openSeqid := setupClientAndOpenState(t, sm)
 
-	locked, err := sm.LockNew(context.Background(), clientID, []byte("owner-a"), 1, openStateid, openSeqid, fileHandle, types.WRITE_LT, 0, 100, false, 0)
+	locked, err := sm.LockNew(context.Background(), clientID, []byte("owner-a"), 1, openStateid, openSeqid+1, fileHandle, types.WRITE_LT, 0, 100, false, clientID)
 	if err != nil || locked.Denied != nil {
 		t.Fatalf("setup LOCK failed: err=%v denied=%v", err, locked)
 	}

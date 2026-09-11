@@ -415,14 +415,12 @@ func (sm *StateManager) LockNew(
 				}
 			}
 		}
-		// A brand-new lock-owner opens its sequence at whatever seqid the
-		// request carries (the same initial-seqid rule nfsd applies to a
-		// stateowner it has never seen; the OPEN path opens open-owner sequences
-		// the same way). LastSeqID is seeded from the request on success below.
-	} else if openSeqIsReplay {
-		// Open seqid replayed but the lock-owner is brand new / not yet
-		// seqid-tracked: nothing consistent to replay.
-		return nil, ErrBadSeqid
+		// A brand-new lock-owner + a replayed open seqid is an inconsistent
+		// retransmit, with or without the v4.1 skip: the replayed OPEN's reply
+		// predates any lock state, so there is nothing consistent to replay.
+		if openSeqIsReplay && !ownerExists {
+			return nil, ErrBadSeqid
+		}
 	}
 
 	// The open stateid must name that open's current seqid, compared after both
