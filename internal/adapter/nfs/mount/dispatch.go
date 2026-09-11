@@ -5,7 +5,6 @@ package mount
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/middleware"
 	mount "github.com/marmos91/dittofs/internal/adapter/nfs/mount/handlers"
@@ -111,7 +110,6 @@ type mountResponse interface {
 		*mount.UmountAllResponse |
 		*mount.ExportResponse
 	Encode() ([]byte, error)
-	GetStatus() uint32
 }
 
 // handleRequest decodes data, runs handle, and encodes the response. Decode
@@ -283,7 +281,8 @@ func handleMountExport(
 // umount uses mount v1 for UMNT). Unknown procedures return an empty response.
 //
 // The authoritative MNT version check for live traffic is the one in
-// pkg/adapter/nfs/dispatch.go — this copy serves only direct API/test callers.
+// pkg/adapter/nfs/dispatch.go; this entrypoint never sees non-v3 MNT calls
+// because the root router rejects them before delegating.
 func DispatchMount(
 	ctx context.Context,
 	call *rpc.RPCCallMessage,
@@ -292,20 +291,6 @@ func DispatchMount(
 	handler *mount.Handler,
 	reg *runtime.Runtime,
 ) ([]byte, error) {
-	if call.Procedure == mount.MountProcMnt && call.Version != rpc.MountVersion3 {
-		logger.Warn("Unsupported Mount version for MNT",
-			"requested", call.Version,
-			"supported", rpc.MountVersion3,
-			"xid", fmt.Sprintf("0x%x", call.XID),
-			"client", clientAddr)
-
-		mismatchReply, makeErr := rpc.MakeProgMismatchReply(call.XID, rpc.MountVersion3, rpc.MountVersion3)
-		if makeErr != nil {
-			return nil, fmt.Errorf("make version mismatch reply: %w", makeErr)
-		}
-		return mismatchReply, nil
-	}
-
 	procedure, ok := MountDispatchTable[call.Procedure]
 	if !ok {
 		logger.Debug("Unknown Mount procedure", "procedure", call.Procedure)
