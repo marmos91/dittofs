@@ -57,9 +57,10 @@ func TestErrorCodeStringUnknown(t *testing.T) {
 }
 
 // Every named code must have a non-Unknown String mapping. This guards against
-// adding a new code constant without a corresponding switch arm.
+// adding a new code constant without a corresponding switch arm. The
+// errCodeSentinel tail is excluded: it bounds the walks and has no arm.
 func TestEveryCodeHasName(t *testing.T) {
-	for c := ErrNotFound; c <= ErrCrossShare; c++ {
+	for c := ErrNotFound; c < errCodeSentinel; c++ {
 		if s := c.String(); len(s) >= 7 && s[:7] == "Unknown" {
 			t.Errorf("code %d has no String() name (got %q)", c, s)
 		}
@@ -160,9 +161,11 @@ func TestClassifiers(t *testing.T) {
 		// ErrCrossShare maps to no classifier: it is a wire-code only, so
 		// its expected set is all-false. Extending the walk to it would
 		// force an empty row here — not worth forcing.
+		// errCodeSentinel is excluded: it is a bound, not an arm, and
+		// want[nil] would nil-map to all-false anyway.
 	}
 
-	for c := ErrNotFound; c <= ErrCrossShare; c++ {
+	for c := ErrNotFound; c < errCodeSentinel; c++ {
 		err := &StoreError{Code: c, Message: "x"}
 		want := expect[c]
 		for _, cl := range classifiers {

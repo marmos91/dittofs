@@ -109,6 +109,11 @@ const (
 	// it to NFS3ErrXDev / NFS4ERR_XDEV / StatusNotSameDevice — not the
 	// generic invalid-parameter error that masked the condition over SMB.
 	ErrCrossShare
+
+	// errCodeSentinel bounds the "every code is covered" iota-walks. Anchor
+	// new codes BEFORE this line: a code appended after it silently escapes
+	// every switch-exhaustiveness test.
+	errCodeSentinel
 )
 
 // String returns a human-readable name for the error code.
