@@ -3,8 +3,10 @@ package state
 import (
 	"context"
 	"encoding/hex"
+	"slices"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
@@ -408,3 +410,342 @@ func (sm *StateManager) LoadClientRecovery(ctx context.Context, armGrace bool) i
 		"expected_clients", len(expectedStrings))
 	return len(expectedStrings)
 }
+
+func (sm *StateManager) removeClientOpenStateLocked(clientID uint64) {
+	for key, owner := range sm.openOwners {
+		if owner.ClientID != clientID {
+			continue
+		}
+		for _, openState := range owner.OpenStates {
+			for _, lockState := range openState.LockStates {
+				delete(sm.lockStateByOther, lockState.Stateid.Other)
+				sm.removeOwnerLocksLocked(lockState)
+				if lockState.LockOwner != nil {
+					delete(sm.lockOwners, lockState.LockOwner.Key())
+				}
+			}
+			delete(sm.openStateByOther, openState.Stateid.Other)
+			sm.removeOpenStateFromFileLocked(openState)
+		}
+		delete(sm.openOwners, key)
+	}
+
+	// Drop any retained closed-stateid -> owner replay entries for this client.
+	for other, owner := range sm.closedOwnerByOther {
+		if owner.ClientID == clientID {
+			delete(sm.closedOwnerByOther, other)
+		}
+	}
+}
+
+// removeClientLockStateLocked frees the byte-range locks clientID holds on
+// opens it does not own. LOCK takes the lock-owner's client ID from the wire
+// and does not require it to match the client owning the open the lock hangs
+// from, so removeClientOpenStateLocked -- which reaches locks through this
+// client's own opens -- does not see these. Left behind, they stay held in the
+// cross-protocol lock manager on behalf of a client that is gone, with nothing
+// left that could ever unlock them.
+//
+// Caller must hold sm.mu.
+
+func (sm *StateManager) removeClientLockStateLocked(clientID uint64) {
+	for other, lockState := range sm.lockStateByOther {
+		if lockState.LockOwner == nil || lockState.LockOwner.ClientID != clientID {
+			continue
+		}
+
+		sm.removeOwnerLocksLocked(lockState)
+		delete(sm.lockStateByOther, other)
+		delete(sm.lockOwners, lockState.LockOwner.Key())
+		detachLockStateFromOpen(lockState)
+	}
+}
+
+// detachLockStateFromOpen drops a lock state from the open state it hangs off,
+// so the open does not keep reporting a lock that is gone.
+
+func detachLockStateFromOpen(lockState *LockState) {
+	if lockState.OpenState == nil {
+		return
+	}
+	for i, ls := range lockState.OpenState.LockStates {
+		if ls != lockState {
+			continue
+		}
+		lockState.OpenState.LockStates = append(
+			lockState.OpenState.LockStates[:i],
+			lockState.OpenState.LockStates[i+1:]...,
+		)
+		return
+	}
+}
+
+// releaseClientStateLocked frees every open, lock and delegation held by
+// clientID, first remembering the stateids so that a client which comes back
+// and uses one is told its lease expired rather than told the stateid was
+// never valid.
+//
+// It does not touch the client record itself: the caller knows why the state
+// went away and which maps the record still belongs in.
+//
+// Caller must hold sm.mu.
+
+func (sm *StateManager) releaseClientStateLocked(clientID uint64) {
+	sm.markClientStateidsExpiredLocked(clientID)
+	sm.removeClientOpenStateLocked(clientID)
+	sm.removeClientLockStateLocked(clientID)
+
+	for other, deleg := range sm.delegByOther {
+		if deleg.ClientID != clientID {
+			continue
+		}
+		// Both timers outlive the tables they fire against, so they are
+		// stopped before the delegation leaves them.
+		sm.cleanupDirDelegation(deleg)
+		deleg.StopRecallTimer()
+		sm.deleteDelegByOtherLocked(other)
+		sm.removeDelegFromFile(deleg)
+
+		logger.Info("Delegation revoked with the client's state",
+			"client_id", clientID,
+			"deleg_type", deleg.DelegType)
+	}
+}
+
+// clientLeaseLapsedLocked reports whether a confirmed client's lease has run
+// out. Both client generations are checked: the caller has a client ID and no
+// reason to know which minor version minted it.
+//
+// Caller must hold sm.mu.
+
+func (sm *StateManager) clientLeaseLapsedLocked(clientID uint64) bool {
+	record := sm.clientRecordLocked(clientID)
+	return record != nil && record.Confirmed && record.Lease != nil && record.Lease.IsExpired()
+}
+
+// expireLapsedHoldersLocked releases the state of every client that holds an
+// open on fileHandle under a lease that has already run out, except for the
+// clients in keepClientIDs. Callers name every client whose records they are
+// holding a pointer into, since releasing one frees its opens and locks.
+//
+// What keeps an expired client's opens and locks alive is courtesy: a client
+// that merely lost contact for a moment should not come back to find its locks
+// broken, so the state outlives the lease and a sweeper collects it later.
+// RFC 7530 Section 9.6.3.1 says what happens when someone else then wants the
+// file: on "a lock or I/O request that conflicts with one of the courtesy
+// locks", a courtesy lock that is not a delegation "MUST free the courtesy
+// lock and grant the new request".
+//
+// So the collision, not the sweeper's schedule, is what ends the courtesy.
+// Deferring to the sweep refuses a request that nothing live objects to, for
+// however much of the sweep interval is left, which is why the same request is
+// granted or refused depending on when it arrives.
+//
+// Caller must hold sm.mu.
+
+func (sm *StateManager) expireLapsedHoldersLocked(fileHandle []byte, keepClientIDs ...uint64) {
+	// Collected before anything is released: expiring a client rewrites the
+	// index this ranges over.
+	//
+	// ponytail: linear scans of a slice rather than two sets. n is the distinct
+	// clients holding state on ONE file, which is one or two outside a
+	// share-reservation fight, and the allocation two maps would add lands on
+	// every OPEN and LOCK. Switch to sets if a file ever collects enough
+	// simultaneous holders for this to show up in a profile.
+	var lapsed []uint64
+	consider := func(clientID uint64) {
+		if slices.Contains(keepClientIDs, clientID) || slices.Contains(lapsed, clientID) {
+			return
+		}
+		if sm.clientLeaseLapsedLocked(clientID) {
+			lapsed = append(lapsed, clientID)
+		}
+	}
+	for _, os := range sm.openStateByFile[string(fileHandle)] {
+		if os.Owner != nil {
+			consider(os.Owner.ClientID)
+		}
+		// The lock-owner's client can differ from the open-owner's, and it is
+		// the one holding the lock this request may be colliding with.
+		for _, lockState := range os.LockStates {
+			if lockState.LockOwner != nil {
+				consider(lockState.LockOwner.ClientID)
+			}
+		}
+	}
+
+	for _, clientID := range lapsed {
+		logger.Info("Expiring a lapsed client to resolve a conflicting request",
+			"client_id", clientID)
+
+		if v41 := sm.v41ClientLocked(clientID); v41 != nil {
+			sm.markClientStateidsExpiredLocked(clientID)
+			sm.purgeV41Client(v41)
+			continue
+		}
+		sm.expireV40ClientLocked(clientID)
+	}
+}
+
+// maxExpiredStateids caps how many freed-by-lease-cancellation stateids the
+// server remembers; see the expiredStateids field for what overflow costs.
+
+const maxExpiredStateids = 4096
+
+// markClientStateidsExpiredLocked remembers every open, lock, and delegation
+// stateid belonging to clientID as freed by a lease cancellation, so later use
+// of one answers NFS4ERR_EXPIRED rather than NFS4ERR_BAD_STATEID (RFC 7530
+// Section 9.6.3.2). Call it before the state itself is dropped.
+//
+// Caller must hold sm.mu.
+
+func (sm *StateManager) markClientStateidsExpiredLocked(clientID uint64) {
+	if len(sm.expiredStateids) >= maxExpiredStateids {
+		sm.expiredStateids = make(map[[types.NFS4_OTHER_SIZE]byte]struct{})
+	}
+
+	for _, owner := range sm.openOwners {
+		if owner.ClientID != clientID {
+			continue
+		}
+		for _, openState := range owner.OpenStates {
+			sm.expiredStateids[openState.Stateid.Other] = struct{}{}
+			for _, lockState := range openState.LockStates {
+				sm.expiredStateids[lockState.Stateid.Other] = struct{}{}
+			}
+		}
+	}
+
+	for other, lockState := range sm.lockStateByOther {
+		if lockState.LockOwner != nil && lockState.LockOwner.ClientID == clientID {
+			sm.expiredStateids[other] = struct{}{}
+		}
+	}
+
+	for other, deleg := range sm.delegByOther {
+		if deleg.ClientID == clientID {
+			sm.expiredStateids[other] = struct{}{}
+		}
+	}
+}
+
+// isExpiredStateidLocked reports whether the state this stateid named was freed
+// when the server cancelled the owning client's lease. Callers use it on a
+// table miss, before falling back to NFS4ERR_BAD_STATEID.
+//
+// Caller must hold sm.mu (read or write).
+
+func (sm *StateManager) isExpiredStateidLocked(other [types.NFS4_OTHER_SIZE]byte) bool {
+	_, ok := sm.expiredStateids[other]
+	return ok
+}
+
+// onLeaseExpired is the callback invoked when a client's lease timer fires.
+// It cleans up all state for the expired client: open states, open owners,
+// and the client record itself.
+//
+// IMPORTANT: This runs from a timer goroutine and must NOT hold any lease.mu
+// when calling into StateManager. The timer callback in NewLeaseState is a
+// simple function that calls this method directly.
+
+func (sm *StateManager) onLeaseExpired(clientID uint64) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	sm.expireV40ClientLocked(clientID)
+}
+
+// expireV40ClientLocked drops a v4.0 client and everything it holds. It is what
+// a lapsed lease does, and what a conflicting request does to a client whose
+// lease already lapsed.
+//
+// Caller must hold sm.mu.
+
+func (sm *StateManager) expireV40ClientLocked(clientID uint64) {
+	record := sm.v40ClientLocked(clientID)
+	if record == nil {
+		return
+	}
+
+	logger.Info("NFSv4 client lease expired, cleaning up state",
+		"client_id", clientID,
+		"client_id_str", record.ClientIDString,
+		"client_addr", record.ClientAddr)
+
+	// The timer is already spent when its own callback brought us here, but a
+	// conflicting request can expire a lapsed client while the timer is still
+	// armed, and a later fire would look up a client that no longer exists.
+	if record.Lease != nil {
+		record.Lease.Stop()
+	}
+
+	// The client's lease lapsed without renewal: it no longer holds reclaimable
+	// state, so drop its durable recovery record. Best-effort; no-op
+	// when no recovery store is wired.
+	sm.deleteClientRecoveryLocked(record.ClientIDString)
+
+	sm.releaseClientStateLocked(clientID)
+
+	// Remove client from all maps
+	delete(sm.clientsByID, clientID)
+	if record.Confirmed {
+		if confirmed := sm.clientsByName[record.ClientIDString]; confirmed != nil && confirmed.ClientID == clientID {
+			delete(sm.clientsByName, record.ClientIDString)
+		}
+	} else {
+		if unconfirmed := sm.unconfirmedByName[record.ClientIDString]; unconfirmed != nil && unconfirmed.ClientID == clientID {
+			delete(sm.unconfirmedByName, record.ClientIDString)
+		}
+	}
+}
+
+// RevokeDelegation revokes a delegation by its stateid "other" field.
+//
+// Called by the recall timer when the client does not respond to CB_RECALL
+// within the lease period. Per RFC 7530 Section 10.4.6.
+//
+// The delegation is marked as Revoked and removed from delegByFile,
+// but kept in delegByOther for stale stateid detection.
+// The file handle is added to the recently-recalled cache.
+//
+// Thread-safe: acquires sm.mu.Lock.
+
+func (sm *StateManager) RevokeDelegation(delegOther [types.NFS4_OTHER_SIZE]byte) {
+	sm.mu.Lock()
+
+	deleg, exists := sm.delegByOther[delegOther]
+	if !exists || deleg.Revoked {
+		sm.mu.Unlock()
+		return
+	}
+
+	sm.markDelegRevokedLocked(deleg)
+	sm.removeDelegFromFile(deleg)
+	sm.addRecentlyRecalled(deleg.FileHandle)
+
+	// Clean up LockManager delegation and stateid mapping
+	lmDelegID := deleg.LockManagerDelegID
+	fhKey := string(deleg.FileHandle)
+	if lmDelegID != "" {
+		delete(sm.delegStateidMap, lmDelegID)
+	}
+
+	// Capture lockManager reference before releasing mu
+	lockMgr := sm.lockManagerFor(deleg.FileHandle)
+
+	// Keep in delegByOther for stale stateid detection.
+
+	logger.Warn("Delegation revoked due to recall timeout",
+		"client_id", deleg.ClientID,
+		"deleg_type", deleg.DelegType)
+
+	sm.mu.Unlock()
+
+	// Revoke in LockManager outside sm.mu (avoids deadlock per Pitfall 2)
+	if lockMgr != nil && lmDelegID != "" {
+		_ = lockMgr.RevokeDelegation(fhKey, lmDelegID)
+	}
+}
+
+// Shutdown stops all active lease timers, recall timers, and the grace period
+// for graceful server shutdown.
