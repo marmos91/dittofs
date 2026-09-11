@@ -242,6 +242,31 @@ Fix-wave 2 fanned 2026-09-10 ~20:40 as two file-disjoint lanes (base 3afd8383c):
 
 ### Step 4 — Wave 5: god objects, one package per move-only PR
 
+Wave 5 STARTED 2026-09-10. Re-verified premises on develop 7e0e42483: `manager.go` 4,326 LOC (the
+leftover god file — the package already holds concern files client.go, session.go, grace.go,
+delegation.go, lockowner.go, backchannel.go, connection.go, lease.go, client_recovery.go,
+openowner.go, stateid.go, slot_table.go); `setFileInfoFromStore` set_info.go:286-1833 (~1,548);
+`Create()` create.go:498-1539 (~1,042); `completeCreateAfterBreak` create_post_break.go:643-1554
+(~912); Handler 36 fields / 2,933 LOC handler.go. PR1 = manager.go split: move its decls INTO the
+existing concern files (client/client_recovery/openowner/lockowner/grace/session/connection/
+backchannel/lease), core struct+ctor+setters stay; same-package moves, tests untouched,
+`git diff -M --color-moved` zero body edits. Gotchas hit twice: goimports rewrites the whole
+package (churn — run it per-file only on the touched files, restore any file it mangles), and
+a heredoc python script resolves relative paths against the MAIN checkout cwd, not the worktree —
+cd inside the script or use absolute paths.
+
+Wave 5 fanned 2026-09-10 ~07:30 as four move-only split PRs (all same-package, zero test changes,
+full suites green locally): PR1 #2529 refactor/manager-split (v4/state/manager.go 4,326 → 405 core,
+decls moved INTO the existing concern files client.go/client_recovery.go/openowner.go/lockowner.go/
+session.go/connection.go/backchannel.go/grace.go/lease.go), PR2 #2530 refactor/setinfo-split
+(set_info.go 2,721 → 531 dispatch + set_info_file.go 1,826 + set_info_security.go 313 +
+set_info_lease.go 110), PR3 #2531 refactor/create-split (create.go 2,307 → 1,585 +
+create_replay.go 267 + create_path.go 498; create_post_break.go 1,729 → 817 + create_complete.go
+931), PR4 #2532 refactor/handler-split (handler.go 2,933 → 805 + open_file.go 974 +
+session_lifecycle.go 1,072 + share_state.go 214). All assigned marmos91, Copilot wired, babysitter
+merging serially #2529 → #2530 → #2531 → #2532 (fresh rebase between — all touch smb/handlers and
+one touches v4/state).
+
 `manager.go` 3,985 → `setFileInfoFromStore` 1,538 → `Create()` 1,016 → `open.go` 1,103 →
 `completeCreateAfterBreak` 853 → `Handler` 56 fields. Apparatus is load-bearing (119 test files /
 42,810 LOC in `smb/handlers`): move-only, `git diff -M --color-moved` zero body edits, one package
