@@ -270,11 +270,6 @@ func TestMissingIdxRebuilt(t *testing.T) {
 	_ = written
 }
 
-// fixedClock is a Clock pinned to a fixed instant, used to drive the age gate.
-type fixedClock struct{ t time.Time }
-
-func (c fixedClock) Now() time.Time { return c.t }
-
 // TestOrphanSweepAgeGated asserts an unattachable, aged segment file is
 // unlinked on reopen, while the store's real data is untouched.
 func TestOrphanSweepAgeGated(t *testing.T) {
