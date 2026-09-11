@@ -241,6 +241,12 @@ type Store struct {
 	// remote-resident rather than POSIX holes.
 	coldMu sync.Mutex
 	coldFD *os.File
+	// coldBroken marks a cold log whose tail tore and whose rollback also
+	// failed: a torn tail ends replay, so any append put behind it would be
+	// lost for good (a range the caller went on to evict would read as zeros
+	// after restart). No append is attempted while set — a demotion the store
+	// cannot keep is refused, which the caller already treats as fail-closed.
+	coldBroken bool
 
 	// bgCancel stops the background loops started by Open — the dead-ratio
 	// repack and the dirty-age commit. Close cancels it and waits on bgWG so
@@ -919,11 +925,11 @@ func (s *Store) FileSize(_ context.Context, id FileID) (int64, bool) {
 
 // DurableExtent reports how far a file's bytes survive device loss: the maximum
 // end offset over the intervals whose bytes are already on stable storage. An
-// interval qualifies when a completed fsync covered its record (Version at or
-// below the shard's durable watermark), when it is cold (the bytes live in the
-// remote store and the marker was fsynced before it was indexed), or when it is
-// synced (carved and uploaded). Everything else was only buffered —
-// acknowledged to the client, but gone after a crash.
+// interval qualifies by the durable predicate (interval.durable): a completed
+// fsync covered its record (Version at or below the shard's durable watermark),
+// it is cold (the bytes live in the remote store and the marker was fsynced
+// before it was indexed), or it is synced (carved and uploaded). Everything else
+// was only buffered — acknowledged to the client, but gone after a crash.
 //
 // It is the counterpart of FileSize, which reports every interval whether or not
 // its bytes are durable. Callers that publish a size derived from written bytes
@@ -948,7 +954,7 @@ func (s *Store) DurableExtent(_ context.Context, id FileID) (int64, bool) {
 		// the committed size, which is the hole-of-zeros this exists to prevent.
 		// Gaps between durable intervals are a different thing entirely — never
 		// written, correctly read as zeros — so they do not stop the scan.
-		if !iv.cold && !iv.synced && iv.version > synced {
+		if !iv.durable(synced) {
 			break
 		}
 		if e := iv.end(); e > size {
@@ -1468,7 +1474,7 @@ func (s *Store) RestoreToVersion(ctx context.Context, v uint64) error {
 	return nil
 }
 
-// Invalidate marks the live synced intervals overlapping [off, off+length) cold:
+// Invalidate marks the live synced intervals overlapping [off, off+length) remote:
 // their local bytes are unusable, but the range is still durable remotely, so a
 // read of it fetches instead of serving what is there. A whole interval is
 // demoted even when the range covers only part of it, because the record it
@@ -1482,16 +1488,18 @@ func (s *Store) RestoreToVersion(ctx context.Context, v uint64) error {
 // that has proven the local bytes bad demotes them first, and the re-fetch then
 // lands in a range the journal no longer claims to hold.
 //
-// The markers are persisted to the cold log before the flip. This is the one
-// path that marks an interval cold while its record is still live in a segment,
+// The markers are persisted to the cold log before the flip — through demote,
+// the one residency-loss chokepoint. This is the one path that marks an interval
+// cold while its record is still live in a segment,
 // and every path that reclaims a segment — eviction, the emptied-segment sweep,
 // GC repack — treats a cold interval as owning nothing there, so without a
 // durable marker the reclaim unlinks the only copy and a restart finds the range
 // a hole that reads zeros. Persisting first can at worst leave a marker for
 // bytes that are still local, which costs a needless remote fetch.
 //
-// A failed append leaves the interval warm and returns the error, so the caller's
-// read fails closed rather than proceeding on a demotion the store cannot keep.
+// A failed append leaves the interval resident (StateResident) and returns
+// ErrStateLost, so the caller's read fails closed rather than proceeding on a
+// demotion the store cannot keep.
 func (s *Store) Invalidate(_ context.Context, id FileID, off, length int64) error {
 	if s.closed.Load() {
 		return errClosed
@@ -1534,11 +1542,9 @@ func (s *Store) Invalidate(_ context.Context, id FileID, off, length int64) erro
 	if len(entries) == 0 {
 		return nil
 	}
-	if err := s.appendCold(entries); err != nil {
-		return err
-	}
-	for _, k := range hits {
-		fi.ivs[k].cold = true
-	}
-	return nil
+	return s.demote(entries, func() {
+		for _, k := range hits {
+			fi.ivs[k].cold = true
+		}
+	})
 }

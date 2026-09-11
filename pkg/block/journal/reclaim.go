@@ -256,12 +256,20 @@ func (s *Store) evictSegment(sh *shard, seg *segmentMeta) (freed int64, err erro
 	var entries []coldEntry
 	for id, fi := range sh.index {
 		for k := range fi.ivs {
-			if fi.ivs[k].loc.SegmentID == seg.id && !fi.ivs[k].cold {
+			// A non-cold interval of this segment is cold-marked even when a
+			// partial overwrite re-marked its surviving fragment dirty in place:
+			// every record of a sealed segment was committed remotely (the
+			// record counter is fully synced), so the fragment's bytes are the
+			// remote store's copy and the marker is what recovers them. Skipping
+			// the fragment here would leave it pointing at bytes retireSegment
+			// unlinks below — reads would fail instead of hydrating.
+			iv := &fi.ivs[k]
+			if iv.loc.SegmentID == seg.id && !iv.cold {
 				entries = append(entries, coldEntry{
 					id:      id,
-					fileOff: fi.ivs[k].fileOff,
-					length:  fi.ivs[k].length,
-					version: fi.ivs[k].version,
+					fileOff: iv.fileOff,
+					length:  iv.length,
+					version: iv.version,
 					// Copied off the interval being replaced, so it dates the content.
 					provenance: coldFromData,
 				})
@@ -279,7 +287,9 @@ func (s *Store) evictSegment(sh *shard, seg *segmentMeta) (freed int64, err erro
 
 	// This append's fsync is load-bearing and must stay per call: the bytes it
 	// describes are unlinked below, so the log is about to be their only record.
-	if err = s.appendCold(entries); err != nil {
+	// demote is the residency-loss chokepoint: a failed append leaves the
+	// intervals resident and returns ErrStateLost instead of evicting blind.
+	if err = s.demote(entries, nil); err != nil {
 		// Without a durable marker the range would come back from a restart as a
 		// hole, so keep the segment (and its bytes) instead of evicting blind.
 		return 0, err
