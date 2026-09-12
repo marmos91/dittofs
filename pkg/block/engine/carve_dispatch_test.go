@@ -111,8 +111,12 @@ func TestBlockSink_EnforcesUploadWindow(t *testing.T) {
 	)
 	limiter := syncer.NewDynamicSemaphore(limit)
 
-	// windowProbeRemote brackets the underlying remote's PutBlock with an
-	// in-flight counter that flags any exceedance of the limit.
+	// windowProbeRemote brackets the underlying remote's PutBlock with a
+	// blocking gate: each PUT holds a slot until the NEXT PUT arrives, so any
+	// window violation (limit+1 concurrent) is forced deterministically rather
+	// than raced. The first PUT blocks; PUT k+1's arrival proves k was still
+	// holding its slot, i.e. limit was exceeded the moment the counter hit
+	// limit+1 — flagged by the counter itself before the gate releases.
 	var (
 		inFlight atomic.Int32
 		exceeded atomic.Bool
@@ -156,17 +160,38 @@ func TestBlockSink_EnforcesUploadWindow(t *testing.T) {
 // windowProbeRemote wraps a block-keyed remote and flags any moment where the
 // number of concurrent PutBlock calls inside the sink's upload window exceeds
 // the limit. The counter is checked on the PutBlock critical path so the flag
-// cannot fire in a gap between calls. Embedded pointer, not value: an embedded
-// value's copy would carry the underlying store's mutex.
+// cannot fire in a gap between calls, and each PUT blocks until its successor
+// arrives, so with limit+1 PUTs in flight the exceedance is forced, not raced.
+// Embedded pointer, not value: an embedded value's copy would carry the
+// underlying store's mutex.
 type windowProbeRemote struct {
 	store    *remotememory.Store
 	inFlight *atomic.Int32
 	exceeded *atomic.Bool
 	limit    int32
+	// prev is closed by each PUT when its successor arrives, chaining the
+	// gate so slots are provably held across the boundary.
+	prev chan struct{}
 }
 
 func newWindowProbeRemote(mem *remotememory.Store, inFlight *atomic.Int32, exceeded *atomic.Bool, limit int32) *windowProbeRemote {
-	return &windowProbeRemote{store: mem, inFlight: inFlight, exceeded: exceeded, limit: limit}
+	return &windowProbeRemote{store: mem, inFlight: inFlight, exceeded: exceeded, limit: limit, prev: make(chan struct{})}
+}
+
+func (w *windowProbeRemote) PutBlock(ctx context.Context, id string, r io.Reader) error {
+	n := w.inFlight.Add(1)
+	if n > w.limit {
+		w.exceeded.Store(true)
+	}
+	defer w.inFlight.Add(-1)
+	// Chained gate: PUT k closes its slot the moment PUT k+1 enters PutBlock.
+	// The last PUT to arrive closes its own slot without waiting, so the chain
+	// unwinds in reverse arrival order and every call completes. Exceedance is
+	// observed at entry, not raced.
+	this := w.prev
+	w.prev = make(chan struct{})
+	close(this)
+	return w.store.PutBlock(ctx, id, r)
 }
 
 // DeleteBlock, GetBlock, GetBlockRange and WalkBlocks delegate so
@@ -187,15 +212,6 @@ func (w *windowProbeRemote) GetBlockRange(ctx context.Context, id string, offset
 
 func (w *windowProbeRemote) WalkBlocks(ctx context.Context, fn func(string, block.Meta) error) error {
 	return w.store.WalkBlocks(ctx, fn)
-}
-
-func (w *windowProbeRemote) PutBlock(ctx context.Context, id string, r io.Reader) error {
-	n := w.inFlight.Add(1)
-	if n > w.limit {
-		w.exceeded.Store(true)
-	}
-	defer w.inFlight.Add(-1)
-	return w.store.PutBlock(ctx, id, r)
 }
 
 // TestCarvePass_NoFilesIsNoop guards the empty working-set path.

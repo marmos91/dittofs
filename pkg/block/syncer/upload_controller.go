@@ -4,8 +4,9 @@ import "math"
 
 // GoodputController is the pure decision core of adaptive upload concurrency.
 // When the user does not pin parallel_uploads, the syncer ramps the upload
-// window — the number of carve passes running concurrently, each of which
-// issues its own block PUTs — to saturate the uplink on its own.
+// window — the semaphore the engine's block sink acquires around each remote
+// PutBlock, so window size and concurrent PUTs are the same quantity — to
+// saturate the uplink on its own.
 //
 // The control signal is GOODPUT (delivered bytes/sec), not latency. An earlier
 // latency-gradient design read the per-PUT latency rise *caused by useful
