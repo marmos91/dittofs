@@ -169,9 +169,10 @@ type windowProbeRemote struct {
 	inFlight *atomic.Int32
 	exceeded *atomic.Bool
 	limit    int32
-	// prev is closed by each PUT when its successor arrives, chaining the
-	// gate so slots are provably held across the boundary.
+	// prev is closed by each PUT when its successor enters PutBlock, chaining
+	// the gate so slots are provably held across the boundary.
 	prev chan struct{}
+	mu   sync.Mutex
 }
 
 func newWindowProbeRemote(mem *remotememory.Store, inFlight *atomic.Int32, exceeded *atomic.Bool, limit int32) *windowProbeRemote {
@@ -184,12 +185,15 @@ func (w *windowProbeRemote) PutBlock(ctx context.Context, id string, r io.Reader
 		w.exceeded.Store(true)
 	}
 	defer w.inFlight.Add(-1)
-	// Chained gate: PUT k closes its slot the moment PUT k+1 enters PutBlock.
-	// The last PUT to arrive closes its own slot without waiting, so the chain
-	// unwinds in reverse arrival order and every call completes. Exceedance is
-	// observed at entry, not raced.
+	// Chained gate: PUT k closes its slot the moment PUT k+1 enters PutBlock,
+	// so exceedance is observed at entry. The read-modify-write of w.prev is
+	// guarded by a mutex — two PUTs entering between each other's read and
+	// write would otherwise orphan one's slot (and the race detector flags the
+	// unsynchronized swap).
+	w.mu.Lock()
 	this := w.prev
 	w.prev = make(chan struct{})
+	w.mu.Unlock()
 	close(this)
 	return w.store.PutBlock(ctx, id, r)
 }
