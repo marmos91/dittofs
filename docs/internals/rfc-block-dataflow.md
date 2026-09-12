@@ -29,7 +29,7 @@ with an adversarial verify gate, 204 agents over 19,632 LOC — produced **196 f
 seventh, #2238, discussed below. Hence 7 HIGH in total but five in the claim above.)
 
 That is also the signature of the entire prior field history — #1850, #1879, #1888, #2084,
-#1872/#2073/#2093, #1956, #2110. Ten incidents, one defect class, over a year.
+\#1872/#2073/#2093, #1956, #2110. Ten incidents, one defect class, over a year.
 
 The five journal HIGHs are filed as #2227, #2228, #2229, #2230, #2231.
 
@@ -74,7 +74,7 @@ rendered it as `StateAbsent` and served zeros.
 Then every operation is a transition, and the transition table is the specification:
 
 | Operation | Legal transition | The trap it closes |
-|---|---|---|
+| --- | --- | --- |
 | `WriteAt` | `*` → `Dirty` | — |
 | `Flush` | `Dirty` → `Resident` | flip-before-commit (#1872 family) |
 | `Evict` | `Resident` → `Remote` | evicting `Dirty` is data loss (#2228) |
@@ -83,7 +83,7 @@ Then every operation is a transition, and the transition table is the specificat
 | `Seed` | `Absent` → `Remote` | seeding over live local bytes |
 | `Compact` | must never produce `Lost` | #2084, #2093 |
 
-#2084 was `Invalidate` performing `Dirty → Remote` when the only truthful transition was
+\#2084 was `Invalidate` performing `Dirty → Remote` when the only truthful transition was
 `Dirty → Lost`. The shipped fix made it refuse. Here that refusal is the operation's definition,
 not a guard someone remembered to add.
 
@@ -135,7 +135,7 @@ records: **541 occurrences across 60 non-test files**. The smear is visible in t
 `CarveChunk`, which needs two words to say one thing. It is retired, and nothing inherits it.
 
 | Term | Means exactly |
-|---|---|
+| --- | --- |
 | **write** | stage bytes locally and acknowledge the client |
 | **sync** | make durable HERE (fsync) |
 | **flush** | journal's pass: offer dirty runs, accept durability reports |
@@ -175,7 +175,7 @@ behaviour-preserving — no format change, no state-model change — so all sema
 step 3, taken last.
 
 | Step | What | Risk |
-|---|---|---|
+| --- | --- | --- |
 | **0** | Fix #2227-#2231 and #2238 with regression tests first | live bugs, unblocks everything |
 | **1** | syncer — upload transport, ordered completion | behaviour-preserving |
 | **2** | carver — chunking + block assembly | behaviour-preserving |

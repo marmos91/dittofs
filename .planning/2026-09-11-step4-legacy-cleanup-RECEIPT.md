@@ -1,6 +1,6 @@
 # Step 4 legacy cleanup — receipt
 
-**Commit:** 351bdef26 `refactor(block): delete pkg/block/local/fs, hold journal.Store directly`
+**Commit:** 132a3d18a `refactor(block): delete pkg/block/local/fs, hold journal.Store directly`
 **Date:** 2026-09-11
 **Lane:** step 4 (legacy cleanup) of `.planning/2026-09-01-block-dataflow-MASTER-PLAN.md` §4, plus the
 docs-cleanup portion of lane L from `.planning/2026-09-11-step3-execution-PLAN.md`.
