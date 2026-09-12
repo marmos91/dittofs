@@ -510,7 +510,7 @@ func (bs *Store) DrainAllUploads(ctx context.Context) error {
 	defer bs.closeMu.RUnlock()
 	// Force-flush every dirty range to the remote (bypassing the age/size
 	// batching gate), then wait for the uploads to settle.
-	if err := bs.local.Flush(ctx, journal.FileID(""), journal.FlushOptions{Force: true}, nil); err != nil {
+	if err := bs.syncer.FlushAll(ctx); err != nil {
 		return err
 	}
 	return bs.syncer.DrainAllUploads(ctx)
@@ -544,7 +544,7 @@ func (bs *Store) DrainRollups(ctx context.Context) error {
 		return err
 	}
 	defer bs.closeMu.RUnlock()
-	return bs.local.Flush(ctx, journal.FileID(""), journal.FlushOptions{Force: true}, nil)
+	return bs.syncer.FlushAll(ctx)
 }
 
 // ColdSeed is one payload's worth of work for SeedColdBatch: the payload ID and

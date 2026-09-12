@@ -830,19 +830,24 @@ func (m *RemoteSync) adaptiveUploadTick(intervalSec float64) {
 func (m *RemoteSync) flushFn() (journal.FlushFunc, func(context.Context, journal.FileID) error) {
 	var params chunker.Params
 	var window int
+	var blockSize int64
 	if jp, ok := m.local.(interface {
 		ChunkParams() chunker.Params
 		UploadConcurrency() int
+		BlockSize() int64
 	}); ok {
-		params, window = jp.ChunkParams(), jp.UploadConcurrency()
+		params, window, blockSize = jp.ChunkParams(), jp.UploadConcurrency(), jp.BlockSize()
 	}
 	if window <= 0 {
 		window = defaultBlockUploadWindow
 	}
+	if blockSize <= 0 {
+		blockSize = paramsBlockSize(params)
+	}
 	if m.remoteBlockStore != nil {
 		deduper := engineDeduper{synced: m.syncedHashStore}
 		sink := engineBlockSink{sealer: m.chunkSealer, rbs: m.remoteBlockStore, committer: m.blockCommitter, commitLocks: &carveCommitLocks{}, onBlockCommitted: m.noteBlockCommitted}
-		return newFlushClosure(m.local, params, paramsBlockSize(params), window, deduper, sink)
+		return newFlushClosure(m.local, params, blockSize, window, deduper, sink)
 	}
 	// Local-only (no remote block store): the flush cannot upload, but it must
 	// still populate the FileChunk manifest (and project File.Blocks) so a
@@ -850,13 +855,13 @@ func (m *RemoteSync) flushFn() (journal.FlushFunc, func(context.Context, journal
 	// resolve the file's chunks. blockCommitter is nil only for the clone
 	// fixture, whose source has no dirty data so CommitBlock never fires.
 	sink := localBlockSink{committer: m.blockCommitter, commitLocks: &carveCommitLocks{}}
-	return newFlushClosure(m.local, params, paramsBlockSize(params), window, localDeduper{}, sink)
+	return newFlushClosure(m.local, params, blockSize, window, localDeduper{}, sink)
 }
 
-// paramsBlockSize sizes the block target from the share's chunk profile: 256
-// average chunks per block, the same ratio the journal's historical
-// CarveBlockSize default carried. A store with no chunking policy falls back
-// to the historical 4 MiB default.
+// paramsBlockSize is the block-target fallback for a local store that exposes
+// no BlockSize of its own (a test fixture): 256 average chunks per block, the
+// same ratio the journal's historical CarveBlockSize default carried. A store
+// with no chunking policy falls back to the historical 4 MiB default.
 func paramsBlockSize(params chunker.Params) int64 {
 	if params.Avg <= 0 {
 		return 4 << 20
@@ -887,10 +892,34 @@ func (m *RemoteSync) SyncNow(ctx context.Context) error {
 		return nil
 	}
 
-	fn, reap := m.flushFn()
+	// fn + AfterFile are built fresh PER FILE (journal's C9 caller
+	// obligation): the closure's carver and reap state carry across one
+	// file's runs — hoisting them out of the loop interleaves two files'
+	// bytes into one block and reaps file A's rows with file B's spans.
 	var firstErr error
 	for _, id := range m.local.ListFiles(ctx) {
+		fn, reap := m.flushFn()
 		if err := m.local.Flush(ctx, id, journal.FlushOptions{Force: true, AfterFile: reap}, fn); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// FlushAll force-flushes every file the local store indexes: one pass per
+// file, so a whole-store drain the way SyncNow is an every-file drain. The
+// empty FileID is NOT "all files" in journal.Flush — it is a single-file id
+// like any other — so the drain must enumerate and Flush each id itself.
+// fn + AfterFile are built fresh per file (journal's C9 caller obligation):
+// the closure's carver and reap state carry across one file's runs, and a
+// shared closure interleaves two files' bytes into one block.
+func (m *RemoteSync) FlushAll(ctx context.Context) error {
+	if m.remoteStore == nil {
+		return nil
+	}
+	var firstErr error
+	for _, id := range m.local.ListFiles(ctx) {
+		if _, err := m.Flush(ctx, string(id)); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}

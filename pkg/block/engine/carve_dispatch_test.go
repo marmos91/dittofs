@@ -14,15 +14,15 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/syncer"
 )
 
-// carveFanoutLocal is a minimal LocalStore that records per-file Carve calls and
-// synchronizes on channels so a test can observe how many carves run at once.
-// Only ListFiles + Carve are exercised by carvePass; the rest of the interface
-// is embedded (nil) and never called.
+// carveFanoutLocal is a minimal LocalStore that records per-file Flush calls and
+// synchronizes on channels so a test can observe how many flush passes run at
+// once. Only ListFiles + Flush are exercised by carvePass; the rest of the
+// interface is embedded (nil) and never called.
 type carveFanoutLocal struct {
 	local.LocalStore
 	files    []string
-	started  chan string   // one send per Carve entry
-	release  chan struct{} // closed to let every held Carve return
+	started  chan string   // one send per Flush entry
+	release  chan struct{} // closed to let every held Flush return
 	inFlight atomic.Int32
 	mu       sync.Mutex
 	carved   map[string]int // FileID -> completed count
@@ -36,15 +36,15 @@ func (f *carveFanoutLocal) ListFiles(context.Context) []journal.FileID {
 	return out
 }
 
-func (f *carveFanoutLocal) Carve(_ context.Context, opts journal.CarveOptions) (journal.CarveResult, error) {
+func (f *carveFanoutLocal) Flush(_ context.Context, id journal.FileID, _ journal.FlushOptions, _ journal.FlushFunc) error {
 	f.inFlight.Add(1)
-	f.started <- string(opts.FileID)
+	f.started <- string(id)
 	<-f.release
 	f.inFlight.Add(-1)
 	f.mu.Lock()
-	f.carved[string(opts.FileID)]++
+	f.carved[string(id)]++
 	f.mu.Unlock()
-	return journal.CarveResult{BytesCarved: 1, BlocksWritten: 1}, nil
+	return nil
 }
 
 // TestCarvePass_FansOutBoundedByUploadWindow proves carvePass carves every file

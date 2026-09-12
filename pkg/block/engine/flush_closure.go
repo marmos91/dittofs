@@ -101,35 +101,54 @@ func (c *flushClosure) fn(ctx context.Context, r journal.Run) ([]journal.Extent,
 		return nil, err
 	}
 
-	// Stream the run (and its resident extension) through the carver in
-	// max-chunk slices; the last call of the file's last run drains.
-	buf := make([]byte, 0, chunker.MaxChunkSize)
-	off := r.Extent.Off
+	// Stream the run (and its resident extension) through the carver. Box
+	// absorbs every byte it is fed (its accumulator holds the un-cut
+	// residual), but tiles only the bytes it actually cut into chunks. The
+	// read cursor therefore advances by bytes FED while the cut cursor —
+	// Box's off parameter, which names the accumulator's first byte —
+	// advances by tiled: driving both from one cursor re-feeds bytes the
+	// accumulator already holds, duplicating them into every chunk they
+	// span. Boxing only a full buffer (or the stream's end) keeps the
+	// accumulator's residual below Min, so a chunk never spans a re-feed.
+	buf := make([]byte, chunker.MaxChunkSize)
+	read := r.Extent.Off // next byte to feed the carver
+	cut := r.Extent.Off  // next uncut byte; the off Box cuts chunks at
 	final := r.Final
 	for {
-		var p []byte
-		if off < runEnd {
-			n := min(int64(cap(buf)), runEnd-off)
-			p = buf[:n]
-			if _, err := r.ReadAt(p, off); err != nil {
+		fed := 0
+		if read < runEnd {
+			n := min(int64(len(buf)), runEnd-read)
+			var err error
+			fed, err = r.ReadAt(buf[:n], read)
+			if err != nil {
 				return nil, err
 			}
-		} else if off < extEnd {
-			n := min(int64(cap(buf)), extEnd-off)
-			p = buf[:n]
-			if _, _, err := c.local.ReadAt(ctx, r.ID, off, p); err != nil {
+		} else if read < extEnd {
+			n := min(int64(len(buf)), extEnd-read)
+			var err error
+			fed, _, err = c.local.ReadAt(ctx, r.ID, read, buf[:n])
+			if err != nil {
 				return nil, err
 			}
-		} else {
+		}
+		if fed == 0 && !final {
 			break
 		}
-		blocks, tiled, err := c.cv.Box(ctx, p, off, final && off+int64(len(p)) >= extEnd)
+		// final marks the stream's end: the carver cuts the below-Min tail
+		// and resets its boundary search, so a chunk never spans streams.
+		isFinal := final && read+int64(fed) >= extEnd
+		blocks, tiled, err := c.cv.Box(ctx, buf[:fed], cut, isFinal)
 		if err != nil {
 			return nil, err
 		}
-		off += tiled
+		cut += tiled
+		read += int64(fed)
 		for _, b := range blocks {
 			c.submit(ctx, r.ID, b)
+		}
+		if fed == 0 {
+			// The final drain ran: everything the accumulator held is cut.
+			break
 		}
 	}
 	if final {
@@ -148,13 +167,6 @@ func (c *flushClosure) fn(ctx context.Context, r journal.Run) ([]journal.Extent,
 	// Deferred credit from earlier runs rides here; record everything the
 	// chain has resolved so the reap spans exactly the committed ranges.
 	c.committed = append(c.committed, extents...)
-	for _, e := range extents {
-		for o := e.Off; o < e.Off+e.Len; {
-			// Chunk offsets, not byte walks: newOffsets is populated at
-			// submit time from the block's chunk list; nothing to do here.
-			break
-		}
-	}
 	return extents, nil
 }
 

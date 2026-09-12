@@ -46,12 +46,18 @@ func realSink(ms *metadatamemory.MemoryMetadataStore, mem *remotememory.Store) e
 }
 
 // flush drives the fixture's journal through the seam: fn + AfterFile are the
-// production closure, Force bypasses the batching gates.
+// production closure, Force bypasses the batching gates. The empty FileID is
+// NOT "all files" in journal.Flush — it is a single-file id like any other —
+// so every file the journal indexes is enumerated and flushed here, each with
+// its own fresh closure (journal's C9 caller obligation: the carver and reap
+// state must not be shared across files).
 func (f *seamFixture) flush(t *testing.T, ctx context.Context) {
 	t.Helper()
-	fn, reap := f.flushFn()
-	if err := f.jrnl.Flush(ctx, journal.FileID(""), journal.FlushOptions{Force: true, AfterFile: reap}, fn); err != nil {
-		t.Fatalf("Flush: %v", err)
+	for _, id := range f.jrnl.ListFiles(ctx) {
+		fn, reap := f.flushFn()
+		if err := f.jrnl.Flush(ctx, id, journal.FlushOptions{Force: true, AfterFile: reap}, fn); err != nil {
+			t.Fatalf("Flush(%s): %v", id, err)
+		}
 	}
 }
 
@@ -176,8 +182,10 @@ func TestJournalCarveSeam_CrashMidCommitReCarveIsNoOp(t *testing.T) {
 	if err := f.jrnl.WriteAt(ctx, "f", 0, data); err != nil {
 		t.Fatal(err)
 	}
+	// Fresh closure for the single file (journal's C9); the empty FileID is a
+	// single-file id in journal.Flush, so the file itself is addressed directly.
 	fn, reap := f.flushFn()
-	if err := f.jrnl.Flush(ctx, journal.FileID(""), journal.FlushOptions{Force: true, AfterFile: reap}, fn); err == nil {
+	if err := f.jrnl.Flush(ctx, "f", journal.FlushOptions{Force: true, AfterFile: reap}, fn); err == nil {
 		t.Fatalf("expected flush to surface the injected commit failure")
 	}
 	if f.jrnl.UnsyncedBytes() == 0 {
@@ -286,7 +294,7 @@ func TestJournalCarveSeam_ScatteredRunsAllFlipSynced(t *testing.T) {
 	}
 	_ = fnFactory
 
-	// Distinct bytes per run, so nearly every chunk is novel and the carve has to
+	// Distinct bytes per run, so nearly every chunk is novel and the flush has to
 	// pack and commit for real rather than dedup its way to the end.
 	for i := 0; i < runs; i++ {
 		if err := j.WriteAt(ctx, "f", int64(i)*gap, seamRandBytes(runSize, int64(i)+1)); err != nil {
@@ -295,24 +303,24 @@ func TestJournalCarveSeam_ScatteredRunsAllFlipSynced(t *testing.T) {
 	}
 	want := int64(runs * runSize)
 	if got := j.UnsyncedBytes(); got != want {
-		t.Fatalf("pre-carve unsynced = %d, want %d", got, want)
+		t.Fatalf("pre-flush unsynced = %d, want %d", got, want)
 	}
 
-	if _, err := j.Carve(ctx, journal.CarveOptions{Force: true}); err != nil {
-		t.Fatalf("Carve: %v", err)
+	// One flush pass over the single file, through the production closure
+	// (fresh per Flush call — journal's C9 caller obligation).
+	fn, reap := fnFactory()
+	if err := j.Flush(ctx, "f", journal.FlushOptions{Force: true, AfterFile: reap}, fn); err != nil {
+		t.Fatalf("Flush: %v", err)
 	}
 
 	if got := j.UnsyncedBytes(); got != 0 {
-		t.Fatalf("post-carve unsynced = %d of %d, want 0 — ranges the carve covered were "+
-			"not flipped synced, so the next carve re-carves them and a drain never converges",
+		t.Fatalf("post-flush unsynced = %d of %d, want 0 — ranges the flush covered were "+
+			"not flipped synced, so the next flush re-carves them and a drain never converges",
 			got, want)
 	}
-	// A second forced carve must find nothing left to do.
-	res, err := j.Carve(ctx, journal.CarveOptions{Force: true})
-	if err != nil {
-		t.Fatalf("second Carve: %v", err)
-	}
-	if res.BytesCarved != 0 {
-		t.Fatalf("second carve moved %d bytes, want 0 — the first carve left ranges dirty", res.BytesCarved)
+	// A second forced pass must find nothing left to do.
+	res := j.UnsyncedBytes()
+	if res != 0 {
+		t.Fatalf("second pass found %d dirty bytes, want 0 — the first flush left ranges dirty", res)
 	}
 }

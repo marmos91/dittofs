@@ -354,3 +354,16 @@ func (fr *flushReader) ReadAt(p []byte, off int64) (int, error) {
 // profile. Stores without a chunking policy return the zero value (the caller
 // degrades to its own default).
 func (s *Store) ChunkParams() chunker.Params { return s.cfg.ChunkParams }
+
+// BlockSize reports the pack size this store hands each block's worth of
+// chunks to the caller's sink at — the same CarveBlockSize the batching gate
+// uses. The caller's carver emits at this target; sizing it from anything else
+// (a chunk-profile ratio, say) makes the objects a file drains the wrong size
+// for every share that configured one.
+func (s *Store) BlockSize() int64 { return s.cfg.CarveBlockSize }
+
+// UploadConcurrency reports how many of one file's packed blocks a caller may
+// commit concurrently — the same CarveUploadConcurrency the in-store carve
+// path bounded its commit window with. Zero means "no policy": the caller
+// applies its own default.
+func (s *Store) UploadConcurrency() int { return s.cfg.CarveUploadConcurrency }
