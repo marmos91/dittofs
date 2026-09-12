@@ -102,13 +102,13 @@ type Config struct {
 }
 
 const (
-	defaultSegmentSize            int64 = 256 << 20
-	defaultCarveBlockSize         int64 = 4 << 20
-	defaultCarveMaxAge                  = 5 * time.Second
-	defaultGCDeadRatioForce             = 0.5
-	defaultShardCount                   = 16
-	defaultEvictMaxWait                 = 30 * time.Second
-	defaultCarvePackAhead               = 256
+	defaultSegmentSize      int64 = 256 << 20
+	defaultCarveBlockSize   int64 = 4 << 20
+	defaultCarveMaxAge            = 5 * time.Second
+	defaultGCDeadRatioForce       = 0.5
+	defaultShardCount             = 16
+	defaultEvictMaxWait           = 30 * time.Second
+	defaultCarvePackAhead         = 256
 	// defaultDirtyExpiry mirrors Linux writeback's dirty_expire_centisecs
 	// default: an unfsynced write is pushed to the device once it is about
 	// this old.

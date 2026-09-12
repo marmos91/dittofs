@@ -276,6 +276,11 @@ type engineBlockSink struct {
 	// This is where the adaptive window is enforced, so the controller's
 	// TakePeak samples the same semaphore that binds.
 	uploadLimiter *syncer.DynamicSemaphore
+	// metrics is the engine's data-plane metrics handle, captured at sink
+	// construction so the CommitBlock bracket can report in-flight PUTs without
+	// reaching back to the Store. Nil in fixtures that don't inject a recorder
+	// (every call site checks it before calling).
+	metrics func() DataplaneMetrics
 	// onBlockCommitted reports each block as it lands, carrying the block's
 	// uploaded byte count. Reporting here rather than after a carve pass returns
 	// is what makes the count advance *during* a long carve: the drain path
@@ -366,7 +371,17 @@ func (s engineBlockSink) CommitBlock(ctx context.Context, chunks []journal.Carve
 			return fmt.Errorf("carve: acquire upload window: %w", err)
 		}
 	}
+	if s.metrics != nil {
+		if mx := s.metrics(); mx != nil {
+			mx.UploadStarted()
+		}
+	}
 	putErr := s.rbs.PutBlock(ctx, blockID, bytes.NewReader(blockBytes))
+	if s.metrics != nil {
+		if mx := s.metrics(); mx != nil {
+			mx.UploadFinished()
+		}
+	}
 	if s.uploadLimiter != nil {
 		s.uploadLimiter.Release()
 	}

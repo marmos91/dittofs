@@ -837,7 +837,7 @@ func (m *RemoteSync) wireCarveTargets() {
 			return // remote configured but deps not fully wired yet
 		}
 		deduper := engineDeduper{synced: m.syncedHashStore}
-		sink := engineBlockSink{sealer: m.chunkSealer, rbs: m.remoteBlockStore, committer: m.blockCommitter, commitLocks: &carveCommitLocks{}, onBlockCommitted: m.noteBlockCommitted, uploadLimiter: m.uploadLimiter}
+		sink := engineBlockSink{sealer: m.chunkSealer, rbs: m.remoteBlockStore, committer: m.blockCommitter, commitLocks: &carveCommitLocks{}, onBlockCommitted: m.noteBlockCommitted, uploadLimiter: m.uploadLimiter, metrics: m.dataplaneMetrics}
 		m.local.SetCarveTargets(deduper, sink)
 		m.carveTargetsWired = true
 		return
