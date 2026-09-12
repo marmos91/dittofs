@@ -60,18 +60,18 @@ type Config struct {
 	// itself fails.
 	MaxLocalBytes int64
 	EvictMaxWait  time.Duration // write-path backpressure budget before ErrLocalStoreFull
-	// CarveUploadConcurrency bounds how many of one file's packed blocks are
-	// committed (uploaded + committed) at once. Packing itself is sequential
-	// across the whole file, one block at a time, and so are the manifest row-end
-	// lookups that widen each run; only the commits overlap, so a single large
-	// file's carve is not one PutBlock at a time.
+	// CarvePackAhead bounds how many of one file's packed blocks may wait on
+	// their uploads at once — the pack-ahead MEMORY bound, not the
+	// upload-concurrency knob. Concurrent PutBlock calls across all files are
+	// bounded by the engine's upload window in the block sink (the controller's
+	// controlled variable); this window only throttles how many packed blocks
+	// queue per file, bounding the arenas live while they wait.
 	// Peak carve RAM per file is window x (CarveBlockSize + one ChunkParams.Max
 	// chunk) for the block arenas, plus the single chunker scratch buffer of
-	// chunker.MaxChunkSize the pass holds. Per file: whatever bounds how many
-	// files carve at once multiplies the arena term again, so the real ceiling
-	// is that product — keep this modest.
+	// chunker.MaxChunkSize the pass holds. Default matches the engine's upload
+	// ceiling so it never binds first.
 	// Zero falls back to the default via withDefaults.
-	CarveUploadConcurrency int
+	CarvePackAhead int
 	// DirtyExpiry bounds how long an appended record may sit unfsynced. A
 	// background loop commits every shard still holding uncovered records once
 	// per interval, so a client that never asks for durability (no NFS COMMIT,
@@ -108,7 +108,7 @@ const (
 	defaultGCDeadRatioForce             = 0.5
 	defaultShardCount                   = 16
 	defaultEvictMaxWait                 = 30 * time.Second
-	defaultCarveUploadConcurrency       = 8
+	defaultCarvePackAhead               = 256
 	// defaultDirtyExpiry mirrors Linux writeback's dirty_expire_centisecs
 	// default: an unfsynced write is pushed to the device once it is about
 	// this old.
@@ -142,8 +142,8 @@ func (c Config) withDefaults() Config {
 	if c.EvictMaxWait <= 0 {
 		c.EvictMaxWait = defaultEvictMaxWait
 	}
-	if c.CarveUploadConcurrency <= 0 {
-		c.CarveUploadConcurrency = defaultCarveUploadConcurrency
+	if c.CarvePackAhead <= 0 {
+		c.CarvePackAhead = defaultCarvePackAhead
 	}
 	if c.DirtyExpiry == 0 {
 		c.DirtyExpiry = defaultDirtyExpiry

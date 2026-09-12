@@ -71,7 +71,7 @@ func TestCarveInterleavesRowEndLookupsWithCommits(t *testing.T) {
 	)
 	s, dd, fs, _ := carveStore(t, Config{
 		CarveBlockSize:         blockSize,
-		CarveUploadConcurrency: uploadConcurrency,
+		CarvePackAhead: uploadConcurrency,
 		ChunkParams:            chunker.Params{Min: 1 << 10, Avg: 2 << 10, Max: 8 << 10},
 	})
 	ctx := context.Background()

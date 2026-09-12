@@ -21,7 +21,7 @@ func TestCarveScatteredRunsConvergeConcurrently(t *testing.T) {
 		gap       = 8 << 10 // stride > runSize keeps every run non-contiguous
 		totalSize = runs * runSize
 	)
-	s, _, sink, _ := carveStore(t, Config{CarveBlockSize: 4 << 20, CarveUploadConcurrency: 8})
+	s, _, sink, _ := carveStore(t, Config{CarveBlockSize: 4 << 20, CarvePackAhead: 8})
 	ctx := context.Background()
 
 	want := map[int64][]byte{}
@@ -120,7 +120,7 @@ func TestCarveSharedRecordAcrossRuns(t *testing.T) {
 		leftCut  = 32 << 10
 		rightCut = 56 << 10
 	)
-	s, _, sink, _ := carveStore(t, Config{CarveBlockSize: 4 << 20, CarveUploadConcurrency: 4})
+	s, _, sink, _ := carveStore(t, Config{CarveBlockSize: 4 << 20, CarvePackAhead: 4})
 	ctx := context.Background()
 
 	base := randBytes(size, 1)
@@ -244,7 +244,7 @@ func (e *extendingSink) ReapSupersededManifest(_ context.Context, _ FileID, span
 // concurrently.
 func TestCarveRunDoesNotExtendPastNextRun(t *testing.T) {
 	const rec = 8 << 10
-	s, dd, base, _ := carveStore(t, Config{CarveBlockSize: 4 << 20, CarveUploadConcurrency: 4})
+	s, dd, base, _ := carveStore(t, Config{CarveBlockSize: 4 << 20, CarvePackAhead: 4})
 	sink := &extendingSink{
 		fakeSink: base,
 		gateOff:  rec,     // the first run ends here
@@ -342,9 +342,9 @@ func TestCarveBlocksCommitConcurrently(t *testing.T) {
 		window  = 4
 	)
 	s, _, sink, _ := carveStore(t, Config{
-		CarveBlockSize:         8 << 10,
-		CarveUploadConcurrency: window,
-		ChunkParams:            chunker.Params{Min: 4 << 10, Avg: 8 << 10, Max: 16 << 10},
+		CarveBlockSize: 8 << 10,
+		CarvePackAhead: window,
+		ChunkParams:    chunker.Params{Min: 4 << 10, Avg: 8 << 10, Max: 16 << 10},
 	})
 	ctx := context.Background()
 
@@ -436,7 +436,7 @@ func TestCarveBlocksCommitConcurrently(t *testing.T) {
 		t.Fatalf("max blocks committing at once = %d, want > 1: no second commit joined the first within the hold, so the commits did not overlap", max)
 	}
 	if max > window {
-		t.Fatalf("max concurrent commits = %d, want <= CarveUploadConcurrency (%d): the file-scoped bound on in-flight blocks was breached", max, window)
+		t.Fatalf("max concurrent commits = %d, want <= CarvePackAhead (%d): the file-scoped bound on in-flight blocks was breached", max, window)
 	}
 }
 
@@ -512,7 +512,7 @@ func TestCarveReapSurvivesSiblingFailure(t *testing.T) {
 		runSize  = 4 << 10
 		failFrom = 64 << 10
 	)
-	s, dd, base, _ := carveStore(t, Config{CarveBlockSize: runSize, CarveUploadConcurrency: 4})
+	s, dd, base, _ := carveStore(t, Config{CarveBlockSize: runSize, CarvePackAhead: 4})
 	sink := &reapCtxSink{
 		fakeSink:  base,
 		failFrom:  failFrom,

@@ -270,7 +270,7 @@ func TestJournalCarveSeam_ScatteredRunsAllFlipSynced(t *testing.T) {
 	mem := remotememory.New()
 
 	j, err := journal.Open(t.TempDir(),
-		journal.Config{CarveBlockSize: blockSize, CarveUploadConcurrency: 4})
+		journal.Config{CarveBlockSize: blockSize, CarvePackAhead: 4})
 	if err != nil {
 		t.Fatalf("journal.Open: %v", err)
 	}

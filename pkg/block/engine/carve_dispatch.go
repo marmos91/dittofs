@@ -53,20 +53,14 @@ func (m *RemoteSync) carveDispatcher(ctx context.Context) {
 // pass (one file, one block, one PutBlock at a time) leaves the uplink almost
 // idle — the block-upload latency, not the link or CPU, caps throughput.
 //
-// The adaptive upload window bounds how many files carve at once: the loop
-// acquires uploadLimiter before starting each file's carve and releases it when
-// that file's pass returns, so at most Limit() passes run together. It does not
-// bound the block PUTs inside a pass — each pass opens its own window on those —
-// so the PUTs in flight are the product of the two, and so is the memory held by
-// the blocks waiting on them.
-//
-// What the goodput controller samples through TakePeak is therefore this window,
-// the count of files, not the count of PUTs. Draining one large file peaks at a
-// single pass and reads as app-limited however many PUTs that pass has in the
-// air. Acquiring the window is still what keeps it consumed at all; without it
-// the window is never taken and stays pinned at the floor. Files in one shard
-// still serialize on the journal's internal carve lock, so the concurrency here
-// overlaps distinct shards' upload latency.
+// There is no per-pass limit here: concurrent PutBlock calls across all passes
+// are bounded by the engine's upload window, acquired in the block sink itself
+// around each PutBlock — that semaphore is the invariant, and it is what the
+// goodput controller samples through TakePeak, so the count it samples is the
+// count of PUTs in the air and a single large file (one pass, many PUTs) reads
+// as window-limited and is ramped. Files in one shard still serialize on the
+// journal's internal carve lock, so the concurrency here overlaps distinct
+// shards' upload latency.
 func (m *RemoteSync) carvePass(ctx context.Context) {
 	ids := m.local.ListFiles(ctx)
 	files := make([]string, 0, len(ids))
@@ -76,10 +70,9 @@ func (m *RemoteSync) carvePass(ctx context.Context) {
 	if len(files) == 0 {
 		return
 	}
-	// stopCh is not observed once blocked inside uploadLimiter.Acquire or a
-	// file's Carve, so derive a pass context that a stop cancels — otherwise a
-	// shutdown while the window is full (or a carve is stuck on a slow PutBlock)
-	// would hang the dispatcher until the slot frees.
+	// stopCh is not observed once blocked inside a file's Carve, so derive a
+	// pass context that a stop cancels — otherwise a shutdown while a carve is
+	// stuck on a slow PutBlock would hang the dispatcher until the slot frees.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go func() {
@@ -102,22 +95,14 @@ func (m *RemoteSync) carvePass(ctx context.Context) {
 		if stop {
 			break
 		}
-		if m.uploadLimiter != nil {
-			// Blocks here when the window is full, throttling both concurrency
-			// and goroutine spawn to the current limit; released by the worker.
-			if err := m.uploadLimiter.Acquire(ctx); err != nil {
-				break // context cancelled
-			}
-		}
 		wg.Add(1)
 		go func(fileID string) {
 			defer wg.Done()
-			if m.uploadLimiter != nil {
-				defer m.uploadLimiter.Release()
-			}
 			// Success needs no bookkeeping here: the sink feeds the goodput sample
 			// and the completed-sync counter as each block lands, which keeps both
-			// advancing during a pass rather than only at its end.
+			// advancing during a pass rather than only at its end. Concurrent PUTs
+			// across all passes are bounded by the engine's upload window in the
+			// block sink itself, which is the invariant — no per-pass limit here.
 			if _, err := m.local.Carve(ctx, journal.CarveOptions{FileID: journal.FileID(fileID)}); err != nil {
 				m.uploadErrWindow.Add(1)
 				m.failedSyncs.Add(1)

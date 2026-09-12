@@ -24,16 +24,16 @@ const DefaultParallelDownloads = 32
 // is unset (0), the syncer auto-tunes the upload window to saturate the uplink:
 // it starts at AdaptiveUploadFloor and ramps toward AdaptiveUploadCeiling,
 // settling at the goodput knee. A pinned ParallelUploads > 0 overrides this with
-// a fixed window. The window bounds concurrent whole-file carve passes, not
-// individual block PUTs — each pass applies its own bound on concurrent
-// PutBlock calls, so the PUTs in flight are the product of the two. Block PUTs
-// are network-latency bound, so a serial carver leaves the link idle — one
+// a fixed window. The window bounds concurrent remote PutBlock calls — one
+// semaphore in the engine's block sink acquired around each PutBlock — so the
+// sampled signal and the controlled variable are the same quantity. Block PUTs
+// are network-latency bound, so a serial uploader leaves the link idle — one
 // in-flight PutBlock sustained only ~200 Mbit/s VM→fr-par.
 const (
-	AdaptiveUploadFloor   = 16  // starting window in adaptive mode (greedy start)
-	AdaptiveUploadCeiling = 64  // max window the adaptive controller ramps to
+	AdaptiveUploadFloor   = 128 // starting window in adaptive mode (greedy start)
+	AdaptiveUploadCeiling = 256 // max window the adaptive controller ramps to (= MaxParallelUploads)
 	AdaptiveUploadDefault = 0   // ParallelUploads sentinel: 0 = adaptive auto-tune
-	MaxParallelUploads    = 256 // upper bound on a pinned ParallelUploads window
+	MaxParallelUploads    = 256 // upper bound on the upload window, enforced by the sink's semaphore
 )
 
 // uploadControlInterval is how often the adaptive controller samples goodput and
@@ -90,11 +90,11 @@ type RemoteSyncConfig struct {
 	UploadInterval     time.Duration // Periodic uploader scan interval (default: 2s)
 	UploadDelay        time.Duration // Min block age before periodic upload; Flush ignores this (default: 10s)
 
-	// ParallelUploads bounds concurrent block PUTs from the carver (#1407 /
-	// #1432). 0 (the default, AdaptiveUploadDefault) means the carver auto-tunes
-	// the window between AdaptiveUploadFloor and AdaptiveUploadCeiling to
-	// saturate the uplink; > 0 pins a fixed window (from the per-remote
-	// parallel_uploads config / --parallel-uploads). A serial carver (window 1)
+	// ParallelUploads bounds concurrent remote PutBlock calls from the carver
+	// (#1407 / #1432). 0 (the default, AdaptiveUploadDefault) means the uploader
+	// auto-tunes the window between AdaptiveUploadFloor and AdaptiveUploadCeiling
+	// to saturate the uplink; > 0 pins a fixed window (from the per-remote
+	// parallel_uploads config / --parallel-uploads). A serial uploader (window 1)
 	// leaves a WAN link idle, which is the #1432 upload-throughput regression.
 	ParallelUploads int
 

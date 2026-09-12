@@ -22,7 +22,7 @@ func TestCarvePackReachesBlockSizeOnScatteredRuns(t *testing.T) {
 	)
 	s, _, _, _ := carveStore(t, Config{
 		CarveBlockSize:         4 << 20,
-		CarveUploadConcurrency: 4,
+		CarvePackAhead: 4,
 		ChunkParams:            chunker.Params{Min: 1 << 10, Avg: 2 << 10, Max: 8 << 10},
 	})
 	ctx := context.Background()
@@ -62,7 +62,7 @@ func TestCarvePackSpansRunsFlipsEveryContributingRun(t *testing.T) {
 	)
 	s, _, sink, _ := carveStore(t, Config{
 		CarveBlockSize:         4 << 20,
-		CarveUploadConcurrency: 4,
+		CarvePackAhead: 4,
 		ChunkParams:            chunker.Params{Min: 1 << 10, Avg: 2 << 10, Max: 8 << 10},
 	})
 	ctx := context.Background()
@@ -122,7 +122,7 @@ func TestCarvePackFlipPlanWatermarks(t *testing.T) {
 	)
 	s, _, sink, _ := carveStore(t, Config{
 		CarveBlockSize:         32 << 10,
-		CarveUploadConcurrency: 1,
+		CarvePackAhead: 1,
 		ChunkParams:            chunker.Params{Min: 4 << 10, Avg: 8 << 10, Max: 16 << 10},
 	})
 	writeRunAt(t, s, 0, run0Recs)
@@ -190,7 +190,7 @@ func spanningBlockFailureReap(t *testing.T, straddle bool) {
 	)
 	s, dd, base, _ := carveStore(t, Config{
 		CarveBlockSize:         32 << 10,
-		CarveUploadConcurrency: 1,
+		CarvePackAhead: 1,
 		ChunkParams:            chunker.Params{Min: 4 << 10, Avg: 8 << 10, Max: 16 << 10},
 	})
 	sink := &extendingSink{fakeSink: base, straddleEverywhere: straddle}
@@ -249,7 +249,7 @@ func TestCarvePackReapCarriesEveryCommittedRun(t *testing.T) {
 		gap     = 64 << 10
 		runs    = 3
 	)
-	s, dd, base, _ := carveStore(t, Config{CarveBlockSize: 4 << 20, CarveUploadConcurrency: 4})
+	s, dd, base, _ := carveStore(t, Config{CarveBlockSize: 4 << 20, CarvePackAhead: 4})
 	boom := errors.New("reap failed")
 	sink := &extendingSink{fakeSink: base, failFirstReap: boom}
 	s.SetCarveTargets(dd, sink)
@@ -286,7 +286,7 @@ func TestCarvePackSeamRunFailureLeavesSuffixDirty(t *testing.T) {
 	const runSize = 512 << 10
 	s, _, sink, _ := carveStore(t, Config{
 		CarveBlockSize:         64 << 10,
-		CarveUploadConcurrency: 1,
+		CarvePackAhead: 1,
 		ChunkParams:            chunker.Params{Min: 4 << 10, Avg: 8 << 10, Max: 16 << 10},
 	})
 	writeAdjacent(t, s, "f", 128, 4<<10)
@@ -353,7 +353,7 @@ func BenchmarkCarveScatteredPass(b *testing.B) {
 		b.StopTimer()
 		s, _, sink, _ := carveStore(b, Config{
 			CarveBlockSize:         4 << 20,
-			CarveUploadConcurrency: 8,
+			CarvePackAhead: 8,
 			ChunkParams:            chunker.Params{Min: 1 << 10, Avg: 2 << 10, Max: 8 << 10},
 		})
 		s.SetCarveTargets(slowDeduper{delay: deduperLookupDelay}, sink)

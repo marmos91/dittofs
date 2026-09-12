@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"io"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -9,9 +10,12 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/block/local"
+	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/block/syncer"
+	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
 // carveFanoutLocal is a minimal LocalStore that records per-file Carve calls and
@@ -47,20 +51,22 @@ func (f *carveFanoutLocal) Carve(_ context.Context, opts journal.CarveOptions) (
 	return journal.CarveResult{BytesCarved: 1, BlocksWritten: 1}, nil
 }
 
-// TestCarvePass_FansOutBoundedByUploadWindow proves carvePass carves every file
-// (with its FileID set), runs them concurrently, and never exceeds the upload
-// window — the fix that gives the uploader more than one block in flight.
-func TestCarvePass_FansOutBoundedByUploadWindow(t *testing.T) {
+// TestCarvePass_FansOutUnbounded passes every file to local.Carve concurrently:
+// carvePass carves every file (with its FileID set) and runs them all at once.
+// There is no per-pass limit — concurrent PutBlock calls across all passes are
+// bounded by the engine's upload window acquired in the block sink itself
+// (TestBlockSink_EnforcesUploadWindow), so limiting passes here would only
+// delay uploads the global window could already admit.
+func TestCarvePass_FansOutUnbounded(t *testing.T) {
 	fl := &carveFanoutLocal{
 		files:   []string{"a", "b", "c", "d", "e"},
 		started: make(chan string, 5),
 		release: make(chan struct{}),
 		carved:  map[string]int{},
 	}
-	const window = 3
 	m := &RemoteSync{
 		local:         fl,
-		uploadLimiter: syncer.NewDynamicSemaphore(window),
+		uploadLimiter: syncer.NewDynamicSemaphore(AdaptiveUploadFloor),
 		stopCh:        make(chan struct{}),
 		config:        DefaultConfig(),
 	}
@@ -68,31 +74,128 @@ func TestCarvePass_FansOutBoundedByUploadWindow(t *testing.T) {
 	done := make(chan struct{})
 	go func() { m.carvePass(context.Background()); close(done) }()
 
-	// Exactly `window` carves start; the loop's Acquire blocks the rest.
+	// Every file enters local.Carve without waiting on any pass window.
 	seen := map[string]bool{}
-	for i := 0; i < window; i++ {
-		seen[<-fl.started] = true
+	for i := 0; i < len(fl.files); i++ {
+		select {
+		case id := <-fl.started:
+			seen[id] = true
+		case <-time.After(5 * time.Second):
+			t.Fatalf("carve %d never entered local.Carve", i)
+		}
 	}
-	require.Equal(t, int32(window), fl.inFlight.Load(), "in-flight carves should fill the window")
+	require.Len(t, seen, len(fl.files), "every file should have been carved")
 
-	// A further carve must NOT start until a slot frees.
-	select {
-	case id := <-fl.started:
-		t.Fatalf("carve %q started before the upload window freed", id)
-	case <-time.After(50 * time.Millisecond):
-	}
-
-	// Let everything drain; the remaining files carve as slots free.
 	close(fl.release)
-	for i := 0; i < len(fl.files)-window; i++ {
-		seen[<-fl.started] = true
-	}
 	<-done
 
-	require.Len(t, seen, len(fl.files), "every file should have been carved")
 	for _, id := range fl.files {
 		require.Equal(t, 1, fl.carved[id], "file %q carved exactly once", id)
 	}
+}
+
+// TestBlockSink_EnforcesUploadWindow proves the engine's upload window is
+// enforced in the block sink itself: concurrent CommitBlock calls never exceed
+// the semaphore limit around PutBlock. This is the invariant the upload
+// controller samples, and the regression guard that would have caught the
+// product-of-two-windows defect.
+func TestBlockSink_EnforcesUploadWindow(t *testing.T) {
+	ctx := context.Background()
+	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	mem := remotememory.New()
+
+	const (
+		limit = 2
+		calls = 8
+		block = 1 << 20
+	)
+	limiter := syncer.NewDynamicSemaphore(limit)
+
+	// windowProbeRemote brackets the underlying remote's PutBlock with an
+	// in-flight counter that flags any exceedance of the limit.
+	var (
+		inFlight atomic.Int32
+		exceeded atomic.Bool
+	)
+	gate := newWindowProbeRemote(mem, &inFlight, &exceeded, limit)
+	sink := engineBlockSink{sealer: nil, rbs: gate, committer: ms, commitLocks: &carveCommitLocks{}, uploadLimiter: limiter}
+
+	var (
+		wg     sync.WaitGroup
+		errsMu sync.Mutex
+		errs   = make([]error, calls)
+		start  = make(chan struct{})
+	)
+	for i := 0; i < calls; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			data := make([]byte, block)
+			chunk := journal.CarveChunk{
+				FileID:     journal.FileID("probe-file"),
+				FileOffset: int64(i) * block,
+				Hash:       journal.ChunkHash([32]byte{byte(i)}),
+				Data:       data,
+			}
+			<-start
+			err := sink.CommitBlock(ctx, []journal.CarveChunk{chunk})
+			errsMu.Lock()
+			errs[i] = err
+			errsMu.Unlock()
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	for i, err := range errs {
+		require.NoErrorf(t, err, "CommitBlock %d surfaced an error", i)
+	}
+	require.False(t, exceeded.Load(), "in-flight PUTs exceeded the upload window")
+}
+
+// windowProbeRemote wraps a block-keyed remote and flags any moment where the
+// number of concurrent PutBlock calls inside the sink's upload window exceeds
+// the limit. The counter is checked on the PutBlock critical path so the flag
+// cannot fire in a gap between calls. Embedded pointer, not value: an embedded
+// value's copy would carry the underlying store's mutex.
+type windowProbeRemote struct {
+	store    *remotememory.Store
+	inFlight *atomic.Int32
+	exceeded *atomic.Bool
+	limit    int32
+}
+
+func newWindowProbeRemote(mem *remotememory.Store, inFlight *atomic.Int32, exceeded *atomic.Bool, limit int32) *windowProbeRemote {
+	return &windowProbeRemote{store: mem, inFlight: inFlight, exceeded: exceeded, limit: limit}
+}
+
+// DeleteBlock, GetBlock, GetBlockRange and WalkBlocks delegate so
+// *windowProbeRemote satisfies remote.RemoteBlockStore via the embedded pointer
+// rather than an embedded value (whose copy would carry the underlying store's
+// mutex).
+func (w *windowProbeRemote) DeleteBlock(ctx context.Context, id string) error {
+	return w.store.DeleteBlock(ctx, id)
+}
+
+func (w *windowProbeRemote) GetBlock(ctx context.Context, id string) ([]byte, error) {
+	return w.store.GetBlock(ctx, id)
+}
+
+func (w *windowProbeRemote) GetBlockRange(ctx context.Context, id string, offset, length int64) ([]byte, error) {
+	return w.store.GetBlockRange(ctx, id, offset, length)
+}
+
+func (w *windowProbeRemote) WalkBlocks(ctx context.Context, fn func(string, block.Meta) error) error {
+	return w.store.WalkBlocks(ctx, fn)
+}
+
+func (w *windowProbeRemote) PutBlock(ctx context.Context, id string, r io.Reader) error {
+	n := w.inFlight.Add(1)
+	if n > w.limit {
+		w.exceeded.Store(true)
+	}
+	defer w.inFlight.Add(-1)
+	return w.store.PutBlock(ctx, id, r)
 }
 
 // TestCarvePass_NoFilesIsNoop guards the empty working-set path.

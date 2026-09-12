@@ -16,7 +16,7 @@ import (
 // CarveBlockSize and so overshoots by the chunk that crossed the line. Sizing
 // that overhang from the package ceiling rather than the share's own
 // ChunkParams reserves 16 MiB per block for a share chunking at 16 KiB, and the
-// reservation is per concurrency slot — so it multiplies by CarveUploadConcurrency
+// reservation is per pack-ahead slot — so it multiplies by CarvePackAhead
 // and again by however many files carve at once. The carver also packs one
 // further block ahead of the window (its batch is not window-throttled until
 // submit), so the budget carries one extra arena.
@@ -33,9 +33,9 @@ func TestCarveArenaSizedToConfiguredChunkSize(t *testing.T) {
 	params := chunker.Params{Min: 4 << 10, Avg: 8 << 10, Max: 16 << 10}
 
 	s, _, sink, _ := carveStore(t, Config{
-		CarveBlockSize:         blockSize,
-		CarveUploadConcurrency: window,
-		ChunkParams:            params,
+		CarveBlockSize: blockSize,
+		CarvePackAhead: window,
+		ChunkParams:    params,
 	})
 	ctx := context.Background()
 

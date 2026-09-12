@@ -121,9 +121,9 @@ func (s *ctrlSink) peak() int {
 func ctrlStore(t *testing.T, window int) (*Store, *ctrlSink) {
 	t.Helper()
 	cfg := Config{
-		CarveBlockSize:         32 << 10,
-		CarveUploadConcurrency: window,
-		ChunkParams:            chunker.Params{Min: 4 << 10, Avg: 8 << 10, Max: 16 << 10},
+		CarveBlockSize: 32 << 10,
+		CarvePackAhead: window,
+		ChunkParams:    chunker.Params{Min: 4 << 10, Avg: 8 << 10, Max: 16 << 10},
 	}
 	s, err := Open(t.TempDir(), cfg)
 	if err != nil {
