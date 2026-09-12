@@ -533,7 +533,7 @@ func TestInvalidatedRangeSurvivesEviction(t *testing.T) {
 	}
 }
 
-// TestEvictWaitsForCarve pins that eviction holds the shard's carveMu, the way
+// TestEvictWaitsForCarve pins that eviction holds the shard's flushMu, the way
 // reclaimEmptied and the GC pass already do. A carve flips its records synced as
 // each block commits but reaps the rows they superseded only once it has packed
 // the whole file; a record that flipped in that window is already evictable while
@@ -551,7 +551,7 @@ func TestEvictWaitsForCarve(t *testing.T) {
 	}
 
 	// Stand in for a carve pass in flight on this shard.
-	sh.carveMu.Lock()
+	sh.flushMu.Lock()
 
 	done := make(chan EvictResult, 1)
 	go func() {
@@ -564,18 +564,18 @@ func TestEvictWaitsForCarve(t *testing.T) {
 
 	select {
 	case res := <-done:
-		t.Fatalf("Evict finished mid-carve (evicted %d segments): it must not cold-mark a segment while a carve holds carveMu", res.SegmentsEvicted)
+		t.Fatalf("Evict finished mid-carve (evicted %d segments): it must not cold-mark a segment while a carve holds flushMu", res.SegmentsEvicted)
 	case <-time.After(100 * time.Millisecond):
 	}
 
-	sh.carveMu.Unlock()
+	sh.flushMu.Unlock()
 	select {
 	case res := <-done:
 		if res.SegmentsEvicted != 1 {
 			t.Fatalf("SegmentsEvicted=%d want 1 once the carve released the lock", res.SegmentsEvicted)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("Evict never completed after the carve released carveMu")
+		t.Fatal("Evict never completed after the carve released flushMu")
 	}
 }
 

@@ -79,14 +79,14 @@ func TestLocalBlockSink_ConcurrentSameFileCommit_NoSSIConflict(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			data := []byte{byte(i), byte(i >> 8), 0xab, 0xcd}
-			chunk := journal.CarveChunk{
+			chunk := CarveChunk{
 				FileID:     journal.FileID(pid),
 				FileOffset: int64(i) * 4096,
-				Hash:       journal.ChunkHash(blake3.Sum256(data)),
+				Hash:       ChunkHash(blake3.Sum256(data)),
 				Data:       data,
 			}
 			<-start
-			errs[i] = sink.CommitBlock(ctx, []journal.CarveChunk{chunk})
+			errs[i] = sink.CommitBlock(ctx, []CarveChunk{chunk})
 		}(i)
 	}
 	close(start)
@@ -120,10 +120,10 @@ func TestLocalBlockSink_ConcurrentReapAndCommit_NoSSIConflict(t *testing.T) {
 			<-start
 			if i%2 == 0 {
 				data := []byte{byte(i), byte(i >> 8), 0xab, 0xcd}
-				errs[i] = sink.CommitBlock(ctx, []journal.CarveChunk{{
+				errs[i] = sink.CommitBlock(ctx, []CarveChunk{{
 					FileID:     journal.FileID(pid),
 					FileOffset: int64(i) * 4096,
-					Hash:       journal.ChunkHash(blake3.Sum256(data)),
+					Hash:       ChunkHash(blake3.Sum256(data)),
 					Data:       data,
 				}})
 				return

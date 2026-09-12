@@ -118,10 +118,11 @@ func (m *RemoteSync) carvePass(ctx context.Context) {
 			// Success needs no bookkeeping here: the sink feeds the goodput sample
 			// and the completed-sync counter as each block lands, which keeps both
 			// advancing during a pass rather than only at its end.
-			if _, err := m.local.Carve(ctx, journal.CarveOptions{FileID: journal.FileID(fileID)}); err != nil {
+			fn, reap := m.flushFn()
+			if err := m.local.Flush(ctx, journal.FileID(fileID), journal.FlushOptions{AfterFile: reap}, fn); err != nil {
 				m.uploadErrWindow.Add(1)
 				m.failedSyncs.Add(1)
-				logger.Warn("carve dispatcher: file carve failed", "file", fileID, "error", err)
+				logger.Warn("flush dispatcher: file flush failed", "file", fileID, "error", err)
 			}
 		}(id)
 	}

@@ -208,17 +208,17 @@ func (s *Store) Carve(ctx context.Context, opts CarveOptions) (CarveResult, erro
 		}
 		// Serialize this shard's carve against a concurrent carve pass; appends
 		// still proceed (they take sh.mu, which carve only grabs briefly).
-		sh.carveMu.Lock()
+		sh.flushMu.Lock()
 		for _, id := range s.carveCandidates(sh, opts, now, maxAge) {
 			if err := ctx.Err(); err != nil {
-				sh.carveMu.Unlock()
+				sh.flushMu.Unlock()
 				return res, err
 			}
 			if err := s.carveFile(ctx, sh, id, &res); err != nil && firstErr == nil {
 				firstErr = err
 			}
 		}
-		sh.carveMu.Unlock()
+		sh.flushMu.Unlock()
 	}
 	return res, firstErr
 }

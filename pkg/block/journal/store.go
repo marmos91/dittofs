@@ -201,7 +201,7 @@ type Store struct {
 
 	// gcMu serializes GC passes against each other: only one pass runs at a time,
 	// so two passes never pick the same victim. It does NOT exclude Carve or Evict
-	// — a running GC pass keeps them off its segments via the per-shard carveMu it
+	// — a running GC pass keeps them off its segments via the per-shard flushMu it
 	// holds and the per-segment busy claim it CAS-sets on each victim, not gcMu.
 	gcMu sync.Mutex
 

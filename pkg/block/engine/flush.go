@@ -1,15 +1,462 @@
 package engine
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"math"
+	"sync"
+
+	"lukechampine.com/blake3"
 
 	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/blockcodec"
+	"github.com/marmos91/dittofs/pkg/block/carver"
 	"github.com/marmos91/dittofs/pkg/block/journal"
+	"github.com/marmos91/dittofs/pkg/block/remote"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
+// The flush-side collaborators the journal seam calls back into. They live
+// here, next to their only consumer (the fn closure flushPass builds), because
+// every one of them touches pkg/block, blockcodec or the metadata store — none
+// of which the journal knows.
+
+// ChunkHash is the BLAKE3-256 content hash of a chunk's plaintext, keyed so
+// the deduper and the sink agree on identical bytes.
+type ChunkHash = carver.Hash
+
+// Deduper reports whether a chunk is already durable on the remote store. A
+// true result MUST mean "remote-durable", never merely "seen locally", or a
+// flip could clean bytes that never reached remote. Production wiring backs
+// this with the per-share synced-hash oracle.
+type Deduper interface {
+	IsChunkDurable(ctx context.Context, hash ChunkHash) (bool, error)
+}
+
+// CarveChunk is one content-defined chunk handed to the sink for packing.
+type CarveChunk struct {
+	Hash       ChunkHash
+	FileID     journal.FileID
+	FileOffset int64  // logical offset of the chunk within the file
+	Size       int    // chunk length; authoritative when Data is nil
+	Data       []byte // plaintext; nil when the chunk deduped (nothing to upload)
+}
+
+// BlockSink seals, frames, uploads (PutBlock) and atomically commits one
+// block's worth of novel chunks. CommitBlock is atomic: a non-nil error means
+// nothing became durable, so the caller leaves the covered fragments dirty.
+//
+// Lifetime contract: CarveChunk.Data slices are backed by the carver's
+// per-block arena, which covers only the blocks in flight. An implementation
+// MUST NOT retain any Data slice after CommitBlock returns; copy the bytes
+// first if it needs them longer.
+type BlockSink interface {
+	CommitBlock(ctx context.Context, chunks []CarveChunk) error
+}
+
+// SupersededReaper is an optional BlockSink capability. Once a flush pass has
+// committed a file's rows, journal calls ReapSupersededManifest from AfterFile
+// so the sink can delete the manifest rows they superseded — keeping the
+// per-file FileChunk manifest a gap-free, overlap-free tiling of [0,size)
+// after a partial overwrite. spans are the committed parts of the pass's
+// re-carved (dirty) runs, disjoint and ascending; newOffsets are the chunk
+// offsets the pass wrote (so the reap keeps them and deletes only stale
+// straddlers/interior rows). One call per file rather than one per run: the
+// sink re-reads the whole manifest to answer it. Sinks without a metadata
+// store (test fakes) simply don't implement it and the reap is skipped.
+type SupersededReaper interface {
+	ReapSupersededManifest(ctx context.Context, id journal.FileID, spans [][2]int64, newOffsets map[int64]struct{}) error
+}
+
+// ManifestRowEnder is an optional BlockSink capability: it reports how far the
+// manifest coverage straddling an offset reaches. The flush closure uses it to
+// widen a run to a row boundary before packing it, so the fresh tiling covers
+// every row the run-end reap deletes. Sinks without a metadata store (test
+// fakes) don't implement it: a run is packed exactly as offered.
+//
+// The answer is the greatest end among rows starting strictly before off and
+// reaching past it, or off itself when none does — never a value below off.
+type ManifestRowEnder interface {
+	ManifestRowEndAfter(ctx context.Context, id journal.FileID, off int64) (int64, error)
+}
+
+// ClobberGuard is an optional BlockSink capability, and it exists because a
+// manifest row is keyed by the file offset of its first claimed byte while the
+// commit that writes a row is an upsert. A run starting exactly on an existing
+// row's offset therefore REPLACES that row rather than superseding it: the row
+// is gone before the run-end reap ever lists the manifest, and everything it
+// claimed past the run's end is left with no cover at all.
+//
+// The closure calls PreserveClobberedRow once per run, before the run is
+// packed and so while the row still exists, naming the run's final bounds and
+// the ranges past its end that are still OWED. The sink re-keys whatever the
+// row about to be replaced still owns, restricted to those ranges.
+//
+// owed is what makes this safe: the manifest alone cannot tell a range that
+// lost its cover from a range that is SUPPOSED to have none. A punched hole
+// must read as zeros, and re-covering it with the replaced row's pre-punch
+// content is its own corruption. journal answers from the interval index,
+// which distinguishes them: owed carries only ranges durable on the remote
+// (evicted or resident), and excludes both holes and ranges still dirty for a
+// later pass.
+type ClobberGuard interface {
+	PreserveClobberedRow(ctx context.Context, id journal.FileID, runStart, runEnd int64, owed [][2]int64) error
+}
+
+// carveCommitLocks serializes a payloadID's metadata commit so the
+// within-file dispatcher's overlapping commits do not read-modify-write the
+// same File.Blocks row at once (badger SSI aborts on that). The block upload
+// runs OUTSIDE this lock, so overlapping successive blocks' uploads — the
+// point of the concurrent dispatcher — is preserved. A fixed stripe array
+// bounds memory: a long-lived share flushing many files never accumulates one
+// mutex per file the way a keyed map would.
+const numCarveCommitStripes = 256
+
+type carveCommitLocks struct {
+	stripes [numCarveCommitStripes]sync.Mutex
+}
+
+// forKey returns the stripe mutex for payloadID, or nil when no stripes are
+// wired (test fixtures that never exercise the concurrent dispatcher). A nil
+// receiver makes the lock a no-op so those callers keep their prior behaviour.
+func (c *carveCommitLocks) forKey(payloadID string) *sync.Mutex {
+	if c == nil {
+		return nil
+	}
+	// FNV-1a over the payloadID, masked to the stripe count (power of two).
+	var h uint32 = 2166136261
+	for i := 0; i < len(payloadID); i++ {
+		h ^= uint32(payloadID[i])
+		h *= 16777619
+	}
+	return &c.stripes[h&(numCarveCommitStripes-1)]
+}
+
+// engineDeduper answers the flush dedup oracle from the per-share synced-hash
+// store: a chunk is durable once its hash has been mirrored to the remote at
+// least once. A true result therefore means "remote-durable", the contract
+// before a record's synced bit may flip.
+type engineDeduper struct {
+	synced metadata.SyncedHashStore
+}
+
+// IsChunkDurable answers through dedupGuard, which records the adoption so a
+// remote sweep running concurrently cannot reclaim the hash the carver is
+// about to point a manifest row at.
+func (d engineDeduper) IsChunkDurable(ctx context.Context, hash ChunkHash) (bool, error) {
+	h := block.ContentHash(hash)
+	return dedupGuard.adopt(h, func() (bool, error) {
+		return d.synced.IsSynced(ctx, h)
+	})
+}
+
+// localDeduper is the dedup oracle for a share with NO remote block store.
+// There is nothing to be "remote-durable" against, so every chunk is treated
+// as novel — the carver packs it and localBlockSink records its FileChunk
+// manifest row.
+type localDeduper struct{}
+
+func (localDeduper) IsChunkDurable(context.Context, ChunkHash) (bool, error) {
+	return false, nil
+}
+
+// The sinks implement BlockSink plus all three optional capabilities, declared
+// here so a signature change on either side fails the build instead of
+// silently skipping the reap, the row-widen and the clobber guard at runtime.
+var (
+	_ BlockSink        = localBlockSink{}
+	_ SupersededReaper = localBlockSink{}
+	_ ManifestRowEnder = localBlockSink{}
+	_ ClobberGuard     = localBlockSink{}
+
+	_ BlockSink        = engineBlockSink{}
+	_ SupersededReaper = engineBlockSink{}
+	_ ManifestRowEnder = engineBlockSink{}
+	_ ClobberGuard     = engineBlockSink{}
+)
+
+// localBlockSink is the sink for a remote-less (local-only) share. The journal
+// owns the bytes durably on local disk, so nothing frames a block or uploads
+// (no PutBlock) — it only records the per-file FileChunk manifest rows (hash +
+// DataSize, no remote block key). Those rows are what clone reads (O(1)
+// reflink of the ChunkRef list) and what snapshot/restore project into
+// FileAttr.Blocks; without them a local-only DrainRollups could not populate
+// the manifest at all.
+//
+// Rows + the File.Blocks projection are written in one txn via the committer.
+// The clone fixture has no committer, but its source has no dirty data so
+// CommitBlock never fires — a nil committer there is inert.
+type localBlockSink struct {
+	committer   blockCommitter
+	commitLocks *carveCommitLocks
+}
+
+// manifestRows projects a flush batch into its per-file FileChunk rows. Data
+// is nil for a deduped chunk, so the row length comes from Size.
+func manifestRows(chunks []CarveChunk) []*block.FileChunk {
+	rows := make([]*block.FileChunk, 0, len(chunks))
+	for i := range chunks {
+		c := chunks[i]
+		size := len(c.Data)
+		if c.Data == nil {
+			size = c.Size
+		}
+		rows = append(rows, &block.FileChunk{
+			ID:       fmt.Sprintf("%s/%d", c.FileID, c.FileOffset),
+			Hash:     block.ContentHash(c.Hash),
+			DataSize: uint32(size),
+			State:    block.BlockStatePending,
+		})
+	}
+	return rows
+}
+
+// commitManifestRows writes a batch's manifest rows and re-materializes
+// File.Blocks in one txn. Merging only this batch's rows keeps a multi-batch
+// flush from re-listing and re-sorting the whole growing manifest per batch;
+// superseded rows are reaped once at run end.
+func commitManifestRows(ctx context.Context, committer blockCommitter, locks *carveCommitLocks, payloadID string, rows []*block.FileChunk) error {
+	if committer == nil {
+		return fmt.Errorf("flush: no transactional committer wired")
+	}
+	// Serialize this file's commits so overlapping dispatcher calls don't abort
+	// on the shared File-row projection under SSI.
+	if mu := locks.forKey(payloadID); mu != nil {
+		mu.Lock()
+		defer mu.Unlock()
+	}
+	return committer.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		return metadata.CommitCarvedChunks(ctx, tx, payloadID, rows)
+	})
+}
+
+func (s localBlockSink) CommitBlock(ctx context.Context, chunks []CarveChunk) error {
+	if len(chunks) == 0 {
+		return nil
+	}
+	return commitManifestRows(ctx, s.committer, s.commitLocks, string(chunks[0].FileID), manifestRows(chunks))
+}
+
+// preserveClobberedRow implements the optional clobber guard: before a run
+// whose first fresh chunk lands on an existing row's key replaces that row,
+// keep whatever it still owns past the run's end, over the ranges journal
+// reports as still owed. A nil committer (the clone fixture) has no manifest
+// to keep.
+func preserveClobberedRow(
+	ctx context.Context,
+	committer blockCommitter,
+	locks *carveCommitLocks,
+	payloadID string,
+	runStart, runEnd int64,
+	owed [][2]int64,
+) error {
+	if committer == nil {
+		return nil
+	}
+	// Same File-row serialization as the commit path: this writes manifest rows
+	// and re-projects File.Blocks, so it races the same way under SSI.
+	if mu := locks.forKey(payloadID); mu != nil {
+		mu.Lock()
+		defer mu.Unlock()
+	}
+	return committer.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		return metadata.PreserveClobberedRow(ctx, tx, payloadID, runStart, runEnd, owed)
+	})
+}
+
+func (s localBlockSink) PreserveClobberedRow(ctx context.Context, id journal.FileID, runStart, runEnd int64, owed [][2]int64) error {
+	return preserveClobberedRow(ctx, s.committer, s.commitLocks, string(id), runStart, runEnd, owed)
+}
+
+func (s engineBlockSink) PreserveClobberedRow(ctx context.Context, id journal.FileID, runStart, runEnd int64, owed [][2]int64) error {
+	return preserveClobberedRow(ctx, s.committer, s.commitLocks, string(id), runStart, runEnd, owed)
+}
+
+// ReapSupersededManifest implements the optional pass-end reap: once a flush
+// pass's rows are all committed, delete the manifest rows they superseded so
+// the per-file manifest tiles [0,size) with no stale straddler or gap. A nil
+// committer (the clone fixture) has no manifest to reap.
+func (s localBlockSink) ReapSupersededManifest(ctx context.Context, id journal.FileID, spans [][2]int64, newOffsets map[int64]struct{}) error {
+	if s.committer == nil {
+		return nil
+	}
+	return reapSupersededManifest(ctx, s.committer, s.commitLocks, string(id), spans, newOffsets)
+}
+
+// ManifestRowEndAfter answers the run-extension query: how far the manifest
+// coverage straddling off reaches, so a run does not stop inside a row it is
+// about to supersede. A nil committer (the clone fixture) has no manifest, so
+// the run stands as offered.
+func (s localBlockSink) ManifestRowEndAfter(ctx context.Context, id journal.FileID, off int64) (int64, error) {
+	if s.committer == nil {
+		return off, nil
+	}
+	return manifestRowEndAfter(ctx, s.committer, string(id), off)
+}
+
+// ManifestRowEndAfter answers the run-extension query for the remote-backed
+// sink.
+func (s engineBlockSink) ManifestRowEndAfter(ctx context.Context, id journal.FileID, off int64) (int64, error) {
+	return manifestRowEndAfter(ctx, s.committer, string(id), off)
+}
+
+// manifestRowEndAfter runs the straddle lookup in a transaction, so it reads
+// the same manifest the reap will mutate.
+func manifestRowEndAfter(ctx context.Context, c blockCommitter, payloadID string, off int64) (int64, error) {
+	end := off
+	err := c.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		var err error
+		end, err = metadata.ManifestRowEndAfter(ctx, tx, payloadID, off)
+		return err
+	})
+	return end, err
+}
+
+// reapSupersededManifest runs the pass-end reap under the same per-file lock
+// CommitBlock takes, since both end in a read-modify-write of the file's
+// File.Blocks row and would otherwise abort each other under badger's SSI.
+func reapSupersededManifest(ctx context.Context, c blockCommitter, locks *carveCommitLocks, payloadID string, spans [][2]int64, newOffsets map[int64]struct{}) error {
+	if mu := locks.forKey(payloadID); mu != nil {
+		mu.Lock()
+		defer mu.Unlock()
+	}
+	return c.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		return metadata.ReapSupersededManifest(ctx, tx, payloadID, spans, newOffsets)
+	})
+}
+
+// ReapSupersededManifest implements the optional pass-end reap for the
+// remote-backed sink: delete the manifest rows the flush pass superseded,
+// atomic with a re-projection of File.Blocks.
+func (s engineBlockSink) ReapSupersededManifest(ctx context.Context, id journal.FileID, spans [][2]int64, newOffsets map[int64]struct{}) error {
+	return reapSupersededManifest(ctx, s.committer, s.commitLocks, string(id), spans, newOffsets)
+}
+
+// engineBlockSink is the production sink: it seals each carved chunk, frames
+// them into one block via blockcodec, uploads the block with PutBlock, and
+// atomically commits the block record + synced locators + per-file manifest
+// rows.
+type engineBlockSink struct {
+	sealer      remote.ChunkSealer
+	rbs         remote.RemoteBlockStore
+	committer   blockCommitter
+	commitLocks *carveCommitLocks
+	// onBlockCommitted reports each block as it lands, carrying the block's
+	// uploaded byte count. Reporting here rather than after a flush pass
+	// returns is what makes the count advance *during* a long flush: the drain
+	// path force-flushes in one call that can run for many minutes, and its
+	// supervisor reads these counters as a liveness signal. Nil in fixtures
+	// that don't care.
+	onBlockCommitted func(bytes int64)
+}
+
+func (s engineBlockSink) CommitBlock(ctx context.Context, chunks []CarveChunk) error {
+	if len(chunks) == 0 {
+		return nil
+	}
+
+	// Rows cover the whole batch; only chunks carrying bytes are framed and
+	// uploaded. A deduped chunk is already remote-durable, so its row is all
+	// that is missing — and it must land, or the run-end reap leaves the range
+	// with no manifest coverage.
+	fileChunks := manifestRows(chunks)
+	var rawBytes int64
+	novel := 0
+	for i := range chunks {
+		if chunks[i].Data != nil {
+			novel++
+			rawBytes += int64(len(chunks[i].Data))
+		}
+	}
+	if novel == 0 {
+		return commitManifestRows(ctx, s.committer, s.commitLocks, string(chunks[0].FileID), fileChunks)
+	}
+
+	blockID, err := newBlockID()
+	if err != nil {
+		return err
+	}
+
+	var buf bytes.Buffer
+	// Pre-size so the block lands in one backing array: raw bytes plus per-chunk
+	// codec/seal headroom. Best-effort — skipped on an absurd size rather than
+	// risk a negative int conversion.
+	if grow := rawBytes + int64(novel)*256 + 512; grow > 0 && grow <= math.MaxInt {
+		buf.Grow(int(grow))
+	}
+	// nil header-sealer: bodies are sealed per-chunk below, matching the carver.
+	builder, err := blockcodec.NewBuilder(&buf, blockID, nil)
+	if err != nil {
+		return fmt.Errorf("flush: new builder: %w", err)
+	}
+
+	commits := make([]block.BlockChunkCommit, 0, novel)
+	for i := range chunks {
+		c := chunks[i]
+		if c.Data == nil {
+			continue // deduped: manifest row only, nothing to frame
+		}
+		h := block.ContentHash(c.Hash)
+
+		wire := c.Data
+		if s.sealer != nil {
+			wire, err = s.sealer.SealChunk(ctx, h, wire)
+			if err != nil {
+				return fmt.Errorf("flush: seal chunk %s: %w", h, err)
+			}
+		}
+		loc, err := builder.Add(h, wire)
+		if err != nil {
+			return fmt.Errorf("flush: append chunk %s: %w", h, err)
+		}
+		commits = append(commits, block.BlockChunkCommit{Hash: h, Remote: loc})
+	}
+	if _, err := builder.Finish(); err != nil {
+		return fmt.Errorf("flush: finish block: %w", err)
+	}
+
+	blockBytes := buf.Bytes()
+	blockHash := block.ContentHash(blake3.Sum256(blockBytes))
+
+	// PutBlock first: a crash before the commit leaves an orphan block (GC
+	// reclaims it), never an unbacked record.
+	if err := s.rbs.PutBlock(ctx, blockID, bytes.NewReader(blockBytes)); err != nil {
+		return fmt.Errorf("flush: put block %s: %w", blockID, err)
+	}
+
+	rec := block.BlockRecord{
+		BlockID:        blockID,
+		BlockHash:      blockHash,
+		Length:         int64(len(blockBytes)),
+		LiveChunkCount: uint32(len(commits)),
+		SyncState:      block.BlockStateRemote,
+	}
+	// Only the metadata commit is serialized per file (the shared File-row
+	// projection under SSI); the PutBlock upload above ran concurrently with
+	// the next block's, which is the whole point of the overlapping
+	// dispatcher.
+	if err := s.commit(ctx, string(chunks[0].FileID), rec, commits, fileChunks); err != nil {
+		return fmt.Errorf("flush: commit block %s: %w", blockID, err)
+	}
+	if s.onBlockCommitted != nil {
+		s.onBlockCommitted(int64(len(blockBytes)))
+	}
+	return nil
+}
+
+// commit writes one block's record + locators + manifest rows, serialized per
+// file on the shared File-row projection under SSI.
+func (s engineBlockSink) commit(ctx context.Context, payloadID string, rec block.BlockRecord, commits []block.BlockChunkCommit, fileChunks []*block.FileChunk) error {
+	if mu := s.commitLocks.forKey(payloadID); mu != nil {
+		mu.Lock()
+		defer mu.Unlock()
+	}
+	return metadata.DefaultCommitBlock(ctx, s.committer, rec, commits, fileChunks)
+}
+
 // Flush ensures all dirty data for a payload is persisted by delegating
-// to the syncer's carve drain. CAS StoreChunk already dedups physically
+// to the syncer's flush drain. CAS StoreChunk already dedups physically
 // by content hash, so no separate file-level dedup hook runs here.
 //
 // Flush is the single COMMIT/CLOSE seam for every protocol (NFSv3 COMMIT,
@@ -18,7 +465,7 @@ import (
 // the append-log fsync, so this is where that fsync is paid: SyncPayload
 // makes the payload's page-cache-resident records durable BEFORE the syncer
 // drain and BEFORE we report success. A fsync failure aborts the flush so the
-// durability point never falsely acks (PR3).
+// durability point never falsely acks.
 func (bs *Store) Flush(ctx context.Context, payloadID string) (*block.FlushResult, error) {
 	if err := bs.enter(); err != nil {
 		return nil, err
@@ -31,46 +478,46 @@ func (bs *Store) Flush(ctx context.Context, payloadID string) (*block.FlushResul
 	// A durable local store already makes the payload crash-safe at this point,
 	// so under the default (async-remote) policy the ack must NOT block on the
 	// remote mirror — that is exactly what common.CommitBlockStore documents.
-	// Carving to the remote synchronously here turned every FILE_SYNC/DATA_SYNC
+	// Flushing to the remote synchronously here turned every FILE_SYNC/DATA_SYNC
 	// WRITE into an inline S3 PutObject the reply waited on: multi-second per-op
-	// stalls at ~3% CPU (#1621). The background carve loop mirrors the data; a
-	// strict share (require_durable_commit) still drains inline below.
+	// stalls at ~3% CPU. The background flush loop mirrors the data; a strict
+	// share (require_durable_commit) still drains inline below.
 	//
 	// Still perform the per-payload FileChunk metadata quiesce that syncer.Flush
 	// would (persist queued manifest updates so reads and restart-recovery see
-	// the authoritative manifest) — only the remote carve drain is skipped.
+	// the authoritative manifest) — only the remote flush drain is skipped.
 	if bs.LocalDurable() && !bs.RequireDurableCommit() {
 		return &block.FlushResult{Finalized: false}, nil
 	}
-	// Delegate to the syncer's carve drain.
+	// Delegate to the syncer's flush drain.
 	return bs.syncer.Flush(ctx, payloadID)
 }
 
-// DrainAllUploads forces every dirty payload through rollup and then waits for
-// all pending remote uploads to complete.
+// DrainAllUploads forces every dirty payload through the flush drain and then
+// waits for all pending remote uploads to complete.
 //
-// Rollup must run first: it is what turns still-dirty append-log data into CAS
-// chunks, which is the only thing the carver packs to the remote. Draining
-// the syncer alone leaves any data still inside the rollup stabilization window
+// The force-flush must run first: it is what turns still-dirty journal data
+// into CAS chunks, which is the only thing the flush packs to the remote.
+// Draining the syncer alone leaves any data still inside the journal
 // un-chunked, so it never reaches the remote and the caller's durability
-// guarantee silently does not hold (see DrainRollups). The snapshot path rolls
-// up explicitly before calling this; the standalone `system drain-uploads` path
-// relies on the rollup here.
+// guarantee silently does not hold. The snapshot path rolls up explicitly
+// before calling this; the standalone `system drain-uploads` path relies on
+// the flush here.
 func (bs *Store) DrainAllUploads(ctx context.Context) error {
 	if err := bs.enter(); err != nil {
 		return err
 	}
 	defer bs.closeMu.RUnlock()
-	// Force-carve every dirty range to the remote (bypassing the age/size
+	// Force-flush every dirty range to the remote (bypassing the age/size
 	// batching gate), then wait for the uploads to settle.
-	if _, err := bs.local.Carve(ctx, journal.CarveOptions{Force: true}); err != nil {
+	if err := bs.local.Flush(ctx, journal.FileID(""), journal.FlushOptions{Force: true}, nil); err != nil {
 		return err
 	}
 	return bs.syncer.DrainAllUploads(ctx)
 }
 
 // SyncCounts returns the lifetime (completed, failed) sync counts for this
-// store: chunks that reached the remote and failed carve upload attempts.
+// store: chunks that reached the remote and failed flush upload attempts.
 // Both are monotonic. The drain-uploads idle watchdog reads them as a
 // progress signal. Returns (0, 0) when the store is closing or has no remote
 // (local-only stores never sync, so the counters are meaningless — matching
@@ -86,20 +533,18 @@ func (bs *Store) SyncCounts() (completed, failed int) {
 	return bs.syncer.SyncCounts()
 }
 
-// DrainRollups forces the local store to roll up every currently-dirty
-// payload into CAS + the FileChunk manifest, bypassing the
-// stabilization-window gate. The snapshot-create orchestration calls this
-// BEFORE the metadata Backup() so the dump observes a fully-populated
-// FileAttr.Blocks (and therefore a non-empty snapshot manifest). It must
-// run before DrainAllUploads — rollup is what produces the CAS chunks the
-// carver then packs to the remote.
+// DrainRollups forces the local store to flush every currently-dirty payload
+// into CAS + the FileChunk manifest, bypassing the batching gate. The
+// snapshot-create orchestration calls this BEFORE the metadata Backup() so
+// the dump observes a fully-populated FileAttr.Blocks (and therefore a
+// non-empty snapshot manifest). It must run before DrainAllUploads — the
+// flush is what produces the CAS chunks that then pack to the remote.
 func (bs *Store) DrainRollups(ctx context.Context) error {
 	if err := bs.enter(); err != nil {
 		return err
 	}
 	defer bs.closeMu.RUnlock()
-	_, err := bs.local.Carve(ctx, journal.CarveOptions{Force: true})
-	return err
+	return bs.local.Flush(ctx, journal.FileID(""), journal.FlushOptions{Force: true}, nil)
 }
 
 // ColdSeed is one payload's worth of work for SeedColdBatch: the payload ID and

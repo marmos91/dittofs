@@ -10,6 +10,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/chunker"
 	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/block/local"
 	"github.com/marmos91/dittofs/pkg/block/remote"
@@ -288,13 +289,6 @@ func (m *RemoteSync) recomputeCarveActive() {
 		m.blockCommitter != nil &&
 		m.hasRemote.Load()
 	m.carveActive.Store(active)
-	// Wire the journal's carve collaborators as soon as every dep is present.
-	// Done here (not only in Start) so ManualSync fixtures — which drive carve
-	// via Flush/SyncNow and never launch the dispatcher — still get a wired
-	// journal. Guarded + one-shot inside wireCarveTargets. Caller holds m.mu.
-	if active {
-		m.wireCarveTargets()
-	}
 }
 
 // SetHealthCallback sets the callback invoked when the remote store health state changes.
@@ -429,11 +423,13 @@ func (m *RemoteSync) Flush(ctx context.Context, payloadID string) (*block.FlushR
 		return &block.FlushResult{Finalized: false}, nil
 	}
 
-	// Force-carve this file's dirty ranges into remote blocks and commit them
-	// (the BlockSink writes the FileChunk manifest rows in the same txn). The
-	// journal serializes carve per shard, so the explicit drain and the
-	// background dispatcher never pack the same range twice.
-	if _, err := m.local.Carve(ctx, journal.CarveOptions{FileID: journal.FileID(payloadID), Force: true}); err != nil {
+	// Force-flush this file's dirty ranges into remote blocks and commit them
+	// (the sink writes the FileChunk manifest rows in the same txn). The
+	// journal serializes flush passes per shard, so the explicit drain and the
+	// background dispatcher never pack the same range twice. fn + AfterFile
+	// are built fresh per call (journal's C9 caller obligation).
+	fn, reap := m.flushFn()
+	if err := m.local.Flush(ctx, journal.FileID(payloadID), journal.FlushOptions{Force: true, AfterFile: reap}, fn); err != nil {
 		return nil, err
 	}
 	return &block.FlushResult{Finalized: true}, nil
@@ -824,53 +820,59 @@ func (m *RemoteSync) adaptiveUploadTick(intervalSec float64) {
 	}
 }
 
-// wireCarveTargets injects the journal's carve collaborators (the remote-durable
-// dedup oracle and the block sink that seals/frames/uploads/commits) built from
-// the syncer's wired remote/committer/synced deps. One-shot, guarded by m.mu;
-// safe to call again from a late SetRemoteStore attach.
-func (m *RemoteSync) wireCarveTargets() {
-	if m.carveTargetsWired {
-		return
+// flushFn builds the fn + AfterFile pair one Flush pass calls back into: the
+// carver assembly (fresh per call — the C9 caller obligation), the dedup Skip
+// hook, the sink that seals/frames/uploads/commits, and the pass-end manifest
+// reap (passed as FlushOptions.AfterFile, which journal calls under the
+// shard's flush lock after the last flip). Built from the syncer's wired
+// remote/committer/synced deps; the chunking profile comes from the local
+// store, which owns it.
+func (m *RemoteSync) flushFn() (journal.FlushFunc, func(context.Context, journal.FileID) error) {
+	var params chunker.Params
+	var window int
+	if jp, ok := m.local.(interface {
+		ChunkParams() chunker.Params
+		UploadConcurrency() int
+	}); ok {
+		params, window = jp.ChunkParams(), jp.UploadConcurrency()
+	}
+	if window <= 0 {
+		window = defaultBlockUploadWindow
 	}
 	if m.remoteBlockStore != nil {
-		if m.blockCommitter == nil || m.syncedHashStore == nil {
-			return // remote configured but deps not fully wired yet
-		}
 		deduper := engineDeduper{synced: m.syncedHashStore}
 		sink := engineBlockSink{sealer: m.chunkSealer, rbs: m.remoteBlockStore, committer: m.blockCommitter, commitLocks: &carveCommitLocks{}, onBlockCommitted: m.noteBlockCommitted}
-		m.local.SetCarveTargets(deduper, sink)
-		m.carveTargetsWired = true
-		return
+		return newFlushClosure(m.local, params, paramsBlockSize(params), window, deduper, sink)
 	}
-	// Local-only (no remote block store): carve cannot upload, but it must still
-	// populate the FileChunk manifest (and project File.Blocks) so a local-only
-	// DrainRollups is not a hard error and clone/snapshot/restore resolve the
-	// file's chunks. Only wired from ensureCarveWired at Start, once we know no
-	// remote is coming — never from recomputeCarveActive (which gates on a
-	// present remote). blockCommitter is nil only for the clone fixture, whose
-	// source has no dirty data so CommitBlock never fires.
-	m.local.SetCarveTargets(localDeduper{}, localBlockSink{committer: m.blockCommitter, commitLocks: &carveCommitLocks{}})
-	m.carveTargetsWired = true
+	// Local-only (no remote block store): the flush cannot upload, but it must
+	// still populate the FileChunk manifest (and project File.Blocks) so a
+	// local-only DrainRollups is not a hard error and clone/snapshot/restore
+	// resolve the file's chunks. blockCommitter is nil only for the clone
+	// fixture, whose source has no dirty data so CommitBlock never fires.
+	sink := localBlockSink{committer: m.blockCommitter, commitLocks: &carveCommitLocks{}}
+	return newFlushClosure(m.local, params, paramsBlockSize(params), window, localDeduper{}, sink)
 }
 
-// ensureCarveWired wires the carve collaborators at Start, after every Set*
-// dependency call has run. For a remote-backed share this is a no-op (already
-// wired via recomputeCarveActive); for a local-only share it installs the
-// remote-less carve sink so DrainRollups/Flush populate the FileChunk manifest.
-func (m *RemoteSync) ensureCarveWired() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.wireCarveTargets()
+// paramsBlockSize sizes the block target from the share's chunk profile: 256
+// average chunks per block, the same ratio the journal's historical
+// CarveBlockSize default carried. A store with no chunking policy falls back
+// to the historical 4 MiB default.
+func paramsBlockSize(params chunker.Params) int64 {
+	if params.Avg <= 0 {
+		return 4 << 20
+	}
+	return int64(params.Avg) * 256
 }
 
-// SyncNow triggers an immediate carve drain of every locally stored chunk
+// SyncNow triggers an immediate flush drain of every locally stored chunk
 // that has not yet been committed into a remote block. Blocks until the pass
 // completes or the context is cancelled. Returns nil on full success,
-// ctx.Err() on cancellation, or a wrapped error from the carve pass. Callers
+// ctx.Err() on cancellation, or a wrapped error from the flush pass. Callers
 // such as the REST /drain-uploads endpoint and Close() rely on this signal.
 //
-// Serializes against the background carve dispatcher via carveMu (inside
-// carveFlush), so the explicit drain never packs the same chunk twice.
+// Serializes against the background flush dispatcher via the shard's flush
+// lock (inside journal.Flush), so the explicit drain never packs the same
+// chunk twice.
 func (m *RemoteSync) SyncNow(ctx context.Context) error {
 	if m.remoteStore == nil {
 		return nil
@@ -885,8 +887,14 @@ func (m *RemoteSync) SyncNow(ctx context.Context) error {
 		return nil
 	}
 
-	_, err := m.local.Carve(ctx, journal.CarveOptions{Force: true})
-	return err
+	fn, reap := m.flushFn()
+	var firstErr error
+	for _, id := range m.local.ListFiles(ctx) {
+		if err := m.local.Flush(ctx, id, journal.FlushOptions{Force: true, AfterFile: reap}, fn); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 // recoverStaleSyncing requeues blocks left in Syncing by a previous

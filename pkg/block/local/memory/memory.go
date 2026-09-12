@@ -4,6 +4,7 @@
 package memory
 
 import (
+	"bytes"
 	"context"
 	"sync"
 	"sync/atomic"
@@ -206,12 +207,111 @@ func (s *MemoryStore) ListFiles(context.Context) []journal.FileID {
 	return out
 }
 
-// SetCarveTargets injects the carve collaborators.
-func (s *MemoryStore) SetCarveTargets(d journal.Deduper, sink journal.BlockSink) {
+// Flush packs each dirty file's bytes into the sink. id scopes it to one file
+// (the empty id flushes every file with pending dirty bytes); fn drives the
+// packing — nil means the fixture's own whole-file chunk.
+func (s *MemoryStore) Flush(ctx context.Context, id journal.FileID, opts journal.FlushOptions, fn journal.FlushFunc) (err error) {
+	s.mu.RLock()
+	d, sink := s.deduper, s.sink
+	var ids []string
+	if id != "" {
+		if f := s.files[string(id)]; f != nil && f.unsynced > 0 {
+			ids = []string{string(id)}
+		}
+	} else {
+		for fid, f := range s.files {
+			if f.unsynced > 0 {
+				ids = append(ids, fid)
+			}
+		}
+	}
+	s.mu.RUnlock()
+	if len(ids) == 0 {
+		return nil
+	}
+
+	var firstErr error
+	for _, fid := range ids {
+		s.mu.RLock()
+		f := s.files[fid]
+		var data []byte
+		if f != nil {
+			data = append([]byte(nil), f.buf...)
+		}
+		s.mu.RUnlock()
+		if len(data) == 0 {
+			continue
+		}
+		if fn != nil {
+			// Drive the caller's closure: offer the whole dirty file as one
+			// run and flip whatever it reports durable.
+			extents, ferr := fn(ctx, journal.Run{
+				ID:       journal.FileID(fid),
+				Extent:   journal.Extent{Off: 0, Len: int64(len(data)), State: journal.StateDirty},
+				Final:    true,
+				ReaderAt: bytes.NewReader(data),
+			})
+			if ferr != nil && firstErr == nil {
+				firstErr = ferr
+				continue
+			}
+			for _, e := range extents {
+				if end := e.Off + e.Len; end <= int64(len(data)) {
+					s.markCarvedRange(fid, e.Off, end)
+				}
+			}
+			continue
+		}
+		if err := s.packWhole(ctx, d, sink, fid, data); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// packWhole packs a file's bytes as ONE whole-file chunk at offset 0 (the
+// fixture has no cross-store dedup contract, so chunk boundaries don't matter;
+// see the ponytail note on Carve) and flips the file's unsynced charge.
+func (s *MemoryStore) packWhole(ctx context.Context, d journal.Deduper, sink journal.BlockSink, fid string, data []byte) error {
+	h := journal.ChunkHash(blake3.Sum256(data))
+	cc := journal.CarveChunk{Hash: h, FileID: journal.FileID(fid), FileOffset: 0, Size: len(data), Data: data}
+	if d != nil {
+		// Already remote-durable: hand the sink a row-only chunk so the manifest
+		// still records it, but upload nothing.
+		if durable, err := d.IsChunkDurable(ctx, h); err == nil && durable {
+			cc.Data = nil
+		}
+	}
+	if sink == nil {
+		return nil
+	}
+	if err := sink.CommitBlock(ctx, []journal.CarveChunk{cc}); err != nil {
+		return err
+	}
+	if cc.Data != nil {
+		s.markCarvedRange(fid, 0, int64(len(data)))
+	} else {
+		s.markCarvedRange(fid, 0, int64(len(data)))
+	}
+	return nil
+}
+
+// markCarvedRange clears the file's unsynced charge over [off, end).
+func (s *MemoryStore) markCarvedRange(fid string, off, end int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.deduper = d
-	s.sink = sink
+	f := s.files[fid]
+	if f == nil {
+		return
+	}
+	n := end - off
+	if n > f.unsynced {
+		n = f.unsynced
+	}
+	if n > 0 {
+		f.unsynced -= n
+		s.unsynced.Add(-n)
+	}
 }
 
 // Carve packs each dirty file's bytes into the sink.

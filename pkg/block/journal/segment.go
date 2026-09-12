@@ -600,7 +600,7 @@ func writeTombstoneRecord(seg *segmentMeta, id FileID, version uint64) (recStart
 // readRecord resolves a segment under the shard lock, then reads and verifies
 // the record at recOff, handing the whole verified record back for the caller to
 // slice. It snapshots the segment fd under the lock and reads unlocked. Carve is
-// its only caller and holds the shard's carveMu, which GC/eviction also hold
+// its only caller and holds the shard's flushMu, which GC/eviction also hold
 // before closing a segment, so the fd cannot close under it. (ReadAt does its
 // own resolve-and-guard — see readAt.)
 func (s *Store) readRecord(sh *shard, segID uint64, recOff int64, id FileID) (record, error) {

@@ -36,13 +36,6 @@ type gatedSink struct {
 	gates map[int64]chan struct{}
 }
 
-var (
-	_ journal.BlockSink        = (*gatedSink)(nil)
-	_ journal.SupersededReaper = (*gatedSink)(nil)
-	_ journal.ManifestRowEnder = (*gatedSink)(nil)
-	_ journal.ClobberGuard     = (*gatedSink)(nil)
-)
-
 func newGatedSink(real engineBlockSink) *gatedSink {
 	return &gatedSink{
 		real:      real,
@@ -69,7 +62,7 @@ func (g *gatedSink) gate(off int64) chan struct{} {
 // release lets the block whose first chunk sits at off proceed into the real sink.
 func (g *gatedSink) release(off int64) { close(g.gate(off)) }
 
-func (g *gatedSink) CommitBlock(ctx context.Context, chunks []journal.CarveChunk) error {
+func (g *gatedSink) CommitBlock(ctx context.Context, chunks []CarveChunk) error {
 	if len(chunks) == 0 {
 		return g.real.CommitBlock(ctx, chunks)
 	}
@@ -160,7 +153,7 @@ func TestCarveFlipsInWatermarkOrderThroughProductionSink(t *testing.T) {
 		committer:   f.syncer.blockCommitter,
 		commitLocks: &carveCommitLocks{},
 	})
-	f.local.SetCarveTargets(engineDeduper{synced: f.syncer.syncedHashStore}, gated)
+	closure, reap := newFlushClosure(f.local, chunker.Params{Min: 4 << 10, Avg: 8 << 10, Max: 16 << 10}, blockSize, 4, engineDeduper{synced: f.syncer.syncedHashStore}, gated)
 
 	// Distinct random payloads: identical bytes would dedup into one block and
 	// there would be nothing to order.
@@ -183,7 +176,7 @@ func TestCarveFlipsInWatermarkOrderThroughProductionSink(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := f.local.Carve(ctx, journal.CarveOptions{FileID: carveFixturePayload, Force: true})
+		err := f.local.Flush(ctx, carveFixturePayload, journal.FlushOptions{Force: true, AfterFile: reap}, closure)
 		done <- err
 	}()
 

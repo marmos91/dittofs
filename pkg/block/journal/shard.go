@@ -81,11 +81,11 @@ type shard struct {
 	// write-back failure it drops those pages, and the next fsync can return
 	// success without them ever having reached the device.
 	syncFailed atomic.Bool
-	// carveMu serializes a shard's carve passes: the background flush and an
-	// explicit Carve() never build a block from the same records twice. It is
-	// distinct from mu, which serializes appends and index mutation — carve holds
-	// carveMu across its whole pass but only grabs mu briefly to snapshot and flip.
-	carveMu sync.Mutex
+	// flushMu serializes a shard's flush passes: the background pass and an
+	// explicit Flush never offer the same records twice. It is distinct from
+	// mu, which serializes appends and index mutation — a flush holds flushMu
+	// across its whole pass but only grabs mu briefly to snapshot and flip.
+	flushMu sync.Mutex
 
 	// Group-commit state (all under commitMu). Coalesces the burst of concurrent
 	// Commits a high-iodepth durable-write workload issues (fio rand-write-4k runs

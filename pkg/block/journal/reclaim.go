@@ -229,13 +229,13 @@ func evictable(seg *segmentMeta) bool {
 // segment untouched; at worst it left markers for bytes that are still local, which
 // the persist-first order already tolerates.
 //
-// carveMu is held for the same reason reclaimEmptied and the GC pass hold it, and
+// flushMu is held for the same reason reclaimEmptied and the GC pass hold it, and
 // the segment-busy claim does not cover: a carve pass flips its records synced as
 // each block commits, but the manifest rows those fresh rows superseded are reaped
 // only once it has packed the whole file. A record that flipped in that window is
 // evictable while stale rows still overlap its range, and coverage resolves to the
 // greatest covering start — so cold-marking it there lets a stale row starting
-// later than a fresh one serve old bytes on the cold read. Holding carveMu also
+// later than a fresh one serve old bytes on the cold read. Holding flushMu also
 // keeps the segment's fd open under carve's unlocked preads, which readRecord
 // already documents as relying on it.
 //
@@ -243,8 +243,8 @@ func evictable(seg *segmentMeta) bool {
 // than skipping the shard; make it a TryLock that moves on to the next shard's
 // coldest segment if a writer is ever seen stalling behind a live carve.
 func (s *Store) evictSegment(sh *shard, seg *segmentMeta) (freed int64, err error) {
-	sh.carveMu.Lock()
-	defer sh.carveMu.Unlock()
+	sh.flushMu.Lock()
+	defer sh.flushMu.Unlock()
 
 	defer func() {
 		if err != nil {
@@ -449,13 +449,13 @@ func (s *Store) retireSegment(sh *shard, seg *segmentMeta) (int64, error) {
 // segment (a live snapshot's watermark) is left for the snapshot to release. A
 // fully-dead, fully-synced active segment is sealed first — the same force-seal
 // primitive the explicit evict path uses — so the reclaim tail can drop it.
-// carveMu is held so a concurrent carve can't flip synced bits on a segment
+// flushMu is held so a concurrent carve can't flip synced bits on a segment
 // mid-retire; sealed victims are claimed via busy so eviction/GC never race the
 // same retire. Best-effort: a retire failure is returned (and its disk stays
 // counted, reclaimed later by the recovery sweep) but never wedges the unlink.
 func (s *Store) reclaimEmptied(sh *shard) error {
-	sh.carveMu.Lock()
-	defer sh.carveMu.Unlock()
+	sh.flushMu.Lock()
+	defer sh.flushMu.Unlock()
 
 	sh.mu.Lock()
 	// Segments still backing at least one live (non-cold) interval must survive.
@@ -561,12 +561,12 @@ func (s *Store) gc(ctx context.Context, opts gcOptions) (gcResult, error) {
 }
 
 // gcShard repacks a shard's qualifying sealed segments. It holds the shard's
-// carveMu for the whole pass so carve — which flips synced bits by record offset
+// flushMu for the whole pass so carve — which flips synced bits by record offset
 // — never runs against a segment repack is relocating (the same segment-busy
 // discipline eviction takes).
 func (s *Store) gcShard(ctx context.Context, sh *shard, opts gcOptions) (reclaimed int64, count int, err error) {
-	sh.carveMu.Lock()
-	defer sh.carveMu.Unlock()
+	sh.flushMu.Lock()
+	defer sh.flushMu.Unlock()
 
 	// Live bytes per segment are summed once for the whole pass instead of per
 	// victim: rebuilding them means walking every interval of every file under

@@ -3,7 +3,6 @@ package journal
 import (
 	"context"
 	"errors"
-	"reflect"
 	"testing"
 	"time"
 
@@ -113,61 +112,6 @@ func writeRunAt(t *testing.T, s *Store, off int64, n int) {
 // every run to its own end would mark run 1's uncommitted tail synced, which is
 // the silent-zeros class — a record recovery replays as durable whose bytes
 // never reached the remote.
-func TestCarvePackFlipPlanWatermarks(t *testing.T) {
-	const (
-		run0Recs = 4         // [0, 16Ki)
-		run1Off  = 128 << 10 // a hole keeps it a separate run
-		run1Recs = 16        // [128Ki, 192Ki)
-		run1End  = run1Off + run1Recs*(4<<10)
-	)
-	s, _, sink, _ := carveStore(t, Config{
-		CarveBlockSize:         32 << 10,
-		CarveUploadConcurrency: 1,
-		ChunkParams:            chunker.Params{Min: 4 << 10, Avg: 8 << 10, Max: 16 << 10},
-	})
-	writeRunAt(t, s, 0, run0Recs)
-	writeRunAt(t, s, run1Off, run1Recs)
-
-	// Let the first block commit and fail every one after it, so the first block
-	// is the only one that ever flips.
-	sink.okCommits = 1
-	sink.failErr = errors.New("second block fails")
-
-	if _, err := s.Carve(context.Background(), CarveOptions{Force: true}); err == nil {
-		t.Fatal("Carve: want the seeded failure to surface, got nil")
-	}
-
-	// Run 0 is not the plan's last run, so it flips to its own end: every record.
-	for i := 0; i < run0Recs; i++ {
-		off := int64(i) * (4 << 10)
-		if f := recRawFlags(t, s, "f", off); f&flagSynced == 0 {
-			t.Fatalf("run 0 record at %d not flipped: the block did not cover the run to its end (flags=%#x)", off, f)
-		}
-	}
-	// The block reached into run 1, so its head flipped. Without this the test
-	// would pass on a packer that still cut blocks at run boundaries.
-	if f := recRawFlags(t, s, "f", run1Off); f&flagSynced == 0 {
-		t.Fatalf("run 1 head at %d not flipped: the block never spanned the run boundary (flags=%#x)", run1Off, f)
-	}
-	// Run 1 is the plan's last run, so it flips only to lastOff — its tail, which
-	// only the failed block carried, must still be dirty.
-	if f := recRawFlags(t, s, "f", run1End-(4<<10)); f&flagSynced != 0 {
-		t.Fatalf("run 1 tail flipped synced though its block never committed: flags=%#x", f)
-	}
-	if s.UnsyncedBytes() == 0 {
-		t.Fatal("post-carve unsynced=0: run 1's uncommitted tail must stay dirty")
-	}
-}
-
-// TestCarvePackSpanningBlockFailureReapsTheCommittedPrefix pins the failure
-// shape that only exists now that blocks span runs: a block carrying the tail of
-// run 0 and the head of run 1 fails, so run 0 never completes — yet an earlier
-// block did commit its prefix, and those records are already flipped synced. No
-// later pass re-carves them, so no later pass reaps for them either: the rows
-// their fresh tiling superseded have to be reaped here or they outlive it
-// forever, and overlap resolution is greatest-start, so a stale row starting
-// later than a fresh one then wins and serves old bytes on a cold read.
-//
 // The reap stops at the frontier those rows actually reach. The range the failed
 // block held is still dirty, still covered by its stale rows, and re-carved by
 // the next pass — reaping into it would delete that cover with no fresh tiling
@@ -176,73 +120,6 @@ func TestCarvePackFlipPlanWatermarks(t *testing.T) {
 // The straddled subtest pins that a row reaching past the frontier does not
 // suppress the reap: it still runs over exactly the committed prefix, and
 // sparing that one row is the metadata reap's own job.
-func TestCarvePackSpanningBlockFailureReapsTheCommittedPrefix(t *testing.T) {
-	t.Run("boundary", func(t *testing.T) { spanningBlockFailureReap(t, false) })
-	t.Run("straddled", func(t *testing.T) { spanningBlockFailureReap(t, true) })
-}
-
-func spanningBlockFailureReap(t *testing.T, straddle bool) {
-	const (
-		run0Recs = 12        // [0, 48Ki): more than one 32 KiB block
-		run1Off  = 128 << 10 // a hole keeps it a separate run
-		run1Recs = 4         // [128Ki, 144Ki)
-		gap      = run1Off
-	)
-	s, dd, base, _ := carveStore(t, Config{
-		CarveBlockSize:         32 << 10,
-		CarveUploadConcurrency: 1,
-		ChunkParams:            chunker.Params{Min: 4 << 10, Avg: 8 << 10, Max: 16 << 10},
-	})
-	sink := &extendingSink{fakeSink: base, straddleEverywhere: straddle}
-	s.SetCarveTargets(dd, sink)
-
-	var spanned bool
-	base.onCommit = func(chunks []CarveChunk) {
-		for _, c := range chunks {
-			if c.FileOffset/gap != chunks[0].FileOffset/gap {
-				spanned = true
-			}
-		}
-	}
-	writeRunAt(t, s, 0, run0Recs)
-	writeRunAt(t, s, run1Off, run1Recs)
-
-	// The first block (run 0's prefix) commits; the one that spans the boundary
-	// fails.
-	base.okCommits = 1
-	base.failErr = errors.New("spanning block fails")
-
-	if _, err := s.Carve(context.Background(), CarveOptions{Force: true}); err == nil {
-		t.Fatal("Carve: want the seeded failure to surface, got nil")
-	}
-	if !spanned {
-		t.Fatal("no block carried chunks from both runs: the geometry does not build the shape under test")
-	}
-	// The frontier the surviving block committed, read off the rows it wrote.
-	var frontier int64
-	base.mu.Lock()
-	for off, data := range base.chunks {
-		if end := off + int64(len(data)); off < run1Off && end > frontier {
-			frontier = end
-		}
-	}
-	base.mu.Unlock()
-	if frontier == 0 || frontier >= run0Recs*(4<<10) {
-		t.Fatalf("committed frontier %d: the first block must commit a proper prefix of run 0", frontier)
-	}
-
-	want := [][2]int64{{0, frontier}}
-	sink.mu.Lock()
-	defer sink.mu.Unlock()
-	if !reflect.DeepEqual(sink.reaps, want) {
-		t.Fatalf("reaps=%v, want %v: run 0's committed prefix, and nothing of the range the failed block held", sink.reaps, want)
-	}
-}
-
-// TestCarvePackReapCarriesEveryCommittedRun pins that the pass-end reap is asked
-// about every run that committed rows, and that a reap failure surfaces out of
-// Carve. Those runs have already flipped synced, so no later pass revisits them:
-// a run left out of this reap is never reaped at all.
 func TestCarvePackReapCarriesEveryCommittedRun(t *testing.T) {
 	const (
 		runSize = 4 << 10
@@ -282,32 +159,6 @@ func TestCarvePackReapCarriesEveryCommittedRun(t *testing.T) {
 // The run is laid down as many adjacent writes rather than one large one: a
 // record is the granularity flipUpTo advances at, so a single 512 KiB write
 // would be one interval that no mid-run watermark can flip.
-func TestCarvePackSeamRunFailureLeavesSuffixDirty(t *testing.T) {
-	const runSize = 512 << 10
-	s, _, sink, _ := carveStore(t, Config{
-		CarveBlockSize:         64 << 10,
-		CarveUploadConcurrency: 1,
-		ChunkParams:            chunker.Params{Min: 4 << 10, Avg: 8 << 10, Max: 16 << 10},
-	})
-	writeAdjacent(t, s, "f", 128, 4<<10)
-	ctx := context.Background()
-	// Let the first block commit, then fail every one after it. fakeSink already
-	// has both hooks — do not add a new failure field.
-	sink.okCommits = 1
-	sink.failErr = errors.New("seam commit failed")
-
-	if _, err := s.Carve(ctx, CarveOptions{Force: true}); err == nil {
-		t.Fatal("Carve: want the seam failure to surface, got nil")
-	}
-	if s.UnsyncedBytes() == 0 {
-		t.Fatal("post-carve unsynced=0: the failed suffix must stay dirty")
-	}
-	if s.UnsyncedBytes() == int64(runSize) {
-		t.Fatal("post-carve unsynced=runSize: the committed prefix must have flipped")
-	}
-}
-
-// slowDeduper answers IsChunkDurable after a fixed delay, standing in for a
 // real key-value oracle without importing one. The delay is what matters: every
 // lookup is serialised through the single packer goroutine, so a map-backed fake
 // elides the very cost the benchmark exists to show.

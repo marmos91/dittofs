@@ -95,18 +95,15 @@ type LocalStore interface {
 	// FileCount reports the number of files with a live local entry.
 	FileCount() int
 
-	// --- Carve (local → remote) ---
+	// --- Flush (local → remote) ---
 
-	// SetCarveTargets injects the carve collaborators (the remote-durable dedup
-	// oracle and the block sink that seals/frames/uploads/commits). Call once
-	// before the first Carve. Backends with no real carve (memory) may store
-	// them and drive them from Carve, or ignore them.
-	SetCarveTargets(deduper journal.Deduper, sink journal.BlockSink)
-
-	// Carve packs eligible files' dirty ranges into remote blocks and flips the
-	// carved records to synced. opts.Force bypasses the age/size batching gate;
-	// opts.FileID (empty = all files) scopes it to one file.
-	Carve(ctx context.Context, opts journal.CarveOptions) (journal.CarveResult, error)
+	// Flush runs one flush pass over a file's dirty ranges: it offers each
+	// contiguous dirty run to fn and flips the fragments fn reports durable.
+	// opts.Force bypasses the age/size batching gate; id scopes it to one file
+	// (the empty id flushes every file with pending dirty bytes via a nil fn
+	// drain). Backends with no real flush (memory) may implement it as a
+	// no-op or drive their own sink from fn.
+	Flush(ctx context.Context, id journal.FileID, opts journal.FlushOptions, fn journal.FlushFunc) error
 
 	// UnsyncedBytes reports dirty bytes not yet carved to the remote store — the
 	// eviction backpressure signal.

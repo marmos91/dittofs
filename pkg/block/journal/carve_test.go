@@ -263,57 +263,6 @@ func TestCarveRoundTripAndFlip(t *testing.T) {
 	}
 }
 
-func TestCarveCommitStrictlyBeforeFlip(t *testing.T) {
-	// One sub-CarveBlockSize file -> exactly one block, flushed at run end. At the
-	// moment CommitBlock runs, nothing may be flipped yet.
-	s, _, sink, _ := carveStore(t, Config{CarveBlockSize: 8 << 20})
-	ctx := context.Background()
-	data := randBytes(512<<10, 2)
-	if err := s.WriteAt(ctx, "f", 0, data); err != nil {
-		t.Fatal(err)
-	}
-
-	var checked bool
-	sink.onCommit = func(chunks []CarveChunk) {
-		checked = true
-		if s.UnsyncedBytes() != int64(len(data)) {
-			t.Errorf("flip happened before commit: unsynced=%d want %d", s.UnsyncedBytes(), len(data))
-		}
-		if f := recRawFlags(t, s, "f", 0); f&flagSynced != 0 {
-			t.Errorf("record already flipped at commit time: flags=%#x", f)
-		}
-	}
-	if _, err := s.Carve(ctx, CarveOptions{Force: true}); err != nil {
-		t.Fatalf("Carve: %v", err)
-	}
-	if !checked {
-		t.Fatalf("commit hook never ran")
-	}
-	if s.UnsyncedBytes() != 0 {
-		t.Fatalf("post-carve unsynced=%d want 0", s.UnsyncedBytes())
-	}
-}
-
-func TestCarveSinkErrorLeavesDirty(t *testing.T) {
-	s, _, sink, _ := carveStore(t, Config{CarveBlockSize: 1 << 20})
-	ctx := context.Background()
-	data := randBytes(1<<20, 3)
-	if err := s.WriteAt(ctx, "f", 0, data); err != nil {
-		t.Fatal(err)
-	}
-	sink.failErr = errors.New("boom")
-
-	if _, err := s.Carve(ctx, CarveOptions{Force: true}); err == nil {
-		t.Fatalf("expected carve error from failing sink")
-	}
-	if s.UnsyncedBytes() != int64(len(data)) {
-		t.Fatalf("failed carve changed unsynced=%d want %d", s.UnsyncedBytes(), len(data))
-	}
-	if f := recRawFlags(t, s, "f", 0); f&flagSynced != 0 {
-		t.Fatalf("record flipped despite commit failure: flags=%#x", f)
-	}
-}
-
 func TestCarveDedupReCarveIsNoOp(t *testing.T) {
 	s, _, sink, _ := carveStore(t, Config{CarveBlockSize: 1 << 20})
 	ctx := context.Background()

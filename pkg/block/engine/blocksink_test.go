@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/chunker"
 	"github.com/marmos91/dittofs/pkg/block/journal"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
@@ -17,25 +18,41 @@ import (
 // engineBlockSink, a memory metadata store (committer + synced oracle) and a
 // memory block-keyed remote.
 type seamFixture struct {
-	dir  string
-	ms   *metadatamemory.MemoryMetadataStore
-	mem  *remotememory.Store
-	jrnl *journal.Store
+	dir     string
+	ms      *metadatamemory.MemoryMetadataStore
+	mem     *remotememory.Store
+	jrnl    *journal.Store
+	flushFn func() (journal.FlushFunc, func(context.Context, journal.FileID) error)
 }
 
-func newSeamFixture(t *testing.T, dir string, ms *metadatamemory.MemoryMetadataStore, mem *remotememory.Store, sink journal.BlockSink) *seamFixture {
+func newSeamFixture(t *testing.T, dir string, ms *metadatamemory.MemoryMetadataStore, mem *remotememory.Store, sink BlockSink) *seamFixture {
 	t.Helper()
 	j, err := journal.Open(dir, journal.Config{CarveBlockSize: 1 << 20})
 	if err != nil {
 		t.Fatalf("journal.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = j.Close() })
-	j.SetCarveTargets(engineDeduper{synced: ms}, sink)
-	return &seamFixture{dir: dir, ms: ms, mem: mem, jrnl: j}
+	f := &seamFixture{dir: dir, ms: ms, mem: mem, jrnl: j}
+	// fn + AfterFile built fresh per Flush call (journal's C9 caller
+	// obligation); the closure is the production wiring under test.
+	f.flushFn = func() (journal.FlushFunc, func(context.Context, journal.FileID) error) {
+		return newFlushClosure(j, chunker.Params{}, 1<<20, 4, engineDeduper{synced: ms}, sink)
+	}
+	return f
 }
 
 func realSink(ms *metadatamemory.MemoryMetadataStore, mem *remotememory.Store) engineBlockSink {
 	return engineBlockSink{sealer: nil, rbs: mem, committer: ms}
+}
+
+// flush drives the fixture's journal through the seam: fn + AfterFile are the
+// production closure, Force bypasses the batching gates.
+func (f *seamFixture) flush(t *testing.T, ctx context.Context) {
+	t.Helper()
+	fn, reap := f.flushFn()
+	if err := f.jrnl.Flush(ctx, journal.FileID(""), journal.FlushOptions{Force: true, AfterFile: reap}, fn); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
 }
 
 func countBlocks(t *testing.T, ctx context.Context, mem *remotememory.Store) int {
@@ -63,9 +80,7 @@ func TestJournalCarveSeam_CommitsBlocksAndFileChunkRows(t *testing.T) {
 	if err := f.jrnl.WriteAt(ctx, "f", 0, data); err != nil {
 		t.Fatalf("WriteAt: %v", err)
 	}
-	if _, err := f.jrnl.Carve(ctx, journal.CarveOptions{Force: true}); err != nil {
-		t.Fatalf("Carve: %v", err)
-	}
+	f.flush(t, ctx)
 
 	// A block object landed on the remote.
 	if got := countBlocks(t, ctx, mem); got < 1 {
@@ -108,9 +123,7 @@ func TestJournalCarveSeam_DuplicateIsNoOp(t *testing.T) {
 	if err := f.jrnl.WriteAt(ctx, "f", 0, data); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.jrnl.Carve(ctx, journal.CarveOptions{Force: true}); err != nil {
-		t.Fatalf("carve f: %v", err)
-	}
+	f.flush(t, ctx)
 	blocksAfterF := countBlocks(t, ctx, mem)
 
 	// A second file with identical content: every chunk is already remote-durable,
@@ -118,13 +131,9 @@ func TestJournalCarveSeam_DuplicateIsNoOp(t *testing.T) {
 	if err := f.jrnl.WriteAt(ctx, "g", 0, data); err != nil {
 		t.Fatal(err)
 	}
-	res, err := f.jrnl.Carve(ctx, journal.CarveOptions{Force: true})
-	if err != nil {
-		t.Fatalf("carve g: %v", err)
-	}
-	if res.BlocksWritten != 0 || res.BytesCarved != 0 {
-		t.Fatalf("duplicate carve was not a no-op: %+v", res)
-	}
+	// Every chunk is already remote-durable, so the flush dedups to a no-op:
+	// no new block object, and the records still flip synced.
+	f.flush(t, ctx)
 	if got := countBlocks(t, ctx, mem); got != blocksAfterF {
 		t.Fatalf("duplicate carve uploaded new blocks: %d -> %d", blocksAfterF, got)
 	}
@@ -142,7 +151,7 @@ type failOnceSink struct {
 	failed bool
 }
 
-func (s *failOnceSink) CommitBlock(ctx context.Context, chunks []journal.CarveChunk) error {
+func (s *failOnceSink) CommitBlock(ctx context.Context, chunks []CarveChunk) error {
 	if err := s.inner.CommitBlock(ctx, chunks); err != nil {
 		return err
 	}
@@ -167,26 +176,25 @@ func TestJournalCarveSeam_CrashMidCommitReCarveIsNoOp(t *testing.T) {
 	if err := f.jrnl.WriteAt(ctx, "f", 0, data); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.jrnl.Carve(ctx, journal.CarveOptions{Force: true}); err == nil {
-		t.Fatalf("expected carve to surface the injected commit failure")
+	fn, reap := f.flushFn()
+	if err := f.jrnl.Flush(ctx, journal.FileID(""), journal.FlushOptions{Force: true, AfterFile: reap}, fn); err == nil {
+		t.Fatalf("expected flush to surface the injected commit failure")
 	}
 	if f.jrnl.UnsyncedBytes() == 0 {
-		t.Fatalf("records flipped despite the failed carve")
+		t.Fatalf("records flipped despite the failed flush")
 	}
 	blocksAfter := countBlocks(t, ctx, mem)
 	rowsAfter, _ := ms.ListFileChunks(ctx, "f")
 	_ = f.jrnl.Close()
 
-	// Reopen: recovery replays the still-dirty records. Re-carve with a healthy
+	// Reopen: recovery replays the still-dirty records. Re-flush with a healthy
 	// sink dedups every chunk (already remote-durable) — no new block, no new
 	// rows, and the records finally flip synced.
 	f2 := newSeamFixture(t, dir, ms, mem, realSink(ms, mem))
-	res, err := f2.jrnl.Carve(ctx, journal.CarveOptions{Force: true})
-	if err != nil {
-		t.Fatalf("re-carve after reopen: %v", err)
-	}
-	if res.BlocksWritten != 0 {
-		t.Fatalf("re-carve re-uploaded a block: %+v", res)
+	blocksBeforeRe := countBlocks(t, ctx, mem)
+	f2.flush(t, ctx)
+	if got := countBlocks(t, ctx, mem); got != blocksBeforeRe {
+		t.Fatalf("re-flush re-uploaded a block: %d -> %d", blocksBeforeRe, got)
 	}
 	if got := countBlocks(t, ctx, mem); got != blocksAfter {
 		t.Fatalf("re-carve changed block count %d -> %d", blocksAfter, got)
@@ -226,9 +234,7 @@ func TestJournalCarveSeam_ReportsEachBlockAsItLands(t *testing.T) {
 	if err := f.jrnl.WriteAt(ctx, "f", 0, data); err != nil {
 		t.Fatalf("WriteAt: %v", err)
 	}
-	if _, err := f.jrnl.Carve(ctx, journal.CarveOptions{Force: true}); err != nil {
-		t.Fatalf("Carve: %v", err)
-	}
+	f.flush(t, ctx)
 
 	mu.Lock()
 	got := append([]int64(nil), reported...)
@@ -275,7 +281,10 @@ func TestJournalCarveSeam_ScatteredRunsAllFlipSynced(t *testing.T) {
 		t.Fatalf("journal.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = j.Close() })
-	j.SetCarveTargets(engineDeduper{synced: ms}, realSink(ms, mem))
+	fnFactory := func() (journal.FlushFunc, func(context.Context, journal.FileID) error) {
+		return newFlushClosure(j, chunker.Params{}, blockSize, 4, engineDeduper{synced: ms}, realSink(ms, mem))
+	}
+	_ = fnFactory
 
 	// Distinct bytes per run, so nearly every chunk is novel and the carve has to
 	// pack and commit for real rather than dedup its way to the end.

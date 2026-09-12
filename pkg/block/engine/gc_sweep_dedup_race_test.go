@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/journal"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 )
 
@@ -47,7 +46,7 @@ func TestGCIndexSweep_ConcurrentDedupKeepsBytes(t *testing.T) {
 		h := hashFromString("dedup-race-before")
 		seedRemoteChunk(t, st, rs, h) // synced, backdated past grace, no manifest row
 
-		durable, err := (engineDeduper{synced: st}).IsChunkDurable(ctx, journal.ChunkHash(h))
+		durable, err := (engineDeduper{synced: st}).IsChunkDurable(ctx, ChunkHash(h))
 		if err != nil {
 			t.Fatalf("IsChunkDurable: %v", err)
 		}
@@ -100,7 +99,7 @@ func TestGCIndexSweep_ConcurrentDedupKeepsBytes(t *testing.T) {
 				if swept != h {
 					return
 				}
-				durable, dedupErr = deduper.IsChunkDurable(ctx, journal.ChunkHash(swept))
+				durable, dedupErr = deduper.IsChunkDurable(ctx, ChunkHash(swept))
 			},
 		}
 
