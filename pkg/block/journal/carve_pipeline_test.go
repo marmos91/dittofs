@@ -70,9 +70,9 @@ func TestCarveInterleavesRowEndLookupsWithCommits(t *testing.T) {
 		maxPrologue       = 2*uploadConcurrency*runsPerBlock + 1
 	)
 	s, dd, fs, _ := carveStore(t, Config{
-		CarveBlockSize:         blockSize,
-		CarveUploadConcurrency: uploadConcurrency,
-		ChunkParams:            chunker.Params{Min: 1 << 10, Avg: 2 << 10, Max: 8 << 10},
+		CarveBlockSize: blockSize,
+		CarvePackAhead: uploadConcurrency,
+		ChunkParams:    chunker.Params{Min: 1 << 10, Avg: 2 << 10, Max: 8 << 10},
 	})
 	ctx := context.Background()
 

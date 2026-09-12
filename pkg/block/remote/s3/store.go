@@ -41,10 +41,12 @@ const maxBlockReadSize = 8 * 1024 * 1024
 const s3HTTPRequestTimeout = 2 * time.Minute
 
 // maxS3ConnsPerHost sizes the HTTP connection pool so it never caps the
-// syncer's upload concurrency (#1407): it matches the maximum a user can pin
-// via --parallel-uploads (validateParallelUploads allows up to 256) and so also
-// covers the adaptive ceiling (engine.AdaptiveUploadCeiling, 64) plus concurrent
-// downloads. 256 conns are created on demand, not preallocated. Defined locally
+// sink's upload window (#1407): it matches the maximum a user can pin
+// via --parallel-uploads (validateParallelUploads allows up to 256), which the
+// adaptive ceiling (engine.AdaptiveUploadCeiling, 256) also cannot exceed, so
+// PUTs never exhaust the pool while the download workers (32) share the same
+// host — when PUTs sit at the ceiling, downloads queue behind them in the
+// pool. 256 conns are created on demand, not preallocated. Defined locally
 // rather than imported from engine to avoid a dependency cycle.
 const maxS3ConnsPerHost = 256
 
@@ -209,12 +211,13 @@ func NewFromConfig(ctx context.Context, config Config) (*Store, error) {
 }
 
 // newHTTPClient builds the HTTP client the S3 SDK issues every request
-// through. It sizes the connection pool for parallel uploads: the pool must
-// not cap the syncer's upload window below its ceiling, or it becomes the
-// hidden bottleneck, since the adaptive controller ramps to
-// engine.AdaptiveUploadCeiling (64) and downloads run concurrently on the same
-// host, so it is sized for both (128 conns x ~512KB buffers ≈ 64MB worst case,
-// created on demand). A pinned --parallel-uploads above this still caps here.
+// through. It sizes the connection pool for the sink's upload window: the pool
+// must not cap the window below its ceiling, or it becomes the hidden
+// bottleneck, since the adaptive controller ramps to
+// engine.AdaptiveUploadCeiling (256) and downloads run concurrently on the
+// same host. When PUTs sit at the ceiling, downloads queue behind them in the
+// pool rather than erroring; conns are created on demand. A pinned
+// --parallel-uploads above this still caps here.
 //
 // It also carries the two runtime halves of the endpoint guard: a dial-time
 // address check and a refusal to follow redirects. allowPrivate relaxes the

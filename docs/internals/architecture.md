@@ -301,8 +301,12 @@ The carve pass fans out across files: a single sequential pass (one file, one
 block, one `PutBlock` at a time) leaves the uplink almost idle. Concurrency is
 bounded by an **adaptive upload window** (`pkg/block/engine/upload_controller.go`):
 a pinned `--parallel-uploads` fixes the window, while the default (adaptive)
-mode ramps it between a floor and ceiling to track the goodput knee. Files in
-one shard still serialize on the journal's carve lock, so the window overlaps
+mode ramps it between a floor and ceiling to track the goodput knee. The window
+is enforced in the engine's block sink, acquired around each `PutBlock` and
+released when the upload lands, so the count the controller samples through
+`TakePeak` is the count of PUTs actually in the air — a single large file (one
+pass emitting many PUTs) reads as window-limited and is ramped. Files in one
+shard still serialize on the journal's carve lock, so the fan-out overlaps
 distinct shards' upload latency.
 
 Explicit `Flush` / `SyncNow` force-carve a file's (or all files') dirty ranges

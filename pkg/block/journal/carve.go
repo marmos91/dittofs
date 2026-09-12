@@ -44,8 +44,8 @@ var carveScratchPool = sync.Pool{New: func() any {
 //     only at that size and once at the end of the file, so a scattered dirty set
 //     drains as few full-size objects rather than one tiny object per run.
 //     Successive blocks of one file commit concurrently through a bounded worker
-//     pool (CarveUploadConcurrency) so a single large file's carve is not one
-//     PutBlock at a time; packing itself stays sequential.
+//     pool (CarvePackAhead, the pack-ahead memory bound) so a single large file's
+//     carve is not one PutBlock at a time; packing itself stays sequential.
 //  4. Only after a block's commit returns — and after every earlier block flipped —
 //     flip each carved record's synced flag in place with a one-byte pwrite (the
 //     header CRC excludes Flags, so no rewrite). The dispatcher applies the flips in
@@ -386,7 +386,13 @@ func (s *Store) packRuns(ctx context.Context, sh *shard, id FileID, rs []*runSta
 	// (one max chunk) and the carver's accumulator (one max chunk). One Box
 	// call fed a full read buffer emits one block per CarveBlockSize, so a
 	// multi-GiB file's peak is bounded by the same window, not by file size.
-	sem := make(chan struct{}, s.cfg.CarveUploadConcurrency)
+	// This is the pack-ahead MEMORY bound, not the upload-concurrency knob:
+	// concurrent PutBlock calls across all files are bounded by the engine's
+	// upload window in the block sink, and this window only throttles how many
+	// packed blocks may wait on those uploads per file. Default matches the
+	// engine's upload ceiling so it never binds first; below it, uploads drain
+	// as fast as the engine window admits.
+	sem := make(chan struct{}, s.cfg.CarvePackAhead)
 
 	// disp overlaps successive blocks' CommitBlock (upload + commit) while packing
 	// stays sequential. It owns the bounded worker pool and the ordered flip

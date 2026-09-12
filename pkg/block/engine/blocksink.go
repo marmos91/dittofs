@@ -13,6 +13,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/blockcodec"
 	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/block/remote"
+	"github.com/marmos91/dittofs/pkg/block/syncer"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -269,6 +270,17 @@ type engineBlockSink struct {
 	rbs         remote.RemoteBlockStore
 	committer   blockCommitter
 	commitLocks *carveCommitLocks
+	// uploadLimiter bounds concurrent remote PutBlock calls — the engine's
+	// upload window, acquired per PUT and released when the upload lands. Nil
+	// in fixtures that don't exercise the window (the guard is inert there).
+	// This is where the adaptive window is enforced, so the controller's
+	// TakePeak samples the same semaphore that binds.
+	uploadLimiter *syncer.DynamicSemaphore
+	// metrics is the engine's data-plane metrics handle, captured at sink
+	// construction so the CommitBlock bracket can report in-flight PUTs without
+	// reaching back to the Store. Nil in fixtures that don't inject a recorder
+	// (every call site checks it before calling).
+	metrics func() DataplaneMetrics
 	// onBlockCommitted reports each block as it lands, carrying the block's
 	// uploaded byte count. Reporting here rather than after a carve pass returns
 	// is what makes the count advance *during* a long carve: the drain path
@@ -348,9 +360,33 @@ func (s engineBlockSink) CommitBlock(ctx context.Context, chunks []journal.Carve
 	blockHash := block.ContentHash(blake3.Sum256(blockBytes))
 
 	// PutBlock first: a crash before the commit leaves an orphan block (GC
-	// reclaims it), never an unbacked record.
-	if err := s.rbs.PutBlock(ctx, blockID, bytes.NewReader(blockBytes)); err != nil {
-		return fmt.Errorf("carve: put block %s: %w", blockID, err)
+	// reclaims it), never an unbacked record. Bracketed by the engine's upload
+	// window: acquire per PUT, release when the upload lands. This is where the
+	// adaptive window is enforced — the semaphore the upload controller samples
+	// with TakePeak is this one, so the controlled variable and the sampled
+	// signal are the same quantity and a single large file (one carve pass
+	// emitting many PUTs) is read as window-limited and ramped.
+	if s.uploadLimiter != nil {
+		if err := s.uploadLimiter.Acquire(ctx); err != nil {
+			return fmt.Errorf("carve: acquire upload window: %w", err)
+		}
+	}
+	if s.metrics != nil {
+		if mx := s.metrics(); mx != nil {
+			mx.UploadStarted()
+		}
+	}
+	putErr := s.rbs.PutBlock(ctx, blockID, bytes.NewReader(blockBytes))
+	if s.metrics != nil {
+		if mx := s.metrics(); mx != nil {
+			mx.UploadFinished()
+		}
+	}
+	if s.uploadLimiter != nil {
+		s.uploadLimiter.Release()
+	}
+	if putErr != nil {
+		return fmt.Errorf("carve: put block %s: %w", blockID, putErr)
 	}
 
 	rec := block.BlockRecord{

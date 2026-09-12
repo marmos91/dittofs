@@ -56,7 +56,7 @@ func newBadgerCommitter(t *testing.T) (*metadatabadger.BadgerMetadataStore, meta
 }
 
 // TestLocalBlockSink_ConcurrentSameFileCommit_NoSSIConflict reproduces the carve
-// SSI wall: the within-file carve dispatcher (CarveUploadConcurrency) fires
+// SSI wall: the within-file carve dispatcher (CarvePackAhead) fires
 // several CommitBlock calls for one file concurrently, and each re-projects
 // File.Blocks (SetManifest) on the SAME File row. Under badger's SSI that read-write
 // on a shared row aborts as ErrConflict; enough contention exhausts the retry
@@ -73,6 +73,7 @@ func TestLocalBlockSink_ConcurrentSameFileCommit_NoSSIConflict(t *testing.T) {
 	const n = 8
 	var wg sync.WaitGroup
 	errs := make([]error, n)
+	var errsMu sync.Mutex
 	start := make(chan struct{})
 	for i := 0; i < n; i++ {
 		wg.Add(1)
@@ -86,7 +87,10 @@ func TestLocalBlockSink_ConcurrentSameFileCommit_NoSSIConflict(t *testing.T) {
 				Data:       data,
 			}
 			<-start
-			errs[i] = sink.CommitBlock(ctx, []journal.CarveChunk{chunk})
+			err := sink.CommitBlock(ctx, []journal.CarveChunk{chunk})
+			errsMu.Lock()
+			errs[i] = err
+			errsMu.Unlock()
 		}(i)
 	}
 	close(start)
@@ -112,6 +116,7 @@ func TestLocalBlockSink_ConcurrentReapAndCommit_NoSSIConflict(t *testing.T) {
 	const n = 8
 	var wg sync.WaitGroup
 	errs := make([]error, n)
+	var errsMu sync.Mutex
 	start := make(chan struct{})
 	for i := 0; i < n; i++ {
 		wg.Add(1)
@@ -131,7 +136,10 @@ func TestLocalBlockSink_ConcurrentReapAndCommit_NoSSIConflict(t *testing.T) {
 			// A disjoint span from every commit above, so a correct
 			// implementation serializes only the shared File-row write.
 			off := int64(i) * 4096
-			errs[i] = sink.ReapSupersededManifest(ctx, journal.FileID(pid), [][2]int64{{off, off + 4096}}, nil)
+			err := sink.ReapSupersededManifest(ctx, journal.FileID(pid), [][2]int64{{off, off + 4096}}, nil)
+			errsMu.Lock()
+			errs[i] = err
+			errsMu.Unlock()
 		}(i)
 	}
 	close(start)

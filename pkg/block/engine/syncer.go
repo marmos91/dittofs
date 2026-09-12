@@ -115,14 +115,14 @@ type RemoteSync struct {
 	completedSyncs atomic.Int64
 	failedSyncs    atomic.Int64
 
-	// uploadLimiter bounds concurrent whole-file carve passes: carveDispatcher
-	// acquires it before starting a file and releases it when that file's pass
-	// returns. It does not bound the block PUTs inside a pass — those have their
-	// own per-file semaphore sized by CarveUploadConcurrency — so the PUTs
-	// actually in flight are the product of the two windows, not this limit.
-	// When ParallelUploads is pinned (> 0) its limit is fixed at that value.
-	// When unset (adaptive mode) the uploadController resizes it every control
-	// interval to track the goodput knee.
+	// uploadLimiter bounds concurrent remote PutBlock calls: the engine's block
+	// sink acquires it around each PutBlock and releases it when the upload
+	// lands. It is the controlled variable AND the sampled signal — the upload
+	// controller's TakePeak now measures the same semaphore that binds, so a
+	// single large file (one carve pass, many PUTs) is read as window-limited
+	// and ramped correctly. When ParallelUploads is pinned (> 0) its limit is
+	// fixed at that value. When unset (adaptive mode) the uploadController
+	// resizes it every control interval to track the goodput knee.
 	uploadLimiter *syncer.DynamicSemaphore
 	// uploadController is non-nil only in adaptive mode. It consumes one
 	// (goodput, windowLimited, sawError) sample per control interval and returns
@@ -837,7 +837,7 @@ func (m *RemoteSync) wireCarveTargets() {
 			return // remote configured but deps not fully wired yet
 		}
 		deduper := engineDeduper{synced: m.syncedHashStore}
-		sink := engineBlockSink{sealer: m.chunkSealer, rbs: m.remoteBlockStore, committer: m.blockCommitter, commitLocks: &carveCommitLocks{}, onBlockCommitted: m.noteBlockCommitted}
+		sink := engineBlockSink{sealer: m.chunkSealer, rbs: m.remoteBlockStore, committer: m.blockCommitter, commitLocks: &carveCommitLocks{}, onBlockCommitted: m.noteBlockCommitted, uploadLimiter: m.uploadLimiter, metrics: m.dataplaneMetrics}
 		m.local.SetCarveTargets(deduper, sink)
 		m.carveTargetsWired = true
 		return
