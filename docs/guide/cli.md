@@ -6207,7 +6207,7 @@ Flags:
       --encryption-kmip-key-uid string    KMIP managed symmetric key UID (kind=kmip)
       --endpoint string                   Custom S3 endpoint (for S3-compatible stores)
       --name string                       Store name (required)
-      --parallel-uploads int              Max parallel chunk uploads to this remote (0 = adaptive: auto-tune to saturate the uplink)
+      --parallel-uploads int              Max parallel chunk uploads to this remote (0 = adaptive: auto-tune to saturate the uplink; enforced per PUT in the block sink)
       --prefix string                     Key prefix within the bucket (for s3)
       --region string                     AWS region (for s3) (default "us-east-1")
       --secret-key string                 AWS secret access key (for s3)
@@ -6261,7 +6261,7 @@ Flags:
       --bucket string          S3 bucket name (for s3)
       --config string          Store configuration as JSON
       --endpoint string        Custom S3 endpoint
-      --parallel-uploads int   Max parallel chunk uploads to this remote (0 = adaptive: auto-tune to saturate the uplink)
+      --parallel-uploads int   Max parallel chunk uploads to this remote (0 = adaptive: auto-tune to saturate the uplink; enforced per PUT in the block sink)
       --region string          AWS region (for s3)
       --secret-key string      AWS secret access key (for s3)
       --type string            Store type: s3, memory
