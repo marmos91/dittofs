@@ -411,15 +411,21 @@ func (m *RemoteSync) Flush(ctx context.Context, payloadID string) (*block.FlushR
 
 	// A remote without the carve substrate wired (partial test fixture) cannot
 	// make anything durable: report the soft condition instead of claiming it.
-	if !m.carveActive.Load() {
-		// Local-only mode still flushes: the flush populates the FileChunk
-		// manifest (and File.Blocks) through the local-only sink, which is what
-		// makes a local-only DrainRollups non-empty and clone/snapshot/restore
-		// resolve the file's chunks. Only report the soft condition when even
-		// the manifest substrate is missing.
+	// Local-only mode (nil remote) still flushes: the flush populates the
+	// FileChunk manifest (and File.Blocks) through the local-only sink, which
+	// is what makes a local-only DrainRollups non-empty and clone/snapshot/
+	// restore resolve the file's chunks. Only report the soft condition when
+	// even the manifest substrate is missing.
+	if m.remoteStore == nil {
 		if m.blockCommitter == nil {
 			return &block.FlushResult{Finalized: false}, nil
 		}
+	} else if !m.IsRemoteHealthy() {
+		// A down remote is the documented soft condition: leave the dirty
+		// state untouched for the periodic uploader instead of surfacing every
+		// PutObject 404/timeout as a hard wire error. The client re-drives on
+		// its own schedule.
+		return &block.FlushResult{Finalized: false}, nil
 	}
 
 	// Force-flush this file's dirty ranges into remote blocks and commit them
