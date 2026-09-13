@@ -412,15 +412,17 @@ func (m *RemoteSync) Flush(ctx context.Context, payloadID string) (*block.FlushR
 		return nil, err
 	}
 
-	// Local-only or remote-unhealthy: early-exit with Finalized=false.
-	if m.remoteStore == nil || !m.IsRemoteHealthy() {
-		return &block.FlushResult{Finalized: false}, nil
-	}
-
 	// A remote without the carve substrate wired (partial test fixture) cannot
 	// make anything durable: report the soft condition instead of claiming it.
 	if !m.carveActive.Load() {
-		return &block.FlushResult{Finalized: false}, nil
+		// Local-only mode still flushes: the flush populates the FileChunk
+		// manifest (and File.Blocks) through the local-only sink, which is what
+		// makes a local-only DrainRollups non-empty and clone/snapshot/restore
+		// resolve the file's chunks. Only report the soft condition when even
+		// the manifest substrate is missing.
+		if m.blockCommitter == nil {
+			return &block.FlushResult{Finalized: false}, nil
+		}
 	}
 
 	// Force-flush this file's dirty ranges into remote blocks and commit them
@@ -916,9 +918,6 @@ func (m *RemoteSync) SyncNow(ctx context.Context) error {
 // the closure's carver and reap state carry across one file's runs, and a
 // shared closure interleaves two files' bytes into one block.
 func (m *RemoteSync) FlushAll(ctx context.Context) error {
-	if m.remoteStore == nil {
-		return nil
-	}
 	var firstErr error
 	for _, id := range m.local.ListFiles(ctx) {
 		if _, err := m.Flush(ctx, string(id)); err != nil && firstErr == nil {
