@@ -86,22 +86,21 @@ func TestTransition_CommitMakesDirtyDurable(t *testing.T) {
 }
 
 func TestTransition_CarveMakesResident(t *testing.T) {
-	s, _, _, _ := carveStore(t, Config{})
+	s := testStore(t, Config{CarveBlockSize: 1 << 20})
 	ctx := context.Background()
 	data := randBytes(128<<10, 1)
 	if err := s.WriteAt(ctx, "f", 0, data); err != nil {
 		t.Fatalf("WriteAt: %v", err)
 	}
-	res, err := s.Carve(ctx, CarveOptions{Force: true})
-	if err != nil {
-		t.Fatalf("Carve: %v", err)
+	fn := func(_ context.Context, run Run) ([]Extent, error) {
+		return []Extent{run.Extent}, nil
 	}
-	if res.BlocksWritten == 0 {
-		t.Fatal("carve packed nothing; the test would assert on a no-op")
+	if err := s.Flush(ctx, "f", FlushOptions{Force: true}, fn); err != nil {
+		t.Fatalf("Flush: %v", err)
 	}
 	ext := extentStates(t, s, "f")
 	if len(ext) != 1 || ext[0].State != StateResident {
-		t.Fatalf("carved range must be Resident, got %+v", ext)
+		t.Fatalf("flushed range must be Resident, got %+v", ext)
 	}
 	if !ext[0].Durable {
 		t.Fatal("resident range must be Durable")
@@ -109,14 +108,17 @@ func TestTransition_CarveMakesResident(t *testing.T) {
 }
 
 func TestTransition_InvalidateTakesResidentToRemote(t *testing.T) {
-	s, _, _, _ := carveStore(t, Config{})
+	s := testStore(t, Config{CarveBlockSize: 1 << 20})
 	ctx := context.Background()
 	const chunk = 128 << 10
 	if err := s.WriteAt(ctx, "f", 0, randBytes(chunk, 2)); err != nil {
 		t.Fatalf("WriteAt: %v", err)
 	}
-	if _, err := s.Carve(ctx, CarveOptions{Force: true}); err != nil {
-		t.Fatalf("Carve: %v", err)
+	fn := func(_ context.Context, run Run) ([]Extent, error) {
+		return []Extent{run.Extent}, nil
+	}
+	if err := s.Flush(ctx, "f", FlushOptions{Force: true}, fn); err != nil {
+		t.Fatalf("Flush: %v", err)
 	}
 	if err := s.Invalidate(ctx, "f", 0, chunk); err != nil {
 		t.Fatalf("Invalidate: %v", err)
@@ -141,15 +143,18 @@ func TestTransition_InvalidateRefusesDirty(t *testing.T) {
 }
 
 func TestTransition_HydrateTakesRemoteToResident(t *testing.T) {
-	s, _, _, _ := carveStore(t, Config{})
+	s := testStore(t, Config{CarveBlockSize: 1 << 20})
 	ctx := context.Background()
 	const chunk = 128 << 10
 	buf := randBytes(chunk, 4)
 	if err := s.WriteAt(ctx, "f", 0, buf); err != nil {
 		t.Fatalf("WriteAt: %v", err)
 	}
-	if _, err := s.Carve(ctx, CarveOptions{Force: true}); err != nil {
-		t.Fatalf("Carve: %v", err)
+	fn := func(_ context.Context, run Run) ([]Extent, error) {
+		return []Extent{run.Extent}, nil
+	}
+	if err := s.Flush(ctx, "f", FlushOptions{Force: true}, fn); err != nil {
+		t.Fatalf("Flush: %v", err)
 	}
 	if err := s.Invalidate(ctx, "f", 0, chunk); err != nil {
 		t.Fatalf("Invalidate: %v", err)
@@ -235,14 +240,17 @@ func TestTransition_CompactNeverProducesLost(t *testing.T) {
 }
 
 func TestTransition_FailedLossKeepsResident(t *testing.T) {
-	s, _, _, _ := carveStore(t, Config{})
+	s := testStore(t, Config{CarveBlockSize: 1 << 20})
 	ctx := context.Background()
 	const chunk = 128 << 10
 	if err := s.WriteAt(ctx, "f", 0, randBytes(chunk, 7)); err != nil {
 		t.Fatalf("WriteAt: %v", err)
 	}
-	if _, err := s.Carve(ctx, CarveOptions{Force: true}); err != nil {
-		t.Fatalf("Carve: %v", err)
+	fn := func(_ context.Context, run Run) ([]Extent, error) {
+		return []Extent{run.Extent}, nil
+	}
+	if err := s.Flush(ctx, "f", FlushOptions{Force: true}, fn); err != nil {
+		t.Fatalf("Flush: %v", err)
 	}
 	// Break the cold log so the demote's append fails: residency loss that
 	// cannot be made durable must be refused, never taken blind.
@@ -332,7 +340,7 @@ func (o *naiveOracle) apply(op string, off int64) {
 }
 
 func TestModel_RandomOperationsAgainstNaiveOracle(t *testing.T) {
-	s, _, _, _ := carveStore(t, Config{})
+	s := testStore(t, Config{CarveBlockSize: 1 << 20})
 	ctx := context.Background()
 	const (
 		chunk = 64 << 10
@@ -352,9 +360,11 @@ func TestModel_RandomOperationsAgainstNaiveOracle(t *testing.T) {
 			}
 			oracle.apply("write", off)
 			ops++
-		case 1: // carve
-			if _, err := s.Carve(ctx, CarveOptions{Force: true}); err != nil {
-				t.Fatalf("Carve: %v", err)
+		case 1: // flush
+			if err := s.Flush(ctx, "f", FlushOptions{Force: true}, func(_ context.Context, run Run) ([]Extent, error) {
+				return []Extent{run.Extent}, nil
+			}); err != nil {
+				t.Fatalf("Flush: %v", err)
 			}
 			for k := 0; k < spans; k++ {
 				oracle.apply("carve", int64(k)*chunk)

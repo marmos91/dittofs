@@ -3,6 +3,7 @@ package journal
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"sort"
 	"time"
@@ -194,6 +195,72 @@ func (s *Store) Flush(ctx context.Context, id FileID, opts FlushOptions, fn Flus
 	}
 	s.maybeResetDirtyClock(sh, id)
 	return firstErr
+}
+
+// splitRuns groups a file's dirty interval snapshot into contiguous runs,
+// splitting at every hole. Each run becomes one offer to fn.
+func splitRuns(snap []interval) [][]interval {
+	var runs [][]interval
+	for start := 0; start < len(snap); {
+		end := start + 1
+		for end < len(snap) && snap[end].fileOff == snap[end-1].end() {
+			end++
+		}
+		runs = append(runs, snap[start:end])
+		start = end
+	}
+	return runs
+}
+
+// recordHasDirtyFragment reports whether any live interval still backed by the
+// given physical record (segment + record offset) is dirty. Caller holds sh.mu.
+func recordHasDirtyFragment(fi *fileIndex, seg uint64, recOff int64) bool {
+	if fi == nil {
+		return false
+	}
+	for k := range fi.ivs {
+		if fi.ivs[k].loc.SegmentID == seg && fi.ivs[k].recOff == recOff &&
+			!fi.ivs[k].synced && !fi.ivs[k].cold {
+			return true
+		}
+	}
+	return false
+}
+
+// flipRecordSynced sets a record's on-disk synced bit with a one-byte
+// read-modify-write, preserving any other flag bits. It returns false without
+// writing when the bit is already set. The header CRC excludes Flags, so no CRC
+// rewrite is needed.
+func flipRecordSynced(seg *segmentMeta, recOff int64) (bool, error) {
+	var b [1]byte
+	if _, err := seg.fd.ReadAt(b[:], recOff+recordFlagsOffset); err != nil {
+		return false, fmt.Errorf("journal: read record flags seg %d off %d: %w", seg.id, recOff, err)
+	}
+	if b[0]&flagSynced != 0 {
+		return false, nil
+	}
+	b[0] |= flagSynced
+	if _, err := seg.fd.WriteAt(b[:], recOff+recordFlagsOffset); err != nil {
+		return false, fmt.Errorf("journal: flip synced seg %d off %d: %w", seg.id, recOff, err)
+	}
+	return true, nil
+}
+
+// maybeResetDirtyClock clears a file's dirty-age marker once no dirty interval
+// remains, so a later dirty write re-stamps a fresh age.
+func (s *Store) maybeResetDirtyClock(sh *shard, id FileID) {
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	fi := sh.index[id]
+	if fi == nil {
+		return
+	}
+	for k := range fi.ivs {
+		if !fi.ivs[k].synced && !fi.ivs[k].cold {
+			return
+		}
+	}
+	fi.firstDirtyNanos = 0
 }
 
 // durableTail returns the coalesced extents of the durable (resident or

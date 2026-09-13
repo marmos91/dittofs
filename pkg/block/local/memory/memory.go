@@ -6,10 +6,9 @@ package memory
 import (
 	"bytes"
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
-
-	"lukechampine.com/blake3"
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/journal"
@@ -31,9 +30,6 @@ type memFile struct {
 type MemoryStore struct {
 	mu    sync.RWMutex
 	files map[string]*memFile
-
-	deduper journal.Deduper
-	sink    journal.BlockSink
 
 	unsynced atomic.Int64
 	durable  atomic.Bool
@@ -207,12 +203,14 @@ func (s *MemoryStore) ListFiles(context.Context) []journal.FileID {
 	return out
 }
 
-// Flush packs each dirty file's bytes into the sink. id scopes it to one file
-// (the empty id flushes every file with pending dirty bytes); fn drives the
-// packing — nil means the fixture's own whole-file chunk.
+// Flush offers each dirty file's bytes to fn as one run and flips what it
+// reports durable. id scopes it to one file; the empty id flushes every file
+// with pending dirty bytes.
 func (s *MemoryStore) Flush(ctx context.Context, id journal.FileID, opts journal.FlushOptions, fn journal.FlushFunc) (err error) {
+	if fn == nil {
+		return errors.New("memory: Flush requires fn")
+	}
 	s.mu.RLock()
-	d, sink := s.deduper, s.sink
 	var ids []string
 	if id != "" {
 		if f := s.files[string(id)]; f != nil && f.unsynced > 0 {
@@ -242,58 +240,25 @@ func (s *MemoryStore) Flush(ctx context.Context, id journal.FileID, opts journal
 		if len(data) == 0 {
 			continue
 		}
-		if fn != nil {
-			// Drive the caller's closure: offer the whole dirty file as one
-			// run and flip whatever it reports durable.
-			extents, ferr := fn(ctx, journal.Run{
-				ID:       journal.FileID(fid),
-				Extent:   journal.Extent{Off: 0, Len: int64(len(data)), State: journal.StateDirty},
-				Final:    true,
-				ReaderAt: bytes.NewReader(data),
-			})
-			if ferr != nil && firstErr == nil {
-				firstErr = ferr
-				continue
-			}
-			for _, e := range extents {
-				if end := e.Off + e.Len; end <= int64(len(data)) {
-					s.markCarvedRange(fid, e.Off, end)
-				}
-			}
+		// Offer the whole dirty file as one run and flip whatever fn reports
+		// durable.
+		extents, ferr := fn(ctx, journal.Run{
+			ID:       journal.FileID(fid),
+			Extent:   journal.Extent{Off: 0, Len: int64(len(data)), State: journal.StateDirty},
+			Final:    true,
+			ReaderAt: bytes.NewReader(data),
+		})
+		if ferr != nil && firstErr == nil {
+			firstErr = ferr
 			continue
 		}
-		if err := s.packWhole(ctx, d, sink, fid, data); err != nil && firstErr == nil {
-			firstErr = err
+		for _, e := range extents {
+			if end := e.Off + e.Len; end <= int64(len(data)) {
+				s.markCarvedRange(fid, e.Off, end)
+			}
 		}
 	}
 	return firstErr
-}
-
-// packWhole packs a file's bytes as ONE whole-file chunk at offset 0 (the
-// fixture has no cross-store dedup contract, so chunk boundaries don't matter;
-// see the ponytail note on Carve) and flips the file's unsynced charge.
-func (s *MemoryStore) packWhole(ctx context.Context, d journal.Deduper, sink journal.BlockSink, fid string, data []byte) error {
-	h := journal.ChunkHash(blake3.Sum256(data))
-	cc := journal.CarveChunk{Hash: h, FileID: journal.FileID(fid), FileOffset: 0, Size: len(data), Data: data}
-	if d != nil {
-		// Already remote-durable: hand the sink a row-only chunk so the manifest
-		// still records it, but upload nothing.
-		if durable, err := d.IsChunkDurable(ctx, h); err == nil && durable {
-			cc.Data = nil
-		}
-	}
-	if sink == nil {
-		return nil
-	}
-	if err := sink.CommitBlock(ctx, []journal.CarveChunk{cc}); err != nil {
-		return err
-	}
-	if cc.Data != nil {
-		s.markCarvedRange(fid, 0, int64(len(data)))
-	} else {
-		s.markCarvedRange(fid, 0, int64(len(data)))
-	}
-	return nil
 }
 
 // markCarvedRange clears the file's unsynced charge over [off, end).
@@ -311,76 +276,6 @@ func (s *MemoryStore) markCarvedRange(fid string, off, end int64) {
 	if n > 0 {
 		f.unsynced -= n
 		s.unsynced.Add(-n)
-	}
-}
-
-// Carve packs each dirty file's bytes into the sink.
-//
-// ponytail: packs each dirty file as ONE whole-file chunk at offset 0 rather
-// than running FastCDC — this is a test fixture with no cross-store dedup
-// contract, so chunk boundaries don't matter. Wire the real chunker if a memory
-// test ever asserts journal-identical boundaries.
-func (s *MemoryStore) Carve(ctx context.Context, opts journal.CarveOptions) (journal.CarveResult, error) {
-	s.mu.RLock()
-	d, sink := s.deduper, s.sink
-	var ids []string
-	if opts.FileID != "" {
-		if s.files[string(opts.FileID)] != nil {
-			ids = []string{string(opts.FileID)}
-		}
-	} else {
-		for id, f := range s.files {
-			if f.unsynced > 0 {
-				ids = append(ids, id)
-			}
-		}
-	}
-	s.mu.RUnlock()
-
-	var res journal.CarveResult
-	if sink == nil {
-		return res, nil
-	}
-
-	for _, id := range ids {
-		s.mu.RLock()
-		f := s.files[id]
-		var data []byte
-		if f != nil {
-			data = append([]byte(nil), f.buf...)
-		}
-		s.mu.RUnlock()
-		if len(data) == 0 {
-			continue
-		}
-		h := journal.ChunkHash(blake3.Sum256(data))
-		cc := journal.CarveChunk{Hash: h, FileID: journal.FileID(id), FileOffset: 0, Size: len(data), Data: data}
-		if d != nil {
-			// Already remote-durable: hand the sink a row-only chunk so the manifest
-			// still records it, but upload nothing.
-			if durable, err := d.IsChunkDurable(ctx, h); err == nil && durable {
-				cc.Data = nil
-			}
-		}
-		if err := sink.CommitBlock(ctx, []journal.CarveChunk{cc}); err != nil {
-			return res, err
-		}
-		if cc.Data != nil {
-			res.BlocksWritten++
-			res.BytesCarved += int64(len(data))
-		}
-		s.markCarved(id)
-	}
-	return res, nil
-}
-
-// markCarved clears a file's unsynced charge after its bytes reach the sink.
-func (s *MemoryStore) markCarved(payloadID string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if f := s.files[payloadID]; f != nil {
-		s.unsynced.Add(-f.unsynced)
-		f.unsynced = 0
 	}
 }
 

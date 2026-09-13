@@ -189,18 +189,11 @@ type Store struct {
 	clock Clock
 	log   *slog.Logger
 
-	// deduper and sink are the carve collaborators, injected via SetCarveTargets
-	// at wiring time. They own every step that touches pkg/block, blockcodec and
-	// the metadata store, so journal imports none of them. Set once before the
-	// first Carve; nil until wired (Carve reports the substrate is unwired).
-	deduper Deduper
-	sink    BlockSink
-
 	shards    []*shard
 	shardMask uint64
 
 	// gcMu serializes GC passes against each other: only one pass runs at a time,
-	// so two passes never pick the same victim. It does NOT exclude Carve or Evict
+	// so two passes never pick the same victim. It does NOT exclude Flush or Evict
 	// — a running GC pass keeps them off its segments via the per-shard flushMu it
 	// holds and the per-segment busy claim it CAS-sets on each victim, not gcMu.
 	gcMu sync.Mutex

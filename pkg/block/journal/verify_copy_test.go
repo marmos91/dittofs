@@ -50,12 +50,12 @@ func segFileCount(t *testing.T, s *Store) int {
 	return len(ids)
 }
 
-// TestCarveRefusesCorruptedRecord asserts that carve fails closed on a dirty
+// TestCarveRefusesCorruptedRecord asserts that a flush fails closed on a dirty
 // record whose payload rotted on disk instead of hashing those bytes and
-// committing them to the remote store as genuine content — which would make the
-// corrupt copy the authoritative one, under a BLAKE3 hash that matches it.
+// reporting them durable — which would make the corrupt copy the authoritative
+// one, under a BLAKE3 hash that matches it.
 func TestCarveRefusesCorruptedRecord(t *testing.T) {
-	s, _, sink, _ := carveStore(t, Config{CarveBlockSize: 1 << 20})
+	s := testStore(t, Config{CarveBlockSize: 1 << 20})
 	ctx := context.Background()
 
 	data := randBytes(2<<20, 7)
@@ -64,24 +64,28 @@ func TestCarveRefusesCorruptedRecord(t *testing.T) {
 	}
 	corruptFirstPayloadByte(t, s, "f")
 
-	_, err := s.Carve(ctx, CarveOptions{Force: true})
+	fn := func(_ context.Context, run Run) ([]Extent, error) {
+		buf := make([]byte, run.Extent.Len)
+		if _, err := run.ReadAt(buf, run.Extent.Off); err != nil {
+			return nil, err
+		}
+		return []Extent{run.Extent}, nil
+	}
+	err := s.Flush(ctx, "f", FlushOptions{Force: true}, fn)
 	var cre *CorruptRangeError
 	if !errors.As(err, &cre) {
-		t.Fatalf("Carve must refuse a corrupt record, got err=%v", err)
+		t.Fatalf("Flush must refuse a corrupt record, got err=%v", err)
 	}
 	if cre.FileID != "f" {
 		t.Fatalf("CorruptRangeError names wrong file: %+v", cre)
 	}
-	if got := sink.carved(); len(got) != 0 {
-		t.Fatalf("carve uploaded %d bytes from a corrupt record", len(got))
-	}
 	// The run aborted with the bytes still dirty and still local: nothing was
 	// marked durable, so the failure is recoverable rather than silently absorbed.
 	if u := s.UnsyncedBytes(); u != int64(len(data)) {
-		t.Fatalf("unsynced after refused carve = %d, want %d", u, len(data))
+		t.Fatalf("unsynced after refused flush = %d, want %d", u, len(data))
 	}
 	if f := recRawFlags(t, s, "f", 0); f&flagSynced != 0 {
-		t.Fatalf("refused carve still flipped the record synced: flags=%#x", f)
+		t.Fatalf("refused flush still flipped the record synced: flags=%#x", f)
 	}
 }
 

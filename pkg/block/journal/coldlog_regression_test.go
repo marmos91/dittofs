@@ -83,14 +83,17 @@ func TestEviction_ColdMarksDirtyFragment(t *testing.T) {
 // so the log must refuse every later append — a demotion the store cannot keep
 // is refused, never taken with entries behind a tear.
 func TestAppendCold_BrokenLogRefusesLaterAppends(t *testing.T) {
-	s, _, _, _ := carveStore(t, Config{})
+	s := testStore(t, Config{CarveBlockSize: 1 << 20})
 	ctx := context.Background()
 	const chunk = 128 << 10
 	if err := s.WriteAt(ctx, "f", 0, randBytes(chunk, 11)); err != nil {
 		t.Fatalf("WriteAt: %v", err)
 	}
-	if _, err := s.Carve(ctx, CarveOptions{Force: true}); err != nil {
-		t.Fatalf("Carve: %v", err)
+	fn := func(_ context.Context, run Run) ([]Extent, error) {
+		return []Extent{run.Extent}, nil
+	}
+	if err := s.Flush(ctx, "f", FlushOptions{Force: true}, fn); err != nil {
+		t.Fatalf("Flush: %v", err)
 	}
 
 	// Break the log so the first demote's append fails, and make the rollback
