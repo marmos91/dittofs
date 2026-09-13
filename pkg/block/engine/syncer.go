@@ -854,7 +854,11 @@ func (m *RemoteSync) flushFn() (journal.FlushFunc, func(context.Context, journal
 		// submit until CommitBlock returns, so at most `window` uploads (and
 		// their arenas) are in flight per pass.
 		sink := engineBlockSink{sealer: m.chunkSealer, rbs: m.remoteBlockStore, committer: m.blockCommitter, commitLocks: &carveCommitLocks{}, onBlockCommitted: m.noteBlockCommitted, uploadSlots: syncer.NewDynamicSemaphore(window)}
-		return newFlushClosure(m.local, params, blockSize, nil, sink)
+		// The dedup Skip hook consults the per-share synced-hash store: without
+		// it every flush treats every chunk as novel and uploads whole new
+		// blocks instead of landing manifest-only rows for content the remote
+		// already holds.
+		return newFlushClosure(m.local, params, blockSize, engineDeduper{synced: m.syncedHashStore}, sink)
 	}
 	// Local-only (no remote block store): the flush cannot upload, but it must
 	// still populate the FileChunk manifest (and project File.Blocks) so a
@@ -923,7 +927,13 @@ func (m *RemoteSync) SyncNow(ctx context.Context) error {
 func (m *RemoteSync) FlushAll(ctx context.Context) error {
 	var firstErr error
 	for _, id := range m.local.ListFiles(ctx) {
-		if _, err := m.Flush(ctx, string(id)); err != nil && firstErr == nil {
+		res, err := m.Flush(ctx, string(id))
+		if err == nil && res != nil && !res.Finalized {
+			// A soft condition (unwired substrate) left this file unflushed;
+			// reporting success would hide the dirty bytes from the caller.
+			err = errors.New("syncer: flush not finalized for " + string(id))
+		}
+		if err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}

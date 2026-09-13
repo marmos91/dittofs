@@ -156,18 +156,27 @@ func (s *Store) Flush(ctx context.Context, id FileID, opts FlushOptions, fn Flus
 	runs := splitRuns(snap)
 	fnCalled := false
 	var firstErr error
-	for _, run := range runs {
+	for i, run := range runs {
 		if err := ctx.Err(); err != nil {
 			// Cancellation: stop offering, flip already-validated (done below
-			// each call), still call AfterFile.
+			// each call), still call AfterFile. The cancelled context is the
+			// failure the caller sees — a partial flush must not read as
+			// complete, or the caller stops retrying with runs still dirty.
+			if firstErr == nil {
+				firstErr = err
+			}
 			break
 		}
 		r := Run{
 			ID:          id,
 			Extent:      Extent{Off: run[0].fileOff, Len: run[len(run)-1].end() - run[0].fileOff, State: StateDirty},
 			DurableTail: durableTail(sh, id, run[len(run)-1].end()),
-			Final:       true,
-			ReaderAt:    &flushReader{s: s, sh: sh, id: id, ivs: run},
+			// Final marks the file's last call: the caller drains its carver,
+			// cutting the below-Min tail and resetting the boundary search, so
+			// a chunk never spans streams. Earlier runs keep the tail buffered
+			// and tile it with the next run's bytes.
+			Final:    i == len(runs)-1,
+			ReaderAt: &flushReader{s: s, sh: sh, id: id, ivs: run},
 		}
 		fnCalled = true
 		durable, err := fn(ctx, r)

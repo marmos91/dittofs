@@ -120,9 +120,14 @@ func (c *flushClosure) fn(ctx context.Context, r journal.Run) ([]journal.Extent,
 		if fed == 0 && !final {
 			break
 		}
-		// final marks the stream's end: the carver cuts the below-Min tail
-		// and resets its boundary search, so a chunk never spans streams.
-		isFinal := final && read+int64(fed) >= extEnd
+		// Box always ends at the stream's end (extEnd): the below-Min tail is
+		// cut there and the boundary search resets, so a chunk never spans the
+		// gap between two streams — the residual bytes' true offsets lie before
+		// it, and tiling them with the next run's data would assign them the
+		// next run's offsets. Drain (the trailing partial block) waits for the
+		// file's last call (r.Final), so a scattered set packs into whole
+		// blocks instead of one partial block per run.
+		isFinal := read+int64(fed) >= extEnd
 		blocks, tiled, err := c.cv.Box(ctx, buf[:fed], cut, isFinal)
 		if err != nil {
 			return nil, err
@@ -239,14 +244,14 @@ func (c *flushClosure) guardClobberedRow(ctx context.Context, r journal.Run, run
 }
 
 // submit hands one carved block to the ordered upload chain and records the
-// chunk offsets it tiles for the pass-end reap.
+// chunk offsets it tiles for the pass-end reap. A block intentionally spans
+// separate dirty runs, so its bounding Extent includes the holes between
+// them — coalescing that into one reap span would punch those holes shut
+// (ReapSupersededManifest requires holes between spans to remain untouched).
+// The chunks are therefore grouped into contiguous file ranges and one
+// durable extent per range is reported, while a single upload block ships.
 func (c *flushClosure) submit(ctx context.Context, id journal.FileID, b carver.Block) {
 	chunks := make([]CarveChunk, len(b.Chunks))
-	extent := journal.Extent{
-		Off:   b.Chunks[0].Offset,
-		Len:   b.Chunks[len(b.Chunks)-1].Offset + b.Chunks[len(b.Chunks)-1].Size - b.Chunks[0].Offset,
-		State: journal.StateResident,
-	}
 	for i, ch := range b.Chunks {
 		chunks[i] = CarveChunk{
 			Hash:       ch.Hash,
@@ -257,7 +262,31 @@ func (c *flushClosure) submit(ctx context.Context, id journal.FileID, b carver.B
 		}
 		c.newOffsets[ch.Offset] = struct{}{}
 	}
-	c.disp.submit(ctx, chunks, extent)
+	ranges := contiguousRanges(b.Chunks)
+	extents := make([]journal.Extent, len(ranges))
+	for i, r := range ranges {
+		extents[i] = journal.Extent{
+			Off:   r[0].Offset,
+			Len:   r[len(r)-1].Offset + r[len(r)-1].Size - r[0].Offset,
+			State: journal.StateResident,
+		}
+	}
+	c.disp.submit(ctx, chunks, extents)
+}
+
+// contiguousRanges groups a block's chunks into contiguous file-offset runs,
+// splitting at every hole. A run ends where the next chunk's offset begins.
+func contiguousRanges(chunks []carver.Chunk) [][]carver.Chunk {
+	var out [][]carver.Chunk
+	for start := 0; start < len(chunks); {
+		end := start + 1
+		for end < len(chunks) && chunks[end].Offset == chunks[end-1].Offset+chunks[end-1].Size {
+			end++
+		}
+		out = append(out, chunks[start:end])
+		start = end
+	}
+	return out
 }
 
 // afterFile runs once per file after the last flip, still under the shard's
@@ -307,14 +336,15 @@ type uploadChain struct {
 	prev chan struct{} // resolution of the last-submitted flight
 	wg   sync.WaitGroup
 
-	mu       sync.Mutex
-	flights  []*flight
-	firstErr error
-	aborted  bool
+	mu        sync.Mutex
+	flights   []*flight
+	firstErr  error
+	aborted   bool
+	collected int // flights already reported by collect(); each flight reports once
 }
 
 type flight struct {
-	extent   journal.Extent
+	extents  []journal.Extent
 	resolved chan struct{}
 	ok       bool
 	err      error
@@ -328,9 +358,20 @@ func newUploadChain(sink BlockSink) *uploadChain {
 
 // submit launches one block's commit. The commit runs regardless of any
 // predecessor's failure (the upload is content-addressed and harmless), but
-// the flight resolves ok only if the whole prefix before it did.
-func (u *uploadChain) submit(ctx context.Context, chunks []CarveChunk, extent journal.Extent) {
-	f := &flight{extent: extent, resolved: make(chan struct{})}
+// the flight resolves ok only if the whole prefix before it did. The upload
+// slot is acquired HERE, in the caller, before the goroutine spawns, so a
+// flight only exists once a slot is its: the chunk arenas backing at most
+// `window` in-flight blocks are live at once, bounding peak carve RAM by the
+// pass window rather than by file size. The slot releases when the commit
+// returns — the arena's whole live window.
+func (u *uploadChain) submit(ctx context.Context, chunks []CarveChunk, extents []journal.Extent) {
+	if h, ok := u.sink.(slotHolder); ok {
+		if err := h.acquireSlot(ctx); err != nil {
+			return
+		}
+		defer h.releaseSlot()
+	}
+	f := &flight{extents: extents, resolved: make(chan struct{})}
 	mine := f.resolved
 	prev := u.prev
 	u.prev = mine
@@ -360,30 +401,28 @@ func (u *uploadChain) submit(ctx context.Context, chunks []CarveChunk, extent jo
 // collect waits for the flight chain in submission order and returns the
 // resolved committed prefix. The first failed flight's error is returned
 // together with the prefix before it — "these committed, then I failed".
+// A collected cursor keeps each flight reporting once across runs: without
+// it a file with N scattered runs re-reports its earlier extents O(N²) times
+// and the pass-end coalesce/journal validation pays for every copy.
 func (u *uploadChain) collect() ([]journal.Extent, error) {
 	var out []journal.Extent
 	u.mu.Lock()
 	flights := u.flights
-	aborted := u.aborted
-	firstErr := u.firstErr
+	collected := u.collected
 	u.mu.Unlock()
-	if aborted {
-		// A failure already resolved: drain the prefix before it and stop.
-		for _, f := range flights {
-			<-f.resolved
-			if !f.ok {
-				return out, firstErr
-			}
-			out = append(out, f.extent)
-		}
-		return out, firstErr
-	}
-	for _, f := range flights {
+	for _, f := range flights[collected:] {
 		<-f.resolved
 		if !f.ok {
-			return out, u.firstErr
+			u.mu.Lock()
+			firstErr := u.firstErr
+			u.collected = len(flights)
+			u.mu.Unlock()
+			return out, firstErr
 		}
-		out = append(out, f.extent)
+		out = append(out, f.extents...)
 	}
+	u.mu.Lock()
+	u.collected = len(flights)
+	u.mu.Unlock()
 	return out, nil
 }

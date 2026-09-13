@@ -204,24 +204,16 @@ func (s *MemoryStore) ListFiles(context.Context) []journal.FileID {
 }
 
 // Flush offers each dirty file's bytes to fn as one run and flips what it
-// reports durable. id scopes it to one file; the empty id flushes every file
-// with pending dirty bytes.
+// reports durable. id scopes it to one file; the empty id is not special —
+// callers enumerate ListFiles per id, matching the journal implementation.
 func (s *MemoryStore) Flush(ctx context.Context, id journal.FileID, opts journal.FlushOptions, fn journal.FlushFunc) (err error) {
 	if fn == nil {
 		return errors.New("memory: Flush requires fn")
 	}
 	s.mu.RLock()
 	var ids []string
-	if id != "" {
-		if f := s.files[string(id)]; f != nil && f.unsynced > 0 {
-			ids = []string{string(id)}
-		}
-	} else {
-		for fid, f := range s.files {
-			if f.unsynced > 0 {
-				ids = append(ids, fid)
-			}
-		}
+	if f := s.files[string(id)]; f != nil && f.unsynced > 0 {
+		ids = []string{string(id)}
 	}
 	s.mu.RUnlock()
 	if len(ids) == 0 {
@@ -241,21 +233,22 @@ func (s *MemoryStore) Flush(ctx context.Context, id journal.FileID, opts journal
 			continue
 		}
 		// Offer the whole dirty file as one run and flip whatever fn reports
-		// durable.
+		// durable. A failure still credits the committed prefix (the C5 shape:
+		// durable extents ride the error), so a retry never re-offers bytes the
+		// sink already took.
 		extents, ferr := fn(ctx, journal.Run{
 			ID:       journal.FileID(fid),
 			Extent:   journal.Extent{Off: 0, Len: int64(len(data)), State: journal.StateDirty},
 			Final:    true,
 			ReaderAt: bytes.NewReader(data),
 		})
-		if ferr != nil && firstErr == nil {
-			firstErr = ferr
-			continue
-		}
 		for _, e := range extents {
 			if end := e.Off + e.Len; end <= int64(len(data)) {
 				s.markCarvedRange(fid, e.Off, end)
 			}
+		}
+		if ferr != nil && firstErr == nil {
+			firstErr = ferr
 		}
 	}
 	return firstErr

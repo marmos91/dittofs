@@ -374,6 +374,11 @@ func (s *Store) Close() error {
 		if sh == nil {
 			continue
 		}
+		// Serialize an in-flight flush pass before closing segment files: the
+		// pass holds flushMu across its record reads, and closing a segment
+		// under it would fail the reads mid-run (or read partial data). The
+		// closed flag above stops any pass that has not started yet.
+		sh.flushMu.Lock()
 		sh.mu.Lock()
 		if sh.active != nil {
 			if err := sh.active.close(); err != nil && firstErr == nil {
@@ -386,6 +391,7 @@ func (s *Store) Close() error {
 			}
 		}
 		sh.mu.Unlock()
+		sh.flushMu.Unlock()
 	}
 	return firstErr
 }

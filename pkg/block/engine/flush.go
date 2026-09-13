@@ -296,6 +296,35 @@ func (s localBlockSink) ManifestRowEndAfter(ctx context.Context, id journal.File
 	return manifestRowEndAfter(ctx, s.committer, string(id), off)
 }
 
+// slotHolder is the optional upload-window capability: the upload chain
+// acquires a slot per in-flight block before spawning its commit goroutine,
+// so at most `window` blocks (and their arenas) are in flight at once.
+// Declared here so a sink signature change fails the build instead of
+// silently running unbounded at runtime.
+type slotHolder interface {
+	acquireSlot(ctx context.Context) error
+	releaseSlot()
+}
+
+// AcquireSlot takes one upload-window slot, blocking while the pass window
+// is full. Cancellation returns the error and the caller skips the block.
+func (s engineBlockSink) AcquireSlot(ctx context.Context) error {
+	if s.uploadSlots == nil {
+		return nil
+	}
+	if err := s.uploadSlots.Acquire(ctx); err != nil {
+		return fmt.Errorf("flush: upload slot: %w", err)
+	}
+	return nil
+}
+
+// ReleaseSlot returns the slot the chain acquired for one in-flight block.
+func (s engineBlockSink) ReleaseSlot() {
+	if s.uploadSlots != nil {
+		s.uploadSlots.Release()
+	}
+}
+
 // ManifestRowEndAfter answers the run-extension query for the remote-backed
 // sink.
 func (s engineBlockSink) ManifestRowEndAfter(ctx context.Context, id journal.FileID, off int64) (int64, error) {
@@ -343,9 +372,10 @@ type engineBlockSink struct {
 	rbs         remote.RemoteBlockStore
 	committer   blockCommitter
 	commitLocks *carveCommitLocks
-	// uploadSlots bounds concurrent PutBlock calls: each block holds a slot
-	// around its upload, so at most Limit() uploads (and their arenas) are in
-	// flight per pass. Nil means unbounded (test fixtures).
+	// uploadSlots bounds concurrent flush blocks: the upload chain acquires a
+	// slot per in-flight block before spawning its commit goroutine, so at
+	// most `window` blocks (and their arenas) are in flight at once. Nil
+	// means unbounded (test fixtures).
 	uploadSlots *syncer.DynamicSemaphore
 	// onBlockCommitted reports each block as it lands, carrying the block's
 	// uploaded byte count. Reporting here rather than after a flush pass
@@ -425,17 +455,10 @@ func (s engineBlockSink) CommitBlock(ctx context.Context, chunks []CarveChunk) e
 	blockHash := block.ContentHash(blake3.Sum256(blockBytes))
 
 	// PutBlock first: a crash before the commit leaves an orphan block (GC
-	// reclaims it), never an unbacked record. The upload holds an upload slot
-	// so concurrent commits never exceed the pass's window.
-	if s.uploadSlots != nil {
-		if err := s.uploadSlots.Acquire(ctx); err != nil {
-			return fmt.Errorf("flush: upload slot %s: %w", blockID, err)
-		}
-	}
+	// reclaims it), never an unbacked record. The upload slot is held by the
+	// upload chain (acquired before this goroutine spawned), so concurrent
+	// blocks never exceed the pass's window.
 	err = s.rbs.PutBlock(ctx, blockID, bytes.NewReader(blockBytes))
-	if s.uploadSlots != nil {
-		s.uploadSlots.Release()
-	}
 	if err != nil {
 		return fmt.Errorf("flush: put block %s: %w", blockID, err)
 	}
