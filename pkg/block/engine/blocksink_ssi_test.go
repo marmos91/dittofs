@@ -125,12 +125,15 @@ func TestLocalBlockSink_ConcurrentReapAndCommit_NoSSIConflict(t *testing.T) {
 			<-start
 			if i%2 == 0 {
 				data := []byte{byte(i), byte(i >> 8), 0xab, 0xcd}
-				errs[i] = sink.CommitBlock(ctx, []journal.CarveChunk{{
+				err := sink.CommitBlock(ctx, []journal.CarveChunk{{
 					FileID:     journal.FileID(pid),
 					FileOffset: int64(i) * 4096,
 					Hash:       journal.ChunkHash(blake3.Sum256(data)),
 					Data:       data,
 				}})
+				errsMu.Lock()
+				errs[i] = err
+				errsMu.Unlock()
 				return
 			}
 			// A disjoint span from every commit above, so a correct

@@ -480,6 +480,17 @@ func (m *RemoteSync) SyncCounts() (completed, failed int) {
 // leave the progress signal flat for that whole time.
 func (m *RemoteSync) noteBlockCommitted(bytes int64) {
 	m.completedSyncs.Add(1)
+}
+
+// noteBlockUploaded records one successful remote PutBlock — the adaptive
+// controller's byte sample. Called inside the sink's upload-window bracket so
+// the goodput signal measures the operation the window controls: a stalled
+// metadata commit or flip after the upload would otherwise leave a control
+// interval with a saturated TakePeak but zero bytes, misclassifying the
+// interval as a goodput collapse and backing off though the uploads succeeded.
+// uploadErrWindow is incremented by carvePass on carve failure only — a block
+// that reaches remote is not an upload error regardless of its commit fate.
+func (m *RemoteSync) noteBlockUploaded(bytes int64) {
 	m.uploadedBytesWindow.Add(bytes)
 }
 
@@ -852,7 +863,7 @@ func (m *RemoteSync) wireCarveTargets() {
 			return // remote configured but deps not fully wired yet
 		}
 		deduper := engineDeduper{synced: m.syncedHashStore}
-		sink := engineBlockSink{sealer: m.chunkSealer, rbs: m.remoteBlockStore, committer: m.blockCommitter, commitLocks: &carveCommitLocks{}, onBlockCommitted: m.noteBlockCommitted, uploadLimiter: m.uploadLimiter, metrics: m.dataplaneMetrics}
+		sink := engineBlockSink{sealer: m.chunkSealer, rbs: m.remoteBlockStore, committer: m.blockCommitter, commitLocks: &carveCommitLocks{}, onBlockCommitted: m.noteBlockCommitted, onBlockUploaded: m.noteBlockUploaded, uploadLimiter: m.uploadLimiter, metrics: m.dataplaneMetrics}
 		m.local.SetCarveTargets(deduper, sink)
 		m.carveTargetsWired = true
 		return

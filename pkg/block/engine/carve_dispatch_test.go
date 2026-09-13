@@ -69,7 +69,9 @@ func TestCarvePass_FansOutBoundedByCarvePasses(t *testing.T) {
 		fl.files[i] = fmt.Sprintf("file-%d", i)
 	}
 	m := &RemoteSync{
-		local:         fl,
+		local: fl,
+		// The PUT-window limiter is inert here (its Acquire lives in the sink,
+		// not carvePass); the pass cap above is what this test pins.
 		uploadLimiter: syncer.NewDynamicSemaphore(AdaptiveUploadFloor),
 		carvePasses:   syncer.NewDynamicSemaphore(DefaultCarvePasses),
 		stopCh:        make(chan struct{}),
@@ -105,8 +107,11 @@ func TestCarvePass_FansOutBoundedByCarvePasses(t *testing.T) {
 
 // TestCarvePass_FansOutUnbounded passes every file to local.Carve concurrently:
 // carvePass carves every file (with its FileID set) and runs them all at once.
-// Concurrent PutBlock calls across all passes are bounded by the engine's
-// upload window acquired in the block sink itself
+// The limiter is sized BELOW the file count on purpose: if a per-pass
+// uploadLimiter.Acquire ever reappears in carvePass, the sixth file cannot
+// enter and this test fails — the regression is caught, not masked by a
+// limiter wider than the fan-out. Concurrent PutBlock calls across all passes
+// are bounded by the engine's upload window acquired in the block sink itself
 // (TestBlockSink_EnforcesUploadWindow); concurrent passes are bounded by
 // carvePasses (TestCarvePass_FansOutBoundedByCarvePasses).
 func TestCarvePass_FansOutUnbounded(t *testing.T) {
@@ -118,7 +123,7 @@ func TestCarvePass_FansOutUnbounded(t *testing.T) {
 	}
 	m := &RemoteSync{
 		local:         fl,
-		uploadLimiter: syncer.NewDynamicSemaphore(AdaptiveUploadFloor),
+		uploadLimiter: syncer.NewDynamicSemaphore(3),
 		stopCh:        make(chan struct{}),
 		config:        DefaultConfig(),
 	}
@@ -212,10 +217,14 @@ func TestBlockSink_EnforcesUploadWindow(t *testing.T) {
 	close(gate.gate)
 	wg.Wait()
 
+	// The violation attempt is observed BEFORE the gate opens: had the probe
+	// opened the gate on the first entries alone, later callers could enter
+	// after the counter dropped and a broken limiter would pass unnoticed.
+	require.False(t, exceeded.Load(), "in-flight PUTs exceeded the upload window")
+
 	for i, err := range errs {
 		require.NoErrorf(t, err, "CommitBlock %d surfaced an error", i)
 	}
-	require.False(t, exceeded.Load(), "in-flight PUTs exceeded the upload window")
 }
 
 // windowProbeRemote wraps a block-keyed remote and flags any moment where the

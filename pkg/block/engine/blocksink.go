@@ -287,6 +287,11 @@ type engineBlockSink struct {
 	// force-carves in one call that can run for many minutes, and its supervisor
 	// reads these counters as a liveness signal. Nil in fixtures that don't care.
 	onBlockCommitted func(bytes int64)
+	// onBlockUploaded reports one successful remote PutBlock, called inside the
+	// upload-window bracket so the adaptive goodput sample measures the upload
+	// the window controls (a stalled commit after the upload must not read as a
+	// goodput collapse). Nil in fixtures that don't drive the adaptive path.
+	onBlockUploaded func(bytes int64)
 }
 
 func (s engineBlockSink) CommitBlock(ctx context.Context, chunks []journal.CarveChunk) error {
@@ -387,6 +392,13 @@ func (s engineBlockSink) CommitBlock(ctx context.Context, chunks []journal.Carve
 	}
 	if putErr != nil {
 		return fmt.Errorf("carve: put block %s: %w", blockID, putErr)
+	}
+	// Uploaded bytes are recorded inside the bracket (before release would
+	// drop a releasing slot's contribution; after the commit path would let a
+	// stalled commit read as a goodput collapse) — the goodput signal must
+	// measure the upload the window controls.
+	if s.onBlockUploaded != nil {
+		s.onBlockUploaded(int64(len(blockBytes)))
 	}
 
 	rec := block.BlockRecord{

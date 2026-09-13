@@ -46,14 +46,16 @@ const s3HTTPRequestTimeout = 2 * time.Minute
 // adaptive ceiling (engine.AdaptiveUploadCeiling, 256) also cannot exceed, so
 // PUTs and the download workers (default 32) share one pool of 256 conns.
 // When PUTs sit at the ceiling, downloads queue behind them in the pool rather
-// than erroring — the starvation policy. That is deliberate: the adaptive
-// controller only reaches the ceiling when the link is actually saturating, at
-// which point queueing cold reads behind PUTs is correct, and each queued
-// fetch still completes well inside the engine's demand-fetch budget (a 60s
-// client-blocking bound). Revisit with separate pools or a partitioned budget
-// only if a profile at real 256-conn load shows fetch-budget overruns. 256
-// conns are created on demand, not preallocated. Defined locally rather than
-// imported from engine to avoid a dependency cycle.
+// than erroring — the starvation policy. The bound is NOT guaranteed: a queued
+// GET can spend its whole request budget waiting for a connection (a PUT may
+// hold its connection for up to the 2-minute request timeout), and a cold read
+// whose demand-fetch budget expires while queued fails closed with retry. That
+// is the accepted trade-off: the adaptive controller only reaches the ceiling
+// when the link is saturating, reserving conns for reads would not create
+// uplink bandwidth, and StorageGrid-style separated read/write pools are the
+// upgrade path if a profile shows fetch-budget overruns. 256 conns are created
+// on demand, not preallocated. Defined locally rather than imported from
+// engine to avoid a dependency cycle.
 const maxS3ConnsPerHost = 256
 
 // Compile-time interface satisfaction check.
