@@ -103,11 +103,17 @@ func writeCommitDelta(t *testing.T, flags uint32, dialect types.Dialect) (durabl
 // TestWrite_WriteThrough_CommitsMetadataDurably proves a write-through WRITE
 // takes the strict metadata commit inline, before the response is produced,
 // in place of the deferred one the default path takes.
+//
+// The durable delta is 3, not 1: the write-through flush populates the
+// FileChunk manifest transactionally (the carved-chunks commit and the
+// pass-end reap), alongside the pending-write commit itself. That manifest
+// population is the durability point's substrate — without it a local-only
+// clone/snapshot resolves no chunks — and it rides the same strict entrypoint.
 func TestWrite_WriteThrough_CommitsMetadataDurably(t *testing.T) {
 	durable, relaxed := writeCommitDelta(t, writeFlagWriteThrough, 0)
 
-	if durable != 1 {
-		t.Fatalf("write-through added %d durable metadata commit(s) over a plain WRITE, want 1: "+
+	if durable != 3 {
+		t.Fatalf("write-through added %d durable metadata commit(s) over a plain WRITE, want 3 (pending write + manifest commit + reap): "+
 			"the requested durability point was dropped", durable)
 	}
 	if relaxed != -1 {
