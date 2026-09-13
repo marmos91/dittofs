@@ -187,9 +187,12 @@ func (s *Store) Flush(ctx context.Context, id FileID, opts FlushOptions, fn Flus
 	// AfterFile is mandatory and runs under the flush lock, whatever the
 	// outcome above. The reap cannot move outside the lock: releasing at
 	// Flush return lets the next pass commit rows inside this pass's
-	// about-to-be-reaped span before the delayed reap lands.
+	// about-to-be-reaped span before the delayed reap lands. The context is
+	// detached from cancellation so a cancelled pass still reaps: a dead ctx
+	// would fail the metadata transaction and strand the rows the committed
+	// tiling superseded.
 	if fnCalled && opts.AfterFile != nil {
-		if aerr := opts.AfterFile(ctx, id); aerr != nil && firstErr == nil {
+		if aerr := opts.AfterFile(context.WithoutCancel(ctx), id); aerr != nil && firstErr == nil {
 			firstErr = aerr
 		}
 	}

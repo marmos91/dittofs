@@ -845,9 +845,11 @@ func (m *RemoteSync) flushFn() (journal.FlushFunc, func(context.Context, journal
 		blockSize = paramsBlockSize(params)
 	}
 	if m.remoteBlockStore != nil {
-		deduper := engineDeduper{synced: m.syncedHashStore}
-		sink := engineBlockSink{sealer: m.chunkSealer, rbs: m.remoteBlockStore, committer: m.blockCommitter, commitLocks: &carveCommitLocks{}, onBlockCommitted: m.noteBlockCommitted}
-		return newFlushClosure(m.local, params, blockSize, window, deduper, sink)
+		// One window governs concurrent PutBlock calls: blocks hold a slot from
+		// submit until CommitBlock returns, so at most `window` uploads (and
+		// their arenas) are in flight per pass.
+		sink := engineBlockSink{sealer: m.chunkSealer, rbs: m.remoteBlockStore, committer: m.blockCommitter, commitLocks: &carveCommitLocks{}, onBlockCommitted: m.noteBlockCommitted, uploadSlots: syncer.NewDynamicSemaphore(window)}
+		return newFlushClosure(m.local, params, blockSize, nil, sink)
 	}
 	// Local-only (no remote block store): the flush cannot upload, but it must
 	// still populate the FileChunk manifest (and project File.Blocks) so a
@@ -855,7 +857,7 @@ func (m *RemoteSync) flushFn() (journal.FlushFunc, func(context.Context, journal
 	// resolve the file's chunks. blockCommitter is nil only for the clone
 	// fixture, whose source has no dirty data so CommitBlock never fires.
 	sink := localBlockSink{committer: m.blockCommitter, commitLocks: &carveCommitLocks{}}
-	return newFlushClosure(m.local, params, blockSize, window, localDeduper{}, sink)
+	return newFlushClosure(m.local, params, blockSize, localDeduper{}, sink)
 }
 
 // paramsBlockSize is the block-target fallback for a local store that exposes

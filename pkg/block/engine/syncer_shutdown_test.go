@@ -124,14 +124,15 @@ func TestSyncerClose_JoinsInFlightDownloadWorker(t *testing.T) {
 }
 
 // TestSyncerClose_JoinsCarveDispatcher pins the second half of the shutdown
-// contract: Close() must not return while the background carve dispatcher is
+// contract: Close() must not return while the background flush dispatcher is
 // still inside the local store. The dispatcher touches local (and, through it,
 // the remote) and the owning Store closes both immediately after Close returns,
 // so an unjoined pass is a use-after-close.
 //
-// Deterministic: the fixture's Carve blocks until the test releases it, and the
-// syncer has no remote (DrainAllUploads short-circuits) and no queue, so the
-// goroutine join is the only thing Close can block on.
+// Deterministic: the fixture's Flush blocks until the test releases it, the
+// fixture lists a dirty file so carvePass enters local.Flush, and the syncer
+// has no remote (DrainAllUploads short-circuits) and no queue, so the goroutine
+// join is the only thing Close can block on.
 func TestSyncerClose_JoinsCarveDispatcher(t *testing.T) {
 	fl := &carveFanoutLocal{
 		files:   []string{"pinned"},
@@ -155,7 +156,7 @@ func TestSyncerClose_JoinsCarveDispatcher(t *testing.T) {
 	select {
 	case <-fl.started:
 	case <-time.After(5 * time.Second):
-		t.Fatal("carve dispatcher never entered local.Carve")
+		t.Fatal("flush dispatcher never entered local.Flush")
 	}
 
 	closeDone := make(chan struct{})
@@ -166,7 +167,7 @@ func TestSyncerClose_JoinsCarveDispatcher(t *testing.T) {
 
 	select {
 	case <-closeDone:
-		t.Fatal("RemoteSync.Close returned while a carve pass was still inside the local store — the carve dispatcher was not joined")
+		t.Fatal("RemoteSync.Close returned while a flush pass was still inside the local store — the background loop was not joined")
 	case <-time.After(150 * time.Millisecond):
 	}
 
@@ -175,10 +176,10 @@ func TestSyncerClose_JoinsCarveDispatcher(t *testing.T) {
 	select {
 	case <-closeDone:
 	case <-time.After(5 * time.Second):
-		t.Fatal("RemoteSync.Close did not return after the carve was released")
+		t.Fatal("RemoteSync.Close did not return after the flush was released")
 	}
 
 	if n := fl.inFlight.Load(); n != 0 {
-		t.Fatalf("carve still in flight after Close returned: %d", n)
+		t.Fatalf("flush still in flight after Close returned: %d", n)
 	}
 }

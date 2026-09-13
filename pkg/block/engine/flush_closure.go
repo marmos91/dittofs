@@ -12,8 +12,8 @@ import (
 )
 
 // defaultBlockUploadWindow bounds how many of one file's packed blocks are
-// committed (uploaded + committed) at once inside one flush pass. Packing
-// itself stays sequential. Matches the journal's historical default.
+// uploaded (PutBlock) at once inside one flush pass, via the sink's upload
+// semaphore. Packing itself stays sequential.
 const defaultBlockUploadWindow = 8
 
 // flushClosure is the fn + AfterFile pair one Flush pass calls back into: the
@@ -29,13 +29,11 @@ type flushClosure struct {
 	local     local.LocalStore
 	params    chunker.Params
 	blockSize int64
-	window    int
 	deduper   Deduper
 	sink      BlockSink
 
-	cv      *carver.Carver // fresh per closure (per Flush call)
-	disp    *uploadChain
-	fileOff int64 // stream cursor: next byte offset Box tiles
+	cv   *carver.Carver // fresh per closure (per Flush call)
+	disp *uploadChain
 
 	// Pass-end reap state, written by fn (sequential) and read by AfterFile
 	// after the last flip, all within the Flush call that owns this closure.
@@ -45,28 +43,17 @@ type flushClosure struct {
 
 // newFlushClosure builds the fn + AfterFile pair for one Flush pass. See the
 // type comment for the per-call freshness obligation.
-func newFlushClosure(l local.LocalStore, params chunker.Params, blockSize int64, window int, deduper Deduper, sink BlockSink) (journal.FlushFunc, func(context.Context, journal.FileID) error) {
-	if window <= 0 {
-		window = defaultBlockUploadWindow
-	}
+func newFlushClosure(l local.LocalStore, params chunker.Params, blockSize int64, deduper Deduper, sink BlockSink) (journal.FlushFunc, func(context.Context, journal.FileID) error) {
 	c := &flushClosure{
 		local:      l,
 		params:     params,
 		blockSize:  blockSize,
-		window:     window,
 		deduper:    deduper,
 		sink:       sink,
 		newOffsets: map[int64]struct{}{},
 	}
 	c.disp = newUploadChain(sink)
 	return c.fn, c.afterFile
-}
-
-// runSpan tracks one offered run's committed frontier so the reap covers
-// exactly what landed, never the range a failed upload left dirty.
-type runSpan struct {
-	start       int64
-	committedTo int64
 }
 
 // fn offers one run through the carver, submits the blocks it emits, and
@@ -85,7 +72,6 @@ func (c *flushClosure) fn(ctx context.Context, r journal.Run) ([]journal.Extent,
 				return c.deduper.IsChunkDurable(ctx, h)
 			},
 		})
-		c.fileOff = r.Extent.Off
 	}
 
 	// Widen the run to the manifest row its end lands inside, so the fresh

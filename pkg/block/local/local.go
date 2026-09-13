@@ -100,9 +100,8 @@ type LocalStore interface {
 	// Flush runs one flush pass over a file's dirty ranges: it offers each
 	// contiguous dirty run to fn and flips the fragments fn reports durable.
 	// opts.Force bypasses the age/size batching gate; id scopes it to one file
-	// (the empty id flushes every file with pending dirty bytes via a nil fn
-	// drain). Backends with no real flush (memory) may implement it as a
-	// no-op or drive their own sink from fn.
+	// (the empty id is not special — callers enumerate ListFiles and flush
+	// each id). fn is mandatory.
 	Flush(ctx context.Context, id journal.FileID, opts journal.FlushOptions, fn journal.FlushFunc) error
 
 	// UnsyncedBytes reports dirty bytes not yet carved to the remote store — the

@@ -14,6 +14,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/carver"
 	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/block/remote"
+	"github.com/marmos91/dittofs/pkg/block/syncer"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -342,6 +343,10 @@ type engineBlockSink struct {
 	rbs         remote.RemoteBlockStore
 	committer   blockCommitter
 	commitLocks *carveCommitLocks
+	// uploadSlots bounds concurrent PutBlock calls: each block holds a slot
+	// around its upload, so at most Limit() uploads (and their arenas) are in
+	// flight per pass. Nil means unbounded (test fixtures).
+	uploadSlots *syncer.DynamicSemaphore
 	// onBlockCommitted reports each block as it lands, carrying the block's
 	// uploaded byte count. Reporting here rather than after a flush pass
 	// returns is what makes the count advance *during* a long flush: the drain
@@ -420,8 +425,18 @@ func (s engineBlockSink) CommitBlock(ctx context.Context, chunks []CarveChunk) e
 	blockHash := block.ContentHash(blake3.Sum256(blockBytes))
 
 	// PutBlock first: a crash before the commit leaves an orphan block (GC
-	// reclaims it), never an unbacked record.
-	if err := s.rbs.PutBlock(ctx, blockID, bytes.NewReader(blockBytes)); err != nil {
+	// reclaims it), never an unbacked record. The upload holds an upload slot
+	// so concurrent commits never exceed the pass's window.
+	if s.uploadSlots != nil {
+		if err := s.uploadSlots.Acquire(ctx); err != nil {
+			return fmt.Errorf("flush: upload slot %s: %w", blockID, err)
+		}
+	}
+	err = s.rbs.PutBlock(ctx, blockID, bytes.NewReader(blockBytes))
+	if s.uploadSlots != nil {
+		s.uploadSlots.Release()
+	}
+	if err != nil {
 		return fmt.Errorf("flush: put block %s: %w", blockID, err)
 	}
 
