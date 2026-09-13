@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/carver"
 	"github.com/marmos91/dittofs/pkg/block/chunker"
 )
 
@@ -59,27 +58,19 @@ func TestCarveHonorsChunkParams(t *testing.T) {
 		if _, err := run.ReadAt(buf, run.Extent.Off); err != nil {
 			return nil, err
 		}
-		// Count the chunk boundaries a fresh carver with this profile cuts in the
-		// run's bytes — the seam is chunk-agnostic, so the profile's effect is the
-		// boundary count of the bytes fn receives.
-		cv := carver.New(carver.Options{Params: small})
-		for off := 0; off < len(buf); {
-			_, tiled, err := cv.Box(ctx, buf[off:], int64(off), false)
-			if err != nil {
-				return nil, err
+		// Count the chunk boundaries the configured profile cuts in the run's
+		// bytes — the same iteration directChunkCount does on the full plaintext,
+		// so both must agree (the seam is chunk-agnostic; the profile's effect is
+		// the boundary count of the bytes fn receives).
+		c := chunker.NewChunkerWithParams(small)
+		rem := buf
+		for len(rem) > 0 {
+			b, _ := c.Next(rem, true)
+			if b == 0 {
+				b = len(rem)
 			}
-			if tiled == 0 {
-				break
-			}
-			off += int(tiled)
 			cuts++
-		}
-		_, tiled, err := cv.Box(ctx, nil, int64(len(buf)), true)
-		if err != nil {
-			return nil, err
-		}
-		if tiled > 0 {
-			cuts++
+			rem = rem[b:]
 		}
 		return []Extent{run.Extent}, nil
 	}
