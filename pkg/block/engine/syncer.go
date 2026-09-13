@@ -127,7 +127,9 @@ type RemoteSync struct {
 	// carvePasses bounds concurrent whole-file carve passes: aggregate carve
 	// memory scales with files carving at once (each retains up to
 	// CarvePackAhead queued arenas), so the fan-out itself needs a fixed cap
-	// independent of the upload window. Acquired per file in carvePass.
+	// independent of the upload window. Acquired per file by the background
+	// carve dispatcher (carvePass) only — explicit Flush/SyncNow carves are
+	// operator-paced drains and bypass the cap.
 	carvePasses *syncer.DynamicSemaphore
 	// uploadController is non-nil only in adaptive mode. It consumes one
 	// (goodput, windowLimited, sawError) sample per control interval and returns
@@ -230,7 +232,8 @@ func NewRemoteSync(local local.LocalStore, remoteStore remote.RemoteStore, fileC
 		// local data, each retaining up to CarvePackAhead queued arenas. Concurrent
 		// PUTs are bounded by the sink's upload window, but aggregate memory scales
 		// with files carving at once, so the pass count itself needs a fixed cap
-		// (~10k dirty files would otherwise spawn ~10k goroutines).
+		// (~10k dirty files would otherwise spawn ~10k goroutines). Explicit
+		// Flush/SyncNow carves bypass the cap — they are operator-paced drains.
 		carvePasses: syncer.NewDynamicSemaphore(DefaultCarvePasses),
 	}
 	m.hasRemote.Store(remoteStore != nil)

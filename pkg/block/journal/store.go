@@ -72,10 +72,12 @@ type Config struct {
 	// ~20 MiB per slot, so 256 slots ≈ 5 GiB for one file. That is a real RSS
 	// ceiling: a slow remote can hold every slot through its upload latency, and
 	// a pinned ParallelUploads does not reduce it (the two knobs are independent
-	// by design). Default matches the engine's upload ceiling so it never binds
-	// concurrency first; drop it in the share's store config when that queue
-	// depth is too much RSS for one file — a share carving 4 MiB blocks wants
-	// ~64 slots (1.3 GiB) or less.
+	// by design). The default matches the engine's upload ceiling so it never
+	// binds concurrency first.
+	// NOTE: CarvePackAhead is not yet wired from the share's store config —
+	// CreateLocalStoreFromConfig never reads a carve_pack_ahead value — so
+	// every production share runs the 256 default with no operational
+	// mitigation short of a code change. Plumb it before promising tuning here.
 	// Zero falls back to the default via withDefaults.
 	CarvePackAhead int
 	// DirtyExpiry bounds how long an appended record may sit unfsynced. A

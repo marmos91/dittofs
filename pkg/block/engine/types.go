@@ -33,12 +33,14 @@ const (
 	AdaptiveUploadFloor   = 128 // starting window in adaptive mode (greedy start)
 	AdaptiveUploadCeiling = 256 // max window the adaptive controller ramps to (= MaxParallelUploads)
 	AdaptiveUploadDefault = 0   // ParallelUploads sentinel: 0 = adaptive auto-tune
-	MaxParallelUploads    = 256 // upper bound on the upload window, enforced by the sink's semaphore
+	MaxParallelUploads    = 256 // upper bound on carver PUTs, enforced by the sink's semaphore (GC compaction PUTs bypass it)
 
 	// DefaultCarvePasses caps concurrent whole-file carve passes: aggregate
 	// carve memory scales with files carving at once (each retains up to
-	// CarvePackAhead queued arenas), so the fan-out itself needs a fixed cap
-	// independent of the upload window.
+	// CarvePackAhead queued arenas), so the fan-out itself needs a cap
+	// independent of the upload window. Acquired per file by the background
+	// carve dispatcher (carvePass) only — explicit Flush/SyncNow carves are
+	// operator-paced drains and bypass the cap.
 	DefaultCarvePasses = 128
 )
 

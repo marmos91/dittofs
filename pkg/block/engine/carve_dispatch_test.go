@@ -163,12 +163,12 @@ func TestBlockSink_EnforcesUploadWindow(t *testing.T) {
 	)
 	limiter := syncer.NewDynamicSemaphore(limit)
 
-	// windowProbeRemote brackets the underlying remote's PutBlock with a
-	// blocking gate: each PUT holds a slot until the NEXT PUT arrives, so any
-	// window violation (limit+1 concurrent) is forced deterministically rather
-	// than raced. The first PUT blocks; PUT k+1's arrival proves k was still
-	// holding its slot, i.e. limit was exceeded the moment the counter hit
-	// limit+1 — flagged by the counter itself before the gate releases.
+	// windowProbeRemote holds every PUT on a shared gate: PUTs enter, count
+	// themselves, and block until the test releases the gate. The gate is
+	// closed by the probe itself once limit entries are held, so the
+	// limit+1th entry happens while all allowed entries are provably held —
+	// any window violation is forced deterministically, flagged by the
+	// counter before the gate opens, not dependent on scheduling luck.
 	var (
 		inFlight atomic.Int32
 		exceeded atomic.Bool
@@ -201,6 +201,15 @@ func TestBlockSink_EnforcesUploadWindow(t *testing.T) {
 		}(i)
 	}
 	close(start)
+
+	// The probe closes held once limit entries are in flight; the test then
+	// closes gate, so every entry — allowed or violating — is held across the
+	// violation attempt and released to complete. With a broken limiter the
+	// limit+1th entry is forced (overshot closes) while the allowed entries
+	// are provably held; with a correct limiter the remaining entries park in
+	// the semaphore until the gate opens and the counter never exceeds limit.
+	<-gate.held
+	close(gate.gate)
 	wg.Wait()
 
 	for i, err := range errs {
@@ -212,8 +221,9 @@ func TestBlockSink_EnforcesUploadWindow(t *testing.T) {
 // windowProbeRemote wraps a block-keyed remote and flags any moment where the
 // number of concurrent PutBlock calls inside the sink's upload window exceeds
 // the limit. The counter is checked on the PutBlock critical path so the flag
-// cannot fire in a gap between calls, and each PUT blocks until its successor
-// arrives, so with limit+1 PUTs in flight the exceedance is forced, not raced.
+// cannot fire in a gap between calls; PUTs 1..limit hold on the shared gate
+// (closed by the probe itself once limit entries are held), so the limit+1th
+// entry is forced while all allowed entries are provably held.
 // Embedded pointer, not value: an embedded value's copy would carry the
 // underlying store's mutex.
 type windowProbeRemote struct {
@@ -221,32 +231,36 @@ type windowProbeRemote struct {
 	inFlight *atomic.Int32
 	exceeded *atomic.Bool
 	limit    int32
-	// prev is closed by each PUT when its successor enters PutBlock, chaining
-	// the gate so slots are provably held across the boundary.
-	prev chan struct{}
-	mu   sync.Mutex
+	// held is closed by the first PUT whose entry reaches limit, telling the
+	// test the allowed entries are in flight. overshot is closed by the first
+	// PUT whose entry exceeds limit — with a broken limiter that entry is
+	// forced while the allowed entries are provably held on gate, so the
+	// violation is deterministic, not dependent on scheduling luck.
+	held     chan struct{}
+	overshot chan struct{}
+	heldOnce sync.Once
+	shotOnce sync.Once
+	// gate is closed by the test after the violation attempt, releasing every
+	// held entry to complete; nothing hangs in either the correct or broken
+	// limiter case.
+	gate chan struct{}
 }
 
 func newWindowProbeRemote(mem *remotememory.Store, inFlight *atomic.Int32, exceeded *atomic.Bool, limit int32) *windowProbeRemote {
-	return &windowProbeRemote{store: mem, inFlight: inFlight, exceeded: exceeded, limit: limit, prev: make(chan struct{})}
+	return &windowProbeRemote{store: mem, inFlight: inFlight, exceeded: exceeded, limit: limit, held: make(chan struct{}), overshot: make(chan struct{}), gate: make(chan struct{})}
 }
 
 func (w *windowProbeRemote) PutBlock(ctx context.Context, id string, r io.Reader) error {
 	n := w.inFlight.Add(1)
+	defer w.inFlight.Add(-1)
+	if n == w.limit {
+		w.heldOnce.Do(func() { close(w.held) })
+	}
 	if n > w.limit {
 		w.exceeded.Store(true)
+		w.shotOnce.Do(func() { close(w.overshot) })
 	}
-	defer w.inFlight.Add(-1)
-	// Chained gate: PUT k closes its slot the moment PUT k+1 enters PutBlock,
-	// so exceedance is observed at entry. The read-modify-write of w.prev is
-	// guarded by a mutex — two PUTs entering between each other's read and
-	// write would otherwise orphan one's slot (and the race detector flags the
-	// unsynchronized swap).
-	w.mu.Lock()
-	this := w.prev
-	w.prev = make(chan struct{})
-	w.mu.Unlock()
-	close(this)
+	<-w.gate
 	return w.store.PutBlock(ctx, id, r)
 }
 
