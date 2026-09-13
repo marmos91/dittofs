@@ -44,10 +44,16 @@ const s3HTTPRequestTimeout = 2 * time.Minute
 // sink's upload window (#1407): it matches the maximum a user can pin
 // via --parallel-uploads (validateParallelUploads allows up to 256), which the
 // adaptive ceiling (engine.AdaptiveUploadCeiling, 256) also cannot exceed, so
-// PUTs never exhaust the pool while the download workers (32) share the same
-// host — when PUTs sit at the ceiling, downloads queue behind them in the
-// pool. 256 conns are created on demand, not preallocated. Defined locally
-// rather than imported from engine to avoid a dependency cycle.
+// PUTs and the download workers (default 32) share one pool of 256 conns.
+// When PUTs sit at the ceiling, downloads queue behind them in the pool rather
+// than erroring — the starvation policy. That is deliberate: the adaptive
+// controller only reaches the ceiling when the link is actually saturating, at
+// which point queueing cold reads behind PUTs is correct, and each queued
+// fetch still completes well inside the engine's demand-fetch budget (a 60s
+// client-blocking bound). Revisit with separate pools or a partitioned budget
+// only if a profile at real 256-conn load shows fetch-budget overruns. 256
+// conns are created on demand, not preallocated. Defined locally rather than
+// imported from engine to avoid a dependency cycle.
 const maxS3ConnsPerHost = 256
 
 // Compile-time interface satisfaction check.

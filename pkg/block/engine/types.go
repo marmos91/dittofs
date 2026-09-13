@@ -34,6 +34,12 @@ const (
 	AdaptiveUploadCeiling = 256 // max window the adaptive controller ramps to (= MaxParallelUploads)
 	AdaptiveUploadDefault = 0   // ParallelUploads sentinel: 0 = adaptive auto-tune
 	MaxParallelUploads    = 256 // upper bound on the upload window, enforced by the sink's semaphore
+
+	// DefaultCarvePasses caps concurrent whole-file carve passes: aggregate
+	// carve memory scales with files carving at once (each retains up to
+	// CarvePackAhead queued arenas), so the fan-out itself needs a fixed cap
+	// independent of the upload window.
+	DefaultCarvePasses = 128
 )
 
 // uploadControlInterval is how often the adaptive controller samples goodput and

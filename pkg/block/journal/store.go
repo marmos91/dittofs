@@ -68,12 +68,14 @@ type Config struct {
 	// queue per file, bounding the arenas live while they wait.
 	// Peak carve RAM per file is window x (CarveBlockSize + one ChunkParams.Max
 	// chunk) for the block arenas, plus the single chunker scratch buffer of
-	// chunker.MaxChunkSize the pass holds — roughly 1 GiB at the default with a
-	// 4 MiB CarveBlockSize. Default matches the engine's upload ceiling so it
-	// never binds first; drop it in the share's store config when a slow remote
-	// makes that queue depth too much RSS for one file. A pinned
-	// ParallelUploads no longer reduces this (it only bounds the upload
-	// window), so the two knobs are independent by design.
+	// chunker.MaxChunkSize the pass holds — at the default profile that is
+	// ~20 MiB per slot, so 256 slots ≈ 5 GiB for one file. That is a real RSS
+	// ceiling: a slow remote can hold every slot through its upload latency, and
+	// a pinned ParallelUploads does not reduce it (the two knobs are independent
+	// by design). Default matches the engine's upload ceiling so it never binds
+	// concurrency first; drop it in the share's store config when that queue
+	// depth is too much RSS for one file — a share carving 4 MiB blocks wants
+	// ~64 slots (1.3 GiB) or less.
 	// Zero falls back to the default via withDefaults.
 	CarvePackAhead int
 	// DirtyExpiry bounds how long an appended record may sit unfsynced. A

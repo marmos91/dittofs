@@ -124,6 +124,11 @@ type RemoteSync struct {
 	// fixed at that value. When unset (adaptive mode) the uploadController
 	// resizes it every control interval to track the goodput knee.
 	uploadLimiter *syncer.DynamicSemaphore
+	// carvePasses bounds concurrent whole-file carve passes: aggregate carve
+	// memory scales with files carving at once (each retains up to
+	// CarvePackAhead queued arenas), so the fan-out itself needs a fixed cap
+	// independent of the upload window. Acquired per file in carvePass.
+	carvePasses *syncer.DynamicSemaphore
 	// uploadController is non-nil only in adaptive mode. It consumes one
 	// (goodput, windowLimited, sawError) sample per control interval and returns
 	// the next target window, applied to uploadLimiter by the control goroutine.
@@ -220,6 +225,13 @@ func NewRemoteSync(local local.LocalStore, remoteStore remote.RemoteStore, fileC
 
 		uploadLimiter:    syncer.NewDynamicSemaphore(startWindow),
 		uploadController: uploadController,
+
+		// carvePasses bounds the whole-file fan-out: one goroutine per file with
+		// local data, each retaining up to CarvePackAhead queued arenas. Concurrent
+		// PUTs are bounded by the sink's upload window, but aggregate memory scales
+		// with files carving at once, so the pass count itself needs a fixed cap
+		// (~10k dirty files would otherwise spawn ~10k goroutines).
+		carvePasses: syncer.NewDynamicSemaphore(DefaultCarvePasses),
 	}
 	m.hasRemote.Store(remoteStore != nil)
 	m.recomputeCarveActive()

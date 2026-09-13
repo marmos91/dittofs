@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"sync"
 	"sync/atomic"
@@ -51,12 +52,63 @@ func (f *carveFanoutLocal) Carve(_ context.Context, opts journal.CarveOptions) (
 	return journal.CarveResult{BytesCarved: 1, BlocksWritten: 1}, nil
 }
 
+// TestCarvePass_FansOutBoundedByCarvePasses pins the per-file cap: at most
+// DefaultCarvePasses files enter local.Carve concurrently. Concurrent PutBlock
+// calls across all passes are separately bounded by the sink's upload window
+// (TestBlockSink_EnforcesUploadWindow); this test pins the aggregate-memory
+// bound — each carving file retains up to CarvePackAhead queued arenas, so the
+// pass count itself needs a cap independent of the upload window.
+func TestCarvePass_FansOutBoundedByCarvePasses(t *testing.T) {
+	fl := &carveFanoutLocal{
+		files:   make([]string, DefaultCarvePasses+4),
+		started: make(chan string, DefaultCarvePasses+4),
+		release: make(chan struct{}),
+		carved:  map[string]int{},
+	}
+	for i := range fl.files {
+		fl.files[i] = fmt.Sprintf("file-%d", i)
+	}
+	m := &RemoteSync{
+		local:         fl,
+		uploadLimiter: syncer.NewDynamicSemaphore(AdaptiveUploadFloor),
+		carvePasses:   syncer.NewDynamicSemaphore(DefaultCarvePasses),
+		stopCh:        make(chan struct{}),
+		config:        DefaultConfig(),
+	}
+
+	go func() { m.carvePass(context.Background()) }()
+
+	// Exactly DefaultCarvePasses carves enter; the rest are blocked on slots.
+	for i := 0; i < DefaultCarvePasses; i++ {
+		select {
+		case <-fl.started:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("carve %d never entered local.Carve", i)
+		}
+	}
+	select {
+	case id := <-fl.started:
+		t.Fatalf("carve %q entered past the cap", id)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	close(fl.release) // drain and release all slots
+	// The remaining 4 files now enter.
+	for i := 0; i < 4; i++ {
+		select {
+		case <-fl.started:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("carve %d never entered after a slot freed", i)
+		}
+	}
+}
+
 // TestCarvePass_FansOutUnbounded passes every file to local.Carve concurrently:
 // carvePass carves every file (with its FileID set) and runs them all at once.
-// There is no per-pass limit — concurrent PutBlock calls across all passes are
-// bounded by the engine's upload window acquired in the block sink itself
-// (TestBlockSink_EnforcesUploadWindow), so limiting passes here would only
-// delay uploads the global window could already admit.
+// Concurrent PutBlock calls across all passes are bounded by the engine's
+// upload window acquired in the block sink itself
+// (TestBlockSink_EnforcesUploadWindow); concurrent passes are bounded by
+// carvePasses (TestCarvePass_FansOutBoundedByCarvePasses).
 func TestCarvePass_FansOutUnbounded(t *testing.T) {
 	fl := &carveFanoutLocal{
 		files:   []string{"a", "b", "c", "d", "e"},

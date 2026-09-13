@@ -95,14 +95,28 @@ func (m *RemoteSync) carvePass(ctx context.Context) {
 		if stop {
 			break
 		}
+		// Per-file pass slot: aggregate carve memory scales with files carving
+		// at once (each retains up to CarvePackAhead queued arenas), so the
+		// fan-out is capped here, independent of the sink's upload window. The
+		// slot is held for the file's whole carve, released when it returns.
+		if m.carvePasses != nil {
+			if err := m.carvePasses.Acquire(ctx); err != nil {
+				break
+			}
+		}
 		wg.Add(1)
 		go func(fileID string) {
 			defer wg.Done()
+			defer func() {
+				if m.carvePasses != nil {
+					m.carvePasses.Release()
+				}
+			}()
 			// Success needs no bookkeeping here: the sink feeds the goodput sample
 			// and the completed-sync counter as each block lands, which keeps both
 			// advancing during a pass rather than only at its end. Concurrent PUTs
 			// across all passes are bounded by the engine's upload window in the
-			// block sink itself, which is the invariant — no per-pass limit here.
+			// block sink itself; concurrent passes are bounded by carvePasses.
 			if _, err := m.local.Carve(ctx, journal.CarveOptions{FileID: journal.FileID(fileID)}); err != nil {
 				m.uploadErrWindow.Add(1)
 				m.failedSyncs.Add(1)
