@@ -21,9 +21,10 @@ import (
 // the whole interface, so it is deliberately one wide interface rather than
 // composable slices — see the ponytail note below.
 //
-// The carve seam is journal's: SetCarveTargets injects the dedup oracle + block
-// sink, and Carve packs dirty ranges into remote blocks (writing the FileChunk
-// manifest rows inside the sink's commit transaction). Cold reads resolve
+// The carve seam is journal's Flush: callers enumerate journal ListFiles per
+// file id (the empty id is not special) and pass a reading fn plus an AfterFile
+// reap; the sink commits the FileChunk manifest rows inside the flush's
+// transaction. Cold reads resolve
 // through the block-hash → locator + FileChunk rows and Hydrate the fetched
 // bytes back into the local tier.
 //
