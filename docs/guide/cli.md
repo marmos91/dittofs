@@ -705,11 +705,6 @@ Global flags:
       - [`dfsctl store block gc`](#dfsctl-store-block-gc) — Run garbage collection for a block store share
       - [`dfsctl store block gc-status`](#dfsctl-store-block-gc-status) — Show the last block-store GC run summary for a share
       - [`dfsctl store block health`](#dfsctl-store-block-health) — Check block store health
-      - [`dfsctl store block local`](#dfsctl-store-block-local) — Local block store management
-        - [`dfsctl store block local add`](#dfsctl-store-block-local-add) — Add a local block store
-        - [`dfsctl store block local edit`](#dfsctl-store-block-local-edit) — Edit a local block store
-        - [`dfsctl store block local list`](#dfsctl-store-block-local-list) — List local block stores
-        - [`dfsctl store block local remove`](#dfsctl-store-block-local-remove) — Remove a local block store
       - [`dfsctl store block reclaim`](#dfsctl-store-block-reclaim) — Reclaim orphaned block storage (deletes; use --dry-run to preview)
       - [`dfsctl store block reconcile`](#dfsctl-store-block-reconcile) — Report orphaned block storage (read-only; no deletes)
       - [`dfsctl store block remote`](#dfsctl-store-block-remote) — Remote block store management
@@ -5395,14 +5390,8 @@ dfsctl store metadata list
 # Add a new metadata store
 dfsctl store metadata add --name new-meta --type memory
 
-# List local block stores
-dfsctl store block local list
-
 # List remote block stores
 dfsctl store block remote list
-
-# Add a local block store
-dfsctl store block local add --name fs-cache --type fs --config '{"path":"/data/blocks"}'
 
 # Add a remote block store
 dfsctl store block remote add --name s3-store --type s3 --config '{"bucket":"my-bucket"}'
@@ -5426,21 +5415,15 @@ Global flags:
 
 Block store management
 
-Manage local and remote block stores on the DittoFS server.
+Manage remote block stores on the DittoFS server.
 
-Block stores hold file content data as blocks. Local block stores provide
-fast disk-backed storage, while remote block stores provide durable cloud
-storage (e.g., S3).
+Block stores hold file content data as blocks. Each share keeps a local
+journal on disk; a remote block store backs it with durable cloud storage
+(e.g., S3).
 
 **Examples:**
 
 ```bash
-# List local block stores
-dfsctl store block local list
-
-# Add a local filesystem block store
-dfsctl store block local add --name fs-cache --type fs --config '{"path":"/data/blocks"}'
-
 # List remote block stores
 dfsctl store block remote list
 
@@ -5709,8 +5692,6 @@ Check block store health
 
 Perform a health check on a block store configuration.
 
-For local filesystem stores, checks if the path exists and is writable.
-For local memory stores, always reports healthy.
 For remote S3 stores, performs a HeadBucket call to verify connectivity.
 For remote memory stores, always reports healthy.
 
@@ -5721,9 +5702,6 @@ dfsctl store block health [flags]
 **Examples:**
 
 ```bash
-# Check health of a local block store
-dfsctl store block health --kind local --name fs-cache
-
 # Check health of a remote block store
 dfsctl store block health --kind remote --name s3-store
 
@@ -5734,247 +5712,8 @@ dfsctl store block health --kind remote --name s3-store -o json
 Flags:
 
 ```
-      --kind string   Block store kind: local or remote (required)
+      --kind string   Block store kind: remote (required)
       --name string   Block store name (required)
-```
-
-Global flags:
-
-```
-      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
-      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
-      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
-      --no-color             Disable colored output
-  -o, --output string        Output format (table|json|yaml) (default "table")
-      --server string        Server URL (overrides stored credential)
-      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
-      --token string         Bearer token (overrides stored credential)
-  -v, --verbose              Enable verbose output
-```
-
-### `dfsctl store block local`
-
-Local block store management
-
-Manage local block stores on the DittoFS server.
-
-Local block stores provide fast disk-backed storage for file content blocks.
-Supported types: fs (filesystem), memory (testing)
-
-**Examples:**
-
-```bash
-# List local block stores
-dfsctl store block local list
-
-# Add a filesystem block store
-dfsctl store block local add --name fs-cache --type fs --config '{"path":"/data/blocks"}'
-
-# Add a memory block store (for testing)
-dfsctl store block local add --name test-local --type memory
-```
-
-Global flags:
-
-```
-      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
-      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
-      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
-      --no-color             Disable colored output
-  -o, --output string        Output format (table|json|yaml) (default "table")
-      --server string        Server URL (overrides stored credential)
-      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
-      --token string         Bearer token (overrides stored credential)
-  -v, --verbose              Enable verbose output
-```
-
-### `dfsctl store block local add`
-
-Add a local block store
-
-Add a new local block store to the DittoFS server.
-
-Supported types:
-
-```
-- fs: Filesystem-backed block store (fast, persistent)
-- memory: In-memory block store (fast, ephemeral, for testing)
-```
-
-Type-specific options:
-
-```
-fs:
-  --path: Block directory path (or prompted interactively)
-```
-
-```
-dfsctl store block local add [flags]
-```
-
-**Examples:**
-
-```bash
-# Add a filesystem block store
-dfsctl store block local add --name fs-cache --type fs --path /data/blocks
-
-# Add with JSON config
-dfsctl store block local add --name fs-cache --type fs --config '{"path":"/data/blocks"}'
-
-# Add a memory store (for testing)
-dfsctl store block local add --name test-local --type memory
-
-# Add interactively (prompts for path)
-dfsctl store block local add --name fs-cache --type fs
-```
-
-Flags:
-
-```
-      --config string   Store configuration as JSON
-      --name string     Store name (required)
-      --path string     Block directory path (for fs type)
-      --type string     Store type: fs, memory (default "fs")
-```
-
-Global flags:
-
-```
-      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
-      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
-      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
-      --no-color             Disable colored output
-  -o, --output string        Output format (table|json|yaml) (default "table")
-      --server string        Server URL (overrides stored credential)
-      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
-      --token string         Bearer token (overrides stored credential)
-  -v, --verbose              Enable verbose output
-```
-
-### `dfsctl store block local edit`
-
-Edit a local block store
-
-Edit an existing local block store configuration.
-
-When run without flags, opens an interactive editor to modify store properties.
-When flags are provided, only the specified fields are updated.
-
-```
-dfsctl store block local edit <name> [flags]
-```
-
-**Examples:**
-
-```bash
-# Edit interactively
-dfsctl store block local edit default-local
-
-# Update config with JSON
-dfsctl store block local edit default-local --config '{"path":"/new/path"}'
-
-# Update path for fs store
-dfsctl store block local edit default-local --path /new/path
-```
-
-Flags:
-
-```
-      --config string   Store configuration as JSON
-      --path string     Block directory path (for fs type)
-      --type string     Store type: fs, memory
-```
-
-Global flags:
-
-```
-      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
-      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
-      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
-      --no-color             Disable colored output
-  -o, --output string        Output format (table|json|yaml) (default "table")
-      --server string        Server URL (overrides stored credential)
-      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
-      --token string         Bearer token (overrides stored credential)
-  -v, --verbose              Enable verbose output
-```
-
-### `dfsctl store block local list`
-
-List local block stores
-
-List all local block stores on the DittoFS server.
-
-Shows the name, ID, type (fs or memory), and configuration of each registered
-local block store. Other sub-commands accept either form, so this is where you
-find both. Use it to confirm which stores exist before adding, editing, or
-running health checks against one, or to map the store IDs emitted by
-'share show -o json' back to a store name ('share show' table output already
-resolves them to names).
-
-```
-dfsctl store block local list
-```
-
-**Examples:**
-
-```bash
-# List as table
-dfsctl store block local list
-
-# List as JSON
-dfsctl store block local list -o json
-
-# List as YAML
-dfsctl store block local list -o yaml
-```
-
-Global flags:
-
-```
-      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
-      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
-      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
-      --no-color             Disable colored output
-  -o, --output string        Output format (table|json|yaml) (default "table")
-      --server string        Server URL (overrides stored credential)
-      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
-      --token string         Bearer token (overrides stored credential)
-  -v, --verbose              Enable verbose output
-```
-
-### `dfsctl store block local remove`
-
-Remove a local block store
-
-Remove a local block store from the DittoFS server.
-
-The server refuses removal if any share currently references the store.
-Detach the store from all shares first, then remove it. Data on disk is
-not deleted by this command. You will be prompted for confirmation unless
---force is specified.
-
-```
-dfsctl store block local remove <name> [flags]
-```
-
-**Examples:**
-
-```bash
-# Remove with confirmation prompt
-dfsctl store block local remove fs-cache
-
-# Remove without confirmation
-dfsctl store block local remove fs-cache --force
-
-# Verify the store is gone afterward
-dfsctl store block local list
-```
-
-Flags:
-
-```
-  -f, --force   Skip confirmation prompt
 ```
 
 Global flags:

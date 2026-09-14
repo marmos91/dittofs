@@ -111,20 +111,18 @@ tier). Not sure which to pick? See [Choosing stores](choosing-stores.md).
 # Metadata: badger (durable, single-node default)
 dfsctl store metadata add --name default --type badger
 
-# Block: a local filesystem cache backed by a durable S3 remote
-dfsctl store block local add  --name local-cache --type fs
-dfsctl store block remote add --name s3-remote   --type s3
+# Block: a durable S3 remote backing each share's local journal
+dfsctl store block remote add --name s3-remote --type s3
 ```
 
 > **Want zero dependencies for a quick test?** Use `--type memory` for both the metadata
-> store and the block stores instead. Everything is then in-RAM and ephemeral — perfect
+> store and the remote block store instead. Everything is then in-RAM and ephemeral — perfect
 > for a smoke test, useless for real data.
 
 ## 6. Create a share and grant access
 
 ```bash
-dfsctl share create --name /export --metadata default \
-  --local local-cache --remote s3-remote
+dfsctl share create --name /export --metadata default --remote s3-remote
 dfsctl share permission grant /export --user $(whoami) --level read-write
 ```
 
