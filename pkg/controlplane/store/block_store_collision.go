@@ -48,9 +48,9 @@ func checkBlockStoreNameCollisions(db *gorm.DB) error {
 		fmt.Fprintf(&b, "  %q is used by more than one block store\n", n)
 	}
 	b.WriteString("\nBlock stores no longer have a kind, so their names must be unique.\n")
-	b.WriteString("Neither the CLI nor the REST API can rename a block store, so give\n")
-	b.WriteString("one store of each pair a different name directly in the control-plane\n")
-	b.WriteString("database while the server is stopped, then restart:\n")
+	b.WriteString("`dfsctl store block edit` renames a store, but it needs a running\n")
+	b.WriteString("server and this collision is what stops the server starting, so break\n")
+	b.WriteString("the tie directly in the control-plane database, then restart:\n")
 	b.WriteString("  UPDATE block_store_configs SET name = '<new name>' WHERE id = '<the row to rename>';")
 	return fmt.Errorf("%w%s", ErrBlockStoreNameCollision, b.String())
 }

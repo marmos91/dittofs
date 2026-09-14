@@ -418,6 +418,12 @@ type BlockStoreConfigStore interface {
 	// Returns models.ErrStoreNotFound if the store doesn't exist.
 	UpdateBlockStore(ctx context.Context, store *models.BlockStoreConfig) error
 
+	// RenameBlockStore renames a block store, moving any share that referenced
+	// it by name onto its canonical ID in the same transaction.
+	// Returns models.ErrStoreNotFound if the store doesn't exist.
+	// Returns models.ErrDuplicateStore if the new name is already in use.
+	RenameBlockStore(ctx context.Context, name, newName string) (*models.BlockStoreConfig, error)
+
 	// DeleteBlockStore deletes a block store configuration by name or ID.
 	// Returns models.ErrStoreNotFound if the store doesn't exist.
 	// Returns models.ErrStoreInUse if the store is referenced by any shares.

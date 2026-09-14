@@ -12,6 +12,7 @@ import (
 )
 
 var (
+	editName   string
 	editType   string
 	editConfig string
 	// S3 specific
@@ -39,12 +40,16 @@ Examples:
   dfsctl store block edit s3-store --config '{"bucket":"new-bucket"}'
 
   # Update S3 settings
-  dfsctl store block edit s3-store --bucket new-bucket --region us-west-2`,
+  dfsctl store block edit s3-store --bucket new-bucket --region us-west-2
+
+  # Rename a store
+  dfsctl store block edit s3-store --name archive-blocks`,
 	Args: cobra.ExactArgs(1),
 	RunE: runEdit,
 }
 
 func init() {
+	editCmd.Flags().StringVar(&editName, "name", "", "Rename the block store (names must be unique)")
 	editCmd.Flags().StringVar(&editType, "type", "", "Store type: s3, memory")
 	editCmd.Flags().StringVar(&editConfig, "config", "", "Store configuration as JSON")
 	editCmd.Flags().StringVar(&editBucket, "bucket", "", "S3 bucket name (for s3)")
@@ -68,7 +73,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to get block store: %w", err)
 	}
 
-	hasFlags := cmd.Flags().Changed("type") || cmd.Flags().Changed("config") ||
+	hasFlags := cmd.Flags().Changed("name") || cmd.Flags().Changed("type") || cmd.Flags().Changed("config") ||
 		cmd.Flags().Changed("bucket") || cmd.Flags().Changed("region") || cmd.Flags().Changed("endpoint") ||
 		cmd.Flags().Changed("access-key") || cmd.Flags().Changed("secret-key") ||
 		cmd.Flags().Changed("parallel-uploads")
@@ -122,6 +127,11 @@ func runEdit(cmd *cobra.Command, args []string) error {
 			}
 		}
 		req.Config = currentConfig
+		hasUpdate = true
+	}
+
+	if editName != "" {
+		req.Name = &editName
 		hasUpdate = true
 	}
 

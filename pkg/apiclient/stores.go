@@ -40,12 +40,15 @@ type createStoreAPIRequest struct {
 
 // UpdateStoreRequest is the request to update a store.
 type UpdateStoreRequest struct {
+	// Name renames the store. A rename onto a name already in use is refused.
+	Name   *string `json:"name,omitempty"`
 	Type   *string `json:"type,omitempty"`
 	Config any     `json:"-"` // Config is serialized separately as a JSON string
 }
 
 // updateStoreAPIRequest is the actual API request format.
 type updateStoreAPIRequest struct {
+	Name   *string `json:"name,omitempty"`
 	Type   *string `json:"type,omitempty"`
 	Config *string `json:"config,omitempty"`
 }
@@ -147,7 +150,7 @@ func (c *Client) CreateBlockStore(req *CreateStoreRequest) (*BlockStore, error) 
 
 // UpdateBlockStore updates an existing block store.
 func (c *Client) UpdateBlockStore(name string, req *UpdateStoreRequest) (*BlockStore, error) {
-	apiReq := updateStoreAPIRequest{Type: req.Type}
+	apiReq := updateStoreAPIRequest{Name: req.Name, Type: req.Type}
 	if req.Config != nil {
 		configStr, err := serializeConfig(req.Config)
 		if err != nil {

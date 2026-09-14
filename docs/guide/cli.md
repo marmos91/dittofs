@@ -5602,6 +5602,9 @@ dfsctl store block edit s3-store --config '{"bucket":"new-bucket"}'
 
 # Update S3 settings
 dfsctl store block edit s3-store --bucket new-bucket --region us-west-2
+
+# Rename a store
+dfsctl store block edit s3-store --name archive-blocks
 ```
 
 Flags:
@@ -5611,6 +5614,7 @@ Flags:
       --bucket string          S3 bucket name (for s3)
       --config string          Store configuration as JSON
       --endpoint string        Custom S3 endpoint
+      --name string            Rename the block store (names must be unique)
       --parallel-uploads int   Max parallel chunk uploads to this remote (0 = adaptive: auto-tune to saturate the uplink)
       --region string          AWS region (for s3)
       --secret-key string      AWS secret access key (for s3)
