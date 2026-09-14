@@ -100,15 +100,6 @@ type LocalStoreDefaults struct {
 	// is: per-store config["max_log_bytes"] > this global/deduced default.
 	MaxLogBytes int64
 
-	// DefaultRemoteCacheSize is the on-disk ceiling applied to a share's
-	// local tier when a REMOTE block store is configured but no explicit
-	// per-share JournalSize is set. With a remote configured the local
-	// tier is a bounded write-through cache; without this ceiling a fast
-	// writer could exhaust the host volume. 0 leaves the conditional ceiling
-	// off (the share keeps its system-deduced local size even with a
-	// remote). Local-only shares ignore this entirely.
-	DefaultRemoteCacheSize uint64
-
 	// BackpressureMaxWait is how long a write stalls waiting for the syncer
 	// to drain (freeing cache space) before returning ErrDiskFull, when the
 	// remote is healthy but every cached chunk is unsynced. 0 defers to the
@@ -286,32 +277,15 @@ func remotePinnedUploads(ctx context.Context, provider BlockStoreConfigProvider,
 // mergeLocalStoreDefaults returns a copy of the system defaults with per-share
 // overrides applied. Non-zero ShareConfig values take precedence.
 //
-// remoteConfigured signals that the share has a remote block store, which
-// makes the local tier a bounded write-through cache rather than durable
-// storage. In that case, when the operator set no explicit per-share size
-// (config.JournalSize == 0), apply the DefaultRemoteCacheSize ceiling so
-// a fast writer cannot exhaust the host volume — this takes precedence over
-// the generic system-deduced MaxSize, which is sized for the durable
-// local-only tier rather than a transient cache. An explicit per-share
-// --journal-size always wins. Local-only shares keep the existing
-// MaxSize unchanged.
-func mergeLocalStoreDefaults(defaults *LocalStoreDefaults, config *ShareConfig, remoteConfigured bool) *LocalStoreDefaults {
+// JournalSize is the whole of the sizing policy: unset (or negative) means the
+// journal grows unbounded and eviction never runs; a positive value is the
+// ceiling eviction reclaims against.
+func mergeLocalStoreDefaults(defaults *LocalStoreDefaults, config *ShareConfig) *LocalStoreDefaults {
 	if defaults == nil {
 		defaults = &LocalStoreDefaults{}
 	}
 	merged := *defaults // shallow copy
-	switch {
-	case config.JournalSize > 0:
-		// Explicit per-share override always wins.
-		merged.MaxSize = uint64(config.JournalSize)
-	case remoteConfigured && merged.DefaultRemoteCacheSize > 0:
-		// Remote-backed share, no explicit override: bound the
-		// write-through cache at the remote-cache default.
-		merged.MaxSize = merged.DefaultRemoteCacheSize
-		logger.Info("applying default local-cache ceiling for remote-backed share",
-			"share", config.Name,
-			"max_size", merged.MaxSize)
-	}
+	merged.MaxSize = uint64(max(config.JournalSize, 0))
 	if config.ReadBufferSize > 0 {
 		merged.ReadBufferBytes = config.ReadBufferSize
 	}
@@ -328,11 +302,8 @@ func (s *Service) createBlockStoreForShare(
 	localStoreDefaults *LocalStoreDefaults,
 	syncerDefaults *SyncerDefaults,
 ) error {
-	// Merge per-share size overrides into effective defaults. A configured
-	// block store makes the journal a bounded write-through cache, so the
-	// conditional default ceiling applies (see mergeLocalStoreDefaults).
-	remoteConfigured := config.BlockStoreID != ""
-	effectiveDefaults := mergeLocalStoreDefaults(localStoreDefaults, config, remoteConfigured)
+	// Merge per-share size overrides into effective defaults.
+	effectiveDefaults := mergeLocalStoreDefaults(localStoreDefaults, config)
 
 	// The journal is provisioned under the server-level root rather than
 	// configured per share. Opening it refuses a directory still holding the
@@ -475,7 +446,7 @@ func (s *Service) createBlockStoreForShare(
 		return fmt.Errorf("failed to start BlockStore: %w", err)
 	}
 
-	if err := seedColdIfNeeded(ctx, bs, localStore, fileChunkStore, remoteConfigured, config.Name); err != nil {
+	if err := seedColdIfNeeded(ctx, bs, localStore, fileChunkStore, config.BlockStoreID != "", config.Name); err != nil {
 		cleanup()
 		return err
 	}

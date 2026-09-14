@@ -8,15 +8,6 @@ import (
 	"github.com/marmos91/dittofs/internal/pathutil"
 )
 
-// defaultRemoteCacheSize is the on-disk ceiling applied to a share's local
-// tier when a remote block store is configured but no explicit
-// JournalSize / max_size is set. With a remote configured the local tier
-// is a write-through cache, not durable storage, so it must be bounded to
-// avoid filling the host volume on a fast-writer / slow-uploader. 10 GiB is
-// a conservative default; operators raise it via the config key or override
-// per-share with --journal-size.
-const defaultRemoteCacheSize uint64 = 10 << 30 // 10 GiB
-
 // defaultBackpressureMaxWait is how long a write stalls waiting for the
 // syncer to drain unsynced bytes (freeing cache space) before returning
 // ErrDiskFull, when the remote is healthy and every local chunk is still
@@ -44,14 +35,6 @@ type BlockstoreJournalConfig struct {
 	// resolve against the server's working directory. Defaults to
 	// <state dir>/blocks when unset.
 	Path string `mapstructure:"path" yaml:"path"`
-
-	// DefaultRemoteCacheSize is the on-disk ceiling (bytes) applied to a
-	// share's local tier when a remote block store is configured but no
-	// explicit per-share size is set. Bounds the write-through cache so a
-	// fast writer cannot exhaust the host volume while the syncer lags.
-	// Default 10 GiB when zero (ApplyDefaults). Local-only shares ignore
-	// this — they keep their existing (system-deduced) local size.
-	DefaultRemoteCacheSize uint64 `mapstructure:"default_remote_cache_size" yaml:"default_remote_cache_size"`
 
 	// BackpressureMaxWait is how long a write blocks waiting for the syncer
 	// to drain unsynced bytes (and free cache space) before returning
@@ -101,9 +84,6 @@ func (c *BlockstoreJournalConfig) ApplyDefaults() {
 	if expanded, err := pathutil.ExpandPath(c.Path); err == nil {
 		c.Path = expanded
 	}
-	if c.DefaultRemoteCacheSize == 0 {
-		c.DefaultRemoteCacheSize = defaultRemoteCacheSize
-	}
 	if c.BackpressureMaxWait <= 0 {
 		c.BackpressureMaxWait = defaultBackpressureMaxWait
 	}
@@ -113,8 +93,8 @@ func (c *BlockstoreJournalConfig) ApplyDefaults() {
 // values. The error message includes the canonical dotted config path so
 // operators can pinpoint the offending key in their config file.
 func (c *BlockstoreJournalConfig) Validate() error {
-	// DefaultRemoteCacheSize, MaxLogBytes, and BackpressureMaxWait treat zero
-	// as "apply the built-in (or system-deduced) default", so Validate only
+	// MaxLogBytes and BackpressureMaxWait treat zero as "apply the built-in
+	// (or system-deduced) default", so Validate only
 	// rejects an explicitly negative backpressure wait — the one nonsensical
 	// value a duration can take. MaxLogBytes is uint64 and so cannot be
 	// negative; any positive value is honored as an explicit override.

@@ -341,6 +341,12 @@ func (s *Store) ensureSpace(ctx context.Context, needed int64) error {
 	if s.cfg.MaxLocalBytes <= 0 {
 		return nil
 	}
+	// The backpressure tail below is reachable on every share, not just
+	// remote-backed ones: eviction only ever reclaims a segment whose records
+	// are all synced, because dropping the last copy of a byte would lose it.
+	// A share with nothing offloaded therefore has nothing evictable, so
+	// hitting MaxLocalBytes lands straight in the stall-then-ErrLocalStoreFull
+	// path.
 	deadline := time.Now().Add(s.cfg.EvictMaxWait)
 	lastUnsynced := s.unsynced.Load()
 	warned := false
