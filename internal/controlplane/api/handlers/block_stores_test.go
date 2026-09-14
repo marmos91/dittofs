@@ -8,9 +8,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
-	stdruntime "runtime"
 	"strings"
 	"testing"
 	"time"
@@ -52,9 +49,8 @@ func TestBlockStoreHandler_Create(t *testing.T) {
 	_, handler := setupBlockStoreTest(t)
 
 	body, _ := json.Marshal(CreateBlockStoreRequest{
-		Name:   "test-local-store",
-		Type:   "fs",
-		Config: `{"path":"` + t.TempDir() + `"}`,
+		Name: "test-store",
+		Type: "memory",
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/store/block", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -70,14 +66,11 @@ func TestBlockStoreHandler_Create(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("Failed to unmarshal response: %v", err)
 	}
-	if resp.Name != "test-local-store" {
-		t.Errorf("Name = %s, want test-local-store", resp.Name)
+	if resp.Name != "test-store" {
+		t.Errorf("Name = %s, want test-store", resp.Name)
 	}
-	if resp.Kind != models.BlockStoreKindLocal {
-		t.Errorf("Kind = %s, want %s", resp.Kind, models.BlockStoreKindLocal)
-	}
-	if resp.Type != "fs" {
-		t.Errorf("Type = %s, want fs", resp.Type)
+	if resp.Type != "memory" {
+		t.Errorf("Type = %s, want memory", resp.Type)
 	}
 }
 
@@ -102,7 +95,6 @@ func TestBlockStoreHandler_Create_S3_MissingCredentials(t *testing.T) {
 			})
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/store/block", bytes.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
-			req = withBlockStoreKind(req, "remote")
 			w := httptest.NewRecorder()
 
 			handler.Create(w, req)
@@ -118,19 +110,17 @@ func TestBlockStoreHandler_List(t *testing.T) {
 	cpStore, handler := setupBlockStoreTest(t)
 	ctx := context.Background()
 
-	// Create local and remote stores
-	localStore := &models.BlockStoreConfig{
-		ID: uuid.New().String(), Name: "local-1", Type: "fs",
+	memStore := &models.BlockStoreConfig{
+		ID: uuid.New().String(), Name: "mem-1", Type: "memory",
 		CreatedAt: time.Now(),
 	}
-	remoteStore := &models.BlockStoreConfig{
-		ID: uuid.New().String(), Name: "remote-1", Type: "s3",
+	s3Store := &models.BlockStoreConfig{
+		ID: uuid.New().String(), Name: "s3-1", Type: "s3",
 		CreatedAt: time.Now(),
 	}
-	cpStore.CreateBlockStore(ctx, localStore)
-	cpStore.CreateBlockStore(ctx, remoteStore)
+	cpStore.CreateBlockStore(ctx, memStore)
+	cpStore.CreateBlockStore(ctx, s3Store)
 
-	// List remote stores
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/store/block", nil)
 	w := httptest.NewRecorder()
 
@@ -144,11 +134,8 @@ func TestBlockStoreHandler_List(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("Failed to unmarshal response: %v", err)
 	}
-	if len(resp) != 1 {
-		t.Errorf("List(remote) returned %d items, want 1", len(resp))
-	}
-	if len(resp) > 0 && resp[0].Kind != models.BlockStoreKindRemote {
-		t.Errorf("List(remote) returned kind = %s, want remote", resp[0].Kind)
+	if len(resp) != 2 {
+		t.Errorf("List() returned %d items, want 2", len(resp))
 	}
 }
 
@@ -242,7 +229,7 @@ func setupShareBlockStoreTest(t *testing.T) (store.Store, *ShareHandler) {
 	return cpStore, handler
 }
 
-func TestShareBlockStore_CreateWithLocal(t *testing.T) {
+func TestShareBlockStore_CreateWithBlockStore(t *testing.T) {
 	cpStore, handler := setupShareBlockStoreTest(t)
 	ctx := context.Background()
 
@@ -253,24 +240,16 @@ func TestShareBlockStore_CreateWithLocal(t *testing.T) {
 	}
 	cpStore.CreateMetadataStore(ctx, metaStore)
 
-	localStore := &models.BlockStoreConfig{
-		ID: uuid.New().String(), Name: "local-fs", Type: "fs",
+	blockStore := &models.BlockStoreConfig{
+		ID: uuid.New().String(), Name: "s3-store", Type: "s3",
 		CreatedAt: time.Now(),
 	}
-	cpStore.CreateBlockStore(ctx, localStore)
+	cpStore.CreateBlockStore(ctx, blockStore)
 
-	remoteStore := &models.BlockStoreConfig{
-		ID: uuid.New().String(), Name: "remote-s3", Type: "s3",
-		CreatedAt: time.Now(),
-	}
-	cpStore.CreateBlockStore(ctx, remoteStore)
-
-	remoteName := "remote-s3"
 	body, _ := json.Marshal(CreateShareRequest{
-		Name:             "/test-export",
-		MetadataStoreID:  "meta-1",
-		BlockStore:       "local-fs",
-		RemoteBlockStore: &remoteName,
+		Name:            "/test-export",
+		MetadataStoreID: "meta-1",
+		BlockStore:      "s3-store",
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/shares", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -286,15 +265,12 @@ func TestShareBlockStore_CreateWithLocal(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("Failed to unmarshal response: %v", err)
 	}
-	if resp.BlockStoreID != localStore.ID {
-		t.Errorf("LocalBlockStoreID = %s, want %s", resp.BlockStoreID, localStore.ID)
-	}
-	if resp.RemoteBlockStoreID == nil || *resp.RemoteBlockStoreID != remoteStore.ID {
-		t.Errorf("RemoteBlockStoreID = %v, want %s", resp.RemoteBlockStoreID, remoteStore.ID)
+	if resp.BlockStoreID != blockStore.ID {
+		t.Errorf("BlockStoreID = %s, want %s", resp.BlockStoreID, blockStore.ID)
 	}
 }
 
-func TestShareBlockStore_CreateMissingLocal(t *testing.T) {
+func TestShareBlockStore_CreateMissingBlockStore(t *testing.T) {
 	cpStore, handler := setupShareBlockStoreTest(t)
 	ctx := context.Background()
 

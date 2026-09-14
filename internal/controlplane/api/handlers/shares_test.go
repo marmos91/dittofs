@@ -285,21 +285,15 @@ func TestShareHandler_Update_ResolvesBlockStoreNameToID(t *testing.T) {
 	seedShare(t, cpStore, "s-bsname")
 	ctx := context.Background()
 
-	// Create a new local + remote block store referenced by NAME below.
-	newLocal := &models.BlockStoreConfig{
-		ID: uuid.New().String(), Name: "fresh-local", Type: "memory", CreatedAt: time.Now(),
+	// Create a new block store referenced by NAME below.
+	fresh := &models.BlockStoreConfig{
+		ID: uuid.New().String(), Name: "fresh-store", Type: "memory", CreatedAt: time.Now(),
 	}
-	if _, err := cpStore.CreateBlockStore(ctx, newLocal); err != nil {
-		t.Fatalf("CreateBlockStore(local): %v", err)
-	}
-	newRemote := &models.BlockStoreConfig{
-		ID: uuid.New().String(), Name: "fresh-remote", Type: "memory", CreatedAt: time.Now(),
-	}
-	if _, err := cpStore.CreateBlockStore(ctx, newRemote); err != nil {
-		t.Fatalf("CreateBlockStore(remote): %v", err)
+	if _, err := cpStore.CreateBlockStore(ctx, fresh); err != nil {
+		t.Fatalf("CreateBlockStore: %v", err)
 	}
 
-	body := []byte(`{"local_block_store_id":"fresh-local","remote_block_store_id":"fresh-remote"}`)
+	body := []byte(`{"block_store_id":"fresh-store"}`)
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/shares/s-bsname", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req = withShareName(req, "s-bsname")
@@ -314,11 +308,8 @@ func TestShareHandler_Update_ResolvesBlockStoreNameToID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetShare: %v", err)
 	}
-	if got.BlockStoreID != newLocal.ID {
-		t.Errorf("LocalBlockStoreID = %q, want canonical UUID %q (not the name)", got.BlockStoreID, newLocal.ID)
-	}
-	if got.RemoteBlockStoreID == nil || *got.RemoteBlockStoreID != newRemote.ID {
-		t.Errorf("RemoteBlockStoreID = %v, want canonical UUID %q (not the name)", got.RemoteBlockStoreID, newRemote.ID)
+	if got.BlockStoreID != fresh.ID {
+		t.Errorf("BlockStoreID = %q, want canonical UUID %q (not the name)", got.BlockStoreID, fresh.ID)
 	}
 }
 
