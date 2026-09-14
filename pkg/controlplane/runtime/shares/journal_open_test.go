@@ -133,3 +133,43 @@ func TestShareJournalDir_DistinctNamesGetDistinctDirectories(t *testing.T) {
 		seen[got] = name
 	}
 }
+
+// The share name reaches the filesystem, so the directory is confirmed to be
+// inside the root before anything is created there. The cases are built
+// directly rather than through a share name: escaping already prevents them,
+// and a guard that never refuses anything proves nothing.
+func TestCheckUnderJournalRoot_RefusesWhatIsNotInside(t *testing.T) {
+	const root = "/srv/blocks"
+	for _, dir := range []string{
+		"/srv/blocks",         // the root itself, beside the shares directory
+		"/srv/blocksXX/alpha", // shares a string prefix but is a different tree
+		"/srv/blocks/../etc",  // climbs back out
+		"/etc/alpha",          // unrelated
+		"/srv",                // a parent
+	} {
+		if err := checkUnderJournalRoot(root, dir); err == nil {
+			t.Errorf("checkUnderJournalRoot(%q, %q) = nil, want a refusal", root, dir)
+		}
+	}
+}
+
+func TestCheckUnderJournalRoot_AcceptsWhatIsInside(t *testing.T) {
+	const root = "/srv/blocks"
+	for _, dir := range []string{
+		"/srv/blocks/shares",
+		"/srv/blocks/shares/alpha",
+		"/srv/blocks/shares/a%2Fb",
+	} {
+		if err := checkUnderJournalRoot(root, dir); err != nil {
+			t.Errorf("checkUnderJournalRoot(%q, %q) = %v, want nil", root, dir, err)
+		}
+	}
+	// Every name the sanitizer can produce must still open the directory it
+	// opens today.
+	for _, name := range []string{"/..", "/.", "/../../etc", "/a/b", "/normal"} {
+		dir := ShareJournalDir(root, name)
+		if err := checkUnderJournalRoot(root, dir); err != nil {
+			t.Errorf("share %q resolves to %q, which the guard refuses: %v", name, dir, err)
+		}
+	}
+}

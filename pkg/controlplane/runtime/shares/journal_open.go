@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -36,6 +37,9 @@ func OpenShareJournal(shareName string, defaults *LocalStoreDefaults) (*journal.
 		return nil, fmt.Errorf("no journal root configured; set blockstore.journal.path")
 	}
 	shareDir := ShareJournalDir(defaults.JournalRoot, shareName)
+	if err := checkUnderJournalRoot(defaults.JournalRoot, shareDir); err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(shareDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create share directory: %w", err)
 	}
@@ -44,6 +48,27 @@ func OpenShareJournal(shareName string, defaults *LocalStoreDefaults) (*journal.
 	cfg.EvictMaxWait = defaults.BackpressureMaxWait
 	cfg.DirtyExpiry = clampDirtyExpire(defaults.DirtyExpire)
 	return openJournalStore(shareDir, int64(defaults.MaxSize), defaults.MaxLogBytes, cfg)
+}
+
+// checkUnderJournalRoot confirms a share directory sits strictly beneath the
+// journal root before anything is created there.
+//
+// The share name arrives from an operator and reaches the filesystem through
+// this directory, so containment is established at the sink rather than
+// inferred from the name having been escaped. Containment is decided on the
+// relative path, so a directory that merely shares a string prefix with the
+// root ("/srv/blocksXX" against "/srv/blocks") counts as outside it, and the
+// root itself is outside too: a journal written there would sit beside the
+// directory that keeps shares apart instead of inside it.
+func checkUnderJournalRoot(root, shareDir string) error {
+	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(shareDir))
+	if err != nil {
+		return fmt.Errorf("share directory %q is not under the journal root %q", shareDir, root)
+	}
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("share directory %q escapes the journal root %q", shareDir, root)
+	}
+	return nil
 }
 
 // journalChunkParams derives the FastCDC profile from the configured minimum
