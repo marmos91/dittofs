@@ -25,7 +25,7 @@ Comprehensive SMB3 protocol conformance testing for the DittoFS SMB adapter. Thi
   - macOS: `brew install gettext`
   - Ubuntu: `sudo apt-get install -y gettext-base`
   - Alpine: `apk add gettext`
-- **Go 1.25+** (for E2E tests and local mode)
+- **Go 1.26+** (for E2E tests and local mode)
 - **smbclient** (for smbclient E2E tests)
   - Ubuntu: `sudo apt-get install -y smbclient`
   - macOS: `brew install samba`

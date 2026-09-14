@@ -38,7 +38,7 @@ go build -o dfs cmd/dfs/main.go
 ```
 
 The Nix flake provides:
-- Go 1.25 with gopls, delve debugger
+- Go 1.26 with gopls, delve debugger
 - golangci-lint for code quality
 - NFS utilities for E2E testing (Linux)
 - ACL libraries for POSIX compliance testing
@@ -62,7 +62,7 @@ If you prefer not to use Nix, install dependencies manually:
 
 #### Prerequisites
 
-- Go 1.25 or higher
+- Go 1.26 or higher
 - NFS client tools (for E2E testing)
   - Linux: `nfs-common` package
   - macOS: Built-in NFS client

@@ -34,7 +34,7 @@ DittoFS is an NFSv3 server implementation in pure Go. Before contributing, famil
 
 ### Prerequisites
 
-- Go 1.25 or higher
+- Go 1.26 or higher
 - Git
 - Linux or macOS (for NFS client testing)
 

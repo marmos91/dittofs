@@ -38,7 +38,7 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.25.x"
+          go-version: "1.26.x"
 
       - name: Update nix vendorHash
         run: go run scripts/update-nix-hash.go

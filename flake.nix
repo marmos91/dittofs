@@ -346,7 +346,7 @@
           zsh
 
           # Go development (matches go.mod)
-          go_1_25
+          go_1_26
           gopls
           golangci-lint
           delve
@@ -485,7 +485,7 @@
 
               # Auto-updated by .github/workflows/nix-update-hash.yml on go.mod/go.sum changes.
               # Manual: go run scripts/update-nix-hash.go
-              vendorHash = "sha256-Hpkk/rSv5EGeXF+1YFAI2+OXpQOcVuprXSPqOoJjgBQ=";
+              vendorHash = "sha256-P2zzTi5a09cRHbloEff4sr7X/56GvT9faZdAUmZovdw=";
 
               ldflags = [
                 "-s"
@@ -502,9 +502,16 @@
               };
             };
           in
+          # Track the toolchain the module requires: nixpkgs' default `go` lags
+          # behind the go.mod directive, and buildGoModule runs with
+          # GOTOOLCHAIN=local, so a lagging toolchain fails the fetch phase
+          # outright instead of downloading the newer one.
+          let
+            buildGo = pkgs.buildGoModule.override { go = pkgs.go_1_26; };
+          in
           {
             # Build both dfs and dfsctl
-            default = pkgs.buildGoModule (
+            default = buildGo (
               commonArgs
               // {
                 pname = "dittofs";
@@ -519,7 +526,7 @@
             );
 
             # Build only the server daemon
-            dfs = pkgs.buildGoModule (
+            dfs = buildGo (
               commonArgs
               // {
                 pname = "dfs";
@@ -528,7 +535,7 @@
             );
 
             # Build only the client CLI
-            dfsctl = pkgs.buildGoModule (
+            dfsctl = buildGo (
               commonArgs
               // {
                 pname = "dfsctl";

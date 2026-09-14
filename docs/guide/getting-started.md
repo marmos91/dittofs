@@ -31,7 +31,7 @@ curl -fsSL https://github.com/marmos91/dittofs/releases/latest/download/install.
 Docker, the Kubernetes operator, APT/YUM/Arch packages, and Scoop (Windows) are in the
 [Installation guide](install.md).
 
-**Build from source** (needs Go 1.25+):
+**Build from source** (needs Go 1.26+):
 
 ```bash
 git clone https://github.com/marmos91/dittofs.git

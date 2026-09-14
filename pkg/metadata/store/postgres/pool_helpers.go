@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	storesql "github.com/marmos91/dittofs/pkg/metadata/store/sql"
@@ -190,6 +191,10 @@ func (r *poolRows) CommandTag() pgconn.CommandTag {
 
 func (r *poolRows) Conn() *pgx.Conn {
 	return r.rows.Conn()
+}
+
+func (r *poolRows) TypeMap() *pgtype.Map {
+	return r.rows.TypeMap()
 }
 
 // The pgx surface this store is written against must present the shared

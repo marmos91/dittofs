@@ -17,7 +17,7 @@ import (
 // half that already belongs to a disconnected durable handle.
 //
 // The slice→array conversion `[8]byte(id[:8])` is valid Go (≥ 1.20; this repo
-// is on Go 1.25); it copies the first eight bytes into a comparable array.
+// is on Go 1.26); it copies the first eight bytes into a comparable array.
 func fileIDPersistentHalf(id [16]byte) [8]byte {
 	return [8]byte(id[:8])
 }
