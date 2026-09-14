@@ -223,13 +223,23 @@ func TestMinKerberosLevel_IntegrityShareRejectsAuthOnly(t *testing.T) {
 	}
 }
 
-// TestMinKerberosLevel_NoSessionInfoSkipsFloor guards the fail-open path: when a
-// request is RPCSEC_GSS flavored but carries NO GSS session info (the request
-// was not processed as GSS — e.g. Kerberos is not configured on the server), the
-// floor must NOT fire. Otherwise the factory-default "krb5" floor (set on every
-// DB-loaded share) would deny with negotiated service 0. The share keeps the
-// default krb5 floor; the context has no GSSSessionInfo.
-func TestMinKerberosLevel_NoSessionInfoSkipsFloor(t *testing.T) {
+// TestMinKerberosLevel_NoSessionInfoDenies covers an RPCSEC_GSS flavored request
+// that carries NO GSS session info, which means it was never processed as GSS —
+// no GSS processor is configured, so the dispatch left flavor 6 unintercepted
+// and nothing verified the credential.
+//
+// This previously returned NFS4_OK: the floor was skipped so that the
+// factory-default "krb5" level (set on every DB-loaded share) would not deny at
+// negotiated service 0. That avoided a spurious denial by granting an
+// unverifiable credential — and since RequireKerberos is satisfied by the flavor
+// alone and AllowAuthSys does not apply to it, the skipped floor was the last
+// gate a GSS-flavored request had to pass.
+//
+// Nothing legitimate is refused by denying instead. With no GSS processor the
+// dispatch never answers a GSS INIT, so no client can establish a context in
+// that state; a flavor-6 credential arriving there is unverifiable by
+// construction.
+func TestMinKerberosLevel_NoSessionInfoDenies(t *testing.T) {
 	fx := newRealFSTestFixture(t, "/export")
 	fileHandle := fx.createTestFile(t, fx.rootHandle, "f.txt", metadata.FileTypeRegular, 0o644, 1000, 1000)
 
@@ -250,8 +260,47 @@ func TestMinKerberosLevel_NoSessionInfoSkipsFloor(t *testing.T) {
 	var requested []uint32
 	attrs.SetBit(&requested, attrs.FATTR4_TYPE)
 
-	if status := fx.handler.getAttrRealFS(ctx, requested).Status; status != types.NFS4_OK {
-		t.Fatalf("GSS flavor without session info GETATTR status = %d, want NFS4_OK (%d) — floor must not fire",
-			status, types.NFS4_OK)
+	if status := fx.handler.getAttrRealFS(ctx, requested).Status; status != types.NFS4ERR_WRONGSEC {
+		t.Fatalf("GSS flavor without session info GETATTR status = %d, want NFS4ERR_WRONGSEC (%d) — an unverified credential must not pass",
+			status, types.NFS4ERR_WRONGSEC)
+	}
+}
+
+// getAttrStatusForUnverifiedGSS drives a request that claims RPCSEC_GSS but
+// carries no session info — a forged flavor-6 credential on a server with no
+// GSS processor, which the dispatch never intercepts or verifies.
+func getAttrStatusForUnverifiedGSS(fx *realFSTestFixture, fileHandle metadata.FileHandle) uint32 {
+	uid, gid := uint32(1000), uint32(1000)
+	ctx := &types.CompoundContext{
+		Context:    context.Background(),
+		ClientAddr: "192.168.1.100:9999",
+		AuthFlavor: rpc.AuthRPCSECGSS,
+		UID:        &uid,
+		GID:        &gid,
+	}
+	ctx.CurrentFH = make([]byte, len(fileHandle))
+	copy(ctx.CurrentFH, fileHandle)
+
+	var requested []uint32
+	attrs.SetBit(&requested, attrs.FATTR4_TYPE)
+	return fx.handler.getAttrRealFS(ctx, requested).Status
+}
+
+// TestExportAuthPolicy_UnverifiedGSSRejected covers the v4 half of the same
+// gap the MNT path has: a share that mandates Kerberos must not accept a
+// flavor-6 credential that was never processed as GSS. RequireKerberos is
+// satisfied by the flavor alone and AllowAuthSys does not apply to it, so
+// without this the unverified credential clears the share's Kerberos policy.
+func TestExportAuthPolicy_UnverifiedGSSRejected(t *testing.T) {
+	fx := newRealFSTestFixture(t, "/export")
+	fileHandle := fx.createTestFile(t, fx.rootHandle, "f.txt", metadata.FileTypeRegular, 0o644, 1000, 1000)
+
+	// requireKerberos=true: only a verified Kerberos credential may pass.
+	if err := fx.rt.SetExportAuthPolicyForTesting("/export", true, true); err != nil {
+		t.Fatalf("SetExportAuthPolicyForTesting: %v", err)
+	}
+
+	if status := getAttrStatusForUnverifiedGSS(fx, fileHandle); status != types.NFS4ERR_WRONGSEC {
+		t.Fatalf("unverified RPCSEC_GSS GETATTR status = %d, want NFS4ERR_WRONGSEC (%d)", status, types.NFS4ERR_WRONGSEC)
 	}
 }

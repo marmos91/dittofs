@@ -162,3 +162,57 @@ func TestMount_EnabledShare_AllowsMount(t *testing.T) {
 		t.Error("FileHandle is empty, want a non-empty root handle on success")
 	}
 }
+
+// newUnverifiedGSSMountCtx builds a MountHandlerContext for a request that
+// claims RPCSEC_GSS but carries no session info — the shape a forged flavor-6
+// credential takes when the server has no GSS processor configured, so the
+// dispatch never intercepts or verifies it.
+func newUnverifiedGSSMountCtx(reqCtx context.Context) *MountHandlerContext {
+	return &MountHandlerContext{
+		Context:    reqCtx,
+		ClientAddr: "127.0.0.1:12345",
+		AuthFlavor: rpc.AuthRPCSECGSS,
+	}
+}
+
+// TestMount_UnverifiedGSSCredentialDenied pins the GSS floor against a request
+// that was never processed as GSS.
+//
+// The dispatch intercepts flavor 6 only when a GSS processor exists, so with
+// Kerberos unconfigured a forged RPCSEC_GSS credential reaches this handler
+// unverified and carries no session info. Skipping the protection-level check
+// in that state clears the share's whole Kerberos policy: RequireKerberos is
+// satisfied because the flavor *is* GSS, AllowAuthSys does not apply because
+// the flavor is not AUTH_UNIX, and the min-level floor is the only gate left.
+func TestMount_UnverifiedGSSCredentialDenied(t *testing.T) {
+	h, ctx := newTestMountHandler(t, "/export", true)
+	if err := h.Registry.(*runtime.Runtime).SetMinKerberosLevelForTesting("/export", models.KerberosLevelKrb5p); err != nil {
+		t.Fatalf("SetMinKerberosLevelForTesting: %v", err)
+	}
+
+	resp, err := h.Mount(newUnverifiedGSSMountCtx(ctx), &MountRequest{DirPath: "/export"})
+	if err != nil {
+		t.Fatalf("Mount returned unexpected error: %v", err)
+	}
+	if resp.Status != MountErrAccess {
+		t.Fatalf("Status = %d, want MountErrAccess (%d): an unverified GSS credential must not mount a krb5p share", resp.Status, MountErrAccess)
+	}
+	if len(resp.FileHandle) != 0 {
+		t.Errorf("FileHandle = %x, want empty — an unverified credential must not receive a root handle", resp.FileHandle)
+	}
+}
+
+// TestMount_UnverifiedGSSDeniedOnUnrestrictedShare is the same denial on a share
+// with no Kerberos floor configured: the credential is unverifiable regardless
+// of what level the share asks for, so the deny must not depend on the floor.
+func TestMount_UnverifiedGSSDeniedOnUnrestrictedShare(t *testing.T) {
+	h, ctx := newTestMountHandler(t, "/export", true)
+
+	resp, err := h.Mount(newUnverifiedGSSMountCtx(ctx), &MountRequest{DirPath: "/export"})
+	if err != nil {
+		t.Fatalf("Mount returned unexpected error: %v", err)
+	}
+	if resp.Status != MountErrAccess {
+		t.Fatalf("Status = %d, want MountErrAccess (%d)", resp.Status, MountErrAccess)
+	}
+}

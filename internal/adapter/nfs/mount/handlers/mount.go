@@ -134,19 +134,29 @@ func (h *Handler) Mount(
 	// Enforce the per-share GSS protection floor (min_kerberos_level): a krb5i /
 	// krb5p export must reject a Kerberos mount negotiated at a weaker service
 	// level. The negotiated RPCSEC_GSS service level rides in the request context
-	// from the GSS DATA dispatch, set for every processed RPCSEC_GSS request. We
-	// enforce only when that session info is present: a real GSS mount always
-	// carries it, so its absence means the request was not processed as GSS
-	// (e.g. Kerberos not configured), where applying the default "krb5" floor
-	// would spuriously deny. Non-GSS flavors are gated by the checks above.
+	// from the GSS DATA dispatch, which attaches it to every RPCSEC_GSS request
+	// it processes — control messages and failures are answered there and never
+	// reach a handler.
+	//
+	// So a claimed GSS flavor with no session info was never processed as GSS,
+	// which happens when no GSS processor is configured and the dispatch leaves
+	// flavor 6 unintercepted. The credential is then unverified, and it cannot be
+	// allowed to stand in for Kerberos: RequireKerberos is satisfied by the
+	// flavor alone and AllowAuthSys does not apply to it, so treating the absent
+	// session info as "nothing to enforce" would clear the share's entire
+	// Kerberos policy. Deny instead of skipping the check.
 	if ctx.AuthFlavor == rpc.AuthRPCSECGSS {
-		if si := gss.SessionInfoFromContext(ctx.Context); si != nil {
-			if !auth.MeetsMinKerberosLevel(share.MinKerberosLevel, si.Service) {
-				logger.Warn("Mount denied: GSS protection level below share floor",
-					"path", req.DirPath, "client_ip", clientIP,
-					"min_kerberos_level", share.MinKerberosLevel, "negotiated_service", si.Service)
-				return &MountResponse{MountResponseBase: MountResponseBase{Status: MountErrAccess}}, nil
-			}
+		si := gss.SessionInfoFromContext(ctx.Context)
+		if si == nil {
+			logger.Warn("Mount denied: RPCSEC_GSS credential was not verified",
+				"path", req.DirPath, "client_ip", clientIP)
+			return &MountResponse{MountResponseBase: MountResponseBase{Status: MountErrAccess}}, nil
+		}
+		if !auth.MeetsMinKerberosLevel(share.MinKerberosLevel, si.Service) {
+			logger.Warn("Mount denied: GSS protection level below share floor",
+				"path", req.DirPath, "client_ip", clientIP,
+				"min_kerberos_level", share.MinKerberosLevel, "negotiated_service", si.Service)
+			return &MountResponse{MountResponseBase: MountResponseBase{Status: MountErrAccess}}, nil
 		}
 	}
 

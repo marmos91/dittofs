@@ -135,21 +135,29 @@ func (h *Handler) buildV4AuthContext(ctx *types.CompoundContext, handle []byte) 
 		// share configured krb5i/krb5p must reject a GSS session negotiated at a
 		// weaker service level (e.g. plain krb5 authentication-only on a krb5p
 		// privacy share). The negotiated RPCSEC_GSS service level is carried in
-		// the request context by the GSS DATA dispatch, which sets the session
-		// info for every processed RPCSEC_GSS request. We enforce the floor only
-		// when that session info is present: a real GSS session always carries
-		// it, so its absence means the request was not processed as GSS (e.g.
-		// Kerberos is not configured on the server) — applying the default
-		// "krb5" floor there would spuriously deny. Non-GSS flavors are gated
-		// above by AllowAuthSys / RequireKerberos.
+		// the request context by the GSS DATA dispatch, which attaches it to
+		// every RPCSEC_GSS request it processes — control messages and failures
+		// are answered there and never reach a handler.
+		//
+		// So a claimed GSS flavor with no session info was never processed as
+		// GSS, which happens when no GSS processor is configured and the
+		// dispatch leaves flavor 6 unintercepted. That credential is unverified
+		// and cannot stand in for Kerberos: RequireKerberos is satisfied by the
+		// flavor alone and AllowAuthSys does not apply to it, so skipping the
+		// check here would clear the share's entire Kerberos policy.
 		if ctx.AuthFlavor == rpc.AuthRPCSECGSS {
-			if si := gss.SessionInfoFromContext(ctx.Context); si != nil {
-				if !auth.MeetsMinKerberosLevel(share.MinKerberosLevel, si.Service) {
-					return nil, "", &authStatusError{
-						status: types.NFS4ERR_WRONGSEC,
-						err: fmt.Errorf("share %q requires min kerberos level %q (negotiated service %d)",
-							shareName, share.MinKerberosLevel, si.Service),
-					}
+			si := gss.SessionInfoFromContext(ctx.Context)
+			if si == nil {
+				return nil, "", &authStatusError{
+					status: types.NFS4ERR_WRONGSEC,
+					err:    fmt.Errorf("share %q requires Kerberos but the RPCSEC_GSS credential was not verified", shareName),
+				}
+			}
+			if !auth.MeetsMinKerberosLevel(share.MinKerberosLevel, si.Service) {
+				return nil, "", &authStatusError{
+					status: types.NFS4ERR_WRONGSEC,
+					err: fmt.Errorf("share %q requires min kerberos level %q (negotiated service %d)",
+						shareName, share.MinKerberosLevel, si.Service),
 				}
 			}
 		}
