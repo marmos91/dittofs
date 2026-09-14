@@ -93,6 +93,7 @@ func (s *Service) SetBlockStoreForTesting(name string, bs *engine.Store) error {
 		return fmt.Errorf("%w: %q", ErrShareNotFound, name)
 	}
 	share.BlockStore = bs
+	s.blockStoreCache.Store(name, bs)
 	return nil
 }
 
