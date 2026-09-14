@@ -45,10 +45,10 @@ log_info "Creating metadata store..."
 run_dfsctl store metadata add --name meta-mem --type memory 2>/dev/null || true
 
 log_info "Creating block store..."
-run_dfsctl store block add --kind local --name local-mem --type memory 2>/dev/null || true
+run_dfsctl store block add --name local-mem --type memory 2>/dev/null || true
 
 log_info "Creating NFS share /export..."
-run_dfsctl share create --name /export --metadata meta-mem --local local-mem 2>/dev/null || true
+run_dfsctl share create --name /export --metadata meta-mem --block-store local-mem 2>/dev/null || true
 
 log_info "Creating NFS adapter..."
 run_dfsctl adapter create --type nfs --port "$NFS_PORT" 2>/dev/null || true
