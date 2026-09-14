@@ -308,17 +308,6 @@ func (c *NFSConnection) extractShareName(ctx context.Context, data []byte) (stri
 	return shareName, nil
 }
 
-// handleNFSProcedure dispatches an NFS procedure call to the appropriate handler.
-//
-// It looks up the procedure in the dispatch table, extracts authentication
-// context from the RPC call, and invokes the handler with the context.
-//
-// The context enables handlers to:
-// - Respect cancellation during long operations (READ, WRITE, READDIR)
-// - Implement request timeouts
-// - Support graceful server shutdown
-//
-// Returns the reply data or an error if the handler fails.
 // recordOp records one NFS operation for the RED metrics (rate, errors,
 // duration). status is intentionally a bounded ok|error rather than the precise
 // NFS status code: labelling by raw status would multiply series by op ×
