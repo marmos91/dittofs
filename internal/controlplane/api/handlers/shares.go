@@ -84,6 +84,17 @@ func (h *ShareHandler) resolveBlockStoreRef(ctx context.Context, ref string) (*m
 	return h.store.GetBlockStoreByID(ctx, ref)
 }
 
+// parseCommitAck maps a request value to what a COMMIT waits for. Anything
+// unrecognised is refused rather than silently resolved to the default, which
+// would turn a typo into a quieter durability promise than the one asked for.
+func parseCommitAck(v string) (models.CommitAck, bool) {
+	switch models.CommitAck(v) {
+	case models.CommitAckJournal, models.CommitAckBlockStore:
+		return models.CommitAck(v), true
+	}
+	return "", false
+}
+
 // writeBlockStoreRefError maps a resolveBlockStoreRef failure to an HTTP
 // response: a missing reference is the client's fault (400), anything else is
 // an operational failure (500).
@@ -113,7 +124,12 @@ type CreateShareRequest struct {
 	RetentionTTL      string    `json:"retention_ttl,omitempty"` // Duration string like "72h"
 	JournalSize       string    `json:"journal_size,omitempty"`
 	ReadBufferSize    string    `json:"read_buffer_size,omitempty"`
-	QuotaBytes        string    `json:"quota_bytes,omitempty"` // Human-readable, e.g., "10GiB" (0 = unlimited)
+	// CommitAck names what a COMMIT waits for ("journal" or "block-store").
+	// Empty keeps the model default. RelaxedMetadataCommit is the independent
+	// second axis, a pointer so nil keeps the default rather than clearing it.
+	CommitAck             string `json:"commit_ack,omitempty"`
+	RelaxedMetadataCommit *bool  `json:"relaxed_metadata_commit,omitempty"`
+	QuotaBytes            string `json:"quota_bytes,omitempty"` // Human-readable, e.g., "10GiB" (0 = unlimited)
 	// AclFlagInheritedCanonicalization — Refs #514. Pointer so the handler
 	// can distinguish "unset → use default true" from "explicit false".
 	AclFlagInheritedCanonicalization *bool `json:"acl_flag_inherited_canonicalization,omitempty"`
@@ -144,17 +160,19 @@ type CreateShareRequest struct {
 
 // UpdateShareRequest is the request body for PUT /api/v1/shares/{name}.
 type UpdateShareRequest struct {
-	MetadataStoreID   *string   `json:"metadata_store_id,omitempty"`
-	BlockStoreID      *string   `json:"block_store_id,omitempty"`
-	ReadOnly          *bool     `json:"read_only,omitempty"`
-	EncryptData       *bool     `json:"encrypt_data,omitempty"`
-	DefaultPermission *string   `json:"default_permission,omitempty"`
-	BlockedOperations *[]string `json:"blocked_operations,omitempty"`
-	RetentionPolicy   *string   `json:"retention_policy,omitempty"`
-	RetentionTTL      *string   `json:"retention_ttl,omitempty"` // Duration string like "72h"
-	JournalSize       *string   `json:"journal_size,omitempty"`
-	ReadBufferSize    *string   `json:"read_buffer_size,omitempty"`
-	QuotaBytes        *string   `json:"quota_bytes,omitempty"` // Human-readable, nil = no change, "0" = remove quota
+	MetadataStoreID       *string   `json:"metadata_store_id,omitempty"`
+	BlockStoreID          *string   `json:"block_store_id,omitempty"`
+	CommitAck             *string   `json:"commit_ack,omitempty"`
+	RelaxedMetadataCommit *bool     `json:"relaxed_metadata_commit,omitempty"`
+	ReadOnly              *bool     `json:"read_only,omitempty"`
+	EncryptData           *bool     `json:"encrypt_data,omitempty"`
+	DefaultPermission     *string   `json:"default_permission,omitempty"`
+	BlockedOperations     *[]string `json:"blocked_operations,omitempty"`
+	RetentionPolicy       *string   `json:"retention_policy,omitempty"`
+	RetentionTTL          *string   `json:"retention_ttl,omitempty"` // Duration string like "72h"
+	JournalSize           *string   `json:"journal_size,omitempty"`
+	ReadBufferSize        *string   `json:"read_buffer_size,omitempty"`
+	QuotaBytes            *string   `json:"quota_bytes,omitempty"` // Human-readable, nil = no change, "0" = remove quota
 	// AclFlagInheritedCanonicalization — Refs #514. nil = no change;
 	// non-nil = explicit set. Persisted on UpdateShare; runtime hot-reload
 	// is not required (takes effect on adapter restart, matching
@@ -471,6 +489,17 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		rootAttr = &metadata.FileAttr{UID: *owner.UID, GID: gid}
 	}
 
+	commitAck := models.CommitAckJournal
+	if req.CommitAck != "" {
+		parsed, ok := parseCommitAck(req.CommitAck)
+		if !ok {
+			BadRequest(w, "Invalid commit_ack "+req.CommitAck+": expected \"journal\" or \"block-store\"")
+			return
+		}
+		commitAck = parsed
+	}
+	relaxedMetadataCommit := req.RelaxedMetadataCommit != nil && *req.RelaxedMetadataCommit
+
 	now := time.Now()
 	share := &models.Share{
 		ID:                               uuid.New().String(),
@@ -484,6 +513,8 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		RetentionTTL:                     int64(retTTL.Seconds()),
 		JournalSize:                      journalSize,
 		ReadBufferSize:                   readBufferSize,
+		CommitAck:                        commitAck,
+		RelaxedMetadataCommit:            relaxedMetadataCommit,
 		QuotaBytes:                       quotaBytes,
 		Enabled:                          true, // REST-02: new shares are enabled by default.
 		AclFlagInheritedCanonicalization: aclCanon,
@@ -695,6 +726,17 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 	// canonical resolved IDs so a no-op re-submit does not warn.
 	blockStoreBindingChanged := share.BlockStoreID != prevBlockStoreID
 
+	if req.CommitAck != nil {
+		parsed, ok := parseCommitAck(*req.CommitAck)
+		if !ok {
+			BadRequest(w, "Invalid commit_ack "+*req.CommitAck+": expected \"journal\" or \"block-store\"")
+			return
+		}
+		share.CommitAck = parsed
+	}
+	if req.RelaxedMetadataCommit != nil {
+		share.RelaxedMetadataCommit = *req.RelaxedMetadataCommit
+	}
 	if req.ReadOnly != nil {
 		share.ReadOnly = *req.ReadOnly
 	}

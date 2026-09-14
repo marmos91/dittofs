@@ -104,6 +104,11 @@ type CreateShareRequest struct {
 	JournalSize       string    `json:"journal_size,omitempty"`
 	ReadBufferSize    string    `json:"read_buffer_size,omitempty"`
 	QuotaBytes        string    `json:"quota_bytes,omitempty"`
+	// CommitAck is what a COMMIT waits for: "journal" or "block-store".
+	// Empty leaves the server default. RelaxedMetadataCommit is the
+	// independent second axis; nil leaves the default.
+	CommitAck             string `json:"commit_ack,omitempty"`
+	RelaxedMetadataCommit *bool  `json:"relaxed_metadata_commit,omitempty"`
 	// AclFlagInheritedCanonicalization — Refs #514. Pointer so callers can
 	// distinguish "unset → server default (true)" from "explicit false".
 	AclFlagInheritedCanonicalization *bool `json:"acl_flag_inherited_canonicalization,omitempty"`
@@ -144,6 +149,9 @@ type UpdateShareRequest struct {
 	JournalSize       *string   `json:"journal_size,omitempty"`
 	ReadBufferSize    *string   `json:"read_buffer_size,omitempty"`
 	QuotaBytes        *string   `json:"quota_bytes,omitempty"`
+	// CommitAck / RelaxedMetadataCommit — nil = no change.
+	CommitAck             *string `json:"commit_ack,omitempty"`
+	RelaxedMetadataCommit *bool   `json:"relaxed_metadata_commit,omitempty"`
 	// AclFlagInheritedCanonicalization — Refs #514. nil = no change;
 	// non-nil = explicit set. Takes effect on adapter restart.
 	AclFlagInheritedCanonicalization *bool `json:"acl_flag_inherited_canonicalization,omitempty"`

@@ -459,3 +459,89 @@ func TestShareHandler_Update_NoWarnWithoutBindingChange(t *testing.T) {
 		t.Errorf("expected no warnings for a non-binding update, got %v", resp.Warnings)
 	}
 }
+
+// TestShareHandler_Create_SetsDurabilityAxes proves the two axes are settable
+// at create — before this they had no interface at all and every share took the
+// default whatever the operator asked for.
+func TestShareHandler_Create_SetsDurabilityAxes(t *testing.T) {
+	cpStore, _, handler := setupShareTestWithRuntime(t)
+	metaName, blockName := seedStores(t, cpStore, "durable")
+	ctx := context.Background()
+
+	body, _ := json.Marshal(map[string]any{
+		"name":                    "acked",
+		"metadata_store_id":       metaName,
+		"block_store":             blockName,
+		"commit_ack":              "block-store",
+		"relaxed_metadata_commit": true,
+		"default_permission":      "read-write",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/shares", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	handler.Create(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("Create = %d, want 201, body=%s", w.Code, w.Body.String())
+	}
+
+	got, err := cpStore.GetShare(ctx, "/acked")
+	if err != nil {
+		t.Fatalf("GetShare: %v", err)
+	}
+	if got.CommitAck != models.CommitAckBlockStore {
+		t.Errorf("CommitAck = %q, want %q", got.CommitAck, models.CommitAckBlockStore)
+	}
+	if !got.RelaxedMetadataCommit {
+		t.Error("RelaxedMetadataCommit = false, want true: the axes are independent and both were asked for")
+	}
+}
+
+// TestShareHandler_Create_RejectsUnknownCommitAck pins the refusal: resolving a
+// typo to the default would hand the operator a weaker durability promise
+// than the one they wrote, with nothing to reveal it.
+func TestShareHandler_Create_RejectsUnknownCommitAck(t *testing.T) {
+	cpStore, _, handler := setupShareTestWithRuntime(t)
+	metaName, blockName := seedStores(t, cpStore, "badack")
+
+	body, _ := json.Marshal(map[string]any{
+		"name":               "bad",
+		"metadata_store_id":  metaName,
+		"block_store":        blockName,
+		"commit_ack":         "remote",
+		"default_permission": "read-write",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/shares", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	handler.Create(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("Create(commit_ack=remote) = %d, want 400; body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestShareHandler_Update_SetsDurabilityAxes covers the edit path, including
+// that an omitted axis is left alone rather than reset.
+func TestShareHandler_Update_SetsDurabilityAxes(t *testing.T) {
+	cpStore, _, handler := setupShareTestWithRuntime(t)
+	seedShare(t, cpStore, "s-ack")
+	ctx := context.Background()
+
+	body := []byte(`{"commit_ack":"block-store"}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/shares/s-ack", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = withShareName(req, "s-ack")
+	w := httptest.NewRecorder()
+	handler.Update(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Update = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+
+	got, err := cpStore.GetShare(ctx, "/s-ack")
+	if err != nil {
+		t.Fatalf("GetShare: %v", err)
+	}
+	if got.CommitAck != models.CommitAckBlockStore {
+		t.Errorf("CommitAck = %q, want %q", got.CommitAck, models.CommitAckBlockStore)
+	}
+	if got.RelaxedMetadataCommit {
+		t.Error("RelaxedMetadataCommit was flipped by an update that never named it")
+	}
+}
