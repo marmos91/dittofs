@@ -35,7 +35,10 @@ type byteVerifyFixture struct {
 	localStoreDir string
 
 	// Captured so simulateRestart can rebuild the Runtime over the SAME
-	// control-plane store and re-register the reopened metadata store.
+	// control-plane store and re-register the reopened metadata store. The
+	// journal root is captured for the same reason: a fresh one would come up
+	// empty, so a restart would silently lose every byte the journal holds.
+	journalRoot   string
 	metaStoreName string
 	localID       string
 	remoteID      string
@@ -66,7 +69,8 @@ func newByteVerifyFixtureOpts(t *testing.T, meta metadata.Store, metaType string
 	t.Cleanup(func() { _ = cp.Close() })
 
 	rt := New(cp)
-	rt.SetLocalStoreDefaults(&shares.LocalStoreDefaults{JournalRoot: t.TempDir(), MaxSize: 0})
+	journalRoot := t.TempDir()
+	rt.SetLocalStoreDefaults(&shares.LocalStoreDefaults{JournalRoot: journalRoot, MaxSize: 0})
 
 	const metaStoreName = "bv-meta"
 	metaID, err := cp.CreateMetadataStore(context.Background(), &models.MetadataStoreConfig{
@@ -156,6 +160,7 @@ func newByteVerifyFixtureOpts(t *testing.T, meta metadata.Store, metaType string
 		bs:            share.BlockStore,
 		shareName:     shareName,
 		localStoreDir: localStoreDir,
+		journalRoot:   journalRoot,
 		metaStoreName: metaStoreName,
 		localID:       localID,
 		remoteID:      remoteID,
@@ -196,7 +201,7 @@ func (f *byteVerifyFixture) simulateRestart(reopen func(*testing.T) metadata.Sto
 	meta := reopen(f.t)
 
 	rt := New(f.store)
-	rt.SetLocalStoreDefaults(&shares.LocalStoreDefaults{JournalRoot: f.t.TempDir(), MaxSize: 0})
+	rt.SetLocalStoreDefaults(&shares.LocalStoreDefaults{JournalRoot: f.journalRoot, MaxSize: 0})
 	if err := rt.RegisterMetadataStore(f.metaStoreName, meta); err != nil {
 		f.t.Fatalf("simulateRestart RegisterMetadataStore: %v", err)
 	}

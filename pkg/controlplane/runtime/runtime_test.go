@@ -6,8 +6,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/marmos91/dittofs/pkg/block/engine"
-	localmemory "github.com/marmos91/dittofs/pkg/block/local/memory"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
@@ -564,26 +562,11 @@ func TestGetBlockStoreForHandle(t *testing.T) {
 		t.Fatalf("AddShare failed: %v", err)
 	}
 
-	// Create a minimal BlockStore with memory local store.
-	localStore := localmemory.New()
-	localStore.Start(context.Background())
-	syncer := engine.NewRemoteSync(localStore, nil, metaStore, engine.DefaultConfig())
-	bs, err := engine.New(engine.BlockStoreConfig{
-		Local:      localStore,
-		RemoteSync: syncer,
-	})
+	// AddShare gives every share a journal-backed BlockStore, so the one to
+	// resolve against is the share's own — no need to publish a stand-in.
+	bs, err := rt.sharesSvc.GetBlockStoreForShare("/bs-test")
 	if err != nil {
-		t.Fatalf("failed to create BlockStore: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = bs.Close()
-		_ = localStore.Close()
-	})
-	// Publish the BlockStore into the registry via the locked setter. GetShare
-	// returns a snapshot copy, so mutating its BlockStore field would not be
-	// observed by GetBlockStoreForHandle.
-	if err := rt.sharesSvc.SetBlockStoreForTesting("/bs-test", bs); err != nil {
-		t.Fatalf("SetBlockStoreForTesting failed: %v", err)
+		t.Fatalf("GetBlockStoreForShare failed: %v", err)
 	}
 
 	// Get a file handle for this share.
