@@ -70,6 +70,7 @@ Two binaries drive it:
 | **SMB durable handles** | V1 and V2 for session resilience |
 | **SMB security descriptors** | Windows ACL mapping via a shared cross-protocol ACL model |
 | **Authentication** | AUTH_UNIX + Kerberos (RPCSEC_GSS) for NFS; NTLM + Kerberos (SPNEGO) for SMB |
+| **Active Directory** | Domain join via a service keytab; LDAP idmap (`idmap_ad` / `idmap_rid`) resolves AD users and nested groups to the same Unix UID/GID over SMB and NFS |
 | **Cross-protocol coordination** | Bidirectional lease/delegation breaks between SMB and NFS |
 | **Metadata stores** | Memory, BadgerDB, SQLite, PostgreSQL — pluggable per share |
 | **Block stores** | Local: filesystem, memory. Remote: S3, memory. Per-share isolation, async sync |
