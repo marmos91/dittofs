@@ -98,7 +98,7 @@ func (s *GORMStore) UpdateShare(ctx context.Context, share *models.Share) error 
 		"trash_max_bytes":                     share.TrashMaxBytes,
 		"trash_exclude_patterns":              share.TrashExcludePatterns,
 		"encrypt_data":                        share.EncryptData,
-		"local_store_size":                    share.LocalStoreSize,
+		"journal_size":                        share.JournalSize,
 		"read_buffer_size":                    share.ReadBufferSize,
 		"quota_bytes":                         share.QuotaBytes,
 		"updated_at":                          share.UpdatedAt,

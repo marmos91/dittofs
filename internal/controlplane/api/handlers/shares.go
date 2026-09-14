@@ -131,7 +131,7 @@ type CreateShareRequest struct {
 	BlockedOperations *[]string `json:"blocked_operations,omitempty"`
 	RetentionPolicy   string    `json:"retention_policy,omitempty"`
 	RetentionTTL      string    `json:"retention_ttl,omitempty"` // Duration string like "72h"
-	LocalStoreSize    string    `json:"local_store_size,omitempty"`
+	JournalSize       string    `json:"journal_size,omitempty"`
 	ReadBufferSize    string    `json:"read_buffer_size,omitempty"`
 	QuotaBytes        string    `json:"quota_bytes,omitempty"` // Human-readable, e.g., "10GiB" (0 = unlimited)
 	// AclFlagInheritedCanonicalization — Refs #514. Pointer so the handler
@@ -173,13 +173,13 @@ type UpdateShareRequest struct {
 	BlockedOperations  *[]string `json:"blocked_operations,omitempty"`
 	RetentionPolicy    *string   `json:"retention_policy,omitempty"`
 	RetentionTTL       *string   `json:"retention_ttl,omitempty"` // Duration string like "72h"
-	LocalStoreSize     *string   `json:"local_store_size,omitempty"`
+	JournalSize        *string   `json:"journal_size,omitempty"`
 	ReadBufferSize     *string   `json:"read_buffer_size,omitempty"`
 	QuotaBytes         *string   `json:"quota_bytes,omitempty"` // Human-readable, nil = no change, "0" = remove quota
 	// AclFlagInheritedCanonicalization — Refs #514. nil = no change;
 	// non-nil = explicit set. Persisted on UpdateShare; runtime hot-reload
 	// is not required (takes effect on adapter restart, matching
-	// LocalStoreSize/ReadBufferSize semantics).
+	// JournalSize/ReadBufferSize semantics).
 	AclFlagInheritedCanonicalization *bool `json:"acl_flag_inherited_canonicalization,omitempty"`
 	// AccessBasedEnumeration — Refs #532. nil = no change; non-nil = explicit
 	// set. Persisted on UpdateShare; takes effect on adapter restart.
@@ -228,7 +228,7 @@ type ShareResponse struct {
 	BlockedOperations []string `json:"blocked_operations,omitempty"`
 	RetentionPolicy   string   `json:"retention_policy"`
 	RetentionTTL      string   `json:"retention_ttl,omitempty"`    // Human-readable duration
-	LocalStoreSize    string   `json:"local_store_size,omitempty"` // Human-readable byte size
+	JournalSize       string   `json:"journal_size,omitempty"`     // Human-readable byte size
 	ReadBufferSize    string   `json:"read_buffer_size,omitempty"` // Human-readable byte size
 	QuotaBytes        string   `json:"quota_bytes,omitempty"`      // Human-readable, e.g., "10 GiB" or empty if unlimited
 	UsedBytes         int64    `json:"used_bytes"`                 // Logical used bytes (sum of file sizes)
@@ -383,14 +383,14 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parse optional per-share size overrides
-	var localStoreSize, readBufferSize, quotaBytes int64
-	if req.LocalStoreSize != "" {
-		bs, parseErr := bytesize.ParseByteSize(req.LocalStoreSize)
+	var journalSize, readBufferSize, quotaBytes int64
+	if req.JournalSize != "" {
+		bs, parseErr := bytesize.ParseByteSize(req.JournalSize)
 		if parseErr != nil {
-			BadRequest(w, "Invalid local_store_size: "+parseErr.Error())
+			BadRequest(w, "Invalid journal_size: "+parseErr.Error())
 			return
 		}
-		localStoreSize = bs.Int64()
+		journalSize = bs.Int64()
 	}
 	if req.ReadBufferSize != "" {
 		bs, parseErr := bytesize.ParseByteSize(req.ReadBufferSize)
@@ -515,7 +515,7 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		DefaultPermission:                defaultPerm,
 		RetentionPolicy:                  string(retPolicy),
 		RetentionTTL:                     int64(retTTL.Seconds()),
-		LocalStoreSize:                   localStoreSize,
+		JournalSize:                      journalSize,
 		ReadBufferSize:                   readBufferSize,
 		QuotaBytes:                       quotaBytes,
 		Enabled:                          true, // REST-02: new shares are enabled by default.
@@ -608,7 +608,7 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 			RequireKerberos:                  nfsOpts.RequireKerberos,
 			MinKerberosLevel:                 nfsOpts.MinKerberosLevel,
 			BlockedOperations:                share.GetBlockedOps(),
-			LocalStoreSize:                   localStoreSize,
+			JournalSize:                      journalSize,
 			ReadBufferSize:                   readBufferSize,
 			QuotaBytes:                       quotaBytes,
 			LocalBlockStoreID:                localBlockStore.ID,
@@ -762,7 +762,7 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.AclFlagInheritedCanonicalization != nil {
 		// Refs #514. Persisted to DB; takes effect on adapter restart
-		// (matches LocalStoreSize/ReadBufferSize semantics — no runtime
+		// (matches JournalSize/ReadBufferSize semantics — no runtime
 		// hot-reload).
 		share.AclFlagInheritedCanonicalization = *req.AclFlagInheritedCanonicalization
 	}
@@ -878,13 +878,13 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	// Handle per-share size overrides (saved to DB, take effect on restart)
 	sizeChanged := false
-	if req.LocalStoreSize != nil {
-		bs, parseErr := bytesize.ParseByteSize(*req.LocalStoreSize)
+	if req.JournalSize != nil {
+		bs, parseErr := bytesize.ParseByteSize(*req.JournalSize)
 		if parseErr != nil {
-			BadRequest(w, "Invalid local_store_size: "+parseErr.Error())
+			BadRequest(w, "Invalid journal_size: "+parseErr.Error())
 			return
 		}
-		share.LocalStoreSize = bs.Int64()
+		share.JournalSize = bs.Int64()
 		sizeChanged = true
 	}
 	if req.ReadBufferSize != nil {
@@ -921,7 +921,7 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	if sizeChanged {
 		logger.Info("Store size override updated for share (takes effect on restart)", "share", share.Name,
-			"local_store_size", share.LocalStoreSize, "read_buffer_size", share.ReadBufferSize)
+			"journal_size", share.JournalSize, "read_buffer_size", share.ReadBufferSize)
 	}
 
 	// A block-store binding change is not picked up by the running syncer until
@@ -1581,9 +1581,9 @@ func shareToResponse(s *models.Share) ShareResponse {
 	if s.RetentionTTL > 0 {
 		retTTL = s.GetRetentionTTL().String()
 	}
-	var localStoreSizeStr, readBufferSizeStr string
-	if s.LocalStoreSize > 0 {
-		localStoreSizeStr = bytesize.ByteSize(s.LocalStoreSize).String()
+	var journalSizeStr, readBufferSizeStr string
+	if s.JournalSize > 0 {
+		journalSizeStr = bytesize.ByteSize(s.JournalSize).String()
 	}
 	if s.ReadBufferSize > 0 {
 		readBufferSizeStr = bytesize.ByteSize(s.ReadBufferSize).String()
@@ -1607,7 +1607,7 @@ func shareToResponse(s *models.Share) ShareResponse {
 		BlockedOperations:                s.GetBlockedOps(),
 		RetentionPolicy:                  string(s.GetRetentionPolicy()),
 		RetentionTTL:                     retTTL,
-		LocalStoreSize:                   localStoreSizeStr,
+		JournalSize:                      journalSizeStr,
 		ReadBufferSize:                   readBufferSizeStr,
 		QuotaBytes:                       quotaBytesStr,
 		AclFlagInheritedCanonicalization: s.AclFlagInheritedCanonicalization,

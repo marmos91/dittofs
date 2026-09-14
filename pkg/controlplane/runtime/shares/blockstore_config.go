@@ -77,7 +77,7 @@ func resolveBlockStoreConfig(
 
 // LocalStoreDefaults holds default sizing for per-share local stores.
 type LocalStoreDefaults struct {
-	MaxSize uint64 // Maximum local store size per share (0 = unlimited)
+	MaxSize uint64 // Maximum journal size per share (0 = unlimited)
 
 	// ReadBufferBytes is the per-share read buffer budget in bytes (0 = disabled).
 	ReadBufferBytes int64
@@ -93,7 +93,7 @@ type LocalStoreDefaults struct {
 
 	// DefaultRemoteCacheSize is the on-disk ceiling applied to a share's
 	// local tier when a REMOTE block store is configured but no explicit
-	// per-share LocalStoreSize is set. With a remote configured the local
+	// per-share JournalSize is set. With a remote configured the local
 	// tier is a bounded write-through cache; without this ceiling a fast
 	// writer could exhaust the host volume. 0 leaves the conditional ceiling
 	// off (the share keeps its system-deduced local size even with a
@@ -280,11 +280,11 @@ func remotePinnedUploads(ctx context.Context, provider BlockStoreConfigProvider,
 // remoteConfigured signals that the share has a remote block store, which
 // makes the local tier a bounded write-through cache rather than durable
 // storage. In that case, when the operator set no explicit per-share size
-// (config.LocalStoreSize == 0), apply the DefaultRemoteCacheSize ceiling so
+// (config.JournalSize == 0), apply the DefaultRemoteCacheSize ceiling so
 // a fast writer cannot exhaust the host volume — this takes precedence over
 // the generic system-deduced MaxSize, which is sized for the durable
 // local-only tier rather than a transient cache. An explicit per-share
-// --local-store-size always wins. Local-only shares keep the existing
+// --journal-size always wins. Local-only shares keep the existing
 // MaxSize unchanged.
 func mergeLocalStoreDefaults(defaults *LocalStoreDefaults, config *ShareConfig, remoteConfigured bool) *LocalStoreDefaults {
 	if defaults == nil {
@@ -292,9 +292,9 @@ func mergeLocalStoreDefaults(defaults *LocalStoreDefaults, config *ShareConfig, 
 	}
 	merged := *defaults // shallow copy
 	switch {
-	case config.LocalStoreSize > 0:
+	case config.JournalSize > 0:
 		// Explicit per-share override always wins.
-		merged.MaxSize = uint64(config.LocalStoreSize)
+		merged.MaxSize = uint64(config.JournalSize)
 	case remoteConfigured && merged.DefaultRemoteCacheSize > 0:
 		// Remote-backed share, no explicit override: bound the
 		// write-through cache at the remote-cache default.
@@ -512,9 +512,9 @@ func (s *Service) createBlockStoreForShare(
 	// operator at startup (no behavior change) so the misconfiguration is
 	// visible before it bites a client.
 	if config.RetentionPolicy == block.RetentionPin && remoteStore != nil && bs.MaxLocalBytes() > 0 {
-		logger.Warn("pinned share with a bounded local tier: reads will fail with ErrDiskFull once the working set exceeds the local tier — raise local_store_size or drop the pin",
+		logger.Warn("pinned share with a bounded local tier: reads will fail with ErrDiskFull once the working set exceeds the local tier — raise journal_size or drop the pin",
 			"share", config.Name,
-			"local_store_size", bs.MaxLocalBytes())
+			"journal_size", bs.MaxLocalBytes())
 	}
 
 	logger.Info("Per-share BlockStore initialized",

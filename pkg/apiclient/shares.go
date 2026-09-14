@@ -34,7 +34,7 @@ type Share struct {
 	BlockedOperations []string `json:"blocked_operations,omitempty"`
 	RetentionPolicy   string   `json:"retention_policy,omitempty"`
 	RetentionTTL      string   `json:"retention_ttl,omitempty"`
-	LocalStoreSize    string   `json:"local_store_size,omitempty"`
+	JournalSize       string   `json:"journal_size,omitempty"`
 	ReadBufferSize    string   `json:"read_buffer_size,omitempty"`
 	QuotaBytes        string   `json:"quota_bytes,omitempty"`
 	UsedBytes         int64    `json:"used_bytes"`
@@ -102,7 +102,7 @@ type CreateShareRequest struct {
 	BlockedOperations *[]string `json:"blocked_operations,omitempty"`
 	RetentionPolicy   string    `json:"retention_policy,omitempty"`
 	RetentionTTL      string    `json:"retention_ttl,omitempty"`
-	LocalStoreSize    string    `json:"local_store_size,omitempty"`
+	JournalSize       string    `json:"journal_size,omitempty"`
 	ReadBufferSize    string    `json:"read_buffer_size,omitempty"`
 	QuotaBytes        string    `json:"quota_bytes,omitempty"`
 	// AclFlagInheritedCanonicalization — Refs #514. Pointer so callers can
@@ -143,7 +143,7 @@ type UpdateShareRequest struct {
 	BlockedOperations  *[]string `json:"blocked_operations,omitempty"`
 	RetentionPolicy    *string   `json:"retention_policy,omitempty"`
 	RetentionTTL       *string   `json:"retention_ttl,omitempty"`
-	LocalStoreSize     *string   `json:"local_store_size,omitempty"`
+	JournalSize        *string   `json:"journal_size,omitempty"`
 	ReadBufferSize     *string   `json:"read_buffer_size,omitempty"`
 	QuotaBytes         *string   `json:"quota_bytes,omitempty"`
 	// AclFlagInheritedCanonicalization — Refs #514. nil = no change;

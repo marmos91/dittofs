@@ -128,8 +128,8 @@ func runShowDeduced(configPath string) error {
 	fmt.Printf("# Auto-Deduced Block Store Defaults (per share)\n")
 	fmt.Printf("# These values are used when shares don't specify explicit overrides.\n\n")
 
-	fmt.Printf("local_store_size: %s  # 25%% of %s\n",
-		block.FormatBytes(deduced.LocalStoreSize), mem)
+	fmt.Printf("journal_size: %s  # 25%% of %s\n",
+		block.FormatBytes(deduced.JournalSize), mem)
 	fmt.Printf("read_buffer_size: %s  # 12.5%% of %s\n",
 		block.FormatBytes(uint64(deduced.ReadBufferSize)), mem)
 	fmt.Printf("max_log_bytes: %s  # %s; overridable globally (blockstore.journal.max_log_bytes) and per-store\n",

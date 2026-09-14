@@ -73,7 +73,7 @@ func resetCreateFlags() {
 	createDescription = ""
 	createRetention = ""
 	createRetentionTTL = ""
-	createLocalStoreSize = ""
+	createJournalSize = ""
 	createReadBufferSize = ""
 	createQuotaBytes = ""
 	createAclCanonicalize = true
@@ -95,7 +95,7 @@ func resetEditFlags() {
 	editDescription = ""
 	editRetention = ""
 	editRetentionTTL = ""
-	editLocalStoreSize = ""
+	editJournalSize = ""
 	editReadBufferSize = ""
 	editQuotaBytes = ""
 	editAclCanonicalize = ""

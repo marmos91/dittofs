@@ -683,7 +683,7 @@ func TestShareOperations(t *testing.T) {
 			t.Fatalf("failed to get share: %v", err)
 		}
 		got.EncryptData = true
-		got.LocalStoreSize = 123456789
+		got.JournalSize = 123456789
 		got.ReadBufferSize = 65536
 		got.QuotaBytes = 10737418240
 
@@ -698,8 +698,8 @@ func TestShareOperations(t *testing.T) {
 		if !reloaded.EncryptData {
 			t.Error("expected EncryptData to persist as true")
 		}
-		if reloaded.LocalStoreSize != 123456789 {
-			t.Errorf("expected LocalStoreSize 123456789, got %d", reloaded.LocalStoreSize)
+		if reloaded.JournalSize != 123456789 {
+			t.Errorf("expected JournalSize 123456789, got %d", reloaded.JournalSize)
 		}
 		if reloaded.ReadBufferSize != 65536 {
 			t.Errorf("expected ReadBufferSize 65536, got %d", reloaded.ReadBufferSize)
@@ -1724,7 +1724,7 @@ func TestAccessBasedEnumerationBackfill(t *testing.T) {
 			blocked_operations TEXT,
 			retention_policy TEXT DEFAULT '',
 			retention_ttl INTEGER DEFAULT 0,
-			local_store_size INTEGER DEFAULT 0,
+			journal_size INTEGER DEFAULT 0,
 			read_buffer_size INTEGER DEFAULT 0,
 			quota_bytes INTEGER DEFAULT 0,
 			created_at DATETIME,

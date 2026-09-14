@@ -208,7 +208,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 		"cpus", detector.AvailableCPUs(),
 	)
 	logger.Info("Auto-deduced block store defaults",
-		"local_store_size", block.FormatBytes(deduced.LocalStoreSize),
+		"journal_size", block.FormatBytes(deduced.JournalSize),
 		"read_buffer_size", block.FormatBytes(uint64(deduced.ReadBufferSize)),
 		"max_log_bytes", block.FormatBytes(deduced.MaxLogBytes),
 		"parallel_syncs", deduced.ParallelSyncs,
@@ -235,7 +235,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	// Set per-share defaults BEFORE loading shares (AddShare creates BlockStores).
 	rt.SetLocalStoreDefaults(&shares.LocalStoreDefaults{
-		MaxSize:                deduced.LocalStoreSize,
+		MaxSize:                deduced.JournalSize,
 		ReadBufferBytes:        deduced.ReadBufferSize,
 		MaxLogBytes:            block.ClampToInt64(effectiveMaxLogBytes),
 		DefaultRemoteCacheSize: cfg.Blockstore.Journal.DefaultRemoteCacheSize,

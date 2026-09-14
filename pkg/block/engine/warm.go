@@ -182,7 +182,7 @@ func (m *RemoteSync) WarmAll(ctx context.Context, progress func(done, total int6
 			data, err := m.fetchResolvedBlock(gctx, t.fb, t.span)
 			if err != nil {
 				if errors.Is(err, journal.ErrLocalStoreFull) {
-					return fmt.Errorf("warm: local tier full while fetching %s (raise local_store_size or evict): %w",
+					return fmt.Errorf("warm: local tier full while fetching %s (raise journal_size or evict): %w",
 						t.fb.ID, err)
 				}
 				return fmt.Errorf("warm: fetch %s: %w", t.fb.ID, err)
