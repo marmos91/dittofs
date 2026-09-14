@@ -568,6 +568,39 @@ open-questions space, linking to it. **Discussions is currently disabled** on th
   sites. Remaining store types are `s3` and `memory` (`filesystem` already returns a removal
   error).
 
+- **D20. Every share has a block store; journal-only shares cease to exist.** This resolves the
+  audit's largest open question, and it is load-bearing in about ten places. `HasRemote` becomes
+  constant, so the branches gating stats, metrics emission, offline reporting, the `store check`
+  unknown-hash skip and the `share warm` precondition all become dead code and should be removed
+  rather than left as unreachable arms.
+  **Known cost, accepted:** the evict safety guard — *"cannot evict local blocks for share %q: no
+  remote store configured (data would be lost)"* — loses its reachable condition. It exists to
+  prevent data loss, so its removal must be deliberate and noted, not quietly dropped with the
+  branch.
+- **D21. Commit acknowledgement becomes a per-share flag, defaulting to the journal.** NFS COMMIT
+  and SMB Flush acknowledge once the write is durable **in the journal** (the default). A share may
+  opt into acknowledging only once the data has reached the **block store**, trading throughput for
+  a stronger durability guarantee. This replaces the `durable: false` override that auto-provisioning
+  would otherwise have removed, and it lives on the shares table beside the journal size (D15).
+  It must be documented in the guides **and surfaced in the product** — the flag is a durability
+  promise, and an operator cannot infer which one is in force from behaviour alone.
+- **D22. The cache ceiling folds into `journal_size`, and unset means unbounded.**
+  `default_remote_cache_size` goes away entirely, along with the conditional "10 GiB when a remote
+  is configured, deduced size otherwise" rule. New semantics:
+  - unset -> the journal grows without a configured ceiling;
+  - set -> eviction runs as the journal approaches it, and **only blocks already offloaded to the
+    block store are eligible**. Evicting anything else would destroy the only copy.
+  **Consequence to keep in mind:** a cap with nothing yet offloaded cannot be honoured by eviction,
+  so the existing write backpressure path remains the only correct response there — it is not
+  dead code under this decision. And "unbounded by default" is a real change from today's deduced
+  25%-of-RAM ceiling; a fast writer against a slow uploader can now fill the volume.
+- **D23. A name collision at migration is refused, not resolved.** The unique index is on
+  `(name, kind)`, so an install may legitimately hold a local and a remote store sharing a name.
+  Dropping `kind` makes `name` globally unique and those rows collide. Startup names both rows and
+  refuses; the operator renames one. Consistent with D14 — renaming a store under an operator
+  breaks their scripts later instead of now, and dropping the local row silently orphans any share
+  that referenced it.
+
 - **D4. H1 is NOT an incident — no production exposure.** Customers are evaluating DittoFS;
   nothing runs in production. So the five HIGH findings are serious bugs to fix on the normal
   path, not a data-loss event to respond to, and step 0 does not need an emergency release.
