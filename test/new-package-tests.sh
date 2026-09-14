@@ -23,14 +23,16 @@ if ! merge_base=$(git merge-base "$base" HEAD 2>/dev/null); then
 fi
 
 # Directories holding Go files in a given tree, one per line. A directory with
-# no Go files is not a package and never reaches this list.
+# no Go files is not a package and never reaches this list. The repository root
+# is spelled "." rather than the empty string: an empty line would be eaten by
+# the command substitution below, and a root package would slip through unseen.
 go_dirs() {
-	git ls-tree -r --name-only "$1" | sed -n 's![^/]*\.go$!!p' | sed 's!/$!!' | sort -u
+	git ls-tree -r --name-only "$1" | sed -n 's![^/]*\.go$!!p' | sed 's!/$!!; s!^$!.!' | sort -u
 }
 
-# Directories holding at least one Go test file.
+# Directories holding at least one Go test file, spelled the same way.
 test_dirs() {
-	git ls-tree -r --name-only "$1" | sed -n 's![^/]*_test\.go$!!p' | sed 's!/$!!' | sort -u
+	git ls-tree -r --name-only "$1" | sed -n 's![^/]*_test\.go$!!p' | sed 's!/$!!; s!^$!.!' | sort -u
 }
 
 new_dirs=$(comm -13 <(go_dirs "$merge_base") <(go_dirs HEAD))
