@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
@@ -34,17 +35,19 @@ func setupSparsePreservationTest(t *testing.T, seedFSCTLBits uint32) (
 ) {
 	t.Helper()
 
-	rt := newTestRuntime(t, nil)
+	rt, bsID := newTestShareRuntime(t)
 	memStore := memory.NewMemoryMetadataStoreWithDefaults()
 	if err := rt.RegisterMetadataStore("sparse-meta", memStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
 	const shareName = "/sparse"
 	if err := rt.AddShare(context.Background(), &runtime.ShareConfig{
-		Name:          shareName,
-		MetadataStore: "sparse-meta",
-		Enabled:       true,
-		RootAttr:      &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o777},
+		Name:              shareName,
+		MetadataStore:     "sparse-meta",
+		BlockStoreID:      bsID,
+		DefaultPermission: string(models.PermissionReadWrite),
+		Enabled:           true,
+		RootAttr:          &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o777},
 	}); err != nil {
 		t.Fatalf("AddShare: %v", err)
 	}

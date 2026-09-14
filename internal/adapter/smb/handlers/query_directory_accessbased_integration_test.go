@@ -53,7 +53,7 @@ import (
 func setupAccessBasedReproShare(t *testing.T) (*Handler, *runtime.Runtime, metadata.FileHandle, *SMBHandlerContext, *metadata.AuthContext) {
 	t.Helper()
 
-	rt := newTestRuntime(t, nil)
+	rt, bsID := newTestShareRuntime(t)
 	memStore := memory.NewMemoryMetadataStoreWithDefaults()
 	if err := rt.RegisterMetadataStore("abe-repro-meta", memStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
@@ -63,6 +63,8 @@ func setupAccessBasedReproShare(t *testing.T) (*Handler, *runtime.Runtime, metad
 	if err := rt.AddShare(context.Background(), &runtime.ShareConfig{
 		Name:                   shareName,
 		MetadataStore:          "abe-repro-meta",
+		BlockStoreID:           bsID,
+		DefaultPermission:      string(models.PermissionReadWrite),
 		Enabled:                true,
 		AccessBasedEnumeration: true,
 		RootAttr: &metadata.FileAttr{

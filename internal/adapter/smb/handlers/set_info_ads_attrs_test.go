@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
@@ -41,17 +42,19 @@ func setupADSAttrPropagationTest(t *testing.T, basePOSIXMode uint32) (
 ) {
 	t.Helper()
 
-	rt := newTestRuntime(t, nil)
+	rt, bsID := newTestShareRuntime(t)
 	memStore := memory.NewMemoryMetadataStoreWithDefaults()
 	if err := rt.RegisterMetadataStore("ads-attr-meta", memStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
 	const shareName = "/ads-attr"
 	if err := rt.AddShare(context.Background(), &runtime.ShareConfig{
-		Name:          shareName,
-		MetadataStore: "ads-attr-meta",
-		Enabled:       true,
-		RootAttr:      &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o777},
+		Name:              shareName,
+		MetadataStore:     "ads-attr-meta",
+		BlockStoreID:      bsID,
+		DefaultPermission: string(models.PermissionReadWrite),
+		Enabled:           true,
+		RootAttr:          &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o777},
 	}); err != nil {
 		t.Fatalf("AddShare: %v", err)
 	}

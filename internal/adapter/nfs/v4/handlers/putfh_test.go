@@ -15,6 +15,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	memorymeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
@@ -27,7 +28,7 @@ func newPutFHTestHandler(t *testing.T, shareName string) (*Handler, []byte, *run
 	t.Helper()
 
 	ctx := context.Background()
-	rt := newTestRuntime(t, nil)
+	rt, bsID := newTestShareRuntime(t)
 
 	metaStore := memorymeta.NewMemoryMetadataStoreWithDefaults()
 	if err := rt.RegisterMetadataStore("test-meta", metaStore); err != nil {
@@ -35,9 +36,11 @@ func newPutFHTestHandler(t *testing.T, shareName string) (*Handler, []byte, *run
 	}
 
 	cfg := &runtime.ShareConfig{
-		Name:          shareName,
-		MetadataStore: "test-meta",
-		Enabled:       true,
+		Name:              shareName,
+		MetadataStore:     "test-meta",
+		BlockStoreID:      bsID,
+		DefaultPermission: string(models.PermissionReadWrite),
+		Enabled:           true,
 		RootAttr: &metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
 			Mode: 0o755,

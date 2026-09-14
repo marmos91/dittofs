@@ -461,7 +461,7 @@ func TestTreeConnect_ShareFlagAccessBasedEnumConstant(t *testing.T) {
 func newTreeConnectABEHandler(t *testing.T, shareName string, abe bool) (*Handler, uint64) {
 	t.Helper()
 
-	rt := newTestRuntime(t, nil)
+	rt, bsID := newTestShareRuntime(t)
 	metaStore := memorymeta.NewMemoryMetadataStoreWithDefaults()
 	if err := rt.RegisterMetadataStore("test-meta", metaStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
@@ -470,6 +470,7 @@ func newTreeConnectABEHandler(t *testing.T, shareName string, abe bool) (*Handle
 	cfg := &runtime.ShareConfig{
 		Name:                   shareName,
 		MetadataStore:          "test-meta",
+		BlockStoreID:           bsID,
 		Enabled:                true,
 		DefaultPermission:      "read-write",
 		AccessBasedEnumeration: abe,
@@ -575,7 +576,7 @@ func TestTreeConnect_ShareCapContinuousAvailabilityConstant(t *testing.T) {
 func newTreeConnectCAHandler(t *testing.T, shareName string, ca bool) (*Handler, uint64) {
 	t.Helper()
 
-	rt := newTestRuntime(t, nil)
+	rt, bsID := newTestShareRuntime(t)
 	metaStore := memorymeta.NewMemoryMetadataStoreWithDefaults()
 	if err := rt.RegisterMetadataStore("test-meta", metaStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
@@ -584,6 +585,7 @@ func newTreeConnectCAHandler(t *testing.T, shareName string, ca bool) (*Handler,
 	cfg := &runtime.ShareConfig{
 		Name:                   shareName,
 		MetadataStore:          "test-meta",
+		BlockStoreID:           bsID,
 		Enabled:                true,
 		DefaultPermission:      "read-write",
 		ContinuousAvailability: ca,
@@ -917,7 +919,7 @@ func TestResolveSharePermission_RootBypass(t *testing.T) {
 func newTreeConnectGateHandler(t *testing.T, shareName string, enabled bool) (*Handler, uint64) {
 	t.Helper()
 
-	rt := newTestRuntime(t, nil)
+	rt, bsID := newTestShareRuntime(t)
 	metaStore := memorymeta.NewMemoryMetadataStoreWithDefaults()
 	if err := rt.RegisterMetadataStore("test-meta", metaStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
@@ -926,6 +928,7 @@ func newTreeConnectGateHandler(t *testing.T, shareName string, enabled bool) (*H
 	cfg := &runtime.ShareConfig{
 		Name:              shareName,
 		MetadataStore:     "test-meta",
+		BlockStoreID:      bsID,
 		Enabled:           true,
 		DefaultPermission: "read-write",
 		RootAttr: &metadata.FileAttr{

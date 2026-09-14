@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
@@ -25,7 +26,7 @@ import (
 func setupDocTest(t *testing.T) (*Handler, *runtime.Runtime, *SMBHandlerContext, metadata.FileHandle, *metadata.AuthContext) {
 	t.Helper()
 
-	rt := newTestRuntime(t, nil)
+	rt, bsID := newTestShareRuntime(t)
 
 	memStore := memory.NewMemoryMetadataStoreWithDefaults()
 	if err := rt.RegisterMetadataStore("test-meta", memStore); err != nil {
@@ -34,8 +35,10 @@ func setupDocTest(t *testing.T) (*Handler, *runtime.Runtime, *SMBHandlerContext,
 
 	shareName := "/doc-test"
 	if err := rt.AddShare(context.Background(), &runtime.ShareConfig{
-		Name:          shareName,
-		MetadataStore: "test-meta",
+		Name:              shareName,
+		MetadataStore:     "test-meta",
+		BlockStoreID:      bsID,
+		DefaultPermission: string(models.PermissionReadWrite),
 		RootAttr: &metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
 			Mode: 0o755,

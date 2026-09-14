@@ -12,6 +12,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/blocking"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/callback"
 	"github.com/marmos91/dittofs/pkg/adapter"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
@@ -115,13 +116,15 @@ func TestNLMWaiter_GrantedWhenSMBHolderReleases(t *testing.T) {
 	const shareName = "/xproto-wakeup"
 
 	// --- Runtime + share with a memory metadata store -----------------------
-	rt := newTestRuntime(t, nil)
+	rt, bsID := newTestShareRuntime(t)
 	metaStore := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	require.NoError(t, rt.RegisterMetadataStore("test-meta", metaStore))
 	require.NoError(t, rt.AddShare(ctx, &runtime.ShareConfig{
-		Name:          shareName,
-		MetadataStore: "test-meta",
-		Enabled:       true,
+		Name:              shareName,
+		MetadataStore:     "test-meta",
+		BlockStoreID:      bsID,
+		DefaultPermission: string(models.PermissionReadWrite),
+		Enabled:           true,
 		RootAttr: &metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
 			Mode: 0o755,

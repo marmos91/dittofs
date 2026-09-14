@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
@@ -23,7 +24,7 @@ import (
 func setupACLToggleTest(t *testing.T, shareName string, canonicalize bool) (*Handler, *OpenFile, *metadata.AuthContext) {
 	t.Helper()
 
-	rt := newTestRuntime(t, nil)
+	rt, bsID := newTestShareRuntime(t)
 	memStore := memory.NewMemoryMetadataStoreWithDefaults()
 	if err := rt.RegisterMetadataStore("acl-toggle-meta", memStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
@@ -31,6 +32,8 @@ func setupACLToggleTest(t *testing.T, shareName string, canonicalize bool) (*Han
 	if err := rt.AddShare(context.Background(), &runtime.ShareConfig{
 		Name:                             shareName,
 		MetadataStore:                    "acl-toggle-meta",
+		BlockStoreID:                     bsID,
+		DefaultPermission:                string(models.PermissionReadWrite),
 		Enabled:                          true,
 		AclFlagInheritedCanonicalization: canonicalize,
 		RootAttr: &metadata.FileAttr{

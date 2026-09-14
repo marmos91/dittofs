@@ -49,8 +49,8 @@ func TestAddShare_ConcurrentSameName_NoMetadataMismatch(t *testing.T) {
 
 		run := func(store metadata.Store) {
 			defer wg.Done()
-			cfg := &ShareConfig{Name: name, MetadataStore: "m", Enabled: true}
-			err := svc.AddShare(ctx, cfg, fixedStoreProvider{store: store}, metaSvc, nil, &LocalStoreDefaults{JournalRoot: t.TempDir()}, nil)
+			cfg := &ShareConfig{Name: name, MetadataStore: "m", Enabled: true, BlockStoreID: testBlockStoreID}
+			err := svc.AddShare(ctx, cfg, fixedStoreProvider{store: store}, metaSvc, memBlockStoreProvider{}, &LocalStoreDefaults{JournalRoot: t.TempDir()}, nil)
 			if err == nil {
 				mu.Lock()
 				winners++
@@ -101,13 +101,13 @@ func TestAddShare_ConcurrentSameName_SecondCallerRejected(t *testing.T) {
 	svc := New()
 	metaSvc := metadata.New()
 
-	cfg := &ShareConfig{Name: name, MetadataStore: "m", Enabled: true}
-	if err := svc.AddShare(ctx, cfg, fixedStoreProvider{store: store}, metaSvc, nil, &LocalStoreDefaults{JournalRoot: t.TempDir()}, nil); err != nil {
+	cfg := &ShareConfig{Name: name, MetadataStore: "m", Enabled: true, BlockStoreID: testBlockStoreID}
+	if err := svc.AddShare(ctx, cfg, fixedStoreProvider{store: store}, metaSvc, memBlockStoreProvider{}, &LocalStoreDefaults{JournalRoot: t.TempDir()}, nil); err != nil {
 		t.Fatalf("first AddShare: %v", err)
 	}
 
 	// Second add for the same name must fail.
-	if err := svc.AddShare(ctx, cfg, fixedStoreProvider{store: store}, metaSvc, nil, &LocalStoreDefaults{JournalRoot: t.TempDir()}, nil); err == nil {
+	if err := svc.AddShare(ctx, cfg, fixedStoreProvider{store: store}, metaSvc, memBlockStoreProvider{}, &LocalStoreDefaults{JournalRoot: t.TempDir()}, nil); err == nil {
 		t.Fatal("second AddShare for existing name: want error, got nil")
 	}
 

@@ -60,7 +60,7 @@ func readOnlyACL(who string) *acl.ACL {
 func setupABEQueryDirTest(t *testing.T, abe bool, callerUID, callerGID uint32, children []abeChild) (*Handler, *OpenFile, *SMBHandlerContext) {
 	t.Helper()
 
-	rt := newTestRuntime(t, nil)
+	rt, bsID := newTestShareRuntime(t)
 	memStore := memory.NewMemoryMetadataStoreWithDefaults()
 	if err := rt.RegisterMetadataStore("test-meta", memStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
@@ -70,6 +70,8 @@ func setupABEQueryDirTest(t *testing.T, abe bool, callerUID, callerGID uint32, c
 	if err := rt.AddShare(context.Background(), &runtime.ShareConfig{
 		Name:                   shareName,
 		MetadataStore:          "test-meta",
+		BlockStoreID:           bsID,
+		DefaultPermission:      string(models.PermissionReadWrite),
 		AccessBasedEnumeration: abe,
 		RootAttr: &metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
@@ -280,7 +282,7 @@ func TestQueryDirectory_ABE(t *testing.T) {
 func setupQueryDirTest(t *testing.T, names []string) (*Handler, *OpenFile, *metadata.AuthContext, *SMBHandlerContext) {
 	t.Helper()
 
-	rt := newTestRuntime(t, nil)
+	rt, bsID := newTestShareRuntime(t)
 	memStore := memory.NewMemoryMetadataStoreWithDefaults()
 	if err := rt.RegisterMetadataStore("test-meta", memStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
@@ -288,8 +290,10 @@ func setupQueryDirTest(t *testing.T, names []string) (*Handler, *OpenFile, *meta
 
 	shareName := "/test"
 	if err := rt.AddShare(context.Background(), &runtime.ShareConfig{
-		Name:          shareName,
-		MetadataStore: "test-meta",
+		Name:              shareName,
+		MetadataStore:     "test-meta",
+		BlockStoreID:      bsID,
+		DefaultPermission: string(models.PermissionReadWrite),
 		RootAttr: &metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
 			Mode: 0o755,

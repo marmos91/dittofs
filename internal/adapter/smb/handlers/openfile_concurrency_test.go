@@ -32,16 +32,18 @@ import (
 func setupConcurrentDirTest(t *testing.T, nChildren int) (*Handler, *OpenFile, *SMBHandlerContext) {
 	t.Helper()
 
-	rt := newTestRuntime(t, nil)
+	rt, bsID := newTestShareRuntime(t)
 	memStore := memory.NewMemoryMetadataStoreWithDefaults()
 	if err := rt.RegisterMetadataStore("conc-meta", memStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
 	const shareName = "/conc"
 	if err := rt.AddShare(context.Background(), &runtime.ShareConfig{
-		Name:          shareName,
-		MetadataStore: "conc-meta",
-		RootAttr:      &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o755},
+		Name:              shareName,
+		MetadataStore:     "conc-meta",
+		BlockStoreID:      bsID,
+		DefaultPermission: string(models.PermissionReadWrite),
+		RootAttr:          &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o755},
 	}); err != nil {
 		t.Fatalf("AddShare: %v", err)
 	}

@@ -118,6 +118,30 @@ func setJournalRoot(t *testing.T, rt *Runtime) {
 	rt.SetLocalStoreDefaults(&shares.LocalStoreDefaults{JournalRoot: t.TempDir()})
 }
 
+// newRuntimeWithBlockStore builds a runtime over an in-memory control-plane
+// store holding one memory block store, and returns that store's id. Every
+// share needs a block store, so every AddShare here carries the returned id.
+func newRuntimeWithBlockStore(t *testing.T) (*Runtime, string) {
+	t.Helper()
+	cps, err := cpstore.New(&cpstore.Config{
+		Type:   cpstore.DatabaseTypeSQLite,
+		SQLite: cpstore.SQLiteConfig{Path: ":memory:"},
+	})
+	if err != nil {
+		t.Fatalf("cpstore.New: %v", err)
+	}
+	t.Cleanup(func() { _ = cps.Close() })
+	bsID, err := cps.CreateBlockStore(context.Background(), &models.BlockStoreConfig{
+		Name: "test-blocks", Type: "memory",
+	})
+	if err != nil {
+		t.Fatalf("CreateBlockStore: %v", err)
+	}
+	rt := New(cps)
+	setJournalRoot(t, rt)
+	return rt, bsID
+}
+
 // remoteForShare returns the underlying remote store for a share's remote
 // config so the test can count CAS objects (Walk) vs block objects
 // (WalkBlocks) directly on the memory backend.

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
@@ -16,15 +17,17 @@ import (
 func setupCreateWireTest(t *testing.T) (*Handler, *SMBHandlerContext) {
 	t.Helper()
 
-	rt := newTestRuntime(t, nil)
+	rt, bsID := newTestShareRuntime(t)
 	memStore := memory.NewMemoryMetadataStoreWithDefaults()
 	if err := rt.RegisterMetadataStore("test-meta", memStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
 	shareName := "/wire-test"
 	if err := rt.AddShare(context.Background(), &runtime.ShareConfig{
-		Name:          shareName,
-		MetadataStore: "test-meta",
+		Name:              shareName,
+		MetadataStore:     "test-meta",
+		BlockStoreID:      bsID,
+		DefaultPermission: string(models.PermissionReadWrite),
 		RootAttr: &metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
 			Mode: 0o755,

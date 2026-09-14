@@ -25,7 +25,7 @@ func newTestMountHandler(t *testing.T, shareName string, enabled bool) (*Handler
 	t.Helper()
 
 	ctx := context.Background()
-	rt := newTestRuntime(t, nil)
+	rt, bsID := newTestShareRuntime(t)
 
 	metaStore := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	if err := rt.RegisterMetadataStore("test-meta", metaStore); err != nil {
@@ -33,9 +33,11 @@ func newTestMountHandler(t *testing.T, shareName string, enabled bool) (*Handler
 	}
 
 	shareCfg := &runtime.ShareConfig{
-		Name:          shareName,
-		MetadataStore: "test-meta",
-		Enabled:       true, // AddShare validates we can build root handle; flip below.
+		Name:              shareName,
+		MetadataStore:     "test-meta",
+		BlockStoreID:      bsID,
+		DefaultPermission: string(models.PermissionReadWrite),
+		Enabled:           true, // AddShare validates we can build root handle; flip below.
 		RootAttr: &metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
 			Mode: 0o755,

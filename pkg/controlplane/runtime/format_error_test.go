@@ -71,6 +71,7 @@ func TestLoadSharesFromStore_FormatErrorStops(t *testing.T) {
 				Name: "/future-format-" + tc.name,
 			}
 			share.MetadataStoreID = "format-meta-" + tc.name
+			share.BlockStoreID = createBlockStoreConfig(t, s, "format-blocks-"+tc.name)
 			if _, err := s.CreateShare(ctx, share); err != nil {
 				t.Fatalf("CreateShare: %v", err)
 			}

@@ -16,6 +16,7 @@ import (
 	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/block/journal"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	memorymeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
@@ -68,7 +69,7 @@ func newIOTestFixture(t *testing.T, shareName string) *ioTestFixture {
 	t.Cleanup(func() { _ = blockSvc.Close() })
 
 	// Create runtime
-	rt := newTestRuntime(t, nil)
+	rt, bsID := newTestShareRuntime(t)
 	metaSvc := rt.GetMetadataService()
 	metaSvc.SetDeferredCommit(false)
 
@@ -79,8 +80,10 @@ func newIOTestFixture(t *testing.T, shareName string) *ioTestFixture {
 
 	// Add share
 	shareConfig := &runtime.ShareConfig{
-		Name:          shareName,
-		MetadataStore: "test-meta",
+		Name:              shareName,
+		MetadataStore:     "test-meta",
+		BlockStoreID:      bsID,
+		DefaultPermission: string(models.PermissionReadWrite),
 		// Export root owned by the principal these fixtures operate as
 		// (UID/GID 1000). The secure default root mode (0755) grants the
 		// owner write access without making the export world-writable.
@@ -88,6 +91,13 @@ func newIOTestFixture(t *testing.T, shareName string) *ioTestFixture {
 	}
 	if err := rt.AddShare(context.Background(), shareConfig); err != nil {
 		t.Fatalf("add share: %v", err)
+	}
+
+	// AddShare built a block store of its own from the config above. This
+	// fixture serves the engine built here instead, so close that one rather
+	// than leave its syncer and journal running for the rest of the test.
+	if added, aerr := rt.GetBlockStoreForShare(shareName); aerr == nil && added != nil {
+		_ = added.Close()
 	}
 
 	// Publish the per-share BlockStore via the locked setter (GetShare returns

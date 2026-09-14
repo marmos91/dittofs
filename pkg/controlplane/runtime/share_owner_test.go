@@ -13,8 +13,7 @@ import (
 // model: the owner governs who can write at the root via POSIX, independent of
 // the (gate-only) share permission grants.
 func TestAddShare_StampsRootOwner(t *testing.T) {
-	rt := New(nil)
-	setJournalRoot(t, rt)
+	rt, bsID := newRuntimeWithBlockStore(t)
 	ctx := context.Background()
 	if err := rt.RegisterMetadataStore("test-meta", memory.NewMemoryMetadataStoreWithDefaults()); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
@@ -24,6 +23,7 @@ func TestAddShare_StampsRootOwner(t *testing.T) {
 	cfg := &ShareConfig{
 		Name:          "/owned",
 		MetadataStore: "test-meta",
+		BlockStoreID:  bsID,
 		RootAttr:      &metadata.FileAttr{UID: ownerUID, GID: ownerGID},
 	}
 	if err := rt.AddShare(ctx, cfg); err != nil {
@@ -50,14 +50,13 @@ func TestAddShare_StampsRootOwner(t *testing.T) {
 // With no owner specified, the root stays owned by root (UID/GID 0) — the
 // secure default, unchanged.
 func TestAddShare_DefaultRootOwnerIsRoot(t *testing.T) {
-	rt := New(nil)
-	setJournalRoot(t, rt)
+	rt, bsID := newRuntimeWithBlockStore(t)
 	ctx := context.Background()
 	if err := rt.RegisterMetadataStore("test-meta", memory.NewMemoryMetadataStoreWithDefaults()); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
 
-	if err := rt.AddShare(ctx, &ShareConfig{Name: "/def", MetadataStore: "test-meta"}); err != nil {
+	if err := rt.AddShare(ctx, &ShareConfig{Name: "/def", MetadataStore: "test-meta", BlockStoreID: bsID}); err != nil {
 		t.Fatalf("AddShare: %v", err)
 	}
 

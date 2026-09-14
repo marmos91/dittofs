@@ -8,6 +8,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/lease"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
@@ -401,7 +402,7 @@ func setupWalkPathTest(t *testing.T) (*Handler, *metadata.AuthContext, metadata.
 	t.Helper()
 
 	// Create runtime with nil store (no block store needed for walkPath tests)
-	rt := newTestRuntime(t, nil)
+	rt, bsID := newTestShareRuntime(t)
 
 	// Create memory metadata store and register it
 	memStore := memory.NewMemoryMetadataStoreWithDefaults()
@@ -412,8 +413,10 @@ func setupWalkPathTest(t *testing.T) (*Handler, *metadata.AuthContext, metadata.
 	// Add a share
 	shareName := "/test"
 	shareConfig := &runtime.ShareConfig{
-		Name:          shareName,
-		MetadataStore: "test-meta",
+		Name:              shareName,
+		MetadataStore:     "test-meta",
+		BlockStoreID:      bsID,
+		DefaultPermission: string(models.PermissionReadWrite),
 		RootAttr: &metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
 			Mode: 0755,
