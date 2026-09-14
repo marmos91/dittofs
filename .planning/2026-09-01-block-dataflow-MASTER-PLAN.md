@@ -1241,6 +1241,9 @@ never fired; it is a guard that has never existed.
 
 ## 15. Step 5 — retire the configurable local block store
 
+> **The consolidated spec is `2026-09-14-step5-block-store-simplification-SPEC.md`.**
+> Read it first; this section is the working history behind it.
+
 Added 2026-09-14. **This decision was taken verbally and was not written down anywhere** — not in
 this plan, not in the RFC, not in the four audit reports. Recording it now so it constrains other
 lanes. Governed by D11-D13 (§8).
