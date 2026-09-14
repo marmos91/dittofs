@@ -9,6 +9,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/chunker"
 	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/block/local"
+	"github.com/marmos91/dittofs/pkg/block/syncer"
 )
 
 // defaultBlockUploadWindow bounds how many of one file's packed blocks are
@@ -43,7 +44,7 @@ type flushClosure struct {
 
 // newFlushClosure builds the fn + AfterFile pair for one Flush pass. See the
 // type comment for the per-call freshness obligation.
-func newFlushClosure(l local.LocalStore, params chunker.Params, blockSize int64, deduper Deduper, sink BlockSink) (journal.FlushFunc, func(context.Context, journal.FileID) error) {
+func newFlushClosure(l local.LocalStore, params chunker.Params, blockSize int64, deduper Deduper, sink BlockSink, slots *syncer.DynamicSemaphore) (journal.FlushFunc, func(context.Context, journal.FileID) error) {
 	c := &flushClosure{
 		local:      l,
 		params:     params,
@@ -52,7 +53,7 @@ func newFlushClosure(l local.LocalStore, params chunker.Params, blockSize int64,
 		sink:       sink,
 		newOffsets: map[int64]struct{}{},
 	}
-	c.disp = newUploadChain(sink)
+	c.disp = newUploadChain(sink, slots)
 	return c.fn, c.afterFile
 }
 
@@ -333,8 +334,14 @@ func coalesce(extents []journal.Extent) [][2]int64 {
 // delivered to another file's report.
 type uploadChain struct {
 	sink BlockSink
-	prev chan struct{} // resolution of the last-submitted flight
-	wg   sync.WaitGroup
+	// slots bounds how many blocks are in flight at once, and with them how
+	// many carver arenas are live: peak flush RAM is the window, not the file
+	// size. A plain field rather than a capability the sink might implement —
+	// an upload window that a type assertion can silently decline to apply is
+	// the same as no window at all.
+	slots *syncer.DynamicSemaphore
+	prev  chan struct{} // resolution of the last-submitted flight
+	wg    sync.WaitGroup
 
 	mu        sync.Mutex
 	flights   []*flight
@@ -350,26 +357,32 @@ type flight struct {
 	err      error
 }
 
-func newUploadChain(sink BlockSink) *uploadChain {
+func newUploadChain(sink BlockSink, slots *syncer.DynamicSemaphore) *uploadChain {
 	prev := make(chan struct{}, 1)
 	close(prev) // pre-resolved head: the first block resolves as soon as it commits
-	return &uploadChain{sink: sink, prev: prev}
+	return &uploadChain{sink: sink, slots: slots, prev: prev}
 }
 
 // submit launches one block's commit. The commit runs regardless of any
 // predecessor's failure (the upload is content-addressed and harmless), but
-// the flight resolves ok only if the whole prefix before it did. The upload
-// slot is acquired HERE, in the caller, before the goroutine spawns, so a
-// flight only exists once a slot is its: the chunk arenas backing at most
-// `window` in-flight blocks are live at once, bounding peak carve RAM by the
-// pass window rather than by file size. The slot releases when the commit
-// returns — the arena's whole live window.
+// the flight resolves ok only if the whole prefix before it did.
+//
+// The slot is acquired in the CALLER, before the goroutine spawns, so a
+// submission blocks once the window is full — that back-pressure is what stops
+// the carver running ahead and allocating arenas nothing is waiting to free.
+// It is released inside the goroutine the moment CommitBlock returns, which is
+// exactly when the chunk arena backing this block dies. Releasing in submit
+// instead would bound submissions rather than in-flight arenas, which is to say
+// it would bound nothing: submit returns as soon as the goroutine is spawned.
+// The release deliberately precedes the <-prev ordering wait, so a slow
+// predecessor delays the flip but never holds a successor's memory.
 func (u *uploadChain) submit(ctx context.Context, chunks []CarveChunk, extents []journal.Extent) {
-	if h, ok := u.sink.(slotHolder); ok {
-		if err := h.acquireSlot(ctx); err != nil {
+	held := false
+	if u.slots != nil {
+		if err := u.slots.Acquire(ctx); err != nil {
 			return
 		}
-		defer h.releaseSlot()
+		held = true
 	}
 	f := &flight{extents: extents, resolved: make(chan struct{})}
 	mine := f.resolved
@@ -382,6 +395,9 @@ func (u *uploadChain) submit(ctx context.Context, chunks []CarveChunk, extents [
 	go func() {
 		defer u.wg.Done()
 		err := u.sink.CommitBlock(ctx, chunks)
+		if held {
+			u.slots.Release() // the arena is dead; free the slot before ordering
+		}
 		<-prev // predecessor resolved
 		u.mu.Lock()
 		prevOK := !u.aborted

@@ -14,7 +14,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/carver"
 	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/block/remote"
-	"github.com/marmos91/dittofs/pkg/block/syncer"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -296,35 +295,6 @@ func (s localBlockSink) ManifestRowEndAfter(ctx context.Context, id journal.File
 	return manifestRowEndAfter(ctx, s.committer, string(id), off)
 }
 
-// slotHolder is the optional upload-window capability: the upload chain
-// acquires a slot per in-flight block before spawning its commit goroutine,
-// so at most `window` blocks (and their arenas) are in flight at once.
-// Declared here so a sink signature change fails the build instead of
-// silently running unbounded at runtime.
-type slotHolder interface {
-	acquireSlot(ctx context.Context) error
-	releaseSlot()
-}
-
-// AcquireSlot takes one upload-window slot, blocking while the pass window
-// is full. Cancellation returns the error and the caller skips the block.
-func (s engineBlockSink) AcquireSlot(ctx context.Context) error {
-	if s.uploadSlots == nil {
-		return nil
-	}
-	if err := s.uploadSlots.Acquire(ctx); err != nil {
-		return fmt.Errorf("flush: upload slot: %w", err)
-	}
-	return nil
-}
-
-// ReleaseSlot returns the slot the chain acquired for one in-flight block.
-func (s engineBlockSink) ReleaseSlot() {
-	if s.uploadSlots != nil {
-		s.uploadSlots.Release()
-	}
-}
-
 // ManifestRowEndAfter answers the run-extension query for the remote-backed
 // sink.
 func (s engineBlockSink) ManifestRowEndAfter(ctx context.Context, id journal.FileID, off int64) (int64, error) {
@@ -372,11 +342,6 @@ type engineBlockSink struct {
 	rbs         remote.RemoteBlockStore
 	committer   blockCommitter
 	commitLocks *carveCommitLocks
-	// uploadSlots bounds concurrent flush blocks: the upload chain acquires a
-	// slot per in-flight block before spawning its commit goroutine, so at
-	// most `window` blocks (and their arenas) are in flight at once. Nil
-	// means unbounded (test fixtures).
-	uploadSlots *syncer.DynamicSemaphore
 	// onBlockCommitted reports each block as it lands, carrying the block's
 	// uploaded byte count. Reporting here rather than after a flush pass
 	// returns is what makes the count advance *during* a long flush: the drain
