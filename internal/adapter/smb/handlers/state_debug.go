@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/changenotify"
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
@@ -154,7 +155,7 @@ func (h *Handler) AuditSessionCleanup(sessionID uint64) int {
 
 	// Check notify watchers
 	if h.NotifyRegistry != nil {
-		h.NotifyRegistry.RangeWatchers(func(n *PendingNotify) bool {
+		h.NotifyRegistry.RangeWatchers(func(n *changenotify.PendingNotify) bool {
 			if n.SessionID == sessionID {
 				leaked++
 				logger.Warn("LEAKED notify watcher after session cleanup",

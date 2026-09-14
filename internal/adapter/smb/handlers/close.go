@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/common"
+	"github.com/marmos91/dittofs/internal/adapter/smb/changenotify"
 	"github.com/marmos91/dittofs/internal/adapter/smb/pending"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
@@ -467,13 +468,13 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 				// duplicate LEASE_BREAK for one logical change.
 
 				if h.NotifyRegistry != nil {
-					parentPath := GetParentPath(docName.Path)
+					parentPath := changenotify.GetParentPath(docName.Path)
 					// Use the resolved delete-target type (the base file's, not
 					// the stream open's) and the actual removed name.
 					// NameChangeFilterFor routes ADS names via
 					// FILE_NOTIFY_CHANGE_STREAM_NAME automatically.
-					nameFilter := NameChangeFilterFor(deleteFileName, isDeleteTargetDir)
-					h.NotifyRegistry.NotifyChange(openFile.ShareName, parentPath, deleteFileName, FileActionRemoved, nameFilter)
+					nameFilter := changenotify.NameChangeFilterFor(deleteFileName, isDeleteTargetDir)
+					h.NotifyRegistry.NotifyChange(openFile.ShareName, parentPath, deleteFileName, changenotify.FileActionRemoved, nameFilter)
 				}
 			}
 		}
@@ -542,7 +543,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 			// see or mutate it.
 			if notify.AsyncCallback != nil {
 				AppendPostSend(ctx, func() {
-					cleanupResp := &ChangeNotifyResponse{
+					cleanupResp := &changenotify.ChangeNotifyResponse{
 						SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyCleanup},
 					}
 					h.NotifyRegistry.QueueFinalAfterInterim(notify, func() {

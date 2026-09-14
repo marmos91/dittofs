@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/changenotify"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -179,7 +180,7 @@ func (h *Handler) setSecurityInfo(
 
 	if !changed {
 		if h.NotifyRegistry != nil {
-			h.notifyOpenFileModified(openFile, FileNotifyChangeSecurity)
+			h.notifyOpenFileModified(openFile, changenotify.FileNotifyChangeSecurity)
 		}
 		return setInfoStatus(types.StatusSuccess), nil
 	}
@@ -194,7 +195,7 @@ func (h *Handler) setSecurityInfo(
 	}
 
 	if h.NotifyRegistry != nil {
-		h.notifyOpenFileModified(openFile, FileNotifyChangeSecurity)
+		h.notifyOpenFileModified(openFile, changenotify.FileNotifyChangeSecurity)
 	}
 
 	return setInfoStatus(types.StatusSuccess), nil

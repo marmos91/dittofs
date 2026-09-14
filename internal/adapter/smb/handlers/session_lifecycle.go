@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/common"
+	"github.com/marmos91/dittofs/internal/adapter/smb/changenotify"
 	"github.com/marmos91/dittofs/internal/adapter/smb/pending"
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
@@ -482,7 +483,7 @@ func (h *Handler) closeFilesWithFilter(
 				if notify.AsyncCallback == nil {
 					continue
 				}
-				cleanupResp := &ChangeNotifyResponse{
+				cleanupResp := &changenotify.ChangeNotifyResponse{
 					SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyCleanup},
 				}
 				// Gate on interim PENDING — even during teardown, the
@@ -761,7 +762,7 @@ func (h *Handler) ExpireSessionNotifies(sessionID uint64) {
 		if notify.AsyncCallback == nil {
 			continue
 		}
-		resp := &ChangeNotifyResponse{
+		resp := &changenotify.ChangeNotifyResponse{
 			SMBResponseBase: SMBResponseBase{Status: types.StatusCancelled},
 		}
 		n := notify
@@ -810,7 +811,7 @@ func (h *Handler) releaseSessionLeasesAndNotifies(ctx context.Context, sessionID
 			if notify.AsyncCallback == nil {
 				continue
 			}
-			cleanupResp := &ChangeNotifyResponse{
+			cleanupResp := &changenotify.ChangeNotifyResponse{
 				SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyCleanup},
 			}
 			n := notify

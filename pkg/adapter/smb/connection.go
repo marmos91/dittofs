@@ -13,8 +13,8 @@ import (
 
 	"github.com/marmos91/dittofs/internal/adapter/pool"
 	smb "github.com/marmos91/dittofs/internal/adapter/smb"
+	"github.com/marmos91/dittofs/internal/adapter/smb/changenotify"
 	"github.com/marmos91/dittofs/internal/adapter/smb/encryption"
-	"github.com/marmos91/dittofs/internal/adapter/smb/handlers"
 	"github.com/marmos91/dittofs/internal/adapter/smb/header"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -462,8 +462,8 @@ func (c *Connection) Serve(ctx context.Context) {
 }
 
 // makeAsyncNotifyCallback creates the async callback for CHANGE_NOTIFY responses.
-func (c *Connection) makeAsyncNotifyCallback(ci *smb.ConnInfo) handlers.AsyncResponseCallback {
-	return func(sessionID, messageID, asyncId uint64, response *handlers.ChangeNotifyResponse) error {
+func (c *Connection) makeAsyncNotifyCallback(ci *smb.ConnInfo) changenotify.AsyncResponseCallback {
+	return func(sessionID, messageID, asyncId uint64, response *changenotify.ChangeNotifyResponse) error {
 		return smb.SendAsyncChangeNotifyResponse(sessionID, messageID, asyncId, response, ci)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/changenotify"
 	"github.com/marmos91/dittofs/internal/adapter/smb/handlers"
 	"github.com/marmos91/dittofs/internal/adapter/smb/header"
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
@@ -83,7 +84,7 @@ func ProcessSingleRequest(
 	rawMessage []byte,
 	connInfo *ConnInfo,
 	isEncrypted bool,
-	asyncNotifyCallback handlers.AsyncResponseCallback,
+	asyncNotifyCallback changenotify.AsyncResponseCallback,
 ) error {
 	// Check context before processing
 	select {
@@ -566,7 +567,7 @@ func prepareDispatch(ctx context.Context, reqHeader *header.SMB2Header, connInfo
 // [MS-SMB2] 3.3.5.5). Callers on the compound path MUST thread per-subcommand
 // wire bytes here; the first-command caller can pass the concatenation of
 // firstHeader.Encode() and firstBody when no sliced buffer is available.
-func ProcessRequestWithFileIDAndCallback(ctx context.Context, reqHeader *header.SMB2Header, body []byte, rawMessage []byte, connInfo *ConnInfo, isEncrypted bool, asyncNotifyCallback handlers.AsyncResponseCallback) (retResult *HandlerResult, retFileID [16]byte, retCtx *handlers.SMBHandlerContext) {
+func ProcessRequestWithFileIDAndCallback(ctx context.Context, reqHeader *header.SMB2Header, body []byte, rawMessage []byte, connInfo *ConnInfo, isEncrypted bool, asyncNotifyCallback changenotify.AsyncResponseCallback) (retResult *HandlerResult, retFileID [16]byte, retCtx *handlers.SMBHandlerContext) {
 	var fileID [16]byte
 
 	// RED metrics: one sample per compound subcommand. SMB carries a precise
@@ -693,7 +694,7 @@ func ProcessRequestWithFileIDAndCallback(ctx context.Context, reqHeader *header.
 // rawMessage is the wire bytes for this (sub)command (see
 // ProcessRequestWithFileIDAndCallback for details).
 // Returns the handler result, any new FileID (from CREATE), and the handler context.
-func ProcessRequestWithInheritedFileID(ctx context.Context, reqHeader *header.SMB2Header, body []byte, rawMessage []byte, inheritedFileID [16]byte, connInfo *ConnInfo, isEncrypted bool, asyncNotifyCallback handlers.AsyncResponseCallback) (*HandlerResult, [16]byte, *handlers.SMBHandlerContext) {
+func ProcessRequestWithInheritedFileID(ctx context.Context, reqHeader *header.SMB2Header, body []byte, rawMessage []byte, inheritedFileID [16]byte, connInfo *ConnInfo, isEncrypted bool, asyncNotifyCallback changenotify.AsyncResponseCallback) (*HandlerResult, [16]byte, *handlers.SMBHandlerContext) {
 	body = InjectFileID(reqHeader.Command, body, inheritedFileID)
 	result, fileID, handlerCtx := ProcessRequestWithFileIDAndCallback(ctx, reqHeader, body, rawMessage, connInfo, isEncrypted, asyncNotifyCallback)
 	return result, fileID, handlerCtx
@@ -1224,7 +1225,7 @@ func sendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo, respon
 // This is called when a filesystem change matches a pending watch, or when
 // a pending request is cancelled (STATUS_CANCELLED).
 // The asyncId must match the one sent in the interim STATUS_PENDING response.
-func SendAsyncChangeNotifyResponse(sessionID, messageID, asyncId uint64, response *handlers.ChangeNotifyResponse, connInfo *ConnInfo) error {
+func SendAsyncChangeNotifyResponse(sessionID, messageID, asyncId uint64, response *changenotify.ChangeNotifyResponse, connInfo *ConnInfo) error {
 	// Release the async slot reserved when the CHANGE_NOTIFY was first pended.
 	// This must happen exactly once per operation, regardless of outcome.
 	connInfo.ReleaseAsync()

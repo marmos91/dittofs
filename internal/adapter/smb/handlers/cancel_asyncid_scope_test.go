@@ -5,6 +5,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/changenotify"
 	"github.com/marmos91/dittofs/internal/adapter/smb/pending"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 )
@@ -89,7 +90,7 @@ func TestPipeReadRegistry_UnregisterByAsyncIdIsConnectionScoped(t *testing.T) {
 
 func TestNotifyRegistry_UnregisterByAsyncIdIsConnectionScoped(t *testing.T) {
 	r := newTestNotifyRegistry()
-	victim := &PendingNotify{
+	victim := &changenotify.PendingNotify{
 		FileID:           [16]byte{1},
 		SessionID:        10,
 		ConnID:           1,
@@ -97,7 +98,7 @@ func TestNotifyRegistry_UnregisterByAsyncIdIsConnectionScoped(t *testing.T) {
 		AsyncId:          777,
 		WatchPath:        "/dir",
 		ShareName:        "share",
-		CompletionFilter: FileNotifyChangeDirName,
+		CompletionFilter: changenotify.FileNotifyChangeDirName,
 	}
 	mustRegister(t, r, victim)
 

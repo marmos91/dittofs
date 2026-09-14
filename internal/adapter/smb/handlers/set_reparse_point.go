@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/changenotify"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -281,10 +282,10 @@ func (h *Handler) convertOpenFileToNativeSymlink(ctx *SMBHandlerContext, openFil
 	// Notify directory watchers of the placeholder→symlink replacement so client
 	// directory views (Finder/Explorer) refresh without a full re-enumeration.
 	if h.NotifyRegistry != nil {
-		parentPath := GetParentPath(name.Path)
-		h.NotifyRegistry.NotifyChanges(openFile.ShareName, parentPath, []NotifyEvent{
-			{FileName: fileName, Action: FileActionRemoved, Filter: FileNotifyChangeFileName},
-			{FileName: fileName, Action: FileActionAdded, Filter: FileNotifyChangeFileName},
+		parentPath := changenotify.GetParentPath(name.Path)
+		h.NotifyRegistry.NotifyChanges(openFile.ShareName, parentPath, []changenotify.NotifyEvent{
+			{FileName: fileName, Action: changenotify.FileActionRemoved, Filter: changenotify.FileNotifyChangeFileName},
+			{FileName: fileName, Action: changenotify.FileActionAdded, Filter: changenotify.FileNotifyChangeFileName},
 		})
 	}
 

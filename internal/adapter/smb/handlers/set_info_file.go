@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/common"
+	"github.com/marmos91/dittofs/internal/adapter/smb/changenotify"
 	"github.com/marmos91/dittofs/internal/adapter/smb/lease"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
@@ -391,16 +392,16 @@ func (h *Handler) setFileInfoFromStore(
 		if h.NotifyRegistry != nil {
 			var nf uint32
 			if fileAttrs != 0 {
-				nf |= FileNotifyChangeAttributes
+				nf |= changenotify.FileNotifyChangeAttributes
 			}
 			if creationFT != 0 && !isFiletimeSentinel(creationFT) {
-				nf |= FileNotifyChangeCreation
+				nf |= changenotify.FileNotifyChangeCreation
 			}
 			if atimeFT != 0 && !isFiletimeSentinel(atimeFT) {
-				nf |= FileNotifyChangeLastAccess
+				nf |= changenotify.FileNotifyChangeLastAccess
 			}
 			if mtimeFT != 0 && !isFiletimeSentinel(mtimeFT) {
-				nf |= FileNotifyChangeLastWrite
+				nf |= changenotify.FileNotifyChangeLastWrite
 			}
 			if nf != 0 {
 				h.notifyOpenFileModified(openFile, nf)
@@ -501,7 +502,7 @@ func (h *Handler) setFileInfoFromStore(
 
 			// Save old path info for notification before modification
 			oldFileName := oldName.FileName
-			oldParentPath := GetParentPath(oldName.Path)
+			oldParentPath := changenotify.GetParentPath(oldName.Path)
 
 			// Move stamps the renamed inode's LastChangeTime. A client
 			// holding this handle open must keep observing the ChangeTime it
@@ -552,11 +553,11 @@ func (h *Handler) setFileInfoFromStore(
 					if newParentPath == "" || newParentPath == "." {
 						newParentPath = "/"
 					}
-					renameFilter := NameChangeFilterFor(toName, openFile.IsDirectory)
-					if NameChangeFilterFor(oldFileName, openFile.IsDirectory) == FileNotifyChangeStreamName {
-						renameFilter = FileNotifyChangeStreamName
+					renameFilter := changenotify.NameChangeFilterFor(toName, openFile.IsDirectory)
+					if changenotify.NameChangeFilterFor(oldFileName, openFile.IsDirectory) == changenotify.FileNotifyChangeStreamName {
+						renameFilter = changenotify.FileNotifyChangeStreamName
 					}
-					h.NotifyRegistry.NotifyRename(tree.ShareName, oldParentPath, notifyStreamName(oldFileName), newParentPath, notifyStreamName(toName), renameFilter)
+					h.NotifyRegistry.NotifyRename(tree.ShareName, oldParentPath, changenotify.StreamName(oldFileName), newParentPath, changenotify.StreamName(toName), renameFilter)
 				}
 			}
 
@@ -564,7 +565,7 @@ func (h *Handler) setFileInfoFromStore(
 			// read-modify-write against a concurrent rename on the same handle.
 			openFile.mu.Lock()
 			newName := openFile.Name()
-			parentPath := GetParentPath(newName.Path)
+			parentPath := changenotify.GetParentPath(newName.Path)
 			newName.FileName = toName
 			if parentPath == "" || parentPath == "/" || parentPath == "." {
 				newName.Path = toName
@@ -958,7 +959,7 @@ func (h *Handler) setFileInfoFromStore(
 		oldName := openFile.Name()
 		oldPath := oldName.Path
 		oldFileName := oldName.FileName
-		oldParentPath := GetParentPath(oldPath)
+		oldParentPath := changenotify.GetParentPath(oldPath)
 		srcParentHandle := oldName.ParentHandle
 
 		// Pre-overwrite the case-mismatched destination: Move's destination
@@ -1042,13 +1043,13 @@ func (h *Handler) setFileInfoFromStore(
 		if h.NotifyRegistry != nil {
 			tree, ok := h.GetTree(openFile.TreeID)
 			if ok {
-				newParentPath := GetParentPath(newPath)
+				newParentPath := changenotify.GetParentPath(newPath)
 				if newParentPath == "" || newParentPath == "." {
 					newParentPath = "/"
 				}
-				renameFilter := NameChangeFilterFor(toName, openFile.IsDirectory)
-				if NameChangeFilterFor(oldFileName, openFile.IsDirectory) == FileNotifyChangeStreamName {
-					renameFilter = FileNotifyChangeStreamName
+				renameFilter := changenotify.NameChangeFilterFor(toName, openFile.IsDirectory)
+				if changenotify.NameChangeFilterFor(oldFileName, openFile.IsDirectory) == changenotify.FileNotifyChangeStreamName {
+					renameFilter = changenotify.FileNotifyChangeStreamName
 				}
 				h.NotifyRegistry.NotifyRename(tree.ShareName, oldParentPath, oldFileName, newParentPath, toName, renameFilter)
 			} else {
@@ -1065,7 +1066,7 @@ func (h *Handler) setFileInfoFromStore(
 		actualNewPath := newPath
 		if !bytes.Equal(renameInfo.RootDirectory[:], zeroRootDir[:]) {
 			// Handle-relative rename: build path from parent path + new name
-			parentPath := GetParentPath(openFile.Name().Path)
+			parentPath := changenotify.GetParentPath(openFile.Name().Path)
 			if parentPath == "" || parentPath == "/" {
 				actualNewPath = toName
 			} else {
@@ -1388,7 +1389,7 @@ func (h *Handler) setFileInfoFromStore(
 		h.breakParentDirLeasesForContentChange(ctx, authCtx, openFile)
 
 		if h.NotifyRegistry != nil {
-			h.notifyOpenFileModified(openFile, FileNotifyChangeSize)
+			h.notifyOpenFileModified(openFile, changenotify.FileNotifyChangeSize)
 		}
 
 		return setInfoStatus(types.StatusSuccess), nil
@@ -1505,7 +1506,7 @@ func (h *Handler) setFileInfoFromStore(
 					h.StoreOpenFile(openFile)
 					h.breakParentDirLeasesForContentChange(ctx, authCtx, openFile)
 					if h.NotifyRegistry != nil {
-						h.notifyOpenFileModified(openFile, FileNotifyChangeSize)
+						h.notifyOpenFileModified(openFile, changenotify.FileNotifyChangeSize)
 					}
 				}
 			}
@@ -1652,7 +1653,7 @@ func (h *Handler) setFileInfoFromStore(
 		logger.Debug("SET_INFO: FileFullEaInformation persisted",
 			"path", openFile.Name().Path, "count", len(entries))
 		if h.NotifyRegistry != nil {
-			h.notifyOpenFileModified(openFile, FileNotifyChangeEa)
+			h.notifyOpenFileModified(openFile, changenotify.FileNotifyChangeEa)
 		}
 		return setInfoStatus(types.StatusSuccess), nil
 

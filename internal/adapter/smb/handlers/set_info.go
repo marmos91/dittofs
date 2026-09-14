@@ -6,6 +6,7 @@ import (
 	"path"
 	"strings"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/changenotify"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -512,11 +513,11 @@ func (h *Handler) handleFileLinkInformation(
 	if h.NotifyRegistry != nil {
 		tree, ok := h.GetTree(openFile.TreeID)
 		if ok {
-			dstParentPath := GetParentPath(newPath)
+			dstParentPath := changenotify.GetParentPath(newPath)
 			if dstParentPath == "" || dstParentPath == "." {
 				dstParentPath = "/"
 			}
-			h.NotifyRegistry.NotifyChange(tree.ShareName, dstParentPath, linkName, FileActionAdded, FileNotifyChangeFileName)
+			h.NotifyRegistry.NotifyChange(tree.ShareName, dstParentPath, linkName, changenotify.FileActionAdded, changenotify.FileNotifyChangeFileName)
 		}
 	}
 

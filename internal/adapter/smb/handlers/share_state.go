@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"strings"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/changenotify"
 	"github.com/marmos91/dittofs/internal/adapter/smb/rpc"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -18,7 +19,7 @@ import (
 // handle, taking the parent path and stream name from one name snapshot.
 func (h *Handler) notifyOpenFileModified(openFile *OpenFile, filter uint32) {
 	name := openFile.Name()
-	h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(name.Path), notifyStreamName(name.FileName), FileActionModified, filter)
+	h.NotifyRegistry.NotifyChange(openFile.ShareName, changenotify.GetParentPath(name.Path), changenotify.StreamName(name.FileName), changenotify.FileActionModified, filter)
 }
 
 // baseFileUUID returns the base file's UUID for an ADS path, or fallback for non-ADS.

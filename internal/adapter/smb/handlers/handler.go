@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/changenotify"
 	"github.com/marmos91/dittofs/internal/adapter/smb/lease"
 	"github.com/marmos91/dittofs/internal/adapter/smb/pending"
 	"github.com/marmos91/dittofs/internal/adapter/smb/rpc"
@@ -100,7 +101,7 @@ type Handler struct {
 	LeaseManager *lease.LeaseManager
 
 	// Change notification management
-	NotifyRegistry *NotifyRegistry
+	NotifyRegistry *changenotify.NotifyRegistry
 	nextAsyncId    atomic.Uint64
 
 	// Named-pipe async READ tracking
@@ -659,7 +660,7 @@ func NewHandlerWithSessionManager(sessionManager *session.Manager) *Handler {
 		StartTime:               time.Now(),
 		SessionManager:          sessionManager,
 		PipeManager:             rpc.NewPipeManager(),
-		NotifyRegistry:          NewNotifyRegistry(),
+		NotifyRegistry:          changenotify.NewNotifyRegistry(),
 		PipeReadRegistry:        pending.NewPipeReadRegistry(),
 		PendingCreateRegistry:   pending.NewPendingCreateRegistry(),
 		PendingLockRegistry:     pending.NewPendingLockRegistry(),

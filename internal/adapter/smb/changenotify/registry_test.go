@@ -1,7 +1,6 @@
-package handlers
+package changenotify
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"strings"
@@ -32,9 +31,9 @@ func mustRegister(t *testing.T, r *NotifyRegistry, n *PendingNotify) {
 // TestNotifyChange_ExactPath). Pushing flushDelay out of reach makes FlushAll
 // the sole, synchronous delivery path on every platform.
 func newTestNotifyRegistry() *NotifyRegistry {
-	reg := NewNotifyRegistry()
-	reg.flushDelay = time.Hour
-	return reg
+	r := NewNotifyRegistry()
+	r.flushDelay = time.Hour
+	return r
 }
 
 func TestNotifyRegistry_RegisterAndUnregister(t *testing.T) {
@@ -670,23 +669,6 @@ func TestGetParentPath(t *testing.T) {
 	}
 }
 
-func TestGetFileName(t *testing.T) {
-	tests := []struct {
-		input, want string
-	}{
-		{"/foo/bar/file.txt", "file.txt"},
-		{"/file.txt", "file.txt"},
-		{"/", ""},
-		{"", ""},
-	}
-	for _, tt := range tests {
-		got := GetFileName(tt.input)
-		if got != tt.want {
-			t.Errorf("GetFileName(%q) = %q, want %q", tt.input, got, tt.want)
-		}
-	}
-}
-
 func TestRelativePathFromWatch_CrossPath(t *testing.T) {
 	// When watchPath is not a prefix of parentPath, should return fileName
 	// (no panic from out-of-bounds slice)
@@ -1284,7 +1266,7 @@ func TestUnregisterAllForSession_ReturnedNotifiesPreserveAsyncCallback(t *testin
 
 	// Caller invokes the callback to deliver STATUS_NOTIFY_CLEANUP.
 	resp := &ChangeNotifyResponse{
-		SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyCleanup},
+		SMBResponseBase: types.SMBResponseBase{Status: types.StatusNotifyCleanup},
 	}
 	if err := removed[0].AsyncCallback(removed[0].SessionID, removed[0].MessageID, removed[0].AsyncId, resp); err != nil {
 		t.Fatalf("AsyncCallback returned error: %v", err)
@@ -1590,87 +1572,6 @@ func TestEncodedNotifyEntrySize_MatchesMarshaledSize(t *testing.T) {
 	}
 }
 
-// TestReleaseSessionLeasesAndNotifies_FiresCleanupSynchronously verifies that
-// pending CHANGE_NOTIFY watchers belonging to a session are completed with
-// STATUS_NOTIFY_CLEANUP SYNCHRONOUSLY — before releaseSessionLeasesAndNotifies
-// returns. This is critical for smb2.notify.session-reconnect (issue #473):
-// CleanupSession calls DeleteSession immediately after releasing notifies,
-// and SendMessage requires the session to still exist to sign the response.
-// An async (`go func`) delivery races with DeleteSession and emits an
-// unsigned response that the client rejects, hanging the test.
-func TestReleaseSessionLeasesAndNotifies_FiresCleanupSynchronously(t *testing.T) {
-	h := NewHandler()
-
-	const sessionID uint64 = 0xA1B2C3D4E5F60001
-
-	var firedCount atomic.Int32
-	var firedStatus atomic.Uint32
-	var firedSessionID atomic.Uint64
-	if err := h.NotifyRegistry.Register(&PendingNotify{
-		FileID:           [16]byte{1, 2, 3, 4},
-		SessionID:        sessionID,
-		ConnID:           1,
-		MessageID:        42,
-		AsyncId:          7,
-		WatchPath:        "/dir",
-		ShareName:        "share1",
-		CompletionFilter: FileNotifyChangeFileName,
-		AsyncCallback: func(sid, _, _ uint64, response *ChangeNotifyResponse) error {
-			firedCount.Add(1)
-			firedStatus.Store(uint32(response.GetStatus()))
-			firedSessionID.Store(sid)
-			return nil
-		},
-	}); err != nil {
-		t.Fatalf("Register failed: %v", err)
-	}
-
-	// A watcher belonging to a different session must NOT be fired.
-	const otherSessionID uint64 = 0xA1B2C3D4E5F60002
-	var otherFired atomic.Int32
-	if err := h.NotifyRegistry.Register(&PendingNotify{
-		FileID:           [16]byte{5, 6, 7, 8},
-		SessionID:        otherSessionID,
-		ConnID:           2,
-		MessageID:        99,
-		AsyncId:          17,
-		WatchPath:        "/dir",
-		ShareName:        "share1",
-		CompletionFilter: FileNotifyChangeFileName,
-		AsyncCallback: func(_, _, _ uint64, _ *ChangeNotifyResponse) error {
-			otherFired.Add(1)
-			return nil
-		},
-	}); err != nil {
-		t.Fatalf("Register(other) failed: %v", err)
-	}
-
-	// LeaseManager is nil on a fresh handler — exercise the notify branch only.
-	h.releaseSessionLeasesAndNotifies(t.Context(), sessionID)
-
-	// The cleanup callback MUST have fired by the time the call returns —
-	// no `go func`, no sleep, no eventually loop. Sync delivery is the fix.
-	if got := firedCount.Load(); got != 1 {
-		t.Fatalf("AsyncCallback fired %d times, want 1 synchronous fire", got)
-	}
-	if got := types.Status(firedStatus.Load()); got != types.StatusNotifyCleanup {
-		t.Errorf("callback received status 0x%08X, want STATUS_NOTIFY_CLEANUP (0x%08X)",
-			uint32(got), uint32(types.StatusNotifyCleanup))
-	}
-	if got := firedSessionID.Load(); got != sessionID {
-		t.Errorf("callback received sessionID 0x%X, want 0x%X (must be OLD session for signing)",
-			got, sessionID)
-	}
-	if got := otherFired.Load(); got != 0 {
-		t.Errorf("other-session watcher fired %d times, want 0 (cleanup must be scoped to sessionID)", got)
-	}
-	// Watcher must be unregistered so a subsequent CHANGE_NOTIFY on a new
-	// session can re-register without colliding on FileID.
-	if got := h.NotifyRegistry.WatcherCount(); got != 1 {
-		t.Errorf("WatcherCount = %d, want 1 (only the other-session watcher should remain)", got)
-	}
-}
-
 func TestUnregisterAllForTree_PreservesOtherTrees(t *testing.T) {
 	r := newTestNotifyRegistry()
 
@@ -1694,341 +1595,6 @@ func TestUnregisterAllForTree_PreservesOtherTrees(t *testing.T) {
 	watchers := r.GetWatchersForPath("/dir1")
 	if len(watchers) != 1 || watchers[0].TreeID != 2 {
 		t.Errorf("expected tree 2 watcher to remain, got %d watchers", len(watchers))
-	}
-}
-
-// TestChangeNotify_HandlePermissions_GrantedAccessGate mirrors the smbtorture
-// smb2.notify.handle-permissions test (source4/torture/smb2/notify.c::
-// torture_smb2_notify_handle_permissions): a directory handle opened with only
-// FILE_READ_ATTRIBUTES (no FILE_LIST_DIRECTORY) MUST reject CHANGE_NOTIFY
-// with STATUS_ACCESS_DENIED per MS-SMB2 §3.3.5.19 / Samba
-// source3/smbd/notify.c::change_notify_create (check_any_access_fsp with
-// SEC_DIR_LIST). Refs #473.
-func TestChangeNotify_HandlePermissions_GrantedAccessGate(t *testing.T) {
-	const (
-		fileReadAttributes uint32 = 0x00000080 // SEC_FILE_READ_ATTRIBUTE
-		fileListDirectory  uint32 = 0x00000001 // SEC_DIR_LIST
-	)
-	fileID := [16]byte{0xAA, 0xBB, 0xCC, 0xDD}
-	const treeID uint32 = 1
-	const sessionID uint64 = 42
-
-	cases := []struct {
-		name          string
-		grantedAccess uint32
-		desiredAccess uint32
-		wantStatus    types.Status
-	}{
-		{
-			name:          "ReadAttributesOnly_Denied",
-			grantedAccess: fileReadAttributes,
-			desiredAccess: fileReadAttributes,
-			wantStatus:    types.StatusAccessDenied,
-		},
-		{
-			name:          "ListDirectory_Allowed",
-			grantedAccess: fileListDirectory | fileReadAttributes,
-			desiredAccess: fileListDirectory | fileReadAttributes,
-			wantStatus:    types.StatusPending,
-		},
-		{
-			// Regression: an open whose DesiredAccess carries
-			// FILE_LIST_DIRECTORY but whose DACL-resolved GrantedAccess
-			// stripped it (per-bit intersection at CREATE, MS-SMB2
-			// §3.3.5.9 paragraph 8) must still be rejected. The pre-fix
-			// gate consulted DesiredAccess and silently let this through.
-			name:          "DesiredHasListDir_GrantedDoesNot_Denied",
-			grantedAccess: fileReadAttributes,
-			desiredAccess: fileListDirectory | fileReadAttributes,
-			wantStatus:    types.StatusAccessDenied,
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			h := NewHandler()
-
-			h.StoreOpenFile((&OpenFile{
-				FileID:        fileID,
-				TreeID:        treeID,
-				SessionID:     sessionID,
-				ShareName:     "share1",
-				DesiredAccess: tc.desiredAccess,
-				GrantedAccess: tc.grantedAccess,
-				IsDirectory:   true,
-			}).WithName(OpenName{Path: "/HPERM"}))
-
-			ctx := &SMBHandlerContext{
-				SessionID:       sessionID,
-				TreeID:          treeID,
-				MessageID:       100,
-				TryReserveAsync: func() bool { return true },
-				ReleaseAsync:    func() {},
-			}
-
-			body := encodeChangeNotifyReq(SMB2WatchTree, 1000, fileID, FileNotifyChangeFileName|FileNotifyChangeDirName)
-
-			result, err := h.ChangeNotify(ctx, body)
-			if err != nil {
-				t.Fatalf("ChangeNotify returned error: %v", err)
-			}
-			if result == nil {
-				t.Fatal("ChangeNotify returned nil result")
-			}
-			if result.Status != tc.wantStatus {
-				t.Errorf("status = 0x%08x, want 0x%08x", uint32(result.Status), uint32(tc.wantStatus))
-			}
-
-			// On ACCESS_DENIED no watcher must have been registered (also
-			// guarantees no async slot was reserved beyond the pre-check).
-			watchers := h.NotifyRegistry.WatcherCount()
-			if tc.wantStatus == types.StatusAccessDenied && watchers != 0 {
-				t.Errorf("expected zero pending watchers after ACCESS_DENIED, got %d", watchers)
-			}
-			if tc.wantStatus == types.StatusPending && watchers != 1 {
-				t.Errorf("expected one pending watcher after STATUS_PENDING, got %d", watchers)
-			}
-		})
-	}
-}
-
-// encodeChangeNotifyReq builds an SMB2 CHANGE_NOTIFY request body
-// per MS-SMB2 2.2.35.
-func encodeChangeNotifyReq(flags uint16, outBufLen uint32, fileID [16]byte, completionFilter uint32) []byte {
-	body := make([]byte, 32)
-	// StructureSize = 32
-	body[0] = 0x20
-	body[1] = 0x00
-	// Flags
-	body[2] = byte(flags)
-	body[3] = byte(flags >> 8)
-	// OutputBufferLength
-	body[4] = byte(outBufLen)
-	body[5] = byte(outBufLen >> 8)
-	body[6] = byte(outBufLen >> 16)
-	body[7] = byte(outBufLen >> 24)
-	// FileID
-	copy(body[8:24], fileID[:])
-	// CompletionFilter
-	body[24] = byte(completionFilter)
-	body[25] = byte(completionFilter >> 8)
-	body[26] = byte(completionFilter >> 16)
-	body[27] = byte(completionFilter >> 24)
-	return body
-}
-
-// TestChangeNotify_StickyMaxBufferSize_SubsumesValidReq is the unit-level
-// cover for smb2.notify.valid-req's "if the first notify returns
-// NOTIFY_ENUM_DIR, all do" property. Per Samba `change_notify_create` the
-// notify_buffer's max_buffer_size is captured from the FIRST notify on the
-// handle and MIN-capped into every subsequent reply. A small first call
-// therefore caps every later call on the same handle — even when the later
-// call requests max_trans_size.
-func TestChangeNotify_StickyMaxBufferSize_SubsumesValidReq(t *testing.T) {
-	h := NewHandler()
-	h.NotifyRegistry = NewNotifyRegistry()
-	h.MaxTransactSize = 1 << 20
-
-	var fileID [16]byte
-	copy(fileID[:], []byte{0x77, 0x88})
-
-	openFile := (&OpenFile{
-		FileID:        fileID,
-		IsDirectory:   true,
-		ShareName:     "share1",
-		SessionID:     1,
-		TreeID:        1,
-		DesiredAccess: 0x00000001, // FILE_LIST_DIRECTORY
-		GrantedAccess: 0x00000001,
-	}).WithName(OpenName{Path: "/dir"})
-	h.StoreOpenFile(openFile)
-
-	makeCtx := func() *SMBHandlerContext {
-		return &SMBHandlerContext{
-			SessionID:       1,
-			TreeID:          1,
-			MessageID:       1,
-			ConnID:          1,
-			TryReserveAsync: func() bool { return true },
-			ReleaseAsync:    func() {},
-			AsyncNotifyCallback: func(_, _, _ uint64, _ *ChangeNotifyResponse) error {
-				return nil
-			},
-		}
-	}
-
-	// First CHANGE_NOTIFY with a tiny buffer (1 byte). The handler must
-	// accept it and store NotifyMaxBufferSize = 1 on the OpenFile.
-	body1 := encodeChangeNotifyReq(0, 1, fileID, FileNotifyChangeFileName)
-	res1, err := h.ChangeNotify(makeCtx(), body1)
-	if err != nil {
-		t.Fatalf("first CHANGE_NOTIFY error: %v", err)
-	}
-	if res1 == nil || res1.Status != types.StatusPending {
-		t.Fatalf("first CHANGE_NOTIFY: want STATUS_PENDING, got %+v", res1)
-	}
-	if got, set := openFile.NotifyMaxBufferSizeValue(); !set || got != 1 {
-		t.Fatalf("NotifyMaxBufferSize after first call = (%d, set=%v), want (1, true)", got, set)
-	}
-
-	// Drain the registered watcher so the second CHANGE_NOTIFY can register
-	// a fresh one (Register replaces same-FileID entries).
-	h.NotifyRegistry.Unregister(fileID)
-
-	// Second CHANGE_NOTIFY with max_trans_size — must NOT be rejected as
-	// "previously-accepted requests" and must be MIN-capped down to 1 so
-	// any encoded change overflows and yields STATUS_NOTIFY_ENUM_DIR.
-	body2 := encodeChangeNotifyReq(0, h.MaxTransactSize, fileID, FileNotifyChangeFileName|FileNotifyChangeDirName)
-	res2, err := h.ChangeNotify(makeCtx(), body2)
-	if err != nil {
-		t.Fatalf("second CHANGE_NOTIFY error: %v", err)
-	}
-	if res2 == nil || res2.Status != types.StatusPending {
-		t.Fatalf("second CHANGE_NOTIFY: want STATUS_PENDING (not InvalidParameter), got %+v", res2)
-	}
-	if got, set := openFile.NotifyMaxBufferSizeValue(); !set || got != 1 {
-		t.Fatalf("NotifyMaxBufferSize after second call = (%d, set=%v), want (1, true) (stuck)", got, set)
-	}
-
-	// The pending notify must carry the MIN-capped MaxOutputLength, not the
-	// request's max_trans_size — this is what guarantees overflow on
-	// delivery and matches Samba `change_notify_reply` MIN semantics.
-	var pendingMax uint32
-	h.NotifyRegistry.RangeWatchers(func(p *PendingNotify) bool {
-		if p.FileID == fileID {
-			pendingMax = p.MaxOutputLength
-		}
-		return true
-	})
-	if pendingMax != 1 {
-		t.Errorf("registered PendingNotify.MaxOutputLength = %d, want 1 (MIN-capped to first call's value)", pendingMax)
-	}
-}
-
-// TestChangeNotify_FirstLargeBuffer_ThenSmallUsesRequest verifies the
-// inverse: when the first notify uses a large buffer, a subsequent notify
-// with a smaller request honors the smaller value (no upward cap, the cap
-// is asymmetric — Samba `MIN(max_param, notify_buf->max_buffer_size)`).
-func TestChangeNotify_FirstLargeBuffer_ThenSmallUsesRequest(t *testing.T) {
-	h := NewHandler()
-	h.NotifyRegistry = NewNotifyRegistry()
-	h.MaxTransactSize = 1 << 20
-
-	fileID := [16]byte{0x11}
-	openFile := (&OpenFile{
-		FileID: fileID, IsDirectory: true, ShareName: "share1", SessionID: 1, TreeID: 1, DesiredAccess: 0x00000001, GrantedAccess: 0x00000001,
-	}).WithName(OpenName{Path: "/dir"})
-	h.StoreOpenFile(openFile)
-
-	makeCtx := func() *SMBHandlerContext {
-		return &SMBHandlerContext{
-			SessionID: 1, TreeID: 1, MessageID: 1, ConnID: 1,
-			TryReserveAsync: func() bool { return true },
-			ReleaseAsync:    func() {},
-			AsyncNotifyCallback: func(_, _, _ uint64, _ *ChangeNotifyResponse) error {
-				return nil
-			},
-		}
-	}
-
-	// First call: 65536 byte buffer.
-	body1 := encodeChangeNotifyReq(0, 65536, fileID, FileNotifyChangeFileName)
-	if _, err := h.ChangeNotify(makeCtx(), body1); err != nil {
-		t.Fatalf("first CHANGE_NOTIFY error: %v", err)
-	}
-	h.NotifyRegistry.Unregister(fileID)
-
-	// Second call: 256 byte buffer — smaller than stored, must be used as-is.
-	body2 := encodeChangeNotifyReq(0, 256, fileID, FileNotifyChangeFileName)
-	if _, err := h.ChangeNotify(makeCtx(), body2); err != nil {
-		t.Fatalf("second CHANGE_NOTIFY error: %v", err)
-	}
-
-	var pendingMax uint32
-	h.NotifyRegistry.RangeWatchers(func(p *PendingNotify) bool {
-		if p.FileID == fileID {
-			pendingMax = p.MaxOutputLength
-		}
-		return true
-	})
-	if pendingMax != 256 {
-		t.Errorf("PendingNotify.MaxOutputLength = %d, want 256 (request smaller than stored max)", pendingMax)
-	}
-	if got, set := openFile.NotifyMaxBufferSizeValue(); !set || got != 65536 {
-		t.Errorf("NotifyMaxBufferSize must not be updated by later calls; got (%d, set=%v), want (65536, true)", got, set)
-	}
-}
-
-// TestChangeNotify_FirstZeroBuffer_StickyAtZero pins the OutputBufferLength=0
-// edge case. SMB2 CHANGE_NOTIFY permits OutputBufferLength=0 as a valid
-// request; the per-handle "first wins" max_buffer_size must remember that
-// zero and cap every later notify at zero (so even a max_trans_size follow-up
-// overflows immediately, matching Samba `change_notify_create` semantics).
-//
-// The old encoding used 0 as the "unset" sentinel and would silently let a
-// later large request overwrite the captured cap — breaking the sticky
-// invariant. Guards against that regression.
-func TestChangeNotify_FirstZeroBuffer_StickyAtZero(t *testing.T) {
-	h := NewHandler()
-	h.NotifyRegistry = NewNotifyRegistry()
-	h.MaxTransactSize = 1 << 20
-
-	fileID := [16]byte{0x99}
-	openFile := (&OpenFile{
-		FileID: fileID, IsDirectory: true, ShareName: "share1", SessionID: 1, TreeID: 1, DesiredAccess: 0x00000001, GrantedAccess: 0x00000001,
-	}).WithName(OpenName{Path: "/dir"})
-	h.StoreOpenFile(openFile)
-
-	makeCtx := func() *SMBHandlerContext {
-		return &SMBHandlerContext{
-			SessionID: 1, TreeID: 1, MessageID: 1, ConnID: 1,
-			TryReserveAsync: func() bool { return true },
-			ReleaseAsync:    func() {},
-			AsyncNotifyCallback: func(_, _, _ uint64, _ *ChangeNotifyResponse) error {
-				return nil
-			},
-		}
-	}
-
-	// First CHANGE_NOTIFY: OutputBufferLength = 0 — returns ENUM_DIR
-	// synchronously without registering a watcher (buffer=0 fast path).
-	body1 := encodeChangeNotifyReq(0, 0, fileID, FileNotifyChangeFileName)
-	res1, err := h.ChangeNotify(makeCtx(), body1)
-	if err != nil {
-		t.Fatalf("first CHANGE_NOTIFY (OutputBufferLength=0) error: %v", err)
-	}
-	if res1.Status != types.StatusNotifyEnumDir {
-		t.Fatalf("first CHANGE_NOTIFY status = 0x%08X, want STATUS_NOTIFY_ENUM_DIR", res1.Status)
-	}
-
-	// The capture MUST be recorded even though the value is zero.
-	got, set := openFile.NotifyMaxBufferSizeValue()
-	if !set {
-		t.Fatal("NotifyMaxBufferSize was not marked set after first CHANGE_NOTIFY with OutputBufferLength=0")
-	}
-	if got != 0 {
-		t.Fatalf("NotifyMaxBufferSize after first call = %d, want 0", got)
-	}
-
-	// Second CHANGE_NOTIFY: max_trans_size buffer. The sticky cap MUST clamp
-	// effectiveMax to zero, causing another synchronous ENUM_DIR (no watcher
-	// registered). This matches Samba: buffer=0 is immediate ENUM_DIR.
-	body2 := encodeChangeNotifyReq(0, h.MaxTransactSize, fileID, FileNotifyChangeFileName)
-	res2, err := h.ChangeNotify(makeCtx(), body2)
-	if err != nil {
-		t.Fatalf("second CHANGE_NOTIFY error: %v", err)
-	}
-	if res2.Status != types.StatusNotifyEnumDir {
-		t.Fatalf("second CHANGE_NOTIFY status = 0x%08X, want STATUS_NOTIFY_ENUM_DIR (sticky zero)", res2.Status)
-	}
-
-	got, set = openFile.NotifyMaxBufferSizeValue()
-	if !set || got != 0 {
-		t.Fatalf("NotifyMaxBufferSize after second call = (%d, set=%v), want (0, true) — sticky-zero broken", got, set)
-	}
-
-	if h.NotifyRegistry.WatcherCount() != 0 {
-		t.Fatal("buffer=0 fast path should NOT register a watcher")
 	}
 }
 
@@ -2130,53 +1696,6 @@ func TestNotifyRegistry_CancelTombstoneExpires(t *testing.T) {
 	}
 	if err := r.Register(notify); err != nil {
 		t.Fatalf("Register after tombstone TTL: want nil, got %v", err)
-	}
-}
-
-// TestChangeNotify_PreArrivalCancel_HandlerReturnsCancelledSync is the
-// end-to-end regression: invoke the handler with a tombstone already in
-// place and confirm it returns STATUS_CANCELLED synchronously rather than
-// STATUS_PENDING. This is what unblocks the in-flight smbtorture client.
-func TestChangeNotify_PreArrivalCancel_HandlerReturnsCancelledSync(t *testing.T) {
-	h := NewHandler()
-	h.NotifyRegistry = NewNotifyRegistry()
-	h.MaxTransactSize = 1 << 20
-
-	fileID := [16]byte{0x42}
-	openFile := (&OpenFile{
-		FileID: fileID, IsDirectory: true, ShareName: "share1", SessionID: 1, TreeID: 1,
-		DesiredAccess: 0x00000001, GrantedAccess: 0x00000001,
-	}).WithName(OpenName{Path: "/dir"})
-	h.StoreOpenFile(openFile)
-
-	ctx := &SMBHandlerContext{
-		SessionID: 1, TreeID: 1, MessageID: 77, ConnID: 5,
-		TryReserveAsync: func() bool { return true },
-		ReleaseAsync:    func() {},
-		AsyncNotifyCallback: func(_, _, _ uint64, _ *ChangeNotifyResponse) error {
-			return nil
-		},
-	}
-
-	// CANCEL arrived ahead of us.
-	h.NotifyRegistry.CancelByMessageID(ctx.ConnID, ctx.MessageID)
-
-	body := encodeChangeNotifyReq(0, 1000, fileID, FileNotifyChangeFileName)
-	res, err := h.ChangeNotify(ctx, body)
-	if err != nil {
-		t.Fatalf("ChangeNotify error: %v", err)
-	}
-	if res == nil {
-		t.Fatal("ChangeNotify returned nil result")
-	}
-	if res.Status != types.StatusCancelled {
-		t.Fatalf("ChangeNotify status = %v, want STATUS_CANCELLED", res.Status)
-	}
-	if res.AsyncId != 0 {
-		t.Errorf("ChangeNotify AsyncId = %d on cancelled sync reply, want 0", res.AsyncId)
-	}
-	if got := h.NotifyRegistry.WatcherCount(); got != 0 {
-		t.Errorf("WatcherCount after cancelled CHANGE_NOTIFY = %d, want 0", got)
 	}
 }
 
@@ -2407,101 +1926,6 @@ func TestNameChangeFilterFor(t *testing.T) {
 		if got := NameChangeFilterFor(c.name, c.dir); got != c.want {
 			t.Errorf("NameChangeFilterFor(%q, %v) = 0x%x, want 0x%x", c.name, c.dir, got, c.want)
 		}
-	}
-}
-
-// decodeFileNotifyInfos walks a FILE_NOTIFY_INFORMATION list (MS-FSCC §2.7.1 (FILE_NOTIFY_INFORMATION)).
-// Test helper only — production decode happens client-side.
-func decodeFileNotifyInfos(buf []byte) []FileNotifyInformation {
-	var out []FileNotifyInformation
-	off := 0
-	for off+12 <= len(buf) {
-		next := uint32(buf[off]) | uint32(buf[off+1])<<8 | uint32(buf[off+2])<<16 | uint32(buf[off+3])<<24
-		action := uint32(buf[off+4]) | uint32(buf[off+5])<<8 | uint32(buf[off+6])<<16 | uint32(buf[off+7])<<24
-		nameLen := uint32(buf[off+8]) | uint32(buf[off+9])<<8 | uint32(buf[off+10])<<16 | uint32(buf[off+11])<<24
-		if off+12+int(nameLen) > len(buf) {
-			break
-		}
-		u16 := make([]uint16, nameLen/2)
-		for i := range u16 {
-			u16[i] = uint16(buf[off+12+i*2]) | uint16(buf[off+12+i*2+1])<<8
-		}
-		out = append(out, FileNotifyInformation{Action: action, FileName: string(utf16.Decode(u16))})
-		if next == 0 {
-			break
-		}
-		off += int(next)
-	}
-	return out
-}
-
-// TestExpireSessionNotifies_CompletesPendingNotify verifies that an expired
-// Kerberos session completes its outstanding async CHANGE_NOTIFY with
-// STATUS_CANCELLED so the client's smb2_notify_recv unblocks (smbtorture
-// smb2.session.expire2s / expire2e: session.c:1641 expects NT_STATUS_CANCELLED
-// for the cancelled notify). The flush must be idempotent (the test fires
-// several expired requests in the same window) and must not touch other
-// sessions' watchers.
-func TestExpireSessionNotifies_CompletesPendingNotify(t *testing.T) {
-	r := NewNotifyRegistry()
-	h := &Handler{NotifyRegistry: r}
-
-	var calls int
-	var gotStatus types.Status
-	mustRegister(t, r, &PendingNotify{
-		FileID:           [16]byte{7},
-		SessionID:        42,
-		ConnID:           1,
-		MessageID:        9,
-		AsyncId:          900,
-		WatchPath:        "/d",
-		ShareName:        "s",
-		CompletionFilter: FileNotifyChangeFileName,
-		// GateInterim false → final response runs inline (no dispatcher to
-		// signal interim in a unit test).
-		AsyncCallback: func(_, _, _ uint64, resp *ChangeNotifyResponse) error {
-			calls++
-			gotStatus = resp.GetStatus()
-			return nil
-		},
-	})
-
-	// A watcher on a different session must survive the flush.
-	var otherCalls int
-	mustRegister(t, r, &PendingNotify{
-		FileID:           [16]byte{8},
-		SessionID:        99,
-		ConnID:           2,
-		MessageID:        9,
-		AsyncId:          901,
-		WatchPath:        "/other",
-		ShareName:        "s",
-		CompletionFilter: FileNotifyChangeFileName,
-		AsyncCallback: func(_, _, _ uint64, _ *ChangeNotifyResponse) error {
-			otherCalls++
-			return nil
-		},
-	})
-
-	h.ExpireSessionNotifies(42)
-
-	if calls != 1 {
-		t.Fatalf("expected pending notify completed once, got %d calls", calls)
-	}
-	if gotStatus != types.StatusCancelled {
-		t.Errorf("expected STATUS_CANCELLED, got 0x%08X", uint32(gotStatus))
-	}
-	if otherCalls != 0 {
-		t.Errorf("session 99 watcher must not be completed, got %d calls", otherCalls)
-	}
-	if r.WatcherCount() != 1 {
-		t.Errorf("expected 1 surviving watcher (session 99), got %d", r.WatcherCount())
-	}
-
-	// Idempotent: the subsequent expired requests in the same window are no-ops.
-	h.ExpireSessionNotifies(42)
-	if calls != 1 {
-		t.Errorf("ExpireSessionNotifies must be idempotent, got %d calls", calls)
 	}
 }
 
@@ -2885,7 +2309,7 @@ func TestMarkInterimSent_AfterUnregister_StillDeliversFinal(t *testing.T) {
 	// ...and only now does CANCEL queue STATUS_CANCELLED.
 	r.QueueFinalAfterInterim(cancelled, func() {
 		_ = cancelled.AsyncCallback(cancelled.SessionID, cancelled.MessageID, cancelled.AsyncId,
-			&ChangeNotifyResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusCancelled}})
+			&ChangeNotifyResponse{SMBResponseBase: types.SMBResponseBase{Status: types.StatusCancelled}})
 	})
 
 	if len(sent) != 1 || sent[0] != types.StatusCancelled {
@@ -3003,61 +2427,6 @@ func TestNotifyRegistry_ConcurrentCloseRacesRegister(t *testing.T) {
 			t.Fatalf("iter %d: WatcherCount = %d, want 0 (closed=%v regErr=%v)",
 				i, got, closed != nil, regErr)
 		}
-	}
-}
-
-// TestChangeNotify_HandleClosed_ReturnsEncodedCleanupBody pins the wire shape
-// of the synchronous STATUS_NOTIFY_CLEANUP reply.
-//
-// STATUS_NOTIFY_CLEANUP is success-severity, so the response carries a real
-// CHANGE_NOTIFY body with zero changes. Returning it with no body at all
-// leaves a bare SMB2 header on the wire, which fails the client's parse and
-// fails every request in flight on that connection — not just this one.
-func TestChangeNotify_HandleClosed_ReturnsEncodedCleanupBody(t *testing.T) {
-	h := NewHandler()
-	h.NotifyRegistry = NewNotifyRegistry()
-	h.MaxTransactSize = 1 << 20
-
-	fileID := [16]byte{0x43}
-	openFile := (&OpenFile{
-		FileID: fileID, IsDirectory: true, ShareName: "share1", SessionID: 1, TreeID: 1,
-		DesiredAccess: 0x00000001, GrantedAccess: 0x00000001,
-	}).WithName(OpenName{Path: "/dir"})
-	h.StoreOpenFile(openFile)
-
-	// CLOSE ran before this CHANGE_NOTIFY could register.
-	h.NotifyRegistry.CloseByFileID(fileID)
-
-	ctx := &SMBHandlerContext{
-		SessionID: 1, TreeID: 1, MessageID: 78, ConnID: 5,
-		TryReserveAsync: func() bool { return true },
-		ReleaseAsync:    func() {},
-		AsyncNotifyCallback: func(_, _, _ uint64, _ *ChangeNotifyResponse) error {
-			return nil
-		},
-	}
-
-	res, err := h.ChangeNotify(ctx, encodeChangeNotifyReq(0, 1000, fileID, FileNotifyChangeFileName))
-	if err != nil {
-		t.Fatalf("ChangeNotify error: %v", err)
-	}
-	if res.Status != types.StatusNotifyCleanup {
-		t.Fatalf("status = %v, want STATUS_NOTIFY_CLEANUP", res.Status)
-	}
-	if len(res.Data) == 0 {
-		t.Fatal("STATUS_NOTIFY_CLEANUP returned with no body — bare header on the wire")
-	}
-	if got := binary.LittleEndian.Uint16(res.Data[0:2]); got != 9 {
-		t.Errorf("body StructureSize = %d, want 9", got)
-	}
-	if got := binary.LittleEndian.Uint32(res.Data[4:8]); got != 0 {
-		t.Errorf("OutputBufferLength = %d, want 0", got)
-	}
-	if res.AsyncId != 0 {
-		t.Errorf("AsyncId = %d on synchronous cleanup, want 0", res.AsyncId)
-	}
-	if got := h.NotifyRegistry.WatcherCount(); got != 0 {
-		t.Errorf("WatcherCount = %d, want 0", got)
 	}
 }
 
@@ -3289,42 +2658,6 @@ func TestNotifyRegistry_CloseCompletesEveryOutstandingWatch(t *testing.T) {
 	}
 }
 
-// TestCloseFilesWithFilter_OnlyTombstonesDirectories checks that session
-// teardown does not record a close tombstone for handles that could never
-// have carried a watch.
-//
-// CHANGE_NOTIFY is refused on anything but a directory, so a file or pipe
-// handle has no watch to complete. Running the completion for one anyway
-// leaves a tombstone nothing will ever consume, and because the sweep that
-// reclaims them is O(n) per call, tearing down a session holding many file
-// handles would pay that sweep once per handle.
-func TestCloseFilesWithFilter_OnlyTombstonesDirectories(t *testing.T) {
-	e := setupTeardownLeakEnv(t)
-	e.h.NotifyRegistry = NewNotifyRegistry()
-
-	const sessionID = uint64(0x5E)
-	for i := 0; i < 64; i++ {
-		name := fmt.Sprintf("plain%d.txt", i)
-		fh, f := e.makeFile(t, name)
-		of := &OpenFile{
-			FileID:         [16]byte{byte(i), 0xF1},
-			IsDirectory:    false,
-			SessionID:      sessionID,
-			TreeID:         e.tree.TreeID,
-			ShareName:      e.tree.ShareName,
-			MetadataHandle: fh,
-		}
-		_ = f
-		e.h.StoreOpenFile(of.WithName(OpenName{Path: "/" + name}))
-	}
-
-	e.h.CloseAllFilesForSession(t.Context(), sessionID, true)
-
-	if got := e.h.NotifyRegistry.closeTombstoneCount(); got != 0 {
-		t.Fatalf("close tombstones after tearing down 64 file handles = %d, want 0", got)
-	}
-}
-
 // TestNotifyRegistry_CloseTombstonesEvenWhenAWatchWasFound covers the case
 // where the close path finds a watch to complete.
 //
@@ -3361,409 +2694,6 @@ func TestNotifyRegistry_CloseTombstonesEvenWhenAWatchWasFound(t *testing.T) {
 	if got := r.WatcherCount(); got != 0 {
 		t.Fatalf("WatcherCount = %d, want 0 — watch left live on a closed handle", got)
 	}
-}
-
-// notifyHandlerEnv builds a handler with one armed directory handle whose
-// buffered events are ready to be collected.
-func notifyHandlerEnv(t *testing.T, fileID [16]byte) (*Handler, *NotifyRegistry) {
-	t.Helper()
-	h := NewHandler()
-	h.NotifyRegistry = newTestNotifyRegistry()
-	h.MaxTransactSize = 1 << 20
-	h.StoreOpenFile((&OpenFile{
-		FileID: fileID, IsDirectory: true, ShareName: "share1", SessionID: 1, TreeID: 1,
-		DesiredAccess: 0x00000001, GrantedAccess: 0x00000001,
-	}).WithName(OpenName{Path: "/d"}))
-
-	// Arm the handle the way a first CHANGE_NOTIFY would, then take the watch
-	// away again so later events have nowhere live to go and must buffer.
-	mustRegister(t, h.NotifyRegistry, &PendingNotify{
-		FileID: fileID, SessionID: 1, ConnID: 1, MessageID: 1, AsyncId: 1,
-		WatchPath: "/d", ShareName: "share1", MaxOutputLength: 1000,
-		CompletionFilter: FileNotifyChangeFileName, WatchTree: true,
-	})
-	if got := h.NotifyRegistry.CancelByMessageID(1, 1); got == nil {
-		t.Fatal("setup: expected to remove the arming watch")
-	}
-	return h, h.NotifyRegistry
-}
-
-func notifyCtx(msgID uint64, reserved *int) *SMBHandlerContext {
-	return &SMBHandlerContext{
-		SessionID: 1, TreeID: 1, MessageID: msgID, ConnID: 1,
-		TryReserveAsync: func() bool { *reserved++; return true },
-		ReleaseAsync:    func() {},
-		AsyncNotifyCallback: func(_, _, _ uint64, _ *ChangeNotifyResponse) error {
-			return nil
-		},
-	}
-}
-
-// TestChangeNotify_AnswersFromBufferedEventsWithoutGoingPending is the core of
-// the fix: a request that arrives when events are already buffered is answered
-// synchronously with STATUS_OK and never goes pending.
-//
-// A client that polls by sending a CHANGE_NOTIFY and cancelling it immediately
-// — which smb2.notify.tree does, counting num_changes from the reply — can only
-// ever see an event this way. smb2_notify_recv leaves num_changes untouched on
-// any non-OK status, so an interim PENDING followed by a cancel reports nothing.
-func TestChangeNotify_AnswersFromBufferedEventsWithoutGoingPending(t *testing.T) {
-	fileID := [16]byte{0x91}
-	h, r := notifyHandlerEnv(t, fileID)
-
-	r.NotifyChange("share1", "/d", "a.txt", FileActionAdded, FileNotifyChangeFileName)
-
-	reserved := 0
-	res, err := h.ChangeNotify(notifyCtx(7, &reserved),
-		encodeChangeNotifyReq(SMB2WatchTree, 1000, fileID, FileNotifyChangeFileName))
-	if err != nil {
-		t.Fatalf("ChangeNotify: %v", err)
-	}
-	if res.Status != types.StatusSuccess {
-		t.Fatalf("status = %v, want STATUS_SUCCESS", res.Status)
-	}
-	if res.AsyncId != 0 {
-		t.Errorf("AsyncId = %d, want 0 — the request must not go pending", res.AsyncId)
-	}
-	if reserved != 0 {
-		t.Errorf("TryReserveAsync called %d times, want 0", reserved)
-	}
-	if got := r.WatcherCount(); got != 0 {
-		t.Errorf("WatcherCount = %d, want 0 — nothing should be registered", got)
-	}
-	changes := decodeFileNotifyInfos(res.Data[8:])
-	if len(changes) != 1 || changes[0].FileName != "a.txt" {
-		t.Fatalf("reply carried %+v, want one entry for a.txt", changes)
-	}
-}
-
-// TestChangeNotify_BufferedEventsBeatTheCancelTombstone pins the ordering the
-// fix depends on: buffered events are collected BEFORE the pre-arrival cancel
-// tombstone is consulted.
-//
-// The tombstone exists to stop a watch being armed that would wait forever. It
-// has no say over events that already exist — and because the client cancels
-// every request it sends, letting the tombstone win means it never sees one.
-func TestChangeNotify_BufferedEventsBeatTheCancelTombstone(t *testing.T) {
-	fileID := [16]byte{0x92}
-	h, r := notifyHandlerEnv(t, fileID)
-
-	r.NotifyChange("share1", "/d", "b.txt", FileActionAdded, FileNotifyChangeFileName)
-
-	// The CANCEL for this MessageID lands before the CHANGE_NOTIFY is dispatched.
-	if got := r.CancelByMessageID(1, 9); got != nil {
-		t.Fatalf("setup: CancelByMessageID found a watch it should not have: %+v", got)
-	}
-
-	reserved := 0
-	res, err := h.ChangeNotify(notifyCtx(9, &reserved),
-		encodeChangeNotifyReq(SMB2WatchTree, 1000, fileID, FileNotifyChangeFileName))
-	if err != nil {
-		t.Fatalf("ChangeNotify: %v", err)
-	}
-	if res.Status != types.StatusSuccess {
-		t.Fatalf("status = %v, want STATUS_SUCCESS — the tombstone must not swallow existing events", res.Status)
-	}
-	changes := decodeFileNotifyInfos(res.Data[8:])
-	if len(changes) != 1 || changes[0].FileName != "b.txt" {
-		t.Fatalf("reply carried %+v, want one entry for b.txt", changes)
-	}
-}
-
-// TestChangeNotify_SyncAnswerThenCancelRespondsExactlyOnce is the mirror of the
-// invariant #2131 established. That PR made every watch the registry removes
-// get an answer; this one must not produce a second answer for the same
-// MessageID. A request answered synchronously was never queued, so the CANCEL
-// that follows it has nothing to complete.
-func TestChangeNotify_SyncAnswerThenCancelRespondsExactlyOnce(t *testing.T) {
-	fileID := [16]byte{0x93}
-	h, r := notifyHandlerEnv(t, fileID)
-
-	r.NotifyChange("share1", "/d", "c.txt", FileActionAdded, FileNotifyChangeFileName)
-
-	var asyncResponses int
-	ctx := notifyCtx(11, new(int))
-	ctx.AsyncNotifyCallback = func(_, _, _ uint64, _ *ChangeNotifyResponse) error {
-		asyncResponses++
-		return nil
-	}
-
-	res, err := h.ChangeNotify(ctx, encodeChangeNotifyReq(SMB2WatchTree, 1000, fileID, FileNotifyChangeFileName))
-	if err != nil {
-		t.Fatalf("ChangeNotify: %v", err)
-	}
-	if res.Status != types.StatusSuccess {
-		t.Fatalf("status = %v, want STATUS_SUCCESS", res.Status)
-	}
-
-	// The client's CANCEL arrives after the reply is already on the wire.
-	cancelRes, err := h.Cancel(&SMBHandlerContext{SessionID: 1, TreeID: 1, MessageID: 11, ConnID: 1},
-		[]byte{0x04, 0x00, 0x00, 0x00})
-	if err != nil {
-		t.Fatalf("Cancel: %v", err)
-	}
-	if cancelRes != nil {
-		t.Errorf("Cancel produced a response (%v); CANCEL never answers", cancelRes.Status)
-	}
-	if asyncResponses != 0 {
-		t.Fatalf("%d async responses after a synchronous answer, want 0 — MessageID answered twice", asyncResponses)
-	}
-	if got := r.WatcherCount(); got != 0 {
-		t.Errorf("WatcherCount = %d, want 0", got)
-	}
-}
-
-// TestTakeBufferedEvents_LeavesNonMatchingEvents checks that collecting events
-// for one request does not consume events it would not have reported.
-func TestTakeBufferedEvents_LeavesNonMatchingEvents(t *testing.T) {
-	fileID := [16]byte{0x94}
-	_, r := notifyHandlerEnv(t, fileID)
-
-	r.NotifyChange("share1", "/d", "top.txt", FileActionAdded, FileNotifyChangeFileName)
-	r.NotifyChange("share1", "/d/sub", "deep.txt", FileActionAdded, FileNotifyChangeFileName)
-
-	// A non-recursive request takes only the top-level entry.
-	got := r.TakeBufferedEvents(fileID, FileNotifyChangeFileName, false)
-	if len(got) != 1 || got[0].FileName != "top.txt" {
-		t.Fatalf("non-recursive take = %+v, want only top.txt", got)
-	}
-
-	// The subdirectory entry is still there for a recursive request.
-	got = r.TakeBufferedEvents(fileID, FileNotifyChangeFileName, true)
-	if len(got) != 1 || !strings.Contains(got[0].FileName, "deep.txt") {
-		t.Fatalf("recursive take = %+v, want the subdirectory entry", got)
-	}
-	if got = r.TakeBufferedEvents(fileID, FileNotifyChangeFileName, true); got != nil {
-		t.Fatalf("third take = %+v, want nil — events must be consumed once", got)
-	}
-}
-
-// TestChangeNotify_WatchPathIsNormalised covers a directory handle opened by a
-// path the client spelled with a traversal component.
-//
-// The handle stores the filename exactly as the client sent it, while events
-// are reported against resolved paths, so a handle opened as `zqy\..` would
-// never match an event on the parent it actually refers to. smbtorture's
-// smb2.notify.tree opens one that way and expects it to see the parent's
-// events.
-func TestChangeNotify_WatchPathIsNormalised(t *testing.T) {
-	h := NewHandler()
-	h.NotifyRegistry = newTestNotifyRegistry()
-	h.MaxTransactSize = 1 << 20
-
-	fileID := [16]byte{0x95}
-	h.StoreOpenFile((&OpenFile{
-		FileID: fileID, IsDirectory: true, ShareName: "share1", SessionID: 1, TreeID: 1,
-		DesiredAccess: 0x00000001, GrantedAccess: 0x00000001,
-	}).WithName(OpenName{Path: "/d/sub/.."}))
-
-	reserved := 0
-	res, err := h.ChangeNotify(notifyCtx(21, &reserved),
-		encodeChangeNotifyReq(SMB2WatchTree, 1000, fileID, FileNotifyChangeFileName))
-	if err != nil {
-		t.Fatalf("ChangeNotify: %v", err)
-	}
-	if res.Status != types.StatusPending {
-		t.Fatalf("status = %v, want STATUS_PENDING (nothing buffered yet)", res.Status)
-	}
-
-	// An event on the directory the handle actually refers to must reach it.
-	var got []FileNotifyInformation
-	r := h.NotifyRegistry
-	var watch *PendingNotify
-	r.RangeWatchers(func(n *PendingNotify) bool {
-		watch = n
-		return true
-	})
-	if watch == nil {
-		t.Fatal("no watch registered")
-	}
-	if watch.WatchPath != "/d" {
-		t.Fatalf("registered WatchPath = %q, want %q", watch.WatchPath, "/d")
-	}
-	watch.AsyncCallback = func(_, _, _ uint64, resp *ChangeNotifyResponse) error {
-		got = append(got, decodeFileNotifyInfos(resp.Buffer)...)
-		return nil
-	}
-	// The dispatcher's PostSend hook does not run in a unit test, so the
-	// interim-sent signal has to be delivered by hand or the final response
-	// stays deferred. Outside RangeWatchers: that holds the registry lock.
-	r.MarkInterimSent(watch)
-
-	r.NotifyChange("share1", "/d", "x.txt", FileActionAdded, FileNotifyChangeFileName)
-	r.FlushAll()
-
-	if len(got) != 1 || got[0].FileName != "x.txt" {
-		t.Fatalf("watch opened as /d/sub/.. saw %+v, want the event on /d", got)
-	}
-}
-
-// TestTakeBufferedEvents_KeepsByteCountForRemainingEvents checks the overflow
-// byte counter still measures what is actually buffered after a partial take.
-//
-// BufferedBytes is what the proactive overflow latch sizes the backlog with.
-// Zeroing it while non-matching entries remain would under-count them, and the
-// latch would stop firing for a backlog that is really still growing.
-func TestTakeBufferedEvents_KeepsByteCountForRemainingEvents(t *testing.T) {
-	fileID := [16]byte{0x96}
-	_, r := notifyHandlerEnv(t, fileID)
-
-	r.NotifyChange("share1", "/d", "top.txt", FileActionAdded, FileNotifyChangeFileName)
-	r.NotifyChange("share1", "/d/sub", "deep.txt", FileActionAdded, FileNotifyChangeFileName)
-
-	if got := r.TakeBufferedEvents(fileID, FileNotifyChangeFileName, false); len(got) != 1 {
-		t.Fatalf("non-recursive take = %+v, want one entry", got)
-	}
-
-	var bytes uint32
-	var remaining int
-	r.mu.Lock()
-	if a, ok := r.armed[string(fileID[:])]; ok {
-		bytes, remaining = a.BufferedBytes, len(a.BufferedEvents)
-	}
-	r.mu.Unlock()
-
-	if remaining != 1 {
-		t.Fatalf("remaining buffered events = %d, want 1", remaining)
-	}
-	if bytes == 0 {
-		t.Fatal("BufferedBytes = 0 while an event is still buffered — the overflow latch has nothing to measure")
-	}
-}
-
-// TestChangeNotify_SyncAnswerRefreshesArmedRouting covers the armed handle's
-// routing fields when a request is answered synchronously.
-//
-// With no watch pending it is the armed entry, not the request, that decides
-// which events get buffered — and WatchTree is non-sticky. A request answered
-// from the buffer never reaches Register, so without an explicit refresh the
-// previous request's recursion flag stays in place. Stale non-recursive is the
-// damaging direction: subdirectory events are dropped outright and no later
-// recursive request can recover them.
-func TestChangeNotify_SyncAnswerRefreshesArmedRouting(t *testing.T) {
-	fileID := [16]byte{0x97}
-	h, r := notifyHandlerEnv(t, fileID)
-
-	// The handle was armed non-recursive by a previous request.
-	r.Arm(&PendingNotify{
-		FileID: fileID, SessionID: 1, ConnID: 1, WatchPath: "/d", ShareName: "share1",
-		CompletionFilter: FileNotifyChangeFileName, WatchTree: false, MaxOutputLength: 1000,
-	})
-
-	// A top-level event so this request has something to be answered with.
-	r.NotifyChange("share1", "/d", "top.txt", FileActionAdded, FileNotifyChangeFileName)
-
-	// A RECURSIVE request is answered synchronously from that event.
-	reserved := 0
-	res, err := h.ChangeNotify(notifyCtx(31, &reserved),
-		encodeChangeNotifyReq(SMB2WatchTree, 1000, fileID, FileNotifyChangeFileName))
-	if err != nil {
-		t.Fatalf("ChangeNotify: %v", err)
-	}
-	if res.Status != types.StatusSuccess {
-		t.Fatalf("status = %v, want STATUS_SUCCESS", res.Status)
-	}
-
-	// The handle must now be armed recursive, so a subdirectory event buffers.
-	r.NotifyChange("share1", "/d/sub", "deep.txt", FileActionAdded, FileNotifyChangeFileName)
-
-	got := r.TakeBufferedEvents(fileID, FileNotifyChangeFileName, true)
-	if len(got) != 1 || !strings.Contains(got[0].FileName, "deep.txt") {
-		t.Fatalf("subdirectory event after a recursive sync answer = %+v, want it buffered — "+
-			"the armed handle kept the previous request's non-recursive flag", got)
-	}
-}
-
-// TestChangeNotify_EmptyFilterInheritsTheArmedMask covers smb2.notify.rec's
-// re-issued request, which sets completion_filter = 0 and expects the server to
-// keep watching for what the handle was already armed with.
-//
-// [MS-FSA] 2.1.5.11 makes the filter a property of the directory's
-// ChangeNotifyEntry, constructed by the FIRST CHANGE_NOTIFY on the handle;
-// neither it nor MS-SMB2 3.3.5.19 validates the field, and Samba does not
-// either. Only a request that is the first on its handle and names no filter
-// has nothing to watch for.
-func TestChangeNotify_EmptyFilterInheritsTheArmedMask(t *testing.T) {
-	newDirHandle := func(h *Handler, id byte) [16]byte {
-		var fileID [16]byte
-		fileID[0] = id
-		h.StoreOpenFile((&OpenFile{
-			FileID:        fileID,
-			IsDirectory:   true,
-			ShareName:     "share1",
-			SessionID:     1,
-			TreeID:        1,
-			DesiredAccess: 0x00000001,
-			GrantedAccess: 0x00000001,
-		}).WithName(OpenName{Path: "/dir"}))
-		return fileID
-	}
-	makeCtx := func(msgID uint64) *SMBHandlerContext {
-		return &SMBHandlerContext{
-			SessionID: 1, TreeID: 1, MessageID: msgID, ConnID: 1,
-			TryReserveAsync:     func() bool { return true },
-			ReleaseAsync:        func() {},
-			AsyncNotifyCallback: func(_, _, _ uint64, _ *ChangeNotifyResponse) error { return nil },
-		}
-	}
-
-	t.Run("armed handle", func(t *testing.T) {
-		h := NewHandler()
-		h.NotifyRegistry = NewNotifyRegistry()
-		h.MaxTransactSize = 1 << 20
-		fileID := newDirHandle(h, 0x91)
-
-		res, err := h.ChangeNotify(makeCtx(1), encodeChangeNotifyReq(0, 1000, fileID, FileNotifyChangeDirName))
-		if err != nil || res == nil || res.Status != types.StatusPending {
-			t.Fatalf("first CHANGE_NOTIFY: want STATUS_PENDING, got %+v (err=%v)", res, err)
-		}
-
-		res, err = h.ChangeNotify(makeCtx(2), encodeChangeNotifyReq(0, 1000, fileID, 0))
-		if err != nil {
-			t.Fatalf("re-issued CHANGE_NOTIFY error: %v", err)
-		}
-		if res == nil || res.Status != types.StatusPending {
-			t.Fatalf("re-issued CHANGE_NOTIFY with an empty filter: want STATUS_PENDING, got %+v", res)
-		}
-
-		// It must watch for the armed mask, not for nothing.
-		var seen bool
-		h.NotifyRegistry.RangeWatchers(func(p *PendingNotify) bool {
-			if p.MessageID == 2 {
-				seen = true
-				if p.CompletionFilter != FileNotifyChangeDirName {
-					t.Errorf("re-issued watch filter = 0x%08X, want the armed 0x%08X",
-						p.CompletionFilter, FileNotifyChangeDirName)
-				}
-			}
-			return true
-		})
-		if !seen {
-			t.Error("the re-issued request registered no watch")
-		}
-	})
-
-	t.Run("unarmed handle", func(t *testing.T) {
-		h := NewHandler()
-		h.NotifyRegistry = NewNotifyRegistry()
-		h.MaxTransactSize = 1 << 20
-		fileID := newDirHandle(h, 0x92)
-
-		res, err := h.ChangeNotify(makeCtx(1), encodeChangeNotifyReq(0, 1000, fileID, 0))
-		if err != nil {
-			t.Fatalf("CHANGE_NOTIFY error: %v", err)
-		}
-		if res == nil || res.Status != types.StatusInvalidParameter {
-			t.Fatalf("first CHANGE_NOTIFY with an empty filter: want STATUS_INVALID_PARAMETER, got %+v", res)
-		}
-
-		// The refusal must not have armed the handle with an empty mask: a
-		// later request naming a real filter has to work.
-		res, err = h.ChangeNotify(makeCtx(2), encodeChangeNotifyReq(0, 1000, fileID, FileNotifyChangeFileName))
-		if err != nil || res == nil || res.Status != types.StatusPending {
-			t.Fatalf("CHANGE_NOTIFY after a refused empty filter: want STATUS_PENDING, got %+v (err=%v)", res, err)
-		}
-	})
 }
 
 // TestBufferEventLocked_InterleavedEmissionsDoNotMerge covers concurrent
@@ -3840,7 +2770,7 @@ func TestRegisterAfterDeletePendingMark(t *testing.T) {
 	}
 
 	// A trailing "/" or "." spelling of the same directory is the same
-	// directory: notifyWatchPath normalises both sides of the comparison.
+	// directory: WatchPath normalises both sides of the comparison.
 	if err := r.Register(newNotify(2, 11, "share1", "/parent/target/")); !errors.Is(err, ErrDirectoryDeletePending) {
 		t.Errorf("unnormalised path: got %v, want ErrDirectoryDeletePending", err)
 	}
@@ -3896,56 +2826,6 @@ func TestClearDeletePendingMark(t *testing.T) {
 	}
 }
 
-// TestChangeNotify_DeletePendingDirectory_AnsweredSynchronously pins the wire
-// answer for the late-arrival ordering: the directory's delete disposition is
-// committed, and only then does the CHANGE_NOTIFY reach the handler. It
-// must come back on its own MessageID with STATUS_DELETE_PENDING rather than
-// going async on a wait that has already been swept past.
-func TestChangeNotify_DeletePendingDirectory_AnsweredSynchronously(t *testing.T) {
-	h := NewHandler()
-	h.NotifyRegistry = NewNotifyRegistry()
-	h.MaxTransactSize = 1 << 20
-
-	fileID := [16]byte{0x44}
-	openFile := (&OpenFile{
-		FileID: fileID, IsDirectory: true, ShareName: "share1", SessionID: 1, TreeID: 1,
-		DesiredAccess: 0x00000001, GrantedAccess: 0x00000001,
-	}).WithName(OpenName{Path: "/dir"})
-	h.StoreOpenFile(openFile)
-
-	// Another handle marked the directory for deletion first. The sweep finds
-	// nothing: this watch has not registered yet.
-	h.NotifyRegistry.MarkDirectoryDeletePending("share1", "/dir")
-
-	var wentAsync bool
-	ctx := &SMBHandlerContext{
-		SessionID: 1, TreeID: 1, MessageID: 79, ConnID: 5,
-		TryReserveAsync: func() bool { return true },
-		ReleaseAsync:    func() {},
-		AsyncNotifyCallback: func(_, _, _ uint64, _ *ChangeNotifyResponse) error {
-			wentAsync = true
-			return nil
-		},
-	}
-
-	res, err := h.ChangeNotify(ctx, encodeChangeNotifyReq(0, 1000, fileID, FileNotifyChangeFileName))
-	if err != nil {
-		t.Fatalf("ChangeNotify error: %v", err)
-	}
-	if res.Status != types.StatusDeletePending {
-		t.Fatalf("status = %v, want STATUS_DELETE_PENDING", res.Status)
-	}
-	if res.AsyncId != 0 {
-		t.Errorf("AsyncId = %d, want 0 — the reply is synchronous on the original MessageID", res.AsyncId)
-	}
-	if wentAsync {
-		t.Error("the request must not be parked as an async watch")
-	}
-	if n := h.NotifyRegistry.WatcherCount(); n != 0 {
-		t.Errorf("WatcherCount = %d, want 0 — nothing may be left waiting", n)
-	}
-}
-
 // TestCompleteWatchersForDeletePendingDoesNotStick pins the asymmetry between
 // the two entry points. Both close paths remove the directory entry before they
 // sweep, so a sticky marker recorded from the plain sweep would be stamped onto
@@ -3973,5 +2853,106 @@ func TestCompleteWatchersForDeletePendingDoesNotStick(t *testing.T) {
 	}
 	if n := r.WatcherCount(); n != 1 {
 		t.Errorf("expected the watch to be parked normally, got %d watchers", n)
+	}
+}
+
+// decodeFileNotifyInfos walks a FILE_NOTIFY_INFORMATION list (MS-FSCC §2.7.1 (FILE_NOTIFY_INFORMATION)).
+// Test helper only — production decode happens client-side.
+func decodeFileNotifyInfos(buf []byte) []FileNotifyInformation {
+	var out []FileNotifyInformation
+	off := 0
+	for off+12 <= len(buf) {
+		next := uint32(buf[off]) | uint32(buf[off+1])<<8 | uint32(buf[off+2])<<16 | uint32(buf[off+3])<<24
+		action := uint32(buf[off+4]) | uint32(buf[off+5])<<8 | uint32(buf[off+6])<<16 | uint32(buf[off+7])<<24
+		nameLen := uint32(buf[off+8]) | uint32(buf[off+9])<<8 | uint32(buf[off+10])<<16 | uint32(buf[off+11])<<24
+		if off+12+int(nameLen) > len(buf) {
+			break
+		}
+		u16 := make([]uint16, nameLen/2)
+		for i := range u16 {
+			u16[i] = uint16(buf[off+12+i*2]) | uint16(buf[off+12+i*2+1])<<8
+		}
+		out = append(out, FileNotifyInformation{Action: action, FileName: string(utf16.Decode(u16))})
+		if next == 0 {
+			break
+		}
+		off += int(next)
+	}
+	return out
+}
+
+// armedRegistryEnv leaves fileID armed with no live watch, so events recorded
+// afterwards have nowhere to be delivered and must accumulate in the buffer.
+// It is the registry half of the handler-level setup: register a watch the way
+// a first CHANGE_NOTIFY would, then take it away again.
+func armedRegistryEnv(t *testing.T, fileID [16]byte) *NotifyRegistry {
+	t.Helper()
+	r := newTestNotifyRegistry()
+	mustRegister(t, r, &PendingNotify{
+		FileID: fileID, SessionID: 1, ConnID: 1, MessageID: 1, AsyncId: 1,
+		WatchPath: "/d", ShareName: "share1", MaxOutputLength: 1000,
+		CompletionFilter: FileNotifyChangeFileName, WatchTree: true,
+	})
+	if got := r.CancelByMessageID(1, 1); got == nil {
+		t.Fatal("setup: expected to remove the arming watch")
+	}
+	return r
+}
+
+// TestTakeBufferedEvents_LeavesNonMatchingEvents checks that collecting events
+// for one request does not consume events it would not have reported.
+func TestTakeBufferedEvents_LeavesNonMatchingEvents(t *testing.T) {
+	fileID := [16]byte{0x94}
+	r := armedRegistryEnv(t, fileID)
+
+	r.NotifyChange("share1", "/d", "top.txt", FileActionAdded, FileNotifyChangeFileName)
+	r.NotifyChange("share1", "/d/sub", "deep.txt", FileActionAdded, FileNotifyChangeFileName)
+
+	// A non-recursive request takes only the top-level entry.
+	got := r.TakeBufferedEvents(fileID, FileNotifyChangeFileName, false)
+	if len(got) != 1 || got[0].FileName != "top.txt" {
+		t.Fatalf("non-recursive take = %+v, want only top.txt", got)
+	}
+
+	// The subdirectory entry is still there for a recursive request.
+	got = r.TakeBufferedEvents(fileID, FileNotifyChangeFileName, true)
+	if len(got) != 1 || !strings.Contains(got[0].FileName, "deep.txt") {
+		t.Fatalf("recursive take = %+v, want the subdirectory entry", got)
+	}
+	if got = r.TakeBufferedEvents(fileID, FileNotifyChangeFileName, true); got != nil {
+		t.Fatalf("third take = %+v, want nil — events must be consumed once", got)
+	}
+}
+
+// TestTakeBufferedEvents_KeepsByteCountForRemainingEvents checks the overflow
+// byte counter still measures what is actually buffered after a partial take.
+//
+// BufferedBytes is what the proactive overflow latch sizes the backlog with.
+// Zeroing it while non-matching entries remain would under-count them, and the
+// latch would stop firing for a backlog that is really still growing.
+func TestTakeBufferedEvents_KeepsByteCountForRemainingEvents(t *testing.T) {
+	fileID := [16]byte{0x96}
+	r := armedRegistryEnv(t, fileID)
+
+	r.NotifyChange("share1", "/d", "top.txt", FileActionAdded, FileNotifyChangeFileName)
+	r.NotifyChange("share1", "/d/sub", "deep.txt", FileActionAdded, FileNotifyChangeFileName)
+
+	if got := r.TakeBufferedEvents(fileID, FileNotifyChangeFileName, false); len(got) != 1 {
+		t.Fatalf("non-recursive take = %+v, want one entry", got)
+	}
+
+	var bytes uint32
+	var remaining int
+	r.mu.Lock()
+	if a, ok := r.armed[string(fileID[:])]; ok {
+		bytes, remaining = a.BufferedBytes, len(a.BufferedEvents)
+	}
+	r.mu.Unlock()
+
+	if remaining != 1 {
+		t.Fatalf("remaining buffered events = %d, want 1", remaining)
+	}
+	if bytes == 0 {
+		t.Fatal("BufferedBytes = 0 while an event is still buffered — the overflow latch has nothing to measure")
 	}
 }

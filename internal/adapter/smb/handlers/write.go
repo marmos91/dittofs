@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/common"
+	"github.com/marmos91/dittofs/internal/adapter/smb/changenotify"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -595,9 +596,9 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	openFile.SetPayloadID(writeOp.PayloadID)
 
 	if h.NotifyRegistry != nil {
-		parentDirPath := GetParentPath(filePath)
+		parentDirPath := changenotify.GetParentPath(filePath)
 		if isADSWrite {
-			h.NotifyRegistry.NotifyChange(openFile.ShareName, parentDirPath, notifyStreamName(fileName), FileActionModifiedStream, FileNotifyChangeStreamWrite|FileNotifyChangeStreamSize)
+			h.NotifyRegistry.NotifyChange(openFile.ShareName, parentDirPath, changenotify.StreamName(fileName), changenotify.FileActionModifiedStream, changenotify.FileNotifyChangeStreamWrite|changenotify.FileNotifyChangeStreamSize)
 		} else {
 			// Mirror Samba `notify_fname(... NOTIFY_ACTION_MODIFIED, ...)` from
 			// `vfs_default_pwrite_recv`: a successful WRITE on a regular file
@@ -606,7 +607,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 			// this hook, in-memory backends never observe the kernel inotify
 			// MODIFIED event that real Samba relies on (smb2.notify.valid-req
 			// expects REMOVED + ADDED + MODIFIED for unlink → CREATE → WRITE).
-			h.NotifyRegistry.NotifyChange(openFile.ShareName, parentDirPath, fileName, FileActionModified, FileNotifyChangeSize|FileNotifyChangeLastWrite|FileNotifyChangeAttributes)
+			h.NotifyRegistry.NotifyChange(openFile.ShareName, parentDirPath, fileName, changenotify.FileActionModified, changenotify.FileNotifyChangeSize|changenotify.FileNotifyChangeLastWrite|changenotify.FileNotifyChangeAttributes)
 		}
 	}
 
