@@ -42,7 +42,6 @@ type ShareListItem struct {
 // BlockStoreListItem deserializes block store list entries with status.
 type BlockStoreListItem struct {
 	Name   string       `json:"name"`
-	Kind   string       `json:"kind"`
 	Type   string       `json:"type"`
 	Status StatusReport `json:"status"`
 }
@@ -116,29 +115,14 @@ func FetchEntities(client *http.Client, baseURL, token string) Entities {
 
 	go func() {
 		defer wg.Done()
-		var allStores []BlockStoreListItem
-
-		var local []BlockStoreListItem
-		if err := doGet(baseURL+"/store/block/local", &local); err == nil {
-			allStores = append(allStores, local...)
+		var stores []BlockStoreListItem
+		if err := doGet(baseURL+"/store/block", &stores); err == nil {
+			mu.Lock()
+			ent.BlockStores = stores
+			mu.Unlock()
 		} else {
 			mu.Lock()
-			ent.Errors = append(ent.Errors, fmt.Sprintf("block stores (local): %v", err))
-			mu.Unlock()
-		}
-
-		var remote []BlockStoreListItem
-		if err := doGet(baseURL+"/store/block/remote", &remote); err == nil {
-			allStores = append(allStores, remote...)
-		} else {
-			mu.Lock()
-			ent.Errors = append(ent.Errors, fmt.Sprintf("block stores (remote): %v", err))
-			mu.Unlock()
-		}
-
-		if len(allStores) > 0 {
-			mu.Lock()
-			ent.BlockStores = allStores
+			ent.Errors = append(ent.Errors, fmt.Sprintf("block stores: %v", err))
 			mu.Unlock()
 		}
 	}()
