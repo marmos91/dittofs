@@ -398,6 +398,13 @@ func New(config *Config) (*GORMStore, error) {
 		return nil, fmt.Errorf("failed to backfill shares.enabled: %w", err)
 	}
 
+	// Post-migration: carry a configured durability tier off the local block
+	// store config and onto the share, before the blanket backfill below
+	// claims every unset row for the default.
+	if err := migrateShareDurability(db); err != nil {
+		return nil, err
+	}
+
 	// Post-migration: backfill commit_ack for rows that predate the column.
 	// A share acknowledging on nothing is not a weaker promise, it is an
 	// unreadable one, and SQLite may leave NULL on ALTER TABLE ADD COLUMN even
