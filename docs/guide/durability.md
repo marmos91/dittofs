@@ -55,6 +55,8 @@ dfsctl store block local edit <share> --config '{"durability": "remote"}'
   (~5700 ops/s) additionally needs the journal async-commit half — see
   [Remaining work](#remaining-work-1758). Use it for create/write-heavy workloads
   that tolerate losing the last ~100 ms of *metadata* on a hard crash.
+  **It also turns off per-read warm-read verification** — see
+  [Read integrity](#read-integrity-per-read-verification--self-heal) before choosing it.
 - **`remote`** — makes `CLOSE`/`COMMIT` block until the data is durable in the
   remote (S3) store, so an acknowledged write survives losing the whole node. Slow
   by design.

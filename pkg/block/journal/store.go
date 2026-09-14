@@ -219,10 +219,9 @@ type Store struct {
 	// health transition re-enabling eviction cannot lift it.
 	evictionPinned atomic.Bool
 
-	// verifyReads turns on per-read record-CRC verification of warm reads (opt-in
-	// for durable tiers; off for the fast writeback path). When off, ReadAt serves
-	// a warm piece with a single raw pread and does no extra work. Set once before
-	// the store serves reads.
+	// verifyReads turns on per-read record-CRC verification of warm reads. Open
+	// turns it on; when off, ReadAt serves a warm piece with a single raw pread
+	// and does no extra work. Set once before the store serves reads.
 	verifyReads atomic.Bool
 
 	closed atomic.Bool
@@ -264,10 +263,11 @@ type Store struct {
 }
 
 // SetVerifyReads enables or disables per-read record-CRC verification of warm
-// reads. Durable tiers turn it on so on-disk corruption between recovery and a
-// warm read is caught (and healed/failed-closed by the caller) instead of
-// returning silently-wrong bytes; the writeback tier leaves it off to keep the
-// raw fast read. Called once at share construction, before the store serves reads.
+// reads. Verification is on unless this turns it off: with it on, on-disk
+// corruption between recovery and a warm read is caught (and healed/failed-closed
+// by the caller) instead of returning silently-wrong bytes. Only the writeback
+// tier trades that away for the raw fast read. Called once at share construction,
+// before the store serves reads.
 func (s *Store) SetVerifyReads(v bool) { s.verifyReads.Store(v) }
 
 // Open opens (or creates) a Store rooted at dir. A fresh directory gets one
@@ -322,7 +322,8 @@ func Open(dir string, cfg Config) (*Store, error) {
 		log:       log,
 		shardMask: uint64(cfg.ShardCount - 1),
 	}
-	s.durable.Store(true) // the journal substrate is durable; config["durable"] may flip it
+	s.durable.Store(true)     // the journal substrate is durable; config["durable"] may flip it
+	s.verifyReads.Store(true) // warm reads verify unless a caller opts out via SetVerifyReads(false)
 
 	ids, err := scanSegmentIDs(dir)
 	if err != nil {

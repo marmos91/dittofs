@@ -128,13 +128,14 @@ func TestVerifiedReadDetectsFileIDCorruption(t *testing.T) {
 	}
 }
 
-// TestUnverifiedReadReturnsRawBytes documents that the default (writeback) fast
-// path does NOT verify: it serves the corrupted byte verbatim with a single raw
-// read and no error. That the corrupted byte leaks through is the proof the off
-// path took no covering-record read (a verifying read would have CRC-failed).
+// TestUnverifiedReadReturnsRawBytes documents that the writeback fast path does
+// NOT verify: it serves the corrupted byte verbatim with a single raw read and no
+// error. That the corrupted byte leaks through is the proof the off path took no
+// covering-record read (a verifying read would have CRC-failed).
 func TestUnverifiedReadReturnsRawBytes(t *testing.T) {
 	ctx := context.Background()
-	s := testStore(t, Config{}) // VerifyReads defaults off
+	s := testStore(t, Config{})
+	s.SetVerifyReads(false) // the writeback tier has to ask for the raw path
 
 	payload := bytes.Repeat([]byte("dittofs-verify-"), 512)
 	if err := s.WriteAt(ctx, "f1", 0, payload); err != nil {
@@ -149,5 +150,30 @@ func TestUnverifiedReadReturnsRawBytes(t *testing.T) {
 	}
 	if bytes.Equal(got, payload) {
 		t.Fatalf("expected the corrupted byte to leak through the unverified fast path")
+	}
+}
+
+// TestUnconfiguredStoreVerifiesReads pins the default: a store nobody called
+// SetVerifyReads on still catches a corrupted record instead of handing back the
+// damaged bytes. The weaker raw-pread posture has to be asked for.
+func TestUnconfiguredStoreVerifiesReads(t *testing.T) {
+	ctx := context.Background()
+	s := testStore(t, Config{})
+
+	payload := bytes.Repeat([]byte("dittofs-default-"), 512)
+	if err := s.WriteAt(ctx, "f1", 0, payload); err != nil {
+		t.Fatalf("WriteAt: %v", err)
+	}
+	corruptFirstPayloadByte(t, s, "f1")
+
+	got := make([]byte, len(payload))
+	_, st, err := s.ReadAt(ctx, "f1", 0, got)
+	var cre *CorruptRangeError
+	if !errors.As(err, &cre) {
+		t.Fatalf("an unconfigured store served a corrupt record: err=%v, bytes-differ=%v",
+			err, !bytes.Equal(got, payload))
+	}
+	if st.Cold {
+		t.Fatalf("a corrupt range must never be reported cold")
 	}
 }
