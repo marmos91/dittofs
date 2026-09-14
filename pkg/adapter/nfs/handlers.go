@@ -109,53 +109,25 @@ func (c *NFSConnection) handleNFSProcedure(ctx context.Context, call *rpc.RPCCal
 	// non-idempotent ops (REMOVE/RMDIR/RENAME/CREATE/MKDIR/LINK/SYMLINK/MKNOD/
 	// guarded SETATTR) re-executing yields a spurious EEXIST/ENOENT/NOT_SYNC.
 	// We replay the recorded reply instead. Idempotent ops bypass the cache.
-	useDRC := c.server.drc != nil && isCacheable(call.Procedure)
-	if useDRC {
-		switch res, reply := c.server.drc.lookup(clientAddr, call.XID, data); res {
-		case drcReplay:
-			logger.DebugCtx(ctx, "NFS duplicate request replayed from DRC",
-				"procedure", procedure.Name,
-				"client", clientAddr,
-				"xid", fmt.Sprintf("0x%x", call.XID))
-			return reply, nil
-		case drcInProgressDup:
-			// Original is still executing; drop this duplicate and let the
-			// in-flight request produce the single authoritative reply. Signal
-			// "write nothing" via errDropReply so the dispatcher does not emit a
-			// truncated success reply (or a second reply for this XID).
-			logger.DebugCtx(ctx, "NFS duplicate of in-flight request dropped",
-				"procedure", procedure.Name,
-				"client", clientAddr,
-				"xid", fmt.Sprintf("0x%x", call.XID))
-			return nil, errDropReply
-		default:
-			// drcMiss: an in-progress slot is now reserved; fall through to run
-			// the handler and record the reply below.
-		}
-	}
+	return c.withDRC(ctx, call, data, clientAddr,
+		isCacheable(call.Procedure), "NFS "+procedure.Name,
+		func() ([]byte, bool, error) {
+			start := time.Now()
+			result, err := procedure.Handler(
+				handlerCtx,
+				c.server.nfsHandler,
+				c.server.Registry,
+				data,
+			)
+			c.recordOp(procedure.Name, start, err == nil && (result == nil || result.NFSStatus == 0))
 
-	// Dispatch to handler
-	start := time.Now()
-	result, err := procedure.Handler(
-		handlerCtx,
-		c.server.nfsHandler,
-		c.server.Registry,
-		data,
-	)
-	c.recordOp(procedure.Name, start, err == nil && (result == nil || result.NFSStatus == 0))
-
-	if result == nil {
-		if useDRC {
-			// No reply to cache (e.g. decode failure); release the slot so a
-			// later legitimate retry is not swallowed.
-			c.server.drc.abort(clientAddr, call.XID, data)
-		}
-		return nil, err
-	}
-	if useDRC {
-		c.server.drc.record(clientAddr, call.XID, data, result.Data)
-	}
-	return result.Data, err
+			if result == nil {
+				// Nothing to cache (e.g. a decode failure); the deferred
+				// release leaves a later legitimate retry free to run.
+				return nil, false, err
+			}
+			return result.Data, true, err
+		})
 }
 
 // handleMountProcedure dispatches a MOUNT procedure call to the appropriate handler.
@@ -492,64 +464,36 @@ func (c *NFSConnection) handleNFSv4Procedure(ctx context.Context, call *rpc.RPCC
 		// NFS4ERR_EXIST or NFS4ERR_NOENT. Retransmits of v4.1 and v4.2 compounds
 		// are caught by the session slot table instead, so only minorversion 0
 		// consults the cache.
-		useDRC := c.server.drc != nil && drcEligibleV40Compound(data)
-		if useDRC {
-			switch res, reply := c.server.drc.lookup(clientAddr, call.XID, data); res {
-			case drcReplay:
-				logger.DebugCtx(ctx, "NFSv4.0 COMPOUND replayed from DRC",
-					"client", clientAddr,
-					"xid", fmt.Sprintf("0x%x", call.XID))
-				return reply, nil
-			case drcInProgressDup:
-				// The original is still running and owns the XID; write nothing
-				// rather than a second reply on the same XID.
-				logger.DebugCtx(ctx, "NFSv4.0 duplicate of in-flight COMPOUND dropped",
-					"client", clientAddr,
-					"xid", fmt.Sprintf("0x%x", call.XID))
-				return nil, errDropReply
-			default:
-				// drcMiss: an in-progress slot is now reserved. Release it
-				// however this returns -- lookup matches an in-progress entry
-				// before it considers age, so one left behind answers every
-				// later retransmission of this exact request with a silent
-				// drop, for as long as the connection lives. A panic in
-				// ProcessCompound is recovered per request and leaves the
-				// connection open, so only a deferred release covers it.
-				// abort removes the entry only while it is still in-progress,
-				// which makes this a no-op once the reply below is recorded.
-				defer c.server.drc.abort(clientAddr, call.XID, data)
-			}
-		}
+		return c.withDRC(ctx, call, data, clientAddr,
+			drcEligibleV40Compound(data), "NFSv4.0 COMPOUND",
+			func() ([]byte, bool, error) {
+				// COMPOUND status here is coarse: per-op NFS4ERR codes are encoded
+				// inside the XDR result and the RPC always succeeds, so err only
+				// reflects wire/decode failures. Per-op v4 RED needs ProcessCompound
+				// to surface a status (follow-up); this records traffic + latency +
+				// transport errors.
+				start := time.Now()
+				result, err := c.server.v4Handler.ProcessCompound(compCtx, data)
+				c.recordOp("COMPOUND", start, err == nil)
 
-		// COMPOUND status here is coarse: per-op NFS4ERR codes are encoded inside
-		// the XDR result and the RPC always succeeds, so err only reflects
-		// wire/decode failures. Per-op v4 RED needs ProcessCompound to surface a
-		// status (follow-up); this records traffic + latency + transport errors.
-		start := time.Now()
-		result, err := c.server.v4Handler.ProcessCompound(compCtx, data)
-		c.recordOp("COMPOUND", start, err == nil)
+				// The COMPOUND carries the minorversion, so the registry's "4" can
+				// now be refined to the exact dialect. A refused minorversion is not
+				// reported: it is answered with NFS4ERR_MINOR_VERS_MISMATCH and a nil
+				// error, and the server never served that dialect.
+				if err == nil && compCtx.MinorVersionAccepted {
+					c.noteNFSVersion("4." + strconv.FormatUint(uint64(compCtx.MinorVersion), 10))
+				}
 
-		// Record only what a retransmission must not re-run. Anything else
-		// leaves the slot to the deferred release above, so a later legitimate
-		// retry is not swallowed by it.
-		if useDRC && err == nil && drcRecordableReply(compCtx.CacheReply, len(result)) {
-			c.server.drc.record(clientAddr, call.XID, data, result)
-		}
+				// After COMPOUND completes, check if this connection was bound for
+				// back-channel. If so, register a ConnWriter and PendingCBReplies
+				// so the read loop can demux backchannel replies.
+				c.maybeRegisterBackchannel(ctx)
 
-		// The COMPOUND carries the minorversion, so the registry's "4" can now
-		// be refined to the exact dialect. A refused minorversion is not
-		// reported: it is answered with NFS4ERR_MINOR_VERS_MISMATCH and a nil
-		// error, and the server never served that dialect.
-		if err == nil && compCtx.MinorVersionAccepted {
-			c.noteNFSVersion("4." + strconv.FormatUint(uint64(compCtx.MinorVersion), 10))
-		}
-
-		// After COMPOUND completes, check if this connection was bound for
-		// back-channel. If so, register a ConnWriter and PendingCBReplies
-		// so the read loop can demux backchannel replies.
-		c.maybeRegisterBackchannel(ctx)
-
-		return result, err
+				// Record only what a retransmission must not re-run. Anything else
+				// leaves the reservation to the deferred release, so a later
+				// legitimate retry is not swallowed by it.
+				return result, err == nil && drcRecordableReply(compCtx.CacheReply, len(result)), err
+			})
 
 	default:
 		// NFSv4 only has 2 procedures -- anything else is invalid. Write the

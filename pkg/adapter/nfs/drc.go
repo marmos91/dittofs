@@ -1,11 +1,15 @@
 package nfs
 
 import (
+	"context"
+	"fmt"
 	"hash/crc32"
 	"sync"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
 	nfs_types "github.com/marmos91/dittofs/internal/adapter/nfs/types"
+	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // ============================================================================
@@ -285,4 +289,62 @@ func (d *duplicateRequestCache) evictIfNeeded(s *drcShard) {
 	if !first {
 		delete(s.entries, oldestKey)
 	}
+}
+
+// withDRC runs fn under the duplicate-request cache.
+//
+// The cache has a three-phase protocol — look up, reserve, then either record
+// the reply or release the reservation — and getting the last phase wrong is
+// not a visible failure. lookup matches an in-progress entry before it
+// considers age, so a reservation left behind answers every later
+// retransmission of that exact request with a silent drop, for as long as the
+// connection lives. Holding the protocol in one place is what makes the
+// release unconditional: it is deferred, so it covers early returns and a
+// handler that panics and is recovered per request, and it is a no-op once the
+// reply has been recorded.
+//
+// fn reports whether its reply may be recorded. That decision stays with the
+// caller because the programs disagree on it: NFSv3 caches whatever reply it
+// produced, while NFSv4.0 caches only a reply the COMPOUND marked cacheable
+// and only when the transport call itself succeeded. Deciding it here would
+// silently change one of them.
+func (c *NFSConnection) withDRC(
+	ctx context.Context,
+	call *rpc.RPCCallMessage,
+	data []byte,
+	clientAddr string,
+	eligible bool,
+	label string,
+	fn func() (reply []byte, recordable bool, err error),
+) ([]byte, error) {
+	if c.server.drc == nil || !eligible {
+		reply, _, err := fn()
+		return reply, err
+	}
+
+	switch res, cached := c.server.drc.lookup(clientAddr, call.XID, data); res {
+	case drcReplay:
+		logger.DebugCtx(ctx, label+": duplicate request replayed from DRC",
+			"client", clientAddr,
+			"xid", fmt.Sprintf("0x%x", call.XID))
+		return cached, nil
+
+	case drcInProgressDup:
+		// The original is still executing and owns the XID. Write nothing
+		// rather than a second reply on the same XID: the in-flight request
+		// produces the single authoritative one.
+		logger.DebugCtx(ctx, label+": duplicate of in-flight request dropped",
+			"client", clientAddr,
+			"xid", fmt.Sprintf("0x%x", call.XID))
+		return nil, errDropReply
+	}
+
+	// drcMiss reserved an in-progress slot; release it however this returns.
+	defer c.server.drc.abort(clientAddr, call.XID, data)
+
+	reply, recordable, err := fn()
+	if recordable {
+		c.server.drc.record(clientAddr, call.XID, data, reply)
+	}
+	return reply, err
 }
