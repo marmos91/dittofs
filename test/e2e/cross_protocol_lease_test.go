@@ -46,17 +46,17 @@ func TestCrossProtocol_LeaseBreaks(t *testing.T) {
 	// Create shared metadata and block stores
 	// Both NFS and SMB will use the same stores to enable cross-protocol access
 	metaStoreName := helpers.UniqueTestName("leasemeta")
-	localStoreName := helpers.UniqueTestName("leasepayload")
+	blockStoreName := helpers.UniqueTestName("leasepayload")
 	shareName := "/export"
 
 	_, err := cli.CreateMetadataStore(metaStoreName, "memory")
 	require.NoError(t, err, "Should create metadata store")
 
-	_, err = cli.CreateLocalBlockStore(localStoreName, "memory")
+	_, err = cli.CreateBlockStore(blockStoreName, "memory")
 	require.NoError(t, err, "Should create block store")
 
 	// Create share with read-write default permission
-	_, err = cli.CreateShare(shareName, metaStoreName, localStoreName,
+	_, err = cli.CreateShare(shareName, metaStoreName, blockStoreName,
 		helpers.WithShareDefaultPermission("read-write"))
 	require.NoError(t, err, "Should create share")
 

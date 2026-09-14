@@ -19,7 +19,7 @@ import (
 // LocalStack). Both are wired exactly as a non-AWS provider would be: a custom
 // `endpoint`, which makes the s3 store factory auto-enable path-style
 // addressing (force_path_style). A full NFS read/write/overwrite round-trip
-// through a share whose remote tier is the emulator proves the preset works
+// through a share whose block store is the emulator proves the preset works
 // end-to-end, not just that the config parses.
 //
 // MinIO is the headline verified provider here (LocalStack is already covered

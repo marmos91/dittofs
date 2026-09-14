@@ -45,17 +45,17 @@ func TestCrossProtocolInterop(t *testing.T) {
 	// Create shared metadata and block stores
 	// Both NFS and SMB will use the same stores to enable cross-protocol access
 	metaStoreName := helpers.UniqueTestName("xpmeta")
-	localStoreName := helpers.UniqueTestName("xppayload")
+	blockStoreName := helpers.UniqueTestName("xppayload")
 	shareName := "/export"
 
 	_, err := cli.CreateMetadataStore(metaStoreName, "memory")
 	require.NoError(t, err, "Should create metadata store")
 
-	_, err = cli.CreateLocalBlockStore(localStoreName, "memory")
+	_, err = cli.CreateBlockStore(blockStoreName, "memory")
 	require.NoError(t, err, "Should create block store")
 
 	// Create share with read-write default permission
-	_, err = cli.CreateShare(shareName, metaStoreName, localStoreName,
+	_, err = cli.CreateShare(shareName, metaStoreName, blockStoreName,
 		helpers.WithShareDefaultPermission("read-write"))
 	require.NoError(t, err, "Should create share")
 
@@ -532,25 +532,25 @@ func setupErrorConformanceFixture(t *testing.T) *errorConformanceFixture {
 
 	// Primary read-write share.
 	rwMeta := helpers.UniqueTestName("confmeta")
-	rwLocal := helpers.UniqueTestName("confpayload")
+	rwBlock := helpers.UniqueTestName("confpayload")
 	rwShare := "/export"
 	_, err := cli.CreateMetadataStore(rwMeta, "memory")
 	require.NoError(t, err)
-	_, err = cli.CreateLocalBlockStore(rwLocal, "memory")
+	_, err = cli.CreateBlockStore(rwBlock, "memory")
 	require.NoError(t, err)
-	_, err = cli.CreateShare(rwShare, rwMeta, rwLocal,
+	_, err = cli.CreateShare(rwShare, rwMeta, rwBlock,
 		helpers.WithShareDefaultPermission("read-write"))
 	require.NoError(t, err)
 
 	// Read-only share for ErrReadOnly.
 	roMeta := helpers.UniqueTestName("confmetaro")
-	roLocal := helpers.UniqueTestName("confpayloadro")
+	roBlock := helpers.UniqueTestName("confpayloadro")
 	roShare := "/archive"
 	_, err = cli.CreateMetadataStore(roMeta, "memory")
 	require.NoError(t, err)
-	_, err = cli.CreateLocalBlockStore(roLocal, "memory")
+	_, err = cli.CreateBlockStore(roBlock, "memory")
 	require.NoError(t, err)
-	_, err = cli.CreateShare(roShare, roMeta, roLocal,
+	_, err = cli.CreateShare(roShare, roMeta, roBlock,
 		helpers.WithShareReadOnly(true),
 		helpers.WithShareDefaultPermission("read-write"))
 	require.NoError(t, err)

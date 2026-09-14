@@ -79,12 +79,11 @@ func TestBlockStoreImmutableOverwrites(t *testing.T) {
 
 	setup := helpers.SetupStoreMatrix(t, cli, shareName, helpers.MatrixSetupConfig{
 		MetadataType: "memory",
-		LocalType:    "fs",
-		RemoteType:   "s3",
+		BlockType:    "s3",
 	}, nil, lsHelper)
 	require.NotNil(t, setup, "store-matrix setup")
 
-	// Recover the bucket name from the just-created remote store. The
+	// Recover the bucket name from the just-created block store. The
 	// SetupStoreMatrix helper generates it internally; recover it via
 	// the Localstack helper's Buckets list — last-created bucket.
 	require.NotEmpty(t, lsHelper.Buckets, "Localstack helper should track at least one bucket")
@@ -264,7 +263,7 @@ func TestBlockStoreImmutableOverwrites(t *testing.T) {
 }
 
 // drainUploads blocks until the periodic syncer has uploaded every
-// pending block to the remote store. Wraps the existing
+// pending block to the block store. Wraps the existing
 // `dfsctl system drain-uploads` subcommand which calls
 // Runtime.DrainAllUploads on the server.
 func drainUploads(t *testing.T, runner *helpers.CLIRunner) {

@@ -48,16 +48,16 @@ func TestGracePeriodRecovery(t *testing.T) {
 
 	// Setup stores and share
 	metaStoreName := helpers.UniqueTestName("gracemeta")
-	localStoreName := helpers.UniqueTestName("gracepayload")
+	blockStoreName := helpers.UniqueTestName("gracepayload")
 	shareName := "/export"
 
 	_, err := cli.CreateMetadataStore(metaStoreName, "memory")
 	require.NoError(t, err, "Should create metadata store")
 
-	_, err = cli.CreateLocalBlockStore(localStoreName, "memory")
+	_, err = cli.CreateBlockStore(blockStoreName, "memory")
 	require.NoError(t, err, "Should create block store")
 
-	_, err = cli.CreateShare(shareName, metaStoreName, localStoreName,
+	_, err = cli.CreateShare(shareName, metaStoreName, blockStoreName,
 		helpers.WithShareDefaultPermission("read-write"))
 	require.NoError(t, err, "Should create share")
 
@@ -114,10 +114,10 @@ func TestGracePeriodRecovery(t *testing.T) {
 	_, err = cli2.CreateMetadataStore(metaStoreName, "memory")
 	require.NoError(t, err, "Should create metadata store after restart")
 
-	_, err = cli2.CreateLocalBlockStore(localStoreName, "memory")
+	_, err = cli2.CreateBlockStore(blockStoreName, "memory")
 	require.NoError(t, err, "Should create block store after restart")
 
-	_, err = cli2.CreateShare(shareName, metaStoreName, localStoreName,
+	_, err = cli2.CreateShare(shareName, metaStoreName, blockStoreName,
 		helpers.WithShareDefaultPermission("read-write"))
 	require.NoError(t, err, "Should create share after restart")
 
@@ -181,16 +181,16 @@ func TestGracePeriodUnclaimedLocks(t *testing.T) {
 
 	// Setup stores and share
 	metaStoreName := helpers.UniqueTestName("unclaimedmeta")
-	localStoreName := helpers.UniqueTestName("unclaimedpayload")
+	blockStoreName := helpers.UniqueTestName("unclaimedpayload")
 	shareName := "/export"
 
 	_, err := cli.CreateMetadataStore(metaStoreName, "memory")
 	require.NoError(t, err)
 
-	_, err = cli.CreateLocalBlockStore(localStoreName, "memory")
+	_, err = cli.CreateBlockStore(blockStoreName, "memory")
 	require.NoError(t, err)
 
-	_, err = cli.CreateShare(shareName, metaStoreName, localStoreName,
+	_, err = cli.CreateShare(shareName, metaStoreName, blockStoreName,
 		helpers.WithShareDefaultPermission("read-write"))
 	require.NoError(t, err)
 
@@ -272,16 +272,16 @@ func TestCrossProtocolReclaim(t *testing.T) {
 
 	// Setup stores and share
 	metaStoreName := helpers.UniqueTestName("xpreclaimmeta")
-	localStoreName := helpers.UniqueTestName("xpreclaimpayload")
+	blockStoreName := helpers.UniqueTestName("xpreclaimpayload")
 	shareName := "/export"
 
 	_, err := cli.CreateMetadataStore(metaStoreName, "memory")
 	require.NoError(t, err)
 
-	_, err = cli.CreateLocalBlockStore(localStoreName, "memory")
+	_, err = cli.CreateBlockStore(blockStoreName, "memory")
 	require.NoError(t, err)
 
-	_, err = cli.CreateShare(shareName, metaStoreName, localStoreName,
+	_, err = cli.CreateShare(shareName, metaStoreName, blockStoreName,
 		helpers.WithShareDefaultPermission("read-write"))
 	require.NoError(t, err)
 
@@ -368,10 +368,10 @@ func TestCrossProtocolReclaim(t *testing.T) {
 	_, err = cli2.CreateMetadataStore(metaStoreName, "memory")
 	require.NoError(t, err)
 
-	_, err = cli2.CreateLocalBlockStore(localStoreName, "memory")
+	_, err = cli2.CreateBlockStore(blockStoreName, "memory")
 	require.NoError(t, err)
 
-	_, err = cli2.CreateShare(shareName, metaStoreName, localStoreName,
+	_, err = cli2.CreateShare(shareName, metaStoreName, blockStoreName,
 		helpers.WithShareDefaultPermission("read-write"))
 	require.NoError(t, err)
 
@@ -452,16 +452,16 @@ func TestGracePeriodNewLockBlocked(t *testing.T) {
 
 	// Setup stores and share
 	metaStoreName := helpers.UniqueTestName("graceblkmeta")
-	localStoreName := helpers.UniqueTestName("graceblkpayload")
+	blockStoreName := helpers.UniqueTestName("graceblkpayload")
 	shareName := "/export"
 
 	_, err := cli.CreateMetadataStore(metaStoreName, "memory")
 	require.NoError(t, err)
 
-	_, err = cli.CreateLocalBlockStore(localStoreName, "memory")
+	_, err = cli.CreateBlockStore(blockStoreName, "memory")
 	require.NoError(t, err)
 
-	_, err = cli.CreateShare(shareName, metaStoreName, localStoreName,
+	_, err = cli.CreateShare(shareName, metaStoreName, blockStoreName,
 		helpers.WithShareDefaultPermission("read-write"))
 	require.NoError(t, err)
 
@@ -522,16 +522,16 @@ func TestGracePeriodTiming(t *testing.T) {
 
 	// Setup stores and share
 	metaStoreName := helpers.UniqueTestName("gracetimemeta")
-	localStoreName := helpers.UniqueTestName("gracetimepayload")
+	blockStoreName := helpers.UniqueTestName("gracetimepayload")
 	shareName := "/export"
 
 	_, err := cli.CreateMetadataStore(metaStoreName, "memory")
 	require.NoError(t, err)
 
-	_, err = cli.CreateLocalBlockStore(localStoreName, "memory")
+	_, err = cli.CreateBlockStore(blockStoreName, "memory")
 	require.NoError(t, err)
 
-	_, err = cli.CreateShare(shareName, metaStoreName, localStoreName,
+	_, err = cli.CreateShare(shareName, metaStoreName, blockStoreName,
 		helpers.WithShareDefaultPermission("read-write"))
 	require.NoError(t, err)
 
@@ -602,16 +602,16 @@ func TestGracePeriodEarlyExit(t *testing.T) {
 
 	// Setup stores and share
 	metaStoreName := helpers.UniqueTestName("graceearlymeta")
-	localStoreName := helpers.UniqueTestName("graceearlypayload")
+	blockStoreName := helpers.UniqueTestName("graceearlypayload")
 	shareName := "/export"
 
 	_, err := cli.CreateMetadataStore(metaStoreName, "memory")
 	require.NoError(t, err)
 
-	_, err = cli.CreateLocalBlockStore(localStoreName, "memory")
+	_, err = cli.CreateBlockStore(blockStoreName, "memory")
 	require.NoError(t, err)
 
-	_, err = cli.CreateShare(shareName, metaStoreName, localStoreName,
+	_, err = cli.CreateShare(shareName, metaStoreName, blockStoreName,
 		helpers.WithShareDefaultPermission("read-write"))
 	require.NoError(t, err)
 
@@ -681,16 +681,16 @@ func TestGracePeriodWithSMBLeases(t *testing.T) {
 
 	// Setup stores and share
 	metaStoreName := helpers.UniqueTestName("graceleasemeta")
-	localStoreName := helpers.UniqueTestName("graceleasepayload")
+	blockStoreName := helpers.UniqueTestName("graceleasepayload")
 	shareName := "/export"
 
 	_, err := cli.CreateMetadataStore(metaStoreName, "memory")
 	require.NoError(t, err)
 
-	_, err = cli.CreateLocalBlockStore(localStoreName, "memory")
+	_, err = cli.CreateBlockStore(blockStoreName, "memory")
 	require.NoError(t, err)
 
-	_, err = cli.CreateShare(shareName, metaStoreName, localStoreName,
+	_, err = cli.CreateShare(shareName, metaStoreName, blockStoreName,
 		helpers.WithShareDefaultPermission("read-write"))
 	require.NoError(t, err)
 

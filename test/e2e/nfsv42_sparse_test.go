@@ -4,7 +4,6 @@ package e2e
 
 import (
 	"bytes"
-	"fmt"
 	"os"
 	"os/exec"
 	"syscall"
@@ -74,18 +73,17 @@ func setupNFSv42FSServer(t *testing.T) (*helpers.CLIRunner, int) {
 	runner := helpers.LoginAsAdmin(t, sp.APIURL())
 
 	metaStore := helpers.UniqueTestName("sparse-meta")
-	localStore := helpers.UniqueTestName("sparse-local")
+	blockStore := helpers.UniqueTestName("sparse-block")
 
 	_, err := runner.CreateMetadataStore(metaStore, "memory")
 	require.NoError(t, err, "create metadata store")
 	t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaStore) })
 
-	_, err = runner.CreateLocalBlockStore(localStore, "fs",
-		helpers.WithBlockRawConfig(fmt.Sprintf(`{"path":%q}`, t.TempDir())))
-	require.NoError(t, err, "create fs block store")
-	t.Cleanup(func() { _ = runner.DeleteLocalBlockStore(localStore) })
+	_, err = runner.CreateBlockStore(blockStore, "memory")
+	require.NoError(t, err, "create block store")
+	t.Cleanup(func() { _ = runner.DeleteBlockStore(blockStore) })
 
-	_, err = runner.CreateShare("/export", metaStore, localStore)
+	_, err = runner.CreateShare("/export", metaStore, blockStore)
 	require.NoError(t, err, "create share")
 	t.Cleanup(func() { _ = runner.DeleteShare("/export") })
 

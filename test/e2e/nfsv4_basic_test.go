@@ -31,17 +31,17 @@ func setupNFSv4TestServer(t *testing.T) (*helpers.ServerProcess, *helpers.CLIRun
 	runner := helpers.LoginAsAdmin(t, sp.APIURL())
 
 	metaStore := helpers.UniqueTestName("meta")
-	localStore := helpers.UniqueTestName("local")
+	blockStore := helpers.UniqueTestName("block")
 
 	_, err := runner.CreateMetadataStore(metaStore, "memory")
 	require.NoError(t, err, "Should create metadata store")
 	t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaStore) })
 
-	_, err = runner.CreateLocalBlockStore(localStore, "memory")
+	_, err = runner.CreateBlockStore(blockStore, "memory")
 	require.NoError(t, err, "Should create block store")
-	t.Cleanup(func() { _ = runner.DeleteLocalBlockStore(localStore) })
+	t.Cleanup(func() { _ = runner.DeleteBlockStore(blockStore) })
 
-	_, err = runner.CreateShare("/export", metaStore, localStore)
+	_, err = runner.CreateShare("/export", metaStore, blockStore)
 	require.NoError(t, err, "Should create share")
 	t.Cleanup(func() { _ = runner.DeleteShare("/export") })
 
@@ -476,18 +476,18 @@ func TestNFSv4PseudoFSBrowsing(t *testing.T) {
 	runner := helpers.LoginAsAdmin(t, sp.APIURL())
 
 	metaStore := helpers.UniqueTestName("meta")
-	localStore := helpers.UniqueTestName("local")
+	blockStore := helpers.UniqueTestName("block")
 
 	_, err := runner.CreateMetadataStore(metaStore, "memory")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaStore) })
 
-	_, err = runner.CreateLocalBlockStore(localStore, "memory")
+	_, err = runner.CreateBlockStore(blockStore, "memory")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = runner.DeleteLocalBlockStore(localStore) })
+	t.Cleanup(func() { _ = runner.DeleteBlockStore(blockStore) })
 
 	// Create first share: /export
-	_, err = runner.CreateShare("/export", metaStore, localStore)
+	_, err = runner.CreateShare("/export", metaStore, blockStore)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteShare("/export") })
 
@@ -520,17 +520,17 @@ func TestNFSv4PseudoFSBrowsing(t *testing.T) {
 
 	// Create a second share /archive and verify it appears
 	metaStore2 := helpers.UniqueTestName("meta2")
-	localStore2 := helpers.UniqueTestName("local2")
+	blockStore2 := helpers.UniqueTestName("block2")
 
 	_, err = runner.CreateMetadataStore(metaStore2, "memory")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaStore2) })
 
-	_, err = runner.CreateLocalBlockStore(localStore2, "memory")
+	_, err = runner.CreateBlockStore(blockStore2, "memory")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = runner.DeleteLocalBlockStore(localStore2) })
+	t.Cleanup(func() { _ = runner.DeleteBlockStore(blockStore2) })
 
-	_, err = runner.CreateShare("/archive", metaStore2, localStore2)
+	_, err = runner.CreateShare("/archive", metaStore2, blockStore2)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteShare("/archive") })
 
@@ -630,17 +630,17 @@ func TestNFSv4GoldenPathSmoke(t *testing.T) {
 
 	// Step 3: Create memory/memory stores and share
 	metaStore := helpers.UniqueTestName("smoke-meta")
-	localStore := helpers.UniqueTestName("smoke-payload")
+	blockStore := helpers.UniqueTestName("smoke-payload")
 
 	_, err = runner.CreateMetadataStore(metaStore, "memory")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaStore) })
 
-	_, err = runner.CreateLocalBlockStore(localStore, "memory")
+	_, err = runner.CreateBlockStore(blockStore, "memory")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = runner.DeleteLocalBlockStore(localStore) })
+	t.Cleanup(func() { _ = runner.DeleteBlockStore(blockStore) })
 
-	_, err = runner.CreateShare("/export", metaStore, localStore)
+	_, err = runner.CreateShare("/export", metaStore, blockStore)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteShare("/export") })
 
@@ -691,15 +691,15 @@ func TestNFSv4StaleHandle(t *testing.T) {
 	runner1 := helpers.LoginAsAdmin(t, sp1.APIURL())
 
 	metaStore := helpers.UniqueTestName("stale-meta")
-	localStore := helpers.UniqueTestName("stale-payload")
+	blockStore := helpers.UniqueTestName("stale-payload")
 
 	_, err := runner1.CreateMetadataStore(metaStore, "memory")
 	require.NoError(t, err)
 
-	_, err = runner1.CreateLocalBlockStore(localStore, "memory")
+	_, err = runner1.CreateBlockStore(blockStore, "memory")
 	require.NoError(t, err)
 
-	_, err = runner1.CreateShare("/export", metaStore, localStore)
+	_, err = runner1.CreateShare("/export", metaStore, blockStore)
 	require.NoError(t, err)
 
 	nfsPort := helpers.FindFreePort(t)
@@ -730,17 +730,17 @@ func TestNFSv4StaleHandle(t *testing.T) {
 	runner2 := helpers.LoginAsAdmin(t, sp2.APIURL())
 
 	metaStore2 := helpers.UniqueTestName("stale-meta2")
-	localStore2 := helpers.UniqueTestName("stale-payload2")
+	blockStore2 := helpers.UniqueTestName("stale-payload2")
 
 	_, err = runner2.CreateMetadataStore(metaStore2, "memory")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner2.DeleteMetadataStore(metaStore2) })
 
-	_, err = runner2.CreateLocalBlockStore(localStore2, "memory")
+	_, err = runner2.CreateBlockStore(blockStore2, "memory")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = runner2.DeleteLocalBlockStore(localStore2) })
+	t.Cleanup(func() { _ = runner2.DeleteBlockStore(blockStore2) })
 
-	_, err = runner2.CreateShare("/export", metaStore2, localStore2)
+	_, err = runner2.CreateShare("/export", metaStore2, blockStore2)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner2.DeleteShare("/export") })
 
@@ -777,17 +777,17 @@ func TestBackwardCompatNFSv3Full(t *testing.T) {
 	runner := helpers.LoginAsAdmin(t, sp.APIURL())
 
 	metaStore := helpers.UniqueTestName("compat-meta")
-	localStore := helpers.UniqueTestName("compat-payload")
+	blockStore := helpers.UniqueTestName("compat-payload")
 
 	_, err := runner.CreateMetadataStore(metaStore, "memory")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaStore) })
 
-	_, err = runner.CreateLocalBlockStore(localStore, "memory")
+	_, err = runner.CreateBlockStore(blockStore, "memory")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = runner.DeleteLocalBlockStore(localStore) })
+	t.Cleanup(func() { _ = runner.DeleteBlockStore(blockStore) })
 
-	_, err = runner.CreateShare("/export", metaStore, localStore)
+	_, err = runner.CreateShare("/export", metaStore, blockStore)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteShare("/export") })
 

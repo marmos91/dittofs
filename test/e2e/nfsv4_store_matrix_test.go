@@ -23,12 +23,12 @@ import (
 // Test 1: Version-Parameterized Store Matrix (v3 + v4 x all 18 backends)
 // =============================================================================
 
-// TestStoreMatrixV4 validates that all 18 combinations of the 3D store matrix
-// (3 metadata x 2 local x 3 remote) work correctly with file operations
-// across NFSv3, NFSv4.0, and NFSv4.1 mounts.
+// TestStoreMatrixV4 validates that all 6 combinations of the store matrix
+// (3 metadata x 2 block) work correctly with file operations across NFSv3,
+// NFSv4.0, and NFSv4.1 mounts.
 //
 // In short mode, only representative combos run.
-// With DITTOFS_E2E_LOCAL_ONLY=1, only remoteType="none" combos run.
+// With DITTOFS_E2E_LOCAL_ONLY=1, only combos without an S3 block store run.
 func TestStoreMatrixV4(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping version-parameterized store matrix tests in short mode")
@@ -77,7 +77,7 @@ func TestStoreMatrixV4(t *testing.T) {
 }
 
 // runStoreMatrixVersionTest executes file operation tests for a specific
-// version x 3D store combination.
+// version x store combination.
 func runStoreMatrixVersionTest(t *testing.T, version string, sc matrixStoreConfig, pgHelper *framework.PostgresHelper, lsHelper *framework.LocalstackHelper) {
 	t.Helper()
 
@@ -93,8 +93,7 @@ func runStoreMatrixVersionTest(t *testing.T, version string, sc matrixStoreConfi
 	// Create stores and share using the shared helper
 	helpers.SetupStoreMatrix(t, runner, shareName, helpers.MatrixSetupConfig{
 		MetadataType: sc.metadataType,
-		LocalType:    sc.localType,
-		RemoteType:   sc.remoteType,
+		BlockType:    sc.blockType,
 	}, pgHelper, lsHelper)
 
 	// Enable NFS adapter
@@ -265,32 +264,32 @@ func TestMultiShareConcurrent(t *testing.T) {
 
 	// Create stores for share alpha
 	metaAlpha := helpers.UniqueTestName("meta-alpha")
-	localAlpha := helpers.UniqueTestName("local-alpha")
+	blockAlpha := helpers.UniqueTestName("block-alpha")
 	_, err := runner.CreateMetadataStore(metaAlpha, "memory")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaAlpha) })
 
-	_, err = runner.CreateLocalBlockStore(localAlpha, "memory")
+	_, err = runner.CreateBlockStore(blockAlpha, "memory")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = runner.DeleteLocalBlockStore(localAlpha) })
+	t.Cleanup(func() { _ = runner.DeleteBlockStore(blockAlpha) })
 
 	// Create stores for share beta
 	metaBeta := helpers.UniqueTestName("meta-beta")
-	localBeta := helpers.UniqueTestName("local-beta")
+	blockBeta := helpers.UniqueTestName("block-beta")
 	_, err = runner.CreateMetadataStore(metaBeta, "memory")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaBeta) })
 
-	_, err = runner.CreateLocalBlockStore(localBeta, "memory")
+	_, err = runner.CreateBlockStore(blockBeta, "memory")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = runner.DeleteLocalBlockStore(localBeta) })
+	t.Cleanup(func() { _ = runner.DeleteBlockStore(blockBeta) })
 
 	// Create two shares
-	_, err = runner.CreateShare("/share-alpha", metaAlpha, localAlpha)
+	_, err = runner.CreateShare("/share-alpha", metaAlpha, blockAlpha)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteShare("/share-alpha") })
 
-	_, err = runner.CreateShare("/share-beta", metaBeta, localBeta)
+	_, err = runner.CreateShare("/share-beta", metaBeta, blockBeta)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteShare("/share-beta") })
 

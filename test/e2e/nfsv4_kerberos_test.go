@@ -479,13 +479,13 @@ func setupKerberosV4Share(t *testing.T, runner *helpers.CLIRunner, shareName str
 	t.Helper()
 
 	metaStore := fmt.Sprintf("meta-%s", strings.TrimPrefix(shareName, "/"))
-	localStore := fmt.Sprintf("local-%s", strings.TrimPrefix(shareName, "/"))
+	blockStore := fmt.Sprintf("local-%s", strings.TrimPrefix(shareName, "/"))
 
 	_, err := runner.CreateMetadataStore(metaStore, "memory")
 	require.NoError(t, err)
-	_, err = runner.CreateLocalBlockStore(localStore, "memory")
+	_, err = runner.CreateBlockStore(blockStore, "memory")
 	require.NoError(t, err)
-	_, err = runner.CreateShare(shareName, metaStore, localStore)
+	_, err = runner.CreateShare(shareName, metaStore, blockStore)
 	require.NoError(t, err)
 }
 
