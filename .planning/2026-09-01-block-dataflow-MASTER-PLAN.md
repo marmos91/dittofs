@@ -498,6 +498,26 @@ open-questions space, linking to it. **Discussions is currently disabled** on th
   record, and step 3 ends with an explicit sweep: walk all 45, mark each addressed / consciously
   declined / still open. A LOW that is declined is a decision, not an oversight — but it has to
   be written down as one.
+- **D11. The local tier is not configurable — there is one implementation, always.** `fs` and
+  `memory` stop being selectable local block store types. The journal is mandatory, so offering a
+  choice only adds setup surface and a second code path to keep honest. This is what makes the
+  `pkg/block/local` interface and `pkg/block/local/memory` deletable at all.
+- **D12. One server-level journal root, per-share subdirectories.** `blockstore.local.path`
+  (default `<state dir>/blocks`). Each share gets its own subdirectory so two shares never write
+  into the same directory and their I/O stays independent. Replaces the per-share `path` config
+  value. A leading `~` is expanded; the result must be absolute, so the location can never
+  resolve against whatever directory the server was started from.
+- **D13. `pkg/block/local/memory` is deleted outright, not retained as a test double.** It is 335
+  lines re-implementing local-tier semantics (intervals, read states, eviction) in parallel with
+  the journal, and a parallel implementation drifts. The ~28 test files that use it move to a real
+  journal on `t.TempDir()`. Cost accepted: those tests get slower.
+  **Known consequence, do not rediscover it:** deleting the memory store does NOT let the
+  `LocalStore` interface disappear. Two engine tests build partial fakes by embedding it —
+  `alwaysColdLocal` (overrides `ReadAt` to report every read cold, pinning the post-hydrate
+  silent-hole path) and `carveFanoutLocal` (overrides `ListFiles`+`Flush`, blocking inside `Flush`
+  on a channel to count concurrent carve passes). Neither is expressible against a concrete
+  `*journal.Store`. The interface narrows to what those two need; it does not vanish.
+
 - **D4. H1 is NOT an incident — no production exposure.** Customers are evaluating DittoFS;
   nothing runs in production. So the five HIGH findings are serious bugs to fix on the normal
   path, not a data-loss event to respond to, and step 0 does not need an emergency release.
@@ -1119,3 +1139,182 @@ never fired; it is a guard that has never existed.
 4. **Where does the assembly (§11) live in the tree, and what is it called?** It is small enough
    that "a package" and "a module" are both defensible; the split decision only matters at
    `git subtree split` time.
+
+5. **What happens to an install whose shares have divergent local paths?** (step 5, §15.5) A
+   single `blockstore.local.path` cannot represent two shares deliberately placed on two different
+   disks. Proposal: detect at startup, name the disagreeing shares, refuse to start — the #2557
+   shape. Silently relocating a local-only share's journal destroys its only copy. **Undecided.**
+6. **Where does the per-share `durability` tier live once local config rows die?** (step 5, §15.3)
+   It is genuinely per-share policy, unlike the eight other orphaned knobs. Most likely a column on
+   the shares table beside `LocalStoreSize`. **Undecided.**
+7. **Do tests keep a swappable in-process block tier?** (step 5, §15.4) D13 deletes the memory
+   store; ~28 files then need journal-on-`t.TempDir()`. Decide before starting — it is the
+   difference between a mechanical change and a rewrite.
+
+
+## 15. Step 5 — retire the configurable local block store
+
+Added 2026-09-14. **This decision was taken verbally and was not written down anywhere** — not in
+this plan, not in the RFC, not in the four audit reports. Recording it now so it constrains other
+lanes. Governed by D11-D13 (§8).
+
+Goal: the local tier is always a journal, rooted at one server-level directory, with a per-share
+subdirectory. Local block stores stop being a configurable entity. Remote block stores stay
+configurable and are untouched — anything shared between the two kinds must be identified as
+shared, not removed.
+
+### 15.1 Two halves, deliberately sequenced
+
+**B — remove local stores from configuration.** Touches `pkg/config`, `pkg/controlplane/**`,
+`internal/controlplane/**`, `cmd/dfsctl/**`, `models/`, docs. Zero overlap with the in-flight
+engine PRs, so it goes first. It is also the enabler: `memory` has to stop being a selectable
+local store type before the memory store can be deleted.
+
+**A — delete `pkg/block/local/`.** Touches `engine.go`, `flush_closure.go`, `syncer.go` — exactly
+the files the #2550 upload-window collapse rewrites. **Gated behind both #2559 and the collapse**,
+or the same files get merge-resolved twice.
+
+Running A first would have been the intuitive order and is the wrong one.
+
+### 15.2 Work inventory
+
+Surveyed 2026-09-14. `.claude/worktrees/**` excluded from every count below — those are stale
+duplicates of `pkg/` and triple any naive grep.
+
+| Area | Size | State |
+|---|---|---|
+| `blockstore.local.path` knob + defaults + validation | 2 files | **done** — `4afc9ddba` |
+| `Share.LocalBlockStoreID` (`models/share.go:24`, `not null`, **no DB-level FK** — integrity is app-code only) + association `:99` (value type, unlike remote's pointer at `:100`) | 2 fields | open |
+| Schema migration — GORM `AutoMigrate` plus hand-written pre/post blocks, all in `store/gorm.go` (`:301-341` pre, `:348-461` post). No versioned migration dir for the control plane. Precedent to copy: `:409-429`, the `payload_store_id` drop-with-backfill | 1 function | open |
+| Store layer: 8 `Preload`/`Where`/field-map sites (`store/block.go`, `shares.go`, `metadata.go`, `netgroups.go`). `block.go:71,:94` is the `ErrStoreInUse` 409 guard | 8 sites | open |
+| REST: **one** `/block/{kind}` route subtree, 7 routes, all shared (`api/router.go:352-360`). Local arms live in `extractKind:65-66` and `validateBlockStoreType:79-80`; 7 identical `"must be 'local' or 'remote'"` error strings | 455-line shared handler | open |
+| `ValidateBlockStoreConfig` local branch (`blockstore_init.go:36-68`) — **has no unit test today**; only the S3 branches are covered | 1 branch | open |
+| `blockstoreprobe.probeLocal` (`probe.go:92-140`) | ~50 lines | open |
+| `shares.go`: `--local` is **required** on create (`:307-310`), plus rebind bookkeeping at `:712,:754,:933,:941` and `runtime.RebindShareBlockStore` losing a param | ~10 sites | open |
+| CLI: `dfsctl store block local` — 5 files, 4 subcommands, **zero tests**, cleanly deletable | 421 lines | open |
+| CLI: `share create --local` is `MarkFlagRequired` with 11 example lines; `share edit`, `list`, `show` columns | 4 files | open |
+| `CreateLocalStoreFromConfig` switch → "always journal". **Exactly 1 production caller** (`blockstore_config.go:343`), itself called once (`lifecycle.go:82`) | 1 switch | open |
+| **9 per-share knobs lose their home** — see §15.3 | 9 decisions | **open, each needs a call** |
+| `deriveLocalStoreDir` — and note `CreateLocalStoreFromConfig:1062-1080` **independently recomputes the same path from the same key**. Two derivations, one truth; collapse them | 2 callers | open |
+| Delete `pkg/block/local/memory` + rework its consumers — see §15.4 | ~28 files | open (D13) |
+| Delete `pkg/block/local/`; narrow the survivor into `engine` | 3 files | open (A, gated) |
+| Docs: 10 guide/internals files. `cli.md` is **generated** (`go run ./cmd/gendocs`) — never hand-edit | ~90 refs | open |
+
+**Enforcement already exists for the docs half:** `cmd/gendocs/helpref_test.go:378-390`
+(`TestDocsCommandReferences`) fails CI if a hand-written guide references a command that no longer
+exists. Deleting `dfsctl store block local` without updating the guides is caught automatically.
+This is the one place in this refactor where doc rot already fails a build — worth copying the
+shape elsewhere (§15.7).
+
+### 15.3 The nine orphaned per-share knobs — each needs a disposition
+
+`CreateLocalStoreFromConfig` reads the per-share config map for `max_size`, `max_log_bytes`,
+`dirty_expire_seconds`, `chunk_size`, `chunk_max`, `durable`. **Three more are read at a second
+site** — `blockstore_config.go:460-469` resolves `durability` / `writeback` /
+`require_durable_commit` and never passes through `CreateLocalStoreFromConfig` at all. A survey
+that follows only the constructor misses a third of them.
+
+| Knob | Server-level equivalent today? | Proposed |
+|---|---|---|
+| `max_size` | `Share.LocalStoreSize` (shares column) already does this at higher precedence | drop — a surviving equivalent exists |
+| `max_log_bytes` | `blockstore.local.max_log_bytes` | drop the per-share override |
+| `durable` | type-default via `block.DurabilityReporter` | drop — the journal is always durable |
+| `dirty_expire_seconds` | **none** | needs one, or drop |
+| `chunk_size` | **none** | needs one, or drop |
+| `chunk_max` | **none** | needs one, or drop |
+| `durability` (enum, authoritative over the two bools below) | **none** | **keep per-share** — it is a policy choice per share, not a deployment detail |
+| `writeback` | **none** | follows `durability` |
+| `require_durable_commit` | **none** | follows `durability` |
+
+`durability` is the one I would not drop: "how safe must this share's writes be" is genuinely
+per-share, unlike "where does the journal live". If it stays per-share it needs a home on the
+**shares** table next to `LocalStoreSize`, not on a block-store config row.
+
+**Also worth fixing while here:** `ValidateBlockStoreConfig` validates only `path` for local. The
+other nine keys are never validated at write time — warned-and-ignored at attach. So a typo in
+`chunk_size` survives a `PUT` silently today.
+
+### 15.4 The test-rework reality — bigger than D13 assumed
+
+D13 priced this at "~28 test files". The real shape, and the distinction that was missed:
+
+**Two different things are called "memory" and they decouple.**
+- `models.BlockStoreConfig{Kind: local, Type: "memory"}` — a *config row*. **71 occurrences across
+  25 files.** Most of these only ever construct the row; they never build a block tier. When local
+  config rows die, these tests lose a row, not an implementation.
+- `pkg/block/local/memory.MemoryStore` — the Go type. ~28 files in `pkg/block/engine` and
+  `pkg/controlplane/runtime`.
+
+**The e2e half funnels through one chokepoint.** `test/e2e/helpers/stores.go` — 5 functions
+(`CreateLocalBlockStore:272` and friends) shelling out to `dfsctl store block local`. **38 e2e
+files call them.** Rework is concentrated in one file, which is the good news; `matrix.go:62-145`
+fixtures ride on the same helpers.
+
+**The real question D13 has to answer:** those `Type: "memory"` tests are asking for *a cheap
+in-process block tier*. Deleting the memory store means either journal-on-`t.TempDir()` (real
+filesystem, slower, ~28 files) or the tier stops being swappable in tests at all. Decide this
+before starting, not during — it is the difference between a mechanical change and a rewrite.
+
+### 15.5 The upgrade hazard — unresolved, do not hand-wave
+
+Every existing share row carries a non-null FK to a local block store config row, and those rows
+carry per-share `path` values that **may diverge** (two shares deliberately on two different
+disks). A single `blockstore.local.path` cannot represent that.
+
+Silently relocating a share's journal would destroy the only local copy of a local-only share's
+data. This is the exact failure class as the pre-journal-share defect (#2555 / fixed in #2557):
+config the new code does not understand, mounted as though it were fine.
+
+Proposed, **not yet decided** (see §14): detect divergent per-share paths at startup, log which
+shares disagree and what to do about it, and refuse to start. Refusing is recoverable; a wrong
+mount is not.
+
+### 15.6 Residue found while auditing `pkg/block/local` — capture before it is lost
+
+Found 2026-09-14 while answering "what's inside `local`". Independent of step 5, none tracked
+anywhere else:
+
+- **`pkg/block/local/hooks.go` is entirely dead.** `MetricsAware` has zero implementers in the
+  live tree. The probe at `engine.go:385` (`bs.local.(local.MetricsAware)`) can never succeed, and
+  its own doc comment names the implementer that is gone: *"the `*fs.FSStore` eviction/backpressure
+  path"*. `local/fs` was deleted in step 4; the interface, the probe, and the comment naming the
+  deleted type all stayed.
+- **Two Prometheus metrics are permanently zero in the field** as a direct consequence:
+  `metrics.RecordBackpressure` and `RecordEviction` have no production caller — only
+  `instruments_test.go`. Decide whether `journal.Evict` picks them up or they are deleted.
+  Wiring them is the better answer: the eviction path is exactly where backpressure needs to be
+  visible.
+- **`pkg/block/local` has two package comments** — `doc.go:1` and `local.go:1` both open
+  `// Package local`. Go takes one arbitrarily. `doc.go`'s is the stale one: it describes a
+  *"two-tier (memory + disk) store"* that *"handles buffering NFS writes"*, which is the
+  pre-journal engine-era tier, not what the package holds. Moot once the folder goes, but it is
+  the eighth instance of the pattern below.
+
+### 15.7 The pattern these keep instancing
+
+Eight instances across five lanes now, all one shape: **something that compiles, ships, passes CI,
+and asserts something untrue.** Dead config (`ChunkParams`), a dead primitive (`Extents()`), dead
+interfaces (`legacyArchiveMigrator`, `slotHolder`, `MetricsAware`), a vacuous test, a
+one-directional model test, and doc comments describing deleted behaviour.
+
+Each was correct when merged and rotted when the next lane landed. None would fail a build; two
+were live data-loss-class defects (#2554, #2555).
+
+`TestNoForeignImports` (in #2559) is the first thing in this refactor that makes a claim *fail*
+rather than rot. That is the argument for spending lane L's remaining budget on `journaltest/`
+conformance rather than on the §6.2 file reorg.
+
+### 15.8 Still open from earlier lanes — not step 5's job, but unwritten until now
+
+- `chunker` → `carver` fold (§6.2, skipped by lane C; 13 files → 5 once lane L lands)
+- `Extents()` has zero production callers and a doc comment claiming otherwise
+- `legacyArchiveMigrator`: ~90 unreachable lines
+- `carvePass` → `flushPass` rename, skipped
+- `TestCarvePackFlipPlanWatermarks`: the weakened half never restored
+- §6.2 journal file reorg not done — `store.go` is still 1564 lines, `reclaim.go` 1031
+- **`docs/internals/rfc-block-dataflow.md` status line is stale** — still says lanes F and L are
+  open; F merged, L is in flight. Lane D owns the fix.
+- #2423 remains open and its measurements are valid again: the #2556 fix restored the bound but
+  also restored the two-window product (128 at floor, 512 at ceiling, against a declared max of
+  256). The collapse is approved and staged, gated on #2559.
+
