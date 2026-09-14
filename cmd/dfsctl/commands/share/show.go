@@ -76,6 +76,7 @@ func (sd ShareDetail) Rows() [][]string {
 		{"Metadata Store", resolveStoreName(sd.metaStoreNames, s.MetadataStoreID)},
 		{"Block Store", resolveStoreName(sd.blockStoreNames, s.BlockStoreID)},
 		{"Commit Ack", commitAckString(s.CommitAck)},
+		{"Relaxed Metadata Commit", relaxedMetadataCommitString(s.RelaxedMetadataCommit)},
 		{"Read Only", fmt.Sprintf("%v", s.ReadOnly)},
 		{"Enabled", shareEnabledString(s.Enabled)},
 		{"Default Permission", s.DefaultPermission},
@@ -239,6 +240,16 @@ func offlineRows(o *health.OfflineStatus) [][]string {
 	}
 	return [][]string{{"Offline Safe", fmt.Sprintf("no (%s remote-only across %d ranges)",
 		bytesize.ByteSize(o.RemoteOnlyBytes), o.RemoteOnlyRanges)}}
+}
+
+// relaxedMetadataCommitString renders the second durability axis, saying what
+// the setting costs rather than echoing a bare bool: the two axes are
+// independent, so a reader of one row must not have to infer the other.
+func relaxedMetadataCommitString(relaxed bool) string {
+	if relaxed {
+		return "true (metadata fsync deferred; warm-read verification off)"
+	}
+	return "false (metadata fsync paid inline)"
 }
 
 // commitAckString renders what a COMMIT waits for, spelling out what each
