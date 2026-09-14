@@ -21,7 +21,7 @@ func setupShareForSIDPerms(t *testing.T) (*GORMStore, string, string) {
 	if err != nil {
 		t.Fatalf("create metadata store: %v", err)
 	}
-	blkID, err := st.CreateBlockStore(ctx, &models.BlockStoreConfig{Name: "b", Kind: models.BlockStoreKindLocal, Type: "fs"})
+	blkID, err := st.CreateBlockStore(ctx, &models.BlockStoreConfig{Name: "b", Type: "fs"})
 	if err != nil {
 		t.Fatalf("create block store: %v", err)
 	}

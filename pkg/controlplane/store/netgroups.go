@@ -163,8 +163,7 @@ func (s *GORMStore) GetSharesByNetgroup(ctx context.Context, netgroupName string
 	var shares []*models.Share
 	if err := s.db.WithContext(ctx).
 		Preload("MetadataStore").
-		Preload("LocalBlockStore").
-		Preload("RemoteBlockStore").
+		Preload("BlockStore").
 		Where("id IN ?", shareIDs).
 		Find(&shares).Error; err != nil {
 		return nil, err

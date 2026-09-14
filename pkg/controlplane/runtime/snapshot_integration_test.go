@@ -454,6 +454,7 @@ func newOrchestrationFixture(t *testing.T) *orchestrationFixture {
 	t.Cleanup(func() { _ = cp.Close() })
 
 	rt := New(cp)
+	setJournalRoot(t, rt)
 
 	mem := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	backup := &controlledSnapshotable{MemoryMetadataStore: mem}

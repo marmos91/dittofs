@@ -77,6 +77,7 @@ func newConcRuntime(t *testing.T) (*Runtime, *controlledSnapshotable) {
 	t.Cleanup(func() { _ = cp.Close() })
 
 	rt := New(cp)
+	setJournalRoot(t, rt)
 
 	mem := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	backup := &controlledSnapshotable{MemoryMetadataStore: mem}

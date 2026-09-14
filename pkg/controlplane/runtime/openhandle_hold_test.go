@@ -41,6 +41,7 @@ func (f *fakeOpenFileSource) EnumerateOpenFiles(_ context.Context, fn func(fileH
 func newOpenHoldRuntime(t *testing.T, shareName string) (*Runtime, metadata.Store) {
 	t.Helper()
 	rt := New(nil)
+	setJournalRoot(t, rt)
 	store := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	rt.sharesSvc.InjectShareForTesting(&shares.Share{
 		Name:          shareName,

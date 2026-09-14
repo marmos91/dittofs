@@ -32,6 +32,7 @@ func createTestRuntimeWithStore(t *testing.T) (*Runtime, store.Store, store.Netg
 	}
 
 	rt := New(cpStore)
+	setJournalRoot(t, rt)
 	return rt, cpStore, cpStore
 }
 

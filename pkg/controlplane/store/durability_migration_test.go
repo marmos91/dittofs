@@ -10,6 +10,13 @@ import (
 // tier in the local block store config.
 func seedShareWithStoreConfig(t *testing.T, s *GORMStore, share, cfg string) {
 	t.Helper()
+	// The column is dropped on upgrade, so an upgrade test has to put it back
+	// to stand in for the schema the tier was configured under.
+	if !s.DB().Migrator().HasColumn("shares", "local_block_store_id") {
+		if err := s.DB().Exec("ALTER TABLE shares ADD COLUMN local_block_store_id text").Error; err != nil {
+			t.Fatalf("install legacy column: %v", err)
+		}
+	}
 	if err := s.DB().Exec(
 		"INSERT INTO block_store_configs (id, name, type, config) VALUES (?, ?, ?, ?)",
 		"bs-"+share, "bs-"+share, "fs", cfg,
@@ -17,9 +24,9 @@ func seedShareWithStoreConfig(t *testing.T, s *GORMStore, share, cfg string) {
 		t.Fatalf("insert block store: %v", err)
 	}
 	if err := s.DB().Exec(
-		`INSERT INTO shares (id, name, metadata_store_id, local_block_store_id, commit_ack)
-		 VALUES (?, ?, ?, ?, ?)`,
-		"id-"+share, share, "meta", "bs-"+share, "",
+		`INSERT INTO shares (id, name, metadata_store_id, block_store_id, local_block_store_id, commit_ack)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		"id-"+share, share, "meta", "bs-"+share, "bs-"+share, "",
 	).Error; err != nil {
 		t.Fatalf("insert share: %v", err)
 	}

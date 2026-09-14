@@ -159,9 +159,9 @@ func TestSnapshotPolicy_CascadesOnShareDelete(t *testing.T) {
 	ctx := context.Background()
 
 	if _, err := store.CreateShare(ctx, &models.Share{
-		Name:              "alpha",
-		MetadataStoreID:   "m",
-		LocalBlockStoreID: "b",
+		Name:            "alpha",
+		MetadataStoreID: "m",
+		BlockStoreID:    "b",
 	}); err != nil {
 		t.Fatalf("create share: %v", err)
 	}

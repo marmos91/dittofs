@@ -36,8 +36,8 @@ func (s *Service) AddShare(
 		return err
 	}
 
-	if config.LocalBlockStoreID != "" && blockStoreProvider == nil {
-		return fmt.Errorf("block store provider is required when LocalBlockStoreID is set for share %q", config.Name)
+	if config.BlockStoreID != "" && blockStoreProvider == nil {
+		return fmt.Errorf("block store provider is required when BlockStoreID is set for share %q", config.Name)
 	}
 
 	if metadataSvc == nil {
@@ -77,11 +77,10 @@ func (s *Service) AddShare(
 		return err
 	}
 
-	// Phase 2: Create per-share BlockStore if local block store config is provided.
-	if config.LocalBlockStoreID != "" {
-		if err := s.createBlockStoreForShare(ctx, share, config, blockStoreProvider, metadataStore, localStoreDefaults, syncerDefaults); err != nil {
-			return fmt.Errorf("failed to create block store for share %q: %w", config.Name, err)
-		}
+	// Phase 2: Create the per-share BlockStore. Every share has a journal, so
+	// this is unconditional — there is no longer a share without local storage.
+	if err := s.createBlockStoreForShare(ctx, share, config, blockStoreProvider, metadataStore, localStoreDefaults, syncerDefaults); err != nil {
+		return fmt.Errorf("failed to create block store for share %q: %w", config.Name, err)
 	}
 
 	// cleanupShare releases resources for a share that failed to fully initialize.
@@ -101,7 +100,7 @@ func (s *Service) AddShare(
 	// data actually made durable in the journal. This grows metadata.Size up to the
 	// journal size (max-only, never shrinks) BEFORE the share is registered and any
 	// protocol handler can read it, so ACK'd bytes are never truncated.
-	if config.LocalBlockStoreID != "" && share.BlockStore != nil {
+	if share.BlockStore != nil {
 		if err := reconcileMetadataSizeFromJournal(ctx, metadataStore, share.BlockStore); err != nil {
 			cleanupShare()
 			return fmt.Errorf("failed to reconcile metadata sizes for share %q: %w", config.Name, err)
@@ -117,10 +116,10 @@ func (s *Service) AddShare(
 		return fmt.Errorf("failed to configure metadata for share: %w", err)
 	}
 
-	// Apply the per-share metadata writeback tier (#1757) parsed from the local
-	// store config in createBlockStoreForShare. Set explicitly (true or false) so
-	// a re-add that toggles writeback off is honored. Only the concrete
-	// *metadata.Service implements the setter.
+	// Apply the share's relaxed metadata commit tier, stashed by
+	// createBlockStoreForShare. Set explicitly (true or false) so a re-add that
+	// toggles it off is honored. Only the concrete *metadata.Service implements
+	// the setter.
 	if wb, ok := metadataSvc.(MetadataWritebackSetter); ok {
 		wb.SetShareWriteback(config.Name, share.writeback)
 	}

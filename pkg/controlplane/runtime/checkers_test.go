@@ -33,6 +33,7 @@ func newRuntimeForChecks(t *testing.T) (*Runtime, store.Store) {
 		t.Fatalf("store.New: %v", err)
 	}
 	rt := New(cpStore)
+	setJournalRoot(t, rt)
 	return rt, cpStore
 }
 
@@ -204,7 +205,7 @@ func TestStatusCheckers_ShareChecker_CachesWorstOfProbe(t *testing.T) {
 
 func TestStatusCheckers_BlockStore_UnknownWhenStoreMissing(t *testing.T) {
 	rt, _ := newRuntimeForChecks(t)
-	c := rt.BlockStoreChecker(models.BlockStoreKindLocal, "does-not-exist")
+	c := rt.BlockStoreChecker("does-not-exist")
 	rep := c.Healthcheck(context.Background())
 	if rep.Status != health.StatusUnknown {
 		t.Errorf("missing config status = %s, want unknown", rep.Status)
@@ -219,21 +220,21 @@ func TestStatusCheckers_BlockStore_MemoryStoreHealthy(t *testing.T) {
 	rt.statusCheckers = newCheckerCache(5 * time.Second)
 
 	bs := &models.BlockStoreConfig{
-		ID: uuid.New().String(), Name: "mem", Kind: models.BlockStoreKindLocal, Type: "memory",
+		ID: uuid.New().String(), Name: "mem", Type: "memory",
 		CreatedAt: time.Now(),
 	}
 	if _, err := cpStore.CreateBlockStore(context.Background(), bs); err != nil {
 		t.Fatalf("CreateBlockStore: %v", err)
 	}
 
-	rep := rt.BlockStoreChecker(models.BlockStoreKindLocal, "mem").Healthcheck(context.Background())
+	rep := rt.BlockStoreChecker("mem").Healthcheck(context.Background())
 	if rep.Status != health.StatusHealthy {
 		t.Errorf("memory block store status = %s, want healthy (msg=%q)", rep.Status, rep.Message)
 	}
 
 	// Second call inside TTL still returns healthy; this just locks
 	// in that the cached wrapper doesn't drift on repeat access.
-	rep2 := rt.BlockStoreChecker(models.BlockStoreKindLocal, "mem").Healthcheck(context.Background())
+	rep2 := rt.BlockStoreChecker("mem").Healthcheck(context.Background())
 	if rep2.Status != health.StatusHealthy {
 		t.Errorf("second call status = %s, want healthy", rep2.Status)
 	}

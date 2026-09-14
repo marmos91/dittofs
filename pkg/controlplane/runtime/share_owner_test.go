@@ -14,6 +14,7 @@ import (
 // the (gate-only) share permission grants.
 func TestAddShare_StampsRootOwner(t *testing.T) {
 	rt := New(nil)
+	setJournalRoot(t, rt)
 	ctx := context.Background()
 	if err := rt.RegisterMetadataStore("test-meta", memory.NewMemoryMetadataStoreWithDefaults()); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
@@ -50,6 +51,7 @@ func TestAddShare_StampsRootOwner(t *testing.T) {
 // secure default, unchanged.
 func TestAddShare_DefaultRootOwnerIsRoot(t *testing.T) {
 	rt := New(nil)
+	setJournalRoot(t, rt)
 	ctx := context.Background()
 	if err := rt.RegisterMetadataStore("test-meta", memory.NewMemoryMetadataStoreWithDefaults()); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)

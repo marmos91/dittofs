@@ -368,8 +368,9 @@ func buildShareConfig(ctx context.Context, s store.Store, share *models.Share) (
 		JournalSize:                      share.JournalSize,
 		ReadBufferSize:                   share.ReadBufferSize,
 		QuotaBytes:                       share.QuotaBytes,
-		LocalBlockStoreID:                share.LocalBlockStoreID,
-		RemoteBlockStoreID:               derefString(share.RemoteBlockStoreID),
+		BlockStoreID:                     share.BlockStoreID,
+		CommitAck:                        share.CommitAck,
+		RelaxedMetadataCommit:            share.RelaxedMetadataCommit,
 	}, nil
 }
 

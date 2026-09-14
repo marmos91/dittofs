@@ -620,7 +620,7 @@ func (r *Runtime) AddShare(ctx context.Context, config *ShareConfig) error {
 // without a server restart (#1532). It rebuilds the new ShareConfig from the
 // (already-persisted) DB row and passes the previous block-store IDs so the
 // share service can restore the old binding if the new one fails to build.
-func (r *Runtime) RebindShareBlockStore(ctx context.Context, name, oldLocalBlockStoreID, oldRemoteBlockStoreID string) error {
+func (r *Runtime) RebindShareBlockStore(ctx context.Context, name, oldBlockStoreID string) error {
 	shareModel, err := r.store.GetShare(ctx, name)
 	if err != nil {
 		return fmt.Errorf("rebind: failed to load share %q: %w", name, err)
@@ -636,8 +636,7 @@ func (r *Runtime) RebindShareBlockStore(ctx context.Context, name, oldLocalBlock
 	// oldConfig is the same row with the previous block-store binding — used only
 	// for recovery if the new store fails to build.
 	oldCfg := *newCfg
-	oldCfg.LocalBlockStoreID = oldLocalBlockStoreID
-	oldCfg.RemoteBlockStoreID = oldRemoteBlockStoreID
+	oldCfg.BlockStoreID = oldBlockStoreID
 
 	r.mu.RLock()
 	localDefaults := r.localStoreDefaults

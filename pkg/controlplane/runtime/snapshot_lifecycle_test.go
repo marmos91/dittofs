@@ -68,6 +68,7 @@ func setupSnapshotLifecycle(t *testing.T) *lifecycleFixture {
 	t.Cleanup(func() { _ = cp.Close() })
 
 	rt := New(cp)
+	setJournalRoot(t, rt)
 
 	metaStore := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	if err := rt.RegisterMetadataStore("memory", metaStore); err != nil {
@@ -409,6 +410,7 @@ func TestSnapshotHoldProvider_DeleteVsHeldHashes_Race(t *testing.T) {
 	t.Cleanup(func() { _ = cp.Close() })
 
 	rt := New(cp)
+	setJournalRoot(t, rt)
 	shareName := "race"
 	rt.sharesSvc.InjectShareForTesting(&shares.Share{
 		Name:          shareName,

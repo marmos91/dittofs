@@ -30,9 +30,9 @@ func TestMigration_JournalSizeRenamePreservesTheValue(t *testing.T) {
 	// for a database created before the rename.
 	s := openAt(t, path)
 	if err := s.DB().Exec(
-		`INSERT INTO shares (id, name, metadata_store_id, local_block_store_id, journal_size)
+		`INSERT INTO shares (id, name, metadata_store_id, block_store_id, journal_size)
 		 VALUES (?, ?, ?, ?, ?)`,
-		"share-id", "/legacy", "meta-id", "local-id", 12345,
+		"share-id", "/legacy", "meta-id", "bs-id", 12345,
 	).Error; err != nil {
 		t.Fatalf("insert share: %v", err)
 	}

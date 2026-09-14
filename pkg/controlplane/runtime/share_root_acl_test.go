@@ -16,12 +16,12 @@ func TestShareRootGrantACL_ProjectsSIDGrant(t *testing.T) {
 	rt, s := setupTestRuntime(t)
 	ctx := context.Background()
 
-	localID := createLocalBlockStoreConfig(t, s, "grant-local")
+	localID := createBlockStoreConfig(t, s, "grant-local")
 	metaStores, _ := s.ListMetadataStores(ctx)
 	share := &models.Share{
 		Name:              "/grants",
 		MetadataStoreID:   metaStores[0].ID,
-		LocalBlockStoreID: localID,
+		BlockStoreID:      localID,
 		DefaultPermission: string(models.PermissionNone),
 	}
 	if _, err := s.CreateShare(ctx, share); err != nil {
