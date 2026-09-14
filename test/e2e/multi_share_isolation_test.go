@@ -23,7 +23,7 @@ import (
 // - Data isolation: files on share A are not visible on share B
 // - Deletion isolation: deleting share A does not affect share B
 // - Concurrent writes: simultaneous writes to different shares do not corrupt
-// - Local store independence: per-share local stores do not interfere
+// - Block store independence: per-share block stores do not interfere
 // - Cross-protocol lock visibility: locks are per-share, not global
 func TestMultiShareIsolation(t *testing.T) {
 	if testing.Short() {
@@ -47,28 +47,24 @@ func TestMultiShareIsolation(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteMetadataStore(meta2) })
 
-	// Create 2 local block stores (fs type with DIFFERENT paths)
-	local1 := helpers.UniqueTestName("iso-local1")
-	local2 := helpers.UniqueTestName("iso-local2")
-	localPath1 := t.TempDir()
-	localPath2 := t.TempDir()
+	// Create 2 block stores, one per share
+	block1 := helpers.UniqueTestName("iso-block1")
+	block2 := helpers.UniqueTestName("iso-block2")
 
-	_, err = runner.CreateLocalBlockStore(local1, "fs",
-		helpers.WithBlockRawConfig(fmt.Sprintf(`{"path":"%s"}`, localPath1)))
+	_, err = runner.CreateBlockStore(block1, "memory")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = runner.DeleteLocalBlockStore(local1) })
+	t.Cleanup(func() { _ = runner.DeleteBlockStore(block1) })
 
-	_, err = runner.CreateLocalBlockStore(local2, "fs",
-		helpers.WithBlockRawConfig(fmt.Sprintf(`{"path":"%s"}`, localPath2)))
+	_, err = runner.CreateBlockStore(block2, "memory")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = runner.DeleteLocalBlockStore(local2) })
+	t.Cleanup(func() { _ = runner.DeleteBlockStore(block2) })
 
 	// Create share A and share B
-	_, err = runner.CreateShare("/share-iso-a", meta1, local1)
+	_, err = runner.CreateShare("/share-iso-a", meta1, block1)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteShare("/share-iso-a") })
 
-	_, err = runner.CreateShare("/share-iso-b", meta2, local2)
+	_, err = runner.CreateShare("/share-iso-b", meta2, block2)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteShare("/share-iso-b") })
 
@@ -125,19 +121,17 @@ func TestMultiShareIsolation(t *testing.T) {
 	t.Run("DeletionIsolation", func(t *testing.T) {
 		// Create a new share C for deletion testing (so we don't break other subtests)
 		meta3 := helpers.UniqueTestName("iso-meta3")
-		local3 := helpers.UniqueTestName("iso-local3")
-		localPath3 := t.TempDir()
+		block3 := helpers.UniqueTestName("iso-block3")
 
 		_, err := runner.CreateMetadataStore(meta3, "memory")
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = runner.DeleteMetadataStore(meta3) })
 
-		_, err = runner.CreateLocalBlockStore(local3, "fs",
-			helpers.WithBlockRawConfig(fmt.Sprintf(`{"path":"%s"}`, localPath3)))
+		_, err = runner.CreateBlockStore(block3, "memory")
 		require.NoError(t, err)
-		t.Cleanup(func() { _ = runner.DeleteLocalBlockStore(local3) })
+		t.Cleanup(func() { _ = runner.DeleteBlockStore(block3) })
 
-		_, err = runner.CreateShare("/share-iso-c", meta3, local3)
+		_, err = runner.CreateShare("/share-iso-c", meta3, block3)
 		require.NoError(t, err)
 
 		// Mount share C and share B
@@ -268,28 +262,16 @@ func TestMultiShareIsolation(t *testing.T) {
 	})
 
 	// =========================================================================
-	// Subtest d: Local store independence
+	// Subtest d: Block store independence
 	// =========================================================================
-	t.Run("LocalStoreIndependence", func(t *testing.T) {
-		// Create shares with remote stores to enable tiered storage behavior
-		remoteA := helpers.UniqueTestName("iso-remote-a")
-		remoteB := helpers.UniqueTestName("iso-remote-b")
-
-		_, err := runner.CreateRemoteBlockStore(remoteA, "memory")
-		require.NoError(t, err)
-		t.Cleanup(func() { _ = runner.DeleteRemoteBlockStore(remoteA) })
-
-		_, err = runner.CreateRemoteBlockStore(remoteB, "memory")
-		require.NoError(t, err)
-		t.Cleanup(func() { _ = runner.DeleteRemoteBlockStore(remoteB) })
-
-		// Create shares with remote stores
+	t.Run("BlockStoreIndependence", func(t *testing.T) {
+		// Each share gets its own block store
 		metaCA := helpers.UniqueTestName("iso-meta-ca")
 		metaCB := helpers.UniqueTestName("iso-meta-cb")
-		localCA := helpers.UniqueTestName("iso-local-ca")
-		localCB := helpers.UniqueTestName("iso-local-cb")
+		blockCA := helpers.UniqueTestName("iso-block-ca")
+		blockCB := helpers.UniqueTestName("iso-block-cb")
 
-		_, err = runner.CreateMetadataStore(metaCA, "memory")
+		_, err := runner.CreateMetadataStore(metaCA, "memory")
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaCA) })
 
@@ -297,57 +279,55 @@ func TestMultiShareIsolation(t *testing.T) {
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaCB) })
 
-		_, err = runner.CreateLocalBlockStore(localCA, "memory")
+		_, err = runner.CreateBlockStore(blockCA, "memory")
 		require.NoError(t, err)
-		t.Cleanup(func() { _ = runner.DeleteLocalBlockStore(localCA) })
+		t.Cleanup(func() { _ = runner.DeleteBlockStore(blockCA) })
 
-		_, err = runner.CreateLocalBlockStore(localCB, "memory")
+		_, err = runner.CreateBlockStore(blockCB, "memory")
 		require.NoError(t, err)
-		t.Cleanup(func() { _ = runner.DeleteLocalBlockStore(localCB) })
+		t.Cleanup(func() { _ = runner.DeleteBlockStore(blockCB) })
 
-		_, err = runner.CreateShare("/share-local-a", metaCA, localCA,
-			helpers.WithShareRemote(remoteA))
+		_, err = runner.CreateShare("/share-block-a", metaCA, blockCA)
 		require.NoError(t, err)
-		t.Cleanup(func() { _ = runner.DeleteShare("/share-local-a") })
+		t.Cleanup(func() { _ = runner.DeleteShare("/share-block-a") })
 
-		_, err = runner.CreateShare("/share-local-b", metaCB, localCB,
-			helpers.WithShareRemote(remoteB))
+		_, err = runner.CreateShare("/share-block-b", metaCB, blockCB)
 		require.NoError(t, err)
-		t.Cleanup(func() { _ = runner.DeleteShare("/share-local-b") })
+		t.Cleanup(func() { _ = runner.DeleteShare("/share-block-b") })
 
 		// Mount both
-		mountCA := framework.MountNFSExportWithVersion(t, nfsPort, "/share-local-a", "3")
+		mountCA := framework.MountNFSExportWithVersion(t, nfsPort, "/share-block-a", "3")
 		t.Cleanup(mountCA.Cleanup)
 
-		mountCB := framework.MountNFSExportWithVersion(t, nfsPort, "/share-local-b", "3")
+		mountCB := framework.MountNFSExportWithVersion(t, nfsPort, "/share-block-b", "3")
 		t.Cleanup(mountCB.Cleanup)
 
-		// Write data to share A (enough to exercise the local store)
+		// Write data to share A (enough to exercise the block store)
 		for i := 0; i < 20; i++ {
-			filePath := mountCA.FilePath(fmt.Sprintf("local_a_%d.bin", i))
+			filePath := mountCA.FilePath(fmt.Sprintf("block_a_%d.bin", i))
 			framework.WriteFile(t, filePath, framework.GenerateRandomData(t, 8*1024))
 			t.Cleanup(func() { _ = os.Remove(filePath) })
 		}
 
 		// Write data to share B
 		for i := 0; i < 5; i++ {
-			filePath := mountCB.FilePath(fmt.Sprintf("local_b_%d.bin", i))
+			filePath := mountCB.FilePath(fmt.Sprintf("block_b_%d.bin", i))
 			framework.WriteFile(t, filePath, framework.GenerateRandomData(t, 8*1024))
 			t.Cleanup(func() { _ = os.Remove(filePath) })
 		}
 
 		// Verify share B files are intact (share A activity did not affect share B)
 		for i := 0; i < 5; i++ {
-			filePath := mountCB.FilePath(fmt.Sprintf("local_b_%d.bin", i))
+			filePath := mountCB.FilePath(fmt.Sprintf("block_b_%d.bin", i))
 			assert.True(t, framework.FileExists(filePath),
-				"Share B local file %d should still exist", i)
+				"Share B file %d should still exist", i)
 			info, err := os.Stat(filePath)
 			require.NoError(t, err)
 			assert.Equal(t, int64(8*1024), info.Size(),
-				"Share B local file %d should have correct size", i)
+				"Share B file %d should have correct size", i)
 		}
 
-		t.Log("LocalStoreIndependence: PASSED")
+		t.Log("BlockStoreIndependence: PASSED")
 	})
 
 	// =========================================================================
@@ -401,20 +381,18 @@ func TestMultiShareIsolation(t *testing.T) {
 	})
 
 	// =========================================================================
-	// Subtest f: Same remote store scenario
+	// Subtest f: Same block store scenario
 	// =========================================================================
-	t.Run("SameRemoteStore", func(t *testing.T) {
-		// Create a shared remote store
-		sharedRemote := helpers.UniqueTestName("iso-shared-remote")
-		_, err := runner.CreateRemoteBlockStore(sharedRemote, "memory")
+	t.Run("SameBlockStore", func(t *testing.T) {
+		// Create a shared block store
+		sharedBlock := helpers.UniqueTestName("iso-shared-block")
+		_, err := runner.CreateBlockStore(sharedBlock, "memory")
 		require.NoError(t, err)
-		t.Cleanup(func() { _ = runner.DeleteRemoteBlockStore(sharedRemote) })
+		t.Cleanup(func() { _ = runner.DeleteBlockStore(sharedBlock) })
 
-		// Create two shares pointing to the SAME remote store
+		// Create two shares pointing to the SAME block store
 		metaSR1 := helpers.UniqueTestName("iso-meta-sr1")
 		metaSR2 := helpers.UniqueTestName("iso-meta-sr2")
-		localSR1 := helpers.UniqueTestName("iso-local-sr1")
-		localSR2 := helpers.UniqueTestName("iso-local-sr2")
 
 		_, err = runner.CreateMetadataStore(metaSR1, "memory")
 		require.NoError(t, err)
@@ -424,21 +402,11 @@ func TestMultiShareIsolation(t *testing.T) {
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaSR2) })
 
-		_, err = runner.CreateLocalBlockStore(localSR1, "memory")
-		require.NoError(t, err)
-		t.Cleanup(func() { _ = runner.DeleteLocalBlockStore(localSR1) })
-
-		_, err = runner.CreateLocalBlockStore(localSR2, "memory")
-		require.NoError(t, err)
-		t.Cleanup(func() { _ = runner.DeleteLocalBlockStore(localSR2) })
-
-		_, err = runner.CreateShare("/share-sr1", metaSR1, localSR1,
-			helpers.WithShareRemote(sharedRemote))
+		_, err = runner.CreateShare("/share-sr1", metaSR1, sharedBlock)
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = runner.DeleteShare("/share-sr1") })
 
-		_, err = runner.CreateShare("/share-sr2", metaSR2, localSR2,
-			helpers.WithShareRemote(sharedRemote))
+		_, err = runner.CreateShare("/share-sr2", metaSR2, sharedBlock)
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = runner.DeleteShare("/share-sr2") })
 
@@ -471,6 +439,6 @@ func TestMultiShareIsolation(t *testing.T) {
 		contentSR2 := framework.ReadFile(t, fileSR2)
 		assert.Equal(t, []byte("share-sr2-data"), contentSR2)
 
-		t.Log("SameRemoteStore: PASSED (payloadID namespacing keeps data separate)")
+		t.Log("SameBlockStore: PASSED (payloadID namespacing keeps data separate)")
 	})
 }

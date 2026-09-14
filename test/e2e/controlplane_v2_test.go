@@ -53,7 +53,7 @@ func TestControlPlaneV2_FullLifecycle(t *testing.T) {
 
 	// Create stores for test share
 	metaStore := helpers.UniqueTestName("meta")
-	localBlockStore := helpers.UniqueTestName("local-block")
+	blockStore := helpers.UniqueTestName("block")
 	_, err := client.CreateMetadataStore(&apiclient.CreateStoreRequest{
 		Name: metaStore,
 		Type: "memory",
@@ -61,15 +61,15 @@ func TestControlPlaneV2_FullLifecycle(t *testing.T) {
 	require.NoError(t, err, "Should create metadata store")
 	t.Cleanup(func() { _ = client.RemoveMetadataStore(metaStore) })
 
-	_, err = client.CreateBlockStore("local", &apiclient.CreateStoreRequest{
-		Name: localBlockStore,
+	_, err = client.CreateBlockStore(&apiclient.CreateStoreRequest{
+		Name: blockStore,
 		Type: "memory",
 	})
-	require.NoError(t, err, "Should create local block store")
-	t.Cleanup(func() { _ = client.RemoveBlockStore("local", localBlockStore) })
+	require.NoError(t, err, "Should create block store")
+	t.Cleanup(func() { _ = client.RemoveBlockStore(blockStore) })
 
 	// 4. Create a share (security policy now managed via adapter config API)
-	share := helpers.CreateShareWithPolicy(t, client, "/lifecycle-test", metaStore, localBlockStore, nil)
+	share := helpers.CreateShareWithPolicy(t, client, "/lifecycle-test", metaStore, blockStore, nil)
 	t.Cleanup(func() { helpers.CleanupShare(client, "/lifecycle-test") })
 	assert.Equal(t, "/lifecycle-test", share.Name)
 	t.Log("Step 4: Share created")
@@ -303,7 +303,7 @@ func TestControlPlaneV2_NetgroupInUse(t *testing.T) {
 
 	// Create stores for test share
 	metaStore := helpers.UniqueTestName("meta")
-	localBlockStore := helpers.UniqueTestName("local-block")
+	blockStore := helpers.UniqueTestName("block")
 	_, err := client.CreateMetadataStore(&apiclient.CreateStoreRequest{
 		Name: metaStore,
 		Type: "memory",
@@ -311,12 +311,12 @@ func TestControlPlaneV2_NetgroupInUse(t *testing.T) {
 	require.NoError(t, err, "Should create metadata store")
 	t.Cleanup(func() { _ = client.RemoveMetadataStore(metaStore) })
 
-	_, err = client.CreateBlockStore("local", &apiclient.CreateStoreRequest{
-		Name: localBlockStore,
+	_, err = client.CreateBlockStore(&apiclient.CreateStoreRequest{
+		Name: blockStore,
 		Type: "memory",
 	})
-	require.NoError(t, err, "Should create local block store")
-	t.Cleanup(func() { _ = client.RemoveBlockStore("local", localBlockStore) })
+	require.NoError(t, err, "Should create block store")
+	t.Cleanup(func() { _ = client.RemoveBlockStore(blockStore) })
 
 	// 1. Create netgroup
 	ng := helpers.CreateNetgroup(t, client, ngName)
@@ -325,7 +325,7 @@ func TestControlPlaneV2_NetgroupInUse(t *testing.T) {
 	t.Log("Step 1: Netgroup created")
 
 	// 2. Create share (netgroup association is now via adapter config, not share creation)
-	share := helpers.CreateShareWithPolicy(t, client, shareName, metaStore, localBlockStore, nil)
+	share := helpers.CreateShareWithPolicy(t, client, shareName, metaStore, blockStore, nil)
 	t.Cleanup(func() { helpers.CleanupShare(client, shareName) })
 	assert.Equal(t, shareName, share.Name)
 	t.Log("Step 2: Share created")
@@ -368,7 +368,7 @@ func TestControlPlaneV2_ShareSecurityPolicy(t *testing.T) {
 
 	// Create stores for test shares
 	metaStore := helpers.UniqueTestName("meta")
-	localBlockStore := helpers.UniqueTestName("local-block")
+	blockStore := helpers.UniqueTestName("block")
 	_, err := client.CreateMetadataStore(&apiclient.CreateStoreRequest{
 		Name: metaStore,
 		Type: "memory",
@@ -376,12 +376,12 @@ func TestControlPlaneV2_ShareSecurityPolicy(t *testing.T) {
 	require.NoError(t, err, "Should create metadata store")
 	t.Cleanup(func() { _ = client.RemoveMetadataStore(metaStore) })
 
-	_, err = client.CreateBlockStore("local", &apiclient.CreateStoreRequest{
-		Name: localBlockStore,
+	_, err = client.CreateBlockStore(&apiclient.CreateStoreRequest{
+		Name: blockStore,
 		Type: "memory",
 	})
-	require.NoError(t, err, "Should create local block store")
-	t.Cleanup(func() { _ = client.RemoveBlockStore("local", localBlockStore) })
+	require.NoError(t, err, "Should create block store")
+	t.Cleanup(func() { _ = client.RemoveBlockStore(blockStore) })
 
 	// Protocol-specific security fields (AllowAuthSys, RequireKerberos, NetgroupID)
 	// are now managed via per-adapter config API, not the share creation/response API.
@@ -390,7 +390,7 @@ func TestControlPlaneV2_ShareSecurityPolicy(t *testing.T) {
 	t.Run("share with blocked operations", func(t *testing.T) {
 		name := "/" + helpers.UniqueTestName("blocked")
 		blockedOps := []string{"REMOVE", "RENAME"}
-		share := helpers.CreateShareWithPolicy(t, client, name, metaStore, localBlockStore, &helpers.ShareSecurityPolicy{
+		share := helpers.CreateShareWithPolicy(t, client, name, metaStore, blockStore, &helpers.ShareSecurityPolicy{
 			BlockedOperations: blockedOps,
 		})
 		t.Cleanup(func() { helpers.CleanupShare(client, name) })

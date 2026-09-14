@@ -131,13 +131,13 @@ type ShareSecurityPolicy struct {
 
 // CreateShareWithPolicy creates a share with the given security policy via the API client.
 // Returns the created share.
-func CreateShareWithPolicy(t *testing.T, client *apiclient.Client, name, metadataStore, localBlockStore string, policy *ShareSecurityPolicy) *apiclient.Share {
+func CreateShareWithPolicy(t *testing.T, client *apiclient.Client, name, metadataStore, blockStore string, policy *ShareSecurityPolicy) *apiclient.Share {
 	t.Helper()
 
 	req := &apiclient.CreateShareRequest{
 		Name:            name,
 		MetadataStoreID: metadataStore,
-		LocalBlockStore: localBlockStore,
+		BlockStore:      blockStore,
 		// Default to a writable share, matching the CLI CreateShare helper. These
 		// are functional tests (e.g. netgroup IP access control); the share knob
 		// under test is the policy, not least-privilege user permissions. Without

@@ -31,14 +31,14 @@ func TestCrossProtocolXattrParity(t *testing.T) {
 	cli := helpers.LoginAsAdmin(t, sp.APIURL())
 
 	metaStore := helpers.UniqueTestName("xpxmeta")
-	localStore := helpers.UniqueTestName("xpxpayload")
+	blockStore := helpers.UniqueTestName("xpxpayload")
 	const shareName = "/export"
 
 	_, err := cli.CreateMetadataStore(metaStore, "memory")
 	require.NoError(t, err, "create metadata store")
-	_, err = cli.CreateLocalBlockStore(localStore, "memory")
+	_, err = cli.CreateBlockStore(blockStore, "memory")
 	require.NoError(t, err, "create block store")
-	_, err = cli.CreateShare(shareName, metaStore, localStore,
+	_, err = cli.CreateShare(shareName, metaStore, blockStore,
 		helpers.WithShareDefaultPermission("read-write"))
 	require.NoError(t, err, "create share")
 

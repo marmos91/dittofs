@@ -36,18 +36,18 @@ func TestSharesCRUD(t *testing.T) {
 
 	// Create shared stores for all subtests
 	metaStoreName := helpers.UniqueTestName("share_meta")
-	localStoreName := helpers.UniqueTestName("share_local")
+	blockStoreName := helpers.UniqueTestName("share_local")
 
 	_, err := cli.CreateMetadataStore(metaStoreName, "memory")
 	require.NoError(t, err, "Should create shared metadata store")
 
-	_, err = cli.CreateLocalBlockStore(localStoreName, "memory")
-	require.NoError(t, err, "Should create shared local block store")
+	_, err = cli.CreateBlockStore(blockStoreName, "memory")
+	require.NoError(t, err, "Should create shared block store")
 
 	// Cleanup stores after all tests (registered first, runs last)
 	t.Cleanup(func() {
 		_ = cli.DeleteMetadataStore(metaStoreName)
-		_ = cli.DeleteLocalBlockStore(localStoreName)
+		_ = cli.DeleteBlockStore(blockStoreName)
 	})
 
 	// SHR-01: Create share with assigned stores
@@ -60,13 +60,13 @@ func TestSharesCRUD(t *testing.T) {
 			_ = cli.DeleteShare(shareName)
 		})
 
-		share, err := cli.CreateShare(shareName, metaStoreName, localStoreName)
+		share, err := cli.CreateShare(shareName, metaStoreName, blockStoreName)
 		require.NoError(t, err, "Should create share with assigned stores")
 
 		assert.Equal(t, shareName, share.Name, "Share name should match")
 		// Store IDs are UUIDs, not names - just verify they're set
 		assert.NotEmpty(t, share.MetadataStoreID, "Metadata store ID should be set")
-		assert.NotEmpty(t, share.BlockStoreID, "Local block store ID should be set")
+		assert.NotEmpty(t, share.BlockStoreID, "Block store ID should be set")
 	})
 
 	// SHR-01: Create share with options
@@ -79,7 +79,7 @@ func TestSharesCRUD(t *testing.T) {
 			_ = cli.DeleteShare(shareName)
 		})
 
-		share, err := cli.CreateShare(shareName, metaStoreName, localStoreName,
+		share, err := cli.CreateShare(shareName, metaStoreName, blockStoreName,
 			helpers.WithShareReadOnly(true),
 			helpers.WithShareDefaultPermission("read"),
 			helpers.WithShareDescription("Test share with options"),
@@ -104,10 +104,10 @@ func TestSharesCRUD(t *testing.T) {
 		})
 
 		// Create two shares
-		_, err := cli.CreateShare(share1Name, metaStoreName, localStoreName)
+		_, err := cli.CreateShare(share1Name, metaStoreName, blockStoreName)
 		require.NoError(t, err, "Should create first share")
 
-		_, err = cli.CreateShare(share2Name, metaStoreName, localStoreName)
+		_, err = cli.CreateShare(share2Name, metaStoreName, blockStoreName)
 		require.NoError(t, err, "Should create second share")
 
 		// List all shares
@@ -140,7 +140,7 @@ func TestSharesCRUD(t *testing.T) {
 		})
 
 		// Create share with default settings
-		_, err := cli.CreateShare(shareName, metaStoreName, localStoreName)
+		_, err := cli.CreateShare(shareName, metaStoreName, blockStoreName)
 		require.NoError(t, err, "Should create share")
 
 		// Edit share
@@ -168,7 +168,7 @@ func TestSharesCRUD(t *testing.T) {
 		shareName := "/" + helpers.UniqueTestName("share_del")
 
 		// Create share
-		_, err := cli.CreateShare(shareName, metaStoreName, localStoreName)
+		_, err := cli.CreateShare(shareName, metaStoreName, blockStoreName)
 		require.NoError(t, err, "Should create share")
 
 		// Delete share
@@ -192,11 +192,11 @@ func TestSharesCRUD(t *testing.T) {
 		})
 
 		// Create share
-		_, err := cli.CreateShare(shareName, metaStoreName, localStoreName)
+		_, err := cli.CreateShare(shareName, metaStoreName, blockStoreName)
 		require.NoError(t, err, "Should create share")
 
 		// Try to create again with same name
-		_, err = cli.CreateShare(shareName, metaStoreName, localStoreName)
+		_, err = cli.CreateShare(shareName, metaStoreName, blockStoreName)
 		require.Error(t, err, "Should reject duplicate share name")
 
 		// Error should indicate conflict/already exists
@@ -216,7 +216,7 @@ func TestSharesCRUD(t *testing.T) {
 		fakeStoreName := "nonexistent_store_12345"
 
 		// Try to create share with nonexistent metadata store
-		_, err := cli.CreateShare(shareName, fakeStoreName, localStoreName)
+		_, err := cli.CreateShare(shareName, fakeStoreName, blockStoreName)
 		require.Error(t, err, "Should fail to create share with nonexistent metadata store")
 
 		// Error should indicate store not found
@@ -239,7 +239,7 @@ func TestSharesCRUD(t *testing.T) {
 		})
 
 		// Create share
-		created, err := cli.CreateShare(shareName, metaStoreName, localStoreName)
+		created, err := cli.CreateShare(shareName, metaStoreName, blockStoreName)
 		require.NoError(t, err, "Should create share")
 
 		// Get share by name
@@ -248,6 +248,6 @@ func TestSharesCRUD(t *testing.T) {
 
 		assert.Equal(t, created.Name, fetched.Name, "Names should match")
 		assert.Equal(t, created.MetadataStoreID, fetched.MetadataStoreID, "Metadata store IDs should match")
-		assert.Equal(t, created.LocalBlockStoreID, fetched.LocalBlockStoreID, "Local block store IDs should match")
+		assert.Equal(t, created.BlockStoreID, fetched.BlockStoreID, "Block store IDs should match")
 	})
 }

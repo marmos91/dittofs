@@ -20,9 +20,9 @@
 //
 // Procedure (mirrors the documented #1245 trigger):
 //
-//  1. Boot one server, one Postgres metadata store, one S3 bucket, one remote
-//     block store + one per-share local block store, one share (copied from
-//     dedup_cross_share_test.go's remote-S3 setup).
+//  1. Boot one server, one Postgres metadata store, one S3 bucket, one S3
+//     block store, one share (copied from
+//     dedup_cross_share_test.go's S3 setup).
 //  2. Mount the share over NFSv4.1.
 //  3. Prime dedup with a single donor file written first, then write N
 //     additional byte-identical files CONCURRENTLY (goroutines + WaitGroup).
@@ -117,7 +117,7 @@ func TestDedupRace_NFSv4_ConcurrentIdenticalWrites(t *testing.T) {
 	require.NoError(t, err, "create Postgres metadata store")
 	t.Cleanup(func() { _ = cli.DeleteMetadataStore(metaName) })
 
-	// ---- One S3 bucket + remote block store ----
+	// ---- One S3 bucket + block store ----
 	bucketName := strings.ReplaceAll(
 		fmt.Sprintf("dittofs-dedup-nfsv4-%s", helpers.UniqueTestName("bkt")), "_", "-")
 	require.NoError(t,
@@ -125,24 +125,16 @@ func TestDedupRace_NFSv4_ConcurrentIdenticalWrites(t *testing.T) {
 		"create S3 bucket")
 	t.Cleanup(func() { lsHelper.CleanupBucket(context.Background(), bucketName) })
 
-	remoteName := helpers.UniqueTestName("dedup-nfsv4-remote")
-	_, err = cli.CreateRemoteBlockStore(remoteName, "s3",
+	blockName := helpers.UniqueTestName("dedup-nfsv4-block")
+	_, err = cli.CreateBlockStore(blockName, "s3",
 		helpers.WithBlockS3Config(bucketName, "us-east-1",
 			lsHelper.Endpoint, "test", "test"))
-	require.NoError(t, err, "create remote block store")
-	t.Cleanup(func() { _ = cli.DeleteRemoteBlockStore(remoteName) })
+	require.NoError(t, err, "create block store")
+	t.Cleanup(func() { _ = cli.DeleteBlockStore(blockName) })
 
-	// ---- Per-share local block store (CLAUDE.md invariant: local dirs isolated) ----
-	localName := helpers.UniqueTestName("dedup-nfsv4-local")
-	localPath := t.TempDir()
-	_, err = cli.CreateLocalBlockStore(localName, "fs",
-		helpers.WithBlockRawConfig(fmt.Sprintf(`{"path":"%s"}`, localPath)))
-	require.NoError(t, err, "create local block store")
-	t.Cleanup(func() { _ = cli.DeleteLocalBlockStore(localName) })
-
-	// ---- One remote-backed share ----
+	// ---- One share ----
 	shareName := "/dedup-nfsv4-race"
-	_, err = cli.CreateShare(shareName, metaName, localName, helpers.WithShareRemote(remoteName))
+	_, err = cli.CreateShare(shareName, metaName, blockName)
 	require.NoError(t, err, "create share %s", shareName)
 	t.Cleanup(func() { _ = cli.DeleteShare(shareName) })
 
