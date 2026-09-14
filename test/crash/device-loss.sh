@@ -214,6 +214,41 @@ sleep "$SECONDS_WRITING"
 # device was still healthy. drop_writes then silently discards everything
 # written from here on.
 kill -STOP $WRITER
+
+# --- pressure guard ---------------------------------------------------------
+# This rig reads a missing or zeroed record as data loss, which is only honest
+# while the journal never had a legitimate reason to drop one itself. It does
+# have one: eviction, gated on the journal's disk footprint against its disk
+# budget. An evicted record's only remaining copy is the block store's, and
+# this rig's block store is in-memory and dies with the killed server — so a
+# run that wrote enough to provoke eviction loses records for a reason that has
+# nothing to do with the device, and looks exactly like the bug being hunted.
+#
+# The write window and the record rate are the caller's, the budget is the
+# server's, and their product is what decides whether the run stayed clear. So
+# the guard measures instead of guessing, and refuses the run rather than
+# grading one it cannot read. It runs with the writer stopped, on the footprint
+# the device loss is about to freeze. A budget the server does not report is
+# also a refusal: a guard that cannot see the ceiling cannot certify the run
+# stayed under it.
+dctl store block stats --share /crash -o json > "$WORK/stats.json" || fail "block store stats"
+python3 - "$WORK/stats.json" <<'PY' || fail "cannot certify the journal stayed clear of eviction: shorten the write window (argument 3) or give the share a larger journal"
+import json, sys
+
+t = json.load(open(sys.argv[1]))["totals"]
+used, budget = t["local_disk_used"], t["local_disk_max"]
+if budget <= 0:
+    sys.exit("[crash] pressure: journal reports no disk budget, so headroom cannot be checked")
+# Half the budget: the writer is stopped, but a rollup still in flight can move
+# the footprint after this reading, and eviction must stay out of reach of that
+# drift too.
+if used * 2 > budget:
+    sys.exit("[crash] pressure: journal holds %d bytes of a %d-byte disk budget"
+             % (used, budget))
+print("[crash] pressure guard clear: journal holds %d bytes of %d (%.1f%%)"
+      % (used, budget, 100.0 * used / budget))
+PY
+
 retable flakey "$LOOP" 0 0 60 1 drop_writes || fail "device loss"
 log "device lost after $(wc -l < "$ACKS") acknowledged records"
 
