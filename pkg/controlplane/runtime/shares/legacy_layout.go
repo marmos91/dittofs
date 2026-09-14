@@ -17,17 +17,14 @@ const journalSegHeaderSize = 64
 // ErrLegacyLocalFormat reports that a share directory holds a pre-journal
 // on-disk layout (blobs/ + logs/) that this build cannot read. Opening such a
 // directory as a journal starts empty and serves every stored file as zeros, so
-// the store refuses to open and the legacy bytes stay intact on disk for a
-// migration to recover.
+// the store refuses to open and the legacy bytes stay intact on disk.
 //
-// This restores the #1802 guard, which pkg/block/local/fs carried until that
-// package was deleted. The failure it prevents is not hypothetical: it is the
-// reported #1801 incident, "upgrade from v0.26.0 silently loses local block
-// data". For a compacted local-only share the loss is permanent — the
-// blobs/ chunk index (local_chunk_index) is dropped by metadata migrations, and
-// the blobs themselves are raw unframed concatenations, so nothing can locate a
-// chunk in them afterwards. Refusing loudly and leaving the bytes untouched is
-// the only thing that keeps a pre-upgrade backup usable.
+// Refusing is not merely tidier than mounting empty. A local-only share's local
+// bytes are its only copy, and once that share has been compacted the bytes are
+// unrecoverable from the directory alone: the index that locates a chunk inside
+// blobs/ lives in the metadata store and is dropped by its migrations, while
+// blobs/ itself is raw unframed concatenation with nothing to scan for. Leaving
+// the directory untouched and stopping loudly is what keeps a backup usable.
 var ErrLegacyLocalFormat = errors.New("legacy pre-journal local block store layout")
 
 // hasLegacyLocalLayout reports whether shareDir was written by a pre-journal
@@ -43,6 +40,17 @@ var ErrLegacyLocalFormat = errors.New("legacy pre-journal local block store layo
 // only for sites that had never started the broken build. It fires on the
 // second start too, which is the case that actually reaches an operator.
 func hasLegacyLocalLayout(shareDir string) (bool, error) {
+	// Defense-in-depth, matching the check the fs branch already makes on the
+	// configured base path: the caller resolved shareDir from a stored config,
+	// and a relative one would make the joins below resolve against the
+	// server's CWD and scan a directory nobody named. Every component joined
+	// onto it here is a compile-time constant, so an absolute, cleaned root is
+	// the whole of what this needs to be safe.
+	if !filepath.IsAbs(shareDir) {
+		return false, fmt.Errorf("share dir must be absolute, got %q", shareDir)
+	}
+	shareDir = filepath.Clean(shareDir)
+
 	legacy := false
 	for _, sub := range []string{"blobs", "logs"} {
 		entries, err := os.ReadDir(filepath.Join(shareDir, sub))

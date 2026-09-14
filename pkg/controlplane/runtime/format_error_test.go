@@ -8,6 +8,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	sharesvc "github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
@@ -29,9 +30,10 @@ func (s *futureFormatStore) CreateRootDirectory(ctx context.Context, shareName s
 // share whose AddShare path bubbles a format sentinel must be surfaced by
 // LoadSharesFromStore (return the error), not warn-and-skipped — the OR
 // branch in LoadSharesFromStore exists so cmd/dfs/commands/start.go can exit
-// 78 with the operator directive. Covers both sentinels separately so a
-// regression flipping the OR to block-only cannot silently downgrade a
-// future journal directory to warn-and-skip.
+// 78 with the operator directive. Covers each sentinel separately so a
+// regression narrowing that branch cannot silently downgrade any of them to
+// warn-and-skip — which would leave the daemon running and reporting healthy
+// with the share absent, the failure the branch exists to prevent.
 func TestLoadSharesFromStore_FormatErrorStops(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -39,6 +41,7 @@ func TestLoadSharesFromStore_FormatErrorStops(t *testing.T) {
 	}{
 		{"block", block.ErrFutureFormat},
 		{"journal", journal.ErrFutureFormat},
+		{"legacy", sharesvc.ErrLegacyLocalFormat},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rt, s := setupTestRuntime(t)

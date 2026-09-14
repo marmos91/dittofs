@@ -11,6 +11,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	sharesvc "github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
@@ -262,8 +263,11 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 			// absent. Surface it so cmd/dfs/commands/start.go can exit 78 with
 			// the operator directive. Every other AddShare failure stays a
 			// warn-and-skip. The journal tier reports its own sentinel, so both
-			// are matched here.
-			if errors.Is(err, block.ErrFutureFormat) || errors.Is(err, journal.ErrFutureFormat) {
+			// are matched here, as does the pre-journal layout guard: a share
+			// whose bytes this build cannot read must stop the boot either way,
+			// whether the state is too new or too old.
+			if errors.Is(err, block.ErrFutureFormat) || errors.Is(err, journal.ErrFutureFormat) ||
+				errors.Is(err, sharesvc.ErrLegacyLocalFormat) {
 				return fmt.Errorf("share %q: %w", share.Name, err)
 			}
 			logger.Warn("Failed to add share to runtime",

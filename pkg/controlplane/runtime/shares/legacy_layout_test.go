@@ -21,9 +21,9 @@ func writeFile(t *testing.T, path string, size int) {
 	}
 }
 
-// A pre-journal share must be refused, not adopted. Before #1802 was deleted
-// with pkg/block/local/fs, this was the reported #1801 incident: the directory
-// opened as an empty journal and served every stored file as zeros.
+// A pre-journal share must be refused, not adopted: a directory holding
+// blobs/ or logs/ has bytes this build cannot read, and opening it as an empty
+// journal serves every stored file as zeros.
 func TestCheckLegacyLayout_RefusesPreJournalShare(t *testing.T) {
 	for _, sub := range []string{"blobs", "logs"} {
 		t.Run(sub, func(t *testing.T) {
@@ -37,11 +37,10 @@ func TestCheckLegacyLayout_RefusesPreJournalShare(t *testing.T) {
 	}
 }
 
-// The case that actually reaches an operator today. Develop has been stamping
-// empty journals over legacy directories, so by the time anyone installs a
-// fixed build the share already has a journal/ with a header-only segment. If
-// that counted as ownership the guard would protect only sites that had never
-// started the broken build — that is, almost nobody.
+// A journal directory holding only a header-only segment is not ownership. A
+// build without this guard opens a legacy directory once and stamps an empty
+// journal beside the untouched bytes; if that stamp counted, the guard would
+// pass every directory it had already been run against once.
 func TestCheckLegacyLayout_RefusesAfterBrokenBuildStampedAnEmptyJournal(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "blobs", "0001.dat"), 1<<20)
@@ -81,9 +80,9 @@ func TestCheckLegacyLayout_AllowsFreshAndEmptyDirs(t *testing.T) {
 	}
 }
 
-// The guard is only worth anything if the open path calls it. This is the end
-// to end shape of the #1801 report: a share directory as a pre-journal release
-// left it, handed to the function that opens the local store.
+// The guard is only worth anything if the open path calls it: a share directory
+// as a pre-journal release left it, handed to the function that opens the local
+// store, must come back refused.
 func TestOpenJournalStore_RefusesPreJournalShare(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "blobs", "0001.dat"), 1<<20)
