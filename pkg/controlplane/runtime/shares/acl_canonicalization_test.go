@@ -4,9 +4,26 @@ import (
 	"context"
 	"testing"
 
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metamem "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
+
+// testBlockStoreID is the block store every test share in this package
+// references. A share cannot be added without one.
+const testBlockStoreID = "test-block-store"
+
+// memBlockStoreProvider resolves any reference to a memory block store, so
+// AddShare can be driven without a control-plane database.
+type memBlockStoreProvider struct{}
+
+func (memBlockStoreProvider) GetBlockStoreByID(_ context.Context, id string) (*models.BlockStoreConfig, error) {
+	return &models.BlockStoreConfig{ID: id, Name: id, Type: "memory"}, nil
+}
+
+func (memBlockStoreProvider) GetBlockStore(_ context.Context, name string) (*models.BlockStoreConfig, error) {
+	return &models.BlockStoreConfig{ID: name, Name: name, Type: "memory"}, nil
+}
 
 // metaStoreProvider returns a single in-memory metadata store registered
 // against a fixed name. Used to drive AddShare end-to-end without a full
@@ -55,6 +72,7 @@ func TestAddShare_AclFlagInheritedCanonicalization_Propagates(t *testing.T) {
 				Name:                             tc.share,
 				MetadataStore:                    "meta-test",
 				Enabled:                          true,
+				BlockStoreID:                     testBlockStoreID,
 				AclFlagInheritedCanonicalization: tc.val,
 			}
 
@@ -63,7 +81,7 @@ func TestAddShare_AclFlagInheritedCanonicalization_Propagates(t *testing.T) {
 				cfg,
 				&metaStoreProvider{name: "meta-test", store: mds},
 				metaSvcRegistrar{},
-				nil, // no block store provider — the share offloads nowhere
+				memBlockStoreProvider{},
 				&LocalStoreDefaults{JournalRoot: t.TempDir()},
 				nil,
 			)

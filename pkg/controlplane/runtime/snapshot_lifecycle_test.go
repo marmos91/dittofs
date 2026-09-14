@@ -79,6 +79,7 @@ func setupSnapshotLifecycle(t *testing.T) *lifecycleFixture {
 	if err := rt.AddShare(ctx, &ShareConfig{
 		Name:          shareName,
 		MetadataStore: "memory",
+		BlockStoreID:  createBlockStoreConfig(t, cp, "lifecycle-blocks"),
 		Enabled:       true,
 	}); err != nil {
 		t.Fatalf("AddShare: %v", err)

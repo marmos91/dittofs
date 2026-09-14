@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/common"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
+	"github.com/marmos91/dittofs/pkg/block/remote"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
@@ -47,8 +49,10 @@ type byteVerifyFixture struct {
 // newByteVerifyFixture builds the fixture for the given metadata store. The
 // metaType is the engine label recorded in the cpstore ("memory" | "badger" |
 // "postgres") — it drives snapshot/restore's per-engine Restoreable dispatch.
+// Every share carries a block store, so the default fixture gets a plaintext
+// memory one rather than standing up a share with a journal alone.
 func newByteVerifyFixture(t *testing.T, meta metadata.Store, metaType string) *byteVerifyFixture {
-	return newByteVerifyFixtureOpts(t, meta, metaType, nil)
+	return newByteVerifyFixtureOpts(t, meta, metaType, plaintextRemoteCfg())
 }
 
 // newByteVerifyFixtureOpts is newByteVerifyFixture with an optional remote
@@ -180,6 +184,14 @@ func (f *byteVerifyFixture) simulateRestart(reopen func(*testing.T) metadata.Sto
 	_ = f.rt.Shutdown(ctx)
 	cancel()
 
+	// A real remote outlives a restart; the in-memory one does not, so carry its
+	// objects over to the store the restarted runtime will build. Without this
+	// every snapshot looks non-durable after the restart.
+	var priorRemote remote.RemoteStore
+	if f.bs != nil {
+		priorRemote = f.bs.RemoteStore()
+	}
+
 	// Release the outgoing block store's log-blob fd. Runtime.Shutdown closes
 	// metadata stores but NOT block stores, so without this the pre-restart
 	// FSStore keeps blobs/*.blob open on the SHARED fsDir. On Windows an open
@@ -220,6 +232,7 @@ func (f *byteVerifyFixture) simulateRestart(reopen func(*testing.T) metadata.Sto
 	f.rt = rt
 	f.meta = meta
 	f.bs = share.BlockStore
+	copyRemoteBlocks(f.t, priorRemote, f.bs.RemoteStore())
 
 	// The freshly-opened block store holds a new log-blob fd on the SAME fsDir.
 	// f.rt.Shutdown (via the deferred fixture close) does not close block stores,
@@ -233,8 +246,35 @@ func (f *byteVerifyFixture) simulateRestart(reopen func(*testing.T) metadata.Sto
 	})
 }
 
+// copyRemoteBlocks replays every block object from src into dst, standing in
+// for the durability a process-external remote would have on its own.
+func copyRemoteBlocks(t *testing.T, src, dst remote.RemoteStore) {
+	t.Helper()
+	from, ok := src.(remote.RemoteBlockStore)
+	if !ok || dst == nil {
+		return
+	}
+	to, ok := dst.(remote.RemoteBlockStore)
+	if !ok {
+		return
+	}
+	ctx := context.Background()
+	if err := from.WalkBlocks(ctx, func(blockID string, _ block.Meta) error {
+		data, err := from.GetBlock(ctx, blockID)
+		if err != nil {
+			return err
+		}
+		return to.PutBlock(ctx, blockID, bytes.NewReader(data))
+	}); err != nil {
+		t.Fatalf("copy remote blocks: %v", err)
+	}
+}
+
 func (f *byteVerifyFixture) close() {
 	f.t.Helper()
+	// Drop the share first so its block store stops before Shutdown closes the
+	// metadata stores underneath the syncer's in-flight fetches.
+	_ = f.rt.RemoveShare(f.shareName)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := f.rt.Shutdown(ctx); err != nil {

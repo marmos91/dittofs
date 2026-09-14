@@ -239,8 +239,7 @@ func TestListMountsIsolation(t *testing.T) {
 }
 
 func TestShareOperations(t *testing.T) {
-	rt := New(nil)
-	setJournalRoot(t, rt)
+	rt, bsID := newRuntimeWithBlockStore(t)
 	ctx := context.Background()
 	metaStore := memory.NewMemoryMetadataStoreWithDefaults()
 	if err := rt.RegisterMetadataStore("test-meta", metaStore); err != nil {
@@ -251,6 +250,7 @@ func TestShareOperations(t *testing.T) {
 		config := &ShareConfig{
 			Name:          "/export",
 			MetadataStore: "test-meta",
+			BlockStoreID:  bsID,
 		}
 
 		err := rt.AddShare(ctx, config)
@@ -267,6 +267,7 @@ func TestShareOperations(t *testing.T) {
 		config := &ShareConfig{
 			Name:          "",
 			MetadataStore: "test-meta",
+			BlockStoreID:  bsID,
 		}
 
 		err := rt.AddShare(ctx, config)
@@ -279,6 +280,7 @@ func TestShareOperations(t *testing.T) {
 		config := &ShareConfig{
 			Name:          "/export",
 			MetadataStore: "test-meta",
+			BlockStoreID:  bsID,
 		}
 
 		err := rt.AddShare(ctx, config)
@@ -291,6 +293,7 @@ func TestShareOperations(t *testing.T) {
 		config := &ShareConfig{
 			Name:          "/new-share",
 			MetadataStore: "non-existing",
+			BlockStoreID:  bsID,
 		}
 
 		err := rt.AddShare(ctx, config)
@@ -497,8 +500,7 @@ func TestApplyIdentityMapping(t *testing.T) {
 }
 
 func TestGetMetadataStoreForShare(t *testing.T) {
-	rt := New(nil)
-	setJournalRoot(t, rt)
+	rt, bsID := newRuntimeWithBlockStore(t)
 	ctx := context.Background()
 	metaStore := memory.NewMemoryMetadataStoreWithDefaults()
 	if err := rt.RegisterMetadataStore("test-meta", metaStore); err != nil {
@@ -508,6 +510,7 @@ func TestGetMetadataStoreForShare(t *testing.T) {
 	config := &ShareConfig{
 		Name:          "/export",
 		MetadataStore: "test-meta",
+		BlockStoreID:  bsID,
 	}
 	if err := rt.AddShare(ctx, config); err != nil {
 		t.Fatalf("AddShare failed: %v", err)
@@ -544,8 +547,7 @@ func TestGetServices(t *testing.T) {
 }
 
 func TestGetBlockStoreForHandle(t *testing.T) {
-	rt := New(nil)
-	setJournalRoot(t, rt)
+	rt, bsID := newRuntimeWithBlockStore(t)
 	ctx := context.Background()
 
 	// Register a metadata store and create a share so we can get a valid handle.
@@ -557,6 +559,7 @@ func TestGetBlockStoreForHandle(t *testing.T) {
 	config := &ShareConfig{
 		Name:          "/bs-test",
 		MetadataStore: "test-meta",
+		BlockStoreID:  bsID,
 	}
 	if err := rt.AddShare(ctx, config); err != nil {
 		t.Fatalf("AddShare failed: %v", err)

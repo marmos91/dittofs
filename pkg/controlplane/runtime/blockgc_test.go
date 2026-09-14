@@ -73,8 +73,7 @@ func installCollectGarbageSpy(t *testing.T) *[]*engine.Options {
 // post-AddShare via the test-only setShareRemoteForTest helper.
 func newRuntimeForGC(t *testing.T, shareRemotes map[string]remote.RemoteStore) *Runtime {
 	t.Helper()
-	rt := New(nil)
-	setJournalRoot(t, rt)
+	rt, bsID := newRuntimeWithBlockStore(t)
 	ctx := context.Background()
 
 	// Real memory metadata store keeps AddShare happy without needing a fake
@@ -85,7 +84,7 @@ func newRuntimeForGC(t *testing.T, shareRemotes map[string]remote.RemoteStore) *
 	}
 
 	for name, rs := range shareRemotes {
-		cfg := &ShareConfig{Name: name, MetadataStore: "meta", Enabled: true}
+		cfg := &ShareConfig{Name: name, MetadataStore: "meta", Enabled: true, BlockStoreID: bsID}
 		if err := rt.AddShare(ctx, cfg); err != nil {
 			t.Fatalf("AddShare(%s): %v", name, err)
 		}

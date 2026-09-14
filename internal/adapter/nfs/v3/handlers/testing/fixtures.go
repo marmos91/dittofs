@@ -13,8 +13,10 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers"
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/block/journal"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
+	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
@@ -128,8 +130,25 @@ func NewHandlerFixtureWithStore(
 	}
 	t.Cleanup(func() { _ = blockSvc.Close() })
 
-	// Create registry
-	reg := runtime.New(nil)
+	// Create registry. The control-plane store exists to hold the share's block
+	// store: a share cannot be added without one, even though the fixture
+	// replaces the resulting engine with the one built above.
+	cps, err := cpstore.New(&cpstore.Config{
+		Type:   cpstore.DatabaseTypeSQLite,
+		SQLite: cpstore.SQLiteConfig{Path: ":memory:"},
+	})
+	if err != nil {
+		t.Fatalf("Failed to create control-plane store: %v", err)
+	}
+	t.Cleanup(func() { _ = cps.Close() })
+	blockStoreID, err := cps.CreateBlockStore(ctx, &models.BlockStoreConfig{
+		Name: "test-blocks", Type: "memory",
+	})
+	if err != nil {
+		t.Fatalf("Failed to create block store config: %v", err)
+	}
+
+	reg := runtime.New(cps)
 	reg.SetLocalStoreDefaults(&shares.LocalStoreDefaults{JournalRoot: t.TempDir()})
 
 	// Register the (optionally wrapped) metadata store. The block store/syncer
@@ -147,6 +166,11 @@ func NewHandlerFixtureWithStore(
 	shareConfig := &runtime.ShareConfig{
 		Name:          DefaultShareName,
 		MetadataStore: "test-metaSvc",
+		BlockStoreID:  blockStoreID,
+		// The control-plane store doubles as the identity store, so the export
+		// permission policy is live here. Grant read-write by default, matching
+		// what the fixture asserted when no identity store was configured.
+		DefaultPermission: string(models.PermissionReadWrite),
 		// Export root owned by the default test principal (UID/GID 1000), so
 		// requests issued via Context() operate as the root's owner. The secure
 		// default mode (0755) then grants the owner write access without making
@@ -155,6 +179,13 @@ func NewHandlerFixtureWithStore(
 	}
 	if err := reg.AddShare(ctx, shareConfig); err != nil {
 		t.Fatalf("Failed to add share: %v", err)
+	}
+
+	// AddShare built a block store of its own from the config above. The fixture
+	// serves the engine built here instead, so close that one rather than leave
+	// its syncer and journal running for the rest of the test.
+	if added, err := reg.GetBlockStoreForShare(DefaultShareName); err == nil && added != nil {
+		_ = added.Close()
 	}
 
 	// Publish the per-share BlockStore via the locked setter. GetShare returns

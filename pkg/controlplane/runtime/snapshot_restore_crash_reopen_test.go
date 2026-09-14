@@ -39,7 +39,7 @@ func TestRestoreCrashRecovery_AcrossRealReopen(t *testing.T) {
 				t.Skipf("%s cannot survive a restart (no durable reopen)", bk.name)
 			}
 			meta, metaType := bk.open(t)
-			fx := newByteVerifyFixtureOpts(t, meta, metaType, nil)
+			fx := newByteVerifyFixtureOpts(t, meta, metaType, plaintextRemoteCfg())
 			defer fx.close()
 
 			ctx := context.Background()
@@ -64,6 +64,16 @@ func TestRestoreCrashRecovery_AcrossRealReopen(t *testing.T) {
 			// during the restore below captures this {a,b,c} state.
 			pidC := fx.createEmptyFile(ctx, "c.bin")
 			fx.writeFile(ctx, pidC, origC)
+
+			// The rollback below restores the safety snapshot, and that restore
+			// verifies every hash it holds against the remote. Push c.bin out
+			// before the safety snap captures it.
+			if err := fx.bs.DrainRollups(ctx); err != nil {
+				t.Fatalf("DrainRollups: %v", err)
+			}
+			if err := fx.bs.DrainAllUploads(ctx); err != nil {
+				t.Fatalf("DrainAllUploads: %v", err)
+			}
 
 			// Restore requires the share disabled.
 			if err := fx.rt.DisableShare(ctx, fx.shareName); err != nil {
