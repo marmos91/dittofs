@@ -152,7 +152,14 @@ func TestCarvePackFlipPlanWatermarks(t *testing.T) {
 // a non-empty durable slice TOGETHER with an error — "these committed, then I
 // failed" — and journal flips the validated extents, still calls AfterFile
 // (the committed prefix must be reaped) and returns the error.
-func TestCarvePackSpanningBlockFailureReapsTheCommittedPrefix(t *testing.T) {
+//
+// Scope: this is C5 at the seam, and nothing more. It was named
+// ...SpanningBlockFailureReapsTheCommittedPrefix, which promised more than it
+// checked: one run, no hole, no block spanning anything, and no assertion on
+// the span AfterFile receives. Blocks are the engine's after lane F, so the
+// span property lives where packing does — see
+// TestFlushReapSpanStopsAtTheCommittedFrontier in pkg/block/engine.
+func TestFlushCommittedPrefixFlipsAndReapsDespiteError(t *testing.T) {
 	s, _ := seamStore(t, Config{CarveBlockSize: 32 << 10})
 	ctx := context.Background()
 	writeRunAt(t, s, 0, 4) // [0, 16Ki)
