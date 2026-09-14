@@ -87,8 +87,14 @@ func TestHeldBackSizeDoesNotFreezeTheWriteTime(t *testing.T) {
 
 	f, err := store.GetFile(ctx.Context, handle)
 	require.NoError(t, err)
-	require.False(t, f.Mtime.Before(second),
-		"the store must carry the second write's mtime, got %v want >= %v", f.Mtime, second)
+	// Compared against the first write rather than the second: a backend stores
+	// time at its own granularity (sqlite truncates to 100ns), so a not-before
+	// test against a nanosecond-precise instant fails on a stored value that is
+	// merely rounded down. The sleep above is orders of magnitude larger than
+	// any such rounding, so "moved past the first write" still separates a
+	// fresh timestamp from the inherited frozen one.
+	require.True(t, f.Mtime.After(first),
+		"the store must carry the second write's mtime, not the first's: got %v, the first write was %v", f.Mtime, first)
 }
 
 // TestReadDirectoryReportsTheAckedSize covers a directory listing of a file
