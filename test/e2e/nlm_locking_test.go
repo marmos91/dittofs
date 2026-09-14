@@ -70,13 +70,13 @@ func TestNLMSystemRpcbindRegistration(t *testing.T) {
 	})
 
 	metaStoreName := helpers.UniqueTestName("meta")
-	localStoreName := helpers.UniqueTestName("local")
+	blockStoreName := helpers.UniqueTestName("block")
 	_, err := cli.CreateMetadataStore(metaStoreName, "memory")
 	require.NoError(t, err, "Should create metadata store")
-	_, err = cli.CreateLocalBlockStore(localStoreName, "memory")
-	require.NoError(t, err, "Should create local block store")
+	_, err = cli.CreateBlockStore(blockStoreName, "memory")
+	require.NoError(t, err, "Should create block store")
 
-	_, err = cli.CreateShare("/export-nlm", metaStoreName, localStoreName,
+	_, err = cli.CreateShare("/export-nlm", metaStoreName, blockStoreName,
 		helpers.WithShareDefaultPermission("read-write"))
 	require.NoError(t, err, "Should create share")
 

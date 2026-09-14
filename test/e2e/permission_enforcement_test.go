@@ -40,18 +40,18 @@ func TestPermissionEnforcement(t *testing.T) {
 
 	// Create stores for the share
 	metaStoreName := helpers.UniqueTestName("enf_meta")
-	localStoreName := helpers.UniqueTestName("enf_local")
+	blockStoreName := helpers.UniqueTestName("enf_local")
 
 	_, err := cli.CreateMetadataStore(metaStoreName, "memory")
 	require.NoError(t, err, "Should create metadata store")
 
-	_, err = cli.CreateLocalBlockStore(localStoreName, "memory")
+	_, err = cli.CreateBlockStore(blockStoreName, "memory")
 	require.NoError(t, err, "Should create block store")
 
 	// Create share with default permission "none" (deny by default)
 	// This ensures users must have explicit permission grants to access
 	shareName := "/export"
-	_, err = cli.CreateShare(shareName, metaStoreName, localStoreName,
+	_, err = cli.CreateShare(shareName, metaStoreName, blockStoreName,
 		helpers.WithShareDefaultPermission("none"))
 	require.NoError(t, err, "Should create share with default permission none")
 
@@ -69,7 +69,7 @@ func TestPermissionEnforcement(t *testing.T) {
 	t.Cleanup(func() {
 		_ = cli.DeleteShare(shareName)
 		_ = cli.DeleteMetadataStore(metaStoreName)
-		_ = cli.DeleteLocalBlockStore(localStoreName)
+		_ = cli.DeleteBlockStore(blockStoreName)
 	})
 
 	// Create an admin user for SMB testing.

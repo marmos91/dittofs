@@ -130,22 +130,15 @@ func TestDEDUP03_VMFleet40Pct(t *testing.T) {
 		"create S3 bucket")
 	t.Cleanup(func() { lsHelper.CleanupBucket(context.Background(), bucketName) })
 
-	remoteName := helpers.UniqueTestName("vmfleet-remote")
-	_, err = cli.CreateRemoteBlockStore(remoteName, "s3",
+	blockName := helpers.UniqueTestName("vmfleet-block")
+	_, err = cli.CreateBlockStore(blockName, "s3",
 		helpers.WithBlockS3Config(bucketName, "us-east-1",
 			lsHelper.Endpoint, "test", "test"))
-	require.NoError(t, err, "create remote block store")
-	t.Cleanup(func() { _ = cli.DeleteRemoteBlockStore(remoteName) })
-
-	localName := helpers.UniqueTestName("vmfleet-local")
-	localPath := t.TempDir()
-	_, err = cli.CreateLocalBlockStore(localName, "fs",
-		helpers.WithBlockRawConfig(fmt.Sprintf(`{"path":"%s"}`, localPath)))
-	require.NoError(t, err, "create local block store")
-	t.Cleanup(func() { _ = cli.DeleteLocalBlockStore(localName) })
+	require.NoError(t, err, "create block store")
+	t.Cleanup(func() { _ = cli.DeleteBlockStore(blockName) })
 
 	shareName := "/vm-fleet"
-	_, err = cli.CreateShare(shareName, metaName, localName, helpers.WithShareRemote(remoteName))
+	_, err = cli.CreateShare(shareName, metaName, blockName)
 	require.NoError(t, err, "create share %s", shareName)
 	t.Cleanup(func() { _ = cli.DeleteShare(shareName) })
 

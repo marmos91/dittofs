@@ -39,19 +39,19 @@ func TestSMBTrashRecycleAndRestore(t *testing.T) {
 	// Login as admin to configure the server.
 	runner := helpers.LoginAsAdmin(t, sp.APIURL())
 
-	// Create memory metadata + local block store for the test share.
+	// Create memory metadata + block store for the test share.
 	metaStoreName := helpers.UniqueTestName("meta")
-	localStoreName := helpers.UniqueTestName("local")
+	blockStoreName := helpers.UniqueTestName("block")
 	shareName := "/export"
 
 	_, err := runner.CreateMetadataStore(metaStoreName, "memory")
 	require.NoError(t, err, "Should create metadata store")
 
-	_, err = runner.CreateLocalBlockStore(localStoreName, "memory")
+	_, err = runner.CreateBlockStore(blockStoreName, "memory")
 	require.NoError(t, err, "Should create block store")
 
 	// Create the share with read-write default permission and recycle bin enabled.
-	_, err = runner.CreateShare(shareName, metaStoreName, localStoreName,
+	_, err = runner.CreateShare(shareName, metaStoreName, blockStoreName,
 		helpers.WithShareDefaultPermission("read-write"),
 		helpers.WithShareTrashEnabled())
 	require.NoError(t, err, "Should create trash-enabled share")

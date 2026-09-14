@@ -44,7 +44,7 @@ func TestNFSFileOperations(t *testing.T) {
 
 	// Create metadata and block stores for our test share
 	metaStoreName := helpers.UniqueTestName("meta")
-	localStoreName := helpers.UniqueTestName("local")
+	blockStoreName := helpers.UniqueTestName("block")
 	shareName := "/export"
 
 	_, err := runner.CreateMetadataStore(metaStoreName, "memory")
@@ -53,14 +53,14 @@ func TestNFSFileOperations(t *testing.T) {
 		_ = runner.DeleteMetadataStore(metaStoreName)
 	})
 
-	_, err = runner.CreateLocalBlockStore(localStoreName, "memory")
+	_, err = runner.CreateBlockStore(blockStoreName, "memory")
 	require.NoError(t, err, "Should create block store")
 	t.Cleanup(func() {
-		_ = runner.DeleteLocalBlockStore(localStoreName)
+		_ = runner.DeleteBlockStore(blockStoreName)
 	})
 
 	// Create the share
-	_, err = runner.CreateShare(shareName, metaStoreName, localStoreName)
+	_, err = runner.CreateShare(shareName, metaStoreName, blockStoreName)
 	require.NoError(t, err, "Should create share")
 	t.Cleanup(func() {
 		_ = runner.DeleteShare(shareName)

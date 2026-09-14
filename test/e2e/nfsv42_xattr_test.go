@@ -125,8 +125,7 @@ func TestNFSv42XattrPersistAcrossRestart(t *testing.T) {
 	t.Setenv("DITTOFS_ADMIN_INITIAL_PASSWORD", helpers.GetAdminPassword())
 
 	badgerPath := filepath.Join(stateDir, "badger")
-	blocksPath := filepath.Join(stateDir, "blocks")
-	const metaName, localName = "xpmeta", "xplocal"
+	const metaName, blockName = "xpmeta", "xpblock"
 	const shareName = "/export"
 
 	// ---- First lifetime: create stores/share/adapter, set the xattr ----
@@ -144,10 +143,9 @@ func TestNFSv42XattrPersistAcrossRestart(t *testing.T) {
 
 	_, err := cli.CreateMetadataStore(metaName, "badger", helpers.WithMetaDBPath(badgerPath))
 	require.NoError(t, err, "create badger metadata store")
-	_, err = cli.CreateLocalBlockStore(localName, "fs",
-		helpers.WithBlockRawConfig(fmt.Sprintf(`{"path":"%s"}`, blocksPath)))
-	require.NoError(t, err, "create fs block store")
-	_, err = cli.CreateShare(shareName, metaName, localName,
+	_, err = cli.CreateBlockStore(blockName, "memory")
+	require.NoError(t, err, "create block store")
+	_, err = cli.CreateShare(shareName, metaName, blockName,
 		helpers.WithShareDefaultPermission("read-write"))
 	require.NoError(t, err, "create share")
 	_, err = cli.EnableAdapter("nfs", helpers.WithAdapterPort(nfsPort))

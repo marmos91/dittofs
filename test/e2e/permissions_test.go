@@ -42,61 +42,61 @@ func TestSharePermissions(t *testing.T) {
 
 	// Create shared stores for all subtests
 	metaStoreName := helpers.UniqueTestName("perm_meta")
-	localStoreName := helpers.UniqueTestName("perm_local")
+	blockStoreName := helpers.UniqueTestName("perm_local")
 
 	_, err := cli.CreateMetadataStore(metaStoreName, "memory")
 	require.NoError(t, err, "Should create metadata store")
 
-	_, err = cli.CreateLocalBlockStore(localStoreName, "memory")
+	_, err = cli.CreateBlockStore(blockStoreName, "memory")
 	require.NoError(t, err, "Should create block store")
 
 	t.Cleanup(func() {
 		_ = cli.DeleteMetadataStore(metaStoreName)
-		_ = cli.DeleteLocalBlockStore(localStoreName)
+		_ = cli.DeleteBlockStore(blockStoreName)
 	})
 
 	// Note: These tests run serially (no t.Parallel()) because SQLite
 	// doesn't handle concurrent writes well in the E2E test environment.
 
 	t.Run("PRM-01 grant read permission to user", func(t *testing.T) {
-		testGrantReadPermissionToUser(t, cli, metaStoreName, localStoreName)
+		testGrantReadPermissionToUser(t, cli, metaStoreName, blockStoreName)
 	})
 
 	t.Run("PRM-02 grant read-write permission to user", func(t *testing.T) {
-		testGrantReadWritePermissionToUser(t, cli, metaStoreName, localStoreName)
+		testGrantReadWritePermissionToUser(t, cli, metaStoreName, blockStoreName)
 	})
 
 	t.Run("PRM-03 grant read permission to group", func(t *testing.T) {
-		testGrantReadPermissionToGroup(t, cli, metaStoreName, localStoreName)
+		testGrantReadPermissionToGroup(t, cli, metaStoreName, blockStoreName)
 	})
 
 	t.Run("PRM-04 grant read-write permission to group", func(t *testing.T) {
-		testGrantReadWritePermissionToGroup(t, cli, metaStoreName, localStoreName)
+		testGrantReadWritePermissionToGroup(t, cli, metaStoreName, blockStoreName)
 	})
 
 	t.Run("PRM-05 revoke permission from user", func(t *testing.T) {
-		testRevokePermissionFromUser(t, cli, metaStoreName, localStoreName)
+		testRevokePermissionFromUser(t, cli, metaStoreName, blockStoreName)
 	})
 
 	t.Run("PRM-06 revoke permission from group", func(t *testing.T) {
-		testRevokePermissionFromGroup(t, cli, metaStoreName, localStoreName)
+		testRevokePermissionFromGroup(t, cli, metaStoreName, blockStoreName)
 	})
 
 	t.Run("PRM-07 list permissions for share", func(t *testing.T) {
-		testListPermissionsForShare(t, cli, metaStoreName, localStoreName)
+		testListPermissionsForShare(t, cli, metaStoreName, blockStoreName)
 	})
 
 	t.Run("empty permissions list for new share", func(t *testing.T) {
-		testEmptyPermissionsList(t, cli, metaStoreName, localStoreName)
+		testEmptyPermissionsList(t, cli, metaStoreName, blockStoreName)
 	})
 
 	t.Run("permission override replaces previous level", func(t *testing.T) {
-		testPermissionOverride(t, cli, metaStoreName, localStoreName)
+		testPermissionOverride(t, cli, metaStoreName, blockStoreName)
 	})
 }
 
 // testGrantReadPermissionToUser verifies granting read permission to a user (PRM-01).
-func testGrantReadPermissionToUser(t *testing.T, cli *helpers.CLIRunner, metaStore, localStore string) {
+func testGrantReadPermissionToUser(t *testing.T, cli *helpers.CLIRunner, metaStore, blockStore string) {
 	shareName := "/" + helpers.UniqueTestName("share_prm01")
 	userName := helpers.UniqueTestName("user_prm01")
 
@@ -107,7 +107,7 @@ func testGrantReadPermissionToUser(t *testing.T, cli *helpers.CLIRunner, metaSto
 	})
 
 	// Create share
-	_, err := cli.CreateShare(shareName, metaStore, localStore)
+	_, err := cli.CreateShare(shareName, metaStore, blockStore)
 	require.NoError(t, err, "Should create share")
 
 	// Create user
@@ -126,7 +126,7 @@ func testGrantReadPermissionToUser(t *testing.T, cli *helpers.CLIRunner, metaSto
 }
 
 // testGrantReadWritePermissionToUser verifies granting read-write permission to a user (PRM-02).
-func testGrantReadWritePermissionToUser(t *testing.T, cli *helpers.CLIRunner, metaStore, localStore string) {
+func testGrantReadWritePermissionToUser(t *testing.T, cli *helpers.CLIRunner, metaStore, blockStore string) {
 	shareName := "/" + helpers.UniqueTestName("share_prm02")
 	userName := helpers.UniqueTestName("user_prm02")
 
@@ -136,7 +136,7 @@ func testGrantReadWritePermissionToUser(t *testing.T, cli *helpers.CLIRunner, me
 	})
 
 	// Create share
-	_, err := cli.CreateShare(shareName, metaStore, localStore)
+	_, err := cli.CreateShare(shareName, metaStore, blockStore)
 	require.NoError(t, err, "Should create share")
 
 	// Create user
@@ -155,7 +155,7 @@ func testGrantReadWritePermissionToUser(t *testing.T, cli *helpers.CLIRunner, me
 }
 
 // testGrantReadPermissionToGroup verifies granting read permission to a group (PRM-03).
-func testGrantReadPermissionToGroup(t *testing.T, cli *helpers.CLIRunner, metaStore, localStore string) {
+func testGrantReadPermissionToGroup(t *testing.T, cli *helpers.CLIRunner, metaStore, blockStore string) {
 	shareName := "/" + helpers.UniqueTestName("share_prm03")
 	groupName := helpers.UniqueTestName("group_prm03")
 
@@ -165,7 +165,7 @@ func testGrantReadPermissionToGroup(t *testing.T, cli *helpers.CLIRunner, metaSt
 	})
 
 	// Create share
-	_, err := cli.CreateShare(shareName, metaStore, localStore)
+	_, err := cli.CreateShare(shareName, metaStore, blockStore)
 	require.NoError(t, err, "Should create share")
 
 	// Create group
@@ -184,7 +184,7 @@ func testGrantReadPermissionToGroup(t *testing.T, cli *helpers.CLIRunner, metaSt
 }
 
 // testGrantReadWritePermissionToGroup verifies granting read-write permission to a group (PRM-04).
-func testGrantReadWritePermissionToGroup(t *testing.T, cli *helpers.CLIRunner, metaStore, localStore string) {
+func testGrantReadWritePermissionToGroup(t *testing.T, cli *helpers.CLIRunner, metaStore, blockStore string) {
 	shareName := "/" + helpers.UniqueTestName("share_prm04")
 	groupName := helpers.UniqueTestName("group_prm04")
 
@@ -194,7 +194,7 @@ func testGrantReadWritePermissionToGroup(t *testing.T, cli *helpers.CLIRunner, m
 	})
 
 	// Create share
-	_, err := cli.CreateShare(shareName, metaStore, localStore)
+	_, err := cli.CreateShare(shareName, metaStore, blockStore)
 	require.NoError(t, err, "Should create share")
 
 	// Create group
@@ -213,7 +213,7 @@ func testGrantReadWritePermissionToGroup(t *testing.T, cli *helpers.CLIRunner, m
 }
 
 // testRevokePermissionFromUser verifies revoking permission from a user (PRM-05).
-func testRevokePermissionFromUser(t *testing.T, cli *helpers.CLIRunner, metaStore, localStore string) {
+func testRevokePermissionFromUser(t *testing.T, cli *helpers.CLIRunner, metaStore, blockStore string) {
 	shareName := "/" + helpers.UniqueTestName("share_prm05")
 	userName := helpers.UniqueTestName("user_prm05")
 
@@ -223,7 +223,7 @@ func testRevokePermissionFromUser(t *testing.T, cli *helpers.CLIRunner, metaStor
 	})
 
 	// Create share
-	_, err := cli.CreateShare(shareName, metaStore, localStore)
+	_, err := cli.CreateShare(shareName, metaStore, blockStore)
 	require.NoError(t, err, "Should create share")
 
 	// Create user
@@ -252,7 +252,7 @@ func testRevokePermissionFromUser(t *testing.T, cli *helpers.CLIRunner, metaStor
 }
 
 // testRevokePermissionFromGroup verifies revoking permission from a group (PRM-06).
-func testRevokePermissionFromGroup(t *testing.T, cli *helpers.CLIRunner, metaStore, localStore string) {
+func testRevokePermissionFromGroup(t *testing.T, cli *helpers.CLIRunner, metaStore, blockStore string) {
 	shareName := "/" + helpers.UniqueTestName("share_prm06")
 	groupName := helpers.UniqueTestName("group_prm06")
 
@@ -262,7 +262,7 @@ func testRevokePermissionFromGroup(t *testing.T, cli *helpers.CLIRunner, metaSto
 	})
 
 	// Create share
-	_, err := cli.CreateShare(shareName, metaStore, localStore)
+	_, err := cli.CreateShare(shareName, metaStore, blockStore)
 	require.NoError(t, err, "Should create share")
 
 	// Create group
@@ -291,7 +291,7 @@ func testRevokePermissionFromGroup(t *testing.T, cli *helpers.CLIRunner, metaSto
 }
 
 // testListPermissionsForShare verifies listing permissions with both user and group (PRM-07).
-func testListPermissionsForShare(t *testing.T, cli *helpers.CLIRunner, metaStore, localStore string) {
+func testListPermissionsForShare(t *testing.T, cli *helpers.CLIRunner, metaStore, blockStore string) {
 	shareName := "/" + helpers.UniqueTestName("share_prm07")
 	userName := helpers.UniqueTestName("user_prm07")
 	groupName := helpers.UniqueTestName("group_prm07")
@@ -303,7 +303,7 @@ func testListPermissionsForShare(t *testing.T, cli *helpers.CLIRunner, metaStore
 	})
 
 	// Create share
-	_, err := cli.CreateShare(shareName, metaStore, localStore)
+	_, err := cli.CreateShare(shareName, metaStore, blockStore)
 	require.NoError(t, err, "Should create share")
 
 	// Create user and group
@@ -332,7 +332,7 @@ func testListPermissionsForShare(t *testing.T, cli *helpers.CLIRunner, metaStore
 }
 
 // testEmptyPermissionsList verifies that a new share has no permissions.
-func testEmptyPermissionsList(t *testing.T, cli *helpers.CLIRunner, metaStore, localStore string) {
+func testEmptyPermissionsList(t *testing.T, cli *helpers.CLIRunner, metaStore, blockStore string) {
 	shareName := "/" + helpers.UniqueTestName("share_empty")
 
 	t.Cleanup(func() {
@@ -340,7 +340,7 @@ func testEmptyPermissionsList(t *testing.T, cli *helpers.CLIRunner, metaStore, l
 	})
 
 	// Create share
-	_, err := cli.CreateShare(shareName, metaStore, localStore)
+	_, err := cli.CreateShare(shareName, metaStore, blockStore)
 	require.NoError(t, err, "Should create share")
 
 	// List permissions - should return empty list, not error
@@ -350,7 +350,7 @@ func testEmptyPermissionsList(t *testing.T, cli *helpers.CLIRunner, metaStore, l
 }
 
 // testPermissionOverride verifies that granting a new permission replaces the previous one.
-func testPermissionOverride(t *testing.T, cli *helpers.CLIRunner, metaStore, localStore string) {
+func testPermissionOverride(t *testing.T, cli *helpers.CLIRunner, metaStore, blockStore string) {
 	shareName := "/" + helpers.UniqueTestName("share_override")
 	userName := helpers.UniqueTestName("user_override")
 
@@ -360,7 +360,7 @@ func testPermissionOverride(t *testing.T, cli *helpers.CLIRunner, metaStore, loc
 	})
 
 	// Create share
-	_, err := cli.CreateShare(shareName, metaStore, localStore)
+	_, err := cli.CreateShare(shareName, metaStore, blockStore)
 	require.NoError(t, err, "Should create share")
 
 	// Create user

@@ -42,16 +42,16 @@ func TestNFSRootSquash(t *testing.T) {
 	runner := helpers.LoginAsAdmin(t, sp.APIURL())
 
 	metaStoreName := helpers.UniqueTestName("meta")
-	localStoreName := helpers.UniqueTestName("local")
+	blockStoreName := helpers.UniqueTestName("block")
 	shareName := "/export"
 
 	_, err := runner.CreateMetadataStore(metaStoreName, "memory")
 	require.NoError(t, err, "Should create metadata store")
 	t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaStoreName) })
 
-	_, err = runner.CreateLocalBlockStore(localStoreName, "memory")
+	_, err = runner.CreateBlockStore(blockStoreName, "memory")
 	require.NoError(t, err, "Should create block store")
-	t.Cleanup(func() { _ = runner.DeleteLocalBlockStore(localStoreName) })
+	t.Cleanup(func() { _ = runner.DeleteBlockStore(blockStoreName) })
 
 	// default_permission=read models the common "world-readable, granted-writable"
 	// share: everyone may read/traverse (so an NFSv4 client mounting as the
@@ -61,7 +61,7 @@ func TestNFSRootSquash(t *testing.T) {
 	// the traversal needed to mount, so "none" is reachable only over NFSv3's
 	// separate mount protocol. All assertions below are about write access, which
 	// "read" leaves least-privilege.
-	_, err = runner.CreateShare(shareName, metaStoreName, localStoreName,
+	_, err = runner.CreateShare(shareName, metaStoreName, blockStoreName,
 		helpers.WithShareDefaultPermission("read"))
 	require.NoError(t, err, "Should create share")
 	t.Cleanup(func() { _ = runner.DeleteShare(shareName) })

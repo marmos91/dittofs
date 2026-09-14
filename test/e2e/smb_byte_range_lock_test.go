@@ -193,14 +193,14 @@ func setupSMBByteRangeLockTest(t *testing.T) (mount1, mount2 *framework.Mount) {
 	cli := helpers.LoginAsAdmin(t, sp.APIURL())
 
 	metaStoreName := helpers.UniqueTestName("meta")
-	localStoreName := helpers.UniqueTestName("local")
+	blockStoreName := helpers.UniqueTestName("block")
 	_, err := cli.CreateMetadataStore(metaStoreName, "memory")
 	require.NoError(t, err, "Should create metadata store")
-	_, err = cli.CreateLocalBlockStore(localStoreName, "memory")
-	require.NoError(t, err, "Should create local block store")
+	_, err = cli.CreateBlockStore(blockStoreName, "memory")
+	require.NoError(t, err, "Should create block store")
 
 	shareName := helpers.UniqueTestName("smblock")
-	_, err = cli.CreateShare(shareName, metaStoreName, localStoreName,
+	_, err = cli.CreateShare(shareName, metaStoreName, blockStoreName,
 		helpers.WithShareDefaultPermission("read-write"))
 	require.NoError(t, err, "Should create share")
 

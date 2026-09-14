@@ -17,12 +17,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestStoreMatrixOperations validates that all 18 combinations of the 3D store
-// matrix (3 metadata x 2 local x 3 remote) work correctly with file operations
-// via NFSv3.
+// TestStoreMatrixOperations validates that all 6 combinations of the store
+// matrix (3 metadata x 2 block) work correctly with file operations via NFSv3.
 //
-// In short mode, only 3-4 representative combos run.
-// With DITTOFS_E2E_LOCAL_ONLY=1, only remoteType="none" combos run.
+// In short mode, only representative combos run.
+// With DITTOFS_E2E_LOCAL_ONLY=1, only combos without an S3 block store run.
 func TestStoreMatrixOperations(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping store matrix tests in short mode")
@@ -54,13 +53,13 @@ func TestStoreMatrixOperations(t *testing.T) {
 				t.Skip("Skipping: Localstack (S3) container not available")
 			}
 
-			runStoreMatrix3DTest(t, sc, postgresHelper, localstackHelper)
+			runStoreMatrixTest(t, sc, postgresHelper, localstackHelper)
 		})
 	}
 }
 
-// runStoreMatrix3DTest executes file operation tests for a specific 3D store combination.
-func runStoreMatrix3DTest(t *testing.T, sc matrixStoreConfig, pgHelper *framework.PostgresHelper, lsHelper *framework.LocalstackHelper) {
+// runStoreMatrixTest executes file operation tests for a specific store combination.
+func runStoreMatrixTest(t *testing.T, sc matrixStoreConfig, pgHelper *framework.PostgresHelper, lsHelper *framework.LocalstackHelper) {
 	t.Helper()
 
 	sp := helpers.StartServerProcess(t, "")
@@ -72,8 +71,7 @@ func runStoreMatrix3DTest(t *testing.T, sc matrixStoreConfig, pgHelper *framewor
 
 	helpers.SetupStoreMatrix(t, runner, shareName, helpers.MatrixSetupConfig{
 		MetadataType: sc.metadataType,
-		LocalType:    sc.localType,
-		RemoteType:   sc.remoteType,
+		BlockType:    sc.blockType,
 	}, pgHelper, lsHelper)
 
 	nfsPort := helpers.FindFreePort(t)

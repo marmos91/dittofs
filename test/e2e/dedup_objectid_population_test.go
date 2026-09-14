@@ -90,7 +90,7 @@ func TestObjectIDPopulation_NFSWriteQuiesce(t *testing.T) {
 	require.NoError(t, err, "create Postgres metadata store")
 	t.Cleanup(func() { _ = cli.DeleteMetadataStore(metaName) })
 
-	// ---- One S3 bucket + remote-block-store record ----
+	// ---- One S3 bucket + block-store record ----
 	bucketName := strings.ReplaceAll(
 		fmt.Sprintf("dittofs-objid-%s", helpers.UniqueTestName("bkt")), "_", "-")
 	require.NoError(t,
@@ -98,24 +98,16 @@ func TestObjectIDPopulation_NFSWriteQuiesce(t *testing.T) {
 		"create S3 bucket")
 	t.Cleanup(func() { lsHelper.CleanupBucket(context.Background(), bucketName) })
 
-	remoteName := helpers.UniqueTestName("objid-remote")
-	_, err = cli.CreateRemoteBlockStore(remoteName, "s3",
+	blockName := helpers.UniqueTestName("objid-block")
+	_, err = cli.CreateBlockStore(blockName, "s3",
 		helpers.WithBlockS3Config(bucketName, "us-east-1",
 			lsHelper.Endpoint, "test", "test"))
-	require.NoError(t, err, "create remote block store")
-	t.Cleanup(func() { _ = cli.DeleteRemoteBlockStore(remoteName) })
-
-	// ---- Per-share local block store (CLAUDE.md invariant: dirs isolated) ----
-	localName := helpers.UniqueTestName("objid-local")
-	localPath := t.TempDir()
-	_, err = cli.CreateLocalBlockStore(localName, "fs",
-		helpers.WithBlockRawConfig(fmt.Sprintf(`{"path":"%s"}`, localPath)))
-	require.NoError(t, err, "create local block store")
-	t.Cleanup(func() { _ = cli.DeleteLocalBlockStore(localName) })
+	require.NoError(t, err, "create block store")
+	t.Cleanup(func() { _ = cli.DeleteBlockStore(blockName) })
 
 	// ---- One share ----
 	shareName := "/objid-pop"
-	_, err = cli.CreateShare(shareName, metaName, localName, helpers.WithShareRemote(remoteName))
+	_, err = cli.CreateShare(shareName, metaName, blockName)
 	require.NoError(t, err, "create share %s", shareName)
 	t.Cleanup(func() { _ = cli.DeleteShare(shareName) })
 

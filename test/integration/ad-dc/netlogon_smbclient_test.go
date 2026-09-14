@@ -82,7 +82,7 @@ func TestSMBNTLMNetlogonPassthrough(t *testing.T) {
 	}
 	cli = cli.WithToken(tokens.AccessToken)
 
-	// Create in-memory metadata store and local block store.
+	// Create in-memory metadata store and block store.
 	metaStore, err := cli.CreateMetadataStore(&apiclient.CreateStoreRequest{
 		Name: "ntlm-meta",
 		Type: "memory",
@@ -91,8 +91,8 @@ func TestSMBNTLMNetlogonPassthrough(t *testing.T) {
 		t.Fatalf("create metadata store: %v", err)
 	}
 
-	_, err = cli.CreateBlockStore("local", &apiclient.CreateStoreRequest{
-		Name: "ntlm-local",
+	_, err = cli.CreateBlockStore(&apiclient.CreateStoreRequest{
+		Name: "ntlm-block",
 		Type: "memory",
 	})
 	if err != nil {
@@ -104,7 +104,7 @@ func TestSMBNTLMNetlogonPassthrough(t *testing.T) {
 	_, err = cli.CreateShare(&apiclient.CreateShareRequest{
 		Name:              "/" + shareName,
 		MetadataStoreID:   metaStore.ID,
-		LocalBlockStore:   "ntlm-local",
+		BlockStore:        "ntlm-block",
 		DefaultPermission: "read-write",
 	})
 	if err != nil {
