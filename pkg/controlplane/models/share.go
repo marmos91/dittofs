@@ -14,6 +14,21 @@ const (
 	KerberosLevelKrb5p = "krb5p"
 )
 
+// CommitAck selects what an NFS COMMIT or SMB Flush waits for before it
+// acknowledges a write.
+type CommitAck string
+
+const (
+	// CommitAckJournal acknowledges once the write is durable in the share's
+	// journal. It survives process and host crash, not device loss.
+	CommitAckJournal CommitAck = "journal"
+
+	// CommitAckBlockStore acknowledges only once the data has reached the
+	// block store. It survives device loss, at the cost of every commit
+	// waiting for an upload.
+	CommitAckBlockStore CommitAck = "block-store"
+)
+
 // Share defines a DittoFS share/export configuration.
 // Protocol-specific settings (NFS squash, SMB guest access, etc.) are stored
 // in the share_adapter_configs table via ShareAdapterConfig.
@@ -89,6 +104,7 @@ type Share struct {
 	RetentionPolicy   string    `gorm:"size:10;default:''" json:"retention_policy"`                // pin, ttl, lru (empty = LRU default)
 	RetentionTTL      int64     `gorm:"default:0" json:"retention_ttl"`                            // TTL in seconds (0 = not set)
 	JournalSize       int64     `gorm:"default:0" json:"journal_size"`                             // Per-share journal size override in bytes (0 = system default)
+	CommitAck         CommitAck `gorm:"size:16;default:journal" json:"commit_ack"`                 // What an NFS COMMIT or SMB Flush waits for
 	ReadBufferSize    int64     `gorm:"default:0;column:read_buffer_size" json:"read_buffer_size"` // Read buffer override in bytes (0 = system default)
 	QuotaBytes        int64     `gorm:"default:0;column:quota_bytes" json:"quota_bytes"`           // Per-share byte quota (0 = unlimited)
 	CreatedAt         time.Time `gorm:"autoCreateTime" json:"created_at"`
