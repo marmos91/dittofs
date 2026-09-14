@@ -3805,7 +3805,7 @@ argument. These operations require admin privileges.
 dfsctl share list
 
 # Create a new share
-dfsctl share create --name /archive --metadata default --local fs-cache --remote s3-store
+dfsctl share create --name /archive --metadata default --block-store s3-store
 
 # Show share details
 dfsctl share show /archive
