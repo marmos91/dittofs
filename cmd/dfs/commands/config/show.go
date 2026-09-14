@@ -103,7 +103,7 @@ func yamlKeyedView(cfg *config.Config) (interface{}, error) {
 
 // runShowDeduced displays auto-deduced block store defaults with system info.
 // The append-log budget (max_log_bytes) reflects the effective value: a global
-// blockstore.local.max_log_bytes override (from the config file or DITTOFS_*
+// blockstore.journal.max_log_bytes override (from the config file or DITTOFS_*
 // env) takes precedence over the system-deduced default.
 func runShowDeduced(configPath string) error {
 	detector := sysinfo.NewDetector()
@@ -116,9 +116,9 @@ func runShowDeduced(configPath string) error {
 	// the effective max_log_bytes (global override applied if any).
 	effectiveMaxLogBytes := deduced.MaxLogBytes
 	maxLogBytesSource := "25% of " + mem + ", floor 1 GiB"
-	if cfg, err := config.Load(configPath); err == nil && cfg.Blockstore.Local.MaxLogBytes > 0 {
-		effectiveMaxLogBytes = cfg.Blockstore.Local.MaxLogBytes
-		maxLogBytesSource = "blockstore.local.max_log_bytes override"
+	if cfg, err := config.Load(configPath); err == nil && cfg.Blockstore.Journal.MaxLogBytes > 0 {
+		effectiveMaxLogBytes = cfg.Blockstore.Journal.MaxLogBytes
+		maxLogBytesSource = "blockstore.journal.max_log_bytes override"
 	}
 
 	fmt.Printf("# System Resources\n")
@@ -132,7 +132,7 @@ func runShowDeduced(configPath string) error {
 		block.FormatBytes(deduced.LocalStoreSize), mem)
 	fmt.Printf("read_buffer_size: %s  # 12.5%% of %s\n",
 		block.FormatBytes(uint64(deduced.ReadBufferSize)), mem)
-	fmt.Printf("max_log_bytes: %s  # %s; overridable globally (blockstore.local.max_log_bytes) and per-store\n",
+	fmt.Printf("max_log_bytes: %s  # %s; overridable globally (blockstore.journal.max_log_bytes) and per-store\n",
 		block.FormatBytes(effectiveMaxLogBytes), maxLogBytesSource)
 	fmt.Printf("parallel_syncs: %d  # max(4, %d CPUs)\n",
 		deduced.ParallelSyncs, detector.AvailableCPUs())

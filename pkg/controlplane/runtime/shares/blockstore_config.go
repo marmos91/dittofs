@@ -85,7 +85,7 @@ type LocalStoreDefaults struct {
 	// MaxLogBytes is the effective append-log pressure budget (bytes) applied
 	// to a share when its per-share block store config does NOT carry an
 	// explicit `max_log_bytes`. It resolves the global config
-	// blockstore.local.max_log_bytes (when set) or, failing that, the
+	// blockstore.journal.max_log_bytes (when set) or, failing that, the
 	// system-deduced default (DeduceDefaults.MaxLogBytes). 0 leaves the
 	// FSStore's own internal default in force. Precedence at the share level
 	// is: per-store config["max_log_bytes"] > this global/deduced default.

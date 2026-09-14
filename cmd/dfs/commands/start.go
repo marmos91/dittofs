@@ -225,12 +225,12 @@ func runStart(cmd *cobra.Command, args []string) error {
 	}
 
 	// Resolve the effective append-log pressure budget default: the global
-	// config blockstore.local.max_log_bytes wins when set, otherwise the
+	// config blockstore.journal.max_log_bytes wins when set, otherwise the
 	// system-deduced default. A per-share block store config max_log_bytes
 	// still overrides this inside CreateLocalStoreFromConfig.
 	effectiveMaxLogBytes := deduced.MaxLogBytes
-	if cfg.Blockstore.Local.MaxLogBytes > 0 {
-		effectiveMaxLogBytes = cfg.Blockstore.Local.MaxLogBytes
+	if cfg.Blockstore.Journal.MaxLogBytes > 0 {
+		effectiveMaxLogBytes = cfg.Blockstore.Journal.MaxLogBytes
 	}
 
 	// Set per-share defaults BEFORE loading shares (AddShare creates BlockStores).
@@ -238,8 +238,8 @@ func runStart(cmd *cobra.Command, args []string) error {
 		MaxSize:                deduced.LocalStoreSize,
 		ReadBufferBytes:        deduced.ReadBufferSize,
 		MaxLogBytes:            block.ClampToInt64(effectiveMaxLogBytes),
-		DefaultRemoteCacheSize: cfg.Blockstore.Local.DefaultRemoteCacheSize,
-		BackpressureMaxWait:    cfg.Blockstore.Local.BackpressureMaxWait,
+		DefaultRemoteCacheSize: cfg.Blockstore.Journal.DefaultRemoteCacheSize,
+		BackpressureMaxWait:    cfg.Blockstore.Journal.BackpressureMaxWait,
 	})
 	rt.SetSyncerDefaults(&shares.SyncerDefaults{
 		ParallelDownloads: deduced.ParallelFetches,

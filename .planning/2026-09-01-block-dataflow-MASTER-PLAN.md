@@ -518,6 +518,32 @@ open-questions space, linking to it. **Discussions is currently disabled** on th
   on a channel to count concurrent carve passes). Neither is expressible against a concrete
   `*journal.Store`. The interface narrows to what those two need; it does not vanish.
 
+- **D14. A divergent-path install is refused, not relocated.** If shares disagree about where
+  their local storage lives, startup names the disagreeing shares, prints what the operator must
+  do, and refuses. Same shape as the pre-journal-share refusal. Moving terabytes on a startup path
+  is not a migration, and for a local-only share the journal is the only copy — a move that fails
+  halfway is data loss. Refusing is recoverable.
+- **D15. The user-facing vocabulary becomes "journal", not "local store".** `blockstore.local.*`
+  → `blockstore.journal.*`; `Share.LocalStoreSize` → `JournalSize`; `--local-store-size` →
+  `--journal-size`. Rationale: an operator reading the config should be able to tell which part of
+  the software the knob configures, and "local store" names a layer that no longer exists as a
+  configurable thing. The per-share **durability tier** (`durability` / `writeback` /
+  `require_durable_commit`) moves to a column on the **shares** table beside `JournalSize` — it is
+  genuine per-share policy, unlike everything else in §15.3.
+- **D16. The five homeless knobs promote to `blockstore.journal`.** `chunk_size`, `chunk_max`,
+  `dirty_expire_seconds`, and the per-share `max_size` / `max_log_bytes` overrides become
+  server-level keys. Accepted cost: `chunk_size` stops being tunable per share, so a node mixing a
+  VM-image share with a general-purpose one gets one chunking profile. Revisit only if a real
+  deployment needs both on one node.
+- **D17. `dfsctl share create --local` is dropped entirely.** A share's journal is provisioned
+  automatically under `blockstore.journal.path`. `--remote` stays. Breaks existing scripts and all
+  38 e2e helper call sites — which B breaks regardless.
+- **D18. A config file carrying the old `blockstore.local.*` keys is refused, not silently
+  ignored.** Three keys ship today (`default_remote_cache_size`, `backpressure_max_wait`,
+  `max_log_bytes`). Ignoring an unrecognised key would drop a setting the operator believes is in
+  effect and change runtime behaviour invisibly — the same failure class D14 refuses. Startup
+  names the old key and the new one. *(Decided on the D14 precedent, not separately asked.)*
+
 - **D4. H1 is NOT an incident — no production exposure.** Customers are evaluating DittoFS;
   nothing runs in production. So the five HIGH findings are serious bugs to fix on the normal
   path, not a data-loss event to respond to, and step 0 does not need an emergency release.
@@ -1140,14 +1166,18 @@ never fired; it is a guard that has never existed.
    that "a package" and "a module" are both defensible; the split decision only matters at
    `git subtree split` time.
 
-5. **What happens to an install whose shares have divergent local paths?** (step 5, §15.5) A
+5. ~~**What happens to an install whose shares have divergent local paths?**~~ **DECIDED — D14:**
+   refuse and name them. Original framing kept for the reasoning: A
    single `blockstore.local.path` cannot represent two shares deliberately placed on two different
    disks. Proposal: detect at startup, name the disagreeing shares, refuse to start — the #2557
    shape. Silently relocating a local-only share's journal destroys its only copy. **Undecided.**
-6. **Where does the per-share `durability` tier live once local config rows die?** (step 5, §15.3)
+6. ~~**Where does the per-share `durability` tier live?**~~ **DECIDED — D15:** a column on the
+   shares table, and the whole vocabulary renames to "journal". (step 5, §15.3)
    It is genuinely per-share policy, unlike the eight other orphaned knobs. Most likely a column on
    the shares table beside `LocalStoreSize`. **Undecided.**
-7. **Do tests keep a swappable in-process block tier?** (step 5, §15.4) D13 deletes the memory
+7. ~~**Do tests keep a swappable in-process block tier?**~~ **DECIDED — D13 stands:** delete the
+   memory store. Note the e2e half reworks regardless, since D17 removes the CLI that builds those
+   fixtures. (step 5, §15.4) D13 deletes the memory
    store; ~28 files then need journal-on-`t.TempDir()`. Decide before starting — it is the
    difference between a mechanical change and a rewrite.
 
