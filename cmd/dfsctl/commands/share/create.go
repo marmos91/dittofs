@@ -14,8 +14,7 @@ import (
 var (
 	createName              string
 	createMetadata          string
-	createLocal             string
-	createRemote            string
+	createBlockStore        string
 	createReadOnly          bool
 	createEncryptData       bool
 	createDefaultPermission string
@@ -45,47 +44,43 @@ var createCmd = &cobra.Command{
 	Short: "Create a new share",
 	Long: `Create a new share on the DittoFS server.
 
-A share requires a metadata store and a local block store. A remote block store
-is optional and enables tiered storage (local cache + remote durable storage).
+A share requires a metadata store and a block store. The block store holds the
+durable copy of the data; each share also keeps a local journal on disk.
 
 Examples:
-  # Create a share with local block store only
-  dfsctl share create --name /data --metadata default --local fs-cache
-
-  # Create a share with local and remote block stores
-  dfsctl share create --name /archive --metadata default --local fs-cache --remote s3-store
+  # Create a share
+  dfsctl share create --name /data --metadata default --block-store s3-store
 
   # Create a read-only share
-  dfsctl share create --name /readonly --metadata default --local fs-cache --read-only
+  dfsctl share create --name /readonly --metadata default --block-store s3-store --read-only
 
   # Create with default permission allowing all users read-write access
-  dfsctl share create --name /shared --metadata default --local fs-cache --remote s3-store --default-permission read-write
+  dfsctl share create --name /shared --metadata default --block-store s3-store --default-permission read-write
 
   # Create with description
-  dfsctl share create --name /docs --metadata default --local fs-cache --description "Documentation files"
+  dfsctl share create --name /docs --metadata default --block-store s3-store --description "Documentation files"
 
   # Create a pinned share (blocks never evicted)
-  dfsctl share create --name /edge-data --metadata default --local fs-cache --retention pin
+  dfsctl share create --name /edge-data --metadata default --block-store s3-store --retention pin
 
   # Create with TTL retention (evict after 72 hours of no access)
-  dfsctl share create --name /logs --metadata default --local fs-cache --retention ttl --retention-ttl 72h
+  dfsctl share create --name /logs --metadata default --block-store s3-store --retention ttl --retention-ttl 72h
 
   # Create with per-share cache size overrides
-  dfsctl share create --name /bigdata --metadata default --local fs-cache --journal-size 10GiB --read-buffer-size 2GiB
+  dfsctl share create --name /bigdata --metadata default --block-store s3-store --journal-size 10GiB --read-buffer-size 2GiB
 
   # Create with per-share quota
-  dfsctl share create --name /limited --metadata default --local fs-cache --quota-bytes 10GiB
+  dfsctl share create --name /limited --metadata default --block-store s3-store --quota-bytes 10GiB
 
   # Create an export that does not squash root (e.g. for root-mounted/benchmark clients)
-  dfsctl share create --name /export --metadata default --local fs-cache --squash none`,
+  dfsctl share create --name /export --metadata default --block-store s3-store --squash none`,
 	RunE: runCreate,
 }
 
 func init() {
 	createCmd.Flags().StringVar(&createName, "name", "", "Share name/path (required)")
 	createCmd.Flags().StringVar(&createMetadata, "metadata", "", "Metadata store name (required)")
-	createCmd.Flags().StringVar(&createLocal, "local", "", "Local block store name (required)")
-	createCmd.Flags().StringVar(&createRemote, "remote", "", "Remote block store name (optional)")
+	createCmd.Flags().StringVar(&createBlockStore, "block-store", "", "Block store name (required)")
 	createCmd.Flags().BoolVar(&createReadOnly, "read-only", false, "Make share read-only")
 	createCmd.Flags().BoolVar(&createEncryptData, "encrypt-data", false, "Require SMB3 encryption for this share")
 	createCmd.Flags().StringVar(&createDefaultPermission, "default-permission", "none", "Default permission for unmapped UIDs (none|read|read-write|admin)")
@@ -108,7 +103,7 @@ func init() {
 	createCmd.Flags().BoolVar(&createTrashRestrictAdm, "trash-restrict-empty-to-admin", false, "Restrict emptying the recycle bin to admins.")
 	createCmd.Flags().Int64Var(&createTrashMaxSize, "trash-max-size", 0, "Max bytes the recycle bin may hold before the reaper evicts oldest items (0 = unbounded).")
 	createCmd.Flags().StringSliceVar(&createTrashExclude, "trash-exclude", nil, "Glob patterns whose deletions bypass the recycle bin (repeatable).")
-	_ = createCmd.MarkFlagRequired("local")
+	_ = createCmd.MarkFlagRequired("block-store")
 }
 
 func runCreate(cmd *cobra.Command, args []string) error {
@@ -133,18 +128,9 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	local := createLocal
-	if local == "" {
-		local, err = prompt.InputRequired("Local block store name")
-		if err != nil {
-			return cmdutil.HandleAbort(err)
-		}
-	}
-
-	remote := createRemote
-	if remote == "" && !cmd.Flags().Changed("remote") && createName == "" {
-		// Interactive mode - ask for optional remote store
-		remote, err = prompt.InputOptional("Remote block store name (optional, Enter to skip)")
+	blockStore := createBlockStore
+	if blockStore == "" {
+		blockStore, err = prompt.InputRequired("Block store name")
 		if err != nil {
 			return cmdutil.HandleAbort(err)
 		}
@@ -164,15 +150,12 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	req := &apiclient.CreateShareRequest{
 		Name:              name,
 		MetadataStoreID:   metadata,
-		LocalBlockStore:   local,
+		BlockStore:        blockStore,
 		ReadOnly:          createReadOnly,
 		EncryptData:       createEncryptData,
 		DefaultPermission: defaultPerm,
 		Owner:             createOwner,
 		Description:       createDescription,
-	}
-	if remote != "" {
-		req.RemoteBlockStore = &remote
 	}
 	if createRetention != "" {
 		req.RetentionPolicy = createRetention

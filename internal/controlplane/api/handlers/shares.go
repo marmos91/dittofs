@@ -188,11 +188,12 @@ type UpdateShareRequest struct {
 
 // ShareResponse is the response body for share endpoints.
 type ShareResponse struct {
-	ID              string `json:"id"`
-	Name            string `json:"name"`
-	MetadataStoreID string `json:"metadata_store_id"`
-	BlockStoreID    string `json:"block_store_id"`
-	ReadOnly        bool   `json:"read_only"`
+	ID              string           `json:"id"`
+	Name            string           `json:"name"`
+	MetadataStoreID string           `json:"metadata_store_id"`
+	BlockStoreID    string           `json:"block_store_id"`
+	CommitAck       models.CommitAck `json:"commit_ack"`
+	ReadOnly        bool             `json:"read_only"`
 	// Enabled mirrors models.Share.Enabled. No omitempty — `false` is
 	// semantically meaningful (the share is disabled) and consumers must
 	// render that state explicitly.
@@ -1536,6 +1537,7 @@ func shareToResponse(s *models.Share) ShareResponse {
 		Name:                             s.Name,
 		MetadataStoreID:                  s.MetadataStoreID,
 		BlockStoreID:                     s.BlockStoreID,
+		CommitAck:                        s.CommitAck,
 		ReadOnly:                         s.ReadOnly,
 		Enabled:                          s.Enabled,
 		EncryptData:                      s.EncryptData,

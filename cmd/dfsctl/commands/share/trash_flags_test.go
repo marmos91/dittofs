@@ -21,7 +21,7 @@ func TestCreateCmd_Trash_FlagsMapToRequest(t *testing.T) {
 	resetCreateFlags()
 	createName = "/x"
 	createMetadata = "meta"
-	createLocal = "bs"
+	createBlockStore = "bs"
 	for k, v := range map[string]string{
 		"enable-trash":                  "true",
 		"trash-retention-days":          "7",
@@ -68,7 +68,7 @@ func TestCreateCmd_Trash_UnsetOmitsFields(t *testing.T) {
 	resetCreateFlags()
 	createName = "/x"
 	createMetadata = "meta"
-	createLocal = "bs"
+	createBlockStore = "bs"
 
 	_ = captureStdout(t, func() {
 		if err := runCreate(createCmd, nil); err != nil {

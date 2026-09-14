@@ -83,22 +83,21 @@ func TestShareJSONMarshal_IncludesEnabled(t *testing.T) {
 // store names (not opaque IDs) when the lookup maps have an entry, and falls
 // back to the raw ID when they do not.
 func TestShareDetail_Rows_ResolvesStoreNames(t *testing.T) {
-	remoteID := "remote-id"
 	sd := ShareDetail{
 		share: &apiclient.Share{
-			Name:               "/archive",
-			MetadataStoreID:    "meta-id",
-			LocalBlockStoreID:  "local-id",
-			RemoteBlockStoreID: &remoteID,
+			Name:            "/archive",
+			MetadataStoreID: "meta-id",
+			BlockStoreID:    "block-id",
+			CommitAck:       "block-store",
 		},
 		metaStoreNames:  map[string]string{"meta-id": "meta-name"},
-		blockStoreNames: map[string]string{"local-id": "local-name"},
+		blockStoreNames: map[string]string{},
 	}
 
 	want := map[string]string{
-		"Metadata Store":     "meta-name",  // resolved
-		"Local Block Store":  "local-name", // resolved
-		"Remote Block Store": "remote-id",  // no entry -> raw ID fallback
+		"Metadata Store": "meta-name", // resolved
+		"Block Store":    "block-id",  // no entry -> raw ID fallback
+		"Commit Ack":     "block-store (survives device loss)",
 	}
 
 	got := make(map[string]string)
