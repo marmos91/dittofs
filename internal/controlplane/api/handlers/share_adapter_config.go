@@ -3,6 +3,7 @@ package handlers
 import (
 	"errors"
 	"net/http"
+	"sync"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -28,6 +29,14 @@ type ShareNFSConfigHandlerStore interface {
 type ShareNFSConfigHandler struct {
 	store   ShareNFSConfigHandlerStore
 	runtime *runtime.Runtime
+
+	// patchMu serializes the load/merge/persist/push sequence in Patch. Each
+	// request persists a full options snapshot built from its own read, so two
+	// concurrent PATCHes would otherwise interleave into a lost update — and,
+	// because the live push applies only the fields the request named, leave the
+	// stored config and the running share disagreeing about different fields.
+	// The server is single-node, so one mutex covers every writer.
+	patchMu sync.Mutex
 }
 
 // NewShareNFSConfigHandler creates a new ShareNFSConfigHandler.
@@ -85,6 +94,9 @@ func (h *ShareNFSConfigHandler) Get(w http.ResponseWriter, r *http.Request) {
 
 // Patch handles PATCH /api/v1/shares/{name}/adapters/nfs/config.
 func (h *ShareNFSConfigHandler) Patch(w http.ResponseWriter, r *http.Request) {
+	h.patchMu.Lock()
+	defer h.patchMu.Unlock()
+
 	share, ok := h.lookupShare(w, r)
 	if !ok {
 		return

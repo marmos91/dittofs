@@ -393,3 +393,66 @@ func TestShareNFSConfig_PatchLeavesUnsetExportFieldsAlone(t *testing.T) {
 		t.Errorf("MinKerberosLevel = %q, want krb5i", after.MinKerberosLevel)
 	}
 }
+
+// TestShareNFSConfig_PatchPushesRequireKerberosToRunningShare covers the field
+// the tests above leave out. Every field in NFSExportPolicyUpdate is assigned by
+// hand, so a mis-mapped struct member would otherwise go unnoticed.
+//
+// The share starts with RequireKerberos set on the running share, because the
+// handler refuses to turn it ON without Kerberos configured — clearing it is the
+// direction this fixture can exercise.
+func TestShareNFSConfig_PatchPushesRequireKerberosToRunningShare(t *testing.T) {
+	rt, handler := setupShareNFSConfigTestWithRuntime(t)
+
+	if err := rt.SetExportAuthPolicyForTesting("/export", true, true); err != nil {
+		t.Fatalf("SetExportAuthPolicyForTesting: %v", err)
+	}
+	before, err := rt.GetShare("/export")
+	if err != nil {
+		t.Fatalf("GetShare before: %v", err)
+	}
+	if !before.RequireKerberos {
+		t.Fatal("fixture did not start with RequireKerberos=true; the test cannot show the change")
+	}
+
+	w := doRequest(t, handler.Patch, http.MethodPatch, `{"require_kerberos":false}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Patch() status = %d, want 200, body = %s", w.Code, w.Body.String())
+	}
+
+	after, err := rt.GetShare("/export")
+	if err != nil {
+		t.Fatalf("GetShare after: %v", err)
+	}
+	if after.RequireKerberos {
+		t.Error("running share still has RequireKerberos=true after it was cleared")
+	}
+}
+
+// TestShareNFSConfig_PatchPushesDisableReaddirplusToRunningShare covers the
+// fourth field. READDIRPLUS is downgraded per request by reading this flag off
+// the running share, so persisting it alone leaves the downgrade inactive.
+func TestShareNFSConfig_PatchPushesDisableReaddirplusToRunningShare(t *testing.T) {
+	rt, handler := setupShareNFSConfigTestWithRuntime(t)
+
+	before, err := rt.GetShare("/export")
+	if err != nil {
+		t.Fatalf("GetShare before: %v", err)
+	}
+	if before.DisableReaddirplus {
+		t.Fatal("fixture already has DisableReaddirplus=true; the test cannot show the change")
+	}
+
+	w := doRequest(t, handler.Patch, http.MethodPatch, `{"disable_readdirplus":true}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Patch() status = %d, want 200, body = %s", w.Code, w.Body.String())
+	}
+
+	after, err := rt.GetShare("/export")
+	if err != nil {
+		t.Fatalf("GetShare after: %v", err)
+	}
+	if !after.DisableReaddirplus {
+		t.Error("running share still has DisableReaddirplus=false; the READDIRPLUS downgrade stays inactive")
+	}
+}
