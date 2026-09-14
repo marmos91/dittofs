@@ -25,18 +25,18 @@ const defaultRemoteCacheSize uint64 = 10 << 30 // 10 GiB
 const defaultBackpressureMaxWait = 60 * time.Second
 
 // defaultBlockDirName is the subdirectory of the state directory that holds
-// every share's journal when blockstore.local.path is unset.
+// every share's journal when blockstore.journal.path is unset.
 const defaultBlockDirName = "blocks"
 
 // BlockstoreConfig is the top-level container for blockstore-related
 // tunables; additional layers (remote tier, cache tier) may be added in
 // subsequent milestones.
 type BlockstoreConfig struct {
-	Local BlockstoreLocalConfig `mapstructure:"local" yaml:"local"`
+	Journal BlockstoreJournalConfig `mapstructure:"journal" yaml:"journal"`
 }
 
-// BlockstoreLocalConfig holds local-tier blockstore tunables.
-type BlockstoreLocalConfig struct {
+// BlockstoreJournalConfig holds local-tier blockstore tunables.
+type BlockstoreJournalConfig struct {
 	// Path is the directory holding every share's local journal. Each share
 	// gets its own subdirectory beneath it, so no two shares write into the
 	// same directory and their I/O stays independent. A leading ~ is
@@ -72,7 +72,7 @@ type BlockstoreLocalConfig struct {
 }
 
 // ApplyDefaults fills any zero-valued field with the defaults.
-func (c *BlockstoreLocalConfig) ApplyDefaults() {
+func (c *BlockstoreJournalConfig) ApplyDefaults() {
 	if c.Path == "" {
 		c.Path = filepath.Join(GetStateDir(), defaultBlockDirName)
 	}
@@ -90,32 +90,32 @@ func (c *BlockstoreLocalConfig) ApplyDefaults() {
 	}
 }
 
-// Validate returns an error if the BlockstoreLocalConfig has invalid
+// Validate returns an error if the BlockstoreJournalConfig has invalid
 // values. The error message includes the canonical dotted config path so
 // operators can pinpoint the offending key in their config file.
-func (c *BlockstoreLocalConfig) Validate() error {
+func (c *BlockstoreJournalConfig) Validate() error {
 	// DefaultRemoteCacheSize, MaxLogBytes, and BackpressureMaxWait treat zero
 	// as "apply the built-in (or system-deduced) default", so Validate only
 	// rejects an explicitly negative backpressure wait — the one nonsensical
 	// value a duration can take. MaxLogBytes is uint64 and so cannot be
 	// negative; any positive value is honored as an explicit override.
 	if c.BackpressureMaxWait < 0 {
-		return fmt.Errorf("blockstore.local.backpressure_max_wait must be >= 0 (got %s)", c.BackpressureMaxWait)
+		return fmt.Errorf("blockstore.journal.backpressure_max_wait must be >= 0 (got %s)", c.BackpressureMaxWait)
 	}
 	// Empty means "apply the default" and is only reachable before
 	// ApplyDefaults; a value the operator did set must be absolute.
 	if c.Path != "" && !filepath.IsAbs(c.Path) {
-		return fmt.Errorf("blockstore.local.path must be an absolute directory (got %q)", c.Path)
+		return fmt.Errorf("blockstore.journal.path must be an absolute directory (got %q)", c.Path)
 	}
 	return nil
 }
 
 // ApplyDefaults fans out defaults to every sub-tier.
 func (c *BlockstoreConfig) ApplyDefaults() {
-	c.Local.ApplyDefaults()
+	c.Journal.ApplyDefaults()
 }
 
 // Validate fans out validation to every sub-tier.
 func (c *BlockstoreConfig) Validate() error {
-	return c.Local.Validate()
+	return c.Journal.Validate()
 }
