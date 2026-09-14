@@ -311,7 +311,7 @@ silently ignored.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `max_log_bytes` | int | deduced (25% of RAM, floor 1 GiB) | **Per-share** local-cache size hint. Still accepted and resolved (per-store value takes **precedence** over the global `blockstore.local.max_log_bytes` and the system-deduced default), but it no longer drives write backpressure — the journal caps on-disk usage and evicts on its own budget. Values above 2^53 (~9 PiB) lose precision through JSON parsing. |
+| `max_log_bytes` | int | deduced (25% of RAM, floor 1 GiB) | **Per-share** local-cache size hint. Still accepted and resolved (per-store value takes **precedence** over the global `blockstore.journal.max_log_bytes` and the system-deduced default), but it no longer drives write backpressure — the journal caps on-disk usage and evicts on its own budget. Values above 2^53 (~9 PiB) lose precision through JSON parsing. |
 
 Env-var mapping follows the dot-path convention:
 `DITTOFS_BLOCKSTORE_LOCAL_FS_MAX_LOG_BYTES`.
@@ -335,11 +335,11 @@ first):
 
 1. **Per-store** block-store `config["max_log_bytes"]` — set per share in the
    store's `config` JSON via the block store REST API.
-2. **Global** server-config `blockstore.local.max_log_bytes` — applies to every
+2. **Global** server-config `blockstore.journal.max_log_bytes` — applies to every
    share that does not set the per-store key.
 3. **System-deduced** default (25% of RAM, floor 1 GiB).
 
-The global knob lives in the top-level server-config `blockstore.local` block
+The global knob lives in the top-level server-config `blockstore.journal` block
 and binds to the env var `DITTOFS_BLOCKSTORE_LOCAL_MAX_LOG_BYTES`:
 
 ```yaml
@@ -703,9 +703,9 @@ filling the host volume, the local cache is bounded and writes apply
 **graceful, observable backpressure** when it fills:
 
 - **Bounded cache.** If a remote is configured and you set no explicit
-  per-share size (`dfsctl share … --local-store-size`), the cache is capped at
-  `blockstore.local.default_remote_cache_size` (default **10 GiB**). An
-  explicit `--local-store-size` always wins. **Local-only shares are
+  per-share size (`dfsctl share … --journal-size`), the cache is capped at
+  `blockstore.journal.default_remote_cache_size` (default **10 GiB**). An
+  explicit `--journal-size` always wins. **Local-only shares are
   unaffected** — they keep their existing system-deduced local size and never
   apply remote-cache backpressure. The cap is enforced **lazily, on the
   write/carve path** (it evicts synced segments to make room for new writes); it
@@ -719,7 +719,7 @@ filling the host volume, the local cache is bounded and writes apply
 - **Backpressure stall.** When the cache is full and every cached chunk is
   still unsynced, a write **stalls** waiting for the syncer to drain to the
   remote and free space, rather than failing. The stall is bounded by
-  `blockstore.local.backpressure_max_wait` (default **60s**).
+  `blockstore.journal.backpressure_max_wait` (default **60s**).
 - **Hard failure only when the remote cannot drain.** If the remote is
   **unhealthy** (genuinely unreachable, not merely slow) or the backpressure
   window is exceeded, the write fails with disk-full
@@ -740,7 +740,7 @@ INFO  local cache backpressure released  store=… reason=space_freed
 `reason` distinguishes a clean recovery (`space_freed`) from a failure
 (`window_exceeded`, `remote_unhealthy`).
 
-These knobs live in the top-level server-config `blockstore.local` block:
+These knobs live in the top-level server-config `blockstore.journal` block:
 
 ```yaml
 blockstore:

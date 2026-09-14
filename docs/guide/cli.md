@@ -3882,7 +3882,7 @@ dfsctl share create --name /edge-data --metadata default --local fs-cache --rete
 dfsctl share create --name /logs --metadata default --local fs-cache --retention ttl --retention-ttl 72h
 
 # Create with per-share cache size overrides
-dfsctl share create --name /bigdata --metadata default --local fs-cache --local-store-size 10GiB --read-buffer-size 2GiB
+dfsctl share create --name /bigdata --metadata default --local fs-cache --journal-size 10GiB --read-buffer-size 2GiB
 
 # Create with per-share quota
 dfsctl share create --name /limited --metadata default --local fs-cache --quota-bytes 10GiB
@@ -3903,8 +3903,8 @@ Flags:
       --description string              Share description
       --enable-trash                    Enable the per-share recycle bin so deletes move to #recycle instead of being permanent.
       --encrypt-data                    Require SMB3 encryption for this share
+      --journal-size string             Per-share journal size override (e.g., 10GiB, 500MiB)
       --local string                    Local block store name (required)
-      --local-store-size string         Per-share disk cache size override (e.g., 10GiB, 500MiB)
       --metadata string                 Metadata store name (required)
       --name string                     Share name/path (required)
       --owner string                    Username that owns the share's root directory (defaults to root). The owner can write at the share root; other principals are governed by POSIX mode plus their share permission grant.
@@ -4022,8 +4022,8 @@ dfsctl share edit /archive --retention pin
 # Change retention policy to TTL with 72-hour window
 dfsctl share edit /archive --retention ttl --retention-ttl 72h
 
-# Override per-share disk cache size
-dfsctl share edit /archive --local-store-size 10GiB
+# Override the per-share journal size
+dfsctl share edit /archive --journal-size 10GiB
 
 # Override per-share read buffer size
 dfsctl share edit /archive --read-buffer-size 2GiB
@@ -4044,8 +4044,8 @@ Flags:
       --description string                     Share description
       --enable-trash string                    Enable/disable the per-share recycle bin (true|false). Applied live; disabling auto-empties the bin.
       --encrypt-data string                    Require SMB3 encryption (true|false)
+      --journal-size string                    Per-share journal size override (e.g., 10GiB, 500MiB)
       --local string                           Local block store name
-      --local-store-size string                Per-share disk cache size override (e.g., 10GiB, 500MiB)
       --quota-bytes string                     Per-share byte quota (e.g., '10GiB'). 0 = remove quota
       --read-buffer-size string                Per-share read buffer size override (e.g., 2GiB, 256MiB)
       --read-only string                       Set read-only (true|false)
@@ -5504,7 +5504,7 @@ By default, evicts both the in-memory read buffer and the resident local
 disk blocks for all shares. Local eviction drains every locally-resident
 block whose bytes are already synced to the remote — including the sealed
 log blobs that hold the bulk of resident data after a rollup, which the
-lazy --local-store-size cap only reclaims on the write path. Blocks not yet
+lazy --journal-size cap only reclaims on the write path. Blocks not yet
 uploaded to the remote are never dropped.
 
 Use --read-buffer-only to evict only the read buffer (in-memory).
