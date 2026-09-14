@@ -77,6 +77,25 @@ func resolveBlockStoreConfig(
 
 // LocalStoreDefaults holds default sizing for per-share local stores.
 type LocalStoreDefaults struct {
+	// JournalRoot is the directory holding every share's journal. Each share
+	// opens its own subdirectory beneath it, so no two shares write into the
+	// same directory. It replaces the per-share path a block store config used
+	// to carry.
+	JournalRoot string
+
+	// ChunkSize is the FastCDC minimum chunk size in bytes; average and maximum
+	// derive from it unless ChunkMax overrides the ceiling. 0 keeps the
+	// built-in profile.
+	ChunkSize uint64
+
+	// ChunkMax overrides the derived maximum chunk size in bytes. 0 keeps the
+	// derived value.
+	ChunkMax uint64
+
+	// DirtyExpire bounds how long a write may sit unflushed before the journal
+	// fsyncs it. Negative disables the timer; 0 keeps the journal default.
+	DirtyExpire time.Duration
+
 	MaxSize uint64 // Maximum journal size per share (0 = unlimited)
 
 	// ReadBufferBytes is the per-share read buffer budget in bytes (0 = disabled).
