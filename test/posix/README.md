@@ -64,10 +64,10 @@ ADMIN_PASSWORD="<from-server-output>"
 
 # Create stores
 ./dfsctl store metadata add --name default --type memory
-./dfsctl store payload add --name default --type memory
+./dfsctl store block add --name default --type memory
 
 # Create share
-./dfsctl share create --name /export --metadata default --payload default
+./dfsctl share create --name /export --metadata default --block-store default
 
 # Enable NFS adapter
 ./dfsctl adapter update nfs --enabled true --port 12049

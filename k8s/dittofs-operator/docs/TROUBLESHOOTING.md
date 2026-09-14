@@ -568,7 +568,7 @@ The two store types use different JSON key names for credentials:
 
 ```bash
 # Block store
-dfsctl store block remote add --name s3-content --type s3 \
+dfsctl store block add --name s3-content --type s3 \
   --config '{"bucket":"my-bucket","region":"eu-west-1","access_key_id":"AKIA...","secret_access_key":"..."}'
 ```
 

@@ -290,15 +290,15 @@ configure_server() {
     info "Creating BadgerDB metadata store..."
     dfsctl store metadata add --name demo-meta --type badger --db-path "${METADATA_DIR}"
 
-    info "Creating S3 remote block store (Cubbit DS3)..."
-    dfsctl store block remote add --name demo-remote --type s3 \
+    info "Creating S3 block store (Cubbit DS3)..."
+    dfsctl store block add --name demo-blocks --type s3 \
         --bucket "${S3_BUCKET}" \
         --endpoint "${S3_ENDPOINT}" \
         --access-key "${S3_ACCESS_KEY}" \
         --secret-key "${S3_SECRET_KEY}"
 
     info "Creating /demo share..."
-    dfsctl share create --name /demo --metadata demo-meta --remote demo-remote
+    dfsctl share create --name /demo --metadata demo-meta --block-store demo-blocks
 
     info "Enabling NFS adapter on port 2049..."
     dfsctl adapter enable nfs --port 2049

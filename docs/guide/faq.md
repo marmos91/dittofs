@@ -409,12 +409,14 @@ Yes! This is a core feature. Create stores and shares via CLI:
 ./dfsctl store metadata add --name persistent-db --type badger \
   --config '{"path":"/var/lib/dittofs/metadata"}'
 
-# Create a remote block store for durability
+# Create block stores — every share needs one
+./dfsctl store block add --name scratch --type memory
 ./dfsctl store block add --name cloud-s3 --type s3 \
   --config '{"region":"us-east-1","bucket":"my-bucket"}'
 
 # Create shares referencing different stores
-./dfsctl share create --name /temp --metadata fast-memory
+./dfsctl share create --name /temp --metadata fast-memory \
+  --block-store scratch
 ./dfsctl share create --name /archive --metadata persistent-db \
   --block-store cloud-s3
 ```
