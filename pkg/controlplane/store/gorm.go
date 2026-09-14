@@ -433,7 +433,14 @@ func New(config *Config) (*GORMStore, error) {
 	// a share no longer references a local block store. Dropped only after
 	// migrateShareDurability above, which reads that store's config through it.
 	if lbs := db.Migrator(); lbs.HasColumn(&models.Share{}, "local_block_store_id") {
-		_ = lbs.DropColumn(&models.Share{}, "local_block_store_id")
+		// A local-only share's only binding lives in this column; refuse rather
+		// than drop it out from under them.
+		if err := checkLocalOnlyShares(db); err != nil {
+			return nil, err
+		}
+		if err := lbs.DropColumn(&models.Share{}, "local_block_store_id"); err != nil {
+			return nil, fmt.Errorf("failed to drop local_block_store_id column: %w", err)
+		}
 	}
 
 	// Refs #532: backfill shares.access_based_enumeration for rows that predate

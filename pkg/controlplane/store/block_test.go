@@ -47,17 +47,6 @@ func TestBlockStoreOperations(t *testing.T) {
 		}
 	})
 
-	t.Run("create without kind fails", func(t *testing.T) {
-		bs := &models.BlockStoreConfig{
-			Name: "no-kind",
-			Type: "memory",
-		}
-		_, err := store.CreateBlockStore(ctx, bs)
-		if err == nil {
-			t.Error("expected error for missing kind")
-		}
-	})
-
 	t.Run("duplicate block store fails", func(t *testing.T) {
 		bs := &models.BlockStoreConfig{
 			Name: "test-local-fs",
@@ -69,53 +58,44 @@ func TestBlockStoreOperations(t *testing.T) {
 		}
 	})
 
-	// Regression for #376: WPTS BVT bootstrap creates a local and remote
-	// block store both named "default"; uniqueness must be scoped by (name, kind).
-	t.Run("same name across local and remote kinds succeeds", func(t *testing.T) {
-		local := &models.BlockStoreConfig{
+	// A name identifies a block store on its own, so two stores may not share
+	// one whatever their types. Two differently-typed stores both named
+	// "default" used to be a supported pair; startup now refuses that database.
+	t.Run("same name with a different type still collides", func(t *testing.T) {
+		first := &models.BlockStoreConfig{
 			Name: "default",
 			Type: "memory",
 		}
-		if _, err := store.CreateBlockStore(ctx, local); err != nil {
-			t.Fatalf("create local 'default': %v", err)
+		if _, err := store.CreateBlockStore(ctx, first); err != nil {
+			t.Fatalf("create 'default': %v", err)
 		}
 
-		remote := &models.BlockStoreConfig{
+		second := &models.BlockStoreConfig{
 			Name:   "default",
 			Type:   "s3",
 			Config: `{"bucket":"x"}`,
 		}
-		if _, err := store.CreateBlockStore(ctx, remote); err != nil {
-			t.Fatalf("create remote 'default' should succeed alongside local: %v", err)
+		if _, err := store.CreateBlockStore(ctx, second); !errors.Is(err, models.ErrDuplicateStore) {
+			t.Fatalf("create a second 'default': expected ErrDuplicateStore, got %v", err)
 		}
 
-		gotLocal, err := store.GetBlockStore(ctx, "default")
+		got, err := store.GetBlockStore(ctx, "default")
 		if err != nil {
-			t.Fatalf("get local default: %v", err)
+			t.Fatalf("get default: %v", err)
 		}
-		if gotLocal.Type != "memory" {
-			t.Errorf("local default: expected type 'memory', got %q", gotLocal.Type)
-		}
-
-		gotRemote, err := store.GetBlockStore(ctx, "default")
-		if err != nil {
-			t.Fatalf("get remote default: %v", err)
-		}
-		if gotRemote.Type != "s3" {
-			t.Errorf("remote default: expected type 's3', got %q", gotRemote.Type)
+		if got.Type != "memory" {
+			t.Errorf("default: expected the first store to stand, type 'memory', got %q", got.Type)
 		}
 
-		// Deleting one kind must not affect the other (regression guard against
-		// a future change reverting DeleteBlockStore to filter by name alone).
 		if err := store.DeleteBlockStore(ctx, "default"); err != nil {
-			t.Fatalf("delete local default: %v", err)
+			t.Fatalf("delete default: %v", err)
 		}
-		if _, err := store.GetBlockStore(ctx, "default"); err != nil {
-			t.Errorf("remote default should survive local deletion: %v", err)
+		if _, err := store.GetBlockStore(ctx, "default"); !errors.Is(err, models.ErrStoreNotFound) {
+			t.Errorf("default should be gone after deletion, got %v", err)
 		}
 	})
 
-	t.Run("get block store by name and kind", func(t *testing.T) {
+	t.Run("get block store by name", func(t *testing.T) {
 		bs, err := store.GetBlockStore(ctx, "test-local-fs")
 		if err != nil {
 			t.Fatalf("failed to get block store: %v", err)
@@ -260,30 +240,13 @@ func TestShareBlockStore(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to get shares by block store: %v", err)
 		}
-		if len(shares) != 2 {
-			t.Errorf("expected 2 shares referencing share-local, got %d", len(shares))
-		}
-	})
-
-	t.Run("get shares by remote block store", func(t *testing.T) {
-		shares, err := store.GetSharesByBlockStore(ctx, "share-remote")
-		if err != nil {
-			t.Fatalf("failed to get shares by block store: %v", err)
-		}
 		if len(shares) != 1 {
-			t.Errorf("expected 1 share referencing share-remote, got %d", len(shares))
+			t.Errorf("expected 1 share referencing share-blocks, got %d", len(shares))
 		}
 	})
 
 	t.Run("delete block store in use fails", func(t *testing.T) {
-		err := store.DeleteBlockStore(ctx, "share-local")
-		if !errors.Is(err, models.ErrStoreInUse) {
-			t.Errorf("expected ErrStoreInUse, got %v", err)
-		}
-	})
-
-	t.Run("delete remote block store in use fails", func(t *testing.T) {
-		err := store.DeleteBlockStore(ctx, "share-remote")
+		err := store.DeleteBlockStore(ctx, "share-blocks")
 		if !errors.Is(err, models.ErrStoreInUse) {
 			t.Errorf("expected ErrStoreInUse, got %v", err)
 		}

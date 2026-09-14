@@ -828,9 +828,6 @@ const (
 	// configure. Anything below it is a misconfiguration rather than a tuning
 	// choice: the loop would issue barriers faster than a disk retires them.
 	minDirtyExpire = time.Second
-	// maxDirtyExpireSeconds is where a seconds value stops fitting a
-	// time.Duration (~292 years).
-	maxDirtyExpireSeconds = float64(math.MaxInt64 / int64(time.Second))
 )
 
 // durableOverrideSetter is implemented by block stores (local and remote) that
