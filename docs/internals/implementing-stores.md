@@ -894,14 +894,10 @@ func createLocalStore(config LocalStoreConfig) (local.LocalStore, error) {
 }
 ```
 
-### CLI Integration
+### Selecting the store
 
-Users can then create your store via CLI:
-
-```bash
-./dfsctl store block local add --name my-store --type mylocal \
-  --config '{"path":"/data/blocks"}'
-```
+Local stores are not named entities the CLI can create; the server builds each
+share's local tier from `blockstore.journal.*` in the server config.
 
 ## Additional Resources
 

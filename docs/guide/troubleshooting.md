@@ -288,8 +288,7 @@ ls: cannot access 'file.txt': Stale file handle
    ```bash
    ./dfsctl store metadata add --name persistent --type badger \
      --config '{"path":"/var/lib/dittofs/metadata"}'
-   ./dfsctl store block local add --name default --type memory
-   ./dfsctl share create --name /export --metadata persistent --local default
+   ./dfsctl share create --name /export --metadata persistent
    ```
 
 3. **Clear client NFS cache (Linux):**
@@ -322,10 +321,9 @@ tail -f ~/.local/state/dittofs/dittofs.log | grep -i "slow\|timeout"
          max_write_size: 1048576  # 1MB
    ```
 
-2. **Use memory stores for development:**
+2. **Use a memory metadata store for development:**
    ```bash
    ./dfsctl store metadata add --name fast --type memory
-   ./dfsctl store block local add --name fast --type memory
    ```
 
 3. **For S3, verify configuration:**
@@ -605,12 +603,11 @@ shares:
 
 **Solution:** Ensure stores exist before creating the share:
 ```bash
-# Create the stores first
+# Create the store first
 ./dfsctl store metadata add --name my-store --type memory
-./dfsctl store block local add --name my-blocks --type memory
 
-# Then create the share referencing them
-./dfsctl share create --name /export --metadata my-store --local my-blocks
+# Then create the share referencing it
+./dfsctl share create --name /export --metadata my-store
 ```
 
 ### NFSv4 Session Issues
