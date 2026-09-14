@@ -112,8 +112,8 @@ func (sd ShareDetail) Rows() [][]string {
 	}
 
 	// Only show cache size overrides when set
-	if s.LocalStoreSize != "" {
-		rows = append(rows, []string{"Local Store Size", s.LocalStoreSize})
+	if s.JournalSize != "" {
+		rows = append(rows, []string{"Journal Size", s.JournalSize})
 	}
 	if s.ReadBufferSize != "" {
 		rows = append(rows, []string{"Read Buffer Size", s.ReadBufferSize})
