@@ -20,7 +20,7 @@ By default, evicts both the in-memory read buffer and the resident local
 disk blocks for all shares. Local eviction drains every locally-resident
 block whose bytes are already synced to the remote — including the sealed
 log blobs that hold the bulk of resident data after a rollup, which the
-lazy --local-store-size cap only reclaims on the write path. Blocks not yet
+lazy --journal-size cap only reclaims on the write path. Blocks not yet
 uploaded to the remote are never dropped.
 
 Use --read-buffer-only to evict only the read buffer (in-memory).
