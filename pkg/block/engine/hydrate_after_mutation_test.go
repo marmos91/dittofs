@@ -52,6 +52,7 @@ func newEngineWithGatedRemote(t *testing.T, ms metadata.Store, rem *gatedRemote)
 	syncer.SetRemoteBlockStore(rem)
 	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:           localStore,
+		Remote:          rem,
 		RemoteSync:      syncer,
 		FileChunkStore:  ms,
 		Coordinator:     &testCoordinator{store: ms},

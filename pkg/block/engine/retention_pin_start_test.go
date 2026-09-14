@@ -32,6 +32,7 @@ func drainAfterFill(t *testing.T, pinned bool) int64 {
 	syncer.SetRemoteBlockStore(mem)
 	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:           localStore,
+		Remote:          mem,
 		RemoteSync:      syncer,
 		FileChunkStore:  ms,
 		Coordinator:     &testCoordinator{store: ms},
