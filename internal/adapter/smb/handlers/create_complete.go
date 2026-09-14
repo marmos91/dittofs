@@ -906,7 +906,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 	// open never gets V2 durability (Batch/Handle lease required) yet its
 	// CREATE must still be replay-cacheable, and the replay must echo the
 	// same handle (smb2.replay.dhv2-pending1n-vs-{oplock,lease}-sane io24).
-	if h.CreateReplayCache != nil && openFile != nil && openFile.ReplayCreateGuid != ([16]byte{}) {
+	if h.CreateDRC != nil && openFile != nil && openFile.ReplayCreateGuid != ([16]byte{}) {
 		h.storeCreateReplay(openFile.SessionID, openFile.ReplayCreateGuid, resp, openFile)
 	}
 

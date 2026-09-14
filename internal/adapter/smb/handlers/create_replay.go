@@ -19,7 +19,7 @@ import (
 // zero or when resp.Status != StatusSuccess, so it is safe to call
 // unconditionally here (MS-SMB2 §3.3.5.9).
 func (h *Handler) storeCreateReplayIfApplicable(ctx *SMBHandlerContext, req *CreateRequest, resp *CreateResponse) {
-	if h.CreateReplayCache == nil || resp == nil || resp.Status != types.StatusSuccess {
+	if h.CreateDRC == nil || resp == nil || resp.Status != types.StatusSuccess {
 		return
 	}
 	createGuid := dh2qCreateGuid(req)
@@ -58,7 +58,7 @@ func (h *Handler) storeCreateReplayIfApplicable(ctx *SMBHandlerContext, req *Cre
 //   - No cache match → fall through.
 
 func (h *Handler) resolveCreateReplay(ctx *SMBHandlerContext, req *CreateRequest) (*CreateResponse, bool) {
-	if h.CreateReplayCache == nil {
+	if h.CreateDRC == nil {
 		return nil, false
 	}
 	createGuid := dh2qCreateGuid(req)
@@ -66,7 +66,7 @@ func (h *Handler) resolveCreateReplay(ctx *SMBHandlerContext, req *CreateRequest
 		return nil, false
 	}
 
-	entry := h.CreateReplayCache.LookupEntry(ctx.SessionID, createGuid)
+	entry := h.CreateDRC.Lookup(ctx.SessionID, createGuid)
 	if entry == nil {
 		// No completed entry yet. A replay that arrives while the original
 		// CREATE for this CreateGuid is still parked on a pending
@@ -77,7 +77,7 @@ func (h *Handler) resolveCreateReplay(ctx *SMBHandlerContext, req *CreateRequest
 		// completed-entry lookup so a parked CREATE that has just finished
 		// (entry present, reservation not yet cleared) replays the open
 		// rather than returning FILE_NOT_AVAILABLE.
-		if ctx.IsReplay && h.CreateReplayCache.IsReserved(ctx.SessionID, createGuid) {
+		if ctx.IsReplay && h.CreateDRC.IsReserved(ctx.SessionID, createGuid) {
 			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFileNotAvailable}}, true
 		}
 		return nil, false

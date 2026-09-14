@@ -536,7 +536,7 @@ func (h *Handler) DeleteOpenFile(fileID [16]byte) {
 // still arrive — once the handle is gone, so is any legitimate replay.
 
 func (h *Handler) forgetReplayState(fileID [16]byte) {
-	if h.CreateReplayCache != nil {
+	if h.CreateDRC != nil {
 		if v, ok := h.files.Load(string(fileID[:])); ok {
 			// Forget by the replay-cache key (the requested CreateGuid),
 			// which is set even for non-durable opens that never populate
@@ -547,12 +547,12 @@ func (h *Handler) forgetReplayState(fileID [16]byte) {
 				guid = of.CreateGuid
 			}
 			if guid != ([16]byte{}) {
-				h.CreateReplayCache.Forget(guid)
+				h.CreateDRC.Forget(guid)
 			}
 		}
 	}
-	if h.LockReplayCache != nil {
-		h.LockReplayCache.ForgetFile(fileID)
+	if h.LockDRC != nil {
+		h.LockDRC.ForgetFile(fileID)
 	}
 }
 

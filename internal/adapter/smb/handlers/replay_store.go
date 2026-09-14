@@ -5,11 +5,11 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 )
 
-// createReplayCache and cachedCreate name this package's instantiation of the
+// createDRC and cachedCreate name this package's instantiation of the
 // replay cache. The cache is generic over what it stores so that the pending
 // package need not know the SMB wire types, which is what lets it stand as its
 // own package at all.
-type createReplayCache = pending.CreateReplayCache[*CreateResponse, *OpenFile]
+type createDRC = pending.CreateDRC[*CreateResponse, *OpenFile]
 
 type cachedCreate = pending.CachedCreateResponse[*CreateResponse, *OpenFile]
 
@@ -23,8 +23,8 @@ type cachedCreate = pending.CachedCreateResponse[*CreateResponse, *OpenFile]
 // does not know. Both CREATE completion paths go through this so neither can
 // drift from the rule.
 func (h *Handler) storeCreateReplay(sessionID uint64, createGuid [16]byte, resp *CreateResponse, openFile *OpenFile) {
-	if h.CreateReplayCache == nil || resp == nil || resp.Status != types.StatusSuccess {
+	if h.CreateDRC == nil || resp == nil || resp.Status != types.StatusSuccess {
 		return
 	}
-	h.CreateReplayCache.Store(sessionID, createGuid, resp, openFile)
+	h.CreateDRC.Record(sessionID, createGuid, resp, openFile)
 }

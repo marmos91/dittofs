@@ -90,7 +90,7 @@ func TestReplay_NoOplockOpenIsReplayCacheable(t *testing.T) {
 	if openFile.ReplayCreateGuid != createGuid {
 		t.Fatalf("ReplayCreateGuid=%x, want %x", openFile.ReplayCreateGuid, createGuid)
 	}
-	if e.h.CreateReplayCache.LookupEntry(sessionID, createGuid) == nil {
+	if e.h.CreateDRC.Lookup(sessionID, createGuid) == nil {
 		t.Fatal("NONE-oplock DH2Q open was not stored in the replay cache")
 	}
 
@@ -132,7 +132,7 @@ func TestReplay_PendingReservationFileNotAvailable(t *testing.T) {
 
 	// Simulate the parked original: reserve the guid (as Create does before it
 	// parks on a pending break) without yet storing a completed entry.
-	e.h.CreateReplayCache.Reserve(sessionID, createGuid)
+	e.h.CreateDRC.Reserve(sessionID, createGuid)
 
 	replayCtx := e.makeSMBCtx(sessionID)
 	replayCtx.IsReplay = true

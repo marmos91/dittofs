@@ -108,7 +108,7 @@ type Handler struct {
 	// final response via AsyncLockCompleteCallback. See pending_lock_registry.go.
 	PendingLockRegistry *pending.PendingLockRegistry
 
-	// CreateReplayCache backs SMB3 replay protection for CREATE
+	// CreateDRC backs SMB3 replay protection for CREATE
 	// (MS-SMB2 §3.3.5.9). When a client sets SMB2_FLAGS_REPLAY_OPERATION
 	// on a CREATE carrying a DH2Q with CreateGuid X, the handler
 	// consults this cache first: a hit returns the original response
@@ -116,16 +116,16 @@ type Handler struct {
 	// miss falls through to the normal CREATE path and the success
 	// response is stored for the next replay window. See
 	// replay_cache.go.
-	CreateReplayCache *createReplayCache
+	CreateDRC *createDRC
 
-	// LockReplayCache backs SMB3 replay protection for LOCK
+	// LockDRC backs SMB3 replay protection for LOCK
 	// (MS-SMB2 §3.3.5.14). Keyed by (FileID, LockSequenceIndex),
 	// stores the last LockSequenceNumber + status pair so a replayed
 	// LOCK with matching slot returns the cached status verbatim
 	// instead of trying to re-acquire / re-release (which would trip
 	// STATUS_RANGE_NOT_LOCKED or STATUS_LOCK_NOT_GRANTED). See
 	// replay_cache.go.
-	LockReplayCache *pending.LockReplayCache
+	LockDRC *pending.LockDRC
 
 	// LockWaitGraph tracks "is waiting for" relationships among byte-range
 	// lock owners. Consulted by the blocking-LOCK async-park path before
@@ -580,8 +580,8 @@ func NewHandlerWithSessionManager(sessionManager *session.Manager) *Handler {
 		PipeReadRegistry:        pending.NewPipeReadRegistry(),
 		PendingCreateRegistry:   pending.NewPendingCreateRegistry(),
 		PendingLockRegistry:     pending.NewPendingLockRegistry(),
-		CreateReplayCache:       pending.NewCreateReplayCache[*CreateResponse, *OpenFile](),
-		LockReplayCache:         pending.NewLockReplayCache(),
+		CreateDRC:               pending.NewCreateDRC[*CreateResponse, *OpenFile](),
+		LockDRC:                 pending.NewLockDRC(),
 		LockWaitGraph:           lock.NewWaitForGraph(),
 		MaxTransactSize:         1048576, // 1MB (supports large directory listings; increases per-request memory)
 		MaxReadSize:             1048576, // 1MB

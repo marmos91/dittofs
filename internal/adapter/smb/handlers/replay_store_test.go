@@ -24,12 +24,12 @@ func TestStoreCreateReplay_OnlySuccessIsCached(t *testing.T) {
 		{"sharing violation is not", types.StatusSharingViolation, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			h := &Handler{CreateReplayCache: pending.NewCreateReplayCache[*CreateResponse, *OpenFile]()}
+			h := &Handler{CreateDRC: pending.NewCreateDRC[*CreateResponse, *OpenFile]()}
 			resp := &CreateResponse{SMBResponseBase: SMBResponseBase{Status: tc.status}}
 
 			h.storeCreateReplay(1, guid, resp, nil)
 
-			if got := h.CreateReplayCache.Len() == 1; got != tc.cached {
+			if got := h.CreateDRC.Len() == 1; got != tc.cached {
 				t.Errorf("cached = %v, want %v for status %v", got, tc.cached, tc.status)
 			}
 		})
@@ -43,9 +43,9 @@ func TestStoreCreateReplay_NilCacheAndResponse(t *testing.T) {
 
 	(&Handler{}).storeCreateReplay(1, guid, &CreateResponse{}, nil) // nil cache must not panic
 
-	h := &Handler{CreateReplayCache: pending.NewCreateReplayCache[*CreateResponse, *OpenFile]()}
+	h := &Handler{CreateDRC: pending.NewCreateDRC[*CreateResponse, *OpenFile]()}
 	h.storeCreateReplay(1, guid, nil, nil)
-	if h.CreateReplayCache.Len() != 0 {
+	if h.CreateDRC.Len() != 0 {
 		t.Error("a nil response must not be cached")
 	}
 }

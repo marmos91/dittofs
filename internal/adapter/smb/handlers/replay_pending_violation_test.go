@@ -56,7 +56,7 @@ func TestReplayPendingViolation_LeaseClose_Sane(t *testing.T) {
 	req := dh2qCreateReq(guid, nil)
 
 	// Step 2: opener's CREATE parks; Create reserves the CreateGuid.
-	h.CreateReplayCache.Reserve(violationSessionID, guid)
+	h.CreateDRC.Reserve(violationSessionID, guid)
 
 	// Step 3: replay while parked → FILE_NOT_AVAILABLE.
 	resp, handled := h.resolveCreateReplay(newReplayCtx(violationSessionID, true), req)
@@ -73,9 +73,9 @@ func TestReplayPendingViolation_LeaseClose_Sane(t *testing.T) {
 		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
 		FileID:          originalFileID,
 	}
-	h.CreateReplayCache.Store(violationSessionID, guid, okResp,
+	h.CreateDRC.Record(violationSessionID, guid, okResp,
 		&OpenFile{SessionID: violationSessionID})
-	h.CreateReplayCache.Release(violationSessionID, guid)
+	h.CreateDRC.Release(violationSessionID, guid)
 
 	// Step 5: second replay → cached OK, same FileId. Never FILE_NOT_AVAILABLE
 	// (the reservation is gone) and never a fresh re-execution (the open is
@@ -103,7 +103,7 @@ func TestReplayPendingViolation_LeaseAck_Sane(t *testing.T) {
 	req := dh2qCreateReq(guid, nil)
 
 	// Step 2: opener's CREATE parks; Create reserves the CreateGuid.
-	h.CreateReplayCache.Reserve(violationSessionID, guid)
+	h.CreateDRC.Reserve(violationSessionID, guid)
 
 	// Step 3: replay while parked → FILE_NOT_AVAILABLE.
 	resp, handled := h.resolveCreateReplay(newReplayCtx(violationSessionID, true), req)
@@ -117,9 +117,9 @@ func TestReplayPendingViolation_LeaseAck_Sane(t *testing.T) {
 	// entry on success (openFile != nil), so a SHARING_VIOLATION parked
 	// resolution caches NOTHING; the deferred Release still clears the guid.
 	// We model exactly that: no Store, just Release.
-	h.CreateReplayCache.Release(violationSessionID, guid)
+	h.CreateDRC.Release(violationSessionID, guid)
 
-	if h.CreateReplayCache.LookupEntry(violationSessionID, guid) != nil {
+	if h.CreateDRC.Lookup(violationSessionID, guid) != nil {
 		t.Fatal("a SHARING_VIOLATION parked resolution must not leave a cache entry")
 	}
 
@@ -145,7 +145,7 @@ func TestReplayPendingViolation_NonReplayDuringPark(t *testing.T) {
 	guid := [16]byte{0x4E, 0x52}
 	req := dh2qCreateReq(guid, nil)
 
-	h.CreateReplayCache.Reserve(violationSessionID, guid)
+	h.CreateDRC.Reserve(violationSessionID, guid)
 
 	// Non-replay CREATE while reserved-but-uncached → falls through.
 	if resp, handled := h.resolveCreateReplay(newReplayCtx(violationSessionID, false), req); handled {
@@ -155,10 +155,10 @@ func TestReplayPendingViolation_NonReplayDuringPark(t *testing.T) {
 	// Once the parked CREATE succeeds and caches its open, a non-replay
 	// duplicate of the same CreateGuid is a protocol violation →
 	// DUPLICATE_OBJECTID, regardless of the earlier reservation.
-	h.CreateReplayCache.Store(violationSessionID, guid,
+	h.CreateDRC.Record(violationSessionID, guid,
 		&CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}},
 		&OpenFile{SessionID: violationSessionID})
-	h.CreateReplayCache.Release(violationSessionID, guid)
+	h.CreateDRC.Release(violationSessionID, guid)
 
 	resp, handled := h.resolveCreateReplay(newReplayCtx(violationSessionID, false), req)
 	if !handled {
@@ -179,7 +179,7 @@ func TestReplayPendingViolation_CrossSessionIsolation(t *testing.T) {
 	guid := [16]byte{0x15, 0x0}
 	req := dh2qCreateReq(guid, nil)
 
-	h.CreateReplayCache.Reserve(violationSessionID, guid)
+	h.CreateDRC.Reserve(violationSessionID, guid)
 
 	// Same session, replay → FILE_NOT_AVAILABLE.
 	if resp, handled := h.resolveCreateReplay(newReplayCtx(violationSessionID, true), req); !handled || resp.Status != types.StatusFileNotAvailable {
@@ -278,7 +278,7 @@ func parkedViolationCreate(t *testing.T) (*Handler, uint64, uint64, <-chan parke
 
 	// Create() reserves the guid before dispatching the break; the parked
 	// resume goroutine owns the matching release.
-	h.CreateReplayCache.Reserve(smbCtx.SessionID, guid)
+	h.CreateDRC.Reserve(smbCtx.SessionID, guid)
 
 	sent := make(chan parkedFinalResponse, 1)
 
@@ -291,7 +291,7 @@ func parkedViolationCreate(t *testing.T) (*Handler, uint64, uint64, <-chan parke
 		TryReserveAsync: func() bool { return true },
 		ReleaseAsync:    func() {},
 		AsyncCreateCompleteCallback: func(_, _, _ uint64, status types.Status, _ []byte) error {
-			sent <- parkedFinalResponse{status, h.CreateReplayCache.IsReserved(smbCtx.SessionID, guid)}
+			sent <- parkedFinalResponse{status, h.CreateDRC.IsReserved(smbCtx.SessionID, guid)}
 			return nil
 		},
 	}
@@ -358,7 +358,7 @@ func TestParkedCreate_ReplayReservationClearedOnSessionCancel(t *testing.T) {
 // uncapped backstop would delete the NEW CREATE's reservation, and a replay
 // would stop failing fast and could start a second concurrent CREATE.
 func TestParkedCreate_StaleBackstopCannotClearANewerReservation(t *testing.T) {
-	cache := pending.NewCreateReplayCache[*CreateResponse, *OpenFile]()
+	cache := pending.NewCreateDRC[*CreateResponse, *OpenFile]()
 	const sessionID = uint64(7)
 	guid := [16]byte{0x2a, 0x1}
 

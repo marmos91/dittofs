@@ -103,8 +103,8 @@ func (h *Handler) GetSession(sessionID uint64) (*session.Session, bool) {
 
 func (h *Handler) DeleteSession(sessionID uint64) {
 	h.SessionManager.DeleteSession(sessionID)
-	if h.CreateReplayCache != nil {
-		h.CreateReplayCache.ForgetSession(sessionID)
+	if h.CreateDRC != nil {
+		h.CreateDRC.ForgetSession(sessionID)
 	}
 }
 

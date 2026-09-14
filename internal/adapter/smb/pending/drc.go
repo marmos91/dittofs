@@ -38,16 +38,16 @@ import (
 // session state. A miss falls through to the normal handler path; the
 // caller is responsible for storing a fresh entry on success.
 
-// replayCacheTTL bounds how long a CREATE replay cache entry stays
+// drcTTL bounds how long a CREATE replay cache entry stays
 // valid after the original response was generated. Samba uses a
 // 600-second window (`source3/smbd/smb2_create.c:replay_cache_purge`).
 // We mirror that here so the test client's retry window aligns.
-const replayCacheTTL = 600 * time.Second
+const drcTTL = 600 * time.Second
 
-// maxCreateReplayEntries caps the CREATE replay cache so a misbehaving
+// maxCreateDRCEntries caps the CREATE replay cache so a misbehaving
 // client cannot grow it unbounded. Old entries are pruned lazily on
 // each store call.
-const maxCreateReplayEntries = 4096
+const maxCreateDRCEntries = 4096
 
 // CachedCreateResponse holds the materialised wire-level CREATE
 // response that should be returned on replay. We cache the full
@@ -80,7 +80,7 @@ type reserveKey struct {
 	CreateGuid [16]byte
 }
 
-// CreateReplayCache stores CREATE responses keyed by DH2Q CreateGuid
+// CreateDRC stores CREATE responses keyed by DH2Q CreateGuid
 // so a replayed CREATE (FLAGS_REPLAY_OPERATION) returns the original
 // result instead of re-executing. CreateGuid is client-generated and
 // globally unique per durable open, so it is sufficient as the key.
@@ -92,15 +92,15 @@ type reserveKey struct {
 // (smbtorture smb2.replay.replay-dhv2-pending* / *-vs-{oplock,lease}).
 // Samba models this with the FWP_RESERVED / FILE_NOT_AVAILABLE slot
 // states in smb2srv_open_lookup_replay_cache.
-type CreateReplayCache[R any, O any] struct {
+type CreateDRC[R any, O any] struct {
 	mu       sync.Mutex
 	entries  map[[16]byte]*CachedCreateResponse[R, O]
 	reserved map[reserveKey]struct{}
 }
 
-// NewCreateReplayCache builds an empty cache.
-func NewCreateReplayCache[R any, O any]() *CreateReplayCache[R, O] {
-	return &CreateReplayCache[R, O]{
+// NewCreateDRC builds an empty cache.
+func NewCreateDRC[R any, O any]() *CreateDRC[R, O] {
+	return &CreateDRC[R, O]{
 		entries:  make(map[[16]byte]*CachedCreateResponse[R, O]),
 		reserved: make(map[reserveKey]struct{}),
 	}
@@ -110,7 +110,7 @@ func NewCreateReplayCache[R any, O any]() *CreateReplayCache[R, O] {
 // CREATE for the given session. While reserved, a replayed CREATE for
 // the same CreateGuid resolves to STATUS_FILE_NOT_AVAILABLE. A zero
 // CreateGuid is ignored.
-func (c *CreateReplayCache[R, O]) Reserve(sessionID uint64, createGuid [16]byte) {
+func (c *CreateDRC[R, O]) Reserve(sessionID uint64, createGuid [16]byte) {
 	if createGuid == ([16]byte{}) {
 		return
 	}
@@ -121,7 +121,7 @@ func (c *CreateReplayCache[R, O]) Reserve(sessionID uint64, createGuid [16]byte)
 
 // Release clears an in-progress reservation once the parked CREATE has
 // reached a terminal state (success stored, or failed). Idempotent.
-func (c *CreateReplayCache[R, O]) Release(sessionID uint64, createGuid [16]byte) {
+func (c *CreateDRC[R, O]) Release(sessionID uint64, createGuid [16]byte) {
 	if createGuid == ([16]byte{}) {
 		return
 	}
@@ -132,7 +132,7 @@ func (c *CreateReplayCache[R, O]) Release(sessionID uint64, createGuid [16]byte)
 
 // IsReserved reports whether a CreateGuid's original CREATE is currently
 // parked for the given session.
-func (c *CreateReplayCache[R, O]) IsReserved(sessionID uint64, createGuid [16]byte) bool {
+func (c *CreateDRC[R, O]) IsReserved(sessionID uint64, createGuid [16]byte) bool {
 	if createGuid == ([16]byte{}) {
 		return false
 	}
@@ -142,7 +142,7 @@ func (c *CreateReplayCache[R, O]) IsReserved(sessionID uint64, createGuid [16]by
 	return ok
 }
 
-// Store records a V2 CREATE response keyed by CreateGuid. openFile is
+// Record records a V2 CREATE response keyed by CreateGuid. openFile is
 // the live Open the CREATE established; it is consulted on replay to
 // rebuild the current lease/oplock state (it may be the zero value for
 // paths that have no Open, in which case the cached snapshot is
@@ -153,7 +153,7 @@ func (c *CreateReplayCache[R, O]) IsReserved(sessionID uint64, createGuid [16]by
 // handler path and may succeed the second time. That rule needs the
 // concrete response type to read a status off, which this package
 // deliberately does not know.
-func (c *CreateReplayCache[R, O]) Store(sessionID uint64, createGuid [16]byte, resp R, openFile O) {
+func (c *CreateDRC[R, O]) Record(sessionID uint64, createGuid [16]byte, resp R, openFile O) {
 	if createGuid == ([16]byte{}) {
 		return
 	}
@@ -168,12 +168,12 @@ func (c *CreateReplayCache[R, O]) Store(sessionID uint64, createGuid [16]byte, r
 	}
 }
 
-// LookupEntry returns the full cache entry (response + live Open) for
+// Lookup returns the full cache entry (response + live Open) for
 // the given CreateGuid + session, or nil on miss/expiry. The create
 // path uses this to rebuild the current lease/oplock state on replay
 // and to distinguish a replay (FLAGS_REPLAY_OPERATION set) from a
 // duplicate non-replay CREATE (→ DUPLICATE_OBJECTID).
-func (c *CreateReplayCache[R, O]) LookupEntry(sessionID uint64, createGuid [16]byte) *CachedCreateResponse[R, O] {
+func (c *CreateDRC[R, O]) Lookup(sessionID uint64, createGuid [16]byte) *CachedCreateResponse[R, O] {
 	if createGuid == ([16]byte{}) {
 		return nil
 	}
@@ -183,7 +183,7 @@ func (c *CreateReplayCache[R, O]) LookupEntry(sessionID uint64, createGuid [16]b
 	if !ok || entry.SessionID != sessionID {
 		return nil
 	}
-	if time.Since(entry.StoredAt) > replayCacheTTL {
+	if time.Since(entry.StoredAt) > drcTTL {
 		delete(c.entries, createGuid)
 		return nil
 	}
@@ -193,7 +193,7 @@ func (c *CreateReplayCache[R, O]) LookupEntry(sessionID uint64, createGuid [16]b
 // Forget drops the cached entry for CreateGuid. Called when the open
 // is closed cleanly — the cache window is only meaningful while a
 // retry could still arrive.
-func (c *CreateReplayCache[R, O]) Forget(createGuid [16]byte) {
+func (c *CreateDRC[R, O]) Forget(createGuid [16]byte) {
 	if createGuid == ([16]byte{}) {
 		return
 	}
@@ -205,7 +205,7 @@ func (c *CreateReplayCache[R, O]) Forget(createGuid [16]byte) {
 // ForgetSession drops all entries for the given session. Called by
 // session teardown so a long-lived ServerGUID-stable replay cache
 // does not survive logoff.
-func (c *CreateReplayCache[R, O]) ForgetSession(sessionID uint64) {
+func (c *CreateDRC[R, O]) ForgetSession(sessionID uint64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for k, e := range c.entries {
@@ -221,7 +221,7 @@ func (c *CreateReplayCache[R, O]) ForgetSession(sessionID uint64) {
 }
 
 // Len returns the number of cached entries (test / metrics).
-func (c *CreateReplayCache[R, O]) Len() int {
+func (c *CreateDRC[R, O]) Len() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return len(c.entries)
@@ -230,14 +230,14 @@ func (c *CreateReplayCache[R, O]) Len() int {
 // pruneLocked evicts expired entries and, if the cap is still
 // exceeded, drops oldest-first until under the cap. Cheap because
 // the cache is bounded small.
-func (c *CreateReplayCache[R, O]) pruneLocked() {
+func (c *CreateDRC[R, O]) pruneLocked() {
 	now := time.Now()
 	for k, e := range c.entries {
-		if now.Sub(e.StoredAt) > replayCacheTTL {
+		if now.Sub(e.StoredAt) > drcTTL {
 			delete(c.entries, k)
 		}
 	}
-	if len(c.entries) < maxCreateReplayEntries {
+	if len(c.entries) < maxCreateDRCEntries {
 		return
 	}
 	// Over-cap: drop oldest. Linear scan since the cap is small.
@@ -273,23 +273,23 @@ type CachedLockResponse struct {
 	Status types.Status
 }
 
-// lockReplayKey indexes the LOCK replay cache by FileID + bucket.
-type lockReplayKey struct {
+// lockDRCKey indexes the LOCK replay cache by FileID + bucket.
+type lockDRCKey struct {
 	FileID [16]byte
 	Index  uint32
 }
 
-// LockReplayCache stores the last (LockSequenceNumber, status) pair
+// LockDRC stores the last (LockSequenceNumber, status) pair
 // per (FileID, LockSequenceIndex). Bounded implicitly by LockSequenceIndexMax
 // tracked indices per open × max concurrent opens.
-type LockReplayCache struct {
+type LockDRC struct {
 	mu      sync.RWMutex
-	entries map[lockReplayKey]CachedLockResponse
+	entries map[lockDRCKey]CachedLockResponse
 }
 
-// NewLockReplayCache builds an empty cache.
-func NewLockReplayCache() *LockReplayCache {
-	return &LockReplayCache{entries: make(map[lockReplayKey]CachedLockResponse)}
+// NewLockDRC builds an empty cache.
+func NewLockDRC() *LockDRC {
+	return &LockDRC{entries: make(map[lockDRCKey]CachedLockResponse)}
 }
 
 // UnpackLockSequence extracts (index, number) from the packed
@@ -309,13 +309,13 @@ func UnpackLockSequence(packed uint32) (index uint32, number uint8, enabled bool
 // same LockSequenceNumber. Caller passes the unpacked (index, number).
 // Returns ok=false when no match: the LOCK should execute normally
 // and the result stored via Store.
-func (c *LockReplayCache) Lookup(fileID [16]byte, index uint32, number uint8) (types.Status, bool) {
+func (c *LockDRC) Lookup(fileID [16]byte, index uint32, number uint8) (types.Status, bool) {
 	if index == 0 || index > LockSequenceIndexMax {
 		return 0, false
 	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	entry, ok := c.entries[lockReplayKey{FileID: fileID, Index: index}]
+	entry, ok := c.entries[lockDRCKey{FileID: fileID, Index: index}]
 	if !ok {
 		return 0, false
 	}
@@ -325,16 +325,16 @@ func (c *LockReplayCache) Lookup(fileID [16]byte, index uint32, number uint8) (t
 	return entry.Status, true
 }
 
-// Store records the (Number, Status) pair for the given bucket.
+// Record records the (Number, Status) pair for the given bucket.
 // Subsequent calls with a different Number for the same bucket
 // overwrite — the bucket tracks the LATEST sequence, not history.
-func (c *LockReplayCache) Store(fileID [16]byte, index uint32, number uint8, status types.Status) {
+func (c *LockDRC) Record(fileID [16]byte, index uint32, number uint8, status types.Status) {
 	if index == 0 || index > LockSequenceIndexMax {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.entries[lockReplayKey{FileID: fileID, Index: index}] = CachedLockResponse{
+	c.entries[lockDRCKey{FileID: fileID, Index: index}] = CachedLockResponse{
 		Number: number,
 		Status: status,
 	}
@@ -346,7 +346,7 @@ func (c *LockReplayCache) Store(fileID [16]byte, index uint32, number uint8, sta
 // ponytail: O(n) full-map scan per CLOSE; a FileID-indexed secondary map
 // would make this O(buckets-per-file), worth it only if profiling at real
 // open counts shows the scan.
-func (c *LockReplayCache) ForgetFile(fileID [16]byte) {
+func (c *LockDRC) ForgetFile(fileID [16]byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for k := range c.entries {
@@ -357,7 +357,7 @@ func (c *LockReplayCache) ForgetFile(fileID [16]byte) {
 }
 
 // Len returns the number of cached entries (test / metrics).
-func (c *LockReplayCache) Len() int {
+func (c *LockDRC) Len() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return len(c.entries)

@@ -47,7 +47,7 @@ func TestCreateReplay_PanicReleasesReservation(t *testing.T) {
 
 	e.h.Registry = &panicWhenReserved{
 		smbRuntime: e.h.Registry,
-		reserved:   func() bool { return e.h.CreateReplayCache.IsReserved(sessionID, createGuid) },
+		reserved:   func() bool { return e.h.CreateDRC.IsReserved(sessionID, createGuid) },
 	}
 
 	panicked := func() (p bool) {
@@ -75,7 +75,7 @@ func TestCreateReplay_PanicReleasesReservation(t *testing.T) {
 		t.Fatal("injection never fired; the test no longer reaches the reserved window")
 	}
 
-	if e.h.CreateReplayCache.IsReserved(sessionID, createGuid) {
+	if e.h.CreateDRC.IsReserved(sessionID, createGuid) {
 		t.Fatal("reservation survived the panic: every later replay of this guid " +
 			"answers STATUS_FILE_NOT_AVAILABLE until the session ends")
 	}

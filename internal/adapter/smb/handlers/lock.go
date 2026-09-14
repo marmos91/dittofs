@@ -215,8 +215,8 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 	}
 	lockSeqIndex, lockSeqNumber, lockSeqEnabled := pending.UnpackLockSequence(req.LockSequence)
 	lockSeqEnabled = lockSeqEnabled && checkLockSequence
-	if lockSeqEnabled && h.LockReplayCache != nil {
-		if cachedStatus, hit := h.LockReplayCache.Lookup(req.FileID, lockSeqIndex, lockSeqNumber); hit {
+	if lockSeqEnabled && h.LockDRC != nil {
+		if cachedStatus, hit := h.LockDRC.Lookup(req.FileID, lockSeqIndex, lockSeqNumber); hit {
 			logger.Debug("LOCK: replay hit — returning cached status",
 				"fileID", fmt.Sprintf("%x", req.FileID),
 				"index", lockSeqIndex,
@@ -610,8 +610,8 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 	// FLAGS_REPLAY_OPERATION retry with the same (FileID, Index,
 	// Number) returns this status instead of re-running the
 	// acquire/release path (MS-SMB2 §3.3.5.14 step 4).
-	if lockSeqEnabled && h.LockReplayCache != nil {
-		h.LockReplayCache.Store(req.FileID, lockSeqIndex, lockSeqNumber, types.StatusSuccess)
+	if lockSeqEnabled && h.LockDRC != nil {
+		h.LockDRC.Record(req.FileID, lockSeqIndex, lockSeqNumber, types.StatusSuccess)
 	}
 
 	return NewResult(types.StatusSuccess, respBytes), nil

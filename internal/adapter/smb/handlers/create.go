@@ -1501,8 +1501,8 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// pre-existing open to contend with.
 	replayGuid := dh2qCreateGuid(req)
 	reservedReplay := false
-	if h.CreateReplayCache != nil && fileExists && replayGuid != ([16]byte{}) {
-		h.CreateReplayCache.Reserve(ctx.SessionID, replayGuid)
+	if h.CreateDRC != nil && fileExists && replayGuid != ([16]byte{}) {
+		h.CreateDRC.Reserve(ctx.SessionID, replayGuid)
 		reservedReplay = true
 	}
 
@@ -1516,7 +1516,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// every later replay of this guid.
 	defer func() {
 		if reservedReplay {
-			h.CreateReplayCache.Release(ctx.SessionID, replayGuid)
+			h.CreateDRC.Release(ctx.SessionID, replayGuid)
 		}
 	}()
 

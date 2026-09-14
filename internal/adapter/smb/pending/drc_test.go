@@ -16,17 +16,17 @@ type testResp struct{ id int }
 
 type testOpen struct{ id int }
 
-func newTestCreateCache() *CreateReplayCache[*testResp, *testOpen] {
-	return NewCreateReplayCache[*testResp, *testOpen]()
+func newTestCreateCache() *CreateDRC[*testResp, *testOpen] {
+	return NewCreateDRC[*testResp, *testOpen]()
 }
 
-func TestCreateReplayCache_StoreLookup(t *testing.T) {
+func TestCreateDRC_StoreLookup(t *testing.T) {
 	c := newTestCreateCache()
 	guid := [16]byte{1, 2, 3, 4}
 	resp := &testResp{id: 7}
 	open := &testOpen{id: 9}
-	c.Store(42, guid, resp, open)
-	e := c.LookupEntry(42, guid)
+	c.Record(42, guid, resp, open)
+	e := c.Lookup(42, guid)
 	if e == nil {
 		t.Fatal("LookupEntry missed a response that was just stored")
 	}
@@ -38,65 +38,65 @@ func TestCreateReplayCache_StoreLookup(t *testing.T) {
 	}
 }
 
-func TestCreateReplayCache_LookupWrongSession(t *testing.T) {
+func TestCreateDRC_LookupWrongSession(t *testing.T) {
 	c := newTestCreateCache()
 	guid := [16]byte{1}
-	c.Store(1, guid, &testResp{id: 1}, nil)
-	if c.LookupEntry(2, guid) != nil {
+	c.Record(1, guid, &testResp{id: 1}, nil)
+	if c.Lookup(2, guid) != nil {
 		t.Fatal("LookupEntry across sessions must miss")
 	}
 }
 
-func TestCreateReplayCache_ZeroGuidIgnored(t *testing.T) {
+func TestCreateDRC_ZeroGuidIgnored(t *testing.T) {
 	c := newTestCreateCache()
 	zero := [16]byte{}
-	c.Store(1, zero, &testResp{id: 1}, nil)
+	c.Record(1, zero, &testResp{id: 1}, nil)
 	if c.Len() != 0 {
 		t.Fatal("zero CreateGuid must not be stored")
 	}
-	if c.LookupEntry(1, zero) != nil {
+	if c.Lookup(1, zero) != nil {
 		t.Fatal("zero CreateGuid must not be looked up")
 	}
 }
 
-func TestCreateReplayCache_TTLExpiry(t *testing.T) {
+func TestCreateDRC_TTLExpiry(t *testing.T) {
 	c := newTestCreateCache()
 	guid := [16]byte{9}
-	c.Store(1, guid, &testResp{id: 1}, nil)
+	c.Record(1, guid, &testResp{id: 1}, nil)
 	// Force expiry by rewriting StoredAt
 	c.mu.Lock()
-	c.entries[guid].StoredAt = time.Now().Add(-2 * replayCacheTTL)
+	c.entries[guid].StoredAt = time.Now().Add(-2 * drcTTL)
 	c.mu.Unlock()
-	if c.LookupEntry(1, guid) != nil {
+	if c.Lookup(1, guid) != nil {
 		t.Fatal("expired entry must miss")
 	}
 }
 
-func TestCreateReplayCache_Forget(t *testing.T) {
+func TestCreateDRC_Forget(t *testing.T) {
 	c := newTestCreateCache()
 	guid := [16]byte{3}
-	c.Store(1, guid, &testResp{id: 1}, nil)
+	c.Record(1, guid, &testResp{id: 1}, nil)
 	c.Forget(guid)
 	if c.Len() != 0 {
 		t.Fatal("Forget must drop entry")
 	}
 }
 
-func TestCreateReplayCache_ForgetSession(t *testing.T) {
+func TestCreateDRC_ForgetSession(t *testing.T) {
 	c := newTestCreateCache()
 	g1, g2 := [16]byte{1}, [16]byte{2}
-	c.Store(10, g1, &testResp{id: 1}, nil)
-	c.Store(20, g2, &testResp{id: 1}, nil)
+	c.Record(10, g1, &testResp{id: 1}, nil)
+	c.Record(20, g2, &testResp{id: 1}, nil)
 	c.ForgetSession(10)
-	if c.LookupEntry(10, g1) != nil {
+	if c.Lookup(10, g1) != nil {
 		t.Fatal("ForgetSession should drop session 10 entry")
 	}
-	if c.LookupEntry(20, g2) == nil {
+	if c.Lookup(20, g2) == nil {
 		t.Fatal("ForgetSession should leave other session entries")
 	}
 }
 
-func TestCreateReplayCache_Reservation(t *testing.T) {
+func TestCreateDRC_Reservation(t *testing.T) {
 	c := newTestCreateCache()
 	guid := [16]byte{0x5A}
 
@@ -117,7 +117,7 @@ func TestCreateReplayCache_Reservation(t *testing.T) {
 	}
 }
 
-func TestCreateReplayCache_ZeroGuidReservationIgnored(t *testing.T) {
+func TestCreateDRC_ZeroGuidReservationIgnored(t *testing.T) {
 	c := newTestCreateCache()
 	zero := [16]byte{}
 	c.Reserve(1, zero)
@@ -126,7 +126,7 @@ func TestCreateReplayCache_ZeroGuidReservationIgnored(t *testing.T) {
 	}
 }
 
-func TestCreateReplayCache_ForgetSessionClearsReservations(t *testing.T) {
+func TestCreateDRC_ForgetSessionClearsReservations(t *testing.T) {
 	c := newTestCreateCache()
 	g1, g2 := [16]byte{1}, [16]byte{2}
 	c.Reserve(10, g1)
@@ -165,33 +165,33 @@ func TestUnpackLockSequence(t *testing.T) {
 	}
 }
 
-func TestLockReplayCache_StoreLookup(t *testing.T) {
-	c := NewLockReplayCache()
+func TestLockDRC_StoreLookup(t *testing.T) {
+	c := NewLockDRC()
 	fid := [16]byte{0xAA}
-	c.Store(fid, 3, 7, types.StatusSuccess)
+	c.Record(fid, 3, 7, types.StatusSuccess)
 	if st, ok := c.Lookup(fid, 3, 7); !ok || st != types.StatusSuccess {
 		t.Fatalf("Lookup = (%v, %v), want (StatusSuccess, true)", st, ok)
 	}
 }
 
-func TestLockReplayCache_MissDifferentNumber(t *testing.T) {
-	c := NewLockReplayCache()
+func TestLockDRC_MissDifferentNumber(t *testing.T) {
+	c := NewLockDRC()
 	fid := [16]byte{0xBB}
-	c.Store(fid, 1, 5, types.StatusSuccess)
+	c.Record(fid, 1, 5, types.StatusSuccess)
 	if _, ok := c.Lookup(fid, 1, 6); ok {
 		t.Fatal("Lookup with different Number must miss")
 	}
 }
 
-func TestLockReplayCache_IndexBoundsRejected(t *testing.T) {
-	c := NewLockReplayCache()
+func TestLockDRC_IndexBoundsRejected(t *testing.T) {
+	c := NewLockDRC()
 	fid := [16]byte{0xCC}
 	// Bucket 0 is "not tracked"; bucket > LockSequenceIndexMax is out of range.
-	c.Store(fid, 0, 1, types.StatusSuccess)
+	c.Record(fid, 0, 1, types.StatusSuccess)
 	if c.Len() != 0 {
 		t.Fatal("Store with bucket=0 must be ignored")
 	}
-	c.Store(fid, LockSequenceIndexMax+1, 1, types.StatusSuccess)
+	c.Record(fid, LockSequenceIndexMax+1, 1, types.StatusSuccess)
 	if c.Len() != 0 {
 		t.Fatal("Store with out-of-range bucket must be ignored")
 	}
@@ -203,13 +203,13 @@ func TestLockReplayCache_IndexBoundsRejected(t *testing.T) {
 	}
 }
 
-func TestLockReplayCache_ForgetFile(t *testing.T) {
-	c := NewLockReplayCache()
+func TestLockDRC_ForgetFile(t *testing.T) {
+	c := NewLockDRC()
 	fid1 := [16]byte{1}
 	fid2 := [16]byte{2}
-	c.Store(fid1, 1, 1, types.StatusSuccess)
-	c.Store(fid1, 5, 9, types.StatusSuccess)
-	c.Store(fid2, 1, 1, types.StatusSuccess)
+	c.Record(fid1, 1, 1, types.StatusSuccess)
+	c.Record(fid1, 5, 9, types.StatusSuccess)
+	c.Record(fid2, 1, 1, types.StatusSuccess)
 	c.ForgetFile(fid1)
 	if _, ok := c.Lookup(fid1, 1, 1); ok {
 		t.Fatal("ForgetFile must drop entries for fid1 bucket 1")
@@ -222,11 +222,11 @@ func TestLockReplayCache_ForgetFile(t *testing.T) {
 	}
 }
 
-func TestLockReplayCache_OverwriteUpdatesNumber(t *testing.T) {
-	c := NewLockReplayCache()
+func TestLockDRC_OverwriteUpdatesNumber(t *testing.T) {
+	c := NewLockDRC()
 	fid := [16]byte{0xDD}
-	c.Store(fid, 2, 10, types.StatusSuccess)
-	c.Store(fid, 2, 11, types.StatusLockNotGranted)
+	c.Record(fid, 2, 10, types.StatusSuccess)
+	c.Record(fid, 2, 11, types.StatusLockNotGranted)
 	if _, ok := c.Lookup(fid, 2, 10); ok {
 		t.Fatal("Lookup with previous Number must miss after overwrite")
 	}

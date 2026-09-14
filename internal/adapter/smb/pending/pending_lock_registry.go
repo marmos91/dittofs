@@ -58,7 +58,7 @@ type PendingLock struct {
 	Callback AsyncLockCompleteCallback
 
 	// SMB3 LOCK replay-cache coordinates. Carried so the resume goroutine
-	// can record success in LockReplayCache after a parked LOCK is finally
+	// can record success in LockDRC after a parked LOCK is finally
 	// granted — otherwise a FLAGS_REPLAY_OPERATION retry of the originally
 	// parked LOCK would re-execute the acquire path (MS-SMB2 §3.3.5.14
 	// step 4).

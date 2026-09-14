@@ -94,14 +94,14 @@ func TestRewriteLeaseResponseState_V1NoEpoch(t *testing.T) {
 }
 
 // newReplayTestHandler builds a Handler wired with a real LeaseManager and an
-// empty CreateReplayCache, plus the backing lock Manager for direct lease
+// empty CreateDRC, plus the backing lock Manager for direct lease
 // grants.
 func newReplayTestHandler() (*Handler, *lock.Manager, *lease.LeaseManager) {
 	mgr := lock.NewManager()
 	leaseMgr := lease.NewLeaseManager(&staticLockResolver{mgr: mgr}, nil)
 	h := &Handler{
-		LeaseManager:      leaseMgr,
-		CreateReplayCache: pending.NewCreateReplayCache[*CreateResponse, *OpenFile](),
+		LeaseManager: leaseMgr,
+		CreateDRC:    pending.NewCreateDRC[*CreateResponse, *OpenFile](),
 	}
 	return h, mgr, leaseMgr
 }
@@ -120,7 +120,7 @@ func TestResolveCreateReplay_DuplicateObjectid(t *testing.T) {
 	const sessionID = uint64(7)
 	guid := [16]byte{0xAB, 0xCD}
 
-	h.CreateReplayCache.Store(sessionID,
+	h.CreateDRC.Record(sessionID,
 		guid,
 		&CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}},
 		&OpenFile{},
@@ -143,7 +143,7 @@ func TestResolveCreateReplay_PendingFileNotAvailable(t *testing.T) {
 	const sessionID = uint64(7)
 	guid := [16]byte{0x01, 0x02, 0x03}
 
-	h.CreateReplayCache.Reserve(sessionID, guid)
+	h.CreateDRC.Reserve(sessionID, guid)
 
 	resp, handled := h.resolveCreateReplay(newReplayCtx(sessionID, true), dh2qCreateReq(guid, nil))
 	if !handled {
@@ -155,7 +155,7 @@ func TestResolveCreateReplay_PendingFileNotAvailable(t *testing.T) {
 
 	// Once the original completes (reservation released), the same replay
 	// falls through (no cached entry yet) rather than returning FILE_NOT_AVAILABLE.
-	h.CreateReplayCache.Release(sessionID, guid)
+	h.CreateDRC.Release(sessionID, guid)
 	if _, handled := h.resolveCreateReplay(newReplayCtx(sessionID, true), dh2qCreateReq(guid, nil)); handled {
 		t.Fatal("after release with no cached entry the replay must fall through")
 	}
@@ -173,7 +173,7 @@ func TestResolveCreateReplay_OplockSnapshot(t *testing.T) {
 		OplockLevel:     OplockLevelBatch,
 		FileID:          [16]byte{0xDE, 0xAD},
 	}
-	h.CreateReplayCache.Store(sessionID, guid, cached,
+	h.CreateDRC.Record(sessionID, guid, cached,
 		&OpenFile{OplockLevel: OplockLevelBatch})
 
 	// A replay that re-requests the SAME Batch oplock echoes Batch back and
@@ -210,7 +210,7 @@ func TestResolveCreateReplay_OplockReplayEchoesRequestedNone(t *testing.T) {
 			{Name: DurableHandleV2RequestTag, Data: EncodeDH2QResponse(300000, 0).Data},
 		},
 	}
-	h.CreateReplayCache.Store(sessionID, guid, cached,
+	h.CreateDRC.Record(sessionID, guid, cached,
 		&OpenFile{OplockLevel: OplockLevelBatch})
 
 	// Replay with OplockLevel=NONE (oplock2 second CREATE).
@@ -283,7 +283,7 @@ func TestResolveCreateReplay_LeaseReturnsCurrentState(t *testing.T) {
 			}).Encode(),
 		}},
 	}
-	h.CreateReplayCache.Store(sessionID, leaseKey16Guid(leaseKey), cached, open)
+	h.CreateDRC.Record(sessionID, leaseKey16Guid(leaseKey), cached, open)
 
 	// Replay the original RH request.
 	rhReq := encodeV2LeaseContext(leaseKey, lock.LeaseStateRead|lock.LeaseStateHandle, 1)
@@ -329,7 +329,7 @@ func TestResolveCreateReplay_LeaseReplayDoesNotMutateCache(t *testing.T) {
 		CreateContexts:  []CreateContext{{Name: LeaseContextTagResponse, Data: origData}},
 	}
 	guid := leaseKey16Guid(leaseKey)
-	h.CreateReplayCache.Store(sessionID, guid, cached, open)
+	h.CreateDRC.Record(sessionID, guid, cached, open)
 
 	rhReq := encodeV2LeaseContext(leaseKey, lock.LeaseStateRead|lock.LeaseStateHandle, 1)
 	for i := 0; i < 2; i++ {
@@ -361,7 +361,7 @@ func TestResolveCreateReplay_LeaseKeyMismatch(t *testing.T) {
 	open := grantRWHLease(t, leaseMgr, leaseKey, sessionID)
 
 	cached := &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}, OplockLevel: OplockLevelLease}
-	h.CreateReplayCache.Store(sessionID, leaseKey16Guid(leaseKey), cached, open)
+	h.CreateDRC.Record(sessionID, leaseKey16Guid(leaseKey), cached, open)
 
 	otherKey := [16]byte{0xDE, 0xAD, 0xBE, 0xEF}
 	mismatchReq := encodeV2LeaseContext(otherKey, lock.LeaseStateRead|lock.LeaseStateHandle, 1)
@@ -386,7 +386,7 @@ func TestResolveCreateReplay_OplockReplayedAsLease(t *testing.T) {
 	guid := [16]byte{0x42}
 
 	cached := &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}, OplockLevel: OplockLevelBatch}
-	h.CreateReplayCache.Store(sessionID, guid, cached, &OpenFile{OplockLevel: OplockLevelBatch})
+	h.CreateDRC.Record(sessionID, guid, cached, &OpenFile{OplockLevel: OplockLevelBatch})
 
 	leaseReq := encodeV2LeaseContext([16]byte{0x55}, lock.LeaseStateRead|lock.LeaseStateHandle, 1)
 	resp, handled := h.resolveCreateReplay(newReplayCtx(sessionID, true), dh2qCreateReq(guid, leaseReq))
@@ -414,7 +414,7 @@ func TestResolveCreateReplay_NoOplockPendingReserved(t *testing.T) {
 
 	// Create's inline-conflict path reserves the guid (no async park, no cached
 	// entry yet — the original open has not completed).
-	h.CreateReplayCache.Reserve(sessionID, guid)
+	h.CreateDRC.Reserve(sessionID, guid)
 
 	// Concurrent replay while reserved → FILE_NOT_AVAILABLE.
 	resp, handled := h.resolveCreateReplay(newReplayCtx(sessionID, true), dh2qCreateReq(guid, nil))
@@ -434,8 +434,8 @@ func TestResolveCreateReplay_NoOplockPendingReserved(t *testing.T) {
 
 	// Original completes: Create releases the reservation. A fresh replay now
 	// finds neither a reservation nor a cached entry and falls through — no leak.
-	h.CreateReplayCache.Release(sessionID, guid)
-	if h.CreateReplayCache.IsReserved(sessionID, guid) {
+	h.CreateDRC.Release(sessionID, guid)
+	if h.CreateDRC.IsReserved(sessionID, guid) {
 		t.Fatal("reservation leaked after Release")
 	}
 	if _, handled := h.resolveCreateReplay(newReplayCtx(sessionID, true), dh2qCreateReq(guid, nil)); handled {
@@ -443,7 +443,7 @@ func TestResolveCreateReplay_NoOplockPendingReserved(t *testing.T) {
 	}
 }
 
-// TestCreateReplayCache_ReserveReleaseSingleReservation proves the
+// TestCreateDRC_ReserveReleaseSingleReservation proves the
 // single-logical-reservation invariant the #749 fix relies on: Reserve is
 // idempotent (set semantics) and one Release clears the guid regardless of how
 // many Reserves preceded it. This guards the design where Create reserves the
@@ -452,8 +452,8 @@ func TestResolveCreateReplay_NoOplockPendingReserved(t *testing.T) {
 // Reserve, a single Release must fully clear the guid (no stuck reservation
 // that would wrongly FILE_NOT_AVAILABLE all future opens) and an extra Release
 // must be a harmless no-op (no panic / no negative refcount).
-func TestCreateReplayCache_ReserveReleaseSingleReservation(t *testing.T) {
-	c := pending.NewCreateReplayCache[*CreateResponse, *OpenFile]()
+func TestCreateDRC_ReserveReleaseSingleReservation(t *testing.T) {
+	c := pending.NewCreateDRC[*CreateResponse, *OpenFile]()
 	const sessionID = uint64(11)
 	guid := [16]byte{0xC0, 0xDE}
 

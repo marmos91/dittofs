@@ -706,8 +706,8 @@ func (h *Handler) parkCreateOnLeaseBreak(
 		// goroutine below, and the CANCEL / session-teardown paths that preempt
 		// it. See PendingCreate.ReleaseReplay for why the ordering matters.
 		ReplayReleaser: func() {
-			if h.CreateReplayCache != nil {
-				h.CreateReplayCache.Release(ctx.SessionID, replayGuid)
+			if h.CreateDRC != nil {
+				h.CreateDRC.Release(ctx.SessionID, replayGuid)
 			}
 		},
 		// started is closed by the dispatcher (response.go single-cmd path

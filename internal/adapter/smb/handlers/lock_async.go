@@ -237,8 +237,8 @@ func (h *Handler) resumePendingLock(
 				// (FileID, Index, Number) returns this status instead of
 				// re-running the acquire path (MS-SMB2 §3.3.5.14 step 4).
 				// Mirrors the sync success path in lock.go:Lock.
-				if parkedLock.LockSeqEnabled && h.LockReplayCache != nil {
-					h.LockReplayCache.Store(parkedLock.FileID, parkedLock.LockSeqIndex, parkedLock.LockSeqNumber, types.StatusSuccess)
+				if parkedLock.LockSeqEnabled && h.LockDRC != nil {
+					h.LockDRC.Record(parkedLock.FileID, parkedLock.LockSeqIndex, parkedLock.LockSeqNumber, types.StatusSuccess)
 				}
 				goto deliver
 			}
