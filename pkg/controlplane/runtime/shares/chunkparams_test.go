@@ -49,3 +49,17 @@ func TestJournalChunkParams(t *testing.T) {
 		})
 	}
 }
+
+func TestMergeDefaults_UnsetJournalSizeIsUnbounded(t *testing.T) {
+	got := mergeLocalStoreDefaults(&LocalStoreDefaults{}, &ShareConfig{})
+	if got.MaxSize != 0 {
+		t.Errorf("MaxSize = %d, want 0 (unbounded) when no journal size is configured", got.MaxSize)
+	}
+}
+
+func TestMergeDefaults_SetJournalSizeIsTheCeiling(t *testing.T) {
+	got := mergeLocalStoreDefaults(&LocalStoreDefaults{}, &ShareConfig{JournalSize: 5 << 30})
+	if got.MaxSize != 5<<30 {
+		t.Errorf("MaxSize = %d, want the configured 5 GiB", got.MaxSize)
+	}
+}
