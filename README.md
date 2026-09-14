@@ -43,8 +43,8 @@ DittoFS separates the two. A single server process can:
 
 - Speak **NFSv3, NFSv4.0, NFSv4.1, NFSv4.2, and SMB2/3** at the same time, over the same data.
 - Store metadata in **memory, [BadgerDB](https://github.com/dgraph-io/badger), or [PostgreSQL](https://www.postgresql.org/docs/)** — chosen per share.
-- Store file content in a two-tier **block store**: a fast local tier (filesystem or
-  memory) backed by a durable remote tier ([S3](https://docs.aws.amazon.com/AmazonS3/latest/API/Welcome.html) or memory), with an async syncer between them.
+- Store file content in one **block store** ([S3](https://docs.aws.amazon.com/AmazonS3/latest/API/Welcome.html) or memory)
+  per share, fronted by an on-disk **journal** that absorbs writes, with an async syncer between them.
 - Run **entirely in userspace** — no FUSE, no kernel modules, no special privileges.
 
 Everything is built from **named, reusable stores** wired together into **shares**.
@@ -73,7 +73,7 @@ Two binaries drive it:
 | **Active Directory** | Kerberos service keytab for AD-issued tickets; optional machine account (offline or online domain join) for NTLM pass-through; LDAP idmap (`idmap_ad` / `idmap_rid`) maps AD users and nested groups to the same Unix UID/GID over SMB and NFS |
 | **Cross-protocol coordination** | Bidirectional lease/delegation breaks between SMB and NFS |
 | **Metadata stores** | Memory, BadgerDB, SQLite, PostgreSQL — pluggable per share |
-| **Block stores** | Local: filesystem, memory. Remote: S3, memory. Per-share isolation, async sync |
+| **Block stores** | S3, memory. One per share, fronted by an on-disk journal. Per-share isolation, async sync |
 | **Client-side encryption** | Per-remote envelope encryption (AES-256-GCM / ChaCha20-Poly1305 / XChaCha20-Poly1305) |
 | **Share snapshots** | Point-in-time reference holds (no data copy) with restore |
 | **Control plane** | Unified users/groups, share permissions, REST API with JWT auth |
@@ -180,12 +180,10 @@ stores, mounts and other users. So: **set it before the very first start.**
 
 # 3. Create the stores (interactive prompts collect paths / S3 credentials)
 ./dfsctl store metadata add --name default --type badger
-./dfsctl store block local add  --name local-cache --type fs
-./dfsctl store block remote add --name s3-remote   --type s3
+./dfsctl store block add --name s3-remote --type s3
 
 # 4. Create a share and grant access
-./dfsctl share create --name /export --metadata default \
-  --local local-cache --remote s3-remote
+./dfsctl share create --name /export --metadata default --block-store s3-remote
 ./dfsctl share permission grant /export --user $(whoami) --level read-write
 
 # 5. Enable the NFS adapter
@@ -200,8 +198,8 @@ sudo mount -t nfs -o tcp,port=12049,mountport=12049,resvport,nolock localhost:/e
 echo "Hello DittoFS!" > /mnt/nfs/hello.txt
 ```
 
-> This uses persistent storage (BadgerDB metadata, local filesystem cache, S3 durable
-> backend). Writes land locally first and sync to S3 in the background. For dependency-free
+> This uses persistent storage (BadgerDB metadata, S3 durable backend). Writes land in the
+> share's on-disk journal first and sync to S3 in the background. For dependency-free
 > local testing, use `--type memory` for both the metadata and block stores instead.
 
 ### Mount an SMB share
@@ -255,8 +253,8 @@ controlplane:
     secret: "your-secret-key-at-least-32-characters"
 ```
 
-Block storage and caching are configured per share through the store CLI — each share owns
-an isolated local storage directory and its own caching tiers. See
+Block storage is configured per share through the store CLI — each share points at one block
+store and owns an isolated journal directory beneath `blockstore.journal.path`. See
 [docs/guide/configuration.md](docs/guide/configuration.md) for the full reference.
 
 ## Documentation

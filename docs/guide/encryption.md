@@ -2,13 +2,13 @@
 
 > For the envelope-encryption design, decorator pattern, wire frame layout, KMIP/HSM integration details, and key hierarchy, see [../internals/encryption-design.md](../internals/encryption-design.md).
 
-DittoFS can encrypt every block before it leaves the server using a per-remote, decorator-based encryption layer. Encryption is opt-in per remote block store.
+DittoFS can encrypt every block before it leaves the server using a per-store, decorator-based encryption layer. Encryption is opt-in per block store.
 
 ## What encryption protects (and what it does not)
 
 Encryption protects block payloads against:
 
-- Operators of the remote block store (S3 provider, MinIO admins).
+- Operators of the block store (S3 provider, MinIO admins).
 - Anyone with read access to the bucket / prefix where blocks are stored.
 - Theft of the underlying storage media.
 
@@ -20,7 +20,7 @@ Encryption does **not** protect:
 
 ## Enabling encryption
 
-Encryption is enabled per remote block store by setting an `encryption` block in the remote's config. Add it via `dfsctl` at remote-store creation time:
+Encryption is enabled per block store by setting an `encryption` block in the store's config. Add it via `dfsctl` at store-creation time:
 
 ```bash
 # Generate a passphrase-protected key file.
@@ -29,14 +29,14 @@ Encryption is enabled per remote block store by setting an `encryption` block in
 read -srp 'passphrase: ' DITTOFS_ENCRYPTION_PASSPHRASE; export DITTOFS_ENCRYPTION_PASSPHRASE
 
 # Local-file provider
-dfsctl store block remote add \
+dfsctl store block add \
   --name s3-encrypted --type s3 --bucket prod-data \
   --encryption-aead aes-256-gcm \
   --encryption-key-kind local \
   --encryption-key-file /etc/dittofs/keys/share.key
 
 # KMIP provider (HSM-backed master key)
-dfsctl store block remote add \
+dfsctl store block add \
   --name s3-hsm --type s3 --bucket regulated-data \
   --encryption-aead aes-256-gcm \
   --encryption-key-kind kmip \
@@ -106,9 +106,9 @@ Read this section before turning encryption on in production.
 
 ### Enable encryption at remote-store creation time only, and never remove it
 
-Adding an `encryption` block to a remote store that already contains plaintext blocks will make every existing block **permanently unreadable** through the share — `Get` will return `ErrCiphertextWithoutFrame` because the stored bytes lack the DFENC frame header. The decorator refuses to interpret unframed bytes on an encryption-enabled share; that is intentional (any other behaviour would let a tampered-S3 actor force a plaintext downgrade).
+Adding an `encryption` block to a block store that already contains plaintext blocks will make every existing block **permanently unreadable** through the share — `Get` will return `ErrCiphertextWithoutFrame` because the stored bytes lack the DFENC frame header. The decorator refuses to interpret unframed bytes on an encryption-enabled share; that is intentional (any other behaviour would let a tampered-S3 actor force a plaintext downgrade).
 
-Recommendation: create new remote stores with encryption enabled, migrate data across, then decommission the unencrypted store.
+Recommendation: create new block stores with encryption enabled, migrate data across, then decommission the unencrypted store.
 
 The reverse direction is refused outright: an update that removes the `encryption` block from a store that has one returns `400 Bad Request`. Blocks already written carry a DFENC frame, and an undecorated store would hand that framed ciphertext back to clients as if it were plaintext without erroring anywhere. Changing the encryption policy in place — rotating the key, retiring an old one — stays allowed. To genuinely stop encrypting, create a new store and migrate onto it.
 
@@ -172,7 +172,7 @@ Only a share whose store fails this way is affected: the daemon logs the refusal
 
 ### AAD is per-block, not per-share
 
-The associated data bound into the AEAD is the 32-byte BLAKE3 plaintext hash. It binds ciphertext to its CAS address but does **not** bind it to a share identity. Two shares that reference the same remote store config — and therefore share the same master key — could decrypt each other's blocks if an attacker with direct object-store write access moved blocks between share namespaces. This is acceptable for the supported configuration (one remote-store config per workload) but is a hazard if you reuse one master key across security-domain-distinct shares. Do not do that.
+The associated data bound into the AEAD is the 32-byte BLAKE3 plaintext hash. It binds ciphertext to its CAS address but does **not** bind it to a share identity. Two shares that reference the same block store config — and therefore share the same master key — could decrypt each other's blocks if an attacker with direct object-store write access moved blocks between share namespaces. This is acceptable for the supported configuration (one block-store config per workload) but is a hazard if you reuse one master key across security-domain-distinct shares. Do not do that.
 
 ## What's not in scope (yet)
 

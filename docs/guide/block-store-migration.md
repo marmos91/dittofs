@@ -2,11 +2,11 @@
 
 DittoFS has changed its on-disk/remote block layout twice:
 
-| Layout | Servers | Local | Remote |
-|--------|---------|-------|--------|
+| Layout | Servers | On disk | In the block store |
+|--------|---------|---------|--------------------|
 | Path-indexed (`.blk`) | ≤ v0.15 | `{payloadID}/block-{idx}.blk` | per-block objects |
 | Standalone CAS | v0.16 – v0.21 | per-chunk files `blocks/{hh}/{hh}/{hex}` | per-chunk objects `cas/{hh}/{hh}/{hex}` |
-| Packed blocks | current | append-only log blobs (`blobs/`) | packed containers `blocks/<id>` |
+| Packed blocks | current | journal segments | packed containers `blocks/<id>` |
 
 Current servers store file content as FastCDC chunks (BLAKE3-hashed,
 dedup-safe) packed into ~16 MiB block containers. What you need to do
@@ -46,9 +46,8 @@ layout (exit code 78) — but the directive now is:
 release you upgraded from can no longer read it. There is no downgrade
 command, and there is no partial-downgrade state to repair.
 
-So: **take a snapshot before you upgrade** — the share's local store
-directory and, for remote-backed shares, the bucket/prefix. That snapshot is
-the only way back.
+So: **take a snapshot before you upgrade** — the share's journal directory and
+its block store's bucket/prefix. That snapshot is the only way back.
 
 The migrations announce themselves. Each one logs a `WARN` naming what it is
 about to convert before it touches anything, and long-running ones log

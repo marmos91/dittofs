@@ -10,7 +10,8 @@ the exact config keys and CLI flags, see [Configuration](configuration.md).
 > |-------|---------------|---------|---------------|
 > | Control-plane database | Users, shares, permissions, policies | `sqlite`, `postgres` | `database.*` in config |
 > | Metadata store (per share) | Inodes, names, attrs, ACLs, dedup index | `memory`, `badger`, `sqlite`, `postgres` | `dfsctl store metadata add` |
-> | Block store (per share) | File content (chunks) | local `fs`/`memory` + remote `s3` | `dfsctl store block …` |
+> | Block store (per share) | File content (chunks) | `s3`, `memory` | `dfsctl store block …` |
+> | Journal (per share) | Writes not yet offloaded to the block store | none — always on disk | `blockstore.journal.path` in config |
 
 ## Metadata store (per share)
 
@@ -40,30 +41,30 @@ durability needs and how many server processes must share it.
 ## Block store (per share)
 
 Content is split into content-addressed chunks (FastCDC chunking + BLAKE3 hashing,
-**dedup is always on**, no toggle). Each share has a **local tier** (fast, on-box) and an
-optional **remote tier** (durable, off-box). The local tier acts as a **write-through
-cache** in front of the remote — it is not the source of truth once a remote is attached.
+**dedup is always on**, no toggle). Every share has exactly **one block store** — the
+durable home for its content — and an on-disk **journal** in front of it. The journal is
+not a store you choose: it is provisioned automatically under `blockstore.journal.path`,
+absorbs writes, and hands them to an async syncer that offloads them to the block store.
 
-| Tier / type | Latency | Capacity | Durability | When to choose |
-|-------------|---------|----------|------------|----------------|
-| local `memory` | lowest | RAM-bound | ❌ ephemeral | Tests only |
-| local `fs` | low (disk) | disk-bound | ✅ on that host | Always — this is the cache/fast tier |
-| remote `s3` | network | effectively unlimited | ✅ off-box, replicated by provider | Durable, scalable backing store |
+| Type | Latency | Capacity | Durability | When to choose |
+|------|---------|----------|------------|----------------|
+| `s3` | network | effectively unlimited | ✅ off-box, replicated by provider | **Default.** Durable, scalable backing store |
+| `memory` | lowest | RAM-bound | ❌ ephemeral | Tests only |
 
 **Best practices**
 
-- Run **local `fs` + remote `s3`** for real workloads: writes hit local first and sync to
-  S3 in the background; reads are served from cache and fetched on miss.
-- Size the local cache to your hot set. The remote write-through cache defaults to ~10 GiB
-  (`blockstore.journal.default_remote_cache_size`); raise it if your working set is larger.
+- Run **`s3`** for real workloads: writes hit the journal first and sync to S3 in the
+  background; reads are served from the journal and fetched from S3 on miss.
+- Size the journal to your hot set with the per-share `--journal-size`. Leaving it unset
+  means no configured ceiling — see [Configuration § Journal size](configuration.md#journal-size-and-eviction).
 - DittoFS speaks the **S3 API**, so [Cubbit DS3](https://www.cubbit.io/) (a DittoFS sponsor),
   MinIO, Ceph RGW, GCS (set `force_path_style: false`), Backblaze B2, Wasabi, DigitalOcean
   Spaces, Alibaba OSS, Oracle OCI, Storj, etc. all work —
   see the verified endpoint snippets in [Configuration § Block Store](configuration.md#6-block-store-configuration).
 - Dedup happens automatically across files in a share; identical content is stored once.
-- Pick a durability tier per store (`require_durable_commit`; see the
-  [durability guide](durability.md)) — it sets how far a write must land before it
-  is acknowledged — and size the local write-back cache to your hot set (above).
+- Pick a **commit acknowledgement** per share (`journal` or `block-store`; see the
+  [durability guide](durability.md)) — it sets how far a write must land before an NFS
+  COMMIT or SMB Flush is acknowledged.
 - To migrate a legacy block layout to the content-addressed layout, see
   [Block store migration](block-store-migration.md).
 
@@ -81,8 +82,8 @@ One per server, holds users/shares/permissions/policies — **not** file data.
 ```bash
 # Durable single-node share: badger metadata, S3 backing
 dfsctl store metadata add --name default     --type badger
-dfsctl store block remote add --name s3-remote --type s3
-dfsctl share create --name /export --metadata default --remote s3-remote
+dfsctl store block add --name s3-remote --type s3
+dfsctl share create --name /export --metadata default --block-store s3-remote
 ```
 
 Building a custom backend instead of choosing a built-in one? See
