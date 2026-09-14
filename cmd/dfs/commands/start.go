@@ -939,6 +939,16 @@ func emitAdminPassword(password string) {
 		"mount and user configuration.")
 }
 
+// lastMigratingRelease is the newest release that still carries the pre-journal
+// reader and the in-place migration for the blobs/+logs/ layout. Later builds
+// detect that layout and refuse rather than adopting it as an empty journal, so
+// an operator holding such a share has to pass through this release once.
+//
+// It does not move when a new release ships: the migration was removed, not
+// deferred, so this names the last build that has it rather than the latest
+// build in general.
+const lastMigratingRelease = "v0.31.1"
+
 // formatMismatchDirective renders the multi-line operator directive printed
 // when a store cannot be opened because its on-disk format does not match this
 // build. The wrapped error is embedded verbatim so the operator sees which
@@ -971,13 +981,16 @@ This share holds a pre-journal blobs/+logs/ layout that this build cannot read.
 Opening it as an empty journal would serve every stored file as zeros, so the
 daemon stops instead. Nothing on disk has been modified.
 
-This build carries no migration for that layout. To recover:
-  - reinstall the release that wrote the share, which migrates it in place, and
-    upgrade again once it has, or
-  - restore the snapshot taken before the upgrade.
+This build carries no migration for that layout. %[2]s does. To recover:
 
-Do not start a share on this directory expecting it to re-ingest: for a
+  1. install %[2]s and start it once — it converts the share in place
+  2. wait for the conversion to finish, then stop it
+  3. upgrade to this build and start again
+
+If that is not possible, restore the snapshot taken before the upgrade.
+
+Do not skip step 1 expecting this build to re-ingest the bytes later: for a
 local-only share compacted before the upgrade, the index that locates bytes
 inside blobs/ is dropped by the metadata migrations, and those bytes cannot be
-recovered from the directory alone.`, err)
+recovered from the directory alone.`, err, lastMigratingRelease)
 }
