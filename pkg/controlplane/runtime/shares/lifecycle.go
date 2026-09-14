@@ -36,8 +36,16 @@ func (s *Service) AddShare(
 		return err
 	}
 
-	if config.BlockStoreID != "" && blockStoreProvider == nil {
-		return fmt.Errorf("block store provider is required when BlockStoreID is set for share %q", config.Name)
+	// A share's durable tier is its block store: the journal holds bytes only
+	// until they are synced out, and eviction reclaims journal space on the
+	// promise that a durable copy exists elsewhere. A share without a block
+	// store has no such copy, so eviction could drop the only one. Refuse the
+	// share instead of building one that can lose data.
+	if config.BlockStoreID == "" {
+		return fmt.Errorf("share %q has no block store: every share must reference one", config.Name)
+	}
+	if blockStoreProvider == nil {
+		return fmt.Errorf("block store provider is required to resolve the block store for share %q", config.Name)
 	}
 
 	if metadataSvc == nil {
