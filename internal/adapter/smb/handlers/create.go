@@ -1506,6 +1506,20 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		reservedReplay = true
 	}
 
+	// Deferred rather than released at the end of the inline path: a panic in
+	// the break dispatch or the completion would otherwise strand the
+	// reservation for the session's lifetime. Nothing else collects one — a
+	// reservation carries no timestamp, the cache's prune walks stored entries
+	// rather than reservations, and the per-request recover in the connection
+	// layer keeps the session alive, so the teardown that clears the remainder
+	// never runs. A stranded reservation answers STATUS_FILE_NOT_AVAILABLE to
+	// every later replay of this guid.
+	defer func() {
+		if reservedReplay {
+			h.CreateReplayCache.Release(ctx.SessionID, replayGuid)
+		}
+	}()
+
 	// Dispatch lease break and either park the CREATE async (emit interim
 	// STATUS_PENDING) or wait for the break to drain inline. Mid-chain
 	// (NextCommand != 0) parking is the MS-SMB2 §3.3.4.2 interim-async
@@ -1513,18 +1527,18 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// parked CREATE via ReplaceCallback, so the interim PENDING is safe and
 	// smbtorture compound_async.getinfo_middle requires it.
 	if asyncId := h.breakAndMaybeParkCreate(ctx, draft); asyncId != 0 {
-		// Parked: the resume goroutine releases the reservation on completion.
+		// Parked: ownership of the release moves to the resume goroutine, so
+		// clear the flag rather than releasing here. Releasing on this path
+		// would drop a reservation that goroutine still owns and let a replay
+		// run a fresh conflict resolution against the parked original.
+		reservedReplay = false
 		return &CreateResponse{
 			SMBResponseBase: SMBResponseBase{Status: types.StatusPending},
 			AsyncId:         asyncId,
 		}, nil
 	}
 
-	resp := h.completeCreateAfterBreak(ctx, draft)
-	if reservedReplay {
-		h.CreateReplayCache.Release(ctx.SessionID, replayGuid)
-	}
-	return resp, nil
+	return h.completeCreateAfterBreak(ctx, draft), nil
 }
 
 // ============================================================================
