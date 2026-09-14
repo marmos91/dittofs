@@ -362,7 +362,16 @@ func modeLabel(hasRemote bool) string {
 // share names can produce the same directory name).
 func sanitizeShareName(name string) string {
 	name = strings.TrimPrefix(name, "/")
-	return url.PathEscape(name)
+	escaped := url.PathEscape(name)
+	// Escaping neutralizes separators but leaves dots, so a name that is
+	// nothing but them still addresses a parent once joined — "/.." would put
+	// a share's journal on the root itself, outside the directory that keeps
+	// shares apart. Escaping the dots keeps it an ordinary single name.
+	switch escaped {
+	case ".", "..":
+		return strings.ReplaceAll(escaped, ".", "%2E")
+	}
+	return escaped
 }
 func (s *Service) GetShare(name string) (*Share, error) {
 	s.mu.RLock()
