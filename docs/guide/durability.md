@@ -63,8 +63,10 @@ hard crash can lose the last ~100 ms of size/mtime updates, not the bytes.
 [Read integrity](#read-integrity-per-read-verification--self-heal) before enabling
 it. That coupling is deliberate: the fast path is the point of the setting.
 
-Like `commit_ack`, it is carried over from the old `writeback` bool on upgrade and
-is not settable from the CLI in this release.
+Like `commit_ack`, it is carried over from the old `writeback` bool on upgrade,
+and it is set the same way: `--relaxed-metadata-commit` on `dfsctl share create`
+or `dfsctl share edit`. The flag is only sent when named, so leaving it off keeps
+whatever the share already promised rather than quietly relaxing it.
 
 There is no data-corruption risk on either axis: on restart,
 `reconcileMetadataSizeFromJournal` repairs each file's metadata size from the
