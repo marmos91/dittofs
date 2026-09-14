@@ -1385,6 +1385,23 @@ of what is wanted.
   then `share create --local`. **This is a hard merge gate:** the workflow has no valid form
   between deleting the command and auto-provisioning the journal.
 
+**The command collapse is four verbs, not one.** Verified from the tree rather than from string
+counts: the kind split lives entirely under `store/block/remote/` — `add`, `edit`, `list`,
+`remove`. Those four move up to the parent (eight paths collapse to four, counting the deleted
+local forms). Eight verbs are already kind-agnostic and registered on the parent — `stats`,
+`evict`, `health`, `gc`, `gc-status`, `audit-refcounts`, `reconcile`, `reclaim` — and must come
+through untouched. No name collisions when the four move up. A collapse that accidentally
+reshapes the kind-agnostic eight would be easy to miss in review, so that is the thing to check.
+
+**Method note, because it invalidates part of any grep-based survey here.** Searching for the CLI
+spelling (`store block`, `store/block`) finds only CLI shell-outs. Consumers that use the typed
+client or build URLs by concatenation are invisible to it by construction —
+`test/e2e/helpers/stores.go` carries 54 block-store references through the API and matched no CLI
+grep; `internal/cli/health/types.go` was found only because it happened to embed the route as a
+string literal. Any remaining sweep has to search the typed surface (`BlockStore`,
+`ListBlockStores`, `BlockStoreOption`, `WithBlockS3Config`) as well as the command spelling.
+`test/e2e/helpers/blocks.go` uses `store block stats --share` in addition to `evict`.
+
 **Docs:** `README.md:182-183` hand-documents both `store block local add` and
 `store block remote add`. `docs/guide/cli.md` is generated — `go run ./cmd/gendocs` must run in
 the same change or the published reference describes a command tree that no longer exists.
