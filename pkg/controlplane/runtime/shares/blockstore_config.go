@@ -367,9 +367,17 @@ func (s *Service) createBlockStoreForShare(
 	// The share's FastCDC profile configures the carver the flush pass builds,
 	// so it rides the syncer config rather than the journal's: journal's seam is
 	// content-agnostic and has no use for it.
-	if localStoreCfg, cfgErr := localCfg.GetConfig(); cfgErr == nil {
-		if cp, ok := chunkParamsFromConfig(localStoreCfg); ok {
-			syncerCfg.ChunkParams = cp
+	//
+	// Only for disk-backed local stores. A memory local store ignores the
+	// setting by contract (nothing is re-read off a device, so there is no read
+	// amplification to trade against), and the profile previously reached the
+	// carver only through the journal, which a memory share never opens. Wiring
+	// it unconditionally here would quietly start honouring it for those shares.
+	if localCfg.Type == "fs" {
+		if localStoreCfg, cfgErr := localCfg.GetConfig(); cfgErr == nil {
+			if cp, ok := chunkParamsFromConfig(localStoreCfg); ok {
+				syncerCfg.ChunkParams = cp
+			}
 		}
 	}
 	// A per-remote parallel_uploads override pins the carver's upload window;
@@ -961,7 +969,6 @@ func dirtyExpiryFromConfig(config map[string]any) time.Duration {
 	return d
 }
 
-// CreateLocalStoreFromConfig creates a local store instance from a block store config.
 // chunkParamsFromConfig resolves a share's FastCDC profile from its local block
 // store config. chunk_size sets the Min (#1569) — the dominant knob for
 // effective chunk size and thus random-read amplification; Avg/Max are derived
@@ -1002,6 +1009,7 @@ func chunkParamsFromConfig(config map[string]any) (chunker.Params, bool) {
 	return cp, true
 }
 
+// CreateLocalStoreFromConfig creates a local store instance from a block store config.
 func CreateLocalStoreFromConfig(
 	ctx context.Context,
 	storeType string,
