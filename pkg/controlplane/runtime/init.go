@@ -365,7 +365,7 @@ func buildShareConfig(ctx context.Context, s store.Store, share *models.Share) (
 		BlockedOperations:                share.GetBlockedOps(),
 		RetentionPolicy:                  share.GetRetentionPolicy(),
 		RetentionTTL:                     share.GetRetentionTTL(),
-		LocalStoreSize:                   share.LocalStoreSize,
+		JournalSize:                      share.JournalSize,
 		ReadBufferSize:                   share.ReadBufferSize,
 		QuotaBytes:                       share.QuotaBytes,
 		LocalBlockStoreID:                share.LocalBlockStoreID,

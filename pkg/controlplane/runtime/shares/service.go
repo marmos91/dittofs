@@ -215,7 +215,7 @@ type ShareConfig struct {
 	RetentionTTL    time.Duration
 
 	// Per-share block store size overrides (0 = use system default).
-	LocalStoreSize int64
+	JournalSize    int64
 	ReadBufferSize int64
 
 	// Per-share byte quota (0 = unlimited).
