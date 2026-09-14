@@ -37,8 +37,8 @@ journal's durable high-water mark, so a relaxed metadata commit can only lose th
 The recommended knob is the per-share **`durability`** enum in the share's
 **local block-store config** — `local` (default), `writeback`, or `remote`:
 
-```bash
-dfsctl store block local edit <share> --config '{"durability": "remote"}'
+```json
+{"durability": "remote"}
 ```
 
 | `durability` | Ack after | Survives | ~ops/s (create nj=8) |
@@ -147,12 +147,12 @@ per interval, mirroring Linux writeback's `dirty_expire_centisecs`:
 | Scope | per-share, in the local block-store config |
 | Cost on the write path | none — the loop runs off the ack path and only touches shards that are actually dirty |
 
-```bash
-# Tighter ceiling on a share holding work you do not want to redo
-dfsctl store block local edit <share> --config '{"dirty_expire_seconds": 5}'
+```json
+// Tighter ceiling on a share holding work you do not want to redo
+{"dirty_expire_seconds": 5}
 
-# Turn it off: back to "no promise without fsync", unbounded in time
-dfsctl store block local edit <share> --config '{"dirty_expire_seconds": -1}'
+// Turn it off: back to "no promise without fsync", unbounded in time
+{"dirty_expire_seconds": -1}
 ```
 
 **This is a ceiling, not a guarantee.** `fsync` remains the only *synchronous*

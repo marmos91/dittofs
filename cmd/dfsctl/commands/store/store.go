@@ -23,14 +23,8 @@ Examples:
   # Add a new metadata store
   dfsctl store metadata add --name new-meta --type memory
 
-  # List local block stores
-  dfsctl store block local list
-
   # List remote block stores
   dfsctl store block remote list
-
-  # Add a local block store
-  dfsctl store block local add --name fs-cache --type fs --config '{"path":"/data/blocks"}'
 
   # Add a remote block store
   dfsctl store block remote add --name s3-store --type s3 --config '{"bucket":"my-bucket"}'`,

@@ -303,7 +303,7 @@ layouts must be converted with dittofs ≤ v0.21 (its `migrate-to-cas` command) 
 server will start.
 
 These keys live inside the per-share `local` block store's `config` JSON
-(passed via `dfsctl store block local add --config '{...}'` or the REST API).
+(passed via the block store REST API).
 They only take effect when the local store type is `fs`. Legacy keys from the
 pre-journal design — `use_append_log`, `rollup_workers`, `stabilization_ms`,
 `orphan_log_min_age_seconds` — are no longer parsed; if present they are
@@ -333,8 +333,8 @@ still resolves with the precedence shown, but it no longer gates writes.
 The effective budget resolves with the following **precedence** (highest
 first):
 
-1. **Per-store** block-store `config["max_log_bytes"]` — set per share via
-   `dfsctl store block local edit <share> --config '{"max_log_bytes": 2147483648}'`.
+1. **Per-store** block-store `config["max_log_bytes"]` — set per share in the
+   store's `config` JSON via the block store REST API.
 2. **Global** server-config `blockstore.local.max_log_bytes` — applies to every
    share that does not set the per-store key.
 3. **System-deduced** default (25% of RAM, floor 1 GiB).
@@ -366,17 +366,9 @@ may override.
 | `memory` | remote | `false` — test/dev fixture, lost on restart |
 
 Override the default per store by adding a `durable` bool to the store's
-`config` JSON, e.g. for a local `fs` store on a volatile tmpfs mount:
-
-```sh
-dfsctl store block local edit <share> --config '{"durable": false}'
-```
-
-or to deliberately treat a memory store as durable in a test/dev setup:
-
-```sh
-dfsctl store block local edit <share> --config '{"durable": true}'
-```
+`config` JSON — `{"durable": false}` for a local `fs` store on a volatile tmpfs
+mount, or `{"durable": true}` to deliberately treat a memory store as durable in
+a test/dev setup.
 
 A non-bool `durable` value is ignored with a startup warning (the type default
 stands). The effective values are surfaced as `Local Durable` / `Remote
@@ -393,11 +385,8 @@ per-share policy flag, `require_durable_commit` (default **false**):
 | `false` (default) | Acknowledge once the flush succeeds — **regardless** of durability. The local→remote mirror stays fully **asynchronous** and observable via the unsynced-bytes metric / `Pending Remote (bytes)`. Ordinary NFS/POSIX writes **never** EIO. |
 | `true` (opt-in) | Acknowledge only when the data is on a **durable** store: `committed := localDurable \|\| (Finalized && remoteDurable)`. Trades latency for synchronous durability on non-fs-local stores. |
 
-Set it per share via the local block store config:
-
-```sh
-dfsctl store block local edit <share> --config '{"require_durable_commit": true}'
-```
+Set it per share by adding `{"require_durable_commit": true}` to the local
+block store's `config` JSON.
 
 A non-bool value is ignored with a startup warning (default `false` stands).
 
@@ -447,10 +436,8 @@ I/O (VM images, databases).
 unit. Effective average chunk size ≈ `chunk_size`; a hard ceiling is derived
 (8× `chunk_size`) unless you set `chunk_max` explicitly.
 
-```sh
-# Random-access share: ~128 KiB chunks (≈8× less read amplification)
-dfsctl store block local edit <share> --config '{"chunk_size": 131072}'
-```
+Random-access share: ~128 KiB chunks (≈8× less read amplification) — set
+`{"chunk_size": 131072}` in the store's `config` JSON.
 
 | Setting | Effective avg | 4 KiB random-read amplification | Trade-off |
 |---------|---------------|---------------------------------|-----------|
@@ -481,10 +468,8 @@ each journal shard still holding uncommitted records once per interval, so those
 writes reach the device within roughly that window instead of waiting for the
 shard's next 256 MiB segment rotation.
 
-```sh
-# Default is 30s; tighten it, or set a negative value to disable the loop
-dfsctl store block local edit <share> --config '{"dirty_expire_seconds": 5}'
-```
+The default is 30s; tighten it with `{"dirty_expire_seconds": 5}` in the store's
+`config` JSON, or set a negative value to disable the loop.
 
 - Default **30 s**, on for every share; the loop costs an idle store nothing and
   never runs on the ack path.
@@ -2552,9 +2537,7 @@ Then create stores, shares, and enable adapters via CLI:
 
 ```bash
 ./dfsctl store metadata add --name default --type memory
-./dfsctl store block local add --name default --type fs \
-  --config '{"path":"/tmp/dittofs-blocks"}'
-./dfsctl share create --name /export --metadata default --local default
+./dfsctl share create --name /export --metadata default
 ./dfsctl adapter enable nfs
 ```
 
@@ -2570,8 +2553,7 @@ logging:
 
 ```bash
 ./dfsctl store metadata add --name dev-memory --type memory
-./dfsctl store block local add --name dev-local --type memory
-./dfsctl share create --name /export --metadata dev-memory --local dev-local
+./dfsctl share create --name /export --metadata dev-memory
 ./dfsctl adapter enable nfs --port 12049
 ```
 
@@ -2603,14 +2585,11 @@ Then create stores, shares, and enable adapters via CLI:
 # Create stores
 ./dfsctl store metadata add --name prod-badger --type badger \
   --config '{"path":"/var/lib/dittofs/metadata"}'
-./dfsctl store block local add --name prod-local --type fs \
-  --config '{"path":"/var/lib/dittofs/blocks"}'
 ./dfsctl store block remote add --name prod-s3 --type s3 \
   --config '{"region":"us-east-1","bucket":"dfs-production"}'
 
 # Create share and grant permissions
-./dfsctl share create --name /export --metadata prod-badger \
-  --local prod-local --remote prod-s3
+./dfsctl share create --name /export --metadata prod-badger --remote prod-s3
 ./dfsctl share permission grant /export --user alice --level read-write
 
 # Enable NFS adapter
@@ -2628,16 +2607,13 @@ Different shares using different storage backends:
   --config '{"path":"/var/lib/dittofs/metadata"}'
 
 # Create block stores
-./dfsctl store block local add --name local-cache --type fs \
-  --config '{"path":"/var/lib/dittofs/blocks"}'
 ./dfsctl store block remote add --name cloud-s3 --type s3 \
   --config '{"region":"us-east-1","bucket":"my-dfs-bucket"}'
 
 # Create shares with different backends
-./dfsctl share create --name /temp --metadata fast-memory --local local-cache
-./dfsctl share create --name /cloud --metadata persistent-badger \
-  --local local-cache --remote cloud-s3
-./dfsctl share create --name /public --metadata persistent-badger --local local-cache
+./dfsctl share create --name /temp --metadata fast-memory
+./dfsctl share create --name /cloud --metadata persistent-badger --remote cloud-s3
+./dfsctl share create --name /public --metadata persistent-badger
 
 # Grant permissions
 ./dfsctl share permission grant /temp --user alice --level read-write
@@ -2657,18 +2633,14 @@ Multiple shares sharing the same metadata database:
   --config '{"path":"/var/lib/dittofs/shared-metadata"}'
 
 # Create block stores
-./dfsctl store block local add --name local-cache --type fs \
-  --config '{"path":"/var/lib/dittofs/blocks"}'
 ./dfsctl store block remote add --name s3-production --type s3 \
   --config '{"region":"us-east-1","bucket":"prod-bucket"}'
 ./dfsctl store block remote add --name s3-archive --type s3 \
   --config '{"region":"us-east-1","bucket":"archive-bucket"}'
 
 # Both shares use the same metadata store, different remote stores
-./dfsctl share create --name /prod --metadata shared-badger \
-  --local local-cache --remote s3-production
-./dfsctl share create --name /archive --metadata shared-badger \
-  --local local-cache --remote s3-archive
+./dfsctl share create --name /prod --metadata shared-badger --remote s3-production
+./dfsctl share create --name /archive --metadata shared-badger --remote s3-archive
 
 # Enable NFS adapter
 ./dfsctl adapter enable nfs

@@ -79,12 +79,10 @@ One per server, holds users/shares/permissions/policies — **not** file data.
 ## A typical setup
 
 ```bash
-# Durable single-node share: badger metadata, fs cache, S3 backing
+# Durable single-node share: badger metadata, S3 backing
 dfsctl store metadata add --name default     --type badger
-dfsctl store block local  add --name local-cache --type fs
-dfsctl store block remote add --name s3-remote   --type s3
-dfsctl share create --name /export --metadata default \
-  --local local-cache --remote s3-remote
+dfsctl store block remote add --name s3-remote --type s3
+dfsctl share create --name /export --metadata default --remote s3-remote
 ```
 
 Building a custom backend instead of choosing a built-in one? See

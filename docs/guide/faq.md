@@ -410,16 +410,14 @@ Yes! This is a core feature. Create stores and shares via CLI:
 ./dfsctl store metadata add --name persistent-db --type badger \
   --config '{"path":"/var/lib/dittofs/metadata"}'
 
-# Create block stores (local for fast access, remote for durability)
-./dfsctl store block local add --name local-disk --type fs \
-  --config '{"path":"/var/lib/dittofs/blocks"}'
+# Create a remote block store for durability
 ./dfsctl store block remote add --name cloud-s3 --type s3 \
   --config '{"region":"us-east-1","bucket":"my-bucket"}'
 
 # Create shares referencing different stores
-./dfsctl share create --name /temp --metadata fast-memory --local local-disk
+./dfsctl share create --name /temp --metadata fast-memory
 ./dfsctl share create --name /archive --metadata persistent-db \
-  --local local-disk --remote cloud-s3
+  --remote cloud-s3
 ```
 
 See [CONFIGURATION.md](configuration.md) for more examples.
@@ -434,18 +432,14 @@ Yes! Multiple shares can reference the same store instance for resource efficien
   --config '{"path":"/var/lib/dittofs/shared-metadata"}'
 
 # Create separate remote block stores
-./dfsctl store block local add --name shared-local --type fs \
-  --config '{"path":"/var/lib/dittofs/blocks"}'
 ./dfsctl store block remote add --name s3-prod --type s3 \
   --config '{"region":"us-east-1","bucket":"prod-bucket"}'
 ./dfsctl store block remote add --name s3-archive --type s3 \
   --config '{"region":"us-east-1","bucket":"archive-bucket"}'
 
 # Both shares use the same metadata store; remote stores are ref-counted
-./dfsctl share create --name /prod --metadata shared-meta \
-  --local shared-local --remote s3-prod
-./dfsctl share create --name /archive --metadata shared-meta \
-  --local shared-local --remote s3-archive
+./dfsctl share create --name /prod --metadata shared-meta --remote s3-prod
+./dfsctl share create --name /archive --metadata shared-meta --remote s3-archive
 ```
 
 ### Is there a recycle bin / can I recover deleted files?
