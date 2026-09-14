@@ -537,8 +537,18 @@ func (s *Service) flushPendingWrite(ctx *AuthContext, handle FileHandle, state *
 	// Anything held back above is still uncommitted, so put the state back: the
 	// next flush retries it once the data behind it is durable. RestorePending
 	// merges, so a write that raced in keeps the larger size.
+	//
+	// Only the size was held back. The mtime went to the store unconditionally
+	// above, so the restored state must not carry it: a live pending mtime means
+	// "a write session is in flight, reuse its frozen timestamp" to PrepareWrite,
+	// which would hand every later write the timestamp of this one and leave the
+	// file's write time stuck at the first write of the session. Dropping it
+	// leaves the committed value authoritative — the merge overlay skips a zero
+	// mtime and the next write takes a fresh one.
 	if size < state.MaxSize {
-		s.pendingWrites.RestorePending(handle, state)
+		withheld := *state
+		withheld.LastMtime = time.Time{}
+		s.pendingWrites.RestorePending(handle, &withheld)
 	}
 	return nil
 }

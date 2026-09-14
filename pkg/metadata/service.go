@@ -355,7 +355,7 @@ func (s *Service) GetFile(ctx context.Context, handle FileHandle) (*File, error)
 	// A misbehaving store may return (nil, nil); tolerate it (some callers, e.g.
 	// the NFSv3 WCC re-fetch, rely on GetFile not panicking on a nil re-fetch).
 	if file != nil {
-		s.mergePendingWrites(handle, file)
+		s.mergePendingWrites(handle, &file.FileAttr)
 		s.mergeDirTimes(handle, &file.FileAttr)
 	}
 	return file, nil
@@ -391,29 +391,36 @@ func (s *Service) GetFileForRead(ctx context.Context, handle FileHandle) (*File,
 	// A misbehaving store may return (nil, nil); tolerate it (some callers, e.g.
 	// the NFSv3 WCC re-fetch, rely on GetFile not panicking on a nil re-fetch).
 	if file != nil {
-		s.mergePendingWrites(handle, file)
+		s.mergePendingWrites(handle, &file.FileAttr)
 		s.mergeDirTimes(handle, &file.FileAttr)
 	}
 	return file, nil
 }
 
 // mergePendingWrites overlays deferred-commit state (size, mtime/ctime,
-// setuid/setgid clearing) onto a freshly loaded file, so a read sees its own
-// not-yet-persisted writes.
-func (s *Service) mergePendingWrites(handle FileHandle, file *File) {
+// setuid/setgid clearing) onto freshly loaded attributes, so a read sees
+// acknowledged writes that have not reached the store yet — whether they are
+// still batched or were held back because the bytes behind them are not durable.
+// No-op for a nil attr. Takes *FileAttr so it also serves READDIR entry attrs,
+// not just whole *File reads: a listing that skipped the overlay would report a
+// file as shorter than every handle read of the same file says it is.
+func (s *Service) mergePendingWrites(handle FileHandle, attr *FileAttr) {
+	if attr == nil {
+		return
+	}
 	pending, ok := s.pendingWrites.GetPending(handle)
 	if !ok {
 		return
 	}
-	if pending.MaxSize > file.Size {
-		file.Size = pending.MaxSize
+	if pending.MaxSize > attr.Size {
+		attr.Size = pending.MaxSize
 	}
-	if pending.LastMtime.After(file.Mtime) {
-		file.Mtime = pending.LastMtime
-		file.Ctime = pending.LastMtime
+	if pending.LastMtime.After(attr.Mtime) {
+		attr.Mtime = pending.LastMtime
+		attr.Ctime = pending.LastMtime
 	}
 	if pending.ClearSetuidSetgid {
-		file.Mode &= ^uint32(0o6000)
+		attr.Mode &= ^uint32(0o6000)
 	}
 }
 
