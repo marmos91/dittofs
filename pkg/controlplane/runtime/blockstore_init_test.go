@@ -3,8 +3,6 @@ package runtime
 import (
 	"strings"
 	"testing"
-
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
 // configMap adapts a plain map to the GetConfig interface ValidateBlockStoreConfig expects.
@@ -40,7 +38,7 @@ func TestValidateBlockStoreConfig_S3_SSRF(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := ValidateBlockStoreConfig(models.BlockStoreKindRemote, "s3", tc.cfg)
+			err := ValidateBlockStoreConfig("s3", tc.cfg)
 			if tc.wantErr && err == nil {
 				t.Fatalf("want error, got nil")
 			}
@@ -192,7 +190,7 @@ func TestValidateBlockStoreConfig_S3_RejectsBadEncryption(t *testing.T) {
 		"secret_access_key": "sk",
 		"encryption":        map[string]any{"key": map[string]any{"kind": "vault"}},
 	}
-	err := ValidateBlockStoreConfig(models.BlockStoreKindRemote, "s3", cfg)
+	err := ValidateBlockStoreConfig("s3", cfg)
 	if err == nil {
 		t.Fatal("want error for an unsupported key provider kind, got nil")
 	}

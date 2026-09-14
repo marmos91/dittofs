@@ -15,16 +15,16 @@ import (
 
 func (s *GORMStore) GetShare(ctx context.Context, name string) (*models.Share, error) {
 	return getByNameOrID[models.Share](s.db, ctx, "name", name, models.ErrShareNotFound,
-		"MetadataStore", "LocalBlockStore", "RemoteBlockStore", "AccessRules", "UserPermissions", "GroupPermissions", "SIDPermissions")
+		"MetadataStore", "BlockStore", "AccessRules", "UserPermissions", "GroupPermissions", "SIDPermissions")
 }
 
 func (s *GORMStore) GetShareByID(ctx context.Context, id string) (*models.Share, error) {
 	return getByField[models.Share](s.db, ctx, "id", id, models.ErrShareNotFound,
-		"MetadataStore", "LocalBlockStore", "RemoteBlockStore", "AccessRules", "UserPermissions", "GroupPermissions", "SIDPermissions")
+		"MetadataStore", "BlockStore", "AccessRules", "UserPermissions", "GroupPermissions", "SIDPermissions")
 }
 
 func (s *GORMStore) ListShares(ctx context.Context) ([]*models.Share, error) {
-	return listAll[models.Share](s.db, ctx, "MetadataStore", "LocalBlockStore", "RemoteBlockStore")
+	return listAll[models.Share](s.db, ctx, "MetadataStore", "BlockStore")
 }
 
 func (s *GORMStore) CreateShare(ctx context.Context, share *models.Share) (string, error) {
@@ -82,7 +82,7 @@ func (s *GORMStore) UpdateShare(ctx context.Context, share *models.Share) error 
 		"default_permission":                  share.DefaultPermission,
 		"blocked_operations":                  share.BlockedOperations,
 		"metadata_store_id":                   share.MetadataStoreID,
-		"local_block_store_id":                share.LocalBlockStoreID,
+		"block_store_id":                      share.BlockStoreID,
 		"retention_policy":                    share.RetentionPolicy,
 		"retention_ttl":                       share.RetentionTTL,
 		"enabled":                             share.Enabled,
@@ -99,18 +99,12 @@ func (s *GORMStore) UpdateShare(ctx context.Context, share *models.Share) error 
 		"trash_exclude_patterns":              share.TrashExcludePatterns,
 		"encrypt_data":                        share.EncryptData,
 		"journal_size":                        share.JournalSize,
+		"commit_ack":                          share.CommitAck,
+		"relaxed_metadata_commit":             share.RelaxedMetadataCommit,
 		"read_buffer_size":                    share.ReadBufferSize,
 		"quota_bytes":                         share.QuotaBytes,
 		"updated_at":                          share.UpdatedAt,
 	}
-	// Handle remote_block_store_id explicitly: GORM map-based Updates may skip
-	// typed nil (*string)(nil). Use gorm.Expr("NULL") to ensure the column is cleared.
-	if share.RemoteBlockStoreID == nil {
-		updates["remote_block_store_id"] = gorm.Expr("NULL")
-	} else {
-		updates["remote_block_store_id"] = *share.RemoteBlockStoreID
-	}
-
 	result := s.db.WithContext(ctx).
 		Model(&models.Share{}).
 		Where("id = ?", share.ID).

@@ -1686,7 +1686,7 @@ func raisePinForLocalOnly(bs *engine.Store, jv uint64) {
 // leaves GC more conservative, never less (#1718).
 func (r *Runtime) recomputePinVersion(ctx context.Context, shareName string) {
 	bs, err := r.sharesSvc.GetBlockStoreForShare(shareName)
-	if err != nil || bs == nil || bs.HasRemoteStore() {
+	if err != nil || bs == nil || r.store == nil || bs.HasRemoteStore() {
 		return
 	}
 	snaps, err := r.store.ListSnapshots(ctx, shareName)

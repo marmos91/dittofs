@@ -33,7 +33,6 @@ func encryptedRemoteCfg(t *testing.T) *models.BlockStoreConfig {
 
 	cfg := &models.BlockStoreConfig{
 		Name: "bv-enc-remote",
-		Kind: models.BlockStoreKindRemote,
 		Type: "memory",
 	}
 	// AEAD omitted → defaults to AES-256-GCM (encryption.ParsePolicy).

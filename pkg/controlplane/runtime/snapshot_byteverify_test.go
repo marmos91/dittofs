@@ -66,7 +66,7 @@ func newByteVerifyFixtureOpts(t *testing.T, meta metadata.Store, metaType string
 	t.Cleanup(func() { _ = cp.Close() })
 
 	rt := New(cp)
-	rt.SetLocalStoreDefaults(&shares.LocalStoreDefaults{MaxSize: 0})
+	rt.SetLocalStoreDefaults(&shares.LocalStoreDefaults{JournalRoot: t.TempDir(), MaxSize: 0})
 
 	const metaStoreName = "bv-meta"
 	metaID, err := cp.CreateMetadataStore(context.Background(), &models.MetadataStoreConfig{
@@ -86,7 +86,6 @@ func newByteVerifyFixtureOpts(t *testing.T, meta metadata.Store, metaType string
 	fsDir := t.TempDir()
 	localCfg := &models.BlockStoreConfig{
 		Name: "bv-local",
-		Kind: models.BlockStoreKindLocal,
 		Type: "fs",
 	}
 	// SetConfig serializes into the persisted JSON blob; GetBlockStoreByID
@@ -116,23 +115,22 @@ func newByteVerifyFixtureOpts(t *testing.T, meta metadata.Store, metaType string
 	// shares.enabled in the DB) resolves it. AddShare only populates the
 	// runtime registry, not this row.
 	cpShare := &models.Share{
-		Name:              shareName,
-		MetadataStoreID:   metaID,
-		LocalBlockStoreID: localID,
-		Enabled:           true,
+		Name:            shareName,
+		MetadataStoreID: metaID,
+		BlockStoreID:    localID,
+		Enabled:         true,
 	}
 	if remoteID != "" {
-		cpShare.RemoteBlockStoreID = &remoteID
+		cpShare.BlockStoreID = remoteID
 	}
 	if _, err := cp.CreateShare(context.Background(), cpShare); err != nil {
 		t.Fatalf("cpstore CreateShare: %v", err)
 	}
 	if err := rt.AddShare(context.Background(), &shares.ShareConfig{
-		Name:               shareName,
-		MetadataStore:      metaStoreName,
-		LocalBlockStoreID:  localID,
-		RemoteBlockStoreID: remoteID,
-		Enabled:            true,
+		Name:          shareName,
+		MetadataStore: metaStoreName,
+		BlockStoreID:  remoteID,
+		Enabled:       true,
 	}); err != nil {
 		t.Fatalf("AddShare: %v", err)
 	}
@@ -198,16 +196,15 @@ func (f *byteVerifyFixture) simulateRestart(reopen func(*testing.T) metadata.Sto
 	meta := reopen(f.t)
 
 	rt := New(f.store)
-	rt.SetLocalStoreDefaults(&shares.LocalStoreDefaults{MaxSize: 0})
+	rt.SetLocalStoreDefaults(&shares.LocalStoreDefaults{JournalRoot: f.t.TempDir(), MaxSize: 0})
 	if err := rt.RegisterMetadataStore(f.metaStoreName, meta); err != nil {
 		f.t.Fatalf("simulateRestart RegisterMetadataStore: %v", err)
 	}
 	if err := rt.AddShare(context.Background(), &shares.ShareConfig{
-		Name:               f.shareName,
-		MetadataStore:      f.metaStoreName,
-		LocalBlockStoreID:  f.localID,
-		RemoteBlockStoreID: f.remoteID,
-		Enabled:            false, // restore requires the share disabled
+		Name:          f.shareName,
+		MetadataStore: f.metaStoreName,
+		BlockStoreID:  f.remoteID,
+		Enabled:       false, // restore requires the share disabled
 	}); err != nil {
 		f.t.Fatalf("simulateRestart AddShare: %v", err)
 	}
@@ -550,7 +547,6 @@ func TestSnapshotByteVerify_Matrix(t *testing.T) {
 func plaintextRemoteCfg() *models.BlockStoreConfig {
 	return &models.BlockStoreConfig{
 		Name: "bv-plain-remote",
-		Kind: models.BlockStoreKindRemote,
 		Type: "memory",
 	}
 }

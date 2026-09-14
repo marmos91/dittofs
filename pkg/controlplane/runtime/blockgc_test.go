@@ -74,6 +74,7 @@ func installCollectGarbageSpy(t *testing.T) *[]*engine.Options {
 func newRuntimeForGC(t *testing.T, shareRemotes map[string]remote.RemoteStore) *Runtime {
 	t.Helper()
 	rt := New(nil)
+	setJournalRoot(t, rt)
 	ctx := context.Background()
 
 	// Real memory metadata store keeps AddShare happy without needing a fake

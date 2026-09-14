@@ -15,6 +15,7 @@ import (
 
 func TestNew(t *testing.T) {
 	rt := New(nil)
+	setJournalRoot(t, rt)
 
 	if rt == nil {
 		t.Fatal("expected non-nil runtime")
@@ -42,6 +43,7 @@ func TestNew(t *testing.T) {
 
 func TestSetShutdownTimeout(t *testing.T) {
 	rt := New(nil)
+	setJournalRoot(t, rt)
 
 	t.Run("set custom timeout does not panic", func(t *testing.T) {
 		rt.SetShutdownTimeout(60 * time.Second)
@@ -57,6 +59,7 @@ func TestSetShutdownTimeout(t *testing.T) {
 
 func TestRegisterMetadataStore(t *testing.T) {
 	rt := New(nil)
+	setJournalRoot(t, rt)
 	metaStore := memory.NewMemoryMetadataStoreWithDefaults()
 
 	t.Run("register valid store", func(t *testing.T) {
@@ -90,6 +93,7 @@ func TestRegisterMetadataStore(t *testing.T) {
 
 func TestGetMetadataStore(t *testing.T) {
 	rt := New(nil)
+	setJournalRoot(t, rt)
 	metaStore := memory.NewMemoryMetadataStoreWithDefaults()
 	if err := rt.RegisterMetadataStore("test-store", metaStore); err != nil {
 		t.Fatalf("RegisterMetadataStore failed: %v", err)
@@ -115,6 +119,7 @@ func TestGetMetadataStore(t *testing.T) {
 
 func TestListMetadataStores(t *testing.T) {
 	rt := New(nil)
+	setJournalRoot(t, rt)
 
 	t.Run("empty list", func(t *testing.T) {
 		names := rt.ListMetadataStores()
@@ -140,6 +145,7 @@ func TestListMetadataStores(t *testing.T) {
 
 func TestCountMetadataStores(t *testing.T) {
 	rt := New(nil)
+	setJournalRoot(t, rt)
 
 	if rt.CountMetadataStores() != 0 {
 		t.Errorf("expected 0, got %d", rt.CountMetadataStores())
@@ -155,6 +161,7 @@ func TestCountMetadataStores(t *testing.T) {
 
 func TestMountTracking(t *testing.T) {
 	rt := New(nil)
+	setJournalRoot(t, rt)
 
 	t.Run("record mount", func(t *testing.T) {
 		rt.RecordMount("192.168.1.100:12345", "/export", 1000)
@@ -232,6 +239,7 @@ func TestMountTracking(t *testing.T) {
 
 func TestListMountsIsolation(t *testing.T) {
 	rt := New(nil)
+	setJournalRoot(t, rt)
 	rt.RecordMount("client1", "/share1", 1000)
 
 	mounts := rt.ListMounts()
@@ -251,6 +259,7 @@ func TestListMountsIsolation(t *testing.T) {
 
 func TestShareOperations(t *testing.T) {
 	rt := New(nil)
+	setJournalRoot(t, rt)
 	ctx := context.Background()
 	metaStore := memory.NewMemoryMetadataStoreWithDefaults()
 	if err := rt.RegisterMetadataStore("test-meta", metaStore); err != nil {
@@ -404,6 +413,7 @@ func TestApplyIdentityMapping(t *testing.T) {
 	// Helper to create a fresh runtime with a share for each test
 	setupRuntime := func(squash models.SquashMode) *Runtime {
 		rt := New(nil)
+		setJournalRoot(t, rt)
 		rt.sharesSvc.InjectShareForTesting(&Share{
 			Name:         "/export",
 			Squash:       squash,
@@ -507,6 +517,7 @@ func TestApplyIdentityMapping(t *testing.T) {
 
 func TestGetMetadataStoreForShare(t *testing.T) {
 	rt := New(nil)
+	setJournalRoot(t, rt)
 	ctx := context.Background()
 	metaStore := memory.NewMemoryMetadataStoreWithDefaults()
 	if err := rt.RegisterMetadataStore("test-meta", metaStore); err != nil {
@@ -541,6 +552,7 @@ func TestGetMetadataStoreForShare(t *testing.T) {
 
 func TestGetServices(t *testing.T) {
 	rt := New(nil)
+	setJournalRoot(t, rt)
 
 	t.Run("get metadata service", func(t *testing.T) {
 		svc := rt.GetMetadataService()
@@ -552,6 +564,7 @@ func TestGetServices(t *testing.T) {
 
 func TestGetBlockStoreForHandle(t *testing.T) {
 	rt := New(nil)
+	setJournalRoot(t, rt)
 	ctx := context.Background()
 
 	// Register a metadata store and create a share so we can get a valid handle.
@@ -629,6 +642,7 @@ func TestGetBlockStoreForHandle(t *testing.T) {
 
 func TestAdapterManagementBasics(t *testing.T) {
 	rt := New(nil)
+	setJournalRoot(t, rt)
 
 	t.Run("list running adapters empty", func(t *testing.T) {
 		adapters := rt.ListRunningAdapters()
@@ -653,6 +667,7 @@ func TestAdapterManagementBasics(t *testing.T) {
 
 func TestCloseMetadataStores(t *testing.T) {
 	rt := New(nil)
+	setJournalRoot(t, rt)
 
 	// Register a memory store (which implements io.Closer via its Close method if any)
 	metaStore := memory.NewMemoryMetadataStoreWithDefaults()
@@ -671,6 +686,7 @@ func TestCloseMetadataStores(t *testing.T) {
 
 func TestStore(t *testing.T) {
 	rt := New(nil)
+	setJournalRoot(t, rt)
 
 	t.Run("nil store", func(t *testing.T) {
 		if rt.Store() != nil {

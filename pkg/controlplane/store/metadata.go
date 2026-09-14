@@ -75,8 +75,7 @@ func (s *GORMStore) GetSharesByMetadataStore(ctx context.Context, storeName stri
 	var shares []*models.Share
 	if err := s.db.WithContext(ctx).
 		Preload("MetadataStore").
-		Preload("LocalBlockStore").
-		Preload("RemoteBlockStore").
+		Preload("BlockStore").
 		Where("metadata_store_id = ?", store.ID).
 		Find(&shares).Error; err != nil {
 		return nil, err
