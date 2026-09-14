@@ -18,7 +18,6 @@ import (
 )
 
 // BlockStoreHandler handles block store configuration API endpoints.
-// It serves both local and remote block stores, with kind extracted from the URL path.
 type BlockStoreHandler struct {
 	store   store.BlockStoreConfigStore
 	runtime *runtime.Runtime
@@ -32,14 +31,14 @@ func NewBlockStoreHandler(s store.BlockStoreConfigStore, rt *runtime.Runtime) *B
 	return &BlockStoreHandler{store: s, runtime: rt}
 }
 
-// CreateBlockStoreRequest is the request body for POST /api/v1/store/block/{kind}.
+// CreateBlockStoreRequest is the request body for POST /api/v1/store/block.
 type CreateBlockStoreRequest struct {
 	Name   string `json:"name"`
 	Type   string `json:"type"`
 	Config string `json:"config,omitempty"` // JSON string for type-specific config
 }
 
-// UpdateBlockStoreRequest is the request body for PUT /api/v1/store/block/{kind}/{name}.
+// UpdateBlockStoreRequest is the request body for PUT /api/v1/store/block/{name}.
 type UpdateBlockStoreRequest struct {
 	Type   *string `json:"type,omitempty"`
 	Config *string `json:"config,omitempty"`
@@ -49,51 +48,22 @@ type UpdateBlockStoreRequest struct {
 // Status is non-omitempty so clients can render "unknown" explicitly
 // when the runtime has no definitive report.
 type BlockStoreResponse struct {
-	ID        string                `json:"id"`
-	Name      string                `json:"name"`
-	Kind      models.BlockStoreKind `json:"kind"`
-	Type      string                `json:"type"`
-	Config    json.RawMessage       `json:"config,omitempty"`
-	CreatedAt time.Time             `json:"created_at"`
-	Status    health.Report         `json:"status"`
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	Type      string          `json:"type"`
+	Config    json.RawMessage `json:"config,omitempty"`
+	CreatedAt time.Time       `json:"created_at"`
+	Status    health.Report   `json:"status"`
 }
 
-// extractKind extracts the block store kind from the URL path parameter.
-func extractKind(r *http.Request) (models.BlockStoreKind, bool) {
-	kindStr := chi.URLParam(r, "kind")
-	switch kindStr {
-	case "local":
-		return models.BlockStoreKindLocal, true
-	case "remote":
-		return models.BlockStoreKindRemote, true
-	default:
-		return "", false
-	}
+// validateBlockStoreType checks that a store type is one a block store can have.
+func validateBlockStoreType(storeType string) bool {
+	return storeType == "s3" || storeType == "memory"
 }
 
-// validateBlockStoreType checks that a store type is valid for the given kind.
-// Local block stores accept: fs, memory.
-// Remote block stores accept: s3, memory.
-func validateBlockStoreType(kind models.BlockStoreKind, storeType string) bool {
-	switch kind {
-	case models.BlockStoreKindLocal:
-		return storeType == "fs" || storeType == "memory"
-	case models.BlockStoreKindRemote:
-		return storeType == "s3" || storeType == "memory"
-	default:
-		return false
-	}
-}
-
-// Create handles POST /api/v1/store/block/{kind}.
+// Create handles POST /api/v1/store/block.
 // Creates a new block store configuration (admin only).
 func (h *BlockStoreHandler) Create(w http.ResponseWriter, r *http.Request) {
-	kind, ok := extractKind(r)
-	if !ok {
-		BadRequest(w, "Invalid block store kind: must be 'local' or 'remote'")
-		return
-	}
-
 	var req CreateBlockStoreRequest
 	if !decodeJSONBody(w, r, &req) {
 		return
@@ -108,23 +78,22 @@ func (h *BlockStoreHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !validateBlockStoreType(kind, req.Type) {
-		BadRequest(w, "Store type '"+req.Type+"' is not valid for kind '"+string(kind)+"'")
+	if !validateBlockStoreType(req.Type) {
+		BadRequest(w, "Store type '"+req.Type+"' is not a valid block store type")
 		return
 	}
 
 	bs := &models.BlockStoreConfig{
 		ID:        uuid.New().String(),
 		Name:      req.Name,
-		Kind:      kind,
 		Type:      req.Type,
 		Config:    req.Config,
 		CreatedAt: time.Now(),
 	}
 
-	// Validate (and materialise the fs base path) before persisting so a
-	// saved config is never one that would fail on attach.
-	if err := runtime.ValidateBlockStoreConfig(kind, req.Type, bs); err != nil {
+	// Validate before persisting so a saved config is never one that would
+	// fail on attach.
+	if err := runtime.ValidateBlockStoreConfig(req.Type, bs); err != nil {
 		BadRequest(w, "Invalid block store config: "+err.Error())
 		return
 	}
@@ -146,16 +115,10 @@ func (h *BlockStoreHandler) Create(w http.ResponseWriter, r *http.Request) {
 	WriteJSONCreated(w, resp)
 }
 
-// List handles GET /api/v1/store/block/{kind}.
-// Lists all block store configurations of the given kind (admin only).
+// List handles GET /api/v1/store/block.
+// Lists all block store configurations (admin only).
 func (h *BlockStoreHandler) List(w http.ResponseWriter, r *http.Request) {
-	kind, ok := extractKind(r)
-	if !ok {
-		BadRequest(w, "Invalid block store kind: must be 'local' or 'remote'")
-		return
-	}
-
-	stores, err := h.store.ListBlockStores(r.Context(), kind)
+	stores, err := h.store.ListBlockStores(r.Context())
 	if err != nil {
 		InternalServerError(w, "Failed to list block stores")
 		return
@@ -177,22 +140,16 @@ func (h *BlockStoreHandler) List(w http.ResponseWriter, r *http.Request) {
 	WriteJSONOK(w, response)
 }
 
-// Get handles GET /api/v1/store/block/{kind}/{name}.
+// Get handles GET /api/v1/store/block/{name}.
 // Gets a block store configuration by name (admin only).
 func (h *BlockStoreHandler) Get(w http.ResponseWriter, r *http.Request) {
-	kind, ok := extractKind(r)
-	if !ok {
-		BadRequest(w, "Invalid block store kind: must be 'local' or 'remote'")
-		return
-	}
-
 	name := chi.URLParam(r, "name")
 	if name == "" {
 		BadRequest(w, "Store name is required")
 		return
 	}
 
-	bs, err := h.store.GetBlockStore(r.Context(), name, kind)
+	bs, err := h.store.GetBlockStore(r.Context(), name)
 	if err != nil {
 		if errors.Is(err, models.ErrStoreNotFound) {
 			NotFound(w, "Block store not found")
@@ -209,15 +166,9 @@ func (h *BlockStoreHandler) Get(w http.ResponseWriter, r *http.Request) {
 	WriteJSONOK(w, resp)
 }
 
-// Update handles PUT /api/v1/store/block/{kind}/{name}.
+// Update handles PUT /api/v1/store/block/{name}.
 // Updates a block store configuration (admin only).
 func (h *BlockStoreHandler) Update(w http.ResponseWriter, r *http.Request) {
-	kind, ok := extractKind(r)
-	if !ok {
-		BadRequest(w, "Invalid block store kind: must be 'local' or 'remote'")
-		return
-	}
-
 	name := chi.URLParam(r, "name")
 	if name == "" {
 		BadRequest(w, "Store name is required")
@@ -229,7 +180,7 @@ func (h *BlockStoreHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	bs, err := h.store.GetBlockStore(r.Context(), name, kind)
+	bs, err := h.store.GetBlockStore(r.Context(), name)
 	if err != nil {
 		if errors.Is(err, models.ErrStoreNotFound) {
 			NotFound(w, "Block store not found")
@@ -240,8 +191,8 @@ func (h *BlockStoreHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Type != nil {
-		if !validateBlockStoreType(bs.Kind, *req.Type) {
-			BadRequest(w, "Store type '"+*req.Type+"' is not valid for kind '"+string(bs.Kind)+"'")
+		if !validateBlockStoreType(*req.Type) {
+			BadRequest(w, "Store type '"+*req.Type+"' is not a valid block store type")
 			return
 		}
 		bs.Type = *req.Type
@@ -279,7 +230,7 @@ func (h *BlockStoreHandler) Update(w http.ResponseWriter, r *http.Request) {
 	// Re-validate on any type/config change so a no-op PUT does not
 	// re-touch the filesystem, mirroring Create's pre-persist check.
 	if req.Type != nil || req.Config != nil {
-		if err := runtime.ValidateBlockStoreConfig(bs.Kind, bs.Type, bs); err != nil {
+		if err := runtime.ValidateBlockStoreConfig(bs.Type, bs); err != nil {
 			BadRequest(w, "Invalid block store config: "+err.Error())
 			return
 		}
@@ -293,7 +244,7 @@ func (h *BlockStoreHandler) Update(w http.ResponseWriter, r *http.Request) {
 	// Evict the cached checker so the post-update response does not
 	// observe a stale probe from before the config change landed.
 	if h.runtime != nil {
-		h.runtime.InvalidateBlockStoreChecker(kind, name)
+		h.runtime.InvalidateBlockStoreChecker(name)
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), HealthCheckTimeout)
@@ -303,22 +254,16 @@ func (h *BlockStoreHandler) Update(w http.ResponseWriter, r *http.Request) {
 	WriteJSONOK(w, resp)
 }
 
-// Remove handles DELETE /api/v1/store/block/{kind}/{name}.
+// Remove handles DELETE /api/v1/store/block/{name}.
 // Deletes a block store configuration (admin only).
 func (h *BlockStoreHandler) Remove(w http.ResponseWriter, r *http.Request) {
-	kind, ok := extractKind(r)
-	if !ok {
-		BadRequest(w, "Invalid block store kind: must be 'local' or 'remote'")
-		return
-	}
-
 	name := chi.URLParam(r, "name")
 	if name == "" {
 		BadRequest(w, "Store name is required")
 		return
 	}
 
-	if err := h.store.DeleteBlockStore(r.Context(), name, kind); err != nil {
+	if err := h.store.DeleteBlockStore(r.Context(), name); err != nil {
 		if errors.Is(err, models.ErrStoreNotFound) {
 			NotFound(w, "Block store not found")
 			return
@@ -334,7 +279,7 @@ func (h *BlockStoreHandler) Remove(w http.ResponseWriter, r *http.Request) {
 	// Evict any cached health checker so a subsequently-recreated
 	// store with the same name does not inherit a stale probe.
 	if h.runtime != nil {
-		h.runtime.InvalidateBlockStoreChecker(kind, name)
+		h.runtime.InvalidateBlockStoreChecker(name)
 	}
 
 	WriteNoContent(w)
@@ -345,7 +290,6 @@ func blockStoreToResponse(s *models.BlockStoreConfig) BlockStoreResponse {
 	return BlockStoreResponse{
 		ID:        s.ID,
 		Name:      s.Name,
-		Kind:      s.Kind,
 		Type:      s.Type,
 		Config:    redactedConfigRaw(s.Config),
 		CreatedAt: s.CreatedAt,
@@ -360,25 +304,19 @@ type BlockStoreHealthResponse struct {
 	Details   string `json:"details,omitempty"`
 }
 
-// HealthCheck handles GET /api/v1/store/block/{kind}/{name}/health.
+// HealthCheck handles GET /api/v1/store/block/{name}/health.
 // Always returns 200 with health status in the response body. This
 // is the legacy probe route; the newer /status route returns a full
 // [health.Report]. Both share [blockstoreprobe.Probe] so answers
 // cannot drift.
 func (h *BlockStoreHandler) HealthCheck(w http.ResponseWriter, r *http.Request) {
-	kind, ok := extractKind(r)
-	if !ok {
-		BadRequest(w, "Invalid block store kind: must be 'local' or 'remote'")
-		return
-	}
-
 	name := chi.URLParam(r, "name")
 	if name == "" {
 		BadRequest(w, "Store name is required")
 		return
 	}
 
-	bs, err := h.store.GetBlockStore(r.Context(), name, kind)
+	bs, err := h.store.GetBlockStore(r.Context(), name)
 	if err != nil {
 		if errors.Is(err, models.ErrStoreNotFound) {
 			NotFound(w, "Block store not found")
@@ -401,16 +339,10 @@ func (h *BlockStoreHandler) HealthCheck(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-// Status handles GET /api/v1/store/block/{kind}/{name}/status.
+// Status handles GET /api/v1/store/block/{name}/status.
 // Returns 404 when the config does not exist (matching Get
 // semantics) and 200 with a [health.Report] body otherwise.
 func (h *BlockStoreHandler) Status(w http.ResponseWriter, r *http.Request) {
-	kind, ok := extractKind(r)
-	if !ok {
-		BadRequest(w, "Invalid block store kind: must be 'local' or 'remote'")
-		return
-	}
-
 	name := chi.URLParam(r, "name")
 	if name == "" {
 		BadRequest(w, "Store name is required")
@@ -420,7 +352,7 @@ func (h *BlockStoreHandler) Status(w http.ResponseWriter, r *http.Request) {
 	// Existence check preserves 404 semantics. The fetched config is
 	// then handed to statusForConfig so the runtime checker layer
 	// does not issue a second identical round-trip.
-	bs, err := h.store.GetBlockStore(r.Context(), name, kind)
+	bs, err := h.store.GetBlockStore(r.Context(), name)
 	if err != nil {
 		if errors.Is(err, models.ErrStoreNotFound) {
 			NotFound(w, "Block store not found")

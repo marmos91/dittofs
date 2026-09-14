@@ -37,16 +37,16 @@ func setupShareNFSConfigTest(t *testing.T) (*store.GORMStore, *ShareNFSConfigHan
 	if _, err := cpStore.CreateMetadataStore(ctx, metaStore); err != nil {
 		t.Fatalf("CreateMetadataStore: %v", err)
 	}
-	localBlockStore := &models.BlockStoreConfig{ID: uuid.New().String(), Name: "l", Kind: models.BlockStoreKindLocal, Type: "fs"}
+	localBlockStore := &models.BlockStoreConfig{ID: uuid.New().String(), Name: "l", Type: "fs"}
 	if _, err := cpStore.CreateBlockStore(ctx, localBlockStore); err != nil {
 		t.Fatalf("CreateBlockStore: %v", err)
 	}
 	share := &models.Share{
-		ID:                uuid.New().String(),
-		Name:              "/export",
-		MetadataStoreID:   metaStore.ID,
-		LocalBlockStoreID: localBlockStore.ID,
-		CreatedAt:         time.Now(),
+		ID:              uuid.New().String(),
+		Name:            "/export",
+		MetadataStoreID: metaStore.ID,
+		BlockStoreID:    localBlockStore.ID,
+		CreatedAt:       time.Now(),
 	}
 	if _, err := cpStore.CreateShare(ctx, share); err != nil {
 		t.Fatalf("CreateShare: %v", err)

@@ -10,32 +10,32 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestBlockStore_ListLocal(t *testing.T) {
+func TestBlockStore_List(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, http.MethodGet, r.Method)
-		assert.Equal(t, "/api/v1/store/block/local", r.URL.Path)
+		assert.Equal(t, "/api/v1/store/block", r.URL.Path)
 
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode([]BlockStore{
-			{ID: "1", Name: "local-fs", Kind: "local", Type: "fs"},
-			{ID: "2", Name: "local-mem", Kind: "local", Type: "memory"},
+			{ID: "1", Name: "s3-prod", Type: "s3"},
+			{ID: "2", Name: "mem", Type: "memory"},
 		})
 	}))
 	defer server.Close()
 
 	client := New(server.URL).WithToken("test-token")
-	stores, err := client.ListBlockStores("local")
+	stores, err := client.ListBlockStores()
 
 	require.NoError(t, err)
 	assert.Len(t, stores, 2)
-	assert.Equal(t, "local-fs", stores[0].Name)
-	assert.Equal(t, "local", stores[0].Kind)
+	assert.Equal(t, "s3-prod", stores[0].Name)
+	assert.Equal(t, "s3", stores[0].Type)
 }
 
-func TestBlockStore_CreateRemote(t *testing.T) {
+func TestBlockStore_Create(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, http.MethodPost, r.Method)
-		assert.Equal(t, "/api/v1/store/block/remote", r.URL.Path)
+		assert.Equal(t, "/api/v1/store/block", r.URL.Path)
 
 		var req createStoreAPIRequest
 		err := json.NewDecoder(r.Body).Decode(&req)
@@ -47,14 +47,13 @@ func TestBlockStore_CreateRemote(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(BlockStore{
 			ID:   "new-id",
 			Name: "s3-store",
-			Kind: "remote",
 			Type: "s3",
 		})
 	}))
 	defer server.Close()
 
 	client := New(server.URL).WithToken("test-token")
-	store, err := client.CreateBlockStore("remote", &CreateStoreRequest{
+	store, err := client.CreateBlockStore(&CreateStoreRequest{
 		Name: "s3-store",
 		Type: "s3",
 	})
@@ -62,41 +61,40 @@ func TestBlockStore_CreateRemote(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "new-id", store.ID)
 	assert.Equal(t, "s3-store", store.Name)
-	assert.Equal(t, "remote", store.Kind)
+	assert.Equal(t, "s3", store.Type)
 }
 
 func TestBlockStore_Delete(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, http.MethodDelete, r.Method)
-		assert.Equal(t, "/api/v1/store/block/local/my-store", r.URL.Path)
+		assert.Equal(t, "/api/v1/store/block/my-store", r.URL.Path)
 
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer server.Close()
 
 	client := New(server.URL).WithToken("test-token")
-	err := client.RemoveBlockStore("local", "my-store")
+	err := client.RemoveBlockStore("my-store")
 
 	require.NoError(t, err)
 }
 
-func TestBlockStore_GetRemote(t *testing.T) {
+func TestBlockStore_Get(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, http.MethodGet, r.Method)
-		assert.Equal(t, "/api/v1/store/block/remote/s3-prod", r.URL.Path)
+		assert.Equal(t, "/api/v1/store/block/s3-prod", r.URL.Path)
 
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(BlockStore{
 			ID:   "store-123",
 			Name: "s3-prod",
-			Kind: "remote",
 			Type: "s3",
 		})
 	}))
 	defer server.Close()
 
 	client := New(server.URL).WithToken("test-token")
-	store, err := client.GetBlockStore("remote", "s3-prod")
+	store, err := client.GetBlockStore("s3-prod")
 
 	require.NoError(t, err)
 	assert.Equal(t, "store-123", store.ID)
