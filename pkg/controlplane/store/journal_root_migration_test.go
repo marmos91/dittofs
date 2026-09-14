@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -160,7 +161,7 @@ func TestCheckJournalRoot_SingleDivergentPathSuggestsAdoptingIt(t *testing.T) {
 	if err == nil {
 		t.Fatal("got nil, want a mismatch error")
 	}
-	if !strings.Contains(err.Error(), "Set blockstore.journal.path to /mnt/data") {
+	if !strings.Contains(err.Error(), "Set blockstore.journal.path to "+filepath.Clean("/mnt/data")) {
 		t.Errorf("error must tell the operator to adopt the shared path; got:\n%s", err)
 	}
 }
@@ -179,7 +180,7 @@ func TestCheckJournalRoot_MultipleDivergentPathsDoNotSuggestOne(t *testing.T) {
 	if strings.Contains(msg, "Set blockstore.journal.path to") {
 		t.Errorf("must not suggest adopting one of several paths; got:\n%s", msg)
 	}
-	for _, want := range []string{`share "a"`, "/mnt/one", `share "b"`, "/mnt/two"} {
+	for _, want := range []string{`share "a"`, filepath.Clean("/mnt/one"), `share "b"`, filepath.Clean("/mnt/two")} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("error must name %q; got:\n%s", want, msg)
 		}

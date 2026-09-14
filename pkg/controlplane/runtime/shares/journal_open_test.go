@@ -109,12 +109,12 @@ func TestJournalChunkParams_InvalidProfileIsDropped(t *testing.T) {
 // shape that escaped it: dots survive escaping, so "/.." used to resolve to the
 // journal root itself.
 func TestShareJournalDir_KeepsEveryShareUnderTheSharesDirectory(t *testing.T) {
-	const root = "/srv/blocks"
-	container := root + "/shares"
+	root := filepath.Join(string(filepath.Separator), "srv", "blocks")
+	container := filepath.Join(root, "shares")
 
 	for _, name := range []string{"/..", "/.", "/../../etc", "/a/b", "/normal", "/"} {
 		got := ShareJournalDir(root, name)
-		if got != container && !strings.HasPrefix(got, container+"/") {
+		if got != container && !strings.HasPrefix(got, container+string(filepath.Separator)) {
 			t.Errorf("ShareJournalDir(%q) = %q, which is outside %q", name, got, container)
 		}
 	}
@@ -123,7 +123,7 @@ func TestShareJournalDir_KeepsEveryShareUnderTheSharesDirectory(t *testing.T) {
 // TestShareJournalDir_DistinctNamesGetDistinctDirectories guards the escaping
 // from collapsing two shares onto one journal.
 func TestShareJournalDir_DistinctNamesGetDistinctDirectories(t *testing.T) {
-	const root = "/srv/blocks"
+	root := filepath.Join(string(filepath.Separator), "srv", "blocks")
 	seen := map[string]string{}
 	for _, name := range []string{"/..", "/.", "/a", "/a/b", "/normal"} {
 		got := ShareJournalDir(root, name)
