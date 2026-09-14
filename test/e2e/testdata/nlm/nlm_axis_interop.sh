@@ -92,8 +92,8 @@ $NS env XDG_CONFIG_HOME="$XDG_CONFIG_HOME" $DFSCTL login --server "http://127.0.
 dctl() { $NS env XDG_CONFIG_HOME="$XDG_CONFIG_HOME" $DFSCTL "$@"; }
 
 dctl store metadata add --name meta --type memory || { log "meta store FAIL"; exit 1; }
-dctl store block local add --name blk --type memory || { log "block store FAIL"; exit 1; }
-dctl share create --name /export --metadata meta --local blk --default-permission read-write || { log "share FAIL"; exit 1; }
+dctl store block add --name blk --type memory || { log "block store FAIL"; exit 1; }
+dctl share create --name /export --metadata meta --block-store blk --default-permission read-write || { log "share FAIL"; exit 1; }
 dctl share nfs-config set /export --squash root_to_admin 2>/dev/null || dctl share nfs-config set /export --squash root_to_admin || true
 dctl adapter settings nfs update --portmapper-register-with-system --udp-enabled || { log "nfs settings FAIL"; exit 1; }
 dctl adapter enable nfs --port $NFSP || { log "nfs enable FAIL"; exit 1; }

@@ -216,7 +216,6 @@ func WithBlockAllowPrivateEndpoint() BlockStoreOption {
 // =============================================================================
 
 // appendBlockStoreConfigArgs appends config-related CLI arguments from blockStoreOptions.
-// Shared by both local and remote block store creation.
 func appendBlockStoreConfigArgs(args []string, options *blockStoreOptions) []string {
 	if options.rawConfig != "" {
 		return append(args, "--config", options.rawConfig)
@@ -267,15 +266,15 @@ func appendIfNotEmpty(args []string, flag, value string) []string {
 	return args
 }
 
-// CreateLocalBlockStore creates a new local block store via the CLI.
-// Supports memory and fs store types.
-func (r *CLIRunner) CreateLocalBlockStore(name, storeType string, opts ...BlockStoreOption) (*BlockStore, error) {
+// CreateBlockStore creates a new block store via the CLI.
+// storeType should be "s3" or "memory".
+func (r *CLIRunner) CreateBlockStore(name, storeType string, opts ...BlockStoreOption) (*BlockStore, error) {
 	options := &blockStoreOptions{}
 	for _, opt := range opts {
 		opt(options)
 	}
 
-	args := []string{"store", "block", "local", "add", "--name", name, "--type", storeType}
+	args := []string{"store", "block", "add", "--name", name, "--type", storeType}
 	args = appendBlockStoreConfigArgs(args, options)
 
 	output, err := r.Run(args...)
@@ -291,33 +290,9 @@ func (r *CLIRunner) CreateLocalBlockStore(name, storeType string, opts ...BlockS
 	return &store, nil
 }
 
-// CreateRemoteBlockStore creates a new remote block store via the CLI.
-// Supports memory and s3 store types.
-func (r *CLIRunner) CreateRemoteBlockStore(name, storeType string, opts ...BlockStoreOption) (*BlockStore, error) {
-	options := &blockStoreOptions{}
-	for _, opt := range opts {
-		opt(options)
-	}
-
-	args := []string{"store", "block", "remote", "add", "--name", name, "--type", storeType}
-	args = appendBlockStoreConfigArgs(args, options)
-
-	output, err := r.Run(args...)
-	if err != nil {
-		return nil, err
-	}
-
-	var store BlockStore
-	if err := ParseJSONResponse(output, &store); err != nil {
-		return nil, err
-	}
-
-	return &store, nil
-}
-
-// ListLocalBlockStores lists all local block stores via the CLI.
-func (r *CLIRunner) ListLocalBlockStores() ([]*BlockStore, error) {
-	output, err := r.Run("store", "block", "local", "list")
+// ListBlockStores lists all block stores via the CLI.
+func (r *CLIRunner) ListBlockStores() ([]*BlockStore, error) {
+	output, err := r.Run("store", "block", "list")
 	if err != nil {
 		return nil, err
 	}
@@ -330,9 +305,9 @@ func (r *CLIRunner) ListLocalBlockStores() ([]*BlockStore, error) {
 	return stores, nil
 }
 
-// GetLocalBlockStore retrieves a local block store by name.
-func (r *CLIRunner) GetLocalBlockStore(name string) (*BlockStore, error) {
-	stores, err := r.ListLocalBlockStores()
+// GetBlockStore retrieves a block store by name.
+func (r *CLIRunner) GetBlockStore(name string) (*BlockStore, error) {
+	stores, err := r.ListBlockStores()
 	if err != nil {
 		return nil, err
 	}
@@ -343,22 +318,22 @@ func (r *CLIRunner) GetLocalBlockStore(name string) (*BlockStore, error) {
 		}
 	}
 
-	return nil, fmt.Errorf("local block store not found: %s", name)
+	return nil, fmt.Errorf("block store not found: %s", name)
 }
 
-// EditLocalBlockStore edits an existing local block store via the CLI.
-func (r *CLIRunner) EditLocalBlockStore(name string, opts ...BlockStoreOption) (*BlockStore, error) {
+// EditBlockStore edits an existing block store via the CLI.
+func (r *CLIRunner) EditBlockStore(name string, opts ...BlockStoreOption) (*BlockStore, error) {
 	options := &blockStoreOptions{}
 	for _, opt := range opts {
 		opt(options)
 	}
 
-	args := []string{"store", "block", "local", "edit", name}
+	args := []string{"store", "block", "edit", name}
 	before := len(args)
 	args = appendBlockStoreConfigArgs(args, options)
 
 	if len(args) == before {
-		return nil, fmt.Errorf("at least one option is required for EditLocalBlockStore")
+		return nil, fmt.Errorf("at least one option is required for EditBlockStore")
 	}
 
 	output, err := r.Run(args...)
@@ -374,16 +349,9 @@ func (r *CLIRunner) EditLocalBlockStore(name string, opts ...BlockStoreOption) (
 	return &store, nil
 }
 
-// DeleteLocalBlockStore deletes a local block store via the CLI.
+// DeleteBlockStore deletes a block store via the CLI.
 // Uses --force to skip confirmation prompt.
-func (r *CLIRunner) DeleteLocalBlockStore(name string) error {
-	_, err := r.Run("store", "block", "local", "remove", name, "--force")
-	return err
-}
-
-// DeleteRemoteBlockStore deletes a remote block store via the CLI.
-// Uses --force to skip confirmation prompt.
-func (r *CLIRunner) DeleteRemoteBlockStore(name string) error {
-	_, err := r.Run("store", "block", "remote", "remove", name, "--force")
+func (r *CLIRunner) DeleteBlockStore(name string) error {
+	_, err := r.Run("store", "block", "remove", name, "--force")
 	return err
 }
