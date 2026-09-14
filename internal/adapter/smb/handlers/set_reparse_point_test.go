@@ -34,7 +34,7 @@ func setupReparseShare(t *testing.T) (*Handler, *SMBHandlerContext, metadata.Fil
 	if err != nil {
 		t.Fatalf("cpstore.New: %v", err)
 	}
-	rt := runtime.New(cps)
+	rt := newTestRuntime(t, cps)
 
 	if _, err := cps.CreateMetadataStore(ctx, &models.MetadataStoreConfig{Name: "rpmeta", Type: "memory"}); err != nil {
 		t.Fatalf("CreateMetadataStore: %v", err)

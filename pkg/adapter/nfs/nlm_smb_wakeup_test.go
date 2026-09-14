@@ -115,7 +115,7 @@ func TestNLMWaiter_GrantedWhenSMBHolderReleases(t *testing.T) {
 	const shareName = "/xproto-wakeup"
 
 	// --- Runtime + share with a memory metadata store -----------------------
-	rt := runtime.New(nil)
+	rt := newTestRuntime(t, nil)
 	metaStore := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	require.NoError(t, rt.RegisterMetadataStore("test-meta", metaStore))
 	require.NoError(t, rt.AddShare(ctx, &runtime.ShareConfig{

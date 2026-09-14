@@ -46,7 +46,7 @@ func (s *adsLookupFailStore) ListChildren(ctx context.Context, dirHandle metadat
 // does not exist and whose base-file listing fails: the create must fail with
 // the mapped lookup error, not silently create the base file and the stream.
 func TestCreate_ADSLookupErrorSurfacesAsStatus(t *testing.T) {
-	rt := runtime.New(nil)
+	rt := newTestRuntime(t, nil)
 
 	memStore := memory.NewMemoryMetadataStoreWithDefaults()
 	failStore := &adsLookupFailStore{Store: memStore, parent: nil}

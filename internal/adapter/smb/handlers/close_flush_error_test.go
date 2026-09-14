@@ -45,7 +45,7 @@ func setupWriteTestShare(t *testing.T, metaStore metadata.Store) (*Handler, *SMB
 	if err != nil {
 		t.Fatalf("cpstore.New: %v", err)
 	}
-	rt := runtime.New(cps)
+	rt := newTestRuntime(t, cps)
 
 	if _, err := cps.CreateMetadataStore(ctx, &models.MetadataStoreConfig{Name: "flushmeta", Type: "memory"}); err != nil {
 		t.Fatalf("CreateMetadataStore: %v", err)

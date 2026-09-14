@@ -28,7 +28,7 @@ func newHardlinkTestShare(t *testing.T) (*runtime.Runtime, metadata.FileHandle, 
 	if err != nil {
 		t.Fatalf("cpstore.New: %v", err)
 	}
-	rt := runtime.New(cps)
+	rt := newTestRuntime(t, cps)
 
 	if _, err := cps.CreateMetadataStore(ctx, &models.MetadataStoreConfig{Name: "hlmeta", Type: "memory"}); err != nil {
 		t.Fatalf("CreateMetadataStore: %v", err)

@@ -10,7 +10,6 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/auth"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 )
 
@@ -98,7 +97,7 @@ func newReauthFixture(t *testing.T, cpStore store.Store) *reauthFixture {
 	h := NewHandler()
 	h.NotifyRegistry = NewNotifyRegistry()
 	h.NtlmEnabled = true
-	h.Registry = runtime.New(cpStore)
+	h.Registry = newTestRuntime(t, cpStore)
 
 	const sessionID = uint64(0xdeadbeef)
 	authedUser := &models.User{Username: "alice", Enabled: true}
@@ -376,7 +375,7 @@ func TestSessionSetup_UserWithoutNTHash_Rejected(t *testing.T) {
 
 	h := NewHandler()
 	h.NtlmEnabled = true
-	h.Registry = runtime.New(cpStore)
+	h.Registry = newTestRuntime(t, cpStore)
 
 	// Fresh session: NEGOTIATE (TYPE_1) then AUTHENTICATE (TYPE_3).
 	ctx1 := newTestContext(0)

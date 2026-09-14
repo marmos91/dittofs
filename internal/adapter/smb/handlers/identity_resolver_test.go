@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 )
 
@@ -78,7 +77,7 @@ func TestResolveIdentityMapping(t *testing.T) {
 		},
 	}
 
-	rt := runtime.New(mockStore)
+	rt := newTestRuntime(t, mockStore)
 	h := &Handler{Registry: rt}
 
 	tests := []struct {
@@ -137,7 +136,7 @@ func TestResolveIdentityMapping(t *testing.T) {
 }
 
 func TestResolveIdentityMapping_NilStore(t *testing.T) {
-	rt := runtime.New(nil)
+	rt := newTestRuntime(t, nil)
 	h := &Handler{Registry: rt}
 
 	gotUser, gotFound := h.resolveIdentityMapping(context.Background(), "alice@EXAMPLE.COM", "alice")

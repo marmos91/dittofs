@@ -20,7 +20,7 @@ import (
 func setupEATest(t *testing.T) (*Handler, *metadata.AuthContext, *OpenFile) {
 	t.Helper()
 
-	rt := runtime.New(nil)
+	rt := newTestRuntime(t, nil)
 	memStore := memory.NewMemoryMetadataStoreWithDefaults()
 	if err := rt.RegisterMetadataStore("ea-meta", memStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)

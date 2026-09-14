@@ -42,7 +42,7 @@ func newRealFSTestFixture(t *testing.T, shareName string) *realFSTestFixture {
 
 	// Create a runtime with nil control-plane store (tests don't need persistence)
 	// The runtime creates its own MetadataService
-	rt := runtime.New(nil)
+	rt := newTestRuntime(t, nil)
 	metaSvc := rt.GetMetadataService()
 	metaSvc.SetDeferredCommit(false) // Disable deferred commits for testing
 

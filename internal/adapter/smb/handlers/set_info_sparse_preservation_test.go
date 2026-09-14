@@ -34,7 +34,7 @@ func setupSparsePreservationTest(t *testing.T, seedFSCTLBits uint32) (
 ) {
 	t.Helper()
 
-	rt := runtime.New(nil)
+	rt := newTestRuntime(t, nil)
 	memStore := memory.NewMemoryMetadataStoreWithDefaults()
 	if err := rt.RegisterMetadataStore("sparse-meta", memStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
