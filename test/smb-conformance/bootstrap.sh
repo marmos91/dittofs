@@ -121,14 +121,13 @@ create_block_stores() {
         memory|memory-kerberos|badger|sqlite|postgres)
             # Metadata-store profiles: each pairs its metadata engine with the
             # memory block store (no S3) so the suite stays self-contained.
-            $DFSCTL store block local add --name default --type memory
+            $DFSCTL store block add --name default --type memory
             ;;
         *-s3)
-            $DFSCTL store block local add --name default --type memory
             # Localstack is a deliberate private-network test endpoint; opt it past
-            # the S3 SSRF guard (added in #1124) which otherwise rejects the
-            # private 172.x address that "localstack" resolves to.
-            $DFSCTL store block remote add --name default --type s3 \
+            # the S3 SSRF guard which otherwise rejects the private 172.x address
+            # that "localstack" resolves to.
+            $DFSCTL store block add --name default --type s3 \
                 --config '{"bucket":"dittofs-test","region":"us-east-1","endpoint":"http://localstack:4566","force_path_style":true,"access_key_id":"test","secret_access_key":"test","allow_private_endpoint":true}'
             ;;
         *)
@@ -149,7 +148,7 @@ create_block_stores() {
 SHARE_NAMES="/smbbasic /smbencrypted /fileshare /hideunread /change_notify_disabled /smbnoncanon /create_no_streams /smbpersistent"
 
 # share_create_args NAME — echo the per-share `dfsctl share create` flags
-# (without the common --metadata/--local/--remote flags, which the caller
+# (without the common --metadata/--block-store flags, which the caller
 # appends). This is the single source of truth for share configuration,
 # shared by initial bootstrap and by reset-share.
 share_create_args() {
@@ -186,17 +185,12 @@ share_create_args() {
     esac
 }
 
-# common_share_flags — the --metadata/--local[/--remote] flags shared by every
-# share, derived from the active profile.
+# common_share_flags — the --metadata/--block-store flags shared by every share.
 common_share_flags() {
     # --owner wpts-admin makes the share root owned by the test principal, so it
     # can write at the root via POSIX (the secure default root is 0755). The
     # wpts-admin user must already exist when the share is created.
-    local flags="--metadata default --local default --owner wpts-admin"
-    if [[ "$PROFILE" == *-s3 ]]; then
-        flags="$flags --remote default"
-    fi
-    echo "$flags"
+    echo "--metadata default --block-store default --owner wpts-admin"
 }
 
 # grant_admin_on_share NAME / grant_admin_on_shares — open the export gate for
