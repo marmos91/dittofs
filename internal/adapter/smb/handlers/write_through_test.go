@@ -104,21 +104,67 @@ func writeCommitDelta(t *testing.T, flags uint32, dialect types.Dialect) (durabl
 // takes the strict metadata commit inline, before the response is produced,
 // in place of the deferred one the default path takes.
 //
-// The durable delta is 3, not 1: the write-through flush populates the
-// FileChunk manifest transactionally (the carved-chunks commit and the
-// pass-end reap), alongside the pending-write commit itself. That manifest
-// population is the durability point's substrate — without it a local-only
-// clone/snapshot resolves no chunks — and it rides the same strict entrypoint.
+// The delta is the pending-write commit alone. Carving the payload into the
+// FileChunk manifest is the syncer's work and rides its own transactions off
+// the ack path, so it contributes nothing here — which is exactly why
+// TestWrite_WriteThrough_PopulatesTheManifestOnDrain has to exist alongside
+// this one: the durability point's substrate is still asserted, at the place
+// it is now produced.
 func TestWrite_WriteThrough_CommitsMetadataDurably(t *testing.T) {
 	durable, relaxed := writeCommitDelta(t, writeFlagWriteThrough, 0)
 
-	if durable != 3 {
-		t.Fatalf("write-through added %d durable metadata commit(s) over a plain WRITE, want 3 (pending write + manifest commit + reap): "+
+	if durable != 1 {
+		t.Fatalf("write-through added %d durable metadata commit(s) over a plain WRITE, want 1 (the pending write): "+
 			"the requested durability point was dropped", durable)
 	}
 	if relaxed != -1 {
 		t.Errorf("write-through changed the relaxed commit count by %d, want -1: the durable "+
 			"commit must replace the deferred flush, not run alongside it", relaxed)
+	}
+}
+
+// TestWrite_WriteThrough_PopulatesTheManifestOnDrain proves the written payload
+// still reaches the FileChunk manifest — the substrate a clone or a snapshot
+// resolves chunks through. The write-through WRITE no longer carves inline, so
+// the assertion sits after a drain, which is where the carve now happens.
+func TestWrite_WriteThrough_PopulatesTheManifestOnDrain(t *testing.T) {
+	store := &txCountingMetaStore{MemoryMetadataStore: metamemory.NewMemoryMetadataStoreWithDefaults()}
+	h, smbCtx, fileHandle, fileID := setupWriteTestShare(t, store)
+
+	data := []byte("write-through-payload")
+	resp, err := h.Write(smbCtx, &WriteRequest{
+		FileID: fileID,
+		Length: uint32(len(data)),
+		Data:   data,
+		Flags:  writeFlagWriteThrough,
+	})
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if status := resp.GetStatus(); status != types.StatusSuccess {
+		t.Fatalf("write-through WRITE status = 0x%08X, want STATUS_SUCCESS", uint32(status))
+	}
+
+	ctx := smbCtx.Context
+	bs, err := h.Registry.GetBlockStoreForHandle(ctx, fileHandle)
+	if err != nil {
+		t.Fatalf("GetBlockStoreForHandle: %v", err)
+	}
+	if err := bs.DrainAllUploads(ctx); err != nil {
+		t.Fatalf("DrainAllUploads: %v", err)
+	}
+
+	file, err := h.Registry.GetMetadataService().GetFile(ctx, fileHandle)
+	if err != nil {
+		t.Fatalf("GetFile: %v", err)
+	}
+	rows, err := store.ListFileChunks(ctx, string(file.PayloadID))
+	if err != nil {
+		t.Fatalf("ListFileChunks(%s): %v", file.PayloadID, err)
+	}
+	if len(rows) == 0 {
+		t.Fatalf("the manifest for payload %s is empty after a drain: a clone or a snapshot "+
+			"would resolve no chunks for data the client was told is durable", file.PayloadID)
 	}
 }
 
