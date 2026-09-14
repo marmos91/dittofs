@@ -86,7 +86,7 @@ type LocalStoreDefaults struct {
 	// fsyncs it. Negative disables the timer; 0 keeps the journal default.
 	DirtyExpire time.Duration
 
-	MaxSize uint64 // Maximum journal size per share (0 = unlimited)
+	MaxSize uint64 // Journal ceiling per share (0 = the journal derives its own)
 
 	// ReadBufferBytes is the per-share read buffer budget in bytes (0 = disabled).
 	ReadBufferBytes int64
@@ -277,9 +277,9 @@ func remotePinnedUploads(ctx context.Context, provider BlockStoreConfigProvider,
 // mergeLocalStoreDefaults returns a copy of the system defaults with per-share
 // overrides applied. Non-zero ShareConfig values take precedence.
 //
-// JournalSize is the whole of the sizing policy: unset (or negative) means the
-// journal grows unbounded and eviction never runs; a positive value is the
-// ceiling eviction reclaims against.
+// JournalSize is the whole of the sizing policy: a positive value is the
+// ceiling eviction reclaims against; unset (or negative) hands the decision to
+// the journal, which sizes a soft cap off the volume's free space at open.
 func mergeLocalStoreDefaults(defaults *LocalStoreDefaults, config *ShareConfig) *LocalStoreDefaults {
 	if defaults == nil {
 		defaults = &LocalStoreDefaults{}
