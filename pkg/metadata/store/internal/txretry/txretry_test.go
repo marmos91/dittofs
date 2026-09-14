@@ -53,22 +53,38 @@ func TestDeadline_DefaultsToBudget(t *testing.T) {
 	}
 }
 
-// TestBackoff_CtxCancelWinsAgainstAReadyTimer pins the cancellation check
-// against the case where the backoff timer is ready too.
+// TestWaitOrCancel_CancelledCtxWithAReadyTimer pins the cancellation check
+// against the case where the timer is ready too.
 //
-// A select picks uniformly among ready cases. A cancelled ctx makes Done()
-// ready at once, and a budget this small leaves a jittered wait of at most a
-// microsecond, so the timer becomes ready alongside it — at which point
-// returning the timer's branch retries a request whose context is already
-// cancelled. The single-shot sibling test above only catches this when the
-// runner happens to deschedule the goroutine past the wait, which is why it
-// failed in CI and passed locally.
-func TestBackoff_CtxCancelWinsAgainstAReadyTimer(t *testing.T) {
+// A select picks uniformly among ready cases, so when a cancelled context and a
+// fired timer are both ready the timer's branch wins about half the time —
+// returning "retry" for a request whose caller has already given up. Feeding an
+// already-fired channel makes both cases ready on every iteration, so this
+// fails against the unguarded version deterministically rather than waiting for
+// a loaded runner to deschedule the goroutine past the wait.
+//
+// Driving the real Backoff cannot do that: whether its jittered timer has fired
+// by the time the select is reached depends on the machine, and on a fast one
+// only Done() is ready, which the unguarded version also answers correctly.
+func TestWaitOrCancel_CancelledCtxWithAReadyTimer(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	for i := 0; i < 2000; i++ {
-		if Backoff(ctx, time.Now().Add(time.Microsecond), 0) {
-			t.Fatalf("Backoff retried a cancelled ctx on iteration %d", i)
+	for i := 0; i < 200; i++ {
+		fired := make(chan time.Time, 1)
+		fired <- time.Now()
+		if waitOrCancel(ctx, fired) {
+			t.Fatalf("retried a cancelled ctx on iteration %d", i)
 		}
+	}
+}
+
+// TestWaitOrCancel_LiveCtxTakesTheTimer is the other half: an uncancelled
+// context must still retry when the timer fires, or the guard above would have
+// turned every backoff into a give-up.
+func TestWaitOrCancel_LiveCtxTakesTheTimer(t *testing.T) {
+	fired := make(chan time.Time, 1)
+	fired <- time.Now()
+	if !waitOrCancel(context.Background(), fired) {
+		t.Fatal("a live ctx must retry when the timer fires")
 	}
 }

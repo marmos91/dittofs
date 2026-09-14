@@ -68,10 +68,21 @@ func Backoff(ctx context.Context, deadline time.Time, attempt int) bool {
 	wait := time.Duration(rand.Int64N(int64(d)) + 1)
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
+	return waitOrCancel(ctx, timer.C)
+}
+
+// waitOrCancel reports whether the backoff wait finished without the context
+// being cancelled.
+//
+// Split out of Backoff so the case that matters can be constructed directly: a
+// test cannot make the real timer reliably win against a cancelled context,
+// because whether it has fired by the time the select is reached depends on the
+// machine. Handed an already-fired channel, both cases are ready every time.
+func waitOrCancel(ctx context.Context, timerC <-chan time.Time) bool {
 	select {
 	case <-ctx.Done():
 		return false
-	case <-timer.C:
+	case <-timerC:
 		// Both cases can be ready at once: the jittered wait is as short as a
 		// nanosecond, so any scheduling delay lets the timer fire while the
 		// context is already cancelled. A select picks uniformly among ready
