@@ -714,6 +714,12 @@ func (r *Runtime) SetShareNetgroup(name, netgroupName string) error {
 	return r.sharesSvc.SetShareNetgroup(name, netgroupName)
 }
 
+// SetNFSExportPolicy pushes changed NFS export options into the running share so
+// they bind without an adapter restart. See shares.Service.SetNFSExportPolicy.
+func (r *Runtime) SetNFSExportPolicy(name string, u shares.NFSExportPolicyUpdate) error {
+	return r.sharesSvc.SetNFSExportPolicy(name, u)
+}
+
 // SetShareSquash updates the live in-memory squash policy (and optionally the
 // anonymous UID/GID) for a share so an NFS squash-config change applies to
 // active clients without an adapter restart. nil anon pointers leave those

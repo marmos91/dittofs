@@ -291,3 +291,105 @@ func TestShareNFSConfig_PatchRequireKerberosNeedsKerberos(t *testing.T) {
 		t.Errorf("RequireKerberos = false, want true")
 	}
 }
+
+// setupShareNFSConfigTestWithRuntime is setupShareNFSConfigTest with a real
+// Runtime holding a registered share, so a test can observe what the running
+// adapter would read rather than only what was persisted.
+func setupShareNFSConfigTestWithRuntime(t *testing.T) (*runtime.Runtime, *ShareNFSConfigHandler) {
+	t.Helper()
+
+	cpStore, err := store.New(&store.Config{
+		Type:   "sqlite",
+		SQLite: store.SQLiteConfig{Path: ":memory:"},
+	})
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	ctx := context.Background()
+
+	metaStore := &models.MetadataStoreConfig{ID: uuid.New().String(), Name: "m", Type: "memory"}
+	if _, err := cpStore.CreateMetadataStore(ctx, metaStore); err != nil {
+		t.Fatalf("CreateMetadataStore: %v", err)
+	}
+	localBlockStore := &models.BlockStoreConfig{ID: uuid.New().String(), Name: "l", Kind: models.BlockStoreKindLocal, Type: "fs"}
+	if _, err := cpStore.CreateBlockStore(ctx, localBlockStore); err != nil {
+		t.Fatalf("CreateBlockStore: %v", err)
+	}
+	share := &models.Share{
+		ID:                uuid.New().String(),
+		Name:              "/export",
+		MetadataStoreID:   metaStore.ID,
+		LocalBlockStoreID: localBlockStore.ID,
+		CreatedAt:         time.Now(),
+	}
+	if _, err := cpStore.CreateShare(ctx, share); err != nil {
+		t.Fatalf("CreateShare: %v", err)
+	}
+
+	rt := runtime.New(cpStore)
+	rt.RegisterShareForTesting("/export")
+
+	return rt, nfsConfigHandler(cpStore, rt)
+}
+
+// TestShareNFSConfig_PatchPushesExportPolicyToRunningShare covers the seam
+// between persisting a config change and the adapter enforcing it.
+//
+// The export auth-flavor fields are read from the running share on the request
+// path — the MNT auth gates and advertised flavor list, and the v4 auth check —
+// so persisting them alone left the adapter enforcing the previous values until
+// a restart. AllowAuthSys and RequireKerberos are security controls, so a
+// tightened export kept accepting the flavor it now forbade while this endpoint
+// reported success.
+//
+// Asserting persistence alone cannot catch that: the store is written correctly
+// either way.
+func TestShareNFSConfig_PatchPushesExportPolicyToRunningShare(t *testing.T) {
+	rt, handler := setupShareNFSConfigTestWithRuntime(t)
+
+	before, err := rt.GetShare("/export")
+	if err != nil {
+		t.Fatalf("GetShare before: %v", err)
+	}
+	if !before.AllowAuthSys {
+		t.Fatalf("fixture starts with AllowAuthSys=false; the test cannot show the change")
+	}
+
+	w := doRequest(t, handler.Patch, http.MethodPatch, `{"allow_auth_sys":false,"min_kerberos_level":"krb5p"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Patch() status = %d, want 200, body = %s", w.Code, w.Body.String())
+	}
+
+	after, err := rt.GetShare("/export")
+	if err != nil {
+		t.Fatalf("GetShare after: %v", err)
+	}
+	if after.AllowAuthSys {
+		t.Error("running share still has AllowAuthSys=true; the export keeps accepting a flavor it now forbids")
+	}
+	if after.MinKerberosLevel != models.KerberosLevelKrb5p {
+		t.Errorf("running share MinKerberosLevel = %q, want %q", after.MinKerberosLevel, models.KerberosLevelKrb5p)
+	}
+}
+
+// TestShareNFSConfig_PatchLeavesUnsetExportFieldsAlone guards the partial-update
+// shape: a PATCH naming one field must not reset the others to their zero value.
+func TestShareNFSConfig_PatchLeavesUnsetExportFieldsAlone(t *testing.T) {
+	rt, handler := setupShareNFSConfigTestWithRuntime(t)
+
+	w := doRequest(t, handler.Patch, http.MethodPatch, `{"min_kerberos_level":"krb5i"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Patch() status = %d, want 200, body = %s", w.Code, w.Body.String())
+	}
+
+	after, err := rt.GetShare("/export")
+	if err != nil {
+		t.Fatalf("GetShare: %v", err)
+	}
+	if !after.AllowAuthSys {
+		t.Error("AllowAuthSys was reset to false by a PATCH that did not name it")
+	}
+	if after.MinKerberosLevel != models.KerberosLevelKrb5i {
+		t.Errorf("MinKerberosLevel = %q, want krb5i", after.MinKerberosLevel)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 )
 
@@ -170,7 +171,7 @@ func (h *ShareNFSConfigHandler) Patch(w http.ResponseWriter, r *http.Request) {
 
 	// Push the netgroup association into the running share so it takes effect
 	// immediately (CheckNetgroupAccess reads NetgroupName from the runtime
-	// registry). Other NFS export fields apply on adapter restart.
+	// registry).
 	if req.Netgroup != nil && h.runtime != nil {
 		if err := h.runtime.SetShareNetgroup(share.Name, netgroupName); err != nil {
 			logger.Warn("NFS config persisted but failed to update runtime netgroup",
@@ -190,6 +191,26 @@ func (h *ShareNFSConfigHandler) Patch(w http.ResponseWriter, r *http.Request) {
 					"share", share.Name, "squash", opts.Squash, "error", err)
 			}
 		}
+
+		// The export auth-flavor fields and the READDIRPLUS toggle are read from
+		// the running share on the request path, so persisting them alone leaves
+		// the adapter enforcing the previous values until a restart. For
+		// AllowAuthSys and RequireKerberos that means a tightened export keeps
+		// accepting the flavor it now forbids, while this call reports success.
+		if req.AllowAuthSys != nil || req.RequireKerberos != nil ||
+			req.MinKerberosLevel != nil || req.DisableReaddirplus != nil {
+			update := shares.NFSExportPolicyUpdate{
+				AllowAuthSys:       req.AllowAuthSys,
+				RequireKerberos:    req.RequireKerberos,
+				MinKerberosLevel:   req.MinKerberosLevel,
+				DisableReaddirplus: req.DisableReaddirplus,
+			}
+			if err := h.runtime.SetNFSExportPolicy(share.Name, update); err != nil {
+				logger.Warn("NFS config persisted but failed to update runtime export policy",
+					"share", share.Name, "error", err)
+			}
+		}
+
 		h.runtime.InvalidateAuthCache()
 	}
 

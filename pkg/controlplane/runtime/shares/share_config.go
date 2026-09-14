@@ -72,6 +72,52 @@ func (s *Service) SetShareSquash(name string, squash models.SquashMode, anonUID,
 	return nil
 }
 
+// NFSExportPolicyUpdate carries the NFS export fields to push into a running
+// share. A nil field is left unchanged, matching the partial-update shape of the
+// API request that produces it.
+type NFSExportPolicyUpdate struct {
+	AllowAuthSys       *bool
+	RequireKerberos    *bool
+	MinKerberosLevel   *string
+	DisableReaddirplus *bool
+}
+
+// SetNFSExportPolicy updates the live in-memory NFS export options for a share
+// so a config change binds without an adapter restart.
+//
+// These fields are read from the registry on the request path — the MNT auth
+// gates and the advertised flavor list, the v4 auth check, and the READDIRPLUS
+// downgrade — so persisting them alone leaves the running adapter enforcing the
+// previous values. Two of them, AllowAuthSys and RequireKerberos, are security
+// controls: an operator tightening an export would otherwise get a success
+// response while the export kept accepting the flavor they just forbade.
+//
+// Returns an error if the share is not registered.
+func (s *Service) SetNFSExportPolicy(name string, u NFSExportPolicyUpdate) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	share, exists := s.registry[name]
+	if !exists {
+		return fmt.Errorf("share %q not found", name)
+	}
+
+	if u.AllowAuthSys != nil {
+		share.AllowAuthSys = *u.AllowAuthSys
+	}
+	if u.RequireKerberos != nil {
+		share.RequireKerberos = *u.RequireKerberos
+	}
+	if u.MinKerberosLevel != nil {
+		share.MinKerberosLevel = *u.MinKerberosLevel
+	}
+	if u.DisableReaddirplus != nil {
+		share.DisableReaddirplus = *u.DisableReaddirplus
+	}
+
+	return nil
+}
+
 // TrashSettings is a per-share recycle-bin policy snapshot, returned by value
 // under the service lock so callers never read a mutating shared pointer.
 type TrashSettings struct {
