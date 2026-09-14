@@ -23,12 +23,15 @@ import (
 //   - true (explicitly enabled) -> portmapper enabled
 func (s *NFSAdapter) isPortmapperEnabled() bool {
 	s.configMu.Lock()
-	enabled := s.config.Portmapper.Enabled
-	s.configMu.Unlock()
-	if enabled == nil {
-		return false // Default: disabled
+	defer s.configMu.Unlock()
+	// The VALUE is read under the lock, not the pointer. configMu guards the
+	// config field; it does not guard the bool the field points at, so copying
+	// the pointer out and dereferencing it afterwards leaves the read
+	// unsynchronised against anyone holding the same address.
+	if enabled := s.config.Portmapper.Enabled; enabled != nil {
+		return *enabled
 	}
-	return *enabled
+	return false // Default: disabled
 }
 
 // snapshotSidecarConfig reads the sidecar config tuple (main NFS port,
@@ -138,12 +141,14 @@ func (s *NFSAdapter) startPortmapper(ctx context.Context) error {
 // unset (same *bool convention as isPortmapperEnabled).
 func (s *NFSAdapter) registerWithSystemEnabled() bool {
 	s.configMu.Lock()
-	enabled := s.config.Portmapper.RegisterWithSystem
-	s.configMu.Unlock()
-	if enabled == nil {
-		return false
+	defer s.configMu.Unlock()
+	// Same discipline as isPortmapperEnabled: dereference inside the lock. The
+	// sidecar goroutine calls this while a caller may be swapping the field,
+	// and the pointed-to bool is not covered by the field's lock.
+	if enabled := s.config.Portmapper.RegisterWithSystem; enabled != nil {
+		return *enabled
 	}
-	return *enabled
+	return false
 }
 
 // systemPortmapAddr is the dial address of the host's system rpcbind.

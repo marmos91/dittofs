@@ -15,15 +15,24 @@ func TestReconcileSysregTogglesSidecar(t *testing.T) {
 	a := &NFSAdapter{sidecars: auxsvc.NewGroup(), sysregAddr: "127.0.0.1:1"}
 	a.sidecars.SetBaseContext(context.Background())
 
+	// Mutate the way applyNFSSettings does: a fresh pointer, assigned under
+	// configMu. Taking the address once and flipping the bool through it races
+	// the sidecar goroutine's read — configMu guards the config FIELD, not the
+	// bool the field points at, so an aliased write escapes it entirely.
+	setRegisterWithSystem := func(v bool) {
+		a.configMu.Lock()
+		defer a.configMu.Unlock()
+		a.config.Portmapper.RegisterWithSystem = &v
+	}
+
 	a.reconcileSysreg()
 	waitSysreg(t, a, false, "sysreg sidecar running while register-with-system is unset")
 
-	enabled := true
-	a.config.Portmapper.RegisterWithSystem = &enabled
+	setRegisterWithSystem(true)
 	a.reconcileSysreg()
 	waitSysreg(t, a, true, "sysreg sidecar not started after enabling register-with-system")
 
-	enabled = false
+	setRegisterWithSystem(false)
 	a.reconcileSysreg()
 	waitSysreg(t, a, false, "sysreg sidecar still running after disabling register-with-system")
 }
