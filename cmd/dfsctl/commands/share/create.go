@@ -24,6 +24,8 @@ var (
 	createRetention         string
 	createRetentionTTL      string
 	createJournalSize       string
+	createCommitAck         string
+	createRelaxedMetaCommit bool
 	createReadBufferSize    string
 	createQuotaBytes        string
 	createAclCanonicalize   bool
@@ -90,6 +92,8 @@ func init() {
 	createCmd.Flags().StringVar(&createRetention, "retention", "", "Retention policy (pin|ttl|lru)")
 	createCmd.Flags().StringVar(&createRetentionTTL, "retention-ttl", "", "Retention TTL duration (e.g., 72h, 24h)")
 	createCmd.Flags().StringVar(&createJournalSize, "journal-size", "", "Per-share journal size override (e.g., 10GiB, 500MiB)")
+	createCmd.Flags().StringVar(&createCommitAck, "commit-ack", "", "What a COMMIT waits for: journal (survives host crash) or block-store (survives device loss)")
+	createCmd.Flags().BoolVar(&createRelaxedMetaCommit, "relaxed-metadata-commit", false, "Let an operation that promised stable metadata return before the metadata fsync")
 	createCmd.Flags().StringVar(&createReadBufferSize, "read-buffer-size", "", "Per-share read buffer size override (e.g., 2GiB, 256MiB)")
 	createCmd.Flags().StringVar(&createQuotaBytes, "quota-bytes", "", "Per-share byte quota (e.g., '10GiB', '500MiB'). 0 = unlimited (default)")
 	createCmd.Flags().BoolVar(&createAclCanonicalize, "acl-canonicalize-inherited", true, "When false, preserves the SE_DACL_AUTO_INHERITED control bit verbatim on SET_INFO Security instead of applying MS-DTYP §2.5.3.4.2 canonicalization (Samba \"acl flag inherited canonicalization = no\"). Default true matches Windows.")
@@ -165,6 +169,15 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	}
 	if createJournalSize != "" {
 		req.JournalSize = createJournalSize
+	}
+	if createCommitAck != "" {
+		req.CommitAck = createCommitAck
+	}
+	// Only sent when named, so an unset flag keeps the server default rather
+	// than asserting false over it.
+	if cmd.Flags().Changed("relaxed-metadata-commit") {
+		v := createRelaxedMetaCommit
+		req.RelaxedMetadataCommit = &v
 	}
 	if createReadBufferSize != "" {
 		req.ReadBufferSize = createReadBufferSize

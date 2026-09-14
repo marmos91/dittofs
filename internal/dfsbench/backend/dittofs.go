@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -86,8 +87,7 @@ const (
 	dittofsAPIPort = "8080"
 	dittofsAPIURL  = "http://127.0.0.1:" + dittofsAPIPort
 	dittofsMeta    = "bench-meta"
-	dittofsLocal   = "bench-local"
-	dittofsRemote  = "bench-s3"
+	dittofsBlocks  = "bench-s3"
 	// Throwaway control-plane secret (≥32 chars, required for the API server) and
 	// admin password on a disposable single-tenant bench VM — same fixed-literal
 	// convention as zerofsPassword. ponytail: no prod users; don't generate.
@@ -374,9 +374,9 @@ func dittofsSetup(ctx context.Context, env BackendEnv, kind dittofsMetaKind, dur
 	if err := dittofsAddMetadataStore(ctx, kind); err != nil {
 		return err
 	}
-	// Pass the durability tier (#1758) through the local block store config. The
-	// "durability" enum (local|writeback|remote) is read by resolveDurabilityTier
-	// at share create; "local" is the default so it's harmless to set explicitly.
+	// The durability tier rides the share's own two axes: what a COMMIT waits
+	// for, and whether the metadata fsync may be deferred. They are independent,
+	// so the tier names below expand to a pair rather than to one enum.
 	//
 	// max_size caps the local journal. The unbounded default (dittofsUnboundedMaxSize,
 	// 32 GiB) gives the writeback tier generous headroom: writeback relaxes the
@@ -387,28 +387,42 @@ func dittofsSetup(ctx context.Context, env BackendEnv, kind dittofsMetaKind, dur
 	// same), so the default measures the tier at throughput instead of its
 	// saturation cliff. The cache-cap study variants pass a small maxSize on
 	// purpose, to measure exactly that cliff (backpressure vs error) when it fills.
-	localCfg, err := json.Marshal(map[string]any{
-		"path":       dittofsDataDir + "/blocks",
-		"durability": durability,
-		"max_size":   maxSize,
-	})
+	commitAck, relaxedMetadata, err := dittofsDurabilityFlags(durability)
 	if err != nil {
 		return err
 	}
-	if err := exec.Sh(ctx, "dfsctl", "store", "block", "local", "add",
-		"--name", dittofsLocal, "--type", "fs", "--config", string(localCfg)); err != nil {
-		return err
-	}
-	if err := exec.Sh(ctx, "dfsctl", "store", "block", "remote", "add",
-		"--name", dittofsRemote, "--type", "s3", "--bucket", env.Bucket, "--endpoint", env.Endpoint,
+	if err := exec.Sh(ctx, "dfsctl", "store", "block", "add",
+		"--name", dittofsBlocks, "--type", "s3", "--bucket", env.Bucket, "--endpoint", env.Endpoint,
 		"--access-key", id, "--secret-key", secret, "--region", "us-east-1"); err != nil {
 		return err
 	}
 	// --default-permission read-write so the AUTH_SYS root client (squashed to
 	// nobody) can still write — the benchmark's whole job.
-	return exec.Sh(ctx, "dfsctl", "share", "create", "--name", "/"+dittofsShare,
-		"--metadata", dittofsMeta, "--local", dittofsLocal, "--remote", dittofsRemote,
-		"--default-permission", "read-write")
+	args := []string{"share", "create", "--name", "/" + dittofsShare,
+		"--metadata", dittofsMeta, "--block-store", dittofsBlocks,
+		"--journal-size", strconv.FormatInt(maxSize, 10),
+		"--commit-ack", commitAck,
+		"--default-permission", "read-write"}
+	if relaxedMetadata {
+		args = append(args, "--relaxed-metadata-commit")
+	}
+	return exec.Sh(ctx, "dfsctl", args...)
+}
+
+// dittofsDurabilityFlags expands a tier name into the two independent axes it
+// stands for. An unknown name is an error rather than a default: every cell of
+// the matrix is meant to measure a different write-ack barrier, and silently
+// collapsing one onto another would report a tier the run never exercised.
+func dittofsDurabilityFlags(tier string) (commitAck string, relaxedMetadata bool, err error) {
+	switch tier {
+	case "local":
+		return "journal", false, nil
+	case "writeback":
+		return "journal", true, nil
+	case "remote":
+		return "block-store", false, nil
+	}
+	return "", false, fmt.Errorf("unknown durability tier %q", tier)
 }
 
 func dittofsMount(ctx context.Context, proto Protocol) (string, error) {

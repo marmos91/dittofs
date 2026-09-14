@@ -20,6 +20,8 @@ var (
 	editRetention         string
 	editRetentionTTL      string
 	editJournalSize       string
+	editCommitAck         string
+	editRelaxedMetaCommit bool
 	editReadBufferSize    string
 	editQuotaBytes        string
 	editAclCanonicalize   string
@@ -88,6 +90,8 @@ func init() {
 	editCmd.Flags().StringVar(&editRetention, "retention", "", "Retention policy (pin|ttl|lru)")
 	editCmd.Flags().StringVar(&editRetentionTTL, "retention-ttl", "", "Retention TTL duration (e.g., 72h)")
 	editCmd.Flags().StringVar(&editJournalSize, "journal-size", "", "Per-share journal size override (e.g., 10GiB, 500MiB)")
+	editCmd.Flags().StringVar(&editCommitAck, "commit-ack", "", "What a COMMIT waits for: journal (survives host crash) or block-store (survives device loss)")
+	editCmd.Flags().BoolVar(&editRelaxedMetaCommit, "relaxed-metadata-commit", false, "Let an operation that promised stable metadata return before the metadata fsync")
 	editCmd.Flags().StringVar(&editReadBufferSize, "read-buffer-size", "", "Per-share read buffer size override (e.g., 2GiB, 256MiB)")
 	editCmd.Flags().StringVar(&editQuotaBytes, "quota-bytes", "", "Per-share byte quota (e.g., '10GiB'). 0 = remove quota")
 	editCmd.Flags().StringVar(&editAclCanonicalize, "acl-canonicalize-inherited", "", "When false, preserves the SE_DACL_AUTO_INHERITED control bit verbatim on SET_INFO Security instead of applying MS-DTYP §2.5.3.4.2 canonicalization (Samba \"acl flag inherited canonicalization = no\"). Default true matches Windows. Takes effect on adapter restart.")
@@ -170,6 +174,19 @@ func runEdit(cmd *cobra.Command, args []string) error {
 
 	if editJournalSize != "" {
 		req.JournalSize = &editJournalSize
+		hasUpdate = true
+	}
+
+	if editCommitAck != "" {
+		req.CommitAck = &editCommitAck
+		hasUpdate = true
+	}
+
+	// Only sent when named, so an unset flag leaves the share's setting alone
+	// rather than silently relaxing it.
+	if cmd.Flags().Changed("relaxed-metadata-commit") {
+		v := editRelaxedMetaCommit
+		req.RelaxedMetadataCommit = &v
 		hasUpdate = true
 	}
 

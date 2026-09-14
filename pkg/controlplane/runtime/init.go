@@ -373,4 +373,3 @@ func buildShareConfig(ctx context.Context, s store.Store, share *models.Share) (
 		RelaxedMetadataCommit:            share.RelaxedMetadataCommit,
 	}, nil
 }
-
