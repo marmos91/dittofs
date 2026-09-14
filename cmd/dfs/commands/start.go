@@ -235,15 +235,14 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	// Set per-share defaults BEFORE loading shares (AddShare creates BlockStores).
 	rt.SetLocalStoreDefaults(&shares.LocalStoreDefaults{
-		MaxSize:                deduced.JournalSize,
-		ReadBufferBytes:        deduced.ReadBufferSize,
-		MaxLogBytes:            block.ClampToInt64(effectiveMaxLogBytes),
-		JournalRoot:            cfg.Blockstore.Journal.Path,
-		ChunkSize:              cfg.Blockstore.Journal.ChunkSize,
-		ChunkMax:               cfg.Blockstore.Journal.ChunkMax,
-		DirtyExpire:            cfg.Blockstore.Journal.DirtyExpire,
-		DefaultRemoteCacheSize: cfg.Blockstore.Journal.DefaultRemoteCacheSize,
-		BackpressureMaxWait:    cfg.Blockstore.Journal.BackpressureMaxWait,
+		MaxSize:             deduced.JournalSize,
+		ReadBufferBytes:     deduced.ReadBufferSize,
+		MaxLogBytes:         block.ClampToInt64(effectiveMaxLogBytes),
+		JournalRoot:         cfg.Blockstore.Journal.Path,
+		ChunkSize:           cfg.Blockstore.Journal.ChunkSize,
+		ChunkMax:            cfg.Blockstore.Journal.ChunkMax,
+		DirtyExpire:         cfg.Blockstore.Journal.DirtyExpire,
+		BackpressureMaxWait: cfg.Blockstore.Journal.BackpressureMaxWait,
 	})
 	rt.SetSyncerDefaults(&shares.SyncerDefaults{
 		ParallelDownloads: deduced.ParallelFetches,

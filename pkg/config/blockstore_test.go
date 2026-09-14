@@ -10,26 +10,17 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func TestBlockstoreJournalConfig_ApplyDefaults_SetsRemoteCacheAndBackpressure(t *testing.T) {
+func TestBlockstoreJournalConfig_ApplyDefaults_SetsBackpressure(t *testing.T) {
 	c := BlockstoreJournalConfig{}
 	c.ApplyDefaults()
-	if c.DefaultRemoteCacheSize != 10<<30 {
-		t.Errorf("DefaultRemoteCacheSize: got %d, want %d (10 GiB)", c.DefaultRemoteCacheSize, 10<<30)
-	}
 	if c.BackpressureMaxWait != 60*time.Second {
 		t.Errorf("BackpressureMaxWait: got %s, want 60s", c.BackpressureMaxWait)
 	}
 }
 
-func TestBlockstoreJournalConfig_ApplyDefaults_PreservesRemoteCacheAndBackpressure(t *testing.T) {
-	c := BlockstoreJournalConfig{
-		DefaultRemoteCacheSize: 1 << 30,
-		BackpressureMaxWait:    30 * time.Second,
-	}
+func TestBlockstoreJournalConfig_ApplyDefaults_PreservesBackpressure(t *testing.T) {
+	c := BlockstoreJournalConfig{BackpressureMaxWait: 30 * time.Second}
 	c.ApplyDefaults()
-	if c.DefaultRemoteCacheSize != 1<<30 {
-		t.Errorf("DefaultRemoteCacheSize: got %d, want 1 GiB preserved", c.DefaultRemoteCacheSize)
-	}
 	if c.BackpressureMaxWait != 30*time.Second {
 		t.Errorf("BackpressureMaxWait: got %s, want 30s preserved", c.BackpressureMaxWait)
 	}
@@ -58,8 +49,8 @@ func TestBlockstoreJournalConfig_Validate_AcceptsZeroNewKnobs(t *testing.T) {
 func TestConfig_UmbrellaApplyDefaults_InvokesBlockstoreLocal(t *testing.T) {
 	cfg := &Config{}
 	ApplyDefaults(cfg)
-	if cfg.Blockstore.Journal.DefaultRemoteCacheSize != 10<<30 {
-		t.Fatalf("umbrella ApplyDefaults must initialize Blockstore.Journal.DefaultRemoteCacheSize to 10 GiB; got %d", cfg.Blockstore.Journal.DefaultRemoteCacheSize)
+	if cfg.Blockstore.Journal.BackpressureMaxWait != 60*time.Second {
+		t.Fatalf("umbrella ApplyDefaults must initialize Blockstore.Journal.BackpressureMaxWait to 60s; got %s", cfg.Blockstore.Journal.BackpressureMaxWait)
 	}
 }
 
