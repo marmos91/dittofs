@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"gorm.io/gorm"
@@ -10,20 +9,18 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
-func (s *GORMStore) GetBlockStore(ctx context.Context, name string, kind models.BlockStoreKind) (*models.BlockStoreConfig, error) {
-	// Resolve by name then by ID, scoped to the requested kind so an ID only
-	// matches a store of that kind (docker-style name-or-ID addressing).
-	return getByNameOrIDWithin[models.BlockStoreConfig](s.db, ctx, "name", name, models.ErrStoreNotFound, []fieldEq{{"kind", kind}})
+func (s *GORMStore) GetBlockStore(ctx context.Context, name string) (*models.BlockStoreConfig, error) {
+	// Resolve by name then by ID (docker-style name-or-ID addressing).
+	return getByNameOrID[models.BlockStoreConfig](s.db, ctx, "name", name, models.ErrStoreNotFound)
 }
 
 func (s *GORMStore) GetBlockStoreByID(ctx context.Context, id string) (*models.BlockStoreConfig, error) {
 	return getByField[models.BlockStoreConfig](s.db, ctx, "id", id, models.ErrStoreNotFound)
 }
 
-func (s *GORMStore) ListBlockStores(ctx context.Context, kind models.BlockStoreKind) ([]*models.BlockStoreConfig, error) {
+func (s *GORMStore) ListBlockStores(ctx context.Context) ([]*models.BlockStoreConfig, error) {
 	var results []*models.BlockStoreConfig
 	if err := s.db.WithContext(ctx).
-		Where("kind = ?", kind).
 		Find(&results).Error; err != nil {
 		return nil, err
 	}
@@ -31,15 +28,11 @@ func (s *GORMStore) ListBlockStores(ctx context.Context, kind models.BlockStoreK
 }
 
 func (s *GORMStore) CreateBlockStore(ctx context.Context, store *models.BlockStoreConfig) (string, error) {
-	if store.Kind == "" {
-		return "", fmt.Errorf("block store kind is required")
-	}
 	store.CreatedAt = time.Now()
 	return createWithID(s.db, ctx, store, func(s *models.BlockStoreConfig, id string) { s.ID = id }, store.ID, models.ErrDuplicateStore)
 }
 
 func (s *GORMStore) UpdateBlockStore(ctx context.Context, store *models.BlockStoreConfig) error {
-	// Kind is immutable -- only update name, type, config.
 	result := s.db.WithContext(ctx).
 		Model(&models.BlockStoreConfig{}).
 		Where("id = ?", store.ID).
@@ -58,9 +51,9 @@ func (s *GORMStore) UpdateBlockStore(ctx context.Context, store *models.BlockSto
 	return nil
 }
 
-func (s *GORMStore) DeleteBlockStore(ctx context.Context, name string, kind models.BlockStoreKind) error {
+func (s *GORMStore) DeleteBlockStore(ctx context.Context, name string) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		store, err := getByNameOrIDWithin[models.BlockStoreConfig](tx, ctx, "name", name, models.ErrStoreNotFound, []fieldEq{{"kind", kind}})
+		store, err := getByNameOrID[models.BlockStoreConfig](tx, ctx, "name", name, models.ErrStoreNotFound)
 		if err != nil {
 			return err
 		}
@@ -80,9 +73,9 @@ func (s *GORMStore) DeleteBlockStore(ctx context.Context, name string, kind mode
 	})
 }
 
-func (s *GORMStore) GetSharesByBlockStore(ctx context.Context, storeName string, kind models.BlockStoreKind) ([]*models.Share, error) {
+func (s *GORMStore) GetSharesByBlockStore(ctx context.Context, storeName string) ([]*models.Share, error) {
 	var store models.BlockStoreConfig
-	if err := s.db.WithContext(ctx).Where("name = ? AND kind = ?", storeName, kind).First(&store).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("name = ?", storeName).First(&store).Error; err != nil {
 		return nil, convertNotFoundError(err, models.ErrStoreNotFound)
 	}
 

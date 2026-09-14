@@ -49,27 +49,13 @@ func (m *MetadataStoreConfig) SetConfig(cfg map[string]any) error {
 	return nil
 }
 
-// BlockStoreKind discriminates between local and remote block store configurations.
-type BlockStoreKind string
-
-const (
-	// BlockStoreKindLocal identifies a local block store (disk-backed storage).
-	BlockStoreKindLocal BlockStoreKind = "local"
-
-	// BlockStoreKindRemote identifies a remote block store (S3, etc.).
-	BlockStoreKindRemote BlockStoreKind = "remote"
-)
-
 // BlockStoreConfig defines a block store instance configuration.
-// It uses a Kind discriminator
-// to distinguish local (disk-backed) from remote (S3, etc.) block stores.
 type BlockStoreConfig struct {
-	ID        string         `gorm:"primaryKey;size:36" json:"id"`
-	Name      string         `gorm:"uniqueIndex:idx_block_store_name_kind,priority:1;not null;size:255" json:"name"`
-	Kind      BlockStoreKind `gorm:"uniqueIndex:idx_block_store_name_kind,priority:2;not null;size:10;index" json:"kind"`
-	Type      string         `gorm:"not null;size:50" json:"type"` // fs, memory, s3
-	Config    string         `gorm:"type:text" json:"-"`           // JSON blob for type-specific config
-	CreatedAt time.Time      `gorm:"autoCreateTime" json:"created_at"`
+	ID        string    `gorm:"primaryKey;size:36" json:"id"`
+	Name      string    `gorm:"uniqueIndex:idx_block_store_name;not null;size:255" json:"name"`
+	Type      string    `gorm:"not null;size:50" json:"type"` // memory, s3
+	Config    string    `gorm:"type:text" json:"-"`           // JSON blob for type-specific config
+	CreatedAt time.Time `gorm:"autoCreateTime" json:"created_at"`
 
 	// Parsed configuration (not stored in DB)
 	ParsedConfig map[string]any `gorm:"-" json:"config,omitempty"`

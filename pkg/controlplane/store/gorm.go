@@ -314,6 +314,12 @@ func New(config *Config) (*GORMStore, error) {
 		}
 	}
 
+	// Pre-migration: the (name, kind) uniqueness becomes (name), so two rows
+	// that legitimately shared a name must be resolved by the operator first.
+	if err := checkBlockStoreNameCollisions(db); err != nil {
+		return nil, err
+	}
+
 	// Pre-migration: drop legacy single-column unique index on block_store_configs.name.
 	// AutoMigrate creates the new composite index idx_block_store_name_kind on (name, kind)
 	// but does not drop pre-existing ones, which would prevent having a local and remote
@@ -362,6 +368,22 @@ func New(config *Config) (*GORMStore, error) {
 	// Run auto-migration
 	if err := db.AutoMigrate(models.AllModels()...); err != nil {
 		return nil, fmt.Errorf("failed to run database migration: %w", err)
+	}
+
+	// Post-migration: drop the kind column and the indexes it anchored. The
+	// collision check above guarantees names are already unique. The column
+	// cannot merely be left unread: it is NOT NULL with no default, so the
+	// first insert that stops naming it would be rejected. Its own index has
+	// to go first, because SQLite refuses to drop an indexed column.
+	for _, idx := range []string{"idx_block_store_name_kind", "idx_block_store_configs_kind"} {
+		if err := db.Exec("DROP INDEX IF EXISTS " + idx).Error; err != nil {
+			return nil, fmt.Errorf("failed to drop %s: %w", idx, err)
+		}
+	}
+	if kindMigrator := db.Migrator(); kindMigrator.HasColumn(&models.BlockStoreConfig{}, "kind") {
+		if err := kindMigrator.DropColumn(&models.BlockStoreConfig{}, "kind"); err != nil {
+			return nil, fmt.Errorf("failed to drop block_store_configs.kind: %w", err)
+		}
 	}
 
 	// Post-migration: backfill shares.enabled for rows that predate the
@@ -440,10 +462,10 @@ func New(config *Config) (*GORMStore, error) {
 		// Create default-local block store for existing shares
 		defaultLocalID := uuid.New().String()
 		if err := db.Exec(
-			"INSERT INTO block_store_configs (id, name, kind, type, config, created_at) VALUES (?, 'default-local', 'local', 'fs', '{}', ?)",
+			"INSERT INTO block_store_configs (id, name, type, config, created_at) VALUES (?, 'default-block-store', 'fs', '{}', ?)",
 			defaultLocalID, time.Now(),
 		).Error; err != nil {
-			return nil, fmt.Errorf("failed to create default-local block store: %w", err)
+			return nil, fmt.Errorf("failed to create default block store: %w", err)
 		}
 		// Populate new columns from legacy payload_store_id column
 		if err := db.Exec("UPDATE shares SET local_block_store_id = ?", defaultLocalID).Error; err != nil {
