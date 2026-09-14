@@ -228,9 +228,25 @@ func (c *CreateDRC[R, O]) Len() int {
 }
 
 // pruneLocked evicts expired entries and, if the cap is still
-// exceeded, drops oldest-first until under the cap. Cheap because
-// the cache is bounded small.
+// exceeded, drops oldest-first until under the cap.
+//
+// Record calls this on every insert, so the walk below is on the CREATE path.
+// Under the cap there is nothing worth reclaiming: memory is already bounded by
+// the cap, and Lookup drops an expired entry when it reads one, so no stale
+// response can be served however long a dead entry lingers here. Returning
+// early therefore costs nothing and takes the common case — a server whose live
+// durable opens sit below the cap — from a walk of every entry per CREATE down
+// to a length check.
+//
+// ponytail: at the cap this is still a full walk per insert (two, when nothing
+// has expired), because a map carries no eviction order. Measured at ~89µs with
+// 4096 entries. Give it an intrusive LRU list or evict a batch per pass only if
+// a server is seen holding the cache saturated — that needs thousands of
+// durable opens held open at once, since a clean close forgets its entry.
 func (c *CreateDRC[R, O]) pruneLocked() {
+	if len(c.entries) < maxCreateDRCEntries {
+		return
+	}
 	now := time.Now()
 	for k, e := range c.entries {
 		if now.Sub(e.StoredAt) > drcTTL {
