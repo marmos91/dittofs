@@ -30,7 +30,7 @@ import (
 func setupDaclTest(t *testing.T) (*Handler, *runtime.Runtime, *SMBHandlerContext, metadata.FileHandle, *metadata.AuthContext) {
 	t.Helper()
 
-	rt := runtime.New(nil)
+	rt := newTestRuntime(t, nil)
 
 	memStore := memory.NewMemoryMetadataStoreWithDefaults()
 	if err := rt.RegisterMetadataStore("test-meta", memStore); err != nil {

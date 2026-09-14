@@ -32,7 +32,7 @@ import (
 func setupConcurrentDirTest(t *testing.T, nChildren int) (*Handler, *OpenFile, *SMBHandlerContext) {
 	t.Helper()
 
-	rt := runtime.New(nil)
+	rt := newTestRuntime(t, nil)
 	memStore := memory.NewMemoryMetadataStoreWithDefaults()
 	if err := rt.RegisterMetadataStore("conc-meta", memStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)

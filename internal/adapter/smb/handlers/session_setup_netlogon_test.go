@@ -7,7 +7,6 @@ import (
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/auth/netlogon"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	pkgidentity "github.com/marmos91/dittofs/pkg/identity"
 )
 
@@ -53,7 +52,7 @@ func newNetlogonFallbackHandler(t *testing.T, nl netlogon.NetlogonAuthenticator,
 	t.Helper()
 	h := NewHandler()
 	h.NtlmEnabled = true
-	h.Registry = runtime.New(newInMemoryStoreForTest(t))
+	h.Registry = newTestRuntime(t, newInMemoryStoreForTest(t))
 	h.NetlogonAuth = nl
 	if provider != nil {
 		h.SetIdentityResolver(pkgidentity.NewResolver(pkgidentity.WithProvider(provider)))

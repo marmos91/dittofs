@@ -16,7 +16,7 @@ import (
 func setupCreateWireTest(t *testing.T) (*Handler, *SMBHandlerContext) {
 	t.Helper()
 
-	rt := runtime.New(nil)
+	rt := newTestRuntime(t, nil)
 	memStore := memory.NewMemoryMetadataStoreWithDefaults()
 	if err := rt.RegisterMetadataStore("test-meta", memStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)

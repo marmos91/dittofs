@@ -14,6 +14,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
@@ -129,6 +130,7 @@ func NewHandlerFixtureWithStore(
 
 	// Create registry
 	reg := runtime.New(nil)
+	reg.SetLocalStoreDefaults(&shares.LocalStoreDefaults{JournalRoot: t.TempDir()})
 
 	// Register the (optionally wrapped) metadata store. The block store/syncer
 	// above always reference the concrete inner store; the wrapper only changes

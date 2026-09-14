@@ -451,7 +451,7 @@ func TestEncodeUTF16LE_DelegatesSurrogateSafe(t *testing.T) {
 // case-insensitive lookup CREATE uses for collision detection (must NOT fold
 // them together), then re-encoded for the directory listing byte-for-byte.
 func TestLoneSurrogateNames_CreateQueryRoundTrip(t *testing.T) {
-	rt := runtime.New(nil)
+	rt := newTestRuntime(t, nil)
 	memStore := memory.NewMemoryMetadataStoreWithDefaults()
 	if err := rt.RegisterMetadataStore("test-meta", memStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)

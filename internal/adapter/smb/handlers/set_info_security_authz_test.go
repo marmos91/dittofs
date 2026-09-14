@@ -26,7 +26,7 @@ import (
 func setupSecurityAuthzTest(t *testing.T) (*Handler, *OpenFile, *metadata.AuthContext) {
 	t.Helper()
 
-	rt := runtime.New(nil)
+	rt := newTestRuntime(t, nil)
 	memStore := memory.NewMemoryMetadataStoreWithDefaults()
 	if err := rt.RegisterMetadataStore("authz-meta", memStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)

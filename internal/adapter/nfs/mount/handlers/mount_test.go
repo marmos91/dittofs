@@ -25,7 +25,7 @@ func newTestMountHandler(t *testing.T, shareName string, enabled bool) (*Handler
 	t.Helper()
 
 	ctx := context.Background()
-	rt := runtime.New(nil)
+	rt := newTestRuntime(t, nil)
 
 	metaStore := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	if err := rt.RegisterMetadataStore("test-meta", metaStore); err != nil {

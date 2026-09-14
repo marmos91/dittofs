@@ -41,7 +41,7 @@ func setupADSAttrPropagationTest(t *testing.T, basePOSIXMode uint32) (
 ) {
 	t.Helper()
 
-	rt := runtime.New(nil)
+	rt := newTestRuntime(t, nil)
 	memStore := memory.NewMemoryMetadataStoreWithDefaults()
 	if err := rt.RegisterMetadataStore("ads-attr-meta", memStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
