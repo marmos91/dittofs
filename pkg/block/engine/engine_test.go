@@ -3,11 +3,12 @@ package engine
 import (
 	"bytes"
 	"context"
-	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/local/memory"

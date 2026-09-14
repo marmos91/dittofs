@@ -3,11 +3,12 @@ package shares
 import (
 	"context"
 	"errors"
-	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/block/local/memory"

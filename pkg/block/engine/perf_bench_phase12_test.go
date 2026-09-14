@@ -19,10 +19,11 @@ package engine
 
 import (
 	"context"
-	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"math/rand"
 	"testing"
 	"time"
+
+	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 
 	"lukechampine.com/blake3"
 

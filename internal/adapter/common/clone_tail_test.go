@@ -3,8 +3,9 @@ package common
 import (
 	"bytes"
 	"context"
-	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"testing"
+
+	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"

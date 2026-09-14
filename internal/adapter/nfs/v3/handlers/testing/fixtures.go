@@ -6,10 +6,11 @@ package testing
 
 import (
 	"context"
-	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"path/filepath"
 	"testing"
 	"time"
+
+	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers"
 	"github.com/marmos91/dittofs/pkg/block/engine"

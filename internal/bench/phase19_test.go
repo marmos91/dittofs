@@ -22,13 +22,14 @@ package bench
 
 import (
 	"context"
-	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"math/rand"
 	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"

@@ -3,9 +3,10 @@ package engine_test
 import (
 	"bytes"
 	"context"
-	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"io"
 	"testing"
+
+	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 
 	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/pkg/block/engine"
