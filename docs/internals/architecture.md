@@ -869,16 +869,14 @@ Stores, shares, and adapters are managed at runtime via `dfsctl` (persisted in t
 ./dfsctl store metadata add --name persistent-meta --type badger \
   --config '{"path":"/data/metadata"}'
 
-# Create block stores (local per-share, remote shared across shares)
-./dfsctl store block local add --name local-cache --type fs \
-  --config '{"path":"/data/cache"}'
+# Create remote block stores (shared across shares)
 ./dfsctl store block remote add --name s3-remote --type s3 \
   --config '{"region":"us-east-1","bucket":"my-bucket"}'
 
 # Create shares referencing stores by name (each gets its own BlockStore)
-./dfsctl share create --name /temp --metadata fast-meta --local local-cache
+./dfsctl share create --name /temp --metadata fast-meta
 ./dfsctl share create --name /archive --metadata persistent-meta \
-  --local local-cache --remote s3-remote
+  --remote s3-remote
 ```
 
 ### Benefits
@@ -954,11 +952,9 @@ No custom code required - configure via CLI:
 ```bash
 # Create stores
 ./dfsctl store metadata add --name default-meta --type memory  # or badger, sqlite, postgres
-./dfsctl store block local add --name default-local --type fs \
-  --config '{"path":"/data/blocks"}'
 
-# Create share referencing stores
-./dfsctl share create --name /export --metadata default-meta --local default-local
+# Create share referencing the store
+./dfsctl share create --name /export --metadata default-meta
 ```
 
 ### Implementing Custom Store Backends
