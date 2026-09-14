@@ -57,16 +57,22 @@ func BenchmarkCreateDRC_Contended(b *testing.B) {
 // rather than folded into the contended number above.
 func BenchmarkCreateDRC_RecordAtCap(b *testing.B) {
 	c := NewCreateDRC[int, int]()
-	for i := 0; i < maxCreateDRCEntries; i++ {
+	// Keys start at 1: Record drops the all-zero guid, so a loop from 0 fills
+	// one entry short of the cap and the first timed call takes the under-cap
+	// fast path instead of pruning.
+	for i := 1; i <= maxCreateDRCEntries; i++ {
 		var g [16]byte
 		binary.LittleEndian.PutUint64(g[:], uint64(i))
 		c.Record(1, g, 0, 0)
+	}
+	if got := len(c.entries); got != maxCreateDRCEntries {
+		b.Fatalf("setup filled %d entries, want the %d-entry cap", got, maxCreateDRCEntries)
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		var g [16]byte
-		binary.LittleEndian.PutUint64(g[:], uint64(maxCreateDRCEntries+i))
+		binary.LittleEndian.PutUint64(g[:], uint64(maxCreateDRCEntries+1+i))
 		c.Record(1, g, 0, 0)
 	}
 }

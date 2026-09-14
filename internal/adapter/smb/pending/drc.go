@@ -239,7 +239,7 @@ func (c *CreateDRC[R, O]) Len() int {
 // to a length check.
 //
 // ponytail: at the cap this is still a full walk per insert (two, when nothing
-// has expired), because a map carries no eviction order. Measured at ~89µs with
+// has expired), because a map carries no eviction order. Measured at ~85µs with
 // 4096 entries. Give it an intrusive LRU list or evict a batch per pass only if
 // a server is seen holding the cache saturated — that needs thousands of
 // durable opens held open at once, since a clean close forgets its entry.

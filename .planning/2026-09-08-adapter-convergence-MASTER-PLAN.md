@@ -1195,7 +1195,16 @@ func BenchmarkLockDRC_Contended(b *testing.B) {
       | --- | --- | --- |
       | `OpenCloseCycle` | 823 ns | **596 ns** |
       | `Contended` (saturated) | 62.8 µs | 56.0 µs |
-      | `RecordAtCap` | 89.0 µs | 87.6 µs |
+      | `RecordAtCap` | 84.9 µs | 84.4 µs |
+
+      The at-cap row is the same code in both columns by construction: the early return added
+      to `pruneLocked` is a `len < cap` check, which is false at the cap, so the spread there is
+      run-to-run noise rather than an effect. Its first numbers (89.0 / 87.6 µs) were taken with
+      a setup that filled 4095 entries, not 4096 — `Record` drops the all-zero guid, so a loop
+      from 0 silently lost its first insert and the first timed call took the under-cap fast
+      path. Re-measured after starting the keys at 1; the benchmark now asserts its own
+      occupancy before timing, so an under-filled setup fails instead of quietly measuring the
+      wrong thing.
 
       `Record` called `pruneLocked` unconditionally, so every insert walked the whole cache —
       and took a `time.Now()` — to reclaim nothing. Under the cap there is nothing to reclaim:
