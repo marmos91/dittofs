@@ -194,23 +194,10 @@ func (h *Handler) Mount(
 		return &MountResponse{MountResponseBase: MountResponseBase{Status: MountErrServerFault}}, nil
 	}
 
-	// Return supported authentication flavors
-	// AUTH_UNIX (1) is always supported
-	// When Kerberos is enabled, add Kerberos pseudoflavors per RFC 2623:
-	//   - 390003: krb5 (authentication only)
-	//   - 390004: krb5i (integrity protection)
-	//   - 390005: krb5p (privacy/encryption)
-	// These are the pseudoflavors that Linux NFS clients expect when mounting
-	// with sec=krb5, sec=krb5i, or sec=krb5p options.
-	authFlavors := []int32{1} // AUTH_UNIX
-	if ctx.KerberosEnabled {
-		// Kerberos pseudoflavors per RFC 2623 Section 2.1
-		authFlavors = append(authFlavors,
-			int32(gss.PseudoFlavorKrb5),  // krb5 - authentication only
-			int32(gss.PseudoFlavorKrb5i), // krb5i - integrity
-			int32(gss.PseudoFlavorKrb5p), // krb5p - privacy
-		)
-	}
+	// Report only the flavors this share will actually accept. Clients negotiate
+	// sec= from this list, so advertising one the gates above then refuse sends
+	// them to a mount that cannot succeed.
+	authFlavors := auth.AdvertisedAuthFlavors(share, ctx.KerberosEnabled)
 
 	logger.Info("Mount successful", "path", req.DirPath, "client_ip", clientIP, "handle_len", len(rootHandle), "auth_flavors", authFlavors, "readonly", share.ReadOnly)
 
