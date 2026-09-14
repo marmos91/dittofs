@@ -223,7 +223,10 @@ func (h *Handler) Mount(
 //   - error: Any error encountered during decoding
 func DecodeMountRequest(data []byte) (*MountRequest, error) {
 	req := &MountRequest{}
-	_, err := xdr.Unmarshal(bytes.NewReader(data), req)
+	// The path length is read off the wire before the path itself, so cap the
+	// decoder at the delivered bytes rather than sizing a buffer from a length
+	// the request may not honour.
+	_, err := xdr.UnmarshalLimited(bytes.NewReader(data), req, uint(len(data)))
 	if err != nil {
 		return nil, fmt.Errorf("failed to unmarshal mount request: %w", err)
 	}

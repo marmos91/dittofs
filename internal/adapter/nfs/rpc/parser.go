@@ -65,7 +65,13 @@ func ReadCall(data []byte) (*RPCCallMessage, error) {
 	// Unmarshal the RPC call header using XDR
 	// This decodes all fields: XID, MsgType, RPCVersion, Program,
 	// Version, Procedure, Cred, and Verf
-	_, err := xdr.Unmarshal(bytes.NewReader(data), call)
+	// The credential and verifier are variable-length, and their lengths come
+	// off the wire before the bytes they describe. Capping the decoder at the
+	// bytes the peer actually delivered rejects a length that overruns them
+	// instead of sizing a buffer from it: a call cannot carry more credential
+	// than it carries. ReadCall runs before any credential is inspected, so an
+	// unbounded decode here is an unauthenticated peer's lever on server memory.
+	_, err := xdr.UnmarshalLimited(bytes.NewReader(data), call, uint(len(data)))
 	if err != nil {
 		return nil, fmt.Errorf("unmarshal RPC call: %w", err)
 	}
