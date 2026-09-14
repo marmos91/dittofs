@@ -77,6 +77,25 @@ jobs:
       - name: Test the shared known-failures parser
         run: ./test/common/known-failures_test.sh
 
+  # Splitting a package is only real if each piece can be tested on its own, so
+  # a new package that carries no test has been moved rather than separated.
+  # Pull requests only: the check needs a base branch to tell new from existing.
+  new-package-tests:
+    name: New Package Tests
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # the check diffs package dirs against the merge base
+
+      - name: Check that every new package carries a test
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: ./test/new-package-tests.sh "origin/${BASE_REF}"
+
   golangci-lint:
     name: golangci-lint
     runs-on: ubuntu-latest
