@@ -1017,7 +1017,7 @@ the test is weak.
 
 ---
 
-## Wave 9 — Converge the duplicate-request caches (goals 2 + 3)
+## Wave 9 — Converge the duplicate-request caches (goals 2 + 3) — DONE
 
 Both adapters cache a reply so a repeated request returns the original result, and neither knew the
 other existed. NFS calls it a duplicate-request cache (`pkg/adapter/nfs/drc.go`,
@@ -1062,50 +1062,41 @@ release and hands ownership to the resume goroutine; a `defer` placed above the 
 release a reservation that goroutine still owns and reintroduce the sharing-violation-on-replay bug
 the reservation exists to prevent.
 
-- [ ] **Step 1: Write the failing test** — a panicking completion must not leave a reservation.
+- [x] **Step 1: Write the failing test** — drive the real `Create`, not a mock of the
+      guard. `Handler.Registry` is the `smbRuntime` interface, so wrap it and panic from
+      `GetMetadataService` **only while the reservation is held** — that pins the injection
+      to the window even if the CREATE path is reordered. `completeCreateAfterBreak` calls
+      it, so the panic lands inside. Two traps cost a cycle each and are worth writing down:
+      the fixture needs `e.h.CreateSessionWithID(...)` or `Create` returns
+      `STATUS_USER_SESSION_DELETED` (0xC0000203) long before the reserve, and the test must
+      assert that the injection *fired* — without that check it passes whenever the panic
+      stops being reached.
+
+- [x] **Step 2: Run it and watch it fail** — for the right reason: *"reservation survived
+      the panic"*, not a compile error.
+
+- [x] **Step 3: Defer the release, and hand ownership off on the park branch**
+
+No helper is needed — the existing `reservedReplay` flag already carries the
+ownership decision, so the defer reads it and the park branch clears it:
 
 ```go
-func TestCreateReplay_PanicReleasesReservation(t *testing.T) {
-	c := pending.NewCreateReplayCache[*CreateResponse, *OpenFile]()
-	const sess = uint64(7)
-	guid := [16]byte{1}
-
-	func() {
-		defer func() { _ = recover() }()
-		defer releaseReplayReservation(c, sess, guid, true)
-		c.Reserve(sess, guid)
-		panic("handler blew up")
-	}()
-
-	if c.IsReserved(sess, guid) {
-		t.Fatal("reservation leaked after panic: replayed CREATE would get STATUS_FILE_NOT_AVAILABLE for the session's life")
+defer func() {
+	if reservedReplay {
+		h.CreateReplayCache.Release(ctx.SessionID, replayGuid)
 	}
+}()
+
+if asyncId := h.breakAndMaybeParkCreate(ctx, draft); asyncId != 0 {
+	// Ownership of the release moves to the resume goroutine.
+	reservedReplay = false
+	return &CreateResponse{...}, nil
 }
+return h.completeCreateAfterBreak(ctx, draft), nil
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
-
-Run: `go test ./internal/adapter/smb/handlers/ -run TestCreateReplay_PanicReleasesReservation -v`
-Expected: FAIL — `releaseReplayReservation` undefined.
-
-- [ ] **Step 3: Add the helper and defer it on the inline path only**
-
-```go
-// releaseReplayReservation clears an in-progress CREATE reservation. Deferred
-// on the inline path so a panic in the completion cannot strand it: the
-// reservation has no TTL (pruneLocked walks entries, not reserved), so a
-// stranded one refuses every later replay of that CreateGuid until the session
-// ends. Not deferred on the async-park path, where the resume goroutine owns
-// the release.
-func releaseReplayReservation[R any, O any](c *pending.CreateReplayCache[R, O], sessionID uint64, guid [16]byte, reserved bool) {
-	if reserved && c != nil {
-		c.Release(sessionID, guid)
-	}
-}
-```
-
-- [ ] **Step 4: Run the test, then the package** — `go test ./internal/adapter/smb/handlers/`
-- [ ] **Step 5: Commit** — `fix(smb): release the CREATE replay reservation when the completion panics`
+- [x] **Step 4: Run the test, then the package** — `go test ./internal/adapter/smb/handlers/`
+- [x] **Step 5: Commit** — `fix(smb): release the CREATE replay reservation when the completion panics`
 
 ### Task 9.2 — Rename SMB onto the NFS vocabulary
 
@@ -1126,11 +1117,11 @@ so the protocol grounding is not lost.
 Rename the file `replay_cache.go` → `drc.go` and `replay_cache_test.go` → `drc_test.go` to match
 `pkg/adapter/nfs/drc.go`.
 
-- [ ] **Step 1: Rename with `gopls rename`, never sed** — the plan's standing rule; dispatch entries
+- [x] **Step 1: Rename with `gopls rename`, never sed** — the plan's standing rule; dispatch entries
       and tests must move atomically. One symbol per invocation, `go build ./...` between each.
-- [ ] **Step 2: `git diff -M --color-moved` shows zero body edits** beyond the renamed identifiers.
-- [ ] **Step 3: Full package suite green** — `go test ./internal/adapter/smb/... ./pkg/adapter/smb/...`
-- [ ] **Step 4: Commit** — `refactor(smb): name the replay caches after the duplicate-request cache they are`
+- [x] **Step 2: `git diff -M --color-moved` shows zero body edits** beyond the renamed identifiers.
+- [x] **Step 3: Full package suite green** — `go test ./internal/adapter/smb/... ./pkg/adapter/smb/...`
+- [x] **Step 4: Commit** — `refactor(smb): name the replay caches after the duplicate-request cache they are`
 
 ### Task 9.3 — Benchmark both caches on the contended path
 
@@ -1143,7 +1134,7 @@ with cache occupancy rather than with request count.
 **Files:**
 - Create: `internal/adapter/smb/pending/drc_bench_test.go`
 
-- [ ] **Step 1: Write the benchmarks** — parallel, because uncontended numbers hide the mutex.
+- [x] **Step 1: Write the benchmarks** — parallel, because uncontended numbers hide the mutex.
 
 ```go
 func BenchmarkCreateDRC_Contended(b *testing.B) {
@@ -1191,15 +1182,36 @@ func BenchmarkLockDRC_Contended(b *testing.B) {
 }
 ```
 
-- [ ] **Step 2: Record the baseline** — `go test ./internal/adapter/smb/pending/ -run '^$' -bench . -benchmem -count=10 > /tmp/drc-base.txt`.
+- [x] **Step 2: Record the baseline** — `go test ./internal/adapter/smb/pending/ -run '^$' -bench . -benchmem -count=10 > /tmp/drc-base.txt`.
       Go sizes `b.N` from the timed region only, so keep setup above `ResetTimer`.
-- [ ] **Step 3: Compare against the NFS side** — run `BenchmarkDRC_Contended` the same way. The two
+- [x] **Step 3: Compare against the NFS side** — run `BenchmarkDRC_Contended` the same way. The two
       numbers are the cross-adapter claim; a 10x gap is a finding, not noise.
-- [ ] **Step 4: Judge `pruneLocked` on evidence** — if `RecordAtCap` is not materially worse than
-      `Contended`, the O(n) prune is fine at this cap and gets a `ponytail:` marker naming the
-      ceiling. Only if it *is* worse does an eviction-order change earn its complexity. Do not
-      pre-optimise: record the number first.
-- [ ] **Step 5: Commit** — `test(smb): benchmark the duplicate-request caches on the contended path`
+- [x] **Step 4: Judge `pruneLocked` on evidence.** Measured on an M1 Max. A fourth benchmark
+      had to be added first: the original `Contended` never forgets an entry, so it measures a
+      permanently saturated cache, which is the pathological end rather than the shape a server
+      makes. `OpenCloseCycle` (record → lookup → forget) is the realistic one.
+
+      | | before | after |
+      | --- | --- | --- |
+      | `OpenCloseCycle` | 823 ns | **596 ns** |
+      | `Contended` (saturated) | 62.8 µs | 56.0 µs |
+      | `RecordAtCap` | 89.0 µs | 87.6 µs |
+
+      `Record` called `pruneLocked` unconditionally, so every insert walked the whole cache —
+      and took a `time.Now()` — to reclaim nothing. Under the cap there is nothing to reclaim:
+      the cap bounds memory, and `Lookup` drops an expired entry when it reads one, so a dead
+      entry lingering costs only bytes. Returning early is the whole fix.
+
+      **The cap case is unchanged and stays that way**, marked `ponytail:` with the measurement
+      and the upgrade path (an intrusive LRU list, or batch eviction per pass). Reaching it
+      needs thousands of durable opens held open simultaneously, since a clean close forgets
+      its entry.
+
+      Against `BenchmarkDRC_Contended` on the NFS side (66 ns/op), the realistic SMB path is
+      ~9x, not the ~950x the saturated benchmark first suggested. **Quote the cycle number,
+      not the saturated one** — the saturated figure describes a cache nothing is closing.
+
+- [x] **Step 5: Commit** — `perf(smb): skip the CREATE cache prune below the cap`
 
 **Gate:** no optimisation lands in this wave without a before/after benchmark in the PR body. Per the
 perf ledger, an unmeasured optimisation is a guess with a diff attached.
