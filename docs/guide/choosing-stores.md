@@ -55,7 +55,7 @@ cache** in front of the remote — it is not the source of truth once a remote i
 - Run **local `fs` + remote `s3`** for real workloads: writes hit local first and sync to
   S3 in the background; reads are served from cache and fetched on miss.
 - Size the local cache to your hot set. The remote write-through cache defaults to ~10 GiB
-  (`blockstore.local.default_remote_cache_size`); raise it if your working set is larger.
+  (`blockstore.journal.default_remote_cache_size`); raise it if your working set is larger.
 - DittoFS speaks the **S3 API**, so [Cubbit DS3](https://www.cubbit.io/) (a DittoFS sponsor),
   MinIO, Ceph RGW, GCS (set `force_path_style: false`), Backblaze B2, Wasabi, DigitalOcean
   Spaces, Alibaba OSS, Oracle OCI, Storj, etc. all work —
