@@ -784,6 +784,16 @@ func (r *Runtime) runSnapshotOrchestration(
 	)
 }
 
+// skipVerifyReason names why a restore skipped the remote durability probes:
+// the share has no remote to probe, or the restore is a rollback whose manifest
+// the replaced metadata can no longer resolve to block locators.
+func skipVerifyReason(noRemote bool) string {
+	if noRemote {
+		return "local-only share"
+	}
+	return "rollback"
+}
+
 // drainSentinel returns the typed sentinel for a DrainAllUploads error:
 // ctx cancel / deadline -> ErrSnapshotDrainTimeout, anything else ->
 // ErrSnapshotBackupFailed.
@@ -1337,13 +1347,22 @@ func (r *Runtime) restoreSnapshot(
 	// for such a snapshot), and there is nothing to HEAD-probe. Skip both
 	// the pre- and post-verify remote probes and restore from local CAS.
 	// The remote-backed path is unchanged.
+	//
+	// A rollback restores the safety snapshot taken before the restore that is
+	// being undone, and that restore has already replaced the metadata store —
+	// so a chunk the safety snapshot holds but the replacement metadata never
+	// knew has no block locator left to resolve, and probing it would report a
+	// missing hash for data the remote still holds. Restore the safety
+	// snapshot's own manifest instead of refusing on a probe that cannot
+	// succeed.
 	remoteStore := bs.RemoteStore()
-	remoteVerify := remoteStore != nil
+	remoteVerify := remoteStore != nil && !internal.isRollback
 	// Hardcoded; benchmarking confirmed no operator tuning need.
 	concurrency := 16
 	if !remoteVerify {
-		logger.Info("snapshot restore: local-only share, skipping remote pre-verify",
-			"snapshot_id", snapID, "share", shareName)
+		logger.Info("snapshot restore: skipping remote pre-verify",
+			"snapshot_id", snapID, "share", shareName,
+			"reason", skipVerifyReason(remoteStore == nil))
 	} else {
 		logger.Info("snapshot restore: pre-verify start",
 			"snapshot_id", snapID,
@@ -1611,8 +1630,9 @@ func (r *Runtime) restoreSnapshot(
 	}
 	restoredCount := restoredHashes.Len()
 	if !remoteVerify {
-		logger.Info("snapshot restore: local-only share, skipping remote post-verify",
-			"snapshot_id", snapID, "share", shareName, "restored_count", restoredCount)
+		logger.Info("snapshot restore: skipping remote post-verify",
+			"snapshot_id", snapID, "share", shareName, "restored_count", restoredCount,
+			"reason", skipVerifyReason(remoteStore == nil))
 	} else {
 		logger.Info("snapshot restore: post-verify start",
 			"snapshot_id", snapID,
