@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	mount_handlers "github.com/marmos91/dittofs/internal/adapter/nfs/mount/handlers"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
@@ -305,4 +306,46 @@ func (c *NFSConnection) extractShareName(ctx context.Context, data []byte) (stri
 	}
 
 	return shareName, nil
+}
+
+// handleNFSProcedure dispatches an NFS procedure call to the appropriate handler.
+//
+// It looks up the procedure in the dispatch table, extracts authentication
+// context from the RPC call, and invokes the handler with the context.
+//
+// The context enables handlers to:
+// - Respect cancellation during long operations (READ, WRITE, READDIR)
+// - Implement request timeouts
+// - Support graceful server shutdown
+//
+// Returns the reply data or an error if the handler fails.
+// recordOp records one NFS operation for the RED metrics (rate, errors,
+// duration). status is intentionally a bounded ok|error rather than the precise
+// NFS status code: labelling by raw status would multiply series by op ×
+// ~20 codes. The ok bit is derived accurately from the handler's NFSStatus (v3)
+// so it reflects protocol-level failures, not just transport errors.
+func (c *NFSConnection) recordOp(op string, start time.Time, ok bool) {
+	status := "ok"
+	if !ok {
+		status = "error"
+	}
+	c.server.Registry.Metrics().RecordRequest("nfs", op, status, time.Since(start))
+}
+
+// cancelledBeforeHandler reports the context's error if the call was abandoned
+// before any handler ran.
+//
+// A client that has gone away, or a server shutting down, should not pay for
+// work whose reply nobody will read — and the check has to happen after the
+// procedure is known, so the log names what was dropped.
+func cancelledBeforeHandler(ctx context.Context, program, procedure string, xid uint32) error {
+	select {
+	case <-ctx.Done():
+		logger.DebugCtx(ctx, program+" request cancelled before handler",
+			"procedure", procedure,
+			"xid", fmt.Sprintf("0x%x", xid))
+		return ctx.Err()
+	default:
+		return nil
+	}
 }
