@@ -366,8 +366,8 @@ func (m *RemoteSync) readChunkVerified(ctx context.Context, loc block.ChunkLocat
 // and the demand read then paid the remote round-trips readahead exists to hide.
 //
 // A sparse block (no covering rows) is a nothing-to-do success. Each chunk's
-// fetch routes through
-// inlineFetchOrWait so it registers in the in-flight dedup map: a concurrent
+// fetch routes through inlineFetchOrWait so it registers in the in-flight dedup
+// map: a concurrent
 // demand read for the same chunk piggybacks on this prefetch instead of issuing
 // its own S3 GET. That shared budget is what keeps total remote concurrency
 // bounded when the readahead window overlaps demand.
@@ -473,6 +473,7 @@ func (m *RemoteSync) EnsureAvailable(ctx context.Context, payloadID string, offs
 	if !m.canProcess(ctx) {
 		return ErrClosed
 	}
+
 	end := offset + uint64(length)
 
 	// Resolve EVERY chunk covering [offset, end), not just the chunk at each
