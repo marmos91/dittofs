@@ -80,10 +80,10 @@ jobs:
 
           # Create stores
           ./dfsctl store metadata add --name mem-meta --type memory
-          ./dfsctl store block local add --name mem-payload --type memory
+          ./dfsctl store block add --name mem-payload --type memory
 
           # Create share
-          ./dfsctl share create --name /smbbasic --metadata mem-meta --local mem-payload
+          ./dfsctl share create --name /smbbasic --metadata mem-meta --block-store mem-payload
 
           # Create test user (password must be >= 8 chars)
           ./dfsctl user create --username test --password 'testpass123'
@@ -210,8 +210,8 @@ jobs:
           ./dfsctl login --server http://localhost:8080 --username admin --password "$DITTOFS_ADMIN_INITIAL_PASSWORD"
 
           ./dfsctl store metadata add --name mem-meta --type memory
-          ./dfsctl store block local add --name mem-payload --type memory
-          ./dfsctl share create --name /smbbasic --metadata mem-meta --local mem-payload
+          ./dfsctl store block add --name mem-payload --type memory
+          ./dfsctl share create --name /smbbasic --metadata mem-meta --block-store mem-payload
           ./dfsctl user create --username test --password 'testpass123'
           ./dfsctl share permission grant /smbbasic --user test --level read-write
           # Cap negotiated dialect at SMB 2.1 (SMB3 session/signing is incomplete).
@@ -419,8 +419,8 @@ jobs:
           .\dfsctl.exe login --server http://localhost:8080 --username admin --password $env:DITTOFS_ADMIN_INITIAL_PASSWORD
 
           .\dfsctl.exe store metadata add --name mem-meta --type memory
-          .\dfsctl.exe store block local add --name mem-payload --type memory
-          .\dfsctl.exe share create --name /smbbasic --metadata mem-meta --local mem-payload
+          .\dfsctl.exe store block add --name mem-payload --type memory
+          .\dfsctl.exe share create --name /smbbasic --metadata mem-meta --block-store mem-payload
           .\dfsctl.exe user create --username test --password 'testpass123'
           .\dfsctl.exe share permission grant /smbbasic --user test --level read-write
           # Bind DittoFS to 445 — the only port `net use` can reach (445 is

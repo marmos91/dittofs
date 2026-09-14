@@ -139,6 +139,12 @@ controlplane:
   port: $API
   jwt: {secret: "$SECRET"}
 database: {type: sqlite, sqlite: {path: "$WORK/controlplane.db"}}
+# dirty_expire forces carve to run promptly, so the records are synced to the
+# block store (and their segments evictable) without waiting on the default age.
+blockstore:
+  journal:
+    path: $DATA/blocks
+    dirty_expire: 2s
 CFG
 
 start_server || fail "server never became ready"
@@ -147,18 +153,12 @@ dctl login --server "http://127.0.0.1:$API" --username admin --password "$PW" >/
 dctl store metadata add --name meta --type badger --db-path "$DATA/meta" >/dev/null \
   || fail "metadata store"
 
-# dirty_expire_seconds forces carve to run promptly, so the records are synced to
-# the remote (and their segments evictable) without waiting on the default age.
-dctl store block local add --name local --type fs \
-  --config "{\"path\": \"$DATA/blocks\", \"dirty_expire_seconds\": 2}" >/dev/null \
-  || fail "local block store"
-
-dctl store block remote add --name s3 --type s3 \
+dctl store block add --name s3 --type s3 \
   --config "{\"bucket\": \"$BUCKET\", \"region\": \"us-east-1\", \"endpoint\": \"http://127.0.0.1:$S3PORT\", \"access_key_id\": \"$S3KEY\", \"secret_access_key\": \"$S3SECRET\", \"allow_private_endpoint\": true}" >/dev/null \
-  || fail "remote block store"
+  || fail "block store"
 
-dctl share create --name /cold --metadata meta --local local \
-  --remote s3 --default-permission read-write >/dev/null || fail "share"
+dctl share create --name /cold --metadata meta --block-store s3 \
+  --default-permission read-write >/dev/null || fail "share"
 dctl adapter enable smb --port $SMBP >/dev/null || fail "smb adapter"
 mount_smb || fail "cifs mount"
 
