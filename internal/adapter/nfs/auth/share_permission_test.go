@@ -16,6 +16,10 @@ type permMockStore struct {
 	perm       models.SharePermission
 	permErr    error
 
+	// uidErr, when set, is returned by GetUserByUID instead of consulting
+	// usersByUID — a store failure rather than a missing user.
+	uidErr error
+
 	// sidPerm is returned by ResolveSharePermissionForUnixIDs when the login's
 	// UID or one of its GIDs is present in sidMatchIDs (a direct AD/SID grant,
 	// #1528). Left zero, the SID path resolves to none — existing tests unchanged.
@@ -54,6 +58,9 @@ func (m *permMockStore) ResolveSharePermission(context.Context, *models.User, st
 }
 
 func (m *permMockStore) GetUserByUID(_ context.Context, uid uint32) (*models.User, error) {
+	if m.uidErr != nil {
+		return nil, m.uidErr
+	}
 	user, ok := m.usersByUID[uid]
 	if !ok {
 		return nil, models.ErrUserNotFound
@@ -157,7 +164,7 @@ func TestResolveSharePermission_EmptySquashDoesNotPromoteRoot(t *testing.T) {
 // Behavior 3: a known user resolved to permission "read" is coerced read-only.
 func TestResolveSharePermission_ReadPermissionCoercesReadOnly(t *testing.T) {
 	store := newPermMockStore()
-	store.usersByUID[1000] = &models.User{ID: "u1", Username: "alice", UID: ptrUID(1000)}
+	store.usersByUID[1000] = &models.User{ID: "u1", Username: "alice", UID: ptrUID(1000), Enabled: true}
 	store.perm = models.PermissionRead
 
 	share := &runtime.Share{
@@ -180,7 +187,7 @@ func TestResolveSharePermission_ReadPermissionCoercesReadOnly(t *testing.T) {
 
 func TestResolveSharePermission_KnownUserPermissionNoneDenied(t *testing.T) {
 	store := newPermMockStore()
-	store.usersByUID[1000] = &models.User{ID: "u1", Username: "alice", UID: ptrUID(1000)}
+	store.usersByUID[1000] = &models.User{ID: "u1", Username: "alice", UID: ptrUID(1000), Enabled: true}
 	store.perm = models.PermissionNone
 
 	share := &runtime.Share{Name: "/export", DefaultPermission: "read-write", Squash: models.SquashNone}
@@ -299,7 +306,7 @@ func TestResolveSharePermission_AnonymousAuthNullAllowedReadWrite(t *testing.T) 
 // writes — verifies the share-level flag is ORed in.
 func TestResolveSharePermission_ShareReadOnlyForcesReadOnly(t *testing.T) {
 	store := newPermMockStore()
-	store.usersByUID[1000] = &models.User{ID: "u1", Username: "alice", UID: ptrUID(1000)}
+	store.usersByUID[1000] = &models.User{ID: "u1", Username: "alice", UID: ptrUID(1000), Enabled: true}
 	store.perm = models.PermissionReadWrite
 
 	share := &runtime.Share{Name: "/export", DefaultPermission: "read-write", Squash: models.SquashNone, ReadOnly: true}
@@ -328,5 +335,73 @@ func TestResolveSharePermission_DefaultNoneDeniesUnmappedUID(t *testing.T) {
 	_, err := ResolveSharePermission(context.Background(), store, share, "/export", "127.0.0.1:1", ptrUID(2001), nil)
 	if !errors.Is(err, ErrShareAccessDenied) {
 		t.Fatalf("uid=2001 on default_permission=none: expected ErrShareAccessDenied, got %v", err)
+	}
+}
+
+// A store failure on the UID reverse lookup must not be read as "no such
+// user". The guest branch grants the share default, so collapsing a transient
+// database error into it turns an outage into an access grant — and inverts an
+// explicit per-user 'none' block, since that block lives on the user record the
+// lookup just failed to read.
+func TestResolveSharePermission_StoreErrorOnUIDLookupDenies(t *testing.T) {
+	store := newPermMockStore()
+	store.uidErr = errors.New("connection refused")
+
+	// default_permission is deliberately permissive: if the error routed into
+	// the guest branch, this share would be granted read-write.
+	share := &runtime.Share{Name: "/export", DefaultPermission: "read-write", Squash: models.SquashNone}
+
+	_, err := ResolveSharePermission(context.Background(), store, share, "/export", "127.0.0.1:1", ptrUID(1000), nil)
+	if !errors.Is(err, ErrShareAccessDenied) {
+		t.Fatalf("a store error on UID lookup must deny, got %v", err)
+	}
+}
+
+// A genuine "no such user" is a different case and must still reach the guest
+// branch, or the fix above would deny every unmapped UID.
+func TestResolveSharePermission_UserNotFoundStillReachesGuest(t *testing.T) {
+	store := newPermMockStore()
+	store.uidErr = models.ErrUserNotFound
+
+	share := &runtime.Share{Name: "/export", DefaultPermission: "read-write", Squash: models.SquashNone}
+
+	res, err := ResolveSharePermission(context.Background(), store, share, "/export", "127.0.0.1:1", ptrUID(1000), nil)
+	if err != nil {
+		t.Fatalf("an unknown UID must fall back to the share default, got %v", err)
+	}
+	if res.ReadOnly {
+		t.Fatal("default_permission read-write must not resolve read-only")
+	}
+}
+
+// Disabling a user revokes SMB and password auth immediately. A UID that still
+// maps to that user must not keep NFS access alive.
+func TestResolveSharePermission_DisabledUserDenied(t *testing.T) {
+	store := newPermMockStore()
+	store.usersByUID[1000] = &models.User{ID: "u1", Username: "alice", UID: ptrUID(1000), Enabled: false}
+	store.perm = models.PermissionReadWrite
+
+	share := &runtime.Share{Name: "/export", DefaultPermission: "read-write", Squash: models.SquashNone}
+
+	_, err := ResolveSharePermission(context.Background(), store, share, "/export", "127.0.0.1:1", ptrUID(1000), nil)
+	if !errors.Is(err, ErrShareAccessDenied) {
+		t.Fatalf("a disabled user must be denied, got %v", err)
+	}
+}
+
+// ResolveSharePermission returns an error only when the share lookup itself
+// fails — "this user has no explicit grant" is a non-error path that already
+// returns the default. So an error here is always a store failure, and
+// substituting the share default for it grants access on an outage.
+func TestResolveSharePermission_PermissionResolveErrorDenies(t *testing.T) {
+	store := newPermMockStore()
+	store.usersByUID[1000] = &models.User{ID: "u1", Username: "alice", UID: ptrUID(1000), Enabled: true}
+	store.permErr = errors.New("connection refused")
+
+	share := &runtime.Share{Name: "/export", DefaultPermission: "read-write", Squash: models.SquashNone}
+
+	_, err := ResolveSharePermission(context.Background(), store, share, "/export", "127.0.0.1:1", ptrUID(1000), nil)
+	if !errors.Is(err, ErrShareAccessDenied) {
+		t.Fatalf("a store error on permission resolution must deny, got %v", err)
 	}
 }

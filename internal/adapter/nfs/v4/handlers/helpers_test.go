@@ -246,7 +246,7 @@ func TestBuildV4AuthContext_AppliesExportSquashPolicy(t *testing.T) {
 		uid := uint32(1000)
 		fx.rt.SetIdentityStoreForTesting(&v4PermIdentityStore{
 			knownUID: uid,
-			user:     &models.User{ID: "u1", Username: "alice", UID: &uid},
+			user:     &models.User{ID: "u1", Username: "alice", UID: &uid, Enabled: true},
 			perm:     models.PermissionRead,
 		})
 		if err := fx.rt.SetSharePolicyForTesting("/export", "read-write", models.SquashNone); err != nil {

@@ -47,7 +47,7 @@ func TestResolveSharePermission_SIDGrantByGID(t *testing.T) {
 		uid := uint32(4000)
 		store := newPermMockStore()
 		store.usersByUID[uid] = &models.User{
-			Username: "blocked", UID: &uid,
+			Username: "blocked", UID: &uid, Enabled: true,
 			SharePermissions: []models.UserSharePermission{
 				{ShareName: "/export", Permission: string(models.PermissionNone)},
 			},
