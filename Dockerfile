@@ -2,7 +2,7 @@
 # Multi-stage build for minimal, secure production image
 
 # Build stage
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
 
 # Build arguments for cross-compilation
 ARG TARGETOS

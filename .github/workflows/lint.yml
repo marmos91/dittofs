@@ -26,7 +26,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.25.x"
+          go-version: "1.26.x"
           cache: true  # Built-in Go module caching
 
       - name: Run gofmt
@@ -51,7 +51,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.25.x"
+          go-version: "1.26.x"
           cache: true  # Built-in Go module caching
 
       - name: Check MS-FSCC / MS-FSA / MS-SMB2 citations
@@ -107,7 +107,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.25.x"
+          go-version: "1.26.x"
           cache: true  # Built-in Go module caching
 
       - name: golangci-lint

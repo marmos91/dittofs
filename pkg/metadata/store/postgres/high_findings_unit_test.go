@@ -6,6 +6,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -63,6 +64,9 @@ func (r *errAfterNRows) FieldDescriptions() []pgconn.FieldDescription {
 	return nil
 }
 func (r *errAfterNRows) Conn() *pgx.Conn { return nil }
+func (r *errAfterNRows) TypeMap() *pgtype.Map {
+	return nil
+}
 
 // TestPoolRows_ErrPropagated proves poolRows.Err() delegates to the wrapped
 // rows, so the rows.Err() checks added to ListChildren/ListShares actually
