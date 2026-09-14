@@ -1,4 +1,4 @@
-package remote
+package block
 
 import (
 	"encoding/json"
@@ -37,8 +37,8 @@ var (
 
 var addCmd = &cobra.Command{
 	Use:   "add",
-	Short: "Add a remote block store",
-	Long: `Add a new remote block store to the DittoFS server.
+	Short: "Add a block store",
+	Long: `Add a new block store to the DittoFS server.
 
 Supported types:
   - s3: AWS S3 or S3-compatible store (durable, production)
@@ -55,19 +55,19 @@ Type-specific options:
 
 Examples:
   # Add an S3 store with flags
-  dfsctl store block remote add --name s3-store --type s3 --bucket my-bucket --region us-west-2
+  dfsctl store block add --name s3-store --type s3 --bucket my-bucket --region us-west-2
 
   # Add an S3 store interactively
-  dfsctl store block remote add --name s3-store --type s3
+  dfsctl store block add --name s3-store --type s3
 
   # Add a MinIO store (S3-compatible)
-  dfsctl store block remote add --name minio-store --type s3 --bucket data --endpoint http://localhost:9000
+  dfsctl store block add --name minio-store --type s3 --bucket data --endpoint http://localhost:9000
 
   # Add an S3 store with zstd block compression
-  dfsctl store block remote add --name prod-s3 --type s3 --bucket my-bucket --compression zstd
+  dfsctl store block add --name prod-s3 --type s3 --bucket my-bucket --compression zstd
 
   # Add a memory store (for testing)
-  dfsctl store block remote add --name test-remote --type memory`,
+  dfsctl store block add --name test-remote --type memory`,
 	RunE: runAdd,
 }
 
@@ -122,12 +122,12 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		Config: config,
 	}
 
-	store, err := client.CreateBlockStore("remote", req)
+	store, err := client.CreateBlockStore(req)
 	if err != nil {
-		return fmt.Errorf("failed to create remote block store: %w", err)
+		return fmt.Errorf("failed to create block store: %w", err)
 	}
 
-	return cmdutil.PrintResourceWithSuccess(os.Stdout, store, fmt.Sprintf("Remote block store '%s' (type: %s) created successfully", store.Name, store.Type))
+	return cmdutil.PrintResourceWithSuccess(os.Stdout, store, fmt.Sprintf("Block store '%s' (type: %s) created successfully", store.Name, store.Type))
 }
 
 type encryptionFlags struct {

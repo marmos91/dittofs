@@ -18,7 +18,7 @@ func TestCreateCmd_Squash_PatchesNFSConfig(t *testing.T) {
 	resetCreateFlags()
 	createName = "/x"
 	createMetadata = "meta"
-	createLocal = "bs"
+	createBlockStore = "bs"
 	createSquash = "none"
 	if err := createCmd.Flags().Set("squash", "none"); err != nil {
 		t.Fatalf("Flags.Set: %v", err)
@@ -50,7 +50,7 @@ func TestCreateCmd_Squash_InvalidRejectedBeforeAnyRequest(t *testing.T) {
 	resetCreateFlags()
 	createName = "/x"
 	createMetadata = "meta"
-	createLocal = "bs"
+	createBlockStore = "bs"
 	createSquash = "bogus"
 	if err := createCmd.Flags().Set("squash", "bogus"); err != nil {
 		t.Fatalf("Flags.Set: %v", err)

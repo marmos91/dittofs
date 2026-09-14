@@ -70,17 +70,12 @@ func (sd ShareDetail) Rows() [][]string {
 		retPolicy = "lru"
 	}
 
-	remoteStore := "-"
-	if s.RemoteBlockStoreID != nil && *s.RemoteBlockStoreID != "" {
-		remoteStore = resolveStoreName(sd.blockStoreNames, *s.RemoteBlockStoreID)
-	}
-
 	rows := [][]string{
 		{"Name", s.Name},
 		{"ID", s.ID},
 		{"Metadata Store", resolveStoreName(sd.metaStoreNames, s.MetadataStoreID)},
-		{"Local Block Store", resolveStoreName(sd.blockStoreNames, s.LocalBlockStoreID)},
-		{"Remote Block Store", remoteStore},
+		{"Block Store", resolveStoreName(sd.blockStoreNames, s.BlockStoreID)},
+		{"Commit Ack", commitAckString(s.CommitAck)},
 		{"Read Only", fmt.Sprintf("%v", s.ReadOnly)},
 		{"Enabled", shareEnabledString(s.Enabled)},
 		{"Default Permission", s.DefaultPermission},
@@ -244,4 +239,17 @@ func offlineRows(o *health.OfflineStatus) [][]string {
 	}
 	return [][]string{{"Offline Safe", fmt.Sprintf("no (%s remote-only across %d ranges)",
 		bytesize.ByteSize(o.RemoteOnlyBytes), o.RemoteOnlyRanges)}}
+}
+
+// commitAckString renders what a COMMIT waits for, spelling out what each
+// setting survives so the durability promise is readable without the guide.
+func commitAckString(ack string) string {
+	switch ack {
+	case "block-store":
+		return "block-store (survives device loss)"
+	case "journal", "":
+		return "journal (survives host crash)"
+	default:
+		return ack
+	}
 }

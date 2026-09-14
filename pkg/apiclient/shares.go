@@ -22,6 +22,7 @@ type Share struct {
 	Name            string `json:"name"`
 	MetadataStoreID string `json:"metadata_store_id"`
 	BlockStoreID    string `json:"block_store_id"`
+	CommitAck       string `json:"commit_ack"`
 	ReadOnly        bool   `json:"read_only,omitempty"`
 	// Enabled mirrors models.Share.Enabled. The tag is deliberately NOT
 	// omitempty: `false` is semantically meaningful ("share is

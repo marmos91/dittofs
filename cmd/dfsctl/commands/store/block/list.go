@@ -1,4 +1,4 @@
-package remote
+package block
 
 import (
 	"fmt"
@@ -11,11 +11,11 @@ import (
 
 var listCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List remote block stores",
-	Long: `List all remote block stores on the DittoFS server.
+	Short: "List block stores",
+	Long: `List all block stores on the DittoFS server.
 
 Shows the name, ID, type (s3 or memory), and configuration of each registered
-remote block store. Other sub-commands accept either form, so this is where you
+block store. Other sub-commands accept either form, so this is where you
 find both. Use it to confirm which stores exist before adding, editing, or
 running health checks against one, or to map the store IDs emitted by
 'share show -o json' back to a store name ('share show' table output already
@@ -23,13 +23,13 @@ resolves them to names).
 
 Examples:
   # List as table
-  dfsctl store block remote list
+  dfsctl store block list
 
   # List as JSON
-  dfsctl store block remote list -o json
+  dfsctl store block list -o json
 
   # List as YAML
-  dfsctl store block remote list -o yaml`,
+  dfsctl store block list -o yaml`,
 	RunE: runList,
 }
 
@@ -60,10 +60,10 @@ func runList(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	stores, err := client.ListBlockStores("remote")
+	stores, err := client.ListBlockStores()
 	if err != nil {
-		return fmt.Errorf("failed to list remote block stores: %w", err)
+		return fmt.Errorf("failed to list block stores: %w", err)
 	}
 
-	return cmdutil.PrintOutput(os.Stdout, stores, len(stores) == 0, "No remote block stores found.", StoreList(stores))
+	return cmdutil.PrintOutput(os.Stdout, stores, len(stores) == 0, "No block stores found.", StoreList(stores))
 }

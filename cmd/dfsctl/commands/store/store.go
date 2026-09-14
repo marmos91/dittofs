@@ -23,11 +23,11 @@ Examples:
   # Add a new metadata store
   dfsctl store metadata add --name new-meta --type memory
 
-  # List remote block stores
-  dfsctl store block remote list
+  # List block stores
+  dfsctl store block list
 
-  # Add a remote block store
-  dfsctl store block remote add --name s3-store --type s3 --config '{"bucket":"my-bucket"}'`,
+  # Add a block store
+  dfsctl store block add --name s3-store --type s3 --config '{"bucket":"my-bucket"}'`,
 }
 
 func init() {
