@@ -99,16 +99,21 @@ type Share struct {
 	// ownership survives restarts (#1534).
 	OwnerUID          *uint32   `gorm:"column:owner_uid" json:"owner_uid,omitempty"`
 	OwnerGID          *uint32   `gorm:"column:owner_gid" json:"owner_gid,omitempty"`
-	Config            string    `gorm:"type:text" json:"-"`                                        // JSON blob for additional share config
-	BlockedOperations string    `gorm:"type:text" json:"-"`                                        // JSON array of blocked operations
-	RetentionPolicy   string    `gorm:"size:10;default:''" json:"retention_policy"`                // pin, ttl, lru (empty = LRU default)
-	RetentionTTL      int64     `gorm:"default:0" json:"retention_ttl"`                            // TTL in seconds (0 = not set)
-	JournalSize       int64     `gorm:"default:0" json:"journal_size"`                             // Per-share journal size override in bytes (0 = system default)
-	CommitAck         CommitAck `gorm:"size:16;default:journal" json:"commit_ack"`                 // What an NFS COMMIT or SMB Flush waits for
-	ReadBufferSize    int64     `gorm:"default:0;column:read_buffer_size" json:"read_buffer_size"` // Read buffer override in bytes (0 = system default)
-	QuotaBytes        int64     `gorm:"default:0;column:quota_bytes" json:"quota_bytes"`           // Per-share byte quota (0 = unlimited)
-	CreatedAt         time.Time `gorm:"autoCreateTime" json:"created_at"`
-	UpdatedAt         time.Time `gorm:"autoUpdateTime" json:"updated_at"`
+	Config            string    `gorm:"type:text" json:"-"`                         // JSON blob for additional share config
+	BlockedOperations string    `gorm:"type:text" json:"-"`                         // JSON array of blocked operations
+	RetentionPolicy   string    `gorm:"size:10;default:''" json:"retention_policy"` // pin, ttl, lru (empty = LRU default)
+	RetentionTTL      int64     `gorm:"default:0" json:"retention_ttl"`             // TTL in seconds (0 = not set)
+	JournalSize       int64     `gorm:"default:0" json:"journal_size"`              // Per-share journal size override in bytes (0 = system default)
+	CommitAck         CommitAck `gorm:"size:16;default:journal" json:"commit_ack"`  // What an NFS COMMIT or SMB Flush waits for
+	// RelaxedMetadataCommit lets an operation that promised stable metadata
+	// return once its commit is in the metadata store, leaving the fsync to
+	// that store's background syncer. It has no effect unless the metadata
+	// store itself runs relaxed, where every commit fsyncs regardless.
+	RelaxedMetadataCommit bool      `gorm:"default:false;not null" json:"relaxed_metadata_commit"`
+	ReadBufferSize        int64     `gorm:"default:0;column:read_buffer_size" json:"read_buffer_size"` // Read buffer override in bytes (0 = system default)
+	QuotaBytes            int64     `gorm:"default:0;column:quota_bytes" json:"quota_bytes"`           // Per-share byte quota (0 = unlimited)
+	CreatedAt             time.Time `gorm:"autoCreateTime" json:"created_at"`
+	UpdatedAt             time.Time `gorm:"autoUpdateTime" json:"updated_at"`
 
 	// Relationships
 	MetadataStore    MetadataStoreConfig    `gorm:"foreignKey:MetadataStoreID" json:"metadata_store,omitempty"`
