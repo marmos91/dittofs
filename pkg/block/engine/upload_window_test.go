@@ -93,3 +93,39 @@ func TestUploadWindowBoundsConcurrentCommits(t *testing.T) {
 		t.Errorf("peak concurrent CommitBlock = %d, want <= window %d: the upload window is not bounding in-flight arenas", peak, window)
 	}
 }
+
+// nopSink accepts every block; the chain's own bookkeeping is what is on trial.
+type nopSink struct{}
+
+func (nopSink) CommitBlock(context.Context, []CarveChunk) error { return nil }
+
+// TestUploadChainSurfacesCancelledSlotAcquire pins that a block dropped at the
+// window gate still fails the pass.
+//
+// A cancelled acquire submits nothing, so the block gets no flight and the
+// resolve loop finds every flight it does have in good order. Journal checks
+// cancellation at the TOP of each run, so on the file's LAST run there is no
+// next iteration to notice: the loop ends, Flush returns nil, and the caller
+// reads a successful flush over bytes that never left. They stay dirty rather
+// than lost, but a COMMIT answering "durable" for them is a lie.
+func TestUploadChainSurfacesCancelledSlotAcquire(t *testing.T) {
+	slots := syncer.NewDynamicSemaphore(1)
+	if err := slots.Acquire(context.Background()); err != nil {
+		t.Fatalf("seed acquire: %v", err)
+	} // the only slot is taken, so the submit below must wait
+
+	u := newUploadChain(nopSink{}, slots)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	u.submit(ctx, []CarveChunk{{FileOffset: 0, Size: 4 << 10}},
+		[]journal.Extent{{Off: 0, Len: 4 << 10}})
+
+	out, err := u.collect()
+	if err == nil {
+		t.Fatalf("collect returned (%v, nil): a block dropped at the window gate must fail the pass", out)
+	}
+	if len(out) != 0 {
+		t.Errorf("collect returned extents %v: nothing was submitted, so nothing is durable", out)
+	}
+}

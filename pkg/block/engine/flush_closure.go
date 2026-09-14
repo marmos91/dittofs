@@ -380,6 +380,18 @@ func (u *uploadChain) submit(ctx context.Context, chunks []CarveChunk, extents [
 	held := false
 	if u.slots != nil {
 		if err := u.slots.Acquire(ctx); err != nil {
+			// A cancelled acquire means this block is never submitted, so it
+			// gets no flight and collect() would otherwise see nothing wrong.
+			// Record it as a chain failure: journal checks cancellation at the
+			// TOP of each run, so on the file's last run the loop simply ends
+			// and a dropped block would return a successful flush over bytes
+			// that never left — reported durable, still dirty.
+			u.mu.Lock()
+			u.aborted = true
+			if u.firstErr == nil {
+				u.firstErr = err
+			}
+			u.mu.Unlock()
 			return
 		}
 		held = true
@@ -439,6 +451,11 @@ func (u *uploadChain) collect() ([]journal.Extent, error) {
 	}
 	u.mu.Lock()
 	u.collected = len(flights)
+	// A chain aborted without a failed flight is a submission that never
+	// happened (a cancelled upload-slot acquire). Every flight that exists
+	// resolved ok, so the loop above found nothing; the error still has to
+	// reach the caller or the prefix reads as the whole file.
+	firstErr := u.firstErr
 	u.mu.Unlock()
-	return out, nil
+	return out, firstErr
 }
