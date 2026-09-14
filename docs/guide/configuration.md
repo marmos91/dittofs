@@ -1091,9 +1091,9 @@ automatically would break the operator's scripts at some later point; deleting o
 would orphan any share referencing it.
 
 **Action:** give one store of each colliding pair a different name, then restart.
-Neither `dfsctl` nor the REST API can rename a block store in this release (the
-error message's suggestion of `dfsctl store block edit` is ahead of the CLI), so
-do it in the control-plane database — with the server stopped:
+`dfsctl store block edit <name> --name <new name>` renames a store, but it talks
+to a running server and this collision stops the server from starting — so break
+the tie in the control-plane database first, with the server stopped:
 
 ```sql
 UPDATE block_store_configs SET name = 'archive-local' WHERE id = '<the row to rename>';

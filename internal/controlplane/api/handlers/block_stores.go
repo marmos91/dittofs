@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -40,6 +41,9 @@ type CreateBlockStoreRequest struct {
 
 // UpdateBlockStoreRequest is the request body for PUT /api/v1/store/block/{name}.
 type UpdateBlockStoreRequest struct {
+	// Name renames the store. Names identify a block store on their own, so a
+	// rename that would collide is refused rather than applied.
+	Name   *string `json:"name,omitempty"`
 	Type   *string `json:"type,omitempty"`
 	Config *string `json:"config,omitempty"`
 }
@@ -190,6 +194,15 @@ func (h *BlockStoreHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	renameTo := ""
+	if req.Name != nil && *req.Name != bs.Name {
+		if strings.TrimSpace(*req.Name) == "" {
+			BadRequest(w, "Block store name cannot be empty")
+			return
+		}
+		renameTo = *req.Name
+	}
+
 	if req.Type != nil {
 		if !validateBlockStoreType(*req.Type) {
 			BadRequest(w, "Store type '"+*req.Type+"' is not a valid block store type")
@@ -241,10 +254,34 @@ func (h *BlockStoreHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A share's binding normally holds the store's UUID, but the older update
+	// path persisted the name instead. Those shares would resolve nothing once
+	// the name moves, so repoint them — onto the UUID, which cannot go stale
+	// the next time the store is renamed.
+	if renameTo != "" {
+		renamed, err := h.store.RenameBlockStore(r.Context(), name, renameTo)
+		switch {
+		case errors.Is(err, models.ErrDuplicateStore):
+			Conflict(w, "Block store "+renameTo+" already exists")
+			return
+		case errors.Is(err, models.ErrStoreNotFound):
+			NotFound(w, "Block store not found")
+			return
+		case err != nil:
+			InternalServerError(w, "Failed to rename block store")
+			return
+		}
+		bs = renamed
+	}
+
 	// Evict the cached checker so the post-update response does not
-	// observe a stale probe from before the config change landed.
+	// observe a stale probe from before the config change landed. A rename
+	// leaves an entry under the old name too.
 	if h.runtime != nil {
 		h.runtime.InvalidateBlockStoreChecker(name)
+		if renameTo != "" {
+			h.runtime.InvalidateBlockStoreChecker(renameTo)
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), HealthCheckTimeout)
