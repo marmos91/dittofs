@@ -171,6 +171,11 @@ func ResolveSharePermission(
 	// session setup already refuse one; without this check a UID that still maps
 	// to the disabled record keeps NFS access live, so an administrator's
 	// "disable" silently leaves this one protocol open.
+	//
+	// This runs when an auth context is resolved, not on every operation. The v3
+	// handler caches a resolved context and nothing invalidates that cache when a
+	// user record changes, so a client already holding one keeps access until the
+	// entry expires.
 	if !user.Enabled {
 		logger.DebugCtx(ctx, "Share access denied (user disabled)",
 			"share", shareName, "user", user.Username, "client", clientAddr)
