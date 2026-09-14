@@ -395,40 +395,36 @@ type MetadataStoreConfigStore interface {
 // BlockStoreConfigStore provides block store configuration CRUD.
 //
 // These operations manage the configuration records for block store backends
-// (local: fs, memory; remote: memory, s3). The Kind discriminator distinguishes
-// local (disk-backed storage) from remote (object storage) block stores.
-// The actual block store instances are created and managed by the Runtime.
+// (memory, s3). The actual block store instances are created and managed by
+// the Runtime.
 type BlockStoreConfigStore interface {
-	// GetBlockStore returns a block store configuration by name and kind.
+	// GetBlockStore returns a block store configuration by name or ID.
 	// Returns models.ErrStoreNotFound if the store doesn't exist.
-	GetBlockStore(ctx context.Context, name string, kind models.BlockStoreKind) (*models.BlockStoreConfig, error)
+	GetBlockStore(ctx context.Context, name string) (*models.BlockStoreConfig, error)
 
 	// GetBlockStoreByID returns a block store configuration by ID.
 	// Returns models.ErrStoreNotFound if the store doesn't exist.
 	GetBlockStoreByID(ctx context.Context, id string) (*models.BlockStoreConfig, error)
 
-	// ListBlockStores returns all block store configurations of the given kind.
-	ListBlockStores(ctx context.Context, kind models.BlockStoreKind) ([]*models.BlockStoreConfig, error)
+	// ListBlockStores returns all block store configurations.
+	ListBlockStores(ctx context.Context) ([]*models.BlockStoreConfig, error)
 
 	// CreateBlockStore creates a new block store configuration.
-	// The ID will be generated if empty. Kind must be set on the store.
-	// Returns the generated ID.
+	// The ID will be generated if empty. Returns the generated ID.
 	// Returns models.ErrDuplicateStore if a store with the same name exists.
 	CreateBlockStore(ctx context.Context, store *models.BlockStoreConfig) (string, error)
 
 	// UpdateBlockStore updates an existing block store configuration.
-	// Kind is immutable and will not be updated.
 	// Returns models.ErrStoreNotFound if the store doesn't exist.
 	UpdateBlockStore(ctx context.Context, store *models.BlockStoreConfig) error
 
-	// DeleteBlockStore deletes a block store configuration by name and kind.
+	// DeleteBlockStore deletes a block store configuration by name or ID.
 	// Returns models.ErrStoreNotFound if the store doesn't exist.
 	// Returns models.ErrStoreInUse if the store is referenced by any shares.
-	DeleteBlockStore(ctx context.Context, name string, kind models.BlockStoreKind) error
+	DeleteBlockStore(ctx context.Context, name string) error
 
-	// GetSharesByBlockStore returns all shares using the given block store (by name and kind).
-	// Checks both local_block_store_id and remote_block_store_id references.
-	GetSharesByBlockStore(ctx context.Context, storeName string, kind models.BlockStoreKind) ([]*models.Share, error)
+	// GetSharesByBlockStore returns all shares using the given block store.
+	GetSharesByBlockStore(ctx context.Context, storeName string) ([]*models.Share, error)
 }
 
 // AdapterStore provides adapter configuration CRUD and protocol-specific settings.
