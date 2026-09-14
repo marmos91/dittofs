@@ -39,14 +39,14 @@ func TestStoreAndShareNameOrIDResolution(t *testing.T) {
 		}
 	})
 
-	t.Run("block store by id is kind-scoped", func(t *testing.T) {
+	t.Run("block store by name and by id", func(t *testing.T) {
+		byName, err := store.GetBlockStore(ctx, "local")
+		if err != nil || byName.ID != localID {
+			t.Fatalf("by name: got %+v err %v", byName, err)
+		}
 		byID, err := store.GetBlockStore(ctx, localID)
 		if err != nil || byID.Name != "local" {
-			t.Fatalf("by id (local): got %+v err %v", byID, err)
-		}
-		// The same ID under the wrong kind must not resolve.
-		if _, err := store.GetBlockStore(ctx, localID); !errors.Is(err, models.ErrStoreNotFound) {
-			t.Fatalf("by id (remote): expected ErrStoreNotFound, got %v", err)
+			t.Fatalf("by id: got %+v err %v", byID, err)
 		}
 	})
 

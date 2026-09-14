@@ -374,10 +374,3 @@ func buildShareConfig(ctx context.Context, s store.Store, share *models.Share) (
 	}, nil
 }
 
-// derefString safely dereferences a *string, returning "" if nil.
-func derefString(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
-}

@@ -39,7 +39,7 @@ func TestShareHandler_Create_PersistsOwner(t *testing.T) {
 	body, _ := json.Marshal(map[string]any{
 		"name":              "owned",
 		"metadata_store_id": metaStore.ID,
-		"local_block_store": blockStore.ID,
+		"block_store":       blockStore.ID,
 		"owner":             "smb-user",
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/shares", bytes.NewReader(body))

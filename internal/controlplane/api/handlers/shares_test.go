@@ -319,7 +319,7 @@ func TestShareHandler_Update_RejectsUnknownBlockStore(t *testing.T) {
 	cpStore, _, handler := setupShareTestWithRuntime(t)
 	seedShare(t, cpStore, "s-bsunknown")
 
-	body := []byte(`{"local_block_store_id":"does-not-exist"}`)
+	body := []byte(`{"block_store_id":"does-not-exist"}`)
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/shares/s-bsunknown", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req = withShareName(req, "s-bsunknown")
@@ -328,35 +328,6 @@ func TestShareHandler_Update_RejectsUnknownBlockStore(t *testing.T) {
 	handler.Update(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("Update(unknown block store) = %d, want 400; body=%s", w.Code, w.Body.String())
-	}
-}
-
-// TestShareHandler_Update_RejectsWrongKindBlockStore verifies a UUID that
-// resolves to the wrong kind (a remote store handed to local_block_store_id) is
-// rejected with 400 rather than persisted — otherwise the share would fail to
-// load at the next restart (#1312).
-func TestShareHandler_Update_RejectsWrongKindBlockStore(t *testing.T) {
-	cpStore, _, handler := setupShareTestWithRuntime(t)
-	seedShare(t, cpStore, "s-bskind")
-	ctx := context.Background()
-
-	remote := &models.BlockStoreConfig{
-		ID: uuid.New().String(), Name: "kind-remote", Type: "memory", CreatedAt: time.Now(),
-	}
-	if _, err := cpStore.CreateBlockStore(ctx, remote); err != nil {
-		t.Fatalf("CreateBlockStore(remote): %v", err)
-	}
-
-	// Hand the remote store's UUID to the local tier — must be refused.
-	body := []byte(`{"local_block_store_id":"` + remote.ID + `"}`)
-	req := httptest.NewRequest(http.MethodPut, "/api/v1/shares/s-bskind", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req = withShareName(req, "s-bskind")
-	w := httptest.NewRecorder()
-
-	handler.Update(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("Update(wrong-kind block store) = %d, want 400; body=%s", w.Code, w.Body.String())
 	}
 }
 
@@ -443,7 +414,7 @@ func TestShareHandler_Update_WarnsWhenLiveReloadFails(t *testing.T) {
 		t.Fatalf("CreateBlockStore(remote): %v", err)
 	}
 
-	body := []byte(`{"remote_block_store_id":"warn-remote"}`)
+	body := []byte(`{"block_store_id":"warn-remote"}`)
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/shares/s-bswarn", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req = withShareName(req, "s-bswarn")
