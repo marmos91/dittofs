@@ -27,6 +27,11 @@ func ApplyDefaults(cfg *Config) {
 	cfg.Integrity.ApplyDefaults()
 	cfg.Snapshot.ApplyDefaults()
 	cfg.Blockstore.ApplyDefaults()
+	// The upgrade that stops a share from referencing its own block store
+	// compares the journal root against where each share's data was recorded,
+	// and only the store layer is open at that moment. Carried after the
+	// blockstore defaults so the resolved, expanded path is what travels.
+	cfg.Database.JournalRoot = cfg.Blockstore.Journal.Path
 	cfg.Metadata.ApplyDefaults()
 	cfg.Metrics.ApplyDefaults()
 	cfg.LDAP.ApplyDefaults()
