@@ -1,4 +1,4 @@
-package nfs
+package v3
 
 import (
 	"bytes"
@@ -160,52 +160,5 @@ func TestNFSDispatchTable_Completeness(t *testing.T) {
 			"NFS procedure %d should be named %q, got %q", procNum, expectedName, entry.Name)
 		assert.NotNil(t, entry.Handler,
 			"NFS procedure %d (%s) handler should not be nil", procNum, expectedName)
-	}
-}
-
-// ============================================================================
-// Version Negotiation Tests
-// ============================================================================
-
-// parseRPCReply extracts the AcceptStat and (for PROG_MISMATCH) the low/high
-// version range from an RPC reply byte slice. The input includes the 4-byte
-// RPC fragment header prefix.
-func parseRPCReply(t *testing.T, data []byte) (xid, acceptStat, lowVersion, highVersion uint32) {
-	t.Helper()
-
-	require.True(t, len(data) >= 4+24, "reply too short: need at least 28 bytes, got %d", len(data))
-
-	// Skip 4-byte fragment header
-	body := data[4:]
-	xid = binary.BigEndian.Uint32(body[0:4])
-	// body[4:8] = MsgType (1 = REPLY)
-	// body[8:12] = ReplyState (0 = MSG_ACCEPTED)
-	// body[12:16] = Verf Flavor (0 = AUTH_NULL)
-	// body[16:20] = Verf Body Length (0)
-	acceptStat = binary.BigEndian.Uint32(body[20:24])
-
-	if acceptStat == rpc.RPCProgMismatch && len(body) >= 32 {
-		lowVersion = binary.BigEndian.Uint32(body[24:28])
-		highVersion = binary.BigEndian.Uint32(body[28:32])
-	}
-
-	return
-}
-
-// makeTestCall constructs a minimal RPC call message for dispatch testing.
-func makeTestCall(xid, program, version, procedure uint32) *rpc.RPCCallMessage {
-	return &rpc.RPCCallMessage{
-		XID:       xid,
-		Program:   program,
-		Version:   version,
-		Procedure: procedure,
-		Cred: rpc.OpaqueAuth{
-			Flavor: rpc.AuthNull,
-			Body:   []byte{},
-		},
-		Verf: rpc.OpaqueAuth{
-			Flavor: rpc.AuthNull,
-			Body:   []byte{},
-		},
 	}
 }

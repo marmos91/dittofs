@@ -1,4 +1,4 @@
-package nfs
+package v3
 
 import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"

@@ -1,4 +1,4 @@
-package nfs
+package v3
 
 import (
 	nfs "github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers"

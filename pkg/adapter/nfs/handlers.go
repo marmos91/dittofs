@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"time"
 
-	nfs "github.com/marmos91/dittofs/internal/adapter/nfs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/middleware"
 	mount_dispatch "github.com/marmos91/dittofs/internal/adapter/nfs/mount"
 	nlm "github.com/marmos91/dittofs/internal/adapter/nfs/nlm"
@@ -19,6 +18,7 @@ import (
 	nsm_handlers "github.com/marmos91/dittofs/internal/adapter/nfs/nsm/handlers"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
 	nfs_types "github.com/marmos91/dittofs/internal/adapter/nfs/types"
+	v3 "github.com/marmos91/dittofs/internal/adapter/nfs/v3"
 	v4handlers "github.com/marmos91/dittofs/internal/adapter/nfs/v4/handlers"
 	v4state "github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	v4types "github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
@@ -55,7 +55,7 @@ func (c *NFSConnection) handleNFSProcedure(ctx context.Context, call *rpc.RPCCal
 	c.server.logV3FirstUse()
 
 	// Look up procedure in dispatch table
-	procedure, ok := nfs.NfsDispatchTable[call.Procedure]
+	procedure, ok := v3.NfsDispatchTable[call.Procedure]
 	if !ok {
 		logger.Debug("Unknown NFS procedure", "procedure", call.Procedure)
 		return []byte{}, nil
@@ -72,7 +72,7 @@ func (c *NFSConnection) handleNFSProcedure(ctx context.Context, call *rpc.RPCCal
 	}
 
 	// Extract handler context (includes share and authentication for handlers)
-	handlerCtx := nfs.ExtractHandlerContext(ctx, call, clientAddr, share, procedure.Name)
+	handlerCtx := v3.ExtractHandlerContext(ctx, call, clientAddr, share, procedure.Name)
 
 	// Log request with trace context
 	logger.DebugCtx(ctx, "NFS request",
@@ -661,7 +661,7 @@ func (c *NFSConnection) maybeRegisterBackchannel(ctx context.Context) {
 // makeBlockedOpResponse creates an NFS3ERR_NOTSUPP response for a blocked operation.
 // The response contains the status code followed by empty WCC data (pre_op=false,
 // post_op=false), which clients handle gracefully per RFC 1813.
-func (c *NFSConnection) makeBlockedOpResponse() *nfs.HandlerResult {
+func (c *NFSConnection) makeBlockedOpResponse() *v3.HandlerResult {
 	response := make([]byte, 12)
 
 	// Write status code as big-endian uint32
@@ -670,7 +670,7 @@ func (c *NFSConnection) makeBlockedOpResponse() *nfs.HandlerResult {
 	// bytes 8-11: post_op_attr present flag = 0 (false)
 	// (already zero-initialized)
 
-	return &nfs.HandlerResult{
+	return &v3.HandlerResult{
 		Data:      response,
 		NFSStatus: nfs_types.NFS3ErrNotSupp,
 	}
