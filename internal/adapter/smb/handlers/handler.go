@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/lease"
+	"github.com/marmos91/dittofs/internal/adapter/smb/pending"
 	"github.com/marmos91/dittofs/internal/adapter/smb/rpc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
 	"github.com/marmos91/dittofs/internal/adapter/smb/signing"
@@ -94,18 +95,18 @@ type Handler struct {
 	nextAsyncId    atomic.Uint64
 
 	// Named-pipe async READ tracking
-	PipeReadRegistry *PipeReadRegistry
+	PipeReadRegistry *pending.PipeReadRegistry
 
 	// PendingCreateRegistry tracks CREATE requests parked on a lease break
 	// (MS-SMB2 §3.3.5.9 + §3.3.4.7). The resume goroutine waits for the break
 	// to drain, then delivers the final response via AsyncCreateCompleteCallback.
-	PendingCreateRegistry *PendingCreateRegistry
+	PendingCreateRegistry *pending.PendingCreateRegistry
 
 	// PendingLockRegistry tracks SMB2 LOCK requests parked on a byte-range
 	// conflict (MS-SMB2 §3.3.5.14). The resume goroutine retries the
 	// acquisition until success / timeout / cancellation, then delivers the
 	// final response via AsyncLockCompleteCallback. See pending_lock_registry.go.
-	PendingLockRegistry *PendingLockRegistry
+	PendingLockRegistry *pending.PendingLockRegistry
 
 	// CreateReplayCache backs SMB3 replay protection for CREATE
 	// (MS-SMB2 §3.3.5.9). When a client sets SMB2_FLAGS_REPLAY_OPERATION
@@ -115,7 +116,7 @@ type Handler struct {
 	// miss falls through to the normal CREATE path and the success
 	// response is stored for the next replay window. See
 	// replay_cache.go.
-	CreateReplayCache *CreateReplayCache
+	CreateReplayCache *createReplayCache
 
 	// LockReplayCache backs SMB3 replay protection for LOCK
 	// (MS-SMB2 §3.3.5.14). Keyed by (FileID, LockSequenceIndex),
@@ -124,7 +125,7 @@ type Handler struct {
 	// instead of trying to re-acquire / re-release (which would trip
 	// STATUS_RANGE_NOT_LOCKED or STATUS_LOCK_NOT_GRANTED). See
 	// replay_cache.go.
-	LockReplayCache *LockReplayCache
+	LockReplayCache *pending.LockReplayCache
 
 	// LockWaitGraph tracks "is waiting for" relationships among byte-range
 	// lock owners. Consulted by the blocking-LOCK async-park path before
@@ -133,7 +134,7 @@ type Handler struct {
 	// smb2.lock.open-brlock-deadlock / ctdb-delrec-deadlock).
 	LockWaitGraph *lock.WaitForGraph
 
-	// Pending blocking lock operations (lockMsgKey -> cancel func). Legacy
+	// Pending blocking lock operations (LockMsgKey -> cancel func). Legacy
 	// path for inline retry inside the request goroutine — used as a
 	// fallback when async parking is unavailable (no callback wired,
 	// async-credit pool exhausted, or registry full).
@@ -576,11 +577,11 @@ func NewHandlerWithSessionManager(sessionManager *session.Manager) *Handler {
 		SessionManager:          sessionManager,
 		PipeManager:             rpc.NewPipeManager(),
 		NotifyRegistry:          NewNotifyRegistry(),
-		PipeReadRegistry:        NewPipeReadRegistry(),
-		PendingCreateRegistry:   NewPendingCreateRegistry(),
-		PendingLockRegistry:     NewPendingLockRegistry(),
-		CreateReplayCache:       NewCreateReplayCache(),
-		LockReplayCache:         NewLockReplayCache(),
+		PipeReadRegistry:        pending.NewPipeReadRegistry(),
+		PendingCreateRegistry:   pending.NewPendingCreateRegistry(),
+		PendingLockRegistry:     pending.NewPendingLockRegistry(),
+		CreateReplayCache:       pending.NewCreateReplayCache[*CreateResponse, *OpenFile](),
+		LockReplayCache:         pending.NewLockReplayCache(),
 		LockWaitGraph:           lock.NewWaitForGraph(),
 		MaxTransactSize:         1048576, // 1MB (supports large directory listings; increases per-request memory)
 		MaxReadSize:             1048576, // 1MB

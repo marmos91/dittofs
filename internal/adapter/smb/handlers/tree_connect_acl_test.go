@@ -3,6 +3,7 @@ package handlers
 import (
 	"testing"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/pending"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 )
@@ -43,11 +44,11 @@ func TestShouldRejectUnencryptedTreeConnect_SMB2DialectRejected(t *testing.T) {
 // callbacks have run — no unowned goroutine outlives the teardown.
 func TestPendingLockRegistry_UnregisterAllForTreeInvokesCallbackSynchronously(t *testing.T) {
 	h := NewHandler()
-	h.PendingLockRegistry = NewPendingLockRegistry()
+	h.PendingLockRegistry = pending.NewPendingLockRegistry()
 
 	called := 0
 	done := make(chan struct{})
-	parked := &PendingLock{
+	parked := &pending.PendingLock{
 		ConnID:    1,
 		SessionID: 100,
 		TreeID:    7,

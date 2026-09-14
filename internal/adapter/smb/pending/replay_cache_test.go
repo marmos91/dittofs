@@ -1,4 +1,4 @@
-package handlers
+package pending
 
 import (
 	"testing"
@@ -7,63 +7,75 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 )
 
+// The cache is generic over what it stores, so its own tests use stand-ins
+// rather than the SMB wire types — storing them is the consumer's business.
+// Both carry an id so the tests can assert on the value that came back rather
+// than only on a pointer: two empty structs may share an address, which would
+// make an identity comparison pass without the cache having stored anything.
+type testResp struct{ id int }
+
+type testOpen struct{ id int }
+
+func newTestCreateCache() *CreateReplayCache[*testResp, *testOpen] {
+	return NewCreateReplayCache[*testResp, *testOpen]()
+}
+
 func TestCreateReplayCache_StoreLookup(t *testing.T) {
-	c := NewCreateReplayCache()
+	c := newTestCreateCache()
 	guid := [16]byte{1, 2, 3, 4}
-	resp := &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}
-	c.Store(42, guid, resp, nil)
-	if got := c.Lookup(42, guid); got != resp {
-		t.Fatalf("Lookup returned %v, want %v", got, resp)
+	resp := &testResp{id: 7}
+	open := &testOpen{id: 9}
+	c.Store(42, guid, resp, open)
+	e := c.LookupEntry(42, guid)
+	if e == nil {
+		t.Fatal("LookupEntry missed a response that was just stored")
+	}
+	if e.Response != resp || e.Response.id != 7 {
+		t.Errorf("Response = %+v, want the stored %+v", e.Response, resp)
+	}
+	if e.OpenFile != open || e.OpenFile.id != 9 {
+		t.Errorf("OpenFile = %+v, want the stored %+v", e.OpenFile, open)
 	}
 }
 
 func TestCreateReplayCache_LookupWrongSession(t *testing.T) {
-	c := NewCreateReplayCache()
+	c := newTestCreateCache()
 	guid := [16]byte{1}
-	c.Store(1, guid, &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil)
-	if c.Lookup(2, guid) != nil {
-		t.Fatal("Lookup across sessions must miss")
+	c.Store(1, guid, &testResp{id: 1}, nil)
+	if c.LookupEntry(2, guid) != nil {
+		t.Fatal("LookupEntry across sessions must miss")
 	}
 }
 
 func TestCreateReplayCache_ZeroGuidIgnored(t *testing.T) {
-	c := NewCreateReplayCache()
+	c := newTestCreateCache()
 	zero := [16]byte{}
-	c.Store(1, zero, &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil)
+	c.Store(1, zero, &testResp{id: 1}, nil)
 	if c.Len() != 0 {
 		t.Fatal("zero CreateGuid must not be stored")
 	}
-	if c.Lookup(1, zero) != nil {
+	if c.LookupEntry(1, zero) != nil {
 		t.Fatal("zero CreateGuid must not be looked up")
 	}
 }
 
-func TestCreateReplayCache_NonSuccessNotCached(t *testing.T) {
-	c := NewCreateReplayCache()
-	guid := [16]byte{7}
-	c.Store(1, guid, &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil)
-	if c.Len() != 0 {
-		t.Fatal("non-success response must not be cached")
-	}
-}
-
 func TestCreateReplayCache_TTLExpiry(t *testing.T) {
-	c := NewCreateReplayCache()
+	c := newTestCreateCache()
 	guid := [16]byte{9}
-	c.Store(1, guid, &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil)
+	c.Store(1, guid, &testResp{id: 1}, nil)
 	// Force expiry by rewriting StoredAt
 	c.mu.Lock()
 	c.entries[guid].StoredAt = time.Now().Add(-2 * replayCacheTTL)
 	c.mu.Unlock()
-	if c.Lookup(1, guid) != nil {
+	if c.LookupEntry(1, guid) != nil {
 		t.Fatal("expired entry must miss")
 	}
 }
 
 func TestCreateReplayCache_Forget(t *testing.T) {
-	c := NewCreateReplayCache()
+	c := newTestCreateCache()
 	guid := [16]byte{3}
-	c.Store(1, guid, &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil)
+	c.Store(1, guid, &testResp{id: 1}, nil)
 	c.Forget(guid)
 	if c.Len() != 0 {
 		t.Fatal("Forget must drop entry")
@@ -71,21 +83,21 @@ func TestCreateReplayCache_Forget(t *testing.T) {
 }
 
 func TestCreateReplayCache_ForgetSession(t *testing.T) {
-	c := NewCreateReplayCache()
+	c := newTestCreateCache()
 	g1, g2 := [16]byte{1}, [16]byte{2}
-	c.Store(10, g1, &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil)
-	c.Store(20, g2, &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil)
+	c.Store(10, g1, &testResp{id: 1}, nil)
+	c.Store(20, g2, &testResp{id: 1}, nil)
 	c.ForgetSession(10)
-	if c.Lookup(10, g1) != nil {
+	if c.LookupEntry(10, g1) != nil {
 		t.Fatal("ForgetSession should drop session 10 entry")
 	}
-	if c.Lookup(20, g2) == nil {
+	if c.LookupEntry(20, g2) == nil {
 		t.Fatal("ForgetSession should leave other session entries")
 	}
 }
 
 func TestCreateReplayCache_Reservation(t *testing.T) {
-	c := NewCreateReplayCache()
+	c := newTestCreateCache()
 	guid := [16]byte{0x5A}
 
 	if c.IsReserved(1, guid) {
@@ -106,7 +118,7 @@ func TestCreateReplayCache_Reservation(t *testing.T) {
 }
 
 func TestCreateReplayCache_ZeroGuidReservationIgnored(t *testing.T) {
-	c := NewCreateReplayCache()
+	c := newTestCreateCache()
 	zero := [16]byte{}
 	c.Reserve(1, zero)
 	if c.IsReserved(1, zero) {
@@ -115,7 +127,7 @@ func TestCreateReplayCache_ZeroGuidReservationIgnored(t *testing.T) {
 }
 
 func TestCreateReplayCache_ForgetSessionClearsReservations(t *testing.T) {
-	c := NewCreateReplayCache()
+	c := newTestCreateCache()
 	g1, g2 := [16]byte{1}, [16]byte{2}
 	c.Reserve(10, g1)
 	c.Reserve(20, g2)

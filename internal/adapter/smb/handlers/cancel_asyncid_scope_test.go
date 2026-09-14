@@ -5,6 +5,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/pending"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 )
 
@@ -21,7 +22,7 @@ import (
 // connection 2 with the victim's AsyncId.
 
 func TestPendingCreateRegistry_UnregisterByAsyncIdIsConnectionScoped(t *testing.T) {
-	r := NewPendingCreateRegistry()
+	r := pending.NewPendingCreateRegistry()
 	var calls atomic.Int32
 	victim := newTestPendingCreate(1, 10, 100, 7, &calls)
 	if err := r.Register(victim); err != nil {
@@ -42,7 +43,7 @@ func TestPendingCreateRegistry_UnregisterByAsyncIdIsConnectionScoped(t *testing.
 }
 
 func TestPendingLockRegistry_UnregisterByAsyncIdIsConnectionScoped(t *testing.T) {
-	r := NewPendingLockRegistry()
+	r := pending.NewPendingLockRegistry()
 	var cancels atomic.Int32
 	victim := newTestPendingLock(1, 10, 100, 1000, 50, &cancels)
 	if err := r.Register(victim); err != nil {
@@ -68,7 +69,7 @@ func TestPendingLockRegistry_UnregisterByAsyncIdIsConnectionScoped(t *testing.T)
 }
 
 func TestPipeReadRegistry_UnregisterByAsyncIdIsConnectionScoped(t *testing.T) {
-	r := NewPipeReadRegistry()
+	r := pending.NewPipeReadRegistry()
 	done := make(chan types.Status, 1)
 	victim := newTestPipeRead(1, 1, 10, 100, 1000, done)
 	r.Register(victim)
@@ -121,7 +122,7 @@ func TestCancel_InlineBlockingLockIsConnectionScoped(t *testing.T) {
 	const messageID = 100
 
 	lockCtx, cancel := context.WithCancel(context.Background())
-	h.pendingLocks.Store(lockMsgKey{ConnID: 1, MessageID: messageID}, context.CancelFunc(cancel))
+	h.pendingLocks.Store(pending.LockMsgKey{ConnID: 1, MessageID: messageID}, context.CancelFunc(cancel))
 
 	cancelBody := []byte{4, 0, 0, 0} // StructureSize = 4, Reserved
 
@@ -134,7 +135,7 @@ func TestCancel_InlineBlockingLockIsConnectionScoped(t *testing.T) {
 		t.Fatal("a CANCEL from another connection tore down the inline LOCK")
 	default:
 	}
-	if _, ok := h.pendingLocks.Load(lockMsgKey{ConnID: 1, MessageID: messageID}); !ok {
+	if _, ok := h.pendingLocks.Load(pending.LockMsgKey{ConnID: 1, MessageID: messageID}); !ok {
 		t.Fatal("inline LOCK was unregistered by another connection's CANCEL")
 	}
 
@@ -147,7 +148,7 @@ func TestCancel_InlineBlockingLockIsConnectionScoped(t *testing.T) {
 	default:
 		t.Fatal("the owning connection's CANCEL did not tear down the inline LOCK")
 	}
-	if _, ok := h.pendingLocks.Load(lockMsgKey{ConnID: 1, MessageID: messageID}); ok {
+	if _, ok := h.pendingLocks.Load(pending.LockMsgKey{ConnID: 1, MessageID: messageID}); ok {
 		t.Fatal("inline LOCK still registered after its own connection cancelled it")
 	}
 }

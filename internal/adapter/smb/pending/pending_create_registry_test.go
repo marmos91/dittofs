@@ -1,4 +1,4 @@
-package handlers
+package pending
 
 import (
 	"context"
@@ -209,17 +209,17 @@ func TestPendingCreateRegistry_UnregisterByMessageID_DifferentConnsCollidingMess
 	}
 }
 
-// newGatedPendingCreate wires a `started` channel onto the test entry so the
+// newGatedPendingCreate wires a `Started` channel onto the test entry so the
 // gate behaviour matches what parkCreateOnLeaseBreak actually constructs at
 // runtime.
 func newGatedPendingCreate(asyncId uint64, calls *atomic.Int32) *PendingCreate {
 	p := newTestPendingCreate(1, 100, 42, asyncId, calls)
-	p.started = make(chan struct{})
+	p.Started = make(chan struct{})
 	return p
 }
 
 // TestPendingCreateRegistry_MarkStartedClosesGate verifies the public
-// MarkStarted entry point unblocks a goroutine waiting on PendingCreate.started.
+// MarkStarted entry point unblocks a goroutine waiting on PendingCreate.Started.
 // This is the race that smb2.compound.compound-break exposes when the resume
 // goroutine fires before the compound dispatcher has had a chance to swap
 // the Callback for the continue-compound wrapper.
@@ -234,7 +234,7 @@ func TestPendingCreateRegistry_MarkStartedClosesGate(t *testing.T) {
 
 	released := make(chan struct{})
 	go func() {
-		<-p.started
+		<-p.Started
 		close(released)
 	}()
 
@@ -295,7 +295,7 @@ func TestPendingCreateRegistry_CancelReleasesGate(t *testing.T) {
 
 			released := make(chan struct{})
 			go func() {
-				<-p.started
+				<-p.Started
 				close(released)
 			}()
 
@@ -304,7 +304,7 @@ func TestPendingCreateRegistry_CancelReleasesGate(t *testing.T) {
 			select {
 			case <-released:
 			case <-time.After(time.Second):
-				t.Fatalf("%s did not release started gate within 1s", tc.name)
+				t.Fatalf("%s did not release Started gate within 1s", tc.name)
 			}
 		})
 	}

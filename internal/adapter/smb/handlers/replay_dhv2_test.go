@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/lease"
+	"github.com/marmos91/dittofs/internal/adapter/smb/pending"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
@@ -100,7 +101,7 @@ func newReplayTestHandler() (*Handler, *lock.Manager, *lease.LeaseManager) {
 	leaseMgr := lease.NewLeaseManager(&staticLockResolver{mgr: mgr}, nil)
 	h := &Handler{
 		LeaseManager:      leaseMgr,
-		CreateReplayCache: NewCreateReplayCache(),
+		CreateReplayCache: pending.NewCreateReplayCache[*CreateResponse, *OpenFile](),
 	}
 	return h, mgr, leaseMgr
 }
@@ -452,7 +453,7 @@ func TestResolveCreateReplay_NoOplockPendingReserved(t *testing.T) {
 // that would wrongly FILE_NOT_AVAILABLE all future opens) and an extra Release
 // must be a harmless no-op (no panic / no negative refcount).
 func TestCreateReplayCache_ReserveReleaseSingleReservation(t *testing.T) {
-	c := NewCreateReplayCache()
+	c := pending.NewCreateReplayCache[*CreateResponse, *OpenFile]()
 	const sessionID = uint64(11)
 	guid := [16]byte{0xC0, 0xDE}
 

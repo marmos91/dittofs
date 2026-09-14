@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/common"
+	"github.com/marmos91/dittofs/internal/adapter/smb/pending"
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -246,13 +247,13 @@ func (h *Handler) closeFilesWithFilter(
 		if openFile.IsPipe {
 			// Complete any pending async READ with STATUS_CANCELLED before closing.
 			if h.PipeReadRegistry != nil {
-				if pending := h.PipeReadRegistry.UnregisterByFileID(openFile.FileID); pending != nil {
-					if pending.Callback != nil {
-						go func(pr *PendingPipeRead) {
+				if parked := h.PipeReadRegistry.UnregisterByFileID(openFile.FileID); parked != nil {
+					if parked.Callback != nil {
+						go func(pr *pending.PendingPipeRead) {
 							if err := pr.Callback(pr.SessionID, pr.MessageID, pr.AsyncId, types.StatusCancelled, nil); err != nil {
 								logger.Warn("pipe close: failed to cancel pending READ", "asyncId", pr.AsyncId, "error", err)
 							}
-						}(pending)
+						}(parked)
 					}
 				}
 			}
@@ -784,21 +785,21 @@ func (h *Handler) releaseSessionLeasesAndNotifies(ctx context.Context, sessionID
 
 func (h *Handler) cancelAsyncOpsForSession(sessionID uint64) {
 	if h.PipeReadRegistry != nil {
-		for _, pending := range h.PipeReadRegistry.UnregisterAllForSession(sessionID) {
-			if pending.Callback != nil {
-				go func(pr *PendingPipeRead) {
+		for _, parked := range h.PipeReadRegistry.UnregisterAllForSession(sessionID) {
+			if parked.Callback != nil {
+				go func(pr *pending.PendingPipeRead) {
 					if err := pr.Callback(pr.SessionID, pr.MessageID, pr.AsyncId, types.StatusCancelled, nil); err != nil {
 						logger.Warn("session cleanup: failed to cancel pending pipe READ", "asyncId", pr.AsyncId, "error", err)
 					}
-				}(pending)
+				}(parked)
 			}
 		}
 	}
 	if h.PendingCreateRegistry != nil {
 		for _, parked := range h.PendingCreateRegistry.UnregisterAllForSession(sessionID) {
 			if parked.Callback != nil {
-				go func(p *PendingCreate) {
-					p.releaseReplay()
+				go func(p *pending.PendingCreate) {
+					p.ReleaseReplay()
 					if err := p.Callback(p.SessionID, p.MessageID, p.AsyncId, types.StatusCancelled, nil); err != nil {
 						logger.Debug("session cleanup: failed to cancel pending CREATE",
 							"asyncId", p.AsyncId, "messageID", p.MessageID, "error", err)
@@ -810,7 +811,7 @@ func (h *Handler) cancelAsyncOpsForSession(sessionID uint64) {
 	if h.PendingLockRegistry != nil {
 		for _, parked := range h.PendingLockRegistry.UnregisterAllForSession(sessionID) {
 			if parked.Callback != nil {
-				go func(p *PendingLock) {
+				go func(p *pending.PendingLock) {
 					if err := p.Callback(p.SessionID, p.MessageID, p.AsyncId, types.StatusRangeNotLocked, nil); err != nil {
 						logger.Debug("session cleanup: failed to cancel pending LOCK",
 							"asyncId", p.AsyncId, "messageID", p.MessageID, "error", err)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/pending"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -80,7 +81,7 @@ func (h *Handler) parkLockOnConflict(
 	// bounded by asyncBlockingLockTimeout.
 	waitCtx, cancel := context.WithTimeout(context.Background(), asyncBlockingLockTimeout)
 
-	pending := &PendingLock{
+	parkedLock := &pending.PendingLock{
 		ConnID:         ctx.ConnID,
 		SessionID:      ctx.SessionID,
 		TreeID:         ctx.TreeID,
@@ -96,7 +97,7 @@ func (h *Handler) parkLockOnConflict(
 		LockSeqNumber:  lockSeqNumber,
 	}
 
-	if err := h.PendingLockRegistry.Register(pending); err != nil {
+	if err := h.PendingLockRegistry.Register(parkedLock); err != nil {
 		cancel()
 		ctx.ReleaseAsync()
 		logger.Warn("LOCK: async park rejected — registry full",
@@ -106,7 +107,7 @@ func (h *Handler) parkLockOnConflict(
 		return 0, false
 	}
 
-	go h.resumePendingLock(waitCtx, pending, openFile, fileLock)
+	go h.resumePendingLock(waitCtx, parkedLock, openFile, fileLock)
 
 	logger.Debug("LOCK: parked on conflict — sent interim STATUS_PENDING",
 		"sessionID", ctx.SessionID,
@@ -181,21 +182,20 @@ func lockOwnerOf(fl *metadata.FileLock) string {
 //     repeat-of-same-range deny, all surface StatusLockNotGranted).
 func (h *Handler) resumePendingLock(
 	waitCtx context.Context,
-	pending *PendingLock,
-	openFile *OpenFile,
+	parkedLock *pending.PendingLock, openFile *OpenFile,
 	fileLock metadata.FileLock,
 ) {
-	defer pending.Cancel()
+	defer parkedLock.Cancel()
 	defer func() {
 		if h.LockWaitGraph != nil {
-			h.LockWaitGraph.RemoveWaiter(pending.OwnerID)
+			h.LockWaitGraph.RemoveWaiter(parkedLock.OwnerID)
 		}
 	}()
 
 	metaSvc := h.Registry.GetMetadataService()
 	authCtx := &metadata.AuthContext{
 		Context:  waitCtx,
-		Identity: pending.Identity,
+		Identity: parkedLock.Identity,
 	}
 
 	ticker := time.NewTicker(BlockingLockRetryInterval)
@@ -210,7 +210,7 @@ func (h *Handler) resumePendingLock(
 			//   (a) timeout — DeadlineExceeded; we own delivery and surface
 			//       STATUS_LOCK_NOT_GRANTED.
 			//   (b) external cancel — CANCEL / TDIS / LOGOFF called
-			//       pending.Cancel(). The canceller already drained our
+			//       parkedLock.Cancel(). The canceller already drained our
 			//       registry entry and fired its own callback; the
 			//       Unregister below will return nil and we exit cleanly
 			//       without a duplicate response.
@@ -237,8 +237,8 @@ func (h *Handler) resumePendingLock(
 				// (FileID, Index, Number) returns this status instead of
 				// re-running the acquire path (MS-SMB2 §3.3.5.14 step 4).
 				// Mirrors the sync success path in lock.go:Lock.
-				if pending.LockSeqEnabled && h.LockReplayCache != nil {
-					h.LockReplayCache.Store(pending.FileID, pending.LockSeqIndex, pending.LockSeqNumber, types.StatusSuccess)
+				if parkedLock.LockSeqEnabled && h.LockReplayCache != nil {
+					h.LockReplayCache.Store(parkedLock.FileID, parkedLock.LockSeqIndex, parkedLock.LockSeqNumber, types.StatusSuccess)
 				}
 				goto deliver
 			}
@@ -259,19 +259,19 @@ func (h *Handler) resumePendingLock(
 deliver:
 	// If a cancellation path already drained our entry, it has fired its
 	// own callback. Bail out without sending a duplicate response.
-	if h.PendingLockRegistry.Unregister(pending.AsyncId) == nil {
+	if h.PendingLockRegistry.Unregister(parkedLock.AsyncId) == nil {
 		return
 	}
-	if pending.Callback == nil {
+	if parkedLock.Callback == nil {
 		logger.Warn("LOCK async: no callback registered, dropping response",
-			"messageID", pending.MessageID,
-			"asyncId", pending.AsyncId)
+			"messageID", parkedLock.MessageID,
+			"asyncId", parkedLock.AsyncId)
 		return
 	}
-	if err := pending.Callback(pending.SessionID, pending.MessageID, pending.AsyncId, finalStatus, finalBody); err != nil {
+	if err := parkedLock.Callback(parkedLock.SessionID, parkedLock.MessageID, parkedLock.AsyncId, finalStatus, finalBody); err != nil {
 		logger.Debug("LOCK async: failed to send final response",
-			"messageID", pending.MessageID,
-			"asyncId", pending.AsyncId,
+			"messageID", parkedLock.MessageID,
+			"asyncId", parkedLock.AsyncId,
 			"status", finalStatus.String(),
 			"error", err)
 	}

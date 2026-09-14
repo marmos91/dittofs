@@ -1,4 +1,4 @@
-package handlers
+package pending
 
 import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"

@@ -1,4 +1,4 @@
-package handlers
+package pending
 
 import (
 	"context"
@@ -68,9 +68,9 @@ type PendingLock struct {
 	LockSeqNumber  uint8
 }
 
-// lockMsgKey scopes a MessageID to its connection (SMB2 MessageIDs are
+// LockMsgKey scopes a MessageID to its connection (SMB2 MessageIDs are
 // per-connection).
-type lockMsgKey struct {
+type LockMsgKey struct {
 	ConnID    uint64
 	MessageID uint64
 }
@@ -125,7 +125,7 @@ func NewPendingLockRegistry() *PendingLockRegistry {
 			connID:  func(p *PendingLock) uint64 { return p.ConnID },
 			indexes: []keyFunc[PendingLock]{
 				func(p *PendingLock) any {
-					return lockMsgKey{ConnID: p.ConnID, MessageID: p.MessageID}
+					return LockMsgKey{ConnID: p.ConnID, MessageID: p.MessageID}
 				},
 			},
 			buckets: []keyFunc[PendingLock]{
@@ -148,7 +148,7 @@ func (r *PendingLockRegistry) Register(p *PendingLock) error {
 	if len(r.reg.byAsyncID) >= r.reg.maxOps {
 		return ErrTooManyPendingLocks
 	}
-	if r.reg.lookupLocked(lockIdxMsgKey, lockMsgKey{ConnID: p.ConnID, MessageID: p.MessageID}) != nil {
+	if r.reg.lookupLocked(lockIdxMsgKey, LockMsgKey{ConnID: p.ConnID, MessageID: p.MessageID}) != nil {
 		return ErrDuplicateLockMessageID
 	}
 	if _, dup := r.reg.byAsyncID[p.AsyncId]; dup {
@@ -179,7 +179,7 @@ func (r *PendingLockRegistry) Unregister(asyncId uint64) *PendingLock {
 // and invokes its Cancel closure to unblock the resume goroutine. Returns the
 // removed entry, or nil if none matched. Used by synchronous SMB2_CANCEL.
 func (r *PendingLockRegistry) UnregisterByMessageID(connID, messageID uint64) *PendingLock {
-	p := r.reg.unregisterByIndex(lockIdxMsgKey, lockMsgKey{ConnID: connID, MessageID: messageID})
+	p := r.reg.unregisterByIndex(lockIdxMsgKey, LockMsgKey{ConnID: connID, MessageID: messageID})
 	if p != nil && p.Cancel != nil {
 		p.Cancel()
 	}

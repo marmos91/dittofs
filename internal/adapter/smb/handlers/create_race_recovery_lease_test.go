@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/lease"
+	"github.com/marmos91/dittofs/internal/adapter/smb/pending"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
@@ -202,7 +203,7 @@ func TestCreate_CompoundChain_ParksMidChain(t *testing.T) {
 	tree2 := &TreeConnection{TreeID: smbCtx2.TreeID, SessionID: smbCtx2.SessionID, ShareName: smbCtx2.ShareName}
 	h2.StoreTree(tree2)
 	h2.LeaseManager = lease.NewLeaseManager(&staticLockResolver{mgr: lock.NewManager()}, nil)
-	h2.PendingCreateRegistry = NewPendingCreateRegistry()
+	h2.PendingCreateRegistry = pending.NewPendingCreateRegistry()
 	metaSvc2 := rt2.GetMetadataService()
 	parent2, _ := raceParentDir(t, metaSvc2, rootAuth2, rootHandle2, "compound-solo")
 	t2, _, err := metaSvc2.CreateFile(rootAuth2, parent2, "guarded.txt",

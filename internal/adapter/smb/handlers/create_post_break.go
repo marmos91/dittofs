@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/lease"
+	"github.com/marmos91/dittofs/internal/adapter/smb/pending"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -693,18 +694,18 @@ func (h *Handler) parkCreateOnLeaseBreak(
 	// CreateGuid is a no-op in Release.
 	replayGuid := dh2qCreateGuid(d.req)
 
-	pending := &PendingCreate{
+	parked := &pending.PendingCreate{
 		ConnID:    ctx.ConnID,
 		SessionID: ctx.SessionID,
 		MessageID: ctx.MessageID,
 		AsyncId:   asyncId,
 		Cancel:    cancel,
 		Callback:  ctx.AsyncCreateCompleteCallback,
-		// releaseReplay is invoked by every path that delivers this CREATE's
+		// ReleaseReplay is invoked by every path that delivers this CREATE's
 		// final response, immediately before the response goes out — the resume
 		// goroutine below, and the CANCEL / session-teardown paths that preempt
-		// it. See PendingCreate.releaseReplay for why the ordering matters.
-		replayReleaser: func() {
+		// it. See PendingCreate.ReleaseReplay for why the ordering matters.
+		ReplayReleaser: func() {
 			if h.CreateReplayCache != nil {
 				h.CreateReplayCache.Release(ctx.SessionID, replayGuid)
 			}
@@ -716,10 +717,10 @@ func (h *Handler) parkCreateOnLeaseBreak(
 		// callback before the compound dispatcher has had a chance to swap
 		// it for the continue-compound wrapper (smb2.compound.compound-break
 		// IO_TIMEOUT race observed in CI).
-		started: make(chan struct{}),
+		Started: make(chan struct{}),
 	}
 
-	if err := h.PendingCreateRegistry.Register(pending); err != nil {
+	if err := h.PendingCreateRegistry.Register(parked); err != nil {
 		cancel()
 		ctx.ReleaseAsync()
 		logger.Warn("CREATE: async park rejected — registry full",
@@ -738,8 +739,8 @@ func (h *Handler) parkCreateOnLeaseBreak(
 		// this goroutine — including the early return below, taken when a CANCEL
 		// or session teardown preempted the entry and delivers the response
 		// itself. The exits that DO send from here release explicitly first;
-		// releaseReplay's once-per-entry cap is what makes that overlap safe.
-		defer pending.releaseReplay()
+		// ReleaseReplay's once-per-entry cap is what makes that overlap safe.
+		defer parked.ReleaseReplay()
 
 		if shareConflictWait {
 			// Deferred-open resume: wait for the live share-mode conflict to
@@ -776,8 +777,8 @@ func (h *Handler) parkCreateOnLeaseBreak(
 		// any release path. Done BEFORE Unregister so a CANCEL/teardown that
 		// pulls the entry first can still hand off via markStarted — otherwise
 		// the gate would never close and this goroutine would block forever.
-		// See PendingCreate.started doc for the race this closes.
-		<-pending.started
+		// See PendingCreate.Started doc for the race this closes.
+		<-parked.Started
 
 		// Ensure our entry is still live (not preempted by CANCEL or teardown).
 		// If it was, CANCEL / teardown already sent the final response.
@@ -794,8 +795,8 @@ func (h *Handler) parkCreateOnLeaseBreak(
 				"messageID", messageID,
 				"asyncId", asyncId,
 				"treeID", ctx.TreeID)
-			pending.releaseReplay()
-			if err := pending.Callback(pending.SessionID, messageID, asyncId, types.StatusNetworkNameDeleted, nil); err != nil {
+			parked.ReleaseReplay()
+			if err := parked.Callback(parked.SessionID, messageID, asyncId, types.StatusNetworkNameDeleted, nil); err != nil {
 				logger.Debug("CREATE async: failed to send tree-deleted response", "error", err)
 			}
 			return
@@ -814,9 +815,9 @@ func (h *Handler) parkCreateOnLeaseBreak(
 			}
 		}
 
-		pending.releaseReplay()
+		parked.ReleaseReplay()
 
-		if err := pending.Callback(pending.SessionID, messageID, asyncId, status, body); err != nil {
+		if err := parked.Callback(parked.SessionID, messageID, asyncId, status, body); err != nil {
 			logger.Warn("CREATE async: failed to send final response",
 				"messageID", messageID,
 				"asyncId", asyncId,

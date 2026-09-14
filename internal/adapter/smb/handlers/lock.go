@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/pending"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -212,7 +213,7 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 			checkLockSequence = true
 		}
 	}
-	lockSeqIndex, lockSeqNumber, lockSeqEnabled := UnpackLockSequence(req.LockSequence)
+	lockSeqIndex, lockSeqNumber, lockSeqEnabled := pending.UnpackLockSequence(req.LockSequence)
 	lockSeqEnabled = lockSeqEnabled && checkLockSequence
 	if lockSeqEnabled && h.LockReplayCache != nil {
 		if cachedStatus, hit := h.LockReplayCache.Lookup(req.FileID, lockSeqIndex, lockSeqNumber); hit {
@@ -546,7 +547,7 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 				Context:  cancelCtx,
 				Identity: authCtx.Identity,
 			}
-			pendingKey := lockMsgKey{ConnID: ctx.ConnID, MessageID: ctx.MessageID}
+			pendingKey := pending.LockMsgKey{ConnID: ctx.ConnID, MessageID: ctx.MessageID}
 			h.pendingLocks.Store(pendingKey, cancelFn)
 
 			err = h.acquireLockWithRetry(lockAuthCtx, metaSvc, openFile.MetadataHandle, fileLock, false)

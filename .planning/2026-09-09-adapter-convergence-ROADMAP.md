@@ -21,7 +21,7 @@ Note: develop carries 2 local docs commits (23de25e56 + eda765c47) not yet pushe
 | 3 — Shared-layer reuse | errmap, identity, lifecycle | ✅ **LANDED 2026-09-10** — 6 PRs (#2499–#2504), all reviewed green |
 | 3.5 — Error-universe consolidation | sentinel normalization + `StatusFor` extraction | ✅ IMPLEMENTED 2026-09-10 — consolidation @ f1d554b26 on origin (78 files, +933/-1423), pynfs v4.1 walkout @ f6e191892 on origin (38→14 rows; 4 #2340 rows remain: CSESS16a/26/27, RECC3); review fan-out running |
 | 4 — SMB triage | ~155 untriaged findings | ✅ **COMPLETE 2026-09-10** — triage 159 rows; fix-wave 1 landed #2518/#2512/#2514/#2516 via #2523/#2526/#2524/#2525; fix-wave 2 landed #2513/#2515/#2517 via #2527/#2528 |
-| 5 — God objects | `manager.go` 3,985, `Create()` 1,016… | ❌ blocked behind 1–4 |
+| 5 — God objects | `manager.go` 3,985, `Create()` 1,016… | ⚠️ **file splits landed 2026-09-11, package boundaries NOT** — #2529-#2532 split files inside `package handlers`/`package state`, which is the option the MASTER-PLAN's scope decision overruled. User reaffirmed the boundaries 2026-09-14; all three named ones are refuted (see the plan's CORRECTION 2026-09-14). Real seams: `smb/pending/` (extracted), `smb/notify/`, and a shared-types package as prerequisite. |
 | 6 — Dispatch-core finish line | acceptance test | lands inside 1/3/5 |
 | 7 — Perf lens | bufpool, measurement plan | ❌ not started |
 
@@ -200,7 +200,7 @@ Fix-wave 2 fanned 2026-09-10 ~20:40 as two file-disjoint lanes (base 3afd8383c):
   (15 modified + 6 new domain-named test files).
 - Lane B create (#2517, branch fix/wave4-create-post-break): first child died cold mid-verification
   with a staged 4-file diff; finisher worker landed it GREEN (signed 9f052fc98, 5 files +471/−16:
-  TOCTOU winner-lease break, compound noAsyncPark guard, ADS lookup-error surfacing + test,
+  TOCTOU winner-lease break, compound async-park guard, ADS lookup-error surfacing + test,
   sessionKeyHash removal partial by design with accepted-unused comments).
 - Review fan-out 2026-09-10: both branches adversarial+correctness reviewed. A verdict OK with a
   verified P0 (NextNonce PutUint64 panics on AES-CCM's 11-byte nonce — first encrypted response on
@@ -217,7 +217,7 @@ Fix-wave 2 fanned 2026-09-10 ~20:40 as two file-disjoint lanes (base 3afd8383c):
   nor SessionBaseKey derivation matches; the exact peer-hashed bytes are not observable server-
   side). The check is now ADVISORY (logged, non-fatal) as signed 5d6baac52 with a ponytail ceiling;
   smb2.connect verified green locally. #2528's smb2.compound_async.getinfo_middle fixed by DROPPING
-  the noAsyncPark guard (60915afb3 — mid-chain CREATE parks per MS-SMB2 3.3.4.2, test converted to
+  the async-park guard (60915afb3 — mid-chain CREATE parks per MS-SMB2 3.3.4.2, test converted to
   pin parking) plus the QF1008 selector fix; PR bodies updated, Copilot re-requested, babysitter
   v2 merging A then B when CLEAN.
 - **LANDED 2026-09-10 ~23:55:** #2527 squash-merged as 44d4d70ab, #2528 as a558b0dce; issues

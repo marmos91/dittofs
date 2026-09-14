@@ -28,7 +28,7 @@ func (h *Handler) storeCreateReplayIfApplicable(ctx *SMBHandlerContext, req *Cre
 	}
 	// These bypass paths (pipe / open-root) have no lease- or oplock-bearing
 	// Open to refresh on replay, so the cached snapshot is replayed verbatim.
-	h.CreateReplayCache.Store(ctx.SessionID, createGuid, resp, nil)
+	h.storeCreateReplay(ctx.SessionID, createGuid, resp, nil)
 }
 
 // resolveCreateReplay applies the SMB3 DH2Q CreateGuid de-duplication
@@ -181,7 +181,7 @@ func stripCreateContext(contexts []CreateContext, tag string) []CreateContext {
 // without a lease context, or an entry with no associated open, is a
 // no-op success — the cached snapshot stands.
 
-func (h *Handler) refreshReplayLease(ctx *SMBHandlerContext, req *CreateRequest, entry *CachedCreateResponse, resp *CreateResponse) types.Status {
+func (h *Handler) refreshReplayLease(ctx *SMBHandlerContext, req *CreateRequest, entry *cachedCreate, resp *CreateResponse) types.Status {
 	leaseCtx := FindCreateContext(req.CreateContexts, LeaseContextTagRequest)
 	if leaseCtx == nil || entry.OpenFile == nil {
 		return types.StatusSuccess

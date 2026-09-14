@@ -65,6 +65,40 @@ in every new package — is **load-bearing under this decision**, not process th
 thing that keeps a 40k-line test migration reviewable. Do not drop it later as bureaucracy; it was
 priced in when the boundary was chosen.
 
+**CORRECTION 2026-09-14 — the decision stands, the three named boundaries do not.**
+The user reaffirmed (2) on 2026-09-14: real package boundaries, not same-package file splits.
+Wave 5 as landed delivered the file splits only, so the goal is still open. But all three of the
+boundaries named above were then measured against the code, and none is achievable as written:
+
+- **`handlers/info/` — import cycle.** It owns `restoreFrozenTimestamps`,
+  `restoreParentDirFrozenTimestamps` (`set_info_file.go`), `breakParentDirLeasesForContentChange`
+  (`set_info_lease.go`) and `parseSDOptsForShare` (`set_info_security.go`), which `write.go`,
+  `close.go`, `create_complete.go`, `ioctl_copychunk.go`, `session_lifecycle.go` and
+  `doc_election.go` all call — while needing `Handler`/`OpenFile`/`SMBResponseBase` back. Moved for
+  real under a build overlay: 199 compile errors, 33 symbols needing export across 437 call sites.
+- **`handlers/create/` — import cycle.** `CreateContext` (18 refs from `durable_context.go` /
+  `lease_context.go`), `PendingCreateRegistry` as a `Handler` field, and
+  `AsyncCreateCompleteCallback` as a field on the shared `SMBHandlerContext`. 41 symbols would need
+  exporting across ~190 files.
+- **`smb/state/` — not a move but a rewrite.** The tables *are* `Handler` fields; 60 `*Handler`
+  methods live in those files; 36 production files reach in across 547 typed refs. Credits already
+  live in `session/`. It would invert the dependency and leave `Handler` holding the same fields.
+
+**The prerequisite this plan never named:** the shared types — `SMBResponseBase`,
+`SMBHandlerContext`, `OpenFile`, `TreeConnection`, `CreateContext`, today scattered across
+`result.go`, `context.go`, `open_file.go`, `session_lifecycle.go` and `create.go` — must become
+their own package first. Until they do, every candidate extraction needs `handlers` back and the
+cycle is unavoidable.
+
+**Two real seams exist that this plan did not name:** `smb/pending/` (the pending registries plus
+the replay caches) and `smb/notify/` (`change_notify.go`). The first is extracted in the PR
+carrying this correction.
+
+**Numbers in this section that were wrong:** it is **128** in-package test files, not 119, and
+there are **zero** `handlers_test` external test files — every test is white-box, so nothing moves
+for free. `noAsyncPark`, cited twice in the ROADMAP as a compound/async guard, does not exist as a
+code symbol anywhere in the repository; it appears only in that prose.
+
 **Ponytail findings that survive the scope decision and are applied below:**
 
 - `pkg/adapter/auxsvc/auxsvc.go` is **234 lines (125 non-comment)**, not the 411 stated twice in

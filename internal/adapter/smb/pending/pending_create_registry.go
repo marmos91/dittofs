@@ -1,4 +1,4 @@
-package handlers
+package pending
 
 import (
 	"context"
@@ -35,7 +35,7 @@ type PendingCreate struct {
 	// StatusCancelled + nil body). Releases the async slot as part of its work.
 	Callback AsyncCreateCompleteCallback
 
-	// releaseReplay clears the DH2Q CreateGuid reservation this CREATE holds
+	// ReleaseReplay clears the DH2Q CreateGuid reservation this CREATE holds
 	// while it is parked. Every path that delivers the CREATE's final response
 	// MUST invoke it immediately BEFORE sending: a client learns the CREATE is
 	// finished from exactly that response and may put its replay on the
@@ -49,9 +49,9 @@ type PendingCreate struct {
 	// parkCreateOnLeaseBreak wires this on every parked CREATE, so it is non-nil
 	// there whether or not the request carried a CreateGuid — a CREATE without
 	// one releases the zero guid, which Release ignores. It is nil only on
-	// entries built outside that path, which is why releaseReplay tolerates nil.
+	// entries built outside that path, which is why ReleaseReplay tolerates nil.
 	//
-	// Always go through releaseReplay: it runs the hook AT MOST ONCE per parked
+	// Always go through ReleaseReplay: it runs the hook AT MOST ONCE per parked
 	// CREATE. That cap is load-bearing, not hygiene: the reservation is
 	// keyed by CreateGuid alone, not by CREATE instance, so releasing is not
 	// idempotent in any useful sense. A terminal STATUS_SHARING_VIOLATION is
@@ -59,10 +59,10 @@ type PendingCreate struct {
 	// parks and re-reserves the key first, a second release from this
 	// already-finished entry would clear the NEW CREATE's reservation and let a
 	// replay start a second concurrent CREATE for that guid.
-	replayReleaser func()
+	ReplayReleaser func()
 	replayOnce     sync.Once
 
-	// started is closed by MarkStarted once the dispatch layer has finalized
+	// Started is closed by MarkStarted once the dispatch layer has finalized
 	// the Callback assignment for this entry. The resume goroutine MUST wait
 	// on it before invoking Callback. Without this gate, a fast localhost
 	// break ACK can let the resume goroutine fire the original callback
@@ -73,7 +73,7 @@ type PendingCreate struct {
 	//
 	// CANCEL / session-teardown paths invoke Callback directly without going
 	// through the resume goroutine, so they do NOT need to wait on this gate.
-	started     chan struct{}
+	Started     chan struct{}
 	startedOnce sync.Once
 }
 
@@ -94,18 +94,18 @@ const (
 	createBucketSession = iota
 )
 
-// releaseReplay clears this parked CREATE's replay reservation. Safe on an
+// ReleaseReplay clears this parked CREATE's replay reservation. Safe on an
 // entry that carries no hook, and safe to call from several delivery paths —
 // the resume goroutine's deferred backstop deliberately overlaps the explicit
 // release on the paths that send a response, so the hook runs at most once per
-// entry. See PendingCreate.replayReleaser for why once-per-entry (rather than
+// entry. See PendingCreate.ReplayReleaser for why once-per-entry (rather than
 // merely "delete is idempotent") is what keeps a finished CREATE from clearing
 // a newer CREATE's reservation for the same CreateGuid.
-func (p *PendingCreate) releaseReplay() {
-	if p.replayReleaser == nil {
+func (p *PendingCreate) ReleaseReplay() {
+	if p.ReplayReleaser == nil {
 		return
 	}
-	p.replayOnce.Do(p.replayReleaser)
+	p.replayOnce.Do(p.ReplayReleaser)
 }
 
 // MaxPendingCreates caps concurrent parked CREATEs per server to protect the
@@ -208,7 +208,7 @@ func (r *PendingCreateRegistry) UnregisterByMessageID(connID, messageID uint64) 
 	if p == nil {
 		return nil
 	}
-	// Release the started gate so any resume goroutine racing the cancel
+	// Release the Started gate so any resume goroutine racing the cancel
 	// path past its Unregister check will not deadlock waiting on dispatch
 	// to MarkStarted (CANCEL/teardown bypass the dispatcher).
 	markStarted(p)
@@ -282,16 +282,16 @@ func (r *PendingCreateRegistry) MarkStarted(asyncId uint64) bool {
 	return true
 }
 
-// markStarted closes the started gate exactly once. Called both by the
+// markStarted closes the Started gate exactly once. Called both by the
 // public MarkStarted (dispatch-layer release) and by internal cleanup paths
 // (CANCEL / teardown) that pull entries directly and need to unblock any
 // resume goroutine still parked on the wait — without the unblock, the
 // goroutine would leak when CANCEL runs after MarkStarted's window closes.
 func markStarted(p *PendingCreate) {
-	if p == nil || p.started == nil {
+	if p == nil || p.Started == nil {
 		return
 	}
-	p.startedOnce.Do(func() { close(p.started) })
+	p.startedOnce.Do(func() { close(p.Started) })
 }
 
 // Len returns the number of pending CREATEs.

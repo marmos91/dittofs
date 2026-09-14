@@ -4,6 +4,7 @@ package handlers
 import (
 	"context"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/pending"
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
@@ -175,19 +176,19 @@ type SMBHandlerContext struct {
 
 	// AsyncPipeReadCallback delivers the final async READ response for a pending
 	// named-pipe read. Set by the dispatch layer for SMB2Read commands.
-	AsyncPipeReadCallback AsyncPipeReadCallback
+	AsyncPipeReadCallback pending.AsyncPipeReadCallback
 
 	// AsyncCreateCompleteCallback delivers the final async CREATE response for
 	// a request that was parked on a lease break (MS-SMB2 §3.3.5.9 + §3.3.4.7).
 	// Set by the dispatch layer for SMB2Create commands. See
 	// AsyncCreateCompleteCallback docs in pending_create_registry.go.
-	AsyncCreateCompleteCallback AsyncCreateCompleteCallback
+	AsyncCreateCompleteCallback pending.AsyncCreateCompleteCallback
 
 	// AsyncLockCompleteCallback delivers the final async LOCK response for a
 	// blocking-lock request that was parked on a byte-range conflict
 	// (MS-SMB2 §3.3.5.14). Set by the dispatch layer for SMB2Lock commands.
 	// See AsyncLockCompleteCallback docs in pending_lock_registry.go.
-	AsyncLockCompleteCallback AsyncLockCompleteCallback
+	AsyncLockCompleteCallback pending.AsyncLockCompleteCallback
 
 	// TryReserveAsync checks and atomically reserves one async connection slot.
 	// Returns false when the connection is at max_async_credits (512); the caller

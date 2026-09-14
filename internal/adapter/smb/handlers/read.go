@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/common"
+	"github.com/marmos91/dittofs/internal/adapter/smb/pending"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -579,7 +580,7 @@ func (h *Handler) handlePipeRead(ctx *SMBHandlerContext, req *ReadRequest, openF
 		// fails we haven't consumed a credit for a read we never issued.
 		// UnregisterByFileID rolls back the registration in that case.
 		asyncId := h.generateAsyncId()
-		pending := &PendingPipeRead{
+		pending := &pending.PendingPipeRead{
 			FileID:    req.FileID,
 			SessionID: ctx.SessionID,
 			ConnID:    ctx.ConnID,

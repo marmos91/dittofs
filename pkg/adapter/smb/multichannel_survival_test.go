@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/handlers"
+	"github.com/marmos91/dittofs/internal/adapter/smb/pending"
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 )
@@ -29,7 +30,7 @@ func addChannel(t *testing.T, sess *session.Session, connID uint64) {
 // parkCreate registers a pending CREATE for sessionID.
 func parkCreate(t *testing.T, h *handlers.Handler, sessionID, connID, asyncID uint64) {
 	t.Helper()
-	if err := h.PendingCreateRegistry.Register(&handlers.PendingCreate{
+	if err := h.PendingCreateRegistry.Register(&pending.PendingCreate{
 		ConnID:    connID,
 		SessionID: sessionID,
 		MessageID: 1,

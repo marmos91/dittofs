@@ -90,7 +90,7 @@ func TestReplay_NoOplockOpenIsReplayCacheable(t *testing.T) {
 	if openFile.ReplayCreateGuid != createGuid {
 		t.Fatalf("ReplayCreateGuid=%x, want %x", openFile.ReplayCreateGuid, createGuid)
 	}
-	if e.h.CreateReplayCache.Lookup(sessionID, createGuid) == nil {
+	if e.h.CreateReplayCache.LookupEntry(sessionID, createGuid) == nil {
 		t.Fatal("NONE-oplock DH2Q open was not stored in the replay cache")
 	}
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"unicode/utf16"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/pending"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -309,7 +310,7 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 
 	// Try to cancel a pending async pipe READ.
 	if h.PipeReadRegistry != nil {
-		var pendingRead *PendingPipeRead
+		var pendingRead *pending.PendingPipeRead
 		if ctx.RequestAsyncId != 0 {
 			pendingRead = h.PipeReadRegistry.UnregisterByAsyncId(ctx.ConnID, ctx.RequestAsyncId)
 		} else {
@@ -321,7 +322,7 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 				"asyncId", pendingRead.AsyncId,
 				"messageID", pendingRead.MessageID)
 			if pendingRead.Callback != nil {
-				go func(pr *PendingPipeRead) {
+				go func(pr *pending.PendingPipeRead) {
 					if err := pr.Callback(pr.SessionID, pr.MessageID, pr.AsyncId, types.StatusCancelled, nil); err != nil {
 						logger.Warn("CANCEL: failed to send STATUS_CANCELLED for pipe READ",
 							"messageID", pr.MessageID,
@@ -349,7 +350,7 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 	//     goroutine returns STATUS_CANCELLED through the normal response
 	//     path.
 	if h.PendingLockRegistry != nil {
-		var parked *PendingLock
+		var parked *pending.PendingLock
 		if ctx.RequestAsyncId != 0 {
 			parked = h.PendingLockRegistry.UnregisterByAsyncId(ctx.ConnID, ctx.RequestAsyncId)
 		} else {
@@ -361,7 +362,7 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 				"asyncId", parked.AsyncId,
 				"messageID", parked.MessageID)
 			if parked.Callback != nil {
-				go func(p *PendingLock) {
+				go func(p *pending.PendingLock) {
 					if err := p.Callback(p.SessionID, p.MessageID, p.AsyncId, types.StatusCancelled, nil); err != nil {
 						logger.Warn("CANCEL: failed to send STATUS_CANCELLED for LOCK",
 							"messageID", p.MessageID,
@@ -374,7 +375,7 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 			}
 		}
 	}
-	if cancelFn, ok := h.pendingLocks.LoadAndDelete(lockMsgKey{ConnID: ctx.ConnID, MessageID: ctx.MessageID}); ok {
+	if cancelFn, ok := h.pendingLocks.LoadAndDelete(pending.LockMsgKey{ConnID: ctx.ConnID, MessageID: ctx.MessageID}); ok {
 		cancelledSomething = true
 		cancelFn.(context.CancelFunc)()
 		logger.Debug("CANCEL: cancelled inline blocking LOCK",
@@ -385,7 +386,7 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 	// goroutine's wait context is torn down via Cancel(); we also send a
 	// STATUS_CANCELLED final response so the client's async slot is released.
 	if h.PendingCreateRegistry != nil {
-		var parked *PendingCreate
+		var parked *pending.PendingCreate
 		if ctx.RequestAsyncId != 0 {
 			parked = h.PendingCreateRegistry.UnregisterByAsyncId(ctx.ConnID, ctx.RequestAsyncId)
 		} else {
@@ -397,8 +398,8 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 				"asyncId", parked.AsyncId,
 				"messageID", parked.MessageID)
 			if parked.Callback != nil {
-				go func(p *PendingCreate) {
-					p.releaseReplay()
+				go func(p *pending.PendingCreate) {
+					p.ReleaseReplay()
 					if err := p.Callback(p.SessionID, p.MessageID, p.AsyncId, types.StatusCancelled, nil); err != nil {
 						logger.Warn("CANCEL: failed to send STATUS_CANCELLED for CREATE",
 							"messageID", p.MessageID,

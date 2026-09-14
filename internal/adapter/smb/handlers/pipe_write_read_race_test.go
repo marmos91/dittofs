@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/pending"
 	"github.com/marmos91/dittofs/internal/adapter/smb/rpc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/pkg/auth/sid"
@@ -79,7 +80,7 @@ func TestHandlePipe_WriteReadRace_DeliversResponseOnce(t *testing.T) {
 
 	h := NewHandler()
 	h.PipeManager = rpc.NewPipeManager()
-	h.PipeReadRegistry = NewPipeReadRegistry()
+	h.PipeReadRegistry = pending.NewPipeReadRegistry()
 
 	for i := 0; i < iterations; i++ {
 		var fileID [16]byte

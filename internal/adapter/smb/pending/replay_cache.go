@@ -1,4 +1,4 @@
-package handlers
+package pending
 
 import (
 	"sync"
@@ -65,10 +65,10 @@ const maxCreateReplayEntries = 4096
 // The reference also carries the original oplock type and lease key so
 // the replay path can apply Samba's lease/oplock-mismatch ACCESS_DENIED
 // gates (replay-dhv2-lease3 / oplock-lease).
-type CachedCreateResponse struct {
+type CachedCreateResponse[R any, O any] struct {
 	SessionID uint64
-	Response  *CreateResponse
-	OpenFile  *OpenFile
+	Response  R
+	OpenFile  O
 	StoredAt  time.Time
 }
 
@@ -92,16 +92,16 @@ type reserveKey struct {
 // (smbtorture smb2.replay.replay-dhv2-pending* / *-vs-{oplock,lease}).
 // Samba models this with the FWP_RESERVED / FILE_NOT_AVAILABLE slot
 // states in smb2srv_open_lookup_replay_cache.
-type CreateReplayCache struct {
+type CreateReplayCache[R any, O any] struct {
 	mu       sync.Mutex
-	entries  map[[16]byte]*CachedCreateResponse
+	entries  map[[16]byte]*CachedCreateResponse[R, O]
 	reserved map[reserveKey]struct{}
 }
 
 // NewCreateReplayCache builds an empty cache.
-func NewCreateReplayCache() *CreateReplayCache {
-	return &CreateReplayCache{
-		entries:  make(map[[16]byte]*CachedCreateResponse),
+func NewCreateReplayCache[R any, O any]() *CreateReplayCache[R, O] {
+	return &CreateReplayCache[R, O]{
+		entries:  make(map[[16]byte]*CachedCreateResponse[R, O]),
 		reserved: make(map[reserveKey]struct{}),
 	}
 }
@@ -110,7 +110,7 @@ func NewCreateReplayCache() *CreateReplayCache {
 // CREATE for the given session. While reserved, a replayed CREATE for
 // the same CreateGuid resolves to STATUS_FILE_NOT_AVAILABLE. A zero
 // CreateGuid is ignored.
-func (c *CreateReplayCache) Reserve(sessionID uint64, createGuid [16]byte) {
+func (c *CreateReplayCache[R, O]) Reserve(sessionID uint64, createGuid [16]byte) {
 	if createGuid == ([16]byte{}) {
 		return
 	}
@@ -121,7 +121,7 @@ func (c *CreateReplayCache) Reserve(sessionID uint64, createGuid [16]byte) {
 
 // Release clears an in-progress reservation once the parked CREATE has
 // reached a terminal state (success stored, or failed). Idempotent.
-func (c *CreateReplayCache) Release(sessionID uint64, createGuid [16]byte) {
+func (c *CreateReplayCache[R, O]) Release(sessionID uint64, createGuid [16]byte) {
 	if createGuid == ([16]byte{}) {
 		return
 	}
@@ -132,7 +132,7 @@ func (c *CreateReplayCache) Release(sessionID uint64, createGuid [16]byte) {
 
 // IsReserved reports whether a CreateGuid's original CREATE is currently
 // parked for the given session.
-func (c *CreateReplayCache) IsReserved(sessionID uint64, createGuid [16]byte) bool {
+func (c *CreateReplayCache[R, O]) IsReserved(sessionID uint64, createGuid [16]byte) bool {
 	if createGuid == ([16]byte{}) {
 		return false
 	}
@@ -142,21 +142,25 @@ func (c *CreateReplayCache) IsReserved(sessionID uint64, createGuid [16]byte) bo
 	return ok
 }
 
-// Store records the response for a successful V2 CREATE keyed by
-// CreateGuid. Only success responses are cached — a replayed failed
-// CREATE should run through the normal handler path and may even
-// succeed the second time. openFile is the live Open the CREATE
-// established; it is consulted on replay to rebuild the current
-// lease/oplock state (may be nil for paths that have no Open, in which
-// case the cached snapshot is replayed verbatim).
-func (c *CreateReplayCache) Store(sessionID uint64, createGuid [16]byte, resp *CreateResponse, openFile *OpenFile) {
-	if createGuid == ([16]byte{}) || resp == nil || resp.Status != types.StatusSuccess {
+// Store records a V2 CREATE response keyed by CreateGuid. openFile is
+// the live Open the CREATE established; it is consulted on replay to
+// rebuild the current lease/oplock state (it may be the zero value for
+// paths that have no Open, in which case the cached snapshot is
+// replayed verbatim).
+//
+// Deciding WHICH responses deserve caching belongs to the caller: only a
+// success may be replayed, since a failed CREATE must run the normal
+// handler path and may succeed the second time. That rule needs the
+// concrete response type to read a status off, which this package
+// deliberately does not know.
+func (c *CreateReplayCache[R, O]) Store(sessionID uint64, createGuid [16]byte, resp R, openFile O) {
+	if createGuid == ([16]byte{}) {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.pruneLocked()
-	c.entries[createGuid] = &CachedCreateResponse{
+	c.entries[createGuid] = &CachedCreateResponse[R, O]{
 		SessionID: sessionID,
 		Response:  resp,
 		OpenFile:  openFile,
@@ -164,23 +168,12 @@ func (c *CreateReplayCache) Store(sessionID uint64, createGuid [16]byte, resp *C
 	}
 }
 
-// Lookup returns the cached response if one exists for the given
-// CreateGuid + session and has not expired. Replay is scoped per
-// session — a different session's CreateGuid collision (vanishingly
-// unlikely but possible) must not hijack another session's open.
-func (c *CreateReplayCache) Lookup(sessionID uint64, createGuid [16]byte) *CreateResponse {
-	if e := c.LookupEntry(sessionID, createGuid); e != nil {
-		return e.Response
-	}
-	return nil
-}
-
 // LookupEntry returns the full cache entry (response + live Open) for
 // the given CreateGuid + session, or nil on miss/expiry. The create
 // path uses this to rebuild the current lease/oplock state on replay
 // and to distinguish a replay (FLAGS_REPLAY_OPERATION set) from a
 // duplicate non-replay CREATE (→ DUPLICATE_OBJECTID).
-func (c *CreateReplayCache) LookupEntry(sessionID uint64, createGuid [16]byte) *CachedCreateResponse {
+func (c *CreateReplayCache[R, O]) LookupEntry(sessionID uint64, createGuid [16]byte) *CachedCreateResponse[R, O] {
 	if createGuid == ([16]byte{}) {
 		return nil
 	}
@@ -200,7 +193,7 @@ func (c *CreateReplayCache) LookupEntry(sessionID uint64, createGuid [16]byte) *
 // Forget drops the cached entry for CreateGuid. Called when the open
 // is closed cleanly — the cache window is only meaningful while a
 // retry could still arrive.
-func (c *CreateReplayCache) Forget(createGuid [16]byte) {
+func (c *CreateReplayCache[R, O]) Forget(createGuid [16]byte) {
 	if createGuid == ([16]byte{}) {
 		return
 	}
@@ -212,7 +205,7 @@ func (c *CreateReplayCache) Forget(createGuid [16]byte) {
 // ForgetSession drops all entries for the given session. Called by
 // session teardown so a long-lived ServerGUID-stable replay cache
 // does not survive logoff.
-func (c *CreateReplayCache) ForgetSession(sessionID uint64) {
+func (c *CreateReplayCache[R, O]) ForgetSession(sessionID uint64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for k, e := range c.entries {
@@ -228,7 +221,7 @@ func (c *CreateReplayCache) ForgetSession(sessionID uint64) {
 }
 
 // Len returns the number of cached entries (test / metrics).
-func (c *CreateReplayCache) Len() int {
+func (c *CreateReplayCache[R, O]) Len() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return len(c.entries)
@@ -237,7 +230,7 @@ func (c *CreateReplayCache) Len() int {
 // pruneLocked evicts expired entries and, if the cap is still
 // exceeded, drops oldest-first until under the cap. Cheap because
 // the cache is bounded small.
-func (c *CreateReplayCache) pruneLocked() {
+func (c *CreateReplayCache[R, O]) pruneLocked() {
 	now := time.Now()
 	for k, e := range c.entries {
 		if now.Sub(e.StoredAt) > replayCacheTTL {

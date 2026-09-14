@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/lease"
+	"github.com/marmos91/dittofs/internal/adapter/smb/pending"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
@@ -357,17 +358,17 @@ func TestParkedCreate_ReplayReservationClearedOnSessionCancel(t *testing.T) {
 // uncapped backstop would delete the NEW CREATE's reservation, and a replay
 // would stop failing fast and could start a second concurrent CREATE.
 func TestParkedCreate_StaleBackstopCannotClearANewerReservation(t *testing.T) {
-	cache := NewCreateReplayCache()
+	cache := pending.NewCreateReplayCache[*CreateResponse, *OpenFile]()
 	const sessionID = uint64(7)
 	guid := [16]byte{0x2a, 0x1}
 
 	// A parked CREATE holding the reservation, wired as parkCreateOnLeaseBreak
 	// wires one.
-	parked := &PendingCreate{replayReleaser: func() { cache.Release(sessionID, guid) }}
+	parked := &pending.PendingCreate{ReplayReleaser: func() { cache.Release(sessionID, guid) }}
 	cache.Reserve(sessionID, guid)
 
 	// It resolves and delivers its terminal status, releasing first.
-	parked.releaseReplay()
+	parked.ReleaseReplay()
 	if cache.IsReserved(sessionID, guid) {
 		t.Fatal("release did not clear the parked CREATE's own reservation")
 	}
@@ -377,7 +378,7 @@ func TestParkedCreate_StaleBackstopCannotClearANewerReservation(t *testing.T) {
 	cache.Reserve(sessionID, guid)
 
 	// The finished entry's deferred backstop now fires.
-	parked.releaseReplay()
+	parked.ReleaseReplay()
 
 	if !cache.IsReserved(sessionID, guid) {
 		t.Fatal("a finished CREATE's backstop cleared a newer CREATE's reservation for the same " +

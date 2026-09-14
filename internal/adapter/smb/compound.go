@@ -8,6 +8,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/handlers"
 	"github.com/marmos91/dittofs/internal/adapter/smb/header"
+	"github.com/marmos91/dittofs/internal/adapter/smb/pending"
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -929,8 +930,8 @@ type compoundLoopState struct {
 // whose interim STATUS_PENDING was buffered into this compound frame. It MUST
 // be called only after the frame is on the wire so the final responses cannot
 // overtake the interims. Fired unconditionally (even on a write error) so a
-// resume goroutine is never left blocked on PendingCreate.started.
-func (s *compoundLoopState) releaseStartedGates(reg *handlers.PendingCreateRegistry) {
+// resume goroutine is never left blocked on PendingCreate.Started.
+func (s *compoundLoopState) releaseStartedGates(reg *pending.PendingCreateRegistry) {
 	if reg == nil {
 		return
 	}

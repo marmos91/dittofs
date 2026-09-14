@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/common"
+	"github.com/marmos91/dittofs/internal/adapter/smb/pending"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -162,12 +163,12 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	if openFile.IsPipe {
 		// Cancel any pending async READ before closing the pipe.
 		if h.PipeReadRegistry != nil {
-			if pending := h.PipeReadRegistry.UnregisterByFileID(req.FileID); pending != nil && pending.Callback != nil {
-				go func(pr *PendingPipeRead) {
+			if parked := h.PipeReadRegistry.UnregisterByFileID(req.FileID); parked != nil && parked.Callback != nil {
+				go func(pr *pending.PendingPipeRead) {
 					if err := pr.Callback(pr.SessionID, pr.MessageID, pr.AsyncId, types.StatusCancelled, nil); err != nil {
 						logger.Warn("CLOSE: failed to cancel pending pipe READ", "asyncId", pr.AsyncId, "error", err)
 					}
-				}(pending)
+				}(parked)
 			}
 		}
 		h.PipeManager.ClosePipe(req.FileID)
