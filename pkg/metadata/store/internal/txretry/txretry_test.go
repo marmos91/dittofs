@@ -52,3 +52,23 @@ func TestDeadline_DefaultsToBudget(t *testing.T) {
 		t.Fatalf("Deadline %v not ~now+budget %v", got, want)
 	}
 }
+
+// TestBackoff_CtxCancelWinsAgainstAReadyTimer pins the cancellation check
+// against the case where the backoff timer is ready too.
+//
+// A select picks uniformly among ready cases. A cancelled ctx makes Done()
+// ready at once, and a budget this small leaves a jittered wait of at most a
+// microsecond, so the timer becomes ready alongside it — at which point
+// returning the timer's branch retries a request whose context is already
+// cancelled. The single-shot sibling test above only catches this when the
+// runner happens to deschedule the goroutine past the wait, which is why it
+// failed in CI and passed locally.
+func TestBackoff_CtxCancelWinsAgainstAReadyTimer(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for i := 0; i < 2000; i++ {
+		if Backoff(ctx, time.Now().Add(time.Microsecond), 0) {
+			t.Fatalf("Backoff retried a cancelled ctx on iteration %d", i)
+		}
+	}
+}

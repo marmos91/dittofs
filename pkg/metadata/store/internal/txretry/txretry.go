@@ -72,6 +72,11 @@ func Backoff(ctx context.Context, deadline time.Time, attempt int) bool {
 	case <-ctx.Done():
 		return false
 	case <-timer.C:
-		return true
+		// Both cases can be ready at once: the jittered wait is as short as a
+		// nanosecond, so any scheduling delay lets the timer fire while the
+		// context is already cancelled. A select picks uniformly among ready
+		// cases, so trusting this branch alone retries a cancelled request
+		// about half the time. Re-check instead of trusting which case won.
+		return ctx.Err() == nil
 	}
 }
