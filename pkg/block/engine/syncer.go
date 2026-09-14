@@ -830,18 +830,23 @@ func (m *RemoteSync) adaptiveUploadTick(intervalSec float64) {
 // hook, the sink that seals/frames/uploads/commits, and the pass-end manifest
 // reap (passed as FlushOptions.AfterFile, which journal calls under the
 // shard's flush lock after the last flip). Built from the syncer's wired
-// remote/committer/synced deps; the chunking profile comes from the local
-// store, which owns it.
+// remote/committer/synced deps; the chunking profile is the engine's own
+// config (the local store's seam is content-agnostic).
 func (m *RemoteSync) flushFn() (journal.FlushFunc, func(context.Context, journal.FileID) error) {
-	var params chunker.Params
+	// The chunking profile is the engine's own config: the local store's flush
+	// seam is content-agnostic and never held it. Invalid or unset degrades to
+	// the historical default rather than failing the pass.
+	params := m.config.ChunkParams
+	if params.Validate() != nil {
+		params = chunker.DefaultParams()
+	}
 	var window int
 	var blockSize int64
 	if jp, ok := m.local.(interface {
-		ChunkParams() chunker.Params
 		UploadConcurrency() int
 		BlockSize() int64
 	}); ok {
-		params, window, blockSize = jp.ChunkParams(), jp.UploadConcurrency(), jp.BlockSize()
+		window, blockSize = jp.UploadConcurrency(), jp.BlockSize()
 	}
 	if window <= 0 {
 		window = defaultBlockUploadWindow

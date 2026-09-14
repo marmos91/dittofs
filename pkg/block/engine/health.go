@@ -54,9 +54,11 @@ func (bs *Store) Healthcheck(ctx context.Context) health.Report {
 		return health.NewUnknownReport(err.Error(), time.Since(start))
 	}
 
-	localRep := bs.local.Healthcheck(ctx)
-	if localRep.Status == health.StatusUnhealthy {
-		return health.NewUnhealthyReport("local: "+localRep.Message, time.Since(start))
+	// The local tier answers a bool, not a report: closed is the only failure
+	// mode it has that costs no IO to observe, and the engine is the component
+	// that knows enough (local AND remote) to shape a report at all.
+	if bs.local.Closed() {
+		return health.NewUnhealthyReport("local: block store is closed", time.Since(start))
 	}
 
 	if bs.remote != nil {

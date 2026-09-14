@@ -96,13 +96,13 @@ func (g *gatedSink) PreserveClobberedRow(ctx context.Context, id journal.FileID,
 // once a whole chunk has crossed CarveBlockSize — so with the default chunk
 // parameters a small file is one chunk, hence one block, and there is nothing
 // to order. newCarveFixture does not expose ChunkParams, so the wiring is
-// repeated here rather than widened for one caller.
+// repeated here rather than widened for one caller. The profile rides the
+// syncer config: the journal's flush seam is content-agnostic.
 func newChunkedCarveFixture(t *testing.T, rbs *remotememory.Store, carveBytes int64, params chunker.Params) *carveFixture {
 	t.Helper()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	local, err := journal.Open(t.TempDir(), journal.Config{
 		CarveBlockSize: carveBytes,
-		ChunkParams:    params,
 	})
 	if err != nil {
 		t.Fatalf("journal.Open: %v", err)
@@ -111,6 +111,7 @@ func newChunkedCarveFixture(t *testing.T, rbs *remotememory.Store, carveBytes in
 
 	cfg := DefaultConfig()
 	cfg.ManualSync = true // explicit carve only; no background dispatcher racing assertions
+	cfg.ChunkParams = params
 
 	m := NewRemoteSync(local, rbs, ms, cfg)
 	m.SetSyncedHashStore(ms)

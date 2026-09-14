@@ -14,7 +14,6 @@ import (
 	"context"
 
 	"github.com/marmos91/dittofs/pkg/block/journal"
-	"github.com/marmos91/dittofs/pkg/health"
 )
 
 // LocalStore is the per-share local byte cache. All production consumers hold
@@ -149,8 +148,11 @@ type LocalStore interface {
 	// Stats returns a snapshot of current store statistics.
 	Stats() journal.Stats
 
-	// Healthcheck returns the current health of the local store. Implementations
-	// must satisfy [health.Checker] so the API layer can wrap them with a
-	// [health.CachedChecker].
-	Healthcheck(ctx context.Context) health.Report
+	// Closed reports whether the store has been closed and is no longer
+	// accepting reads or writes. It is the local tier's whole contribution to
+	// the engine's health report: the engine shapes the report (it is the one
+	// that knows the remote's state too), so the local store answers the plain
+	// question rather than returning a status type of its own. Must be cheap
+	// enough to call on a health probe — no IO.
+	Closed() bool
 }

@@ -1,16 +1,11 @@
 package journal
 
-import (
-	"context"
-	"time"
-
-	"github.com/marmos91/dittofs/pkg/health"
-)
+import "context"
 
 // This file holds the LocalStore admin surface the composition layer holds
 // the local tier through: the disk cap probe, the durability report, and the
-// health check. The data plane lives in store.go/index.go; the carve seam in
-// carve.go; eviction in reclaim.go.
+// liveness flag. The data plane lives in store.go/index.go; the flush seam in
+// flush.go; eviction in reclaim.go.
 
 // MaxLocalBytes reports the effective local on-disk cap eviction gates against
 // (an explicit config value, or the free-space default Open derived). 0 means
@@ -36,26 +31,16 @@ var _ interface {
 	SetDurable(bool)
 } = (*Store)(nil)
 
-// Healthcheck reports the journal dir's status. The failure modes an open
-// journal can have are: closed (no longer accepting reads or writes), or the
-// caller's context canceled (StatusUnknown — the probe was indeterminate, not
-// the store). Cheap: one mutex-guarded flag read, no IO.
-func (s *Store) Healthcheck(ctx context.Context) health.Report {
-	start := time.Now()
-
-	if err := ctx.Err(); err != nil {
-		return health.NewUnknownReport(err.Error(), time.Since(start))
-	}
-
-	if s.closed.Load() {
-		return health.NewUnhealthyReport("journal block store is closed", time.Since(start))
-	}
-
-	return health.NewHealthyReport(time.Since(start))
-}
+// Closed reports whether the store has been closed and is no longer accepting
+// reads or writes. It is the only failure mode an opened journal has that a
+// caller can observe without doing IO, so it is the whole of journal's
+// contribution to a host health report — the report itself is the caller's to
+// shape, which is why this returns a bool and not a status type. Cheap: one
+// atomic flag read, no IO.
+func (s *Store) Closed() bool { return s.closed.Load() }
 
 var _ interface {
 	Start(context.Context)
 	MaxLocalBytes() int64
-	Healthcheck(context.Context) health.Report
+	Closed() bool
 } = (*Store)(nil)

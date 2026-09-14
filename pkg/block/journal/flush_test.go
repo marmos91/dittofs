@@ -5,8 +5,6 @@ import (
 	"errors"
 	"testing"
 	"time"
-
-	"github.com/marmos91/dittofs/pkg/block/chunker"
 )
 
 // seamRunner is the fn closure a seam test drives: it accumulates every run's
@@ -100,10 +98,7 @@ func TestCarveCommitStrictlyBeforeFlip(t *testing.T) {
 // whole-extent flip (or a flip past the report) would mark unuploaded bytes
 // synced — the silent-zeros class.
 func TestCarvePackFlipPlanWatermarks(t *testing.T) {
-	s, _ := seamStore(t, Config{
-		CarveBlockSize: 32 << 10,
-		ChunkParams:    chunker.Params{Min: 4 << 10, Avg: 8 << 10, Max: 16 << 10},
-	})
+	s, _ := seamStore(t, Config{CarveBlockSize: 32 << 10})
 	ctx := context.Background()
 	writeRunAt(t, s, 0, 4)        // [0, 16Ki)
 	writeRunAt(t, s, 128<<10, 16) // [128Ki, 192Ki)

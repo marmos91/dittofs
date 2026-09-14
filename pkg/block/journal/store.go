@@ -10,8 +10,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/marmos91/dittofs/pkg/block/chunker"
 )
 
 // FileID identifies a file's byte stream inside the cache. It is the same
@@ -65,11 +63,10 @@ type Config struct {
 	// across the whole file, one block at a time, and so are the manifest row-end
 	// lookups that widen each run; only the commits overlap, so a single large
 	// file's carve is not one PutBlock at a time.
-	// Peak carve RAM per file is window x (CarveBlockSize + one ChunkParams.Max
-	// chunk) for the block arenas, plus the single chunker scratch buffer of
-	// chunker.MaxChunkSize the pass holds. Per file: whatever bounds how many
-	// files carve at once multiplies the arena term again, so the real ceiling
-	// is that product — keep this modest.
+	// The buffers themselves are the caller's: peak RAM per file is this window
+	// times whatever the caller's sink holds per block in flight. Whatever
+	// bounds how many files flush at once multiplies that term again, so the
+	// real ceiling is the product — keep this modest.
 	// Zero falls back to the default via withDefaults.
 	CarveUploadConcurrency int
 	// DirtyExpiry bounds how long an appended record may sit unfsynced. A
@@ -91,11 +88,6 @@ type Config struct {
 	// them — the journal never reaches the process logger on its own, so
 	// wiring one is the caller's choice.
 	Logger *slog.Logger
-	// ChunkParams sets the per-share FastCDC sizing carve feeds the chunker.
-	// The zero value (or any params that fail Validate) degrades to
-	// chunker.DefaultParams — the historical 1M/4M/16M profile — so a
-	// misconfiguration is never a hard error, matching the fs store.
-	ChunkParams chunker.Params
 	// Clock supplies the store's time. Nil falls back to a system clock;
 	// tests pin it to drive age-based batching and expiry deterministically.
 	Clock Clock
@@ -147,9 +139,6 @@ func (c Config) withDefaults() Config {
 	}
 	if c.DirtyExpiry == 0 {
 		c.DirtyExpiry = defaultDirtyExpiry
-	}
-	if c.ChunkParams.Validate() != nil {
-		c.ChunkParams = chunker.DefaultParams()
 	}
 	// MaxLocalBytes is left untouched here (0 = unset): withDefaults has no dir
 	// to size a free-space-based cap from. Open fills it in once dir is known.

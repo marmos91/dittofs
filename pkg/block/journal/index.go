@@ -7,8 +7,6 @@ import (
 	"slices"
 	"sort"
 	"sync"
-
-	"github.com/marmos91/dittofs/pkg/block/chunker"
 )
 
 // segmentLocation points at a record payload inside a shared segment. It
@@ -375,12 +373,11 @@ func (s *Store) ReadAt(ctx context.Context, id FileID, offset int64, dst []byte)
 	return len(dst), st, nil
 }
 
-// maxPooledRecordScratch bounds what a verified read hands back to the pool. A
-// record is at most one FastCDC chunk, and the chunker's 16 MiB hard ceiling is
-// far above the average cut — retaining a buffer that big would pin it for the
-// process lifetime to serve a read that almost never repeats, so an oversized
-// one is dropped for the GC instead.
-const maxPooledRecordScratch = chunker.AvgChunkSize
+// maxPooledRecordScratch bounds what a verified read hands back to the pool.
+// Records run far smaller than this in practice; retaining a buffer above it
+// would pin the memory for the process lifetime to serve a read that almost
+// never repeats, so an oversized one is dropped for the GC instead.
+const maxPooledRecordScratch = 4 << 20
 
 // recordScratchPool recycles the whole-record buffers verified reads need.
 var recordScratchPool = sync.Pool{New: func() any { return new([]byte) }}

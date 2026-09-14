@@ -2,6 +2,7 @@ package engine
 
 import (
 	"errors"
+	"github.com/marmos91/dittofs/pkg/block/chunker"
 	"time"
 )
 
@@ -97,6 +98,16 @@ type RemoteSyncConfig struct {
 	// parallel_uploads config / --parallel-uploads). A serial carver (window 1)
 	// leaves a WAN link idle, which is the #1432 upload-throughput regression.
 	ParallelUploads int
+
+	// ChunkParams is the share's FastCDC profile: the sizing the carver built
+	// for each flush pass cuts chunks with. The zero value (or any params that
+	// fail Validate) degrades to chunker.DefaultParams — the historical
+	// 1M/4M/16M profile — so a misconfiguration is never a hard error.
+	//
+	// It lives here rather than on the local store because the local store's
+	// flush seam is content-agnostic: it hands out byte runs and never learns
+	// how they are cut. The carver is the engine's, so the profile is too.
+	ChunkParams chunker.Params
 
 	// ManualSync, when true, suppresses the background carve dispatcher.
 	// Durability is then driven solely by explicit Flush, making Flush the

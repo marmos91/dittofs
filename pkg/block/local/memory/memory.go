@@ -294,6 +294,15 @@ func (s *MemoryStore) SetEvictionPinned(bool) {}
 // Start is a no-op.
 func (s *MemoryStore) Start(context.Context) {}
 
+// Closed reports whether the store has been closed and is no longer accepting
+// reads or writes — the only failure mode a pure in-memory store has. Cheap,
+// lock-protected, safe for concurrent calls.
+func (s *MemoryStore) Closed() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.closed
+}
+
 // Close marks the store closed.
 func (s *MemoryStore) Close() error {
 	s.mu.Lock()

@@ -7,8 +7,6 @@ import (
 	"io"
 	"sort"
 	"time"
-
-	"github.com/marmos91/dittofs/pkg/block/chunker"
 )
 
 // Run is one offer: a contiguous dirty region of one file, plus its bytes.
@@ -427,12 +425,6 @@ func (fr *flushReader) ReadAt(p []byte, off int64) (int, error) {
 	}
 	return total, nil
 }
-
-// ChunkParams reports the FastCDC sizing this store's chunks were cut with, so
-// a caller assembling blocks from Run bytes sizes its carver to the same
-// profile. Stores without a chunking policy return the zero value (the caller
-// degrades to its own default).
-func (s *Store) ChunkParams() chunker.Params { return s.cfg.ChunkParams }
 
 // BlockSize reports the pack size this store hands each block's worth of
 // chunks to the caller's sink at — the same CarveBlockSize the batching gate

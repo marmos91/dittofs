@@ -364,6 +364,14 @@ func (s *Service) createBlockStoreForShare(
 	// unconditional (the syncer will refetch from S3 on the rare crash path).
 
 	syncerCfg := buildSyncerConfigFromDefaults(syncerDefaults)
+	// The share's FastCDC profile configures the carver the flush pass builds,
+	// so it rides the syncer config rather than the journal's: journal's seam is
+	// content-agnostic and has no use for it.
+	if localStoreCfg, cfgErr := localCfg.GetConfig(); cfgErr == nil {
+		if cp, ok := chunkParamsFromConfig(localStoreCfg); ok {
+			syncerCfg.ChunkParams = cp
+		}
+	}
 	// A per-remote parallel_uploads override pins the carver's upload window;
 	// 0 (the default) keeps the adaptive auto-tune (#1407 / #1432).
 	if pinned := remotePinnedUploads(ctx, blockStoreProvider, config.RemoteBlockStoreID); pinned > 0 {
@@ -954,6 +962,46 @@ func dirtyExpiryFromConfig(config map[string]any) time.Duration {
 }
 
 // CreateLocalStoreFromConfig creates a local store instance from a block store config.
+// chunkParamsFromConfig resolves a share's FastCDC profile from its local block
+// store config. chunk_size sets the Min (#1569) — the dominant knob for
+// effective chunk size and thus random-read amplification; Avg/Max are derived
+// (4x/8x Min) unless chunk_max overrides the ceiling. ok is false when the
+// share configured nothing usable, and the caller keeps the default profile.
+//
+// The profile belongs to the carver, which the engine owns: the journal's flush
+// seam is content-agnostic and never learns how the bytes it hands out are cut.
+// Lower it (e.g. 131072 = 128 KiB) on random-access shares (VM images /
+// databases): trades weaker dedup + more FileChunk manifest rows for far less
+// read amplification. Reads never re-chunk, so changing this only affects newly
+// written data.
+func chunkParamsFromConfig(config map[string]any) (chunker.Params, bool) {
+	v, ok := config["chunk_size"]
+	if !ok {
+		return chunker.Params{}, false
+	}
+	n, ok := v.(float64)
+	if !ok || n <= 0 || n != math.Trunc(n) || n > float64(math.MaxInt32) {
+		logger.Warn("block store config has chunk_size but it is invalid or non-positive; ignoring", "value", v)
+		return chunker.Params{}, false
+	}
+	cp := chunker.Params{Min: int(n), Avg: int(n) * 4, Max: int(n) * 8}
+	if mv, ok := config["chunk_max"]; ok {
+		if m, ok := mv.(float64); ok && m > 0 && m == math.Trunc(m) && m <= float64(math.MaxInt32) {
+			cp.Max = int(m)
+			if cp.Avg > cp.Max {
+				cp.Avg = cp.Max
+			}
+		} else {
+			logger.Warn("block store config has chunk_max but it is invalid; ignoring", "value", mv)
+		}
+	}
+	if err := cp.Validate(); err != nil {
+		logger.Warn("block store config chunk_size produced invalid chunker params; keeping default", "error", err)
+		return chunker.Params{}, false
+	}
+	return cp, true
+}
+
 func CreateLocalStoreFromConfig(
 	ctx context.Context,
 	storeType string,
@@ -1027,36 +1075,6 @@ func CreateLocalStoreFromConfig(
 	}
 	jcfg.DirtyExpiry = dirtyExpiryFromConfig(config)
 	jcfg.MaxLogBytes = maxLogBytes
-	// chunk_size sets the FastCDC Min for this share's carve chunker (#1569) —
-	// the dominant knob for effective chunk size and thus random-read
-	// amplification. Avg/Max are derived (4x/8x Min) unless chunk_max overrides
-	// the ceiling. Absent => the FSStore default (1M/4M/16M, byte-identical to
-	// pre-#1569). Lower it (e.g. 131072 = 128 KiB) on random-access shares
-	// (VM images / databases): trades weaker dedup + more FileChunk manifest
-	// rows for far less read amplification. Reads never re-chunk, so changing
-	// this only affects newly written data.
-	if v, ok := config["chunk_size"]; ok {
-		if n, ok := v.(float64); ok && n > 0 && n == math.Trunc(n) && n <= float64(math.MaxInt32) {
-			cp := chunker.Params{Min: int(n), Avg: int(n) * 4, Max: int(n) * 8}
-			if mv, ok := config["chunk_max"]; ok {
-				if m, ok := mv.(float64); ok && m > 0 && m == math.Trunc(m) && m <= float64(math.MaxInt32) {
-					cp.Max = int(m)
-					if cp.Avg > cp.Max {
-						cp.Avg = cp.Max
-					}
-				} else {
-					logger.Warn("block store config has chunk_max but it is invalid; ignoring", "value", mv)
-				}
-			}
-			if err := cp.Validate(); err != nil {
-				logger.Warn("block store config chunk_size produced invalid chunker params; keeping default", "error", err)
-			} else {
-				jcfg.ChunkParams = cp
-			}
-		} else {
-			logger.Warn("block store config has chunk_size but it is invalid or non-positive; ignoring", "value", v)
-		}
-	}
 	switch storeType {
 	case "fs":
 		basePath, ok := config["path"].(string)
