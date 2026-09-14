@@ -46,9 +46,11 @@ loss)"), and the share JSON carries it as `commit_ack`. This is a promise an
 operator cannot infer by watching the system behave, so check it there rather than
 guessing from latency.
 
-> **No flag sets this yet.** `commit_ack` is read-only on the CLI and the REST API
-> in this release: it is populated by the upgrade carry-over described above, and
-> otherwise takes its `journal` default. A share create/edit flag is still to come.
+Set it with `--commit-ack journal|block-store` on `dfsctl share create` or
+`dfsctl share edit` (`commit_ack` in the share JSON). An unrecognised value is
+refused rather than resolved to the default, so a typo cannot quietly hand back
+a weaker promise than the one asked for. A share that sets nothing takes the
+`journal` default, or whatever the upgrade carry-over described above gave it.
 
 ### Axis 2 — relaxed metadata commit (`relaxed_metadata_commit`)
 

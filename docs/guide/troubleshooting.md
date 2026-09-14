@@ -288,7 +288,9 @@ ls: cannot access 'file.txt': Stale file handle
    ```bash
    ./dfsctl store metadata add --name persistent --type badger \
      --config '{"path":"/var/lib/dittofs/metadata"}'
-   ./dfsctl share create --name /export --metadata persistent
+   ./dfsctl store block add --name persistent-blocks --type memory
+   ./dfsctl share create --name /export --metadata persistent \
+     --block-store persistent-blocks
    ```
 
 3. **Clear client NFS cache (Linux):**
@@ -603,11 +605,12 @@ shares:
 
 **Solution:** Ensure stores exist before creating the share:
 ```bash
-# Create the store first
+# Create the stores first — a share needs both
 ./dfsctl store metadata add --name my-store --type memory
+./dfsctl store block add --name my-blocks --type memory
 
-# Then create the share referencing it
-./dfsctl share create --name /export --metadata my-store
+# Then create the share referencing them
+./dfsctl share create --name /export --metadata my-store --block-store my-blocks
 ```
 
 ### NFSv4 Session Issues

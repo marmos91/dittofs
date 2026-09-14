@@ -3895,6 +3895,7 @@ Flags:
       --allow-mfsymlink                 Convert 1067-byte XSym (Minshall+French) symlink files written by macOS/Windows SMB clients into real symlinks on CLOSE. Off by default (XSym files are stored as regular files).
       --block-store string              Block store name (required)
       --change-notify-disabled          Reject SMB2 CHANGE_NOTIFY with STATUS_NOT_IMPLEMENTED on this share (mirrors Samba 'kernel change notify = no').
+      --commit-ack string               What a COMMIT waits for: journal (survives host crash) or block-store (survives device loss)
       --continuous-availability         Advertise SMB2_SHARE_CAP_CONTINUOUS_AVAILABILITY and allow SMB3 persistent durable handles on this share.
       --default-permission string       Default permission for unmapped UIDs (none|read|read-write|admin) (default "none")
       --description string              Share description
@@ -3907,6 +3908,7 @@ Flags:
       --quota-bytes string              Per-share byte quota (e.g., '10GiB', '500MiB'). 0 = unlimited (default)
       --read-buffer-size string         Per-share read buffer size override (e.g., 2GiB, 256MiB)
       --read-only                       Make share read-only
+      --relaxed-metadata-commit         Let an operation that promised stable metadata return before the metadata fsync
       --retention string                Retention policy (pin|ttl|lru)
       --retention-ttl string            Retention TTL duration (e.g., 72h, 24h)
       --squash string                   NFS export squash mode (none|root_to_admin|root_to_guest|all_to_admin|all_to_guest). Default root_to_guest (root_squash); use none or root_to_admin so a root-mounted client is not squashed to guest.
@@ -4033,6 +4035,7 @@ Flags:
       --access-based-enumeration string        Enable/disable Windows access-based enumeration (true|false). Takes effect on adapter restart.
       --acl-canonicalize-inherited string      When false, preserves the SE_DACL_AUTO_INHERITED control bit verbatim on SET_INFO Security instead of applying MS-DTYP §2.5.3.4.2 canonicalization (Samba "acl flag inherited canonicalization = no"). Default true matches Windows. Takes effect on adapter restart.
       --block-store string                     Block store name
+      --commit-ack string                      What a COMMIT waits for: journal (survives host crash) or block-store (survives device loss)
       --default-permission string              Default permission (none|read|read-write|admin)
       --description string                     Share description
       --enable-trash string                    Enable/disable the per-share recycle bin (true|false). Applied live; disabling auto-empties the bin.
@@ -4041,6 +4044,7 @@ Flags:
       --quota-bytes string                     Per-share byte quota (e.g., '10GiB'). 0 = remove quota
       --read-buffer-size string                Per-share read buffer size override (e.g., 2GiB, 256MiB)
       --read-only string                       Set read-only (true|false)
+      --relaxed-metadata-commit                Let an operation that promised stable metadata return before the metadata fsync
       --retention string                       Retention policy (pin|ttl|lru)
       --retention-ttl string                   Retention TTL duration (e.g., 72h)
       --trash-exclude strings                  Glob patterns whose deletions bypass the recycle bin (repeatable).

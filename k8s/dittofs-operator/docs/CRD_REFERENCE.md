@@ -375,7 +375,7 @@ The two store types use different JSON key names for credentials:
 Example (block store):
 
 ```bash
-dfsctl store block remote add --name s3-content --type s3 \
+dfsctl store block add --name s3-content --type s3 \
   --config '{"bucket":"my-bucket","region":"eu-west-1","access_key_id":"AKIA...","secret_access_key":"..."}'
 ```
 
@@ -579,7 +579,7 @@ stringData:
 Once the DittoServer is Ready, create the S3 block store via the REST API (credentials must be passed explicitly per store):
 
 ```bash
-dfsctl store block remote add --name s3-content --type s3 \
+dfsctl store block add --name s3-content --type s3 \
   --config '{"bucket":"my-dittofs-content","region":"eu-west-1","access_key_id":"AKIA...","secret_access_key":"..."}'
 ```
 
