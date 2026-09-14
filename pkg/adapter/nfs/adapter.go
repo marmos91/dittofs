@@ -148,6 +148,14 @@ type NFSAdapter struct {
 	// settings-watcher goroutine, on the accept loop per connection, and at
 	// startup — three concurrent writers — and read by the sysreg transition
 	// goroutine and the portmapper/UDP start paths.
+	//
+	// Three of those fields are *bool, and the lock covers the POINTER. A
+	// reader must dereference inside the critical section: copying the pointer
+	// out and reading through it afterwards moves the read of the bool outside
+	// every lock in the program. A writer must likewise assign a fresh pointer
+	// under the lock rather than mutating the pointed-to value in place — that
+	// discipline, not the mutex, is what keeps an aliased write from racing
+	// every reader at once.
 	configMu sync.Mutex
 
 	// portmapServer is the embedded portmapper server (RFC 1057).

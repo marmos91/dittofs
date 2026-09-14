@@ -31,8 +31,10 @@ const defaultUDPHandlerLimit = 100
 // started. Disabled unless adapters.nfs.udp.enabled is explicitly true.
 func (s *NFSAdapter) isUDPEnabled() bool {
 	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	// Dereferenced under the lock: configMu guards the config field, not the
+	// bool behind it, so a deref after Unlock is synchronised by nothing.
 	enabled := s.config.UDP.Enabled
-	s.configMu.Unlock()
 	return enabled != nil && *enabled
 }
 

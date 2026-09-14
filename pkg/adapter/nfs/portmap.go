@@ -40,16 +40,17 @@ func (s *NFSAdapter) isPortmapperEnabled() bool {
 // of the three values — the portmapper registry/server and the system-rpcbind
 // mappings — must go through this helper rather than reading the fields
 // separately. Reads UDP.Enabled directly: isUDPEnabled() would re-acquire the
-// same mutex inside this one (not reentrant) and self-deadlock.
+// same mutex inside this one (not reentrant) and self-deadlock. The bool is
+// dereferenced inside the critical section, so the snapshot it promises covers
+// the value and not merely the pointer.
 func (s *NFSAdapter) snapshotSidecarConfig() (nfsPort, portmapPort int, udpEnabled bool) {
 	s.configMu.Lock()
 	nfsPort = s.config.Port
 	portmapPort = s.config.Portmapper.Port
-	enabled := s.config.UDP.Enabled
-	s.configMu.Unlock()
-	if enabled != nil {
+	if enabled := s.config.UDP.Enabled; enabled != nil {
 		udpEnabled = *enabled
 	}
+	s.configMu.Unlock()
 	return nfsPort, portmapPort, udpEnabled
 }
 
