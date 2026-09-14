@@ -148,17 +148,16 @@ func TestCarvePackFlipPlanWatermarks(t *testing.T) {
 	}
 }
 
-// TestCarvePackSpanningBlockFailureReapsTheCommittedPrefix pins C5: fn returns
+// TestFlushCommittedPrefixFlipsAndReapsDespiteError pins C5: fn returns
 // a non-empty durable slice TOGETHER with an error — "these committed, then I
 // failed" — and journal flips the validated extents, still calls AfterFile
 // (the committed prefix must be reaped) and returns the error.
 //
-// Scope: this is C5 at the seam, and nothing more. It was named
-// ...SpanningBlockFailureReapsTheCommittedPrefix, which promised more than it
-// checked: one run, no hole, no block spanning anything, and no assertion on
-// the span AfterFile receives. Blocks are the engine's after lane F, so the
-// span property lives where packing does — see
-// TestFlushReapSpanStopsAtTheCommittedFrontier in pkg/block/engine.
+// Scope: this is C5 at the seam, and nothing more. It asserts that AfterFile
+// runs and that the reported prefix flips, NOT which span AfterFile receives —
+// the seam never sees a block, so it cannot observe one spanning two runs.
+// That span is pinned by TestFlushReapSpanStopsAtTheCommittedFrontier in
+// pkg/block/engine, beside the packing that produces it.
 func TestFlushCommittedPrefixFlipsAndReapsDespiteError(t *testing.T) {
 	s, _ := seamStore(t, Config{CarveBlockSize: 32 << 10})
 	ctx := context.Background()

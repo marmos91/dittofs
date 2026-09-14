@@ -66,17 +66,18 @@ func (s *spanningReapSink) ReapSupersededManifest(_ context.Context, _ journal.F
 	return nil
 }
 
-// TestFlushReapSpanStopsAtTheCommittedFrontier restores the property the pinned
-// journal test lost when lane F moved packing into the engine. Its replacement
-// kept the name TestCarvePackSpanningBlockFailureReapsTheCommittedPrefix but
-// dropped the geometry: one run, no hole, no spanning block, and an assertion
-// only that the reap RAN — never what span it was asked about.
+// TestFlushReapSpanStopsAtTheCommittedFrontier pins the span the pass-end reap
+// may delete.
 //
-// The property: when a block spanning two runs fails, the pass-end reap must be
-// asked about exactly the committed prefix and nothing of the range the failed
-// block held. A reap that over-reaches past the committed frontier deletes
-// manifest rows for bytes that never became durable — the silent-zeros class
-// this refactor exists to make unrepresentable (#1850, #1956, #2084).
+// When a block carrying chunks from two runs fails, the reap must be asked
+// about exactly the committed prefix and nothing of the range the failed block
+// held. Over-reaching past the committed frontier deletes manifest rows for
+// bytes that never became durable, so a later read resolves them to zeros with
+// nothing reporting a fault.
+//
+// It lives beside the packing rather than in the journal because the journal's
+// flush seam is content-agnostic: it offers byte runs and never sees a block,
+// so it cannot observe a block spanning two of them.
 func TestFlushReapSpanStopsAtTheCommittedFrontier(t *testing.T) {
 	ctx := context.Background()
 	const (
