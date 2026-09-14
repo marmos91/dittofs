@@ -560,6 +560,38 @@ func (s *Service) RemoveShare(name string) error {
 // cannot block the rest of shutdown. Drains run outside the registry lock (a
 // drain can block up to its grace window). The block stores stay OPEN; their
 // full teardown still happens in RemoveShare.
+// CloseBlockStores closes every registered share's block store.
+//
+// Shutdown fenced the rollup workers and closed the metadata stores but left
+// the journals open, so each share held its append log and index open for the
+// rest of the process's life. Nothing on a Unix filesystem reports that — an
+// open file can still be unlinked — but the handles are real, and a platform
+// that refuses to remove a file while it is open surfaces the leak as a
+// directory that cannot be cleaned up.
+//
+// Runs before the metadata stores close, for the reason StopRollups already
+// runs there: closing drains in-flight work that writes manifests through the
+// metadata store, which has to still be open to receive them.
+//
+// Close is idempotent, so a share removed afterwards closes harmlessly again.
+// The registry is left intact: this is resource teardown, not removal.
+func (s *Service) CloseBlockStores() {
+	s.mu.RLock()
+	stores := make(map[string]*engine.Store, len(s.registry))
+	for name, share := range s.registry {
+		if share.BlockStore != nil {
+			stores[name] = share.BlockStore
+		}
+	}
+	s.mu.RUnlock()
+
+	for name, bs := range stores {
+		if err := bs.Close(); err != nil {
+			logger.Warn("Shutdown: failed to close block store for share", "share", name, "error", err)
+		}
+	}
+}
+
 func (s *Service) StopRollups(ctx context.Context) {
 	type namedStore struct {
 		name string
