@@ -198,7 +198,7 @@ startup-recovery CRC and the remote cold-fetch BLAKE3 don't cover on their own.
 slices out the requested sub-range. For large sequential reads that is free (you
 would read the record anyway); for **small random reads** it adds read
 amplification (a whole record fetched to return a few KiB) plus the CRC32 CPU.
-That is exactly why it is **off on the fast `writeback` default** and on for the
+That is exactly why it is **off on the fast `writeback` tier** and on for the
 durability-sensitive tiers.
 
 ### Why opt-in-on-durable-tiers (not always-on, not never)
