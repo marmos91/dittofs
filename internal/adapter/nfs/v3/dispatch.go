@@ -120,8 +120,8 @@ type nfsProcedure struct {
 // Each entry contains the procedure name and handler function.
 //
 // Note: NFSv4 uses its own COMPOUND internal dispatch (v4/handlers/compound.go)
-// and does not use this table. ProgramNFS handles both v3 and v4, with
-// version routing in Dispatch().
+// and does not use this table. Program number 100003 carries both v3 and v4;
+// the connection layer routes on the RPC version before reaching either.
 var NfsDispatchTable map[uint32]*nfsProcedure
 
 // init initializes the NFSv3 procedure dispatch table.

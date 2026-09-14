@@ -23,6 +23,20 @@ import (
 // RPC headers + NFS compound headers (~200 bytes overhead per request).
 const MaxFragmentSize = (1 << 20) + (1 << 18) // 1MB + 256KB headroom
 
+// MaxFragmentsPerRecord bounds how many record-marking fragments a single RPC
+// record may span.
+//
+// The cumulative size check advances only on fragments that carry payload, so
+// zero-length continuation fragments cost the sender four bytes and the
+// receiver nothing it can measure: they never grow the record, never reach the
+// size limit and never set the last-fragment flag. Without a separate cap on
+// the count, a peer holds the connection and its goroutine indefinitely, four
+// bytes at a time, before it has authenticated anything.
+//
+// A legitimate record needs one fragment per write the client chose to split
+// across, which is orders of magnitude below this.
+const MaxFragmentsPerRecord = 1024
+
 // FragmentHeader represents a parsed RPC record-marking fragment header.
 //
 // The fragment header is 4 bytes:
@@ -89,8 +103,11 @@ func ReadRPCMessage(r io.Reader, length uint32) ([]byte, error) {
 //
 // firstHeader is the already-read header of the first fragment (whose size the
 // caller has validated). Subsequent fragment headers are read and validated
-// here, with the running total bounded by MaxFragmentSize so a stream of
-// not-last fragments cannot exhaust memory.
+// here. Two separate bounds apply: the running total is capped by
+// MaxFragmentSize so a stream of payload-carrying fragments cannot exhaust
+// memory, and the fragment count is capped by MaxFragmentsPerRecord because
+// zero-length fragments advance the total by nothing and would otherwise let
+// the record continue forever.
 //
 // The common case — a single last fragment — returns a single pooled buffer
 // with no extra copy. The returned buffer is from the pool; the caller must
@@ -110,7 +127,21 @@ func ReadRPCRecord(r io.Reader, firstHeader *FragmentHeader, clientAddr string) 
 	}
 
 	total := uint32(len(message))
+	// The caller already read the first fragment's header, so the record spans
+	// one fragment before this loop adds any.
+	fragments := 1
 	for {
+		fragments++
+		if fragments > MaxFragmentsPerRecord {
+			pool.Put(message)
+			logger.Warn("RPC record spans too many fragments",
+				"fragments", fragments,
+				"max", MaxFragmentsPerRecord,
+				"accumulated", bytesize.ByteSize(total),
+				"address", clientAddr)
+			return nil, fmt.Errorf("RPC record spans more than %d fragments", MaxFragmentsPerRecord)
+		}
+
 		header, herr := ReadFragmentHeader(r)
 		if herr != nil {
 			pool.Put(message)

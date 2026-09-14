@@ -619,7 +619,7 @@ Large I/O operations use buffer pools (`internal/adapter/nfs/bufpool.go`):
 ### Dispatch and Handler Pattern
 
 ```go
-// internal/adapter/nfs/dispatch.go
+// internal/adapter/nfs/v3/dispatch.go
 
 // NFS dispatch table - maps procedure numbers to handlers
 var NfsDispatchTable = map[uint32]*nfsProcedure{

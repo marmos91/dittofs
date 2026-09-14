@@ -111,10 +111,48 @@ func TestHandleRPCCall_NLMv1IsNotVersionRejected(t *testing.T) {
 	for _, version := range []uint32{rpc.NLMVersion1, rpc.NLMVersion3, rpc.NLMVersion4} {
 		body := driveCall(t, versionCall(rpc.ProgramNLM, version, 0))
 		if body == nil {
-			continue // never reached the version check's reply path: not a rejection
+			t.Fatalf("NLM v%d produced no reply; a served version must answer", version)
 		}
-		if len(body) >= 24 && binary.BigEndian.Uint32(body[20:24]) == rpc.RPCProgMismatch {
-			t.Errorf("NLM v%d was rejected with PROG_MISMATCH; v1/v3/v4 are all served", version)
+		if len(body) < 24 {
+			t.Fatalf("NLM v%d reply too short to carry accept_stat: %d bytes", version, len(body))
 		}
+		if got := binary.BigEndian.Uint32(body[20:24]); got != rpc.RPCSuccess {
+			t.Errorf("NLM v%d accept_stat = %d, want %d (SUCCESS); v1/v3/v4 are all served",
+				version, got, rpc.RPCSuccess)
+		}
+	}
+}
+
+// TestHandleRPCCall_ServedVersionsAreAccepted is the other half of the version
+// contract: a version the server does implement must reach its handler rather
+// than be answered with a mismatch. Without it, a regression that rejects
+// everything would satisfy the negotiation table above.
+func TestHandleRPCCall_ServedVersionsAreAccepted(t *testing.T) {
+	tests := []struct {
+		name      string
+		program   uint32
+		version   uint32
+		procedure uint32
+	}{
+		{"NFS_v3_NULL", rpc.ProgramNFS, rpc.NFSVersion3, 0},
+		// Every MOUNT procedure except MNT is version-agnostic, so a v1 caller
+		// is served rather than told to speak v3.
+		{"Mount_NULL_v1", rpc.ProgramMount, 1, 0},
+		{"Mount_NULL_v3", rpc.ProgramMount, rpc.MountVersion3, 0},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			body := driveCall(t, versionCall(tc.program, tc.version, tc.procedure))
+			if body == nil {
+				t.Fatal("no reply written for a version the server serves")
+			}
+			if len(body) < 24 {
+				t.Fatalf("reply too short to carry accept_stat: %d bytes", len(body))
+			}
+			if got := binary.BigEndian.Uint32(body[20:24]); got != rpc.RPCSuccess {
+				t.Errorf("accept_stat = %d, want %d (SUCCESS)", got, rpc.RPCSuccess)
+			}
+		})
 	}
 }
