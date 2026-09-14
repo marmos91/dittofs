@@ -40,7 +40,7 @@ func TestCopyChunk_SparseDest_LeadingGapReadsZeros(t *testing.T) {
 		t.Fatalf("cpstore.New: %v", err)
 	}
 
-	rt := runtime.New(cps)
+	rt := newTestRuntime(t, cps)
 
 	// Register a memory metadata store.
 	if _, err := cps.CreateMetadataStore(ctx, &models.MetadataStoreConfig{Name: "ccmeta", Type: "memory"}); err != nil {
@@ -265,7 +265,7 @@ func TestCopyChunk_SparseDest_SurvivesPriorPayloadReuse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cpstore.New: %v", err)
 	}
-	rt := runtime.New(cps)
+	rt := newTestRuntime(t, cps)
 
 	if _, err := cps.CreateMetadataStore(ctx, &models.MetadataStoreConfig{Name: "ccmeta", Type: "memory"}); err != nil {
 		t.Fatalf("CreateMetadataStore: %v", err)

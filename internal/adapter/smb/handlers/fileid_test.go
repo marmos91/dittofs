@@ -268,7 +268,7 @@ func readFirstNamedEntryFileID(
 func setupFileIDTest(t *testing.T) (*Handler, *metadata.AuthContext, metadata.FileHandle) {
 	t.Helper()
 
-	rt := runtime.New(nil)
+	rt := newTestRuntime(t, nil)
 	memStore := memory.NewMemoryMetadataStoreWithDefaults()
 	if err := rt.RegisterMetadataStore("fid-meta", memStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)

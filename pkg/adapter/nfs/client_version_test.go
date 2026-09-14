@@ -103,7 +103,7 @@ func TestClientRegistry_VersionFromDispatch(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			adapter := New(NFSConfig{Enabled: true, Port: 12049})
-			rt := runtime.New(nil)
+			rt := newTestRuntime(t, nil)
 			adapter.Registry = rt
 
 			client, server := net.Pipe()
@@ -150,7 +150,7 @@ func newRegisteredConnection(t *testing.T) (*NFSConnection, *runtime.Runtime) {
 	t.Helper()
 
 	adapter := New(NFSConfig{Enabled: true, Port: 12049})
-	rt := runtime.New(nil)
+	rt := newTestRuntime(t, nil)
 	adapter.Registry = rt
 
 	client, server := net.Pipe()
@@ -225,7 +225,7 @@ func TestClientRegistry_VersionFromCompoundMinorVersion(t *testing.T) {
 	const clientID = "nfs-1"
 
 	adapter := New(NFSConfig{Enabled: true, Port: 12049})
-	rt := runtime.New(nil)
+	rt := newTestRuntime(t, nil)
 	adapter.Registry = rt
 	adapter.v4Handler = v4handlers.NewHandler(rt, pseudofs.New())
 
@@ -271,7 +271,7 @@ func TestClientRegistry_RefusedMinorVersionNotReported(t *testing.T) {
 	const clientID = "nfs-1"
 
 	adapter := New(NFSConfig{Enabled: true, Port: 12049})
-	rt := runtime.New(nil)
+	rt := newTestRuntime(t, nil)
 	adapter.Registry = rt
 	adapter.v4Handler = v4handlers.NewHandler(rt, pseudofs.New())
 

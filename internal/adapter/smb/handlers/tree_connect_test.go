@@ -461,7 +461,7 @@ func TestTreeConnect_ShareFlagAccessBasedEnumConstant(t *testing.T) {
 func newTreeConnectABEHandler(t *testing.T, shareName string, abe bool) (*Handler, uint64) {
 	t.Helper()
 
-	rt := runtime.New(nil)
+	rt := newTestRuntime(t, nil)
 	metaStore := memorymeta.NewMemoryMetadataStoreWithDefaults()
 	if err := rt.RegisterMetadataStore("test-meta", metaStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
@@ -575,7 +575,7 @@ func TestTreeConnect_ShareCapContinuousAvailabilityConstant(t *testing.T) {
 func newTreeConnectCAHandler(t *testing.T, shareName string, ca bool) (*Handler, uint64) {
 	t.Helper()
 
-	rt := runtime.New(nil)
+	rt := newTestRuntime(t, nil)
 	metaStore := memorymeta.NewMemoryMetadataStoreWithDefaults()
 	if err := rt.RegisterMetadataStore("test-meta", metaStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
@@ -917,7 +917,7 @@ func TestResolveSharePermission_RootBypass(t *testing.T) {
 func newTreeConnectGateHandler(t *testing.T, shareName string, enabled bool) (*Handler, uint64) {
 	t.Helper()
 
-	rt := runtime.New(nil)
+	rt := newTestRuntime(t, nil)
 	metaStore := memorymeta.NewMemoryMetadataStoreWithDefaults()
 	if err := rt.RegisterMetadataStore("test-meta", metaStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)

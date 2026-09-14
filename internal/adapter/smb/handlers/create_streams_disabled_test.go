@@ -49,7 +49,7 @@ func setupStreamsDisabledShare(t *testing.T, streamsDisabled bool) (*Handler, *S
 	if err != nil {
 		t.Fatalf("cpstore.New: %v", err)
 	}
-	rt := runtime.New(cps)
+	rt := newTestRuntime(t, cps)
 	memStore := memory.NewMemoryMetadataStoreWithDefaults()
 	if err := rt.RegisterMetadataStore("streams-test-meta", memStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)

@@ -33,7 +33,7 @@ func setupTruncateTest(t *testing.T) (*Handler, *metadata.AuthContext, *OpenFile
 	if err != nil {
 		t.Fatalf("cpstore.New: %v", err)
 	}
-	rt := runtime.New(cps)
+	rt := newTestRuntime(t, cps)
 
 	if _, err := cps.CreateMetadataStore(ctx, &models.MetadataStoreConfig{Name: "trunc-meta", Type: "memory"}); err != nil {
 		t.Fatalf("CreateMetadataStore: %v", err)

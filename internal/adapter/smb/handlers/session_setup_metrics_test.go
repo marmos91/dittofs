@@ -12,7 +12,6 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/auth"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metrics"
 )
 
@@ -22,7 +21,7 @@ func newMetricsHandler(t *testing.T) (*Handler, *metrics.Metrics) {
 	t.Helper()
 	h := NewHandler()
 	h.NtlmEnabled = true
-	rt := runtime.New(newInMemoryStoreForTest(t))
+	rt := newTestRuntime(t, newInMemoryStoreForTest(t))
 	m := metrics.New("test", "test")
 	rt.SetMetrics(m)
 	h.Registry = rt

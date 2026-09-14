@@ -68,7 +68,7 @@ func newIOTestFixture(t *testing.T, shareName string) *ioTestFixture {
 	t.Cleanup(func() { _ = blockSvc.Close() })
 
 	// Create runtime
-	rt := runtime.New(nil)
+	rt := newTestRuntime(t, nil)
 	metaSvc := rt.GetMetadataService()
 	metaSvc.SetDeferredCommit(false)
 

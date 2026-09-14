@@ -35,7 +35,7 @@ func setupBasicInfoTimestampTest(t *testing.T) (
 ) {
 	t.Helper()
 
-	rt := runtime.New(nil)
+	rt := newTestRuntime(t, nil)
 	memStore := memory.NewMemoryMetadataStoreWithDefaults()
 	if err := rt.RegisterMetadataStore("ts-meta", memStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
