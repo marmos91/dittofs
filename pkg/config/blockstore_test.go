@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -120,5 +122,62 @@ controlplane:
 	}
 	if cfg.Blockstore.Local.MaxLogBytes != 4<<30 {
 		t.Fatalf("max_log_bytes from env: got %d, want %d (4 GiB)", cfg.Blockstore.Local.MaxLogBytes, 4<<30)
+	}
+}
+
+func TestBlockstoreLocalConfig_ApplyDefaults_SetsAbsolutePath(t *testing.T) {
+	c := BlockstoreLocalConfig{}
+	c.ApplyDefaults()
+	if c.Path == "" {
+		t.Fatal("Path: got empty, want a default")
+	}
+	if !filepath.IsAbs(c.Path) {
+		t.Errorf("Path: got %q, want an absolute path", c.Path)
+	}
+	if want := filepath.Join(GetStateDir(), "blocks"); c.Path != want {
+		t.Errorf("Path: got %q, want %q", c.Path, want)
+	}
+}
+
+func TestBlockstoreLocalConfig_ApplyDefaults_PreservesPath(t *testing.T) {
+	c := BlockstoreLocalConfig{Path: "/srv/dittofs/blocks"}
+	c.ApplyDefaults()
+	if c.Path != "/srv/dittofs/blocks" {
+		t.Errorf("Path: got %q, want the configured value preserved", c.Path)
+	}
+}
+
+func TestBlockstoreLocalConfig_ApplyDefaults_ExpandsHomePath(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("no home directory: %v", err)
+	}
+	c := BlockstoreLocalConfig{Path: "~/dittofs-blocks"}
+	c.ApplyDefaults()
+	if want := filepath.Join(home, "dittofs-blocks"); c.Path != want {
+		t.Errorf("Path: got %q, want %q", c.Path, want)
+	}
+}
+
+// A relative path would resolve against whatever directory the server happens
+// to be started from, putting a share's only local copy somewhere the next
+// start cannot find. Validate must refuse it rather than let it through.
+func TestBlockstoreLocalConfig_Validate_RejectsRelativePath(t *testing.T) {
+	c := BlockstoreLocalConfig{Path: "blocks"}
+	err := c.Validate()
+	if err == nil {
+		t.Fatal("Validate: got nil, want an error for a relative path")
+	}
+	if !strings.Contains(err.Error(), "blockstore.local.path") {
+		t.Errorf("Validate: error %q does not name the offending key", err)
+	}
+}
+
+// Empty means "apply the default" and is only reachable before ApplyDefaults,
+// so it must not be reported as an operator error.
+func TestBlockstoreLocalConfig_Validate_AcceptsEmptyPath(t *testing.T) {
+	c := BlockstoreLocalConfig{}
+	if err := c.Validate(); err != nil {
+		t.Errorf("Validate: got %v, want nil for an unset path", err)
 	}
 }

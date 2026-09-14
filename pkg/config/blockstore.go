@@ -2,7 +2,10 @@ package config
 
 import (
 	"fmt"
+	"path/filepath"
 	"time"
+
+	"github.com/marmos91/dittofs/internal/pathutil"
 )
 
 // defaultRemoteCacheSize is the on-disk ceiling applied to a share's local
@@ -21,6 +24,10 @@ const defaultRemoteCacheSize uint64 = 10 << 30 // 10 GiB
 // window for the remote-cache backpressure path.
 const defaultBackpressureMaxWait = 60 * time.Second
 
+// defaultBlockDirName is the subdirectory of the state directory that holds
+// every share's journal when blockstore.local.path is unset.
+const defaultBlockDirName = "blocks"
+
 // BlockstoreConfig is the top-level container for blockstore-related
 // tunables; additional layers (remote tier, cache tier) may be added in
 // subsequent milestones.
@@ -30,6 +37,14 @@ type BlockstoreConfig struct {
 
 // BlockstoreLocalConfig holds local-tier blockstore tunables.
 type BlockstoreLocalConfig struct {
+	// Path is the directory holding every share's local journal. Each share
+	// gets its own subdirectory beneath it, so no two shares write into the
+	// same directory and their I/O stays independent. A leading ~ is
+	// expanded; the result must be absolute so the location can never
+	// resolve against the server's working directory. Defaults to
+	// <state dir>/blocks when unset.
+	Path string `mapstructure:"path" yaml:"path"`
+
 	// DefaultRemoteCacheSize is the on-disk ceiling (bytes) applied to a
 	// share's local tier when a remote block store is configured but no
 	// explicit per-share size is set. Bounds the write-through cache so a
@@ -58,6 +73,15 @@ type BlockstoreLocalConfig struct {
 
 // ApplyDefaults fills any zero-valued field with the defaults.
 func (c *BlockstoreLocalConfig) ApplyDefaults() {
+	if c.Path == "" {
+		c.Path = filepath.Join(GetStateDir(), defaultBlockDirName)
+	}
+	// A ~ that cannot be expanded (no home directory) is left as-is and
+	// fails Validate's absolute-path check rather than being silently
+	// resolved against the working directory.
+	if expanded, err := pathutil.ExpandPath(c.Path); err == nil {
+		c.Path = expanded
+	}
 	if c.DefaultRemoteCacheSize == 0 {
 		c.DefaultRemoteCacheSize = defaultRemoteCacheSize
 	}
@@ -77,6 +101,11 @@ func (c *BlockstoreLocalConfig) Validate() error {
 	// negative; any positive value is honored as an explicit override.
 	if c.BackpressureMaxWait < 0 {
 		return fmt.Errorf("blockstore.local.backpressure_max_wait must be >= 0 (got %s)", c.BackpressureMaxWait)
+	}
+	// Empty means "apply the default" and is only reachable before
+	// ApplyDefaults; a value the operator did set must be absolute.
+	if c.Path != "" && !filepath.IsAbs(c.Path) {
+		return fmt.Errorf("blockstore.local.path must be an absolute directory (got %q)", c.Path)
 	}
 	return nil
 }
