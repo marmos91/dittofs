@@ -287,3 +287,34 @@ func TestMount_AuthFlavors_OmitsPseudoflavorsBelowFloor(t *testing.T) {
 		t.Fatalf("AuthFlavors = %v, want krb5p offered on a krb5p share", resp.AuthFlavors)
 	}
 }
+
+// TestMount_AuthNoneDeniedWhenShareForbidsAuthSys covers the flavor the
+// AllowAuthSys gate used to miss.
+//
+// The gate named AUTH_UNIX specifically, so an AUTH_NONE caller — carrying no
+// credential at all — passed it on a share configured to refuse AUTH_SYS and
+// received a root handle, gated only by the share's default_permission. A share
+// that refuses AUTH_SYS refuses a weaker flavor too.
+func TestMount_AuthNoneDeniedWhenShareForbidsAuthSys(t *testing.T) {
+	h, ctx := newTestMountHandler(t, "/export", true)
+	if err := h.Registry.(*runtime.Runtime).SetExportAuthPolicyForTesting("/export", false, false); err != nil {
+		t.Fatalf("SetExportAuthPolicyForTesting: %v", err)
+	}
+
+	c := newMountCtx(ctx)
+	c.AuthFlavor = 0 // AUTH_NONE
+	c.UID, c.GID, c.GIDs = nil, nil, nil
+
+	resp, err := h.Mount(c, &MountRequest{DirPath: "/export"})
+	if err != nil {
+		t.Fatalf("Mount returned unexpected error: %v", err)
+	}
+	if resp.Status != MountErrAccess {
+		t.Fatalf("Status = %d, want MountErrAccess (%d): an AUTH_NONE caller must not mount a share that refuses AUTH_SYS",
+			resp.Status, MountErrAccess)
+	}
+	if len(resp.FileHandle) != 0 {
+		t.Fatalf("FileHandle = %x (%d bytes), want empty — a denied mount must not return a root handle",
+			resp.FileHandle, len(resp.FileHandle))
+	}
+}

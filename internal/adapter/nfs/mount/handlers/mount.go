@@ -121,9 +121,15 @@ func (h *Handler) Mount(
 	// Security policy enforcement: check auth flavor against share policy.
 	// Per locked decision: existing connections are grandfathered; this check
 	// applies to NEW mount requests only.
-	if !share.AllowAuthSys && ctx.AuthFlavor == rpc.AuthUnix {
-		logger.Warn("Mount denied: AUTH_SYS not allowed on share",
-			"path", req.DirPath, "client_ip", clientIP)
+	// A share that refuses AUTH_SYS refuses everything weaker than it too, so
+	// this tests for the flavors that are allowed rather than the one that is
+	// not. Naming AUTH_UNIX alone let an AUTH_NONE caller — no credential at
+	// all — past the gate and collect a root handle, since nothing else on the
+	// mount path distinguishes an anonymous caller beyond the share's
+	// default_permission.
+	if !share.AllowAuthSys && ctx.AuthFlavor != rpc.AuthRPCSECGSS {
+		logger.Warn("Mount denied: share accepts only Kerberos auth",
+			"path", req.DirPath, "client_ip", clientIP, "auth_flavor", ctx.AuthFlavor)
 		return &MountResponse{MountResponseBase: MountResponseBase{Status: MountErrAccess}}, nil
 	}
 	if share.RequireKerberos && ctx.AuthFlavor != rpc.AuthRPCSECGSS {
