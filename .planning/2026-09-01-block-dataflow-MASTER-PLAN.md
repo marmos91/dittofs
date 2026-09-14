@@ -544,6 +544,30 @@ open-questions space, linking to it. **Discussions is currently disabled** on th
   effect and change runtime behaviour invisibly — the same failure class D14 refuses. Startup
   names the old key and the new one. *(Decided on the D14 precedent, not separately asked.)*
 
+- **D19. There is one kind of block store, so the kind discriminator goes away entirely.** Not
+  just the local half: the word "remote" leaves the CLI and the API too. A block store is always
+  remote and always durable, apart from the in-memory implementation kept for testing, so naming
+  the only kind adds a word to every command and a path segment to every route without ever
+  distinguishing anything.
+  - `models.BlockStoreKind`, its two constants, and `BlockStoreConfig.Kind` are deleted. The
+    composite unique index `(name, kind)` becomes unique on `name` alone — previously a local and
+    a remote store could share a name, which stops being expressible.
+  - REST `/api/v1/store/block/{kind}/…` becomes `/api/v1/store/block/…`. `extractKind` and the
+    seven `"must be 'local' or 'remote'"` error strings go with it.
+  - `dfsctl store block remote <cmd>` becomes `dfsctl store block <cmd>`; `dfsctl store block
+    health --kind` is dropped (one legal value, and it was `MarkFlagRequired`, so every invocation
+    had to type the only thing it could have been).
+  - `Share.RemoteBlockStoreID` becomes `BlockStoreID` (JSON `remote_block_store_id` ->
+    `block_store_id`); `Share.LocalBlockStoreID` is deleted.
+  - `dfsctl share create --remote` becomes `--block-store`, and `--local` is gone (D17).
+    *Chosen over `--blocks` for symmetry with the `store block` command; `--metadata` keeps its
+    name. Easy to change before release, impossible after.*
+  - Store-layer methods (`GetBlockStore`, `ListBlockStores`, `DeleteBlockStore`,
+    `GetSharesByBlockStore`) and the six `apiclient` methods lose their `kind` parameter.
+  Surveyed surface: 49 non-test `BlockStoreKind` sites, 122 counting both FK fields, ~71 test
+  sites. Remaining store types are `s3` and `memory` (`filesystem` already returns a removal
+  error).
+
 - **D4. H1 is NOT an incident — no production exposure.** Customers are evaluating DittoFS;
   nothing runs in production. So the five HIGH findings are serious bugs to fix on the normal
   path, not a data-loss event to respond to, and step 0 does not need an emergency release.
