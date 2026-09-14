@@ -371,6 +371,8 @@ func (r *Runtime) Shutdown(ctx context.Context) error {
 	// the DB is still open or it races the close. Bounded by the caller's ctx
 	// (an overall deadline across shares) so shutdown stays predictable.
 	r.sharesSvc.StopRollups(ctx)
+	// Release the journals before the metadata stores they write through.
+	r.sharesSvc.CloseBlockStores()
 	r.CloseMetadataStores()
 	return nil
 }

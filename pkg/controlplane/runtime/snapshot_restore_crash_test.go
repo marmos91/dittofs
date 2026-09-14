@@ -130,10 +130,14 @@ func testRecoveryClearsUnknownShareMarker(t *testing.T) {
 func (f *restoreFixture) simulateRestart() *Runtime {
 	f.t.Helper()
 
-	// Tear down the old runtime's goroutines/ctx without touching the
-	// shared cpstore (Shutdown closes metadata stores but not the cp).
+	// Stop the old runtime's goroutines without releasing the stores it was
+	// holding. A crash does not close anything, and this fixture re-registers
+	// the very same metadata and block store instances on the other side of the
+	// restart so their post-crash contents survive — a full Shutdown would
+	// close the block store and hand the new runtime one that refuses every op.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	_ = f.rt.Shutdown(ctx)
+	f.rt.shutdownSnapshots(ctx)
+	f.rt.sharesSvc.StopRollups(ctx)
 	cancel()
 
 	rt := New(f.store)
