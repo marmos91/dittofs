@@ -10,11 +10,11 @@ import (
 
 // defaultRemoteCacheSize is the on-disk ceiling applied to a share's local
 // tier when a remote block store is configured but no explicit
-// LocalStoreSize / max_size is set. With a remote configured the local tier
+// JournalSize / max_size is set. With a remote configured the local tier
 // is a write-through cache, not durable storage, so it must be bounded to
 // avoid filling the host volume on a fast-writer / slow-uploader. 10 GiB is
 // a conservative default; operators raise it via the config key or override
-// per-share with --local-store-size.
+// per-share with --journal-size.
 const defaultRemoteCacheSize uint64 = 10 << 30 // 10 GiB
 
 // defaultBackpressureMaxWait is how long a write stalls waiting for the

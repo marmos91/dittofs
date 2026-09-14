@@ -20,7 +20,7 @@ var (
 	editDescription       string
 	editRetention         string
 	editRetentionTTL      string
-	editLocalStoreSize    string
+	editJournalSize       string
 	editReadBufferSize    string
 	editQuotaBytes        string
 	editAclCanonicalize   string
@@ -68,8 +68,8 @@ Examples:
   # Change retention policy to TTL with 72-hour window
   dfsctl share edit /archive --retention ttl --retention-ttl 72h
 
-  # Override per-share disk cache size
-  dfsctl share edit /archive --local-store-size 10GiB
+  # Override the per-share journal size
+  dfsctl share edit /archive --journal-size 10GiB
 
   # Override per-share read buffer size
   dfsctl share edit /archive --read-buffer-size 2GiB
@@ -92,7 +92,7 @@ func init() {
 	editCmd.Flags().StringVar(&editDescription, "description", "", "Share description")
 	editCmd.Flags().StringVar(&editRetention, "retention", "", "Retention policy (pin|ttl|lru)")
 	editCmd.Flags().StringVar(&editRetentionTTL, "retention-ttl", "", "Retention TTL duration (e.g., 72h)")
-	editCmd.Flags().StringVar(&editLocalStoreSize, "local-store-size", "", "Per-share disk cache size override (e.g., 10GiB, 500MiB)")
+	editCmd.Flags().StringVar(&editJournalSize, "journal-size", "", "Per-share journal size override (e.g., 10GiB, 500MiB)")
 	editCmd.Flags().StringVar(&editReadBufferSize, "read-buffer-size", "", "Per-share read buffer size override (e.g., 2GiB, 256MiB)")
 	editCmd.Flags().StringVar(&editQuotaBytes, "quota-bytes", "", "Per-share byte quota (e.g., '10GiB'). 0 = remove quota")
 	editCmd.Flags().StringVar(&editAclCanonicalize, "acl-canonicalize-inherited", "", "When false, preserves the SE_DACL_AUTO_INHERITED control bit verbatim on SET_INFO Security instead of applying MS-DTYP §2.5.3.4.2 canonicalization (Samba \"acl flag inherited canonicalization = no\"). Default true matches Windows. Takes effect on adapter restart.")
@@ -117,7 +117,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		cmd.Flags().Changed("read-only") || cmd.Flags().Changed("encrypt-data") ||
 		cmd.Flags().Changed("default-permission") ||
 		cmd.Flags().Changed("description") || cmd.Flags().Changed("retention") ||
-		cmd.Flags().Changed("retention-ttl") || cmd.Flags().Changed("local-store-size") ||
+		cmd.Flags().Changed("retention-ttl") || cmd.Flags().Changed("journal-size") ||
 		cmd.Flags().Changed("read-buffer-size") || cmd.Flags().Changed("quota-bytes") ||
 		cmd.Flags().Changed("acl-canonicalize-inherited") ||
 		cmd.Flags().Changed("access-based-enumeration") ||
@@ -178,8 +178,8 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		hasUpdate = true
 	}
 
-	if editLocalStoreSize != "" {
-		req.LocalStoreSize = &editLocalStoreSize
+	if editJournalSize != "" {
+		req.JournalSize = &editJournalSize
 		hasUpdate = true
 	}
 
@@ -257,7 +257,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	}
 
 	if !hasUpdate {
-		return fmt.Errorf("no fields specified. Use --local, --remote, --read-only, --default-permission, --description, --retention, --retention-ttl, --local-store-size, --read-buffer-size, --quota-bytes, --acl-canonicalize-inherited, --access-based-enumeration, --enable-trash, --trash-retention-days, --trash-restrict-empty-to-admin, --trash-max-size, or --trash-exclude")
+		return fmt.Errorf("no fields specified. Use --local, --remote, --read-only, --default-permission, --description, --retention, --retention-ttl, --journal-size, --read-buffer-size, --quota-bytes, --acl-canonicalize-inherited, --access-based-enumeration, --enable-trash, --trash-retention-days, --trash-restrict-empty-to-admin, --trash-max-size, or --trash-exclude")
 	}
 
 	share, err := client.UpdateShare(name, req)
@@ -373,18 +373,18 @@ func runEditInteractive(client *apiclient.Client, name string) error {
 		}
 	}
 
-	// Local store size override
-	currentLocalStoreSize := current.LocalStoreSize
-	if currentLocalStoreSize == "" {
-		currentLocalStoreSize = "0 (system default)"
+	// Journal size override
+	currentJournalSize := current.JournalSize
+	if currentJournalSize == "" {
+		currentJournalSize = "0 (system default)"
 	}
-	fmt.Printf("Current local store size: %s\n", currentLocalStoreSize)
-	newLocalStoreSize, err := prompt.Input("Local store size (0 for system default)", current.LocalStoreSize)
+	fmt.Printf("Current journal size: %s\n", currentJournalSize)
+	newJournalSize, err := prompt.Input("Journal size (0 for system default)", current.JournalSize)
 	if err != nil {
 		return cmdutil.HandleAbort(err)
 	}
-	if newLocalStoreSize != current.LocalStoreSize {
-		req.LocalStoreSize = &newLocalStoreSize
+	if newJournalSize != current.JournalSize {
+		req.JournalSize = &newJournalSize
 		hasUpdate = true
 	}
 

@@ -24,7 +24,7 @@ var (
 	createDescription       string
 	createRetention         string
 	createRetentionTTL      string
-	createLocalStoreSize    string
+	createJournalSize       string
 	createReadBufferSize    string
 	createQuotaBytes        string
 	createAclCanonicalize   bool
@@ -71,7 +71,7 @@ Examples:
   dfsctl share create --name /logs --metadata default --local fs-cache --retention ttl --retention-ttl 72h
 
   # Create with per-share cache size overrides
-  dfsctl share create --name /bigdata --metadata default --local fs-cache --local-store-size 10GiB --read-buffer-size 2GiB
+  dfsctl share create --name /bigdata --metadata default --local fs-cache --journal-size 10GiB --read-buffer-size 2GiB
 
   # Create with per-share quota
   dfsctl share create --name /limited --metadata default --local fs-cache --quota-bytes 10GiB
@@ -94,7 +94,7 @@ func init() {
 	createCmd.Flags().StringVar(&createDescription, "description", "", "Share description")
 	createCmd.Flags().StringVar(&createRetention, "retention", "", "Retention policy (pin|ttl|lru)")
 	createCmd.Flags().StringVar(&createRetentionTTL, "retention-ttl", "", "Retention TTL duration (e.g., 72h, 24h)")
-	createCmd.Flags().StringVar(&createLocalStoreSize, "local-store-size", "", "Per-share disk cache size override (e.g., 10GiB, 500MiB)")
+	createCmd.Flags().StringVar(&createJournalSize, "journal-size", "", "Per-share journal size override (e.g., 10GiB, 500MiB)")
 	createCmd.Flags().StringVar(&createReadBufferSize, "read-buffer-size", "", "Per-share read buffer size override (e.g., 2GiB, 256MiB)")
 	createCmd.Flags().StringVar(&createQuotaBytes, "quota-bytes", "", "Per-share byte quota (e.g., '10GiB', '500MiB'). 0 = unlimited (default)")
 	createCmd.Flags().BoolVar(&createAclCanonicalize, "acl-canonicalize-inherited", true, "When false, preserves the SE_DACL_AUTO_INHERITED control bit verbatim on SET_INFO Security instead of applying MS-DTYP §2.5.3.4.2 canonicalization (Samba \"acl flag inherited canonicalization = no\"). Default true matches Windows.")
@@ -180,8 +180,8 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	if createRetentionTTL != "" {
 		req.RetentionTTL = createRetentionTTL
 	}
-	if createLocalStoreSize != "" {
-		req.LocalStoreSize = createLocalStoreSize
+	if createJournalSize != "" {
+		req.JournalSize = createJournalSize
 	}
 	if createReadBufferSize != "" {
 		req.ReadBufferSize = createReadBufferSize
