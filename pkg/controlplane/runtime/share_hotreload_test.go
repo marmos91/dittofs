@@ -17,17 +17,17 @@ func addShareViaRuntime(t *testing.T, rt *Runtime, s cpstore.Store, shareName, l
 	ctx := context.Background()
 	metaStores, _ := s.ListMetadataStores(ctx)
 	share := &models.Share{
-		Name:              shareName,
-		MetadataStoreID:   metaStores[0].ID,
-		LocalBlockStoreID: localID,
+		Name:            shareName,
+		MetadataStoreID: metaStores[0].ID,
+		BlockStoreID:    localID,
 	}
 	if _, err := s.CreateShare(ctx, share); err != nil {
 		t.Fatalf("failed to create share in DB: %v", err)
 	}
 	cfg := &ShareConfig{
-		Name:              shareName,
-		MetadataStore:     "test-meta",
-		LocalBlockStoreID: localID,
+		Name:          shareName,
+		MetadataStore: "test-meta",
+		BlockStoreID:  localID,
 	}
 	if err := rt.AddShare(ctx, cfg); err != nil {
 		t.Fatalf("AddShare failed: %v", err)
@@ -36,7 +36,7 @@ func addShareViaRuntime(t *testing.T, rt *Runtime, s cpstore.Store, shareName, l
 
 func TestShareHotReload_AddTriggersCallback(t *testing.T) {
 	rt, s := setupTestRuntime(t)
-	localID := createLocalBlockStoreConfig(t, s, "local-hot-add")
+	localID := createBlockStoreConfig(t, s, "local-hot-add")
 
 	ch := make(chan []string, 1)
 	unsubscribe := rt.OnShareChange(func(shares []string) {
@@ -66,7 +66,7 @@ func TestShareHotReload_AddTriggersCallback(t *testing.T) {
 
 func TestShareHotReload_RemoveTriggersCallback(t *testing.T) {
 	rt, s := setupTestRuntime(t)
-	localID := createLocalBlockStoreConfig(t, s, "local-hot-remove")
+	localID := createBlockStoreConfig(t, s, "local-hot-remove")
 
 	// Add share first (consume callback).
 	addCh := make(chan []string, 1)
@@ -109,7 +109,7 @@ func TestShareHotReload_RemoveTriggersCallback(t *testing.T) {
 
 func TestShareHotReload_MultipleCallbacks(t *testing.T) {
 	rt, s := setupTestRuntime(t)
-	localID := createLocalBlockStoreConfig(t, s, "local-hot-multi")
+	localID := createBlockStoreConfig(t, s, "local-hot-multi")
 
 	ch1 := make(chan []string, 1)
 	ch2 := make(chan []string, 1)
@@ -152,7 +152,7 @@ func TestShareHotReload_MultipleCallbacks(t *testing.T) {
 
 func TestShareHotReload_Unsubscribe(t *testing.T) {
 	rt, s := setupTestRuntime(t)
-	localID := createLocalBlockStoreConfig(t, s, "local-hot-unsub")
+	localID := createBlockStoreConfig(t, s, "local-hot-unsub")
 
 	ch1 := make(chan []string, 1)
 	ch2 := make(chan []string, 1)
@@ -190,7 +190,7 @@ func TestShareHotReload_Unsubscribe(t *testing.T) {
 
 func TestShareHotReload_FullLifecycle(t *testing.T) {
 	rt, s := setupTestRuntime(t)
-	localID := createLocalBlockStoreConfig(t, s, "local-hot-lifecycle")
+	localID := createBlockStoreConfig(t, s, "local-hot-lifecycle")
 
 	ch := make(chan []string, 2)
 	unsub := rt.OnShareChange(func(shares []string) {
@@ -265,8 +265,8 @@ func TestShareHotReload_FullLifecycle(t *testing.T) {
 
 func TestShareHotReload_SequentialAdds(t *testing.T) {
 	rt, s := setupTestRuntime(t)
-	localID1 := createLocalBlockStoreConfig(t, s, "local-hot-seq-1")
-	localID2 := createLocalBlockStoreConfig(t, s, "local-hot-seq-2")
+	localID1 := createBlockStoreConfig(t, s, "local-hot-seq-1")
+	localID2 := createBlockStoreConfig(t, s, "local-hot-seq-2")
 
 	ch := make(chan []string, 2)
 	unsub := rt.OnShareChange(func(shares []string) {

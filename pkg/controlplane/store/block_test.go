@@ -18,7 +18,6 @@ func TestBlockStoreOperations(t *testing.T) {
 	t.Run("create local block store", func(t *testing.T) {
 		bs := &models.BlockStoreConfig{
 			Name:   "test-local-fs",
-			Kind:   models.BlockStoreKindLocal,
 			Type:   "fs",
 			Config: `{"path":"/data/blocks"}`,
 		}
@@ -35,7 +34,6 @@ func TestBlockStoreOperations(t *testing.T) {
 	t.Run("create remote block store", func(t *testing.T) {
 		bs := &models.BlockStoreConfig{
 			Name:   "test-remote-s3",
-			Kind:   models.BlockStoreKindRemote,
 			Type:   "s3",
 			Config: `{"bucket":"test-bucket"}`,
 		}
@@ -63,7 +61,6 @@ func TestBlockStoreOperations(t *testing.T) {
 	t.Run("duplicate block store fails", func(t *testing.T) {
 		bs := &models.BlockStoreConfig{
 			Name: "test-local-fs",
-			Kind: models.BlockStoreKindLocal,
 			Type: "fs",
 		}
 		_, err := store.CreateBlockStore(ctx, bs)
@@ -77,7 +74,6 @@ func TestBlockStoreOperations(t *testing.T) {
 	t.Run("same name across local and remote kinds succeeds", func(t *testing.T) {
 		local := &models.BlockStoreConfig{
 			Name: "default",
-			Kind: models.BlockStoreKindLocal,
 			Type: "memory",
 		}
 		if _, err := store.CreateBlockStore(ctx, local); err != nil {
@@ -86,7 +82,6 @@ func TestBlockStoreOperations(t *testing.T) {
 
 		remote := &models.BlockStoreConfig{
 			Name:   "default",
-			Kind:   models.BlockStoreKindRemote,
 			Type:   "s3",
 			Config: `{"bucket":"x"}`,
 		}
@@ -94,7 +89,7 @@ func TestBlockStoreOperations(t *testing.T) {
 			t.Fatalf("create remote 'default' should succeed alongside local: %v", err)
 		}
 
-		gotLocal, err := store.GetBlockStore(ctx, "default", models.BlockStoreKindLocal)
+		gotLocal, err := store.GetBlockStore(ctx, "default")
 		if err != nil {
 			t.Fatalf("get local default: %v", err)
 		}
@@ -102,7 +97,7 @@ func TestBlockStoreOperations(t *testing.T) {
 			t.Errorf("local default: expected type 'memory', got %q", gotLocal.Type)
 		}
 
-		gotRemote, err := store.GetBlockStore(ctx, "default", models.BlockStoreKindRemote)
+		gotRemote, err := store.GetBlockStore(ctx, "default")
 		if err != nil {
 			t.Fatalf("get remote default: %v", err)
 		}
@@ -112,16 +107,16 @@ func TestBlockStoreOperations(t *testing.T) {
 
 		// Deleting one kind must not affect the other (regression guard against
 		// a future change reverting DeleteBlockStore to filter by name alone).
-		if err := store.DeleteBlockStore(ctx, "default", models.BlockStoreKindLocal); err != nil {
+		if err := store.DeleteBlockStore(ctx, "default"); err != nil {
 			t.Fatalf("delete local default: %v", err)
 		}
-		if _, err := store.GetBlockStore(ctx, "default", models.BlockStoreKindRemote); err != nil {
+		if _, err := store.GetBlockStore(ctx, "default"); err != nil {
 			t.Errorf("remote default should survive local deletion: %v", err)
 		}
 	})
 
 	t.Run("get block store by name and kind", func(t *testing.T) {
-		bs, err := store.GetBlockStore(ctx, "test-local-fs", models.BlockStoreKindLocal)
+		bs, err := store.GetBlockStore(ctx, "test-local-fs")
 		if err != nil {
 			t.Fatalf("failed to get block store: %v", err)
 		}
@@ -137,14 +132,14 @@ func TestBlockStoreOperations(t *testing.T) {
 	})
 
 	t.Run("get block store wrong kind returns not found", func(t *testing.T) {
-		_, err := store.GetBlockStore(ctx, "test-local-fs", models.BlockStoreKindRemote)
+		_, err := store.GetBlockStore(ctx, "test-local-fs")
 		if !errors.Is(err, models.ErrStoreNotFound) {
 			t.Errorf("expected ErrStoreNotFound, got %v", err)
 		}
 	})
 
 	t.Run("get block store by ID", func(t *testing.T) {
-		local, _ := store.GetBlockStore(ctx, "test-local-fs", models.BlockStoreKindLocal)
+		local, _ := store.GetBlockStore(ctx, "test-local-fs")
 		bs, err := store.GetBlockStoreByID(ctx, local.ID)
 		if err != nil {
 			t.Fatalf("failed to get block store by ID: %v", err)
@@ -162,7 +157,7 @@ func TestBlockStoreOperations(t *testing.T) {
 	})
 
 	t.Run("update block store", func(t *testing.T) {
-		bs, _ := store.GetBlockStore(ctx, "test-local-fs", models.BlockStoreKindLocal)
+		bs, _ := store.GetBlockStore(ctx, "test-local-fs")
 		bs.Config = `{"path":"/new/path"}`
 
 		err := store.UpdateBlockStore(ctx, bs)
@@ -170,7 +165,7 @@ func TestBlockStoreOperations(t *testing.T) {
 			t.Fatalf("failed to update block store: %v", err)
 		}
 
-		updated, _ := store.GetBlockStore(ctx, "test-local-fs", models.BlockStoreKindLocal)
+		updated, _ := store.GetBlockStore(ctx, "test-local-fs")
 		if updated.Config != `{"path":"/new/path"}` {
 			t.Errorf("expected updated config, got %q", updated.Config)
 		}
@@ -188,24 +183,23 @@ func TestBlockStoreOperations(t *testing.T) {
 		// Create a temporary store to delete
 		bs := &models.BlockStoreConfig{
 			Name: "to-delete",
-			Kind: models.BlockStoreKindLocal,
 			Type: "fs",
 		}
 		store.CreateBlockStore(ctx, bs)
 
-		err := store.DeleteBlockStore(ctx, "to-delete", models.BlockStoreKindLocal)
+		err := store.DeleteBlockStore(ctx, "to-delete")
 		if err != nil {
 			t.Fatalf("failed to delete block store: %v", err)
 		}
 
-		_, err = store.GetBlockStore(ctx, "to-delete", models.BlockStoreKindLocal)
+		_, err = store.GetBlockStore(ctx, "to-delete")
 		if !errors.Is(err, models.ErrStoreNotFound) {
 			t.Error("block store should not exist after deletion")
 		}
 	})
 
 	t.Run("delete nonexistent block store", func(t *testing.T) {
-		err := store.DeleteBlockStore(ctx, "nonexistent", models.BlockStoreKindLocal)
+		err := store.DeleteBlockStore(ctx, "nonexistent")
 		if !errors.Is(err, models.ErrStoreNotFound) {
 			t.Errorf("expected ErrStoreNotFound, got %v", err)
 		}
@@ -220,19 +214,19 @@ func TestBlockStoreKindFilter(t *testing.T) {
 	// Create local stores
 	for _, name := range []string{"local-1", "local-2"} {
 		store.CreateBlockStore(ctx, &models.BlockStoreConfig{
-			Name: name, Kind: models.BlockStoreKindLocal, Type: "fs",
+			Name: name, Type: "fs",
 		})
 	}
 
 	// Create remote stores
 	for _, name := range []string{"remote-1", "remote-2", "remote-3"} {
 		store.CreateBlockStore(ctx, &models.BlockStoreConfig{
-			Name: name, Kind: models.BlockStoreKindRemote, Type: "s3",
+			Name: name, Type: "s3",
 		})
 	}
 
 	t.Run("list local only", func(t *testing.T) {
-		stores, err := store.ListBlockStores(ctx, models.BlockStoreKindLocal)
+		stores, err := store.ListBlockStores(ctx)
 		if err != nil {
 			t.Fatalf("failed to list local stores: %v", err)
 		}
@@ -247,7 +241,7 @@ func TestBlockStoreKindFilter(t *testing.T) {
 	})
 
 	t.Run("list remote only", func(t *testing.T) {
-		stores, err := store.ListBlockStores(ctx, models.BlockStoreKindRemote)
+		stores, err := store.ListBlockStores(ctx)
 		if err != nil {
 			t.Fatalf("failed to list remote stores: %v", err)
 		}
@@ -271,18 +265,17 @@ func TestShareBlockStore(t *testing.T) {
 	meta := &models.MetadataStoreConfig{Name: "share-meta", Type: "memory"}
 	metaID, _ := store.CreateMetadataStore(ctx, meta)
 
-	local := &models.BlockStoreConfig{Name: "share-local", Kind: models.BlockStoreKindLocal, Type: "fs"}
+	local := &models.BlockStoreConfig{Name: "share-local", Type: "fs"}
 	localID, _ := store.CreateBlockStore(ctx, local)
 
-	remote := &models.BlockStoreConfig{Name: "share-remote", Kind: models.BlockStoreKindRemote, Type: "s3"}
+	remote := &models.BlockStoreConfig{Name: "share-remote", Type: "s3"}
 	remoteID, _ := store.CreateBlockStore(ctx, remote)
 
 	t.Run("create share with local and remote block stores", func(t *testing.T) {
 		share := &models.Share{
-			Name:               "/test-share",
-			MetadataStoreID:    metaID,
-			LocalBlockStoreID:  localID,
-			RemoteBlockStoreID: &remoteID,
+			Name:            "/test-share",
+			MetadataStoreID: metaID,
+			BlockStoreID:    remoteID,
 		}
 
 		id, err := store.CreateShare(ctx, share)
@@ -296,9 +289,9 @@ func TestShareBlockStore(t *testing.T) {
 
 	t.Run("create share with local only", func(t *testing.T) {
 		share := &models.Share{
-			Name:              "/local-only-share",
-			MetadataStoreID:   metaID,
-			LocalBlockStoreID: localID,
+			Name:            "/local-only-share",
+			MetadataStoreID: metaID,
+			BlockStoreID:    localID,
 		}
 
 		id, err := store.CreateShare(ctx, share)
@@ -342,7 +335,7 @@ func TestShareBlockStore(t *testing.T) {
 	})
 
 	t.Run("get shares by block store", func(t *testing.T) {
-		shares, err := store.GetSharesByBlockStore(ctx, "share-local", models.BlockStoreKindLocal)
+		shares, err := store.GetSharesByBlockStore(ctx, "share-local")
 		if err != nil {
 			t.Fatalf("failed to get shares by block store: %v", err)
 		}
@@ -352,7 +345,7 @@ func TestShareBlockStore(t *testing.T) {
 	})
 
 	t.Run("get shares by remote block store", func(t *testing.T) {
-		shares, err := store.GetSharesByBlockStore(ctx, "share-remote", models.BlockStoreKindRemote)
+		shares, err := store.GetSharesByBlockStore(ctx, "share-remote")
 		if err != nil {
 			t.Fatalf("failed to get shares by block store: %v", err)
 		}
@@ -362,14 +355,14 @@ func TestShareBlockStore(t *testing.T) {
 	})
 
 	t.Run("delete block store in use fails", func(t *testing.T) {
-		err := store.DeleteBlockStore(ctx, "share-local", models.BlockStoreKindLocal)
+		err := store.DeleteBlockStore(ctx, "share-local")
 		if !errors.Is(err, models.ErrStoreInUse) {
 			t.Errorf("expected ErrStoreInUse, got %v", err)
 		}
 	})
 
 	t.Run("delete remote block store in use fails", func(t *testing.T) {
-		err := store.DeleteBlockStore(ctx, "share-remote", models.BlockStoreKindRemote)
+		err := store.DeleteBlockStore(ctx, "share-remote")
 		if !errors.Is(err, models.ErrStoreInUse) {
 			t.Errorf("expected ErrStoreInUse, got %v", err)
 		}

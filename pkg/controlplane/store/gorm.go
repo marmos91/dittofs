@@ -365,6 +365,19 @@ func New(config *Config) (*GORMStore, error) {
 		}
 	}
 
+	// Pre-migration: rename remote_block_store_id to block_store_id. Must
+	// precede AutoMigrate for the same reason as journal_size — otherwise the
+	// new column arrives empty and every share loses its store reference.
+	if db.Migrator().HasColumn(&models.Share{}, "remote_block_store_id") {
+		if db.Migrator().HasColumn(&models.Share{}, "block_store_id") {
+			return nil, fmt.Errorf("shares table has both remote_block_store_id and block_store_id; " +
+				"copy the intended values into block_store_id, drop the old column, and restart")
+		}
+		if err := db.Migrator().RenameColumn(&models.Share{}, "remote_block_store_id", "block_store_id"); err != nil {
+			return nil, fmt.Errorf("failed to rename remote_block_store_id column: %w", err)
+		}
+	}
+
 	// Run auto-migration
 	if err := db.AutoMigrate(models.AllModels()...); err != nil {
 		return nil, fmt.Errorf("failed to run database migration: %w", err)
@@ -414,6 +427,13 @@ func New(config *Config) (*GORMStore, error) {
 		string(models.CommitAckJournal),
 	).Error; err != nil {
 		return nil, fmt.Errorf("failed to backfill commit_ack: %w", err)
+	}
+
+	// Post-migration: the journal is provisioned under the server-level root, so
+	// a share no longer references a local block store. Dropped only after
+	// migrateShareDurability above, which reads that store's config through it.
+	if lbs := db.Migrator(); lbs.HasColumn(&models.Share{}, "local_block_store_id") {
+		_ = lbs.DropColumn(&models.Share{}, "local_block_store_id")
 	}
 
 	// Refs #532: backfill shares.access_based_enumeration for rows that predate
@@ -474,12 +494,13 @@ func New(config *Config) (*GORMStore, error) {
 		).Error; err != nil {
 			return nil, fmt.Errorf("failed to create default block store: %w", err)
 		}
-		// Populate new columns from legacy payload_store_id column
-		if err := db.Exec("UPDATE shares SET local_block_store_id = ?", defaultLocalID).Error; err != nil {
-			return nil, fmt.Errorf("failed to populate local_block_store_id: %w", err)
+		// Populate the new column from the legacy payload_store_id column,
+		// falling back to the store just created for rows that named none.
+		if err := db.Exec("UPDATE shares SET block_store_id = payload_store_id WHERE payload_store_id IS NOT NULL AND payload_store_id != ''").Error; err != nil {
+			return nil, fmt.Errorf("failed to populate block_store_id: %w", err)
 		}
-		if err := db.Exec("UPDATE shares SET remote_block_store_id = payload_store_id WHERE payload_store_id IS NOT NULL AND payload_store_id != ''").Error; err != nil {
-			return nil, fmt.Errorf("failed to populate remote_block_store_id: %w", err)
+		if err := db.Exec("UPDATE shares SET block_store_id = ? WHERE block_store_id IS NULL OR block_store_id = ''", defaultLocalID).Error; err != nil {
+			return nil, fmt.Errorf("failed to populate block_store_id default: %w", err)
 		}
 		// Drop old column
 		if err := postMigrator.DropColumn(&models.Share{}, "payload_store_id"); err != nil {

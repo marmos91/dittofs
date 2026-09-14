@@ -15,9 +15,9 @@ func TestMigration_CommitAckBackfillsToJournal(t *testing.T) {
 
 	s := openAt(t, path)
 	if err := s.DB().Exec(
-		`INSERT INTO shares (id, name, metadata_store_id, local_block_store_id, commit_ack)
+		`INSERT INTO shares (id, name, metadata_store_id, block_store_id, commit_ack)
 		 VALUES (?, ?, ?, ?, ?)`,
-		"s1", "/legacy", "meta", "local", "",
+		"s1", "/legacy", "meta", "bs", "",
 	).Error; err != nil {
 		t.Fatalf("insert: %v", err)
 	}

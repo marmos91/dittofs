@@ -61,7 +61,7 @@ func (s *GORMStore) DeleteBlockStore(ctx context.Context, name string) error {
 		// Check if any shares reference this store (via local or remote block store ID)
 		var count int64
 		if err := tx.Model(&models.Share{}).
-			Where("local_block_store_id = ? OR remote_block_store_id = ?", store.ID, store.ID).
+			Where("block_store_id = ?", store.ID).
 			Count(&count).Error; err != nil {
 			return err
 		}
@@ -82,9 +82,8 @@ func (s *GORMStore) GetSharesByBlockStore(ctx context.Context, storeName string)
 	var shares []*models.Share
 	if err := s.db.WithContext(ctx).
 		Preload("MetadataStore").
-		Preload("LocalBlockStore").
-		Preload("RemoteBlockStore").
-		Where("local_block_store_id = ? OR remote_block_store_id = ?", store.ID, store.ID).
+		Preload("BlockStore").
+		Where("block_store_id = ?", store.ID).
 		Find(&shares).Error; err != nil {
 		return nil, err
 	}

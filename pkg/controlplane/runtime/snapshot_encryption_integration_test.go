@@ -79,6 +79,7 @@ func newEncryptedFixture(t *testing.T) *encryptedFixture {
 	t.Cleanup(func() { _ = cp.Close() })
 
 	rt := New(cp)
+	setJournalRoot(t, rt)
 
 	mem := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	backup := &controlledSnapshotable{MemoryMetadataStore: mem}

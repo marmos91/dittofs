@@ -146,11 +146,11 @@ func (r *Runtime) InvalidateShareChecker(name string) {
 
 // InvalidateBlockStoreChecker evicts any cached health checker for
 // the named block store config.
-func (r *Runtime) InvalidateBlockStoreChecker(kind models.BlockStoreKind, name string) {
+func (r *Runtime) InvalidateBlockStoreChecker(name string) {
 	if r == nil || r.statusCheckers == nil {
 		return
 	}
-	r.statusCheckers.Delete(statusKey{kind: "block-" + string(kind), name: name})
+	r.statusCheckers.Delete(statusKey{kind: "block", name: name})
 }
 
 // MetadataStoreChecker returns a cached [health.Checker] for the
@@ -200,13 +200,13 @@ func (r *Runtime) ShareChecker(name string) health.Checker {
 // other. A missing config surfaces as [health.StatusUnknown] rather
 // than [health.StatusUnhealthy]; the HTTP handler returns 404 for
 // that case before consulting this checker.
-func (r *Runtime) BlockStoreChecker(kind models.BlockStoreKind, name string) health.Checker {
-	return r.cachedChecker(statusKey{kind: "block-" + string(kind), name: name}, func(ctx context.Context) health.Report {
+func (r *Runtime) BlockStoreChecker(name string) health.Checker {
+	return r.cachedChecker(statusKey{kind: "block", name: name}, func(ctx context.Context) health.Report {
 		start := time.Now()
 		if r.store == nil {
 			return unknownReport(start, "control-plane store not configured")
 		}
-		bs, err := r.store.GetBlockStore(ctx, name, kind)
+		bs, err := r.store.GetBlockStore(ctx, name)
 		if err != nil {
 			if errors.Is(err, models.ErrStoreNotFound) {
 				return unknownReport(start, "block store "+name+" not found")
@@ -215,7 +215,7 @@ func (r *Runtime) BlockStoreChecker(kind models.BlockStoreKind, name string) hea
 			// message in the Report so clients never see internal DB
 			// error text.
 			logger.Error("BlockStoreChecker: failed to load block store config",
-				"name", name, "kind", string(kind), "error", err)
+				"name", name, "error", err)
 			return unknownReport(start, "block store lookup failed")
 		}
 		return blockstoreprobe.Probe(ctx, bs)

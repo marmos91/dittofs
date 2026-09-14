@@ -54,12 +54,12 @@ func TestDeleteNetgroup_NoFalsePositiveOnUUIDSubstring(t *testing.T) {
 
 	meta := &models.MetadataStoreConfig{Name: "ng-test-meta", Type: "memory"}
 	metaID, _ := s.CreateMetadataStore(ctx, meta)
-	local := &models.BlockStoreConfig{Name: "ng-test-local", Kind: models.BlockStoreKindLocal, Type: "fs"}
+	local := &models.BlockStoreConfig{Name: "ng-test-local", Type: "fs"}
 	localID, _ := s.CreateBlockStore(ctx, local)
 	share := &models.Share{
-		Name:              "/ng-test-share",
-		MetadataStoreID:   metaID,
-		LocalBlockStoreID: localID,
+		Name:            "/ng-test-share",
+		MetadataStoreID: metaID,
+		BlockStoreID:    localID,
 	}
 	shareID, err := s.CreateShare(ctx, share)
 	if err != nil {
@@ -97,12 +97,12 @@ func TestDeleteNetgroup_BlockedWhenActuallyReferenced(t *testing.T) {
 
 	meta := &models.MetadataStoreConfig{Name: "ng-inuse-meta", Type: "memory"}
 	metaID, _ := s.CreateMetadataStore(ctx, meta)
-	local := &models.BlockStoreConfig{Name: "ng-inuse-local", Kind: models.BlockStoreKindLocal, Type: "fs"}
+	local := &models.BlockStoreConfig{Name: "ng-inuse-local", Type: "fs"}
 	localID, _ := s.CreateBlockStore(ctx, local)
 	share := &models.Share{
-		Name:              "/ng-inuse-share",
-		MetadataStoreID:   metaID,
-		LocalBlockStoreID: localID,
+		Name:            "/ng-inuse-share",
+		MetadataStoreID: metaID,
+		BlockStoreID:    localID,
 	}
 	shareID, _ := s.CreateShare(ctx, share)
 
@@ -143,12 +143,12 @@ func TestGetSharesByNetgroup_NoFalsePositiveOnUUIDSubstring(t *testing.T) {
 
 	meta := &models.MetadataStoreConfig{Name: "ng-query-meta", Type: "memory"}
 	metaID, _ := s.CreateMetadataStore(ctx, meta)
-	local := &models.BlockStoreConfig{Name: "ng-query-local", Kind: models.BlockStoreKindLocal, Type: "fs"}
+	local := &models.BlockStoreConfig{Name: "ng-query-local", Type: "fs"}
 	localID, _ := s.CreateBlockStore(ctx, local)
 	share := &models.Share{
-		Name:              "/ng-query-share",
-		MetadataStoreID:   metaID,
-		LocalBlockStoreID: localID,
+		Name:            "/ng-query-share",
+		MetadataStoreID: metaID,
+		BlockStoreID:    localID,
 	}
 	shareID, _ := s.CreateShare(ctx, share)
 

@@ -264,6 +264,7 @@ func newRealBackupFixture(t *testing.T) *realBackupFixture {
 	t.Cleanup(func() { _ = cp.Close() })
 
 	rt := New(cp)
+	setJournalRoot(t, rt)
 
 	mem := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	if err := rt.RegisterMetadataStore("memory", mem); err != nil {

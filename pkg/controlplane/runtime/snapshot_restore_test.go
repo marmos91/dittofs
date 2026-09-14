@@ -582,6 +582,7 @@ func newRestoreFixture(t *testing.T, opts restoreFixtureOpts) *restoreFixture {
 	t.Cleanup(func() { _ = cp.Close() })
 
 	rt := New(cp)
+	setJournalRoot(t, rt)
 
 	mem := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	metaStoreName := "memory-restore"

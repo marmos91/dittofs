@@ -16,7 +16,7 @@ func TestLoadSharesFromStore_ReappliesPersistedOwner(t *testing.T) {
 	rt, s := setupTestRuntime(t)
 	ctx := context.Background()
 
-	localID := createLocalBlockStoreConfig(t, s, "owner-local")
+	localID := createBlockStoreConfig(t, s, "owner-local")
 	metaStores, err := s.ListMetadataStores(ctx)
 	if err != nil || len(metaStores) == 0 {
 		t.Fatalf("ListMetadataStores: %v", err)
@@ -24,11 +24,11 @@ func TestLoadSharesFromStore_ReappliesPersistedOwner(t *testing.T) {
 
 	uid, gid := uint32(1000), uint32(2000)
 	share := &models.Share{
-		Name:              "/owned-restart",
-		MetadataStoreID:   metaStores[0].ID,
-		LocalBlockStoreID: localID,
-		OwnerUID:          &uid,
-		OwnerGID:          &gid,
+		Name:            "/owned-restart",
+		MetadataStoreID: metaStores[0].ID,
+		BlockStoreID:    localID,
+		OwnerUID:        &uid,
+		OwnerGID:        &gid,
 	}
 	if _, err := s.CreateShare(ctx, share); err != nil {
 		t.Fatalf("CreateShare: %v", err)
@@ -73,14 +73,14 @@ func TestLoadSharesFromStore_OwnerSurvivesRestart_Badger(t *testing.T) {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
 
-	localID := createLocalBlockStoreConfig(t, s, "owner-local-badger")
+	localID := createBlockStoreConfig(t, s, "owner-local-badger")
 	uid, gid := uint32(1000), uint32(1000)
 	share := &models.Share{
-		Name:              "/owned-badger",
-		MetadataStoreID:   metaCfg.ID,
-		LocalBlockStoreID: localID,
-		OwnerUID:          &uid,
-		OwnerGID:          &gid,
+		Name:            "/owned-badger",
+		MetadataStoreID: metaCfg.ID,
+		BlockStoreID:    localID,
+		OwnerUID:        &uid,
+		OwnerGID:        &gid,
 	}
 	if _, err := s.CreateShare(ctx, share); err != nil {
 		t.Fatalf("CreateShare: %v", err)

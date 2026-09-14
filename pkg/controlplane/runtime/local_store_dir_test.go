@@ -20,6 +20,7 @@ import (
 // only cares about the final string the shares service hands it.
 func TestRuntime_LocalStoreDir_Found(t *testing.T) {
 	rt := New(nil)
+	setJournalRoot(t, rt)
 	rt.sharesSvc.InjectShareForTesting(&shares.Share{
 		Name:          "myshare",
 		MetadataStore: "memory",
@@ -39,6 +40,7 @@ func TestRuntime_LocalStoreDir_Found(t *testing.T) {
 // it to 404 deterministically.
 func TestRuntime_LocalStoreDir_NotFound(t *testing.T) {
 	rt := New(nil)
+	setJournalRoot(t, rt)
 
 	_, err := rt.LocalStoreDir("nope")
 	require.Error(t, err)
@@ -52,6 +54,7 @@ func TestRuntime_LocalStoreDir_NotFound(t *testing.T) {
 // available" and proceeds without crashing.
 func TestRuntime_LocalStoreDir_EmptyForMemoryBackend(t *testing.T) {
 	rt := New(nil)
+	setJournalRoot(t, rt)
 	rt.sharesSvc.InjectShareForTesting(&shares.Share{
 		Name:          "memshare",
 		MetadataStore: "memory",

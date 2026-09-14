@@ -8,22 +8,16 @@ import (
 	"io"
 	"log/slog"
 	"math"
-	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/internal/pathutil"
 	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/chunker"
 	"github.com/marmos91/dittofs/pkg/block/compression"
 	"github.com/marmos91/dittofs/pkg/block/encryption"
 	"github.com/marmos91/dittofs/pkg/block/encryption/keyprovider"
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/block/journal"
-	"github.com/marmos91/dittofs/pkg/block/local"
-	localmemory "github.com/marmos91/dittofs/pkg/block/local/memory"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	remotes3 "github.com/marmos91/dittofs/pkg/block/remote/s3"
@@ -33,26 +27,22 @@ import (
 
 // BlockStoreConfigProvider resolves block store configurations from the control plane DB.
 //
-// A share's LocalBlockStoreID/RemoteBlockStoreID normally hold the block store
-// row's UUID, but the REST UpdateShare path historically persisted the raw
-// *name* instead (#1312). Resolution therefore tries the UUID first and falls
-// back to a kind-scoped name lookup so shares whose rows hold a name still load
-// after a restart.
+// A share's BlockStoreID normally holds the block store row's UUID, but the
+// REST UpdateShare path historically persisted the raw *name* instead (#1312).
+// Resolution therefore tries the UUID first and falls back to a name lookup so
+// shares whose rows hold a name still load after a restart.
 type BlockStoreConfigProvider interface {
 	GetBlockStoreByID(ctx context.Context, id string) (*models.BlockStoreConfig, error)
-	GetBlockStore(ctx context.Context, name string, kind models.BlockStoreKind) (*models.BlockStoreConfig, error)
+	GetBlockStore(ctx context.Context, name string) (*models.BlockStoreConfig, error)
 }
 
 // resolveBlockStoreConfig resolves a block store reference that may be either a
 // UUID (the canonical form) or a name (#1312 legacy rows). It tries the UUID
-// lookup first; on not-found it falls back to a name lookup scoped to the
-// expected kind. The kind scope keeps a local name from accidentally resolving
-// to a same-named remote store and vice versa.
+// lookup first; on not-found it falls back to a name lookup.
 func resolveBlockStoreConfig(
 	ctx context.Context,
 	provider BlockStoreConfigProvider,
 	ref string,
-	kind models.BlockStoreKind,
 ) (*models.BlockStoreConfig, error) {
 	cfg, err := provider.GetBlockStoreByID(ctx, ref)
 	if err == nil {
@@ -62,7 +52,7 @@ func resolveBlockStoreConfig(
 		return nil, err
 	}
 	// Fall back to name resolution for legacy rows that stored the name.
-	byName, nameErr := provider.GetBlockStore(ctx, ref, kind)
+	byName, nameErr := provider.GetBlockStore(ctx, ref)
 	if nameErr != nil {
 		// A real operational error (DB/context) on the name path must not be
 		// masked as "not found"; only collapse to the familiar ID-lookup error
@@ -267,7 +257,7 @@ func remotePinnedUploads(ctx context.Context, provider BlockStoreConfigProvider,
 	if ref == "" || provider == nil {
 		return 0
 	}
-	cfg, err := resolveBlockStoreConfig(ctx, provider, ref, models.BlockStoreKindRemote)
+	cfg, err := resolveBlockStoreConfig(ctx, provider, ref)
 	if err != nil {
 		return 0
 	}
@@ -338,36 +328,25 @@ func (s *Service) createBlockStoreForShare(
 	localStoreDefaults *LocalStoreDefaults,
 	syncerDefaults *SyncerDefaults,
 ) error {
-	// Resolve local block store config from DB (by UUID, or by name for #1312
-	// legacy rows).
-	localCfg, err := resolveBlockStoreConfig(ctx, blockStoreProvider, config.LocalBlockStoreID, models.BlockStoreKindLocal)
-	if err != nil {
-		return fmt.Errorf("failed to resolve local block store config %q: %w", config.LocalBlockStoreID, err)
-	}
-	if localCfg.Kind != models.BlockStoreKindLocal {
-		return fmt.Errorf("block store config %q has kind %q, expected %q", config.LocalBlockStoreID, localCfg.Kind, models.BlockStoreKindLocal)
-	}
-
 	// Merge per-share size overrides into effective defaults. A configured
-	// remote makes the local tier a bounded write-through cache, so the
+	// block store makes the journal a bounded write-through cache, so the
 	// conditional default ceiling applies (see mergeLocalStoreDefaults).
-	remoteConfigured := config.RemoteBlockStoreID != ""
+	remoteConfigured := config.BlockStoreID != ""
 	effectiveDefaults := mergeLocalStoreDefaults(localStoreDefaults, config, remoteConfigured)
 
-	// A remote-backed share whose local dir still holds the pre-journal
-	// blobs/+logs/ layout is migrated in place: the local dirs are archived aside
-	// so the journal opens clean, and the bytes are re-materialized from the
-	// remote via a cold seed below. A local-only share passes false so the
-	// guardrail refuses to open a legacy dir (its bytes are the sole copy).
-	localStore, err := CreateLocalStoreFromConfig(ctx, localCfg.Type, localCfg, config.Name, effectiveDefaults, fileChunkStore)
+	// The journal is provisioned under the server-level root rather than
+	// configured per share. Opening it refuses a directory still holding the
+	// pre-journal layout rather than stamping an empty journal over bytes that
+	// may be their own only copy.
+	localStore, err := OpenShareJournal(config.Name, effectiveDefaults)
 	if err != nil {
-		return fmt.Errorf("failed to create local store: %w", err)
+		return fmt.Errorf("failed to open share journal: %w", err)
 	}
 
 	var remoteStore remote.RemoteStore
 	var remoteConfigID string
-	if config.RemoteBlockStoreID != "" {
-		remoteStore, remoteConfigID, err = s.acquireRemoteStore(ctx, config.RemoteBlockStoreID, blockStoreProvider)
+	if config.BlockStoreID != "" {
+		remoteStore, remoteConfigID, err = s.acquireRemoteStore(ctx, config.BlockStoreID, blockStoreProvider)
 		if err != nil {
 			_ = localStore.Close()
 			return fmt.Errorf("failed to create remote store: %w", err)
@@ -387,21 +366,15 @@ func (s *Service) createBlockStoreForShare(
 	// so it rides the syncer config rather than the journal's: journal's seam is
 	// content-agnostic and has no use for it.
 	//
-	// Only for disk-backed local stores. A memory local store ignores the
-	// setting by contract (nothing is re-read off a device, so there is no read
-	// amplification to trade against), and the profile previously reached the
-	// carver only through the journal, which a memory share never opens. Wiring
-	// it unconditionally here would quietly start honouring it for those shares.
-	if localCfg.Type == "fs" {
-		if localStoreCfg, cfgErr := localCfg.GetConfig(); cfgErr == nil {
-			if cp, ok := chunkParamsFromConfig(localStoreCfg); ok {
-				syncerCfg.ChunkParams = cp
-			}
-		}
+	// Every share's journal is disk-backed, so the read-amplification trade the
+	// setting governs always applies — there is no longer a memory-backed local
+	// tier to exempt.
+	if cp, ok := journalChunkParams(effectiveDefaults); ok {
+		syncerCfg.ChunkParams = cp
 	}
 	// A per-remote parallel_uploads override pins the carver's upload window;
 	// 0 (the default) keeps the adaptive auto-tune (#1407 / #1432).
-	if pinned := remotePinnedUploads(ctx, blockStoreProvider, config.RemoteBlockStoreID); pinned > 0 {
+	if pinned := remotePinnedUploads(ctx, blockStoreProvider, config.BlockStoreID); pinned > 0 {
 		syncerCfg.ParallelUploads = pinned
 	}
 
@@ -485,27 +458,17 @@ func (s *Service) createBlockStoreForShare(
 		return fmt.Errorf("failed to create BlockStore: %w", err)
 	}
 
-	// Apply the per-share durability tier (#1758), composed from the local store
-	// config. The "durability" enum (local|writeback|remote) selects the tier;
-	// when absent, the raw "require_durable_commit" (#1274) and "writeback"
-	// (#1757) bools are honored for backward compatibility. require_durable_commit
-	// is set before Start so it governs the very first commit; the metadata
-	// writeback flag is stashed and applied to the metadata service in AddShare
-	// (which holds the registrar), after RegisterStoreForShare.
-	if localStoreCfg, cfgErr := localCfg.GetConfig(); cfgErr == nil {
-		writeback, requireDurableCommit := resolveDurabilityTier(localStoreCfg, config.Name)
-		bs.SetRequireDurableCommit(requireDurableCommit)
-		share.writeback = writeback
-		// Durable tiers (local-durable and remote) verify warm reads per-record so
-		// on-disk corruption is caught and healed/failed-closed instead of returning
-		// silently-wrong bytes; the writeback tier keeps the raw fast read.
-		if vr, ok := localStore.(interface{ SetVerifyReads(bool) }); ok {
-			vr.SetVerifyReads(!writeback)
-		}
-	} else {
-		logger.Warn("failed to read local block store config for durability tier; defaulting to local",
-			"share", config.Name, "error", cfgErr)
-	}
+	// Apply the share's durability choice. The acknowledgement rule is set
+	// before Start so it governs the very first commit; the relaxed metadata
+	// flag is stashed and applied to the metadata service in AddShare (which
+	// holds the registrar), after RegisterStoreForShare.
+	relaxed := config.RelaxedMetadataCommit
+	bs.SetRequireDurableCommit(config.CommitAck == models.CommitAckBlockStore)
+	share.writeback = relaxed
+	// A share acknowledging durably verifies warm reads per-record so on-disk
+	// corruption is caught and healed/failed-closed instead of returning
+	// silently-wrong bytes; the relaxed tier keeps the raw fast read.
+	localStore.SetVerifyReads(!relaxed)
 
 	if err := bs.Start(ctx); err != nil {
 		cleanup()
@@ -532,15 +495,11 @@ func (s *Service) createBlockStoreForShare(
 	// Safe without lock: share is not yet in the registry.
 	share.BlockStore = bs
 	share.remoteConfigID = remoteConfigID
-	// Compute the persistent gc-state directory for this share. Only fs-backed
-	// local stores produce a non-empty path; in-memory backends skip
-	// last-run.json persistence entirely (engine.PersistLastRunSummary is a
-	// no-op on empty rootDir).
-	share.gcStateRoot = deriveGCStateRoot(localCfg, config.Name)
-	// per-share local data dir for the migration journal.
-	// Same source-of-truth + emptiness semantics as gcStateRoot — memory
-	// backends produce "" so the status handler can short-circuit.
-	share.localStoreDir = deriveLocalStoreDir(localCfg, config.Name)
+	// The share's journal directory doubles as the home of the migration
+	// journal and the persistent gc-state. OpenShareJournal has already
+	// refused an unconfigured root, so this is never empty here.
+	share.localStoreDir = ShareJournalDir(effectiveDefaults.JournalRoot, config.Name)
+	share.gcStateRoot = filepath.Join(share.localStoreDir, "gc-state")
 
 	// A pinned share never evicts, so a bounded local tier can fill and then
 	// fail reads with ErrDiskFull once the working set exceeds it. Warn the
@@ -555,7 +514,6 @@ func (s *Service) createBlockStoreForShare(
 	logger.Info("Per-share BlockStore initialized",
 		"share", config.Name,
 		"mode", modeLabel(remoteStore != nil),
-		"local_type", localCfg.Type,
 		"retention", config.RetentionPolicy,
 		"retention_ttl", config.RetentionTTL)
 
@@ -589,9 +547,6 @@ func (s *Service) RebindShareBlockStore(
 	syncerDefaults *SyncerDefaults,
 ) error {
 	name := newConfig.Name
-	if newConfig.LocalBlockStoreID == "" {
-		return fmt.Errorf("cannot rebind share %q: no local block store configured", name)
-	}
 
 	// Serialize rebinds: overlapping teardown/rebuild over the same local dir is
 	// unsafe.
@@ -613,12 +568,9 @@ func (s *Service) RebindShareBlockStore(
 
 	// Pre-validate the new binding resolves BEFORE tearing down the live store,
 	// so a bad binding fails fast without disrupting the running share.
-	if _, err := resolveBlockStoreConfig(ctx, blockStoreProvider, newConfig.LocalBlockStoreID, models.BlockStoreKindLocal); err != nil {
-		return fmt.Errorf("failed to resolve new local block store %q: %w", newConfig.LocalBlockStoreID, err)
-	}
-	if newConfig.RemoteBlockStoreID != "" {
-		if _, err := resolveBlockStoreConfig(ctx, blockStoreProvider, newConfig.RemoteBlockStoreID, models.BlockStoreKindRemote); err != nil {
-			return fmt.Errorf("failed to resolve new remote block store %q: %w", newConfig.RemoteBlockStoreID, err)
+	if newConfig.BlockStoreID != "" {
+		if _, err := resolveBlockStoreConfig(ctx, blockStoreProvider, newConfig.BlockStoreID); err != nil {
+			return fmt.Errorf("failed to resolve new block store %q: %w", newConfig.BlockStoreID, err)
 		}
 	}
 
@@ -725,9 +677,8 @@ func (s *Service) RebindShareBlockStore(
 	s.notifyShareChange()
 	logger.Info("Per-share BlockStore rebound live",
 		"share", name,
-		"local_block_store_id", newConfig.LocalBlockStoreID,
-		"remote_block_store_id", newConfig.RemoteBlockStoreID,
-		"mode", modeLabel(newConfig.RemoteBlockStoreID != ""))
+		"block_store_id", newConfig.BlockStoreID,
+		"mode", modeLabel(newConfig.BlockStoreID != ""))
 	return nil
 }
 
@@ -752,12 +703,9 @@ func (s *Service) acquireRemoteStore(ctx context.Context, ref string, provider B
 	// ref-count map is always keyed by the canonical store UUID. Two shares
 	// referencing the same remote — one by UUID, one by legacy name — must
 	// share the single ref-counted store.
-	remoteCfg, err := resolveBlockStoreConfig(ctx, provider, ref, models.BlockStoreKindRemote)
+	remoteCfg, err := resolveBlockStoreConfig(ctx, provider, ref)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to resolve remote block store config %q: %w", ref, err)
-	}
-	if remoteCfg.Kind != models.BlockStoreKindRemote {
-		return nil, "", fmt.Errorf("block store config %q has kind %q, expected %q", ref, remoteCfg.Kind, models.BlockStoreKindRemote)
 	}
 	configID := remoteCfg.ID
 
@@ -904,54 +852,6 @@ func (s *Service) releaseRemoteStore(configID string) {
 	}
 }
 
-// deriveGCStateRoot returns the per-share gc-state directory used by the GC
-// engine to persist its run state and last-run.json: the share's local store
-// directory plus a `gc-state` suffix. Returns "" whenever that directory is
-// unresolvable — engine.PersistLastRunSummary treats "" as "do not persist".
-func deriveGCStateRoot(localCfg interface {
-	GetConfig() (map[string]any, error)
-}, shareName string) string {
-	dir := deriveLocalStoreDir(localCfg, shareName)
-	if dir == "" {
-		return ""
-	}
-	return filepath.Join(dir, "gc-state")
-}
-
-// deriveLocalStoreDir returns the per-share on-disk data directory the
-// migration tool uses to host `.migration-state.jsonl` and the rolling
-// snapshot. Returns "" for in-memory or unresolvable configs (the REST
-// status handler treats "" as "no journal available", not an error).
-//
-// Path layout: `<basePath>/shares/<sanitized>/`. Note the absence of a
-// "blocks" or "gc-state" suffix — the migration journal lives at the
-// share root next to the blocks directory, not inside it. This matches
-// the offline migration tool's --state-dir contract: the operator
-// passes the same path the daemon would compute here.
-func deriveLocalStoreDir(localCfg interface {
-	GetConfig() (map[string]any, error)
-}, shareName string) string {
-	if localCfg == nil {
-		return ""
-	}
-	cfg, err := localCfg.GetConfig()
-	if err != nil {
-		return ""
-	}
-	basePath, ok := cfg["path"].(string)
-	if !ok || basePath == "" {
-		return ""
-	}
-	expanded, err := pathutil.ExpandPath(basePath)
-	if err != nil {
-		return ""
-	}
-	if !filepath.IsAbs(expanded) {
-		return ""
-	}
-	return filepath.Join(expanded, "shares", sanitizeShareName(shareName))
-}
-
 const (
 	// minDirtyExpire is the shortest dirty-age commit interval a share may
 	// configure. Anything below it is a misconfiguration rather than a tuning
@@ -961,193 +861,6 @@ const (
 	// time.Duration (~292 years).
 	maxDirtyExpireSeconds = float64(math.MaxInt64 / int64(time.Second))
 )
-
-// dirtyExpiryFromConfig reads the dirty_expire_seconds key, which caps how long
-// an acknowledged write may stay in the page cache before the journal fsyncs it
-// on its own. Zero (absent, or an unusable value) leaves the journal default in
-// place; a negative value disables the loop, leaving the client's own fsync and
-// segment rotation as the only durability points.
-func dirtyExpiryFromConfig(config map[string]any) time.Duration {
-	v, ok := config["dirty_expire_seconds"]
-	if !ok {
-		return 0
-	}
-	n, isNum := v.(float64)
-	if !isNum || math.IsNaN(n) || math.Abs(n) > maxDirtyExpireSeconds {
-		logger.Warn("block store config has dirty_expire_seconds but it is invalid; ignoring", "value", v)
-		return 0
-	}
-	d := time.Duration(n * float64(time.Second))
-	// A sub-second interval would put a disk barrier on the store far more often
-	// than it can retire one; a typo must not do that.
-	if n > 0 && d < minDirtyExpire {
-		logger.Warn("block store config dirty_expire_seconds is below the floor; clamping",
-			"value", n, "floor", minDirtyExpire)
-		return minDirtyExpire
-	}
-	return d
-}
-
-// chunkParamsFromConfig resolves a share's FastCDC profile from its local block
-// store config. chunk_size sets the Min (#1569) — the dominant knob for
-// effective chunk size and thus random-read amplification; Avg/Max are derived
-// (4x/8x Min) unless chunk_max overrides the ceiling. ok is false when the
-// share configured nothing usable, and the caller keeps the default profile.
-//
-// The profile belongs to the carver, which the engine owns: the journal's flush
-// seam is content-agnostic and never learns how the bytes it hands out are cut.
-// Lower it (e.g. 131072 = 128 KiB) on random-access shares (VM images /
-// databases): trades weaker dedup + more FileChunk manifest rows for far less
-// read amplification. Reads never re-chunk, so changing this only affects newly
-// written data.
-func chunkParamsFromConfig(config map[string]any) (chunker.Params, bool) {
-	v, ok := config["chunk_size"]
-	if !ok {
-		return chunker.Params{}, false
-	}
-	n, ok := v.(float64)
-	if !ok || n <= 0 || n != math.Trunc(n) || n > float64(math.MaxInt32) {
-		logger.Warn("block store config has chunk_size but it is invalid or non-positive; ignoring", "value", v)
-		return chunker.Params{}, false
-	}
-	cp := chunker.Params{Min: int(n), Avg: int(n) * 4, Max: int(n) * 8}
-	if mv, ok := config["chunk_max"]; ok {
-		if m, ok := mv.(float64); ok && m > 0 && m == math.Trunc(m) && m <= float64(math.MaxInt32) {
-			cp.Max = int(m)
-			if cp.Avg > cp.Max {
-				cp.Avg = cp.Max
-			}
-		} else {
-			logger.Warn("block store config has chunk_max but it is invalid; ignoring", "value", mv)
-		}
-	}
-	if err := cp.Validate(); err != nil {
-		logger.Warn("block store config chunk_size produced invalid chunker params; keeping default", "error", err)
-		return chunker.Params{}, false
-	}
-	return cp, true
-}
-
-// CreateLocalStoreFromConfig creates a local store instance from a block store config.
-func CreateLocalStoreFromConfig(
-	ctx context.Context,
-	storeType string,
-	cfg interface {
-		GetConfig() (map[string]any, error)
-	},
-	shareName string,
-	defaults *LocalStoreDefaults,
-	fileChunkStore block.EngineFileChunkStore,
-) (local.LocalStore, error) {
-	config, err := cfg.GetConfig()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get config: %w", err)
-	}
-
-	var maxDisk int64
-	if defaults != nil {
-		maxDisk = int64(defaults.MaxSize)
-	}
-
-	// Remote-cache backpressure window (how long a write stalls for the
-	// journal to evict before ErrDiskFull). Threaded into journal.Config
-	// below; zero defers to the journal default.
-	var backpressureMaxWait time.Duration
-	if defaults != nil {
-		backpressureMaxWait = defaults.BackpressureMaxWait
-	}
-
-	// Per-store max_size from config JSON takes precedence over defaults
-	if v, ok := config["max_size"]; ok {
-		if n, ok := v.(float64); ok && n > 0 {
-			maxDisk = int64(n)
-		} else {
-			logger.Warn("block store config has max_size but it is invalid or non-positive; ignoring", "value", v)
-		}
-	}
-
-	// Append is mandatory on the local tier — the use_append_log opt-out
-	// flag was deleted with the legacy path-keyed writer. Budgets still
-	// surface through journal.Config to journal.Open; invalid values
-	// are warned and ignored.
-	var jcfg journal.Config
-	jcfg.EvictMaxWait = backpressureMaxWait
-	// max_log_bytes no longer gates writes; it only feeds the Stats size hint,
-	// so it threads into the journal as a hint the Stats snapshot echoes.
-	var maxLogBytes int64
-	// Local-cache size-hint default. Precedence (lowest first):
-	// global/deduced default (plumbed via LocalStoreDefaults.MaxLogBytes) <
-	// per-store config["max_log_bytes"].
-	if defaults != nil && defaults.MaxLogBytes > 0 {
-		maxLogBytes = defaults.MaxLogBytes
-	}
-	if v, ok := config["max_log_bytes"]; ok {
-		if n, ok := v.(float64); ok && n > 0 {
-			// FIX-15: JSON-decoded numbers land here as float64. Values above
-			// 2^53 (~9 PiB) lose integer precision, and non-integer values
-			// silently truncate. Warn so a misconfigured budget surfaces in
-			// logs instead of producing a budget that is off by hundreds of
-			// kilobytes from what the operator typed.
-			// Reject out-of-range and non-integer values rather than perform
-			// an implementation-defined float64->int64 cast (which on out-of-range
-			// inputs can produce a negative or garbage budget).
-			if n > float64(math.MaxInt64) || n != math.Trunc(n) {
-				logger.Warn("config: max_log_bytes is out of range or non-integer; keeping default", "value", n)
-			} else {
-				maxLogBytes = int64(n)
-			}
-		} else {
-			logger.Warn("block store config has max_log_bytes but it is invalid or non-positive; ignoring", "value", v)
-		}
-	}
-	jcfg.DirtyExpiry = dirtyExpiryFromConfig(config)
-	jcfg.MaxLogBytes = maxLogBytes
-	switch storeType {
-	case "fs":
-		basePath, ok := config["path"].(string)
-		if !ok || basePath == "" {
-			return nil, errors.New("fs local store requires path in config")
-		}
-		expanded, err := pathutil.ExpandPath(basePath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to expand path %q: %w", basePath, err)
-		}
-		// Defense-in-depth: ValidateBlockStoreConfig rejects relative paths at
-		// create/update time, but pre-existing or out-of-band configs could
-		// still carry them. Guard here so filepath.Join doesn't resolve
-		// against the server's CWD.
-		if !filepath.IsAbs(expanded) {
-			return nil, fmt.Errorf("fs local store path must be absolute, got %q", basePath)
-		}
-		sanitized := sanitizeShareName(shareName)
-		// The journal roots at `journal/` under the share dir (its own layout
-		// convention). Existing pre-v0.16 installs migrated via `dfs
-		// migrate-to-cas` (which uses share-root as its state-dir, already
-		// aligned with deriveLocalStoreDir).
-		shareDir := filepath.Join(expanded, "shares", sanitized)
-		if err := os.MkdirAll(shareDir, 0755); err != nil {
-			return nil, fmt.Errorf("failed to create share directory: %w", err)
-		}
-
-		// There is no longer a rollup worker pool (the journal carves dirty
-		// ranges directly), so the former RollupStore guard and StartRollup
-		// call are gone.
-		store, err := openJournalStore(shareDir, maxDisk, maxLogBytes, jcfg)
-		if err != nil {
-			return nil, err
-		}
-		applyDurableOverride(store, config, "local "+storeType, shareName)
-		return store, nil
-
-	case "memory":
-		store := localmemory.New()
-		applyDurableOverride(store, config, "local "+storeType, shareName)
-		return store, nil
-
-	default:
-		return nil, fmt.Errorf("unsupported local store type: %s", storeType)
-	}
-}
 
 // durableOverrideSetter is implemented by block stores (local and remote) that
 // expose a per-store durability override (block stores embed a
@@ -1205,89 +918,6 @@ func applyDurableOverride(store any, config map[string]any, label, shareName str
 	}
 	setter.SetDurable(b)
 	logger.Info("block store durability overridden by config", "store", label, "share", shareName, "durable", b)
-}
-
-// parseRequireDurableCommit reads the optional per-share "require_durable_commit"
-// bool from the local store config (#1274). Read the same conservative way as
-// config["durable"]: absent or non-bool → false (default), so the commit seam
-// acks once Flush succeeds and the remote mirror stays async — ordinary
-// NFS/POSIX writes never EIO. When true, CLOSE/COMMIT only succeed once the data
-// is on a durable store.
-func parseRequireDurableCommit(config map[string]any, shareName string) bool {
-	v, ok := config["require_durable_commit"]
-	if !ok {
-		return false
-	}
-	b, ok := v.(bool)
-	if !ok {
-		logger.Warn("block store config has require_durable_commit but it is not a bool; ignoring",
-			"share", shareName, "value", v)
-		return false
-	}
-	return b
-}
-
-// resolveDurabilityTier composes the per-share durability knobs into the two
-// underlying behaviors (#1758). The optional "durability" enum in the local
-// store config selects a named tier; when absent, the older raw bools
-// ("writeback", "require_durable_commit") are honored unchanged for backward
-// compatibility. When "durability" is present it is authoritative — the raw
-// bools are ignored.
-//
-//	local     (default) — journal + metadata fsync, async S3 (node-crash-safe)
-//	writeback           — per-op FILE_SYNC metadata flush relaxed (deferred to
-//	                      the ticker); data still journal-fsync durable. The full
-//	                      data-writeback tier additionally needs the journal
-//	                      async-commit half, tracked separately.
-//	remote              — CLOSE/COMMIT block until data is durable in the remote
-//	                      (S3) store (require_durable_commit); survives node loss.
-func resolveDurabilityTier(config map[string]any, shareName string) (writeback, requireDurableCommit bool) {
-	v, ok := config["durability"]
-	if !ok {
-		return parseWritebackConfig(config, shareName), parseRequireDurableCommit(config, shareName)
-	}
-	tier, ok := v.(string)
-	if !ok {
-		logger.Warn("block store config has durability but it is not a string; defaulting to local",
-			"share", shareName, "value", v)
-		return false, false
-	}
-	switch strings.ToLower(strings.TrimSpace(tier)) {
-	case "", "local":
-		return false, false
-	case "writeback":
-		logger.Info("durability tier: writeback (metadata flush relaxed)", "share", shareName)
-		return true, false
-	case "remote":
-		logger.Info("durability tier: remote (ack-on-S3, strict CLOSE/COMMIT)", "share", shareName)
-		return false, true
-	default:
-		logger.Warn("unknown durability tier; defaulting to local",
-			"share", shareName, "durability", tier)
-		return false, false
-	}
-}
-
-// parseWritebackConfig reads the optional per-share "writeback" bool from the
-// local store config (#1757). Read the same conservative way as
-// config["require_durable_commit"]: absent or non-bool → false (default,
-// durable). When true, the share's per-op FILE_SYNC metadata flush takes the
-// relaxed deferred-fsync path (see metadata.Service.SetShareWriteback).
-func parseWritebackConfig(config map[string]any, shareName string) bool {
-	v, ok := config["writeback"]
-	if !ok {
-		return false
-	}
-	b, ok := v.(bool)
-	if !ok {
-		logger.Warn("block store config has writeback but it is not a bool; ignoring",
-			"share", shareName, "value", v)
-		return false
-	}
-	if b {
-		logger.Info("metadata writeback tier enabled by config", "share", shareName)
-	}
-	return b
 }
 
 // CreateRemoteStoreFromConfig creates a remote store from type and dynamic config.

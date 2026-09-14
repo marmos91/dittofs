@@ -91,6 +91,7 @@ func snapshotHoldCreateState(t *testing.T, rt *Runtime, shareName, state string)
 // (store == nil) returns nil from HeldHashes and emits zero callbacks.
 func TestSnapshotHoldProvider_NilStore_NoOp(t *testing.T) {
 	rt := New(nil)
+	setJournalRoot(t, rt)
 	rt.sharesSvc.InjectShareForTesting(&shares.Share{
 		Name:          "alpha",
 		MetadataStore: "memory",

@@ -137,6 +137,7 @@ func (f *restoreFixture) simulateRestart() *Runtime {
 	cancel()
 
 	rt := New(f.store)
+	setJournalRoot(f.t, rt)
 
 	var registered metadata.Store = f.meta
 	if f.failable != nil {

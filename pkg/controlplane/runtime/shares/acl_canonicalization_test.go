@@ -63,8 +63,8 @@ func TestAddShare_AclFlagInheritedCanonicalization_Propagates(t *testing.T) {
 				cfg,
 				&metaStoreProvider{name: "meta-test", store: mds},
 				metaSvcRegistrar{},
-				nil, // no block store provider — LocalBlockStoreID empty skips the path
-				nil,
+				nil, // no block store provider — the share offloads nowhere
+				&LocalStoreDefaults{JournalRoot: t.TempDir()},
 				nil,
 			)
 			if err != nil {

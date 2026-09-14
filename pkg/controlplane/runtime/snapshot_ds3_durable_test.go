@@ -36,7 +36,6 @@ func ds3RemoteConfig(t *testing.T, prefix string) *models.BlockStoreConfig {
 	}
 	cfg := &models.BlockStoreConfig{
 		Name: "ds3-bv",
-		Kind: models.BlockStoreKindRemote,
 		Type: "s3",
 	}
 	if err := cfg.SetConfig(map[string]any{

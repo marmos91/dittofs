@@ -37,7 +37,7 @@ func TestAddShare_RejectsColonInName(t *testing.T) {
 			&metaStoreProvider{name: "meta-test", store: mds},
 			metaSvcRegistrar{},
 			nil,
-			nil,
+			&LocalStoreDefaults{JournalRoot: t.TempDir()},
 			nil,
 		)
 		if err == nil {
@@ -72,7 +72,7 @@ func TestAddShare_RejectsColonInName(t *testing.T) {
 			&metaStoreProvider{name: "meta-test", store: mds},
 			metaSvcRegistrar{},
 			nil,
-			nil,
+			&LocalStoreDefaults{JournalRoot: t.TempDir()},
 			nil,
 		); err != nil {
 			t.Fatalf("AddShare(%q): %v", name, err)
@@ -120,7 +120,7 @@ func TestAddShare_RejectsOverLongName(t *testing.T) {
 			&metaStoreProvider{name: "meta-test", store: mds},
 			metaSvcRegistrar{},
 			nil,
-			nil,
+			&LocalStoreDefaults{JournalRoot: t.TempDir()},
 			nil,
 		)
 		if err == nil {
@@ -153,7 +153,7 @@ func TestAddShare_RejectsOverLongName(t *testing.T) {
 			&metaStoreProvider{name: "meta-test", store: mds},
 			metaSvcRegistrar{},
 			nil,
-			nil,
+			&LocalStoreDefaults{JournalRoot: t.TempDir()},
 			nil,
 		); err != nil {
 			t.Fatalf("AddShare(%q) (%d bytes, the limit): %v", longest, len(longest), err)

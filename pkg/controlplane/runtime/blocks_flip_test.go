@@ -12,6 +12,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	sqlitemeta "github.com/marmos91/dittofs/pkg/metadata/store/sqlite"
@@ -110,25 +111,11 @@ func registerSQLiteMeta(t *testing.T, rt *Runtime, cp cpstore.Store, name string
 	return mds
 }
 
-// createFSLocalBlockStore creates an fs (log-blob) local block store config in
-// the DB with a fresh temp path and returns its config ID. The fs backend is
-// what exposes the log-blob substrate the carver reads from — a memory local
-// store leaves carve disabled.
-func createFSLocalBlockStore(t *testing.T, cp cpstore.Store, name string) string {
+// setJournalRoot points the runtime's journal root at a temp dir. Every share
+// opens its own journal beneath it, so a test that adds a share needs one.
+func setJournalRoot(t *testing.T, rt *Runtime) {
 	t.Helper()
-	cfg := &models.BlockStoreConfig{
-		Name: name,
-		Kind: models.BlockStoreKindLocal,
-		Type: "fs",
-	}
-	if err := cfg.SetConfig(map[string]any{"path": t.TempDir()}); err != nil {
-		t.Fatalf("SetConfig(%s): %v", name, err)
-	}
-	id, err := cp.CreateBlockStore(context.Background(), cfg)
-	if err != nil {
-		t.Fatalf("CreateBlockStore(local %s): %v", name, err)
-	}
-	return id
+	rt.SetLocalStoreDefaults(&shares.LocalStoreDefaults{JournalRoot: t.TempDir()})
 }
 
 // remoteForShare returns the underlying remote store for a share's remote
@@ -177,12 +164,13 @@ func TestBlocksFlip_NewWriteCarvesToBlocks(t *testing.T) {
 	t.Cleanup(func() { _ = cp.Close() })
 
 	rt := New(cp)
+	setJournalRoot(t, rt)
 
 	metaStore := registerSQLiteMeta(t, rt, cp, "sqlite-meta")
-	localID := createFSLocalBlockStore(t, cp, "fs-local")
-	// Registered AFTER createFSLocalBlockStore so t.Cleanup's LIFO order runs
-	// this (which Close()s the share's block store, releasing the log-blob fd)
-	// BEFORE the block store's t.TempDir() RemoveAll. On Windows an open handle
+	setJournalRoot(t, rt)
+	// Registered AFTER the journal root so t.Cleanup's LIFO order runs this
+	// (which Close()s the share's block store, releasing the log-blob fd)
+	// BEFORE the root's t.TempDir() RemoveAll. On Windows an open handle
 	// blocks unlink of blobs/*.blob; Unix tolerates unlink-while-open.
 	t.Cleanup(func() {
 		for _, name := range rt.ListShares() {
@@ -190,7 +178,7 @@ func TestBlocksFlip_NewWriteCarvesToBlocks(t *testing.T) {
 		}
 	})
 
-	remoteCfg := &models.BlockStoreConfig{Name: "mem-remote", Kind: models.BlockStoreKindRemote, Type: "memory"}
+	remoteCfg := &models.BlockStoreConfig{Name: "mem-remote", Type: "memory"}
 	remoteID, err := cp.CreateBlockStore(ctx, remoteCfg)
 	if err != nil {
 		t.Fatalf("CreateBlockStore(remote): %v", err)
@@ -198,11 +186,10 @@ func TestBlocksFlip_NewWriteCarvesToBlocks(t *testing.T) {
 
 	shareName := "/blocks-flip"
 	if err := rt.AddShare(ctx, &ShareConfig{
-		Name:               shareName,
-		MetadataStore:      "sqlite-meta",
-		LocalBlockStoreID:  localID,
-		RemoteBlockStoreID: remoteID,
-		Enabled:            true,
+		Name:          shareName,
+		MetadataStore: "sqlite-meta",
+		BlockStoreID:  remoteID,
+		Enabled:       true,
 	}); err != nil {
 		t.Fatalf("AddShare: %v", err)
 	}
@@ -329,15 +316,15 @@ func TestBlocksFlip_GCUnionReclaimerFreesOwnerOnly(t *testing.T) {
 	t.Cleanup(func() { _ = cp.Close() })
 
 	rt := New(cp)
+	setJournalRoot(t, rt)
 
 	metaA := registerSQLiteMeta(t, rt, cp, "meta-a")
 	metaB := registerSQLiteMeta(t, rt, cp, "meta-b")
-	localA := createFSLocalBlockStore(t, cp, "fs-a")
-	localB := createFSLocalBlockStore(t, cp, "fs-b")
-	// Registered AFTER both createFSLocalBlockStore calls so t.Cleanup's LIFO
-	// order runs this (which Close()s each share's block store, releasing the
-	// log-blob fds) BEFORE the block stores' t.TempDir() RemoveAll. On Windows
-	// an open handle blocks unlink of blobs/*.blob; Unix tolerates unlink-open.
+	setJournalRoot(t, rt)
+	// Registered AFTER the journal root so t.Cleanup's LIFO order runs this
+	// (which Close()s each share's block store, releasing the log-blob fds)
+	// BEFORE the root's t.TempDir() RemoveAll. On Windows an open handle
+	// blocks unlink of blobs/*.blob; Unix tolerates unlink-open.
 	t.Cleanup(func() {
 		for _, name := range rt.ListShares() {
 			_ = rt.RemoveShare(name)
@@ -346,17 +333,17 @@ func TestBlocksFlip_GCUnionReclaimerFreesOwnerOnly(t *testing.T) {
 
 	// ONE remote config, shared (ref-counted) by both shares.
 	remoteID, err := cp.CreateBlockStore(ctx, &models.BlockStoreConfig{
-		Name: "shared-remote", Kind: models.BlockStoreKindRemote, Type: "memory",
+		Name: "shared-remote", Type: "memory",
 	})
 	if err != nil {
 		t.Fatalf("CreateBlockStore(remote): %v", err)
 	}
 
 	shareA, shareB := "/share-a", "/share-b"
-	if err := rt.AddShare(ctx, &ShareConfig{Name: shareA, MetadataStore: "meta-a", LocalBlockStoreID: localA, RemoteBlockStoreID: remoteID, Enabled: true}); err != nil {
+	if err := rt.AddShare(ctx, &ShareConfig{Name: shareA, MetadataStore: "meta-a", BlockStoreID: remoteID, Enabled: true}); err != nil {
 		t.Fatalf("AddShare A: %v", err)
 	}
-	if err := rt.AddShare(ctx, &ShareConfig{Name: shareB, MetadataStore: "meta-b", LocalBlockStoreID: localB, RemoteBlockStoreID: remoteID, Enabled: true}); err != nil {
+	if err := rt.AddShare(ctx, &ShareConfig{Name: shareB, MetadataStore: "meta-b", BlockStoreID: remoteID, Enabled: true}); err != nil {
 		t.Fatalf("AddShare B: %v", err)
 	}
 

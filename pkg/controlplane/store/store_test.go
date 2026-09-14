@@ -591,14 +591,14 @@ func TestShareOperations(t *testing.T) {
 	// Create prerequisite stores
 	metaStore := &models.MetadataStoreConfig{Name: "test-meta", Type: "memory"}
 	metaStoreID, _ := store.CreateMetadataStore(ctx, metaStore)
-	localBlockStore := &models.BlockStoreConfig{Name: "test-local", Kind: models.BlockStoreKindLocal, Type: "fs"}
+	localBlockStore := &models.BlockStoreConfig{Name: "test-local", Type: "fs"}
 	localBlockStoreID, _ := store.CreateBlockStore(ctx, localBlockStore)
 
 	t.Run("create share", func(t *testing.T) {
 		share := &models.Share{
-			Name:              "/export",
-			MetadataStoreID:   metaStoreID,
-			LocalBlockStoreID: localBlockStoreID,
+			Name:            "/export",
+			MetadataStoreID: metaStoreID,
+			BlockStoreID:    localBlockStoreID,
 		}
 
 		id, err := store.CreateShare(ctx, share)
@@ -612,9 +612,9 @@ func TestShareOperations(t *testing.T) {
 
 	t.Run("duplicate share fails", func(t *testing.T) {
 		share := &models.Share{
-			Name:              "/export",
-			MetadataStoreID:   metaStoreID,
-			LocalBlockStoreID: localBlockStoreID,
+			Name:            "/export",
+			MetadataStoreID: metaStoreID,
+			BlockStoreID:    localBlockStoreID,
 		}
 		_, err := store.CreateShare(ctx, share)
 		if !errors.Is(err, models.ErrDuplicateShare) {
@@ -670,9 +670,9 @@ func TestShareOperations(t *testing.T) {
 		// success while silently dropping them. Set all four to
 		// non-default values and assert each round-trips through GetShare.
 		share := &models.Share{
-			Name:              "/export-1268",
-			MetadataStoreID:   metaStoreID,
-			LocalBlockStoreID: localBlockStoreID,
+			Name:            "/export-1268",
+			MetadataStoreID: metaStoreID,
+			BlockStoreID:    localBlockStoreID,
 		}
 		if _, err := store.CreateShare(ctx, share); err != nil {
 			t.Fatalf("failed to create share: %v", err)
@@ -729,9 +729,9 @@ func TestShareOperations(t *testing.T) {
 
 	t.Run("new share defaults enabled=true", func(t *testing.T) {
 		share := &models.Share{
-			Name:              "/export-enabled-default",
-			MetadataStoreID:   metaStoreID,
-			LocalBlockStoreID: localBlockStoreID,
+			Name:            "/export-enabled-default",
+			MetadataStoreID: metaStoreID,
+			BlockStoreID:    localBlockStoreID,
 		}
 		if _, err := store.CreateShare(ctx, share); err != nil {
 			t.Fatalf("failed to create share: %v", err)
@@ -753,7 +753,7 @@ func TestShareOperations(t *testing.T) {
 		share := &models.Share{
 			Name:                             "/export-acl-canon-default",
 			MetadataStoreID:                  metaStoreID,
-			LocalBlockStoreID:                localBlockStoreID,
+			BlockStoreID:                     localBlockStoreID,
 			AclFlagInheritedCanonicalization: true,
 		}
 		if _, err := store.CreateShare(ctx, share); err != nil {
@@ -773,10 +773,10 @@ func TestShareOperations(t *testing.T) {
 		// naming would mangle the "MFsymlink" initialism, so the field-map and
 		// backfill literal would target a column AutoMigrate never created.
 		share := &models.Share{
-			Name:              "/export-mfsymlink",
-			MetadataStoreID:   metaStoreID,
-			LocalBlockStoreID: localBlockStoreID,
-			AllowMFsymlink:    true,
+			Name:            "/export-mfsymlink",
+			MetadataStoreID: metaStoreID,
+			BlockStoreID:    localBlockStoreID,
+			AllowMFsymlink:  true,
 		}
 		if _, err := store.CreateShare(ctx, share); err != nil {
 			t.Fatalf("failed to create share: %v", err)
@@ -811,7 +811,7 @@ func TestShareOperations(t *testing.T) {
 		share := &models.Share{
 			Name:                             "/export-acl-canon-false",
 			MetadataStoreID:                  metaStoreID,
-			LocalBlockStoreID:                localBlockStoreID,
+			BlockStoreID:                     localBlockStoreID,
 			AclFlagInheritedCanonicalization: false,
 		}
 		if _, err := store.CreateShare(ctx, share); err != nil {
@@ -899,12 +899,12 @@ func TestSharePermissions(t *testing.T) {
 	store.CreateGroup(ctx, group)
 	metaStore := &models.MetadataStoreConfig{Name: "perm-meta", Type: "memory"}
 	metaStoreID, _ := store.CreateMetadataStore(ctx, metaStore)
-	localBlockStore := &models.BlockStoreConfig{Name: "perm-local", Kind: models.BlockStoreKindLocal, Type: "fs"}
+	localBlockStore := &models.BlockStoreConfig{Name: "perm-local", Type: "fs"}
 	localBlockStoreID, _ := store.CreateBlockStore(ctx, localBlockStore)
 	share := &models.Share{
-		Name:              "/permshare",
-		MetadataStoreID:   metaStoreID,
-		LocalBlockStoreID: localBlockStoreID,
+		Name:            "/permshare",
+		MetadataStoreID: metaStoreID,
+		BlockStoreID:    localBlockStoreID,
 	}
 	store.CreateShare(ctx, share)
 
@@ -932,7 +932,7 @@ func TestSharePermissions(t *testing.T) {
 		store.CreateUser(ctx, uUser)
 		uMeta := &models.MetadataStoreConfig{Name: "upsert-meta", Type: "memory"}
 		uMetaID, _ := store.CreateMetadataStore(ctx, uMeta)
-		uLocal := &models.BlockStoreConfig{Name: "upsert-local", Kind: models.BlockStoreKindLocal, Type: "fs"}
+		uLocal := &models.BlockStoreConfig{Name: "upsert-local", Type: "fs"}
 		uLocalID, _ := store.CreateBlockStore(ctx, uLocal)
 		uShare := &models.Share{Name: "/upsert-share", MetadataStoreID: uMetaID, LocalBlockStoreID: uLocalID}
 		store.CreateShare(ctx, uShare)
@@ -1012,7 +1012,7 @@ func TestSharePermissions(t *testing.T) {
 		store.CreateGroup(ctx, uGroup)
 		uMeta2 := &models.MetadataStoreConfig{Name: "upsert-meta2", Type: "memory"}
 		uMetaID2, _ := store.CreateMetadataStore(ctx, uMeta2)
-		uLocal2 := &models.BlockStoreConfig{Name: "upsert-local2", Kind: models.BlockStoreKindLocal, Type: "fs"}
+		uLocal2 := &models.BlockStoreConfig{Name: "upsert-local2", Type: "fs"}
 		uLocalID2, _ := store.CreateBlockStore(ctx, uLocal2)
 		uShare2 := &models.Share{Name: "/upsert-gshare", MetadataStoreID: uMetaID2, LocalBlockStoreID: uLocalID2}
 		store.CreateShare(ctx, uShare2)
@@ -1294,7 +1294,6 @@ func TestBlockStoreOperationsBasic(t *testing.T) {
 	t.Run("create block store", func(t *testing.T) {
 		blockStore := &models.BlockStoreConfig{
 			Name:   "block-store",
-			Kind:   models.BlockStoreKindRemote,
 			Type:   "memory",
 			Config: `{}`,
 		}
@@ -1309,7 +1308,7 @@ func TestBlockStoreOperationsBasic(t *testing.T) {
 	})
 
 	t.Run("duplicate block store fails", func(t *testing.T) {
-		blockStore := &models.BlockStoreConfig{Name: "block-store", Kind: models.BlockStoreKindRemote, Type: "memory"}
+		blockStore := &models.BlockStoreConfig{Name: "block-store", Type: "memory"}
 		_, err := store.CreateBlockStore(ctx, blockStore)
 		if !errors.Is(err, models.ErrDuplicateStore) {
 			t.Errorf("expected ErrDuplicateStore, got %v", err)
@@ -1317,7 +1316,7 @@ func TestBlockStoreOperationsBasic(t *testing.T) {
 	})
 
 	t.Run("get block store", func(t *testing.T) {
-		blockStore, err := store.GetBlockStore(ctx, "block-store", models.BlockStoreKindRemote)
+		blockStore, err := store.GetBlockStore(ctx, "block-store")
 		if err != nil {
 			t.Fatalf("failed to get block store: %v", err)
 		}
@@ -1327,7 +1326,7 @@ func TestBlockStoreOperationsBasic(t *testing.T) {
 	})
 
 	t.Run("list block stores", func(t *testing.T) {
-		stores, err := store.ListBlockStores(ctx, models.BlockStoreKindRemote)
+		stores, err := store.ListBlockStores(ctx)
 		if err != nil {
 			t.Fatalf("failed to list stores: %v", err)
 		}

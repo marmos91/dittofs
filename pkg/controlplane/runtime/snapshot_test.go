@@ -36,6 +36,7 @@ func TestWaitForSnapshot_FallbackWhenAlreadyComplete(t *testing.T) {
 	t.Cleanup(func() { _ = cp.Close() })
 
 	rt := New(cp)
+	setJournalRoot(t, rt)
 
 	const shareName = "alpha"
 
@@ -86,6 +87,7 @@ func TestWaitForSnapshot_NotFound(t *testing.T) {
 	t.Cleanup(func() { _ = cp.Close() })
 
 	rt := New(cp)
+	setJournalRoot(t, rt)
 
 	_, err = rt.WaitForSnapshot(ctx, "alpha", "no-such-id")
 	if err == nil {
@@ -110,6 +112,7 @@ func TestWaitForSnapshot_CtxCancelDuringWait(t *testing.T) {
 	t.Cleanup(func() { _ = cp.Close() })
 
 	rt := New(cp)
+	setJournalRoot(t, rt)
 
 	const shareName = "alpha"
 

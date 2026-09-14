@@ -27,11 +27,8 @@ package blockstoreprobe
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/pathutil"
 	"github.com/marmos91/dittofs/pkg/block/remote/s3"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/health"
@@ -67,93 +64,8 @@ func Probe(ctx context.Context, bs *models.BlockStoreConfig) health.Report {
 		return health.StatusUnhealthy
 	}
 
-	switch bs.Kind {
-	case models.BlockStoreKindLocal:
-		status, msg := probeLocal(ctx, bs)
-		return finish(status, msg)
-	case models.BlockStoreKindRemote:
-		ok, msg := probeRemote(ctx, bs)
-		return finish(statusOf(ok), msg)
-	default:
-		return finish(health.StatusUnhealthy, fmt.Sprintf("unknown block store kind: %s", bs.Kind))
-	}
-}
-
-// probeLocal preserves the previous checkLocalBlockStoreHealth behaviour:
-// fs stores must expose a writable directory at the configured path,
-// memory stores are always healthy. The caller's context is checked
-// before the expensive filesystem operations so cancellation during a
-// long-running Stat aborts the remaining write probe cleanly.
-//
-// The return is a [health.Status] (not a plain bool) so the tempfile
-// cleanup path can downgrade to [health.StatusDegraded] — the write
-// itself succeeded, so the store is usable, but a failed cleanup
-// leaves a dot-file behind and is worth surfacing to operators.
-func probeLocal(ctx context.Context, bs *models.BlockStoreConfig) (health.Status, string) {
-	if err := ctx.Err(); err != nil {
-		return health.StatusUnhealthy, "context canceled: " + err.Error()
-	}
-	if bs.Type == "memory" {
-		return health.StatusHealthy, "in-memory store is always healthy"
-	}
-	if bs.Type != "fs" {
-		return health.StatusUnhealthy, fmt.Sprintf("unknown local store type: %s", bs.Type)
-	}
-
-	config, err := bs.GetConfig()
-	if err != nil {
-		return health.StatusUnhealthy, "failed to parse store configuration"
-	}
-
-	rawPath, _ := config["path"].(string)
-	if rawPath == "" {
-		return health.StatusUnhealthy, "no path configured"
-	}
-	expanded, err := pathutil.ExpandPath(rawPath)
-	if err != nil {
-		return health.StatusUnhealthy, "cannot resolve configured path"
-	}
-	path := filepath.Clean(expanded)
-
-	info, err := os.Stat(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return health.StatusUnhealthy, "configured path does not exist"
-		}
-		return health.StatusUnhealthy, "cannot access configured path"
-	}
-	if !info.IsDir() {
-		return health.StatusUnhealthy, "configured path is not a directory"
-	}
-
-	// Re-check cancellation between the Stat call and the write probe:
-	// a slow/hung Stat followed by caller cancellation should not
-	// proceed to create (and leak) a tempfile.
-	if err := ctx.Err(); err != nil {
-		return health.StatusUnhealthy, "context canceled: " + err.Error()
-	}
-
-	f, err := os.CreateTemp(path, ".dfs-health-check-*")
-	if err != nil {
-		return health.StatusUnhealthy, "configured path is not writable"
-	}
-	name := f.Name()
-	if closeErr := f.Close(); closeErr != nil {
-		// Try to clean up even on close failure, but the write probe
-		// itself is now inconclusive — report unhealthy so operators
-		// investigate.
-		_ = os.Remove(name)
-		return health.StatusUnhealthy, "write probe close failed: " + closeErr.Error()
-	}
-	if removeErr := os.Remove(name); removeErr != nil && !os.IsNotExist(removeErr) {
-		// Write + close succeeded so the store is functionally usable;
-		// cleanup failure is a leak-risk, not a correctness failure.
-		// Degraded lets dashboards flag it without tripping outage
-		// alerts.
-		return health.StatusDegraded, "write probe cleanup failed: " + removeErr.Error()
-	}
-
-	return health.StatusHealthy, "path accessible and writable"
+	ok, msg := probeRemote(ctx, bs)
+	return finish(statusOf(ok), msg)
 }
 
 // probeRemote preserves the previous checkRemoteBlockStoreHealth

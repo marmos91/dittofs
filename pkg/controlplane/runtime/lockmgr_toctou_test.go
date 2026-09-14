@@ -19,7 +19,7 @@ import (
 // AddShare/RemoveShare lifecycle the control plane uses.
 func TestRemoveShare_ConcurrentLockManagerLookup(t *testing.T) {
 	rt, s := setupTestRuntime(t)
-	localID := createLocalBlockStoreConfig(t, s, "local-lockmgr-toctou")
+	localID := createBlockStoreConfig(t, s, "local-lockmgr-toctou")
 
 	const shareName = "/lockmgr-toctou"
 	addShareViaRuntime(t, rt, s, shareName, localID)
