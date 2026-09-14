@@ -16,6 +16,7 @@ For the internal mechanism design and threat model, see
   - [NFS: AUTH\_NULL](#nfs-auth_null)
   - [SMB: Kerberos via SPNEGO](#smb-kerberos-via-spnego)
   - [SMB: NTLM and guest fallback](#smb-ntlm-and-guest-fallback)
+  - [Active Directory and LDAP](#active-directory-and-ldap)
 - [Message integrity and encryption](#message-integrity-and-encryption)
   - [SMB signing](#smb-signing)
   - [SMB encryption](#smb-encryption)
@@ -48,6 +49,7 @@ For the internal mechanism design and threat model, see
 
 - Kerberos authentication for NFS via RPCSEC_GSS (RFC 2203)
 - Kerberos authentication for SMB via SPNEGO
+- Active Directory / LDAP idmap (`idmap_ad` RFC2307 attributes or `idmap_rid` RID derivation), with Kerberos keytab and NTLM machine-account pass-through
 - SMB3 encryption with AES-128-GCM, AES-128-CCM, AES-256-GCM, AES-256-CCM
 - SMB3 signing with AES-128-CMAC and AES-128-GMAC; SMB 2.x signing with HMAC-SHA256
 - SMB 3.1.1 preauth integrity (SHA-512 hash chain) for downgrade protection
@@ -148,6 +150,32 @@ NTLM security tradeoffs:
 
 **Recommendation:** configure Kerberos for all production deployments. Use NTLM only as a
 transition mechanism or for clients that cannot use Kerberos.
+
+### Active Directory and LDAP
+
+DittoFS can authenticate Active Directory domain users directly, with no local DittoFS
+account for them. Three pieces are independent and can be enabled in any combination:
+
+| Piece | What it does | Credential at rest |
+|---|---|---|
+| **Kerberos service keytab** | Verifies AD-issued service tickets over SMB (SPNEGO) and NFS (RPCSEC\_GSS) | Keytab file |
+| **Machine account** (`kerberos.machine_account`) | Forwards the NTLM challenge/response to the Domain Controller over a sealed NETLOGON channel, for clients that cannot use Kerberos | Computer account secret |
+| **LDAP idmap** | Maps the authenticated principal or SID to a Unix UID/GID and resolves nested group membership | Read-only bind DN + password |
+
+Security notes:
+
+- With a machine account configured, AD-user NTLM is validated by the Domain Controller —
+  **no local NT hash is stored or used**. Without one, domain-user NTLM fails with
+  `STATUS_LOGON_FAILURE`.
+- The keytab, the LDAP bind password, and the machine account secret are stored at rest in
+  plaintext (write-only, and redacted from API responses). Protect them with filesystem
+  permissions equivalent to a keytab file (`chmod 600`).
+- The LDAP bind account is read-only; reach the directory over LDAPS or a private network.
+- A principal is resolved through the same idmap regardless of the protocol it arrived on,
+  so an AD user gets one Unix identity across SMB and NFS.
+
+See [identity.md](identity.md) for the provider reference and
+[windows-ad-setup.md](windows-ad-setup.md) for the end-to-end operator runbook.
 
 ---
 

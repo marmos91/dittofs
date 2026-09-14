@@ -70,7 +70,7 @@ Two binaries drive it:
 | **SMB durable handles** | V1 and V2 for session resilience |
 | **SMB security descriptors** | Windows ACL mapping via a shared cross-protocol ACL model |
 | **Authentication** | AUTH_UNIX + Kerberos (RPCSEC_GSS) for NFS; NTLM + Kerberos (SPNEGO) for SMB |
-| **Active Directory** | Domain join via a service keytab; LDAP idmap (`idmap_ad` / `idmap_rid`) resolves AD users and nested groups to the same Unix UID/GID over SMB and NFS |
+| **Active Directory** | Kerberos service keytab for AD-issued tickets; optional machine account (offline or online domain join) for NTLM pass-through; LDAP idmap (`idmap_ad` / `idmap_rid`) maps AD users and nested groups to the same Unix UID/GID over SMB and NFS |
 | **Cross-protocol coordination** | Bidirectional lease/delegation breaks between SMB and NFS |
 | **Metadata stores** | Memory, BadgerDB, SQLite, PostgreSQL — pluggable per share |
 | **Block stores** | Local: filesystem, memory. Remote: S3, memory. Per-share isolation, async sync |
@@ -321,7 +321,8 @@ See [test/e2e/](test/e2e/) (and [test/e2e/BENCHMARKS.md](test/e2e/BENCHMARKS.md)
 DittoFS is experimental and has not been professionally audited.
 
 - **Authentication:** AUTH_UNIX and Kerberos (RPCSEC_GSS) for NFS; NTLM and Kerberos
-  (SPNEGO) for SMB.
+  (SPNEGO) for SMB. AD domain users can authenticate directly against a directory —
+  see [docs/guide/identity.md](docs/guide/identity.md).
 - **Transport encryption:** SMB3 encrypts its transport (AES-GCM/CCM). NFS supports
   NFS-over-TLS (RFC 9289) and Kerberos privacy (`krb5p`); without either, run NFS over a VPN
   or a trusted network.

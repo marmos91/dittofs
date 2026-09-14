@@ -50,6 +50,8 @@ also live in [NFS.md](nfs.md#glossary) and [SMB.md](smb.md#glossary).
 | Term | Definition |
 |------|------------|
 | **Kerberos** | A ticket-based network authentication protocol. DittoFS supports it for both NFS (via RPCSEC_GSS) and SMB (via SPNEGO). [RFC 4120](https://www.rfc-editor.org/rfc/rfc4120) |
+| **Active Directory (AD)** | Microsoft's directory service. DittoFS authenticates AD domain users directly — Kerberos service tickets from a keytab, or NTLM passed through to a Domain Controller by a machine account. |
+| **idmap** | The mapping from an authenticated principal or SID to a Unix UID/GID. DittoFS supports `idmap_ad` (RFC2307 `uidNumber`/`gidNumber` attributes) and `idmap_rid` (derive from the RID). See [identity.md](identity.md). |
 | **GSS-API** | A standard programming interface that lets applications use security mechanisms like Kerberos without hard-coding them. [RFC 2743](https://www.rfc-editor.org/rfc/rfc2743) |
 | **SPNEGO** (Simple and Protected GSS-API Negotiation) | The wrapper that lets an SMB client and server agree on whether to use Kerberos or NTLM. [RFC 4178](https://www.rfc-editor.org/rfc/rfc4178) |
 | **NTLM / NTLMSSP** | Microsoft's challenge/response authentication scheme, used by SMB when Kerberos isn't available. NTLMSSP is the GSS-API wrapping of NTLM. [MS-NLMP](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-nlmp/) |
