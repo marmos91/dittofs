@@ -103,8 +103,7 @@ See [ARCHITECTURE.md](../internals/architecture.md) for details.
 Absolutely! Implement either or both of these interfaces:
 
 - **Metadata Store**: `pkg/metadata/Store` interface
-- **Local Block Store**: `pkg/block/local.LocalStore` interface
-- **Remote Block Store**: `pkg/block/remote.RemoteStore` interface
+- **Block Store**: `pkg/block/remote.RemoteStore` interface
 
 See [IMPLEMENTING_STORES.md](../internals/implementing-stores.md) for implementation guidelines.
 
@@ -358,9 +357,9 @@ releases); the boot guard refuses `.blk` layouts with exit code 78. See
 A share's pre-journal local cache (the `blobs/` + `logs/` on-disk layout
 from v0.26 and earlier) is also migrated automatically on first start:
 
-- **Remote-backed shares** re-materialize their bytes from the remote store
+- Bytes already offloaded to the block store are re-materialized from it
   using the surviving metadata manifest — always safe.
-- **Local-only shares** (no remote) re-ingest their bytes from the append
+- Bytes that never reached the block store are re-ingested from the append
   logs in the background; reads that arrive mid-migration fault their file in
   on demand, and the old on-disk data is deleted only once every file has
   been re-ingested (a crash mid-migration simply resumes on the next start).
@@ -411,13 +410,13 @@ Yes! This is a core feature. Create stores and shares via CLI:
   --config '{"path":"/var/lib/dittofs/metadata"}'
 
 # Create a remote block store for durability
-./dfsctl store block remote add --name cloud-s3 --type s3 \
+./dfsctl store block add --name cloud-s3 --type s3 \
   --config '{"region":"us-east-1","bucket":"my-bucket"}'
 
 # Create shares referencing different stores
 ./dfsctl share create --name /temp --metadata fast-memory
 ./dfsctl share create --name /archive --metadata persistent-db \
-  --remote cloud-s3
+  --block-store cloud-s3
 ```
 
 See [CONFIGURATION.md](configuration.md) for more examples.
@@ -432,14 +431,14 @@ Yes! Multiple shares can reference the same store instance for resource efficien
   --config '{"path":"/var/lib/dittofs/shared-metadata"}'
 
 # Create separate remote block stores
-./dfsctl store block remote add --name s3-prod --type s3 \
+./dfsctl store block add --name s3-prod --type s3 \
   --config '{"region":"us-east-1","bucket":"prod-bucket"}'
-./dfsctl store block remote add --name s3-archive --type s3 \
+./dfsctl store block add --name s3-archive --type s3 \
   --config '{"region":"us-east-1","bucket":"archive-bucket"}'
 
 # Both shares use the same metadata store; remote stores are ref-counted
-./dfsctl share create --name /prod --metadata shared-meta --remote s3-prod
-./dfsctl share create --name /archive --metadata shared-meta --remote s3-archive
+./dfsctl share create --name /prod --metadata shared-meta --block-store s3-prod
+./dfsctl share create --name /archive --metadata shared-meta --block-store s3-archive
 ```
 
 ### Is there a recycle bin / can I recover deleted files?
@@ -576,7 +575,7 @@ Linux kernel NFS server or Samba gives you:
   defaults to `strict sync = yes` (honor client FLUSH). DittoFS matches both. The
   `async` knfsd mode some setups use is a non-default, explicitly-unsafe opt-in that
   can silently lose data on a crash — DittoFS does **not** do that by default.
-- **At COMMIT/FLUSH the data is made durable in DittoFS's local block store**
+- **At COMMIT/FLUSH the data is made durable in the share's journal**
   (fsync'd to local disk), and is uploaded to the object store (S3) **asynchronously**
   by the background syncer. So a write that has been COMMIT-acked is **crash-durable**
   — it survives a server process crash or power loss via the local journal — and its
@@ -602,7 +601,7 @@ any NFS/SMB server: with mount options and application `fsync` behavior.
 
 **Caching and read performance.** DittoFS is a *native userspace* server (no kernel
 FUSE), so warm reads are served from the standard NFS/SMB **client** page cache (as
-with any server) plus DittoFS's own local block-store cache. Standard client mount
+with any server) plus the share's own on-disk journal. Standard client mount
 tunings — `actimeo` (attribute cache), `nconnect` (parallel connections, default 1),
 `rsize`/`wsize` — apply exactly as they would to a kernel NFS server.
 

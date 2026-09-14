@@ -64,8 +64,8 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 │     Stores     │  │  pkg/block/     │
 │                │  │                      │
 │  - Memory      │  │  ┌──────────────┐    │
-│  - BadgerDB    │  │  │ Local Store  │    │
-│  - PostgreSQL  │  │  │ fs / memory  │    │
+│  - BadgerDB    │  │  │   Journal    │    │
+│  - PostgreSQL  │  │  │  (on disk)   │    │
 │                │  │  └──────┬───────┘    │
 │                │  │         │            │
 │                │  │  ┌──────▼───────┐    │
@@ -74,8 +74,8 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 │                │  │  └──────┬───────┘    │
 │                │  │         │            │
 │                │  │  ┌──────▼────────┐   │
-│                │  │  │ Remote Store  │   │
-│                │  │  │ s3 / memory   │   │
+│                │  │  │  Block Store  │   │
+│                │  │  │  s3 / memory  │   │
 │                │  │  │ (ref counted) │   │
 │                │  │  └───────────────┘   │
 └────────────────┘  └──────────────────────┘
@@ -139,13 +139,14 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 
 **6. BlockStore** (`pkg/block/`)
 - Per-share block storage orchestrator. Each share gets its own `*engine.BlockStore` instance.
-- `engine.BlockStore` composes `local.LocalStore + remote.RemoteStore + engine.Syncer`
-- Each share gets an isolated local storage directory; remote stores can be shared across shares (ref counted)
+- `engine.BlockStore` composes the share's journal (`local.LocalStore`, in production always `*journal.Store`) + its one block store (`remote.RemoteStore`) + `engine.Syncer`
+- Each share gets an isolated journal directory beneath `blockstore.journal.path`; block stores can be shared across shares (ref counted)
 - `shares.Service` owns the lifecycle (create on AddShare, close on RemoveShare)
 - Sub-packages:
-  - `engine/`: BlockStore orchestrator — composes local + remote stores and owns the unified CAS-keyed `Cache` (read buffering + prefetch), the syncer, and the garbage collector. See `pkg/block/engine/cache.go` for the Cache type.
-  - `local/`: Local store interface and implementations (`fs/` filesystem, `memory/` in-memory)
-  - `remote/`: Remote store interface and implementations (`s3/` production, `memory/` testing)
+  - `engine/`: BlockStore orchestrator — composes the journal and the block store and owns the unified CAS-keyed `Cache` (read buffering + prefetch), the syncer, and the garbage collector. See `pkg/block/engine/cache.go` for the Cache type.
+  - `journal/`: the on-disk journal every share gets — the production `local.LocalStore`
+  - `local/`: the `LocalStore` interface plus `memory/`, an in-memory implementation used by tests
+  - `remote/`: block store interface and implementations (`s3/` production, `memory/` testing)
   - `storetest/`: Conformance test helpers for new backend implementations
 
 **7. Metadata Store** (`pkg/metadata/store.go`)
@@ -169,8 +170,8 @@ Each share in DittoFS gets its own `*engine.BlockStore` instance, providing comp
 ### How It Works
 
 1. **Share Creation**: When a share is added via `dfsctl share create`, the runtime creates a dedicated BlockStore instance with:
-   - An isolated local storage directory (under the configured local store path)
-   - A reference to the configured remote store (shared across shares via ref counting)
+   - An isolated journal directory beneath `blockstore.journal.path` (`<path>/shares/<share-name>/journal/`)
+   - A reference to its one block store (shared across shares via ref counting)
 
 2. **Handle Resolution**: Protocol handlers call `GetBlockStoreForHandle(ctx, handle)` which:
    - Extracts the share name from the file handle
@@ -178,15 +179,15 @@ Each share in DittoFS gets its own `*engine.BlockStore` instance, providing comp
    - There is no global BlockStore
 
 3. **Share Removal**: When a share is removed, its BlockStore is closed:
-   - Local storage directory is cleaned up
-   - Remote store reference count is decremented
-   - If ref count reaches zero, the remote store connection is closed
+   - The journal directory is cleaned up
+   - The block store's reference count is decremented
+   - If ref count reaches zero, the block store connection is closed
 
 ### Isolation Properties
 
-- **Data Isolation**: Each share's local blocks are stored in separate directories
+- **Data Isolation**: Each share's journal lives in its own directory
 - **Cache Independence**: The unified `Cache` is per-share (eviction in one share does not affect others). Inside a share, the cache is keyed by `ContentHash`, so two files referencing the same chunk via dedup share one cache entry.
-- **Remote Sharing**: Multiple shares can reference the same remote store (e.g., same S3 bucket). Chunk bytes are packed into `blocks/<id>` container objects; identical chunks dedup by content hash across every share that targets the same bucket+prefix. For isolation, give shares different buckets or prefixes
+- **Block Store Sharing**: Multiple shares can reference the same block store (e.g., same S3 bucket). Chunk bytes are packed into `blocks/<id>` container objects; identical chunks dedup by content hash across every share that targets the same bucket+prefix. For isolation, give shares different buckets or prefixes
 - **Lifecycle Independence**: Block stores are created/closed with share lifecycle
 
 ## Storage Tiers
@@ -219,7 +220,7 @@ DittoFS uses a three-tier storage model for block data:
                │ cold read (range not cached)
                ▼
 ┌─────────────────────────────────────┐
-│  Remote Store                       │
+│  Block Store                        │
 │  pkg/block/remote/s3/          │
 │  - S3 or compatible object store    │
 │  - Slowest (network I/O)            │
@@ -240,17 +241,20 @@ reads are warm. A per-payload sequential tracker drives remote prefetch.
 and acknowledges immediately (write-back) — there is no synchronous chunking,
 hashing, or upload on the client path. A background carve pass later packs the
 accumulated dirty ranges into remote blocks (see below). How durable the ack is
-depends on the configured durability tier (`writeback` / `local-durable` /
-`remote`; see the [durability guide](../guide/durability.md)).
+depends on the share's commit acknowledgement (`journal` or `block-store`) and on
+whether its metadata commit is relaxed — two independent axes, see the
+[durability guide](../guide/durability.md).
 
 **Eviction**:
 - Cache: LRU eviction when the RAM budget is reached. No data loss (the journal still holds the bytes). The cache is per-share but cross-file inside a share — the same content hash referenced by two files shares one entry.
-- Journal: whole fully-synced segments are evicted approx-LRU under disk pressure. Only ranges already carved to the remote qualify, so eviction never destroys the only copy of dirty bytes. Manual eviction via `dfsctl store block evict`.
+- Journal: whole fully-synced segments are evicted approx-LRU under disk pressure. Only ranges already offloaded to the block store qualify, so eviction never destroys the only copy of dirty bytes — which means a journal that hits its ceiling with nothing offloaded backpressures writes instead of evicting. Manual eviction via `dfsctl store block evict`.
 
 ## Block Store — Local Journal Tier
 
-The per-share local tier is the **journal** (`pkg/block/journal/`): a single
-append-only, log-structured **write-back cache** in front of the remote store.
+Every share's local tier is the **journal** (`pkg/block/journal/`): a single
+append-only, log-structured **write-back cache** in front of the block store. It
+is provisioned automatically under `blockstore.journal.path` and is not a store
+an operator configures.
 It replaces the earlier two-tier design (a per-file append-only log plus a
 separate rolled-up "log-blob" tier) with one substrate. See the journal
 package's own doc comment for the authoritative model; this section covers it
@@ -259,7 +263,7 @@ at architecture altitude.
 A client write (`WriteAt`) appends a dirty record for `(payloadID, offset)` to
 a shared segment file and acknowledges immediately — it never chunks, hashes,
 or uploads on the client path, and it never fsyncs (durability is a separate
-`Commit`, driven by NFS COMMIT / SMB Flush and the configured durability tier).
+`Commit`, driven by NFS COMMIT / SMB Flush and the share's commit acknowledgement).
 Cold-read hydration (`Hydrate`) funnels through the same append primitive, the
 only difference being that a hydrated record is born *clean* (already durable
 in the remote store, so immediately evictable) while a client write is born
@@ -269,10 +273,12 @@ in the remote store, so immediately evictable) while a client write is born
 `*journal.Store` (`pkg/block/journal/`) IS the live per-file byte cache — the
 composition layer holds it directly (no adapter between them). The journal
 owns its own segment layout, carve, eviction, and local garbage collection.
-Only `BackpressureMaxWait` (as `Config.EvictMaxWait`) and `ChunkParams` remain
-load-bearing knobs; the old rollup/append-log options (`max_log_bytes`,
-`rollup_workers`, `stabilization_ms`, `orphan_log_min_age_seconds`) are
-vestigial — the journal carves on its own age/size gate.
+Its load-bearing knobs all live in the server config's `blockstore.journal` block
+(`path`, `chunk_size`, `chunk_max`, `dirty_expire`, `max_log_bytes`,
+`backpressure_max_wait`) plus the per-share `journal_size` ceiling; the old
+rollup/append-log options (`rollup_workers`, `stabilization_ms`,
+`orphan_log_min_age_seconds`) are vestigial — the journal carves on its own
+age/size gate.
 
 ### Carve: local → remote
 
@@ -291,11 +297,11 @@ manifest rows in a single metadata transaction (`metadata.DefaultCommitBlock`).
 object (reclaimed by GC), never an unbacked record; a re-carve targets a fresh
 block ID and never double-commits.
 
-Dedup is answered by a durability oracle: a chunk is treated as already remote
-iff its hash is present in the per-share `SyncedHashStore`. A share with **no**
-remote block store still carves — the local block sink records only the
-FileChunk manifest rows (hash + `DataSize`, no remote block key) so clone,
-snapshot, and restore can resolve the file's chunks, but nothing is uploaded.
+Dedup is answered by a durability oracle: a chunk is treated as already offloaded
+iff its hash is present in the per-share `SyncedHashStore`. A share whose block
+store is not yet resolvable still carves — the local block sink records only the
+FileChunk manifest rows (hash + `DataSize`, no block key) so clone, snapshot, and
+restore can resolve the file's chunks, but nothing is uploaded.
 
 The carve pass fans out across files: a single sequential pass (one file, one
 block, one `PutBlock` at a time) leaves the uplink almost idle. Concurrency is
@@ -869,21 +875,22 @@ Stores, shares, and adapters are managed at runtime via `dfsctl` (persisted in t
 ./dfsctl store metadata add --name persistent-meta --type badger \
   --config '{"path":"/data/metadata"}'
 
-# Create remote block stores (shared across shares)
-./dfsctl store block remote add --name s3-remote --type s3 \
+# Create block stores (shared across shares)
+./dfsctl store block add --name mem-blocks --type memory
+./dfsctl store block add --name s3-remote --type s3 \
   --config '{"region":"us-east-1","bucket":"my-bucket"}'
 
-# Create shares referencing stores by name (each gets its own BlockStore)
-./dfsctl share create --name /temp --metadata fast-meta
+# Create shares referencing stores by name (each gets its own BlockStore + journal)
+./dfsctl share create --name /temp --metadata fast-meta --block-store mem-blocks
 ./dfsctl share create --name /archive --metadata persistent-meta \
-  --remote s3-remote
+  --block-store s3-remote
 ```
 
 ### Benefits
 
-- **Per-share isolation**: Each share gets its own BlockStore with isolated local storage directory
-- **Resource Efficiency**: Remote stores are shared (ref counted) when multiple shares reference the same config
-- **Flexible Topologies**: Mix local-only and remote-backed storage per-share
+- **Per-share isolation**: Each share gets its own BlockStore and its own journal directory
+- **Resource Efficiency**: Block stores are shared (ref counted) when multiple shares reference the same config
+- **Flexible Topologies**: Different shares can target different block stores
 - **Future Multi-Tenancy**: Foundation for per-tenant store isolation
 
 ## Service Layer
@@ -953,15 +960,15 @@ No custom code required - configure via CLI:
 # Create stores
 ./dfsctl store metadata add --name default-meta --type memory  # or badger, sqlite, postgres
 
-# Create share referencing the store
-./dfsctl share create --name /export --metadata default-meta
+# Create share referencing the stores
+./dfsctl store block add --name default-blocks --type memory
+./dfsctl share create --name /export --metadata default-meta --block-store default-blocks
 ```
 
 ### Implementing Custom Store Backends
 
 See [docs/IMPLEMENTING_STORES.md](implementing-stores.md) for detailed implementation guides for:
-- **Local Store**: Implement `pkg/block/local.LocalStore` interface
-- **Remote Store**: Implement `pkg/block/remote.RemoteStore` interface
+- **Block Store**: Implement `pkg/block/remote.RemoteStore` interface
 - **Metadata Store**: Implement `pkg/metadata/Store` interface
 
 ## Directory Structure
@@ -1027,13 +1034,12 @@ dittofs/
 │   │   │                         # min=1 MiB / avg=4 MiB / max=16 MiB, lvl 2;
 │   │   │                         # BLAKE3 hashing; consumed by the carve pass
 │   │   ├── engine/               # BlockStore orchestrator + read cache + syncer + GC
-│   │   ├── journal/              # Local write-back cache (append-only segments)
-│   │   ├── local/                # Local store interface
-│   │   │   ├── fs/               # Thin adapter over pkg/block/journal
+│   │   ├── journal/              # The per-share journal (append-only segments)
+│   │   ├── local/                # LocalStore interface (journal.Store implements it)
 │   │   │   └── memory/           # In-memory local store (testing)
-│   │   └── remote/               # Remote store interface
-│   │       ├── s3/               # S3-backed remote store
-│   │       └── memory/           # In-memory remote store (testing)
+│   │   └── remote/               # Block store interface
+│   │       ├── s3/               # S3-backed block store
+│   │       └── memory/           # In-memory block store (testing)
 │   │
 │   ├── controlplane/             # Control plane (config + runtime)
 │   │   ├── store/                # GORM-based persistent store

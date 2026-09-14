@@ -11,22 +11,22 @@ How to size the machine that runs `dfs`. For picking *which* stores to run, see
 
 ## Single-node, not a cluster
 
-Size **one box**, not a fleet. Block stores are per-share and their local cache directories
-are **always isolated** — even with a shared PostgreSQL metadata store (which is
+Size **one box**, not a fleet. Block stores are per-share and each share's journal
+directory is **always isolated** — even with a shared PostgreSQL metadata store (which is
 multi-writer), you cannot run active-active `dfs` replicas against the same data. So
 "sizing" means sizing a single server, plus:
 
 - an **S3 backend** you size and scale separately (Cubbit DS3, MinIO, Ceph RGW, …), and
 - a **control-plane database** (SQLite by default — nothing to size).
 
-The realistic topology is **badger metadata + local `fs` cache + remote `s3` backing**.
+The realistic topology is **badger metadata + on-disk journal + an `s3` block store**.
 
 ## What drives each resource
 
 | Resource | What drives it | How to size it |
 |----------|----------------|----------------|
 | **RAM** | Badger auto-sizes its block/index caches from available RAM (cgroup-aware in containers). Plus per-connection NFS/SMB buffers. FastCDC/BLAKE3 streaming buffers are pooled and **capped at the chunk size** — they do *not* grow with file size. | Give the process a real RAM budget: badger spends it on metadata cache, so more RAM means a hotter cache and faster `lookup`/`getattr`/`readdir`. If the cache hit ratio drops on a large metadata set, pin `metadata.badger.block_cache_mb` / `index_cache_mb`. |
-| **Disk (local cache)** | The local `fs` tier is a **write-through cache** in front of S3, defaulting to **10 GiB per share** (`blockstore.journal.default_remote_cache_size`). Metadata (badger LSM) also lives on disk and grows with inode/file count. | Size the cache to your **hot working set**, not total data — total data lives in S3. Raise the ceiling if the working set exceeds 10 GiB. Use NVMe/SSD: writes hit local first. |
+| **Disk (journal)** | Each share's journal is a **write-through tier** in front of its block store. With no per-share `--journal-size` it claims a soft 80% of the volume's free space at open, so it will happily grow into whatever you give it. Metadata (badger LSM) also lives on disk and grows with inode/file count. | Set `--journal-size` to your **hot working set**, not total data — total data lives in S3 — and leave headroom for metadata on the same volume. Use NVMe/SSD: writes hit the journal first. |
 | **CPU** | The write path is CPU-bound: FastCDC chunking + BLAKE3 hashing on every write (dedup is always on), plus encryption if enabled. | Cores help write throughput and concurrent connections. At small scale writes are typically per-op / `fsync`-bound rather than CPU-starved. |
 | **Network** | Background sync to the S3 backend, plus client NFS/SMB traffic. | Bandwidth to the S3 endpoint gates durable-write acknowledgement and cold-read latency. Keep `dfs` close to its S3 backend. |
 
@@ -34,10 +34,10 @@ The realistic topology is **badger metadata + local `fs` cache + remote `s3` bac
 
 Anchor points, not guarantees — validate against your workload.
 
-| Tier | vCPU | RAM | Local cache disk | Notes |
-|------|------|-----|------------------|-------|
-| **Pilot / eval** | 2–4 | 4–8 GiB | 20–50 GiB SSD | Default 10 GiB cache is fine for small hot sets |
-| **Single-node "serious"** | 8 | 16–32 GiB | 100–500 GiB NVMe (≥ hot working set) | Raise the badger cache; NVMe matters — writes hit local first |
+| Tier | vCPU | RAM | Journal disk | Notes |
+|------|------|-----|--------------|-------|
+| **Pilot / eval** | 2–4 | 4–8 GiB | 20–50 GiB SSD | A 10 GiB `--journal-size` is fine for small hot sets |
+| **Single-node "serious"** | 8 | 16–32 GiB | 100–500 GiB NVMe (≥ hot working set) | Raise the badger cache; NVMe matters — writes hit the journal first |
 | **Heavy** | 16+ | 64 GiB+ | 1 TiB+ NVMe | Past the tested envelope — validate, don't assume |
 
 Add, separately: an **S3 backend** sized for *total* data, and a **control-plane DB**
@@ -46,10 +46,10 @@ control plane).
 
 ## Rules of thumb
 
-- **Cache = hot set, S3 = everything.** Don't size local disk for total capacity.
+- **Journal = hot set, S3 = everything.** Don't size local disk for total capacity.
 - **RAM buys metadata speed.** The metadata store is the hot path for every filesystem
   operation; give badger room to cache it.
-- **NVMe for the local tier.** Writes land locally before syncing to S3.
+- **NVMe for the journal.** Writes land there before syncing to S3.
 - **Co-locate with S3.** Round-trips to the backend gate durable writes and cold reads.
 - **One box.** No active-active HA today — plan for a single node.
 
