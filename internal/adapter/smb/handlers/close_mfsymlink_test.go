@@ -57,7 +57,7 @@ func setupMFsymlinkShare(t *testing.T, allowMFsymlink bool, target string) (*Han
 	// false, so CLOSE acks once the flush succeeds regardless of durability
 	// (#1274). This test exercises MFsymlink conversion, not durability.
 	localBSID, err := cps.CreateBlockStore(ctx, &models.BlockStoreConfig{
-		Name: "mfbs", Kind: models.BlockStoreKindLocal, Type: "memory",
+		Name: "mfbs", Type: "memory",
 	})
 	if err != nil {
 		t.Fatalf("CreateBlockStore: %v", err)
@@ -65,11 +65,11 @@ func setupMFsymlinkShare(t *testing.T, allowMFsymlink bool, target string) (*Han
 
 	const shareName = "/mf"
 	if err := rt.AddShare(ctx, &runtime.ShareConfig{
-		Name:              shareName,
-		MetadataStore:     "mfmeta",
-		Enabled:           true,
-		LocalBlockStoreID: localBSID,
-		AllowMFsymlink:    allowMFsymlink,
+		Name:           shareName,
+		MetadataStore:  "mfmeta",
+		Enabled:        true,
+		BlockStoreID:   localBSID,
+		AllowMFsymlink: allowMFsymlink,
 		RootAttr: &metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
 			Mode: 0o777,

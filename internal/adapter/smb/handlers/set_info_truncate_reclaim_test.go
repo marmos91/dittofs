@@ -42,7 +42,7 @@ func setupTruncateTest(t *testing.T) (*Handler, *metadata.AuthContext, *OpenFile
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
 	localBSID, err := cps.CreateBlockStore(ctx, &models.BlockStoreConfig{
-		Name: "trunc-bs", Kind: models.BlockStoreKindLocal, Type: "memory",
+		Name: "trunc-bs", Type: "memory",
 	})
 	if err != nil {
 		t.Fatalf("CreateBlockStore: %v", err)
@@ -50,11 +50,11 @@ func setupTruncateTest(t *testing.T) (*Handler, *metadata.AuthContext, *OpenFile
 
 	const shareName = "/trunc"
 	if err := rt.AddShare(ctx, &runtime.ShareConfig{
-		Name:              shareName,
-		MetadataStore:     "trunc-meta",
-		Enabled:           true,
-		LocalBlockStoreID: localBSID,
-		RootAttr:          &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o777},
+		Name:          shareName,
+		MetadataStore: "trunc-meta",
+		Enabled:       true,
+		BlockStoreID:  localBSID,
+		RootAttr:      &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o777},
 	}); err != nil {
 		t.Fatalf("AddShare: %v", err)
 	}

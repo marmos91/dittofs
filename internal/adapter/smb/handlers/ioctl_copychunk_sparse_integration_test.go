@@ -53,7 +53,7 @@ func TestCopyChunk_SparseDest_LeadingGapReadsZeros(t *testing.T) {
 
 	// Create a memory local block store config.
 	localBSID, err := cps.CreateBlockStore(ctx, &models.BlockStoreConfig{
-		Name: "ccbs", Kind: models.BlockStoreKindLocal, Type: "memory",
+		Name: "ccbs", Type: "memory",
 	})
 	if err != nil {
 		t.Fatalf("CreateBlockStore: %v", err)
@@ -61,10 +61,10 @@ func TestCopyChunk_SparseDest_LeadingGapReadsZeros(t *testing.T) {
 
 	const shareName = "/cc"
 	if err := rt.AddShare(ctx, &runtime.ShareConfig{
-		Name:              shareName,
-		MetadataStore:     "ccmeta",
-		Enabled:           true,
-		LocalBlockStoreID: localBSID,
+		Name:          shareName,
+		MetadataStore: "ccmeta",
+		Enabled:       true,
+		BlockStoreID:  localBSID,
 		RootAttr: &metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
 			Mode: 0o777,
@@ -275,7 +275,7 @@ func TestCopyChunk_SparseDest_SurvivesPriorPayloadReuse(t *testing.T) {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
 	localBSID, err := cps.CreateBlockStore(ctx, &models.BlockStoreConfig{
-		Name: "ccbs", Kind: models.BlockStoreKindLocal, Type: "memory",
+		Name: "ccbs", Type: "memory",
 	})
 	if err != nil {
 		t.Fatalf("CreateBlockStore: %v", err)
@@ -283,11 +283,11 @@ func TestCopyChunk_SparseDest_SurvivesPriorPayloadReuse(t *testing.T) {
 
 	const shareName = "/cc"
 	if err := rt.AddShare(ctx, &runtime.ShareConfig{
-		Name:              shareName,
-		MetadataStore:     "ccmeta",
-		Enabled:           true,
-		LocalBlockStoreID: localBSID,
-		RootAttr:          &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o777},
+		Name:          shareName,
+		MetadataStore: "ccmeta",
+		Enabled:       true,
+		BlockStoreID:  localBSID,
+		RootAttr:      &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o777},
 	}); err != nil {
 		t.Fatalf("AddShare: %v", err)
 	}

@@ -934,7 +934,7 @@ func TestSharePermissions(t *testing.T) {
 		uMetaID, _ := store.CreateMetadataStore(ctx, uMeta)
 		uLocal := &models.BlockStoreConfig{Name: "upsert-local", Type: "fs"}
 		uLocalID, _ := store.CreateBlockStore(ctx, uLocal)
-		uShare := &models.Share{Name: "/upsert-share", MetadataStoreID: uMetaID, LocalBlockStoreID: uLocalID}
+		uShare := &models.Share{Name: "/upsert-share", MetadataStoreID: uMetaID, BlockStoreID: uLocalID}
 		store.CreateShare(ctx, uShare)
 
 		shareInfo, _ := store.GetShare(ctx, "/upsert-share")
@@ -1014,7 +1014,7 @@ func TestSharePermissions(t *testing.T) {
 		uMetaID2, _ := store.CreateMetadataStore(ctx, uMeta2)
 		uLocal2 := &models.BlockStoreConfig{Name: "upsert-local2", Type: "fs"}
 		uLocalID2, _ := store.CreateBlockStore(ctx, uLocal2)
-		uShare2 := &models.Share{Name: "/upsert-gshare", MetadataStoreID: uMetaID2, LocalBlockStoreID: uLocalID2}
+		uShare2 := &models.Share{Name: "/upsert-gshare", MetadataStoreID: uMetaID2, BlockStoreID: uLocalID2}
 		store.CreateShare(ctx, uShare2)
 
 		shareInfo, _ := store.GetShare(ctx, "/upsert-gshare")
