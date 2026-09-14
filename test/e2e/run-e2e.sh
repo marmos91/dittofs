@@ -23,8 +23,8 @@
 #   --timeout DURATION   Set test timeout (default: 30m)
 #   --race               Enable race detector (-race)
 #   --portmap            Run only portmapper tests (TestPortmapper)
-#   --local-only         Only run store matrix combos with remoteType="none"
-#   --with-remote        Explicitly enable remote combos (default behavior)
+#   --local-only         Only run store matrix combos needing no object-store container
+#   --with-remote        Only run store matrix combos backed by an S3 block store
 #   --help               Show this help message
 #
 # Examples:
@@ -36,8 +36,8 @@
 #   sudo ./run-e2e.sh --s3                             # Include S3 tests
 #   sudo ./run-e2e.sh --portmap                        # Run portmapper tests only
 #   sudo ./run-e2e.sh --nfs-version 4                  # Set NFS version for tests
-#   sudo ./run-e2e.sh --local-only                     # Skip remote store combos
-#   sudo ./run-e2e.sh --with-remote                    # Explicitly enable remotes
+#   sudo ./run-e2e.sh --local-only                     # Skip the S3-backed combos
+#   sudo ./run-e2e.sh --with-remote                    # Run only the S3-backed combos
 
 set -euo pipefail
 
@@ -91,8 +91,8 @@ Options:
   --timeout DURATION   Set test timeout (default: 30m)
   --race               Enable race detector (-race)
   --portmap            Run only portmapper tests (TestPortmapper)
-  --local-only         Only run store matrix combos with remoteType="none"
-  --with-remote        Explicitly enable remote combos (default behavior)
+  --local-only         Only run store matrix combos needing no object-store container
+  --with-remote        Only run store matrix combos backed by an S3 block store
   --help               Show this help message
 
 Examples:
@@ -103,7 +103,7 @@ Examples:
   sudo ./run-e2e.sh --minio                          # Include S3-compatible preset tests (MinIO)
   sudo ./run-e2e.sh --portmap                        # Run portmapper tests only
   sudo ./run-e2e.sh --nfs-version 4                  # Set NFS version for tests
-  sudo ./run-e2e.sh --local-only                     # Skip remote store combos
+  sudo ./run-e2e.sh --local-only                     # Skip the S3-backed combos
 USAGE
 }
 
