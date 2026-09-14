@@ -3,8 +3,9 @@ package shares
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
-	"path/filepath"
+	"strings"
 )
 
 // journalSegHeaderSize is the size of a freshly created journal segment file:
@@ -40,24 +41,34 @@ var ErrLegacyLocalFormat = errors.New("legacy pre-journal local block store layo
 // only for sites that had never started the broken build. It fires on the
 // second start too, which is the case that actually reaches an operator.
 func hasLegacyLocalLayout(shareDir string) (bool, error) {
-	// Defense-in-depth, matching the check the fs branch already makes on the
-	// configured base path: the caller resolved shareDir from a stored config,
-	// and a relative one would make the joins below resolve against the
-	// server's CWD and scan a directory nobody named. Every component joined
-	// onto it here is a compile-time constant, so an absolute, cleaned root is
-	// the whole of what this needs to be safe.
-	if !filepath.IsAbs(shareDir) {
-		return false, fmt.Errorf("share dir must be absolute, got %q", shareDir)
+	// Everything below is read THROUGH an os.Root anchored at shareDir, so no
+	// name resolved here can leave that directory even if one of its entries is
+	// a symlink pointing elsewhere. The names joined onto it are compile-time
+	// constants, and the root is the containment the caller's configured path
+	// does not carry on its own.
+	root, err := os.OpenRoot(shareDir)
+	if err != nil {
+		// A share directory that does not exist yet is a fresh share, not a
+		// legacy one: journal.Open creates it.
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
 	}
-	shareDir = filepath.Clean(shareDir)
+	defer func() { _ = root.Close() }()
 
 	legacy := false
 	for _, sub := range []string{"blobs", "logs"} {
-		entries, err := os.ReadDir(filepath.Join(shareDir, sub))
+		d, err := root.Open(sub)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
 		if err != nil {
+			return false, err
+		}
+		entries, err := d.ReadDir(1) // presence is the question, not the count
+		_ = d.Close()
+		if err != nil && !errors.Is(err, io.EOF) {
 			return false, err
 		}
 		if len(entries) > 0 {
@@ -69,19 +80,30 @@ func hasLegacyLocalLayout(shareDir string) (bool, error) {
 		return false, nil
 	}
 
-	segs, err := filepath.Glob(filepath.Join(shareDir, "journal", "*.seg"))
+	jd, err := root.Open("journal")
+	if errors.Is(err, os.ErrNotExist) {
+		return true, nil
+	}
 	if err != nil {
 		return false, err
 	}
-	for _, seg := range segs {
-		fi, err := os.Stat(seg)
+	defer func() { _ = jd.Close() }()
+	entries, err := jd.ReadDir(-1)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false, err
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".seg") {
+			continue
+		}
+		info, err := e.Info()
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
 			return false, err
 		}
-		if fi.Size() > journalSegHeaderSize {
+		if info.Size() > journalSegHeaderSize {
 			return false, nil
 		}
 	}

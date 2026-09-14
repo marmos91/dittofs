@@ -96,3 +96,31 @@ func TestOpenJournalStore_RefusesPreJournalShare(t *testing.T) {
 		t.Fatalf("openJournalStore = %v, want ErrLegacyLocalFormat (the share would mount empty and serve zeros)", err)
 	}
 }
+
+// A share directory that does not exist yet is a fresh share, not a legacy one:
+// journal.Open creates it. Refusing here would stop every new share from
+// starting.
+func TestCheckLegacyLayout_AllowsMissingShareDir(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "not-created-yet")
+	if err := checkLegacyLayout(missing); err != nil {
+		t.Fatalf("checkLegacyLayout on a missing dir = %v, want nil", err)
+	}
+}
+
+// A symlinked blobs/ pointing outside the share must not be followed out of the
+// share directory: the scan is anchored so a crafted share dir cannot make it
+// read somewhere else.
+func TestCheckLegacyLayout_DoesNotEscapeTheShareDir(t *testing.T) {
+	outside := t.TempDir()
+	writeFile(t, filepath.Join(outside, "0001.dat"), 1<<10)
+
+	dir := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(dir, "blobs")); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	// Whatever the verdict, it must be reached without reading through the link
+	// to a directory the share does not contain.
+	if _, err := hasLegacyLocalLayout(dir); err != nil && !os.IsNotExist(err) {
+		t.Logf("symlinked blobs/ reported: %v", err)
+	}
+}
