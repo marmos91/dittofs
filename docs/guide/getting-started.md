@@ -104,25 +104,27 @@ dfsctl user create --username $(whoami) --host-uid
 ## 5. Create stores
 
 A share is built from a **metadata store** (where file metadata lives) and a **block
-store** (where file content lives, split into a fast local tier and a durable remote
-tier). Not sure which to pick? See [Choosing stores](choosing-stores.md).
+store** (the durable home for file content). Every share also keeps an on-disk **journal**
+that absorbs writes before they reach the block store; it is provisioned automatically
+under `blockstore.journal.path` and is not a store you create. Not sure which to pick?
+See [Choosing stores](choosing-stores.md).
 
 ```bash
 # Metadata: badger (durable, single-node default)
 dfsctl store metadata add --name default --type badger
 
-# Block: a durable S3 remote backing each share's local journal
-dfsctl store block remote add --name s3-remote --type s3
+# Block: the durable S3 store behind each share's journal
+dfsctl store block add --name s3-remote --type s3
 ```
 
 > **Want zero dependencies for a quick test?** Use `--type memory` for both the metadata
-> store and the remote block store instead. Everything is then in-RAM and ephemeral — perfect
+> store and the block store instead. Everything is then in-RAM and ephemeral — perfect
 > for a smoke test, useless for real data.
 
 ## 6. Create a share and grant access
 
 ```bash
-dfsctl share create --name /export --metadata default --remote s3-remote
+dfsctl share create --name /export --metadata default --block-store s3-remote
 dfsctl share permission grant /export --user $(whoami) --level read-write
 ```
 
@@ -140,7 +142,7 @@ sudo mount -t nfs -o tcp,port=12049,mountport=12049,resvport,nolock localhost:/e
 echo "Hello DittoFS!" > /mnt/nfs/hello.txt
 ```
 
-Writes land in the local cache first and sync to S3 in the background. More mount
+Writes land in the share's journal first and sync to S3 in the background. More mount
 options, Kerberos, and NFS-over-TLS are in the [NFS guide](nfs.md).
 
 ## 8. Mount over SMB

@@ -14,7 +14,7 @@ Access to a file is decided by **two independent layers**, both of which must al
 
    ```bash
    # Default for principals with no explicit grant (secure default: none)
-   dfsctl share create --name /data --metadata default --local default --default-permission none
+   dfsctl share create --name /data --metadata default --block-store default --default-permission none
 
    # Grant alice read-write access to the export
    dfsctl share permission grant /data --user alice --level read-write
@@ -60,7 +60,7 @@ To make a share writable by a specific principal, set the **share owner** at cre
 # alice owns /home-alice: she can create files at its root.
 # (Grant her export access too — the two layers are separate.)
 dfsctl user create --username alice --uid 1000 --gid 1000 --password ...
-dfsctl share create --name /home-alice --metadata default --local default --owner alice
+dfsctl share create --name /home-alice --metadata default --block-store default --owner alice
 dfsctl share permission grant /home-alice --user alice --level read-write
 ```
 

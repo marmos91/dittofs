@@ -1,6 +1,6 @@
 # Implementing Custom Stores
 
-This guide provides comprehensive instructions for implementing custom metadata stores, local block stores, and remote block stores for DittoFS. Whether you're building a database-backed metadata store or a custom cloud storage integration, this document will walk you through the process with best practices and practical examples.
+This guide provides comprehensive instructions for implementing custom metadata stores and block stores for DittoFS. Whether you're building a database-backed metadata store or a custom cloud storage integration, this document will walk you through the process with best practices and practical examples.
 
 ## Table of Contents
 
@@ -8,7 +8,7 @@ This guide provides comprehensive instructions for implementing custom metadata 
 2. [When to Implement Custom Stores](#when-to-implement-custom-stores)
 3. [Understanding the Architecture](#understanding-the-architecture)
 4. [Implementing Metadata Stores](#implementing-metadata-stores)
-5. [Implementing a Local Store](#implementing-a-local-store)
+5. [The journal (local tier)](#the-journal-local-tier)
 6. [Implementing a Remote Store](#implementing-a-remote-store)
 7. [Implementing a Remote Block Store (block-keyed)](#implementing-a-remote-block-store-block-keyed)
 8. [Best Practices](#best-practices)
@@ -18,18 +18,27 @@ This guide provides comprehensive instructions for implementing custom metadata 
 
 ## Overview
 
-DittoFS uses a **two-tier block store architecture** with three distinct store types:
+There are **two** store types an operator configures and therefore two you can
+implement:
 
 - **Metadata Stores**: Simple CRUD operations for file/directory structure, attributes, permissions
-- **Local Block Stores**: Fast, per-share storage on local disk or in memory (L2 cache tier)
-- **Remote Block Stores**: Durable storage in S3 or compatible object stores (L3 tier, shared across shares via ref counting)
+- **Block Stores**: Durable storage in S3 or a compatible object store, shared across shares via ref counting
 
-**Key Design Principle**: Each share gets its own `*engine.BlockStore` instance that composes a local store, optional remote store, and syncer. The engine orchestrates reads and writes across the tiers. Local stores provide fast access; remote stores provide durability.
+The local tier is **not** one of them. Every share keeps an on-disk **journal**
+(`pkg/block/journal/`) in front of its block store; it is provisioned
+automatically under `blockstore.journal.path` and has no type, no kind, and no
+operator-facing configuration. A block store has no kind either — the old
+local/remote split is gone, and the valid types are `s3` and `memory`. If you are
+here looking for how to implement a custom *local* store type, that concept no
+longer exists; see [The journal](#the-journal-local-tier) for what replaced it.
+
+**Key Design Principle**: Each share gets its own `*engine.BlockStore` instance
+that composes its journal, its one block store, and a syncer. The engine
+orchestrates reads and writes across the two tiers.
 
 This separation enables:
 - Independent scaling of metadata and block storage
-- Per-share isolation with shared remote backends
-- Different storage tiers (hot/cold storage, SSD/HDD)
+- Per-share isolation with shared block-store backends
 - Simple store implementations (just implement the interface, the engine handles coordination)
 
 ## When to Implement Custom Stores
@@ -45,25 +54,20 @@ Implement a custom metadata store when you need:
 
 **Example**: A PostgreSQL-backed metadata store for enterprise environments requiring audit trails and high availability.
 
-### Local Store Use Cases
+### Block Store Use Cases
 
-Implement a custom local store when you need:
-
-- **Specialized local storage**: NVMe-optimized, hardware-accelerated compression
-- **Custom eviction**: Access-pattern-aware eviction beyond simple LRU
-- **Encryption at rest**: Hardware-accelerated encryption for local blocks
-
-**Reference implementation**: `pkg/block/journal/` (filesystem-backed local store)
-
-### Remote Store Use Cases
-
-Implement a custom remote store when you need:
+Implement a custom block store when you need:
 
 - **Cloud storage integration**: Azure Blob, Google Cloud Storage, custom object stores
 - **Specialized storage**: Tape archives, HSM systems, data lakes
 - **Tiering**: Automatic hot/cold data movement based on access patterns
 
-**Reference implementation**: `pkg/block/remote/s3/` (S3-backed remote store)
+**Reference implementation**: `pkg/block/remote/s3/` (S3-backed block store)
+
+There is no "local store use case" row any more. The journal is the only local
+tier and it is not pluggable by configuration; `pkg/block/local` remains as an
+internal interface with exactly two implementations (`*journal.Store` in
+production, `local/memory` for tests).
 
 ## Understanding the Architecture
 
@@ -76,8 +80,8 @@ Each share gets its own `*engine.BlockStore` instance:
 │  engine.BlockStore (per-share)      │
 │                                     │
 │  ┌─────────────┐  ┌─────────────┐  │
-│  │ LocalStore  │  │ RemoteStore │  │
-│  │ (required)  │  │ (optional)  │  │
+│  │   Journal   │  │ Block Store │  │
+│  │  (always)   │  │  (always)   │  │
 │  └──────┬──────┘  └──────┬──────┘  │
 │         │                │          │
 │         └───────┬────────┘          │
@@ -89,9 +93,12 @@ Each share gets its own `*engine.BlockStore` instance:
 └─────────────────────────────────────┘
 ```
 
-- **LocalStore** is required -- all reads and writes go through local storage first
-- **RemoteStore** is optional -- when configured, the Syncer asynchronously uploads local blocks to remote storage
-- **Ref counting**: Remote stores are shared across shares; when the last share using a remote store is removed, the connection is closed
+- **Journal** — all reads and writes go through it first. One per share, under
+  `blockstore.journal.path/shares/<share-name>/journal/`.
+- **Block store** — one per share, the durable copy. The Syncer asynchronously
+  offloads journal blocks to it.
+- **Ref counting**: Block stores are shared across shares; when the last share
+  using one is removed, the connection is closed.
 
 ### File Handle and Block Resolution
 
@@ -459,67 +466,113 @@ CopyPayload(ctx, srcPayloadID, srcBlocks []BlockRef, dstPayloadID) ([]BlockRef, 
 
 `blocks` is the CAS path with end-to-end BLAKE3 verification.
 
-## Implementing a Local Store
+## The journal (local tier)
 
-Local stores provide fast, per-share block storage. Each share gets an isolated local storage directory.
+The journal is **not a pluggable store**. Every share gets one, provisioned
+automatically under the server-level `blockstore.journal.path`, and there is no
+type to choose and nothing to register. This section describes the seam so that
+code composing an `*engine.BlockStore` — or a test double standing in for the
+journal — gets the contract right.
 
-### The LocalStore Interface
+### The LocalStore interface
 
-The `pkg/block/local.LocalStore` interface defines the contract. The local tier
-is the **journal** (`pkg/block/journal/`) — an append-only, log-structured
-write-back cache — so the surface is keyed by `(payloadID, offset)`, **not** by
-content hash. See `pkg/block/local/local.go` for the authoritative definition
-and per-method contract; the representative methods are:
+`pkg/block/local.LocalStore` is the internal contract the journal satisfies. It
+is the journal's own vocabulary — the surface is keyed by `(FileID, offset)`,
+**not** by content hash. See `pkg/block/local/local.go` for the authoritative
+definition and per-method contract; the representative methods are:
 
 ```go
 type LocalStore interface {
-    // --- Data plane (payloadID + offset keyed) ---
-    WriteAt(ctx context.Context, payloadID string, offset int64, data []byte) error
-    ReadAt(ctx context.Context, payloadID string, offset int64, dst []byte) (n int, st journal.ReadState, err error)
-    Hydrate(ctx context.Context, payloadID string, offset int64, data []byte) error // fill from remote on cold read
-    Commit(ctx context.Context, payloadID string) error                             // fsync buffered writes
-    FileSize(ctx context.Context, payloadID string) (int64, bool)
-    DataExtents(ctx context.Context, payloadID string, fileSize int64) ([][2]uint64, error)
-    Truncate(ctx context.Context, payloadID string, newSize int64) error
-    Delete(ctx context.Context, payloadID string) error
-    ListFiles(ctx context.Context) []string
+    // --- Data plane (FileID + offset keyed) ---
+    WriteAt(ctx context.Context, id journal.FileID, offset int64, data []byte) error
+    ReadAt(ctx context.Context, id journal.FileID, offset int64, dst []byte) (n int, st journal.ReadState, err error)
+    Hydrate(ctx context.Context, id journal.FileID, offset int64, data []byte, notAfter uint64) error
+    WriteVersion() uint64
+    Invalidate(ctx context.Context, id journal.FileID, offset, length int64) error
+    Commit(ctx context.Context, id journal.FileID) error   // fsync buffered writes
+    FileSize(ctx context.Context, id journal.FileID) (int64, bool)
+    DataExtents(ctx context.Context, id journal.FileID, fileSize int64) ([][2]uint64, error)
+    Truncate(ctx context.Context, id journal.FileID, newSize int64) error
+    Delete(ctx context.Context, id journal.FileID) error
+    ListFiles(ctx context.Context) []journal.FileID
 
-    // --- Carve (local → remote) + eviction ---
-    SetCarveTargets(deduper journal.Deduper, sink journal.BlockSink)
-    Carve(ctx context.Context, opts journal.CarveOptions) (journal.CarveResult, error)
+    // --- Flush (journal → block store) ---
+    Flush(ctx context.Context, id journal.FileID, opts journal.FlushOptions, fn journal.FlushFunc) error
     UnsyncedBytes() int64
+
+    // --- Eviction ---
     Evict(ctx context.Context, targetBytes int64) (journal.EvictResult, error)
     SetEvictionEnabled(enabled bool)
-    // ... plus lifecycle (Start, Close), Stats, and Healthcheck.
+    SetEvictionPinned(pinned bool)
+    // ... plus lifecycle (Start, Close), Durable/SetDurable, Stats, Closed.
 }
 ```
 
 A write buffers a dirty range and local-acks without fsync; `Commit` is the
 durability point. `ReadAt` reports both evicted (`ReadState.Cold`) and uncovered
 (`ReadState.Hole`) ranges; the engine reconciles either against the FileChunk
-manifest and `Hydrate`s whatever the manifest says is remote-resident. `Carve`
-packs a file's dirty ranges into remote blocks via the injected `BlockSink` (see
-the carve pass in [the architecture doc](architecture.md#carve-local--remote));
-`Evict` frees whole fully-synced segments under pressure.
+manifest and `Hydrate`s whatever the manifest says the block store holds.
 
-### Reference Implementation
+### The Flush seam replaced SetCarveTargets / Carve
 
-The filesystem-backed store `*journal.Store` (`pkg/block/journal/`) IS the
-per-file byte cache the composition layer holds directly — no adapter. The
-in-memory store (`pkg/block/local/memory/`) is the other reference. There is
-no separate append-log or rollup tier and no
-`metadata.RollupStore` contract — those were removed when the journal replaced
-the two-tier local design.
+Earlier releases wired the offload path by injecting a deduper and a sink into
+the store (`SetCarveTargets`) and then asking it to carve (`Carve`). Both are
+gone. The seam is now a single method, `Flush`, and everything it needs arrives
+as arguments:
 
-### Conformance Tests
+```go
+Flush(ctx, id, journal.FlushOptions{Force: true, AfterFile: reap}, fn)
+```
 
-The journal-native `LocalStore` surface is `(payloadID, offset)`-keyed, not the
+- `fn` (a `journal.FlushFunc`) is **mandatory**. The journal offers it each
+  contiguous dirty run for one file and flips the fragments `fn` reports durable.
+  Building it is the caller's job — `pkg/block/engine/flush_closure.go` is the
+  production one — and it must be built **fresh per call**; a closure is not
+  reusable across flushes.
+- `opts.Force` bypasses the age/size batching gate.
+- `id` scopes the pass to one file. The empty id is **not** special: a caller
+  wanting every file enumerates `ListFiles` and flushes each id in turn.
+- `opts.AfterFile` is the per-file reap hook, run once the file's runs are done.
+
+The store no longer holds a deduper or a sink of its own, so a double that
+implements `LocalStore` needs no setup call before a flush — and a `Flush` with
+a nil `fn` is an error, not a no-op.
+
+### Flushing while the block store is unhealthy
+
+`RemoteSync.Flush` treats an unhealthy block store as a **soft** condition: it
+returns `FlushResult{Finalized: false}` with a nil error and leaves the dirty
+state for the periodic uploader, rather than surfacing every timeout as a wire
+error. Callers must not tight-loop retry on it — surface it and let the client
+re-drive on its own schedule.
+
+What changed is what the COMMIT seam does with that soft result when the local
+tier is **volatile** (a journal explicitly marked `{"durable": false}`, or the
+in-memory store used by tests) and the share asks for `commit_ack: block-store`.
+It used to acknowledge anyway; it now returns a hard error (`ErrNotDurableYet`,
+normalized to the I/O-class wire code). That is deliberate and more honest: with a
+volatile local tier and an unreachable block store, nothing holding the bytes
+survives a crash, so acknowledging would be a promise the server cannot keep. With
+an ordinary durable journal the soft result is still acked — the bytes already
+survive a restart, and the syncer keeps retrying.
+
+### Reference implementations
+
+`*journal.Store` (`pkg/block/journal/`) IS the per-file byte cache the
+composition layer holds directly — no adapter between them. The in-memory store
+(`pkg/block/local/memory/`) is the other implementation, for tests. There is no
+separate append-log or rollup tier and no `metadata.RollupStore` contract — those
+were removed when the journal replaced the two-tier local design.
+
+### Conformance tests
+
+The journal-native `LocalStore` surface is `(FileID, offset)`-keyed, not the
 content-addressed `block.Store` surface, so the `blockstoretest` suites below
-(`BlockStoreConformance` / `RemoteBlockStoreConformance`) do **not** apply to a
-local store — they target the CAS `block.Store` surface that remote stores
-implement (see [Implementing a Remote Store](#implementing-a-remote-store)). The
-in-tree local stores are exercised by their own package tests under
-`pkg/block/journal/` and `pkg/block/local/`; model a new local store on those.
+(`BlockStoreConformance` / `RemoteBlockStoreConformance`) do **not** apply to it —
+they target the CAS `block.Store` surface that block stores implement (see
+[Implementing a Remote Store](#implementing-a-remote-store)). The journal and the
+in-memory local store are exercised by their own package tests under
+`pkg/block/journal/` and `pkg/block/local/`.
 
 ## Implementing a Remote Store
 
@@ -527,8 +580,8 @@ Remote stores provide durable block storage shared across shares via ref countin
 
 ### The RemoteStore Interface
 
-The `pkg/block/remote.RemoteStore` interface defines the contract. Like the
-local store, remote storage is **content-addressed**: the interface embeds the
+The `pkg/block/remote.RemoteStore` interface defines the contract. Unlike the
+journal, a block store is **content-addressed**: the interface embeds the
 CAS `block.Store` surface (`Put`, `Get`, `GetRange`, `Has`, `Delete`, `Head`,
 `Walk` — keyed by `block.ContentHash`) and adds verification + health methods.
 See `pkg/block/remote/remote.go` for the authoritative definition:
@@ -849,14 +902,13 @@ func (s *MyStore) ReadBlock(ctx context.Context, blockID string) ([]byte, error)
 
 ### Error Handling
 
-- Local store errors should be wrapped with meaningful context
-- Remote store errors should distinguish transient (retry-able) from permanent failures
+- Journal errors should be wrapped with meaningful context
+- Block store errors should distinguish transient (retry-able) from permanent failures
 - Delete operations should be idempotent (deleting a non-existent block is not an error)
 
 ### Performance
 
-- **Local stores**: Minimize syscalls, use buffered I/O, consider memory-mapped files
-- **Remote stores**: Use connection pooling, implement retry with backoff, batch operations where possible
+- **Block stores**: Use connection pooling, implement retry with backoff, batch operations where possible
 
 ## Testing Your Implementation
 
@@ -876,35 +928,46 @@ func (s *MyStore) ReadBlock(ctx context.Context, blockID string) ([]byte, error)
 
 ### Register Your Store
 
-Add your store type to the configuration system:
+Add your store type to the block-store factory, and to the type whitelist the
+REST layer validates against:
 
 ```go
-// pkg/config/stores.go
-func createLocalStore(config LocalStoreConfig) (local.LocalStore, error) {
-    switch config.Type {
-    case "fs":
-        return fs.New(config.Path)
+// pkg/controlplane/runtime/shares/blockstore_config.go
+func CreateRemoteStoreFromConfig(ctx context.Context, storeType string, cfg …) (remote.RemoteStore, error) {
+    switch storeType {
     case "memory":
-        return memory.New()
-    case "mylocal":
-        return mylocal.New(config.Path)
+        return remotememory.New(), nil
+    case "s3":
+        // …
+    case "myremote":
+        return myremote.New(config)
     default:
-        return nil, fmt.Errorf("unknown local store type: %s", config.Type)
+        return nil, fmt.Errorf("unknown block store type: %s", storeType)
     }
+}
+
+// internal/controlplane/api/handlers/block_stores.go
+func validateBlockStoreType(storeType string) bool {
+    return storeType == "s3" || storeType == "memory" || storeType == "myremote"
 }
 ```
 
+There is no kind to register alongside the type: a block store row is unique by
+name alone.
+
 ### Selecting the store
 
-Local stores are not named entities the CLI can create; the server builds each
-share's local tier from `blockstore.journal.*` in the server config.
+Create it with `dfsctl store block add --name <name> --type <type>` and attach it
+to a share with `dfsctl share create/edit --block-store <name>`. The journal has
+no equivalent — it is not a named entity the CLI can create, and the server builds
+each share's from `blockstore.journal.*` in the server config.
 
 ## Additional Resources
 
 - **Interface Definitions**: `pkg/block/local/local.go`, `pkg/block/remote/remote.go`
 - **Reference Implementations**:
-  - Local: `pkg/block/journal/`, `pkg/block/local/memory/`
-  - Remote: `pkg/block/remote/s3/`, `pkg/block/remote/memory/`
+  - Journal (local tier): `pkg/block/journal/`, `pkg/block/local/memory/`
+  - Block stores: `pkg/block/remote/s3/`, `pkg/block/remote/memory/`
   - Metadata: `pkg/metadata/store/memory/`, `pkg/metadata/store/badger/`, `pkg/metadata/store/sqlite/`, `pkg/metadata/store/postgres/` (the SQL pair share `pkg/metadata/store/sql/`)
 - **Conformance Tests**: `pkg/block/blockstoretest/` (block stores), `pkg/metadata/storetest/` (metadata stores)
 - **Architecture**: `docs/ARCHITECTURE.md`

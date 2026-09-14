@@ -291,137 +291,155 @@ Related glossary terms: [TLS / mTLS](glossary.md#authentication).
 
 ### 6. Block Store Configuration
 
-Per-share block storage is configured via `dfsctl store` / `dfsctl share` commands (not the server config file). Each share owns an isolated local storage directory plus a reference to a remote store (S3 or filesystem). The block store lives in `pkg/block/engine/` and composes a local tier, a remote tier, the unified CAS-keyed in-memory `Cache`, a syncer (async local-to-remote transfer), and a garbage collector.
+Every share has exactly **one block store** — the durable home for its content —
+plus an on-disk **journal** that absorbs writes in front of it. Block stores are
+created with `dfsctl store block …` and attached to a share with
+`dfsctl share create/edit --block-store <name>`. Valid types are `s3` and
+`memory`; a block store has no *kind*, and the old local/remote split is gone.
 
-#### Local `fs` store tuning
+The journal is **not** a store you create. It is provisioned automatically under
+one server-level root, `blockstore.journal.path`, with each share getting its own
+subdirectory (`<path>/shares/<share-name>/journal/`). The block store lives in
+`pkg/block/engine/` and composes the journal, the block store, the unified
+CAS-keyed in-memory `Cache`, a syncer (async journal-to-block-store transfer), and
+a garbage collector.
 
-The local filesystem store (`fs`) is a thin adapter over the **journal** — an
-append-only, log-structured write-back cache (`pkg/block/journal/`). Writes
-append to the journal and local-ack; a background carve pass packs dirty ranges
-into packed remote blocks (`blocks/<id>`). Pre-v0.16 `{payloadID}/block-{idx}`
-layouts must be converted with dittofs ≤ v0.21 (its `migrate-to-cas` command) before the
-server will start.
+#### Journal tuning (`blockstore.journal`)
 
-These keys live inside the per-share `local` block store's `config` JSON
-(passed via the block store REST API).
-They only take effect when the local store type is `fs`. Legacy keys from the
-pre-journal design — `use_append_log`, `rollup_workers`, `stabilization_ms`,
-`orphan_log_min_age_seconds` — are no longer parsed; if present they are
-silently ignored.
+The journal (`pkg/block/journal/`) is an append-only, log-structured write-back
+tier. Writes append to it and are acknowledged locally; a background flush pass
+packs dirty ranges into packed blocks (`blocks/<id>`) and offloads them to the
+block store. Pre-v0.16 `{payloadID}/block-{idx}` layouts must be converted with
+dittofs ≤ v0.21 (its `migrate-to-cas` command) before the server will start.
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `max_log_bytes` | int | deduced (25% of RAM, floor 1 GiB) | **Per-share** local-cache size hint. Still accepted and resolved (per-store value takes **precedence** over the global `blockstore.journal.max_log_bytes` and the system-deduced default), but it no longer drives write backpressure — the journal caps on-disk usage and evicts on its own budget. Values above 2^53 (~9 PiB) lose precision through JSON parsing. |
-
-Env-var mapping follows the dot-path convention:
-`DITTOFS_BLOCKSTORE_LOCAL_FS_MAX_LOG_BYTES`.
-
-There is no `metadata.RollupStore` backend requirement any more — the journal
-owns its local-cache state; a metadata backend only needs the block-record and
-synced-hash contracts (see [implementing stores](../internals/implementing-stores.md)).
-
-##### Write backpressure
-
-Under the journal, write backpressure comes from the **local on-disk cap**, not
-an append-log budget: when the cache is full and every segment is pinned by
-not-yet-carved (dirty) bytes, a write waits up to the eviction budget and then
-returns `ErrLocalStoreFull` (surfaced as disk-full to the protocol). A healthy
-remote lets the carve pass drain dirty bytes so eviction frees space and the
-writer proceeds. The `max_log_bytes` value below is retained as a size hint and
-still resolves with the precedence shown, but it no longer gates writes.
-
-The effective budget resolves with the following **precedence** (highest
-first):
-
-1. **Per-store** block-store `config["max_log_bytes"]` — set per share in the
-   store's `config` JSON via the block store REST API.
-2. **Global** server-config `blockstore.journal.max_log_bytes` — applies to every
-   share that does not set the per-store key.
-3. **System-deduced** default (25% of RAM, floor 1 GiB).
-
-The global knob lives in the top-level server-config `blockstore.journal` block
-and binds to the env var `DITTOFS_BLOCKSTORE_LOCAL_MAX_LOG_BYTES`:
+Its knobs are **server-level** config, not per-share store JSON. They used to live
+in a per-share `local` block store `config` blob; that store is gone and every key
+below moved into the top-level `blockstore.journal` block:
 
 ```yaml
 blockstore:
-  local:
-    max_log_bytes: 2147483648   # 2 GiB global local-cache size hint (no longer gates writes).
-                                # 0 / unset = system-deduced default
-                                # (25% of RAM, floor 1 GiB). A per-store
-                                # config max_log_bytes overrides this.
+  journal:
+    path: /var/lib/dittofs/blocks   # journal root; default <state dir>/blocks
+    chunk_size: 0                   # FastCDC minimum chunk size; 0 = built-in profile
+    chunk_max: 0                    # override the derived maximum; 0 = derived from chunk_size
+    dirty_expire: 30s               # dirty-age fsync ceiling; negative disables the loop
+    max_log_bytes: 2147483648       # 2 GiB append-log pressure budget
+    backpressure_max_wait: 60s      # how long a write stalls before ErrDiskFull
 ```
 
-#### Durability & the CLOSE/COMMIT contract (`durable`)
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `path` | string | `<state dir>/blocks` | Root holding every share's journal. Must be absolute (a leading `~` is expanded). |
+| `chunk_size` | int | `0` (built-in profile) | FastCDC minimum chunk size in bytes — see [Chunk size](#chunk-size--random-access-shares-chunk_size). |
+| `chunk_max` | int | `0` (derived) | Overrides the derived maximum chunk size. |
+| `dirty_expire` | duration | `30s` | Dirty-age fsync ceiling — see [below](#dirty-age-fsync-ceiling-dirty_expire). Negative disables it; values under 1 s are clamped with a warning. |
+| `max_log_bytes` | int | deduced (25% of RAM, floor 1 GiB) | Append-log pressure budget. `AppendWrite` stalls once the buffered total exceeds it. |
+| `backpressure_max_wait` | duration | `60s` | How long a write blocks waiting for the syncer to drain before returning `ErrDiskFull`. |
 
-Durability is a **per-store property**: whether bytes a store has accepted
-survive a daemon crash / restart. Each local and remote store resolves an
-effective `durable` flag at construction — a **type default** that an operator
-may override.
+Env-var mapping follows the dot-path convention, e.g.
+`DITTOFS_BLOCKSTORE_JOURNAL_MAX_LOG_BYTES`.
 
-| Store type | Kind | Default `durable` |
-|------------|------|-------------------|
-| `fs` | local | `true` — bytes are on disk; un-mirrored chunks are never evicted, survive restart, and re-mirror asynchronously |
-| `memory` | local | `false` — volatile, lost on restart |
-| `s3` | remote | `true` — durable object storage |
-| `memory` | remote | `false` — test/dev fixture, lost on restart |
+A config file still carrying the old `blockstore.local.*` keys is **refused at
+startup**, naming both spellings — see [Upgrading](#upgrading-from-the-localremote-block-store-split).
+Because these knobs are now server-level, a node mixing a VM-image share with a
+general-purpose one gets a single chunking profile for both.
 
-Override the default per store by adding a `durable` bool to the store's
-`config` JSON — `{"durable": false}` for a local `fs` store on a volatile tmpfs
-mount, or `{"durable": true}` to deliberately treat a memory store as durable in
-a test/dev setup.
+There is no `metadata.RollupStore` backend requirement any more — the journal
+owns its own local state; a metadata backend only needs the block-record and
+synced-hash contracts (see [implementing stores](../internals/implementing-stores.md)).
 
-A non-bool `durable` value is ignored with a startup warning (the type default
-stands). The effective values are surfaced as `Local Durable` / `Remote
-Durable` in `dfsctl store block stats`.
+##### Journal size and eviction
+
+The journal's ceiling is a **per-share** setting, `--journal-size` on
+`dfsctl share create` / `share edit` (`journal_size` in the share JSON). It
+replaces the old `--local-store-size` flag and the deleted
+`blockstore.journal.default_remote_cache_size` key.
+
+- **Unset** — the share has no configured ceiling. The journal still sizes a soft
+  default off the volume's free space when it opens (80% of what is free at that
+  moment), and only degrades to genuinely unbounded growth if the free-space probe
+  fails, which it warns about. This is a real change from the old behaviour, which
+  deduced a ceiling from RAM (25%) or capped a remote-backed share at 10 GiB: a
+  fast writer against a slow uploader can now fill much more of the volume before
+  anything pushes back.
+- **Set** — the value is the ceiling eviction reclaims against.
+
+Eviction can only reclaim blocks **already offloaded to the block store**.
+Anything else is still the only copy of those bytes, so dropping it would lose
+them. The consequence is easy to get wrong: **a cap reached with nothing yet
+offloaded cannot be honoured by eviction at all** — the write path falls straight
+through to backpressure, stalls for up to
+`blockstore.journal.backpressure_max_wait`, and then returns `ErrLocalStoreFull`
+(surfaced as disk-full to the protocol). That is the correct response, not dead
+code: a healthy block store lets the flush pass drain dirty bytes, eviction frees
+space, and the writer proceeds.
+
+A stall logs its cause so the next move is unambiguous:
+
+```
+WARN journal local store full: nothing evictable, backpressuring writes
+     dir=… disk_bytes=… max_local_bytes=… unsynced_bytes=…
+     eviction_suspended=… eviction_pinned=…
+```
+
+`unsynced_bytes > 0` means the flush pass is behind and the wait will clear;
+`eviction_suspended` means the block store is unhealthy (fix the outage);
+`eviction_pinned` means a retention policy is holding the blocks (change the
+policy).
+
+#### Durability & the CLOSE/COMMIT contract
+
+Durability is a **per-store property**: whether bytes a store has accepted survive
+a daemon crash / restart. Each store resolves an effective `durable` flag at
+construction — a **type default** that an operator may override.
+
+| Store | Default `durable` |
+|-------|-------------------|
+| journal (every share) | `true` — bytes are on disk; un-offloaded chunks are never evicted, survive restart, and offload asynchronously |
+| `s3` block store | `true` — durable object storage |
+| `memory` block store | `false` — test/dev fixture, lost on restart |
+
+Override the default per store by adding a `durable` bool to the store's `config`
+JSON — `{"durable": false}` for a journal on a volatile tmpfs mount, or
+`{"durable": true}` to deliberately treat a memory store as durable in a test/dev
+setup. A non-bool value is ignored with a startup warning (the type default
+stands). The effective values are surfaced as `Local Durable` / `Remote Durable`
+in `dfsctl store block stats`.
 
 **CLOSE/COMMIT semantics.** SMB CLOSE and NFS COMMIT (and the NFSv3 stable-WRITE
-path) call the engine flush. A **hard** flush error (I/O fault, remote rejection,
-metadata error) is **always** surfaced to the client regardless of the settings
-below. Beyond that, whether CLOSE/COMMIT waits for durability is governed by a
-per-share policy flag, `require_durable_commit` (default **false**):
+path) call the engine flush. A **hard** flush error (I/O fault, block-store
+rejection, metadata error) is **always** surfaced to the client. Beyond that, what
+a COMMIT waits for is the per-share **commit acknowledgement**, `commit_ack`
+(default `journal`):
 
-| `require_durable_commit` | CLOSE/COMMIT behavior |
-|--------------------------|-----------------------|
-| `false` (default) | Acknowledge once the flush succeeds — **regardless** of durability. The local→remote mirror stays fully **asynchronous** and observable via the unsynced-bytes metric / `Pending Remote (bytes)`. Ordinary NFS/POSIX writes **never** EIO. |
-| `true` (opt-in) | Acknowledge only when the data is on a **durable** store: `committed := localDurable \|\| (Finalized && remoteDurable)`. Trades latency for synchronous durability on non-fs-local stores. |
+| `commit_ack` | CLOSE/COMMIT behavior |
+|--------------|-----------------------|
+| `journal` (default) | Acknowledge once the write is durable in the share's journal. The offload to the block store stays fully **asynchronous** and observable via the unsynced-bytes metric / `Pending Remote (bytes)`. Ordinary NFS/POSIX writes **never** EIO. |
+| `block-store` | Acknowledge only when the data is on a durable store: `committed := localDurable \|\| (Finalized && remoteDurable)`. Every commit waits for an upload. |
 
-Set it per share by adding `{"require_durable_commit": true}` to the local
-block store's `config` JSON.
+`dfsctl share show <name>` prints the setting in force as a **Commit Ack** row.
+See [Durability](durability.md) for what each one survives and the throughput
+cost — and note that the metadata-commit relaxation is a **separate, independent**
+axis, not a third value of this one.
 
-A non-bool value is ignored with a startup warning (default `false` stands).
+Under `commit_ack: block-store` the COMMIT drives the offload inline — it flushes
+the file's dirty ranges into packed blocks, uploads them, and only then returns.
+What happens when that cannot finish depends on whether the journal is durable:
 
-When `require_durable_commit = true`, the strict rule resolves as follows:
+- **Durable journal (the normal case):** an unhealthy block store makes the flush
+  return its soft, non-finalized result, and the COMMIT is acked anyway — the
+  bytes already survive a restart, and the syncer keeps retrying.
+- **Volatile local tier** (a journal explicitly marked `{"durable": false}`, or
+  the in-memory store used by tests): nothing crash-safe holds the bytes, so the
+  COMMIT returns a transient I/O error (`NFS3ERR_IO` / `NFS4ERR_IO` / SMB
+  `STATUS_UNEXPECTED_IO_ERROR`) and the client re-drives.
 
-- **Production (local `fs`):** `localDurable=true`, so CLOSE/COMMIT ack
-  immediately — there is **no wait** on the remote, and the mirror stays fully
-  asynchronous. fs-local is always durable, so the flag is effectively a
-  **no-op** there (the fast path is identical to the default).
-- **Volatile local (`memory`) + durable remote (`s3`):** the data is only safe
-  once it reaches the durable remote, so CLOSE/COMMIT succeeds only when the
-  flush is `Finalized`. While the remote is unhealthy or a mirror pass is
-  in-flight, CLOSE/COMMIT returns a transient I/O error (`NFS3ERR_IO` /
-  `NFS4ERR_IO` / SMB `STATUS_UNEXPECTED_IO_ERROR`) and the client re-drives —
-  the bytes remain in local CAS and the syncer keeps mirroring. (NFS *unstable*
-  WRITE is unaffected — it still returns `UNSTABLE` and defers durability to a
-  later COMMIT.)
-- **Volatile local with no remote (or a non-durable remote):** the data is never
-  durable, so CLOSE/COMMIT reports the same transient I/O error rather than
-  silently acknowledging a write that a crash would lose.
-
-In the **default** configuration none of the above transient errors occur —
-CLOSE/COMMIT acks on a successful flush and the syncer mirrors in the
-background. Use `require_durable_commit = true` only when you need synchronous
-durability guarantees on a volatile-local + durable-remote share and can accept
-the added latency.
-
-> The recommended way to select this is the per-share `durability` enum
-> (`local` | `writeback` | `remote`); `require_durable_commit: true` is equivalent
-> to `durability: remote`. See [Durability & QoS tiers](durability.md) for the full
-> spectrum and per-tier throughput numbers.
+(NFS *unstable* WRITE is unaffected either way: it still returns `UNSTABLE` and
+defers durability to a later COMMIT.)
 
 `dfsctl store block stats` also shows `Pending Remote (bytes)` — the headline
-data-at-risk gauge (local CAS bytes not yet mirrored to the remote) — which is
-the way to observe the async mirror backlog under the default policy.
+data-at-risk gauge (journal bytes not yet offloaded) — which is the way to observe
+the async offload backlog under the default policy.
 
 #### Chunk size — random-access shares (`chunk_size`)
 
@@ -436,8 +454,9 @@ I/O (VM images, databases).
 unit. Effective average chunk size ≈ `chunk_size`; a hard ceiling is derived
 (8× `chunk_size`) unless you set `chunk_max` explicitly.
 
-Random-access share: ~128 KiB chunks (≈8× less read amplification) — set
-`{"chunk_size": 131072}` in the store's `config` JSON.
+Random-access node: ~128 KiB chunks (≈8× less read amplification) — set
+`blockstore.journal.chunk_size: 131072` in the server config. This is a
+server-level knob, so it applies to every share on the node.
 
 | Setting | Effective avg | 4 KiB random-read amplification | Trade-off |
 |---------|---------------|---------------------------------|-----------|
@@ -456,11 +475,12 @@ Notes:
   boundaries — so changing `chunk_size` affects only newly written data, and old
   data stays readable. Dedup is not restored across a change (different
   boundaries → different hashes), but on VM/DB images dedup is already ~0.
-- Invalid or below-floor (< 4 KiB) values are ignored with a startup warning and
-  the default stands. Applies to `fs` local stores; `memory` local stores ignore
-  it (in-RAM reads have no amplification).
+- An invalid `chunk_size` / `chunk_max` combination is warned about and dropped,
+  leaving the built-in profile in force — a bad profile would otherwise cut every
+  newly written block to the wrong size, and reads never re-chunk, so the damage
+  would outlive the misconfiguration.
 
-#### Dirty-age fsync ceiling (`dirty_expire_seconds`)
+#### Dirty-age fsync ceiling (`dirty_expire`)
 
 A client that writes and never issues an NFS `COMMIT`/`FILE_SYNC` or an SMB
 `FLUSH`/`CLOSE` never asks the server for durability. A background loop fsyncs
@@ -468,18 +488,18 @@ each journal shard still holding uncommitted records once per interval, so those
 writes reach the device within roughly that window instead of waiting for the
 shard's next 256 MiB segment rotation.
 
-The default is 30s; tighten it with `{"dirty_expire_seconds": 5}` in the store's
-`config` JSON, or set a negative value to disable the loop.
+The default is 30s; tighten it with `blockstore.journal.dirty_expire: 5s` in the
+server config, or set a negative value to disable the loop. It used to be a
+per-share `dirty_expire_seconds` key in the local block store's `config` JSON.
 
 - Default **30 s**, on for every share; the loop costs an idle store nothing and
   never runs on the ack path.
 - Negative disables it, leaving the client's own fsync and segment rotation as
   the only durability points — the loss window is then unbounded in time.
-- Values below 1 s are clamped with a warning; non-numeric values are ignored.
+- Values below 1 s are clamped with a warning.
 - This is a **ceiling on the loss window, not a durability guarantee**: only a
   returned `COMMIT`/`FLUSH` says the bytes are on the device. See
-  [Durability & QoS tiers](durability.md#the-dirty-age-ceiling-dirty_expire_seconds).
-- Applies to `fs` local stores; `memory` local stores ignore it.
+  [Durability](durability.md#the-dirty-age-ceiling-dirty_expire).
 
 #### GC knobs
 
@@ -510,12 +530,12 @@ To **pin** a fixed concurrency instead (disabling auto-tuning), set
 `--parallel-uploads N` on the remote:
 
 ```bash
-dfsctl store block remote add --name r1 --type s3 \
+dfsctl store block add --name r1 --type s3 \
   --bucket … --region … --endpoint … \
   --parallel-uploads 32          # fixed window of 32; 0 (default) = adaptive
 ```
 
-`dfsctl store block remote edit r1 --parallel-uploads 0` returns a remote
+`dfsctl store block edit r1 --parallel-uploads 0` returns a remote
 to adaptive mode. Observe the live window via the Prometheus gauge
 `dittofs_datapath_upload_window` (target concurrency) alongside
 `dittofs_datapath_uploads_inflight` (actual in-flight uploads); see
@@ -631,11 +651,11 @@ and `--repair` to act on it.
 
 #### Offline read safety
 
-A remote-backed share's local tier is a cache: once a range is mirrored to the
-remote it becomes evictable, and an evicted range is served by fetching it
-back. Reads of such a range fail while the remote is unreachable. Whether a
+A share's journal is a cache in front of its block store: once a range is
+offloaded it becomes evictable, and an evicted range is served by fetching it
+back. Reads of such a range fail while the block store is unreachable. Whether a
 box would keep serving through an outage therefore depends on how much of its
-data is currently remote-only, and that number moves with every eviction and
+data is currently block-store-only, and that number moves with every eviction and
 every warm.
 
 The server reports it per share:
@@ -658,9 +678,9 @@ The measurement never guesses. Three cases report **unknown** rather than a
 number, because a zero would read as "provably safe" for exactly the shares
 whose data is most likely to be remote-only:
 
-- the share's local tier does not track residency (the in-memory backend),
-- the local tier has not been seeded from the manifest yet — it holds no
-  record of ranges that live only on the remote, so they would count as
+- the share's journal does not track residency (the in-memory backend),
+- the journal has not been seeded from the manifest yet — it holds no
+  record of ranges that live only in the block store, so they would count as
   absent rather than remote-only,
 - the block store is closed,
 - the residency scan did not finish inside the request's deadline.
@@ -668,21 +688,19 @@ whose data is most likely to be remote-only:
 An unknown share reports `dittofs_offline_safe = 0` but publishes no byte
 counts, so a dashboard cannot mistake it for a clean fully-local share.
 
-A share with **no remote at all** is normally safe by construction — nothing
-evicts it, so everything it holds is local. The exception is a share whose
-remote was unbound after it had already evicted: the evicted ranges stay
-recorded in the local tier and are replayed from its cold log on the next
-open, but there is no longer anything to fetch them from, so they never
-serve. Those shares report a non-zero remote-only figure rather than being
-waved through as local-only.
+A share whose block store was swapped out after it had already evicted is the
+awkward case: the evicted ranges stay recorded in the journal and are replayed
+from its cold log on the next open, but there is no longer anything to fetch them
+from, so they never serve. Those shares report a non-zero remote-only figure
+rather than being waved through as safe.
 
-The figure is **bytes, not blocks**. The local tier tracks byte ranges, which
+The figure is **bytes, not blocks**. The journal tracks byte ranges, which
 split and merge independently of manifest chunk rows; a block count would
 need a metadata walk to produce and would not answer "how much would break
 offline" any more precisely.
 
 Note this is read availability only. Offline **writes** already work — writes
-are stored locally and drain when the remote returns.
+land in the journal and drain when the block store returns.
 
 
 The schedule restarts from zero on server start, so a box restarted more
@@ -693,71 +711,66 @@ Env-var mapping:
 `DITTOFS_INTEGRITY_AUTO_ENABLED`,
 `DITTOFS_INTEGRITY_AUTO_INTERVAL`.
 
-#### Local cache size limit & write backpressure
+#### Journal size limit & write backpressure
 
-When a share has a **remote** block store configured (S3 or filesystem
-remote), the on-disk local tier is a **temporary write-through cache**, not
-durable storage — every chunk is mirrored to the remote and may be evicted
-locally once synced. To stop a fast writer with a slow/lagging uploader from
-filling the host volume, the local cache is bounded and writes apply
-**graceful, observable backpressure** when it fills:
+The on-disk journal is a **temporary write-through tier**, not the durable copy —
+every chunk is offloaded to the block store and may be evicted locally once
+offloaded. To stop a fast writer with a slow/lagging uploader from filling the
+host volume, the journal is bounded and writes apply **graceful, observable
+backpressure** when it fills:
 
-- **Bounded cache.** If a remote is configured and you set no explicit
-  per-share size (`dfsctl share … --journal-size`), the cache is capped at
-  `blockstore.journal.default_remote_cache_size` (default **10 GiB**). An
-  explicit `--journal-size` always wins. **Local-only shares are
-  unaffected** — they keep their existing system-deduced local size and never
-  apply remote-cache backpressure. The cap is enforced **lazily, on the
-  write/carve path** (it evicts synced segments to make room for new writes); it
+- **Bounded journal.** The ceiling is the per-share `--journal-size`. With none
+  set, the journal claims a soft default of 80% of the volume's free space at open
+  time — see [Journal size and eviction](#journal-size-and-eviction) for the full
+  rule and for why eviction can only reclaim already-offloaded blocks. The cap is
+  enforced **lazily, on the write/flush path** (it evicts offloaded segments to
+  make room for new writes); it
   is **not** a background reaper, so on an idle or read-only workload the
   resident local tier is not shrunk toward the cap. To reclaim local disk — or
   to force cold, remote-served reads for read-path benchmarking — evict on
   demand with `dfsctl store block evict` (drops the read buffer and drains
-  resident synced blocks; never drops not-yet-uploaded data). Remote read-miss
+  resident offloaded blocks; never drops not-yet-uploaded data). Read-miss
   volume (the read-amplification signal) is observable via the
   `dittofs_datapath_block_range_read_bytes_total` metric.
-- **Backpressure stall.** When the cache is full and every cached chunk is
+- **Backpressure stall.** When the journal is full and every resident chunk is
   still unsynced, a write **stalls** waiting for the syncer to drain to the
-  remote and free space, rather than failing. The stall is bounded by
+  block store and free space, rather than failing. The stall is bounded by
   `blockstore.journal.backpressure_max_wait` (default **60s**).
-- **Hard failure only when the remote cannot drain.** If the remote is
+- **Hard failure only when the block store cannot drain.** If it is
   **unhealthy** (genuinely unreachable, not merely slow) or the backpressure
   window is exceeded, the write fails with disk-full
   (`NFS3ERR_NOSPC` / `NFS4ERR_NOSPC` / SMB `STATUS_DISK_FULL`) instead of
   silently filling the disk.
 
-**Diagnosing a stall.** Backpressure engage/release events are logged
-(rate-limited) at `INFO`, so a stalled writer is never a mystery:
+**Diagnosing a stall.** A stall warns once with the state that explains it, so a
+stalled writer is never a mystery — see
+[Journal size and eviction](#journal-size-and-eviction) for how to read the
+fields:
 
 ```
-INFO  local cache backpressure engaged: waiting for syncer to drain
-      store=… disk_used=10737418240 max_disk=10737418240 needed=…
-      unsynced_bytes=… remote_healthy=true max_wait_ms=60000
-INFO  local cache backpressure released  store=… reason=space_freed
-      disk_used=… max_disk=… unsynced_bytes=… remote_healthy=true stall_ms=…
+WARN  journal local store full: nothing evictable, backpressuring writes
+      dir=… disk_bytes=… max_local_bytes=… unsynced_bytes=…
+      eviction_suspended=… eviction_pinned=…
 ```
-
-`reason` distinguishes a clean recovery (`space_freed`) from a failure
-(`window_exceeded`, `remote_unhealthy`).
 
 These knobs live in the top-level server-config `blockstore.journal` block:
 
 ```yaml
 blockstore:
-  local:
-    default_remote_cache_size: 10737418240   # 10 GiB; cap for remote-backed
-                                             # shares with no explicit size.
-                                             # Defaults to 10 GiB if unset.
+  journal:
     backpressure_max_wait: 60s               # Max time a write stalls for the
                                              # syncer to drain before disk-full.
-    max_log_bytes: 2147483648                # Global local-cache size hint
+    max_log_bytes: 2147483648                # Append-log pressure budget
                                              # (see above). 0/unset = deduced.
 ```
 
+`default_remote_cache_size` was deleted along with its "10 GiB when a remote is
+configured, deduced size otherwise" conditional; the per-share `--journal-size`
+is now the whole of the sizing policy.
+
 Env-var mapping (dot-path convention):
-`DITTOFS_BLOCKSTORE_LOCAL_DEFAULT_REMOTE_CACHE_SIZE`,
-`DITTOFS_BLOCKSTORE_LOCAL_BACKPRESSURE_MAX_WAIT`,
-`DITTOFS_BLOCKSTORE_LOCAL_DEDUP_LRU_SIZE`.
+`DITTOFS_BLOCKSTORE_JOURNAL_BACKPRESSURE_MAX_WAIT`,
+`DITTOFS_BLOCKSTORE_JOURNAL_MAX_LOG_BYTES`.
 
 > Prometheus metrics for cache pressure / unsynced bytes are tracked
 > separately (server-wide instrumentation, issue #1188); today the signal is
@@ -787,7 +800,7 @@ file's content is not recycled (only unlink and replace-overwrite are).
 
 ```bash
 # Enable the bin with a 30-day retention and a 10 GiB cap
-./dfsctl share create --name /docs --metadata badger-main --local local-cache \
+./dfsctl share create --name /docs --metadata badger-main --block-store s3-remote \
   --enable-trash --trash-retention-days 30 --trash-max-size 10737418240
 
 # Change settings on an existing share (applied live)
@@ -810,7 +823,7 @@ Add a `compression` block to the remote store's `config` JSON when
 creating it:
 
 ```bash
-./dfsctl store block remote add --name prod-s3 --type s3 \
+./dfsctl store block add --name prod-s3 --type s3 \
   --config '{"region":"us-east-1","bucket":"dfs-production","compression":{"algo":"zstd"}}'
 ```
 
@@ -901,8 +914,8 @@ to it instead of AWS. The store reads exactly these config keys (see
 Credentials live in the store's own config (the `--config` blob below, or the
 equivalent `--access-key` / `--secret-key` flags) — they are not read from the
 `DITTOFS_*` server-config environment. Each recipe is a
-`dfsctl store block remote add` invocation; attach the resulting store to a
-share with `dfsctl share create … --remote <name>`.
+`dfsctl store block add` invocation; attach the resulting store to a
+share with `dfsctl share create … --block-store <name>`.
 
 ##### Verified providers
 
@@ -918,15 +931,15 @@ exercised by the e2e suite where an emulator exists:
 
 ```bash
 # MinIO  (verified by e2e emulator)
-dfsctl store block remote add --name minio-store --type s3 \
+dfsctl store block add --name minio-store --type s3 \
   --config '{"endpoint":"http://minio.example:9000","bucket":"dittofs","region":"us-east-1","access_key_id":"minioadmin","secret_access_key":"minioadmin","allow_private_endpoint":true}'
 
 # LocalStack  (verified by e2e emulator)
-dfsctl store block remote add --name localstack-store --type s3 \
+dfsctl store block add --name localstack-store --type s3 \
   --config '{"endpoint":"http://localstack:4566","bucket":"dittofs","region":"us-east-1","access_key_id":"test","secret_access_key":"test","allow_private_endpoint":true}'
 
 # Ceph RGW (RADOS Gateway)
-dfsctl store block remote add --name ceph-store --type s3 \
+dfsctl store block add --name ceph-store --type s3 \
   --config '{"endpoint":"https://rgw.example:7480","bucket":"dittofs","region":"us-east-1","access_key_id":"ACCESS","secret_access_key":"SECRET","allow_private_endpoint":true}'
 ```
 
@@ -950,45 +963,159 @@ compatibility guide. The per-provider column flags the one gotcha that bites.
 
 ```bash
 # Cubbit DS3 (DittoFS sponsor) — geo-distributed, S3-compatible object storage
-dfsctl store block remote add --name ds3-store --type s3 \
+dfsctl store block add --name ds3-store --type s3 \
   --config '{"endpoint":"https://s3.cubbit.eu","bucket":"dittofs","region":"eu-west-1","access_key_id":"DS3_ACCESS_KEY","secret_access_key":"DS3_SECRET_KEY"}'
 
 # Google Cloud Storage — note force_path_style:false (GCS wants virtual-hosted)
-dfsctl store block remote add --name gcs-store --type s3 \
+dfsctl store block add --name gcs-store --type s3 \
   --config '{"endpoint":"https://storage.googleapis.com","bucket":"dittofs","region":"us-east-1","access_key_id":"GOOG_HMAC_KEY","secret_access_key":"GOOG_HMAC_SECRET","force_path_style":false}'
 
 # Backblaze B2 — region is baked into the endpoint host
-dfsctl store block remote add --name b2-store --type s3 \
+dfsctl store block add --name b2-store --type s3 \
   --config '{"endpoint":"https://s3.us-west-004.backblazeb2.com","bucket":"dittofs","region":"us-west-004","access_key_id":"B2_KEY_ID","secret_access_key":"B2_APP_KEY"}'
 
 # Wasabi
-dfsctl store block remote add --name wasabi-store --type s3 \
+dfsctl store block add --name wasabi-store --type s3 \
   --config '{"endpoint":"https://s3.us-east-1.wasabisys.com","bucket":"dittofs","region":"us-east-1","access_key_id":"ACCESS","secret_access_key":"SECRET"}'
 
 # DigitalOcean Spaces
-dfsctl store block remote add --name spaces-store --type s3 \
+dfsctl store block add --name spaces-store --type s3 \
   --config '{"endpoint":"https://nyc3.digitaloceanspaces.com","bucket":"dittofs","region":"us-east-1","access_key_id":"SPACES_KEY","secret_access_key":"SPACES_SECRET"}'
 
 # Alibaba Cloud OSS
-dfsctl store block remote add --name oss-store --type s3 \
+dfsctl store block add --name oss-store --type s3 \
   --config '{"endpoint":"https://oss-us-west-1.aliyuncs.com","bucket":"dittofs","region":"us-west-1","access_key_id":"ACCESS","secret_access_key":"SECRET"}'
 
 # Tencent Cloud COS — bucket name carries the AppID suffix
-dfsctl store block remote add --name cos-store --type s3 \
+dfsctl store block add --name cos-store --type s3 \
   --config '{"endpoint":"https://cos.ap-guangzhou.myqcloud.com","bucket":"dittofs-1250000000","region":"ap-guangzhou","access_key_id":"SECRET_ID","secret_access_key":"SECRET_KEY"}'
 
 # Oracle Cloud (OCI) Object Storage — endpoint embeds your namespace
-dfsctl store block remote add --name oci-store --type s3 \
+dfsctl store block add --name oci-store --type s3 \
   --config '{"endpoint":"https://my-namespace.compat.objectstorage.us-ashburn-1.oraclecloud.com","bucket":"dittofs","region":"us-ashburn-1","access_key_id":"OCI_ACCESS","secret_access_key":"OCI_SECRET"}'
 
 # Storj (S3-compatible gateway)
-dfsctl store block remote add --name storj-store --type s3 \
+dfsctl store block add --name storj-store --type s3 \
   --config '{"endpoint":"https://gateway.storjshare.io","bucket":"dittofs","region":"us-east-1","access_key_id":"STORJ_ACCESS","secret_access_key":"STORJ_SECRET"}'
 ```
 
 All of the above accept the same optional knobs as AWS S3 —
 `prefix`, `compression`, `encryption`, and `durable` (see the preceding
 subsections) — because they share the single `s3` store implementation.
+
+#### Upgrading from the local/remote block store split
+
+Before this release a share carried **two** block stores — a local one (type `fs`
+or `memory`) and an optional remote one — and both the config file and the
+control-plane schema were shaped around that split. The first start after the
+upgrade migrates them, and **refuses to start** in four cases where guessing would
+silently change what an operator configured. Each refusal is recoverable; none of
+them lose data.
+
+**1. A config file still using `blockstore.local.*`**
+
+```
+config uses renamed keys; update them and restart:
+  blockstore.local.max_log_bytes -> blockstore.journal.max_log_bytes
+```
+
+Unknown keys are normally warned about and ignored, but a *renamed* one cannot
+ride that policy: the operator believes the setting is live, an equivalent exists
+under the new name, and dropping it silently changes runtime behaviour.
+
+**Action:** rename the section to `blockstore.journal` (every key beneath it keeps
+its name) and restart.
+
+**2. Shares whose journals do not live under the configured root**
+
+```
+shares do not live under the configured journal root
+  configured blockstore.journal.path: /var/lib/dittofs/blocks
+  share "/archive" stores its data in: /srv/dittofs/archive
+
+Set blockstore.journal.path to /srv/dittofs/archive and restart.
+```
+
+A share's journal holds the only copy of every byte not yet offloaded, so a root
+that disagrees with where the data actually is would serve a share whose bytes are
+somewhere else — reads would return zeros for everything written before the
+change, with nothing failing. Relocating the directories automatically would mean
+moving that only copy during startup, where a partial move cannot be undone.
+
+**Action:** when every share agrees on one directory, the error names it — set
+`blockstore.journal.path` to that directory and restart. When shares are spread
+across several directories, one root cannot express that: move them under a single
+parent (preserving the `shares/<name>/` level), point `blockstore.journal.path` at
+it, and restart.
+
+**3. Both size columns present**
+
+```
+shares table has both local_store_size and journal_size;
+copy the intended values into journal_size, drop local_store_size, and restart
+```
+
+An earlier upgrade added the new column without moving the values across. Which
+one is authoritative is not recoverable from the schema, and choosing wrong
+silently changes every share's size ceiling.
+
+**Action:** copy the values you intend to keep into `journal_size`, drop
+`local_store_size`, and restart.
+
+**4. Both store-id columns present**
+
+```
+shares table has both remote_block_store_id and block_store_id;
+copy the intended values into block_store_id, drop the old column, and restart
+```
+
+Same shape as above, with a worse failure mode: picking the empty column would
+leave every share without a block store.
+
+**Action:** copy the values into `block_store_id`, drop
+`remote_block_store_id`, and restart.
+
+**5. Two block stores sharing a name**
+
+```
+two block stores share a name
+  "archive" is used by more than one block store
+
+Block stores no longer have a kind, so their names must be unique.
+Rename one of each pair with `dfsctl store block edit`, then restart.
+```
+
+Names used to be unique per `(name, kind)`, so a local `archive` and a remote
+`archive` could coexist. With the kind column gone they collide. Renaming one
+automatically would break the operator's scripts at some later point; deleting one
+would orphan any share referencing it.
+
+**Action:** give one store of each colliding pair a different name, then restart.
+Neither `dfsctl` nor the REST API can rename a block store in this release (the
+error message's suggestion of `dfsctl store block edit` is ahead of the CLI), so
+do it in the control-plane database — with the server stopped:
+
+```sql
+UPDATE block_store_configs SET name = 'archive-local' WHERE id = '<the row to rename>';
+```
+
+Pick the row by `id`; `SELECT id, name, kind, type FROM block_store_configs` shows
+which is which while the `kind` column still exists. A share normally holds the
+store's UUID, but older rows written through the REST update path hold the *name*
+instead, so check
+`SELECT name, block_store_id FROM shares` afterwards and repoint any share that
+was matching on the old name.
+
+**What migrates without asking**
+
+- `shares.local_store_size` → `shares.journal_size`
+- `shares.remote_block_store_id` → `shares.block_store_id`
+- `shares.local_block_store_id` → dropped, after its `durability` / `writeback` /
+  `require_durable_commit` settings are carried onto the share as `commit_ack` and
+  `relaxed_metadata_commit` (see [Durability](durability.md))
+- `block_store_configs.kind` → dropped, after the collision check above
+- `blockstore.journal.default_remote_cache_size` → deleted; per-share
+  `--journal-size` is now the whole of the sizing policy
 
 ### 7. Metadata Configuration
 
@@ -1153,9 +1280,9 @@ Shares are managed at runtime via `dfsctl` and persisted in the control plane da
 
 ```bash
 # Create shares referencing existing stores
-./dfsctl share create --name /fast --metadata memory-fast --local local-cache
-./dfsctl share create --name /cloud --metadata badger-main --local local-cache --remote s3-remote
-./dfsctl share create --name /archive --metadata badger-main --local local-cache --remote s3-archive
+./dfsctl share create --name /fast --metadata memory-fast --block-store mem-blocks
+./dfsctl share create --name /cloud --metadata badger-main --block-store s3-remote
+./dfsctl share create --name /archive --metadata badger-main --block-store s3-archive
 
 # Grant permissions on shares
 ./dfsctl share permission grant /fast --user alice --level read-write
@@ -1173,10 +1300,9 @@ Shares are managed at runtime via `dfsctl` and persisted in the control plane da
 **Configuration Patterns:**
 
 - **Shared Metadata**: `/cloud` and `/archive` both use `badger-main` - they share the same metadata database
-- **Performance Tiering**: Different shares use different storage backends (memory, local disk, S3)
-- **Isolation**: Each share gets its own BlockStore with isolated local storage directory
-- **Resource Efficiency**: Remote stores are shared (ref counted) when multiple shares reference the same config
-- **Flexible Topologies**: Mix local-only and remote-backed storage per-share
+- **Performance Tiering**: Different shares use different storage backends (memory, S3)
+- **Isolation**: Each share gets its own BlockStore and its own journal directory beneath `blockstore.journal.path`
+- **Resource Efficiency**: Block stores are shared (ref counted) when multiple shares reference the same config
 
 #### Per-share and per-identity quotas
 
@@ -2585,11 +2711,11 @@ Then create stores, shares, and enable adapters via CLI:
 # Create stores
 ./dfsctl store metadata add --name prod-badger --type badger \
   --config '{"path":"/var/lib/dittofs/metadata"}'
-./dfsctl store block remote add --name prod-s3 --type s3 \
+./dfsctl store block add --name prod-s3 --type s3 \
   --config '{"region":"us-east-1","bucket":"dfs-production"}'
 
 # Create share and grant permissions
-./dfsctl share create --name /export --metadata prod-badger --remote prod-s3
+./dfsctl share create --name /export --metadata prod-badger --block-store prod-s3
 ./dfsctl share permission grant /export --user alice --level read-write
 
 # Enable NFS adapter
@@ -2607,13 +2733,14 @@ Different shares using different storage backends:
   --config '{"path":"/var/lib/dittofs/metadata"}'
 
 # Create block stores
-./dfsctl store block remote add --name cloud-s3 --type s3 \
+./dfsctl store block add --name cloud-s3 --type s3 \
   --config '{"region":"us-east-1","bucket":"my-dfs-bucket"}'
 
 # Create shares with different backends
-./dfsctl share create --name /temp --metadata fast-memory
-./dfsctl share create --name /cloud --metadata persistent-badger --remote cloud-s3
-./dfsctl share create --name /public --metadata persistent-badger
+./dfsctl store block add --name mem-blocks --type memory
+./dfsctl share create --name /temp --metadata fast-memory --block-store mem-blocks
+./dfsctl share create --name /cloud --metadata persistent-badger --block-store cloud-s3
+./dfsctl share create --name /public --metadata persistent-badger --block-store cloud-s3
 
 # Grant permissions
 ./dfsctl share permission grant /temp --user alice --level read-write
@@ -2633,14 +2760,14 @@ Multiple shares sharing the same metadata database:
   --config '{"path":"/var/lib/dittofs/shared-metadata"}'
 
 # Create block stores
-./dfsctl store block remote add --name s3-production --type s3 \
+./dfsctl store block add --name s3-production --type s3 \
   --config '{"region":"us-east-1","bucket":"prod-bucket"}'
-./dfsctl store block remote add --name s3-archive --type s3 \
+./dfsctl store block add --name s3-archive --type s3 \
   --config '{"region":"us-east-1","bucket":"archive-bucket"}'
 
-# Both shares use the same metadata store, different remote stores
-./dfsctl share create --name /prod --metadata shared-badger --remote s3-production
-./dfsctl share create --name /archive --metadata shared-badger --remote s3-archive
+# Both shares use the same metadata store, different block stores
+./dfsctl share create --name /prod --metadata shared-badger --block-store s3-production
+./dfsctl share create --name /archive --metadata shared-badger --block-store s3-archive
 
 # Enable NFS adapter
 ./dfsctl adapter enable nfs

@@ -328,7 +328,7 @@ tail -f ~/.local/state/dittofs/dittofs.log | grep -i "slow\|timeout"
 
 3. **For S3, verify configuration:**
    ```bash
-   ./dfsctl store block remote add --name s3-store --type s3 \
+   ./dfsctl store block add --name s3-store --type s3 \
      --config '{"region":"us-east-1","bucket":"my-bucket"}'
    ```
 
