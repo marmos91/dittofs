@@ -118,6 +118,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		cmd.Flags().Changed("description") || cmd.Flags().Changed("retention") ||
 		cmd.Flags().Changed("retention-ttl") || cmd.Flags().Changed("journal-size") ||
 		cmd.Flags().Changed("read-buffer-size") || cmd.Flags().Changed("quota-bytes") ||
+		cmd.Flags().Changed("commit-ack") || cmd.Flags().Changed("relaxed-metadata-commit") ||
 		cmd.Flags().Changed("acl-canonicalize-inherited") ||
 		cmd.Flags().Changed("access-based-enumeration") ||
 		cmd.Flags().Changed("enable-trash") ||
@@ -264,7 +265,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	}
 
 	if !hasUpdate {
-		return fmt.Errorf("no fields specified. Use --block-store, --read-only, --default-permission, --description, --retention, --retention-ttl, --journal-size, --read-buffer-size, --quota-bytes, --acl-canonicalize-inherited, --access-based-enumeration, --enable-trash, --trash-retention-days, --trash-restrict-empty-to-admin, --trash-max-size, or --trash-exclude")
+		return fmt.Errorf("no fields specified. Use --block-store, --read-only, --default-permission, --description, --retention, --retention-ttl, --journal-size, --read-buffer-size, --quota-bytes, --commit-ack, --relaxed-metadata-commit, --acl-canonicalize-inherited, --access-based-enumeration, --enable-trash, --trash-retention-days, --trash-restrict-empty-to-admin, --trash-max-size, or --trash-exclude")
 	}
 
 	share, err := client.UpdateShare(name, req)
