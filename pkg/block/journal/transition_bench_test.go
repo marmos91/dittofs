@@ -35,6 +35,11 @@ func benchStoreDir(b *testing.B, cfg Config) (*Store, string) {
 	if err != nil {
 		b.Fatalf("Open: %v", err)
 	}
+	// Pin the raw-pread read path. Open verifies by default, and a benchmark that
+	// silently moved onto the covering-record CRC read would report a different
+	// path under the same name; the verified path gets its own benchmark when it
+	// needs numbers.
+	s.SetVerifyReads(false)
 	b.Cleanup(func() { _ = s.Close() })
 	return s, dir
 }

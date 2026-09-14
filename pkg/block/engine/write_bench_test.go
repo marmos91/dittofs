@@ -59,6 +59,10 @@ func newWriteBenchEngine(tb testing.TB) *Store {
 	if err != nil {
 		tb.Fatalf("journal.Open: %v", err)
 	}
+	// The mixed read/write benchmark measures the raw-pread read path, so pin it
+	// rather than inherit Open's verifying default: a warm read that re-reads and
+	// CRCs its covering record is a different path under the same benchmark name.
+	localStore.SetVerifyReads(false)
 	rem := remotememory.New()
 	syncer := NewRemoteSync(localStore, rem, ms, DefaultConfig())
 	bs, err := New(BlockStoreConfig{
