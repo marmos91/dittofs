@@ -37,18 +37,18 @@ func newHardlinkTestShare(t *testing.T) (*runtime.Runtime, metadata.FileHandle, 
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
 	localBSID, err := cps.CreateBlockStore(ctx, &models.BlockStoreConfig{
-		Name: "hlbs", Kind: models.BlockStoreKindLocal, Type: "memory",
+		Name: "hlbs", Type: "memory",
 	})
 	if err != nil {
 		t.Fatalf("CreateBlockStore: %v", err)
 	}
 
 	if err := rt.AddShare(ctx, &runtime.ShareConfig{
-		Name:              hardlinkTestShareName,
-		MetadataStore:     "hlmeta",
-		Enabled:           true,
-		LocalBlockStoreID: localBSID,
-		RootAttr:          &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o777},
+		Name:          hardlinkTestShareName,
+		MetadataStore: "hlmeta",
+		Enabled:       true,
+		BlockStoreID:  localBSID,
+		RootAttr:      &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o777},
 	}); err != nil {
 		t.Fatalf("AddShare: %v", err)
 	}

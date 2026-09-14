@@ -58,7 +58,7 @@ func setupWriteTestShare(t *testing.T, metaStore metadata.Store) (*Handler, *SMB
 	}
 
 	localBSID, err := cps.CreateBlockStore(ctx, &models.BlockStoreConfig{
-		Name: "flushbs", Kind: models.BlockStoreKindLocal, Type: "memory",
+		Name: "flushbs", Type: "memory",
 	})
 	if err != nil {
 		t.Fatalf("CreateBlockStore: %v", err)
@@ -66,10 +66,10 @@ func setupWriteTestShare(t *testing.T, metaStore metadata.Store) (*Handler, *SMB
 
 	const shareName = "/flush"
 	if err := rt.AddShare(ctx, &runtime.ShareConfig{
-		Name:              shareName,
-		MetadataStore:     "flushmeta",
-		Enabled:           true,
-		LocalBlockStoreID: localBSID,
+		Name:          shareName,
+		MetadataStore: "flushmeta",
+		Enabled:       true,
+		BlockStoreID:  localBSID,
 		RootAttr: &metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
 			Mode: 0o777,
