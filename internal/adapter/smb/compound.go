@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/changenotify"
 	"github.com/marmos91/dittofs/internal/adapter/smb/handlers"
 	"github.com/marmos91/dittofs/internal/adapter/smb/header"
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
@@ -47,7 +48,7 @@ type compoundResponse struct {
 //   - connInfo: connection metadata for handler dispatch
 //   - isEncrypted: whether the compound request was received inside an SMB3 Transform Header
 //   - asyncNotifyCallback: optional callback for CHANGE_NOTIFY async responses (nil = no async)
-func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header, firstBody []byte, firstRaw []byte, compoundData []byte, connInfo *ConnInfo, isEncrypted bool, asyncNotifyCallback handlers.AsyncResponseCallback) {
+func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header, firstBody []byte, firstRaw []byte, compoundData []byte, connInfo *ConnInfo, isEncrypted bool, asyncNotifyCallback changenotify.AsyncResponseCallback) {
 	// This chain's place in the connection's response order — see RequestOrder
 	// and the single-request path in response.go. Every response below waits
 	// for the responses ahead of it, so a break notification an earlier
@@ -951,7 +952,7 @@ func (s *compoundLoopState) processRemaining(
 	remaining []byte,
 	connInfo *ConnInfo,
 	isEncrypted bool,
-	asyncNotifyCallback handlers.AsyncResponseCallback,
+	asyncNotifyCallback changenotify.AsyncResponseCallback,
 ) {
 	for len(remaining) >= header.HeaderSize {
 		// Keep a reference to the current command's start for signature verification.
@@ -1205,7 +1206,7 @@ func completeCompoundAfterAsyncCreate(
 	compoundData []byte,
 	connInfo *ConnInfo,
 	isEncrypted bool,
-	asyncNotifyCallback handlers.AsyncResponseCallback,
+	asyncNotifyCallback changenotify.AsyncResponseCallback,
 ) {
 	// Build CREATE completion response (async header format).
 	createCredits := grantConnectionCredits(connInfo, firstHeader.SessionID, firstHeader.Credits, firstHeader.CreditCharge)

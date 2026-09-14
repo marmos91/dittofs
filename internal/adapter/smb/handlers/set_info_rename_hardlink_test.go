@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"testing"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/changenotify"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 )
 
@@ -18,18 +19,18 @@ func encodeFileRenameInfoWire(t *testing.T, replaceIfExists bool, rootDir [8]byt
 // renameWatcher arms reg with a watcher on the share root that sets *notified
 // when a name-change notification reaches it. Delivery is buffered, so callers
 // must FlushAll before reading the flag.
-func renameWatcher(t *testing.T, reg *NotifyRegistry, notified *bool) {
+func renameWatcher(t *testing.T, reg *changenotify.NotifyRegistry, notified *bool) {
 	t.Helper()
-	mustRegister(t, reg, &PendingNotify{
+	mustRegister(t, reg, &changenotify.PendingNotify{
 		FileID:           [16]byte{0x9E},
 		SessionID:        1,
 		MessageID:        10,
 		AsyncId:          100,
 		WatchPath:        "/",
 		ShareName:        hardlinkTestShareName,
-		CompletionFilter: FileNotifyChangeFileName,
+		CompletionFilter: changenotify.FileNotifyChangeFileName,
 		MaxOutputLength:  4096,
-		AsyncCallback: func(sessionID, messageID, asyncId uint64, response *ChangeNotifyResponse) error {
+		AsyncCallback: func(sessionID, messageID, asyncId uint64, response *changenotify.ChangeNotifyResponse) error {
 			*notified = true
 			return nil
 		},

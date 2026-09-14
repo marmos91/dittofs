@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"unicode/utf16"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/changenotify"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -247,7 +248,7 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 	// Per [MS-SMB2] 3.3.5.16: If SMB2_FLAGS_ASYNC_COMMAND is set, look up by
 	// AsyncId; otherwise by MessageID.
 	if h.NotifyRegistry != nil {
-		var cancelled *PendingNotify
+		var cancelled *changenotify.PendingNotify
 		if ctx.RequestAsyncId != 0 {
 			cancelled = h.NotifyRegistry.UnregisterByAsyncId(ctx.ConnID, ctx.RequestAsyncId)
 		} else {
@@ -279,7 +280,7 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 			if cancelled.AsyncCallback != nil {
 				cb := cancelled
 				h.NotifyRegistry.QueueFinalAfterInterim(cb, func() {
-					cancelResp := &ChangeNotifyResponse{
+					cancelResp := &changenotify.ChangeNotifyResponse{
 						SMBResponseBase: SMBResponseBase{Status: types.StatusCancelled},
 					}
 					if err := cb.AsyncCallback(cb.SessionID, cb.MessageID, cb.AsyncId, cancelResp); err != nil {
@@ -427,7 +428,7 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 // When changes occur (via CREATE/CLOSE/SET_INFO), we can notify watchers.
 func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
 	// Parse the request
-	req, err := DecodeChangeNotifyRequest(body)
+	req, err := changenotify.DecodeChangeNotifyRequest(body)
 	if err != nil {
 		logger.Debug("CHANGE_NOTIFY: failed to decode request", "error", err)
 		return NewErrorResult(types.StatusInvalidParameter), nil
@@ -458,7 +459,7 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		// NewErrorResult here returns an SMB2 ERROR body, which the client
 		// rejects as INVALID_NETWORK_RESPONSE.
 		logger.Debug("CHANGE_NOTIFY: file handle not found (closed)", "fileID", fmt.Sprintf("%x", req.FileID))
-		respBytes, encErr := (&ChangeNotifyResponse{
+		respBytes, encErr := (&changenotify.ChangeNotifyResponse{
 			SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyCleanup},
 		}).Encode()
 		if encErr != nil {
@@ -525,7 +526,7 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 	// smbtorture smb2.notify.tree opens one that way. Cleaning here keeps the
 	// normalisation notify-local: what CREATE stores is unchanged, so the
 	// share-mode comparisons that read the same field are untouched.
-	watchPath := notifyWatchPath(openFile.Name().Path)
+	watchPath := changenotify.WatchPath(openFile.Name().Path)
 
 	// Register the pending notification if registry is available
 	if h.NotifyRegistry == nil {
@@ -547,7 +548,7 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		// tells the client to re-enumerate; any retained events would
 		// replay stale state on the next Register.
 		h.NotifyRegistry.ClearBufferedEvents(req.FileID)
-		respBytes, err := (&ChangeNotifyResponse{
+		respBytes, err := (&changenotify.ChangeNotifyResponse{
 			SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyEnumDir},
 		}).Encode()
 		if err != nil {
@@ -591,7 +592,7 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 	// request will actually run with. Reserved and unrecognised bits stay
 	// accepted: they simply never match an event, which is what
 	// smb2.notify.mask walking all 32 bit positions requires.
-	if !IsValidCompletionFilter(effectiveFilter) {
+	if !changenotify.IsValidCompletionFilter(effectiveFilter) {
 		logger.Debug("CHANGE_NOTIFY: invalid CompletionFilter",
 			"filter", fmt.Sprintf("0x%08X", req.CompletionFilter))
 		return NewErrorResult(types.StatusInvalidParameter), nil
@@ -628,7 +629,7 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		}
 		h.NotifyRegistry.ClearBufferedEvents(req.FileID)
 		h.NotifyRegistry.ResetArmedOverflow(req.FileID, stickyMax)
-		respBytes, encErr := (&ChangeNotifyResponse{
+		respBytes, encErr := (&changenotify.ChangeNotifyResponse{
 			SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyEnumDir},
 		}).Encode()
 		if encErr != nil {
@@ -637,9 +638,9 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		return NewResult(types.StatusNotifyEnumDir, respBytes), nil
 	}
 
-	watchTree := req.Flags&SMB2WatchTree != 0
+	watchTree := req.Flags&changenotify.SMB2WatchTree != 0
 
-	notify := &PendingNotify{
+	notify := &changenotify.PendingNotify{
 		FileID:           req.FileID,
 		SessionID:        ctx.SessionID,
 		ConnID:           ctx.ConnID,
@@ -686,18 +687,18 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 	// the handle. A client that pipelines two notifies blocks on the first and
 	// does not generate the next event until it returns, so letting the second
 	// take the buffered events strands the first forever.
-	var changes []FileNotifyInformation
+	var changes []changenotify.FileNotifyInformation
 	if !h.NotifyRegistry.HasEarlierInFlightNotify(req.FileID, ctx.ConnID, ctx.MessageID) {
 		changes = h.NotifyRegistry.TakeBufferedEvents(req.FileID, effectiveFilter, watchTree)
 	}
 	if len(changes) > 0 {
-		buffer := EncodeFileNotifyInformation(changes)
+		buffer := changenotify.EncodeFileNotifyInformation(changes)
 		if uint32(len(buffer)) > effectiveMax {
 			// Too big for the advertised buffer: the client must re-enumerate,
 			// and the events are already consumed so they cannot replay.
 			openFile.NotifyOverflowed.Store(true)
 			h.NotifyRegistry.ResetArmedOverflow(req.FileID, effectiveMax)
-			respBytes, encErr := (&ChangeNotifyResponse{
+			respBytes, encErr := (&changenotify.ChangeNotifyResponse{
 				SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyEnumDir},
 			}).Encode()
 			if encErr != nil {
@@ -705,7 +706,7 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 			}
 			return NewResult(types.StatusNotifyEnumDir, respBytes), nil
 		}
-		respBytes, encErr := (&ChangeNotifyResponse{
+		respBytes, encErr := (&changenotify.ChangeNotifyResponse{
 			OutputBufferLength: uint32(len(buffer)),
 			Buffer:             buffer,
 		}).Encode()
@@ -740,7 +741,7 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		// pending request completes with STATUS_NOTIFY_CLEANUP. The close
 		// path ran before we could register, so answer it synchronously
 		// rather than registering a watch nothing will ever complete.
-		if errors.Is(err, ErrHandleClosed) {
+		if errors.Is(err, changenotify.ErrHandleClosed) {
 			logger.Debug("CHANGE_NOTIFY: handle closed before register — replying STATUS_NOTIFY_CLEANUP",
 				"path", watchPath,
 				"sessionID", ctx.SessionID,
@@ -750,7 +751,7 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 			// the error body NewErrorResult would produce. A header with no
 			// body fails the client's parse and takes down every request in
 			// flight on the connection, not just this one.
-			respBytes, encErr := (&ChangeNotifyResponse{
+			respBytes, encErr := (&changenotify.ChangeNotifyResponse{
 				SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyCleanup},
 			}).Encode()
 			if encErr != nil {
@@ -758,7 +759,7 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 			}
 			return NewResult(types.StatusNotifyCleanup, respBytes), nil
 		}
-		if errors.Is(err, ErrAlreadyCancelled) {
+		if errors.Is(err, changenotify.ErrAlreadyCancelled) {
 			logger.Debug("CHANGE_NOTIFY: pre-arrival CANCEL — replying STATUS_CANCELLED",
 				"path", watchPath,
 				"sessionID", ctx.SessionID,
@@ -769,7 +770,7 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		// is already marked for deletion is completed immediately with
 		// STATUS_DELETE_PENDING rather than left waiting. STATUS_DELETE_PENDING
 		// is error severity, so the error body is the right one here.
-		if errors.Is(err, ErrDirectoryDeletePending) {
+		if errors.Is(err, changenotify.ErrDirectoryDeletePending) {
 			logger.Debug("CHANGE_NOTIFY: directory marked for deletion — replying STATUS_DELETE_PENDING",
 				"path", watchPath,
 				"sessionID", ctx.SessionID,

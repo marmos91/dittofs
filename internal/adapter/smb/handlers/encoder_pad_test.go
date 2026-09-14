@@ -3,6 +3,8 @@ package handlers
 import (
 	"encoding/binary"
 	"testing"
+
+	"github.com/marmos91/dittofs/internal/adapter/smb/changenotify"
 )
 
 // SMB2 encoders declared with StructureSize=N must emit (N-1) bytes of fixed
@@ -31,7 +33,7 @@ func TestEncoders_EmptyVariableSectionPadded(t *testing.T) {
 			lengthAt:    4,
 			lengthBytes: 4,
 			encode: func() []byte {
-				body, err := (&ChangeNotifyResponse{}).Encode()
+				body, err := (&changenotify.ChangeNotifyResponse{}).Encode()
 				if err != nil {
 					t.Fatalf("ChangeNotifyResponse.Encode: %v", err)
 				}
@@ -122,7 +124,7 @@ func TestChangeNotifyResponse_Encode_NonEmptyKeepsOffset72(t *testing.T) {
 	// Spec says OutputBufferOffset is fixed at 72 (header + fixed body) and
 	// must NOT regress to 0 just because the buffer is empty — the previous
 	// encoder did exactly that and broke WPTS.
-	resp := &ChangeNotifyResponse{Buffer: []byte{0xde, 0xad, 0xbe, 0xef}}
+	resp := &changenotify.ChangeNotifyResponse{Buffer: []byte{0xde, 0xad, 0xbe, 0xef}}
 	body, err := resp.Encode()
 	if err != nil {
 		t.Fatalf("Encode: %v", err)

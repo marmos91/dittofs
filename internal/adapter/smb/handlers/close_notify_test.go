@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/changenotify"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 )
 
@@ -22,7 +23,7 @@ import (
 // the CLOSE response is consumed).
 func TestClose_PendingNotifyCleanup_DeferredViaPostSend(t *testing.T) {
 	h := NewHandler()
-	h.NotifyRegistry = NewNotifyRegistry()
+	h.NotifyRegistry = changenotify.NewNotifyRegistry()
 
 	var fileID [16]byte
 	copy(fileID[:], []byte{0xab, 0xcd, 0xef, 0x01})
@@ -44,14 +45,14 @@ func TestClose_PendingNotifyCleanup_DeferredViaPostSend(t *testing.T) {
 	var callbackStatus atomic.Uint32
 	var callbackAsyncId atomic.Uint64
 
-	notify := &PendingNotify{
+	notify := &changenotify.PendingNotify{
 		FileID:    fileID,
 		SessionID: 42,
 		MessageID: 6,
 		AsyncId:   14,
 		WatchPath: "/share/watched-dir",
 		ShareName: "share",
-		AsyncCallback: func(sessionID, messageID, asyncId uint64, resp *ChangeNotifyResponse) error {
+		AsyncCallback: func(sessionID, messageID, asyncId uint64, resp *changenotify.ChangeNotifyResponse) error {
 			callbackFired.Store(true)
 			callbackStatus.Store(uint32(resp.GetStatus()))
 			callbackAsyncId.Store(asyncId)
@@ -127,7 +128,7 @@ func TestClose_PendingNotifyCleanup_DeferredViaPostSend(t *testing.T) {
 // nothing extra to do and the common path stays zero-overhead.
 func TestClose_NoPendingNotify_PostSendNil(t *testing.T) {
 	h := NewHandler()
-	h.NotifyRegistry = NewNotifyRegistry()
+	h.NotifyRegistry = changenotify.NewNotifyRegistry()
 
 	var fileID [16]byte
 	copy(fileID[:], []byte{0x11, 0x22, 0x33, 0x44})
@@ -169,7 +170,7 @@ func TestClose_NoPendingNotify_PostSendNil(t *testing.T) {
 // STATUS_DELETE_PENDING.
 func TestClose_DeleteOnClose_CompletesOtherHandlesNotify(t *testing.T) {
 	h := NewHandler()
-	h.NotifyRegistry = NewNotifyRegistry()
+	h.NotifyRegistry = changenotify.NewNotifyRegistry()
 
 	metaHandle := []byte{0x11, 0x22, 0x33}
 	watcherID := [16]byte{0xa1}
@@ -199,16 +200,16 @@ func TestClose_DeleteOnClose_CompletesOtherHandlesNotify(t *testing.T) {
 
 	var gotStatus atomic.Uint32
 	var fired atomic.Bool
-	if err := h.NotifyRegistry.Register(&PendingNotify{
+	if err := h.NotifyRegistry.Register(&changenotify.PendingNotify{
 		FileID:           watcherID,
 		SessionID:        42,
 		MessageID:        6,
 		AsyncId:          14,
 		WatchPath:        "/watched",
 		ShareName:        "share",
-		CompletionFilter: FileNotifyChangeFileName | FileNotifyChangeDirName,
+		CompletionFilter: changenotify.FileNotifyChangeFileName | changenotify.FileNotifyChangeDirName,
 		MaxOutputLength:  4096,
-		AsyncCallback: func(sessionID, messageID, asyncId uint64, resp *ChangeNotifyResponse) error {
+		AsyncCallback: func(sessionID, messageID, asyncId uint64, resp *changenotify.ChangeNotifyResponse) error {
 			fired.Store(true)
 			gotStatus.Store(uint32(resp.GetStatus()))
 			return nil
@@ -251,7 +252,7 @@ func TestClose_DeleteOnClose_CompletesOtherHandlesNotify(t *testing.T) {
 func TestClose_DirectoryDeleteOnClose_RetiresNotifyMarker(t *testing.T) {
 	h, ctx, _ := setupStreamsDisabledShare(t, false)
 	if h.NotifyRegistry == nil {
-		h.NotifyRegistry = NewNotifyRegistry()
+		h.NotifyRegistry = changenotify.NewNotifyRegistry()
 	}
 
 	dirID := dirTestCreate(t, h, ctx, "doomed", types.FileOpenIf, types.FileDirectoryFile)
@@ -261,17 +262,17 @@ func TestClose_DirectoryDeleteOnClose_RetiresNotifyMarker(t *testing.T) {
 	}
 	shareName, watchPath := openFile.ShareName, openFile.Name().Path
 
-	lateNotify := func(messageID uint64) *PendingNotify {
-		return &PendingNotify{
+	lateNotify := func(messageID uint64) *changenotify.PendingNotify {
+		return &changenotify.PendingNotify{
 			FileID:           [16]byte{0x51, byte(messageID)},
 			SessionID:        ctx.SessionID,
 			MessageID:        messageID,
 			AsyncId:          messageID * 10,
 			WatchPath:        watchPath,
 			ShareName:        shareName,
-			CompletionFilter: FileNotifyChangeFileName,
+			CompletionFilter: changenotify.FileNotifyChangeFileName,
 			MaxOutputLength:  4096,
-			AsyncCallback:    func(uint64, uint64, uint64, *ChangeNotifyResponse) error { return nil },
+			AsyncCallback:    func(uint64, uint64, uint64, *changenotify.ChangeNotifyResponse) error { return nil },
 		}
 	}
 
@@ -288,7 +289,7 @@ func TestClose_DirectoryDeleteOnClose_RetiresNotifyMarker(t *testing.T) {
 		t.Fatalf("disposition on an empty directory = %v, want STATUS_SUCCESS", resp.Status)
 	}
 
-	if err := h.NotifyRegistry.Register(lateNotify(11)); !errors.Is(err, ErrDirectoryDeletePending) {
+	if err := h.NotifyRegistry.Register(lateNotify(11)); !errors.Is(err, changenotify.ErrDirectoryDeletePending) {
 		t.Fatalf("a watch registering after the mark: got %v, want ErrDirectoryDeletePending", err)
 	}
 
@@ -314,7 +315,7 @@ func TestClose_DirectoryDeleteOnClose_RetiresNotifyMarker(t *testing.T) {
 func TestSetInfo_ClearDisposition_KeepsMarkerWhileASiblingStillHoldsIt(t *testing.T) {
 	h, ctx, _ := setupStreamsDisabledShare(t, false)
 	if h.NotifyRegistry == nil {
-		h.NotifyRegistry = NewNotifyRegistry()
+		h.NotifyRegistry = changenotify.NewNotifyRegistry()
 	}
 
 	// Both opens are taken before either marks: once a directory is
@@ -344,24 +345,24 @@ func TestSetInfo_ClearDisposition_KeepsMarkerWhileASiblingStillHoldsIt(t *testin
 		}
 	}
 
-	lateNotify := func(messageID uint64) *PendingNotify {
-		return &PendingNotify{
+	lateNotify := func(messageID uint64) *changenotify.PendingNotify {
+		return &changenotify.PendingNotify{
 			FileID:           [16]byte{0x52, byte(messageID)},
 			SessionID:        ctx.SessionID,
 			MessageID:        messageID,
 			AsyncId:          messageID * 10,
 			WatchPath:        watchPath,
 			ShareName:        shareName,
-			CompletionFilter: FileNotifyChangeFileName,
+			CompletionFilter: changenotify.FileNotifyChangeFileName,
 			MaxOutputLength:  4096,
-			AsyncCallback:    func(uint64, uint64, uint64, *ChangeNotifyResponse) error { return nil },
+			AsyncCallback:    func(uint64, uint64, uint64, *changenotify.ChangeNotifyResponse) error { return nil },
 		}
 	}
 
 	setDisposition(markerID, true)
 	setDisposition(retractorID, false)
 
-	if err := h.NotifyRegistry.Register(lateNotify(20)); !errors.Is(err, ErrDirectoryDeletePending) {
+	if err := h.NotifyRegistry.Register(lateNotify(20)); !errors.Is(err, changenotify.ErrDirectoryDeletePending) {
 		t.Fatalf("a sibling open still holds the directory delete-pending: got %v, want ErrDirectoryDeletePending", err)
 	}
 

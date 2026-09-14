@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/auth"
+	"github.com/marmos91/dittofs/internal/adapter/smb/changenotify"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
@@ -96,7 +97,7 @@ type reauthFixture struct {
 func newReauthFixture(t *testing.T, cpStore store.Store) *reauthFixture {
 	t.Helper()
 	h := NewHandler()
-	h.NotifyRegistry = NewNotifyRegistry()
+	h.NotifyRegistry = changenotify.NewNotifyRegistry()
 	h.NtlmEnabled = true
 	h.Registry = runtime.New(cpStore)
 
@@ -111,14 +112,14 @@ func newReauthFixture(t *testing.T, cpStore store.Store) *reauthFixture {
 	notifyStatus := &atomic.Uint32{}
 	var fileID [16]byte
 	copy(fileID[:], []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08})
-	notify := &PendingNotify{
+	notify := &changenotify.PendingNotify{
 		FileID:    fileID,
 		SessionID: sessionID,
 		MessageID: 100,
 		AsyncId:   200,
 		WatchPath: "/share/dir",
 		ShareName: "share",
-		AsyncCallback: func(sid, mid, aid uint64, resp *ChangeNotifyResponse) error {
+		AsyncCallback: func(sid, mid, aid uint64, resp *changenotify.ChangeNotifyResponse) error {
 			notifyFired.Store(true)
 			notifyStatus.Store(uint32(resp.GetStatus()))
 			return nil

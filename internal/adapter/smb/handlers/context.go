@@ -4,6 +4,7 @@ package handlers
 import (
 	"context"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/changenotify"
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
@@ -171,7 +172,7 @@ type SMBHandlerContext struct {
 	// AsyncNotifyCallback is used for sending async CHANGE_NOTIFY responses.
 	// Set by the connection layer to enable async notification delivery.
 	// If nil, notifications are logged but not sent.
-	AsyncNotifyCallback AsyncResponseCallback
+	AsyncNotifyCallback changenotify.AsyncResponseCallback
 
 	// AsyncPipeReadCallback delivers the final async READ response for a pending
 	// named-pipe read. Set by the dispatch layer for SMB2Read commands.

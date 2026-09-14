@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/changenotify"
 	"github.com/marmos91/dittofs/internal/adapter/smb/lease"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
@@ -791,19 +792,19 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 
 	// Step 9: Notify change watchers.
 	if h.NotifyRegistry != nil {
-		parentPath := GetParentPath(filename)
+		parentPath := changenotify.GetParentPath(filename)
 		switch createAction {
 		case types.FileCreated:
-			nameFilter := NameChangeFilterFor(baseName, openFile.IsDirectory)
-			h.NotifyRegistry.NotifyChange(tree.ShareName, parentPath, baseName, FileActionAdded, nameFilter)
+			nameFilter := changenotify.NameChangeFilterFor(baseName, openFile.IsDirectory)
+			h.NotifyRegistry.NotifyChange(tree.ShareName, parentPath, baseName, changenotify.FileActionAdded, nameFilter)
 		case types.FileOverwritten, types.FileSuperseded:
 			// One operation, three records: the client must see them in one
 			// CHANGE_NOTIFY response, so they are emitted as one batch.
-			nameFilter := NameChangeFilterFor(baseName, openFile.IsDirectory)
-			h.NotifyRegistry.NotifyChanges(tree.ShareName, parentPath, []NotifyEvent{
-				{FileName: baseName, Action: FileActionRemoved, Filter: nameFilter},
-				{FileName: baseName, Action: FileActionAdded, Filter: nameFilter},
-				{FileName: baseName, Action: FileActionModified, Filter: FileNotifyChangeAttributes | FileNotifyChangeLastWrite | FileNotifyChangeSize},
+			nameFilter := changenotify.NameChangeFilterFor(baseName, openFile.IsDirectory)
+			h.NotifyRegistry.NotifyChanges(tree.ShareName, parentPath, []changenotify.NotifyEvent{
+				{FileName: baseName, Action: changenotify.FileActionRemoved, Filter: nameFilter},
+				{FileName: baseName, Action: changenotify.FileActionAdded, Filter: nameFilter},
+				{FileName: baseName, Action: changenotify.FileActionModified, Filter: changenotify.FileNotifyChangeAttributes | changenotify.FileNotifyChangeLastWrite | changenotify.FileNotifyChangeSize},
 			})
 		}
 	}

@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/changenotify"
 	"github.com/marmos91/dittofs/internal/adapter/smb/handlers"
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
@@ -71,7 +72,7 @@ func TestSendAsyncChangeNotifyResponse_AdvancesSessionCredits(t *testing.T) {
 	grantedBefore := mgr.GetSessionStats(sess.SessionID).Granted
 	windowBefore := ci.SequenceWindow.Size()
 
-	notify := &handlers.ChangeNotifyResponse{}
+	notify := &changenotify.ChangeNotifyResponse{}
 	err := SendAsyncChangeNotifyResponse(sess.SessionID, 200, 7, notify, ci)
 	require.NoError(t, err)
 

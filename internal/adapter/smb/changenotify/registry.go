@@ -1,4 +1,4 @@
-package handlers
+package changenotify
 
 import (
 	"fmt"
@@ -110,7 +110,7 @@ type ChangeNotifyRequest struct {
 // ChangeNotifyResponse represents an SMB2 CHANGE_NOTIFY response [MS-SMB2] 2.2.36.
 // Contains an array of FileNotifyInformation entries describing the changes.
 type ChangeNotifyResponse struct {
-	SMBResponseBase
+	types.SMBResponseBase
 	OutputBufferOffset uint16
 	OutputBufferLength uint32
 	Buffer             []byte // Serialized FileNotifyInformation array
@@ -460,8 +460,18 @@ type notifyDirKey struct {
 	Path      string
 }
 
-// NewNotifyRegistry creates a new notify registry.
+// NewNotifyRegistry creates a new notify registry with the default
+// accumulation window.
 func NewNotifyRegistry() *NotifyRegistry {
+	return NewNotifyRegistryWithFlushDelay(notifyFlushDelay)
+}
+
+// NewNotifyRegistryWithFlushDelay creates a registry that accumulates buffered
+// events for d before delivering them. A caller that must observe the buffer
+// rather than race the flush timer — anything driving delivery explicitly
+// instead of waiting on wall-clock — passes a delay longer than its own
+// lifetime.
+func NewNotifyRegistryWithFlushDelay(d time.Duration) *NotifyRegistry {
 	return &NotifyRegistry{
 		pending:           make(map[string][]*PendingNotify),
 		byFileID:          make(map[string][]*PendingNotify),
@@ -472,7 +482,7 @@ func NewNotifyRegistry() *NotifyRegistry {
 		cancelTombstones:  make(map[notifyMsgKey]time.Time),
 		closeTombstones:   make(map[string]time.Time),
 		deletePendingDirs: make(map[notifyDirKey]struct{}),
-		flushDelay:        notifyFlushDelay,
+		flushDelay:        d,
 	}
 }
 
@@ -636,11 +646,12 @@ func (r *NotifyRegistry) CloseByFileID(fileID [16]byte) []*PendingNotify {
 	return closing
 }
 
-// closeTombstoneCount reports how many close tombstones are outstanding.
-// Test-only: the tombstone map is an internal detail, but a caller that
-// records one per non-directory handle turns bulk teardown into an O(n)
-// sweep per handle, and that is only observable from here.
-func (r *NotifyRegistry) closeTombstoneCount() int {
+// CloseTombstoneCount reports how many close tombstones are outstanding.
+// The tombstone map is an internal detail, but a caller that records one per
+// non-directory handle turns bulk teardown into an O(n) sweep per handle, and
+// that is only observable from here — so the count is exported alongside
+// WatcherCount for callers outside this package that assert on it.
+func (r *NotifyRegistry) CloseTombstoneCount() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.closeTombstones)
@@ -846,7 +857,7 @@ func (r *NotifyRegistry) Register(notify *PendingNotify) error {
 	defer func() {
 		for _, old := range superseded {
 			r.sendFinalGated(old, &ChangeNotifyResponse{
-				SMBResponseBase: SMBResponseBase{Status: types.StatusCancelled},
+				SMBResponseBase: types.SMBResponseBase{Status: types.StatusCancelled},
 			}, "MessageID reused by a later CHANGE_NOTIFY")
 		}
 	}()
@@ -892,7 +903,7 @@ func (r *NotifyRegistry) Register(notify *PendingNotify) error {
 	// Checked after the two tombstones above so a cancelled or closing request
 	// keeps the answer its own lifecycle owes it: a client that cancelled has
 	// stopped waiting, and a closing handle is owed STATUS_NOTIFY_CLEANUP.
-	dirKey := notifyDirKey{ShareName: notify.ShareName, Path: notifyWatchPath(notify.WatchPath)}
+	dirKey := notifyDirKey{ShareName: notify.ShareName, Path: WatchPath(notify.WatchPath)}
 	if _, marked := r.deletePendingDirs[dirKey]; marked {
 		logger.Debug("NotifyRegistry: register short-circuited by delete-pending directory",
 			"connID", notify.ConnID,
@@ -1227,11 +1238,11 @@ func EncodeFileNotifyInformation(changes []FileNotifyInformation) []byte {
 // Notification Helpers
 // ============================================================================
 
-// notifyStreamName appends the ":$DATA" stream-type suffix to ADS notification
+// StreamName appends the ":$DATA" stream-type suffix to ADS notification
 // filenames. WPTS and Windows expect ChangeNotify events for alternate data
 // streams to carry the full "file:stream:$DATA" form, but internally we strip
 // the type suffix during normalization. This restores it for the wire.
-func notifyStreamName(name string) string {
+func StreamName(name string) string {
 	if strings.Contains(name, ":") && !strings.HasSuffix(strings.ToUpper(name), ":$DATA") {
 		return name + ":$DATA"
 	}
@@ -1759,7 +1770,7 @@ func (r *NotifyRegistry) deliverChanges(notify *PendingNotify, changes []FileNot
 		// the directory and stale buffered entries would replay otherwise.
 		r.ClearBufferedEvents(notify.FileID)
 		enumResp := &ChangeNotifyResponse{
-			SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyEnumDir},
+			SMBResponseBase: types.SMBResponseBase{Status: types.StatusNotifyEnumDir},
 		}
 		r.sendFinalGated(notify, enumResp, "deliverChanges/overflow")
 		return
@@ -1819,7 +1830,7 @@ func (r *NotifyRegistry) MarkDirectoryDeletePending(shareName, dirPath string) i
 }
 
 func (r *NotifyRegistry) completeWatchersForDeletePending(shareName, dirPath string, sticky bool) int {
-	dirPath = notifyWatchPath(dirPath)
+	dirPath = WatchPath(dirPath)
 
 	r.mu.Lock()
 	if sticky {
@@ -1838,7 +1849,7 @@ func (r *NotifyRegistry) completeWatchersForDeletePending(shareName, dirPath str
 
 	for _, w := range marked {
 		r.sendFinalGated(w, &ChangeNotifyResponse{
-			SMBResponseBase: SMBResponseBase{Status: types.StatusDeletePending},
+			SMBResponseBase: types.SMBResponseBase{Status: types.StatusDeletePending},
 		}, "completeWatchersForDeletePending")
 	}
 
@@ -1861,7 +1872,7 @@ func (r *NotifyRegistry) completeWatchersForDeletePending(shareName, dirPath str
 // and then survived — the deletion cancelled, or the removal refused — could
 // never be watched again for the life of the process.
 func (r *NotifyRegistry) ClearDeletePendingMark(shareName, dirPath string) {
-	key := notifyDirKey{ShareName: shareName, Path: notifyWatchPath(dirPath)}
+	key := notifyDirKey{ShareName: shareName, Path: WatchPath(dirPath)}
 	r.mu.Lock()
 	_, had := r.deletePendingDirs[key]
 	delete(r.deletePendingDirs, key)
@@ -2184,11 +2195,11 @@ func relativePathFromWatch(watchPath, parentPath, fileName string) string {
 	return fileName
 }
 
-// notifyWatchPath normalises a directory path into the form the notify maps are
+// WatchPath normalises a directory path into the form the notify maps are
 // keyed by: cleaned, with the root spelled "/" rather than path.Clean's ".".
 // Registration and every lookup that has to find those watchers must agree on
 // it, so they all go through here.
-func notifyWatchPath(p string) string {
+func WatchPath(p string) string {
 	if cleaned := path.Clean(p); cleaned != "." {
 		return cleaned
 	}
