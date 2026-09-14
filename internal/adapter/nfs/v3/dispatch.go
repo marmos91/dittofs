@@ -1,10 +1,6 @@
 package v3
 
 import (
-	"context"
-
-	"github.com/marmos91/dittofs/internal/adapter/nfs/middleware"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
 	nfs "github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 )
@@ -47,32 +43,6 @@ type HandlerResult struct {
 	// Optional: Only populated by WRITE handlers for metrics tracking.
 	// Zero value indicates not a write operation or no data written.
 	BytesWritten uint64
-}
-
-// ============================================================================
-// Handler Context Creation (delegates to middleware)
-// ============================================================================
-
-// ExtractHandlerContext creates an NFSHandlerContext from an RPC call message.
-// This delegates to middleware.ExtractHandlerContext for the actual extraction.
-//
-// Parameters:
-//   - ctx: The Go context for cancellation and timeout control
-//   - call: The RPC call message containing authentication data
-//   - clientAddr: The remote address of the client connection
-//   - share: The share name extracted from file handle (empty if not available)
-//   - procedure: Name of the procedure (for logging purposes)
-//
-// Returns:
-//   - *nfs.NFSHandlerContext with extracted authentication information and propagated context
-func ExtractHandlerContext(
-	ctx context.Context,
-	call *rpc.RPCCallMessage,
-	clientAddr string,
-	share string,
-	procedure string,
-) *nfs.NFSHandlerContext {
-	return middleware.ExtractHandlerContext(ctx, call, clientAddr, share, procedure)
 }
 
 // ============================================================================

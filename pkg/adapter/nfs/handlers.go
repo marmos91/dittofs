@@ -72,7 +72,7 @@ func (c *NFSConnection) handleNFSProcedure(ctx context.Context, call *rpc.RPCCal
 	}
 
 	// Extract handler context (includes share and authentication for handlers)
-	handlerCtx := v3.ExtractHandlerContext(ctx, call, clientAddr, share, procedure.Name)
+	handlerCtx := middleware.ExtractHandlerContext(ctx, call, clientAddr, share, procedure.Name)
 
 	// Log request with trace context
 	logger.DebugCtx(ctx, "NFS request",
