@@ -832,6 +832,11 @@ func Load(configPath string) (*Config, error) {
 	// Unknown-key warnings only make sense when a file was actually parsed;
 	// the env-only path has no file keys to be reported as unused.
 	if configFileFound && len(md.Unused) > 0 {
+		// A key that was renamed rather than removed is refused instead of
+		// warned about — see checkRenamedKeys.
+		if err := checkRenamedKeys(md.Unused); err != nil {
+			return nil, err
+		}
 		sort.Strings(md.Unused)
 		fmt.Fprintf(os.Stderr, "WARNING: config contains unknown keys (ignored): %s\n", strings.Join(md.Unused, ", "))
 	}
