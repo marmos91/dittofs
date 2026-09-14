@@ -1358,6 +1358,37 @@ were live data-loss-class defects (#2554, #2555).
 rather than rot. That is the argument for spending lane L's remaining budget on `journaltest/`
 conformance rather than on the §6.2 file reorg.
 
+### 15.9 Call sites the kind removal breaks — surveyed, not guessed
+
+Collected 2026-09-14 from a parallel session's sweep, each verified here before recording.
+
+**The one that fails silently — fix first.** `internal/cli/health/types.go:122,131` issues two
+GETs, `/store/block/local` and `/store/block/remote`, and appends each failure to `ent.Errors`
+instead of returning it. The populate step is guarded by `len(allStores) > 0`. So when those
+routes disappear, `dfs status` reports zero block stores, buries two error strings in its output,
+and **exits successfully** — a cluster reads as healthy and storeless. Every other site below
+fails loudly, which makes this the only one that can ship unnoticed.
+
+**A test whose assertion inverts.** `cmd/gendocs/helpref_test.go:437` holds a *negative* assertion
+rejecting `dfsctl store block add --kind local`, commented "it is `store block local add`". That
+rule becomes backwards: it either fails confusingly or keeps passing while enforcing the opposite
+of what is wanted.
+
+**Shell and helper call sites (these fail loudly):**
+- `test/posix/setup-posix.sh` — 4 sites incl. `store block remote add --type s3`
+- `test/crash/invalidate-cold-loss.sh:152,156` — both kinds
+- `test/crash/device-loss.sh:170`
+- `test/e2e/testdata/nlm/nlm_axis_interop.sh:95`
+- `test/e2e/helpers/blocks.go` (`store block evict --share`), `test/e2e/helpers/cas.go`
+  (`store block gc`)
+- `.github/workflows/smb-client-compat.yml:83,213,422` + `:86,214,423` — creates a local store
+  then `share create --local`. **This is a hard merge gate:** the workflow has no valid form
+  between deleting the command and auto-provisioning the journal.
+
+**Docs:** `README.md:182-183` hand-documents both `store block local add` and
+`store block remote add`. `docs/guide/cli.md` is generated — `go run ./cmd/gendocs` must run in
+the same change or the published reference describes a command tree that no longer exists.
+
 ### 15.8 Still open from earlier lanes — not step 5's job, but unwritten until now
 
 - `chunker` → `carver` fold (§6.2, skipped by lane C; 13 files → 5 once lane L lands)
