@@ -300,16 +300,10 @@ func checkBlockStoreNameCollisions(db *gorm.DB) error {
 	if !db.Migrator().HasTable("block_store_configs") {
 		return nil
 	}
-	if !db.Migrator().HasColumn(&struct{}{}, "kind") {
-		// Migrator needs a model for HasColumn; fall back to a raw probe so the
-		// check works before the model loses the field.
-		var count int64
-		if err := db.Raw(
-			"SELECT COUNT(*) FROM pragma_table_info('block_store_configs') WHERE name = 'kind'",
-		).Scan(&count).Error; err != nil || count == 0 {
-			return nil
-		}
-	}
+	// No need to probe for the kind column: once it is gone the surviving
+	// unique index on name makes duplicates impossible, so the query below
+	// returns nothing and the check is a no-op. Probing would mean a
+	// dialect-specific catalog query for no gain.
 
 	var names []string
 	if err := db.Raw(
@@ -610,17 +604,20 @@ func TestBlockStoreFetchFailureIsReported(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ent := fetchEntry(srv.URL)
-	if len(ent.Errors) == 0 {
+	ents := FetchEntities(srv.Client(), srv.URL, "")
+	joined := strings.Join(ents.Errors(), " ")
+	if joined == "" {
 		t.Fatal("a failed block store fetch must be reported")
 	}
-	if !strings.Contains(strings.Join(ent.Errors, " "), "block stores") {
-		t.Errorf("error must name what failed; got %v", ent.Errors)
+	if !strings.Contains(joined, "block stores") {
+		t.Errorf("error must name what failed; got %q", joined)
 	}
 }
 ```
 
-Adapt `fetchEntry` to whatever the existing entry point is named; do not invent a new one.
+The entry point is `FetchEntities(client *http.Client, baseURL, token string) Entities`
+(`internal/cli/health/types.go:75`). If `Entities` exposes its errors under a different accessor
+than `Errors()`, use that one — do not add a new entry point.
 
 - [ ] **Step 2:** Replace the two `doGet` calls with a single `doGet(baseURL+"/store/block", &all)`.
 - [ ] **Step 3:** Drop `Kind` from `BlockStoreListItem` and the
