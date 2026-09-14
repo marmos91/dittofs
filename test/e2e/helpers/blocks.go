@@ -103,13 +103,12 @@ func PutBlockObject(t *testing.T, lsHelper *framework.LocalstackHelper, bucketNa
 	}
 }
 
-// EvictBlocks evicts every local tier (read buffer + local disk) for a
-// single share via `dfsctl store block evict --share <share>`. This forces
-// the next read of an evicted block to miss both in-memory and on-disk
-// caches and fetch from the remote packed block (a genuine cold read that
-// exercises the block-locator fetch → blockcodec decode → BLAKE3 verify
-// path). Eviction of local blocks is refused by the server when no remote
-// is configured, so callers must use a share with a remote store.
+// EvictBlocks evicts every local tier (read buffer + journal) for a single
+// share via `dfsctl store block evict --share <share>`. This forces the next
+// read of an evicted block to miss both in-memory and on-disk caches and
+// fetch the packed block from the share's block store (a genuine cold read
+// that exercises the block-locator fetch → blockcodec decode → BLAKE3 verify
+// path).
 func EvictBlocks(t *testing.T, runner *CLIRunner, shareName string) error {
 	t.Helper()
 	_, err := runner.Run("store", "block", "evict", "--share", shareName)
@@ -121,7 +120,7 @@ func EvictBlocks(t *testing.T, runner *CLIRunner, shareName string) error {
 
 // GetBlockStats fetches per-share block-store statistics via
 // `dfsctl store block stats --share <share>` and decodes the JSON. Used to
-// assert local-tier occupancy before/after eviction and GC.
+// assert journal occupancy before/after eviction and GC.
 func GetBlockStats(t *testing.T, runner *CLIRunner, shareName string) *apiclient.BlockStoreStatsResponse {
 	t.Helper()
 	out, err := runner.Run("store", "block", "stats", "--share", shareName)
