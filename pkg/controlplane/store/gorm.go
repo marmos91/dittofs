@@ -376,6 +376,17 @@ func New(config *Config) (*GORMStore, error) {
 		return nil, fmt.Errorf("failed to backfill shares.enabled: %w", err)
 	}
 
+	// Post-migration: backfill commit_ack for rows that predate the column.
+	// A share acknowledging on nothing is not a weaker promise, it is an
+	// unreadable one, and SQLite may leave NULL on ALTER TABLE ADD COLUMN even
+	// with a DEFAULT.
+	if err := db.Exec(
+		"UPDATE shares SET commit_ack = ? WHERE commit_ack IS NULL OR commit_ack = ''",
+		string(models.CommitAckJournal),
+	).Error; err != nil {
+		return nil, fmt.Errorf("failed to backfill commit_ack: %w", err)
+	}
+
 	// Refs #532: backfill shares.access_based_enumeration for rows that predate
 	// the column. SQLite ALTER TABLE ADD COLUMN can leave NULL despite DEFAULT,
 	// which would surface as a Scan failure when the GORM tag declares the
