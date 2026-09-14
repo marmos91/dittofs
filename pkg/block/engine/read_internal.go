@@ -35,8 +35,7 @@ func blockRefHashes(refs []block.ChunkRef) []block.ContentHash {
 // map to the whole file for such a row, so SEEK reports data where READ refuses
 // — never a hole where READ would have refused.
 //
-// A fully warm read never consults the manifest, and neither does a hole on a
-// local-only share, where there is no remote to hydrate from.
+// A fully warm read never consults the manifest.
 func (bs *Store) readAtInternal(ctx context.Context, payloadID string, data []byte, offset uint64) (int, error) {
 	if len(data) == 0 {
 		return 0, nil
@@ -53,7 +52,7 @@ func (bs *Store) readAtInternal(ctx context.Context, payloadID string, data []by
 		}
 		return 0, fmt.Errorf("local read failed: %w", err)
 	}
-	reconcile := st.Cold || (st.Hole && bs.HasRemoteStore())
+	reconcile := st.Cold || st.Hole
 	if !reconcile {
 		return n, nil
 	}
@@ -68,18 +67,13 @@ func (bs *Store) readAtInternal(ctx context.Context, payloadID string, data []by
 // read detected (journal returned *CorruptRangeError). With a remote store it
 // demotes the bad range to remote-only and re-fetches the covering chunks
 // through the standard hydrate path — the fetch is BLAKE3-verified — then
-// re-reads the now-healed bytes. Without a remote there is no good copy to heal
-// from, so it fails closed with ErrIntegrityCheckFailed (maps to NFS3ERR_IO)
-// rather than returning corrupt or zero-filled bytes.
+// re-reads the now-healed bytes. A hydrate that cannot produce good bytes fails
+// closed rather than returning corrupt or zero-filled ones.
 //
 // The demotion is what makes the re-fetch land: a hydrate fills rather than
 // overwrites, so while the store still claims to hold these bytes the fresh
 // copy has nowhere to go and the re-read finds the same bad record.
 func (bs *Store) healCorruptWarmRead(ctx context.Context, payloadID string, data []byte, offset uint64, corrupt *journal.CorruptRangeError) (int, error) {
-	if !bs.HasRemoteStore() {
-		return 0, fmt.Errorf("warm read integrity failure for %s at offset %d (local-only, no remote to heal from): %w",
-			payloadID, offset, block.ErrIntegrityCheckFailed)
-	}
 	if err := bs.local.Invalidate(ctx, journal.FileID(payloadID), corrupt.Offset, corrupt.Len); err != nil {
 		return 0, fmt.Errorf("demote corrupt range for %s at offset %d: %w", payloadID, offset, err)
 	}

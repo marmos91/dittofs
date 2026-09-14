@@ -366,10 +366,11 @@ func newReapEngine(t *testing.T, st metadata.Store) *Store {
 	t.Helper()
 	localStore := memory.New()
 	fbs := newStubFileChunkStore()
-	syncer := NewRemoteSync(localStore, nil, fbs, DefaultConfig())
+	testRemote := remotememory.New()
+	syncer := NewRemoteSync(localStore, testRemote, fbs, DefaultConfig())
 	bs, err := New(BlockStoreConfig{
 		Local:          localStore,
-		Remote:         nil,
+		Remote:         testRemote,
 		RemoteSync:     syncer,
 		FileChunkStore: fbs,
 		Coordinator:    &reapCoordinator{store: st},

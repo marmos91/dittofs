@@ -3,7 +3,6 @@ package engine_test
 import (
 	"bytes"
 	"context"
-	"errors"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -18,10 +17,9 @@ import (
 )
 
 // buildSelfHealEngine wires a journal-backed engine with per-read integrity
-// verification turned on (the durable-tier posture). A non-nil mem wires a real
-// remote block store (so a corrupt warm read can self-heal); a nil mem leaves the
-// share local-only (so a corrupt warm read must fail closed). It returns the
-// engine and the FSStore base dir so a test can corrupt a segment on disk.
+// verification turned on (the durable-tier posture) over the given remote block
+// store. It returns the engine and the FSStore base dir so a test can corrupt a
+// segment on disk.
 func buildSelfHealEngine(t *testing.T, ms metadata.Store, mem *remotememory.Store) (*engine.Store, string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -46,17 +44,11 @@ func buildSelfHealEngine(t *testing.T, ms metadata.Store, mem *remotememory.Stor
 		SyncedHashStore: syncedHashStore,
 		ReadBufferBytes: 64 * 1024 * 1024,
 	}
-	if mem != nil {
-		syncer := engine.NewRemoteSync(localStore, mem, ms, engine.DefaultConfig())
-		syncer.SetSyncedHashStore(syncedHashStore)
-		syncer.SetRemoteBlockStore(mem)
-		cfg.RemoteSync = syncer
-		cfg.Remote = mem
-	} else {
-		syncer := engine.NewRemoteSync(localStore, nil, ms, engine.DefaultConfig())
-		syncer.SetSyncedHashStore(syncedHashStore)
-		cfg.RemoteSync = syncer
-	}
+	syncer := engine.NewRemoteSync(localStore, mem, ms, engine.DefaultConfig())
+	syncer.SetSyncedHashStore(syncedHashStore)
+	syncer.SetRemoteBlockStore(mem)
+	cfg.RemoteSync = syncer
+	cfg.Remote = mem
 	bs, err := engine.New(cfg)
 	if err != nil {
 		t.Fatalf("engine.New: %v", err)
@@ -159,14 +151,14 @@ func TestWarmReadSelfHeal_RemoteHeals(t *testing.T) {
 	}
 }
 
-// TestWarmReadSelfHeal_LocalOnlyFailsClosed corrupts a byte in a local-only
-// share's segment and asserts the verified warm read fails closed with
-// ErrIntegrityCheckFailed (maps to NFS3ERR_IO) — never zeros, never garbage.
-// There is no remote to heal from, so detection-only is the correct outcome.
-func TestWarmReadSelfHeal_LocalOnlyFailsClosed(t *testing.T) {
+// TestWarmReadSelfHeal_UnhealableFailsClosed corrupts a byte on disk after the
+// remote has lost the blocks that back it, so the heal has nothing to re-fetch.
+// The read must fail closed — never the corrupt bytes, never zeros.
+func TestWarmReadSelfHeal_UnhealableFailsClosed(t *testing.T) {
 	ctx := context.Background()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	bs, dir := buildSelfHealEngine(t, ms, nil) // local-only: no remote
+	mem := remotememory.New()
+	bs, dir := buildSelfHealEngine(t, ms, mem)
 
 	rootHandle := createShare(t, ms, "heal")
 	pid, _ := createRealFile(t, ms, "heal", "f.bin", rootHandle)
@@ -181,15 +173,35 @@ func TestWarmReadSelfHeal_LocalOnlyFailsClosed(t *testing.T) {
 	if _, err := bs.Flush(ctx, pid); err != nil {
 		t.Fatalf("Flush: %v", err)
 	}
+	if err := bs.DrainRollups(ctx); err != nil {
+		t.Fatalf("DrainRollups: %v", err)
+	}
+	if err := bs.DrainAllUploads(ctx); err != nil {
+		t.Fatalf("DrainAllUploads: %v", err)
+	}
+
+	// Drop every block the remote holds: the manifest still places the bytes,
+	// but nothing can serve them back.
+	var blockIDs []string
+	if err := mem.WalkBlocks(ctx, func(id string, _ block.Meta) error {
+		blockIDs = append(blockIDs, id)
+		return nil
+	}); err != nil {
+		t.Fatalf("WalkBlocks: %v", err)
+	}
+	if len(blockIDs) == 0 {
+		t.Fatal("remote holds no blocks after the drain; the fixture proves nothing")
+	}
+	for _, id := range blockIDs {
+		if err := mem.DeleteBlock(ctx, id); err != nil {
+			t.Fatalf("DeleteBlock(%s): %v", id, err)
+		}
+	}
 
 	corruptSegmentByte(t, filepath.Join(dir, "journal"))
 
 	got := make([]byte, size)
-	_, err := bs.ReadAt(ctx, pid, got, 0)
-	if err == nil {
-		t.Fatalf("local-only corrupt read must fail closed, got nil error")
-	}
-	if !errors.Is(err, block.ErrIntegrityCheckFailed) {
-		t.Fatalf("want ErrIntegrityCheckFailed, got: %v", err)
+	if _, err := bs.ReadAt(ctx, pid, got, 0); err == nil {
+		t.Fatalf("unhealable corrupt read must fail closed, got nil error")
 	}
 }

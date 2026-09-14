@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block"
@@ -16,10 +17,11 @@ import (
 func newReapFixture(t *testing.T, coord MetadataCoordinator, fbs *stubFileChunkStore) *Store {
 	t.Helper()
 	localStore := memory.New()
-	syncer := NewRemoteSync(localStore, nil, fbs, DefaultConfig())
+	testRemote := remotememory.New()
+	syncer := NewRemoteSync(localStore, testRemote, fbs, DefaultConfig())
 	bs, err := New(BlockStoreConfig{
 		Local:          localStore,
-		Remote:         nil,
+		Remote:         testRemote,
 		RemoteSync:     syncer,
 		Coordinator:    coord,
 		FileChunkStore: fbs,

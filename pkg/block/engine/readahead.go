@@ -118,14 +118,13 @@ func (m *RemoteSync) pruneReadahead() {
 // demand read for an already-in-flight block piggybacks instead of issuing a
 // duplicate S3 GET — the shared budget that bounds total remote concurrency.
 //
-// No-op without a remote, while the remote is unhealthy, or for a zero-length
-// read. The hot-path cost is one in-memory frontier update (planWindow); the
+// No-op while the remote is unhealthy, or for a zero-length read. The hot-path cost is one in-memory frontier update (planWindow); the
 // per-block local/remote probes happen in the worker pool, off the read path.
 func (m *RemoteSync) scheduleReadahead(payloadID string, offset uint64, length uint32) {
 	if length == 0 || m.queue == nil {
 		return
 	}
-	if !m.hasRemote.Load() || !m.IsRemoteHealthy() {
+	if !m.IsRemoteHealthy() {
 		return
 	}
 	start, end := blockRange(offset, length)

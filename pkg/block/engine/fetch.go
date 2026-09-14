@@ -365,8 +365,8 @@ func (m *RemoteSync) readChunkVerified(ctx context.Context, loc block.ChunkLocat
 // cold: readahead promised a block of lookahead and delivered one chunk of it,
 // and the demand read then paid the remote round-trips readahead exists to hide.
 //
-// A sparse block (no covering rows) and local-only mode (nil remoteStore) are
-// both nothing-to-do successes. Each chunk's fetch routes through
+// A sparse block (no covering rows) is a nothing-to-do success. Each chunk's
+// fetch routes through
 // inlineFetchOrWait so it registers in the in-flight dedup map: a concurrent
 // demand read for the same chunk piggybacks on this prefetch instead of issuing
 // its own S3 GET. That shared budget is what keeps total remote concurrency
@@ -374,11 +374,6 @@ func (m *RemoteSync) readChunkVerified(ctx context.Context, loc block.ChunkLocat
 func (m *RemoteSync) fetchBlock(ctx context.Context, payloadID string, blockIdx uint64) error {
 	if !m.canProcess(ctx) {
 		return ErrClosed
-	}
-
-	if m.remoteStore == nil {
-		logger.Debug("syncer: skipping fetchBlock, no remote store")
-		return nil // No remote data exists
 	}
 
 	// Health gate: fail fast when remote is unreachable
@@ -478,10 +473,6 @@ func (m *RemoteSync) EnsureAvailable(ctx context.Context, payloadID string, offs
 	if !m.canProcess(ctx) {
 		return ErrClosed
 	}
-	if m.remoteStore == nil {
-		return nil // Local-only: all data must be in local store, no downloads possible
-	}
-
 	end := offset + uint64(length)
 
 	// Resolve EVERY chunk covering [offset, end), not just the chunk at each

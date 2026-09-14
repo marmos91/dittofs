@@ -3,6 +3,7 @@ package shares
 import (
 	"context"
 	"errors"
+	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -23,8 +24,10 @@ func newLocalEngineStore(t *testing.T) *engine.Store {
 	// requires a non-nil one); the teardown path never exercises it.
 	fbs := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	t.Cleanup(func() { _ = fbs.Close() })
-	syncer := engine.NewRemoteSync(local, nil, fbs, engine.DefaultConfig())
+	testRemote := remotememory.New()
+	syncer := engine.NewRemoteSync(local, testRemote, fbs, engine.DefaultConfig())
 	bs, err := engine.New(engine.BlockStoreConfig{
+		Remote:         testRemote,
 		Local:          local,
 		RemoteSync:     syncer,
 		FileChunkStore: fbs,

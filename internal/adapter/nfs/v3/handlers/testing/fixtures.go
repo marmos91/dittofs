@@ -6,6 +6,7 @@ package testing
 
 import (
 	"context"
+	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"path/filepath"
 	"testing"
 	"time"
@@ -116,9 +117,11 @@ func NewHandlerFixtureWithStore(
 		t.Fatalf("Failed to create local store: %v", err)
 	}
 	t.Cleanup(func() { _ = localStore.Close() })
-	syncer := engine.NewRemoteSync(localStore, nil, metaStore, engine.DefaultConfig())
+	testRemote := remotememory.New()
+	syncer := engine.NewRemoteSync(localStore, testRemote, metaStore, engine.DefaultConfig())
 
 	blockSvc, err := engine.New(engine.BlockStoreConfig{
+		Remote:     testRemote,
 		Local:      localStore,
 		RemoteSync: syncer,
 	})

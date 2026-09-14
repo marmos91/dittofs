@@ -21,8 +21,9 @@ type healthTransitionCallback func(healthy bool)
 //   - After failureThreshold consecutive probe failures: transitions to unhealthy.
 //   - After 1 successful probe while unhealthy: transitions back to healthy.
 //
-// When probeFunc is nil (local-only shares), the monitor always reports healthy
-// and never starts a background goroutine.
+// When probeFunc is nil, the monitor always reports healthy and never starts a
+// background goroutine. Every wired monitor probes a real remote; the nil case
+// keeps a bare monitor inert rather than panicking on Start.
 type HealthMonitor struct {
 	probeFunc         func(ctx context.Context) error
 	healthyInterval   time.Duration

@@ -19,6 +19,7 @@ package engine
 
 import (
 	"context"
+	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"math/rand"
 	"testing"
 	"time"
@@ -136,11 +137,12 @@ func newPerfTestEngine(tb testing.TB, readBufferBytes int64, prefetchWorkers int
 	tb.Helper()
 	localStore := memory.New()
 	fbs := newStubFileChunkStore()
-	syncer := NewRemoteSync(localStore, nil, fbs, DefaultConfig())
+	testRemote := remotememory.New()
+	syncer := NewRemoteSync(localStore, testRemote, fbs, DefaultConfig())
 
 	bs, err := New(BlockStoreConfig{
 		Local:           localStore,
-		Remote:          nil,
+		Remote:          testRemote,
 		RemoteSync:      syncer,
 		ReadBufferBytes: readBufferBytes,
 		PrefetchWorkers: prefetchWorkers,

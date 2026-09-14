@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"sync"
 	"testing"
 	"time"
@@ -229,11 +230,12 @@ func buildCascadeFixture(t *testing.T, coord MetadataCoordinator, syncedStore me
 	t.Helper()
 	localStore := memory.New()
 	fbs := newStubFileChunkStore()
-	syncer := NewRemoteSync(localStore, nil, fbs, DefaultConfig())
+	testRemote := remotememory.New()
+	syncer := NewRemoteSync(localStore, testRemote, fbs, DefaultConfig())
 
 	bs, err := New(BlockStoreConfig{
 		Local:           localStore,
-		Remote:          nil,
+		Remote:          testRemote,
 		RemoteSync:      syncer,
 		Coordinator:     coord,
 		SyncedHashStore: syncedStore,

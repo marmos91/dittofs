@@ -97,7 +97,7 @@ func (bs *Store) OfflineReadiness(ctx context.Context) OfflineReadiness {
 	if bs.closed {
 		return OfflineReadiness{Reason: "block store is closed"}
 	}
-	return offlineReadinessOf(ctx, bs.local, bs.HasRemoteStore(), bs.memoizedShortfall)
+	return offlineReadinessOf(ctx, bs.local, bs.memoizedShortfall)
 }
 
 // memoizedShortfall is the store's cross-check, memoized. See shortfallMemo for
@@ -114,35 +114,21 @@ func (bs *Store) memoizedShortfall(ctx context.Context, index coldRangeReporter)
 // answering zero, because a zero here reads as "provably offline safe" and
 // would say that about exactly the shares whose data is most likely to be
 // remote-only.
-func offlineReadinessOf(ctx context.Context, localTier any, hasRemote bool, shortfall shortfallFunc) OfflineReadiness {
+func offlineReadinessOf(ctx context.Context, localTier any, shortfall shortfallFunc) OfflineReadiness {
 	reporter, ok := localTier.(coldRangeReporter)
 	if !ok {
-		// A tier that cannot report residency and has no remote also has
-		// nothing to evict to, so everything it holds is local. With a remote
-		// it could hold evicted ranges it cannot tell us about.
-		if !hasRemote {
-			return OfflineReadiness{Known: true}
-		}
+		// A tier that cannot report residency could hold evicted ranges it
+		// cannot tell us about.
 		return OfflineReadiness{Reason: "local tier does not track remote-only ranges"}
 	}
 
 	// An unseeded tier holds no interval for ranges that live only on the
 	// remote, so its index would report them as absent rather than cold and the
 	// count would come back zero on the worst case this exists to catch.
-	// Seeding only ever runs for a remote-backed share, so an unseeded tier is
-	// a blind spot only when there is a remote it might not have caught up with.
-	if hasRemote && !reporter.ColdSeeded() {
+	if !reporter.ColdSeeded() {
 		return OfflineReadiness{Reason: "local tier has not been seeded from the manifest"}
 	}
 
-	// Ask the tier even with no remote configured. A share can hold cold ranges
-	// and have no remote at once — unbinding a remote from a share that had
-	// already evicted leaves the cold intervals in place, and the journal
-	// replays them from its cold log on the next open. Those ranges are worse
-	// than unsafe: reads reconcile on the cold flag whether or not a remote
-	// exists, so there is nothing to fetch them from and they never serve. A
-	// non-zero count is the honest report; treating "no remote" as "all local"
-	// would call that share provably offline-safe.
 	bytes, ranges, err := reporter.ColdExtents(ctx)
 	if err != nil {
 		return OfflineReadiness{Reason: "residency scan did not finish: " + err.Error()}

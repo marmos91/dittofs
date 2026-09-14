@@ -3,6 +3,7 @@ package engine_test
 import (
 	"bytes"
 	"context"
+	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"io"
 	"testing"
 
@@ -13,13 +14,12 @@ import (
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
-// newLocalOnlyEngine builds an engine over a real journal-backed local store
-// with NO remote store (HasRemoteStore() == false). This is the configuration
-// that surfaces the local-only CLONE-reads-zeros bug: the journal owns the only
-// copy of the bytes, so a manifest-only reflink leaves the destination with no
-// resolvable interval. An in-memory local store would mask the bug, so this
-// fixture deliberately uses the fs (journal) store.
-func newLocalOnlyEngine(t *testing.T, ms metadata.Store) *engine.Store {
+// newCloneEngine builds an engine over a real journal-backed local store whose
+// carve path is left unwired, so the source bytes stay in the journal and never
+// reach the remote. That is what makes a CLONE-reads-zeros regression visible:
+// an in-memory local store would mask it, so this fixture deliberately uses the
+// journal store.
+func newCloneEngine(t *testing.T, ms metadata.Store) *engine.Store {
 	t.Helper()
 	localStore, err := journal.Open(t.TempDir(), journal.Config{MaxLocalBytes: 100 * 1024 * 1024,
 		MaxLogBytes: 128 * 1024 * 1024,
@@ -32,10 +32,12 @@ func newLocalOnlyEngine(t *testing.T, ms metadata.Store) *engine.Store {
 		t.Fatalf("metadata store %T does not implement metadata.SyncedHashStore", ms)
 	}
 	coord := &testCoordinator{store: ms}
-	syncer := engine.NewRemoteSync(localStore, nil, ms, engine.DefaultConfig())
-	// No remote block store: the journal owns the bytes and the local carve sink
-	// records the FileChunk manifest via the SyncedHashStore committer.
+	testRemote := remotememory.New()
+	syncer := engine.NewRemoteSync(localStore, testRemote, ms, engine.DefaultConfig())
+	// No remote block store is wired, so the manifest-only sink records the
+	// FileChunk rows via the SyncedHashStore committer and nothing uploads.
 	bs, err := engine.New(engine.BlockStoreConfig{
+		Remote:          testRemote,
 		Local:           localStore,
 		RemoteSync:      syncer,
 		FileChunkStore:  ms,
@@ -64,16 +66,15 @@ func readWhole(t *testing.T, bs *engine.Store, payloadID string, size int) []byt
 	return out[:n]
 }
 
-// TestCloneWholeFile_LocalOnly_MaterializesContent guards the residual #1784
-// bug: on a share with no remote store, CLONE used to copy only the source's
-// manifest rows (hash + size) to the destination, which carries no journal
-// interval of its own — so a read of the clone found no interval and zero-filled
-// (silent corruption). The fix materializes the source bytes into the
-// destination's own journal, so the clone reads back byte-identical.
-func TestCloneWholeFile_LocalOnly_MaterializesContent(t *testing.T) {
+// TestCloneWholeFile_MaterializesContent guards against a CLONE that copies
+// only the source's manifest rows (hash + size) while the bytes they name have
+// never left the source's journal: a read of such a clone finds no interval of
+// its own and zero-fills, which is silent corruption. The clone must read back
+// byte-identical instead.
+func TestCloneWholeFile_MaterializesContent(t *testing.T) {
 	ctx := context.Background()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	bs := newLocalOnlyEngine(t, ms)
+	bs := newCloneEngine(t, ms)
 
 	root := createShare(t, ms, "clone")
 	srcPID, srcHandle := createRealFile(t, ms, "clone", "src.bin", root)

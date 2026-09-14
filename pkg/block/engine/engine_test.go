@@ -3,6 +3,7 @@ package engine
 import (
 	"bytes"
 	"context"
+	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -130,11 +131,12 @@ func newTestEngine(t *testing.T, readBufferBytes int64, prefetchWorkers int) *St
 	t.Helper()
 	localStore := memory.New()
 	fbs := newStubFileChunkStore()
-	syncer := NewRemoteSync(localStore, nil, fbs, DefaultConfig())
+	testRemote := remotememory.New()
+	syncer := NewRemoteSync(localStore, testRemote, fbs, DefaultConfig())
 
 	bs, err := New(BlockStoreConfig{
 		Local:           localStore,
-		Remote:          nil,
+		Remote:          testRemote,
 		RemoteSync:      syncer,
 		FileChunkStore:  fbs,
 		ReadBufferBytes: readBufferBytes,
@@ -158,11 +160,12 @@ func newTestEngineWithCoordinator(t *testing.T, c MetadataCoordinator) *Store {
 	t.Helper()
 	localStore := memory.New()
 	fbs := newStubFileChunkStore()
-	syncer := NewRemoteSync(localStore, nil, fbs, DefaultConfig())
+	testRemote1 := remotememory.New()
+	syncer := NewRemoteSync(localStore, testRemote1, fbs, DefaultConfig())
 
 	bs, err := New(BlockStoreConfig{
 		Local:          localStore,
-		Remote:         nil,
+		Remote:         testRemote1,
 		RemoteSync:     syncer,
 		FileChunkStore: fbs,
 		Coordinator:    c,
@@ -364,11 +367,12 @@ func (r *recordingCache) Close() error      { r.closed.Store(true); return nil }
 func TestClose_ClosesCache(t *testing.T) {
 	localStore := memory.New()
 	fbs := newStubFileChunkStore()
-	syncer := NewRemoteSync(localStore, nil, fbs, DefaultConfig())
+	testRemote2 := remotememory.New()
+	syncer := NewRemoteSync(localStore, testRemote2, fbs, DefaultConfig())
 
 	bs, err := New(BlockStoreConfig{
 		Local:      localStore,
-		Remote:     nil,
+		Remote:     testRemote2,
 		RemoteSync: syncer,
 	})
 	if err != nil {

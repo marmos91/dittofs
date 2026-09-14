@@ -94,8 +94,8 @@ func TestPlanWindow_MapBounded(t *testing.T) {
 // newSchedSyncer builds a RemoteSync with a real (unstarted) SyncQueue so
 // scheduleReadahead enqueues into an inspectable prefetch channel.
 func newSchedSyncer(prefetch int) *RemoteSync {
+	// IsRemoteHealthy() is true before a health monitor is built.
 	m := &RemoteSync{config: RemoteSyncConfig{PrefetchBlocks: prefetch}}
-	m.hasRemote.Store(true) // IsRemoteHealthy() is true with no health monitor
 	m.queue = NewSyncQueue(m, SyncQueueConfig{QueueSize: 1000, DownloadWorkers: 4})
 	return m
 }
@@ -140,13 +140,5 @@ func TestScheduleReadahead_SlidesOnEveryRead(t *testing.T) {
 
 	// Re-reading within block 1 schedules nothing (schedule-once frontier).
 	m.scheduleReadahead("p", bs, 1)
-	eq(t, drainPrefetch(m.queue), nil)
-}
-
-func TestScheduleReadahead_NoRemoteIsNoOp(t *testing.T) {
-	m := newSchedSyncer(4)
-	m.hasRemote.Store(false)
-	m.scheduleReadahead("p", 0, 1)
-	m.scheduleReadahead("p", 0, 1)
 	eq(t, drainPrefetch(m.queue), nil)
 }

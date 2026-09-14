@@ -57,18 +57,13 @@ type warmTarget struct {
 // running (done, total) counts so callers can drive a poll/UI. total is the
 // number of enumerated chunks, which is what this run will fetch.
 //
-// A nil remote tier is an error: there is nothing to warm from. A fetch that
-// fails with fs.ErrDiskFull is terminal — the bounded local tier cannot hold
+// A fetch that fails with fs.ErrDiskFull is terminal — the bounded local tier cannot hold
 // the working set — so the whole run is cancelled and the error surfaced.
 // Context cancellation stops the run promptly.
 func (m *RemoteSync) WarmAll(ctx context.Context, progress func(done, total int64)) (WarmResult, error) {
 	if err := m.checkReady(ctx); err != nil {
 		return WarmResult{}, err
 	}
-	if m.remoteStore == nil {
-		return WarmResult{}, errors.New("warm: share has no remote tier to warm from")
-	}
-
 	// Enumerate all FileChunk rows into the work list. The enumeration walks the
 	// same surface as populateBlockCounts: fileChunkStore.EnumeratePayloads ->
 	// per-payload ListFileChunks (the authoritative metadata, which survives

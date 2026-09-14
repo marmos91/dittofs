@@ -176,13 +176,12 @@ var (
 	_ ClobberGuard     = engineBlockSink{}
 )
 
-// localBlockSink is the sink for a remote-less (local-only) share. The journal
-// owns the bytes durably on local disk, so nothing frames a block or uploads
-// (no PutBlock) — it only records the per-file FileChunk manifest rows (hash +
-// DataSize, no remote block key). Those rows are what clone reads (O(1)
-// reflink of the ChunkRef list) and what snapshot/restore project into
-// FileAttr.Blocks; without them a local-only DrainRollups could not populate
-// the manifest at all.
+// localBlockSink is the sink for a remote that exposes no block-keyed surface,
+// so nothing frames a block or uploads (no PutBlock) — it only records the
+// per-file FileChunk manifest rows (hash + DataSize, no remote block key).
+// Those rows are what clone reads (O(1) reflink of the ChunkRef list) and what
+// snapshot/restore project into FileAttr.Blocks; without them DrainRollups
+// could not populate the manifest at all.
 //
 // Rows + the File.Blocks projection are written in one txn via the committer.
 // The clone fixture has no committer, but its source has no dirty data so
@@ -522,17 +521,12 @@ func (bs *Store) DrainAllUploads(ctx context.Context) error {
 // SyncCounts returns the lifetime (completed, failed) sync counts for this
 // store: chunks that reached the remote and failed flush upload attempts.
 // Both are monotonic. The drain-uploads idle watchdog reads them as a
-// progress signal. Returns (0, 0) when the store is closing or has no remote
-// (local-only stores never sync, so the counters are meaningless — matching
-// stats.go, which also reports zeros in that mode).
+// progress signal. Returns (0, 0) when the store is closing.
 func (bs *Store) SyncCounts() (completed, failed int) {
 	if err := bs.enter(); err != nil {
 		return 0, 0
 	}
 	defer bs.closeMu.RUnlock()
-	if bs.remote == nil {
-		return 0, 0
-	}
 	return bs.syncer.SyncCounts()
 }
 
@@ -618,15 +612,6 @@ func (bs *Store) SeedColdRefs(ctx context.Context, payloadID string, refs []bloc
 		return err
 	}
 	defer bs.closeMu.RUnlock()
-	// Nothing to record on a share with no remote: a cold range there has
-	// nowhere to hydrate from and fails its reads closed, where the same range
-	// left as a hole reads as the zeros it is. Local-only copies materialize real
-	// bytes into the destination's own journal, which describes them already, so
-	// there is no work here rather than work being refused — the same shape as
-	// the no-remote-hydration case below.
-	if !bs.HasRemoteStore() {
-		return nil
-	}
 	type coldSeeder interface {
 		SeedCold(ctx context.Context, id journal.FileID, extents [][2]int64) error
 	}

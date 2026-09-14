@@ -63,9 +63,8 @@ type BlockStoreStats struct {
 	// (#1274): the type default (fs/s3 → true, memory → false) unless the
 	// operator overrode it via config["durable"]. They drive the honest
 	// CLOSE/COMMIT contract — a payload is committed iff
-	// LocalDurable || (Finalized && RemoteDurable). RemoteDurable is always
-	// false when HasRemote is false. Surfaced so operators can confirm whether
-	// CLOSE/COMMIT acks are crash-safe for a given share.
+	// LocalDurable || (Finalized && RemoteDurable). Surfaced so operators can
+	// confirm whether CLOSE/COMMIT acks are crash-safe for a given share.
 	LocalDurable  bool `json:"local_durable"`
 	RemoteDurable bool `json:"remote_durable"`
 }
@@ -131,13 +130,9 @@ func (bs *Store) getStats(withBlockCounts bool) BlockStoreStats {
 	// Completed/failed carve counters come from the carve dispatcher. There is
 	// no per-chunk "pending" count anymore (the journal tracks dirty BYTES, not
 	// a chunk set) — the real backpressure signal is UnsyncedBytes below, so the
-	// pending-count fields report 0. In local-only mode (no remote) nothing ever
-	// carves, so report zeros.
-	var completed, failed int
+	// pending-count fields report 0.
 	pendingUploads := 0
-	if bs.remote != nil {
-		completed, failed = bs.syncer.SyncCounts()
-	}
+	completed, failed := bs.syncer.SyncCounts()
 
 	remoteHealthy := bs.syncer.IsRemoteHealthy()
 	outageDuration := bs.syncer.RemoteOutageDuration()
@@ -156,13 +151,13 @@ func (bs *Store) getStats(withBlockCounts bool) BlockStoreStats {
 		ReadBufferEntries:   cacheStats.Entries,
 		ReadBufferUsed:      cacheStats.CurBytes,
 		ReadBufferMax:       cacheStats.MaxBytes,
-		HasRemote:           bs.remote != nil,
+		HasRemote:           true,
 		PendingSyncs:        pendingUploads,
 		PendingUploads:      pendingUploads,
 		CompletedSyncs:      completed,
 		FailedSyncs:         failed,
 		RemoteHealthy:       remoteHealthy,
-		EvictionSuspended:   bs.remote != nil && !remoteHealthy,
+		EvictionSuspended:   !remoteHealthy,
 		OutageDurationSecs:  outageDuration.Seconds(),
 		OfflineReadsBlocked: bs.syncer.OfflineReadsBlocked(),
 		UnsyncedBytes:       bs.syncer.UnsyncedBytes(),

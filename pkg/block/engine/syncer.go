@@ -42,10 +42,6 @@ type fetchResult struct {
 type RemoteSync struct {
 	local       local.LocalStore
 	remoteStore remote.RemoteStore
-	// hasRemote mirrors "remoteStore != nil" as an atomic so hot-path gating
-	// (the carveActive recompute and the readahead scheduler) can read it
-	// without taking m.mu, avoiding a data race with SetRemoteStore.
-	hasRemote atomic.Bool
 	// fileChunkStore is the per-file chunk manifest, and the syncer needs the
 	// wide EngineFileChunkStore surface rather than a narrower one because it
 	// reads the manifest three different ways: GetFileChunk to resolve a single
@@ -56,8 +52,8 @@ type RemoteSync struct {
 	// syncedHashStore persists per-CAS-hash local→remote sync state. The
 	// restart/drift reseed consumes local.ListUnsynced (which itself filters
 	// via SyncedHashStore.IsSynced); the carver records synced markers +
-	// block locators atomically via DefaultCommitBlock. May be nil in unit
-	// tests / local-only fixtures; production callers wire a real store via
+	// block locators atomically via DefaultCommitBlock. May be nil in bare
+	// unit-test fixtures; production callers wire a real store via
 	// SetSyncedHashStore.
 	syncedHashStore metadata.SyncedHashStore
 
@@ -175,7 +171,10 @@ func (m *RemoteSync) UnsyncedBytes() int64 {
 	return m.local.UnsyncedBytes()
 }
 
-// NewRemoteSync creates a new RemoteSync. The fileChunkStore is required for content-addressed dedup.
+// NewRemoteSync creates a new RemoteSync. The remoteStore is required — the
+// syncer has no mode that runs without one — as is the fileChunkStore, which
+// carries the content-addressed dedup state. engine.New refuses a syncer whose
+// remote is missing.
 func NewRemoteSync(local local.LocalStore, remoteStore remote.RemoteStore, fileChunkStore block.EngineFileChunkStore, config RemoteSyncConfig) *RemoteSync {
 	if fileChunkStore == nil {
 		panic("fileChunkStore is required for RemoteSync")
@@ -217,7 +216,6 @@ func NewRemoteSync(local local.LocalStore, remoteStore remote.RemoteStore, fileC
 		uploadLimiter:    syncer.NewDynamicSemaphore(startWindow),
 		uploadController: uploadController,
 	}
-	m.hasRemote.Store(remoteStore != nil)
 	m.recomputeCarveActive()
 
 	queueConfig := DefaultSyncQueueConfig()
@@ -280,10 +278,7 @@ func (m *RemoteSync) SetRemoteBlockStore(rbs remote.RemoteBlockStore) {
 // carver is suppressed but explicit Flush/SyncNow still drains the carve set,
 // so log-blob chunks must still route to it.
 func (m *RemoteSync) recomputeCarveActive() {
-	active := m.remoteBlockStore != nil &&
-		m.blockCommitter != nil &&
-		m.hasRemote.Load()
-	m.carveActive.Store(active)
+	m.carveActive.Store(m.remoteBlockStore != nil && m.blockCommitter != nil)
 }
 
 // SetHealthCallback sets the callback invoked when the remote store health state changes.
@@ -304,18 +299,17 @@ func (m *RemoteSync) SetHealthCallback(fn healthTransitionCallback) {
 // carveActive is deliberately the same flag that decides whether a record can
 // ever become synced, so "may be evicted" and "can be re-fetched" are one answer
 // by construction rather than two that agree by luck. Health alone is not
-// enough: IsRemoteHealthy reports true for a nil monitor, so a share with no
-// remote at all reads as healthy, and a journal carrying synced records from a
-// previous remote-backed life would then satisfy the eviction gate and lose the
-// only copy of those bytes.
+// enough: IsRemoteHealthy reports true before the monitor starts, and a journal
+// carrying synced records from an earlier life would then satisfy the eviction
+// gate while the carve path is still unwired.
 func (m *RemoteSync) CanEvict() bool {
 	return m.carveActive.Load() && m.IsRemoteHealthy()
 }
 
 // IsRemoteHealthy returns the health state of the remote store.
-// Returns true when there is no HealthMonitor (local-only mode) — which is why
-// it is not sufficient on its own to decide whether eviction is safe. Use
-// CanEvict for that.
+// Returns true before Start builds the HealthMonitor — which is why it is not
+// sufficient on its own to decide whether eviction is safe. Use CanEvict for
+// that.
 func (m *RemoteSync) IsRemoteHealthy() bool {
 	if m.healthMonitor == nil {
 		return true
@@ -391,9 +385,7 @@ func (m *RemoteSync) canProcess(ctx context.Context) bool {
 //
 // Return contract — see block.Flusher godoc for the full state
 // machine and caller-retry guidance. In brief:
-//   - Finalized=true, err=nil: the file's bytes are committed to their
-//     sink — on a remote-backed share that is the remote; in local-only
-//     mode it is the local tier plus the populated FileChunk manifest.
+//   - Finalized=true, err=nil: the file's bytes are committed to the remote.
 //   - Finalized=false, err=nil: SOFT condition (remote unhealthy, or the
 //     flush substrate is not wired). Callers
 //     MUST NOT tight-loop retry: surface the soft-fail to the protocol
@@ -409,18 +401,8 @@ func (m *RemoteSync) Flush(ctx context.Context, payloadID string) (*block.FlushR
 		return nil, err
 	}
 
-	// A remote without the carve substrate wired (partial test fixture) cannot
-	// make anything durable: report the soft condition instead of claiming it.
-	// Local-only mode (nil remote) still flushes: the flush populates the
-	// FileChunk manifest (and File.Blocks) through the local-only sink, which
-	// is what makes a local-only DrainRollups non-empty and clone/snapshot/
-	// restore resolve the file's chunks. Only report the soft condition when
-	// even the manifest substrate is missing.
-	if m.remoteStore == nil {
-		if m.blockCommitter == nil {
-			return &block.FlushResult{Finalized: false}, nil
-		}
-	} else if !m.IsRemoteHealthy() {
+	// A down remote is the documented soft condition.
+	if !m.IsRemoteHealthy() {
 		// A down remote is the documented soft condition: leave the dirty
 		// state untouched for the periodic uploader instead of surfacing every
 		// PutObject 404/timeout as a hard wire error. The client re-drives on
@@ -506,11 +488,6 @@ func (m *RemoteSync) GetFileSize(ctx context.Context, payloadID string) (uint64,
 		return 0, err
 	}
 
-	if m.remoteStore == nil {
-		logger.Debug("syncer: skipping GetFileSize, no remote store")
-		return 0, nil
-	}
-
 	// Health gate: fail fast when remote is unreachable
 	if !m.IsRemoteHealthy() {
 		return 0, m.remoteUnavailableError()
@@ -573,11 +550,6 @@ func (m *RemoteSync) Exists(ctx context.Context, payloadID string) (bool, error)
 	if err := m.checkReady(ctx); err != nil {
 		return false, err
 	}
-	if m.remoteStore == nil {
-		logger.Debug("syncer: skipping Exists, no remote store")
-		return false, nil
-	}
-
 	// Health gate: fail fast when remote is unreachable
 	if !m.IsRemoteHealthy() {
 		return false, m.remoteUnavailableError()
@@ -624,10 +596,6 @@ func (m *RemoteSync) Truncate(ctx context.Context, payloadID string, newSize uin
 	if err := m.checkReady(ctx); err != nil {
 		return err
 	}
-	if m.remoteStore == nil {
-		logger.Debug("syncer: skipping Truncate, no remote store")
-		return nil
-	}
 	// Health gate retained for symmetry with the pre-CAS contract; the
 	// remote-side cleanup itself is delegated to GC + refcount drops.
 	if !m.IsRemoteHealthy() {
@@ -650,10 +618,6 @@ func (m *RemoteSync) Delete(ctx context.Context, payloadID string) error {
 		return err
 	}
 
-	if m.remoteStore == nil {
-		logger.Debug("syncer: skipping Delete, no remote store")
-		return nil
-	}
 	if !m.IsRemoteHealthy() {
 		logger.Warn("Delete: skipping remote cleanup, remote store unhealthy",
 			"payloadID", payloadID)
@@ -662,9 +626,8 @@ func (m *RemoteSync) Delete(ctx context.Context, payloadID string) error {
 	return nil
 }
 
-// Start begins background upload processing and periodic uploader.
+// Start begins background upload processing and the periodic uploader.
 // Must be called after New() to enable async uploads.
-// When remoteStore is nil (local-only mode), the periodic syncer is skipped.
 func (m *RemoteSync) Start(ctx context.Context) {
 	// The health monitor's eager probe is a network round trip, so it runs
 	// after m.mu is released: every read and flush path takes that lock, and
@@ -676,18 +639,13 @@ func (m *RemoteSync) Start(ctx context.Context) {
 }
 
 // startLocked performs the locked half of Start and returns the health monitor
-// still to be started, or nil in local-only mode.
+// still to be started.
 func (m *RemoteSync) startLocked(ctx context.Context) *HealthMonitor {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if m.queue != nil {
 		m.queue.Start(ctx)
-	}
-
-	if m.remoteStore == nil {
-		logger.Info("RemoteSync started in local-only mode (no remote store)")
-		return nil
 	}
 
 	// one-shot janitor pass before the periodic uploader
@@ -865,11 +823,11 @@ func (m *RemoteSync) flushFn() (journal.FlushFunc, func(context.Context, journal
 		// already holds.
 		return newFlushClosure(m.local, params, blockSize, engineDeduper{synced: m.syncedHashStore}, sink, syncer.NewDynamicSemaphore(window))
 	}
-	// Local-only (no remote block store): the flush cannot upload, but it must
-	// still populate the FileChunk manifest (and project File.Blocks) so a
-	// local-only DrainRollups is not a hard error and clone/snapshot/restore
-	// resolve the file's chunks. blockCommitter is nil only for the clone
-	// fixture, whose source has no dirty data so CommitBlock never fires.
+	// A remote with no block-keyed surface: the flush cannot upload, but it must
+	// still populate the FileChunk manifest (and project File.Blocks) so
+	// DrainRollups is not a hard error and clone/snapshot/restore resolve the
+	// file's chunks. blockCommitter is nil only for the clone fixture, whose
+	// source has no dirty data so CommitBlock never fires.
 	sink := localBlockSink{committer: m.blockCommitter, commitLocks: &carveCommitLocks{}}
 	return newFlushClosure(m.local, params, blockSize, localDeduper{}, sink, syncer.NewDynamicSemaphore(window))
 }
@@ -895,10 +853,6 @@ func paramsBlockSize(params chunker.Params) int64 {
 // lock (inside journal.Flush), so the explicit drain never packs the same
 // chunk twice.
 func (m *RemoteSync) SyncNow(ctx context.Context) error {
-	if m.remoteStore == nil {
-		return nil
-	}
-
 	if !m.carveActive.Load() {
 		// A remote without the carve substrate cannot drain anything. Fail
 		// honestly when dirty bytes are pending rather than claiming durability.
@@ -1069,7 +1023,6 @@ func waitBounded(wg *gosync.WaitGroup, timeout time.Duration) bool {
 }
 
 // HealthCheck verifies the remote store is accessible.
-// Returns nil (healthy) when remoteStore is nil -- local-only mode is valid.
 func (m *RemoteSync) HealthCheck(ctx context.Context) error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -1078,56 +1031,5 @@ func (m *RemoteSync) HealthCheck(ctx context.Context) error {
 		return ErrClosed
 	}
 
-	if m.remoteStore == nil {
-		return nil // Local-only mode is healthy
-	}
-
 	return m.remoteStore.HealthCheck(ctx)
-}
-
-// SetRemoteStore transitions the syncer from local-only mode to remote-backed mode.
-// This is a one-shot operation -- calling it again returns an error.
-// It sets the remoteStore, enables local store eviction, and starts the periodic syncer.
-//
-// It does NOT seed the pending-upload set from disk: chunks written while the
-// syncer was local-only are picked up by the next periodic drift reconcile
-// (seedPendingFromDisk), not immediately. Not currently wired into any
-// production control-plane path; Start() is the seeded entry point.
-func (m *RemoteSync) SetRemoteStore(ctx context.Context, remoteStore remote.RemoteStore) error {
-	hm, err := m.setRemoteStoreLocked(ctx, remoteStore)
-	if err != nil {
-		return err
-	}
-
-	// Eager probe outside m.mu; see Start.
-	hm.Start(ctx)
-
-	logger.Info("Remote store attached, periodic syncer started")
-	return nil
-}
-
-// setRemoteStoreLocked performs the locked half of SetRemoteStore and returns
-// the health monitor still to be started.
-func (m *RemoteSync) setRemoteStoreLocked(ctx context.Context, remoteStore remote.RemoteStore) (*HealthMonitor, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if m.closed {
-		return nil, ErrClosed
-	}
-	if m.remoteStore != nil {
-		return nil, errors.New("remote store already set")
-	}
-	if remoteStore == nil {
-		return nil, errors.New("remoteStore must not be nil")
-	}
-
-	m.remoteStore = remoteStore
-	m.hasRemote.Store(true)
-	m.recomputeCarveActive()
-	m.local.SetEvictionEnabled(true)
-
-	hm := m.newHealthMonitorLocked()
-	m.startPeriodicUploader(ctx)
-	return hm, nil
 }

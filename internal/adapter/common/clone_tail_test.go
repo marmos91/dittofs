@@ -3,6 +3,7 @@ package common
 import (
 	"bytes"
 	"context"
+	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block"
@@ -12,11 +13,10 @@ import (
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
-// newLocalOnlyTestEngine builds a journal-backed engine with no remote, so
-// CloneWholeFile takes materializeLocalClone rather than the manifest-only
-// reflink. The engine's own tests cover the remote-backed path; this fixture is
-// the only way to reach the local-only one.
-func newLocalOnlyTestEngine(t *testing.T, coord *fakeCoordinator, ms *metadatamemory.MemoryMetadataStore) (*engine.Store, *journal.Store) {
+// newCloneTailEngine builds a journal-backed engine so CloneWholeFile runs
+// against real on-disk intervals, which is what the destination's tail handling
+// has to be measured on.
+func newCloneTailEngine(t *testing.T, coord *fakeCoordinator, ms *metadatamemory.MemoryMetadataStore) (*engine.Store, *journal.Store) {
 	t.Helper()
 	localStore, err := journal.Open(t.TempDir(), journal.Config{MaxLocalBytes: 100 * 1024 * 1024})
 	if err != nil {
@@ -26,9 +26,11 @@ func newLocalOnlyTestEngine(t *testing.T, coord *fakeCoordinator, ms *metadatame
 	if !ok {
 		t.Fatalf("metadata store %T does not implement metadata.SyncedHashStore", ms)
 	}
-	syncer := engine.NewRemoteSync(localStore, nil, ms, engine.DefaultConfig())
+	testRemote := remotememory.New()
+	syncer := engine.NewRemoteSync(localStore, testRemote, ms, engine.DefaultConfig())
 	syncer.SetSyncedHashStore(syncedHashStore)
 	bs, err := engine.New(engine.BlockStoreConfig{
+		Remote:          testRemote,
 		Local:           localStore,
 		RemoteSync:      syncer,
 		FileChunkStore:  ms,
@@ -75,10 +77,10 @@ func writeAndSeal(t *testing.T, ctx context.Context, bs *engine.Store, payloadID
 // would leave a row claiming bytes the file no longer has, and the two tiers
 // disagreeing about who owns a range is its own defect — one that reads as a
 // mosaic rather than as a clean stale read.
-func TestMaterializeLocalClone_KeepsNothingPastTheSourcesSize(t *testing.T) {
+func TestCloneWholeFile_KeepsNothingPastTheSourcesSize(t *testing.T) {
 	ctx := context.Background()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	bs, _ := newLocalOnlyTestEngine(t, &fakeCoordinator{}, ms)
+	bs, _ := newCloneTailEngine(t, &fakeCoordinator{}, ms)
 
 	const srcSize, dstSize = 4096, 8192
 	source := bytes.Repeat([]byte{0x11}, srcSize)
@@ -139,13 +141,13 @@ func TestMaterializeLocalClone_KeepsNothingPastTheSourcesSize(t *testing.T) {
 	}
 }
 
-// TestMaterializeLocalClone_GrowsWithoutClipping is the other direction, and
+// TestCloneWholeFile_GrowsWithoutClipping is the other direction, and
 // what keeps the clip from ever being the thing that loses content: a source
 // longer than the destination grows it, and every copied byte must survive.
-func TestMaterializeLocalClone_GrowsWithoutClipping(t *testing.T) {
+func TestCloneWholeFile_GrowsWithoutClipping(t *testing.T) {
 	ctx := context.Background()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	bs, _ := newLocalOnlyTestEngine(t, &fakeCoordinator{}, ms)
+	bs, _ := newCloneTailEngine(t, &fakeCoordinator{}, ms)
 
 	const srcSize, dstSize = 8192, 4096
 	source := bytes.Repeat([]byte{0x33}, srcSize)

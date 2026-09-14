@@ -31,9 +31,9 @@ func (bs *Store) HealthCheck(ctx context.Context) error {
 //
 //   - If the local store reports unhealthy → engine is unhealthy
 //     (we can't even serve cached blocks).
-//   - If a remote store is configured and reports unhealthy → engine
-//     is degraded (local reads still work, but new uploads will queue
-//     and the system is operating in offline-write mode).
+//   - If the remote store reports unhealthy → engine is degraded (local
+//     reads still work, but new uploads will queue and the system is
+//     operating in offline-write mode).
 //   - Otherwise → healthy.
 //
 // The combined message preserves the worst-status component's message
@@ -61,17 +61,14 @@ func (bs *Store) Healthcheck(ctx context.Context) health.Report {
 		return health.NewUnhealthyReport("local: block store is closed", time.Since(start))
 	}
 
-	if bs.remote != nil {
-		remoteRep := bs.remote.Healthcheck(ctx)
-		if remoteRep.Status == health.StatusUnhealthy {
-			// Local works, remote is unreachable: degraded — reads
-			// still served from local cache, writes will queue.
-			return health.Report{
-				Status:    health.StatusDegraded,
-				Message:   "remote unreachable: " + remoteRep.Message,
-				CheckedAt: time.Now().UTC(),
-				LatencyMs: time.Since(start).Milliseconds(),
-			}
+	if remoteRep := bs.remote.Healthcheck(ctx); remoteRep.Status == health.StatusUnhealthy {
+		// Local works, remote is unreachable: degraded — reads still served
+		// from local cache, writes will queue.
+		return health.Report{
+			Status:    health.StatusDegraded,
+			Message:   "remote unreachable: " + remoteRep.Message,
+			CheckedAt: time.Now().UTC(),
+			LatencyMs: time.Since(start).Milliseconds(),
 		}
 	}
 

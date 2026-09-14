@@ -3,6 +3,7 @@ package engine_test
 import (
 	"bytes"
 	"context"
+	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block/engine"
@@ -11,9 +12,10 @@ import (
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
-// localOnlyPair is newLocalOnlyEngine but hands back the local store too, so the
-// test can drive the journal directly the way a replayed journal would arrive.
-func localOnlyPair(t *testing.T, ms metadata.Store) (*engine.Store, *journal.Store) {
+// unwiredCarvePair builds an engine whose carve path is never wired to the
+// remote, and hands back the local store too so the test can drive the journal
+// directly the way a replayed journal would arrive.
+func unwiredCarvePair(t *testing.T, ms metadata.Store) (*engine.Store, *journal.Store) {
 	t.Helper()
 	localStore, err := journal.Open(t.TempDir(), journal.Config{MaxLocalBytes: 100 * 1024 * 1024,
 		MaxLogBytes: 128 * 1024 * 1024,
@@ -25,8 +27,10 @@ func localOnlyPair(t *testing.T, ms metadata.Store) (*engine.Store, *journal.Sto
 	if !ok {
 		t.Fatalf("metadata store %T is not a SyncedHashStore", ms)
 	}
-	syncer := engine.NewRemoteSync(localStore, nil, ms, engine.DefaultConfig())
+	testRemote := remotememory.New()
+	syncer := engine.NewRemoteSync(localStore, testRemote, ms, engine.DefaultConfig())
 	bs, err := engine.New(engine.BlockStoreConfig{
+		Remote:          testRemote,
 		Local:           localStore,
 		RemoteSync:      syncer,
 		FileChunkStore:  ms,
@@ -41,19 +45,19 @@ func localOnlyPair(t *testing.T, ms metadata.Store) (*engine.Store, *journal.Sto
 	return bs, localStore
 }
 
-// TestLocalOnlyShareNeverEvictsItsOnlyCopy pins #2314. A journal replayed from
-// a share's earlier remote-backed life carries records still flagged synced. If
-// that journal is reopened under a share with no remote, those records satisfy
-// the eviction gate — and there is nothing to fetch them back from, so eviction
-// destroys the only copy.
+// TestUnwiredCarveNeverEvictsItsOnlyCopy pins the eviction gate. A replayed
+// journal carries records still flagged synced from an earlier life. While the
+// carve path is not wired to the remote those records would satisfy a
+// health-only gate — and nothing could fetch them back, so eviction would
+// destroy the only copy.
 //
-// The gate used to be IsRemoteHealthy(), which reports true for a nil health
-// monitor, so a share with no remote at all read as healthy. It is now
-// CanEvict(), which also requires the carve path to be wired to a remote.
-func TestLocalOnlyShareNeverEvictsItsOnlyCopy(t *testing.T) {
+// The gate used to be IsRemoteHealthy(), which reports true before the health
+// monitor exists. It is now CanEvict(), which also requires the carve path to be
+// wired to the remote.
+func TestUnwiredCarveNeverEvictsItsOnlyCopy(t *testing.T) {
 	ctx := context.Background()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	bs, localStore := localOnlyPair(t, ms)
+	bs, localStore := unwiredCarvePair(t, ms)
 
 	const payloadID = "p2314"
 	want := bytes.Repeat([]byte("A"), 1<<20)
@@ -76,7 +80,7 @@ func TestLocalOnlyShareNeverEvictsItsOnlyCopy(t *testing.T) {
 		t.Fatalf("Evict: %v", err)
 	}
 	if res.SegmentsEvicted != 0 {
-		t.Errorf("evicted %d segment(s) / %d bytes from a share with no remote — "+
+		t.Errorf("evicted %d segment(s) / %d bytes while the carve path was unwired — "+
 			"those bytes existed nowhere else", res.SegmentsEvicted, res.BytesFreed)
 	}
 

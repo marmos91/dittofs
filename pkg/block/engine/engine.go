@@ -24,7 +24,10 @@ type BlockStoreConfig struct {
 	// Local is the on-node block store (required).
 	Local local.LocalStore
 
-	// Remote is the durable backend store (nil for local-only mode).
+	// Remote is the durable backend store (required). Every share binds one:
+	// the local journal holds bytes only until they are synced out, and
+	// eviction reclaims journal space on the promise that a durable copy
+	// exists elsewhere.
 	Remote remote.RemoteStore
 
 	// RemoteSync handles async local-to-remote transfers (required).
@@ -49,8 +52,8 @@ type BlockStoreConfig struct {
 	// Sourced from the same per-share metadata-store handle the
 	// Coordinator wraps. Threaded through to the RemoteSync so the carver
 	// can commit synced markers + block locators atomically
-	// (DefaultCommitBlock). Nil is accepted (local-only / no-remote
-	// fixtures); carve stays disabled in that mode.
+	// (DefaultCommitBlock). Nil is accepted (bare test fixtures); carve
+	// stays disabled without it.
 	SyncedHashStore metadata.SyncedHashStore
 
 	// ReadBufferBytes is the memory budget for the read buffer per share.
@@ -154,14 +157,26 @@ type Store struct {
 	requireDurableCommit bool
 }
 
-// New creates a new Store from the given configuration.
-// Local store and syncer are required; remote may be nil for local-only mode.
+// New creates a new Store from the given configuration. Local store, remote
+// store and syncer are all required.
 func New(cfg BlockStoreConfig) (*Store, error) {
 	if cfg.Local == nil {
 		return nil, errors.New("local store is required")
 	}
 	if cfg.RemoteSync == nil {
 		return nil, errors.New("remote sync is required")
+	}
+	// Without a remote there is nowhere to hydrate cold bytes from, so a read
+	// of an evicted range would return zeros rather than fail. Refuse the
+	// store instead of building one that can serve silently wrong data.
+	if cfg.Remote == nil {
+		return nil, errors.New("remote store is required")
+	}
+	// The syncer carries its own reference to the remote and drives every
+	// upload, fetch and health probe from it. A syncer built without one would
+	// leave the store reporting a remote it can neither read nor write.
+	if cfg.RemoteSync.remoteStore == nil {
+		return nil, errors.New("remote sync was built without a remote store")
 	}
 
 	bs := &Store{
@@ -180,9 +195,8 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 	// Start runs.
 	bs.cache = nullCache{}
 	// Thread the SyncedHashStore into the RemoteSync so the carver can commit
-	// synced markers + block locators atomically. Nil is accepted
-	// (local-only / no-remote fixtures); carve stays disabled in that
-	// mode.
+	// synced markers + block locators atomically. Nil is accepted (bare test
+	// fixtures); carve stays disabled without it.
 	if cfg.SyncedHashStore != nil {
 		cfg.RemoteSync.SetSyncedHashStore(cfg.SyncedHashStore)
 	}
@@ -337,10 +351,8 @@ func (bs *Store) Close() error {
 	if err := bs.local.Close(); err != nil {
 		errs = append(errs, fmt.Errorf("local close: %w", err))
 	}
-	if bs.remote != nil {
-		if err := bs.remote.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("remote close: %w", err))
-		}
+	if err := bs.remote.Close(); err != nil {
+		errs = append(errs, fmt.Errorf("remote close: %w", err))
 	}
 
 	bs.closeErr = errors.Join(errs...)
@@ -425,10 +437,10 @@ func (bs *Store) LocalDurable() bool {
 }
 
 // RemoteDurable reports whether the engine's remote store survives a process
-// crash / restart. A nil remote (local-only share) and a remote that does not
-// implement DurabilityReporter both fall back to the conservative default
-// (false) via block.IsDurable. The report sees through the encryption /
-// compression decorators because they delegate Durable() to the store they wrap.
+// crash / restart. A remote that does not implement DurabilityReporter falls
+// back to the conservative default (false) via block.IsDurable. The report sees
+// through the encryption / compression decorators because they delegate
+// Durable() to the store they wrap.
 func (bs *Store) RemoteDurable() bool {
 	return block.IsDurable(bs.remote)
 }
@@ -449,10 +461,9 @@ func (bs *Store) SetRequireDurableCommit(v bool) {
 	bs.requireDurableCommit = v
 }
 
-// RemoteStore returns the per-share remote object store, or nil if the
-// share is local-only. Used by the snapshot sync-gate verify step
-// to drive VerifyRemoteDurability after DrainAllUploads, and by
-// cross-package tests for shared-remote identity checks.
+// RemoteStore returns the per-share remote object store. Used by the snapshot
+// sync-gate verify step to drive VerifyRemoteDurability after DrainAllUploads,
+// and by cross-package tests for shared-remote identity checks.
 func (bs *Store) RemoteStore() remote.RemoteStore { return bs.remote }
 
 // ListFiles returns the payloadIDs of all files with live local data in the

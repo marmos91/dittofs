@@ -8,8 +8,7 @@ import (
 )
 
 // TestStore_GetSize_Exists drives the public GetSize/Exists accessors for
-// both a present and an absent payload. The local-only engine (no remote)
-// resolves entirely from the local store.
+// both a present and an absent payload, which resolve from the local store.
 func TestStore_GetSize_Exists(t *testing.T) {
 	bs := newTestEngine(t, 64*1024*1024, 0)
 	ctx := context.Background()
@@ -44,11 +43,11 @@ func TestStore_Accessors(t *testing.T) {
 	bs := newTestEngine(t, 64*1024*1024, 0)
 	ctx := context.Background()
 
-	if bs.HasRemoteStore() {
-		t.Error("HasRemoteStore: local-only engine should report false")
+	if !bs.HasRemoteStore() {
+		t.Error("HasRemoteStore: every engine is built over a remote")
 	}
-	if bs.RemoteStore() != nil {
-		t.Error("RemoteStore: want nil for local-only engine")
+	if bs.RemoteStore() == nil {
+		t.Error("RemoteStore: want the remote the engine was built with")
 	}
 	if bs.Local() == nil {
 		t.Error("Local: want non-nil local store")
@@ -74,7 +73,7 @@ func TestStore_Accessors(t *testing.T) {
 }
 
 // TestStore_HealthCheck covers both the legacy error probe and the
-// structured Healthcheck for a healthy local-only engine.
+// structured Healthcheck for a healthy engine.
 func TestStore_HealthCheck(t *testing.T) {
 	bs := newTestEngine(t, 64*1024*1024, 0)
 	ctx := context.Background()

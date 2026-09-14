@@ -40,6 +40,7 @@ func newEngineWithRemote(t *testing.T, ms metadata.Store, mem *remotememory.Stor
 	syncer.SetRemoteBlockStore(mem)
 	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:           localStore,
+		Remote:          mem,
 		RemoteSync:      syncer,
 		FileChunkStore:  ms,
 		Coordinator:     coord,

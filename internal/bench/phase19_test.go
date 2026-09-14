@@ -22,6 +22,7 @@ package bench
 
 import (
 	"context"
+	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"math/rand"
 	"os"
 	"strings"
@@ -175,10 +176,11 @@ func newPhase19BlockStore(t *testing.T) *engine.Store {
 	t.Helper()
 	localStore := memory.New()
 	fbs := newAggregateStubFileChunkStore()
-	syncer := engine.NewRemoteSync(localStore, nil, fbs, engine.DefaultConfig())
+	testRemote := remotememory.New()
+	syncer := engine.NewRemoteSync(localStore, testRemote, fbs, engine.DefaultConfig())
 	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:          localStore,
-		Remote:         nil,
+		Remote:         testRemote,
 		RemoteSync:     syncer,
 		FileChunkStore: fbs,
 	})

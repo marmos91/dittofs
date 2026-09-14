@@ -2,6 +2,7 @@ package common
 
 import (
 	"context"
+	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block/engine"
@@ -24,11 +25,12 @@ func newTestEngine(t *testing.T) *engine.Store {
 		t.Fatalf("journal.Open failed: %v", err)
 	}
 
-	syncer := engine.NewRemoteSync(localStore, nil, ms, engine.DefaultConfig())
+	testRemote := remotememory.New()
+	syncer := engine.NewRemoteSync(localStore, testRemote, ms, engine.DefaultConfig())
 
 	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:           localStore,
-		Remote:          nil,
+		Remote:          testRemote,
 		RemoteSync:      syncer,
 		FileChunkStore:  ms,
 		ReadBufferBytes: 0,
