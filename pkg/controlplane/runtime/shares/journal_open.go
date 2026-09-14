@@ -55,17 +55,17 @@ func OpenShareJournal(shareName string, defaults *LocalStoreDefaults) (*journal.
 //
 // The share name arrives from an operator and reaches the filesystem through
 // this directory, so containment is established at the sink rather than
-// inferred from the name having been escaped. Containment is decided on the
-// relative path, so a directory that merely shares a string prefix with the
-// root ("/srv/blocksXX" against "/srv/blocks") counts as outside it, and the
-// root itself is outside too: a journal written there would sit beside the
-// directory that keeps shares apart instead of inside it.
+// inferred from the name having been escaped.
+//
+// Both sides are cleaned first, which resolves any ".." the name smuggled in,
+// and the root must be followed by a separator: a directory that merely shares
+// a string prefix with the root ("/srv/blocksXX" against "/srv/blocks") is a
+// different tree, and the root itself is outside too — a journal written there
+// would sit beside the directory that keeps shares apart instead of inside it.
 func checkUnderJournalRoot(root, shareDir string) error {
-	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(shareDir))
-	if err != nil {
-		return fmt.Errorf("share directory %q is not under the journal root %q", shareDir, root)
-	}
-	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	cleanRoot := filepath.Clean(root)
+	cleanDir := filepath.Clean(shareDir)
+	if !strings.HasPrefix(cleanDir, cleanRoot+string(filepath.Separator)) {
 		return fmt.Errorf("share directory %q escapes the journal root %q", shareDir, root)
 	}
 	return nil
