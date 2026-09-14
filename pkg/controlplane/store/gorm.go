@@ -113,6 +113,13 @@ type Config struct {
 	Type     DatabaseType   `mapstructure:"type" yaml:"type"`
 	SQLite   SQLiteConfig   `mapstructure:"sqlite" yaml:"sqlite"`
 	Postgres PostgresConfig `mapstructure:"postgres" yaml:"postgres"`
+
+	// JournalRoot carries the server's blockstore.journal.path in so the
+	// upgrade can compare it against where each share's data was recorded
+	// before a share stopped referencing its own block store. It is derived
+	// from that key rather than set under `database`, and empty means the
+	// comparison has nothing to compare against and is skipped.
+	JournalRoot string `mapstructure:"-" yaml:"-" json:"-"`
 }
 
 // ApplyDefaults fills in missing configuration with default values.
@@ -436,6 +443,13 @@ func New(config *Config) (*GORMStore, error) {
 		// A local-only share's only binding lives in this column; refuse rather
 		// than drop it out from under them.
 		if err := checkLocalOnlyShares(db); err != nil {
+			return nil, err
+		}
+		// The column is also the only surviving record of where a share's
+		// bytes sit. A journal root that names somewhere else would open an
+		// empty journal beside them and read back zeros, so compare while the
+		// comparison is still possible.
+		if err := checkShareJournalRoots(db, config.JournalRoot); err != nil {
 			return nil, err
 		}
 		if err := lbs.DropColumn(&models.Share{}, "local_block_store_id"); err != nil {

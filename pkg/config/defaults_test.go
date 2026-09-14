@@ -174,3 +174,25 @@ func TestGetDefaultConfig_HasRequiredFields(t *testing.T) {
 		t.Error("Default config missing admin username")
 	}
 }
+
+// The upgrade that stops a share from referencing its own block store compares
+// the journal root against where each share's data was recorded, and the store
+// layer can only see what is carried onto its own config. Without this the
+// comparison is skipped and a misplaced share opens an empty journal.
+func TestApplyDefaults_CarriesTheJournalRootToTheDatabaseConfig(t *testing.T) {
+	cfg := &Config{}
+	cfg.Blockstore.Journal.Path = "/srv/dittofs/blocks"
+	ApplyDefaults(cfg)
+
+	if cfg.Database.JournalRoot != "/srv/dittofs/blocks" {
+		t.Errorf("Database.JournalRoot = %q, want the configured journal path", cfg.Database.JournalRoot)
+	}
+
+	// An operator who configured nothing still gets the defaulted root, not an
+	// empty one that would skip the comparison.
+	bare := &Config{}
+	ApplyDefaults(bare)
+	if bare.Database.JournalRoot == "" || bare.Database.JournalRoot != bare.Blockstore.Journal.Path {
+		t.Errorf("Database.JournalRoot = %q, want the defaulted %q", bare.Database.JournalRoot, bare.Blockstore.Journal.Path)
+	}
+}
