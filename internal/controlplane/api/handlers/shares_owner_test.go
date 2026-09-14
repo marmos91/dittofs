@@ -31,7 +31,7 @@ func TestShareHandler_Create_PersistsOwner(t *testing.T) {
 	if _, err := cpStore.CreateMetadataStore(ctx, metaStore); err != nil {
 		t.Fatalf("CreateMetadataStore: %v", err)
 	}
-	blockStore := &models.BlockStoreConfig{Name: "b-owner", Kind: models.BlockStoreKindLocal, Type: "memory"}
+	blockStore := &models.BlockStoreConfig{Name: "b-owner", Type: "memory"}
 	if _, err := cpStore.CreateBlockStore(ctx, blockStore); err != nil {
 		t.Fatalf("CreateBlockStore: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestShareHandler_Create_UnknownOwnerRejectedBeforePersist(t *testing.T) {
 	if _, err := cpStore.CreateMetadataStore(ctx, metaStore); err != nil {
 		t.Fatalf("CreateMetadataStore: %v", err)
 	}
-	blockStore := &models.BlockStoreConfig{Name: "b-noowner", Kind: models.BlockStoreKindLocal, Type: "memory"}
+	blockStore := &models.BlockStoreConfig{Name: "b-noowner", Type: "memory"}
 	if _, err := cpStore.CreateBlockStore(ctx, blockStore); err != nil {
 		t.Fatalf("CreateBlockStore: %v", err)
 	}

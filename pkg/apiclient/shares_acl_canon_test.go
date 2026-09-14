@@ -97,7 +97,7 @@ func TestCreateShare_SendsAclFlagInheritedCanonicalizationFalse(t *testing.T) {
 	share, err := client.CreateShare(&CreateShareRequest{
 		Name:                             "/x",
 		MetadataStoreID:                  "meta",
-		LocalBlockStore:                  "bs",
+		BlockStore:                       "bs",
 		AclFlagInheritedCanonicalization: &falseV,
 	})
 	require.NoError(t, err)

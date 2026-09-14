@@ -55,7 +55,7 @@ func seedShare(t *testing.T, cpStore store.Store, name string) string {
 	}
 
 	blockStore := &models.BlockStoreConfig{
-		ID: uuid.New().String(), Name: "b-" + name, Kind: models.BlockStoreKindLocal, Type: "memory",
+		ID: uuid.New().String(), Name: "b-" + name, Type: "memory",
 		CreatedAt: time.Now(),
 	}
 	if _, err := cpStore.CreateBlockStore(ctx, blockStore); err != nil {
@@ -66,7 +66,7 @@ func seedShare(t *testing.T, cpStore store.Store, name string) string {
 		ID:                uuid.New().String(),
 		Name:              "/" + name,
 		MetadataStoreID:   metaStore.ID,
-		LocalBlockStoreID: blockStore.ID,
+		BlockStoreID:      blockStore.ID,
 		DefaultPermission: "read-write",
 		CreatedAt:         time.Now(),
 		UpdatedAt:         time.Now(),
@@ -287,13 +287,13 @@ func TestShareHandler_Update_ResolvesBlockStoreNameToID(t *testing.T) {
 
 	// Create a new local + remote block store referenced by NAME below.
 	newLocal := &models.BlockStoreConfig{
-		ID: uuid.New().String(), Name: "fresh-local", Kind: models.BlockStoreKindLocal, Type: "memory", CreatedAt: time.Now(),
+		ID: uuid.New().String(), Name: "fresh-local", Type: "memory", CreatedAt: time.Now(),
 	}
 	if _, err := cpStore.CreateBlockStore(ctx, newLocal); err != nil {
 		t.Fatalf("CreateBlockStore(local): %v", err)
 	}
 	newRemote := &models.BlockStoreConfig{
-		ID: uuid.New().String(), Name: "fresh-remote", Kind: models.BlockStoreKindRemote, Type: "memory", CreatedAt: time.Now(),
+		ID: uuid.New().String(), Name: "fresh-remote", Type: "memory", CreatedAt: time.Now(),
 	}
 	if _, err := cpStore.CreateBlockStore(ctx, newRemote); err != nil {
 		t.Fatalf("CreateBlockStore(remote): %v", err)
@@ -314,8 +314,8 @@ func TestShareHandler_Update_ResolvesBlockStoreNameToID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetShare: %v", err)
 	}
-	if got.LocalBlockStoreID != newLocal.ID {
-		t.Errorf("LocalBlockStoreID = %q, want canonical UUID %q (not the name)", got.LocalBlockStoreID, newLocal.ID)
+	if got.BlockStoreID != newLocal.ID {
+		t.Errorf("LocalBlockStoreID = %q, want canonical UUID %q (not the name)", got.BlockStoreID, newLocal.ID)
 	}
 	if got.RemoteBlockStoreID == nil || *got.RemoteBlockStoreID != newRemote.ID {
 		t.Errorf("RemoteBlockStoreID = %v, want canonical UUID %q (not the name)", got.RemoteBlockStoreID, newRemote.ID)
@@ -350,7 +350,7 @@ func TestShareHandler_Update_RejectsWrongKindBlockStore(t *testing.T) {
 	ctx := context.Background()
 
 	remote := &models.BlockStoreConfig{
-		ID: uuid.New().String(), Name: "kind-remote", Kind: models.BlockStoreKindRemote, Type: "memory", CreatedAt: time.Now(),
+		ID: uuid.New().String(), Name: "kind-remote", Type: "memory", CreatedAt: time.Now(),
 	}
 	if _, err := cpStore.CreateBlockStore(ctx, remote); err != nil {
 		t.Fatalf("CreateBlockStore(remote): %v", err)
@@ -384,7 +384,7 @@ func seedStores(t *testing.T, cpStore store.Store, name string) (metaName, block
 		t.Fatalf("CreateMetadataStore: %v", err)
 	}
 	blockStore := &models.BlockStoreConfig{
-		ID: uuid.New().String(), Name: "b-" + name, Kind: models.BlockStoreKindLocal, Type: "memory", CreatedAt: time.Now(),
+		ID: uuid.New().String(), Name: "b-" + name, Type: "memory", CreatedAt: time.Now(),
 	}
 	if _, err := cpStore.CreateBlockStore(ctx, blockStore); err != nil {
 		t.Fatalf("CreateBlockStore: %v", err)
@@ -404,7 +404,7 @@ func TestShareHandler_Create_RejectsInvalidDefaultPermission(t *testing.T) {
 	body, _ := json.Marshal(CreateShareRequest{
 		Name:              "/perm-bad",
 		MetadataStoreID:   metaName,
-		LocalBlockStore:   blockName,
+		BlockStore:        blockName,
 		DefaultPermission: "read_write", // underscore — the valid token is "read-write"
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/shares", bytes.NewReader(body))
@@ -446,7 +446,7 @@ func TestShareHandler_Update_WarnsWhenLiveReloadFails(t *testing.T) {
 	ctx := context.Background()
 
 	remote := &models.BlockStoreConfig{
-		ID: uuid.New().String(), Name: "warn-remote", Kind: models.BlockStoreKindRemote, Type: "memory", CreatedAt: time.Now(),
+		ID: uuid.New().String(), Name: "warn-remote", Type: "memory", CreatedAt: time.Now(),
 	}
 	if _, err := cpStore.CreateBlockStore(ctx, remote); err != nil {
 		t.Fatalf("CreateBlockStore(remote): %v", err)

@@ -92,7 +92,6 @@ func seedMetaAndBlock(t *testing.T, cpStore store.Store) (string, string) {
 	bs := &models.BlockStoreConfig{
 		ID:        uuid.New().String(),
 		Name:      "bs-aclcanon",
-		Kind:      models.BlockStoreKindLocal,
 		Type:      "memory",
 		CreatedAt: time.Now(),
 	}
@@ -120,7 +119,7 @@ func TestShareHandler_Create_AclFlagInheritedCanonicalization_DefaultTrue(t *tes
 	body, _ := json.Marshal(CreateShareRequest{
 		Name:            "/acldef",
 		MetadataStoreID: metaName,
-		LocalBlockStore: bsName,
+		BlockStore:      bsName,
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/shares", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -159,7 +158,7 @@ func TestShareHandler_Create_AclFlagInheritedCanonicalization_ExplicitFalse(t *t
 	body, _ := json.Marshal(CreateShareRequest{
 		Name:                             "/aclfalse",
 		MetadataStoreID:                  metaName,
-		LocalBlockStore:                  bsName,
+		BlockStore:                       bsName,
 		AclFlagInheritedCanonicalization: &falseV,
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/shares", bytes.NewReader(body))
@@ -202,7 +201,7 @@ func TestShareHandler_Update_AclFlagInheritedCanonicalization_TogglesFalse(t *te
 	createBody, _ := json.Marshal(CreateShareRequest{
 		Name:            "/aclupdate",
 		MetadataStoreID: metaName,
-		LocalBlockStore: bsName,
+		BlockStore:      bsName,
 	})
 	cReq := httptest.NewRequest(http.MethodPost, "/api/v1/shares", bytes.NewReader(createBody))
 	cReq.Header.Set("Content-Type", "application/json")
@@ -248,7 +247,7 @@ func TestShareHandler_Update_AclFlagInheritedCanonicalization_NilLeavesUnchanged
 	createBody, _ := json.Marshal(CreateShareRequest{
 		Name:                             "/aclnochange",
 		MetadataStoreID:                  metaName,
-		LocalBlockStore:                  bsName,
+		BlockStore:                       bsName,
 		AclFlagInheritedCanonicalization: &falseV,
 	})
 	cReq := httptest.NewRequest(http.MethodPost, "/api/v1/shares", bytes.NewReader(createBody))
