@@ -150,7 +150,7 @@ func (h *Handler) buildV4AuthContext(ctx *types.CompoundContext, handle []byte) 
 			if si == nil {
 				return nil, "", &authStatusError{
 					status: types.NFS4ERR_WRONGSEC,
-					err:    fmt.Errorf("share %q requires Kerberos but the RPCSEC_GSS credential was not verified", shareName),
+					err:    fmt.Errorf("RPCSEC_GSS credential for share %q was not verified", shareName),
 				}
 			}
 			if !auth.MeetsMinKerberosLevel(share.MinKerberosLevel, si.Service) {

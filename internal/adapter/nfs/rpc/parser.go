@@ -604,6 +604,12 @@ func MakeAuthErrorReply(xid uint32, authStat uint32) ([]byte, error) {
 	return result, nil
 }
 
+// AuthTooWeak is the RFC 5531 auth_stat for a credential the server cannot
+// accept because it does not support the flavor — as opposed to a credential it
+// supports but rejects. Returned for an RPCSEC_GSS call when no GSS processor is
+// configured, where the credential can be neither verified nor honoured.
+const AuthTooWeak uint32 = 5
+
 // RPCSEC_GSS Auth Stat codes per RFC 2203 Section 5.3.3.3.
 const (
 	// RPCSECGSSCredProblem indicates a problem with the GSS credential.

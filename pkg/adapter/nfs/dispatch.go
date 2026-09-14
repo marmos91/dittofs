@@ -50,6 +50,26 @@ func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMess
 	// are handled entirely here and never reach NFS handlers.
 	// GSS DATA messages have their procedureData replaced with the unwrapped
 	// arguments and GSS identity injected into the context.
+	// Without a processor there is nothing that can verify an RPCSEC_GSS
+	// credential, so refuse the call rather than routing it onward. Falling
+	// through would hand an unverified flavor-6 credential to a handler, where it
+	// satisfies a share's RequireKerberos on the flavor alone and escapes
+	// AllowAuthSys because the flavor is not AUTH_UNIX — an unauthenticated
+	// caller passing as a Kerberos one. RFC 5531 answers a flavor the server
+	// cannot accept with AUTH_TOOWEAK, and no legitimate client is refused: with
+	// no processor the GSS INIT below is never answered either, so no context can
+	// be established in this state.
+	if call.GetAuthFlavor() == rpc.AuthRPCSECGSS && c.server.gssProcessor == nil {
+		logger.Warn("Rejecting RPCSEC_GSS call: no GSS processor configured",
+			"xid", fmt.Sprintf("0x%x", call.XID), "client", clientAddr,
+			"program", call.Program, "procedure", call.Procedure)
+		authErrReply, makeErr := rpc.MakeAuthErrorReply(call.XID, rpc.AuthTooWeak)
+		if makeErr != nil {
+			return fmt.Errorf("make auth error reply: %w", makeErr)
+		}
+		return c.writeReply(call.XID, authErrReply)
+	}
+
 	if call.GetAuthFlavor() == rpc.AuthRPCSECGSS && c.server.gssProcessor != nil {
 		// The RPCSEC_GSS DATA call verifier is a MIC over the marshalled RPC
 		// call header (XID..end-of-credential). Capture that exact byte range
