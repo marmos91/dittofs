@@ -879,7 +879,8 @@ func handleFormatMismatch(err error, stderr *os.File) bool {
 	if err == nil {
 		return false
 	}
-	if !errors.Is(err, block.ErrFutureFormat) && !errors.Is(err, journal.ErrFutureFormat) {
+	if !errors.Is(err, block.ErrFutureFormat) && !errors.Is(err, journal.ErrFutureFormat) &&
+		!errors.Is(err, shares.ErrLegacyLocalFormat) {
 		return false
 	}
 	_, _ = fmt.Fprintln(stderr, formatMismatchDirective(err))
@@ -966,8 +967,17 @@ No data has been modified.`, err)
 	}
 	return fmt.Sprintf(`Refusing to start: %s.
 
-This share holds a pre-journal blobs/+logs/ layout that this build cannot read
-directly. The bytes are intact on disk — the migration converts them in place
-at startup once the share is configured with a remote, or re-ingests them from
-the append logs for a local-only share.`, err)
+This share holds a pre-journal blobs/+logs/ layout that this build cannot read.
+Opening it as an empty journal would serve every stored file as zeros, so the
+daemon stops instead. Nothing on disk has been modified.
+
+This build carries no migration for that layout. To recover:
+  - reinstall the release that wrote the share, which migrates it in place, and
+    upgrade again once it has, or
+  - restore the snapshot taken before the upgrade.
+
+Do not start a share on this directory expecting it to re-ingest: for a
+local-only share compacted before the upgrade, the index that locates bytes
+inside blobs/ is dropped by the metadata migrations, and those bytes cannot be
+recovered from the directory alone.`, err)
 }

@@ -1121,6 +1121,13 @@ type durableOverrideSetter interface {
 // gate writes. applyDurableOverride (at the call site) applies config["durable"]
 // to the returned store via its SetDurable.
 func openJournalStore(shareDir string, maxDisk, maxLogBytes int64, cfg journal.Config) (*journal.Store, error) {
+	// Refuse a pre-journal directory before journal.Open stamps an empty one
+	// over it. journal cannot make this call itself: it sees only shareDir/journal
+	// and, finding no format stamp there, correctly adopts the directory as new.
+	// The legacy bytes sit one level up, in a layout only this package knows.
+	if err := checkLegacyLayout(shareDir); err != nil {
+		return nil, err
+	}
 	cfg.MaxLocalBytes = maxDisk
 	cfg.MaxLogBytes = maxLogBytes
 	// slog.SetDefault routes the configured process logger here.
