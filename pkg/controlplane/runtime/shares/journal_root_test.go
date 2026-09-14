@@ -83,3 +83,32 @@ func TestCheckJournalRoot_RefusesWhenNoRootConfigured(t *testing.T) {
 		t.Fatalf("got %v, want a wrapped ErrJournalRootMismatch", err)
 	}
 }
+
+// TestShareJournalDir_KeepsEveryShareUnderTheSharesDirectory pins the one name
+// shape that escaped it: dots survive escaping, so "/.." used to resolve to the
+// journal root itself.
+func TestShareJournalDir_KeepsEveryShareUnderTheSharesDirectory(t *testing.T) {
+	const root = "/srv/blocks"
+	container := root + "/shares"
+
+	for _, name := range []string{"/..", "/.", "/../../etc", "/a/b", "/normal", "/"} {
+		got := ShareJournalDir(root, name)
+		if got != container && !strings.HasPrefix(got, container+"/") {
+			t.Errorf("ShareJournalDir(%q) = %q, which is outside %q", name, got, container)
+		}
+	}
+}
+
+// TestShareJournalDir_DistinctNamesGetDistinctDirectories guards the escaping
+// from collapsing two shares onto one journal.
+func TestShareJournalDir_DistinctNamesGetDistinctDirectories(t *testing.T) {
+	const root = "/srv/blocks"
+	seen := map[string]string{}
+	for _, name := range []string{"/..", "/.", "/a", "/a/b", "/normal"} {
+		got := ShareJournalDir(root, name)
+		if prev, dup := seen[got]; dup {
+			t.Errorf("shares %q and %q both resolve to %q", prev, name, got)
+		}
+		seen[got] = name
+	}
+}
