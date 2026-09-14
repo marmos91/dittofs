@@ -41,17 +41,9 @@ func setupBlockStoreTest(t *testing.T) (store.Store, *BlockStoreHandler) {
 	return cpStore, handler
 }
 
-// withBlockStoreKind creates a request with a chi URL param "kind" set.
-func withBlockStoreKind(r *http.Request, kind string) *http.Request {
+// withBlockStoreName creates a request with the chi URL param "name" set.
+func withBlockStoreName(r *http.Request, name string) *http.Request {
 	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("kind", kind)
-	return r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, rctx))
-}
-
-// withBlockStoreKindAndName creates a request with chi URL params "kind" and "name" set.
-func withBlockStoreKindAndName(r *http.Request, kind, name string) *http.Request {
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("kind", kind)
 	rctx.URLParams.Add("name", name)
 	return r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, rctx))
 }
@@ -64,9 +56,8 @@ func TestBlockStoreHandler_Create(t *testing.T) {
 		Type:   "fs",
 		Config: `{"path":"` + t.TempDir() + `"}`,
 	})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/store/block/local", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/store/block", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	req = withBlockStoreKind(req, "local")
 	w := httptest.NewRecorder()
 
 	handler.Create(w, req)
@@ -90,182 +81,6 @@ func TestBlockStoreHandler_Create(t *testing.T) {
 	}
 }
 
-func TestBlockStoreHandler_Create_InvalidKind(t *testing.T) {
-	_, handler := setupBlockStoreTest(t)
-
-	body, _ := json.Marshal(CreateBlockStoreRequest{
-		Name: "bad-store",
-		Type: "fs",
-	})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/store/block/invalid", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req = withBlockStoreKind(req, "invalid")
-	w := httptest.NewRecorder()
-
-	handler.Create(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("Create(invalid kind) status = %d, want %d, body = %s", w.Code, http.StatusBadRequest, w.Body.String())
-	}
-}
-
-func TestBlockStoreHandler_Create_TypeKindMismatch(t *testing.T) {
-	_, handler := setupBlockStoreTest(t)
-
-	tests := []struct {
-		name     string
-		kind     string
-		storeTyp string
-	}{
-		{"s3 with local kind", "local", "s3"},
-		{"fs with remote kind", "remote", "fs"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			body, _ := json.Marshal(CreateBlockStoreRequest{
-				Name: "mismatched-store",
-				Type: tt.storeTyp,
-			})
-			req := httptest.NewRequest(http.MethodPost, "/api/v1/store/block/"+tt.kind, bytes.NewReader(body))
-			req.Header.Set("Content-Type", "application/json")
-			req = withBlockStoreKind(req, tt.kind)
-			w := httptest.NewRecorder()
-
-			handler.Create(w, req)
-
-			if w.Code != http.StatusBadRequest {
-				t.Errorf("Create(%s) status = %d, want %d, body = %s", tt.name, w.Code, http.StatusBadRequest, w.Body.String())
-			}
-		})
-	}
-}
-
-func TestBlockStoreHandler_Create_FS_AutoCreatesBaseDir(t *testing.T) {
-	_, handler := setupBlockStoreTest(t)
-
-	// Path does not exist yet; Create must materialise it.
-	basePath := filepath.Join(t.TempDir(), "fresh", "store")
-
-	body, _ := json.Marshal(CreateBlockStoreRequest{
-		Name:   "auto-mkdir",
-		Type:   "fs",
-		Config: `{"path":"` + basePath + `"}`,
-	})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/store/block/local", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req = withBlockStoreKind(req, "local")
-	w := httptest.NewRecorder()
-
-	handler.Create(w, req)
-
-	if w.Code != http.StatusCreated {
-		t.Fatalf("Create() status = %d, want %d, body = %s", w.Code, http.StatusCreated, w.Body.String())
-	}
-	info, err := os.Stat(basePath)
-	if err != nil {
-		t.Fatalf("Expected base dir created at %s, stat failed: %v", basePath, err)
-	}
-	if !info.IsDir() {
-		t.Errorf("Expected %s to be a directory", basePath)
-	}
-}
-
-func TestBlockStoreHandler_Create_FS_MissingPath(t *testing.T) {
-	_, handler := setupBlockStoreTest(t)
-
-	body, _ := json.Marshal(CreateBlockStoreRequest{
-		Name: "no-path",
-		Type: "fs",
-	})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/store/block/local", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req = withBlockStoreKind(req, "local")
-	w := httptest.NewRecorder()
-
-	handler.Create(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("Create(no path) status = %d, want %d, body = %s", w.Code, http.StatusBadRequest, w.Body.String())
-	}
-}
-
-func TestBlockStoreHandler_Create_FS_UncreatablePath(t *testing.T) {
-	_, handler := setupBlockStoreTest(t)
-
-	// /dev/null is a char device, MkdirAll under it must fail.
-	body, _ := json.Marshal(CreateBlockStoreRequest{
-		Name:   "bad-path",
-		Type:   "fs",
-		Config: `{"path":"/dev/null/cannot-create"}`,
-	})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/store/block/local", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req = withBlockStoreKind(req, "local")
-	w := httptest.NewRecorder()
-
-	handler.Create(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("Create(uncreatable path) status = %d, want %d, body = %s", w.Code, http.StatusBadRequest, w.Body.String())
-	}
-}
-
-func TestBlockStoreHandler_Create_FS_RelativePath(t *testing.T) {
-	_, handler := setupBlockStoreTest(t)
-
-	body, _ := json.Marshal(CreateBlockStoreRequest{
-		Name:   "rel-path",
-		Type:   "fs",
-		Config: `{"path":"relative/dir"}`,
-	})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/store/block/local", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req = withBlockStoreKind(req, "local")
-	w := httptest.NewRecorder()
-
-	handler.Create(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("Create(relative path) status = %d, want %d, body = %s", w.Code, http.StatusBadRequest, w.Body.String())
-	}
-}
-
-// TestBlockStoreHandler_Create_FS_TildePath is the dittofs-pro #110 / dittofs
-// #391 regression: a ~-prefixed path must be expanded before the IsAbs guard,
-// so users configuring "~/foo" in the UI are not rejected.
-func TestBlockStoreHandler_Create_FS_TildePath(t *testing.T) {
-	if stdruntime.GOOS == "windows" {
-		t.Skip("tilde expansion test uses HOME redirection (not applicable on Windows)")
-	}
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	_, handler := setupBlockStoreTest(t)
-
-	body, _ := json.Marshal(CreateBlockStoreRequest{
-		Name:   "tilde-path",
-		Type:   "fs",
-		Config: `{"path":"~/localstore"}`,
-	})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/store/block/local", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req = withBlockStoreKind(req, "local")
-	w := httptest.NewRecorder()
-
-	handler.Create(w, req)
-
-	if w.Code != http.StatusCreated {
-		t.Fatalf("Create(~/localstore) status = %d, want %d, body = %s", w.Code, http.StatusCreated, w.Body.String())
-	}
-	expanded := filepath.Join(home, "localstore")
-	if info, err := os.Stat(expanded); err != nil {
-		t.Fatalf("Expected expanded path %s created, stat failed: %v", expanded, err)
-	} else if !info.IsDir() {
-		t.Errorf("Expected %s to be a directory", expanded)
-	}
-}
-
 func TestBlockStoreHandler_Create_S3_MissingCredentials(t *testing.T) {
 	_, handler := setupBlockStoreTest(t)
 
@@ -285,7 +100,7 @@ func TestBlockStoreHandler_Create_S3_MissingCredentials(t *testing.T) {
 				Type:   "s3",
 				Config: tt.config,
 			})
-			req := httptest.NewRequest(http.MethodPost, "/api/v1/store/block/remote", bytes.NewReader(body))
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/store/block", bytes.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
 			req = withBlockStoreKind(req, "remote")
 			w := httptest.NewRecorder()
@@ -299,56 +114,24 @@ func TestBlockStoreHandler_Create_S3_MissingCredentials(t *testing.T) {
 	}
 }
 
-func TestBlockStoreHandler_Update_FS_RevalidatesPath(t *testing.T) {
-	cpStore, handler := setupBlockStoreTest(t)
-	ctx := context.Background()
-
-	initialPath := t.TempDir()
-	bs := &models.BlockStoreConfig{
-		ID: uuid.New().String(), Name: "revalidate", Kind: models.BlockStoreKindLocal, Type: "fs",
-		Config:    `{"path":"` + initialPath + `"}`,
-		CreatedAt: time.Now(),
-	}
-	cpStore.CreateBlockStore(ctx, bs)
-
-	// Path does not exist yet; Update must materialise it.
-	newPath := filepath.Join(t.TempDir(), "moved", "store")
-	newConfig := `{"path":"` + newPath + `"}`
-	body, _ := json.Marshal(UpdateBlockStoreRequest{Config: &newConfig})
-	req := httptest.NewRequest(http.MethodPut, "/api/v1/store/block/local/revalidate", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req = withBlockStoreKindAndName(req, "local", "revalidate")
-	w := httptest.NewRecorder()
-
-	handler.Update(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("Update() status = %d, want %d, body = %s", w.Code, http.StatusOK, w.Body.String())
-	}
-	if _, err := os.Stat(newPath); err != nil {
-		t.Errorf("Expected new path %s created by Update, stat failed: %v", newPath, err)
-	}
-}
-
 func TestBlockStoreHandler_List(t *testing.T) {
 	cpStore, handler := setupBlockStoreTest(t)
 	ctx := context.Background()
 
 	// Create local and remote stores
 	localStore := &models.BlockStoreConfig{
-		ID: uuid.New().String(), Name: "local-1", Kind: models.BlockStoreKindLocal, Type: "fs",
+		ID: uuid.New().String(), Name: "local-1", Type: "fs",
 		CreatedAt: time.Now(),
 	}
 	remoteStore := &models.BlockStoreConfig{
-		ID: uuid.New().String(), Name: "remote-1", Kind: models.BlockStoreKindRemote, Type: "s3",
+		ID: uuid.New().String(), Name: "remote-1", Type: "s3",
 		CreatedAt: time.Now(),
 	}
 	cpStore.CreateBlockStore(ctx, localStore)
 	cpStore.CreateBlockStore(ctx, remoteStore)
 
 	// List remote stores
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/store/block/remote", nil)
-	req = withBlockStoreKind(req, "remote")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/store/block", nil)
 	w := httptest.NewRecorder()
 
 	handler.List(w, req)
@@ -372,8 +155,8 @@ func TestBlockStoreHandler_List(t *testing.T) {
 func TestBlockStoreHandler_Get_NotFound(t *testing.T) {
 	_, handler := setupBlockStoreTest(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/store/block/local/nonexistent", nil)
-	req = withBlockStoreKindAndName(req, "local", "nonexistent")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/store/block/nonexistent", nil)
+	req = withBlockStoreName(req, "nonexistent")
 	w := httptest.NewRecorder()
 
 	handler.Get(w, req)
@@ -396,7 +179,7 @@ func TestBlockStoreHandler_Delete_InUse(t *testing.T) {
 
 	// Create a local block store
 	blockStore := &models.BlockStoreConfig{
-		ID: uuid.New().String(), Name: "in-use-store", Kind: models.BlockStoreKindLocal, Type: "fs",
+		ID: uuid.New().String(), Name: "in-use-store", Type: "fs",
 		CreatedAt: time.Now(),
 	}
 	cpStore.CreateBlockStore(ctx, blockStore)
@@ -406,7 +189,7 @@ func TestBlockStoreHandler_Delete_InUse(t *testing.T) {
 		ID:                uuid.New().String(),
 		Name:              "/test-share",
 		MetadataStoreID:   metaStore.ID,
-		LocalBlockStoreID: blockStore.ID,
+		BlockStoreID:      blockStore.ID,
 		DefaultPermission: "read-write",
 		CreatedAt:         time.Now(),
 		UpdatedAt:         time.Now(),
@@ -414,8 +197,8 @@ func TestBlockStoreHandler_Delete_InUse(t *testing.T) {
 	cpStore.CreateShare(ctx, share)
 
 	// Try to delete the in-use block store
-	req := httptest.NewRequest(http.MethodDelete, "/api/v1/store/block/local/in-use-store", nil)
-	req = withBlockStoreKindAndName(req, "local", "in-use-store")
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/store/block/in-use-store", nil)
+	req = withBlockStoreName(req, "in-use-store")
 	w := httptest.NewRecorder()
 
 	handler.Remove(w, req)
@@ -428,8 +211,8 @@ func TestBlockStoreHandler_Delete_InUse(t *testing.T) {
 func TestBlockStoreHandler_Delete_NotFound(t *testing.T) {
 	_, handler := setupBlockStoreTest(t)
 
-	req := httptest.NewRequest(http.MethodDelete, "/api/v1/store/block/local/nonexistent", nil)
-	req = withBlockStoreKindAndName(req, "local", "nonexistent")
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/store/block/nonexistent", nil)
+	req = withBlockStoreName(req, "nonexistent")
 	w := httptest.NewRecorder()
 
 	handler.Remove(w, req)
@@ -471,13 +254,13 @@ func TestShareBlockStore_CreateWithLocal(t *testing.T) {
 	cpStore.CreateMetadataStore(ctx, metaStore)
 
 	localStore := &models.BlockStoreConfig{
-		ID: uuid.New().String(), Name: "local-fs", Kind: models.BlockStoreKindLocal, Type: "fs",
+		ID: uuid.New().String(), Name: "local-fs", Type: "fs",
 		CreatedAt: time.Now(),
 	}
 	cpStore.CreateBlockStore(ctx, localStore)
 
 	remoteStore := &models.BlockStoreConfig{
-		ID: uuid.New().String(), Name: "remote-s3", Kind: models.BlockStoreKindRemote, Type: "s3",
+		ID: uuid.New().String(), Name: "remote-s3", Type: "s3",
 		CreatedAt: time.Now(),
 	}
 	cpStore.CreateBlockStore(ctx, remoteStore)
@@ -486,7 +269,7 @@ func TestShareBlockStore_CreateWithLocal(t *testing.T) {
 	body, _ := json.Marshal(CreateShareRequest{
 		Name:             "/test-export",
 		MetadataStoreID:  "meta-1",
-		LocalBlockStore:  "local-fs",
+		BlockStore:       "local-fs",
 		RemoteBlockStore: &remoteName,
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/shares", bytes.NewReader(body))
@@ -503,8 +286,8 @@ func TestShareBlockStore_CreateWithLocal(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("Failed to unmarshal response: %v", err)
 	}
-	if resp.LocalBlockStoreID != localStore.ID {
-		t.Errorf("LocalBlockStoreID = %s, want %s", resp.LocalBlockStoreID, localStore.ID)
+	if resp.BlockStoreID != localStore.ID {
+		t.Errorf("LocalBlockStoreID = %s, want %s", resp.BlockStoreID, localStore.ID)
 	}
 	if resp.RemoteBlockStoreID == nil || *resp.RemoteBlockStoreID != remoteStore.ID {
 		t.Errorf("RemoteBlockStoreID = %v, want %s", resp.RemoteBlockStoreID, remoteStore.ID)
@@ -538,63 +321,18 @@ func TestShareBlockStore_CreateMissingLocal(t *testing.T) {
 	}
 }
 
-func TestShareBlockStore_CreateLocalOnly(t *testing.T) {
-	cpStore, handler := setupShareBlockStoreTest(t)
-	ctx := context.Background()
-
-	// Create prerequisite stores
-	metaStore := &models.MetadataStoreConfig{
-		ID: uuid.New().String(), Name: "meta-1", Type: "memory",
-		CreatedAt: time.Now(),
-	}
-	cpStore.CreateMetadataStore(ctx, metaStore)
-
-	localStore := &models.BlockStoreConfig{
-		ID: uuid.New().String(), Name: "local-fs", Kind: models.BlockStoreKindLocal, Type: "fs",
-		CreatedAt: time.Now(),
-	}
-	cpStore.CreateBlockStore(ctx, localStore)
-
-	body, _ := json.Marshal(CreateShareRequest{
-		Name:            "/test-export-local",
-		MetadataStoreID: "meta-1",
-		LocalBlockStore: "local-fs",
-		// remote_block_store is null -- local-only share
-	})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/shares", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-
-	handler.Create(w, req)
-
-	if w.Code != http.StatusCreated {
-		t.Fatalf("Create(local-only) status = %d, want %d, body = %s", w.Code, http.StatusCreated, w.Body.String())
-	}
-
-	var resp ShareResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("Failed to unmarshal response: %v", err)
-	}
-	if resp.LocalBlockStoreID != localStore.ID {
-		t.Errorf("LocalBlockStoreID = %s, want %s", resp.LocalBlockStoreID, localStore.ID)
-	}
-	if resp.RemoteBlockStoreID != nil {
-		t.Errorf("RemoteBlockStoreID = %v, want nil (local-only share)", resp.RemoteBlockStoreID)
-	}
-}
-
 func TestBlockStoreHandler_HealthCheck_LocalMemory(t *testing.T) {
 	cpStore, handler := setupBlockStoreTest(t)
 	ctx := context.Background()
 
 	bs := &models.BlockStoreConfig{
-		ID: uuid.New().String(), Name: "mem-local", Kind: models.BlockStoreKindLocal, Type: "memory",
+		ID: uuid.New().String(), Name: "mem-local", Type: "memory",
 		CreatedAt: time.Now(),
 	}
 	cpStore.CreateBlockStore(ctx, bs)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/store/block/local/mem-local/health", nil)
-	req = withBlockStoreKindAndName(req, "local", "mem-local")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/store/block/mem-local/health", nil)
+	req = withBlockStoreName(req, "mem-local")
 	w := httptest.NewRecorder()
 
 	handler.HealthCheck(w, req)
@@ -615,79 +353,18 @@ func TestBlockStoreHandler_HealthCheck_LocalMemory(t *testing.T) {
 	}
 }
 
-func TestBlockStoreHandler_HealthCheck_LocalFS_Healthy(t *testing.T) {
-	cpStore, handler := setupBlockStoreTest(t)
-	ctx := context.Background()
-
-	dir := t.TempDir()
-	bs := &models.BlockStoreConfig{
-		ID: uuid.New().String(), Name: "fs-local", Kind: models.BlockStoreKindLocal, Type: "fs",
-		Config:    `{"path":"` + dir + `"}`,
-		CreatedAt: time.Now(),
-	}
-	cpStore.CreateBlockStore(ctx, bs)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/store/block/local/fs-local/health", nil)
-	req = withBlockStoreKindAndName(req, "local", "fs-local")
-	w := httptest.NewRecorder()
-
-	handler.HealthCheck(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("HealthCheck(local/fs) status = %d, want %d, body = %s", w.Code, http.StatusOK, w.Body.String())
-	}
-
-	var resp BlockStoreHealthResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("Failed to unmarshal response: %v", err)
-	}
-	if !resp.Healthy {
-		t.Errorf("Expected healthy=true, got false")
-	}
-}
-
-func TestBlockStoreHandler_HealthCheck_LocalFS_PathNotExist(t *testing.T) {
-	cpStore, handler := setupBlockStoreTest(t)
-	ctx := context.Background()
-
-	bs := &models.BlockStoreConfig{
-		ID: uuid.New().String(), Name: "fs-bad", Kind: models.BlockStoreKindLocal, Type: "fs",
-		Config:    `{"path":"/nonexistent/path/that/does/not/exist"}`,
-		CreatedAt: time.Now(),
-	}
-	cpStore.CreateBlockStore(ctx, bs)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/store/block/local/fs-bad/health", nil)
-	req = withBlockStoreKindAndName(req, "local", "fs-bad")
-	w := httptest.NewRecorder()
-
-	handler.HealthCheck(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("HealthCheck(local/fs bad path) status = %d, want %d, body = %s", w.Code, http.StatusOK, w.Body.String())
-	}
-
-	var resp BlockStoreHealthResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("Failed to unmarshal response: %v", err)
-	}
-	if resp.Healthy {
-		t.Errorf("Expected healthy=false for non-existent path")
-	}
-}
-
 func TestBlockStoreHandler_HealthCheck_RemoteMemory(t *testing.T) {
 	cpStore, handler := setupBlockStoreTest(t)
 	ctx := context.Background()
 
 	bs := &models.BlockStoreConfig{
-		ID: uuid.New().String(), Name: "mem-remote", Kind: models.BlockStoreKindRemote, Type: "memory",
+		ID: uuid.New().String(), Name: "mem-remote", Type: "memory",
 		CreatedAt: time.Now(),
 	}
 	cpStore.CreateBlockStore(ctx, bs)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/store/block/remote/mem-remote/health", nil)
-	req = withBlockStoreKindAndName(req, "remote", "mem-remote")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/store/block/mem-remote/health", nil)
+	req = withBlockStoreName(req, "mem-remote")
 	w := httptest.NewRecorder()
 
 	handler.HealthCheck(w, req)
@@ -708,8 +385,8 @@ func TestBlockStoreHandler_HealthCheck_RemoteMemory(t *testing.T) {
 func TestBlockStoreHandler_HealthCheck_NotFound(t *testing.T) {
 	_, handler := setupBlockStoreTest(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/store/block/local/nonexistent/health", nil)
-	req = withBlockStoreKindAndName(req, "local", "nonexistent")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/store/block/nonexistent/health", nil)
+	req = withBlockStoreName(req, "nonexistent")
 	w := httptest.NewRecorder()
 
 	handler.HealthCheck(w, req)
@@ -719,65 +396,6 @@ func TestBlockStoreHandler_HealthCheck_NotFound(t *testing.T) {
 	}
 }
 
-func TestBlockStoreHandler_HealthCheck_InvalidKind(t *testing.T) {
-	_, handler := setupBlockStoreTest(t)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/store/block/invalid/test/health", nil)
-	req = withBlockStoreKindAndName(req, "invalid", "test")
-	w := httptest.NewRecorder()
-
-	handler.HealthCheck(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("HealthCheck(invalid kind) status = %d, want %d", w.Code, http.StatusBadRequest)
-	}
-}
-
-func TestBlockStoreHandler_Update_DoesNotChangeKind(t *testing.T) {
-	cpStore, handler := setupBlockStoreTest(t)
-	ctx := context.Background()
-
-	// Create a local block store
-	blockStore := &models.BlockStoreConfig{
-		ID: uuid.New().String(), Name: "update-test", Kind: models.BlockStoreKindLocal, Type: "fs",
-		CreatedAt: time.Now(),
-	}
-	cpStore.CreateBlockStore(ctx, blockStore)
-
-	// Update the store's type but kind should stay local
-	newType := "memory"
-	body, _ := json.Marshal(UpdateBlockStoreRequest{
-		Type: &newType,
-	})
-	req := httptest.NewRequest(http.MethodPut, "/api/v1/store/block/local/update-test", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req = withBlockStoreKindAndName(req, "local", "update-test")
-	w := httptest.NewRecorder()
-
-	handler.Update(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("Update() status = %d, want %d, body = %s", w.Code, http.StatusOK, w.Body.String())
-	}
-
-	var resp BlockStoreResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("Failed to unmarshal response: %v", err)
-	}
-	if resp.Kind != models.BlockStoreKindLocal {
-		t.Errorf("Kind after update = %s, want local (unchanged)", resp.Kind)
-	}
-	if resp.Type != "memory" {
-		t.Errorf("Type after update = %s, want memory", resp.Type)
-	}
-}
-
-// --- U-E status tests ---
-
-// setupBlockStoreTestWithRuntime mirrors setupBlockStoreTest but
-// wires a real runtime so the runtime-backed status paths can be
-// exercised. A nil-runtime fixture (setupBlockStoreTest) keeps the
-// older tests decoupled from the runtime package.
 func setupBlockStoreTestWithRuntime(t *testing.T) (store.Store, *BlockStoreHandler) {
 	t.Helper()
 
@@ -798,13 +416,13 @@ func TestBlockStoreHandler_Status_OK(t *testing.T) {
 	ctx := context.Background()
 
 	bs := &models.BlockStoreConfig{
-		ID: uuid.New().String(), Name: "mem-local", Kind: models.BlockStoreKindLocal, Type: "memory",
+		ID: uuid.New().String(), Name: "mem-local", Type: "memory",
 		CreatedAt: time.Now(),
 	}
 	cpStore.CreateBlockStore(ctx, bs)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/store/block/local/mem-local/status", nil)
-	req = withBlockStoreKindAndName(req, "local", "mem-local")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/store/block/mem-local/status", nil)
+	req = withBlockStoreName(req, "mem-local")
 	w := httptest.NewRecorder()
 
 	handler.Status(w, req)
@@ -827,8 +445,8 @@ func TestBlockStoreHandler_Status_OK(t *testing.T) {
 func TestBlockStoreHandler_Status_NotFound(t *testing.T) {
 	_, handler := setupBlockStoreTestWithRuntime(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/store/block/local/nope/status", nil)
-	req = withBlockStoreKindAndName(req, "local", "nope")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/store/block/nope/status", nil)
+	req = withBlockStoreName(req, "nope")
 	w := httptest.NewRecorder()
 
 	handler.Status(w, req)
@@ -843,12 +461,11 @@ func TestBlockStoreHandler_List_IncludesStatus(t *testing.T) {
 	ctx := context.Background()
 
 	cpStore.CreateBlockStore(ctx, &models.BlockStoreConfig{
-		ID: uuid.New().String(), Name: "a", Kind: models.BlockStoreKindLocal, Type: "memory",
+		ID: uuid.New().String(), Name: "a", Type: "memory",
 		CreatedAt: time.Now(),
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/store/block/local", nil)
-	req = withBlockStoreKind(req, "local")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/store/block", nil)
 	w := httptest.NewRecorder()
 
 	handler.List(w, req)
@@ -872,12 +489,12 @@ func TestBlockStoreHandler_Get_IncludesStatus(t *testing.T) {
 	ctx := context.Background()
 
 	cpStore.CreateBlockStore(ctx, &models.BlockStoreConfig{
-		ID: uuid.New().String(), Name: "g", Kind: models.BlockStoreKindLocal, Type: "memory",
+		ID: uuid.New().String(), Name: "g", Type: "memory",
 		CreatedAt: time.Now(),
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/store/block/local/g", nil)
-	req = withBlockStoreKindAndName(req, "local", "g")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/store/block/g", nil)
+	req = withBlockStoreName(req, "g")
 	w := httptest.NewRecorder()
 
 	handler.Get(w, req)
@@ -923,16 +540,16 @@ func TestBlockStoreHandler_Update_EncryptionCannotBeRemoved(t *testing.T) {
 		t.Helper()
 		cpStore, handler := setupBlockStoreTest(t)
 		bs := &models.BlockStoreConfig{
-			ID: uuid.New().String(), Name: "enc-test", Kind: models.BlockStoreKindRemote,
+			ID: uuid.New().String(), Name: "enc-test",
 			Type: "s3", Config: initial, CreatedAt: time.Now(),
 		}
 		if _, err := cpStore.CreateBlockStore(context.Background(), bs); err != nil {
 			t.Fatalf("CreateBlockStore: %v", err)
 		}
 		body, _ := json.Marshal(UpdateBlockStoreRequest{Config: &cfg})
-		req := httptest.NewRequest(http.MethodPut, "/api/v1/store/block/remote/enc-test", bytes.NewReader(body))
+		req := httptest.NewRequest(http.MethodPut, "/api/v1/store/block/enc-test", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
-		req = withBlockStoreKindAndName(req, "remote", "enc-test")
+		req = withBlockStoreName(req, "enc-test")
 		w := httptest.NewRecorder()
 		handler.Update(w, req)
 		return w

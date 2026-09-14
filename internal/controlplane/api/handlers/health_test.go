@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/health"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -246,6 +247,9 @@ func TestReadiness_WithSharesNoAdapters_ReturnsOK(t *testing.T) {
 		t.Fatalf("Failed to register metadata store: %v", err)
 	}
 
+	// Every share opens a journal under the server-level root.
+	reg.SetLocalStoreDefaults(&shares.LocalStoreDefaults{JournalRoot: t.TempDir()})
+
 	// Add a share
 	shareConfig := &runtime.ShareConfig{
 		Name:          "/test",
@@ -297,6 +301,9 @@ func TestReadiness_WithSharesAndAdapters_ReturnsOK(t *testing.T) {
 	if err := reg.RegisterMetadataStore("test-meta", metaStore); err != nil {
 		t.Fatalf("Failed to register metadata store: %v", err)
 	}
+
+	// Every share opens a journal under the server-level root.
+	reg.SetLocalStoreDefaults(&shares.LocalStoreDefaults{JournalRoot: t.TempDir()})
 
 	// Add a share
 	shareConfig := &runtime.ShareConfig{

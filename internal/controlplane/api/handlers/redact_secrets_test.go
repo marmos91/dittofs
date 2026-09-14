@@ -104,7 +104,6 @@ func TestBlockStoreToResponse_RedactsConfig(t *testing.T) {
 	m := &models.BlockStoreConfig{
 		ID:        "id1",
 		Name:      "remote-s3",
-		Kind:      models.BlockStoreKindRemote,
 		Type:      "s3",
 		Config:    `{"bucket":"b","secret_access_key":"LEAKED-S3-SECRET"}`,
 		CreatedAt: time.Now(),

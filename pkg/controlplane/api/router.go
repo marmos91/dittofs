@@ -41,7 +41,7 @@ const passwordChangePath = "/api/v1/users/me/password"
 //   - /api/v1/groups/* - Group management (admin only)
 //   - /api/v1/shares/* - Share management (admin only)
 //   - /api/v1/store/metadata/* - Metadata store management (admin only)
-//   - /api/v1/store/block/{kind}/* - Block store management (admin only)
+//   - /api/v1/store/block/* - Block store management (admin only)
 //   - GET /api/v1/adapters - Adapter list (admin + operator)
 //   - /api/v1/adapters/* - Adapter management (admin only)
 //   - /api/v1/adapters/{type}/settings - Adapter settings (admin only)
@@ -304,8 +304,8 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				// Per-share GC trigger + last-run summary.
 				// Mounted under /shares/{name}/blockstore/... so the route
 				// pattern stays consistent with stats/evict and avoids the
-				// /store/block/{kind} wildcard collision (chi cannot disambiguate
-				// {kind} vs {name} at the same segment).
+				// /store/block/{name} wildcard collision (chi cannot
+				// disambiguate two wildcards at the same segment).
 				r.Post("/{name}/blockstore/gc", blockGCHandler.RunGC)
 				r.Get("/{name}/blockstore/gc/{job_id}", blockGCHandler.GCJobStatus)
 				r.Get("/{name}/blockstore/gc-status", blockGCHandler.GCStatus)
@@ -348,8 +348,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 			r.Route("/store", func(r chi.Router) {
 				r.Use(apiMiddleware.RequireAdmin())
 
-				// Block stores (local and remote) via kind URL param
-				r.Route("/block/{kind}", func(r chi.Router) {
+				r.Route("/block", func(r chi.Router) {
 					blockStoreHandler := handlers.NewBlockStoreHandler(cpStore, rt)
 					r.Post("/", blockStoreHandler.Create)
 					r.Get("/", blockStoreHandler.List)

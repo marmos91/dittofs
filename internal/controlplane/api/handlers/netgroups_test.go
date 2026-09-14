@@ -169,16 +169,16 @@ func TestDeleteNetgroup_InUse(t *testing.T) {
 	cpStore.CreateMetadataStore(ctx, metaStore)
 
 	localBlockStore := &models.BlockStoreConfig{
-		ID: uuid.New().String(), Name: "l-store", Kind: models.BlockStoreKindLocal, Type: "fs",
+		ID: uuid.New().String(), Name: "l-store", Type: "fs",
 	}
 	cpStore.CreateBlockStore(ctx, localBlockStore)
 
 	share := &models.Share{
-		ID:                uuid.New().String(),
-		Name:              "/shared",
-		MetadataStoreID:   metaStore.ID,
-		LocalBlockStoreID: localBlockStore.ID,
-		CreatedAt:         time.Now(),
+		ID:              uuid.New().String(),
+		Name:            "/shared",
+		MetadataStoreID: metaStore.ID,
+		BlockStoreID:    localBlockStore.ID,
+		CreatedAt:       time.Now(),
 	}
 	cpStore.CreateShare(ctx, share)
 
