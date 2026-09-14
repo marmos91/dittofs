@@ -60,6 +60,25 @@ type BlockstoreJournalConfig struct {
 	// evict wait.
 	BackpressureMaxWait time.Duration `mapstructure:"backpressure_max_wait" yaml:"backpressure_max_wait"`
 
+	// ChunkSize is the FastCDC minimum chunk size in bytes, the dominant knob
+	// for effective chunk size and so for random-read amplification. Average
+	// and maximum are derived from it (4x/8x) unless ChunkMax overrides the
+	// ceiling. Lower it (131072 = 128 KiB) for random-access workloads such as
+	// VM images or databases: weaker dedup and more manifest rows, but far less
+	// read amplification. Reads never re-chunk, so a change affects only newly
+	// written data. 0 keeps the built-in profile.
+	ChunkSize uint64 `mapstructure:"chunk_size" yaml:"chunk_size"`
+
+	// ChunkMax overrides the derived maximum chunk size in bytes. 0 keeps the
+	// value derived from ChunkSize.
+	ChunkMax uint64 `mapstructure:"chunk_max" yaml:"chunk_max"`
+
+	// DirtyExpire is how long a write may sit unflushed before the journal
+	// fsyncs it, bounding what a crash can lose. Negative disables the timer,
+	// leaving segment rotation as the only durability point. 0 keeps the
+	// journal's own default.
+	DirtyExpire time.Duration `mapstructure:"dirty_expire" yaml:"dirty_expire"`
+
 	// MaxLogBytes is the per-share append-log pressure budget in bytes: the
 	// on-disk append log buffers freshly-written bytes before the async
 	// rollup folds them into CAS chunks, and AppendWrite stalls
