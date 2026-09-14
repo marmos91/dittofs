@@ -102,9 +102,17 @@ func (s *Service) ReadDirectory(ctx *AuthContext, dirHandle FileHandle, cookie u
 	// READDIRPLUS / READDIR / QUERY_DIRECTORY report the same fresh mtime a
 	// direct GETATTR/LOOKUP on that subdirectory would (#1573). mergeDirTimes is
 	// a no-op for entries with a nil or non-directory Attr.
+	//
+	// Overlay pending writes for the same reason: a file entry's size and write
+	// time must be the acknowledged ones, which is what every handle read of that
+	// file reports. Writes reach the store in their own time — batched by the
+	// deferred commit, or held back while the bytes behind them are not durable —
+	// and a listing reading straight through would report a file as shorter, and
+	// older, than a GETATTR taken the same moment says it is.
 	for i := range entries {
 		entries[i].Cookie = s.cookies.GenerateCookie(dirHandle, entries[i].Name)
 		s.mergeDirTimes(entries[i].Handle, entries[i].Attr)
+		s.mergePendingWrites(entries[i].Handle, entries[i].Attr)
 	}
 
 	// Generate next cookie from next token
