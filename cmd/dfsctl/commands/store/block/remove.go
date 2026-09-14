@@ -1,4 +1,4 @@
-package remote
+package block
 
 import (
 	"fmt"
@@ -11,8 +11,8 @@ var removeForce bool
 
 var removeCmd = &cobra.Command{
 	Use:   "remove <name>",
-	Short: "Remove a remote block store",
-	Long: `Remove a remote block store from the DittoFS server.
+	Short: "Remove a block store",
+	Long: `Remove a block store from the DittoFS server.
 
 The server refuses removal if any share currently references the store.
 Detach the store from all shares first, then remove it. No objects are
@@ -21,13 +21,13 @@ confirmation unless --force is specified.
 
 Examples:
   # Remove with confirmation prompt
-  dfsctl store block remote remove s3-store
+  dfsctl store block remove s3-store
 
   # Remove without confirmation
-  dfsctl store block remote remove s3-store --force
+  dfsctl store block remove s3-store --force
 
   # Verify the store is gone afterward
-  dfsctl store block remote list`,
+  dfsctl store block list`,
 	Args: cobra.ExactArgs(1),
 	RunE: runRemove,
 }
@@ -44,9 +44,9 @@ func runRemove(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	return cmdutil.RunDeleteWithConfirmation("Remote block store", name, removeForce, func() error {
-		if err := client.RemoveBlockStore("remote", name); err != nil {
-			return fmt.Errorf("failed to remove remote block store: %w", err)
+	return cmdutil.RunDeleteWithConfirmation("Block store", name, removeForce, func() error {
+		if err := client.RemoveBlockStore(name); err != nil {
+			return fmt.Errorf("failed to remove block store: %w", err)
 		}
 		return nil
 	})

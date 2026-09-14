@@ -12,8 +12,7 @@ import (
 )
 
 var (
-	editLocal             string
-	editRemote            string
+	editBlockStore        string
 	editReadOnly          string
 	editEncryptData       string
 	editDefaultPermission string
@@ -44,11 +43,8 @@ Examples:
   # Edit share interactively
   dfsctl share edit /archive
 
-  # Update local block store reference
-  dfsctl share edit /archive --local new-fs-cache
-
-  # Update remote block store reference
-  dfsctl share edit /archive --remote new-s3-store
+  # Update the block store reference
+  dfsctl share edit /archive --block-store new-s3-store
 
   # Make share read-only
   dfsctl share edit /archive --read-only true
@@ -84,8 +80,7 @@ Examples:
 }
 
 func init() {
-	editCmd.Flags().StringVar(&editLocal, "local", "", "Local block store name")
-	editCmd.Flags().StringVar(&editRemote, "remote", "", "Remote block store name")
+	editCmd.Flags().StringVar(&editBlockStore, "block-store", "", "Block store name")
 	editCmd.Flags().StringVar(&editReadOnly, "read-only", "", "Set read-only (true|false)")
 	editCmd.Flags().StringVar(&editEncryptData, "encrypt-data", "", "Require SMB3 encryption (true|false)")
 	editCmd.Flags().StringVar(&editDefaultPermission, "default-permission", "", "Default permission (none|read|read-write|admin)")
@@ -113,7 +108,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	}
 
 	// Check if any flags were provided
-	hasFlags := cmd.Flags().Changed("local") || cmd.Flags().Changed("remote") ||
+	hasFlags := cmd.Flags().Changed("block-store") ||
 		cmd.Flags().Changed("read-only") || cmd.Flags().Changed("encrypt-data") ||
 		cmd.Flags().Changed("default-permission") ||
 		cmd.Flags().Changed("description") || cmd.Flags().Changed("retention") ||
@@ -136,13 +131,8 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	req := &apiclient.UpdateShareRequest{}
 	hasUpdate := false
 
-	if editLocal != "" {
-		req.LocalBlockStoreID = &editLocal
-		hasUpdate = true
-	}
-
-	if editRemote != "" {
-		req.RemoteBlockStoreID = &editRemote
+	if editBlockStore != "" {
+		req.BlockStoreID = &editBlockStore
 		hasUpdate = true
 	}
 
@@ -257,7 +247,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	}
 
 	if !hasUpdate {
-		return fmt.Errorf("no fields specified. Use --local, --remote, --read-only, --default-permission, --description, --retention, --retention-ttl, --journal-size, --read-buffer-size, --quota-bytes, --acl-canonicalize-inherited, --access-based-enumeration, --enable-trash, --trash-retention-days, --trash-restrict-empty-to-admin, --trash-max-size, or --trash-exclude")
+		return fmt.Errorf("no fields specified. Use --block-store, --read-only, --default-permission, --description, --retention, --retention-ttl, --journal-size, --read-buffer-size, --quota-bytes, --acl-canonicalize-inherited, --access-based-enumeration, --enable-trash, --trash-retention-days, --trash-restrict-empty-to-admin, --trash-max-size, or --trash-exclude")
 	}
 
 	share, err := client.UpdateShare(name, req)

@@ -47,8 +47,7 @@ Examples:
 type shareRow struct {
 	Name              string `json:"name"`
 	MetadataStore     string `json:"metadata_store"`
-	LocalBlockStore   string `json:"local_block_store"`
-	RemoteBlockStore  string `json:"remote_block_store"`
+	BlockStore        string `json:"block_store"`
 	Quota             string `json:"quota"`
 	Used              string `json:"used"`
 	DefaultPermission string `json:"default_permission"`
@@ -66,7 +65,7 @@ type ShareList []shareRow
 
 // Headers implements TableRenderer.
 func (sl ShareList) Headers() []string {
-	return []string{"NAME", "METADATA STORE", "LOCAL STORE", "REMOTE STORE", "QUOTA", "USED", "DEFAULT PERMISSION", "RETENTION", "ENABLED", "STATUS"}
+	return []string{"NAME", "METADATA STORE", "BLOCK STORE", "QUOTA", "USED", "DEFAULT PERMISSION", "RETENTION", "ENABLED", "STATUS"}
 }
 
 // Rows implements TableRenderer.
@@ -81,7 +80,7 @@ func (sl ShareList) Rows() [][]string {
 		if s.Status != "" {
 			status = s.Status
 		}
-		rows = append(rows, []string{s.Name, s.MetadataStore, s.LocalBlockStore, s.RemoteBlockStore, s.Quota, s.Used, s.DefaultPermission, s.Retention, enabled, status})
+		rows = append(rows, []string{s.Name, s.MetadataStore, s.BlockStore, s.Quota, s.Used, s.DefaultPermission, s.Retention, enabled, status})
 	}
 	return rows
 }
@@ -97,14 +96,8 @@ func buildStoreNameMaps(client *apiclient.Client) (metaMap, blockMap map[string]
 		}
 	}
 
-	// Fetch both local and remote block stores for name resolution
-	if localStores, err := client.ListBlockStores("local"); err == nil {
-		for _, s := range localStores {
-			blockMap[s.ID] = s.Name
-		}
-	}
-	if remoteStores, err := client.ListBlockStores("remote"); err == nil {
-		for _, s := range remoteStores {
+	if blockStores, err := client.ListBlockStores(); err == nil {
+		for _, s := range blockStores {
 			blockMap[s.ID] = s.Name
 		}
 	}
@@ -136,10 +129,6 @@ func runList(cmd *cobra.Command, args []string) error {
 
 	rows := make(ShareList, 0, len(shares))
 	for _, s := range shares {
-		remoteStore := "-"
-		if s.RemoteBlockStoreID != nil && *s.RemoteBlockStoreID != "" {
-			remoteStore = resolveStoreName(blockNames, *s.RemoteBlockStoreID)
-		}
 		retention := s.RetentionPolicy
 		if retention == "" {
 			retention = "lru"
@@ -159,8 +148,7 @@ func runList(cmd *cobra.Command, args []string) error {
 		rows = append(rows, shareRow{
 			Name:              s.Name,
 			MetadataStore:     resolveStoreName(metaNames, s.MetadataStoreID),
-			LocalBlockStore:   resolveStoreName(blockNames, s.LocalBlockStoreID),
-			RemoteBlockStore:  remoteStore,
+			BlockStore:        resolveStoreName(blockNames, s.BlockStoreID),
 			Quota:             quota,
 			Used:              used,
 			DefaultPermission: s.DefaultPermission,
