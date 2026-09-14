@@ -340,6 +340,25 @@ func New(config *Config) (*GORMStore, error) {
 		}
 	}
 
+	// Pre-migration: rename local_store_size to journal_size if it exists.
+	// Must run before AutoMigrate: AutoMigrate adds any column the model
+	// declares but the table lacks, so renaming afterwards would leave the
+	// operator's configured ceiling in the old column with a fresh empty one
+	// beside it, reading back as "never set".
+	if db.Migrator().HasColumn(&models.Share{}, "local_store_size") {
+		if db.Migrator().HasColumn(&models.Share{}, "journal_size") {
+			// Both columns present means an earlier upgrade added the new one
+			// without moving the values across. Which one is authoritative is
+			// not recoverable from the schema, and choosing wrong silently
+			// changes every share's size ceiling.
+			return nil, fmt.Errorf("shares table has both local_store_size and journal_size; " +
+				"copy the intended values into journal_size, drop local_store_size, and restart")
+		}
+		if err := db.Migrator().RenameColumn(&models.Share{}, "local_store_size", "journal_size"); err != nil {
+			return nil, fmt.Errorf("failed to rename local_store_size column: %w", err)
+		}
+	}
+
 	// Run auto-migration
 	if err := db.AutoMigrate(models.AllModels()...); err != nil {
 		return nil, fmt.Errorf("failed to run database migration: %w", err)
