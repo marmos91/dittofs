@@ -27,12 +27,16 @@ func newTestEngine(t *testing.T) *engine.Store {
 
 	testRemote := remotememory.New()
 	syncer := engine.NewRemoteSync(localStore, testRemote, ms, engine.DefaultConfig())
+	// Mirror the production wiring: the block-keyed remote surface plus the
+	// synced-hash store are what give the flush a transactional committer.
+	syncer.SetRemoteBlockStore(testRemote)
 
 	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:           localStore,
 		Remote:          testRemote,
 		RemoteSync:      syncer,
 		FileChunkStore:  ms,
+		SyncedHashStore: ms,
 		ReadBufferBytes: 0,
 		PrefetchWorkers: 0,
 	})

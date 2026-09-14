@@ -29,6 +29,9 @@ func newCloneTailEngine(t *testing.T, coord *fakeCoordinator, ms *metadatamemory
 	testRemote := remotememory.New()
 	syncer := engine.NewRemoteSync(localStore, testRemote, ms, engine.DefaultConfig())
 	syncer.SetSyncedHashStore(syncedHashStore)
+	// The block-keyed remote surface is what activates carve, so the sealed
+	// bytes reach the remote and the clone's manifest rows resolve on a read.
+	syncer.SetRemoteBlockStore(testRemote)
 	bs, err := engine.New(engine.BlockStoreConfig{
 		Remote:          testRemote,
 		Local:           localStore,
@@ -60,15 +63,18 @@ func writeAndSeal(t *testing.T, ctx context.Context, bs *engine.Store, payloadID
 	if err := bs.DrainRollups(ctx); err != nil {
 		t.Fatalf("DrainRollups: %v", err)
 	}
+	if err := bs.DrainAllUploads(ctx); err != nil {
+		t.Fatalf("DrainAllUploads(%s): %v", payloadID, err)
+	}
 }
 
-// TestMaterializeLocalClone_KeepsNothingPastTheSourcesSize pins the half of the
-// clone contract the local-only path used to leave undone.
+// TestCloneWholeFile_KeepsNothingPastTheSourcesSize pins the half of the clone
+// contract that is easiest to leave undone.
 //
-// That path copies real bytes over [0, srcSize) and lets the write path
-// supersede the destination's own intervals by version. Superseding is not
-// clipping, so a destination that was longer than the source keeps everything
-// past srcSize — interval, manifest row and all. The size stamped on the
+// A clone replaces the destination's content over [0, srcSize) and lets the
+// write path supersede the destination's own intervals by version. Superseding
+// is not clipping, so a destination that was longer than the source would keep
+// everything past srcSize — interval, manifest row and all. The size stamped on the
 // destination hides it from every read that clamps, which is why it stays
 // invisible until something grows the file: a grown region owes zeros, and the
 // destination would serve the bytes the clone was supposed to take away.

@@ -75,7 +75,10 @@ func (bs *Store) Healthcheck(ctx context.Context) health.Report {
 	return health.NewHealthyReport(time.Since(start))
 }
 
-// HasRemoteStore returns true if this Store has a remote store configured.
+// HasRemoteStore reports whether this Store has a remote store configured. New
+// refuses a store without one, so this is now constant for every live engine;
+// callers that branch on it are testing a configuration that can no longer
+// occur.
 func (bs *Store) HasRemoteStore() bool {
 	return bs.remote != nil
 }

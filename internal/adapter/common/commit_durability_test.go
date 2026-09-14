@@ -30,17 +30,12 @@ func newMemoryEngine(t *testing.T, remote *remotememory.Store, durableLocalOverr
 		FileChunkStore:  ms,
 		SyncedHashStore: ms,
 	}
-	if remote != nil {
-		cfg.Remote = remote
-		cfg.RemoteSync = engine.NewRemoteSync(localStore, remote, ms, engine.DefaultConfig())
-		// Mirror the production wiring (shares service): the block-keyed
-		// remote surface activates the carve path — the only upload path
-		// post-#1493. Memory local stores carve through the hash-keyed
-		// local read fallback.
-		cfg.RemoteSync.SetRemoteBlockStore(remote)
-	} else {
-		cfg.RemoteSync = engine.NewRemoteSync(localStore, nil, ms, engine.DefaultConfig())
-	}
+	cfg.Remote = remote
+	cfg.RemoteSync = engine.NewRemoteSync(localStore, remote, ms, engine.DefaultConfig())
+	// Mirror the production wiring (shares service): the block-keyed remote
+	// surface activates the carve path — the only upload path. Memory local
+	// stores carve through the hash-keyed local read fallback.
+	cfg.RemoteSync.SetRemoteBlockStore(remote)
 
 	bs, err := engine.New(cfg)
 	if err != nil {
@@ -93,31 +88,20 @@ func commitUntilDurable(t *testing.T, bs *engine.Store, payloadID string) {
 // strict durability enforcement is OPT-IN, so after a successful Flush the
 // commit seam acks unconditionally regardless of local/remote durability.
 
-// TestCommitBlockStore_Default_MemoryLocal_NoRemote_ReturnsNil is the exact
-// pjdfstest-breaking case: a volatile memory-local store with NO remote and
-// the default policy must return nil (NOT ErrNotDurableYet) from a CLOSE/
-// COMMIT after a successful flush.
-func TestCommitBlockStore_Default_MemoryLocal_NoRemote_ReturnsNil(t *testing.T) {
-	bs := newMemoryEngine(t, nil, nil) // memory local, no remote, default policy
-	payloadID := "default-mem-local-no-remote"
-	writePayload(t, bs, payloadID)
-
-	if bs.RequireDurableCommit() {
-		t.Fatal("default policy must be require_durable_commit=false")
-	}
-	if err := CommitBlockStore(context.Background(), bs, metadata.PayloadID(payloadID)); err != nil {
-		t.Fatalf("default policy: memory-local + no remote should ack (nil); got %v", err)
-	}
-}
-
-// TestCommitBlockStore_Default_MemoryLocal_NonDurableRemote_ReturnsNil asserts
-// that under the default policy even a non-durable remote does not block the
-// ack — the mirror stays async.
+// TestCommitBlockStore_Default_MemoryLocal_NonDurableRemote_ReturnsNil is the
+// exact pjdfstest-breaking case: nothing durable backs the data — a volatile
+// memory local and a non-durable remote — yet the default policy must return
+// nil (NOT ErrNotDurableYet) from a CLOSE/COMMIT after a successful flush. The
+// mirror stays async.
 func TestCommitBlockStore_Default_MemoryLocal_NonDurableRemote_ReturnsNil(t *testing.T) {
 	remote := remotememory.New() // memory remote: NOT durable by default
 	bs := newMemoryEngine(t, remote, nil)
 	payloadID := "default-mem-local-nondurable-remote"
 	writePayload(t, bs, payloadID)
+
+	if bs.RequireDurableCommit() {
+		t.Fatal("default policy must be require_durable_commit=false")
+	}
 
 	if err := CommitBlockStore(context.Background(), bs, metadata.PayloadID(payloadID)); err != nil {
 		t.Fatalf("default policy: memory-local + non-durable remote should ack (nil); got %v", err)
@@ -135,13 +119,12 @@ func strict(bs *engine.Store) *engine.Store {
 	return bs
 }
 
-// TestCommitBlockStore_Strict_FSLocal_NoRemote_ReturnsNil asserts the FAST
-// path under strict mode: a durable local (fs) store acks immediately
-// regardless of remote state. fs-local is always durable so the strict flag is
-// a no-op there.
-func TestCommitBlockStore_Strict_FSLocal_NoRemote_ReturnsNil(t *testing.T) {
-	bs := strict(newTestEngine(t)) // fs-backed local, nil remote
-	payloadID := "strict-fs-local-no-remote"
+// TestCommitBlockStore_Strict_FSLocal_ReturnsNil asserts the FAST path under
+// strict mode: a durable local (fs) store acks immediately regardless of remote
+// state. fs-local is always durable so the strict flag is a no-op there.
+func TestCommitBlockStore_Strict_FSLocal_ReturnsNil(t *testing.T) {
+	bs := strict(newTestEngine(t)) // fs-backed local over a non-durable remote
+	payloadID := "strict-fs-local"
 	writePayload(t, bs, payloadID)
 
 	if err := CommitBlockStore(context.Background(), bs, metadata.PayloadID(payloadID)); err != nil {
@@ -189,26 +172,14 @@ func TestCommitBlockStore_Strict_MemoryLocal_NonDurableRemote_NotDurableYet(t *t
 	}
 }
 
-// TestCommitBlockStore_Strict_MemoryLocal_NoRemote_NotDurableYet asserts the
-// honest failure under strict mode when nothing durable backs the data.
-func TestCommitBlockStore_Strict_MemoryLocal_NoRemote_NotDurableYet(t *testing.T) {
-	bs := strict(newMemoryEngine(t, nil, nil))
-	payloadID := "strict-mem-local-no-remote"
-	writePayload(t, bs, payloadID)
-
-	err := CommitBlockStore(context.Background(), bs, metadata.PayloadID(payloadID))
-	if !errors.Is(err, ErrNotDurableYet) {
-		t.Fatalf("strict memory-local + no remote should be ErrNotDurableYet; got %v", err)
-	}
-}
-
 // TestCommitBlockStore_Strict_ConfigOverride_FlipsBehavior asserts the
 // per-store durable override changes the commit decision under strict mode: a
-// memory local store marked durable=true now acks on the fast path (no remote
-// required).
+// memory local store marked durable=true acks on the fast path even though the
+// remote behind it is not durable.
 func TestCommitBlockStore_Strict_ConfigOverride_FlipsBehavior(t *testing.T) {
 	durable := true
-	bs := strict(newMemoryEngine(t, nil, &durable)) // memory local, FORCED durable, no remote
+	// A non-durable remote, so only the forced-durable local can produce the ack.
+	bs := strict(newMemoryEngine(t, remotememory.New(), &durable))
 	payloadID := "strict-mem-local-override-durable"
 	writePayload(t, bs, payloadID)
 

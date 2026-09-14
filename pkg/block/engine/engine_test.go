@@ -416,3 +416,29 @@ func TestCopyPayload_EmptySource(t *testing.T) {
 // engine.Delete refcount → GC path is provided by
 // TestEngine_Delete_PreservesSyncedMarker in engine_delete_test.go and
 // by the integration tests in syncer_test.go.
+
+// TestNew_RefusesAMissingRemote proves the construction guard refuses rather
+// than building a store whose cold reads would resolve as zeros. Both halves
+// matter: the engine's own remote and the one the syncer drives its uploads,
+// fetches and health probes from.
+func TestNew_RefusesAMissingRemote(t *testing.T) {
+	localStore := memory.New()
+	fbs := newStubFileChunkStore()
+	rem := remotememory.New()
+	t.Cleanup(func() { _ = rem.Close() })
+
+	if _, err := New(BlockStoreConfig{
+		Local:      localStore,
+		RemoteSync: NewRemoteSync(localStore, rem, fbs, DefaultConfig()),
+	}); err == nil {
+		t.Error("New accepted a config with no remote store")
+	}
+
+	if _, err := New(BlockStoreConfig{
+		Local:      localStore,
+		Remote:     rem,
+		RemoteSync: NewRemoteSync(localStore, nil, fbs, DefaultConfig()),
+	}); err == nil {
+		t.Error("New accepted a syncer built without a remote store")
+	}
+}
