@@ -2,7 +2,7 @@
 # Device-loss crash rig: does an acknowledged write ever come back as the right
 # size with zero content?
 #
-# Runs a DittoFS server whose metadata store and local block store both live on
+# Runs a DittoFS server whose metadata store and journal both live on
 # an ext4 filesystem over dm-flakey. Mid-write the table is swapped to
 # drop_writes, so only bytes that genuinely reached the device survive - the
 # power-cut model. `kill -9` does not reproduce this: the page cache outlives
@@ -148,6 +148,15 @@ mkfs.ext4 -q -F "/dev/mapper/$DEV" || fail "mkfs"
 mount "/dev/mapper/$DEV" "$DATA" || fail "mount"
 mkdir -p "$DATA/meta" "$DATA/blocks"
 
+# DIRTY_EXPIRE_SECONDS overrides the journal's dirty-age fsync ceiling, so a run
+# can bound the non-durable window well inside its own write window. Unset
+# leaves the shipped default in place.
+JOURNAL_DIRTY_EXPIRE=""
+if [ -n "${DIRTY_EXPIRE_SECONDS:-}" ]; then
+    JOURNAL_DIRTY_EXPIRE="
+    dirty_expire: ${DIRTY_EXPIRE_SECONDS}s"
+fi
+
 cat > "$WORK/config.yaml" <<CFG
 logging: {level: INFO, format: text, output: $WORK/dfs.log}
 controlplane:
@@ -155,20 +164,19 @@ controlplane:
   port: $API
   jwt: {secret: "$SECRET"}
 database: {type: sqlite, sqlite: {path: "$WORK/controlplane.db"}}
+blockstore:
+  journal:
+    path: $DATA/blocks$JOURNAL_DIRTY_EXPIRE
 CFG
 
 start_server || fail "server never became ready"
 dctl login --server "http://127.0.0.1:$API" --username admin --password "$PW" >/dev/null || fail "login"
 dctl store metadata add --name meta --type badger --db-path "$DATA/meta" >/dev/null || fail "metadata store"
-# DIRTY_EXPIRE_SECONDS overrides the share's dirty-age fsync ceiling, so a run
-# can bound the non-durable window well inside its own write window. Unset
-# leaves the shipped default in place.
-LOCAL_CFG="{\"path\": \"$DATA/blocks\"}"
-if [ -n "${DIRTY_EXPIRE_SECONDS:-}" ]; then
-    LOCAL_CFG="{\"path\": \"$DATA/blocks\", \"dirty_expire_seconds\": $DIRTY_EXPIRE_SECONDS}"
-fi
-dctl store block local add --name blk --type fs --config "$LOCAL_CFG" >/dev/null || fail "block store"
-dctl share create --name /crash --metadata meta --local blk --default-permission read-write >/dev/null || fail "share create"
+# The written data lives in the journal on the flaky device; the block store is
+# mandatory but holds nothing the device loss can take away, so it stays in
+# memory rather than adding a second failure domain to the rig.
+dctl store block add --name blk --type memory >/dev/null || fail "block store"
+dctl share create --name /crash --metadata meta --block-store blk --default-permission read-write >/dev/null || fail "share create"
 dctl adapter enable smb --port $SMBP >/dev/null || fail "smb adapter"
 
 mount_smb || fail "cifs mount"

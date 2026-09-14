@@ -275,31 +275,22 @@ configure_via_api() {
             ;;
     esac
 
-    # Create local block store based on config type
-    log_info "Creating local block store..."
+    # Create block store based on config type
+    log_info "Creating block store..."
     case "$CONFIG_TYPE" in
-        memory-content)
-            "$DITTOFSCTL_BIN" store block local add --name default --type memory
-            ;;
         cache-s3|postgres-s3)
-            "$DITTOFSCTL_BIN" store block local add --name default --type memory
-            log_info "Creating remote block store..."
-            "$DITTOFSCTL_BIN" store block remote add --name default --type s3 \
+            "$DITTOFSCTL_BIN" store block add --name default --type s3 \
                 --config '{"bucket":"dittofs-posix-test","region":"us-east-1","endpoint":"http://localhost:4566","force_path_style":true,"access_key_id":"test","secret_access_key":"test","allow_private_endpoint":true}'
             ;;
         *)
             # Default: memory block store
-            "$DITTOFSCTL_BIN" store block local add --name default --type memory
+            "$DITTOFSCTL_BIN" store block add --name default --type memory
             ;;
     esac
 
     # Create share
     log_info "Creating share..."
-    if [[ "$CONFIG_TYPE" == "cache-s3" || "$CONFIG_TYPE" == "postgres-s3" ]]; then
-        "$DITTOFSCTL_BIN" share create --name /export --metadata default --local default --remote default
-    else
-        "$DITTOFSCTL_BIN" share create --name /export --metadata default --local default
-    fi
+    "$DITTOFSCTL_BIN" share create --name /export --metadata default --block-store default
 
     # pjdfstest's prove(1) harness runs as root and relies on uid 0 retaining
     # POSIX superuser privileges to build/tear down the test tree (chown to

@@ -47,17 +47,17 @@ func SetupSMB3TestEnv(t *testing.T) *SMB3TestEnv {
 
 	// Create stores
 	metaStoreName := UniqueTestName("smb3meta")
-	localStoreName := UniqueTestName("smb3local")
+	blockStoreName := UniqueTestName("smb3block")
 
 	_, err := cli.CreateMetadataStore(metaStoreName, "memory")
 	require.NoError(t, err, "Should create metadata store")
 
-	_, err = cli.CreateLocalBlockStore(localStoreName, "memory")
-	require.NoError(t, err, "Should create local block store")
+	_, err = cli.CreateBlockStore(blockStoreName, "memory")
+	require.NoError(t, err, "Should create block store")
 
 	// Create share with read-write default permission
 	shareName := "/" + UniqueTestName("smb3share")
-	_, err = cli.CreateShare(shareName, metaStoreName, localStoreName,
+	_, err = cli.CreateShare(shareName, metaStoreName, blockStoreName,
 		WithShareDefaultPermission("read-write"))
 	require.NoError(t, err, "Should create share")
 
