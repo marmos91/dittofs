@@ -54,11 +54,7 @@ func PrintEntityStatus(ent Entities) {
 
 	bsRows := make([]entityRow, len(ent.BlockStores))
 	for i, b := range ent.BlockStores {
-		label := b.Name
-		if b.Kind != "" {
-			label = b.Kind + "/" + b.Name
-		}
-		bsRows[i] = entityRow{label, b.Status}
+		bsRows[i] = entityRow{b.Name, b.Status}
 	}
 	printSection("Block Stores", bsRows)
 
