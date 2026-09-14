@@ -580,7 +580,7 @@ func (h *Handler) handlePipeRead(ctx *SMBHandlerContext, req *ReadRequest, openF
 		// fails we haven't consumed a credit for a read we never issued.
 		// UnregisterByFileID rolls back the registration in that case.
 		asyncId := h.generateAsyncId()
-		pending := &pending.PendingPipeRead{
+		parked := &pending.PendingPipeRead{
 			FileID:    req.FileID,
 			SessionID: ctx.SessionID,
 			ConnID:    ctx.ConnID,
@@ -589,7 +589,7 @@ func (h *Handler) handlePipeRead(ctx *SMBHandlerContext, req *ReadRequest, openF
 			MaxLen:    int(req.Length),
 			Callback:  ctx.AsyncPipeReadCallback,
 		}
-		h.PipeReadRegistry.Register(pending)
+		h.PipeReadRegistry.Register(parked)
 
 		if ctx.TryReserveAsync == nil || !ctx.TryReserveAsync() {
 			h.PipeReadRegistry.UnregisterByFileID(req.FileID)
