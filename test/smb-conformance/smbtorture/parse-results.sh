@@ -760,11 +760,13 @@ if [[ -n "$RESULTS_DIR" ]] && [[ -d "$RESULTS_DIR" ]]; then
     if [[ "$NEW_FAILURES" -eq 0 && ${#UNEXPECTED_TRUNCATIONS[@]} -eq 0 && "$NO_RESULT" -gt 0 ]]; then
         category=inconclusive
     fi
-    # category, then the two counts the status cannot separate: a run with one
-    # new failure and one ungraded test is a one-failure run, not a two-failure
-    # one, and the reader is told about the ungraded test rather than having it
-    # folded into the regression count.
-    echo "${category} $((NEW_FAILURES + ${#UNEXPECTED_TRUNCATIONS[@]})) ${NO_RESULT}" > "${RESULTS_DIR}/verdict"
+    # category, then the three counts the status cannot separate. They are
+    # separate because they mean different things to whoever reads the summary:
+    # a new failure is a regression, a truncation is a test that stopped without
+    # saying why, and a no-result never reached the server. Folding any of them
+    # into the regression count reports work that was never graded as work that
+    # broke — the false label this whole mechanism exists to remove.
+    echo "${category} ${NEW_FAILURES} ${#UNEXPECTED_TRUNCATIONS[@]} ${NO_RESULT}" > "${RESULTS_DIR}/verdict"
 fi
 if [[ "$BAD" -gt 254 ]]; then
     BAD=254

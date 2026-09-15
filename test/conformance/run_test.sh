@@ -84,16 +84,16 @@ exit 3
 EOF
 
 # Graders that also write the verdict sidecar, the way parse-results.sh does:
-# "category failures no_result". The exit status is the aggregate count.
+# "category failures truncations no_result". The exit status is the aggregate.
 cat >"${FAKE_TEST}/fake/inconclusive2.sh" <<'EOF'
 #!/usr/bin/env bash
-echo "inconclusive 0 2" > "${DITTOFS_RESULTS_DIR}/verdict"
+echo "inconclusive 0 0 2" > "${DITTOFS_RESULTS_DIR}/verdict"
 exit 2
 EOF
 
 cat >"${FAKE_TEST}/fake/mixed.sh" <<'EOF'
 #!/usr/bin/env bash
-echo "failures 1 1" > "${DITTOFS_RESULTS_DIR}/verdict"
+echo "failures 1 0 1" > "${DITTOFS_RESULTS_DIR}/verdict"
 exit 2
 EOF
 
@@ -108,8 +108,20 @@ if [ -e "${FAKE_STALE_MARK}" ]; then
     exit 9
 fi
 : > "${FAKE_STALE_MARK}"
-echo "inconclusive 0 2" > "${DITTOFS_RESULTS_DIR}/verdict"
+echo "inconclusive 0 0 2" > "${DITTOFS_RESULTS_DIR}/verdict"
 exit 2
+EOF
+
+cat >"${FAKE_TEST}/fake/truncated.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "failures 0 1 0" > "${DITTOFS_RESULTS_DIR}/verdict"
+exit 1
+EOF
+
+cat >"${FAKE_TEST}/fake/refused.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "refused 0 0 0" > "${DITTOFS_RESULTS_DIR}/verdict"
+exit 1
 EOF
 
 cat >"${FAKE_TEST}/fake/teardown.sh" <<'EOF'
@@ -160,6 +172,24 @@ cat >"$FAKE_MANIFEST" <<'EOF'
       "tiers": { "pull_request": "all", "push": "all" },
       "steps": [
         { "name": "run", "cmd": "fake/stale.sh", "args": [], "root": false }
+      ]
+    },
+    "truncated": {
+      "description": "one test stopped without saying why, nothing failed",
+      "runner_dir": "fake",
+      "profiles": ["memory"],
+      "tiers": { "pull_request": "all", "push": "all" },
+      "steps": [
+        { "name": "run", "cmd": "fake/truncated.sh", "args": [], "root": false }
+      ]
+    },
+    "refused": {
+      "description": "refuses to start because another stack is live",
+      "runner_dir": "fake",
+      "profiles": ["memory"],
+      "tiers": { "pull_request": "all", "push": "all" },
+      "steps": [
+        { "name": "run", "cmd": "fake/refused.sh", "args": [], "root": false }
       ]
     },
     "graded": {
@@ -359,6 +389,17 @@ assert_not_contains "and is not counted as new failures" "new failure(s)" "$OUT"
 OUT="$(run_fake --suite mixed --profile memory)"
 assert_contains "a mixed run reports the regression count, not the total" "1 new failure(s)" "$OUT"
 assert_contains "and still names the ungraded test" "1 inconclusive" "$OUT"
+
+# A test that stopped without saying why is a coverage gap, not a regression.
+OUT="$(run_fake --suite truncated --profile memory)"
+assert_contains "a truncation is counted as a truncation" "1 truncated" "$OUT"
+assert_contains "and not as a new failure" "0 new failure(s)" "$OUT"
+
+# A run refused for a live stack graded nothing, and the exit status alone would
+# have been rendered as a regression.
+OUT="$(run_fake --suite refused --profile memory)"
+assert_contains "a refused run says no tests were graded" "no tests were graded" "$OUT"
+assert_not_contains "and is never called a new failure" "new failure(s)" "$OUT"
 
 # A stale sidecar must not be inherited. results_dir is keyed by suite and label,
 # not by invocation, so the second run of the SAME suite finds the first run's

@@ -333,16 +333,28 @@ write_summary() {
         # that never reached the server at all — the same false label the
         # graded step exists to remove, one layer up and in the line a human
         # actually reads.
-        local category n_fail n_noresult
-        read -r category n_fail n_noresult < "${results_dir}/verdict"
-        if [[ "$category" == "inconclusive" ]]; then
-            verdict="inconclusive — ${n_noresult} test(s) produced no server result"
-            icon=":warning:"
-        else
-            verdict="${n_fail} new failure(s)"
-            [[ "${n_noresult:-0}" -gt 0 ]] && verdict+=", ${n_noresult} inconclusive"
-            icon=":x:"
-        fi
+        local category n_fail n_trunc n_noresult
+        read -r category n_fail n_trunc n_noresult < "${results_dir}/verdict"
+        case "$category" in
+            refused)
+                verdict="refused to run — another instance of this stack is live; no tests were graded"
+                icon=":construction:"
+                ;;
+            inconclusive)
+                verdict="inconclusive — ${n_noresult} test(s) produced no server result"
+                icon=":warning:"
+                ;;
+            *)
+                # Each count under its own name. A truncated test stopped without
+                # saying why and an ungraded one never reached the server;
+                # neither is a regression, and calling either one sends the
+                # reader hunting a change that did not happen.
+                verdict="${n_fail} new failure(s)"
+                [[ "${n_trunc:-0}" -gt 0 ]] && verdict+=", ${n_trunc} truncated"
+                [[ "${n_noresult:-0}" -gt 0 ]] && verdict+=", ${n_noresult} inconclusive"
+                icon=":x:"
+                ;;
+        esac
     else
         verdict="${status} new failure(s)"
         icon=":x:"

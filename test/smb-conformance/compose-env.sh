@@ -78,6 +78,15 @@ require_exclusive_stack() {
     fi
 
     local project="${live%%|*}" workdir="${live#*|}"
+
+    # This refusal exits from inside the graded step, so without a verdict of
+    # its own the common runner falls back to rendering the exit status as
+    # "N new failure(s)" — reporting a regression for a run in which no test
+    # ever started. The counts are zero because nothing was graded.
+    if [[ -n "${DITTOFS_RESULTS_DIR:-}" && -d "${DITTOFS_RESULTS_DIR}" ]]; then
+        echo "refused 0 0 0" > "${DITTOFS_RESULTS_DIR}/verdict"
+    fi
+
     cat >&2 <<EOF
 
 ERROR: an SMB conformance stack already exists from ${workdir:-an unknown directory}
@@ -89,6 +98,7 @@ only one may run at a time — including a stack an earlier run left behind with
 Wait for that run to finish, or clear it from anywhere with:
     docker rm -f \$(docker ps -aq --filter label=com.docker.compose.project=${project})
     docker volume rm \$(docker volume ls -q --filter label=com.docker.compose.project=${project})
+    docker network rm \$(docker network ls -q --filter label=com.docker.compose.project=${project})
 
 Both queries go by label rather than by name or Compose file, because
 neither of those is reliable here: `docker compose` has to run from the
