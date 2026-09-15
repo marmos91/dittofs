@@ -123,7 +123,10 @@ func (c *NFSConnection) writeReply(xid uint32, reply []byte) error {
 }
 
 // write puts one complete message on the wire under the connection's write
-// lock, bounded by the given timeout (0 leaves the deadline as it stands).
+// lock, bounded by the given timeout. A zero timeout means unbounded, and it
+// CLEARS any deadline a previous write installed rather than inheriting it —
+// a socket carries the last absolute deadline set on it, so "leave it alone"
+// would fail an unbounded write at the previous callback's expiry.
 //
 // Every write on this socket goes through here, fore-channel replies and
 // back-channel callbacks alike, because they contend for the same lock and an

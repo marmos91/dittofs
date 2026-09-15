@@ -227,9 +227,10 @@ type BackchannelSender struct {
 	stopCh chan struct{}
 
 	// nextCBSeqID is the per-slot CB_SEQUENCE seqID counter (RFC 8881
-	// §2.10.6.1). It is independent of nextXID: the backchannel uses a single
-	// slot, so a single monotonic counter incrementing by exactly 1 per send
-	// is correct. Zero-value starts at 0, giving first seqID=1 on first Add(1).
+	// §2.10.6.1). It is independent of nextCallbackXID, the package-level RPC
+	// XID counter: the backchannel uses a single slot, so a single monotonic
+	// counter incrementing by exactly 1 per send is correct. Zero-value starts
+	// at 0, giving first seqID=1 on first Add(1).
 	nextCBSeqID atomic.Uint32
 
 	callbackTimeout time.Duration
@@ -459,7 +460,7 @@ func (bs *BackchannelSender) sendCallback(ctx context.Context, req CallbackReque
 	framedMsg := AddCBRecordMark(callMsg, true)
 
 	// 6/7. Find a back-bound connection and register the XID on its reply table.
-	connID, writer, pending, replyCh, ok := bs.selectBackBoundWaiter(xid)
+	connID, writer, pending, replyCh, ok := bs.selectBackBoundWaiter(xid, 0)
 	if !ok {
 		return fmt.Errorf("%w: no back-bound connection for session %s",
 			errCallbackNotAttempted, bs.sessionID.String())
@@ -628,8 +629,7 @@ var errCallbackNotAttempted = errors.New("callback not attempted on this session
 // rather than the attempt. Two candidates, because a session with more than two
 // back-bound connections retiring in sequence is a connection table churning
 // faster than a callback can be issued, and looping on it would spin.
-func (bs *BackchannelSender) selectBackBoundWaiter(xid uint32) (uint64, ConnWriter, *PendingCBReplies, chan []byte, bool) {
-	var exclude uint64
+func (bs *BackchannelSender) selectBackBoundWaiter(xid uint32, exclude uint64) (uint64, ConnWriter, *PendingCBReplies, chan []byte, bool) {
 	for attempt := 0; attempt < 2; attempt++ {
 		id, writer, pending, ok := bs.sm.getBackBoundConnWriter(bs.sessionID, exclude)
 		if !ok {
@@ -651,31 +651,57 @@ func (bs *BackchannelSender) probeCallbackPath(ctx context.Context) error {
 	callMsg := BuildCBRPCCallMessage(xid, params.program, types.NFS4_CALLBACK_VERSION, types.CB_PROC_NULL, nil, params.cred)
 	framedMsg := AddCBRecordMark(callMsg, true)
 
-	connID, writer, pending, replyCh, ok := bs.selectBackBoundWaiter(xid)
-	if !ok {
-		return fmt.Errorf("no back-bound connection for session %s", bs.sessionID.String())
-	}
-	if err := writer(framedMsg); err != nil {
-		pending.Cancel(xid)
-		return fmt.Errorf("write CB_NULL to back-bound connection %d: %w", connID, err)
-	}
-
-	timeoutCtx, cancel := context.WithTimeout(ctx, bs.callbackTimeout)
-	defer cancel()
-
-	select {
-	case <-timeoutCtx.Done():
-		pending.Cancel(xid)
-		return fmt.Errorf("CB_NULL timed out after %s", bs.callbackTimeout)
-	case <-bs.stopCh:
-		pending.Cancel(xid)
-		return fmt.Errorf("backchannel sender stopped")
-	case replyBytes := <-replyCh:
-		if err := ValidateCBReply(replyBytes); err != nil {
-			return fmt.Errorf("CB_NULL reply: %w", err)
+	// A verdict here is durable in a way a send's is not: it is published on the
+	// client record, and nothing re-probes until the next parameter update. So a
+	// socket that went away must not be reported as the client failing to answer
+	// — with a second back-bound connection for this session sitting usable, that
+	// withholds delegations indefinitely on the strength of the wrong connection.
+	// A write failure and a reply table retired mid-wait both cost a candidate;
+	// a timeout does not, because a client that took the bytes and said nothing
+	// is exactly what this is asking about.
+	var lastErr error
+	var exclude uint64
+	for attempt := 0; attempt < 2; attempt++ {
+		connID, writer, pending, replyCh, ok := bs.selectBackBoundWaiter(xid, exclude)
+		if !ok {
+			break
 		}
-		return nil
+		if err := writer(framedMsg); err != nil {
+			pending.Cancel(xid)
+			lastErr = fmt.Errorf("write CB_NULL to back-bound connection %d: %w", connID, err)
+			exclude = connID
+			continue
+		}
+
+		timeoutCtx, cancel := context.WithTimeout(ctx, bs.callbackTimeout)
+		select {
+		case <-timeoutCtx.Done():
+			cancel()
+			pending.Cancel(xid)
+			return fmt.Errorf("CB_NULL timed out after %s", bs.callbackTimeout)
+		case <-bs.stopCh:
+			cancel()
+			pending.Cancel(xid)
+			return fmt.Errorf("backchannel sender stopped")
+		case replyBytes, open := <-replyCh:
+			cancel()
+			if !open {
+				// FailAll closed the waiter: the connection was retired while
+				// this was waiting on it, which says nothing about the client.
+				lastErr = fmt.Errorf("back-bound connection %d was retired while CB_NULL was in flight", connID)
+				exclude = connID
+				continue
+			}
+			if err := ValidateCBReply(replyBytes); err != nil {
+				return fmt.Errorf("CB_NULL reply: %w", err)
+			}
+			return nil
+		}
 	}
+	if lastErr != nil {
+		return lastErr
+	}
+	return fmt.Errorf("no back-bound connection for session %s", bs.sessionID.String())
 }
 
 // probeV41CallbackPath runs probeCallbackPath and records the verdict on the

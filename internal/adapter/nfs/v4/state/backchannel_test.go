@@ -1500,3 +1500,60 @@ func TestSendCallback_RetiredSelectionDoesNotStrandALiveConnection(t *testing.T)
 			"rather than costing one candidate")
 	}
 }
+
+// TestProbeCallbackPath_ARetiredSocketIsNotTheClientsVerdict covers what a
+// CB_NULL failure is allowed to mean. The probe's answer is published on the
+// client record and nothing re-probes until the next parameter update, so
+// reporting a socket that went away as "the client does not answer callbacks"
+// withholds delegations indefinitely — while a second back-bound connection for
+// the same session sits there able to answer.
+func TestProbeCallbackPath_ARetiredSocketIsNotTheClientsVerdict(t *testing.T) {
+	sender, sm, sessionID := createTestBackchannelSender(t)
+	defer sm.Shutdown()
+	sender.callbackTimeout = 200 * time.Millisecond
+
+	// The preferred connection, whose write fails the way a dead socket does.
+	deadConnID := uint64(7301)
+	sm.RegisterConnWriter(deadConnID, func([]byte) error {
+		return errors.New("broken pipe")
+	})
+	if _, err := sm.BindConnToSession(deadConnID, sessionID, types.CDFC4_FORE_OR_BOTH); err != nil {
+		t.Fatalf("BindConnToSession (dead): %v", err)
+	}
+
+	// The one that answers. It replies to whatever XID it is handed.
+	// Takes the bytes and says nothing, which is what "the client is not
+	// answering callbacks" actually looks like — and is a verdict about the
+	// client rather than about a socket.
+	var reachedLive atomic.Bool
+	liveConnID := uint64(7302)
+	sm.RegisterConnWriter(liveConnID, func([]byte) error {
+		reachedLive.Store(true)
+		return nil
+	})
+	if _, err := sm.BindConnToSession(liveConnID, sessionID, types.CDFC4_FORE_OR_BOTH); err != nil {
+		t.Fatalf("BindConnToSession (live): %v", err)
+	}
+
+	setBindingActivity(t, sm, sessionID, deadConnID, time.Now())
+	setBindingActivity(t, sm, sessionID, liveConnID, time.Now().Add(-time.Minute))
+
+	err := sender.probeCallbackPath(context.Background())
+
+	if !reachedLive.Load() {
+		t.Fatal("the probe never reached the usable connection: a dead socket cost the verdict " +
+			"rather than costing one candidate")
+	}
+	// The live connection never answers, so the probe still ends in an error —
+	// but it must be the timeout, which is a statement about the client, not the
+	// write failure from the socket it was supposed to move past.
+	if err == nil {
+		t.Fatal("the probe succeeded although nothing answered CB_NULL")
+	}
+	if strings.Contains(err.Error(), "broken pipe") {
+		t.Errorf("the probe reported the dead socket as its verdict: %v", err)
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("verdict is %q, want the CB_NULL timeout", err)
+	}
+}
