@@ -385,7 +385,16 @@ func TestStart_RequireKerberosWithoutKerberosExitCode(t *testing.T) {
 // what the test asserts is that the load itself neither refused the share nor
 // exited 78 on the way there.
 func TestStart_RequireKerberosShareLoadsWhenKerberosResolvedFirst(t *testing.T) {
-	tmp := t.TempDir()
+	// runStart opens the control-plane database and each share's journal and
+	// closes neither, so those handles are still live when the test returns.
+	// t.TempDir's cleanup would try to unlink them and fail the test on Windows,
+	// where an open file cannot be removed, so nothing this run writes lives
+	// under a managed directory and the whole tree is removed best-effort.
+	tmp, err := os.MkdirTemp("", "dittofs-krb-boot-")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmp) })
 
 	// Contain every default path the daemon would otherwise resolve under the
 	// developer's real home directory.
@@ -396,17 +405,8 @@ func TestStart_RequireKerberosShareLoadsWhenKerberosResolvedFirst(t *testing.T) 
 	t.Setenv(api.EnvControlPlaneSecret, "")
 	t.Setenv(models.EnvAdminInitialPassword, "")
 
-	// runStart opens the control-plane database and never closes it, so the
-	// handle is still live when the test returns. t.TempDir's cleanup would try
-	// to unlink it and fail the test on Windows, where an open file cannot be
-	// removed, so the database lives outside the managed directory and its
-	// removal is best-effort.
-	dbDir, err := os.MkdirTemp("", "dittofs-krb-boot-")
-	if err != nil {
-		t.Fatalf("MkdirTemp: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dbDir) })
-	dbPath := filepath.Join(dbDir, "controlplane.db")
+	dbPath := filepath.Join(tmp, "controlplane.db")
+	journalRoot := filepath.Join(tmp, "journal")
 	tokenPath := filepath.Join(tmp, "metrics-token-that-does-not-exist")
 	cfgPath := filepath.Join(tmp, "config.yaml")
 	cfgBody := fmt.Sprintf(`database:
@@ -431,7 +431,7 @@ metrics:
   enabled: true
   auth: token
   token_file: %s
-`, dbPath, strings.Repeat("s", 64), filepath.Join(tmp, "journal"), tokenPath)
+`, dbPath, strings.Repeat("s", 64), journalRoot, tokenPath)
 	if err := os.WriteFile(cfgPath, []byte(cfgBody), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -467,7 +467,7 @@ metrics:
 	// regression it exists to catch. Assert on something only a loaded share
 	// produces — AddShare opens the share's journal beneath JournalRoot, so the
 	// directory exists if and only if the share was added.
-	entries, rerr := os.ReadDir(filepath.Join(tmp, "journal"))
+	entries, rerr := os.ReadDir(journalRoot)
 	if rerr != nil {
 		t.Fatalf("read journal root: %v", rerr)
 	}
