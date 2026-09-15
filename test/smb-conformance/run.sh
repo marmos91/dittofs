@@ -27,11 +27,10 @@ source "${SCRIPT_DIR}/compose-env.sh"
 
 VALID_PROFILES=("memory" "badger" "badger-s3" "postgres-s3")
 
-# The WPTS container started by --mode local, named per run. A fixed name is a
-# name another run can also own, and cleanup removes by name: a second run
-# would tear down the first run's client mid-suite. The lease in compose-env.sh
-# keeps two runs from overlapping in the first place; this keeps the removal
-# from reaching anything this run did not start even if it somehow does.
+# The WPTS container started by --mode local, named per run: cleanup removes by
+# name, so a fixed name would let one run tear down another's client mid-suite.
+# The lease already keeps two runs from overlapping; the per-run name keeps the
+# removal from reaching anything this run did not start.
 WPTS_LOCAL_NAME="wpts-local-$$"
 
 # --------------------------------------------------------------------------

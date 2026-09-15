@@ -437,11 +437,9 @@ docker compose down -v
   suites assert on sub-second lease and oplock breaks, so before either runner
   creates anything it takes a lease on `/tmp/dittofs-smb-conformance.lease` and
   holds it until the run ends. A second run is refused and told which run holds
-  it, whatever checkout it came from and whichever mode it would have used —
-  `--mode local` starts a native server and an unlabelled container, so no
-  Docker query would have attributed it to a conformance run at all. The lease
-  is released by the kernel, so a killed run leaves nothing to clear; if one was
-  killed while the server it started kept running, that server holds the lease,
-  and `lsof /tmp/dittofs-smb-conformance.lease` names it. A stack left behind
-  with `--keep` is refused separately, since no run owns it any more
+  it, whatever checkout it came from and whichever mode it runs in. The lease is
+  released by the kernel, so a killed run leaves nothing to clear; if the server
+  it started kept running, that server holds the lease and
+  `lsof /tmp/dittofs-smb-conformance.lease` names it. A stack left behind with
+  `--keep` is refused separately, since no run owns it any more
 - **ptfconfig:** Generated from templates in `ptfconfig/`. Edit templates, then re-run

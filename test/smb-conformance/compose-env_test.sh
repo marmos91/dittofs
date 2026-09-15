@@ -69,9 +69,8 @@ fail() {
 # the holder is killed.
 start_holder() {
     local ready="${WORK}/ready" child=""
-    rm -f "$ready" "${WORK}/child.pid"
     [[ "${2:-}" == "--with-child" ]] && child="${WORK}/child.pid"
-    rm -f "${WORK}/gate"
+    rm -f "$ready" "${WORK}/child.pid" "${WORK}/gate"
     mkfifo "${WORK}/gate"
     "${WORK}/hold.sh" "$1" "$ready" "${WORK}/gate" "$child" \
         >"${WORK}/holder.txt" 2>&1 &
@@ -90,6 +89,14 @@ start_holder() {
     return 0
 }
 
+# kill_holder — ends the holding run the way a watchdog, a Ctrl-C or a
+# cancelled CI job does, without letting it run any cleanup.
+kill_holder() {
+    kill -9 "$HOLDER_PID" 2>/dev/null
+    wait "$HOLDER_PID" 2>/dev/null
+    HOLDER_PID=""
+}
+
 # try_admit ENV_FILE — attempts a run, leaving output in $WORK/last.txt.
 # Echoes the exit status.
 try_admit() {
@@ -97,6 +104,16 @@ try_admit() {
     bash -c 'source "$1"; require_exclusive_stack; echo ADMITTED' _ "$1" \
         >"${WORK}/last.txt" 2>&1
     echo $?
+}
+
+# assert_exit WANT GOT NAME
+assert_exit() {
+    if [[ "$2" -eq "$1" ]]; then
+        echo "ok: $3"
+        return
+    fi
+    fail "$3: exit ${2}, want ${1}"
+    cat "${WORK}/last.txt"
 }
 
 assert_output() {
@@ -122,21 +139,15 @@ fi
 # -- lost to. The two runs come from different checkouts, which the label scan
 # -- this lease replaces treated as unrelated. --
 if start_holder "$CO1"; then
-    got="$(try_admit "$CO2")"
-    [[ "$got" -eq 1 ]] || fail "second run admitted (exit ${got}), want refusal"
-    [[ "$got" -eq 1 ]] && echo "ok: a second run from another checkout is refused"
+    assert_exit 1 "$(try_admit "$CO2")" "a second run from another checkout is refused"
     assert_output "the refusal names the holder" "pid ${HOLDER_PID}"
     assert_output "the refusal names the lease" "$DITTOFS_CONFORMANCE_LEASE"
 
     # -- A run killed outright leaves no lease to reap. Watchdogs, Ctrl-C and
     # -- cancelled CI jobs make this the common ending, and a lease that had to
     # -- be cleared by hand would be worse than the check it replaces. --
-    kill -9 "$HOLDER_PID" 2>/dev/null
-    wait "$HOLDER_PID" 2>/dev/null
-    HOLDER_PID=""
-    got="$(try_admit "$CO2")"
-    [[ "$got" -eq 0 ]] || fail "lease survived a killed holder (exit ${got})"
-    [[ "$got" -eq 0 ]] && echo "ok: a killed holder leaves no lease behind"
+    kill_holder
+    assert_exit 0 "$(try_admit "$CO2")" "a killed holder leaves no lease behind"
 fi
 
 # -- Killing the harness while a process it started is still alive keeps the
@@ -145,36 +156,39 @@ fi
 # -- lease exists to prevent. --
 if start_holder "$CO1" --with-child; then
     child="$(cat "${WORK}/child.pid")"
-    kill -9 "$HOLDER_PID" 2>/dev/null
-    wait "$HOLDER_PID" 2>/dev/null
-    HOLDER_PID=""
-    got="$(try_admit "$CO2")"
-    [[ "$got" -eq 1 ]] || fail "a run was admitted while the previous run's processes live (exit ${got})"
-    [[ "$got" -eq 1 ]] && echo "ok: the lease survives while a process of the run does"
+    kill_holder
+    assert_exit 1 "$(try_admit "$CO2")" "the lease survives while a process of the run does"
 
+    # Not `wait`: $child was forked inside hold.sh, so it is not a job of this
+    # shell and `wait` would return at once without it having gone anywhere.
     kill -9 "$child" 2>/dev/null
-    wait "$child" 2>/dev/null
+    while kill -0 "$child" 2>/dev/null; do sleep 0.1; done
     : > "${WORK}/child.pid"
-    got="$(try_admit "$CO2")"
-    [[ "$got" -eq 0 ]] || fail "lease survived the last process of the run (exit ${got})"
-    [[ "$got" -eq 0 ]] && echo "ok: the lease goes with the run's last process"
+    assert_exit 0 "$(try_admit "$CO2")" "the lease goes with the run's last process"
 fi
 
 # -- Back-to-back runs from the same checkout are the normal case and must not
 # -- refuse each other. --
-got="$(try_admit "$CO1")"
-[[ "$got" -eq 0 ]] || fail "a run was refused with no other run in flight (exit ${got})"
-[[ "$got" -eq 0 ]] && echo "ok: successive runs are admitted"
-got="$(try_admit "$CO1")"
-[[ "$got" -eq 0 ]] || fail "the previous run's lease outlived it (exit ${got})"
-[[ "$got" -eq 0 ]] && echo "ok: the lease is released when its run exits"
+assert_exit 0 "$(try_admit "$CO1")" "successive runs are admitted"
+assert_exit 0 "$(try_admit "$CO1")" "the lease is released when its run exits"
 
 # -- An unwritable lease path is refused rather than silently skipped: a lease
 # -- that cannot be taken must never read as admission. --
 export DITTOFS_CONFORMANCE_LEASE="${WORK}/no-such-dir/lease"
-got="$(try_admit "$CO1")"
-[[ "$got" -eq 1 ]] || fail "an unopenable lease admitted the run (exit ${got})"
-[[ "$got" -eq 1 ]] && echo "ok: an unopenable lease refuses the run"
+assert_exit 1 "$(try_admit "$CO1")" "an unopenable lease refuses the run"
+
+export DITTOFS_CONFORMANCE_LEASE="${WORK}/lease"
+
+# -- A lease that cannot be taken for want of perl is refused the same way, and
+# -- says so: reporting it as a run in flight sends the reader looking for one
+# -- that does not exist. --
+export DITTOFS_CONFORMANCE_LEASE="${WORK}/lease"
+mkdir -p "${WORK}/noperl"
+printf '#!/bin/sh\nexit 127\n' > "${WORK}/noperl/perl"
+chmod +x "${WORK}/noperl/perl"
+PATH="${WORK}/noperl:${PATH}" assert_exit 1 "$(PATH="${WORK}/noperl:${PATH}" try_admit "$CO1")" \
+    "a missing perl refuses the run"
+assert_output "the refusal names perl" "needs perl"
 
 echo ""
 if [[ "$FAILURES" -eq 0 ]]; then
