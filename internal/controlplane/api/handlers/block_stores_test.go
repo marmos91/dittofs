@@ -759,3 +759,32 @@ func TestBlockStoreHandler_Update_EvictsCheckersItCannotName(t *testing.T) {
 		t.Error("a checker the request never named survived: eviction is still keyed by the names this handler knows")
 	}
 }
+
+// A name probed before its store exists caches a "not found" verdict. Creating
+// the store changes that name's health, so a create invalidates checkers for
+// the same reason an update or a delete does.
+func TestBlockStoreHandler_Create_EvictsTheCheckerCachedWhileTheNameWasAbsent(t *testing.T) {
+	cpStore, handler := setupBlockStoreTestWithRuntime(t)
+	ctx := context.Background()
+
+	if got := handler.runtime.BlockStoreChecker("arriving").Healthcheck(ctx).Status; got == health.StatusHealthy {
+		t.Fatalf("a name with no store must not probe healthy, got %v", got)
+	}
+
+	body, _ := json.Marshal(CreateBlockStoreRequest{Name: "arriving", Type: "memory"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/store/block", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.Create(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("Create = %d, want %d; body=%s", w.Code, http.StatusCreated, w.Body.String())
+	}
+	if _, err := cpStore.GetBlockStore(ctx, "arriving"); err != nil {
+		t.Fatalf("GetBlockStore(arriving): %v", err)
+	}
+
+	if got := handler.runtime.BlockStoreChecker("arriving").Healthcheck(ctx).Status; got != health.StatusHealthy {
+		t.Errorf("status = %v, want healthy: the not-found verdict cached before the create survived it", got)
+	}
+}

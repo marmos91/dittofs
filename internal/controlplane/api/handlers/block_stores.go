@@ -111,6 +111,13 @@ func (h *BlockStoreHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A name that was probed before it existed is cached as "not found", so a
+	// create invalidates checkers for the same reason an update or a delete
+	// does: the name's health just changed.
+	if h.runtime != nil {
+		h.runtime.InvalidateBlockStoreCheckers()
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), HealthCheckTimeout)
 	defer cancel()
 
