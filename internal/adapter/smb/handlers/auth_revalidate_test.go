@@ -49,7 +49,7 @@ func (r *revalidateRuntime) GetUserStore() models.UserStore { return r.users }
 func newRevalidateHandler(t *testing.T, user *models.User, store *revalidateUserStore, pinned models.SharePermission, withTree bool) (*Handler, uint64, uint32) {
 	t.Helper()
 
-	rt := runtime.New(nil)
+	rt, blockStoreID := newTestShareRuntime(t)
 	metaStore := memorymeta.NewMemoryMetadataStoreWithDefaults()
 	if err := rt.RegisterMetadataStore("test-meta", metaStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
@@ -57,6 +57,7 @@ func newRevalidateHandler(t *testing.T, user *models.User, store *revalidateUser
 	cfg := &runtime.ShareConfig{
 		Name:              "/export",
 		MetadataStore:     "test-meta",
+		BlockStoreID:      blockStoreID,
 		Enabled:           true,
 		DefaultPermission: "read-write",
 		RootAttr:          &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o755},
