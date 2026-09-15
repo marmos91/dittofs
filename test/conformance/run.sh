@@ -234,6 +234,13 @@ run_one() {
 
     if [[ "$DRY_RUN" == false ]]; then
         mkdir -p "$results_dir"
+        # Absolute from here on. A relative --results-dir is exported verbatim
+        # as DITTOFS_RESULTS_DIR, and the SMB runners cd into their own
+        # directory before writing the verdict sidecar — so the child would
+        # write it somewhere this function never looks, and the summary would
+        # fall back to calling the aggregate status a failure count. The whole
+        # mechanism is only worth what the consumer can find.
+        results_dir="$(cd "$results_dir" && pwd)"
         # The directory is keyed by suite and label, not by invocation, so a
         # verdict left by an earlier run is still sitting here. A run that dies
         # before the graded step would otherwise be reported with that verdict

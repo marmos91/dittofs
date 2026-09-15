@@ -87,7 +87,10 @@ EOF
 # "category failures truncations no_result". The exit status is the aggregate.
 cat >"${FAKE_TEST}/fake/inconclusive2.sh" <<'EOF'
 #!/usr/bin/env bash
-echo "inconclusive 0 0 2" > "${DITTOFS_RESULTS_DIR}/verdict"
+# cd first, the way the SMB runners do before writing their sidecar: a relative
+# DITTOFS_RESULTS_DIR resolves against THIS directory, not the caller's.
+cd / || exit 9
+echo "inconclusive 0 0 2" > "${DITTOFS_RESULTS_DIR}/verdict" || exit 9
 exit 2
 EOF
 
@@ -382,6 +385,16 @@ assert_contains "a graded failure is reported as a failure count" "3 new failure
 # The count the status carries is an aggregate, and clamped. What a human reads
 # has to separate a regression from a test that never reached the server, so the
 # grader writes both counts beside the category and the summary renders them.
+# A relative --results-dir must reach the graded step as an absolute one: the SMB
+# runners cd elsewhere before writing the sidecar, so a relative path would have
+# them write it where the summary never looks.
+(
+    cd "$FAKE_TEST" || exit 1
+    OUT="$(run_fake --suite inconclusive --profile memory --results-dir ./relresults)"
+    assert_contains "a relative results dir still finds the verdict" \
+        "inconclusive — 2 test(s) produced no server result" "$OUT"
+)
+
 OUT="$(run_fake --suite inconclusive --profile memory)"
 assert_contains "an ungraded run is not called a failure" "inconclusive — 2 test(s) produced no server result" "$OUT"
 assert_not_contains "and is not counted as new failures" "new failure(s)" "$OUT"
