@@ -12,7 +12,7 @@ import (
 
 // setupPreserveCtimeFile wires a service over a memory store with one share and
 // one regular file, and returns the service, a root auth context, the file's
-// handle and the share root's.
+// handle, and the share root's handle.
 func setupPreserveCtimeFile(t *testing.T) (*metadata.Service, *metadata.AuthContext, metadata.FileHandle, metadata.FileHandle) {
 	t.Helper()
 	const share = "/pc"
@@ -247,5 +247,39 @@ func TestPreserveCtime_IsHonouredOnTruncate(t *testing.T) {
 	}
 	if !after.Mtime.After(before.Mtime) {
 		t.Errorf("Mtime did not advance: PreserveCtime holds the change time, not the modify time")
+	}
+}
+
+// A held change time must not undo a peer's deliberate LOWERING of it. SMB's
+// restoreFrozenTimestamps writes an explicitly older ChangeTime, and a
+// PreserveCtime write that had read a higher value before it must leave that
+// restore standing rather than carrying its own snapshot forward. The stored
+// value is the authority — that is what "hold it" means, in both directions.
+func TestPreserveCtime_DoesNotUndoADeliberateLowering(t *testing.T) {
+	svc, ctx, handle, _ := setupPreserveCtimeFile(t)
+
+	// A peer restores an explicitly older ChangeTime, the way a frozen-timestamp
+	// restore does.
+	restored := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	if _, err := svc.SetFileAttributes(ctx, handle, &metadata.SetAttrs{Ctime: &restored}); err != nil {
+		t.Fatalf("seed the lowered ChangeTime: %v", err)
+	}
+
+	// A PreserveCtime write lands afterwards and must leave it alone.
+	atime := time.Now().Add(time.Minute)
+	if _, err := svc.SetFileAttributes(ctx, handle, &metadata.SetAttrs{
+		Atime: &atime, PreserveCtime: true,
+	}); err != nil {
+		t.Fatalf("SetFileAttributes(Atime, PreserveCtime): %v", err)
+	}
+
+	got, err := svc.GetFile(ctx.Context, handle)
+	if err != nil || got == nil {
+		t.Fatalf("GetFile: %v", err)
+	}
+	if !got.Ctime.Equal(restored) {
+		t.Errorf("ChangeTime is %s, want the restored %s — the held write carried its own "+
+			"snapshot forward and undid a peer's deliberate lowering",
+			got.Ctime.UTC().Format(time.RFC3339Nano), restored.UTC().Format(time.RFC3339Nano))
 	}
 }
