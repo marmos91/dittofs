@@ -1106,55 +1106,233 @@ func TestProcessAppInstanceId_NotPresent(t *testing.T) {
 		{Name: "MxAc", Data: make([]byte, 8)},
 	}
 
-	appId := ProcessAppInstanceId(context.Background(), store, nil, contexts)
+	appId := ProcessAppInstanceId(context.Background(), store, nil, contexts, nil, [16]byte{})
 	if appId != ([16]byte{}) {
 		t.Errorf("Expected zero AppInstanceId when not present, got %x", appId)
 	}
 }
 
-func TestProcessAppInstanceId_ForceClosesOldHandles(t *testing.T) {
+// appInstanceCtxs builds the CREATE context list carrying appId.
+func appInstanceCtxs(appId [16]byte) []CreateContext {
+	data := make([]byte, 20)
+	binary.LittleEndian.PutUint16(data[0:2], 20) // StructureSize
+	copy(data[4:20], appId[:])
+	return []CreateContext{{Name: AppInstanceIdTag, Data: data}}
+}
+
+// appInstanceEnv is the fixture for the ProcessAppInstanceId displacement
+// gates: a real metadata store (so maximal access is evaluated for real),
+// a durable-handle store, and a file the persisted handles point at.
+type appInstanceEnv struct {
+	h       *Handler
+	store   *mockDurableStore
+	metaSvc *metadata.Service
+	share   string
+	root    metadata.FileHandle
+	appID   [16]byte
+}
+
+func newAppInstanceEnv(t *testing.T) *appInstanceEnv {
+	t.Helper()
+	h, rt, smbCtx, rootHandle, _ := setupDaclTest(t)
 	store := newMockDurableStore()
-	ctx := context.Background()
+	h.DurableStore = store
+	return &appInstanceEnv{
+		h:       h,
+		store:   store,
+		metaSvc: rt.GetMetadataService(),
+		share:   smbCtx.ShareName,
+		root:    rootHandle,
+		appID:   [16]byte{0xC0, 0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xCB, 0xCC, 0xCD, 0xCE, 0xCF},
+	}
+}
 
-	appId := [16]byte{0xC0, 0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xCB, 0xCC, 0xCD, 0xCE, 0xCF}
+// file creates name under the share root owned by root with the given mode and
+// returns its metadata handle.
+func (e *appInstanceEnv) file(t *testing.T, name string, mode uint32) metadata.FileHandle {
+	t.Helper()
+	file, _, err := e.metaSvc.CreateFile(rootAuthCtx(), e.root, name,
+		&metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: mode})
+	if err != nil {
+		t.Fatalf("CreateFile %s: %v", name, err)
+	}
+	handle, err := metadata.EncodeFileHandle(file)
+	if err != nil {
+		t.Fatalf("EncodeFileHandle %s: %v", name, err)
+	}
+	return handle
+}
 
-	// Pre-populate with handles matching this AppInstanceId
-	_ = store.PutDurableHandle(ctx, &lock.PersistedDurableHandle{
-		ID:            "old-001",
-		AppInstanceId: appId,
-		ShareName:     "/share1",
-		Path:          "old1.txt",
+// persist records a disconnected durable handle for the file at metaHandle,
+// opened by the client identified by clientGUID.
+func (e *appInstanceEnv) persist(t *testing.T, id, path string, metaHandle metadata.FileHandle, clientGUID [16]byte) {
+	t.Helper()
+	if err := e.store.PutDurableHandle(context.Background(), &lock.PersistedDurableHandle{
+		ID:             id,
+		AppInstanceId:  e.appID,
+		ShareName:      e.share,
+		Path:           path,
+		MetadataHandle: metaHandle,
+		ClientGUID:     clientGUID,
+	}); err != nil {
+		t.Fatalf("PutDurableHandle %s: %v", id, err)
+	}
+}
+
+func (e *appInstanceEnv) survives(t *testing.T, id string) bool {
+	t.Helper()
+	h, _ := e.store.GetDurableHandle(context.Background(), id)
+	return h != nil
+}
+
+// claim runs ProcessAppInstanceId for connection clientGUID on behalf of a
+// non-root, non-owner requester — one the POSIX permission path judges by the
+// file's "other" mode bits.
+func (e *appInstanceEnv) claim(clientGUID [16]byte) [16]byte {
+	uid, gid := uint32(4242), uint32(4242)
+	authCtx := &metadata.AuthContext{
+		Context:  context.Background(),
+		Identity: &metadata.Identity{UID: &uid, GID: &gid},
+	}
+	return ProcessAppInstanceId(context.Background(), e.store, e.h,
+		appInstanceCtxs(e.appID), authCtx, clientGUID)
+}
+
+// live registers an open on fileHandle held by clientGUID and returns its
+// FileID.
+func (e *appInstanceEnv) live(fileHandle metadata.FileHandle, clientGUID [16]byte) [16]byte {
+	fileID := [16]byte{0x0A, 0x0B, 0x0C, 0x0D}
+	e.h.StoreOpenFile((&OpenFile{
+		FileID:         fileID,
+		SessionID:      1,
+		TreeID:         1,
+		ShareName:      e.share,
+		MetadataHandle: fileHandle,
+		AppInstanceId:  e.appID,
+		ClientGUID:     clientGUID,
+	}).WithName(OpenName{Path: "/live.txt"}))
+	return fileID
+}
+
+// TestProcessAppInstanceId_ForceClosesOldHandles covers the conditions that
+// decide whether a persisted durable handle carrying a matching AppInstanceId
+// is actually displaced (MS-SMB2 §3.3.5.9.13): the requester must be a
+// different client, and must have GENERIC_READ on the file the matched open
+// holds. Matching the AppInstanceId alone authorizes nothing — it is a
+// cleartext application-instance identifier, not a secret.
+func TestProcessAppInstanceId_ForceClosesOldHandles(t *testing.T) {
+	claimant := [16]byte{0x11}
+	incumbent := [16]byte{0x22}
+
+	t.Run("different client with read access displaces", func(t *testing.T) {
+		e := newAppInstanceEnv(t)
+		e.persist(t, "readable", "readable.txt", e.file(t, "readable.txt", 0o644), incumbent)
+
+		if got := e.claim(claimant); got != e.appID {
+			t.Errorf("returned AppInstanceId %x, want %x", got, e.appID)
+		}
+		if e.survives(t, "readable") {
+			t.Error("a different client that can read the file must displace the handle")
+		}
 	})
-	_ = store.PutDurableHandle(ctx, &lock.PersistedDurableHandle{
-		ID:            "old-002",
-		AppInstanceId: appId,
-		ShareName:     "/share1",
-		Path:          "old2.txt",
+
+	t.Run("requester without read access displaces nothing", func(t *testing.T) {
+		e := newAppInstanceEnv(t)
+		// 0o600: root owns it, so a non-root, non-group requester falls to the
+		// "other" bits and is granted neither read nor write.
+		e.persist(t, "private", "private.txt", e.file(t, "private.txt", 0o600), incumbent)
+
+		e.claim(claimant)
+		if !e.survives(t, "private") {
+			t.Error("a requester with no read access on the file must not displace the handle")
+		}
 	})
 
-	// Build AppInstanceId context
-	appIdData := make([]byte, 20)
-	binary.LittleEndian.PutUint16(appIdData[0:2], 20) // StructureSize
-	copy(appIdData[4:20], appId[:])
+	t.Run("same client displaces nothing", func(t *testing.T) {
+		e := newAppInstanceEnv(t)
+		// Same file permissions and same requester as the displacing case
+		// above: only the ClientGuid differs.
+		e.persist(t, "own", "own.txt", e.file(t, "own.txt", 0o644), claimant)
 
-	contexts := []CreateContext{
-		{Name: AppInstanceIdTag, Data: appIdData},
-	}
+		e.claim(claimant)
+		if !e.survives(t, "own") {
+			t.Error("an open belonging to the claiming client itself must not be displaced")
+		}
+	})
 
-	result := ProcessAppInstanceId(ctx, store, nil, contexts)
-	if result != appId {
-		t.Errorf("Expected AppInstanceId %x, got %x", appId, result)
-	}
+	t.Run("claiming connection with no client identity displaces nothing", func(t *testing.T) {
+		e := newAppInstanceEnv(t)
+		// The other side of the identity gate: a connection carrying no
+		// ClientGuid cannot be distinguished from the incumbent's client, so it
+		// displaces nothing rather than everything.
+		e.persist(t, "victim", "victim.txt", e.file(t, "victim.txt", 0o644), incumbent)
 
-	// Verify old handles were force-closed (deleted from store)
-	h1, _ := store.GetDurableHandle(ctx, "old-001")
-	h2, _ := store.GetDurableHandle(ctx, "old-002")
-	if h1 != nil {
-		t.Error("Expected old-001 to be deleted")
-	}
-	if h2 != nil {
-		t.Error("Expected old-002 to be deleted")
-	}
+		e.claim([16]byte{})
+		if !e.survives(t, "victim") {
+			t.Error("a connection with no ClientGuid must not displace another client's open")
+		}
+	})
+
+	t.Run("handle with no recorded client displaces nothing", func(t *testing.T) {
+		e := newAppInstanceEnv(t)
+		// A row written before the ClientGUID field was captured attributes the
+		// open to no client, so the different-client condition cannot be
+		// evaluated for it and it is left alone.
+		e.persist(t, "legacy", "legacy.txt", e.file(t, "legacy.txt", 0o644), [16]byte{})
+
+		e.claim(claimant)
+		if !e.survives(t, "legacy") {
+			t.Error("an open with no recorded ClientGuid must not be displaced")
+		}
+	})
+
+	t.Run("handle with no recorded file displaces nothing", func(t *testing.T) {
+		e := newAppInstanceEnv(t)
+		e.persist(t, "unresolvable", "gone.txt", nil, incumbent)
+
+		e.claim(claimant)
+		if !e.survives(t, "unresolvable") {
+			t.Error("access that cannot be established must leave the handle alone")
+		}
+	})
+}
+
+// TestProcessAppInstanceId_LiveOpenGates mirrors the persisted-handle gates on
+// the live-open path: an open still present in Handler.files is displaced only
+// when it belongs to another client and the requester can read its file.
+func TestProcessAppInstanceId_LiveOpenGates(t *testing.T) {
+	claimant := [16]byte{0x11}
+	incumbent := [16]byte{0x22}
+
+	t.Run("different client with read access displaces", func(t *testing.T) {
+		e := newAppInstanceEnv(t)
+		fileID := e.live(e.file(t, "live.txt", 0o644), incumbent)
+
+		e.claim(claimant)
+		if _, ok := e.h.GetOpenFile(fileID); ok {
+			t.Error("a different client that can read the file must displace the live open")
+		}
+	})
+
+	t.Run("requester without read access displaces nothing", func(t *testing.T) {
+		e := newAppInstanceEnv(t)
+		fileID := e.live(e.file(t, "live.txt", 0o600), incumbent)
+
+		e.claim(claimant)
+		if _, ok := e.h.GetOpenFile(fileID); !ok {
+			t.Error("a requester with no read access on the file must not displace the live open")
+		}
+	})
+
+	t.Run("same client displaces nothing", func(t *testing.T) {
+		e := newAppInstanceEnv(t)
+		fileID := e.live(e.file(t, "live.txt", 0o644), claimant)
+
+		e.claim(claimant)
+		if _, ok := e.h.GetOpenFile(fileID); !ok {
+			t.Error("an open belonging to the claiming client itself must not be displaced")
+		}
+	})
 }
 
 // TestProcessDurableReconnectContext_OriginalFileIDRestored locks in the
@@ -2438,6 +2616,7 @@ func TestProcessAppInstanceId_ReleasesLocksOnPersistedHandle(t *testing.T) {
 		OriginalFileID: origFileID, // full FileID — lock owner key
 		MetadataHandle: fileHandle,
 		AppInstanceId:  appID,
+		ClientGUID:     [16]byte{0x22},
 		ShareName:      smbCtx.ShareName,
 		Path:           "/locked.txt",
 		DisconnectedAt: time.Now(),
@@ -2454,7 +2633,8 @@ func TestProcessAppInstanceId_ReleasesLocksOnPersistedHandle(t *testing.T) {
 
 	// Call ProcessAppInstanceId — this should displace the persisted handle
 	// and release its byte-range lock.
-	ProcessAppInstanceId(context.Background(), h.DurableStore, h, newOpenCtxs)
+	ProcessAppInstanceId(context.Background(), h.DurableStore, h, newOpenCtxs,
+		rootAuthCtx(), [16]byte{0x11})
 
 	// The persisted handle must have been deleted.
 	remaining, _ := mock.GetDurableHandle(context.Background(), "test-handle")

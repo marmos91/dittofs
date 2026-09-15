@@ -778,6 +778,21 @@ const (
 	accessMaskPosixMinimal uint32 = 0x00120000 // READ_CONTROL | SYNCHRONIZE
 )
 
+// HasMaximalReadAccess reports whether the maximal access the requester has on
+// file covers the whole of MS-DTYP §2.4.3 GENERIC_READ mapped to file-object
+// rights, which is the same bundle as accessMaskPosixRead.
+//
+// It answers through ComputeMaximalAccess, so an ACL-bearing file and a
+// POSIX-mode file are judged exactly as they are for the MxAc create-context
+// reply — a requester told it may read a file is the same requester this
+// returns true for.
+func (s *Service) HasMaximalReadAccess(file *File, authCtx *AuthContext) bool {
+	if file == nil {
+		return false
+	}
+	return s.ComputeMaximalAccess(file, authCtx)&accessMaskPosixRead == accessMaskPosixRead
+}
+
 // CheckFileAccess validates a CREATE DesiredAccess request against an
 // existing file's stored DACL per MS-SMB2 §3.3.5.9 and MS-FSA §2.1.5.1.2.1.
 //

@@ -1459,6 +1459,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	if h.DurableStore != nil {
 		appInstanceId = ProcessAppInstanceId(
 			authCtx.Context, h.DurableStore, h, req.CreateContexts,
+			authCtx, connClientGUID(ctx),
 		)
 	}
 

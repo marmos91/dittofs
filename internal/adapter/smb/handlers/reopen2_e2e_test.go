@@ -80,8 +80,15 @@ func setupReopen2Env(t *testing.T) *reopen2Env {
 // connection ClientGUID via a mock crypto state (so connClientGUID(ctx) is
 // non-zero, matching the live dispatch path).
 func (e *reopen2Env) makeSMBCtx(sessionID uint64) *SMBHandlerContext {
+	return e.makeSMBCtxForClient(sessionID, e.clientGUID)
+}
+
+// makeSMBCtxForClient is makeSMBCtx with an explicit connection ClientGUID, for
+// the tests that need two opens to look like they come from two different
+// clients rather than two sessions of one.
+func (e *reopen2Env) makeSMBCtxForClient(sessionID uint64, clientGUID [16]byte) *SMBHandlerContext {
 	cs := &mockCryptoState{}
-	cs.SetClientGUID(e.clientGUID)
+	cs.SetClientGUID(clientGUID)
 	return &SMBHandlerContext{
 		Context:         context.Background(),
 		SessionID:       sessionID,
@@ -1107,10 +1114,18 @@ func TestAppInstance_SilentFailover(t *testing.T) {
 	appID := [16]byte{0xA9, 0x91, 0x01, 0xFF, 0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0x90, 0xA0, 0xB0, 0xC0}
 	createGuid1 := [16]byte{0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x10}
 	createGuid2 := [16]byte{0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x20}
+	clientGUID1 := [16]byte{0xC1, 0x01}
+	clientGUID2 := [16]byte{0xC2, 0x02}
 
-	open := func(sessionID uint64, createGuid [16]byte) *CreateResponse {
+	// Each open gets its own connection ClientGUID: smbtorture's app-instance
+	// case drives tree1 and tree2 from two independent connections, and
+	// MS-SMB2 3.3.5.9.13 only displaces an open whose ClientGuid differs from
+	// the claiming connection's. Two sessions sharing one ClientGUID are the
+	// same client and must NOT displace each other — see
+	// TestAppInstance_SameClientDoesNotFailover below.
+	open := func(sessionID uint64, createGuid, clientGUID [16]byte) *CreateResponse {
 		e.h.CreateSessionWithID(sessionID, "127.0.0.1:1", false, "alice", "WORKGROUP")
-		rcCtx := e.makeSMBCtx(sessionID)
+		rcCtx := e.makeSMBCtxForClient(sessionID, clientGUID)
 		resp, err := e.h.Create(rcCtx, &CreateRequest{
 			FileName:          "durable.txt",
 			DesiredAccess:     0x001F01FF,
@@ -1131,12 +1146,13 @@ func TestAppInstance_SilentFailover(t *testing.T) {
 		return resp
 	}
 
-	resp1 := open(70, createGuid1)
+	resp1 := open(70, createGuid1, clientGUID1)
 	of1ID := resp1.FileID
 
 	// Second open: same file, same AppInstanceId, different CreateGuid, on a
-	// distinct session — must force-close open #1 silently.
-	resp2 := open(71, createGuid2)
+	// distinct session of a different client — must force-close open #1
+	// silently.
+	resp2 := open(71, createGuid2, clientGUID2)
 
 	if notifier.count != 0 {
 		t.Errorf("break_info.count = %d, want 0 (AppInstanceId failover must be silent)", notifier.count)
@@ -1146,5 +1162,57 @@ func TestAppInstance_SilentFailover(t *testing.T) {
 	}
 	if resp2.OplockLevel != OplockLevelBatch {
 		t.Errorf("second open OplockLevel = 0x%02x, want Batch (no conflicting open remains)", resp2.OplockLevel)
+	}
+}
+
+// TestAppInstance_SameClientDoesNotFailover is the negative half of
+// TestAppInstance_SilentFailover: the same CREATE, differing only in that both
+// opens come from one connection ClientGUID. MS-SMB2 3.3.5.9.13 matches only
+// opens whose ClientGuid differs from the claiming connection's, so the first
+// open must survive and the second must lose to it on share mode exactly as it
+// would with no AppInstanceId at all.
+func TestAppInstance_SameClientDoesNotFailover(t *testing.T) {
+	e := setupReopen2Env(t)
+
+	appID := [16]byte{0xA9, 0x91, 0x01, 0xFF, 0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0x90, 0xA0, 0xB0, 0xC0}
+	createGuid1 := [16]byte{0x11, 0x12, 0x13, 0x14}
+	createGuid2 := [16]byte{0x21, 0x22, 0x23, 0x24}
+	clientGUID := [16]byte{0xC1, 0x01}
+
+	open := func(sessionID uint64, createGuid [16]byte) (*CreateResponse, error) {
+		e.h.CreateSessionWithID(sessionID, "127.0.0.1:1", false, "alice", "WORKGROUP")
+		return e.h.Create(e.makeSMBCtxForClient(sessionID, clientGUID), &CreateRequest{
+			FileName:          "durable.txt",
+			DesiredAccess:     0x001F01FF,
+			ShareAccess:       0, // share_access("") — no sharing
+			CreateDisposition: types.FileOpen,
+			// No oplock on either open: this case is about the ClientGuid
+			// gate, and a batch oplock would only make the second open wait
+			// out a break on the holder it is not allowed to displace.
+			OplockLevel: OplockLevelNone,
+			CreateContexts: []CreateContext{
+				dh2qContext(createGuid, 60000),
+				appInstanceIdCtx(appID),
+			},
+		})
+	}
+
+	resp1, err := open(70, createGuid1)
+	if err != nil {
+		t.Fatalf("first open: %v", err)
+	}
+	if resp1.Status != types.StatusSuccess {
+		t.Fatalf("first open: status=0x%08x", uint32(resp1.Status))
+	}
+
+	resp2, err := open(71, createGuid2)
+	if err != nil {
+		t.Fatalf("second open: %v", err)
+	}
+	if resp2.Status == types.StatusSuccess {
+		t.Error("second open of the SAME client succeeded — the AppInstanceId failover displaced an open it must not touch")
+	}
+	if _, ok := e.h.GetOpenFile(resp1.FileID); !ok {
+		t.Error("first open was force-closed by a same-ClientGuid AppInstanceId open")
 	}
 }

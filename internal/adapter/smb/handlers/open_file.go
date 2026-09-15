@@ -26,14 +26,17 @@ import (
 // read-modify-write region; release before any I/O to the metadata store to
 // keep the critical section bounded. Atomic-typed fields
 // (NotifyOverflowed/NotifyMaxBufferSize/NotifyCompletionFilter) and immutable
-// fields (FileID/TreeID/SessionID/MetadataHandle/CreateOptions) are safe to
-// access without the mutex.
+// fields (FileID/TreeID/SessionID/CreateOptions) are safe to access without the
+// mutex.
 //
-// PayloadID and the name triple are NOT immutable: the first WRITE on a file
-// created empty caches the payload the metadata store allocated,
-// SET_REPARSE_POINT and COPYCHUNK replace it, and SET_INFO rename rewrites the
-// name/path/parent triple. Reach the payload through GetPayloadID /
-// SetPayloadID and the triple through Name / SetName.
+// MetadataHandle, PayloadID and the name triple are NOT immutable: the first
+// WRITE on a file created empty caches the payload the metadata store
+// allocated, SET_REPARSE_POINT replaces both the handle and the payload when a
+// placeholder becomes a symlink, COPYCHUNK replaces the payload, and SET_INFO
+// rename rewrites the name/path/parent triple. Reach the payload through
+// GetPayloadID / SetPayloadID and the triple through Name / SetName; read
+// MetadataHandle under mu whenever the value has to still describe the same
+// file by the time it is acted on.
 type OpenFile struct {
 	// mu guards the mutable fields listed in the struct comment above. Held
 	// across QueryDirectory enumeration R-M-W, freeze/thaw bookkeeping in
