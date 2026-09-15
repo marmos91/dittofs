@@ -25,7 +25,7 @@ import (
 func migrateShareDurability(db *gorm.DB) error {
 	// The join column is the only route back to the config; once it is gone
 	// the migration has already run.
-	if !db.Migrator().HasColumn(&models.Share{}, "local_block_store_id") {
+	if !hasColumn(db, &models.Share{}, "local_block_store_id") {
 		return nil
 	}
 

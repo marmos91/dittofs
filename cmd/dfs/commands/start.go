@@ -225,8 +225,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	// Resolve the effective append-log pressure budget default: the global
 	// config blockstore.journal.max_log_bytes wins when set, otherwise the
-	// system-deduced default. A per-share block store config max_log_bytes
-	// still overrides this inside CreateLocalStoreFromConfig.
+	// system-deduced default.
 	effectiveMaxLogBytes := deduced.MaxLogBytes
 	if cfg.Blockstore.Journal.MaxLogBytes > 0 {
 		effectiveMaxLogBytes = cfg.Blockstore.Journal.MaxLogBytes

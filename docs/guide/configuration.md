@@ -2688,7 +2688,8 @@ Then create stores, shares, and enable adapters via CLI:
 
 ```bash
 ./dfsctl store metadata add --name default --type memory
-./dfsctl share create --name /export --metadata default
+./dfsctl store block add --name default-blocks --type memory
+./dfsctl share create --name /export --metadata default --block-store default-blocks
 ./dfsctl adapter enable nfs
 ```
 
@@ -2704,7 +2705,8 @@ logging:
 
 ```bash
 ./dfsctl store metadata add --name dev-memory --type memory
-./dfsctl share create --name /export --metadata dev-memory
+./dfsctl store block add --name dev-blocks --type memory
+./dfsctl share create --name /export --metadata dev-memory --block-store dev-blocks
 ./dfsctl adapter enable nfs --port 12049
 ```
 

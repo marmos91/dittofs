@@ -75,14 +75,29 @@ func NewShareHandler(s ShareHandlerStore, rt *runtime.Runtime) *ShareHandler {
 // as a 500 rather than masking it as an unknown reference.
 func (h *ShareHandler) resolveBlockStoreRef(ctx context.Context, ref string) (*models.BlockStoreConfig, error) {
 	cfg, err := h.store.GetBlockStore(ctx, ref)
-	if err == nil {
-		return cfg, nil
+	if err != nil {
+		if !errors.Is(err, models.ErrStoreNotFound) {
+			return nil, err
+		}
+		if cfg, err = h.store.GetBlockStoreByID(ctx, ref); err != nil {
+			return nil, err
+		}
 	}
-	if !errors.Is(err, models.ErrStoreNotFound) {
-		return nil, err
+	// A store whose type the runtime cannot build is refused here rather than
+	// at the rebind below it: binding persists first, so a type that fails to
+	// build leaves the share holding a reference that fails at every startup,
+	// where the share is skipped with a warning and the server reports healthy
+	// without it. Creation already refuses these types, so a row carrying one
+	// predates the single-block-store model.
+	if !validateBlockStoreType(cfg.Type) {
+		return nil, fmt.Errorf("%w: %s", errUnsupportedBlockStoreType, cfg.Type)
 	}
-	return h.store.GetBlockStoreByID(ctx, ref)
+	return cfg, nil
 }
+
+// errUnsupportedBlockStoreType reports a reference that resolved to a store of
+// a type no share can be bound to.
+var errUnsupportedBlockStoreType = errors.New("unsupported block store type")
 
 // parseCommitAck maps a request value to what a COMMIT waits for. Anything
 // unrecognised is refused rather than silently resolved to the default, which
@@ -101,6 +116,11 @@ func parseCommitAck(v string) (models.CommitAck, bool) {
 func writeBlockStoreRefError(w http.ResponseWriter, ref string, err error) {
 	if errors.Is(err, models.ErrStoreNotFound) {
 		BadRequest(w, "Block store not found: "+ref)
+		return
+	}
+	if errors.Is(err, errUnsupportedBlockStoreType) {
+		BadRequest(w, "Block store "+ref+" cannot back a share: "+err.Error()+
+			". Create an s3 or memory block store and bind the share to that instead.")
 		return
 	}
 	InternalServerError(w, "Failed to resolve block store "+ref+": "+err.Error())

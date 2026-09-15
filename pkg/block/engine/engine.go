@@ -140,7 +140,7 @@ type Store struct {
 	closed   bool  // guarded by closeMu; true once teardown has run
 	closeErr error // memoized result of the first Close (idempotent)
 
-	// requireDurableCommit gates the strict honest-CLOSE/COMMIT rule (#1274).
+	// requireDurableCommit gates the strict honest-CLOSE/COMMIT rule.
 	// When false (the default), CommitBlockStore acks once engine.Flush
 	// succeeds regardless of local/remote durability — the remote mirror
 	// stays fully async and observable via the unsynced-bytes metric, so the
@@ -148,10 +148,12 @@ type Store struct {
 	// true (opt-in per-share via config["require_durable_commit"]), CLOSE/
 	// COMMIT only succeed when the data is on a durable store
 	// (localDurable || (Finalized && remoteDurable)), trading latency for
-	// synchronous durability on non-fs-local stores. Set once at
-	// construction; read on the commit path. fs-local is always durable so
-	// the flag is a no-op there.
-	requireDurableCommit bool
+	// synchronous durability on non-fs-local stores. fs-local is always
+	// durable so the flag is a no-op there.
+	//
+	// Atomic because an operator can retighten the promise on a share that is
+	// already serving: the write lands while commit-path readers are running.
+	requireDurableCommit atomic.Bool
 }
 
 // New creates a new Store from the given configuration.
@@ -434,19 +436,21 @@ func (bs *Store) RemoteDurable() bool {
 }
 
 // RequireDurableCommit reports whether this share enforces the strict
-// honest-CLOSE/COMMIT durability rule (#1274). When false (the default), the
-// commit seam acks once engine.Flush succeeds and the remote mirror stays
-// async. When true, CLOSE/COMMIT only succeed once the data reaches a durable
-// store. Configured per-share via config["require_durable_commit"].
+// honest-CLOSE/COMMIT durability rule. When false (the default), the commit
+// seam acks once engine.Flush succeeds and the remote mirror stays async. When
+// true, CLOSE/COMMIT only succeed once the data reaches a durable store.
+// Configured per-share via config["require_durable_commit"].
 func (bs *Store) RequireDurableCommit() bool {
-	return bs.requireDurableCommit
+	return bs.requireDurableCommit.Load()
 }
 
 // SetRequireDurableCommit sets the strict honest-CLOSE/COMMIT durability
-// policy for this share. Called once at construction by the shares service
-// from the per-share config["require_durable_commit"] key (default false).
+// policy for this share, at construction from the per-share
+// config["require_durable_commit"] key (default false) and again whenever an
+// operator edits the share while it is serving. The next commit waits on the
+// new terms; the ones already in flight finish on the old.
 func (bs *Store) SetRequireDurableCommit(v bool) {
-	bs.requireDurableCommit = v
+	bs.requireDurableCommit.Store(v)
 }
 
 // RemoteStore returns the per-share remote object store, or nil if the
