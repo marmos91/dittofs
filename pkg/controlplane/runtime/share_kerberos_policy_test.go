@@ -16,9 +16,7 @@ import (
 func persistRequireKerberosShare(t *testing.T, ctx context.Context, s cpstore.Store, name string) {
 	t.Helper()
 
-	share := &models.Share{Name: name}
-	share.MetadataStoreID = "test-meta"
-	shareID, err := s.CreateShare(ctx, share)
+	shareID, err := s.CreateShare(ctx, &models.Share{Name: name, MetadataStoreID: "test-meta"})
 	if err != nil {
 		t.Fatalf("CreateShare: %v", err)
 	}

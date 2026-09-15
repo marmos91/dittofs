@@ -239,9 +239,9 @@ func configBoolDefault(config map[string]any, key string, def bool) bool {
 }
 
 // ErrKerberosNotConfigured reports a persisted share whose NFS export policy
-// requires Kerberos on a server that has none configured. It matches the
-// refusal the share-config API raises at write time, so the same
-// unsatisfiable policy reads as one rule whichever path reaches it.
+// requires Kerberos on a server that has none configured. Its message is the
+// one the share-config API raises at write time, so the same unsatisfiable
+// policy reads identically whichever path reaches it.
 var ErrKerberosNotConfigured = errors.New("require_kerberos needs Kerberos configured on this server")
 
 // LoadSharesFromStore loads shares from the database into the runtime.
@@ -263,14 +263,12 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 		}
 
 		// The export auth-flavor policy is persisted, so it outlives the
-		// server capability it depends on: require_kerberos accepted while
-		// Kerberos was configured survives Kerberos being decommissioned.
-		// Such a share accepts no auth flavor at all — AUTH_SYS and AUTH_NONE
-		// are refused by the policy, RPCSEC_GSS cannot be negotiated — so it
-		// would export while refusing every client, and SECINFO would narrow
-		// to an empty flavor list no client can retry against. Refuse the boot
-		// rather than serve it or quietly drop the policy the operator asked
-		// for.
+		// server capability it depends on: require_kerberos survives Kerberos
+		// being decommissioned. Such a share accepts no flavor at all —
+		// AUTH_SYS and AUTH_NONE are refused by the policy, RPCSEC_GSS cannot
+		// be negotiated — so it would export while refusing every client, and
+		// SECINFO would narrow to an empty flavor list. Refuse the boot rather
+		// than serve it or silently drop the policy.
 		if shareConfig.RequireKerberos && !rt.KerberosEnabled() {
 			return fmt.Errorf("share %q: %w; enable Kerberos (kerberos.enabled / "+
 				"DITTOFS_KERBEROS_ENABLED) or clear the policy with "+

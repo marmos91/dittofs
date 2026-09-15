@@ -159,7 +159,7 @@ func (h *ShareNFSConfigHandler) Patch(w http.ResponseWriter, r *http.Request) {
 		// negotiated. Refusing it here is also what leaves SECINFO with at
 		// least one flavor to report for every share.
 		if *req.RequireKerberos && h.runtime != nil && !h.runtime.KerberosEnabled() {
-			BadRequest(w, "require_kerberos needs Kerberos configured on this server")
+			BadRequest(w, runtime.ErrKerberosNotConfigured.Error())
 			return
 		}
 		opts.RequireKerberos = *req.RequireKerberos

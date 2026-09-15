@@ -333,13 +333,12 @@ func TestStart_RequireKerberosWithoutKerberosExitCode(t *testing.T) {
 		}
 	}
 
-	origStderr := os.Stderr
+	// handleLoadSharesError writes to the *os.File it is handed, so the pipe
+	// alone captures the directive; os.Stderr stays untouched.
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatalf("os.Pipe: %v", err)
 	}
-	os.Stderr = w
-	t.Cleanup(func() { os.Stderr = origStderr })
 
 	loadErr := fmt.Errorf("share %q: %w; enable Kerberos", "/krb-gone", runtime.ErrKerberosNotConfigured)
 	if !handleLoadSharesError(loadErr, w) {

@@ -276,11 +276,9 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// sets the runtime's LDAP config and returns the effective Kerberos config to
 	// hand to the adapter factory.
 	//
-	// Resolved BEFORE loading shares because Kerberos availability is a server
-	// capability each persisted share's export auth-flavor policy is validated
-	// against: a share requiring Kerberos on a server without it is reachable by
-	// no flavor at all, and LoadSharesFromStore reads rt.KerberosEnabled() to
-	// refuse it.
+	// Resolved BEFORE loading shares: LoadSharesFromStore reads
+	// rt.KerberosEnabled() to refuse a persisted share whose export policy
+	// requires a Kerberos this server does not have.
 	effectiveKerberos := resolveIdentityProviders(ctx, cpStore, rt, cfg)
 	rt.SetKerberosEnabled(effectiveKerberos.Enabled)
 
@@ -910,13 +908,11 @@ func handleLoadSharesError(err error, stderr *os.File) bool {
 	}
 	// A persisted export policy no auth flavor can satisfy is an operator
 	// configuration error, not a share that can be skipped: the share would
-	// come up refusing every client. Exit with the same config code the
-	// format-mismatch directive uses, printing the error, which names the
-	// share and the missing Kerberos configuration.
+	// come up refusing every client. The error already names the share and the
+	// missing Kerberos configuration, so print it as-is and exit 78.
 	if errors.Is(err, runtime.ErrKerberosNotConfigured) {
-		_, _ = fmt.Fprintln(stderr, err.Error())
+		_, _ = fmt.Fprintln(stderr, err)
 		exitFn(EX_CONFIG)
-		// Unreachable in production (exitFn == os.Exit terminates).
 		return true
 	}
 	logger.Warn("Failed to load some shares", "error", err)
