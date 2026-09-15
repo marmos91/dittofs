@@ -158,6 +158,30 @@ prefix is what makes the set harvestable as a group. Keep the marker when editin
 code; drop it only when the shortcut is actually replaced, not when the comment is merely
 reworded.
 
+### `decision:` markers
+
+The same ledger, one axis over. A `ponytail:` marker says the *implementation* is simpler
+than it could be; a `decision:` marker says the *behaviour* is deliberate — most often that
+a gate is knowingly not applied:
+
+```go
+// decision: a null or guest session is exempt from encryption enforcement
+// because it holds no session key and cannot encrypt at all (MS-SMB2 3.3.5.2.9).
+// The exemption is worth only what such a session can reach — withdraw it if one
+// can ever reach a share holding data.
+if sess.IsNull || sess.IsGuest {
+```
+
+Write one whenever a check is deliberately skipped, narrower than its name suggests, or
+fails open. Name the rule, why it holds, and what evidence would overturn it — an exemption
+with no stated ceiling is indistinguishable from a bug, both to a reviewer and to whoever
+audits the gate later.
+
+The decision is recorded **at the code site**, not in the issue that asked for it. #2518
+asked for exactly the exemption above; #2523 shipped it without stating the reasoning
+anywhere, and nobody noticed, because an issue thread is not a thing anyone reads while
+changing the line.
+
 ## Commits & PRs
 
 - Never mention Claude Code, AI tools, or add `Co-Authored-By` lines for AI.
