@@ -9,7 +9,6 @@ import (
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/auth"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc/gss"
 	internalxdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
 	"github.com/marmos91/dittofs/internal/logger"
 	xdr "github.com/rasky/go-xdr/xdr2"
@@ -118,76 +117,19 @@ func (h *Handler) Mount(
 		return &MountResponse{MountResponseBase: MountResponseBase{Status: MountErrAccess}}, nil
 	}
 
-	// Security policy enforcement: check auth flavor against share policy.
-	// Per locked decision: existing connections are grandfathered; this check
-	// applies to NEW mount requests only.
-	// A share that refuses AUTH_SYS refuses everything weaker than it too, so
-	// this tests for the flavors that are allowed rather than the one that is
-	// not. Naming AUTH_UNIX alone let an AUTH_NONE caller — no credential at
-	// all — past the gate and collect a root handle, since nothing else on the
-	// mount path distinguishes an anonymous caller beyond the share's
-	// default_permission.
-	if !share.AllowAuthSys && ctx.AuthFlavor != rpc.AuthRPCSECGSS {
-		logger.Warn("Mount denied: share accepts only Kerberos auth",
-			"path", req.DirPath, "client_ip", clientIP, "auth_flavor", ctx.AuthFlavor)
-		return &MountResponse{MountResponseBase: MountResponseBase{Status: MountErrAccess}}, nil
-	}
-	if share.RequireKerberos && ctx.AuthFlavor != rpc.AuthRPCSECGSS {
-		logger.Warn("Mount denied: Kerberos required but client uses non-GSS auth",
-			"path", req.DirPath, "client_ip", clientIP, "auth_flavor", ctx.AuthFlavor)
-		return &MountResponse{MountResponseBase: MountResponseBase{Status: MountErrAccess}}, nil
-	}
-	// Enforce the per-share GSS protection floor (min_kerberos_level): a krb5i /
-	// krb5p export must reject a Kerberos mount negotiated at a weaker service
-	// level. The negotiated RPCSEC_GSS service level rides in the request context
-	// from the GSS DATA dispatch, which attaches it to every RPCSEC_GSS request
-	// it processes — control messages and failures are answered there and never
-	// reach a handler.
+	// Export access-control policy: which auth flavors this export accepts, the
+	// GSS protection floor, and the netgroup client allowlist. The decision lives
+	// in one place so MNT and the per-operation gate on the data path cannot
+	// drift apart, and so this handler stays protocol-only.
 	//
-	// So a claimed GSS flavor with no session info was never processed as GSS,
-	// which happens when no GSS processor is configured and the dispatch leaves
-	// flavor 6 unintercepted. The credential is then unverified, and it cannot be
-	// allowed to stand in for Kerberos: RequireKerberos is satisfied by the
-	// flavor alone and AllowAuthSys does not apply to it, so treating the absent
-	// session info as "nothing to enforce" would clear the share's entire
-	// Kerberos policy. Deny instead of skipping the check.
-	if ctx.AuthFlavor == rpc.AuthRPCSECGSS {
-		si := gss.SessionInfoFromContext(ctx.Context)
-		if si == nil {
-			logger.Warn("Mount denied: RPCSEC_GSS credential was not verified",
-				"path", req.DirPath, "client_ip", clientIP)
-			return &MountResponse{MountResponseBase: MountResponseBase{Status: MountErrAccess}}, nil
-		}
-		if !auth.MeetsMinKerberosLevel(share.MinKerberosLevel, si.Service) {
-			logger.Warn("Mount denied: GSS protection level below share floor",
-				"path", req.DirPath, "client_ip", clientIP,
-				"min_kerberos_level", share.MinKerberosLevel, "negotiated_service", si.Service)
-			return &MountResponse{MountResponseBase: MountResponseBase{Status: MountErrAccess}}, nil
-		}
-	}
-
-	// Netgroup IP access check: reject mount if client IP is not in allowed netgroup.
-	// Per locked decision: empty allowlist = allow all.
-	// Fail-closed: if we cannot parse the client IP, deny access.
-	clientNetIP := net.ParseIP(clientIP)
-	if clientNetIP == nil {
-		logger.Warn("Mount denied: unable to parse client IP for netgroup check",
-			"path", req.DirPath, "client_ip", clientIP)
+	// Existing connections are grandfathered at MOUNT only in the sense that MNT
+	// is not replayed; the same policy is re-applied per operation.
+	if accessErr := auth.CheckExportAccess(
+		ctx.Context, share, ctx.AuthFlavor, net.ParseIP(clientIP), h.Registry.CheckNetgroupAccess,
+	); accessErr != nil {
+		logger.Warn("Mount denied by export access policy",
+			"path", req.DirPath, "client_ip", clientIP, "reason", accessErr)
 		return &MountResponse{MountResponseBase: MountResponseBase{Status: MountErrAccess}}, nil
-	}
-	{
-		allowed, netErr := h.Registry.CheckNetgroupAccess(ctx.Context, req.DirPath, clientNetIP)
-		if netErr != nil {
-			logger.Warn("Mount netgroup access check error",
-				"path", req.DirPath, "client_ip", clientIP, "error", netErr)
-			// On error, deny access (fail-closed)
-			return &MountResponse{MountResponseBase: MountResponseBase{Status: MountErrAccess}}, nil
-		}
-		if !allowed {
-			logger.Warn("Mount denied: client IP not in allowed netgroup",
-				"path", req.DirPath, "client_ip", clientIP)
-			return &MountResponse{MountResponseBase: MountResponseBase{Status: MountErrAccess}}, nil
-		}
 	}
 
 	// Record the mount in the registry

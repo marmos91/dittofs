@@ -3,7 +3,6 @@ package nfs
 import (
 	"encoding/binary"
 
-	nfs_types "github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	v3 "github.com/marmos91/dittofs/internal/adapter/nfs/v3"
 )
 
@@ -37,20 +36,22 @@ func (c *NFSConnection) isOperationBlocked(opName string) bool {
 	return blocked
 }
 
-// makeBlockedOpResponse creates an NFS3ERR_NOTSUPP response for a blocked operation.
-// The response contains the status code followed by empty WCC data (pre_op=false,
-// post_op=false), which clients handle gracefully per RFC 1813.
-func (c *NFSConnection) makeBlockedOpResponse() *v3.HandlerResult {
+// makeStatusOnlyResponse creates a bare NFSv3 error reply carrying status
+// followed by empty WCC data (pre_op=false, post_op=false), which clients
+// handle gracefully per RFC 1813. It is what the dispatch layer answers with
+// when a request is refused before any procedure handler runs, so no
+// procedure-specific response type is available to encode.
+func (c *NFSConnection) makeStatusOnlyResponse(status uint32) *v3.HandlerResult {
 	response := make([]byte, 12)
 
 	// Write status code as big-endian uint32
-	binary.BigEndian.PutUint32(response[0:4], uint32(nfs_types.NFS3ErrNotSupp))
+	binary.BigEndian.PutUint32(response[0:4], status)
 	// bytes 4-7: pre_op_attr present flag = 0 (false)
 	// bytes 8-11: post_op_attr present flag = 0 (false)
 	// (already zero-initialized)
 
 	return &v3.HandlerResult{
 		Data:      response,
-		NFSStatus: nfs_types.NFS3ErrNotSupp,
+		NFSStatus: status,
 	}
 }
