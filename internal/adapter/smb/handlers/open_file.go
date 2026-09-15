@@ -26,17 +26,18 @@ import (
 // read-modify-write region; release before any I/O to the metadata store to
 // keep the critical section bounded. Atomic-typed fields
 // (NotifyOverflowed/NotifyMaxBufferSize/NotifyCompletionFilter) and immutable
-// fields (FileID/TreeID/SessionID/CreateOptions) are safe to access without the
-// mutex.
+// fields (FileID/TreeID/SessionID/CreateOptions) are safe to access without
+// the mutex.
 //
 // MetadataHandle, PayloadID and the name triple are NOT immutable: the first
 // WRITE on a file created empty caches the payload the metadata store
-// allocated, SET_REPARSE_POINT replaces both the handle and the payload when a
-// placeholder becomes a symlink, COPYCHUNK replaces the payload, and SET_INFO
-// rename rewrites the name/path/parent triple. Reach the payload through
-// GetPayloadID / SetPayloadID and the triple through Name / SetName; read
-// MetadataHandle under mu whenever the value has to still describe the same
-// file by the time it is acted on.
+// allocated, SET_REPARSE_POINT and COPYCHUNK replace it, SET_REPARSE_POINT
+// also repoints the handle itself when a placeholder becomes a symlink, and
+// SET_INFO rename rewrites the name/path/parent triple. Reach the handle
+// through GetMetadataHandle, the payload through GetPayloadID / SetPayloadID
+// and the triple through Name / SetName. A handle-table scan comparing
+// MetadataHandle across opens MUST go through GetMetadataHandle: the field is
+// a slice header, so an unsynchronized read can observe it mid-swap.
 type OpenFile struct {
 	// mu guards the mutable fields listed in the struct comment above. Held
 	// across QueryDirectory enumeration R-M-W, freeze/thaw bookkeeping in
@@ -572,10 +573,11 @@ func (h *Handler) isFileDeletePending(fileHandle metadata.FileHandle) bool {
 	pending := false
 	h.files.Range(func(_, value any) bool {
 		existing := value.(*OpenFile)
-		if existing.IsPipe || len(existing.MetadataHandle) == 0 {
+		existingHandle := existing.GetMetadataHandle()
+		if existing.IsPipe || len(existingHandle) == 0 {
 			return true
 		}
-		if !bytes.Equal(existing.MetadataHandle, fileHandle) {
+		if !bytes.Equal(existingHandle, fileHandle) {
 			return true
 		}
 		// DeletePending is concurrently written by CLOSE DOC propagation under
@@ -629,7 +631,7 @@ func (h *Handler) isFileOrBaseDeletePending(
 	pending := false
 	h.files.Range(func(_, value any) bool {
 		existing := value.(*OpenFile)
-		if existing.IsPipe || len(existing.MetadataHandle) == 0 {
+		if existing.IsPipe || len(existing.GetMetadataHandle()) == 0 {
 			return true
 		}
 		// BaseFileDeletePending is concurrently written by CLOSE deferred-delete
@@ -739,14 +741,15 @@ func (h *Handler) checkShareModeConflict(
 		if existing.IsPipe {
 			return true
 		}
-		if len(existing.MetadataHandle) == 0 {
+		existingHandle := existing.GetMetadataHandle()
+		if len(existingHandle) == 0 {
 			return true
 		}
 
 		// Same stream (same metadata handle) → full share mode check.
 		// Base file vs its stream (or vice versa) → DELETE-only check.
 		// Stream A vs stream B (different streams) → skip.
-		sameFile := bytes.Equal(existing.MetadataHandle, fileHandle)
+		sameFile := bytes.Equal(existingHandle, fileHandle)
 		crossStream := false
 		if !sameFile {
 			existingName := existing.Name()
@@ -843,6 +846,8 @@ func (h *Handler) lookupCaseInsensitive(
 func (h *Handler) checkShareDeleteConflict(renameFile *OpenFile) bool {
 	const fileShareDelete = uint32(0x04) // FILE_SHARE_DELETE
 
+	renameHandle := renameFile.GetMetadataHandle()
+
 	var culprit *OpenFile
 	h.files.Range(func(key, value any) bool {
 		other := value.(*OpenFile)
@@ -851,10 +856,11 @@ func (h *Handler) checkShareDeleteConflict(renameFile *OpenFile) bool {
 			return true
 		}
 		// Only check handles to the same file (same metadata handle)
-		if len(other.MetadataHandle) == 0 || len(renameFile.MetadataHandle) == 0 {
+		otherHandle := other.GetMetadataHandle()
+		if len(otherHandle) == 0 || len(renameHandle) == 0 {
 			return true
 		}
-		if !bytes.Equal(other.MetadataHandle, renameFile.MetadataHandle) {
+		if !bytes.Equal(otherHandle, renameHandle) {
 			return true
 		}
 		// If this other handle does not allow delete sharing, conflict
@@ -903,10 +909,11 @@ func (h *Handler) checkParentDirRenameConflict(renamer *OpenFile, dstParent meta
 		if other.FileID == renamer.FileID {
 			return true
 		}
-		if len(other.MetadataHandle) == 0 {
+		otherHandle := other.GetMetadataHandle()
+		if len(otherHandle) == 0 {
 			return true
 		}
-		if !bytes.Equal(other.MetadataHandle, dstParent) {
+		if !bytes.Equal(otherHandle, dstParent) {
 			return true
 		}
 		// Stat-only opens (READ_ATTRIBUTES / WRITE_ATTRIBUTES / SYNCHRONIZE /
@@ -940,13 +947,14 @@ func (h *Handler) snapshotOpenChildren(dirHandle metadata.FileHandle) []metadata
 	h.files.Range(func(_, value any) bool {
 		of := value.(*OpenFile)
 		parent := of.Name().ParentHandle
-		if len(parent) == 0 || len(of.MetadataHandle) == 0 {
+		ofHandle := of.GetMetadataHandle()
+		if len(parent) == 0 || len(ofHandle) == 0 {
 			return true
 		}
 		if !bytes.Equal(parent, dirHandle) {
 			return true
 		}
-		children = append(children, of.MetadataHandle)
+		children = append(children, ofHandle)
 		return true
 	})
 	return children
@@ -994,10 +1002,11 @@ func (h *Handler) hasOpenHandleOnFile(targetMeta metadata.FileHandle, excludeFil
 		if other.FileID == excludeFileID {
 			return true
 		}
-		if len(other.MetadataHandle) == 0 {
+		otherHandle := other.GetMetadataHandle()
+		if len(otherHandle) == 0 {
 			return true
 		}
-		if !bytes.Equal(other.MetadataHandle, targetMeta) {
+		if !bytes.Equal(otherHandle, targetMeta) {
 			return true
 		}
 		conflict = true
