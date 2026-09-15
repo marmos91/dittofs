@@ -13,11 +13,16 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+# Every job here is capped. The slowest of them, golangci-lint, has never
+# exceeded 145 seconds, so ten minutes is a hang detector rather than a budget:
+# without it a wedged job inherits the six-hour default and holds a runner slot
+# for the rest of the day instead of failing where it can be retried.
 jobs:
   # Combine gofmt and go vet into a single fast job
   format-vet:
     name: Format & Vet
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout code
@@ -43,6 +48,7 @@ jobs:
   spec-citations:
     name: Spec Citations
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout code
@@ -63,6 +69,7 @@ jobs:
   conformance-manifest:
     name: Conformance Manifest
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout code
@@ -84,6 +91,7 @@ jobs:
     name: New Package Tests
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout code
@@ -109,6 +117,7 @@ jobs:
   commit-type:
     name: Commit Type Matches Diff
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout code
@@ -136,6 +145,7 @@ jobs:
   required-tests:
     name: Required Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout code
@@ -153,6 +163,7 @@ jobs:
   golangci-lint:
     name: golangci-lint
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout code
@@ -188,6 +199,7 @@ jobs:
   shellcheck-changes:
     name: Detect shell script changes
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       has_changes: ${{ steps.filter.outputs.shell }}
     steps:
@@ -211,6 +223,7 @@ jobs:
   shellcheck:
     name: ShellCheck
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: shellcheck-changes
     if: needs.shellcheck-changes.outputs.has_changes == 'true'
 
@@ -230,6 +243,7 @@ jobs:
   e2e-harness:
     name: E2E Harness Self-Test
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout code

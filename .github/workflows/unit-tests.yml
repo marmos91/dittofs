@@ -24,6 +24,10 @@ jobs:
   unit-tests:
     name: Unit Tests
     runs-on: ubuntu-latest
+    # go test caps itself at 25m, which covers a wedged test but not a wedged
+    # setup-go or module download; those would otherwise hold a slot for the
+    # six-hour default.
+    timeout-minutes: 35
 
     strategy:
       matrix:
@@ -45,9 +49,19 @@ jobs:
       - name: Verify dependencies
         run: go mod verify
 
+      # A pull request runs the short suite; the push to develop runs the full
+      # one. The guarded tests still run on the same pull request under the
+      # integration job, which passes no -short — but it passes no -race either,
+      # so the race detector stops covering them between opening a pull request
+      # and merging it. Drop the split if a race ever reaches develop that the
+      # full run would have caught during review. The coverage profile below
+      # narrows with the suite, so a pull request measures a short run against a
+      # full-run baseline; that comparison is only meaningful once both sides
+      # run the same set.
       - name: Run unit tests
         run: |
-          go test -v -race -timeout=25m -coverprofile=coverage.txt -covermode=atomic \
+          go test -v -race ${{ github.event_name == 'pull_request' && '-short' || '' }} \
+            -timeout=25m -coverprofile=coverage.txt -covermode=atomic \
             ./pkg/... \
             ./internal/... \
             ./cmd/...
@@ -60,12 +74,9 @@ jobs:
           name: codecov-unit-tests
         continue-on-error: true
 
+      # Building stays — go vet type-checks cmd/dfs but never links it, so this
+      # is where a link error surfaces. Uploading goes: every download-artifact
+      # in the repo names dfs-binaries, so nothing has ever fetched what this
+      # step stored.
       - name: Build binary
         run: go build -v -o dfs cmd/dfs/main.go
-
-      - name: Upload binary artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: dfs-${{ matrix.go-version }}
-          path: dfs
-          retention-days: 7

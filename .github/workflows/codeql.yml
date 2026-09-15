@@ -27,10 +27,18 @@ jobs:
       contents: read
       actions: read
 
+    timeout-minutes: 30
+
     strategy:
       fail-fast: false
       matrix:
-        language: [actions, go, python]
+        # A pull request analyses Go only. The actions and python analyses each
+        # hold a runner slot in a fan-out that is already starved for them, and
+        # both still run on every push to develop and on the weekly schedule —
+        # so a finding in a workflow or a python script surfaces one merge later
+        # rather than not at all. Restore them here if that one-merge window
+        # ever lets something through.
+        language: ${{ github.event_name == 'pull_request' && fromJSON('["go"]') || fromJSON('["actions", "go", "python"]') }}
 
     steps:
       - name: Checkout code
