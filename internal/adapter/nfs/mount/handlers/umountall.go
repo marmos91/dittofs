@@ -28,9 +28,9 @@ type UmountAllResponse struct {
 }
 
 // UmntAll handles MOUNT UMNTALL (RFC 1813 Appendix I, Mount procedure 4).
-// Removes all mount records for the calling client across all shares.
-// Delegates to Runtime.RemoveAllMounts to clear all mount tracking state.
-// Clears all mount session records; idempotent, more efficient than per-path UMNT.
+// Removes every NFS mount record the calling client holds, across all shares.
+// Other clients' records are untouched, as are this client's mounts over other
+// protocols. Idempotent, and more efficient than one UMNT per path.
 // Errors: none (UMNTALL always succeeds per RFC 1813, returns void).
 func (h *Handler) UmntAll(
 	ctx *MountHandlerContext,
@@ -47,14 +47,14 @@ func (h *Handler) UmntAll(
 
 	logger.Info("Unmount-all request", "client_ip", clientIP)
 
-	// Remove all mount records from the registry
-	count := h.Registry.RemoveAllMounts()
+	// Remove this client's mount records from the registry
+	count := h.Registry.RemoveAllMounts(clientIP)
 
 	logger.Info("Unmount-all successful", "client_ip", clientIP, "removed", count)
 
 	// UMNTALL always returns void/success per RFC 1813
-	// Even if RemoveShareMount failed or was cancelled, we return success
-	// because the client-side unmount has already occurred
+	// Even if the removal found nothing, we return success because the
+	// client-side unmount has already occurred
 	return &UmountAllResponse{MountResponseBase: MountResponseBase{Status: MountOK}}, nil
 }
 

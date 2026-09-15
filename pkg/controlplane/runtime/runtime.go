@@ -975,12 +975,16 @@ func (r *Runtime) RecordMount(clientAddr, shareName string, mountTime int64) {
 	r.mountTracker.Record(clientAddr, "nfs", shareName, mountTime)
 }
 
-func (r *Runtime) RemoveMount(clientAddr string) bool {
-	return r.mountTracker.RemoveByClient(clientAddr)
+// RemoveMount drops the NFS mount record for one client and one export.
+func (r *Runtime) RemoveMount(clientAddr, shareName string) bool {
+	return r.mountTracker.Remove(clientAddr, "nfs", shareName)
 }
 
-func (r *Runtime) RemoveAllMounts() int {
-	return r.mountTracker.RemoveAll()
+// RemoveAllMounts drops every NFS mount record held by one client and returns
+// how many went away. Other clients, and the client's own SMB records, are
+// left in place.
+func (r *Runtime) RemoveAllMounts(clientAddr string) int {
+	return r.mountTracker.RemoveByClient(clientAddr, "nfs")
 }
 
 // ListMounts converts unified mount records to the legacy NFS format.

@@ -175,12 +175,12 @@ func TestMountTracking(t *testing.T) {
 	})
 
 	t.Run("remove mount", func(t *testing.T) {
-		removed := rt.RemoveMount("192.168.1.100:12345")
+		removed := rt.RemoveMount("192.168.1.100:12345", "/export")
 		if !removed {
 			t.Error("expected mount to be removed")
 		}
 
-		removed = rt.RemoveMount("192.168.1.100:12345")
+		removed = rt.RemoveMount("192.168.1.100:12345", "/export")
 		if removed {
 			t.Error("expected false for already removed mount")
 		}
@@ -191,25 +191,42 @@ func TestMountTracking(t *testing.T) {
 	})
 
 	t.Run("remove non-existing mount", func(t *testing.T) {
-		removed := rt.RemoveMount("non-existing")
+		removed := rt.RemoveMount("non-existing", "/export")
 		if removed {
 			t.Error("expected false for non-existing mount")
 		}
 	})
 
-	t.Run("remove all mounts", func(t *testing.T) {
+	t.Run("remove mount leaves the client's other exports", func(t *testing.T) {
 		rt.RecordMount("client1", "/share1", 1000)
-		rt.RecordMount("client2", "/share2", 2000)
-		rt.RecordMount("client3", "/share3", 3000)
+		rt.RecordMount("client1", "/share2", 2000)
 
-		count := rt.RemoveAllMounts()
-		if count != 3 {
-			t.Errorf("expected 3 removed, got %d", count)
+		if !rt.RemoveMount("client1", "/share1") {
+			t.Fatal("expected /share1 to be removed")
 		}
 
-		if len(rt.ListMounts()) != 0 {
-			t.Error("expected no mounts after removing all")
+		mounts := rt.ListMounts()
+		if len(mounts) != 1 || mounts[0].ShareName != "/share2" {
+			t.Errorf("expected only /share2 left, got %+v", mounts)
 		}
+		rt.RemoveAllMounts("client1")
+	})
+
+	t.Run("remove all mounts is scoped to the client", func(t *testing.T) {
+		rt.RecordMount("client1", "/share1", 1000)
+		rt.RecordMount("client1", "/share2", 2000)
+		rt.RecordMount("client2", "/share3", 3000)
+
+		count := rt.RemoveAllMounts("client1")
+		if count != 2 {
+			t.Errorf("expected 2 removed, got %d", count)
+		}
+
+		mounts := rt.ListMounts()
+		if len(mounts) != 1 || mounts[0].ClientAddr != "client2" {
+			t.Errorf("expected client2's mount left, got %+v", mounts)
+		}
+		rt.RemoveAllMounts("client2")
 	})
 }
 

@@ -25,8 +25,8 @@ type mountRuntime interface {
 
 	// Mount tracking (DUMP / UMNT / UMNTALL).
 	RecordMount(clientAddr, shareName string, mountTime int64)
-	RemoveMount(clientAddr string) bool
-	RemoveAllMounts() int
+	RemoveMount(clientAddr, shareName string) bool
+	RemoveAllMounts(clientAddr string) int
 	ListMounts() []*runtime.LegacyMountInfo
 }
 

@@ -48,20 +48,23 @@ func TestRemove(t *testing.T) {
 	}
 }
 
+// RemoveByClient is scoped to one protocol: the client's mounts on other
+// protocols, and other clients entirely, must survive.
 func TestRemoveByClient(t *testing.T) {
 	mt := NewTracker()
 	mt.Record("10.0.0.1", "nfs", "share1", nil)
+	mt.Record("10.0.0.1", "nfs", "share2", nil)
 	mt.Record("10.0.0.1", "smb", "share2", nil)
 	mt.Record("10.0.0.2", "nfs", "share1", nil)
 
-	if !mt.RemoveByClient("10.0.0.1") {
-		t.Error("RemoveByClient returned false for present client")
+	if n := mt.RemoveByClient("10.0.0.1", "nfs"); n != 2 {
+		t.Errorf("RemoveByClient = %d, want 2", n)
 	}
-	if mt.Count() != 1 {
-		t.Errorf("count = %d, want 1 (only 10.0.0.2 remains)", mt.Count())
+	if mt.Count() != 2 {
+		t.Errorf("count = %d, want 2 (10.0.0.1 smb + 10.0.0.2 nfs)", mt.Count())
 	}
-	if mt.RemoveByClient("10.0.0.99") {
-		t.Error("RemoveByClient returned true for absent client")
+	if n := mt.RemoveByClient("10.0.0.99", "nfs"); n != 0 {
+		t.Errorf("RemoveByClient for absent client = %d, want 0", n)
 	}
 }
 
@@ -79,18 +82,6 @@ func TestRemoveAllByProtocol(t *testing.T) {
 	}
 	if n := mt.RemoveAllByProtocol("nfs"); n != 0 {
 		t.Errorf("second RemoveAllByProtocol(nfs) = %d, want 0", n)
-	}
-}
-
-func TestRemoveAll(t *testing.T) {
-	mt := NewTracker()
-	mt.Record("a", "nfs", "s1", nil)
-	mt.Record("b", "smb", "s2", nil)
-	if n := mt.RemoveAll(); n != 2 {
-		t.Errorf("RemoveAll = %d, want 2", n)
-	}
-	if mt.Count() != 0 {
-		t.Errorf("count = %d, want 0", mt.Count())
 	}
 }
 

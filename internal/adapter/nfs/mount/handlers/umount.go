@@ -39,9 +39,10 @@ type UmountResponse struct {
 }
 
 // Umnt handles MOUNT UMNT (RFC 1813 Appendix I, Mount procedure 3).
-// Removes a client's mount record for a previously mounted filesystem.
-// Delegates to Runtime.RemoveMount to clear mount tracking state.
-// Removes mount session record (not the share itself); idempotent.
+// Removes the calling client's mount record for the requested export only —
+// other exports the client still has mounted, and its mounts over other
+// protocols, are left in place. UMNTALL is the remove-everything procedure.
+// Removes the mount session record (not the share itself); idempotent.
 // Errors: none (UMNT always succeeds per RFC 1813, returns void).
 func (h *Handler) Umnt(
 	ctx *MountHandlerContext,
@@ -62,10 +63,12 @@ func (h *Handler) Umnt(
 
 	logger.Info("Unmount request", "path", req.DirPath, "client_ip", clientIP)
 
-	// Remove the mount record from the registry
+	// Remove the mount record from the registry.
 	// Note: We remove the mount SESSION, NOT the share itself! The share persists.
-	// UMNT always succeeds per RFC 1813, even if no mount record exists
-	removed := h.Registry.RemoveMount(clientIP)
+	// The dirpath is the same string MNT recorded the mount under, so it scopes
+	// the removal to the one export the client asked to unmount.
+	// UMNT always succeeds per RFC 1813, even if no mount record exists.
+	removed := h.Registry.RemoveMount(clientIP, req.DirPath)
 	if removed {
 		logger.Info("Unmount successful", "path", req.DirPath, "client_ip", clientIP)
 	} else {

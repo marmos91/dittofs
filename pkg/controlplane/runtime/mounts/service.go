@@ -61,19 +61,22 @@ func (mt *Tracker) Remove(clientAddr, protocol, shareName string) bool {
 	return false
 }
 
-// RemoveByClient removes all mounts for a client address.
-func (mt *Tracker) RemoveByClient(clientAddr string) bool {
+// RemoveByClient removes every mount one client holds on one protocol and
+// returns how many went away. The protocol is part of the scope because a
+// client address is shared across adapters: the same IP can hold an NFS and an
+// SMB mount of the same share, and removing one must not touch the other.
+func (mt *Tracker) RemoveByClient(clientAddr, protocol string) int {
 	mt.mu.Lock()
 	defer mt.mu.Unlock()
 
-	found := false
+	count := 0
 	for key, info := range mt.mounts {
-		if info.ClientAddr == clientAddr {
+		if info.ClientAddr == clientAddr && info.Protocol == protocol {
 			delete(mt.mounts, key)
-			found = true
+			count++
 		}
 	}
-	return found
+	return count
 }
 
 func (mt *Tracker) RemoveAllByProtocol(protocol string) int {
@@ -87,15 +90,6 @@ func (mt *Tracker) RemoveAllByProtocol(protocol string) int {
 			count++
 		}
 	}
-	return count
-}
-
-func (mt *Tracker) RemoveAll() int {
-	mt.mu.Lock()
-	defer mt.mu.Unlock()
-
-	count := len(mt.mounts)
-	mt.mounts = make(map[mountKey]*MountInfo)
 	return count
 }
 
