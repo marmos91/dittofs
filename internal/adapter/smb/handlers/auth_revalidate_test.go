@@ -296,3 +296,29 @@ func TestRevokedSessionRecoversOnReauth(t *testing.T) {
 		t.Error("session still reports as unauthorized after a successful re-authentication")
 	}
 }
+
+// TestRevalidateAuthorization_RevokedSessionKeepsNoTrees pins the teardown.
+// MS-SMB2 keeps tree connections across a re-authentication, and re-auth clears
+// the revocation — so a revoked session that kept its trees would resume on the
+// permission resolved for the old user, including grants revoked while it was
+// out. Every TREE_CONNECT after a recovery must re-decide access.
+func TestRevalidateAuthorization_RevokedSessionKeepsNoTrees(t *testing.T) {
+	disabled := enabledUser()
+	disabled.Enabled = false
+	store := &revalidateUserStore{user: disabled, perm: models.PermissionReadWrite}
+
+	h, sessionID, treeID := newRevalidateHandler(t, enabledUser(), store, models.PermissionReadWrite, true)
+	if _, ok := h.GetTree(treeID); !ok {
+		t.Fatal("tree missing before revalidation")
+	}
+
+	h.RevalidateAuthorization(context.Background())
+
+	sess, _ := h.GetSession(sessionID)
+	if !sess.AuthRevoked() {
+		t.Fatal("session not revoked")
+	}
+	if _, ok := h.GetTree(treeID); ok {
+		t.Error("a revoked session kept its tree; a later re-auth would inherit its permission")
+	}
+}

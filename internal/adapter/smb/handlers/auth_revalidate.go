@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
+	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
@@ -56,7 +57,7 @@ func (h *Handler) RevalidateAuthorization(ctx context.Context) {
 		if !ok || sess.LoggedOff.Load() {
 			return true
 		}
-		current := sess.User
+		current := sess.CurrentUser()
 		if current == nil {
 			// Guest and anonymous sessions carry no user record; their access
 			// rests on the share default, which the tree pass re-resolves.
@@ -80,7 +81,7 @@ func (h *Handler) RevalidateAuthorization(ctx context.Context) {
 		case errors.Is(err, models.ErrUserNotFound):
 			logger.Info("SMB session revoked: user deleted",
 				"sessionID", sessionID, "username", current.Username)
-			h.revokeSession(sess, sessionID)
+			h.revokeSession(ctx, sess, sessionID)
 		case err != nil:
 			// A store failure is not evidence that the account went away, and
 			// revoking on one would drop every SMB session on a transient
@@ -91,7 +92,7 @@ func (h *Handler) RevalidateAuthorization(ctx context.Context) {
 		case user == nil || !user.Enabled:
 			logger.Info("SMB session revoked: user disabled",
 				"sessionID", sessionID, "username", current.Username)
-			h.revokeSession(sess, sessionID)
+			h.revokeSession(ctx, sess, sessionID)
 		default:
 			surviving[sessionID] = user
 		}
@@ -101,17 +102,50 @@ func (h *Handler) RevalidateAuthorization(ctx context.Context) {
 	h.revalidateTrees(ctx, userStore, surviving)
 }
 
-// revokeSession retires a session's authorization and completes anything it has
-// parked on the server.
+// revokeSession retires a session's authorization and tears down the state that
+// authorization was holding open.
 //
-// The dispatch gate only refuses a request the client sends, but an armed
-// CHANGE_NOTIFY is delivered from a timer and consults no session state, so a
-// client that arms one and then goes quiet would keep receiving file names from
-// a share it has lost. Completing them here is what the expiry path already does
-// when it refuses a request.
-func (h *Handler) revokeSession(sess *session.Session, sessionID uint64) {
+// Marking the session is not enough on its own, for three reasons. The dispatch
+// gate only refuses a request the client sends, so an armed CHANGE_NOTIFY —
+// delivered from a timer, consulting no session state — would keep reporting
+// file names from a share the user has lost. A parked blocking LOCK has already
+// passed the gate and would complete after revocation. And the trees carry the
+// permission resolved for the old user: a later re-authentication clears the
+// revocation, and MS-SMB2 keeps tree connections across it, so leaving them in
+// place lets a session resume on grants that were revoked while it was out —
+// or lets a different, lower-privileged user inherit them.
+//
+// So a revoked session is left alive but empty: its opens are closed, its parked
+// locks cancelled, its notifies completed and its trees removed. It can still
+// LOGOFF, and a re-authentication that succeeds starts from a clean slate where
+// every TREE_CONNECT re-decides access. Opens are closed with isDisconnect
+// false, so durable handles do not survive to be reclaimed — a reclaim would
+// hand the handle back without re-deciding anything.
+func (h *Handler) revokeSession(ctx context.Context, sess *session.Session, sessionID uint64) {
 	sess.RevokeAuth()
+
+	filesClosed := h.CloseAllFilesForSession(ctx, sessionID, false)
+
+	if h.PendingLockRegistry != nil {
+		for _, parked := range h.PendingLockRegistry.UnregisterAllForSession(sessionID) {
+			if parked.Callback != nil {
+				if err := parked.Callback(parked.SessionID, parked.MessageID, parked.AsyncId, types.StatusCancelled, nil); err != nil {
+					logger.Debug("Revoke: failed to send LOCK cancel response",
+						"asyncId", parked.AsyncId, "error", err)
+				}
+			}
+			if h.LockWaitGraph != nil && parked.OwnerID != "" {
+				h.LockWaitGraph.RemoveWaiter(parked.OwnerID)
+			}
+		}
+	}
+
+	h.releaseSessionLeasesAndNotifies(ctx, sessionID)
 	h.ExpireSessionNotifies(sessionID)
+	treesDeleted := h.DeleteAllTreesForSession(sessionID)
+
+	logger.Info("SMB session authorization revoked",
+		"sessionID", sessionID, "filesClosed", filesClosed, "treesDeleted", treesDeleted)
 }
 
 // revalidateTrees re-resolves each surviving session's pinned tree permissions

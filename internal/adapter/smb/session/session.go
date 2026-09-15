@@ -397,6 +397,16 @@ func (s *Session) IsExpired() bool {
 	return !s.ExpiresAt.IsZero() && time.Now().After(s.ExpiresAt)
 }
 
+// CurrentUser returns the session's DittoFS user record under the lock that
+// UpdateIdentity writes it through, so a re-authentication swapping the record
+// cannot be observed as a torn or half-published pointer. Nil for guest and
+// anonymous sessions.
+func (s *Session) CurrentUser() *models.User {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.User
+}
+
 // IsExpiredOrRevoked reports whether the session has lost its authorization,
 // either because a Kerberos ticket ran out or because a re-check retired the
 // user behind it. The dispatch gate and the LOCK handler's own new-lock refusal
