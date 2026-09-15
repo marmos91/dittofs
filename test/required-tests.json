@@ -1,0 +1,45 @@
+{
+  "_comment": [
+    "Tests that may not disappear. test/required-tests.sh runs every name listed",
+    "here and fails when one is missing, skipped or red.",
+    "",
+    "A regression test is the only thing standing between a fixed defect and its",
+    "return, and it is deleted by the same edit that reintroduces the defect — so",
+    "the suite goes green over the regression and nothing reports it. Listing a",
+    "name here moves it out of reach of that edit: removing the test now means",
+    "removing it from this file too, which is a line a reviewer sees.",
+    "",
+    "The list is deliberately short. It is for gates whose removal is silent and",
+    "expensive — authorization, encryption and squashing decisions — not for",
+    "coverage in general, which is what the ordinary unit suite is for.",
+    "",
+    "Names are top-level Go test functions. A subtest is not addressable here: a",
+    "test keeps its name while its cases are hollowed out, so a name in this file",
+    "pins existence, not thoroughness.",
+    "",
+    "Adding one: name a test that already exists and passes on develop, or the",
+    "check goes red on the pull request that adds it.",
+    "",
+    "JSON with jq, matching test/conformance/suites.json, so a runner needs",
+    "nothing a dev shell does not already have."
+  ],
+  "packages": {
+    "./internal/adapter/nfs/auth": [
+      "TestAdvertisedAuthFlavors",
+      "TestCheckExportAccess_AuthFlavorPolicy",
+      "TestCheckExportAccess_Netgroup",
+      "TestResolveSharePermission_DefaultPermissionNoneDeniesUnknownUID",
+      "TestResolveSharePermission_RootPromotedToAdmin"
+    ],
+    "./internal/adapter/smb": [
+      "TestCheckEncryptionRequired_GlobalMode"
+    ],
+    "./internal/adapter/smb/handlers": [
+      "TestCreate_DaclEnforcement_DeniesWhenBitNotGranted",
+      "TestCreate_MaxAllowedPlusExplicitDeniedBit_ReturnsAccessDenied",
+      "TestShouldRejectUnencryptedTreeConnect_SMB2DialectRejected",
+      "TestShouldRejectUnencryptedTreeConnect_SMB2WithCrypto",
+      "TestTreeConnect_RequiredModeRejectsUnencryptedSession"
+    ]
+  }
+}
