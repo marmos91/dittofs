@@ -938,7 +938,7 @@ func (r *Runtime) Serve(ctx context.Context) error {
 		logger.Error("restore recovery returned error (continuing startup)", "error", err)
 	}
 
-	return r.lifecycleSvc.Serve(ctx, lifecycle.Deps{
+	err := r.lifecycleSvc.Serve(ctx, lifecycle.Deps{
 		Settings:        r.settingsWatcher,
 		AdapterLoader:   r.adaptersSvc,
 		MetadataFlusher: r.metadataService,
@@ -947,6 +947,19 @@ func (r *Runtime) Serve(ctx context.Context) error {
 		SnapshotDrainer: r,
 		RollupStopper:   r,
 	})
+	if err != nil {
+		// Serve returns a startup error before it reaches its shutdown hook, so
+		// the drain that stops and joins the snapshot scheduler never runs. The
+		// scheduler was started above and reads and writes policies through the
+		// control-plane store, which the caller closes as soon as this returns
+		// — the exact overlap the drain exists to prevent, reached by the error
+		// path instead of the normal one.
+		//
+		// WithoutCancel because ctx may already be done: the join has to
+		// outlive the cancellation to be a join at all.
+		r.shutdownSnapshots(context.WithoutCancel(ctx))
+	}
+	return err
 }
 
 // StopRollups stops + drains every share's block-store rollup worker pool.
