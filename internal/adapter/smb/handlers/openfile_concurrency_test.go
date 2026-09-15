@@ -1,11 +1,11 @@
-// Race regression tests for OpenFile mutable-field synchronization (#585, #606).
+// Race regression tests for OpenFile mutable-field synchronization.
 //
 // MS-SMB2 multichannel does not mandate in-order delivery across channels and
 // SMB clients legitimately pipeline operations on the same handle, so the
 // same *OpenFile pointer is observed by concurrent goroutines. The tests below
 // pin the per-OpenFile sync.RWMutex (`openFile.mu`) by deliberately running
 // concurrent operations that mutate the enumeration cursor (#585), the SMB
-// delayed-write timestamp overlay (#606) and the freeze/thaw flags (#606).
+// delayed-write timestamp overlay and the freeze/thaw flags.
 //
 // Each test fails under `go test -race` if the lock is removed or any field is
 // touched without it.
@@ -128,7 +128,7 @@ func TestQueryDirectory_ConcurrentEnumerationCursor_NoRace(t *testing.T) {
 	wg.Wait()
 }
 
-// TestSmbDelayedWrite_ConcurrentArmApply_NoRace pins #606 for the
+// TestSmbDelayedWrite_ConcurrentArmApply_NoRace pins the
 // SmbWriteTriggered / SmbWritePreMtime / SmbWriteFlushMtime / SmbWriteFlushAt
 // / SmbStickyWriteTime fields. Concurrent armSmbDelayedWrite (mutates) and
 // applySmbDelayedWriteOverride (reads) on the same OpenFile must serialize
@@ -192,7 +192,7 @@ func TestSmbStickyWriteTime_ConcurrentSetApply_NoRace(t *testing.T) {
 // Frozen* pointer fields against concurrent SET_INFO (write) and
 // READ/WRITE/COPYCHUNK (IsAtimeFrozen reads) + QUERY_INFO
 // (applyFrozenTimestamps reads). All paths go through helpers that take
-// openFile.mu (#606).
+// openFile.mu.
 func TestFreezeFields_ConcurrentReadWrite_NoRace(t *testing.T) {
 	openFile := &OpenFile{FileID: [16]byte{3}}
 

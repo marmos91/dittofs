@@ -577,7 +577,7 @@ func (h *Handler) executeCopyChunks(
 	// is bumped too; MS-FSA specifies no parent-directory timestamp update here.
 	// Hoist a single timestamp for consistency (matches write.go pattern).
 	now := time.Now()
-	// IsAtimeFrozen takes the per-OpenFile read lock; see #606.
+	// IsAtimeFrozen takes the per-OpenFile read lock.
 	if !srcOpen.IsAtimeFrozen() {
 		srcAttrs := &metadata.SetAttrs{Atime: &now}
 		holdFrozenCtime(srcOpen, srcAttrs)

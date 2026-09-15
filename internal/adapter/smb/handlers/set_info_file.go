@@ -133,7 +133,7 @@ func (h *Handler) setFileInfoFromStore(
 		// suppresses the auto-bump in all of these cases.
 		anyBasicMutation := fileAttrs != 0 || creationFT != 0 || atimeFT != 0 || mtimeFT != 0
 		// Serialize concurrent SET_INFO BasicInfo / READ / WRITE / QUERY_INFO on
-		// the same handle (#606). The freeze flags (BtimeFrozen / MtimeFrozen /
+		// the same handle. The freeze flags (BtimeFrozen / MtimeFrozen /
 		// CtimeFrozen / AtimeFrozen) plus their Frozen* timestamp pointers and
 		// the SMB delayed-write fields are read and written here, and observed
 		// by QUERY_INFO / READ / WRITE / COPYCHUNK on parallel goroutines. We
@@ -221,7 +221,7 @@ func (h *Handler) setFileInfoFromStore(
 		basicAuthCtx := withTimestampHandleAuth(authCtx, openFile.GrantedAccess)
 
 		if _, err := metaSvc.SetFileAttributes(basicAuthCtx, openFile.MetadataHandle, setAttrs); err != nil {
-			openFile.mu.Unlock() // release before returning; refs #606.
+			openFile.mu.Unlock() // release before returning.
 			logger.Debug("SET_INFO: failed to set basic info", "path", openFile.Name().Path, "error", err)
 			return setInfoStatus(types.StatusForErr(err)), nil
 		}
@@ -1566,7 +1566,7 @@ func (h *Handler) setFileInfoFromStore(
 //
 // Takes openFile.mu (read) — the freeze flags and Frozen* pointers are mutated
 // under the write lock in SET_INFO BasicInfo and must be observed atomically
-// against a concurrent freeze/thaw on the same handle (#606).
+// against a concurrent freeze/thaw on the same handle.
 
 func applyFrozenTimestamps(openFile *OpenFile, file *metadata.File) {
 	openFile.mu.RLock()
@@ -1659,7 +1659,7 @@ func withTimestampHandleAuth(authCtx *metadata.AuthContext, grantedAccess uint32
 // All reads of the freeze flags / Frozen* pointers go through buildFrozenAttrs
 // (which takes openFile.mu read), snapshotMtimeFrozen (likewise), or the local
 // snapshot taken under openFile.mu — so a concurrent SET_INFO freeze/thaw on
-// the same handle cannot tear our view (#606).
+// the same handle cannot tear our view.
 
 func (h *Handler) restoreFrozenTimestamps(authCtx *metadata.AuthContext, openFile *OpenFile) {
 	restoreAttrs := buildFrozenAttrs(openFile)
@@ -1766,7 +1766,7 @@ func (h *Handler) restoreParentDirFrozenTimestamps(authCtx *metadata.AuthContext
 				"path", openFile.Name().Path, "error", err)
 		} else {
 			// IsMtimeFrozen / IsCtimeFrozen / IsAtimeFrozen each take
-			// openFile.mu (read); see #606. Cheap because the parent-dir
+			// openFile.mu (read). Cheap because the parent-dir
 			// frozen log line is debug-gated.
 			logger.Debug("restoreParentDirFrozenTimestamps: restored",
 				"path", openFile.Name().Path,
@@ -1785,7 +1785,7 @@ func (h *Handler) restoreParentDirFrozenTimestamps(authCtx *metadata.AuthContext
 //
 // Takes openFile.mu (read); see applyFrozenTimestamps for rationale.
 // Snapshots the time pointers so callers using the returned SetAttrs after
-// unlock cannot tear against a concurrent thaw clearing them. (#606)
+// unlock cannot tear against a concurrent thaw clearing them.
 
 func buildFrozenAttrs(openFile *OpenFile) *metadata.SetAttrs {
 	openFile.mu.RLock()

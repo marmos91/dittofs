@@ -72,23 +72,35 @@ func TestSetFileAttributes_PreserveCtimeDoesNotRevertAConcurrentAdvance(t *testi
 		var wg sync.WaitGroup
 		wg.Add(2)
 		start := make(chan struct{})
+		// Both writers' errors are kept. Discarding them lets a round where the
+		// PreserveCtime write failed outright still reach the assertion below
+		// and satisfy it on the other writer alone — a green round that tested
+		// nothing, which is exactly the shape this test exists to rule out.
+		var preserveErr, advanceErr error
 
 		go func() {
 			defer wg.Done()
 			<-start
 			atime := base.Add(time.Duration(i+1) * time.Minute)
-			_, _ = svc.SetFileAttributes(ctx, handle, &metadata.SetAttrs{
+			_, preserveErr = svc.SetFileAttributes(ctx, handle, &metadata.SetAttrs{
 				Atime: &atime, PreserveCtime: true,
 			})
 		}()
 		go func() {
 			defer wg.Done()
 			<-start
-			_, _ = svc.SetFileAttributes(ctx, handle, &metadata.SetAttrs{Ctime: &advanced})
+			_, advanceErr = svc.SetFileAttributes(ctx, handle, &metadata.SetAttrs{Ctime: &advanced})
 		}()
 
 		close(start)
 		wg.Wait()
+
+		if preserveErr != nil {
+			t.Fatalf("round %d: the PreserveCtime write failed, so this round proves nothing: %v", i, preserveErr)
+		}
+		if advanceErr != nil {
+			t.Fatalf("round %d: the Ctime advance failed, so this round proves nothing: %v", i, advanceErr)
+		}
 
 		got, err := svc.GetFile(context.Background(), handle)
 		if err != nil {

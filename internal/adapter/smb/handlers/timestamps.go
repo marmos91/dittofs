@@ -141,7 +141,7 @@ func armSmbDelayedWriteLocked(openFile *OpenFile, preMtime time.Time, writeTime 
 // visibility window on the first call. Subsequent calls are no-ops.
 //
 // Takes OpenFile.mu (write) — concurrent WRITE pipelines on the same handle
-// must serialize their first-write capture (#606). Callers that already hold
+// must serialize their first-write capture. Callers that already hold
 // the write lock should call armSmbDelayedWriteLocked instead.
 func armSmbDelayedWrite(openFile *OpenFile, preMtime time.Time, writeTime time.Time) {
 	if openFile == nil {
@@ -211,7 +211,7 @@ func setSmbStickyWriteTime(openFile *OpenFile, t time.Time) {
 //
 // Takes OpenFile.mu (read) — must observe a consistent snapshot of the
 // SmbWrite* fields against concurrent armSmbDelayedWrite / flushSmbDelayedWrite
-// on the same handle (#606).
+// on the same handle.
 func applySmbDelayedWriteOverride(openFile *OpenFile, file *metadata.File) {
 	if openFile == nil || file == nil {
 		return

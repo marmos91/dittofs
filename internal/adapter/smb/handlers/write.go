@@ -404,7 +404,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// expires (Samba: trigger_write_time_update). Best-effort — only the
 	// first WRITE on the open consumes the snapshot. Probe under the per-
 	// OpenFile read lock so a concurrent armSmbDelayedWrite /
-	// setSmbStickyWriteTime cannot tear our view (#606); armSmbDelayedWrite
+	// setSmbStickyWriteTime cannot tear our view; armSmbDelayedWrite
 	// below re-checks the flags under the write lock so a race between probe
 	// and arm collapses to a single first-write capture.
 	var preWriteMtime time.Time
@@ -524,7 +524,8 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// Both bumps coalesce per handle the way READ's does — see noteSmbAccess
 	// and noteSmbParentAccess.
 	now := time.Now()
-	// IsAtimeFrozen takes openFile.mu (read); see #606.
+	// IsAtimeFrozen takes openFile.mu (read), so this probe is serialized
+	// against a concurrent SET_INFO freezing the access time.
 	if !openFile.IsAtimeFrozen() && noteSmbAccess(openFile, now) {
 		attrs := &metadata.SetAttrs{Atime: &now}
 		holdFrozenCtime(openFile, attrs)

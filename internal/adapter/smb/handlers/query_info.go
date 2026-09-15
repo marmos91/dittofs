@@ -643,7 +643,7 @@ func (h *Handler) resolveBaseFileAttrForADS(authCtx *metadata.AuthContext, openF
 	attr := baseFile.FileAttr
 	// Read the freeze flags and Frozen* pointers under openFile.mu (read);
 	// SET_INFO BasicInfo on a parallel goroutine mutates them under the
-	// write lock (#606).
+	// write lock.
 	openFile.mu.RLock()
 	if openFile.BtimeFrozen && openFile.FrozenBtime != nil {
 		attr.CreationTime = *openFile.FrozenBtime

@@ -481,7 +481,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// armSmbDelayedWrite, DeletePending under the same lock by a concurrent
 	// closer's delete-on-close election. Snapshot both under the read lock so
 	// we observe consistent values against a parallel WRITE or CLOSE on the
-	// same handle (#606).
+	// same handle.
 	openFile.mu.RLock()
 	smbWriteTriggered := openFile.SmbWriteTriggered
 	deletePending := openFile.DeletePending
