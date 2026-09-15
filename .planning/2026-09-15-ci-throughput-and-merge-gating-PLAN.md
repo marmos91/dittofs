@@ -21,6 +21,7 @@ Measured against the GitHub API, not inferred.
 ### 2.1 Queue starvation is the whole story
 
 Lint run `34976565728`: all 10 jobs created at `13:40:52`. Longest job 2m17s. Run wall 1254s (21 min).
+
 | job | started | duration |
 | --- | --- | --- |
 | Commit Type Matches Diff | 13:44:44 | 8s |
