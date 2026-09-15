@@ -516,6 +516,22 @@ func (h *Handler) closeFilesWithFilter(
 	// sync.Map the rename scan never reads, and the in-flight ops for a
 	// teardown handle are not waited on here.
 	//
+	// ponytail: teardown drops a handle without draining its in-flight ops,
+	// unlike CLOSE, which drains first. Draining here would deadlock against
+	// the very work this function performs: an in-flight SET_INFO rename holds
+	// a handle-op registration while parked in WaitForOtherKeyBreaks, and that
+	// wait ends only on an ack or CLOSE from a lease holder — which, on a
+	// logoff or a dropped transport, only the lease release a few lines below
+	// can supply. Waiting first would make teardown wait for the rename while
+	// the rename waits for teardown, resolved only by the break timeout. The
+	// ceiling is that an op still running observes its handle gone from
+	// `files`: it keeps the *OpenFile it already holds, so it completes against
+	// a detached handle, and its late write or cache flush can land after the
+	// AppInstanceId failover path has handed the file to a new open. Upgrade to
+	// a drain only once a parked break-wait can be cancelled by the teardown
+	// that will satisfy it — cancel this session's waits, then drain, so the
+	// wait cannot be circular.
+	//
 	// releaseHandleLeaseRecord runs after every map removal so its "any other
 	// open on the same file shares this key" scan sees the shrunk table —
 	// otherwise sibling opens of the same file/key (all still present in the
