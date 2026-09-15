@@ -94,9 +94,13 @@ Use the fix-issue skill to work DittoFS issue(s) #<N>[, #<M> in order].
 Worktree: ~/dittofs-worktrees/<slug>   (create it yourself, branch off origin/develop)
 
 Deviations from fix-issue for this parallel run:
-- STOP after the PR is green and every Copilot comment is addressed.
-  Do NOT merge. Report the PR number and a one-paragraph summary of the
-  root cause. Merges are serialized by the orchestrator.
+- STOP once the PR is pushed and your own local verification is done.
+  Do NOT merge, do NOT wait for CI, and do NOT arm a Monitor or any
+  polling loop on check status, the merge queue, or Copilot. Report the
+  PR number and a one-paragraph summary of the root cause, then exit.
+  The orchestrator holds one watch across every PR and will send you the
+  failing job and its output if CI goes red; you resume from your own
+  context then, which is the part the orchestrator cannot reproduce.
 - Do NOT run test/e2e/run-e2e.sh, test/smb-conformance/run.sh, or
   test/nfs-conformance/run.sh without asking me first — they collide on
   ports, mounts and sudo, and only one agent may hold them at a time.
@@ -105,6 +109,18 @@ Deviations from fix-issue for this parallel run:
 Commit signed and often; report back even if you conclude there is nothing
 to fix.
 ```
+
+**Do not let agents wait on CI.** An agent that arms a watch on its own PR is
+woken by every check transition, re-reads its context, re-reports the same SHA,
+and stops — then the watch wakes it again. Two agents did this for four rounds
+each in one session; every round cost the orchestrator a full report to read and
+told it nothing `gh pr checks` would not have said for free. Worse, the reports
+are near-identical, so the one that *does* carry a new finding is the hardest to
+spot. One watch, held by the orchestrator, covering every PR at once. If an agent
+is already looping, `TaskStop` it rather than asking it to stand down — the branch
+is pushed, and a polite request costs another wake cycle to deliver. The only
+thing lost is the ability to resume it, which is worth having solely if its CI
+goes red.
 
 Those three carve-outs are the only genuinely shared state: the protocol suites
 bind fixed ports and mount points, there is one `scw` account and one
@@ -171,6 +187,31 @@ While agents run, you hold the contended resources. When one asks:
   yourself, and hand the agent the IP. Share a single VM across agents if their
   reproductions do not conflict. You own the teardown, including the identity
   check that stops a development VM being destroyed.
+
+## 4b. Read Copilot the moment it posts, not when CI goes green
+
+Copilot's review lands within a couple of minutes of a PR opening. A full CI matrix
+takes 30-40. Waiting for green before reading the review serializes the rework
+*after* the wait instead of overlapping it, and it is the single largest avoidable
+delay in this loop.
+
+In one batch, six PRs were blocked by Copilot findings — an operator change that
+needed an admission guard and three missing assertions, a share-rename that silently
+moved a metadata namespace, a durability paragraph that was wrong in the opposite
+direction from the text it replaced, a third site carrying a stale API claim, a
+fail-closed guard applied to only one side of a symmetric comparison, and a fix whose
+guarantee held sequentially but not under concurrent writers. Every one of those was
+readable within minutes of the PR opening; every one was read at green, 40 minutes
+later, and sent back for a rework that then needed another full matrix.
+
+So: arm one watch for new Copilot comments across every open PR in the batch, and
+route each finding to its agent as it arrives. The agent is usually still warm, CI is
+still running, and the rework lands in the same cycle rather than costing a second
+one.
+
+Do not merge on a green matrix without checking Copilot first
+(`feedback_check_copilot_before_merge`) — but the point here is the opposite ordering
+problem: do not *wait* for the matrix before checking Copilot either.
 
 ## 5. Merge serially
 
