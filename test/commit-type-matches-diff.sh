@@ -12,6 +12,10 @@
 #
 # Allowed paths for those two types: docs/**, .planning/**, any *.md, README*.
 #
+# `chore(release)` additionally allows flake.nix, and only flake.nix: a release
+# commit bumps the version there and changes nothing else, so refusing it would
+# block every release rather than catch anything.
+#
 # The one exception is a Go file whose diff touches only `//` comment lines and
 # blank lines — a typo fix in a doc comment is a documentation change whatever
 # file it lives in. The exception applies to modified files only: an added,
@@ -66,7 +70,10 @@ for sha in $(git rev-list --no-merges "${merge_base}..HEAD"); do
 	type="${BASH_REMATCH[1]}"
 	scope="${BASH_REMATCH[3]:-}"
 
-	if [ "$type" != "docs" ] && [ "$type$scope" != "chorerelease" ]; then
+	release=false
+	if [ "$type$scope" = "chorerelease" ]; then
+		release=true
+	elif [ "$type" != "docs" ]; then
 		continue
 	fi
 
@@ -76,6 +83,10 @@ for sha in $(git rev-list --no-merges "${merge_base}..HEAD"); do
 		# Renames report the destination in a third field; judge that.
 		[ "${st:0:1}" = "R" ] && path="$rename_to"
 		is_doc_path "$path" && continue
+		# The version bump a release commit exists to make.
+		if [ "$release" = true ] && [ "$path" = "flake.nix" ]; then
+			continue
+		fi
 		if [ "${path##*.}" = "go" ] && [ "$st" = "M" ] && go_comments_only "$sha" "$path"; then
 			continue
 		fi
@@ -93,10 +104,10 @@ if [ "$status" -ne 0 ]; then
 	echo >&2
 	echo "A docs: or chore(release): commit may only touch docs/**, .planning/**," >&2
 	echo "*.md or README*. A modified .go file is also allowed when its diff changes" >&2
-	echo "only // comment and blank lines." >&2
+	echo "only // comment and blank lines, and chore(release): may bump flake.nix." >&2
 	echo >&2
 	echo "Retype the commit for what it actually changes, or split the code out of it." >&2
 	exit 1
 fi
 
-echo "every docs: and chore(release): commit touches documentation only"
+echo "every docs: and chore(release): commit stays inside its allowed paths"
