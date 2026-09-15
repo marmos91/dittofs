@@ -65,25 +65,7 @@ func (h *Handler) TreeDisconnect(ctx *SMBHandlerContext, body []byte) (*HandlerR
 	// STATUS_RANGE_NOT_LOCKED (the FileID's open went away with the tree).
 	// Failing to do so leaves the dispatch goroutine waiting for a lock
 	// that no client will ever release.
-	if h.PendingLockRegistry != nil {
-		for _, parked := range h.PendingLockRegistry.UnregisterAllForTree(ctx.TreeID) {
-			if parked.Callback != nil {
-				// Synchronous like the CLOSE and LOGOFF siblings: the callback
-				// writes the LOCK-cancel response through the connection's
-				// write mutex, so a fire-and-forget goroutine would only add
-				// unowned concurrency (no join on teardown) — the dispatch
-				// goroutine is already dedicated to this request and the
-				// count of parked locks is bounded by the tree's clients.
-				if err := parked.Callback(parked.SessionID, parked.MessageID, parked.AsyncId, types.StatusRangeNotLocked, nil); err != nil {
-					logger.Debug("TREE_DISCONNECT: failed to cancel pending LOCK",
-						"asyncId", parked.AsyncId, "messageID", parked.MessageID, "error", err)
-				}
-			}
-			if h.LockWaitGraph != nil && parked.OwnerID != "" {
-				h.LockWaitGraph.RemoveWaiter(parked.OwnerID)
-			}
-		}
-	}
+	h.cancelPendingLocksForTree(ctx.TreeID)
 
 	// ========================================================================
 	// Step 3: Delete the tree connection

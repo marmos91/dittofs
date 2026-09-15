@@ -386,7 +386,11 @@ func resolveSharePermission(
 ) (models.SharePermission, string) {
 	var user *models.User
 	if sess != nil {
-		user = sess.User
+		// Through the locked accessor: SESSION_SETUP re-authentication replaces
+		// this field under the session mutex, so reading it directly races a
+		// concurrent re-auth and can resolve access from a half-published
+		// identity.
+		user = sess.CurrentUser()
 	}
 	perm, identifier, _ := resolveSharePermissionForUser(ctx, sess, user, share, defaultPerm, userStore)
 	return perm, identifier

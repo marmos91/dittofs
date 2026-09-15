@@ -213,6 +213,11 @@ func (h *Handler) revalidateTrees(ctx context.Context, userStore models.UserStor
 			// lock it holds would stand against other users until the
 			// connection dropped.
 			closed := h.CloseAllFilesForTree(ctx, u.treeID, u.sessionID)
+			// A LOCK parked on this tree passed its authorization check before
+			// the grant was withdrawn and is not woken by closing the opens, so
+			// it would otherwise complete against access this sweep just
+			// removed. Drain it through the same helper TREE_DISCONNECT uses.
+			h.cancelPendingLocksForTree(u.treeID)
 			logger.Info("SMB tree removed: share access revoked",
 				"treeID", u.treeID, "filesClosed", closed)
 			h.DeleteTree(u.treeID)

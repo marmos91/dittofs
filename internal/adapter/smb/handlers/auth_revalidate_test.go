@@ -408,3 +408,45 @@ func TestRevalidateAuthorization_ResolverErrorDoesNotRaisePermission(t *testing.
 			"default and was written back as a new authorization decision", tree.Permission)
 	}
 }
+
+// TestRevalidateAuthorization_RevokedTreeCancelsParkedLock pins the tree
+// teardown against a blocking LOCK. A LOCK parked on the tree passed its
+// authorization check before the grant was withdrawn, and closing the tree's
+// opens does not wake it — TREE_DISCONNECT owes such a lock a cancel, and a
+// revocation that removes the same tree owes it the same. Without the drain the
+// dispatch goroutine waits for a lock no client will ever release, on a tree the
+// sweep has already deleted.
+func TestRevalidateAuthorization_RevokedTreeCancelsParkedLock(t *testing.T) {
+	store := &revalidateUserStore{user: enabledUser(), perm: models.PermissionNone}
+
+	h, sessionID, treeID := newRevalidateHandler(t, enabledUser(), store, models.PermissionReadWrite, true)
+
+	gotStatus := make(chan types.Status, 1)
+	if err := h.PendingLockRegistry.Register(&pending.PendingLock{
+		SessionID: sessionID,
+		TreeID:    treeID,
+		MessageID: 11,
+		AsyncId:   42,
+		Callback: func(_, _, _ uint64, status types.Status, _ []byte) error {
+			gotStatus <- status
+			return nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	h.RevalidateAuthorization(context.Background())
+
+	if _, ok := h.GetTree(treeID); ok {
+		t.Fatal("fixture is wrong: the tree survived, so no teardown ran")
+	}
+	select {
+	case status := <-gotStatus:
+		if status != types.StatusRangeNotLocked {
+			t.Errorf("parked LOCK completed with %v, want STATUS_RANGE_NOT_LOCKED", status)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("parked LOCK was never completed: the revoked tree left its dispatch " +
+			"goroutine waiting for a lock no client can release")
+	}
+}
