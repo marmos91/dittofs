@@ -908,6 +908,20 @@ func validateAndRestore(
 // client" would let a request whose own identity cannot be established
 // force-close an open that demonstrably belongs to someone else — the opposite
 // of the fail-closed rule the displacement check is here to enforce.
+// decision: `recorded` is the ClientGuid that established the open, and the
+// spec's fourth condition names a different value —
+// Open.Session.Connection.ClientGuid, the GUID of the connection the open's
+// session is on now (MS-SMB2 3.3.5.9.13). The two diverge only for an open that
+// reconnected from a different ClientGuid, and this server allows that on a
+// non-lease DHnC/DH2C reconnect: the ClientGuid gate on reconnect is applied to
+// lease-backed handles alone, because a lease is scoped per (ClientGuid,
+// LeaseKey) and the smbtorture reopen ladders pin that. For an open that never
+// moved clients — every open in the durable reconnect tests, and every open a
+// single-client application instance holds — the two values are the same and
+// this condition is the spec's. Withdraw it when reconnect gates on ClientGuid
+// for the whole 3.x family per 3.3.5.9.7, which is the change that makes the
+// establishing GUID and the current one the same value again; until then the
+// gap is that a displaced-and-reconnected open is judged by where it came from.
 func sameOrUnknownClient(recorded, conn [16]byte) bool {
 	var unknown [16]byte
 	return recorded == conn || recorded == unknown || conn == unknown
