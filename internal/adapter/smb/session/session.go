@@ -139,6 +139,22 @@ type Session struct {
 	// attempting signature verification on a defunct session.
 	LoggedOff atomic.Bool
 
+	// authRevoked is set when a re-check of the session's authorization finds
+	// the DittoFS user it authenticated as no longer eligible — the record was
+	// deleted, or it was disabled after this session was established. Both are
+	// refused at SESSION_SETUP, but a session outlives that check: the user
+	// snapshot below is taken once at authentication and nothing re-reads it,
+	// so without this flag a disabled user keeps the session for as long as the
+	// connection stays open.
+	//
+	// The dispatch layer treats it like an expired Kerberos ticket: every
+	// command except LOGOFF, CLOSE and LOCK is refused with
+	// STATUS_NETWORK_SESSION_EXPIRED, leaving the client a window to release
+	// locks and close handles before it re-authenticates — where SESSION_SETUP
+	// refuses it outright. Atomic because the control-plane goroutine running
+	// the sweep races the per-request dispatch goroutines reading it.
+	authRevoked atomic.Bool
+
 	// OriginConnID is the ConnID of the TCP connection that created this
 	// session via SESSION_SETUP. For SMB 2.x (below 3.0), session lookup
 	// is per-connection per MS-SMB2 §3.3.5.5, so a SESSION_SETUP from a
@@ -233,6 +249,25 @@ func (s *Session) UpdateIdentity(username, domain string, user *models.User, isG
 	s.IsNull = isNull
 	// User and PAC identity may both have changed; drop the memoized derived
 	// identity so the next consumer rebuilds from the new fields.
+	s.authIdentity = nil
+	s.authIdentityUser = nil
+}
+
+// RefreshUser replaces the session's DittoFS user record, leaving the rest of
+// the identity (username, domain, guest/null flags) alone. An authorization
+// re-check uses it to install a record re-read from the store: the original is
+// a snapshot taken at authentication, and share-permission resolution reads the
+// user's own grants and group memberships off that object rather than from the
+// database, so a stale one resolves against grants that may since have been
+// revoked.
+//
+// Takes the same lock as UpdateIdentity and drops the memoized derived identity
+// for the same reason — group membership feeds the UID/GID and group-SID set.
+// Safe for concurrent use.
+func (s *Session) RefreshUser(user *models.User) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.User = user
 	s.authIdentity = nil
 	s.authIdentityUser = nil
 }
@@ -371,6 +406,18 @@ func (s *Session) SetBindIdentity(dialect types.Dialect, signingAlgo uint16, cip
 // IsExpired returns true if the session has a Kerberos ticket that has expired.
 func (s *Session) IsExpired() bool {
 	return !s.ExpiresAt.IsZero() && time.Now().After(s.ExpiresAt)
+}
+
+// RevokeAuth marks the session's authorization as no longer valid. Callers are
+// authorization re-checks, not the request path.
+func (s *Session) RevokeAuth() {
+	s.authRevoked.Store(true)
+}
+
+// AuthRevoked reports whether an authorization re-check has retired this
+// session's user.
+func (s *Session) AuthRevoked() bool {
+	return s.authRevoked.Load()
 }
 
 // RequestStarted records that a request has started processing.

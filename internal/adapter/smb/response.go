@@ -466,11 +466,17 @@ func prepareDispatch(ctx context.Context, reqHeader *header.SMB2Header, connInfo
 		// still refused inside the LOCK handler (which re-checks expiry and
 		// lets only UNLOCK through). The LoggedOff / channel-bind checks above
 		// and below still apply to these exempt commands.
-		if sess.IsExpired() && !isExpiryExemptCommand(reqHeader.Command) {
-			logger.Debug("Kerberos ticket expired",
+		//
+		// A revoked authorization (the user was disabled or deleted after this
+		// session authenticated) is refused the same way and through the same
+		// exemptions: the client gets the identical release-then-reauthenticate
+		// window, and SESSION_SETUP is where it learns the account is gone.
+		if (sess.IsExpired() || sess.AuthRevoked()) && !isExpiryExemptCommand(reqHeader.Command) {
+			logger.Debug("Session no longer authorized",
 				"sessionID", reqHeader.SessionID,
 				"username", sess.Username,
-				"expiresAt", sess.ExpiresAt)
+				"expiresAt", sess.ExpiresAt,
+				"authRevoked", sess.AuthRevoked())
 			// Complete any async CHANGE_NOTIFY armed before the ticket expired
 			// so the client's smb2_notify_recv unblocks (MS-SMB2 §3.3.5.2.9;
 			// smbtorture smb2.session.expire2s/expire2e). The session survives —

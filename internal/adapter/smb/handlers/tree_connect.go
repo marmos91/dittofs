@@ -384,6 +384,18 @@ func resolveSharePermission(
 		return models.PermissionNone, ""
 	}
 
+	// A disabled user keeps no access on any protocol. SESSION_SETUP refuses one
+	// at authentication, but an established session outlives that check and
+	// carries a user snapshot taken back then — so without this a user disabled
+	// mid-session keeps TREE_CONNECTing to shares it has not been re-authorized
+	// for. Ahead of the root bypass below because a disabled root is still
+	// disabled. Mirrors the NFS resolver.
+	if sess.User != nil && !sess.User.Enabled {
+		logger.Debug("Share access denied (user disabled)",
+			"shareName", share.Name, "user", sess.User.Username)
+		return models.PermissionNone, sess.User.Username
+	}
+
 	// 1. Root user bypass: UID 0 with a squash mode that allows root access gets
 	// admin regardless of grants. Mirrors resolveNFSSharePermission.
 	if sess.User != nil && isRootUser(sess.User) && rootHasAdminAccess(share) {

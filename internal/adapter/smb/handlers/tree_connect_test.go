@@ -814,7 +814,7 @@ func TestResolveSharePermission_RootBypass(t *testing.T) {
 
 	t.Run("RootUserGetsAdminPermission", func(t *testing.T) {
 		uid := uint32(0)
-		user := &models.User{Username: "admin", UID: &uid}
+		user := &models.User{Username: "admin", UID: &uid, Enabled: true}
 		sess := session.NewSessionWithUser(1, "127.0.0.1", user, "")
 		// Explicit root_to_admin (no_root_squash) — root keeps admin.
 		share := &runtime.Share{Name: "/export", Squash: models.SquashRootToAdmin, DefaultPermission: "read-write"}
@@ -832,7 +832,7 @@ func TestResolveSharePermission_RootBypass(t *testing.T) {
 
 	t.Run("RootUserWithEmptySquashIsSquashed", func(t *testing.T) {
 		uid := uint32(0)
-		user := &models.User{Username: "admin", UID: &uid}
+		user := &models.User{Username: "admin", UID: &uid, Enabled: true}
 		sess := session.NewSessionWithUser(1, "127.0.0.1", user, "")
 		// Empty squash normalizes to DefaultSquashMode (root_to_guest), so root
 		// gets NO admin bypass — it falls back to the default permission.
@@ -848,7 +848,7 @@ func TestResolveSharePermission_RootBypass(t *testing.T) {
 
 	t.Run("RootUserWithRootToGuestSquash", func(t *testing.T) {
 		uid := uint32(0)
-		user := &models.User{Username: "admin", UID: &uid}
+		user := &models.User{Username: "admin", UID: &uid, Enabled: true}
 		sess := session.NewSessionWithUser(1, "127.0.0.1", user, "")
 		share := &runtime.Share{Name: "/export", Squash: models.SquashRootToGuest, DefaultPermission: "read-write"}
 		defaultPerm := models.PermissionReadWrite
@@ -864,7 +864,7 @@ func TestResolveSharePermission_RootBypass(t *testing.T) {
 
 	t.Run("NonRootUserDoesNotGetAdminBypass", func(t *testing.T) {
 		uid := uint32(1000)
-		user := &models.User{Username: "user", UID: &uid}
+		user := &models.User{Username: "user", UID: &uid, Enabled: true}
 		sess := session.NewSessionWithUser(1, "127.0.0.1", user, "")
 		share := &runtime.Share{Name: "/export", Squash: "", DefaultPermission: "read-write"}
 		defaultPerm := models.PermissionReadWrite

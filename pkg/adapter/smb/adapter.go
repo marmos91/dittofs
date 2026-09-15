@@ -302,6 +302,17 @@ func (s *Adapter) SetRuntime(rtAny any) {
 		logger.Debug("SMB adapter: LeaseManager wired with per-share LockManagers")
 	}
 
+	// Push user, group and share-permission changes into established
+	// connections. SMB resolves authorization once — the user record at
+	// SESSION_SETUP, the share permission at TREE_CONNECT — and re-reads
+	// neither per operation, so without this a disabled or deleted user keeps
+	// access for as long as the connection stays open, and a revoked share
+	// grant never takes effect on it at all.
+	unsubAuthInvalidate := rt.OnAuthCacheInvalidate(func() {
+		s.handler.RevalidateAuthorization(context.Background())
+	})
+	s.shareUnsubscribers = append(s.shareUnsubscribers, unsubAuthInvalidate)
+
 	// Register share change callback for cache invalidation
 	s.handler.RegisterShareChangeCallback()
 

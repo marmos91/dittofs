@@ -89,7 +89,7 @@ func TestResolveSharePermission_SIDGrant(t *testing.T) {
 		// her group must NOT override that block.
 		uid := uint32(1000)
 		user := &models.User{
-			Username: "alice", UID: &uid,
+			Username: "alice", UID: &uid, Enabled: true,
 			SharePermissions: []models.UserSharePermission{
 				{ShareName: "/export", Permission: string(models.PermissionNone)},
 			},
@@ -110,7 +110,7 @@ func TestResolveSharePermission_SIDGrant(t *testing.T) {
 
 	t.Run("SID grant elevates a lower local permission", func(t *testing.T) {
 		uid := uint32(1000)
-		sess := session.NewSessionWithUser(1, "127.0.0.1", &models.User{Username: "alice", UID: &uid}, "")
+		sess := session.NewSessionWithUser(1, "127.0.0.1", &models.User{Username: "alice", UID: &uid, Enabled: true}, "")
 		sess.SetPACIdentity([]string{groupSID}, "")
 
 		store := &sidGrantStore{
