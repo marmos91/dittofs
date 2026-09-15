@@ -180,10 +180,11 @@ func (h *Handler) scanNonStatOpensForFile(
 		if other.FileID == selfFileID {
 			return true
 		}
-		if len(other.MetadataHandle) == 0 {
+		otherHandle := other.GetMetadataHandle()
+		if len(otherHandle) == 0 {
 			return true
 		}
-		if !bytes.Equal(other.MetadataHandle, fileHandle) {
+		if !bytes.Equal(otherHandle, fileHandle) {
 			return true
 		}
 		// Skip stat-only existing opens (Samba `is_oplock_stat_open` carve-out

@@ -958,9 +958,13 @@ func ProcessAppInstanceId(
 		if handler.LeaseManager != nil {
 			handler.files.Range(func(_, value any) bool {
 				f := value.(*OpenFile)
-				if f.AppInstanceId == appId && f.LeaseKey != ([16]byte{}) && len(f.MetadataHandle) > 0 {
+				// Under the handle's lock: SET_REPARSE_POINT repoints a live
+				// handle's MetadataHandle, so a bare read of the slice header
+				// can observe it mid-swap.
+				fHandle := f.GetMetadataHandle()
+				if f.AppInstanceId == appId && f.LeaseKey != ([16]byte{}) && len(fHandle) > 0 {
 					displaced = append(displaced, displacedLease{
-						fileHandle: lock.FileHandle(f.MetadataHandle),
+						fileHandle: lock.FileHandle(fHandle),
 						leaseKey:   f.LeaseKey,
 						shareName:  f.ShareName,
 						isLease:    f.OplockLevel == OplockLevelLease,

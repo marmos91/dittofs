@@ -847,6 +847,9 @@ func (h *Handler) checkShareDeleteConflict(renameFile *OpenFile) bool {
 	const fileShareDelete = uint32(0x04) // FILE_SHARE_DELETE
 
 	renameHandle := renameFile.GetMetadataHandle()
+	if len(renameHandle) == 0 {
+		return false
+	}
 
 	var culprit *OpenFile
 	h.files.Range(func(key, value any) bool {
@@ -857,7 +860,7 @@ func (h *Handler) checkShareDeleteConflict(renameFile *OpenFile) bool {
 		}
 		// Only check handles to the same file (same metadata handle)
 		otherHandle := other.GetMetadataHandle()
-		if len(otherHandle) == 0 || len(renameHandle) == 0 {
+		if len(otherHandle) == 0 {
 			return true
 		}
 		if !bytes.Equal(otherHandle, renameHandle) {
