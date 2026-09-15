@@ -998,8 +998,7 @@ func (h *Handler) handleNTLMNegotiate(ctx *SMBHandlerContext, usedSPNEGO bool, m
 	// Per [MS-SMB2] 3.3.5.5: each session gets its own preauth hash chain
 	// initialized from the connection hash. We pass our own request bytes
 	// directly (rather than reading from a per-connection stash, which used
-	// to race when multiple SESSION_SETUPs were dispatched concurrently —
-	// issue #362).
+	// to race when multiple SESSION_SETUPs were dispatched concurrently).
 	if ctx.ConnCryptoState != nil {
 		ctx.ConnCryptoState.InitSessionPreauthHash(sessionID, ctx.RawRequest)
 	}
@@ -1368,16 +1367,16 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 			// NETLOGON domain-user fallback: a domain user with no local
 			// control-plane account may still be authenticated by forwarding the
 			// NTLM response to a Domain Controller over a NETLOGON secure channel.
-			// Mirrors the Kerberos directory-resolved-identity path (#1317): the DC
+			// Mirrors the Kerberos directory-resolved-identity path: the DC
 			// returns the SIDs + session base key, the resolver maps the SID to a
 			// UID/GID.
 			//
 			// Re-auth is ALWAYS excluded (a re-auth must not resurrect a
 			// passed-through identity in place of the original). The two other
 			// paths differ only in what they build:
-			//   - fresh, non-binding SESSION_SETUP (#1314): synthesize a new
-			//     session for the resolved identity (tryNetlogonFallback);
-			//   - session bind / multichannel (#1632): validate the SAME domain
+			//   - fresh, non-binding SESSION_SETUP: synthesize a new session
+			//     for the resolved identity (tryNetlogonFallback);
+			//   - session bind / multichannel: validate the SAME domain
 			//     user on an additional connection and register a channel on the
 			//     existing session (tryNetlogonBind). completeSessionBind enforces
 			//     that the DC-resolved identity matches the bound session's user,
@@ -1428,9 +1427,9 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 
 // tryNetlogonFallback authenticates a domain user that has no local
 // control-plane account by forwarding the NTLM challenge/response to a Domain
-// Controller over a NETLOGON secure channel (#1314), then synthesizing a
-// session from the DC-returned identity. It mirrors the Kerberos
-// directory-resolved-identity path (#1317): where Kerberos obtains the SIDs
+// Controller over a NETLOGON secure channel, then synthesizing a session from
+// the DC-returned identity. It mirrors the Kerberos
+// directory-resolved-identity path: where Kerberos obtains the SIDs
 // from the ticket's PAC, NETLOGON obtains them from the DC; from there the
 // session-building path is identical — resolve the SID to a UID/GID, create the
 // session, stamp the PAC identity, and configure signing from the session base
@@ -1525,7 +1524,7 @@ func (h *Handler) tryNetlogonFallback(ctx *SMBHandlerContext, pending *PendingAu
 }
 
 // tryNetlogonBind validates a domain user that has no local control-plane
-// account on an SMB2 session-bind (multichannel) path (#1632) and, when the
+// account on an SMB2 session-bind (multichannel) path and, when the
 // DC-resolved identity matches the bound session's existing user, registers a
 // new signing channel on that session.
 //
@@ -1621,7 +1620,7 @@ func (h *Handler) tryNetlogonBind(ctx *SMBHandlerContext, pending *PendingAuth, 
 // *error* is treated as an infrastructure failure: we fail closed and do NOT use
 // the RID fallback, since silently switching to algorithmic UIDs could mask a
 // directory outage and hand a user a different UID/GID than the configured
-// mapping (#1357). Mirrors resolveKerberosIdentity, keyed on a validated SID.
+// mapping. Mirrors resolveKerberosIdentity, keyed on a validated SID.
 func (h *Handler) resolveNetlogonIdentity(ctx *SMBHandlerContext, res *netlogon.LogonResult) *pkgidentity.ResolvedIdentity {
 	if resolver := h.IdentityResolver(); resolver != nil {
 		// Provider is deliberately left unset (unlike the Kerberos path which
