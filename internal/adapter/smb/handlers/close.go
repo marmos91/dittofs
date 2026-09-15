@@ -683,6 +683,11 @@ func (h *Handler) releaseHandleLeaseRecord(ctx context.Context, openFile *OpenFi
 	if leaseKey == ([16]byte{}) {
 		return
 	}
+	// One snapshot for the scan and the release: SET_REPARSE_POINT can republish
+	// this open's metadata handle, and a scan that decided "no sibling on this
+	// file" against the old value followed by a release against the new one
+	// tears out a record a survivor still holds — or leaves this one's behind.
+	metaHandle := openFile.Handle()
 
 	// Check if any other open on the SAME FILE shares this lease key.
 	// Two opens on the same file share one lease record (requestLeaseImpl
@@ -697,7 +702,7 @@ func (h *Handler) releaseHandleLeaseRecord(ctx context.Context, openFile *OpenFi
 		if other.LeaseKey != leaseKey {
 			return true
 		}
-		if bytes.Equal(other.MetadataHandle, openFile.MetadataHandle) {
+		if bytes.Equal(other.Handle(), metaHandle) {
 			hasOtherOpenSameFile = true
 			return false
 		}
@@ -712,7 +717,7 @@ func (h *Handler) releaseHandleLeaseRecord(ctx context.Context, openFile *OpenFi
 
 	// Last open on this file with this lease key — release only this handle's
 	// lease record. Other files sharing the key keep theirs.
-	if err := h.LeaseManager.ReleaseLeaseForHandle(ctx, lock.FileHandle(openFile.MetadataHandle), leaseKey, openFile.ShareName); err != nil {
+	if err := h.LeaseManager.ReleaseLeaseForHandle(ctx, lock.FileHandle(metaHandle), leaseKey, openFile.ShareName); err != nil {
 		logger.Debug(caller+": failed to release lease",
 			"path", openFile.Name().Path,
 			"leaseKey", fmt.Sprintf("%x", leaseKey),

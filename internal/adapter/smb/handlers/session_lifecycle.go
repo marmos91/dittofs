@@ -144,8 +144,12 @@ func (h *Handler) ReleaseAllLocksForSession(ctx context.Context, sessionID uint6
 			return true // Continue iterating
 		}
 
-		// Skip directories and pipes
-		if openFile.IsDirectory || openFile.IsPipe || len(openFile.Handle()) == 0 {
+		// Skip directories and pipes. One snapshot, because the emptiness test
+		// and the unlock must name the same handle: SET_REPARSE_POINT can
+		// republish it between two reads, and unlocking the new one leaves this
+		// open's byte-range locks on the old.
+		metaHandle := openFile.Handle()
+		if openFile.IsDirectory || openFile.IsPipe || len(metaHandle) == 0 {
 			return true
 		}
 
@@ -153,7 +157,7 @@ func (h *Handler) ReleaseAllLocksForSession(ctx context.Context, sessionID uint6
 		metaSvc := h.Registry.GetMetadataService()
 
 		// UnlockAllForOpen doesn't return errors for missing locks
-		if unlockErr := metaSvc.UnlockAllForOpen(ctx, openFile.Handle(), openFile.OpenID()); unlockErr != nil {
+		if unlockErr := metaSvc.UnlockAllForOpen(ctx, metaHandle, openFile.OpenID()); unlockErr != nil {
 			logger.Warn("ReleaseAllLocksForSession: failed to release locks",
 				"share", openFile.ShareName,
 				"path", openFile.Name().Path,
