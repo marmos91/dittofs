@@ -34,8 +34,9 @@ while read -r pkg; do
 
 	missing=""
 	while read -r name; do
-		# Top-level results are unindented; subtest lines are not matched.
-		if ! grep -qx -- "--- PASS: ${name} (.*)" <<<"$output"; then
+		# Top-level results start at column 0; subtest lines are indented. The
+		# trailing " (" stops a name matching a longer one that contains it.
+		if ! grep -q "^--- PASS: ${name} (" <<<"$output"; then
 			missing+="  ${name}"$'\n'
 		fi
 	done <<<"$names"

@@ -96,6 +96,48 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
         run: ./test/new-package-tests.sh "origin/${BASE_REF}"
 
+  # A docs: or chore(release): subject tells a reviewer that nothing executable
+  # moved, which makes it the one diff nobody opens. Commit 83e532d78, titled
+  # `docs(planning): wave 4 fix-wave 1 landed`, carried 830 deletions across 15
+  # files and reverted the security fixes from #2523 and #2526 — green, because
+  # the regression tests were deleted in the same commit.
+  # Pull requests only: the check needs a base branch to bound the commit range.
+  commit-type:
+    name: Commit Type Matches Diff
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # the check walks every commit back to the merge base
+
+      - name: Check that a docs commit changes only documentation
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: ./test/commit-type-matches-diff.sh "origin/${BASE_REF}"
+
+  # The tests that pin an authorization or encryption gate are deleted by the
+  # same edit that reopens the gate, so the suite goes green over the
+  # regression. These are named in a manifest and run by name instead.
+  required-tests:
+    name: Required Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+          cache: true  # Built-in Go module caching
+
+      - name: Run every test named in the manifest
+        run: ./test/required-tests.sh
+
   golangci-lint:
     name: golangci-lint
     runs-on: ubuntu-latest
