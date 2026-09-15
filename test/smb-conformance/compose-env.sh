@@ -62,7 +62,20 @@ require_exclusive_stack() {
         --format '{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.project.working_dir"}}' \
         2>/dev/null |
         awk -F'|' '$1 ~ /^smb-conformance/ { print; exit }' || true)"
-    [[ -z "$live" ]] && return 0
+    if [[ -z "$live" ]]; then
+        # `docker compose down` without -v removes the containers and keeps the
+        # labeled volumes, so a project can still own a bootstrapped store with
+        # no container left to find it by. A run that adopts that store fails
+        # partway through bootstrap on an existing admin password — the same
+        # unexplained mid-run collapse, reached with the container table empty.
+        local vols
+        vols="$(docker volume ls \
+            --format '{{.Label "com.docker.compose.project"}}' \
+            2>/dev/null |
+            awk '$1 ~ /^smb-conformance/ { print; exit }' || true)"
+        [[ -z "$vols" ]] && return 0
+        live="${vols}|"
+    fi
 
     local project="${live%%|*}" workdir="${live#*|}"
     cat >&2 <<EOF

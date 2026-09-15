@@ -191,7 +191,9 @@ validate_profile
 # --------------------------------------------------------------------------
 # Results directory
 # --------------------------------------------------------------------------
-RESULTS_DIR="${CONFORMANCE_DIR}/results/smbtorture-$(date +%Y-%m-%d_%H%M%S)"
+# The common runner injects the directory it collects artifacts from and reads
+# the verdict sidecar out of; writing anywhere else leaves both behind.
+RESULTS_DIR="${DITTOFS_RESULTS_DIR:-${CONFORMANCE_DIR}/results/smbtorture-$(date +%Y-%m-%d_%H%M%S)}"
 
 # --------------------------------------------------------------------------
 # Dry-run
@@ -248,7 +250,7 @@ cleanup() {
         cd "$CONFORMANCE_DIR"
         docker compose down -v 2>/dev/null || true
     else
-        log_warn "Containers left running (--keep). Clean up with: docker compose -p ${COMPOSE_PROJECT_NAME} down -v"
+        log_warn "Containers left running (--keep). Clean up with: cd ${CONFORMANCE_DIR} && docker compose -p ${COMPOSE_PROJECT_NAME} down -v"
     fi
 
     return $exit_code

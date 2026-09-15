@@ -234,6 +234,11 @@ run_one() {
 
     if [[ "$DRY_RUN" == false ]]; then
         mkdir -p "$results_dir"
+        # The directory is keyed by suite and label, not by invocation, so a
+        # verdict left by an earlier run is still sitting here. A run that dies
+        # before the graded step would otherwise be reported with that verdict
+        # instead of its own failure.
+        rm -f "${results_dir}/verdict"
         clear_orphan_server
     fi
 
@@ -320,16 +325,24 @@ write_summary() {
     elif [[ -n "$failed_step" && "$failed_step" != "$GRADED_STEP" ]]; then
         verdict="${failed_step} failed (exit ${status}) — no tests were graded"
         icon=":construction:"
-    elif [[ "$(cat "${results_dir}/verdict" 2>/dev/null)" == "inconclusive" ]]; then
-        # The count is real but it is not a failure count. The graded step
-        # writes this verdict when nothing failed and nothing was cut short, but
-        # some tests never reached the server, so there is no result for them
-        # either way. Saying "new failure(s)" would send the reader hunting a
-        # regression in a suite that graded nothing — the same false label the
-        # graded step exists to remove, and the reason the category travels
-        # beside the status rather than inside it.
-        verdict="inconclusive — ${status} test(s) produced no server result"
-        icon=":warning:"
+    elif [[ -r "${results_dir}/verdict" ]]; then
+        # The graded step writes its own counts here because the exit status
+        # cannot carry them: it is one number, clamped at 254, and it says
+        # nothing about which kind of problem it counted. Rendering it as
+        # "N new failure(s)" sends the reader hunting a regression for tests
+        # that never reached the server at all — the same false label the
+        # graded step exists to remove, one layer up and in the line a human
+        # actually reads.
+        local category n_fail n_noresult
+        read -r category n_fail n_noresult < "${results_dir}/verdict"
+        if [[ "$category" == "inconclusive" ]]; then
+            verdict="inconclusive — ${n_noresult} test(s) produced no server result"
+            icon=":warning:"
+        else
+            verdict="${n_fail} new failure(s)"
+            [[ "${n_noresult:-0}" -gt 0 ]] && verdict+=", ${n_noresult} inconclusive"
+            icon=":x:"
+        fi
     else
         verdict="${status} new failure(s)"
         icon=":x:"

@@ -282,7 +282,6 @@ if $DRY_RUN; then
     echo "  Filter:      ${FILTER}"
     echo "  Keep:        ${KEEP}"
     echo "  Verbose:     ${VERBOSE}"
-    echo "  Stack:       ${COMPOSE_PROJECT_NAME}"
     echo ""
     echo "  DITTOFS_HOST: ${DITTOFS_HOST}"
     echo "  SMB_PORT:     ${SMB_PORT}"
@@ -342,7 +341,7 @@ cleanup() {
     fi
 
     if $KEEP; then
-        log_warn "Containers left running (--keep). Clean up with: docker compose -p ${COMPOSE_PROJECT_NAME} down -v"
+        log_warn "Containers left running (--keep). Clean up with: cd ${SCRIPT_DIR} && docker compose -p ${COMPOSE_PROJECT_NAME} down -v"
     fi
 
     return $exit_code

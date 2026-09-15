@@ -756,11 +756,15 @@ fi
 # remove, one layer up and in the line a human actually reads. So the category
 # travels beside the count rather than inside it.
 if [[ -n "$RESULTS_DIR" ]] && [[ -d "$RESULTS_DIR" ]]; then
+    category=failures
     if [[ "$NEW_FAILURES" -eq 0 && ${#UNEXPECTED_TRUNCATIONS[@]} -eq 0 && "$NO_RESULT" -gt 0 ]]; then
-        echo "inconclusive" > "${RESULTS_DIR}/verdict"
-    else
-        echo "failures" > "${RESULTS_DIR}/verdict"
+        category=inconclusive
     fi
+    # category, then the two counts the status cannot separate: a run with one
+    # new failure and one ungraded test is a one-failure run, not a two-failure
+    # one, and the reader is told about the ungraded test rather than having it
+    # folded into the regression count.
+    echo "${category} $((NEW_FAILURES + ${#UNEXPECTED_TRUNCATIONS[@]})) ${NO_RESULT}" > "${RESULTS_DIR}/verdict"
 fi
 if [[ "$BAD" -gt 254 ]]; then
     BAD=254
