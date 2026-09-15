@@ -169,10 +169,14 @@ type NFSAdapter struct {
 	// Stop() may race Serve() (Stop is documented safe to call concurrently).
 	sysregActive atomic.Bool
 
-	// sysregReconciling guards the background registration reconcile so a burst
-	// of settings applies (one per accepted connection) collapses into a single
-	// in-flight transition instead of a goroutine per call.
-	sysregReconciling atomic.Bool
+	// sysregState sequences the background registration reconcile so a burst of
+	// settings applies (one per accepted connection) collapses into a single
+	// in-flight transition instead of a goroutine per call, while still
+	// applying the last value a caller asked for. It holds one of sysregIdle,
+	// sysregRunning or sysregDirty: a caller that finds a transition already in
+	// flight marks it dirty rather than returning, and the running transition
+	// makes another pass so the flip it raced is applied instead of dropped.
+	sysregState atomic.Int32
 
 	// sysregAddr overrides the system rpcbind dial address. Empty means the
 	// well-known one; a test sets it to keep the host's rpcbind untouched.

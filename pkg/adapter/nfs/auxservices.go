@@ -128,30 +128,62 @@ func (p portmapSidecar) Stop(context.Context) error      { p.a.stopPortmapper();
 // The transition itself talks to rpcbind and is bounded by systemRegTimeout, so
 // it runs in the background: the callers are the accept loop and the
 // settings-watcher goroutine, and an unreachable rpcbind must not stall either.
-// Reconcile tolerates a start racing shutdown, and the state check keeps the
-// steady-state call (every accepted connection) allocation-free.
+// Reconcile tolerates a start racing shutdown, and the steady-state check keeps
+// the per-connection call (every accepted connection) allocation-free.
+//
+// A caller that finds a transition already in flight cannot simply return: the
+// running transition captured the setting as it was when it started, and an
+// unreachable rpcbind holds it there for up to systemRegTimeout. Dropping the
+// flip would leave the sidecar in the state the user just turned off until some
+// unrelated call happened to reconcile again. Such a caller marks the in-flight
+// transition dirty instead, and the transition makes another pass.
 func (s *NFSAdapter) reconcileSysreg() {
-	// Read the setting once, on the caller's goroutine: applyNFSSettings writes
-	// it, so the background transition must not read it again.
+	// Steady state: the sidecar already matches the setting and nothing is in
+	// flight that could move it away. Every accepted connection lands here.
 	want := s.registerWithSystemEnabled()
-	if s.sidecars.IsRunning(sysregSidecarName) == want {
+	if s.sidecars.IsRunning(sysregSidecarName) == want && s.sysregState.Load() == sysregIdle {
 		return
 	}
-	// One transition at a time: the callers fire per accepted connection, and
-	// the running state only flips once the transition finishes. A flip that
-	// arrives mid-transition is picked up by the next apply.
-	if !s.sysregReconciling.CompareAndSwap(false, true) {
-		return
+	// Claim the transition, or hand this flip to the one already running.
+	for claimed := false; !claimed; {
+		switch st := s.sysregState.Load(); st {
+		case sysregIdle:
+			claimed = s.sysregState.CompareAndSwap(sysregIdle, sysregRunning)
+		default:
+			if s.sysregState.CompareAndSwap(st, sysregDirty) {
+				return
+			}
+		}
 	}
 	go func() {
-		defer s.sysregReconciling.Store(false)
-		err := s.sidecars.Reconcile(sysregSidecarName, want,
-			func(context.Context) auxsvc.Service { return sysregSidecar{s} })
-		if err != nil {
-			logger.Debug("System rpcbind registration sidecar failed to start", "error", err)
+		for {
+			// Re-read per pass rather than capturing once: the value that
+			// matters is the one current when the pass begins, and a flip that
+			// landed during the previous pass is exactly what dirty records.
+			want := s.registerWithSystemEnabled()
+			err := s.sidecars.Reconcile(sysregSidecarName, want,
+				func(context.Context) auxsvc.Service { return sysregSidecar{s} })
+			if err != nil {
+				logger.Debug("System rpcbind registration sidecar failed to start", "error", err)
+			}
+			// Settle only if no flip arrived while this pass was running. The
+			// CAS is what closes the window: a caller marking dirty between the
+			// read above and here loses the CAS and gets another pass.
+			if s.sysregState.CompareAndSwap(sysregRunning, sysregIdle) {
+				return
+			}
+			s.sysregState.Store(sysregRunning)
 		}
 	}()
 }
+
+// Reconcile states for sysregState. A transition runs until it completes a pass
+// with no flip having arrived during it.
+const (
+	sysregIdle int32 = iota
+	sysregRunning
+	sysregDirty
+)
 
 const sysregSidecarName = "sysreg"
 
