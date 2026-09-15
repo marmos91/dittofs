@@ -27,8 +27,9 @@ func TestShareJournalDir_SeparatesShares(t *testing.T) {
 // The share name reaches the filesystem here, so a name containing traversal
 // must not escape the root.
 func TestShareJournalDir_ContainsTraversalNames(t *testing.T) {
-	got := ShareJournalDir("/srv/blocks", "../../etc")
-	if !strings.HasPrefix(filepath.Clean(got), "/srv/blocks") {
+	root := filepath.Join(string(filepath.Separator), "srv", "blocks")
+	got := ShareJournalDir(root, "../../etc")
+	if !strings.HasPrefix(filepath.Clean(got), root) {
 		t.Errorf("share dir %q escaped the journal root", got)
 	}
 }

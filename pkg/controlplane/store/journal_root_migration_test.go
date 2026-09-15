@@ -50,7 +50,7 @@ func TestCheckShareJournalRoots_RefusesAShareRecordedElsewhere(t *testing.T) {
 	if !strings.Contains(err.Error(), "/archive") {
 		t.Errorf("the refusal must name the share an operator has to fix, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "/srv/dittofs") {
+	if !strings.Contains(err.Error(), filepath.Clean("/srv/dittofs")) {
 		t.Errorf("the refusal must name where the data actually is, got: %v", err)
 	}
 }
