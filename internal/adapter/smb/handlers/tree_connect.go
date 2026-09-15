@@ -167,6 +167,17 @@ func (h *Handler) TreeConnect(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 		ContinuousAvailability: share.ContinuousAvailability,
 		AllowMFsymlink:         share.AllowMFsymlink,
 	}
+	// Re-check the revocation between resolving access and publishing the tree.
+	// The dispatch gate ran before this handler did, so a re-check sweep that
+	// revoked the session and removed its trees in the meantime would otherwise
+	// find this one published behind it — and a later re-authentication, which
+	// clears the revocation, would leave it standing on the permission resolved
+	// for the user that was retired.
+	if sess != nil && sess.IsExpiredOrRevoked() {
+		logger.Warn("SMB TREE_CONNECT refused: session was revoked while access was being resolved",
+			"share", shareName, "sessionID", ctx.SessionID)
+		return NewErrorResult(types.StatusNetworkSessionExpired), nil
+	}
 	h.StoreTree(tree)
 
 	ctx.TreeID = treeID

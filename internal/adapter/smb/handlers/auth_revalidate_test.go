@@ -450,3 +450,36 @@ func TestRevalidateAuthorization_RevokedTreeCancelsParkedLock(t *testing.T) {
 			"goroutine waiting for a lock no client can release")
 	}
 }
+
+// TestTreeConnect_RefusesAfterSessionRevoked pins the window between resolving
+// access and publishing the tree. The dispatch gate runs before the handler, so
+// a sweep that revokes the session and removes its trees while TREE_CONNECT is
+// resolving would otherwise find a tree published behind it — and because
+// re-authentication clears the revocation, that tree would stand on the
+// permission resolved for the user that was just retired.
+func TestTreeConnect_RefusesAfterSessionRevoked(t *testing.T) {
+	store := &revalidateUserStore{user: enabledUser(), perm: models.PermissionReadWrite}
+
+	h, sessionID, _ := newRevalidateHandler(t, enabledUser(), store, models.PermissionReadWrite, false)
+
+	sess, ok := h.GetSession(sessionID)
+	if !ok {
+		t.Fatal("fixture is wrong: no session")
+	}
+	// The state the sweep leaves behind, reached here directly because the race
+	// it models is what the guard exists to lose.
+	sess.RevokeAuth()
+
+	ctx := newTreeConnectTestContext(sessionID)
+	res, err := h.TreeConnect(ctx, buildTreeConnectRequestBody("\\\\server\\export"))
+	if err != nil {
+		t.Fatalf("TreeConnect: %v", err)
+	}
+	if res.Status != types.StatusNetworkSessionExpired {
+		t.Errorf("Status = %#x, want STATUS_NETWORK_SESSION_EXPIRED: a revoked "+
+			"session published a tree that a later re-auth would leave standing", res.Status)
+	}
+	if ctx.TreeID != 0 {
+		t.Errorf("TreeID = %d, want 0: the tree was published anyway", ctx.TreeID)
+	}
+}
