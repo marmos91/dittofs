@@ -619,7 +619,7 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 
 	// Auto-update ctime when attributes change, unless explicitly set
 	if modified {
-		if attrs.Ctime == nil {
+		if attrs.Ctime == nil && !attrs.PreserveCtime {
 			file.Ctime = now
 		}
 		// A size change (truncate/grow) is data-paired: the new size must

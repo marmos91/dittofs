@@ -446,7 +446,9 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	if !openFile.IsAtimeFrozen() {
 		now := time.Now()
 		if noteSmbAccess(openFile, now) {
-			_, _ = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{Atime: &now})
+			attrs := &metadata.SetAttrs{Atime: &now}
+			holdFrozenCtime(openFile, attrs)
+			_, _ = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, attrs)
 		}
 	}
 

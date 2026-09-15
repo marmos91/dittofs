@@ -526,9 +526,20 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	now := time.Now()
 	// IsAtimeFrozen takes openFile.mu (read); see #606.
 	if !openFile.IsAtimeFrozen() && noteSmbAccess(openFile, now) {
-		_, _ = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{Atime: &now})
+		attrs := &metadata.SetAttrs{Atime: &now}
+		holdFrozenCtime(openFile, attrs)
+		_, _ = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, attrs)
 	}
 	if len(parentHandle) > 0 && noteSmbParentAccess(openFile, now) {
+		// decision: the parent's bump does not hold ChangeTime the way the file's
+		// does above, so it stamps and the restore below puts the value back.
+		// Whether to hold it is not knowable from this handle: the freeze would be
+		// on whichever handle has the parent open, and there may be several, each
+		// frozen or not independently — which is why restoreParentDirFrozenTimestamps
+		// walks them all. Answering it here means folding that walk into the bump.
+		// The end state is correct either way; what remains is a window in which a
+		// reader sees a ChangeTime the freeze forbids. Fold them if that window is
+		// ever shown to matter.
 		_, _ = metaSvc.SetFileAttributes(authCtx, parentHandle, &metadata.SetAttrs{Atime: &now})
 		// Per MS-FSA §2.1.5.15.2 ("FileBasicInformation"): Restore frozen timestamps on the parent directory
 		// if any open handle has them frozen. The SetFileAttributes call above

@@ -584,7 +584,12 @@ doneLoop:
 	// LastAccessTime to the current system time, unless frozen via SET_INFO -1.
 	if !openFile.AtimeFrozen {
 		now := time.Now()
-		_, _ = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{Atime: &now})
+		attrs := &metadata.SetAttrs{Atime: &now}
+		// openFile.mu is held for write from the top of this handler, which is
+		// why the guard above reads AtimeFrozen directly rather than through
+		// IsAtimeFrozen. Same reason here.
+		holdFrozenCtimeLocked(openFile, attrs)
+		_, _ = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, attrs)
 	}
 
 	logger.Debug("QUERY_DIRECTORY successful",

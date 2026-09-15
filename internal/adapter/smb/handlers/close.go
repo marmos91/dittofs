@@ -287,7 +287,9 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 			// smbAtimeUpdateWindow of access-time precision.
 			if pending := takeSmbPendingAtime(openFile); !pending.IsZero() && !openFile.IsAtimeFrozen() {
 				if cur, curErr := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle); curErr == nil && cur.Atime.Before(pending) {
-					if _, atimeErr := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{Atime: &pending}); atimeErr != nil {
+					atimeAttrs := &metadata.SetAttrs{Atime: &pending}
+					holdFrozenCtime(openFile, atimeAttrs)
+					if _, atimeErr := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, atimeAttrs); atimeErr != nil {
 						logger.Warn("CLOSE: LastAccessTime flush failed", "path", closePath, "error", atimeErr)
 					}
 				}

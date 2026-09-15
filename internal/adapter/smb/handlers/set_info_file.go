@@ -1819,3 +1819,47 @@ func buildFrozenAttrs(openFile *OpenFile) *metadata.SetAttrs {
 	}
 	return attrs
 }
+
+// holdFrozenCtime marks an attribute write so the metadata layer leaves
+// ChangeTime alone, when this handle has ChangeTime frozen.
+//
+// SetFileAttributes assigns Ctime = now to any change that leaves attrs.Ctime
+// nil, because an attribute change is a metadata change and POSIX says ctime
+// moves. A ChangeTime frozen by SET_INFO(-1) must not move (MS-FSA
+// §2.1.5.15.2), so an attribute write made for an unrelated reason — the
+// LastAccessTime bump that follows a READ, a WRITE or a directory enumeration —
+// would otherwise overwrite it. Suppressing the stamp keeps the store from ever
+// holding a ChangeTime the freeze forbids, rather than writing the wrong value
+// and putting it back afterwards, so a concurrent reader cannot observe one and
+// a concurrent read-modify-write cannot latch one.
+//
+// This holds the stored value rather than writing the frozen one. Naming the
+// frozen value would overwrite a ChangeTime some other opener legitimately
+// advanced after the freeze, dragging it backwards — and NFSv4 encodes the
+// change attribute from Ctime, where a value that goes backwards lets a client
+// keep serving a cache it should have dropped.
+//
+// No-op when this handle has no frozen ChangeTime, or when the caller is
+// setting ChangeTime explicitly.
+//
+// Takes openFile.mu (read); see applyFrozenTimestamps for rationale. A caller
+// that already holds the lock must call holdFrozenCtimeLocked instead.
+func holdFrozenCtime(openFile *OpenFile, attrs *metadata.SetAttrs) {
+	if attrs.Ctime != nil {
+		return
+	}
+	openFile.mu.RLock()
+	defer openFile.mu.RUnlock()
+	holdFrozenCtimeLocked(openFile, attrs)
+}
+
+// holdFrozenCtimeLocked is the lock-free body of holdFrozenCtime. Callers must
+// hold openFile.mu.
+func holdFrozenCtimeLocked(openFile *OpenFile, attrs *metadata.SetAttrs) {
+	if attrs.Ctime != nil {
+		return
+	}
+	if openFile.CtimeFrozen {
+		attrs.PreserveCtime = true
+	}
+}

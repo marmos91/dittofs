@@ -216,6 +216,16 @@ type SetAttrs struct {
 	Ctime          *time.Time
 	Hidden         *bool
 
+	// PreserveCtime suppresses the automatic Ctime = now that any other change
+	// in this SetAttrs would otherwise trigger, leaving the stored value exactly
+	// as it is. This is not the same as naming Ctime: naming a value writes that
+	// value, which drags the timestamp backwards whenever someone else advanced
+	// it in the meantime. Use it for a change that must land without counting as
+	// a metadata change for this file — an access-time bump on a handle whose
+	// ChangeTime is frozen by the SMB -1 sentinel. Ignored when Ctime is also
+	// set, since that is an explicit write and wins.
+	PreserveCtime bool
+
 	// ACL sets the NFSv4 ACL on the file.
 	// When non-nil, the ACL is validated (canonical ordering, max ACEs) before applying.
 	ACL *acl.ACL
