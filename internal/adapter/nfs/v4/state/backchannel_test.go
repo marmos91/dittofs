@@ -778,3 +778,85 @@ func TestCallbackXIDsAreUniqueAcrossSenders(t *testing.T) {
 		t.Errorf("two senders minted the same XID %d; callback XIDs must be unique per connection", xidA)
 	}
 }
+
+// TestGetBackchannelSender_SkipsSessionWithNoLiveBackBinding pins the selection.
+// A sender now exists per back-bound session, so a client with two sessions has
+// two. Returning the first one found keeps choosing a session whose connection
+// has since closed: every recall through it fails with "no back-bound
+// connection" and revokes the delegation, while a sibling session of the same
+// client still has a live path to that client.
+func TestGetBackchannelSender_SkipsSessionWithNoLiveBackBinding(t *testing.T) {
+	sm := NewStateManager(90 * time.Second)
+
+	var verifier [8]byte
+	copy(verifier[:], "bcsel001")
+	eid, err := sm.ExchangeID([]byte("sender-selection-client"), verifier, 0, nil, "127.0.0.1:9999")
+	if err != nil {
+		t.Fatalf("ExchangeID: %v", err)
+	}
+
+	newSession := func(seq uint32) types.SessionId4 {
+		t.Helper()
+		res, _, cerr := sm.CreateSession(
+			eid.ClientID, seq,
+			types.CREATE_SESSION4_FLAG_CONN_BACK_CHAN,
+			types.ChannelAttrs{
+				MaxRequestSize: 1048576, MaxResponseSize: 1048576,
+				MaxResponseSizeCached: 4096, MaxOperations: 16, MaxRequests: 64,
+			},
+			types.ChannelAttrs{
+				MaxRequestSize: 4096, MaxResponseSize: 4096,
+				MaxOperations: 2, MaxRequests: 8,
+			},
+			0x40000000,
+			[]types.CallbackSecParms4{{CbSecFlavor: 0}},
+		)
+		if cerr != nil {
+			t.Fatalf("CreateSession: %v", cerr)
+		}
+		return res.SessionID
+	}
+
+	deadSessionID := newSession(eid.SequenceID)
+	liveSessionID := newSession(eid.SequenceID + 1)
+
+	// Give both sessions a sender, as StartBackchannelSender does per session.
+	for _, id := range []types.SessionId4{deadSessionID, liveSessionID} {
+		sess := sm.GetSession(id)
+		if sess == nil {
+			t.Fatalf("session %x not found", id)
+		}
+		sess.backchannelSender = NewBackchannelSender(id, eid.ClientID, 0x40000000, nil, sess.BackChannelSlots, sm)
+	}
+
+	// Only the live session keeps a back-bound connection. The dead one is
+	// given one and then loses it, which is the sequence a closing connection
+	// produces, rather than never having had one.
+	deadConnID, liveConnID := uint64(2001), uint64(2002)
+	sm.RegisterConnWriter(deadConnID, func([]byte) error { return nil })
+	if _, err := sm.BindConnToSession(deadConnID, deadSessionID, types.CDFC4_FORE_OR_BOTH); err != nil {
+		t.Fatalf("BindConnToSession(dead): %v", err)
+	}
+	sm.RegisterConnWriter(liveConnID, func([]byte) error { return nil })
+	if _, err := sm.BindConnToSession(liveConnID, liveSessionID, types.CDFC4_FORE_OR_BOTH); err != nil {
+		t.Fatalf("BindConnToSession(live): %v", err)
+	}
+	sm.UnregisterConnWriter(deadConnID)
+
+	if _, _, _, ok := sm.getBackBoundConnWriter(deadSessionID, 0); ok {
+		t.Fatal("fixture is wrong: the dead session still has a back-bound writer, " +
+			"so this proves nothing about the selection")
+	}
+	if _, _, _, ok := sm.getBackBoundConnWriter(liveSessionID, 0); !ok {
+		t.Fatal("fixture is wrong: the live session has no back-bound writer")
+	}
+
+	got := sm.getBackchannelSender(eid.ClientID)
+	if got == nil {
+		t.Fatal("no sender selected, though one session has a live back binding")
+	}
+	if got.sessionID != liveSessionID {
+		t.Errorf("selected the session with no back-bound connection; every recall " +
+			"through it would fail and revoke a delegation the client can still be reached about")
+	}
+}

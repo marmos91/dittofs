@@ -704,12 +704,32 @@ func (sm *StateManager) getBackchannelSender(clientID uint64) *BackchannelSender
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
+	// A sender exists per back-bound session, so a client with several sessions
+	// has several. Pick one whose session still has a back-bound connection:
+	// returning the first sender found would keep choosing a session whose
+	// connection has since closed, and every recall through it would fail with
+	// no back-bound connection and revoke the delegation while a sibling session
+	// of the same client still had a live path to the client.
+	//
+	// Lock ordering: sm.mu is held here and getBackBoundConnWriter takes
+	// connMu, which is the documented direction (manager.go, sm.mu before
+	// connMu, never reverse).
+	var fallback *BackchannelSender
 	for _, session := range sm.sessionsByClientID[clientID] {
-		if session.backchannelSender != nil {
+		if session.backchannelSender == nil {
+			continue
+		}
+		if fallback == nil {
+			fallback = session.backchannelSender
+		}
+		if _, _, _, ok := sm.getBackBoundConnWriter(session.SessionID, 0); ok {
 			return session.backchannelSender
 		}
 	}
-	return nil
+	// No session has a live back binding. Returning a sender anyway keeps the
+	// caller on its existing "no back-bound connection" path, which is the
+	// honest outcome, rather than the different one a nil sender takes.
+	return fallback
 }
 
 // getBackBoundConnWriter finds a back-bound connection for the session,
