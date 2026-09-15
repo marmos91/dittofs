@@ -20,9 +20,8 @@ import (
 )
 
 // TestCaptureOpenerIdentity_SnapshotsUserAndFlags verifies that the snapshot
-// captures ctx.User + ctx.IsGuest verbatim. Caller is responsible for
-// SessionManager wiring — when absent we silently skip the IsNull lookup
-// (test-fixture path).
+// captures ctx.User, ctx.IsGuest and ctx.IsNull verbatim — all three from the
+// one locked read primeAuthContext took at the head of the CREATE.
 func TestCaptureOpenerIdentity_SnapshotsUserAndFlags(t *testing.T) {
 	uid := uint32(1001)
 	alice := &models.User{ID: "u1", Username: "alice", UID: &uid}

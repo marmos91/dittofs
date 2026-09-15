@@ -264,16 +264,9 @@ func (s *Session) UpdateIdentity(username, domain string, user *models.User, isG
 	s.User = user
 	s.IsGuest = isGuest
 	s.IsNull = isNull
-	if len(pacGroupSIDs) == 0 {
-		s.pacGroupSIDs = nil
-	} else {
-		s.pacGroupSIDs = append([]string(nil), pacGroupSIDs...)
-	}
-	s.pacUserSID = pacUserSID
-	// User and PAC identity may both have changed; drop the memoized derived
-	// identity so the next consumer rebuilds from the new fields.
-	s.authIdentity = nil
-	s.authIdentityUser = nil
+	// Drops the memoized derived identity too: User and PAC may both have
+	// changed, so the next consumer rebuilds from the new fields.
+	s.setPACLocked(pacGroupSIDs, pacUserSID)
 	// Re-authentication re-decides authorization, so it clears a revocation the
 	// way a fresh ticket end-time clears an expiry. SESSION_SETUP refuses a
 	// disabled or deleted user outright, so reaching here means the account is
@@ -323,20 +316,25 @@ func (s *Session) PublishUser(user *models.User, generation uint64) bool {
 // resolve an identity off it. Re-authentication writes the SIDs through
 // UpdateIdentity instead, so the record and the SIDs it belongs with are
 // published in one write. The group SIDs are copied so the caller's slice is
-// never aliased and a concurrent PACIdentity reader can never observe a torn
-// header. Safe for concurrent use.
+// never aliased and a concurrent reader can never observe a torn header. Safe
+// for concurrent use.
 func (s *Session) SetPACIdentity(groupSIDs []string, userSID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.setPACLocked(groupSIDs, userSID)
+}
+
+// setPACLocked replaces the PAC identity and drops the memoized derived
+// identity, which folds the group SIDs in and so goes stale with them. Both
+// writers of the PAC go through it, so there is one copy of that rule. Caller
+// holds mu.
+func (s *Session) setPACLocked(groupSIDs []string, userSID string) {
 	if len(groupSIDs) == 0 {
 		s.pacGroupSIDs = nil
 	} else {
 		s.pacGroupSIDs = append([]string(nil), groupSIDs...)
 	}
 	s.pacUserSID = userSID
-	// The memoized identity folds in the PAC group SIDs, so any refresh (or the
-	// NTLM-reauth clear) must drop it. Both re-auth paths call SetPACIdentity, so
-	// this is the single chokepoint that keeps the cache from going stale.
 	s.authIdentity = nil
 	s.authIdentityUser = nil
 }
@@ -363,19 +361,6 @@ func (s *Session) SetCachedAuthIdentity(user *models.User, identity *metadata.Id
 	defer s.mu.Unlock()
 	s.authIdentityUser = user
 	s.authIdentity = identity
-}
-
-// PACIdentity returns a copy of the session's Kerberos PAC group SIDs and the
-// user SID. The slice is copied so the caller cannot mutate session state and
-// never shares a backing array with a concurrent SetPACIdentity. Returns
-// (nil, "") for sessions without PAC identity. Safe for concurrent use.
-func (s *Session) PACIdentity() (groupSIDs []string, userSID string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.pacGroupSIDs) > 0 {
-		groupSIDs = append([]string(nil), s.pacGroupSIDs...)
-	}
-	return groupSIDs, s.pacUserSID
 }
 
 // Credits tracks credit accounting for a session.
@@ -463,6 +448,26 @@ func (s *Session) CurrentUser() *models.User {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.User
+}
+
+// GuestOrNull reports the session's guest and anonymous flags together, under
+// the lock re-authentication writes them through. It exists so the signing and
+// encryption gates, which need only these two bools, do not pay for a whole
+// identity snapshot — and do not read the fields directly, which races a
+// concurrent re-auth.
+func (s *Session) GuestOrNull() (isGuest, isNull bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.IsGuest, s.IsNull
+}
+
+// CurrentUsername returns the session's authenticated name under the lock
+// re-authentication writes it through. For log lines and for state keyed on the
+// name, where a whole identity snapshot would be waste.
+func (s *Session) CurrentUsername() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Username
 }
 
 // AuthzIdentity is one consistent view of every identity field an

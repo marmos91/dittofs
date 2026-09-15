@@ -46,6 +46,17 @@ type revalidateUserStore struct {
 	// gotSIDs records the SIDs the last SID-grant lookup was asked about, so a
 	// test can tell which identity the resolution actually ran against.
 	gotSIDs []string
+	// resolveFromRecord makes the share-permission lookup answer from the
+	// record it is handed, the way the real store does — grants and group
+	// membership are read off the user object, not the database. That is what
+	// lets a test tell which record a resolution actually ran against: the
+	// session's stale copy and the persisted one give different answers, so the
+	// assertion can be on the access granted rather than on which pointer was
+	// passed.
+	resolveFromRecord bool
+	// gets counts the record lookups, so a test can tell a resolution that
+	// re-read the record from one that happened to agree with it.
+	gets int
 }
 
 // ResolveSharePermissionForSIDs makes the fake satisfy sidSharePermissionResolver
@@ -59,6 +70,7 @@ func (s *revalidateUserStore) ResolveSharePermissionForSIDs(_ context.Context, s
 }
 
 func (s *revalidateUserStore) GetUser(_ context.Context, _ string) (*models.User, error) {
+	s.gets++
 	if s.onGetUser != nil {
 		s.onGetUser()
 	}
@@ -68,12 +80,19 @@ func (s *revalidateUserStore) GetUser(_ context.Context, _ string) (*models.User
 	return s.user, nil
 }
 
-func (s *revalidateUserStore) ResolveSharePermission(_ context.Context, _ *models.User, _ string) (models.SharePermission, error) {
+func (s *revalidateUserStore) ResolveSharePermission(_ context.Context, user *models.User, shareName string) (models.SharePermission, error) {
 	if s.onResolve != nil {
 		s.onResolve()
 	}
 	if s.permErr != nil {
 		return models.PermissionNone, s.permErr
+	}
+	if s.resolveFromRecord {
+		if user == nil {
+			return models.PermissionNone, nil
+		}
+		perm, _ := user.GetExplicitSharePermission(shareName)
+		return perm, nil
 	}
 	return s.perm, nil
 }
@@ -89,7 +108,7 @@ func (r *revalidateRuntime) GetUserStore() models.UserStore { return r.users }
 
 // newRevalidateHandler builds a handler holding one share, one session
 // authenticated as user, and (when withTree) one tree pinned at pinned.
-func newRevalidateHandler(t *testing.T, user *models.User, store models.UserStore, pinned models.SharePermission, withTree bool) (*Handler, uint64, uint32) {
+func newRevalidateHandler(t *testing.T, user *models.User, store *revalidateUserStore, pinned models.SharePermission, withTree bool) (*Handler, uint64, uint32) {
 	t.Helper()
 
 	rt, blockStoreID := newTestShareRuntime(t)

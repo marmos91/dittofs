@@ -3,28 +3,12 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
-
-// principalOf names which of the two test principals an identity belongs to,
-// answering separately from the user record and from the PAC group SIDs. A
-// per-operation identity that reports one principal by its UID and the other by
-// its group SIDs is a combination the session never held: the two halves were
-// read a re-authentication apart.
-func principalOf(t *testing.T, uid uint32) string {
-	t.Helper()
-	switch uid {
-	case 1000:
-		return "alice"
-	case 1001:
-		return "bob"
-	}
-	t.Fatalf("identity carries UID %d, which belongs to neither test principal", uid)
-	return ""
-}
 
 // TestPrimeAuthContext_ConcurrentReauthIsRaceFree drives the per-operation
 // authorization path against re-authentication on the same session.
@@ -45,6 +29,7 @@ func TestPrimeAuthContext_ConcurrentReauthIsRaceFree(t *testing.T) {
 		"alice": "S-1-5-21-1-2-3-1000",
 		"bob":   "S-1-5-21-1-2-3-1001",
 	}
+	pacSIDs := []string{sidOf["alice"], sidOf["bob"]}
 
 	h := NewHandler()
 	sess := h.CreateSession("127.0.0.1:12345", false, alice.Username, "")
@@ -54,9 +39,16 @@ func TestPrimeAuthContext_ConcurrentReauthIsRaceFree(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
+	// The SID that belongs with each principal's UID. A per-operation identity
+	// reporting one principal by the UID an ownership check compares against
+	// and the other by the group SIDs a DACL matches on was read a
+	// re-authentication apart, and authorizes a pairing the session never held.
+	sidForUID := map[uint32]string{aliceUID: sidOf["alice"], bobUID: sidOf["bob"]}
+
 	// The dispatch side: prime a fresh request context off the session and
 	// build the AuthContext an ownership or group-ACL check would run against.
-	mismatches := make(chan string, 200)
+	var mu sync.Mutex
+	var mismatches []string
 	go func() {
 		defer wg.Done()
 		for i := range 200 {
@@ -66,15 +58,16 @@ func TestPrimeAuthContext_ConcurrentReauthIsRaceFree(t *testing.T) {
 			if err != nil || authCtx.Identity == nil || authCtx.Identity.UID == nil {
 				continue
 			}
-			byRecord := principalOf(t, *authCtx.Identity.UID)
-			for name, sid := range sidOf {
-				if name == byRecord {
-					continue
-				}
-				for _, got := range authCtx.Identity.GroupSIDs {
-					if got == sid {
-						mismatches <- fmt.Sprintf("identity for %s carries %s's group SID %s", byRecord, name, sid)
-					}
+			want := sidForUID[*authCtx.Identity.UID]
+			for _, got := range authCtx.Identity.GroupSIDs {
+				// The implicit Everyone / Authenticated Users SIDs ride on every
+				// identity; only the principal's own PAC SID is under test.
+				if got != want && slices.Contains(pacSIDs, got) {
+					mu.Lock()
+					mismatches = append(mismatches,
+						fmt.Sprintf("identity with UID %d carries group SID %s, want %s",
+							*authCtx.Identity.UID, got, want))
+					mu.Unlock()
 				}
 			}
 		}
@@ -94,8 +87,8 @@ func TestPrimeAuthContext_ConcurrentReauthIsRaceFree(t *testing.T) {
 	}()
 
 	wg.Wait()
-	close(mismatches)
-	if msg, ok := <-mismatches; ok {
-		t.Errorf("per-operation identity mixed two principals: %s", msg)
+	if len(mismatches) > 0 {
+		t.Errorf("per-operation identity mixed two principals (%d times), first: %s",
+			len(mismatches), mismatches[0])
 	}
 }

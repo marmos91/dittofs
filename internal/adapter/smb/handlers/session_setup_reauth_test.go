@@ -448,7 +448,8 @@ func TestTryReauthUpdate_ClearsKerberosPACIdentity(t *testing.T) {
 	if got.Username != "bob" {
 		t.Errorf("Username = %q, want bob", got.Username)
 	}
-	gotGroupSIDs, gotUserSID := got.PACIdentity()
+	gotIdentity := got.AuthzIdentity()
+	gotGroupSIDs, gotUserSID := gotIdentity.GroupSIDs, gotIdentity.UserSID
 	if len(gotGroupSIDs) != 0 {
 		t.Errorf("PACGroupSIDs not cleared after NTLM reauth: %v — stale AD groups leak privilege", gotGroupSIDs)
 	}

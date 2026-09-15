@@ -474,7 +474,7 @@ func prepareDispatch(ctx context.Context, reqHeader *header.SMB2Header, connInfo
 		if sess.IsExpiredOrRevoked() && !isExpiryExemptCommand(reqHeader.Command) {
 			logger.Debug("Session no longer authorized",
 				"sessionID", reqHeader.SessionID,
-				"username", sess.AuthzIdentity().Username,
+				"username", sess.CurrentUsername(),
 				"expiresAt", sess.ExpiresAt,
 				"authRevoked", sess.AuthRevoked())
 			// Complete any async CHANGE_NOTIFY armed before the ticket expired
@@ -513,13 +513,11 @@ func prepareDispatch(ctx context.Context, reqHeader *header.SMB2Header, connInfo
 				"originConnID", sess.OriginConnID)
 			return nil, nil, types.StatusUserSessionDeleted
 		}
-		// One locked read: SESSION_SETUP re-authentication replaces these
-		// fields under the session mutex while this dispatch goroutine primes
-		// the request context off them, and IsGuest is an authorization input —
-		// it is what selects the unprivileged nobody arm in BuildAuthContext.
-		identity := sess.AuthzIdentity()
-		handlerCtx.IsGuest = identity.IsGuest
-		handlerCtx.Username = identity.Username
+		// Through the locked accessor: SESSION_SETUP re-authentication writes
+		// this flag under the session mutex. primeAuthContext overwrites it
+		// from the same read as the user record on every path that resolves an
+		// identity; this seeds it for the handlers that never prime.
+		handlerCtx.IsGuest, _ = sess.GuestOrNull()
 	}
 
 	if cmd.NeedsTree && reqHeader.TreeID != 0 {
@@ -719,7 +717,7 @@ func checkEncryptionRequired(reqHeader *header.SMB2Header, connInfo *ConnInfo, i
 	// Also skip encryption enforcement for guest sessions (no signing key).
 	if reqHeader.SessionID != 0 {
 		if sess, ok := connInfo.Handler.GetSession(reqHeader.SessionID); ok {
-			if sess.IsNull || sess.IsGuest {
+			if isGuest, isNull := sess.GuestOrNull(); isNull || isGuest {
 				return 0
 			}
 		}
@@ -1168,7 +1166,8 @@ func sendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo, respon
 			// SESSION_SETUP response" path by leaving the bit off for
 			// IsNull sessions — anon-signing1 still passes because
 			// check_signature stays false there too.
-			skipSignForNullSetup := isSessionSetupSuccess && sess.IsNull
+			_, isNullSession := sess.GuestOrNull()
+			skipSignForNullSetup := isSessionSetupSuccess && isNullSession
 			if sess.ShouldSign() && !skipSignForNullSetup {
 				sess.SignMessageOnChannel(connInfo.ConnID, smbPayload)
 				// Sync signature back so callers that re-encode the header see

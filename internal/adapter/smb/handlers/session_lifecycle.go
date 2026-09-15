@@ -300,7 +300,7 @@ func (h *Handler) closeFilesWithFilter(
 			username := ""
 			var sessionKeyHash [32]byte
 			if sess != nil {
-				username = sess.Username
+				username = sess.CurrentUsername()
 				sessionKeyHash = computeSessionKeyHash(sess)
 			}
 

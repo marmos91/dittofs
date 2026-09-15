@@ -428,7 +428,7 @@ func resolveSharePermission(
 		// concurrent re-auth and can resolve access from a half-published
 		// identity.
 		snap = sess.AuthzIdentity()
-		snap.User = currentRecordFor(ctx, snap.User, userStore)
+		snap.User = currentRecordFor(ctx.Context, snap.User, userStore)
 	}
 	perm, identifier, _ := resolveSharePermissionForIdentity(ctx, sess, snap, share, defaultPerm, userStore)
 	return perm, identifier
@@ -445,30 +445,47 @@ func resolveSharePermission(
 // only applied to the established trees survives no longer than the next
 // TREE_CONNECT.
 //
-// decision: two lookups do not produce a record, and in both the session's own
-// stays. A principal resolved from the directory with no local account is
-// backed by a record that was never persisted — it carries no primary key, and
-// looking it up reports it missing — so it is not offered to the store at all;
-// refusing on that answer would lock every AD session out of every share. And a
-// lookup that fails, including one that reports the row gone, is not written
-// back as a decision: a store outage would otherwise revoke share access
-// wholesale, and a deleted or disabled account is already refused outright by
-// the dispatch gate, which is a stronger answer than anything decided here. The
-// ceiling is that a deletion the store cannot currently confirm leaves this
-// resolution on the older record until the store answers again. Withdraw the
-// exemption for the missing-row case only if the dispatch gate ever stops
-// covering it.
-func currentRecordFor(ctx *SMBHandlerContext, user *models.User, userStore models.UserStore) *models.User {
-	if user == nil || userStore == nil || user.ID == "" {
+// decision: a lookup that fails, including one that reports the row gone,
+// leaves the session's own record standing rather than becoming a decision. A
+// store outage would otherwise revoke share access wholesale, and a deleted or
+// disabled account is already refused outright by the dispatch gate, which is a
+// stronger answer than anything decided here. The ceiling is that a deletion
+// the store cannot currently confirm leaves this resolution on the older record
+// until the store answers again. Withdraw the exemption for the missing-row
+// case only if the dispatch gate ever stops covering it. The re-check applies
+// the opposite policy to the same lookup — a missing row there revokes the
+// session — which is why askPersistedRecord reports the outcome rather than
+// deciding it.
+func currentRecordFor(ctx context.Context, user *models.User, userStore models.UserStore) *models.User {
+	current, asked, err := askPersistedRecord(ctx, user, userStore)
+	if !asked {
 		return user
 	}
-	current, err := userStore.GetUser(ctx.Context, user.Username)
 	if err != nil || current == nil {
 		logger.Debug("TREE_CONNECT could not re-read the user record, resolving against the session's copy",
 			"user", user.Username, "error", err)
 		return user
 	}
 	return current
+}
+
+// askPersistedRecord re-reads the store's record for the user a session is
+// carrying. It reports whether the store was asked at all, so a caller can tell
+// "no answer available" from "the store says this user is gone" — the two mean
+// opposite things to an authorization decision.
+//
+// decision: a principal resolved from the directory with no local account is
+// never offered to the store. Its record was synthesized and never persisted,
+// so it carries no primary key and the lookup can only report it missing;
+// treating that as an answer would retire every AD session on the next
+// unrelated user edit. Withdraw the exemption if such a principal ever gets a
+// persisted row to read back.
+func askPersistedRecord(ctx context.Context, user *models.User, userStore models.UserStore) (*models.User, bool, error) {
+	if user == nil || userStore == nil || user.ID == "" {
+		return nil, false, nil
+	}
+	current, err := userStore.GetUser(ctx, user.Username)
+	return current, true, err
 }
 
 // resolveSharePermissionForIdentity resolves against a supplied identity rather

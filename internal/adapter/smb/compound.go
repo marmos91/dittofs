@@ -764,8 +764,9 @@ func VerifyCompoundCommandSignature(data []byte, hdr *header.SMB2Header, connInf
 
 	// Per MS-SMB2 3.3.5.2.4: For dialect 3.1.1, unsigned unencrypted requests
 	// from authenticated sessions require disconnect.
+	isGuest, isNull := sess.GuestOrNull()
 	if !isSigned && connInfo.CryptoState != nil && connInfo.CryptoState.GetDialect() == types.Dialect0311 &&
-		!sess.IsGuest && !sess.IsNull &&
+		!isGuest && !isNull &&
 		sessCrypto != nil && sessCrypto.ShouldVerify() {
 		return errCompoundUnsignedDisconnect
 	}

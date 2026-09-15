@@ -2145,10 +2145,9 @@ func (h *Handler) tryReauthUpdate(pending *PendingAuth, username, domain string,
 	// its identity inside.
 	existingSess.UpdateIdentity(username, domain, user, isGuest, username == "" && !isGuest, nil, "")
 
-	identity := existingSess.AuthzIdentity()
 	logger.Info("Session re-authenticated (identity updated, keys retained)",
 		"sessionID", existingSess.SessionID,
-		"username", identity.Username,
+		"username", username,
 		"domain", domain,
 		"signingEnabled", existingSess.ShouldSign(),
 		"encryptData", existingSess.ShouldEncrypt())

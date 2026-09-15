@@ -41,15 +41,14 @@ import (
 // indexing them by username. Both tables are per-connection state bounded by the
 // client count, and the walk runs only on a control-plane mutation, not per
 // operation; index them if a deployment ever makes that walk visible.
-// survivingSession is a session the re-check kept, paired with the identity
-// generation the record was read at. The tree pass resolves against the record
-// but applies nothing once the generation has moved on.
 // survivingSession is the identity a session's trees re-resolve against: the
 // one snapshot the session pass read, with the user record replaced by the one
 // the store returned for it. Carrying the whole snapshot rather than the record
 // alone keeps the tree pass on a single identity — re-reading the session for
 // its name, guest flag or PAC SIDs would reintroduce the mixing the snapshot
-// exists to prevent, a sweep's worth of time after it was taken.
+// exists to prevent, a sweep's worth of time after it was taken. The snapshot
+// carries the generation the record was read at, and the tree pass applies
+// nothing once that has moved on.
 type survivingSession struct {
 	snap session.AuthzIdentity
 }
@@ -102,30 +101,18 @@ func (h *Handler) RevalidateAuthorization(ctx context.Context) {
 		}
 		snap := sess.AuthzIdentity()
 		current, gen := snap.User, snap.Generation
-		if current == nil {
-			// Guest and anonymous sessions carry no user record; their access
-			// rests on the share default, which the tree pass re-resolves.
+		// Not every session has a record the store can be asked about: a guest
+		// or anonymous one carries none, and a directory-resolved principal
+		// carries one that was never persisted. Both rest on what the tree pass
+		// re-resolves — the share default and the SID grants respectively — so
+		// they survive with the identity they have. askPersistedRecord holds
+		// that rule, and TREE_CONNECT reads it from the same place.
+		user, asked, err := askPersistedRecord(ctx, current, userStore)
+		if !asked {
 			surviving[sessionID] = survivingSession{snap: snap}
 			return true
 		}
 
-		// A directory-resolved principal with no local account is backed by a
-		// synthesized record that was never persisted, so it carries no primary
-		// key and there is no row to re-read. Its authorization comes from the
-		// SID grants the tree pass re-resolves. Looking it up would report the
-		// user as missing and retire every AD session on the next unrelated
-		// user edit.
-		if current.ID == "" {
-			surviving[sessionID] = survivingSession{snap: snap}
-			return true
-		}
-
-		if userStore == nil {
-			surviving[sessionID] = survivingSession{snap: snap}
-			return true
-		}
-
-		user, err := userStore.GetUser(ctx, current.Username)
 		switch {
 		case errors.Is(err, models.ErrUserNotFound):
 			if !h.revokeIfCurrent(ctx, sess, sessionID, gen) {

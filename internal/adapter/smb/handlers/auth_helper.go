@@ -344,9 +344,10 @@ func (h *Handler) primeAuthContext(ctx *SMBHandlerContext, treeID uint32, sessio
 		// the session never held — one principal's user record beside another's
 		// group SIDs.
 		snap := sess.AuthzIdentity()
-		// Propagate guest-ness independent of User: guest sessions seed
-		// User=nil + IsGuest=true and BuildAuthContext relies on IsGuest
-		// to pick the nobody/nogroup (65534) arm instead of root.
+		// Guest-ness and anonymity are propagated independent of User: guest
+		// and null sessions seed User=nil, and the flags are what a handle's
+		// frozen opener identity rebuilds the unprivileged nobody/nogroup
+		// (65534) arm from after a re-auth.
 		ctx.IsGuest = snap.IsGuest
 		ctx.IsNull = snap.IsNull
 		if snap.User != nil {

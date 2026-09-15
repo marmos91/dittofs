@@ -150,10 +150,6 @@ type SMBHandlerContext struct {
 	// session for the last of them.
 	IsNull bool
 
-	// Username for authenticated sessions
-	Username string
-	Domain   string
-
 	// User is the authenticated DittoFS user (nil for guest sessions)
 	// This is set from the session during request handling.
 	User *models.User

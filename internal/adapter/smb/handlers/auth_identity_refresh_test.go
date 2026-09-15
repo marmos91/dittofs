@@ -8,48 +8,8 @@ import (
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
-
-// recordResolvingStore answers the share-permission lookup from the record it
-// is handed, the way the real store does — grants and group membership are read
-// off the user object, not the database. That is what makes it able to tell
-// which record a resolution actually ran against: a resolution against the
-// session's stale copy and one against the persisted record give different
-// answers, so the assertion can be on the access granted rather than on which
-// pointer was passed.
-type recordResolvingStore struct {
-	models.UserStore
-	persisted *models.User
-	err       error
-	// gets counts the record lookups, so a test can tell a resolution that
-	// re-read the record from one that happened to agree with it.
-	gets int
-	// onGetUser runs on entry to the lookup: the window between the caller
-	// reading the session's identity and acting on what the store says about
-	// it, where a test can re-authenticate the session.
-	onGetUser func()
-}
-
-func (s *recordResolvingStore) GetUser(_ context.Context, _ string) (*models.User, error) {
-	s.gets++
-	if s.onGetUser != nil {
-		s.onGetUser()
-	}
-	if s.err != nil {
-		return nil, s.err
-	}
-	return s.persisted, nil
-}
-
-func (s *recordResolvingStore) ResolveSharePermission(_ context.Context, user *models.User, shareName string) (models.SharePermission, error) {
-	if user == nil {
-		return models.PermissionNone, nil
-	}
-	if perm, ok := user.GetExplicitSharePermission(shareName); ok {
-		return perm, nil
-	}
-	return models.PermissionNone, nil
-}
 
 // userWithGrant builds a record carrying one explicit grant on /export and one
 // group, which is what a resolution and an identity respectively read off it.
@@ -70,7 +30,7 @@ func userWithGrant(perm models.SharePermission, uid uint32, groupGID uint32) *mo
 // buildDispatchIdentity resolves the identity a file operation on this session
 // would be authorized with: the same prime-then-build the dispatch path runs
 // before every metadata call.
-func buildDispatchIdentity(t *testing.T, h *Handler, sessionID uint64) *metadataIdentity {
+func buildDispatchIdentity(t *testing.T, h *Handler, sessionID uint64) *metadata.Identity {
 	t.Helper()
 	ctx := NewSMBHandlerContext(context.Background(), "127.0.0.1:12345", sessionID, 0, 1)
 	h.primeAuthContext(ctx, 0, sessionID)
@@ -81,12 +41,7 @@ func buildDispatchIdentity(t *testing.T, h *Handler, sessionID uint64) *metadata
 	if authCtx.Identity == nil || authCtx.Identity.UID == nil {
 		t.Fatal("no identity on the AuthContext a file operation would carry")
 	}
-	return &metadataIdentity{uid: *authCtx.Identity.UID, gids: authCtx.Identity.GIDs}
-}
-
-type metadataIdentity struct {
-	uid  uint32
-	gids []uint32
+	return authCtx.Identity
 }
 
 // TestRevalidateAuthorization_PublishesRefreshedIdentity pins the per-operation
@@ -99,28 +54,28 @@ func TestRevalidateAuthorization_PublishesRefreshedIdentity(t *testing.T) {
 	// The record the session authenticated with: UID 1000, in group 1000.
 	sessionRecord := userWithGrant(models.PermissionReadWrite, 1000, 1000)
 	// The record the operator has since edited: moved to UID 1500 and regrouped.
-	store := &recordResolvingStore{persisted: userWithGrant(models.PermissionReadWrite, 1500, 2000)}
+	store := &revalidateUserStore{resolveFromRecord: true, user: userWithGrant(models.PermissionReadWrite, 1500, 2000)}
 
 	h, sessionID, _ := newRevalidateHandler(t, sessionRecord, store, models.PermissionReadWrite, false)
 
 	before := buildDispatchIdentity(t, h, sessionID)
-	if before.uid != 1000 {
-		t.Fatalf("fixture is wrong: operations start out authorized as UID %d, want 1000", before.uid)
+	if *before.UID != 1000 {
+		t.Fatalf("fixture is wrong: operations start out authorized as UID %d, want 1000", *before.UID)
 	}
 
 	h.RevalidateAuthorization(context.Background())
 
 	after := buildDispatchIdentity(t, h, sessionID)
-	if after.uid != 1500 {
+	if *after.UID != 1500 {
 		t.Errorf("a file operation is still authorized as UID %d after the sweep, want 1500: "+
-			"the ownership check runs against the identity captured at SESSION_SETUP", after.uid)
+			"the ownership check runs against the identity captured at SESSION_SETUP", *after.UID)
 	}
-	if !slices.Contains(after.gids, uint32(2000)) {
+	if !slices.Contains(after.GIDs, uint32(2000)) {
 		t.Errorf("identity GIDs = %v, want the current group 2000: a group ACL still matches "+
-			"on the membership the session authenticated with", after.gids)
+			"on the membership the session authenticated with", after.GIDs)
 	}
-	if slices.Contains(after.gids, uint32(1000)) {
-		t.Errorf("identity GIDs = %v, still carries the withdrawn group 1000", after.gids)
+	if slices.Contains(after.GIDs, uint32(1000)) {
+		t.Errorf("identity GIDs = %v, still carries the withdrawn group 1000", after.GIDs)
 	}
 }
 
@@ -130,7 +85,7 @@ func TestRevalidateAuthorization_PublishesRefreshedIdentity(t *testing.T) {
 // previous identity must not be written over it.
 func TestRevalidateAuthorization_ReauthDuringLookupLeavesRecord(t *testing.T) {
 	sessionRecord := userWithGrant(models.PermissionReadWrite, 1000, 1000)
-	store := &recordResolvingStore{persisted: userWithGrant(models.PermissionReadWrite, 1500, 2000)}
+	store := &revalidateUserStore{resolveFromRecord: true, user: userWithGrant(models.PermissionReadWrite, 1500, 2000)}
 
 	h, sessionID, _ := newRevalidateHandler(t, sessionRecord, store, models.PermissionReadWrite, false)
 	sess, ok := h.GetSession(sessionID)
@@ -147,9 +102,9 @@ func TestRevalidateAuthorization_ReauthDuringLookupLeavesRecord(t *testing.T) {
 	h.RevalidateAuthorization(context.Background())
 
 	got := buildDispatchIdentity(t, h, sessionID)
-	if got.uid != bobUID {
+	if *got.UID != bobUID {
 		t.Errorf("operations authorized as UID %d, want %d: the sweep published alice's record "+
-			"onto a session that had already re-authenticated as bob", got.uid, bobUID)
+			"onto a session that had already re-authenticated as bob", *got.UID, bobUID)
 	}
 }
 
@@ -162,7 +117,7 @@ func TestRevalidateAuthorization_ReauthDuringLookupLeavesRecord(t *testing.T) {
 func TestTreeConnect_ResolvesAgainstPersistedRecord(t *testing.T) {
 	sessionRecord := userWithGrant(models.PermissionReadWrite, 1000, 1000)
 	// The grant has been withdrawn since the session authenticated.
-	store := &recordResolvingStore{persisted: userWithGrant(models.PermissionNone, 1000, 1000)}
+	store := &revalidateUserStore{resolveFromRecord: true, user: userWithGrant(models.PermissionNone, 1000, 1000)}
 
 	h, sessionID, _ := newRevalidateHandler(t, sessionRecord, store, models.PermissionReadWrite, false)
 
@@ -195,7 +150,7 @@ func TestTreeConnect_SynthesizedDirectoryUserNotRefused(t *testing.T) {
 			{ShareName: "/export", Permission: string(models.PermissionAdmin)},
 		},
 	}
-	store := &recordResolvingStore{err: models.ErrUserNotFound}
+	store := &revalidateUserStore{resolveFromRecord: true, err: models.ErrUserNotFound}
 
 	h, sessionID, _ := newRevalidateHandler(t, synth, store, models.PermissionReadWrite, false)
 
@@ -237,7 +192,7 @@ func TestTreeConnect_LookupFailureKeepsSessionRecord(t *testing.T) {
 	// record's own answer from the share default that resolving against a
 	// dropped record would fall back to.
 	sessionRecord := userWithGrant(models.PermissionAdmin, 1000, 1000)
-	store := &recordResolvingStore{err: errors.New("connection refused")}
+	store := &revalidateUserStore{resolveFromRecord: true, err: errors.New("connection refused")}
 
 	h, sessionID, _ := newRevalidateHandler(t, sessionRecord, store, models.PermissionReadWrite, false)
 

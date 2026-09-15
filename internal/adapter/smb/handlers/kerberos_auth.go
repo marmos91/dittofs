@@ -179,9 +179,9 @@ func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte, p
 
 	logger.Debug("Kerberos session created",
 		"sessionID", sess.SessionID,
-		"username", sess.Username,
-		"domain", sess.Domain,
-		"isGuest", sess.IsGuest,
+		"username", user.Username,
+		"domain", h.sessionDomain(authResult.Realm),
+		"isGuest", false,
 		"signingEnabled", sess.ShouldSign(),
 		"encryptData", sess.ShouldEncrypt())
 
@@ -231,8 +231,8 @@ func (h *Handler) reauthKerberosSession(
 
 	logger.Info("Kerberos session re-authenticated (identity updated, keys retained)",
 		"sessionID", sess.SessionID,
-		"username", sess.Username,
-		"domain", sess.Domain,
+		"username", user.Username,
+		"domain", h.sessionDomain(authResult.Realm),
 		"signingEnabled", sess.ShouldSign(),
 		"encryptData", sess.ShouldEncrypt())
 
