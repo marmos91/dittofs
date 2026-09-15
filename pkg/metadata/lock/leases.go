@@ -62,6 +62,12 @@ var ErrLeaseAckNotBreaking = errors.New("lease not in breaking state")
 // across files MUST fail with STATUS_INVALID_PARAMETER.
 var ErrLeaseKeyInUse = errors.New("lease key already in use on another file")
 
+// ErrLeaseDelegationConflict is returned by RequestLease when an NFS
+// delegation on the same file cannot coexist with the requested lease state.
+// It is an expected denial, not a failure: the caller grants LeaseState=None
+// and the CREATE succeeds.
+var ErrLeaseDelegationConflict = errors.New("lease denied: conflicts with delegation on file")
+
 // validUpgrades defines allowed lease state upgrade transitions.
 // A lease can only be upgraded (more permissions), never downgraded via RequestLease.
 // Downgrade happens only through lease break.
@@ -373,8 +379,8 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, req leaseRequest) (gran
 			"fileHandle", req.handleKey,
 			"delegationType", deleg.DelegType.String(),
 			"requestedState", LeaseStateToString(req.state))
-		return LeaseStateNone, 0, fmt.Errorf("lease denied: conflicts with %s delegation on file",
-			deleg.DelegType.String())
+		return LeaseStateNone, 0, fmt.Errorf("%w (%s)",
+			ErrLeaseDelegationConflict, deleg.DelegType)
 	}
 
 	if handled, state, ep, serr := lm.resolveSameKeyLeaseLocked(req, locks); handled {

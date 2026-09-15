@@ -423,18 +423,19 @@ func openHasLocks(metaSvc *metadata.Service, openFile *OpenFile) bool {
 	if openFile.HasByteRangeLocks.Load() {
 		return true
 	}
-	if metaSvc == nil || len(openFile.MetadataHandle) == 0 {
+	metaHandle := openFile.GetMetadataHandle()
+	if metaSvc == nil || len(metaHandle) == 0 {
 		// Cannot consult the lock manager — fail closed.
 		return true
 	}
-	lm, err := metaSvc.GetLockManagerForHandle(openFile.MetadataHandle)
+	lm, err := metaSvc.GetLockManagerForHandle(metaHandle)
 	if err != nil || lm == nil {
 		logger.Debug("openHasLocks: lock manager lookup failed, failing closed",
 			"error", err)
 		return true
 	}
 	openID := openFile.OpenID()
-	for _, fl := range lm.ListLocks(string(openFile.MetadataHandle)) {
+	for _, fl := range lm.ListLocks(string(metaHandle)) {
 		if fl.OpenID == openID {
 			return true
 		}
@@ -473,6 +474,18 @@ func (f *OpenFile) GetPayloadID() metadata.PayloadID {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 	return f.PayloadID
+}
+
+// GetMetadataHandle returns the metadata store handle under the read lock.
+// SET_REPARSE_POINT repoints a live handle when it replaces a regular-file
+// placeholder with a symlink, so the field is a mutable slice header: a scan
+// over the handle table that compares handles across opens must read through
+// here rather than touching the field directly.
+
+func (f *OpenFile) GetMetadataHandle() metadata.FileHandle {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.MetadataHandle
 }
 
 // SetPayloadID publishes a new cached payload identifier under the write lock.

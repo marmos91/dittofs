@@ -548,7 +548,8 @@ func (h *Handler) disallowWriteLeaseForFile(
 		if !ok || existing.IsPipe || existing.IsDirectory {
 			return true
 		}
-		if len(existing.MetadataHandle) == 0 || !bytes.Equal(existing.MetadataHandle, metaHandle) {
+		existingHandle := existing.GetMetadataHandle()
+		if len(existingHandle) == 0 || !bytes.Equal(existingHandle, metaHandle) {
 			return true
 		}
 		// Skip the requestor's own open(s) and same-client opens: same lease key

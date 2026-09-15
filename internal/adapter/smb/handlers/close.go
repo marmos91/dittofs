@@ -689,6 +689,7 @@ func (h *Handler) releaseHandleLeaseRecord(ctx context.Context, openFile *OpenFi
 	// upgrades in place). Different files with the same key are separate
 	// records in distinct handleKey buckets and must not be disturbed.
 	hasOtherOpenSameFile := false
+	ownHandle := openFile.GetMetadataHandle()
 	h.files.Range(func(_, value any) bool {
 		other := value.(*OpenFile)
 		if other.FileID == openFile.FileID {
@@ -697,7 +698,7 @@ func (h *Handler) releaseHandleLeaseRecord(ctx context.Context, openFile *OpenFi
 		if other.LeaseKey != leaseKey {
 			return true
 		}
-		if bytes.Equal(other.MetadataHandle, openFile.MetadataHandle) {
+		if bytes.Equal(other.GetMetadataHandle(), ownHandle) {
 			hasOtherOpenSameFile = true
 			return false
 		}
