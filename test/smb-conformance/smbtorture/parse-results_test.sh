@@ -331,6 +331,16 @@ assert_output "CSN draw leaves no server-result gap" "| No server result | 0 |"
 assert_output "CSN-only run stays green" "CI green"
 
 
+# -- A shell exit status is a single byte. A run that loses connectivity for 256
+# -- tests must not wrap to 0 and read as success under an inconclusive banner. --
+for i in $(seq 1 256); do
+    printf 'test: smb2.wrap.t%d\nfailure: smb2.wrap.t%d [\n' "$i" "$i"
+    printf '../../source4/torture/smb2/smb2.c:95: Establishing SMB2 connection failed\n]\n'
+done > "${WORK}/wrap.txt"
+run_case "256 inconclusive tests do not wrap to exit 0" 254 < "${WORK}/wrap.txt"
+assert_output "all 256 counted" "| No server result | 256 |"
+assert_not_output "a wrapped count is never green" "CI green"
+
 echo ""
 if [[ "$FAILURES" -eq 0 ]]; then
     echo "PASS: all parse-results.sh grading tests passed"

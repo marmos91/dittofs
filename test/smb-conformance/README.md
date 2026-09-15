@@ -417,7 +417,10 @@ docker compose logs -f dittofs
 # 3. Inspect generated ptfconfig
 cat ptfconfig-generated/MS-SMB2_ServerTestSuite.deployment.ptfconfig
 
-# 4. Run a specific test category
+# 4. Run a specific test category — a kept stack cannot be reused, because
+#    bootstrap would run a second time against an already-bootstrapped server,
+#    so tear it down first
+docker compose down -v
 ./run.sh --profile memory --keep --category BVT
 
 # 5. When done, clean up
@@ -432,5 +435,6 @@ docker compose down -v
 - **Network:** WPTS shares the DittoFS network namespace (`network_mode: service:dittofs`)
 - **One stack at a time:** the published host ports are a single set and the
   suites assert on sub-second lease and oplock breaks, so the runners refuse to
-  start while another checkout's stack is live and name the directory holding it
+  start while any stack is live — another checkout's, or one this checkout left
+  behind with `--keep` — and name the directory holding it
 - **ptfconfig:** Generated from templates in `ptfconfig/`. Edit templates, then re-run

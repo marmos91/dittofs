@@ -736,5 +736,12 @@ if [[ "$BAD" -eq 0 ]]; then
     echo ""
 fi
 
-# Exit with the count of things that fail the job (0 = success)
+# Exit with the count of things that fail the job (0 = success).
+#
+# A shell exit status is a single byte, so a count of 256 would leave as 0 and
+# be read as success — the false green this grading exists to prevent. The
+# report carries the exact counts; the status only has to stay non-zero.
+if [[ "$BAD" -gt 254 ]]; then
+    BAD=254
+fi
 exit "$BAD"
