@@ -398,6 +398,32 @@ func New(config *Config) (*GORMStore, error) {
 		}
 	}
 
+	// Pre-migration: refuse an upgrade that would lose where a share's data is,
+	// before any of it happens.
+	//
+	// Both checks read local_block_store_id, which the post-migration step
+	// below drops. They run here rather than beside that drop because
+	// AutoMigrate adds the foreign key on the share's block store and
+	// validates it against the existing rows: a share holding an empty
+	// reference fails that constraint first, and the operator gets the
+	// database's message about it instead of the one naming the share and the
+	// fix. Running first also means a refusal leaves the schema untouched
+	// rather than partly upgraded.
+	if hasColumn(db, &models.Share{}, "local_block_store_id") {
+		// A local-only share's only binding lives in that column; refuse
+		// rather than drop it out from under them.
+		if err := checkLocalOnlyShares(db); err != nil {
+			return nil, err
+		}
+		// The column is also the only surviving record of where a share's
+		// bytes sit. A journal root that names somewhere else would open an
+		// empty journal beside them and read back zeros, so compare while the
+		// comparison is still possible.
+		if err := checkShareJournalRoots(db, config.JournalRoot); err != nil {
+			return nil, err
+		}
+	}
+
 	// Run auto-migration
 	if err := db.AutoMigrate(models.AllModels()...); err != nil {
 		return nil, fmt.Errorf("failed to run database migration: %w", err)
@@ -452,19 +478,8 @@ func New(config *Config) (*GORMStore, error) {
 	// Post-migration: the journal is provisioned under the server-level root, so
 	// a share no longer references a local block store. Dropped only after
 	// migrateShareDurability above, which reads that store's config through it.
+	// The refusals that gate this drop ran before AutoMigrate.
 	if hasColumn(db, &models.Share{}, "local_block_store_id") {
-		// A local-only share's only binding lives in this column; refuse rather
-		// than drop it out from under them.
-		if err := checkLocalOnlyShares(db); err != nil {
-			return nil, err
-		}
-		// The column is also the only surviving record of where a share's
-		// bytes sit. A journal root that names somewhere else would open an
-		// empty journal beside them and read back zeros, so compare while the
-		// comparison is still possible.
-		if err := checkShareJournalRoots(db, config.JournalRoot); err != nil {
-			return nil, err
-		}
 		if err := db.Migrator().DropColumn(&models.Share{}, "local_block_store_id"); err != nil {
 			return nil, fmt.Errorf("failed to drop local_block_store_id column: %w", err)
 		}
