@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -444,23 +445,29 @@ func (s *Service) prepareShare(
 	// already has one would leave the real files addressable by nothing. Refuse
 	// that share rather than serve it empty. Renaming the namespace would be the
 	// other way out; it reissues every handle, and a handle must survive a
-	// restart. The two spellings are compared in the store, not against the name
+	// restart. The spellings are compared in the store, not against the name
 	// as it was persisted, so correcting the persisted name alone does not
 	// silence this.
-	unfolded := strings.TrimPrefix(config.Name, "/")
+	//
+	// Each fold this code has applied gets its own probe: a share only reaches
+	// here with its root under some other spelling by having been folded by an
+	// earlier build, so the set to check is the set of folds, not a guess about
+	// the name.
 	foldedRoot, err := rootExists(ctx, metadataStore, config.Name)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to look up the root of share %q: %w", config.Name, err)
 	}
 	if !foldedRoot {
-		unfoldedRoot, err := rootExists(ctx, metadataStore, unfolded)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to look up the root of share %q: %w", unfolded, err)
-		}
-		if unfoldedRoot {
-			return nil, nil, fmt.Errorf(
-				"share %q would be served from a new, empty root: its files are keyed by %q, which this build addresses as %q",
-				config.Name, unfolded, config.Name)
+		for _, other := range otherSpellings(config.Name) {
+			exists, err := rootExists(ctx, metadataStore, other)
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to look up the root of share %q: %w", other, err)
+			}
+			if exists {
+				return nil, nil, fmt.Errorf(
+					"share %q would be served from a new, empty root: its files are keyed by %q, which this build addresses as %q",
+					config.Name, other, config.Name)
+			}
 		}
 	}
 
@@ -790,4 +797,33 @@ func SeedColdFromManifest(ctx context.Context, bs *engine.Store, metaStore metad
 		return report, err
 	}
 	return report, flush()
+}
+
+// otherSpellings returns the names a build with a different fold would have
+// keyed this share's metadata by: the one a leading-slash trim produces, and the
+// one a percent-decode produces. Both folds have been in force — the trim is the
+// current one, the decode preceded it — so a share carried across either change
+// has its root under a name this build no longer writes.
+//
+// The decoded spelling is folded the same way the live seam folds, so a name
+// that decodes to nothing new contributes nothing and is dropped along with any
+// spelling equal to the name itself.
+func otherSpellings(name string) []string {
+	out := make([]string, 0, 2)
+	add := func(s string) {
+		if s == name {
+			return
+		}
+		for _, have := range out {
+			if have == s {
+				return
+			}
+		}
+		out = append(out, s)
+	}
+	add(strings.TrimPrefix(name, "/"))
+	if decoded, err := url.PathUnescape(name); err == nil {
+		add(metadata.NormalizeShareName(decoded))
+	}
+	return out
 }
