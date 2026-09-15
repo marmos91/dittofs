@@ -338,7 +338,7 @@ func TestRevokedSessionRecoversOnReauth(t *testing.T) {
 		t.Fatal("session did not report as revoked")
 	}
 
-	sess.UpdateIdentity(user.Username, "", user, false, false)
+	sess.UpdateIdentity(user.Username, "", user, false, false, nil, "")
 
 	if sess.AuthRevoked() {
 		t.Error("re-authentication must clear the revocation, or the session can never recover")
@@ -634,7 +634,7 @@ func TestRevalidateAuthorization_ConcurrentReauthIsRaceFree(t *testing.T) {
 		defer wg.Done()
 		user := enabledUser()
 		for i := range 50 {
-			sess.UpdateIdentity(fmt.Sprintf("user-%d", i), "", user, false, false)
+			sess.UpdateIdentity(fmt.Sprintf("user-%d", i), "", user, false, false, nil, "")
 		}
 	}()
 	wg.Wait()
@@ -656,7 +656,7 @@ func TestRevalidateAuthorization_ReauthDuringLookupSurvives(t *testing.T) {
 	uid := uint32(1001)
 	replacement := &models.User{ID: "user-2", Username: "bob", UID: &uid, Enabled: true}
 	store.onGetUser = func() {
-		sess.UpdateIdentity(replacement.Username, "", replacement, false, false)
+		sess.UpdateIdentity(replacement.Username, "", replacement, false, false, nil, "")
 	}
 
 	h.RevalidateAuthorization(context.Background())
@@ -685,7 +685,7 @@ func TestRevalidateAuthorization_ReauthDuringResolveLeavesTree(t *testing.T) {
 	uid := uint32(1001)
 	replacement := &models.User{ID: "user-2", Username: "bob", UID: &uid, Enabled: true}
 	store.onResolve = func() {
-		sess.UpdateIdentity(replacement.Username, "", replacement, false, false)
+		sess.UpdateIdentity(replacement.Username, "", replacement, false, false, nil, "")
 	}
 
 	h.RevalidateAuthorization(context.Background())
@@ -821,8 +821,8 @@ func TestResolveSharePermission_RunsOnOneIdentity(t *testing.T) {
 
 	// The re-authentication that lands while the decision is in flight.
 	replacement := &models.User{ID: "user-2", Username: "bob", Enabled: true}
-	sess.UpdateIdentity("bob", "", replacement, false, false)
-	sess.SetPACIdentity([]string{"S-1-5-21-9-9-9-5104"}, "S-1-5-21-9-9-9-5200")
+	sess.UpdateIdentity("bob", "", replacement, false, false,
+		[]string{"S-1-5-21-9-9-9-5104"}, "S-1-5-21-9-9-9-5200")
 
 	share, err := h.Registry.GetShare("/export")
 	if err != nil || share == nil {

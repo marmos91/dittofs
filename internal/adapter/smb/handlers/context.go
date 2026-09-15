@@ -143,6 +143,13 @@ type SMBHandlerContext struct {
 	// IsGuest indicates guest/anonymous session
 	IsGuest bool
 
+	// IsNull mirrors the session-level "anonymous logon, not guest" state.
+	// Populated from the same locked identity snapshot as IsGuest and User by
+	// primeAuthContext, so a CREATE freezing the opener identity onto its
+	// OpenFile records all three from one read rather than going back to the
+	// session for the last of them.
+	IsNull bool
+
 	// Username for authenticated sessions
 	Username string
 	Domain   string

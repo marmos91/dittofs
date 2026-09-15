@@ -220,11 +220,12 @@ func (h *Handler) reauthKerberosSession(
 	// requests through again (expire1/2 recovery).
 	// UpdateIdentity holds the session lock: a concurrent request goroutine
 	// building an AuthContext must not observe a half-updated identity.
-	sess.UpdateIdentity(user.Username, h.sessionDomain(authResult.Realm), user, false, false)
+	// The PAC group/user SIDs go in the same write: group membership may have
+	// changed between the original logon and this re-authentication, and a
+	// request resolving its identity between two writes would pair the new
+	// ticket's user record with the old ticket's groups.
+	sess.UpdateIdentity(user.Username, h.sessionDomain(authResult.Realm), user, false, false, authResult.GroupSIDs, authResult.UserSID)
 	sess.ExpiresAt = ticketEndTime
-	// Refresh the PAC group/user SIDs from the new ticket — group membership may
-	// have changed between the original logon and this re-authentication.
-	sess.SetPACIdentity(authResult.GroupSIDs, authResult.UserSID)
 	ctx.PACGroupSIDs = authResult.GroupSIDs
 	ctx.IsGuest = false
 
@@ -404,10 +405,11 @@ func (h *Handler) completeKerberosBind(ctx *SMBHandlerContext, sess *session.Ses
 	// comparison is the same SID-first helper the NTLM bind path uses: username
 	// alone would let a SID-less local account sharing a username bind onto a
 	// SID-bearing session's authorization context.
-	if !bindIdentityMatchesSession(sess, user) {
+	sessCurrent := sess.CurrentUser()
+	if !bindIdentityMatchesSession(sessCurrent, user) {
 		sessUser := "<nil>"
-		if sess.User != nil {
-			sessUser = sess.User.Username
+		if sessCurrent != nil {
+			sessUser = sessCurrent.Username
 		}
 		logger.Info("Kerberos bind: identity mismatch",
 			"sessionID", ctx.SessionID, "sessionUser", sessUser, "bindUser", user.Username)

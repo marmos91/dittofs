@@ -248,7 +248,15 @@ type Session struct {
 // concurrent reader (AuthContext build, share access) never observes a torn
 // or half-updated identity, and drops the memoized derived identity since
 // User/PAC may both change. Safe for concurrent use.
-func (s *Session) UpdateIdentity(username, domain string, user *models.User, isGuest, isNull bool) {
+//
+// The Kerberos PAC SIDs are written here rather than through a following
+// SetPACIdentity call because the two together are one identity: a Kerberos
+// re-authentication refreshes both and an NTLM one clears the PAC, so writing
+// them in two critical sections publishes a state the session never held — the
+// new principal's user record beside the old principal's group SIDs — which a
+// reader taking a correctly locked snapshot in that window would authorize.
+// The group SIDs are copied, so the caller's slice is never aliased.
+func (s *Session) UpdateIdentity(username, domain string, user *models.User, isGuest, isNull bool, pacGroupSIDs []string, pacUserSID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Username = username
@@ -256,6 +264,12 @@ func (s *Session) UpdateIdentity(username, domain string, user *models.User, isG
 	s.User = user
 	s.IsGuest = isGuest
 	s.IsNull = isNull
+	if len(pacGroupSIDs) == 0 {
+		s.pacGroupSIDs = nil
+	} else {
+		s.pacGroupSIDs = append([]string(nil), pacGroupSIDs...)
+	}
+	s.pacUserSID = pacUserSID
 	// User and PAC identity may both have changed; drop the memoized derived
 	// identity so the next consumer rebuilds from the new fields.
 	s.authIdentity = nil
@@ -270,9 +284,11 @@ func (s *Session) UpdateIdentity(username, domain string, user *models.User, isG
 }
 
 // SetPACIdentity stores the Kerberos PAC group SIDs and user SID for the
-// session, replacing any previous set. Called on SESSION_SETUP and on
-// re-authentication (Kerberos reauth refreshes, NTLM reauth clears with a nil
-// slice and empty string). The group SIDs are copied so the caller's slice is
+// session, replacing any previous set. Called when a session is first
+// established, before its ID has reached the client and anything else can
+// resolve an identity off it. Re-authentication writes the SIDs through
+// UpdateIdentity instead, so the record and the SIDs it belongs with are
+// published in one write. The group SIDs are copied so the caller's slice is
 // never aliased and a concurrent PACIdentity reader can never observe a torn
 // header. Safe for concurrent use.
 func (s *Session) SetPACIdentity(groupSIDs []string, userSID string) {
@@ -429,6 +445,7 @@ type AuthzIdentity struct {
 	User       *models.User
 	Username   string
 	IsGuest    bool
+	IsNull     bool
 	GroupSIDs  []string
 	UserSID    string
 	Generation uint64
@@ -449,6 +466,7 @@ func (s *Session) AuthzIdentity() AuthzIdentity {
 		User:       s.User,
 		Username:   s.Username,
 		IsGuest:    s.IsGuest,
+		IsNull:     s.IsNull,
 		GroupSIDs:  groupSIDs,
 		UserSID:    s.pacUserSID,
 		Generation: s.authGen.Load(),

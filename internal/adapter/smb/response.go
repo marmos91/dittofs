@@ -474,7 +474,7 @@ func prepareDispatch(ctx context.Context, reqHeader *header.SMB2Header, connInfo
 		if sess.IsExpiredOrRevoked() && !isExpiryExemptCommand(reqHeader.Command) {
 			logger.Debug("Session no longer authorized",
 				"sessionID", reqHeader.SessionID,
-				"username", sess.Username,
+				"username", sess.AuthzIdentity().Username,
 				"expiresAt", sess.ExpiresAt,
 				"authRevoked", sess.AuthRevoked())
 			// Complete any async CHANGE_NOTIFY armed before the ticket expired
@@ -513,8 +513,13 @@ func prepareDispatch(ctx context.Context, reqHeader *header.SMB2Header, connInfo
 				"originConnID", sess.OriginConnID)
 			return nil, nil, types.StatusUserSessionDeleted
 		}
-		handlerCtx.IsGuest = sess.IsGuest
-		handlerCtx.Username = sess.Username
+		// One locked read: SESSION_SETUP re-authentication replaces these
+		// fields under the session mutex while this dispatch goroutine primes
+		// the request context off them, and IsGuest is an authorization input —
+		// it is what selects the unprivileged nobody arm in BuildAuthContext.
+		identity := sess.AuthzIdentity()
+		handlerCtx.IsGuest = identity.IsGuest
+		handlerCtx.Username = identity.Username
 	}
 
 	if cmd.NeedsTree && reqHeader.TreeID != 0 {
