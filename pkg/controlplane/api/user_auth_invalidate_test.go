@@ -55,6 +55,21 @@ func seedGroup(t *testing.T, cpStore store.Store, name string) {
 	}
 }
 
+// seedShare creates a share directly in the store, so a grant written against
+// it is actually persisted rather than skipped as unresolvable.
+func seedShare(t *testing.T, cpStore store.Store, name string) {
+	t.Helper()
+	if _, err := cpStore.CreateShare(context.Background(), &models.Share{
+		ID:                "share-" + name,
+		Name:              name,
+		MetadataStoreID:   "meta-1",
+		LocalBlockStoreID: "block-1",
+		Enabled:           true,
+	}); err != nil {
+		t.Fatalf("seed share %q: %v", name, err)
+	}
+}
+
 // TestIdentityMutationsInvalidateAuthCache verifies that every control-plane
 // mutation the NFS auth resolver can observe fires the auth-cache invalidation
 // event. The NFSv3 handler caches a resolved auth context keyed
@@ -89,13 +104,6 @@ func TestIdentityMutationsInvalidateAuthCache(t *testing.T) {
 			method: http.MethodPut,
 			path:   "/api/v1/users/target",
 			body:   `{"uid":6001}`,
-			want:   http.StatusOK,
-		},
-		{
-			name:   "rewrite share grants",
-			method: http.MethodPut,
-			path:   "/api/v1/users/target",
-			body:   `{"share_permissions":{"nope":"rw"}}`,
 			want:   http.StatusOK,
 		},
 		{
@@ -147,6 +155,7 @@ func TestIdentityMutationsInvalidateAuthCache(t *testing.T) {
 			router, token, cpStore, calls := newInvalidateTestRouter(t)
 			seedUser(t, cpStore, "target")
 			seedGroup(t, cpStore, "staff")
+			seedShare(t, cpStore, "/export")
 
 			rec := doAuthedRequest(t, router, token, tc.method, tc.path, tc.body)
 			if rec.Code != tc.want {
@@ -194,5 +203,35 @@ func TestPasswordChangeDoesNotInvalidateAuthCache(t *testing.T) {
 	}
 	if got := calls.Load(); got != 0 {
 		t.Errorf("password reset fired %d invalidation(s), want 0", got)
+	}
+}
+
+// TestShareGrantWriteInvalidatesAuthCache covers the share-grant path through
+// the user endpoints, and asserts the grant actually landed in the store. The
+// handler skips an unresolvable share name and an invalid permission value
+// silently, so without that second assertion this case passes even when it
+// writes nothing and the invalidation it observes comes only from the
+// user-record write beside it.
+func TestShareGrantWriteInvalidatesAuthCache(t *testing.T) {
+	router, token, cpStore, calls := newInvalidateTestRouter(t)
+	seedUser(t, cpStore, "target")
+	seedShare(t, cpStore, "/export")
+
+	rec := doAuthedRequest(t, router, token, http.MethodPut, "/api/v1/users/target",
+		`{"share_permissions":{"/export":"read-write"}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("grant write = %d, want %d (body=%q)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	perm, err := cpStore.GetUserSharePermission(context.Background(), "target", "/export")
+	if err != nil {
+		t.Fatalf("read back grant: %v", err)
+	}
+	if perm == nil || perm.Permission != string(models.PermissionReadWrite) {
+		t.Fatalf("grant not persisted: %+v", perm)
+	}
+
+	if calls.Load() == 0 {
+		t.Error("share-grant write did not fire the auth-cache invalidation event")
 	}
 }
