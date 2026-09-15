@@ -13,7 +13,8 @@ import (
 // Associates the current TCP connection with a session in a given channel direction (fore/back/both).
 // Delegates to StateManager.BindConnToSession with generous direction negotiation policy.
 // Binds connection to session's channel map; session-exempt (no SEQUENCE required).
-// Errors: NFS4ERR_BADSESSION, NFS4ERR_INVAL (removing sole fore conn), NFS4ERR_RESOURCE, NFS4ERR_BADXDR.
+// Errors: NFS4ERR_BADSESSION, NFS4ERR_BADXDR, NFS4ERR_DELAY (per-session connection
+// limit reached), NFS4ERR_INVAL (removing sole fore conn), NFS4ERR_SERVERFAULT.
 func HandleBindConnToSession(
 	d *Deps,
 	ctx *types.CompoundContext,

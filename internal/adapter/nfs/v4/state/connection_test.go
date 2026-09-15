@@ -181,7 +181,9 @@ func TestBindConnToSession_ConnectionLimit(t *testing.T) {
 		}
 	}
 
-	// 4th connection should fail with NFS4ERR_RESOURCE
+	// 4th connection should fail with NFS4ERR_DELAY: NFS4ERR_RESOURCE is absent
+	// from BIND_CONN_TO_SESSION's valid-error list in RFC 8881 Section 15.2, and
+	// the limit clears once one of the bound connections drops.
 	_, err := sm.BindConnToSession(4, sessionID, types.CDFC4_FORE)
 	if err == nil {
 		t.Fatal("expected error for 4th connection, got nil")
@@ -190,8 +192,11 @@ func TestBindConnToSession_ConnectionLimit(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected NFS4StateError, got %T", err)
 	}
-	if stateErr.Status != types.NFS4ERR_RESOURCE {
-		t.Errorf("status = %d, want %d (NFS4ERR_RESOURCE)", stateErr.Status, types.NFS4ERR_RESOURCE)
+	if stateErr.Status != types.NFS4ERR_DELAY {
+		t.Errorf("status = %d, want %d (NFS4ERR_DELAY)", stateErr.Status, types.NFS4ERR_DELAY)
+	}
+	if stateErr.Status == types.NFS4ERR_RESOURCE {
+		t.Error("NFS4ERR_RESOURCE is not a valid NFSv4.1 error")
 	}
 }
 

@@ -135,7 +135,7 @@ func negotiateDirection(clientDir uint32) (ConnectionDirection, uint32) {
 //   - Validates the session exists
 //   - Negotiates the channel direction (generous policy)
 //   - Silently unbinds the connection from a previous session if needed
-//   - Enforces a per-session connection limit (NFS4ERR_RESOURCE)
+//   - Enforces a per-session connection limit (NFS4ERR_DELAY)
 //   - Ensures at least one fore-channel connection remains (NFS4ERR_INVAL)
 //
 // Thread-safe: acquires sm.mu.RLock then sm.connMu.Lock.
@@ -170,8 +170,14 @@ func (sm *StateManager) BindConnToSession(connectionID uint64, sessionID types.S
 		}
 	}
 	if sm.maxConnsPerSession > 0 && !isRebind && len(bindings) >= sm.maxConnsPerSession {
+		// NFS4ERR_RESOURCE is an NFSv4.0-only error (RFC 7530 Section 13.1.3.4);
+		// it is absent from the NFSv4.1 error registry and from
+		// BIND_CONN_TO_SESSION's valid-error list in RFC 8881 Section 15.2. The
+		// limit clears as soon as one of the session's existing connections
+		// drops, so the answer is the retryable NFS4ERR_DELAY rather than
+		// NFS4ERR_SERVERFAULT, which clients translate to a fatal EIO.
 		return nil, &NFS4StateError{
-			Status:  types.NFS4ERR_RESOURCE,
+			Status:  types.NFS4ERR_DELAY,
 			Message: "per-session connection limit exceeded",
 		}
 	}

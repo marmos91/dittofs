@@ -2000,7 +2000,7 @@ func TestCompound_BindConnToSession_Rebind(t *testing.T) {
 }
 
 func TestCompound_BindConnToSession_LimitExceeded(t *testing.T) {
-	// Create max_connections bindings, attempt one more, verify NFS4ERR_RESOURCE.
+	// Create max_connections bindings, attempt one more, verify NFS4ERR_DELAY.
 	h, sessionID := createTestSessionWithConnectionID(t, 8020)
 
 	// Set max connections per session to 3 (conn 8020 auto-bound = 1 already)
@@ -2016,7 +2016,7 @@ func TestCompound_BindConnToSession_LimitExceeded(t *testing.T) {
 		t.Fatalf("expected 3 bindings at limit, got %d", len(bindings))
 	}
 
-	// Attempt one more -- should fail with NFS4ERR_RESOURCE
+	// Attempt one more -- should fail with NFS4ERR_DELAY
 	ctx := newTestCompoundContext()
 	ctx.ConnectionID = 8023
 
@@ -2034,8 +2034,10 @@ func TestCompound_BindConnToSession_LimitExceeded(t *testing.T) {
 		t.Fatalf("decode response error: %v", err)
 	}
 
-	if decoded.Status != types.NFS4ERR_RESOURCE {
-		t.Errorf("status = %d, want NFS4ERR_RESOURCE (%d)", decoded.Status, types.NFS4ERR_RESOURCE)
+	// NFS4ERR_RESOURCE (10018) is an NFSv4.0 error that RFC 8881 does not define
+	// and that BIND_CONN_TO_SESSION's valid-error list in Section 15.2 omits.
+	if decoded.Status != types.NFS4ERR_DELAY {
+		t.Errorf("status = %d, want NFS4ERR_DELAY (%d)", decoded.Status, types.NFS4ERR_DELAY)
 	}
 }
 
