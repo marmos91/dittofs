@@ -2088,6 +2088,34 @@ func TestCompound_SequenceBindConnToSession_LimitExceeded(t *testing.T) {
 	if got := len(h.StateManager.GetConnectionBindings(sessionID)); got != 2 {
 		t.Errorf("bindings after refused bind = %d, want 2", got)
 	}
+
+	// The DELAY is genuinely retryable rather than pinned by the reply cache:
+	// freeing a connection and re-sending with the next sequence ID re-executes
+	// the bind. ValidateSequence treats seqid == slot.SeqID+1 as a new request,
+	// so only a retry reusing the original slot+seqid would replay the cached
+	// reply -- and Section 15.1.1.3 requires the client to vary them here.
+	h.StateManager.UnbindConnection(8041)
+
+	retryCtx := newTestCompoundContext()
+	retryCtx.ConnectionID = 8042
+	retryOps := []compoundOp{
+		{opCode: types.OP_SEQUENCE, data: encodeSequenceArgs(sessionID, 0, 2, 0, false)},
+		{opCode: types.OP_BIND_CONN_TO_SESSION, data: encodeBindConnToSessionArgs(sessionID, types.CDFC4_FORE, false)},
+	}
+	retryResp, err := h.ProcessCompound(retryCtx, buildCompoundArgsWithOps([]byte("seqbind"), 1, retryOps))
+	if err != nil {
+		t.Fatalf("retry ProcessCompound error: %v", err)
+	}
+	retryDecoded, err := decodeCompoundResponse(retryResp)
+	if err != nil {
+		t.Fatalf("decode retry response error: %v", err)
+	}
+	if retryDecoded.Status != types.NFS4_OK {
+		t.Errorf("retry compound status = %d, want NFS4_OK", retryDecoded.Status)
+	}
+	if got := len(h.StateManager.GetConnectionBindings(sessionID)); got != 2 {
+		t.Errorf("bindings after successful retry = %d, want 2", got)
+	}
 }
 
 func TestCompound_BindConnToSession_ForeEnforcement(t *testing.T) {
