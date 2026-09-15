@@ -900,6 +900,11 @@ func (r *Runtime) Metrics() *metrics.Metrics {
 	return r.metrics
 }
 
+// startupDrainTimeout bounds the snapshot drain run after a failed startup. The
+// process is already abandoning the boot, so this only has to be long enough for
+// a tick to finish its store round-trip, not for one to complete work.
+const startupDrainTimeout = 10 * time.Second
+
 func (r *Runtime) Serve(ctx context.Context) error {
 	r.clientRegistry.StartSweeper(ctx)
 
@@ -947,17 +952,22 @@ func (r *Runtime) Serve(ctx context.Context) error {
 		SnapshotDrainer: r,
 		RollupStopper:   r,
 	})
-	if err != nil {
-		// Serve returns a startup error before it reaches its shutdown hook, so
-		// the drain that stops and joins the snapshot scheduler never runs. The
-		// scheduler was started above and reads and writes policies through the
-		// control-plane store, which the caller closes as soon as this returns
-		// — the exact overlap the drain exists to prevent, reached by the error
-		// path instead of the normal one.
-		//
-		// WithoutCancel because ctx may already be done: the join has to
-		// outlive the cancellation to be a join at all.
-		r.shutdownSnapshots(context.WithoutCancel(ctx))
+	// Only a startup error, which is why ctx.Err() has to be nil for this to
+	// run: Serve also returns ctx.Err() after its ordinary shutdown, and that
+	// path has already drained. A startup error returns before Serve reaches
+	// its shutdown hook, so the drain that stops and joins the snapshot
+	// scheduler never runs — and the scheduler reads and writes policies
+	// through the control-plane store the caller closes as soon as this
+	// returns, which is the overlap the drain exists to prevent.
+	//
+	// Bounded, and detached from ctx rather than derived from it: the join has
+	// to outlive a cancellation to be a join, but an unbounded one hands a
+	// wedged tick the power to stop the process from ever exiting, which would
+	// also keep the store open forever.
+	if err != nil && ctx.Err() == nil {
+		stopCtx, cancelStop := context.WithTimeout(context.WithoutCancel(ctx), startupDrainTimeout)
+		defer cancelStop()
+		r.shutdownSnapshots(stopCtx)
 	}
 	return err
 }
