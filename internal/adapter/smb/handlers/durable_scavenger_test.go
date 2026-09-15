@@ -430,18 +430,32 @@ func TestScavengerCleanupReleasesLocks(t *testing.T) {
 		scavenger.Run(ctx)
 		close(done)
 	}()
-	time.Sleep(200 * time.Millisecond)
-	cancel()
-	<-done
-
 	lm, err := metaSvc.GetLockManagerForHandle(fileHandle)
 	if err != nil {
 		t.Fatalf("GetLockManagerForHandle: %v", err)
 	}
-	for _, l := range lm.ListLocks(string(fileHandle)) {
-		if l.OpenID == openID {
-			t.Errorf("lock under openID %q still held after scavenger expiry — cleanupAndDelete did not release it", openID)
+	released := func() bool {
+		for _, l := range lm.ListLocks(string(fileHandle)) {
+			if l.OpenID == openID {
+				return false
+			}
 		}
+		return true
+	}
+
+	// Wait for the release rather than assuming a fixed slice of wall clock
+	// covers it. The scavenger ticks every 50ms, but a loaded runner can sleep
+	// through several ticks before the cleanup goroutine is scheduled, which
+	// makes a bare sleep read as "the lock was never released".
+	deadline := time.Now().Add(10 * time.Second)
+	for !released() && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	if !released() {
+		t.Errorf("lock under openID %q still held after scavenger expiry — cleanupAndDelete did not release it", openID)
 	}
 }
 
