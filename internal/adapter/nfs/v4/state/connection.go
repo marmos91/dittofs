@@ -245,15 +245,7 @@ func (sm *StateManager) unbindConnectionLocked(connectionID uint64) {
 	// would return with the writer closure and the pending-reply demultiplexer
 	// still held for the life of the state manager. This is where the connection
 	// actually dies, so this is where they are released.
-	if pending := sm.cbRepliesByConn[connectionID]; pending != nil {
-		// Release the waiters before dropping the table that routes to them.
-		// Dropping it alone only makes the replies unroutable; whoever is already
-		// waiting stays blocked until its own timeout, and the recall behind it
-		// waits with it.
-		pending.FailAll()
-	}
-	delete(sm.connWriters, connectionID)
-	delete(sm.cbRepliesByConn, connectionID)
+	sm.releaseBackchannelStateLocked(connectionID)
 
 	bindings, ok := sm.connByID[connectionID]
 	if !ok {
@@ -263,6 +255,25 @@ func (sm *StateManager) unbindConnectionLocked(connectionID uint64) {
 	for _, b := range bindings {
 		sm.removeConnFromSessionLocked(connectionID, b.SessionID)
 	}
+}
+
+// releaseBackchannelStateLocked drops a connection's callback writer and fails
+// every caller waiting on a reply over it. Caller must hold sm.connMu.
+//
+// Every path that retires a connection routes through here, not only the socket
+// close: a binding reaped as orphaned can be the connection's last one, and the
+// writer and demultiplexer left behind would outlive the socket they name.
+//
+// The waiters are released before the table that routes to them is dropped.
+// Dropping it alone only makes the replies unroutable; whoever is already
+// waiting stays blocked until its own timeout, and the recall behind it waits
+// with it.
+func (sm *StateManager) releaseBackchannelStateLocked(connectionID uint64) {
+	if pending := sm.cbRepliesByConn[connectionID]; pending != nil {
+		pending.FailAll()
+	}
+	delete(sm.connWriters, connectionID)
+	delete(sm.cbRepliesByConn, connectionID)
 }
 
 // removeConnBindingLocked drops one (connection, session) binding from the

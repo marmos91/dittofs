@@ -533,6 +533,12 @@ func (sm *StateManager) reapExpiredSessions() {
 	for _, sb := range stale {
 		sm.removeConnBindingLocked(sb.connID, sb.sessionID)
 		sm.removeConnFromSessionLocked(sb.connID, sb.sessionID)
+		// Reaping the connection's last binding retires the connection as surely
+		// as a socket close does, and leaves the same writer and pending-reply
+		// demultiplexer behind if nothing releases them.
+		if _, stillBound := sm.connByID[sb.connID]; !stillBound {
+			sm.releaseBackchannelStateLocked(sb.connID)
+		}
 	}
 	sm.connMu.Unlock()
 }

@@ -414,15 +414,21 @@ func (c *NFSConnection) handleConnectionClose() {
 			"stack", stack)
 	}
 
-	c.wg.Wait()
-
 	// Drop the NFSv4.1 session bindings this connection held, along with its
 	// callback writer and reply demultiplexer. A connection may be bound to
 	// several sessions at once, and every one of them would otherwise keep
 	// selecting a closed socket for its callbacks.
+	//
+	// Ahead of the wait, not after it: an in-flight handler can be blocked on a
+	// callback reply that this socket was the only path for, and waiting for it
+	// first means waiting out that handler's callback timeout before releasing
+	// the waiter it is stuck on. Unbinding first fails those waiters, and the
+	// handlers the wait is for then unwind on their own.
 	if c.server.v4Handler != nil && c.server.v4Handler.StateManager != nil && c.connectionID != 0 {
 		c.server.v4Handler.StateManager.UnbindConnection(c.connectionID)
 	}
+
+	c.wg.Wait()
 
 	// Deregister from the client registry.
 	if rt := c.server.Registry; rt != nil && c.clientID != "" {
