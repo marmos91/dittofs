@@ -48,12 +48,21 @@ is_doc_path() {
 
 # True when every changed line in this file is a // comment or blank. Context
 # lines are excluded by --unified=0; the +++/--- headers are dropped by name.
+#
+# Counts the code lines rather than testing for one with `grep -q`. -q exits on
+# the first match, closing the pipe under a sed that is still writing, and
+# pipefail then reports that SIGPIPE as the pipeline's status; negating it reads
+# a large diff full of code as "no code found". That fails open on exactly the
+# big rewrite this script exists to catch, and only on the big ones — a short
+# diff finishes writing before the pipe closes and is judged correctly.
 go_comments_only() {
-	! git show --format='' --unified=0 "$1" -- "$2" |
+	local code
+	code=$(git show --format='' --unified=0 "$1" -- "$2" |
 		grep -E '^[+-]' |
 		grep -Ev '^(\+\+\+|---)' |
 		sed -E 's/^[+-][[:space:]]*//' |
-		grep -qvE '^(//|$)'
+		grep -cvE '^(//|$)' || true)
+	[ "${code:-0}" -eq 0 ]
 }
 
 status=0
