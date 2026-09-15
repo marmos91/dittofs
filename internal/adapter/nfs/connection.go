@@ -185,14 +185,23 @@ func ReadRPCRecord(r io.Reader, firstHeader *FragmentHeader, clientAddr string) 
 // Returns true if the message was a backchannel reply and was handled (or dropped).
 // Returns false if the message is a normal CALL that should be processed normally.
 //
-// When pending is nil (no backchannel bound), always returns false.
-func DemuxBackchannelReply(message []byte, connectionID uint64, pending *state.PendingCBReplies) bool {
-	if len(message) < 8 || pending == nil {
+// The demultiplexer is resolved through pending rather than passed in, and only
+// once the message has turned out to be a REPLY: the fore channel is every
+// message on a v3 or v4.0 connection and most of them on a v4.1 one, and it has
+// no reason to pay for the lookup. When it resolves to nil (no backchannel
+// bound), the message falls through as a CALL.
+func DemuxBackchannelReply(message []byte, connectionID uint64, pending func() *state.PendingCBReplies) bool {
+	if len(message) < 8 {
 		return false
 	}
 
 	msgType := binary.BigEndian.Uint32(message[4:8])
 	if msgType != rpc.RPCReply {
+		return false
+	}
+
+	table := pending()
+	if table == nil {
 		return false
 	}
 
@@ -203,7 +212,7 @@ func DemuxBackchannelReply(message []byte, connectionID uint64, pending *state.P
 	copy(replyBytes, message)
 	pool.Put(message) // Return pooled buffer
 
-	if pending.Deliver(xid, replyBytes) {
+	if table.Deliver(xid, replyBytes) {
 		logger.Debug("Backchannel REPLY routed",
 			"xid", fmt.Sprintf("0x%x", xid),
 			"conn_id", connectionID)

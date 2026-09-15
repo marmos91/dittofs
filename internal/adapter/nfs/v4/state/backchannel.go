@@ -58,8 +58,17 @@ var backchannelRetryDelays = [backchannelMaxRetries]time.Duration{
 // ============================================================================
 
 // ConnWriter writes data to a connection. The implementation must acquire
-// the connection's writeMu to prevent interleaving with fore-channel replies.
+// the connection's writeMu to prevent interleaving with fore-channel replies,
+// and must bound the write by CallbackWriteTimeout.
 type ConnWriter func(data []byte) error
+
+// CallbackWriteTimeout is the budget one ConnWriter call may spend on the
+// socket. A callback write holds the connection's write lock, so an unbounded
+// one blocks every fore-channel reply behind it and the connection close that
+// waits on those replies. worstCaseSendDuration charges each attempt for it,
+// so a writer that runs longer than this expires the recall watchdog while its
+// own callback is still on the wire.
+const CallbackWriteTimeout = defaultBackchannelTimeout
 
 // ============================================================================
 // CallbackRequest -- a single callback to be sent via backchannel
@@ -414,7 +423,11 @@ func (bs *BackchannelSender) sendCallbackWithRetry(ctx context.Context, req Call
 // is guaranteed to have reported: every attempt timing out, plus every backoff
 // between them.
 func (bs *BackchannelSender) worstCaseSendDuration() time.Duration {
-	total := time.Duration(backchannelMaxRetries) * bs.callbackTimeout
+	// An attempt spends up to two writes before it waits for the reply: the
+	// connection it picked, and the alternate it falls back to when that write
+	// fails. Each is bounded by the same budget as the reply wait
+	// (CallbackWriteTimeout), so all three are charged at callbackTimeout.
+	total := time.Duration(backchannelMaxRetries) * 3 * bs.callbackTimeout
 	for i := 0; i < backchannelMaxRetries-1; i++ {
 		total += backchannelRetryDelays[i]
 	}
@@ -478,8 +491,13 @@ func (bs *BackchannelSender) sendCallback(ctx context.Context, req CallbackReque
 		var registered2 bool
 		replyCh, registered2 = pending.Register(xid)
 		if !registered2 {
-			return fmt.Errorf("%w: alternate connection %d was retired before the callback was registered",
-				errCallbackNotAttempted, connID2)
+			// Not "never attempted": the write above did reach a transport and
+			// failed there, which is evidence about this client's callback
+			// path. Reporting the retired alternate alone would have the recall
+			// classify the whole send as local and leave CBPathUp standing, so
+			// the original failure is what propagates.
+			return fmt.Errorf("write to back-bound connection %d failed and alternate %d was retired before the callback was registered: %w",
+				connID, connID2, err)
 		}
 		if err2 := writer2(framedMsg); err2 != nil {
 			pending.Cancel(xid)

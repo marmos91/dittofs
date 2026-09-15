@@ -114,22 +114,35 @@ func (c *NFSConnection) sendReply(xid uint32, data []byte) error {
 //   - Write deadline cannot be set
 //   - Network write fails
 func (c *NFSConnection) writeReply(xid uint32, reply []byte) error {
-	// Serialize all connection writes to prevent corruption
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-
-	if c.server.config.Timeouts.Write > 0 {
-		deadline := time.Now().Add(c.server.config.Timeouts.Write)
-		if err := c.conn.SetWriteDeadline(deadline); err != nil {
-			return fmt.Errorf("set write deadline: %w", err)
-		}
-	}
-
-	_, err := c.conn.Write(reply)
-	if err != nil {
+	if err := c.write(reply, c.server.config.Timeouts.Write); err != nil {
 		return fmt.Errorf("write reply: %w", err)
 	}
 
 	logger.Debug("Sent reply", "xid", fmt.Sprintf("0x%x", xid), "bytes", bytesize.ByteSize(len(reply)))
+	return nil
+}
+
+// write puts one complete message on the wire under the connection's write
+// lock, bounded by the given timeout (0 leaves the deadline as it stands).
+//
+// Every write on this socket goes through here, fore-channel replies and
+// back-channel callbacks alike, because they contend for the same lock and an
+// unbounded one is not a slow write but a stuck connection: it holds writeMu,
+// so the replies behind it never go out, the handlers that owe them never
+// finish, and handleConnectionClose waits on those handlers before it closes
+// the socket that would have unblocked the write.
+func (c *NFSConnection) write(data []byte, timeout time.Duration) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
+	if timeout > 0 {
+		if err := c.conn.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
+			return fmt.Errorf("set write deadline: %w", err)
+		}
+	}
+
+	if _, err := c.conn.Write(data); err != nil {
+		return err
+	}
 	return nil
 }

@@ -121,6 +121,13 @@ func (c *NFSConnection) handleNFSv4Procedure(ctx context.Context, call *rpc.RPCC
 // sender is per session, and one connection may carry several sessions, so the
 // writer is registered once and every back-bound session on the connection
 // gets its own sender started.
+//
+// The demultiplexer this installs is not copied onto the connection: the read
+// loop reads it back out of the StateManager. Two concurrent COMPOUNDs on one
+// connection can both reach the registration below, and a DESTROY_SESSION
+// between one of them registering and publishing its copy would leave the read
+// loop demuxing into a table no sender registers with any more. One owner, so
+// there is nothing to reconcile.
 func (c *NFSConnection) maybeRegisterBackchannel(ctx context.Context) {
 	if c.server.v4Handler == nil || c.server.v4Handler.StateManager == nil {
 		return
@@ -139,19 +146,17 @@ func (c *NFSConnection) maybeRegisterBackchannel(ctx context.Context) {
 		return
 	}
 
-	// Register the ConnWriter once per connection. When the local handle is
-	// set but StateManager no longer tracks the connection (unbind/rebind
-	// cleared it), re-register rather than leaving the sender writerless.
-	if c.pendingCBReplies.Load() == nil || sm.GetPendingCBReplies(c.connectionID) == nil {
-		// Captures this NFSConnection's writeMu to prevent interleaving
-		// between fore-channel replies and backchannel callbacks.
+	// Register the ConnWriter once per connection. When StateManager no longer
+	// tracks the connection (unbind/rebind cleared it), re-register rather than
+	// leaving the sender writerless.
+	if sm.GetPendingCBReplies(c.connectionID) == nil {
+		// Serialized against fore-channel replies on the same writeMu, and
+		// bounded, because a callback that never returns from the socket holds
+		// that lock against every reply behind it.
 		writer := v4state.ConnWriter(func(data []byte) error {
-			c.writeMu.Lock()
-			defer c.writeMu.Unlock()
-			_, err := c.conn.Write(data)
-			return err
+			return c.write(data, c.callbackWriteTimeout())
 		})
-		c.pendingCBReplies.Store(sm.RegisterConnWriter(c.connectionID, writer))
+		sm.RegisterConnWriter(c.connectionID, writer)
 	}
 
 	for _, b := range backBound {
@@ -163,4 +168,16 @@ func (c *NFSConnection) maybeRegisterBackchannel(ctx context.Context) {
 			"session_id", b.SessionID.String(),
 			"direction", b.Direction.String())
 	}
+}
+
+// callbackWriteTimeout bounds one back-channel write. It is the configured
+// fore-channel write timeout, capped at the budget the backchannel sender
+// charges every attempt for: the recall watchdog is derived from that budget,
+// and a write allowed to outlast it has the recall give up and start revoking
+// while its own callback is still on the socket.
+func (c *NFSConnection) callbackWriteTimeout() time.Duration {
+	if w := c.server.config.Timeouts.Write; w > 0 && w < v4state.CallbackWriteTimeout {
+		return w
+	}
+	return v4state.CallbackWriteTimeout
 }

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -1281,9 +1282,11 @@ func TestPendingCBReplies_RegisterReportsARetiredTable(t *testing.T) {
 func TestWorstCaseSendDuration_ExceedsEveryAttemptAndBackoff(t *testing.T) {
 	bs := &BackchannelSender{callbackTimeout: defaultBackchannelTimeout}
 
+	// Two bounded writes (the chosen connection and its alternate) and the
+	// reply wait, each on the same budget, for every attempt.
 	var want time.Duration
 	for i := 0; i < backchannelMaxRetries; i++ {
-		want += defaultBackchannelTimeout
+		want += 3 * defaultBackchannelTimeout
 		if i < backchannelMaxRetries-1 {
 			want += backchannelRetryDelays[i]
 		}
@@ -1323,5 +1326,101 @@ func TestProbeV41CallbackPath_DeferredProbeRunsAfterTheOneInFlight(t *testing.T)
 	sm.probeV41CallbackPath(context.Background(), bs)
 	if bs.probeWanted.Load() {
 		t.Error("the deferred request was still pending after a probe ran to completion")
+	}
+}
+
+// TestEvictV41Client_ReleasesBackchannelStateOfItsLastConnection covers the
+// fourth path that retires a connection, and the one that does not go through
+// DESTROY_SESSION at all: a client purge (eviction, DESTROY_CLIENTID, or an
+// EXCHANGE_ID that supersedes a live record) drops the client's sessions
+// wholesale. A session removed that way still holds connection bindings, and a
+// connection whose last binding is one of them is as gone as after a socket
+// close — its writer and pending-reply table have to go with it, or a caller
+// already waiting on a callback reply blocks with nothing left to answer it.
+func TestEvictV41Client_ReleasesBackchannelStateOfItsLastConnection(t *testing.T) {
+	bs, sm, sessionID := createTestBackchannelSender(t)
+
+	const connID = uint64(7533)
+	pending := sm.RegisterConnWriter(connID, func([]byte) error { return nil })
+	replyCh, _ := pending.Register(0x9002)
+
+	sm.connMu.Lock()
+	binding := &BoundConnection{ConnectionID: connID, SessionID: sessionID}
+	sm.connByID[connID] = append(sm.connByID[connID], binding)
+	sm.connBySession[sessionID] = append(sm.connBySession[sessionID], binding)
+	sm.connMu.Unlock()
+
+	if err := sm.EvictV41Client(bs.clientID); err != nil {
+		t.Fatalf("EvictV41Client: %v", err)
+	}
+
+	select {
+	case _, open := <-replyCh:
+		if open {
+			t.Error("waiter received a reply rather than being released")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("waiter still blocked after its connection's only session was purged with the client")
+	}
+
+	sm.connMu.Lock()
+	_, writerHeld := sm.connWriters[connID]
+	_, repliesHeld := sm.cbRepliesByConn[connID]
+	bindingsHeld := len(sm.connBySession[sessionID])
+	sm.connMu.Unlock()
+	if writerHeld {
+		t.Error("the callback writer outlived the purged client's last connection")
+	}
+	if repliesHeld {
+		t.Error("the pending-reply demultiplexer outlived the purged client's last connection")
+	}
+	if bindingsHeld != 0 {
+		t.Errorf("connBySession still holds %d binding(s) for the purged client's session", bindingsHeld)
+	}
+}
+
+// TestSendCallback_RetiredAlternateKeepsTheTransportError covers what the
+// verdict is when the first connection's write fails and the alternate is
+// retired before the callback can be registered on it.
+//
+// The send did reach a transport and fail there, which is evidence about the
+// client's callback path. Reported as "not attempted", the recall classifies it
+// as sender-local, leaves CBPathUp standing, and the next OPEN hands out a
+// delegation over a path that has already failed.
+func TestSendCallback_RetiredAlternateKeepsTheTransportError(t *testing.T) {
+	sender, sm, sessionID := createTestBackchannelSender(t)
+	defer sm.Shutdown()
+	sender.callbackTimeout = 200 * time.Millisecond
+
+	// The alternate is still in the tables but its reply router has been
+	// retired, which is the race the send loses. It is bound first because the
+	// send picks the most recently active connection.
+	altConnID := uint64(7101)
+	altPending := sm.RegisterConnWriter(altConnID, func([]byte) error { return nil })
+	if _, err := sm.BindConnToSession(altConnID, sessionID, types.CDFC4_FORE_OR_BOTH); err != nil {
+		t.Fatalf("BindConnToSession (alternate): %v", err)
+	}
+	altPending.FailAll()
+
+	failConnID := uint64(7100)
+	sm.RegisterConnWriter(failConnID, func([]byte) error {
+		return errors.New("broken pipe")
+	})
+	if _, err := sm.BindConnToSession(failConnID, sessionID, types.CDFC4_FORE_OR_BOTH); err != nil {
+		t.Fatalf("BindConnToSession (fail): %v", err)
+	}
+
+	err := sender.sendCallback(context.Background(), CallbackRequest{
+		OpCode:  types.OP_CB_RECALL,
+		Payload: EncodeCBRecallOp(&types.Stateid4{Seqid: 1}, false, []byte{0x01}),
+	})
+	if err == nil {
+		t.Fatal("sendCallback succeeded with a failed write and a retired alternate")
+	}
+	if errors.Is(err, errCallbackNotAttempted) {
+		t.Errorf("a write that failed on a transport was reported as never attempted: %v", err)
+	}
+	if !strings.Contains(err.Error(), "broken pipe") {
+		t.Errorf("the transport failure was dropped from the error: %v", err)
 	}
 }

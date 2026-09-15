@@ -55,12 +55,6 @@ type NFSConnection struct {
 	wg         sync.WaitGroup
 	writeMu    sync.Mutex
 
-	// pendingCBReplies routes NFSv4.1 backchannel REPLY messages.
-	// nil unless the connection is bound for back-channel. The Serve read loop
-	// reads it on every message to demux replies while a concurrent dispatch
-	// goroutine installs it on the first back-channel bind, so it is atomic.
-	pendingCBReplies atomic.Pointer[state.PendingCBReplies]
-
 	// nfsVersion holds the NFS version string last published to the client
 	// registry for this connection. Read and written from the concurrent
 	// dispatch goroutines, so it is atomic.
@@ -94,9 +88,20 @@ func NewNFSConnection(server *NFSAdapter, conn net.Conn, connectionID uint64) *N
 	}
 }
 
-// SetPendingCBReplies enables backchannel REPLY demuxing on this connection.
-func (c *NFSConnection) SetPendingCBReplies(p *state.PendingCBReplies) {
-	c.pendingCBReplies.Store(p)
+// pendingCBReplies returns the reply demultiplexer for this connection, or nil
+// when it carries no back channel.
+//
+// Read out of the StateManager on every backchannel reply rather than copied
+// onto the connection when the back channel is registered: a copy and the
+// table it came from drift apart the moment a teardown lands between a
+// concurrent registration and its publication, and the read loop would then
+// deliver replies into a table no sender waits on. Only reply messages get
+// here, so the fore channel does not pay for the lookup.
+func (c *NFSConnection) pendingCBReplies() *state.PendingCBReplies {
+	if c.server.v4Handler == nil || c.server.v4Handler.StateManager == nil {
+		return nil
+	}
+	return c.server.v4Handler.StateManager.GetPendingCBReplies(c.connectionID)
 }
 
 // Serve runs the read loop for this connection. It reads RPC requests
@@ -354,7 +359,7 @@ func (c *NFSConnection) readRequest(ctx context.Context) (*rpc.RPCCallMessage, [
 		return nil, nil, fmt.Errorf("read RPC message: %w", err)
 	}
 
-	if nfs_internal.DemuxBackchannelReply(message, c.connectionID, c.pendingCBReplies.Load()) {
+	if nfs_internal.DemuxBackchannelReply(message, c.connectionID, c.pendingCBReplies) {
 		return nil, nil, errBackchannelReply
 	}
 
