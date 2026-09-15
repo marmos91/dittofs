@@ -363,3 +363,87 @@ func TestHandleDestroySession_OwnerCanDestroy_WithSequence(t *testing.T) {
 			types.NFS4ERR_NOT_SAME)
 	}
 }
+
+// TestHandleDestroySession_SharedConnection_ResolvesTargetOwner covers a
+// connection carrying sessions of two clients, which RFC 8881 Section 2.10.3.1
+// allows. Resolving the requester from whichever session bound the connection
+// last would refuse the owner of the other one, so the owner's own standalone
+// destroy has to still succeed while a session no client on the connection owns
+// stays refused.
+func TestHandleDestroySession_SharedConnection_ResolvesTargetOwner(t *testing.T) {
+	h := newTestHandler()
+	secParms := []types.CallbackSecParms4{{CbSecFlavor: 0}}
+
+	createSession := func(connID uint64, clientID uint64, seq uint32, tag string) types.SessionId4 {
+		ctx := newTestCompoundContext()
+		ctx.ConnectionID = connID
+		csArgs := encodeCreateSessionArgsWithSec(clientID, seq, 0, secParms)
+		ops := []compoundOp{{opCode: types.OP_CREATE_SESSION, data: csArgs}}
+		data := buildCompoundArgsWithOps([]byte(tag), 1, ops)
+		resp, err := h.ProcessCompound(ctx, data)
+		if err != nil {
+			t.Fatalf("CREATE_SESSION %s error: %v", tag, err)
+		}
+		reader := bytes.NewReader(resp)
+		_, _ = xdr.DecodeUint32(reader) // overall status
+		_, _ = xdr.DecodeOpaque(reader) // tag
+		_, _ = xdr.DecodeUint32(reader) // numResults
+		_, _ = xdr.DecodeUint32(reader) // opcode
+		var csRes types.CreateSessionRes
+		if err := csRes.Decode(reader); err != nil {
+			t.Fatalf("decode CreateSessionRes %s: %v", tag, err)
+		}
+		if csRes.Status != types.NFS4_OK {
+			t.Fatalf("CREATE_SESSION %s status = %d", tag, csRes.Status)
+		}
+		return csRes.SessionID
+	}
+
+	destroyOverConn := func(connID uint64, target types.SessionId4, tag string) uint32 {
+		ctx := newTestCompoundContext()
+		ctx.ConnectionID = connID
+		var dsBuf bytes.Buffer
+		dsArgs := types.DestroySessionArgs{SessionID: target}
+		_ = dsArgs.Encode(&dsBuf)
+		ops := []compoundOp{{opCode: types.OP_DESTROY_SESSION, data: dsBuf.Bytes()}}
+		resp, err := h.ProcessCompound(ctx, buildCompoundArgsWithOps([]byte(tag), 1, ops))
+		if err != nil {
+			t.Fatalf("DESTROY_SESSION %s error: %v", tag, err)
+		}
+		decoded, err := decodeCompoundResponse(resp)
+		if err != nil {
+			t.Fatalf("decode %s response: %v", tag, err)
+		}
+		return decoded.Status
+	}
+
+	// Clients A and B both put a session on connection 9400, A's first.
+	clientAID, seqA := registerExchangeID(t, h, "ds-shared-conn-a")
+	clientBID, seqB := registerExchangeID(t, h, "ds-shared-conn-b")
+	sessionA := createSession(9400, clientAID, seqA, "cs-a")
+	sessionB := createSession(9400, clientBID, seqB, "cs-b")
+
+	// A session on a connection of its own, owned by a third client.
+	clientCID, seqC := registerExchangeID(t, h, "ds-shared-conn-c")
+	sessionC := createSession(9401, clientCID, seqC, "cs-c")
+
+	// A destroys its own session over the shared connection, where B's session
+	// bound more recently.
+	if status := destroyOverConn(9400, sessionA, "own-older"); status != types.NFS4_OK {
+		t.Errorf("owner destroy over shared connection status = %d, want NFS4_OK", status)
+	}
+	if h.StateManager.GetSession(sessionA) != nil {
+		t.Error("session A should be destroyed")
+	}
+
+	// C's session is not owned by anything bound to the shared connection.
+	if status := destroyOverConn(9400, sessionC, "cross-client"); status == types.NFS4_OK {
+		t.Error("destroy of an unrelated client's session should be refused")
+	}
+	if h.StateManager.GetSession(sessionC) == nil {
+		t.Error("session C should survive")
+	}
+	if h.StateManager.GetSession(sessionB) == nil {
+		t.Error("session B should be unaffected")
+	}
+}

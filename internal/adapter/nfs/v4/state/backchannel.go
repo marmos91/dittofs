@@ -193,11 +193,8 @@ func NewBackchannelSender(
 
 // setCred encodes and stores the credential callbacks on this session carry.
 func (bs *BackchannelSender) setCred(secParms []types.CallbackSecParms4) {
-	if cred := EncodeCallbackCred(secParms); cred != nil {
-		bs.cbCred.Store(&cred)
-		return
-	}
-	bs.cbCred.Store(nil)
+	cred := EncodeCallbackCred(secParms)
+	bs.cbCred.Store(&cred)
 }
 
 // cred returns the pre-encoded callback credential, or nil for the server's own.
@@ -622,6 +619,18 @@ func (sm *StateManager) GetPendingCBReplies(connectionID uint64) *PendingCBRepli
 // Thread-safe: acquires sm.mu.Lock.
 
 func (sm *StateManager) StartBackchannelSender(ctx context.Context, sessionID types.SessionId4) {
+	// Every COMPOUND on a back-bound connection reaches here, and all but the
+	// first find the sender already running, so settle that under a read lock
+	// rather than serializing the whole fore channel behind sm.mu. The write
+	// path below re-checks, which is what makes the race between the two
+	// harmless.
+	sm.mu.RLock()
+	started := sm.sessionsByID[sessionID] != nil && sm.sessionsByID[sessionID].backchannelSender != nil
+	sm.mu.RUnlock()
+	if started {
+		return
+	}
+
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 

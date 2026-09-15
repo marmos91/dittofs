@@ -60,8 +60,8 @@ func EncodeCBRecallOp(stateid *types.Stateid4, truncate bool, fh []byte) []byte 
 	return buf.Bytes()
 }
 
-// encodeAuthSysCred writes an AUTH_SYS credential carrying the server's own
-// identity, as flavor + length-prefixed authsys_parms body.
+// encodeAuthSysCred writes an AUTH_SYS credential as flavor + length-prefixed
+// authsys_parms body.
 //
 // Body per RFC 5531 Section 9.2:
 //
@@ -71,17 +71,25 @@ func EncodeCBRecallOp(stateid *types.Stateid4, truncate bool, fh []byte) []byte 
 //	gid:         [uint32]
 //	gids:        [uint32<16>]
 //
-// The callback runs on the server's own behalf rather than any end user's, so
-// it presents uid/gid 0 with an empty machine name and no supplementary groups.
-// Receivers gate callbacks on the credential's flavor, not its contents; an
-// empty machine name keeps the encoding free of a hostname lookup that can fail.
-func encodeAuthSysCred(buf *bytes.Buffer) {
+// A nil p carries the server's own identity: the callback runs on the server's
+// behalf rather than any end user's, so it presents uid/gid 0 with an empty
+// machine name and no supplementary groups. Receivers gate callbacks on the
+// credential's flavor, not its contents; an empty machine name keeps the
+// encoding free of a hostname lookup that can fail.
+func encodeAuthSysCred(buf *bytes.Buffer, p *types.AuthSysParms) {
+	if p == nil {
+		p = &types.AuthSysParms{}
+	}
+
 	var body bytes.Buffer
-	_ = xdr.WriteUint32(&body, 0)     // stamp
-	_ = xdr.WriteXDRString(&body, "") // machinename
-	_ = xdr.WriteUint32(&body, 0)     // uid
-	_ = xdr.WriteUint32(&body, 0)     // gid
-	_ = xdr.WriteUint32(&body, 0)     // gids: empty array
+	_ = xdr.WriteUint32(&body, p.Stamp)
+	_ = xdr.WriteXDRString(&body, p.MachineName)
+	_ = xdr.WriteUint32(&body, p.UID)
+	_ = xdr.WriteUint32(&body, p.GID)
+	_ = xdr.WriteUint32(&body, uint32(len(p.GIDs)))
+	for _, gid := range p.GIDs {
+		_ = xdr.WriteUint32(&body, gid)
+	}
 
 	_ = xdr.WriteUint32(buf, uint32(rpc.AuthUnix))
 	_ = xdr.WriteXDROpaque(buf, body.Bytes())
@@ -106,22 +114,8 @@ func EncodeCallbackCred(secParms []types.CallbackSecParms4) []byte {
 		if sp.CbSecFlavor != uint32(rpc.AuthUnix) {
 			continue
 		}
-		p := sp.AuthSysParms
-		if p == nil {
-			p = &types.AuthSysParms{}
-		}
-		var body bytes.Buffer
-		_ = xdr.WriteUint32(&body, p.Stamp)
-		_ = xdr.WriteXDRString(&body, p.MachineName)
-		_ = xdr.WriteUint32(&body, p.UID)
-		_ = xdr.WriteUint32(&body, p.GID)
-		_ = xdr.WriteUint32(&body, uint32(len(p.GIDs)))
-		for _, gid := range p.GIDs {
-			_ = xdr.WriteUint32(&body, gid)
-		}
 		var buf bytes.Buffer
-		_ = xdr.WriteUint32(&buf, uint32(rpc.AuthUnix))
-		_ = xdr.WriteXDROpaque(&buf, body.Bytes())
+		encodeAuthSysCred(&buf, sp.AuthSysParms)
 		return buf.Bytes()
 	}
 	for _, sp := range secParms {
@@ -176,7 +170,7 @@ func BuildCBRPCCallMessage(xid, prog, vers, proc uint32, args, cred []byte) []by
 	if cred != nil {
 		_, _ = buf.Write(cred)
 	} else {
-		encodeAuthSysCred(&buf)
+		encodeAuthSysCred(&buf, nil)
 	}
 
 	// Auth verifier: AUTH_NULL (flavor=0, length=0)

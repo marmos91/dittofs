@@ -117,12 +117,10 @@ func (c *NFSConnection) handleNFSv4Procedure(ctx context.Context, call *rpc.RPCC
 // or CREATE_SESSION auto-bind results that include back-channel direction.
 // The check is cheap (one map lookup) and idempotent (no-op if already registered).
 //
-// The ConnWriter and its reply demultiplexer are per connection, but the
-// sender is per session, and one connection may carry several sessions at
-// once. Starting a sender only on the COMPOUND that first registers the
-// writer would leave every later session on that connection without one, so
-// the two are registered independently and every back-bound session on the
-// connection gets its sender started.
+// The ConnWriter and its reply demultiplexer are per connection while the
+// sender is per session, and one connection may carry several sessions, so the
+// writer is registered once and every back-bound session on the connection
+// gets its own sender started.
 func (c *NFSConnection) maybeRegisterBackchannel(ctx context.Context) {
 	if c.server.v4Handler == nil || c.server.v4Handler.StateManager == nil {
 		return

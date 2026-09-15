@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 
+	v4state "github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/logger"
 )
@@ -34,7 +35,7 @@ func HandleDestroySession(d *Deps, ctx *types.CompoundContext, v41ctx *types.V41
 	// session, otherwise an anonymous caller could destroy a victim's session.
 	targetSess := d.StateManager.GetSession(args.SessionID)
 	if targetSess != nil {
-		requestingClientID, identified := resolveRequestingClientID(d, v41ctx, ctx)
+		requestingClientID, identified := resolveRequestingClientID(d, v41ctx, ctx, targetSess)
 		if !identified {
 			// The caller has no resolvable association with any session/client
 			// (no SEQUENCE, the connection is not bound to a session, and no
@@ -109,16 +110,21 @@ func HandleDestroySession(d *Deps, ctx *types.CompoundContext, v41ctx *types.V41
 //
 //  1. v41ctx != nil: a preceding SEQUENCE identified the requesting session, so
 //     the requester is that session's owning client.
-//  2. The connection this request arrived on is bound to a session (the common
-//     standalone case: an owner destroys a session over a connection that is
-//     itself bound to one of its sessions). The requester is the client that
-//     owns the bound session.
+//  2. The connection this request arrived on is bound to a session of the
+//     target's client (the common standalone case: an owner destroys a session
+//     over a connection bound to one of its own sessions). The requester is
+//     that client. One connection may carry several sessions, so every binding
+//     on it is searched rather than whichever session bound it last: taking
+//     only the newest would refuse an owner whose session is not the most
+//     recent binding. Clients sharing one connection are indistinguishable at
+//     this layer, which is what the SP4_MACH_CRED and SP4_SSV protections of
+//     RFC 8881 Section 18.37.3 exist for.
 //  3. ctx.ClientState != nil: the v4.0 connection layer set a client ID.
 //
 // The second return value is false when none of the above can associate the
 // caller with a client. In that case the caller is anonymous with respect to
 // session state and MUST NOT be allowed to destroy an existing session.
-func resolveRequestingClientID(d *Deps, v41ctx *types.V41RequestContext, ctx *types.CompoundContext) (uint64, bool) {
+func resolveRequestingClientID(d *Deps, v41ctx *types.V41RequestContext, ctx *types.CompoundContext, target *v4state.Session) (uint64, bool) {
 	if v41ctx != nil {
 		if reqSess := d.StateManager.GetSession(v41ctx.SessionID); reqSess != nil {
 			return reqSess.ClientID, true
@@ -126,13 +132,22 @@ func resolveRequestingClientID(d *Deps, v41ctx *types.V41RequestContext, ctx *ty
 		return 0, false
 	}
 	// Standalone DESTROY_SESSION (no SEQUENCE): authorize via the connection
-	// the request arrived on. If that connection is bound to a session, the
-	// owner of that session is the requester.
+	// the request arrived on being associated with the target session.
 	if ctx.ConnectionID != 0 {
-		if binding := d.StateManager.GetConnectionBinding(ctx.ConnectionID); binding != nil {
-			if boundSess := d.StateManager.GetSession(binding.SessionID); boundSess != nil {
+		var other uint64
+		var haveOther bool
+		for _, binding := range d.StateManager.GetConnectionBindingsForConn(ctx.ConnectionID) {
+			boundSess := d.StateManager.GetSession(binding.SessionID)
+			if boundSess == nil {
+				continue
+			}
+			if target != nil && boundSess.ClientID == target.ClientID {
 				return boundSess.ClientID, true
 			}
+			other, haveOther = boundSess.ClientID, true
+		}
+		if haveOther {
+			return other, true
 		}
 	}
 	if ctx.ClientState != nil {
