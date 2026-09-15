@@ -9,7 +9,7 @@ Two problems, one root each:
 
 | Problem | Root cause | Fix shape |
 | --- | --- | --- |
-| PR CI takes forever | ~42 jobs per push into a ~20-slot free-runner pool; ~85% of wall-clock is queue wait | Delete jobs, not tests |
+| PR CI takes forever | ~44 jobs per push into a ~20-slot free-runner pool; ~85% of wall-clock is queue wait | Delete jobs, not tests |
 | Green does not mean safe | No required status checks and 0 required approvals in either ruleset | Add a gate |
 
 These are independent. The second is the more important one and costs no CI time.
@@ -59,7 +59,7 @@ required_status_checks:   ABSENT
 required_approving_review_count: 0
 ```
 
-Nothing stops a merge with 42 red checks, and nothing requires a green one to be read. Every
+Nothing stops a merge with 44 red checks, and nothing requires a green one to be read. Every
 question about "does green mean safe" is currently moot.
 
 ### 2.3 Windows Build is largely a duplicate, but `-short` prunes the *expensive* tests
