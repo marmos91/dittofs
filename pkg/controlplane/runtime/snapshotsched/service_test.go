@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -238,5 +239,120 @@ func TestRunNow_NoPolicy(t *testing.T) {
 	deps := &fakeDeps{byShare: map[string]*models.SnapshotPolicy{}}
 	if _, err := newSvc(deps, now).RunNow(context.Background(), "alpha"); !errors.Is(err, models.ErrSnapshotPolicyNotFound) {
 		t.Fatalf("RunNow missing = %v, want ErrSnapshotPolicyNotFound", err)
+	}
+}
+
+// blockingDeps holds the FIRST ListPolicies open until released, so a test can
+// pin a tick inside the store and observe what Stop does about it. Later calls
+// pass straight through, since the ticker keeps firing.
+type blockingDeps struct {
+	fakeDeps
+	once     sync.Once
+	entered  chan struct{}
+	release  chan struct{}
+	returned chan struct{}
+}
+
+func newBlockingDeps() *blockingDeps {
+	return &blockingDeps{
+		entered:  make(chan struct{}),
+		release:  make(chan struct{}),
+		returned: make(chan struct{}),
+	}
+}
+
+func (b *blockingDeps) ListPolicies(ctx context.Context) ([]*models.SnapshotPolicy, error) {
+	b.once.Do(func() {
+		close(b.entered)
+		<-b.release
+		close(b.returned)
+	})
+	return nil, nil
+}
+
+// TestStop_WaitsForATickAlreadyInFlight pins the join Stop has to provide: a
+// tick that is already reading the control-plane store must finish before Stop
+// returns, because the caller closes that store next. Signalling alone would
+// let Stop return while the query is still running.
+func TestStop_WaitsForATickAlreadyInFlight(t *testing.T) {
+	deps := newBlockingDeps()
+	s := New(deps, time.Millisecond)
+	s.Start(context.Background())
+
+	// Wait for a tick to be inside ListPolicies.
+	select {
+	case <-deps.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("scheduler never entered a tick")
+	}
+
+	stopReturned := make(chan struct{})
+	go func() {
+		s.Stop(context.Background())
+		close(stopReturned)
+	}()
+
+	// Stop must still be blocked while the tick holds the store.
+	select {
+	case <-stopReturned:
+		t.Fatal("Stop returned while a tick was still inside the store")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(deps.release)
+
+	select {
+	case <-stopReturned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop did not return after the tick finished")
+	}
+	select {
+	case <-deps.returned:
+	default:
+		t.Fatal("Stop returned before the tick's store call completed")
+	}
+}
+
+// TestStop_BoundedByContext asserts Stop gives up on its own deadline rather
+// than blocking shutdown behind a wedged tick.
+func TestStop_BoundedByContext(t *testing.T) {
+	deps := newBlockingDeps()
+	s := New(deps, time.Millisecond)
+	s.Start(context.Background())
+	select {
+	case <-deps.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("scheduler never entered a tick")
+	}
+	t.Cleanup(func() { close(deps.release) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		s.Stop(ctx)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop ignored its context deadline")
+	}
+}
+
+// TestStop_NeverStartedReturnsImmediately guards the wait against a scheduler
+// that was constructed but never launched, whose goroutine will never close
+// the stopped channel.
+func TestStop_NeverStartedReturnsImmediately(t *testing.T) {
+	s := New(&fakeDeps{}, time.Minute)
+	done := make(chan struct{})
+	go func() {
+		s.Stop(context.Background())
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop blocked on a scheduler that was never started")
 	}
 }

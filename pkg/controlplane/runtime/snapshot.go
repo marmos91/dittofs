@@ -917,6 +917,18 @@ func (r *Runtime) cancelAndWaitInFlightSnaps(shareName string) {
 // upper bound should pass context.WithTimeout(...); callers passing
 // context.Background block until full drain.
 func (r *Runtime) shutdownSnapshots(ctx context.Context) {
+	// Step 0: stop the scheduler that creates the work, and wait for a tick
+	// already in flight. It reads and writes snapshot policies through the
+	// control-plane store, so it has to be joined here rather than merely
+	// signalled — nothing else in the drain waits for it, and the caller
+	// closes that store once this returns.
+	r.mu.RLock()
+	ss := r.snapSchedSvc
+	r.mu.RUnlock()
+	if ss != nil {
+		ss.Stop(ctx)
+	}
+
 	// Step 1: cancel every child ctx derived from runtimeCtx. Idempotent:
 	// second call is a no-op.
 	if r.runtimeCancel != nil {

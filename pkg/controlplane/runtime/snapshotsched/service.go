@@ -13,6 +13,7 @@ package snapshotsched
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -55,6 +56,13 @@ type Service struct {
 	deps     Deps
 	interval time.Duration
 	stopCh   chan struct{}
+	// started guards the goroutine against a second Start and tells Stop
+	// whether there is anything to wait for.
+	started atomic.Bool
+	// stopped is closed by the scheduler goroutine as it returns, so Stop can
+	// wait for a tick that is already inside the store rather than only
+	// signalling it.
+	stopped chan struct{}
 	// now is the clock, overridable in tests for deterministic due/prune.
 	now func() time.Time
 }
@@ -69,14 +77,19 @@ func New(deps Deps, pollInterval time.Duration) *Service {
 		deps:     deps,
 		interval: pollInterval,
 		stopCh:   make(chan struct{}),
+		stopped:  make(chan struct{}),
 		now:      time.Now,
 	}
 }
 
 // Start launches the scheduler goroutine. It ticks at the poll interval until
-// ctx is cancelled or Stop is called.
+// ctx is cancelled or Stop is called. A second Start is a no-op.
 func (s *Service) Start(ctx context.Context) {
+	if !s.started.CompareAndSwap(false, true) {
+		return
+	}
 	go func() {
+		defer close(s.stopped)
 		ticker := time.NewTicker(s.interval)
 		defer ticker.Stop()
 		for {
@@ -92,12 +105,25 @@ func (s *Service) Start(ctx context.Context) {
 	}()
 }
 
-// Stop signals the scheduler goroutine to exit. Idempotent.
-func (s *Service) Stop() {
+// Stop signals the scheduler goroutine to exit and waits for it, bounded by
+// ctx. Waiting is the point: a tick reads and writes snapshot policies through
+// the control-plane store, so a caller that is about to close that store needs
+// "stopped" to mean the tick has finished, not merely that it was asked to.
+// A scheduler that was never started returns immediately. Idempotent.
+func (s *Service) Stop(ctx context.Context) {
 	select {
 	case <-s.stopCh:
 	default:
 		close(s.stopCh)
+	}
+	if !s.started.Load() {
+		return
+	}
+	select {
+	case <-s.stopped:
+	case <-ctx.Done():
+		logger.Warn("Snapshot scheduler: stop deadline reached with a tick still running",
+			"error", ctx.Err())
 	}
 }
 

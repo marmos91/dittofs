@@ -344,14 +344,12 @@ func (r *Runtime) Shutdown(ctx context.Context) error {
 	// idempotent so a double-stop (this + ctx cancellation) is harmless.
 	r.mu.RLock()
 	ts := r.trashSvc
-	ss := r.snapSchedSvc
 	r.mu.RUnlock()
 	if ts != nil {
 		ts.Stop()
 	}
-	if ss != nil {
-		ss.Stop()
-	}
+	// The snapshot scheduler is stopped by shutdownSnapshots below, which is
+	// the seam the lifecycle drain also routes through.
 
 	// Cancel any in-flight async GC so a long mark/sweep does not outlive the
 	// stores it operates on.
@@ -902,9 +900,10 @@ func (r *Runtime) Serve(ctx context.Context) error {
 	// an explicit Trash().Stop() from Runtime.Shutdown.
 	r.Trash().Start(ctx)
 
-	// Launch the snapshot scheduler unless disabled. Same lifecycle as the
-	// reaper: exits on ctx cancellation or SnapshotScheduler().Stop() from
-	// Runtime.Shutdown. Policy-free fleets pay one ListPolicies query per tick.
+	// Launch the snapshot scheduler unless disabled. Stopped and joined by
+	// shutdownSnapshots, which both the lifecycle drain and Runtime.Shutdown
+	// call; it also exits on ctx cancellation if neither ever runs.
+	// Policy-free fleets pay one ListPolicies query per tick.
 	if !r.snapSchedDisabled {
 		r.SnapshotScheduler().Start(ctx)
 	}
