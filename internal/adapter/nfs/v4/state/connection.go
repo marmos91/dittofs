@@ -276,6 +276,25 @@ func (sm *StateManager) releaseBackchannelStateLocked(connectionID uint64) {
 	delete(sm.cbRepliesByConn, connectionID)
 }
 
+// dropConnBindingLocked removes one (connection, session) binding and releases
+// the connection's callback state when that was its last binding.
+//
+// Every path that tears a binding down goes through here — socket close,
+// DESTROY_SESSION, and the reaper's orphan sweep — because the connection is
+// equally gone in all three and the writer and pending-reply table are held per
+// connection, not per binding. BindConnToSession is the one caller that removes
+// a binding directly: its rebind re-adds one in the same breath, and releasing
+// the writer it just registered would leave the rebound connection mute.
+//
+// Caller must hold sm.connMu.
+func (sm *StateManager) dropConnBindingLocked(connectionID uint64, sessionID types.SessionId4) {
+	sm.removeConnBindingLocked(connectionID, sessionID)
+	sm.removeConnFromSessionLocked(connectionID, sessionID)
+	if _, stillBound := sm.connByID[connectionID]; !stillBound {
+		sm.releaseBackchannelStateLocked(connectionID)
+	}
+}
+
 // removeConnBindingLocked drops one (connection, session) binding from the
 // connection index, leaving the connection's bindings to other sessions in
 // place. Caller must hold sm.connMu.

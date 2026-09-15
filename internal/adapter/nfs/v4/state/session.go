@@ -399,8 +399,14 @@ func (sm *StateManager) destroySessionLocked(sessionID types.SessionId4, force b
 	// Clean up connection bindings for this session.
 	// Lock ordering: sm.mu (held by caller) before connMu.
 	sm.connMu.Lock()
+	// Snapshot first: dropConnBindingLocked edits connBySession[sessionID] as
+	// it goes, which is the slice this would otherwise be ranging over.
+	connIDs := make([]uint64, 0, len(sm.connBySession[sessionID]))
 	for _, b := range sm.connBySession[sessionID] {
-		sm.removeConnBindingLocked(b.ConnectionID, sessionID)
+		connIDs = append(connIDs, b.ConnectionID)
+	}
+	for _, connID := range connIDs {
+		sm.dropConnBindingLocked(connID, sessionID)
 	}
 	delete(sm.connBySession, sessionID)
 	sm.connMu.Unlock()
@@ -531,14 +537,7 @@ func (sm *StateManager) reapExpiredSessions() {
 		}
 	}
 	for _, sb := range stale {
-		sm.removeConnBindingLocked(sb.connID, sb.sessionID)
-		sm.removeConnFromSessionLocked(sb.connID, sb.sessionID)
-		// Reaping the connection's last binding retires the connection as surely
-		// as a socket close does, and leaves the same writer and pending-reply
-		// demultiplexer behind if nothing releases them.
-		if _, stillBound := sm.connByID[sb.connID]; !stillBound {
-			sm.releaseBackchannelStateLocked(sb.connID)
-		}
+		sm.dropConnBindingLocked(sb.connID, sb.sessionID)
 	}
 	sm.connMu.Unlock()
 }

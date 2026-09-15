@@ -13,6 +13,7 @@ package state
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -319,12 +320,12 @@ func (bs *BackchannelSender) sendCallbackWithRetry(ctx context.Context, req Call
 			select {
 			case <-ctx.Done():
 				if req.ResultCh != nil {
-					req.ResultCh <- ctx.Err()
+					req.ResultCh <- fmt.Errorf("%w: %w", errCallbackNotAttempted, ctx.Err())
 				}
 				return
 			case <-bs.stopCh:
 				if req.ResultCh != nil {
-					req.ResultCh <- fmt.Errorf("backchannel sender stopped")
+					req.ResultCh <- fmt.Errorf("%w: backchannel sender stopped", errCallbackNotAttempted)
 				}
 				return
 			case <-time.After(delay):
@@ -382,7 +383,8 @@ func (bs *BackchannelSender) sendCallback(ctx context.Context, req CallbackReque
 	// 6. Find a back-bound connection (0 = no exclusion)
 	connID, writer, pending, ok := bs.sm.getBackBoundConnWriter(bs.sessionID, 0)
 	if !ok {
-		return fmt.Errorf("no back-bound connection for session %s", bs.sessionID.String())
+		return fmt.Errorf("%w: no back-bound connection for session %s",
+			errCallbackNotAttempted, bs.sessionID.String())
 	}
 
 	// 7. Register XID with PendingCBReplies
@@ -514,6 +516,18 @@ func encodeCBSequenceOp(sessionID types.SessionId4, seqID, slotID, highestSlotID
 // connection is judged unreachable and gets no delegation. Withholding one is
 // the safe direction: the cost is a client that caches less, where the reverse
 // is a delegation the server cannot recall.
+// errCallbackNotAttempted marks a callback failure that carries no evidence
+// about the client: the send never reached the wire for this session, because
+// the sender was stopped or cancelled or because this session has no back-bound
+// connection at all. A recall must not count one of these against the client's
+// callback path — another of its sessions may still carry the recall, and
+// clearing CBPathUp on this would withhold delegations from a client that never
+// stopped answering.
+//
+// probeCallbackPath deliberately does not use it: there, a missing back-bound
+// connection is the verdict, not an excuse for withholding one.
+var errCallbackNotAttempted = errors.New("callback not attempted on this session")
+
 func (bs *BackchannelSender) probeCallbackPath(ctx context.Context) error {
 	xid := nextCallbackXID.Add(1)
 	params := bs.currentParams()

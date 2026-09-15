@@ -3,6 +3,7 @@ package state
 import (
 	"bytes"
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -735,11 +736,21 @@ func (sm *StateManager) attemptRecallV41(deleg *DelegationState, sender *Backcha
 	select {
 	case err := <-resultCh:
 		if err != nil {
+			// Not every failure is the client's. A send that never reached the
+			// wire for this session says nothing about whether the client is
+			// answering, and counting it as a dead path would clear CBPathUp
+			// and withhold delegations from a client still listening on another
+			// session.
+			outcome := recallNoPath
+			if errors.Is(err, errCallbackNotAttempted) {
+				outcome = recallSenderLocal
+			}
 			logger.Warn("CB_RECALL (v4.1) failed",
 				"client_id", deleg.ClientID,
 				"session_id", sender.sessionID.String(),
+				"counts_against_path", outcome == recallNoPath,
 				"error", err)
-			return recallNoPath
+			return outcome
 		}
 		sm.startRevocationTimer(deleg, sm.leaseDuration)
 		logger.Debug("CB_RECALL (v4.1) sent successfully",

@@ -430,6 +430,16 @@ func (c *NFSConnection) handleConnectionClose() {
 
 	c.wg.Wait()
 
+	// Unbound a second time, because the first one raced the handlers this wait
+	// was for: a BIND_CONN_TO_SESSION or CREATE_SESSION still in flight above
+	// can register a binding and a writer after the early unbind, and nothing
+	// would remove them. The socket is closed below, so a binding surviving
+	// here is a dead connection left in the tables for a later callback to
+	// select. Unbinding an already-unbound connection is a no-op.
+	if c.server.v4Handler != nil && c.server.v4Handler.StateManager != nil && c.connectionID != 0 {
+		c.server.v4Handler.StateManager.UnbindConnection(c.connectionID)
+	}
+
 	// Deregister from the client registry.
 	if rt := c.server.Registry; rt != nil && c.clientID != "" {
 		rt.Clients().Deregister(c.clientID)

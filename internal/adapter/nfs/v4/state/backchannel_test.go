@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -1125,5 +1126,78 @@ func TestReapExpiredSessions_ReleasesBackchannelStateOfAnOrphanedConnection(t *t
 	}
 	if repliesHeld {
 		t.Error("the pending-reply demultiplexer outlived the connection the reaper retired")
+	}
+}
+
+// TestDestroySession_ReleasesBackchannelStateOfItsLastConnection covers the
+// third path that retires a connection. DESTROY_SESSION drops each of the
+// session's bindings; when the session holds a connection's only binding, that
+// connection is as gone as it is after a socket close, and its writer and
+// pending-reply table have to go with it. Left behind, a caller already waiting
+// on a callback reply blocks until its own timeout with nothing left to answer.
+func TestDestroySession_ReleasesBackchannelStateOfItsLastConnection(t *testing.T) {
+	bs, sm, sessionID := createTestBackchannelSender(t)
+	_ = bs
+
+	const connID = uint64(7422)
+	pending := sm.RegisterConnWriter(connID, func([]byte) error { return nil })
+	replyCh := pending.Register(0x9001)
+
+	sm.connMu.Lock()
+	binding := &BoundConnection{ConnectionID: connID, SessionID: sessionID}
+	sm.connByID[connID] = append(sm.connByID[connID], binding)
+	sm.connBySession[sessionID] = append(sm.connBySession[sessionID], binding)
+	sm.connMu.Unlock()
+
+	if err := sm.DestroySession(sessionID); err != nil {
+		t.Fatalf("DestroySession: %v", err)
+	}
+
+	select {
+	case _, open := <-replyCh:
+		if open {
+			t.Error("waiter received a reply rather than being released")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("waiter still blocked after the session holding its connection's only binding was destroyed")
+	}
+
+	sm.connMu.Lock()
+	_, writerHeld := sm.connWriters[connID]
+	_, repliesHeld := sm.cbRepliesByConn[connID]
+	sm.connMu.Unlock()
+	if writerHeld {
+		t.Error("the callback writer outlived the destroyed session's last connection")
+	}
+	if repliesHeld {
+		t.Error("the pending-reply demultiplexer outlived the destroyed session's last connection")
+	}
+}
+
+// TestSendCallback_NoBackBoundConnectionIsNotEvidenceAboutTheClient pins the
+// classification the three-valued recall outcome exists for. A session with no
+// back-bound connection never puts the callback on a wire, so the failure says
+// nothing about whether the client is answering — another of its sessions may
+// still carry the recall. attemptRecallV41 reads this sentinel to choose
+// recallSenderLocal over recallNoPath; without it every failure counted as a
+// dead path, cleared CBPathUp and withheld delegations from a live client.
+//
+// Asserted on sendCallback directly rather than through attemptRecallV41: with
+// no sender goroutine running, that path reaches recallSenderLocal via its
+// 30-second result timeout instead, and would pass whether or not this sentinel
+// existed.
+func TestSendCallback_NoBackBoundConnectionIsNotEvidenceAboutTheClient(t *testing.T) {
+	sender, _, _ := createTestBackchannelSender(t)
+
+	err := sender.sendCallback(context.Background(), CallbackRequest{
+		OpCode:  types.OP_CB_RECALL,
+		Payload: []byte{0x00},
+	})
+	if err == nil {
+		t.Fatal("precondition: the send succeeded, so this test reaches no failure to classify")
+	}
+	if !errors.Is(err, errCallbackNotAttempted) {
+		t.Errorf("error %q does not carry errCallbackNotAttempted: a recall would count it "+
+			"against the client's callback path", err)
 	}
 }
