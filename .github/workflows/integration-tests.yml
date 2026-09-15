@@ -102,14 +102,52 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
+      # Which packages the integration tag actually changes, derived here and
+      # never written down. A hand-maintained list goes stale silently the
+      # first time someone adds a tagged file to a package not on it — the
+      # suite stays green and simply stops running the new tests.
+      #
+      # The comparison is on each package's test-file LIST rather than its
+      # count, so a tag that swaps one file for another is caught as well as
+      # one that adds.
+      - name: Resolve the integration-tagged packages
+        id: pkgs
+        run: |
+          set -euo pipefail
+          # Materialised to files rather than compared through process
+          # substitution: a `go list` failure inside <(...) is invisible, and
+          # an empty list would then read as "no packages to test" and pass.
+          go list -f '{{.ImportPath}} {{.TestGoFiles}} {{.XTestGoFiles}}' ./... | sort > /tmp/pkgs-plain.txt
+          go list -tags=integration -f '{{.ImportPath}} {{.TestGoFiles}} {{.XTestGoFiles}}' ./... | sort > /tmp/pkgs-tagged.txt
+          comm -13 /tmp/pkgs-plain.txt /tmp/pkgs-tagged.txt | awk '{print $1}' | sort -u > /tmp/integration-pkgs.txt
+
+          count=$(wc -l < /tmp/integration-pkgs.txt)
+          echo "the integration tag changes the test set of ${count} package(s):"
+          cat /tmp/integration-pkgs.txt
+          if [ "${count}" -eq 0 ]; then
+            echo "::error::derived no integration-tagged packages. Either the tag is gone from the tree or this derivation is broken; running nothing and reporting success is the one outcome this job must never produce."
+            exit 1
+          fi
+          echo "count=${count}" >> "$GITHUB_OUTPUT"
+
+      # decision: this runs the tagged packages only, not ./... . The tag
+      # changes nothing about the rest, so compiling and running them here was
+      # duplicated work — but it also means this job is no longer a second,
+      # unshortened run of the whole suite. The unit job passes -short on a
+      # pull request, so tests behind a testing.Short() guard now run at full
+      # strength only on the push to develop. Widen this back to ./... if a
+      # defect ever reaches develop that the full PR-time run would have caught.
+      #
       # -p 1 serializes package test binaries: several packages (metadata
       # store conformance, blockstore engine drain) share the single
       # dittofs_test database, and the conformance suite truncates it
       # between subtests — running their binaries concurrently would race.
-      - name: Run all integration tests
+      - name: Run the integration tests
         env:
           DITTOFS_TEST_POSTGRES_DSN: "host=localhost port=5432 dbname=dittofs_test user=postgres password=postgres sslmode=disable"
-        run: go test -tags=integration -v -timeout=20m -p 1 ./...
+        run: |
+          set -euo pipefail
+          xargs go test -tags=integration -v -timeout=20m -p 1 < /tmp/integration-pkgs.txt
 
       - name: Install and start rpcbind
         env:
