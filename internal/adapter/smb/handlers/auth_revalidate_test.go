@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/pending"
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
+	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -321,5 +324,55 @@ func TestRevalidateAuthorization_RevokedSessionKeepsNoTrees(t *testing.T) {
 	}
 	if _, ok := h.GetTree(treeID); ok {
 		t.Error("a revoked session kept its tree; a later re-auth would inherit its permission")
+	}
+}
+
+// TestRevalidateAuthorization_RevokedSessionDrainsParkedCreate pins the outcome,
+// not the mechanism: a CREATE parked on a lease break passed its authorization
+// check before the revocation, and completeCreateAfterBreak does not re-check
+// the session, so it must not be left to resume.
+//
+// It holds today by two independent paths — releasing the session's leases
+// completes the break with StatusCancelled, and the explicit drain cancels
+// whatever is still registered — so removing either one alone keeps it green.
+// That is the point: the contract is that no parked operation survives a
+// revocation, and it should stay pinned however the teardown is rearranged.
+func TestRevalidateAuthorization_RevokedSessionDrainsParkedCreate(t *testing.T) {
+	uid := uint32(1000)
+	user := &models.User{ID: "u1", Username: "alice", UID: &uid, Enabled: true}
+	store := &revalidateUserStore{user: &models.User{ID: "u1", Username: "alice", UID: &uid, Enabled: false}}
+
+	h, sessionID, _ := newRevalidateHandler(t, user, store, models.PermissionReadWrite, true)
+
+	gotStatus := make(chan types.Status, 1)
+	err := h.PendingCreateRegistry.Register(&pending.PendingCreate{
+		SessionID: sessionID,
+		MessageID: 7,
+		AsyncId:   99,
+		Cancel:    func() {},
+		Callback: func(_, _, _ uint64, status types.Status, _ []byte) error {
+			gotStatus <- status
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Register parked CREATE: %v", err)
+	}
+	if h.PendingCreateRegistry.Len() != 1 {
+		t.Fatalf("parked CREATE was not registered")
+	}
+
+	h.RevalidateAuthorization(context.Background())
+
+	if n := h.PendingCreateRegistry.Len(); n != 0 {
+		t.Fatalf("revocation left %d parked CREATE(s) registered; they resume with the revoked session's authorization", n)
+	}
+	select {
+	case status := <-gotStatus:
+		if status != types.StatusCancelled {
+			t.Errorf("parked CREATE completed with %v; want StatusCancelled", status)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("parked CREATE was never completed, so its async slot and replay reservation leak")
 	}
 }

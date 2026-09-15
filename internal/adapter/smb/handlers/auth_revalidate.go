@@ -5,7 +5,6 @@ import (
 	"errors"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
-	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
@@ -126,19 +125,13 @@ func (h *Handler) revokeSession(ctx context.Context, sess *session.Session, sess
 
 	filesClosed := h.CloseAllFilesForSession(ctx, sessionID, false)
 
-	if h.PendingLockRegistry != nil {
-		for _, parked := range h.PendingLockRegistry.UnregisterAllForSession(sessionID) {
-			if parked.Callback != nil {
-				if err := parked.Callback(parked.SessionID, parked.MessageID, parked.AsyncId, types.StatusCancelled, nil); err != nil {
-					logger.Debug("Revoke: failed to send LOCK cancel response",
-						"asyncId", parked.AsyncId, "error", err)
-				}
-			}
-			if h.LockWaitGraph != nil && parked.OwnerID != "" {
-				h.LockWaitGraph.RemoveWaiter(parked.OwnerID)
-			}
-		}
-	}
+	// Parked CREATEs, blocked LOCKs and pending pipe READs all passed their
+	// authorization check before the revocation and would otherwise complete
+	// against it: a parked CREATE resumes through completeCreateAfterBreak and a
+	// blocked LOCK through resumePendingLock. Drain all three through the same
+	// helper session teardown uses, so a registry added there is drained here
+	// too rather than only on logoff.
+	h.cancelAsyncOpsForSession(sessionID)
 
 	h.releaseSessionLeasesAndNotifies(ctx, sessionID)
 	h.ExpireSessionNotifies(sessionID)
