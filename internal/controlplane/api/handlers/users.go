@@ -25,17 +25,34 @@ type userStore interface {
 type UserHandler struct {
 	store      userStore
 	jwtService *auth.JWTService
+	onChange   func()
 }
 
 // NewUserHandler creates a new UserHandler. jwtService is required for generating
 // new tokens after password changes to ensure users receive fresh credentials.
 // Returns an error if jwtService is nil, allowing callers to handle the
 // misconfiguration gracefully (e.g., at startup).
-func NewUserHandler(s userStore, jwtService *auth.JWTService) (*UserHandler, error) {
+//
+// The optional onChange callback is invoked after a user record is created,
+// updated or deleted. Adapters resolve authorization from the user record and
+// cache the result per identity, so without this signal a disable, a UID change
+// or a share-grant rewrite stays invisible to clients holding a cached context
+// until it ages out.
+func NewUserHandler(s userStore, jwtService *auth.JWTService, onChange func()) (*UserHandler, error) {
 	if jwtService == nil {
 		return nil, errors.New("NewUserHandler: jwtService is required and must not be nil")
 	}
-	return &UserHandler{store: s, jwtService: jwtService}, nil
+	return &UserHandler{store: s, jwtService: jwtService, onChange: onChange}, nil
+}
+
+// notifyChange fires the change callback when one is configured. The password
+// endpoints deliberately do not call it: the NFS auth resolver reads no
+// credential material, so a password change cannot alter an already-resolved
+// auth context, and flushing on it would drop the cache on a routine operation.
+func (h *UserHandler) notifyChange() {
+	if h.onChange != nil {
+		h.onChange()
+	}
 }
 
 // CreateUserRequest is the request body for POST /api/v1/users.
@@ -134,6 +151,12 @@ func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 		InternalServerError(w, "Failed to create user")
 		return
 	}
+
+	// The record now exists. A UID that previously resolved to no user took the
+	// guest branch and the share default; it now resolves to this record, so any
+	// cached decision for it is stale. Deferred so the share grants applied
+	// below are covered by the same single notification.
+	defer h.notifyChange()
 
 	// Apply any requested share permissions. These are best-effort and
 	// non-transactional with user creation: an unresolvable share or invalid
@@ -251,6 +274,12 @@ func (h *UserHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The record has changed. Deferred rather than called here so the group and
+	// share-grant writes below are covered by the same single notification, and
+	// so their error paths — which return early but leave this write persisted —
+	// still notify.
+	defer h.notifyChange()
+
 	// Replace group memberships if the caller provided a Groups list.
 	if req.Groups != nil {
 		if err := h.store.ReplaceUserGroups(r.Context(), username, *req.Groups); err != nil {
@@ -315,6 +344,7 @@ func (h *UserHandler) Remove(w http.ResponseWriter, r *http.Request) {
 	// bypassed by addressing the admin via its ID.
 	switch err := h.store.DeleteUser(r.Context(), token); {
 	case err == nil:
+		h.notifyChange()
 		WriteNoContent(w)
 	case errors.Is(err, models.ErrCannotDeleteAdmin):
 		Forbidden(w, "Cannot delete admin user")

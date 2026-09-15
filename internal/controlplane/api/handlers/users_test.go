@@ -42,7 +42,7 @@ func setupUserTest(t *testing.T) (store.Store, *auth.JWTService, *UserHandler) {
 		t.Fatalf("Failed to create JWT service: %v", err)
 	}
 
-	handler, err := NewUserHandler(cpStore, jwtService)
+	handler, err := NewUserHandler(cpStore, jwtService, nil)
 	if err != nil {
 		t.Fatalf("Failed to create user handler: %v", err)
 	}
