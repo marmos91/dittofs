@@ -58,7 +58,7 @@ func (s *GORMStore) DeleteBlockStore(ctx context.Context, name string) error {
 			return err
 		}
 
-		// Check if any shares reference this store (via local or remote block store ID)
+		// Check if any shares reference this store
 		var count int64
 		if err := tx.Model(&models.Share{}).
 			Where("block_store_id = ?", store.ID).

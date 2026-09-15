@@ -1008,7 +1008,7 @@ subsections) — because they share the single `s3` store implementation.
 Before this release a share carried **two** block stores — a local one (type `fs`
 or `memory`) and an optional remote one — and both the config file and the
 control-plane schema were shaped around that split. The first start after the
-upgrade migrates them, and **refuses to start** in four cases where guessing would
+upgrade migrates them, and **refuses to start** in six cases where guessing would
 silently change what an operator configured. Each refusal is recoverable; none of
 them lose data.
 
@@ -1075,7 +1075,32 @@ leave every share without a block store.
 **Action:** copy the values into `block_store_id`, drop
 `remote_block_store_id`, and restart.
 
-**5. Two block stores sharing a name**
+**5. A share left with no block store**
+
+```
+share has no block store after upgrade
+  "/archive" has no block store
+
+These shares kept their data in a local block store and never had a
+remote one. Every share now needs a block store, and the local store
+they used cannot become one — pick an s3 or memory block store for
+each, with the server stopped:
+  UPDATE shares SET block_store_id = '<block store id>' WHERE name = '<share>';
+```
+
+A share that kept its data in a local store and never had a remote one reaches
+the new model with nothing to bind to: the rename in case 4 hands it an empty
+`block_store_id`. Carrying the old local id across is not a repair — that tier
+was typically an `fs` store, a type that exists only locally, so the share would
+come up bound to a block store that cannot be built. The choice of a real store
+is the operator's.
+
+**Action:** pick an `s3` or `memory` block store for each named share and set
+`block_store_id` to its id, with the server stopped, then restart. The old
+column is left in place until every share is bound, so the record of which local
+store each one used is still there to consult.
+
+**6. Two block stores sharing a name**
 
 ```
 two block stores share a name

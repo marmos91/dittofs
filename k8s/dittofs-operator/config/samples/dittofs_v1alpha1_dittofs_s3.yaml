@@ -21,7 +21,7 @@ spec:
         key: password
 # After this DittoServer is Ready, create S3-backed stores via the REST API:
 #
-#   dfsctl store block remote add --name s3-content --type s3 \
+#   dfsctl store block add --name s3-content --type s3 \
 #     --config '{"bucket":"dittofs-data","region":"eu-west-1","access_key_id":"AKIA...","secret_access_key":"..."}'
 #
 # Each store carries its own credentials; the operator does not inject AWS env vars.

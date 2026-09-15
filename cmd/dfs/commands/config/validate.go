@@ -95,13 +95,13 @@ func checkLegacyPayloadKey(configPath string) []string {
 		if strings.HasPrefix(trimmed, "payload:") {
 			warnings = append(warnings, fmt.Sprintf(
 				"Line %d: Config key 'payload' has been renamed to 'block_store'. "+
-					"Please update your config file. See docs/CONFIGURATION.md for the new format.",
+					"Please update your config file. See docs/guide/configuration.md for the new format.",
 				lineNum))
 		} else if strings.HasPrefix(trimmed, "payload_store:") {
 			warnings = append(warnings, fmt.Sprintf(
 				"Line %d: Config key 'payload_store' is no longer used. "+
-					"Shares are now managed via dfsctl with --local and --remote flags. "+
-					"See docs/CONFIGURATION.md for the new format.",
+					"Shares are now managed via dfsctl, and each one names its block store "+
+					"with --block-store. See docs/guide/configuration.md for the new format.",
 				lineNum))
 		}
 	}
