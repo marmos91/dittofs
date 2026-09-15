@@ -144,14 +144,23 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// worker added later: the root cancel is registered before this and would
 	// otherwise run after it.
 	//
-	// decision: the forced-exit branch of that wait returns while the drain is
-	// still running, so on that one path the handle can close under an
-	// in-flight API request or adapter teardown. Accepted because that branch
-	// is already abandoning the drain, sql.DB.Close lets checked-out
-	// connections finish rather than cutting them, and a later use returns an
-	// error rather than panicking — the process exits within milliseconds
-	// either way. Withdraw it if that branch ever becomes one the process
-	// continues past.
+	// decision: the handle can close while an API request is still using it,
+	// and on more than the one path this originally named. http.Server.Shutdown
+	// returns when its own deadline expires whether or not handlers have
+	// finished, and API handlers hold cpStore directly, so an ordinary SIGTERM
+	// with a slow handler reaches this close the same way the forced-exit
+	// branch does. Nothing here waits for handlers to drain.
+	//
+	// Accepted, because the cost is bounded by what sql.DB.Close actually does:
+	// it stops new queries, lets connections already checked out finish rather
+	// than cutting them, and makes any later use return an error instead of
+	// panicking. A handler caught by it fails its request on a process that is
+	// milliseconds from exiting anyway.
+	//
+	// Withdraw it if a handler ever performs a write whose partial application
+	// outlives the process, or if this becomes a path the process continues
+	// past rather than exits from. The real fix is to join the API handlers
+	// before closing.
 	defer func() {
 		cancel()
 		_ = cpStore.Close()
