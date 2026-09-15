@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
@@ -52,6 +53,9 @@ func TestPrimeAuthContext_ConcurrentReauthIsRaceFree(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := range 200 {
+			// The dispatch gate runs before the prime and reads the ticket
+			// end-time a Kerberos re-authentication refreshes.
+			sess.IsExpiredOrRevoked()
 			ctx := NewSMBHandlerContext(context.Background(), "127.0.0.1:12345", sessionID, 0, uint64(i))
 			h.primeAuthContext(ctx, 0, sessionID)
 			authCtx, err := BuildAuthContext(ctx)
@@ -83,6 +87,9 @@ func TestPrimeAuthContext_ConcurrentReauthIsRaceFree(t *testing.T) {
 				user, name = bob, "bob"
 			}
 			sess.UpdateIdentity(user.Username, "", user, false, false, []string{sidOf[name]}, sidOf[name])
+			// Kerberos re-authentication refreshes the ticket end-time right
+			// after publishing the identity.
+			sess.SetExpiry(time.Now().Add(time.Hour))
 		}
 	}()
 

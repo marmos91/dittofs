@@ -475,7 +475,7 @@ func prepareDispatch(ctx context.Context, reqHeader *header.SMB2Header, connInfo
 			logger.Debug("Session no longer authorized",
 				"sessionID", reqHeader.SessionID,
 				"username", sess.CurrentUsername(),
-				"expiresAt", sess.ExpiresAt,
+				"expiresAt", sess.Expiry(),
 				"authRevoked", sess.AuthRevoked())
 			// Complete any async CHANGE_NOTIFY armed before the ticket expired
 			// so the client's smb2_notify_recv unblocks (MS-SMB2 §3.3.5.2.9;
@@ -514,10 +514,11 @@ func prepareDispatch(ctx context.Context, reqHeader *header.SMB2Header, connInfo
 			return nil, nil, types.StatusUserSessionDeleted
 		}
 		// Through the locked accessor: SESSION_SETUP re-authentication writes
-		// this flag under the session mutex. primeAuthContext overwrites it
+		// these flags under the session mutex. primeAuthContext overwrites them
 		// from the same read as the user record on every path that resolves an
-		// identity; this seeds it for the handlers that never prime.
-		handlerCtx.IsGuest, _ = sess.GuestOrNull()
+		// identity; this seeds both for the handlers that never prime, so a
+		// non-priming path never reads an anonymous session as a named one.
+		handlerCtx.IsGuest, handlerCtx.IsNull = sess.GuestOrNull()
 	}
 
 	if cmd.NeedsTree && reqHeader.TreeID != 0 {

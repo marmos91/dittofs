@@ -629,11 +629,13 @@ func (h *Handler) handleSessionBind(ctx *SMBHandlerContext, req *SessionSetupReq
 
 	// Step 8: guest / anonymous sessions cannot be bound (no real identity
 	// to authenticate against on the new channel).
-	if sess.IsGuest || sess.IsNull {
+	// One locked read: a concurrent SESSION_SETUP on this session writes both
+	// flags under the session mutex, and this is an authorization gate.
+	if bindIsGuest, bindIsNull := sess.GuestOrNull(); bindIsGuest || bindIsNull {
 		logger.Info("SESSION_SETUP bind rejected: session is guest/anonymous",
 			"sessionID", ctx.SessionID,
-			"isGuest", sess.IsGuest,
-			"isNull", sess.IsNull)
+			"isGuest", bindIsGuest,
+			"isNull", bindIsNull)
 		return NewErrorResult(types.StatusNotSupported), nil
 	}
 
@@ -1854,6 +1856,12 @@ func (h *Handler) configureSessionSigningWithKey(sess *session.Session, sessionK
 		return nil
 	}
 
+	// One locked read for the whole configuration below: this runs on the
+	// re-authentication path too, so a concurrent SESSION_SETUP on this session
+	// writes the flag under the mutex while these gates read it, and reading it
+	// four times could derive keys from two different answers.
+	_, isNullSession := sess.GuestOrNull()
+
 	// Determine the negotiated dialect from the connection's CryptoState.
 	// If CryptoState is nil (legacy 2.x path or tests), default to 2.0.2.
 	dialect := types.Dialect0202
@@ -1921,7 +1929,7 @@ func (h *Handler) configureSessionSigningWithKey(sess *session.Session, sessionK
 			// reach the handler; Samba's smbd_smb2_signing_key returns NULL
 			// for null sessions, so the unsigned-required gate doesn't fire
 			// there either.
-			cryptoState.SigningRequired = (h.SigningConfig.Required || dialect == types.Dialect0311) && !sess.IsNull
+			cryptoState.SigningRequired = (h.SigningConfig.Required || dialect == types.Dialect0311) && !isNullSession
 		}
 
 		// Encryption: activate encryptors for preferred/required modes on 3.x sessions.
@@ -1947,10 +1955,10 @@ func (h *Handler) configureSessionSigningWithKey(sess *session.Session, sessionK
 		//     decryption_key from an all-zeros session key — matching what
 		//     our zero-base-key path produces here.
 		allowAnonEncryption := false
-		if sess.IsNull && ctx != nil && ctx.ConnCryptoState != nil {
+		if isNullSession && ctx != nil && ctx.ConnCryptoState != nil {
 			allowAnonEncryption = ctx.ConnCryptoState.HasAuthenticatedSession()
 		}
-		if encryptionEnabled && (!sess.IsNull || allowAnonEncryption) {
+		if encryptionEnabled && (!isNullSession || allowAnonEncryption) {
 			// SMB 3.0/3.0.2 don't use negotiate contexts, so cipherId may be 0.
 			// Per MS-SMB2 spec, AES-128-CCM is the mandatory cipher for SMB 3.0.
 			encCipherId := cipherId
@@ -2044,7 +2052,7 @@ func (h *Handler) configureSessionSigningWithKey(sess *session.Session, sessionK
 	// branch above and smbtorture smb2.session.anon-encryption{1,2,3}).
 	// Guest sessions never enter this function (they have no session key),
 	// so only IsNull needs to be filtered here.
-	if !sess.IsNull && ctx != nil && ctx.ConnCryptoState != nil {
+	if !isNullSession && ctx != nil && ctx.ConnCryptoState != nil {
 		ctx.ConnCryptoState.SetHasAuthenticatedSession()
 	}
 

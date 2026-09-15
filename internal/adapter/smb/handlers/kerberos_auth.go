@@ -225,7 +225,7 @@ func (h *Handler) reauthKerberosSession(
 	// request resolving its identity between two writes would pair the new
 	// ticket's user record with the old ticket's groups.
 	sess.UpdateIdentity(user.Username, h.sessionDomain(authResult.Realm), user, false, false, authResult.GroupSIDs, authResult.UserSID)
-	sess.ExpiresAt = ticketEndTime
+	sess.SetExpiry(ticketEndTime)
 	ctx.PACGroupSIDs = authResult.GroupSIDs
 	ctx.IsGuest = false
 

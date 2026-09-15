@@ -208,3 +208,39 @@ func TestTreeConnect_LookupFailureKeepsSessionRecord(t *testing.T) {
 	assertTreePermission(t, h, ctx.TreeID, models.PermissionAdmin,
 		"a failed lookup was written back as an authorization decision")
 }
+
+// TestTreeConnect_ReauthDuringResolveRefusesTree pins the generation gate on
+// the publish. Resolving access takes two store round trips, and MS-SMB2 keeps
+// tree connections across a re-authentication — so a tree published from an
+// answer about the previous principal would carry that principal's access for
+// the life of the connection. The re-authentication is injected from inside the
+// record lookup, which is where the window actually is.
+func TestTreeConnect_ReauthDuringResolveRefusesTree(t *testing.T) {
+	sessionRecord := userWithGrant(models.PermissionAdmin, 1000, 1000)
+	store := &revalidateUserStore{resolveFromRecord: true, user: sessionRecord}
+
+	h, sessionID, _ := newRevalidateHandler(t, sessionRecord, store, models.PermissionReadWrite, false)
+	sess, ok := h.GetSession(sessionID)
+	if !ok {
+		t.Fatal("fixture is wrong: no session")
+	}
+
+	bobUID := uint32(4242)
+	bob := &models.User{ID: "user-2", Username: "bob", UID: &bobUID, Enabled: true}
+	store.onGetUser = func() {
+		sess.UpdateIdentity(bob.Username, "", bob, false, false, nil, "")
+	}
+
+	ctx := newTreeConnectTestContext(sessionID)
+	res, err := h.TreeConnect(ctx, buildTreeConnectRequestBody("\\\\server\\export"))
+	if err != nil {
+		t.Fatalf("TreeConnect: %v", err)
+	}
+	if res.Status != types.StatusNetworkSessionExpired {
+		t.Errorf("Status = %#x, want STATUS_NETWORK_SESSION_EXPIRED: alice's access was "+
+			"published onto a session that re-authenticated as bob mid-resolution", res.Status)
+	}
+	if ctx.TreeID != 0 {
+		t.Errorf("TreeID = %d, want 0: the tree was published anyway", ctx.TreeID)
+	}
+}

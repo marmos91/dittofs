@@ -1015,7 +1015,7 @@ func (h *Handler) CreateSessionWithUser(sessionID uint64, clientAddr string, use
 
 func (h *Handler) CreateSessionWithUserAndExpiry(sessionID uint64, clientAddr string, user *models.User, domain string, expiresAt time.Time) *session.Session {
 	sess := session.NewSessionWithUser(sessionID, clientAddr, user, domain)
-	sess.ExpiresAt = expiresAt
+	sess.SetExpiry(expiresAt)
 	h.SessionManager.StoreSession(sess)
 	return sess
 }

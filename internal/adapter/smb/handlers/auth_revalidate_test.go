@@ -264,7 +264,7 @@ func TestResolveSharePermission_DisabledUserDenied(t *testing.T) {
 		sess := session.NewSessionWithUser(1, "127.0.0.1", user, "")
 		share := &runtime.Share{Name: "/export", DefaultPermission: "read-write"}
 
-		perm, _ := resolveSharePermission(ctx, sess, share, models.PermissionReadWrite, nil)
+		perm, _, _ := resolveSharePermission(ctx, sess, share, models.PermissionReadWrite, nil)
 
 		if perm != models.PermissionNone {
 			t.Errorf("Permission = %v, want none for a disabled user", perm)
@@ -283,7 +283,7 @@ func TestResolveSharePermission_DisabledUserDenied(t *testing.T) {
 			DefaultPermission: "read-write",
 		}
 
-		perm, _ := resolveSharePermission(ctx, sess, share, models.PermissionReadWrite, nil)
+		perm, _, _ := resolveSharePermission(ctx, sess, share, models.PermissionReadWrite, nil)
 
 		if perm != models.PermissionNone {
 			t.Errorf("Permission = %v, want none for a disabled root user", perm)

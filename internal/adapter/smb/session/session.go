@@ -436,8 +436,33 @@ func (s *Session) SetBindIdentity(dialect types.Dialect, signingAlgo uint16, cip
 }
 
 // IsExpired returns true if the session has a Kerberos ticket that has expired.
+// Read under the lock SetExpiry writes through: this is the per-request
+// authorization gate, and a Kerberos re-authentication refreshes the end-time
+// on a live session while dispatch goroutines are consulting it.
 func (s *Session) IsExpired() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return !s.ExpiresAt.IsZero() && time.Now().After(s.ExpiresAt)
+}
+
+// SetExpiry records the Kerberos ticket end-time the session is valid until, or
+// the zero time for a session that never expires. Written under the lock
+// IsExpired reads through: re-authentication refreshes it right after
+// publishing the new identity, and a request landing between the two would
+// otherwise see the fresh principal beside the previous ticket's end-time and
+// be refused on a session that has just recovered.
+func (s *Session) SetExpiry(expiresAt time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ExpiresAt = expiresAt
+}
+
+// Expiry returns the ticket end-time under the same lock. Zero when the session
+// does not expire.
+func (s *Session) Expiry() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ExpiresAt
 }
 
 // CurrentUser returns the session's DittoFS user record under the lock that
