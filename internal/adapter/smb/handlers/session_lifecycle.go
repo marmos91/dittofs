@@ -234,7 +234,16 @@ func (h *Handler) closeFilesWithFilter(
 	// key (still both present in h.files) each observe the other as a surviving
 	// sibling and skip release, leaking the record. Pipes (no lease) and durable
 	// handles persisted for reconnect (lease intentionally retained) are excluded.
-	var leaseReleases []*OpenFile
+	// Each carries the handle snapshot this teardown authorized, so the third
+	// pass releases the lease on the same file the first pass released locks on:
+	// SET_REPARSE_POINT can republish MetadataHandle between the two, and a
+	// lease released against the new handle leaves the displaced open's record
+	// standing while the next CREATE waits out its oplock timeout on it.
+	type leaseRelease struct {
+		openFile   *OpenFile
+		metaHandle []byte
+	}
+	var leaseReleases []leaseRelease
 
 	// Get session for auth context (may be nil if session already deleted)
 	sess, _ := h.GetSession(sessionID)
@@ -428,7 +437,7 @@ func (h *Handler) closeFilesWithFilter(
 		// the same numeric lease key on another file and overwrote the
 		// sessionMap entry — the root cause of the #568 rotating cross-test
 		// lease flake. See releaseHandleLeaseRecord for the full rationale.
-		leaseReleases = append(leaseReleases, openFile)
+		leaseReleases = append(leaseReleases, leaseRelease{openFile: openFile, metaHandle: metaHandle})
 
 		toDelete = append(toDelete, openFile.FileID)
 		if openFile.IsDirectory {
@@ -515,8 +524,8 @@ func (h *Handler) closeFilesWithFilter(
 	for _, fileID := range toDelete {
 		h.deleteOpenFileEntry(fileID)
 	}
-	for _, openFile := range leaseReleases {
-		h.releaseHandleLeaseRecord(ctx, openFile, caller)
+	for _, lr := range leaseReleases {
+		h.releaseHandleLeaseRecordOn(ctx, lr.openFile, lr.metaHandle, caller)
 	}
 	h.renameScanMu.Unlock()
 
