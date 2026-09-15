@@ -36,6 +36,21 @@ func persistRequireKerberosShare(t *testing.T, ctx context.Context, s cpstore.St
 	}
 }
 
+// serveNFS persists the enabled NFS adapter row a real server would have. The
+// require_kerberos refusal gates an NFS-only export policy, so without this row
+// every test below would assert against a server that never serves NFS and the
+// refusal would be unreachable — green for the wrong reason.
+func serveNFS(t *testing.T, ctx context.Context, s cpstore.Store) {
+	t.Helper()
+	if _, err := s.CreateAdapter(ctx, &models.AdapterConfig{
+		Type:    "nfs",
+		Enabled: true,
+		Port:    models.DefaultNFSPort,
+	}); err != nil {
+		t.Fatalf("CreateAdapter(nfs): %v", err)
+	}
+}
+
 // TestLoadSharesFromStore_RequireKerberosWithoutKerberosStops covers the
 // sequence the config-time guard cannot see: require_kerberos is accepted
 // while Kerberos is configured, Kerberos is then decommissioned, and the
@@ -46,6 +61,7 @@ func TestLoadSharesFromStore_RequireKerberosWithoutKerberosStops(t *testing.T) {
 	rt, s := setupTestRuntime(t)
 	ctx := context.Background()
 
+	serveNFS(t, ctx, s)
 	persistRequireKerberosShare(t, ctx, s, "/krb-gone")
 
 	// Kerberos has been decommissioned: the server comes up without it.
@@ -61,8 +77,14 @@ func TestLoadSharesFromStore_RequireKerberosWithoutKerberosStops(t *testing.T) {
 	if !strings.Contains(err.Error(), "/krb-gone") {
 		t.Fatalf("error %q does not name the share", err)
 	}
-	if rt.ShareExists("/krb-gone") {
-		t.Fatal("share must not be registered after a refused load")
+	// The share is registered by the time the refusal is raised: whether the
+	// policy is reachable depends on the share being served, which is only
+	// known once AddShare has succeeded. Nothing reads that registration — the
+	// sole caller aborts the boot, and adapters start after the share load, so
+	// no listener exists to export it.
+	if !rt.ShareExists("/krb-gone") {
+		t.Fatal("fixture is wrong: the share was never added, so the refusal " +
+			"cannot have come from the served-share check this test pins")
 	}
 }
 
@@ -75,6 +97,7 @@ func TestLoadSharesFromStore_RequireKerberosWithKerberosLoads(t *testing.T) {
 	rt, s := setupTestRuntime(t)
 	ctx := context.Background()
 
+	serveNFS(t, ctx, s)
 	persistRequireKerberosShare(t, ctx, s, "/krb-ok")
 	rt.SetKerberosEnabled(true)
 
@@ -96,6 +119,7 @@ func TestLoadSharesFromStore_RequireKerberosOnDisabledShareLoads(t *testing.T) {
 	rt, s := setupTestRuntime(t)
 	ctx := context.Background()
 
+	serveNFS(t, ctx, s)
 	persistRequireKerberosShare(t, ctx, s, "/krb-disabled")
 
 	// Enabled is declared `default:true`, so the column has to be cleared with
@@ -116,5 +140,59 @@ func TestLoadSharesFromStore_RequireKerberosOnDisabledShareLoads(t *testing.T) {
 
 	if err := LoadSharesFromStore(ctx, rt, s); err != nil {
 		t.Fatalf("LoadSharesFromStore refused a disabled share: %v", err)
+	}
+}
+
+// TestLoadSharesFromStore_RequireKerberosWithoutNFSLoads keeps the refusal off
+// a server that does not serve NFS at all. require_kerberos is an NFS export
+// policy: with no NFS adapter enabled no client can ever reach it, so an
+// SMB-only deployment carrying the row from an earlier NFS life must still
+// boot. Refusing it would strand that deployment on an upgrade, directing the
+// operator at a policy that governs nothing it runs.
+func TestLoadSharesFromStore_RequireKerberosWithoutNFSLoads(t *testing.T) {
+	rt, s := setupTestRuntime(t)
+	ctx := context.Background()
+
+	// Deliberately no serveNFS: the adapter row is absent, as on a server whose
+	// operator ran `dfsctl adapter disable nfs`.
+	persistRequireKerberosShare(t, ctx, s, "/krb-smb-only")
+	rt.SetKerberosEnabled(false)
+
+	if err := LoadSharesFromStore(ctx, rt, s); err != nil {
+		t.Fatalf("LoadSharesFromStore refused a share whose NFS policy no adapter serves: %v", err)
+	}
+	if !rt.ShareExists("/krb-smb-only") {
+		t.Fatal("share must load: its require_kerberos policy is unreachable without NFS")
+	}
+}
+
+// TestLoadSharesFromStore_RequireKerberosOnUnaddableShareLoads keeps the
+// refusal off a share this load did not actually serve. A row naming a block
+// store that is not configured is warned about and skipped, exporting nothing,
+// so it carries no reachable misconfiguration and must not stop the server —
+// the same exemption a disabled share gets, for the same reason.
+func TestLoadSharesFromStore_RequireKerberosOnUnaddableShareLoads(t *testing.T) {
+	rt, s := setupTestRuntime(t)
+	ctx := context.Background()
+
+	serveNFS(t, ctx, s)
+	persistRequireKerberosShare(t, ctx, s, "/krb-unaddable")
+
+	share, err := s.GetShare(ctx, "/krb-unaddable")
+	if err != nil {
+		t.Fatalf("GetShare: %v", err)
+	}
+	share.BlockStoreID = "00000000-0000-0000-0000-000000000000"
+	if err := s.UpdateShare(ctx, share); err != nil {
+		t.Fatalf("UpdateShare: %v", err)
+	}
+
+	rt.SetKerberosEnabled(false)
+
+	if err := LoadSharesFromStore(ctx, rt, s); err != nil {
+		t.Fatalf("LoadSharesFromStore refused a share it could not add anyway: %v", err)
+	}
+	if rt.ShareExists("/krb-unaddable") {
+		t.Fatal("fixture is wrong: the share was added, so this proves nothing about the skip path")
 	}
 }
