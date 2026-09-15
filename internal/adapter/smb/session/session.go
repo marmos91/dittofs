@@ -151,8 +151,10 @@ type Session struct {
 	// command except LOGOFF, CLOSE and LOCK is refused with
 	// STATUS_NETWORK_SESSION_EXPIRED, leaving the client a window to release
 	// locks and close handles before it re-authenticates — where SESSION_SETUP
-	// refuses it outright. Atomic because the control-plane goroutine running
-	// the sweep races the per-request dispatch goroutines reading it.
+	// refuses it outright. Cleared by UpdateIdentity, so a re-authentication
+	// that succeeds puts the session back in service. Atomic because the
+	// control-plane goroutine running the sweep races the per-request dispatch
+	// goroutines reading it.
 	authRevoked atomic.Bool
 
 	// OriginConnID is the ConnID of the TCP connection that created this
@@ -251,6 +253,12 @@ func (s *Session) UpdateIdentity(username, domain string, user *models.User, isG
 	// identity so the next consumer rebuilds from the new fields.
 	s.authIdentity = nil
 	s.authIdentityUser = nil
+	// Re-authentication re-decides authorization, so it clears a revocation the
+	// way a fresh ticket end-time clears an expiry. SESSION_SETUP refuses a
+	// disabled or deleted user outright, so reaching here means the account is
+	// valid again; without this the session would keep failing every operation
+	// with no way back, since re-auth reuses this same session object.
+	s.authRevoked.Store(false)
 }
 
 // SetPACIdentity stores the Kerberos PAC group SIDs and user SID for the

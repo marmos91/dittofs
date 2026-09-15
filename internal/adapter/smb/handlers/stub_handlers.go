@@ -842,7 +842,7 @@ func (h *Handler) OplockBreak(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 			if sess.LoggedOff.Load() {
 				return NewErrorResult(types.StatusUserSessionDeleted), nil
 			}
-			if sess.IsExpired() {
+			if sess.IsExpiredOrRevoked() {
 				return NewErrorResult(types.StatusNetworkSessionExpired), nil
 			}
 		}

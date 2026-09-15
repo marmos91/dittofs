@@ -410,12 +410,12 @@ func resolveSharePermissionForUser(
 		return models.PermissionNone, ""
 	}
 
-	// A disabled user keeps no access on any protocol. SESSION_SETUP refuses one
-	// at authentication, but an established session outlives that check and
-	// carries a user snapshot taken back then — so without this a user disabled
-	// mid-session keeps TREE_CONNECTing to shares it has not been re-authorized
-	// for. Ahead of the root bypass below because a disabled root is still
-	// disabled. Mirrors the NFS resolver.
+	// A disabled user keeps no access on any protocol. Every path that installs
+	// a user on a session already requires Enabled, so this does not currently
+	// refuse a request the earlier checks let through — it is the backstop that
+	// keeps that true, and the one place a re-check can pass a record read after
+	// the session was established. Ahead of the root bypass below because a
+	// disabled root is still disabled. Mirrors the NFS resolver.
 	if user != nil && !user.Enabled {
 		logger.Debug("Share access denied (user disabled)",
 			"shareName", share.Name, "user", user.Username)

@@ -80,7 +80,7 @@ func (h *Handler) RevalidateAuthorization(ctx context.Context) {
 		case errors.Is(err, models.ErrUserNotFound):
 			logger.Info("SMB session revoked: user deleted",
 				"sessionID", sessionID, "username", current.Username)
-			sess.RevokeAuth()
+			h.revokeSession(sess, sessionID)
 		case err != nil:
 			// A store failure is not evidence that the account went away, and
 			// revoking on one would drop every SMB session on a transient
@@ -91,7 +91,7 @@ func (h *Handler) RevalidateAuthorization(ctx context.Context) {
 		case user == nil || !user.Enabled:
 			logger.Info("SMB session revoked: user disabled",
 				"sessionID", sessionID, "username", current.Username)
-			sess.RevokeAuth()
+			h.revokeSession(sess, sessionID)
 		default:
 			surviving[sessionID] = user
 		}
@@ -101,11 +101,25 @@ func (h *Handler) RevalidateAuthorization(ctx context.Context) {
 	h.revalidateTrees(ctx, userStore, surviving)
 }
 
+// revokeSession retires a session's authorization and completes anything it has
+// parked on the server.
+//
+// The dispatch gate only refuses a request the client sends, but an armed
+// CHANGE_NOTIFY is delivered from a timer and consults no session state, so a
+// client that arms one and then goes quiet would keep receiving file names from
+// a share it has lost. Completing them here is what the expiry path already does
+// when it refuses a request.
+func (h *Handler) revokeSession(sess *session.Session, sessionID uint64) {
+	sess.RevokeAuth()
+	h.ExpireSessionNotifies(sessionID)
+}
+
 // revalidateTrees re-resolves each surviving session's pinned tree permissions
 // against the user records the session pass just read.
 func (h *Handler) revalidateTrees(ctx context.Context, userStore models.UserStore, surviving map[uint64]*models.User) {
 	type treeUpdate struct {
 		treeID     uint32
+		sessionID  uint64
 		permission models.SharePermission
 	}
 	var updates []treeUpdate
@@ -127,8 +141,9 @@ func (h *Handler) revalidateTrees(ctx context.Context, userStore models.UserStor
 		}
 		share, err := h.Registry.GetShare(tree.ShareName)
 		if err != nil || share == nil {
-			// The share is gone; TREE_CONNECT's own lookup would refuse it and
-			// the share-change subscription owns that teardown.
+			// The share is gone. Its trees are left as they are: a removed share
+			// has no permission to re-resolve against, and TREE_CONNECT's own
+			// lookup refuses a fresh connect to it.
 			return true
 		}
 
@@ -144,7 +159,7 @@ func (h *Handler) revalidateTrees(ctx context.Context, userStore models.UserStor
 		if permission == tree.Permission {
 			return true
 		}
-		updates = append(updates, treeUpdate{treeID: tree.TreeID, permission: permission})
+		updates = append(updates, treeUpdate{treeID: tree.TreeID, sessionID: tree.SessionID, permission: permission})
 		return true
 	})
 
@@ -155,7 +170,14 @@ func (h *Handler) revalidateTrees(ctx context.Context, userStore models.UserStor
 		// downstream read-only checks read none as "not read-only", so pinning
 		// it would lift the ceiling instead of closing access.
 		if u.permission == models.PermissionNone {
-			logger.Info("SMB tree removed: share access revoked", "treeID", u.treeID)
+			// Close the opens first, the way TREE_DISCONNECT does. CLOSE is
+			// itself a tree-scoped command, so a handle left behind on a
+			// removed tree can never be closed by its client, and any byte-range
+			// lock it holds would stand against other users until the
+			// connection dropped.
+			closed := h.CloseAllFilesForTree(ctx, u.treeID, u.sessionID)
+			logger.Info("SMB tree removed: share access revoked",
+				"treeID", u.treeID, "filesClosed", closed)
 			h.DeleteTree(u.treeID)
 			continue
 		}

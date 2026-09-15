@@ -272,3 +272,27 @@ func TestIsExpiredOrRevoked(t *testing.T) {
 		t.Error("a revoked session must report as unauthorized even with no ticket expiry")
 	}
 }
+
+// TestRevokedSessionRecoversOnReauth pins the recovery path. Re-authentication
+// reuses the same session object, so without clearing the flag a revoked session
+// would keep failing every operation even after the account was re-enabled — the
+// client would re-run SESSION_SETUP successfully and then loop on the refusal.
+// The Kerberos expiry axis already recovers this way by refreshing ExpiresAt.
+func TestRevokedSessionRecoversOnReauth(t *testing.T) {
+	user := enabledUser()
+	sess := session.NewSessionWithUser(1, "127.0.0.1", user, "")
+
+	sess.RevokeAuth()
+	if !sess.IsExpiredOrRevoked() {
+		t.Fatal("session did not report as revoked")
+	}
+
+	sess.UpdateIdentity(user.Username, "", user, false, false)
+
+	if sess.AuthRevoked() {
+		t.Error("re-authentication must clear the revocation, or the session can never recover")
+	}
+	if sess.IsExpiredOrRevoked() {
+		t.Error("session still reports as unauthorized after a successful re-authentication")
+	}
+}
