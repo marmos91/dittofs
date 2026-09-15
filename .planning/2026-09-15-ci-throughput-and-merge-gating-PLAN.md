@@ -21,7 +21,6 @@ Measured against the GitHub API, not inferred.
 ### 2.1 Queue starvation is the whole story
 
 Lint run `34976565728`: all 10 jobs created at `13:40:52`. Longest job 2m17s. Run wall 1254s (21 min).
-
 | job | started | duration |
 | --- | --- | --- |
 | Commit Type Matches Diff | 13:44:44 | 8s |
@@ -41,10 +40,11 @@ Conformance run `34979004304` shows the same shape harder:
 
 A ten-second grader waits sixteen minutes for a runner.
 
-Cause: public repo, free standard runners, shared concurrency pool. One PR push creates ~42 jobs
-(Lint 10, Conformance 18, NFS Conformance 8, Unit 1, Integration 1, Windows 1, CodeQL 1, Secret
-Scan 1, CI Health 1). Nine open PRs plus every `develop` push draw from the same pool. The pool
-cannot drain that, so latency is set by scheduling, not by test execution.
+Cause: public repo, free standard runners, shared concurrency pool. One PR push creates ~44 jobs
+(Lint 10, Conformance 18, NFS Conformance 8, **CodeQL 3** — its `analyze` job has a three-entry
+matrix `[actions, go, python]` — Unit 1, Integration 1, Windows 1, Secret Scan 1, CI Health 1).
+Nine open PRs plus every `develop` push draw from the same pool. The pool cannot drain that, so
+latency is set by scheduling, not by test execution.
 
 **Consequence for the plan: parallelising the unit suite across a matrix would make this worse.**
 The fix is fewer jobs.
@@ -141,17 +141,25 @@ configuring the gate first means configuring it against names about to be delete
 
 | # | Change | Saves | Confidence |
 | --- | --- | --- | --- |
-| 1.1 | Lint: 10 jobs → 3. Group (a) Go-toolchain checks sharing checkout + `setup-go` (`format-vet`, `spec-citations`, `required-tests`), (b) shell/harness (`shellcheck*`, `e2e-harness`), (c) manifest/docs (`conformance-manifest`, `new-package-tests`, `commit-type`). Keep each check a **named step** so a red job still says which check failed. | 7 slots/PR; Lint 21min → ~5min | Slight ↓ in granularity, mitigated by named steps |
-| 1.2 | Fold `nfs-pynfs.yml` into `conformance.yml` as a manifest-driven `pynfs` suite cell (complete the half-wired `outputs.pynfs`). One matrix, one Build Binaries, one Nix install. Add `pynfs` to `summary`'s `needs` so the existing aggregator gates it. | 3 jobs/push + 1 workflow + 1 build + 1 Nix install | Neutral — same 4 cells, same grader, same KNOWN_FAILURES tables |
-| 1.3 | Remove the duplicate grader execution. Drop `run_test.sh` + `known-failures_test.sh` from `lint.yml`, keep `check-docs.sh` there; `conformance.yml`'s `graders` keeps the runner tests. | seconds, 1 duplicate | None — each script still runs exactly once |
-| 1.4 | Windows Build: keep `go build ./...` + `go vet ./...` per-PR, reduce the test step to the windows-tagged files (5) plus `-race` on those. **Measure first** (§2.3 caveat). | 1477s → ~5–8min | ↓ — see 5.1 |
+| 1.1 | Lint: 10 jobs → **5 job definitions, 4 active on a typical PR**. Group (a) Go-toolchain checks sharing checkout + `setup-go` (`format-vet`, `spec-citations`, `required-tests` — note `spec-citations` runs `go run` and `required-tests` runs `go test`, so the merged job **must** provision Go and its cache), (b) shell/harness (`e2e-harness` + the conditional ShellCheck pair), (c) manifest/docs (`conformance-manifest`, `new-package-tests`, `commit-type`). Keep each check a **named step** so a red job still says which check failed. | 5–6 slots/PR; Lint 21min → ~5min | Slight ↓ in granularity, mitigated by named steps |
+| 1.2 | Fold `nfs-pynfs.yml` into `conformance.yml` as a manifest-driven `pynfs` suite cell (complete the half-wired `outputs.pynfs`). One matrix, one Build Binaries, one Nix install. Add `pynfs` to `summary`'s `needs` so the existing aggregator gates it. | **3 jobs/push** (its matrix/grading/build) — the 4 pynfs cells remain; 1 workflow, 1 build, 1 Nix install | Neutral — same 4 cells, same grader, same KNOWN_FAILURES tables |
+| 1.3 | Remove the duplicate grader execution. Drop `run_test.sh` + `known-failures_test.sh` from `lint.yml`, keep `check-docs.sh` there; `conformance.yml`'s `graders` keeps the runner tests. | seconds of *duration*, **not a slot** — the `graders` job remains | None — each script still runs exactly once |
+| 1.4 | Windows Build: keep `go build ./...` + `go vet ./...` per-PR, reduce the test step to the windows-tagged files (5) plus `-race` on those. **Measure first** (§2.3 caveat). | 1477s → ~5–8min of *duration*; **no slot saved** unless the job is split | ↓ — see 5.1 |
 | 1.5 | Add `timeout-minutes: 10` to every Lint job. | prevents a 6h slot hold | None — pure safety |
 | 1.6 | Delete the dead `dfs-1.26.x` artifact upload and the single-entry `go-version` matrices. | seconds, clearer check names | None |
 
-**Expected: ~42 → ~22 jobs per push.** On a 20-slot pool that is the difference between a 20-minute
-queue and near-none. Note the reviewer's correction: with `nfs-pynfs` merged the reduction is ~3 jobs
-from that workflow, not 8 — the 8 figure double-counted cells that are already `needs`-gated rather
-than independently scheduled.
+**Expected: ~44 → ~26 jobs per push** (slots), *plus* large duration reductions that do not change
+the count. The two figures must be tracked separately — several items above save wall-clock without
+freeing a slot, and conflating them is how the projection gets overstated:
+
+| | before | after |
+| --- | --- | --- |
+| Job slots per push | ~44 | ~26 |
+| Queue term on a 20-slot pool | ~18 min | near-zero |
+
+Earlier drafts of this plan said "42 → 22" and credited 8 slots to the `nfs-pynfs` merge and 1 slot to
+1.4. Both were wrong: the merge removes 3 scaffolding jobs (the 4 cells stay), and 1.4 shortens a job
+rather than deleting one unless the job is explicitly split. The corrected numbers are above.
 
 ### Phase 1b — scope integration tests (confidence-neutral, do not hand-write the list)
 
@@ -189,11 +197,17 @@ trap here; the diff-based derivation avoids it by construction.
    - `Format & Vet`
    - `gitleaks`
    - `Commit Type Matches Diff`
-   - `Conformance summary` — already a genuine aggregator (`needs: [wpts, smbtorture, pjdfstest,
-     nfs-kerberos]`, `if: always()`, fails on any `failure`/`cancelled`). After 1.2, add `pynfs` to
-     its `needs` and it gates pynfs too.
 
-   **Tier 2 — require only after the path-filter fix below:** `Unit Tests`, `Integration Tests`.
+   **Tier 2 — require only after the aggregator fix below:** `Unit Tests`, `Integration Tests`,
+   and the conformance suite.
+
+   **`Conformance summary` is NOT currently a safe gate.** Its `needs:` is only
+   `[wpts, smbtorture, pjdfstest, nfs-kerberos]` — it omits `matrix`, `graders`, and `build`. Worse,
+   `wpts` and `smbtorture` `need:` only `matrix`, **not `build`**, so a failed `Build Binaries`
+   leaves them to run against a missing artifact while `summary` reports green. A failed resolver or
+   grader likewise never reaches the summary. Do not require it until it `needs:` every terminal job
+   and fails on any non-success. This is a false-green path in the *existing* workflow, independent
+   of this plan — worth fixing regardless of whether the gate is ever enabled.
 
    **Do not require coverage.** `codecov` is `continue-on-error: true` and should stay that way — a
    required coverage number invites gaming.
@@ -212,14 +226,30 @@ trap here; the diff-based derivation avoids it by construction.
    the exact change class that hits this. The gate would have to be bypassed on precisely the PRs
    that `commit-type-matches-diff` exists to police.
 
-   Fix: add one always-triggering **aggregator job** that `needs:` the path-filtered jobs with
-   `if: always()` and fails when any dependency failed, then mark **that** job required. It always
-   reports, so the required check is always satisfied — by real passes or by a genuine failure. This
-   also keeps the required check *name* stable while the jobs behind it change, which is what lets
-   Phase 1 and Phase 2 be done in either order safely.
-2. **Enable a merge queue** on `develop` and `main`. Add `merge_group:` to the `on:` blocks of every
-   workflow carrying a required check, or the queue waits for checks that never start.
+   Fix: add one always-triggering **aggregator job** per gated workflow that `needs:` the
+   path-filtered jobs with `if: always()` and fails when any dependency failed, then mark **that**
+   job required. It always reports, so the required check is always satisfied — by real passes or by
+   a genuine failure. This also keeps the required check *name* stable while the jobs behind it
+   change, which is what lets Phase 1 and Phase 2 be done in either order safely.
+2. **Enable a merge queue** on `develop` and `main`. Adding `merge_group:` to the `on:` blocks is
+   necessary but **not sufficient** — two existing payload assumptions break under it:
+
+   - **`conformance.yml` selects the wrong tier.** Its `EVENT` expression maps only `pull_request`
+     and `schedule`, falling through to `'push'` for anything else. `suites.json` gives `push` the
+     **full** `all` matrix, so a merge group would run postsubmit-sized conformance — more jobs than
+     the PR path it replaces, defeating the point. Map `merge_group` explicitly to the PR tier.
+   - **`commit-type-matches-diff` can false-green.** Its non-PR branch reads `github.event.before`,
+     which a `merge_group` payload does not carry (`merge_group` uses `base_sha`/`head_sha`). The
+     value is empty, the script hits its "no base commit for this event; nothing to check" success
+     path, and the required check passes without inspecting anything. A required check that silently
+     does nothing is worse than no check — extend the `BASE` expression for `merge_group`.
+
+   Audit every workflow that gains `merge_group:` for this class of bug: an event-name ternary with
+   no `merge_group` arm, or a payload field that only exists on `pull_request`/`push`.
 3. **Raise `required_approving_review_count` 0 → 1.**
+4. **Apply the same settings to `Protect main`.** The gate is only described for `Protect develop`,
+   but merges to `main` flow through it and the rulesets are separate. Gating one branch leaves the
+   other bypassable.
 
 Why this is the confidence story: required checks make green *necessary*; the merge queue makes the
 tested artifact the *merge result* rather than each PR against a stale base; `required-tests.json`
@@ -261,6 +291,12 @@ The failure mode to avoid is "rerun until green", which is how green stops meani
    keep `-race` on the reduced set; keep `go build ./...` + `go vet ./...` (compile coverage is the
    bulk of what a platform job uniquely provides); run the full Windows suite on push-to-develop
    and nightly so a break cannot reach `main`.
+
+   **Path-trigger caveat:** an earlier draft proposed triggering on `filepath` or `os.PathSeparator`.
+   Those are *source identifiers*, not paths — GitHub path filters match changed file paths, so those
+   patterns would never match. If path-triggering is wanted, list concrete Windows-specific files
+   (`**/*_windows_test.go`, `cmd/dfs/commands/daemon*.go`, `pkg/controlplane/runtime/snapshot_open*.go`)
+   or add a diff-content detector.
 2. **Lint consolidation.** Only safe if every existing check is retained in the merged jobs. A
    dropped check is a silent coverage loss — verify by diffing the check list before/after.
 3. **Merge queue.** Batching means a batch failure can implicate several PRs. Configure max batch
@@ -298,11 +334,12 @@ The failure mode to avoid is "rerun until green", which is how green stops meani
 ## 7. Verify
 
 ```bash
-# Phase 1: job count per push should fall from ~42 to ~22
-gh run list --workflow=Lint --limit 3 --json databaseId \
-  --jq '.[]|.databaseId' | while read id; do
+# Phase 1: total job slots per push across ALL PR-triggered workflows (not just Lint).
+# Replace <sha> with the head commit of the PR under test.
+gh api "repos/marmos91/dittofs/actions/runs?head_sha=<sha>&per_page=100" \
+  --jq '.workflow_runs[]|select(.event=="pull_request")|.id' | while read id; do
   gh api repos/marmos91/dittofs/actions/runs/$id/jobs --jq '.total_count'
-done
+done | paste -sd+ | bc
 
 # Phase 1: Lint wall-clock should fall from ~21min to ~5min
 gh run list --workflow=Lint --limit 5 --json createdAt,updatedAt \
@@ -367,7 +404,26 @@ than a full roster, single pass, read-only. Labeled honestly rather than present
 - The `nfs-pynfs` merge saves ~3 jobs, not 8 — the higher figure double-counted cells already
   `needs`-gated rather than independently scheduled.
 
+**Findings added by the Copilot review on PR #2637:**
+
+- **`Conformance summary` is not a safe gate today.** It `needs:` only the four suite jobs, omitting
+  `matrix`, `graders`, and `build`; and `wpts`/`smbtorture` `need:` only `matrix`, not `build`. A
+  failed build or grader therefore leaves `summary` green. This is a **pre-existing false-green path**
+  worth fixing whether or not the gate is ever enabled.
+- **CodeQL contributes 3 jobs, not 1** (`[actions, go, python]`), so the baseline was understated.
+- **`merge_group` breaks two payload assumptions:** `conformance.yml`'s `EVENT` ternary falls through
+  to `'push'` (the *full* matrix — more jobs than the PR path), and `commit-type-matches-diff` reads
+  `github.event.before`, which a merge group does not carry, so it would pass without checking
+  anything.
+- **The job-count projection conflated slots with duration.** 1.3 and 1.4 save wall-clock without
+  freeing a slot; the corrected table separates the two.
+- **Lint 10 → 2 was arithmetically wrong** (the grouping leaves 5 definitions, 4 active), and
+  `spec-citations`/`required-tests` need Go provisioned in the merged job.
+- **The Windows path-trigger mitigation was invalid** — `filepath` and `os.PathSeparator` are source
+  identifiers, not paths.
+- **The Phase 1 verify command only counted Lint jobs** while claiming to verify the global total.
+
 **Confidence:** high on the diagnosis (job timestamps are exact, the ruleset state was read from the
-API, and both reviewers independently reached the same dominant cause). Medium on the projected
+API, and three independent reviewers reached the same dominant cause). Medium on the projected
 savings, which are estimates — §6 states what would falsify them. The structural recommendation
 (fewer jobs, then a real gate) does not depend on the exact magnitudes.
