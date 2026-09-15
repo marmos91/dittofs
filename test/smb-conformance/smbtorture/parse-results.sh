@@ -8,9 +8,10 @@
 #   - SKIP:  Test was skipped (dim)
 #
 # Exit codes:
-#   0  All failures are known (or no failures) and no suite was cut short
-#      without a recorded reason
-#   >0 Number of new unexpected failures, plus suites cut short with no sign-off
+#   0  All failures are known (or no failures), every test reached the server,
+#      and no suite was cut short without a recorded reason
+#   >0 Number of new unexpected failures, plus suites cut short with no sign-off,
+#      plus tests that produced no server result
 #   1  Missing output file or no results
 #
 # Usage:
@@ -164,6 +165,12 @@ pending_is_flake=false
 pending_flake_reason=""
 # "test name — reason" for every failure the pre-filter rewrote to a skip.
 declare -a RECLASSIFIED_LIST=()
+# The reason recorded when the client never got as far as a server exchange.
+CONN_SETUP_REASON="connection setup"
+# Tests excused for that reason, i.e. the ones that produced no server-side
+# result at all. They are neither passes nor failures, and a run holding any of
+# them has no verdict for them — see the inconclusive grading at the end.
+declare -a NO_SERVER_RESULT_LIST=()
 # Set once a NO_MEMORY diagnostic has been seen in the pending block, so the
 # connection marker that anchors it may arrive on either line, in either order.
 pending_saw_no_memory=false
@@ -186,6 +193,9 @@ flush_pending() {
             local reclassified="${BASH_REMATCH[1]}"
             [[ "$reclassified" != smb2.* ]] && reclassified="smb2.${reclassified}"
             RECLASSIFIED_LIST+=("${reclassified} — ${pending_flake_reason}")
+            if [[ "$pending_flake_reason" == "$CONN_SETUP_REASON" ]]; then
+                NO_SERVER_RESULT_LIST+=("$reclassified")
+            fi
         fi
         pending_block[0]="$header"
     fi
@@ -227,7 +237,7 @@ while IFS= read -r line; do
         if [[ "$line" == *"$CONN_FAIL_PATTERN"* ]] ||
            { $pending_saw_no_memory && $pending_saw_conn_setup; }; then
             pending_is_flake=true
-            pending_flake_reason="connection setup"
+            pending_flake_reason="$CONN_SETUP_REASON"
         fi
         # A closing "]" ends the bracketed detail block.
         [[ "$line" == "]" ]] && flush_pending
@@ -639,10 +649,11 @@ report_body() {
     echo "| Known | ${KNOWN_HITS} |"
     echo "| New Failures | ${NEW_FAILURES} |"
     echo "| Skipped | ${SKIP_COUNT} |"
-    echo "| Inconclusive | ${#INCOMPLETE_LIST[@]} |"
+    echo "| Killed mid-test | ${#INCOMPLETE_LIST[@]} |"
     echo "| Suites cut short | ${#TIMED_OUT_SUITES[@]} |"
     echo "| Cut short unexpectedly | ${#UNEXPECTED_TRUNCATIONS[@]} |"
     echo "| Reclassified as flakes | ${#RECLASSIFIED_LIST[@]} |"
+    echo "| No server result | ${#NO_SERVER_RESULT_LIST[@]} |"
 
     report_list "New failures — not in KNOWN_FAILURES.md, these fail the job" \
         "${NEW_FAILURE_LIST[@]+"${NEW_FAILURE_LIST[@]}"}"
@@ -656,6 +667,8 @@ report_body() {
         "${NOW_PASSING_LIST[@]+"${NOW_PASSING_LIST[@]}"}"
     report_list "Failures reclassified as infrastructure flakes — graded as skips, not failures" \
         "${RECLASSIFIED_LIST[@]+"${RECLASSIFIED_LIST[@]}"}"
+    report_list "Tests with no server result — the client never got a protocol exchange, these fail the job" \
+        "${NO_SERVER_RESULT_LIST[@]+"${NO_SERVER_RESULT_LIST[@]}"}"
     report_list "Known failures still failing" \
         "${KNOWN_STILL_FAILING[@]+"${KNOWN_STILL_FAILING[@]}"}"
 }
@@ -669,35 +682,53 @@ echo ""
 # --------------------------------------------------------------------------
 # Verdict
 #
-# The job fails on two things: failures that are not on the KNOWN_FAILURES.md
-# blacklist, and suites the harness gave up on without a recorded reason.
+# The job fails on three things: failures that are not on the KNOWN_FAILURES.md
+# blacklist, suites the harness gave up on without a recorded reason, and tests
+# whose client never reached the server.
 #
-# The second is not a failed test — it is a missing one. Tests past the cut
-# point emit no result lines at all, so they are neither passed nor failed, and
-# a run that grades only what it reached would report clean while silently
-# shrinking its own coverage. A truncation that someone has signed off on
-# (run.sh's expected_truncation) is still reported, but does not move the
-# verdict; anything else does.
+# The last two are not failed tests — they are missing ones. Tests past a cut
+# point emit no result lines at all, and a test excused for a connection-setup
+# failure was never graded against the server either. Neither is a pass nor a
+# failure, so a run that grades only what it reached would report clean while
+# silently shrinking its own coverage. The excuse that keeps a connection flake
+# off the failure count must not also buy it a clean bill of health: the green
+# banner is read as "the test gating my change passed", so a run with no
+# verdict for a test names that test instead of printing it. A truncation that
+# someone has signed off on (run.sh's expected_truncation) is still reported,
+# but does not move the verdict; anything else does.
 # --------------------------------------------------------------------------
-BAD=$((NEW_FAILURES + ${#UNEXPECTED_TRUNCATIONS[@]}))
+NO_RESULT=${#NO_SERVER_RESULT_LIST[@]}
+BAD=$((NEW_FAILURES + ${#UNEXPECTED_TRUNCATIONS[@]} + NO_RESULT))
 
-if [[ "$BAD" -gt 0 ]]; then
-    if [[ "$NEW_FAILURES" -gt 0 ]]; then
-        echo -e "${RED}${BOLD}RESULT: ${NEW_FAILURES} new failure(s) detected!${NC}"
-        echo ""
-        echo "To add as known failures, append to KNOWN_FAILURES.md:"
-        echo "  | <test-name> | <category> | <reason> | - |"
-        echo ""
-    fi
-    if [[ ${#UNEXPECTED_TRUNCATIONS[@]} -gt 0 ]]; then
-        echo -e "${RED}${BOLD}RESULT: ${#UNEXPECTED_TRUNCATIONS[@]} suite(s) cut short with no sign-off!${NC}"
-        echo ""
-        echo "Those suites lost every test they had not reached. Either give them"
-        echo "enough budget to finish, or record why no budget can help them in"
-        echo "run.sh's expected_truncation()."
-        echo ""
-    fi
-else
+if [[ "$NEW_FAILURES" -gt 0 ]]; then
+    echo -e "${RED}${BOLD}RESULT: ${NEW_FAILURES} new failure(s) detected!${NC}"
+    echo ""
+    echo "To add as known failures, append to KNOWN_FAILURES.md:"
+    echo "  | <test-name> | <category> | <reason> | - |"
+    echo ""
+fi
+
+if [[ ${#UNEXPECTED_TRUNCATIONS[@]} -gt 0 ]]; then
+    echo -e "${RED}${BOLD}RESULT: ${#UNEXPECTED_TRUNCATIONS[@]} suite(s) cut short with no sign-off!${NC}"
+    echo ""
+    echo "Those suites lost every test they had not reached. Either give them"
+    echo "enough budget to finish, or record why no budget can help them in"
+    echo "run.sh's expected_truncation()."
+    echo ""
+fi
+
+if [[ "$NO_RESULT" -gt 0 ]]; then
+    echo -e "${YELLOW}${BOLD}RESULT: INCONCLUSIVE — ${NO_RESULT} test(s) produced no server result!${NC}"
+    echo ""
+    echo "These tests failed in the client's own connection setup, so they were"
+    echo "graded as skips rather than failures. Nothing was measured for them:"
+    printf -- '  - %s\n' "${NO_SERVER_RESULT_LIST[@]}"
+    echo ""
+    echo "Re-run the suite. A green run is the only evidence that these passed."
+    echo ""
+fi
+
+if [[ "$BAD" -eq 0 ]]; then
     echo -e "${GREEN}${BOLD}RESULT: All failures are known. CI green.${NC}"
     if [[ ${#INCOMPLETE_LIST[@]} -gt 0 || ${#TIMED_OUT_SUITES[@]} -gt 0 ]]; then
         echo -e "${YELLOW}NOTE: coverage was incomplete — see the timeout sections above.${NC}"

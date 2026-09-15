@@ -397,12 +397,12 @@ test/smb-conformance/
 
 ## Iterating on Failures
 
-When working on fixing a specific test failure:
-
 The harness names its Compose project after the checkout it runs from, so a
 bare `docker compose` command in this directory will not find the containers.
 Source `compose-env.sh` first (it exports `COMPOSE_PROJECT_NAME`); the runner
 prints the name as `Stack:` in its banner.
+
+When working on fixing a specific test failure:
 
 ```bash
 # 0. Address this checkout's stack

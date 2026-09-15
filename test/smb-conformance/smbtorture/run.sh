@@ -248,7 +248,7 @@ cleanup() {
         cd "$CONFORMANCE_DIR"
         docker compose down -v 2>/dev/null || true
     else
-        log_warn "Containers left running (--keep). Clean up with: cd ${CONFORMANCE_DIR} && docker compose down -v"
+        log_warn "Containers left running (--keep). Clean up with: docker compose -p ${COMPOSE_PROJECT_NAME} down -v"
     fi
 
     return $exit_code

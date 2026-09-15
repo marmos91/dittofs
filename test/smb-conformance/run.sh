@@ -341,7 +341,7 @@ cleanup() {
     fi
 
     if $KEEP; then
-        log_warn "Containers left running (--keep). Clean up with: docker compose down -v"
+        log_warn "Containers left running (--keep). Clean up with: docker compose -p ${COMPOSE_PROJECT_NAME} down -v"
     fi
 
     return $exit_code

@@ -21,15 +21,14 @@
 # second run refuses immediately and names the checkout holding the stack
 # rather than failing to bind a port somewhere in the middle of bootstrap.
 
-_compose_env_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# cksum is POSIX and present everywhere the harness runs; the value only has to
-# separate a handful of checkouts on one machine, and two that collided would
-# be caught by the exclusivity check below rather than silently sharing a stack.
-_compose_repo_root="$(cd "${_compose_env_dir}/../.." && pwd)"
-_compose_checkout_id="$(printf '%s' "$_compose_repo_root" | cksum | cut -d' ' -f1)"
-COMPOSE_PROJECT_NAME="smb-conformance-${_compose_checkout_id}"
+# ponytail: cksum is POSIX and present everywhere the harness runs; the value
+# only has to separate a handful of checkouts on one machine, and two that
+# collided would be caught by the exclusivity check below rather than silently
+# sharing a stack. Reach for a real hash only if that ever bites.
+_compose_repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+COMPOSE_PROJECT_NAME="smb-conformance-$(printf '%s' "$_compose_repo_root" | cksum | cut -d' ' -f1)"
 export COMPOSE_PROJECT_NAME
-unset _compose_env_dir _compose_repo_root _compose_checkout_id
+unset _compose_repo_root
 
 # require_exclusive_stack — abort when a conformance stack from another
 # checkout is live, naming the directory it was started from.
@@ -41,18 +40,20 @@ require_exclusive_stack() {
         --format '{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.project.working_dir"}}' \
         2>/dev/null |
         awk -F'|' -v me="$COMPOSE_PROJECT_NAME" \
-            '$1 ~ /^smb-conformance/ && $1 != me { print $1 "|" $2; exit }' || true)"
+            '$1 ~ /^smb-conformance/ && $1 != me { print; exit }' || true)"
     [[ -z "$other" ]] && return 0
 
     local project="${other%%|*}" workdir="${other#*|}"
-    echo "" >&2
-    echo "ERROR: an SMB conformance stack is already running from ${workdir:-an unknown directory}" >&2
-    echo "       (Compose project ${project})." >&2
-    echo "" >&2
-    echo "The stack publishes fixed host ports and the suites are timing-sensitive," >&2
-    echo "so only one checkout may run it at a time. Wait for that run to finish, or" >&2
-    echo "stop it with:" >&2
-    echo "    docker compose -p ${project} down -v" >&2
-    echo "" >&2
+    cat >&2 <<EOF
+
+ERROR: an SMB conformance stack is already running from ${workdir:-an unknown directory}
+       (Compose project ${project}).
+
+The stack publishes fixed host ports and the suites are timing-sensitive,
+so only one checkout may run it at a time. Wait for that run to finish, or
+stop it with:
+    docker compose -p ${project} down -v
+
+EOF
     exit 1
 }
