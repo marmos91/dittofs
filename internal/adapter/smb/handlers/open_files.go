@@ -17,10 +17,16 @@ func (h *Handler) EnumerateOpenFiles(_ context.Context, fn func(fileHandle []byt
 	var handles [][]byte
 	h.files.Range(func(_, value any) bool {
 		of, ok := value.(*OpenFile)
-		if !ok || of == nil || len(of.MetadataHandle) == 0 {
+		if !ok || of == nil {
 			return true
 		}
-		handles = append(handles, []byte(of.MetadataHandle))
+		// Under the handle's lock: SET_REPARSE_POINT repoints a live handle's
+		// MetadataHandle, so a bare read can observe the slice header mid-swap.
+		fh := of.GetMetadataHandle()
+		if len(fh) == 0 {
+			return true
+		}
+		handles = append(handles, []byte(fh))
 		return true
 	})
 	for _, fh := range handles {

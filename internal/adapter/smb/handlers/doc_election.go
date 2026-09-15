@@ -140,9 +140,8 @@ func (h *Handler) electDeleteOnClose(openFile *OpenFile) (docDecision, docTarget
 			if other.FileID == openFile.FileID || other.docLeaving {
 				return true
 			}
-			// Read under `other`'s lock: SET_REPARSE_POINT repoints a live
-			// handle's MetadataHandle when it turns a placeholder into a
-			// symlink, so the slice header is not stable for a bare read.
+			// Guard the read: SET_REPARSE_POINT repoints a live handle's
+			// MetadataHandle when a placeholder becomes a symlink.
 			if !bytes.Equal(other.GetMetadataHandle(), ownHandle) {
 				return true
 			}

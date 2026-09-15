@@ -1092,16 +1092,12 @@ func ProcessAppInstanceId(
 	handler.files.Range(func(_, value any) bool {
 		f := value.(*OpenFile)
 		if f.AppInstanceId == appId && !sameOrUnknownClient(f.ClientGUID, connClientGUID) {
-			// MetadataHandle is reassigned under the open's lock when
-			// SET_REPARSE_POINT turns a placeholder into a symlink, so copy it
-			// under that lock rather than treating it as immutable: the handle
+			// Through the accessor, not the field: SET_REPARSE_POINT repoints
+			// a live handle when a placeholder becomes a symlink, so the handle
 			// authorized below has to be the one the close acts on.
-			f.mu.RLock()
-			metaHandle := f.MetadataHandle
-			f.mu.RUnlock()
 			candidates = append(candidates, candidate{
 				fileID:     f.FileID,
-				metaHandle: metaHandle,
+				metaHandle: f.GetMetadataHandle(),
 				leaseKey:   f.LeaseKey,
 				shareName:  f.ShareName,
 			})
