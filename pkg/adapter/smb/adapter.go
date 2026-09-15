@@ -121,7 +121,7 @@ type Adapter struct {
 	// OnIdentityProviderConfigChange subscription that hot-reloads the NETLOGON
 	// machine credential / DC binding. Registered once (guarded by nil) so an
 	// API-driven machine-account config change rebuilds the secure channel
-	// without a restart (#1325).
+	// without a restart.
 	netlogonProviderUnsub func()
 
 	// kerberosProvider is retained for lifecycle management. It owns a
@@ -145,7 +145,7 @@ type Adapter struct {
 	authSweep *authSweeper
 
 	// sidecars manages the adapter's auxiliary/companion services — the mDNS and
-	// WS-Discovery advertisers (issue #1609) — under one uniform lifecycle.
+	// WS-Discovery advertisers — under one uniform lifecycle.
 	// Seeded with the Serve context and torn down in Stop. See discovery.go.
 	sidecars *auxsvc.Group
 
@@ -267,7 +267,7 @@ func (s *Adapter) SetRuntime(rtAny any) {
 	s.handler.Registry = rt
 
 	// Register the handler's open-file table as an open-file enumerator for
-	// the block-GC open-handle hold (#1448): files unlinked (e.g. over NFS)
+	// the block-GC open-handle hold: files unlinked (e.g. over NFS)
 	// while an SMB client holds them open must keep their blocks until the
 	// last SMB close.
 	rt.SetAdapterProvider(adapter.SMBOpenFilesProviderKey, s.handler)
@@ -404,7 +404,7 @@ func (s *Adapter) SetRuntime(rtAny any) {
 
 	// Subscribe the NETLOGON machine-credential hot-reload so an API-driven
 	// machine-account config change rebuilds the secure channel without a
-	// restart (#1325). A no-op when NETLOGON pass-through is not configured.
+	// restart. A no-op when NETLOGON pass-through is not configured.
 	s.wireNetlogonReload(rt)
 
 	logger.Debug("SMB adapter configured with runtime", "shares", rt.CountShares())
@@ -600,7 +600,7 @@ func (s *Adapter) Serve(ctx context.Context) error {
 
 	// Start the discovery advertisers (mDNS, WS-Discovery) through the shared
 	// auxsvc group so they share the adapter's lifecycle and can be toggled live
-	// from settings (issue #1609). See discovery.go.
+	// from settings. See discovery.go.
 	s.startEnabledDiscovery(ctx)
 
 	return s.ServeWithFactory(ctx, s, s.preAcceptCheck, nil)
@@ -760,7 +760,7 @@ func (s *Adapter) SetKerberosProvider(provider *kerberos.Provider) {
 // before Serve(). A nil value is a no-op (local-only NTLM remains the fallback).
 //
 // The concrete authenticator is retained so an API-driven machine-account config
-// change can hot-reload its credential / DC binding without a restart (#1325).
+// change can hot-reload its credential / DC binding without a restart.
 func (s *Adapter) SetNetlogonAuthenticator(nlAuth *netlogon.Authenticator) {
 	if nlAuth == nil {
 		return
@@ -769,7 +769,7 @@ func (s *Adapter) SetNetlogonAuthenticator(nlAuth *netlogon.Authenticator) {
 	s.handler.NetlogonAuth = nlAuth
 	// Enable the idmap_rid fallback so a DC-validated domain user with no LDAP/
 	// local mapping still resolves to a stable POSIX identity (UID == SID RID)
-	// and gets a usable session (#1357). A configured directory mapping always
+	// and gets a usable session. A configured directory mapping always
 	// takes precedence; this only fires when nothing else resolves the SID.
 	s.handler.NetlogonIdmapRID = true
 	logger.Debug("SMB adapter: NETLOGON authenticator configured")
@@ -781,7 +781,7 @@ func (s *Adapter) SetNetlogonAuthenticator(nlAuth *netlogon.Authenticator) {
 }
 
 // wireNetlogonReload subscribes a one-shot OnIdentityProviderConfigChange
-// callback that hot-reloads the NETLOGON machine credential / DC binding (#1325).
+// callback that hot-reloads the NETLOGON machine credential / DC binding.
 // On a config change it reads the latest credential from the runtime and calls
 // Authenticator.ReloadCredential, which swaps the credential and tears down the
 // cached secure channel atomically so the next logon rebuilds it. A no-op when
@@ -831,13 +831,13 @@ const netlogonReloadTimeout = 10 * time.Second
 // TargetInfo. Otherwise the server presents as standalone WORKGROUP, the domain
 // client embeds MsvAvNbDomainName="WORKGROUP" in its NTLMv2 response, and that
 // disagreement with the LogonDomainName DittoFS forwards makes the DC reject an
-// otherwise-valid response with STATUS_LOGON_FAILURE (#1357).
+// otherwise-valid response with STATUS_LOGON_FAILURE.
 //
 // netbiosComputer is the server's own NetBIOS computer name (MsvAvNbComputerName).
 // Under NETLOGON pass-through it MUST be the AD machine-account name (e.g.
 // "DITTOFS"), not the OS hostname: the DC rejects a forwarded NTLMv2 response
 // whose computer name does not match the machine account the secure channel
-// authenticated as (#1357).
+// authenticated as.
 //
 // Idempotent and safe to call alongside SetKerberosProvider; the names come from
 // the same Kerberos config. Empty arguments are ignored so a later/earlier
@@ -945,7 +945,7 @@ func (s *Adapter) wireForeignSIDResolver(rt *runtime.Runtime) {
 
 	// Wire the directory-SID bridge so file owner/group descriptors carry the
 	// account's real AD SID (and round-trip it back) rather than the algorithmic
-	// machine-domain SID (#1617). Shares the same resolver chain and config-change
+	// machine-domain SID. Shares the same resolver chain and config-change
 	// re-run as the foreign-SID resolver above; a no-op when no LDAP/AD provider
 	// is configured (the bridge simply never hits).
 	handlers.SetDirectorySIDBridge(newDirectorySIDBridge(resolver))
