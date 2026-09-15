@@ -384,3 +384,46 @@ func (s *Service) StartWarm(_ context.Context, shareName string) (*WarmJob, erro
 func (s *Service) GetWarm(jobID string) (*WarmJob, bool) {
 	return s.warmJobs.get(jobID)
 }
+
+// verifyReadsSetter is implemented by a local tier that can turn per-record
+// warm-read verification on and off while the share is serving.
+type verifyReadsSetter interface{ SetVerifyReads(bool) }
+
+// ApplyDurability puts a share's durability choice into effect on the running
+// share.
+//
+// Both axes are otherwise read only when the block store is built, so a share
+// edited in place would keep acknowledging on the old terms until a restart —
+// and an operator who tightened the promise would have been told it succeeded.
+// The three settings are independent atomic toggles, so applying them to a
+// serving share changes what the next operation waits for without disturbing
+// the ones in flight.
+//
+// The registry's own copy is updated too, so a later read of the share reports
+// what is actually in force rather than what it was started with.
+func (s *Service) ApplyDurability(name string, requireDurableCommit, relaxedMetadataCommit bool, metadataSvc any) error {
+	bs, err := s.GetBlockStoreForShare(name)
+	if err != nil {
+		return err
+	}
+
+	bs.SetRequireDurableCommit(requireDurableCommit)
+
+	// A share acknowledging durably verifies warm reads per-record so on-disk
+	// corruption is caught rather than served; the relaxed tier keeps the raw
+	// fast read. Mirrors what the build path applies.
+	if vr, ok := bs.Local().(verifyReadsSetter); ok {
+		vr.SetVerifyReads(!relaxedMetadataCommit)
+	}
+
+	if wb, ok := metadataSvc.(MetadataWritebackSetter); ok {
+		wb.SetShareWriteback(name, relaxedMetadataCommit)
+	}
+
+	s.mu.Lock()
+	if share, exists := s.registry[name]; exists {
+		share.writeback = relaxedMetadataCommit
+	}
+	s.mu.Unlock()
+	return nil
+}

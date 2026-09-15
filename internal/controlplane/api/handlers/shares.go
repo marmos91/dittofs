@@ -706,6 +706,7 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 	// changing it here silently has no effect on mirroring until a full server
 	// restart. We detect the change below and warn the operator.
 	prevBlockStoreID := share.BlockStoreID
+	prevCommitAck, prevRelaxed := share.CommitAck, share.RelaxedMetadataCommit
 
 	// Apply updates
 	if req.MetadataStoreID != nil {
@@ -923,6 +924,25 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 			logger.Info("Share block store rebound live after binding change",
 				"share", share.Name,
 				"block_store_id", share.BlockStoreID)
+		}
+	}
+
+	// Both durability axes apply LIVE: they decide what a COMMIT waits for, and
+	// an operator who tightens the promise must not be told it succeeded while
+	// acknowledgement carries on under the old terms. A failure to apply is the
+	// one case that needs the restart warning.
+	if (share.CommitAck != prevCommitAck || share.RelaxedMetadataCommit != prevRelaxed) && h.runtime != nil {
+		if err := h.runtime.ApplyShareDurability(share.Name,
+			share.CommitAck == models.CommitAckBlockStore, share.RelaxedMetadataCommit); err != nil {
+			logger.Error("Failed to apply the durability change to the running share; a restart is required",
+				"share", share.Name, "error", err)
+			updateWarnings = append(updateWarnings,
+				"durability settings changed but could not be applied to the running share; a server restart is required for the change to take effect")
+		} else {
+			logger.Info("Share durability applied live",
+				"share", share.Name,
+				"commit_ack", share.CommitAck,
+				"relaxed_metadata_commit", share.RelaxedMetadataCommit)
 		}
 	}
 

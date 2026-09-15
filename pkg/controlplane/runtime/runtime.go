@@ -617,6 +617,13 @@ func (r *Runtime) AddShare(ctx context.Context, config *ShareConfig) error {
 	return nil
 }
 
+// ApplyShareDurability puts a share's durability choice into effect on the
+// running share, so an edit does not wait for a restart to change what a COMMIT
+// acknowledges.
+func (r *Runtime) ApplyShareDurability(name string, requireDurableCommit, relaxedMetadataCommit bool) error {
+	return r.sharesSvc.ApplyDurability(name, requireDurableCommit, relaxedMetadataCommit, r.GetMetadataService())
+}
+
 // RebindShareBlockStore hot-reloads a running share's per-share BlockStore after
 // its local/remote block-store binding changed, so the change takes effect
 // without a server restart (#1532). It rebuilds the new ShareConfig from the
