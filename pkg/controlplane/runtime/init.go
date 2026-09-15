@@ -270,7 +270,7 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 		// would export while refusing every client, and SECINFO would narrow
 		// to an empty flavor list no client can retry against. Refuse the boot
 		// rather than serve it or quietly drop the policy the operator asked
-		// for. Reported once per share so the first offender is named.
+		// for.
 		if shareConfig.RequireKerberos && !rt.KerberosEnabled() {
 			return fmt.Errorf("share %q: %w; enable Kerberos (kerberos.enabled / "+
 				"DITTOFS_KERBEROS_ENABLED) or clear the policy with "+

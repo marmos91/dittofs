@@ -622,6 +622,12 @@ to no share, reports the full set the server offers.
 such a share would be reachable by no auth flavor at all, and SECINFO would have
 nothing to report. Configure `kerberos.enabled` first.
 
+The same rule is re-checked at startup, because the policy is persisted and
+outlives the server capability it needs: if Kerberos is later decommissioned, a
+share that still carries `require_kerberos=true` stops the server with exit code
+78 and an error naming the share. Either re-enable `kerberos.enabled`, or clear
+the policy with `dfsctl share nfs-config set <share> --require-kerberos false`.
+
 `min_kerberos_level` only constrains RPCSEC_GSS sessions: it rejects a Kerberos
 session whose negotiated service level is below the floor (e.g. a plain `krb5`
 authentication-only session on a `krb5p` privacy share). Non-GSS flavors are
