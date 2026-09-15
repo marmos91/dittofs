@@ -701,11 +701,11 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Snapshot the block-store binding before applying updates. The running
-	// per-share syncer/BlockStore mode (local-only vs. remote) is fixed at
-	// share-load and is NOT hot-reloaded on a binding change (see #1532), so
-	// changing it here silently has no effect on mirroring until a full server
-	// restart. We detect the change below and warn the operator.
+	// Snapshot the block-store binding and the durability axes before applying
+	// updates, so the handler can tell what actually changed. A binding change
+	// rebuilds the share's block store live and a durability change is applied
+	// to the running share; both warn the operator only when that fails, so an
+	// edit is never silently inert.
 	prevBlockStoreID := share.BlockStoreID
 	prevCommitAck, prevRelaxed := share.CommitAck, share.RelaxedMetadataCommit
 

@@ -141,7 +141,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	}
 
 	if !hasUpdate {
-		return fmt.Errorf("no update fields specified. Use --type, --config, --bucket, --region, --endpoint, --access-key, --secret-key, or --parallel-uploads")
+		return fmt.Errorf("no update fields specified. Use --name, --type, --config, --bucket, --region, --endpoint, --access-key, --secret-key, or --parallel-uploads")
 	}
 
 	store, err := client.UpdateBlockStore(name, req)
