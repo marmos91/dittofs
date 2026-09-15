@@ -11,14 +11,15 @@
 #   0  All failures are known (or no failures), every test reached the server,
 #      and no suite was cut short without a recorded reason
 #   >0 Number of new unexpected failures, plus suites cut short with no sign-off,
-#      plus tests that produced no server result, capped at 248 — a shell exit
+#      plus tests that produced no server result, capped at 254 — a shell exit
 #      status is one byte, and a count of 256 would arrive as 0 and read as
 #      success
-#   250 Nothing failed and nothing was cut short, but some tests produced no
-#      server result: the run graded nothing against the server for those, which
-#      is neither a pass nor a failure. Distinct so the caller can say that
-#      rather than report them as regressions
 #   1  Missing output file or no results
+#
+# The status carries how many, never which kind. When a results directory is
+# given, a "verdict" file beside the report says whether the count is failures
+# or an inconclusive run that graded nothing against the server, so a caller can
+# label it without inferring a category from a number.
 #
 # Usage:
 #   ./parse-results.sh <smbtorture-output-file> [known-failures-file] [results-dir]
@@ -703,9 +704,6 @@ echo ""
 # someone has signed off on (run.sh's expected_truncation) is still reported,
 # but does not move the verdict; anything else does.
 # --------------------------------------------------------------------------
-# Distinct from any failure count, and above the clamped range so the two
-# can never collide.
-EXIT_INCONCLUSIVE=250
 NO_RESULT=${#NO_SERVER_RESULT_LIST[@]}
 BAD=$((NEW_FAILURES + ${#UNEXPECTED_TRUNCATIONS[@]} + NO_RESULT))
 
@@ -750,15 +748,21 @@ fi
 # A shell exit status is a single byte, so a count of 256 would leave as 0 and
 # be read as success — the false green this grading exists to prevent. The
 # report carries the exact counts; the status only has to stay non-zero.
-# An inconclusive-only run is graded separately. Reported as a plain count it
-# reaches the shared runner's summary as "N new failure(s)" — the phrase that
-# means a test which used to pass now fails — for tests that were never graded
-# against the server at all. That is the same false label this script exists to
-# remove, one layer up and in the line a human actually reads.
-if [[ "$NEW_FAILURES" -eq 0 && ${#UNEXPECTED_TRUNCATIONS[@]} -eq 0 && "$NO_RESULT" -gt 0 ]]; then
-    exit "$EXIT_INCONCLUSIVE"
+# The exit status stays the count — callers and this script's own tests read it
+# that way. What the count cannot carry is which kind of problem it is, and the
+# shared runner renders any non-zero graded status as "N new failure(s)", the
+# phrase meaning a test that used to pass now fails. For tests that were never
+# graded against the server that is the same false label this script exists to
+# remove, one layer up and in the line a human actually reads. So the category
+# travels beside the count rather than inside it.
+if [[ -n "$RESULTS_DIR" ]] && [[ -d "$RESULTS_DIR" ]]; then
+    if [[ "$NEW_FAILURES" -eq 0 && ${#UNEXPECTED_TRUNCATIONS[@]} -eq 0 && "$NO_RESULT" -gt 0 ]]; then
+        echo "inconclusive" > "${RESULTS_DIR}/verdict"
+    else
+        echo "failures" > "${RESULTS_DIR}/verdict"
+    fi
 fi
-if [[ "$BAD" -gt 248 ]]; then
-    BAD=248
+if [[ "$BAD" -gt 254 ]]; then
+    BAD=254
 fi
 exit "$BAD"
