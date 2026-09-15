@@ -157,14 +157,17 @@ func TestHandleDestroySession_OwnerStandalone_OverBoundConnection(t *testing.T) 
 	}
 }
 
-// TestHandleDestroySession_OwnerStandalone_OverDifferentConnection covers the
-// cross-connection legitimate case: the owner has two sessions; it destroys
-// session A over a connection bound to session B. Both sessions belong to the
-// same client, so the connection binding authorizes the destroy.
+// TestHandleDestroySession_OwnerStandalone_OverDifferentConnection pins that
+// same-client ownership does not stand in for the connection binding. The owner
+// has two sessions on two connections and destroys session A over the
+// connection bound only to session B.
+//
 // RFC 8881 Section 18.37.3: "DESTROY_SESSION MUST be invoked on a connection
 // that is associated with the session being destroyed." A sibling connection
 // bound only to another of the owner's sessions is not that connection, so a
 // standalone destroy over it is refused even though the same client owns both.
+// Over session A's own connection the identical request succeeds, which is what
+// makes the refusal about the binding rather than about the request.
 func TestHandleDestroySession_OwnerStandalone_OverDifferentConnection(t *testing.T) {
 	h := newTestHandler()
 

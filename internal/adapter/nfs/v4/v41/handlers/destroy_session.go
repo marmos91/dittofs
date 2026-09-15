@@ -31,7 +31,8 @@ func HandleDestroySession(d *Deps, ctx *types.CompoundContext, v41ctx *types.V41
 	//
 	// DESTROY_SESSION is session-exempt: it may be sent standalone, without a
 	// preceding SEQUENCE. The server MUST still confirm the requester owns the
-	// target session, otherwise an anonymous caller could destroy a victim's.
+	// target session, otherwise an anonymous caller could destroy a victim's
+	// session.
 	//
 	// How the requester is identified differs by path, and only one of them
 	// reaches across connections. With a SEQUENCE, the requesting session names
