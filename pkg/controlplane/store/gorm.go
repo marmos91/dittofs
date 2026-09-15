@@ -267,6 +267,21 @@ func New(config *Config) (*GORMStore, error) {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
+	// Every path below can refuse the database — a renamed config key, a
+	// half-migrated column pair, a share left without a block store. Those
+	// returns hand back no store, so nothing else can ever close this handle;
+	// release it here instead of leaving the file open for the life of the
+	// process. Cleared once the store takes ownership.
+	opened := true
+	defer func() {
+		if !opened {
+			return
+		}
+		if sqlDB, derr := db.DB(); derr == nil {
+			_ = sqlDB.Close()
+		}
+	}()
+
 	// Configure the connection pool.
 	switch config.Type {
 	case DatabaseTypePostgres:
@@ -580,6 +595,7 @@ func New(config *Config) (*GORMStore, error) {
 		return nil, fmt.Errorf("failed to apply portmapper defaults: %w", err)
 	}
 
+	opened = false
 	return store, nil
 }
 
