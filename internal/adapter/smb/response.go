@@ -471,7 +471,7 @@ func prepareDispatch(ctx context.Context, reqHeader *header.SMB2Header, connInfo
 		// session authenticated) is refused the same way and through the same
 		// exemptions: the client gets the identical release-then-reauthenticate
 		// window, and SESSION_SETUP is where it learns the account is gone.
-		if (sess.IsExpired() || sess.AuthRevoked()) && !isExpiryExemptCommand(reqHeader.Command) {
+		if sess.IsExpiredOrRevoked() && !isExpiryExemptCommand(reqHeader.Command) {
 			logger.Debug("Session no longer authorized",
 				"sessionID", reqHeader.SessionID,
 				"username", sess.Username,

@@ -86,7 +86,7 @@ func newRevalidateHandler(t *testing.T, user *models.User, store *revalidateUser
 
 func enabledUser() *models.User {
 	uid := uint32(1000)
-	return &models.User{Username: "alice", UID: &uid, Enabled: true}
+	return &models.User{ID: "user-1", Username: "alice", UID: &uid, Enabled: true}
 }
 
 // TestRevalidateAuthorization_DisabledUserRevokesSession is the core guard for
@@ -115,7 +115,7 @@ func TestRevalidateAuthorization_DisabledUserRevokesSession(t *testing.T) {
 // TestRevalidateAuthorization_DeletedUserRevokesSession covers the other
 // retirement: the record is gone entirely, which the store reports as an error.
 func TestRevalidateAuthorization_DeletedUserRevokesSession(t *testing.T) {
-	store := &revalidateUserStore{err: errors.New("user not found"), perm: models.PermissionReadWrite}
+	store := &revalidateUserStore{err: models.ErrUserNotFound, perm: models.PermissionReadWrite}
 
 	h, sessionID, _ := newRevalidateHandler(t, enabledUser(), store, models.PermissionReadWrite, false)
 	h.RevalidateAuthorization(context.Background())
@@ -219,4 +219,56 @@ func TestResolveSharePermission_DisabledUserDenied(t *testing.T) {
 			t.Errorf("Permission = %v, want none for a disabled root user", perm)
 		}
 	})
+}
+
+// TestRevalidateAuthorization_SynthesizedADUserSurvives guards a regression the
+// sweep would otherwise cause. A Kerberos/LDAP principal with no local account
+// is backed by a synthesized, never-persisted record, so a lookup by username
+// reports it missing. Revoking on that would retire every AD session on the
+// next unrelated user edit — a worse outage than the staleness being fixed.
+func TestRevalidateAuthorization_SynthesizedADUserSurvives(t *testing.T) {
+	uid := uint32(4242)
+	// No ID: synthUserFromResolved never persists the record.
+	synth := &models.User{Username: "ad-user", UID: &uid, Enabled: true, SID: "S-1-5-21-1-2-3-1104"}
+	store := &revalidateUserStore{err: models.ErrUserNotFound, perm: models.PermissionReadWrite}
+
+	h, sessionID, treeID := newRevalidateHandler(t, synth, store, models.PermissionReadWrite, true)
+	h.RevalidateAuthorization(context.Background())
+
+	sess, _ := h.GetSession(sessionID)
+	if sess.AuthRevoked() {
+		t.Error("a directory-resolved session with no local account must not be revoked")
+	}
+	if _, ok := h.GetTree(treeID); !ok {
+		t.Error("tree removed for a directory-resolved session that still has access")
+	}
+}
+
+// TestRevalidateAuthorization_TransientStoreErrorKeepsSession pins the other
+// half of that rule: a store failure is not evidence the account went away, and
+// revoking on one would drop every SMB session on a database blip.
+func TestRevalidateAuthorization_TransientStoreErrorKeepsSession(t *testing.T) {
+	store := &revalidateUserStore{err: errors.New("connection refused"), perm: models.PermissionReadWrite}
+
+	h, sessionID, _ := newRevalidateHandler(t, enabledUser(), store, models.PermissionReadWrite, false)
+	h.RevalidateAuthorization(context.Background())
+
+	sess, _ := h.GetSession(sessionID)
+	if sess.AuthRevoked() {
+		t.Error("a transient store error must not revoke an established session")
+	}
+}
+
+// TestIsExpiredOrRevoked pins the predicate the dispatch gate and the LOCK
+// handler share, so a revoked session cannot take a new lock through the
+// exemption that lets it release held ones.
+func TestIsExpiredOrRevoked(t *testing.T) {
+	sess := session.NewSessionWithUser(1, "127.0.0.1", enabledUser(), "")
+	if sess.IsExpiredOrRevoked() {
+		t.Fatal("a fresh session reports as expired or revoked")
+	}
+	sess.RevokeAuth()
+	if !sess.IsExpiredOrRevoked() {
+		t.Error("a revoked session must report as unauthorized even with no ticket expiry")
+	}
 }

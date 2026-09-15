@@ -316,9 +316,13 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 	// smb2.session.expire2s/expire2e: "1st unlock => OK". A NEW lock on an
 	// expired session must still be refused with STATUS_NETWORK_SESSION_EXPIRED
 	// ("lock => EXPIRED"). UNLOCK requests proceed regardless of expiry.
+	// A revoked session reaches here for the same reason an expired one does —
+	// LOCK is exempt at dispatch so held locks can still be released — so it
+	// must be refused a NEW lock here too, or an account disabled mid-session
+	// keeps taking out byte-range locks through the one command left open to it.
 	if !isUnlockRequest && ctx.SessionID != 0 {
-		if sess, ok := h.GetSession(ctx.SessionID); ok && sess.IsExpired() {
-			logger.Debug("LOCK: new lock on expired session refused",
+		if sess, ok := h.GetSession(ctx.SessionID); ok && sess.IsExpiredOrRevoked() {
+			logger.Debug("LOCK: new lock on an unauthorized session refused",
 				"sessionID", ctx.SessionID, "fileID", fmt.Sprintf("%x", req.FileID))
 			return NewErrorResult(types.StatusNetworkSessionExpired), nil
 		}

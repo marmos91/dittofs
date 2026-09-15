@@ -140,15 +140,7 @@ func (h *Handler) TreeConnect(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 		"user", user,
 		"permission", permission)
 
-	// Apply share-level read_only override
-	// If share is configured as read_only, cap permission to Read
-	if share.ReadOnly && permission != models.PermissionNone {
-		if permission == models.PermissionReadWrite || permission == models.PermissionAdmin {
-			logger.Debug("Share is read-only, capping permission to read",
-				"shareName", shareName, "originalPermission", permission)
-			permission = models.PermissionRead
-		}
-	}
+	permission = capReadOnlyShare(share, permission)
 
 	// Encryption enforcement: in required mode, reject unencrypted sessions
 	// connecting to encrypted shares.
@@ -371,9 +363,43 @@ type sidSharePermissionResolver interface {
 //  4. Default permission if no explicit permission found
 //
 // This mirrors the NFS behavior where root users get automatic admin access based on squash settings.
+// capReadOnlyShare caps a resolved permission to read when the share itself is
+// configured read-only, so no resolution hands back write access the share
+// forbids. Every path that resolves a share permission goes through it —
+// TREE_CONNECT and the authorization re-check alike — because a second copy of
+// this rule is a copy that can drift.
+func capReadOnlyShare(share *runtime.Share, permission models.SharePermission) models.SharePermission {
+	if !share.ReadOnly || (permission != models.PermissionReadWrite && permission != models.PermissionAdmin) {
+		return permission
+	}
+	logger.Debug("Share is read-only, capping permission to read",
+		"shareName", share.Name, "originalPermission", permission)
+	return models.PermissionRead
+}
+
 func resolveSharePermission(
 	ctx *SMBHandlerContext,
 	sess *session.Session,
+	share *runtime.Share,
+	defaultPerm models.SharePermission,
+	userStore models.UserStore,
+) (models.SharePermission, string) {
+	var user *models.User
+	if sess != nil {
+		user = sess.User
+	}
+	return resolveSharePermissionForUser(ctx, sess, user, share, defaultPerm, userStore)
+}
+
+// resolveSharePermissionForUser resolves against an explicitly supplied user
+// record rather than the session's own snapshot. An authorization re-check
+// passes a record it has just read from the store, so the grants and group
+// memberships consulted below are current ones rather than those captured when
+// the session authenticated.
+func resolveSharePermissionForUser(
+	ctx *SMBHandlerContext,
+	sess *session.Session,
+	user *models.User,
 	share *runtime.Share,
 	defaultPerm models.SharePermission,
 	userStore models.UserStore,
@@ -390,36 +416,36 @@ func resolveSharePermission(
 	// mid-session keeps TREE_CONNECTing to shares it has not been re-authorized
 	// for. Ahead of the root bypass below because a disabled root is still
 	// disabled. Mirrors the NFS resolver.
-	if sess.User != nil && !sess.User.Enabled {
+	if user != nil && !user.Enabled {
 		logger.Debug("Share access denied (user disabled)",
-			"shareName", share.Name, "user", sess.User.Username)
-		return models.PermissionNone, sess.User.Username
+			"shareName", share.Name, "user", user.Username)
+		return models.PermissionNone, user.Username
 	}
 
 	// 1. Root user bypass: UID 0 with a squash mode that allows root access gets
 	// admin regardless of grants. Mirrors resolveNFSSharePermission.
-	if sess.User != nil && isRootUser(sess.User) && rootHasAdminAccess(share) {
+	if user != nil && isRootUser(user) && rootHasAdminAccess(share) {
 		logger.Debug("Root user granted admin access via squash mode",
-			"shareName", share.Name, "user", sess.User.Username, "squash", share.Squash)
-		return models.PermissionAdmin, sess.User.Username
+			"shareName", share.Name, "user", user.Username, "squash", share.Squash)
+		return models.PermissionAdmin, user.Username
 	}
 
 	// 2. Local user/group resolution.
 	localPerm := defaultPerm
 	identifier := sess.Username
 	switch {
-	case sess.User != nil:
-		identifier = sess.User.Username
+	case user != nil:
+		identifier = user.Username
 		if userStore != nil {
-			if perm, err := userStore.ResolveSharePermission(ctx.Context, sess.User, share.Name); err != nil {
+			if perm, err := userStore.ResolveSharePermission(ctx.Context, user, share.Name); err != nil {
 				logger.Debug("Permission resolution failed, using default",
-					"shareName", share.Name, "user", sess.User.Username, "error", err, "default", defaultPerm)
+					"shareName", share.Name, "user", user.Username, "error", err, "default", defaultPerm)
 			} else {
 				localPerm = perm
 			}
 		} else {
 			logger.Debug("No userStore available, using default permission",
-				"shareName", share.Name, "user", sess.User.Username, "default", defaultPerm)
+				"shareName", share.Name, "user", user.Username, "default", defaultPerm)
 		}
 	case sess.IsGuest:
 		identifier = "guest"
@@ -433,8 +459,8 @@ func resolveSharePermission(
 	// be overridden, mirroring the local resolver's "user-explicit wins" rule.
 	effective := localPerm
 	userExplicit := false
-	if sess.User != nil {
-		_, userExplicit = sess.User.GetExplicitSharePermission(share.Name)
+	if user != nil {
+		_, userExplicit = user.GetExplicitSharePermission(share.Name)
 	}
 	if r, ok := userStore.(sidSharePermissionResolver); ok && !userExplicit {
 		groupSIDs, userSID := sess.PACIdentity()

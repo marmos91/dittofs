@@ -253,25 +253,6 @@ func (s *Session) UpdateIdentity(username, domain string, user *models.User, isG
 	s.authIdentityUser = nil
 }
 
-// RefreshUser replaces the session's DittoFS user record, leaving the rest of
-// the identity (username, domain, guest/null flags) alone. An authorization
-// re-check uses it to install a record re-read from the store: the original is
-// a snapshot taken at authentication, and share-permission resolution reads the
-// user's own grants and group memberships off that object rather than from the
-// database, so a stale one resolves against grants that may since have been
-// revoked.
-//
-// Takes the same lock as UpdateIdentity and drops the memoized derived identity
-// for the same reason — group membership feeds the UID/GID and group-SID set.
-// Safe for concurrent use.
-func (s *Session) RefreshUser(user *models.User) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.User = user
-	s.authIdentity = nil
-	s.authIdentityUser = nil
-}
-
 // SetPACIdentity stores the Kerberos PAC group SIDs and user SID for the
 // session, replacing any previous set. Called on SESSION_SETUP and on
 // re-authentication (Kerberos reauth refreshes, NTLM reauth clears with a nil
@@ -406,6 +387,14 @@ func (s *Session) SetBindIdentity(dialect types.Dialect, signingAlgo uint16, cip
 // IsExpired returns true if the session has a Kerberos ticket that has expired.
 func (s *Session) IsExpired() bool {
 	return !s.ExpiresAt.IsZero() && time.Now().After(s.ExpiresAt)
+}
+
+// IsExpiredOrRevoked reports whether the session has lost its authorization,
+// either because a Kerberos ticket ran out or because a re-check retired the
+// user behind it. The dispatch gate and the LOCK handler's own new-lock refusal
+// share it so the two cannot answer differently for the same session.
+func (s *Session) IsExpiredOrRevoked() bool {
+	return s.IsExpired() || s.AuthRevoked()
 }
 
 // RevokeAuth marks the session's authorization as no longer valid. Callers are
