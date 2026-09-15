@@ -45,6 +45,12 @@ func (h *Handler) RevalidateAuthorization(ctx context.Context) {
 		return
 	}
 
+	// One sweep at a time: see revalidateMu. Held across the whole sweep, both
+	// the resolve pass and the apply pass, because splitting them is exactly
+	// what lets a stale decision land after a fresh one.
+	h.revalidateMu.Lock()
+	defer h.revalidateMu.Unlock()
+
 	// Sessions that survive, mapped to the record their trees re-resolve
 	// against. A surviving guest session maps to a nil record, which is what it
 	// authenticated with; a revoked session is absent, so the tree pass leaves

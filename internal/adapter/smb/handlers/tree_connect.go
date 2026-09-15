@@ -447,8 +447,14 @@ func resolveSharePermissionForUser(
 	}
 
 	// 2. Local user/group resolution.
+	// One snapshot of the identity fields for the whole resolution. The
+	// authorization sweep calls this from its own goroutine while SESSION_SETUP
+	// may be re-authenticating, so reading Username and IsGuest separately could
+	// mix an old and a new identity within a single decision.
+	_, snapUsername, snapIsGuest := sess.AuthIdentity()
+
 	localPerm := defaultPerm
-	identifier := sess.Username
+	identifier := snapUsername
 	// resolved reports whether the permission below is a decision the store
 	// actually made — across both lookups, the local one here and the SID grant
 	// further down. A failed lookup falls back to the share default, which is a
@@ -471,7 +477,7 @@ func resolveSharePermissionForUser(
 			logger.Debug("No userStore available, using default permission",
 				"shareName", share.Name, "user", user.Username, "default", defaultPerm)
 		}
-	case sess.IsGuest:
+	case snapIsGuest:
 		identifier = "guest"
 	}
 

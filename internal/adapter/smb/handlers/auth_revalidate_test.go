@@ -3,6 +3,9 @@ package handlers
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,6 +34,9 @@ type revalidateUserStore struct {
 	// sidErr fails only the SID-grant lookup, which for an AD principal with no
 	// local account can carry its entire grant.
 	sidErr error
+	// onResolve, when set, runs on entry to the share-permission lookup so a
+	// test can observe how many sweeps are inside the resolve pass at once.
+	onResolve func()
 }
 
 // ResolveSharePermissionForSIDs makes the fake satisfy sidSharePermissionResolver
@@ -50,6 +56,9 @@ func (s *revalidateUserStore) GetUser(_ context.Context, _ string) (*models.User
 }
 
 func (s *revalidateUserStore) ResolveSharePermission(_ context.Context, _ *models.User, _ string) (models.SharePermission, error) {
+	if s.onResolve != nil {
+		s.onResolve()
+	}
 	if s.permErr != nil {
 		return models.PermissionNone, s.permErr
 	}
@@ -534,4 +543,79 @@ func TestRevalidateAuthorization_SIDResolverErrorDoesNotRaisePermission(t *testi
 		t.Errorf("Permission = %v, want read: the SID lookup failed, so the share default "+
 			"was left standing and written back as an authorization decision", tree.Permission)
 	}
+}
+
+// TestRevalidateAuthorization_SweepsDoNotOverlap pins the serialization. Each
+// control-plane mutation fires its own invalidation from its own goroutine, so
+// without a lock two sweeps interleave: the earlier one resolves a grant, the
+// later one resolves and stores the newer value, and the earlier one then
+// stores its stale copy over it, restoring access that was just withdrawn.
+//
+// Asserting on the final permission would be timing-dependent. The invariant
+// that is not is that no two sweeps are ever inside the resolve pass at once.
+func TestRevalidateAuthorization_SweepsDoNotOverlap(t *testing.T) {
+	var inFlight, maxInFlight atomic.Int32
+
+	store := &revalidateUserStore{user: enabledUser(), perm: models.PermissionRead}
+	store.onResolve = func() {
+		n := inFlight.Add(1)
+		for {
+			old := maxInFlight.Load()
+			if n <= old || maxInFlight.CompareAndSwap(old, n) {
+				break
+			}
+		}
+		// Wide enough that an unserialized pair would overlap here.
+		time.Sleep(20 * time.Millisecond)
+		inFlight.Add(-1)
+	}
+
+	h, _, _ := newRevalidateHandler(t, enabledUser(), store, models.PermissionReadWrite, true)
+
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			h.RevalidateAuthorization(context.Background())
+		}()
+	}
+	wg.Wait()
+
+	if got := maxInFlight.Load(); got > 1 {
+		t.Errorf("%d sweeps were resolving at once; concurrent sweeps can publish out of "+
+			"order and restore a withdrawn grant", got)
+	}
+}
+
+// TestRevalidateAuthorization_ConcurrentReauthIsRaceFree runs the sweep against
+// a re-authentication, which is what the invalidation goroutine and SESSION_SETUP
+// do to the same session in production. It asserts nothing directly: the race
+// detector is the assertion, and it fails on any unsynchronized read of the
+// identity fields the resolver consults.
+func TestRevalidateAuthorization_ConcurrentReauthIsRaceFree(t *testing.T) {
+	store := &revalidateUserStore{user: enabledUser(), perm: models.PermissionRead}
+	h, sessionID, _ := newRevalidateHandler(t, enabledUser(), store, models.PermissionReadWrite, true)
+
+	sess, ok := h.GetSession(sessionID)
+	if !ok {
+		t.Fatal("fixture is wrong: no session")
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for range 50 {
+			h.RevalidateAuthorization(context.Background())
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		user := enabledUser()
+		for i := range 50 {
+			sess.UpdateIdentity(fmt.Sprintf("user-%d", i), "", user, false, false)
+		}
+	}()
+	wg.Wait()
 }

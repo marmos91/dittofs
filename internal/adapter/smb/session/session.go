@@ -407,6 +407,17 @@ func (s *Session) CurrentUser() *models.User {
 	return s.User
 }
 
+// AuthIdentity returns the identity fields authorization resolves against, read
+// together under the lock UpdateIdentity writes them through. Taking them one
+// accessor at a time would let a re-authentication land between two reads and
+// produce a pair that never existed — a username from the old identity beside
+// the new one's user record.
+func (s *Session) AuthIdentity() (user *models.User, username string, isGuest bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.User, s.Username, s.IsGuest
+}
+
 // IsExpiredOrRevoked reports whether the session has lost its authorization,
 // either because a Kerberos ticket ran out or because a re-check retired the
 // user behind it. The dispatch gate and the LOCK handler's own new-lock refusal

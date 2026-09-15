@@ -71,6 +71,15 @@ type Handler struct {
 	// touch only the sync.Map, and CLOSE's WaitAndDeleteOpenFile drains only
 	// the *closing* handle's own in-flight ops (never a rename, which registers
 	// under its own distinct FileID).
+	// revalidateMu serializes authorization sweeps. Control-plane mutations run
+	// on their own goroutines and each fires an invalidation, so two sweeps can
+	// otherwise interleave: the earlier one resolves a grant, the later one
+	// resolves and stores the newer value, and the earlier one then stores its
+	// stale copy over it — restoring access that was just withdrawn. Serialized,
+	// each sweep re-reads the store from scratch, so the last one to run is the
+	// one that decides.
+	revalidateMu sync.Mutex
+
 	renameScanMu sync.Mutex
 
 	// docElectionMu serializes the delete-on-close last-handle election
