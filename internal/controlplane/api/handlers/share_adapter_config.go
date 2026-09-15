@@ -154,16 +154,21 @@ func (h *ShareNFSConfigHandler) Patch(w http.ResponseWriter, r *http.Request) {
 		opts.AllowAuthSys = *req.AllowAuthSys
 	}
 	if req.RequireKerberos != nil {
-		// A share that requires Kerberos on a server without Kerberos
-		// configured is reachable by no auth flavor at all: AUTH_SYS and
-		// AUTH_NONE are refused by the policy and RPCSEC_GSS cannot be
-		// negotiated. Refusing it here is also what leaves SECINFO with at
-		// least one flavor to report for every share.
-		if *req.RequireKerberos && h.runtime != nil && !h.runtime.KerberosEnabled() {
-			BadRequest(w, runtime.ErrKerberosNotConfigured.Error())
-			return
-		}
 		opts.RequireKerberos = *req.RequireKerberos
+	}
+	// A share reachable by no auth flavor at all would export while refusing
+	// every client, and SECINFO would narrow to an empty list. Two settings
+	// produce it — requiring Kerberos the server does not have, and forbidding
+	// AUTH_SYS with nothing else left to offer — and either can arrive on its
+	// own, with the other flag coming from the stored config. So this is
+	// evaluated on the resulting pair rather than on the field being written:
+	// checking the incoming flag alone misses `--allow-auth-sys false` on a
+	// share whose require_kerberos was already set, and every partial update.
+	if h.runtime != nil &&
+		runtime.ExportAcceptsNoAuthFlavor(opts.RequireKerberos, opts.AllowAuthSys, h.runtime.KerberosEnabled()) {
+		BadRequest(w, runtime.ErrKerberosNotConfigured.Error()+
+			": the resulting export would accept no auth flavor; allow AUTH_SYS, clear require_kerberos, or enable Kerberos")
+		return
 	}
 	if req.MinKerberosLevel != nil {
 		opts.MinKerberosLevel = *req.MinKerberosLevel

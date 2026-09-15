@@ -27,6 +27,34 @@ func persistRequireKerberosShare(t *testing.T, ctx context.Context, s cpstore.St
 
 	opts := models.DefaultNFSExportOptions()
 	opts.RequireKerberos = true
+	persistNFSExportOptions(t, ctx, s, shareID, opts)
+}
+
+// persistNoAuthSysShare writes the other way to reach an export no client can
+// use: AUTH_SYS forbidden with no Kerberos to fall back to. It needs no
+// decommissioning step to become unreachable — unlike require_kerberos, which
+// is valid until the server loses Kerberos, this is already unusable the moment
+// it is written on a server that has none.
+func persistNoAuthSysShare(t *testing.T, ctx context.Context, s cpstore.Store, name string) {
+	t.Helper()
+
+	shareID, err := s.CreateShare(ctx, &models.Share{
+		Name:            name,
+		MetadataStoreID: "test-meta",
+		BlockStoreID:    createBlockStoreConfig(t, s, "blocks"+name),
+	})
+	if err != nil {
+		t.Fatalf("CreateShare: %v", err)
+	}
+
+	opts := models.DefaultNFSExportOptions()
+	opts.AllowAuthSys = false
+	opts.RequireKerberos = false
+	persistNFSExportOptions(t, ctx, s, shareID, opts)
+}
+
+func persistNFSExportOptions(t *testing.T, ctx context.Context, s cpstore.Store, shareID string, opts models.NFSExportOptions) {
+	t.Helper()
 	cfg := &models.ShareAdapterConfig{ShareID: shareID, AdapterType: "nfs"}
 	if err := cfg.SetConfig(opts); err != nil {
 		t.Fatalf("SetConfig: %v", err)
@@ -194,5 +222,54 @@ func TestLoadSharesFromStore_RequireKerberosOnUnaddableShareLoads(t *testing.T) 
 	}
 	if rt.ShareExists("/krb-unaddable") {
 		t.Fatal("fixture is wrong: the share was added, so this proves nothing about the skip path")
+	}
+}
+
+// TestLoadSharesFromStore_NoAuthSysWithoutKerberosStops covers the second way to
+// reach an export reachable by no auth flavor. allow_auth_sys=false produces the
+// identical unreachable share as require_kerberos on a Kerberos-less server —
+// AUTH_SYS and AUTH_NONE refused by the policy, RPCSEC_GSS impossible to
+// negotiate — and used to be refused at neither write time nor load time.
+func TestLoadSharesFromStore_NoAuthSysWithoutKerberosStops(t *testing.T) {
+	rt, s := setupTestRuntime(t)
+	ctx := context.Background()
+
+	serveNFS(t, ctx, s)
+	persistNoAuthSysShare(t, ctx, s, "/no-authsys")
+	rt.SetKerberosEnabled(false)
+
+	err := LoadSharesFromStore(ctx, rt, s)
+	if err == nil {
+		t.Fatal("LoadSharesFromStore returned nil; a share that accepts no auth flavor must stop the boot")
+	}
+	if !errors.Is(err, ErrKerberosNotConfigured) {
+		t.Fatalf("error = %v; want errors.Is ErrKerberosNotConfigured", err)
+	}
+	if !strings.Contains(err.Error(), "/no-authsys") {
+		t.Fatalf("error %q does not name the share", err)
+	}
+	// The remedy has to name the setting that actually caused it: telling an
+	// operator to clear require_kerberos on a share that never set it sends
+	// them to a flag that is already false.
+	if !strings.Contains(err.Error(), "--allow-auth-sys true") {
+		t.Errorf("error %q does not offer the remedy for the setting that caused it", err)
+	}
+}
+
+// TestLoadSharesFromStore_NoAuthSysWithKerberosLoads pins the other half: with
+// Kerberos available the same share is served by RPCSEC_GSS and is valid.
+func TestLoadSharesFromStore_NoAuthSysWithKerberosLoads(t *testing.T) {
+	rt, s := setupTestRuntime(t)
+	ctx := context.Background()
+
+	serveNFS(t, ctx, s)
+	persistNoAuthSysShare(t, ctx, s, "/no-authsys-krb")
+	rt.SetKerberosEnabled(true)
+
+	if err := LoadSharesFromStore(ctx, rt, s); err != nil {
+		t.Fatalf("LoadSharesFromStore refused a Kerberos-only share on a Kerberos server: %v", err)
+	}
+	if !rt.ShareExists("/no-authsys-krb") {
+		t.Fatal("a Kerberos-only share must load when the server has Kerberos")
 	}
 }

@@ -302,11 +302,12 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 			continue
 		}
 
-		// The export auth-flavor policy is persisted, so it outlives the
-		// server capability it depends on: require_kerberos survives Kerberos
-		// being decommissioned. Such a share accepts no flavor at all —
-		// AUTH_SYS and AUTH_NONE are refused by the policy, RPCSEC_GSS cannot
-		// be negotiated — so it would export while refusing every client, and
+		// The export auth-flavor policy is persisted, so it outlives the server
+		// capability it depends on: require_kerberos survives Kerberos being
+		// decommissioned, and allow_auth_sys=false never needed a capability to
+		// begin with. Either leaves a share that accepts no flavor at all —
+		// AUTH_SYS and AUTH_NONE refused by the policy, RPCSEC_GSS impossible to
+		// negotiate — so it would export while refusing every client, and
 		// SECINFO would narrow to an empty flavor list. Refuse the boot rather
 		// than serve it or silently drop the policy.
 		//
@@ -315,11 +316,15 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 		// boot; and the share has to be one this load actually served, which is
 		// why this sits after AddShare rather than before it — an enabled row
 		// that AddShare warns about and skips exports nothing either.
-		if shareConfig.RequireKerberos && shareConfig.Enabled && nfsEnabled && !rt.KerberosEnabled() {
+		if shareConfig.Enabled && nfsEnabled &&
+			ExportAcceptsNoAuthFlavor(shareConfig.RequireKerberos, shareConfig.AllowAuthSys, rt.KerberosEnabled()) {
+			remedy := "clear the policy with `dfsctl share nfs-config set " + share.Name + " --require-kerberos false`"
+			if !shareConfig.AllowAuthSys {
+				remedy = "re-allow AUTH_SYS with `dfsctl share nfs-config set " + share.Name + " --allow-auth-sys true`"
+			}
 			return fmt.Errorf("share %q: %w; enable Kerberos (kerberos.enabled / "+
-				"DITTOFS_KERBEROS_ENABLED), disable the NFS adapter, or clear the "+
-				"policy with `dfsctl share nfs-config set %s --require-kerberos false`",
-				share.Name, ErrKerberosNotConfigured, share.Name)
+				"DITTOFS_KERBEROS_ENABLED), disable the NFS adapter, or %s",
+				share.Name, ErrKerberosNotConfigured, remedy)
 		}
 
 		logger.Info("Loaded share", "name", share.Name, "metadata_store", shareConfig.MetadataStore)
