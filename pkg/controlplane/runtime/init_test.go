@@ -508,3 +508,37 @@ func TestRemoveShareClosesBlockStore(t *testing.T) {
 	// closed memory store. We just verify no panic occurs.
 	_, _ = bs.WriteAt(ctx, "post-close-payload", nil, []byte("should fail or noop"), 0)
 }
+
+// A share whose block store reference resolves to nothing is reported by name,
+// with the reference that could not be resolved, rather than being folded into
+// the generic add-failure warning that leaves an operator guessing which
+// binding is broken.
+func TestLoadSharesFromStore_ReportsUnresolvableBlockStore(t *testing.T) {
+	rt, s := setupTestRuntime(t)
+	ctx := context.Background()
+
+	metaStores, err := s.ListMetadataStores(ctx)
+	if err != nil || len(metaStores) == 0 {
+		t.Fatalf("ListMetadataStores: %v", err)
+	}
+
+	if _, err := s.CreateShare(ctx, &models.Share{
+		Name:            "/orphaned",
+		MetadataStoreID: metaStores[0].ID,
+		BlockStoreID:    "deleted-blocks",
+	}); err != nil {
+		t.Fatalf("CreateShare: %v", err)
+	}
+
+	if err := LoadSharesFromStore(ctx, rt, s); err != nil {
+		t.Fatalf("LoadSharesFromStore: %v", err)
+	}
+
+	reason, ok := rt.SkippedShares()["/orphaned"]
+	if !ok {
+		t.Fatal("share with an unresolvable block store was not recorded as skipped")
+	}
+	if want := "block store deleted-blocks is not configured"; reason != want {
+		t.Errorf("skip reason = %q, want %q", reason, want)
+	}
+}

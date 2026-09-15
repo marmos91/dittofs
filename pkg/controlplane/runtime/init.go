@@ -246,6 +246,18 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 	}
 
 	for _, share := range shares {
+		// A binding that resolves to no store leaves the share absent from a
+		// server that otherwise reports healthy. Name it and the reference it
+		// could not resolve, rather than letting the AddShare failure below
+		// report it as a generic startup error.
+		if ref := share.BlockStoreID; ref != "" && !blockStoreExists(ctx, s, ref) {
+			logger.Warn("Share references unknown block store",
+				"share", share.Name,
+				"block_store_id", ref)
+			rt.markShareSkipped(share.Name, "block store "+ref+" is not configured")
+			continue
+		}
+
 		shareConfig, err := buildShareConfig(ctx, s, share)
 		if err != nil {
 			return err
@@ -281,6 +293,21 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 	}
 
 	return nil
+}
+
+// blockStoreExists reports whether a share's block store reference names a
+// configured store, resolving it the same way the share loader does: by UUID
+// first, then by name for rows that hold the name instead.
+//
+// Only a genuine "not found" on both lookups counts as missing. A DB or context
+// error says nothing about whether the store exists, so it is left to the load
+// path to report rather than being turned into a misleading report here.
+func blockStoreExists(ctx context.Context, s store.Store, ref string) bool {
+	if _, err := s.GetBlockStoreByID(ctx, ref); !errors.Is(err, models.ErrStoreNotFound) {
+		return true
+	}
+	_, err := s.GetBlockStore(ctx, ref)
+	return !errors.Is(err, models.ErrStoreNotFound)
 }
 
 // buildShareConfig assembles the runtime ShareConfig for a persisted share row,
