@@ -74,9 +74,9 @@ func getattrCall(handle metadata.FileHandle) (*rpc.RPCCallMessage, []byte) {
 }
 
 // TestV3ExportAuthPolicy_TighteningRefusesAnExistingHandle drives the sequence
-// #2577 describes: a client acquires a handle while the share accepts AUTH_SYS,
-// an administrator then sets allow_auth_sys=false, and the client keeps using
-// the handle it already holds.
+// the per-operation gate exists for: a client acquires a handle while the share
+// accepts AUTH_SYS, an administrator then sets allow_auth_sys=false, and the
+// client keeps using the handle it already holds.
 //
 // MOUNT gates handle acquisition only, so without a per-operation gate the
 // second GETATTR still succeeds and the policy change reaches new mounts alone.

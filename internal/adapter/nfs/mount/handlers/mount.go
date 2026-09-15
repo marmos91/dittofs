@@ -120,10 +120,9 @@ func (h *Handler) Mount(
 	// Export access-control policy: which auth flavors this export accepts, the
 	// GSS protection floor, and the netgroup client allowlist. The decision lives
 	// in one place so MNT and the per-operation gate on the data path cannot
-	// drift apart, and so this handler stays protocol-only.
-	//
-	// Existing connections are grandfathered at MOUNT only in the sense that MNT
-	// is not replayed; the same policy is re-applied per operation.
+	// drift apart, and so this handler stays protocol-only. MNT is never
+	// replayed, so a client that already mounted is caught by that per-operation
+	// gate rather than here.
 	if accessErr := auth.CheckExportAccess(
 		ctx.Context, share, ctx.AuthFlavor, net.ParseIP(clientIP), h.Registry.CheckNetgroupAccess,
 	); accessErr != nil {

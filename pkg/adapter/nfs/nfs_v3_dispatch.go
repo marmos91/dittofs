@@ -2,6 +2,7 @@ package nfs
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"time"
 
@@ -71,8 +72,9 @@ func (c *NFSConnection) handleNFSProcedure(ctx context.Context, call *rpc.RPCCal
 	// PATHCONF) resolve no auth context at all. Tightening a share therefore
 	// takes effect on the next operation of an already-mounted client.
 	//
-	// An empty share name means no handle was carried (NULL) or the handle did
-	// not resolve; the handler answers those.
+	// A share that does not resolve has no policy to apply: the name is empty
+	// because no handle was carried (NULL) or the handle did not decode, or the
+	// share is gone. The handler answers all of those.
 	//
 	// ponytail: one GetShare snapshot copy per RPC. Narrow it to a
 	// flavor-policy accessor only if this shows up in a profile.
@@ -84,7 +86,7 @@ func (c *NFSConnection) handleNFSProcedure(ctx context.Context, call *rpc.RPCCal
 					"share", share,
 					"client", clientAddr,
 					"reason", accessErr)
-				return c.makeStatusOnlyResponse(nfs_types.NFS3ErrAccess).Data, nil
+				return v3StatusOnlyReply(nfs_types.NFS3ErrAccess), nil
 			}
 		}
 	}
@@ -96,8 +98,7 @@ func (c *NFSConnection) handleNFSProcedure(ctx context.Context, call *rpc.RPCCal
 			"client", clientAddr,
 			"xid", fmt.Sprintf("0x%x", call.XID))
 
-		// Return a minimal NFS3ERR_NOTSUPP response
-		return c.makeStatusOnlyResponse(nfs_types.NFS3ErrNotSupp).Data, nil
+		return v3StatusOnlyReply(nfs_types.NFS3ErrNotSupp), nil
 	}
 
 	// Duplicate-request cache (DRC) for non-idempotent procedures.
@@ -125,4 +126,16 @@ func (c *NFSConnection) handleNFSProcedure(ctx context.Context, call *rpc.RPCCal
 			}
 			return result.Data, true, err
 		})
+}
+
+// v3StatusOnlyReply encodes a bare NFSv3 error reply: the status followed by
+// empty WCC data (pre_op=false, post_op=false), which clients handle gracefully
+// per RFC 1813. It is what the dispatch layer answers with when a request is
+// refused before any procedure handler runs, so no procedure-specific response
+// type is available to encode.
+func v3StatusOnlyReply(status uint32) []byte {
+	reply := make([]byte, 12)
+	binary.BigEndian.PutUint32(reply[0:4], status)
+	// bytes 4-11: the two attr-present flags, already zero (false).
+	return reply
 }
