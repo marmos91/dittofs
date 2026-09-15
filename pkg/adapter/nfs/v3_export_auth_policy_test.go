@@ -19,13 +19,14 @@ import (
 func newV3PolicyFixture(t *testing.T) (*NFSConnection, *runtime.Runtime, metadata.FileHandle) {
 	t.Helper()
 
-	rt := runtime.New(nil)
+	rt, bsID := newTestShareRuntime(t)
 	if err := rt.RegisterMetadataStore("test-meta", metadatamemory.NewMemoryMetadataStoreWithDefaults()); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
 	shareCfg := &runtime.ShareConfig{
 		Name:          "/export",
 		MetadataStore: "test-meta",
+		BlockStoreID:  bsID,
 		Enabled:       true,
 		RootAttr:      &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o755},
 	}

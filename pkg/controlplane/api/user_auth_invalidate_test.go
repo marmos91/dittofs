@@ -60,11 +60,11 @@ func seedGroup(t *testing.T, cpStore store.Store, name string) {
 func seedShare(t *testing.T, cpStore store.Store, name string) {
 	t.Helper()
 	if _, err := cpStore.CreateShare(context.Background(), &models.Share{
-		ID:                "share-" + name,
-		Name:              name,
-		MetadataStoreID:   "meta-1",
-		LocalBlockStoreID: "block-1",
-		Enabled:           true,
+		ID:              "share-" + name,
+		Name:            name,
+		MetadataStoreID: "meta-1",
+		BlockStoreID:    "block-1",
+		Enabled:         true,
 	}); err != nil {
 		t.Fatalf("seed share %q: %v", name, err)
 	}
