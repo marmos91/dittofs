@@ -622,6 +622,25 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 		if attrs.Ctime == nil && !attrs.PreserveCtime {
 			file.Ctime = now
 		}
+		// Holding ChangeTime means writing back whatever the row holds, not
+		// whatever this call read before it began. `file` was loaded before the
+		// transaction opened and every field of it is about to be rewritten, so
+		// leaving Ctime untouched in memory would still revert an advance another
+		// writer committed in between — the backwards move a held timestamp exists
+		// to avoid, and the one NFSv4's change attribute must never make. Re-read
+		// it inside the transaction so the write carries the current value
+		// forward. Exact on a backend whose transaction serialises the read
+		// against concurrent writers; on one whose in-transaction read takes no
+		// row lock this narrows the window rather than closing it, the same
+		// residue RestoreChangeTimeIfUnchanged documents.
+		holdCtime := func(tx Transaction) {
+			if !attrs.PreserveCtime || attrs.Ctime != nil {
+				return
+			}
+			if cur, curErr := tx.GetFile(ctx.Context, handle); curErr == nil && cur != nil {
+				file.Ctime = cur.Ctime
+			}
+		}
 		// A size change (truncate/grow) is data-paired: the new size must
 		// survive a crash together with the block data, or a read past the new
 		// EOF returns stale-tail / silent-truncation bytes (#588). Persist it
@@ -640,6 +659,7 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 			mu := s.pendingWrites.GetFlushLock(handle)
 			mu.Lock()
 			err := store.WithTransaction(ctx.Context, func(tx Transaction) error {
+				holdCtime(tx)
 				if blocksPruned {
 					return tx.SetManifest(ctx.Context, file)
 				}
@@ -656,6 +676,7 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 			}
 		} else {
 			if err := withRelaxedTransaction(store, ctx.Context, func(tx Transaction) error {
+				holdCtime(tx)
 				return tx.UpdateAttrs(ctx.Context, file)
 			}); err != nil {
 				return nil, err

@@ -1,0 +1,136 @@
+package metadata_test
+
+import (
+	"context"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+)
+
+// setupPreserveCtimeFile wires a service over a memory store with one share and
+// one regular file, and returns the service, a root auth context and the file's
+// handle.
+func setupPreserveCtimeFile(t *testing.T) (*metadata.Service, *metadata.AuthContext, metadata.FileHandle) {
+	t.Helper()
+	const share = "/pc"
+	store := memory.NewMemoryMetadataStoreWithDefaults()
+	rootFile, err := store.CreateRootDirectory(context.Background(), share, &metadata.FileAttr{
+		Type: metadata.FileTypeDirectory, Mode: 0o777,
+	})
+	if err != nil {
+		t.Fatalf("CreateRootDirectory: %v", err)
+	}
+	rootHandle, err := metadata.EncodeShareHandle(share, rootFile.ID)
+	if err != nil {
+		t.Fatalf("EncodeShareHandle: %v", err)
+	}
+	svc := metadata.New()
+	if err := svc.RegisterStoreForShare(share, store); err != nil {
+		t.Fatalf("RegisterStoreForShare: %v", err)
+	}
+	ctx := &metadata.AuthContext{
+		Context:    context.Background(),
+		AuthMethod: "unix",
+		Identity: &metadata.Identity{
+			UID: metadata.Uint32Ptr(0), GID: metadata.Uint32Ptr(0), GIDs: []uint32{0},
+		},
+		ClientAddr: "127.0.0.1",
+	}
+	file, _, err := svc.CreateFile(ctx, rootHandle, "f", &metadata.FileAttr{
+		Type: metadata.FileTypeRegular, Mode: 0o644,
+	})
+	if err != nil {
+		t.Fatalf("CreateFile: %v", err)
+	}
+	handle, err := metadata.EncodeFileHandle(file)
+	if err != nil {
+		t.Fatalf("EncodeFileHandle: %v", err)
+	}
+	return svc, ctx, handle
+}
+
+// A PreserveCtime write must carry the row's current ChangeTime forward, not the
+// snapshot SetFileAttributes read before its transaction opened. Otherwise a
+// writer that advances ChangeTime in between is silently reverted — the
+// backwards move NFSv4's change attribute must never make.
+//
+// The interleaving is a real race, so this drives it rather than staging it: the
+// assertion only fires when the revert actually happens, so the test can fail
+// only in the presence of the defect, never because the window was missed.
+func TestSetFileAttributes_PreserveCtimeDoesNotRevertAConcurrentAdvance(t *testing.T) {
+	svc, ctx, handle := setupPreserveCtimeFile(t)
+
+	base := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	const rounds = 300
+
+	for i := range rounds {
+		advanced := base.Add(time.Duration(i+1) * time.Hour)
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		start := make(chan struct{})
+
+		go func() {
+			defer wg.Done()
+			<-start
+			atime := base.Add(time.Duration(i+1) * time.Minute)
+			_, _ = svc.SetFileAttributes(ctx, handle, &metadata.SetAttrs{
+				Atime: &atime, PreserveCtime: true,
+			})
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			_, _ = svc.SetFileAttributes(ctx, handle, &metadata.SetAttrs{Ctime: &advanced})
+		}()
+
+		close(start)
+		wg.Wait()
+
+		got, err := svc.GetFile(context.Background(), handle)
+		if err != nil {
+			t.Fatalf("round %d: GetFile: %v", i, err)
+		}
+		// The two writers are unordered, so the advance may not have landed yet;
+		// what must never happen is the stored value ending up older than a value
+		// that was already committed before this round began.
+		floor := base.Add(time.Duration(i) * time.Hour)
+		if i > 0 && got.Ctime.Before(floor) {
+			t.Fatalf("round %d: ChangeTime reverted to %v, below the %v already committed",
+				i, got.Ctime.UTC(), floor.UTC())
+		}
+	}
+}
+
+// PreserveCtime must leave ChangeTime alone while still landing the change that
+// carried it — the sequential half of the guarantee.
+func TestSetFileAttributes_PreserveCtimeHoldsTheStoredValue(t *testing.T) {
+	svc, ctx, handle := setupPreserveCtimeFile(t)
+
+	pinned := time.Date(2021, 2, 3, 4, 5, 6, 0, time.UTC)
+	if _, err := svc.SetFileAttributes(ctx, handle, &metadata.SetAttrs{Ctime: &pinned}); err != nil {
+		t.Fatalf("seed ctime: %v", err)
+	}
+
+	atime := time.Date(2024, 7, 8, 9, 10, 11, 0, time.UTC)
+	if _, err := svc.SetFileAttributes(ctx, handle, &metadata.SetAttrs{
+		Atime: &atime, PreserveCtime: true,
+	}); err != nil {
+		t.Fatalf("atime bump: %v", err)
+	}
+
+	got, err := svc.GetFile(context.Background(), handle)
+	if err != nil {
+		t.Fatalf("GetFile: %v", err)
+	}
+	if !got.Ctime.Equal(pinned) {
+		t.Errorf("ChangeTime = %v; want the held %v", got.Ctime.UTC(), pinned.UTC())
+	}
+	if !got.Atime.Equal(atime) {
+		t.Errorf("LastAccessTime = %v; want %v — the change itself must still land",
+			got.Atime.UTC(), atime.UTC())
+	}
+}
