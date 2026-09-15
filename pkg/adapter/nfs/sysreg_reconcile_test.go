@@ -3,6 +3,7 @@ package nfs
 import (
 	"context"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -47,33 +48,38 @@ func TestReconcileSysregTogglesSidecar(t *testing.T) {
 // A flip that lands while a transition is still talking to rpcbind is applied
 // rather than dropped. A caller that reacts to the sidecar's running state
 // always issues its flip into an in-flight transition (see waitRunning), so the
-// window this covers is the normal case, not a rare one. slowSysregAddr holds
-// the transition open long enough for the flip to be issued deterministically.
+// window this covers is the normal case, not a rare one. The registration is
+// held open until the flip has been issued, so the race is arranged rather than
+// waited for.
 func TestReconcileSysregAppliesFlipDuringTransition(t *testing.T) {
-	a, setRegisterWithSystem := newSysregAdapter(slowSysregAddr(t, 250*time.Millisecond))
+	addr, release := heldSysregAddr(t)
+	a, setRegisterWithSystem := newSysregAdapter(addr)
 
 	setRegisterWithSystem(true)
 	a.reconcileSysreg()
 	waitRunning(t, a, true)
 	if got := a.sysregState.Load(); got != sysregRunning {
-		t.Fatalf("enable transition already settled (state %d); the flip below would not race it", got)
+		t.Fatalf("enable transition not in flight (state %d); the flip below would not race it", got)
 	}
 
 	setRegisterWithSystem(false)
 	a.reconcileSysreg()
+	release()
 	waitSysreg(t, a, false, "register-with-system disabled during an in-flight enable")
 }
 
-// slowSysregAddr returns the address of a listener that accepts a connection,
-// stalls for d, then closes it, so a sysreg registration against it stays in
-// flight for at least d before failing.
-func slowSysregAddr(t *testing.T, d time.Duration) string {
+// heldSysregAddr returns the address of a listener that accepts a connection
+// and holds it open until release is called, so a sysreg registration against
+// it stays in flight for exactly as long as the caller wants. Bounding the
+// window by a duration instead would make every assertion about the in-flight
+// state a bet on the test goroutine being scheduled inside it.
+func heldSysregAddr(t *testing.T) (addr string, release func()) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	t.Cleanup(func() { _ = ln.Close() })
+	held := make(chan struct{})
 	go func() {
 		for {
 			c, err := ln.Accept()
@@ -81,12 +87,17 @@ func slowSysregAddr(t *testing.T, d time.Duration) string {
 				return
 			}
 			go func() {
-				time.Sleep(d)
+				<-held
 				_ = c.Close()
 			}()
 		}
 	}()
-	return ln.Addr().String()
+	release = sync.OnceFunc(func() { close(held) })
+	t.Cleanup(func() {
+		release()
+		_ = ln.Close()
+	})
+	return ln.Addr().String(), release
 }
 
 // waitRunning waits only for the sidecar's running state, which the group

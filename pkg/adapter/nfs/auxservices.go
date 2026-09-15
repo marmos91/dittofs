@@ -145,10 +145,20 @@ const (
 // unrelated call happened to reconcile again. Such a caller marks the in-flight
 // transition dirty instead, and the transition makes another pass.
 func (s *NFSAdapter) reconcileSysreg() {
-	// Steady state: the sidecar already matches the setting and nothing is in
-	// flight that could move it away. Every accepted connection lands here.
+	// Steady state: nothing is in flight, and the sidecar already matches the
+	// setting. Every accepted connection lands here.
+	//
+	// The order of these two reads is load-bearing, and not interchangeable.
+	// Observing idle FIRST is what makes the running state read after it
+	// trustworthy: a transition holds the state non-idle from its claim until
+	// after its mutation is visible, so idle means no mutation is in flight,
+	// and any transition claimed afterwards re-reads the setting this caller
+	// has already written. Reading the running state first would let a caller
+	// see the value from before an in-flight mutation and the idle that the
+	// same transition published after settling, conclude "steady", and return
+	// with its flip applied nowhere.
 	want := s.registerWithSystemEnabled()
-	if s.sidecars.IsRunning(sysregSidecarName) == want && s.sysregState.Load() == sysregIdle {
+	if s.sysregState.Load() == sysregIdle && s.sidecars.IsRunning(sysregSidecarName) == want {
 		return
 	}
 	// Nothing can be applied once the group has been torn down: StopAll clears
