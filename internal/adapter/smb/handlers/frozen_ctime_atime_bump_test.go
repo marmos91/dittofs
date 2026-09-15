@@ -327,6 +327,16 @@ func TestFrozenChangeTime_SurvivesCloseAtimeFlush(t *testing.T) {
 			resp.GetStatus() != types.StatusSuccess {
 			t.Fatalf("Read %d: err=%v status=%v", i, err, resp.GetStatus())
 		}
+		// The suppressed READ only holds its sample when that sample is strictly
+		// after the one already written, and two READs this close together land
+		// in the same tick on a coarse clock — so the handle would come out of
+		// the loop with nothing held, for a reason that has nothing to do with
+		// coalescing. Backdate inside the window: still suppressed, now ordered.
+		if i == 0 {
+			openFile.mu.Lock()
+			openFile.SmbAtimeWrittenAt = openFile.SmbAtimeWrittenAt.Add(-time.Second)
+			openFile.mu.Unlock()
+		}
 	}
 	if openFile.SmbPendingAtime.IsZero() {
 		t.Fatal("no access time held on the handle; CLOSE would have nothing to flush")
