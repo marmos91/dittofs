@@ -148,7 +148,7 @@ func (h *Handler) ReleaseAllLocksForSession(ctx context.Context, sessionID uint6
 		// and the unlock must name the same handle: SET_REPARSE_POINT can
 		// republish it between two reads, and unlocking the new one leaves this
 		// open's byte-range locks on the old.
-		metaHandle := openFile.Handle()
+		metaHandle := openFile.GetMetadataHandle()
 		if openFile.IsDirectory || openFile.IsPipe || len(metaHandle) == 0 {
 			return true
 		}
@@ -324,7 +324,7 @@ func (h *Handler) closeFilesWithFilter(
 			var leaseState uint32
 			var leaseEpoch uint16
 			if h.LeaseManager != nil && openFile.LeaseKey != ([16]byte{}) {
-				if state, epoch, found := h.LeaseManager.GetLeaseState(ctx, lock.FileHandle(openFile.Handle()), openFile.ShareName, openFile.LeaseKey); found {
+				if state, epoch, found := h.LeaseManager.GetLeaseState(ctx, lock.FileHandle(openFile.GetMetadataHandle()), openFile.ShareName, openFile.LeaseKey); found {
 					leaseState = state
 					leaseEpoch = epoch
 				}
@@ -397,7 +397,7 @@ func (h *Handler) closeFilesWithFilter(
 		// One snapshot for the whole teardown of this open: the lock release
 		// below and the lease break further down must name the same file, and
 		// SET_REPARSE_POINT can republish the handle between them.
-		metaHandle := openFile.Handle()
+		metaHandle := openFile.GetMetadataHandle()
 		if !openFile.IsDirectory && len(metaHandle) > 0 {
 			if h.PendingLockRegistry != nil {
 				for _, parked := range h.PendingLockRegistry.UnregisterAllForOwner(openFile.OpenID()) {
@@ -632,7 +632,7 @@ func (h *Handler) handleDeleteOnClose(ctx context.Context, sess *session.Session
 	_, removed, err := h.removeElectedTarget(ctx, authCtx, openFile, target, caller)
 
 	if err == nil && removed {
-		if metaHandle := openFile.Handle(); h.LeaseManager != nil && len(metaHandle) > 0 {
+		if metaHandle := openFile.GetMetadataHandle(); h.LeaseManager != nil && len(metaHandle) > 0 {
 			lockFileHandle := lock.FileHandle(metaHandle)
 			// Exclude the closing session: its leases on this file are about to
 			// be released anyway, and firing self-breaks creates spurious

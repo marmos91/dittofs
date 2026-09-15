@@ -1146,7 +1146,7 @@ func ProcessAppInstanceId(
 				// established against a different file, so this open is left
 				// alone rather than closed on an authorization that no longer
 				// describes it.
-				if current := f.Handle(); !bytes.Equal(current, want) {
+				if current := f.GetMetadataHandle(); !bytes.Equal(current, want) {
 					logger.Debug("ProcessAppInstanceId: matched open changed file since it was authorized, not displacing it",
 						"appInstanceId", fmt.Sprintf("%x", appId))
 					return false
