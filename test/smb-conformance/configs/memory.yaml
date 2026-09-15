@@ -1,7 +1,7 @@
 # DittoFS Configuration for SMB Conformance Testing
 # Profile: memory/memory
 #
-# Bootstrap creates: memory metadata store + memory local block store
+# Bootstrap creates: memory metadata store + memory block store
 # Stores, shares, and adapters are managed via the API (bootstrap.sh).
 
 logging:

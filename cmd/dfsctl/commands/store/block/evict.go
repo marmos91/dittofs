@@ -27,8 +27,8 @@ Use --read-buffer-only to evict only the read buffer (in-memory).
 Use --local-only to evict only local disk data (preserves read buffer).
 Use --share to evict a specific share only.
 
-Safety: eviction of local blocks is refused if no remote store is
-configured for a share, since that would cause data loss.
+Safety: blocks that have not yet reached the share's block store are
+never dropped, since that would cause data loss.
 
 Uses: reclaim local disk on demand, or force cold (remote-served) reads for
 read-path benchmarking — the local tier is otherwise sticky, so a benchmark

@@ -512,7 +512,7 @@ unknown key). Upload concurrency is **adaptive by default** — see below.
 
 #### Adaptive upload concurrency
 
-When you mirror a share to a remote (S3 or filesystem remote), DittoFS uploads
+When you mirror a share to its block store (S3 or memory), DittoFS uploads
 CAS chunks concurrently. Uploads are **network-latency bound**, not CPU bound:
 a single PUT to a remote region sustains only a few MiB/s, so throughput scales
 with the number of concurrent uploads until the uplink saturates. The right
@@ -1730,7 +1730,8 @@ adapters:
 
 ```bash
 # Enable encryption for a specific share
-dfsctl share create --name /secure --metadata default --encrypt-data
+dfsctl share create --name /secure --metadata default \
+  --block-store s3-remote --encrypt-data
 ```
 
 **Encryption Modes:**

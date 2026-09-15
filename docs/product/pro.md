@@ -21,7 +21,7 @@ Manage your entire DittoFS deployment from the browser.
 <table>
   <tr>
     <td width="50%"><img src="../assets/pro/shares.png" alt="Shares" /><br /><sub><b>Shares</b> — connect a block store and a metadata store into a virtual filesystem.</sub></td>
-    <td width="50%"><img src="../assets/pro/block-stores.png" alt="Block stores" /><br /><sub><b>Block stores</b> — local (filesystem/memory) and remote (S3) backends.</sub></td>
+    <td width="50%"><img src="../assets/pro/block-stores.png" alt="Block stores" /><br /><sub><b>Block stores</b> — S3 or memory, one per share, fronted by an on-disk journal.</sub></td>
   </tr>
   <tr>
     <td width="50%"><img src="../assets/pro/metadata-stores.png" alt="Metadata stores" /><br /><sub><b>Metadata stores</b> — Badger, SQLite, PostgreSQL, or Memory.</sub></td>

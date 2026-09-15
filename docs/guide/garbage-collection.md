@@ -2,11 +2,14 @@
 
 DittoFS stores file data as content-addressed **blocks** (chunks). When you delete
 a file, its directory entry disappears immediately, but the underlying blocks are
-reclaimed **asynchronously** by garbage collection (GC). GC frees space on **both**
-tiers of a share's block store:
+reclaimed **asynchronously** by garbage collection (GC). GC sweeps the share's
+**block store** — the objects behind `s3` or `memory` backing.
 
-- the **local** tier (the on-disk cache, e.g. `/var/lib/dittofs/blocks`), and
-- the **remote** tier (S3 / object storage), if the share has one.
+The **journal** on disk (e.g. `/var/lib/dittofs/blocks`) is not swept by GC. It
+reclaims its own dead bytes as it rewrites, and evicts what the block store
+already holds when it comes under space pressure. So `dfsctl store block gc` is
+not the way to free journal disk — see
+[block eviction](cli.md#dfsctl-store-block-evict) for that.
 
 A block is reclaimed only when **no live file references it** and **no snapshot
 holds it**. Blocks shared by several files (deduplication) survive until the last

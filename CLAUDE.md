@@ -112,10 +112,13 @@ composition layer over six sub-services: `adapters/`, `stores/`, `shares/`, `mou
    the Runtime can route. Handlers never parse or interpret them. They must stay stable across
    restarts for persistent backends.
 
-4. **Block stores are per-share.** Each share owns a `*engine.BlockStore` (local + remote +
-   syncer). No global block store exists. Resolve via `rt.GetBlockStoreForHandle(ctx, handle)`.
-   Remote stores are ref-counted when shares share config; local storage dirs are always
-   isolated. Lifecycle is tied to `AddShare` / `RemoveShare`.
+4. **Block stores are per-share, and every share has one.** Each share owns a
+   `*engine.Store` (journal + block store + syncer). No global block store exists.
+   Resolve via `rt.GetBlockStoreForHandle(ctx, handle)`. The `*engine.Store` itself is never
+   shared, but the S3/memory store behind it is ref-counted when shares reference the same
+   config. Each share's journal hangs off the server-level `blockstore.journal.path` in its
+   own subdirectory, so two shares never share one. Lifecycle is tied to `AddShare` /
+   `RemoveShare`.
 
 5. **WRITE coordinates metadata + block store in this order:** `metadataStore.WriteFile`
    (permission check, size/mtime update, returns pre-op attrs for WCC) →

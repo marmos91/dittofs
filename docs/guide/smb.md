@@ -606,7 +606,7 @@ sudo go test -tags=e2e -v ./test/e2e/ -run TestCrossProtocol
 ### Operations Timeout
 
 1. Increase timeout in SMB config
-2. Check block store connectivity (S3, filesystem)
+2. Check block store connectivity (for an `s3` store, reachability of the endpoint)
 3. Enable debug logging for detailed timing
 
 ### macOS-Specific Issues

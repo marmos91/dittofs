@@ -1,7 +1,7 @@
 # DittoFS Configuration for SMB Conformance Testing
 # Profile: postgres (PostgreSQL metadata store + memory block store)
 #
-# Bootstrap creates: PostgreSQL metadata store + memory local block store.
+# Bootstrap creates: PostgreSQL metadata store + memory block store.
 # Requires the compose "postgres" service (activated via COMPOSE_PROFILES by
 # run.sh). The metadata backend is selected in bootstrap.sh
 # (create_metadata_store); this file only configures the control-plane DB,

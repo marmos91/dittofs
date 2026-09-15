@@ -1,7 +1,7 @@
 # DittoFS Configuration for SMB Conformance Testing
 # Profile: sqlite (SQLite metadata store + memory block store)
 #
-# Bootstrap creates: SQLite metadata store + memory local block store.
+# Bootstrap creates: SQLite metadata store + memory block store.
 # The metadata backend is selected in bootstrap.sh (create_metadata_store);
 # this file only configures the control-plane DB, API, and cache, which are
 # identical across profiles.

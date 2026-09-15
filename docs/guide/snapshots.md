@@ -274,10 +274,13 @@ point-in-time image under active load.
 The snapshot still completes, the GC hold still applies, but the
 `remote_durable` flag is `false`. Use it when:
 
-- You want a fast local-only snapshot for an imminent risky operation
-  (e.g., a config push that might break an adapter).
-- The remote block store is temporarily unreachable but the local
-  block store is intact.
+- You want a fast snapshot for an imminent risky operation (e.g., a config
+  push that might break an adapter).
+
+It does **not** make an unreachable block store survivable. A drain runs before
+the metadata dump so the dump carries every block's locator, and that one is not
+part of the verify gate: if the block store cannot be reached, create fails with
+`--no-verify` exactly as it does without it.
 
 Restoring a `remote_durable=false` snapshot requires the explicit
 `--force` flag (§7). Without `--force`, restore refuses with

@@ -22,7 +22,7 @@ Common questions about DittoFS and their answers.
 DittoFS is a modular virtual filesystem written entirely in Go that decouples file access protocols
 from storage backends. It supports NFSv3, NFSv4/v4.1, and SMB2 with pluggable metadata and block
 stores, making it easy to serve files over multiple protocols from various backends (memory,
-filesystem, S3, BadgerDB, PostgreSQL, etc.).
+BadgerDB, SQLite or PostgreSQL for metadata; memory or S3 for blocks).
 
 ### Why not use FUSE?
 
