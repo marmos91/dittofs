@@ -35,10 +35,9 @@ func (s *Service) AddShare(
 	// leading slashes share a journal directory, so the second one must fail the
 	// reservation below as a duplicate instead of opening the first one's journal.
 	//
-	// The fold only touches leading slashes. The name arrives from a persisted
+	// The fold touches only leading slashes. The name arrives from a persisted
 	// share row, where a '%' is a character and not an escape, so decoding it
-	// would key the journal directory and the registry off a name the row never
-	// held.
+	// would key the journal directory and the registry off a name no row holds.
 	config.Name = metadata.NormalizeShareName(config.Name)
 
 	// A share whose name cannot encode a file handle can never serve a file, so
