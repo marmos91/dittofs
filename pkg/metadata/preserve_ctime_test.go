@@ -11,9 +11,9 @@ import (
 )
 
 // setupPreserveCtimeFile wires a service over a memory store with one share and
-// one regular file, and returns the service, a root auth context and the file's
-// handle.
-func setupPreserveCtimeFile(t *testing.T) (*metadata.Service, *metadata.AuthContext, metadata.FileHandle) {
+// one regular file, and returns the service, a root auth context, the file's
+// handle and the share root's.
+func setupPreserveCtimeFile(t *testing.T) (*metadata.Service, *metadata.AuthContext, metadata.FileHandle, metadata.FileHandle) {
 	t.Helper()
 	const share = "/pc"
 	store := memory.NewMemoryMetadataStoreWithDefaults()
@@ -49,7 +49,7 @@ func setupPreserveCtimeFile(t *testing.T) (*metadata.Service, *metadata.AuthCont
 	if err != nil {
 		t.Fatalf("EncodeFileHandle: %v", err)
 	}
-	return svc, ctx, handle
+	return svc, ctx, handle, rootHandle
 }
 
 // A PreserveCtime write must carry the row's current ChangeTime forward, not the
@@ -61,7 +61,7 @@ func setupPreserveCtimeFile(t *testing.T) (*metadata.Service, *metadata.AuthCont
 // assertion only fires when the revert actually happens, so the test can fail
 // only in the presence of the defect, never because the window was missed.
 func TestSetFileAttributes_PreserveCtimeDoesNotRevertAConcurrentAdvance(t *testing.T) {
-	svc, ctx, handle := setupPreserveCtimeFile(t)
+	svc, ctx, handle, _ := setupPreserveCtimeFile(t)
 
 	base := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 	const rounds = 300
@@ -135,7 +135,7 @@ func TestSetFileAttributes_PreserveCtimeDoesNotRevertAConcurrentAdvance(t *testi
 // PreserveCtime must leave ChangeTime alone while still landing the change that
 // carried it — the sequential half of the guarantee.
 func TestSetFileAttributes_PreserveCtimeHoldsTheStoredValue(t *testing.T) {
-	svc, ctx, handle := setupPreserveCtimeFile(t)
+	svc, ctx, handle, _ := setupPreserveCtimeFile(t)
 
 	pinned := time.Date(2021, 2, 3, 4, 5, 6, 0, time.UTC)
 	if _, err := svc.SetFileAttributes(ctx, handle, &metadata.SetAttrs{Ctime: &pinned}); err != nil {
@@ -159,5 +159,52 @@ func TestSetFileAttributes_PreserveCtimeHoldsTheStoredValue(t *testing.T) {
 	if !got.Atime.Equal(atime) {
 		t.Errorf("LastAccessTime = %v; want %v — the change itself must still land",
 			got.Atime.UTC(), atime.UTC())
+	}
+}
+
+// A PreserveCtime write on a DIRECTORY must not drop the directory's pending
+// timestamp bump. Creates and removes coalesce the parent's mtime/ctime/atime
+// in the DirTimesTracker rather than writing the row each time, and the read
+// overlay is what makes those bumps visible. The in-transaction re-read that
+// holds ChangeTime forward reads the durable row, which does not carry them —
+// so assigning it outright reverted the pending advance, and the tracker Clear
+// that follows the write then discarded it for good. The observable result is
+// the move this whole mechanism exists to prevent: a peer's ChangeTime going
+// backwards.
+func TestPreserveCtime_DoesNotDropAPendingDirectoryBump(t *testing.T) {
+	svc, ctx, _, rootHandle := setupPreserveCtimeFile(t)
+
+	// The file created by the fixture already bumped the root's pending times;
+	// one more makes the advance unambiguous.
+	if _, _, err := svc.CreateFile(ctx, rootHandle, "g", &metadata.FileAttr{
+		Type: metadata.FileTypeRegular, Mode: 0o644,
+	}); err != nil {
+		t.Fatalf("CreateFile: %v", err)
+	}
+
+	before, err := svc.GetFile(ctx.Context, rootHandle)
+	if err != nil || before == nil {
+		t.Fatalf("GetFile(root) before: %v", err)
+	}
+
+	// An explicit directory-time set is what clears the pending overlay, and it
+	// is exactly what an SMB frozen-timestamp restore sends: mtime/atime written
+	// deliberately, ChangeTime held. Without the set, the bump stays pending and
+	// the read overlay hides the problem.
+	frozenMtime := before.Mtime.Add(-time.Hour)
+	if _, err := svc.SetFileAttributes(ctx, rootHandle, &metadata.SetAttrs{
+		Mtime: &frozenMtime, PreserveCtime: true,
+	}); err != nil {
+		t.Fatalf("SetFileAttributes(PreserveCtime) on the directory: %v", err)
+	}
+
+	after, err := svc.GetFile(ctx.Context, rootHandle)
+	if err != nil || after == nil {
+		t.Fatalf("GetFile(root) after: %v", err)
+	}
+	if after.Ctime.Before(before.Ctime) {
+		t.Errorf("directory ChangeTime moved backwards across a PreserveCtime write: "+
+			"before=%s after=%s — the pending bump was replaced by the durable row and then cleared",
+			before.Ctime.Format(time.RFC3339Nano), after.Ctime.Format(time.RFC3339Nano))
 	}
 }

@@ -628,8 +628,8 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 		// leaving Ctime untouched in memory would still revert an advance another
 		// writer committed in between — the backwards move a held timestamp exists
 		// to avoid, and the one NFSv4's change attribute must never make. Re-read
-		// it inside the transaction so the write carries the current value
-		// forward. Exact on a backend whose transaction serialises the read
+		// it inside the transaction and keep whichever value is later, so the
+		// write carries the current value forward. Exact on a backend whose transaction serialises the read
 		// against concurrent writers; on one whose in-transaction read takes no
 		// row lock this narrows the window rather than closing it, the same
 		// residue RestoreChangeTimeIfUnchanged documents.
@@ -654,7 +654,17 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 					Path:    file.Path,
 				}
 			}
-			file.Ctime = cur.Ctime
+			// Forward only. The row is one of two places a newer value can be:
+			// another writer's commit, which is why this re-read exists, and the
+			// coalesced directory timestamps the caller's read already overlaid
+			// onto `file` but that have not been flushed yet. Assigning the row
+			// value outright would drop the second — and the Clear below then
+			// discards the pending bump for good, so a peer's visible
+			// ChangeTime moves backwards. That is the exact move a held
+			// timestamp exists to prevent, arriving through the fix for it.
+			if cur.Ctime.After(file.Ctime) {
+				file.Ctime = cur.Ctime
+			}
 			return nil
 		}
 		// A size change (truncate/grow) is data-paired: the new size must
