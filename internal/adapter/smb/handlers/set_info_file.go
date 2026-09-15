@@ -1851,10 +1851,18 @@ func buildFrozenAttrs(openFile *OpenFile) *metadata.SetAttrs {
 // Closing it means holding a per-handle lock across a metadata-store write,
 // which puts a store round-trip inside a lock every pipelined operation on the
 // handle contends for. The window is one freeze landing between a flag read and
-// a store write on the same handle, and it costs a single stale ChangeTime that
-// the next operation on that handle corrects. Withdraw this if ChangeTime ever
-// becomes load-bearing for a client's cache-validity decision, where one stale
-// value is not self-correcting.
+// a store write on the same handle, and it costs a single stale ChangeTime.
+//
+// How long that value survives depends on what the handle does next, and it is
+// not always short: restoreFrozenTimestamps is what puts the frozen value back,
+// and only CLOSE, WRITE, COPYCHUNK and SET_INFO call it. READ and
+// QUERY_DIRECTORY set PreserveCtime and never restore, so on a handle that only
+// ever reads, the stamped value stands until the handle is closed or something
+// writes through it.
+//
+// Withdraw this if ChangeTime ever becomes load-bearing for a client's
+// cache-validity decision, where a stale value held for the life of a read-only
+// handle is not something the next operation quietly repairs.
 func holdFrozenCtime(openFile *OpenFile, attrs *metadata.SetAttrs) {
 	if attrs.Ctime != nil {
 		return
