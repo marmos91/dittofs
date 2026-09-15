@@ -161,8 +161,7 @@ func (sm *StateManager) ExchangeID(
 	defer sm.mu.Unlock()
 
 	princ := firstOrEmpty(principal)
-	ownerKey := string(ownerID)
-	existing := sm.v41ClientsByOwner[ownerKey]
+	existing := sm.v41ClientsByOwner[string(ownerID)]
 
 	// A record that superseded a still-live confirmed one is discarded here and
 	// hands the owner ID back, so the rest of the algorithm sees a single record
@@ -173,7 +172,7 @@ func (sm *StateManager) ExchangeID(
 			"client_id", existing.ClientID,
 			"client_addr", clientAddr)
 		sm.purgeV41Client(existing)
-		existing = sm.v41ClientsByOwner[ownerKey]
+		existing = sm.v41ClientsByOwner[string(ownerID)]
 	}
 
 	if flags&types.EXCHGID4_FLAG_UPD_CONFIRMED_REC_A != 0 {
