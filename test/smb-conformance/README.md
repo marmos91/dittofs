@@ -433,8 +433,15 @@ docker compose down -v
 - **TRX output:** Check `results/<timestamp>/*.trx` for detailed WPTS error messages
 - **smbtorture output:** Check `results/smbtorture-<timestamp>/` for test logs
 - **Network:** WPTS shares the DittoFS network namespace (`network_mode: service:dittofs`)
-- **One stack at a time:** the published host ports are a single set and the
-  suites assert on sub-second lease and oplock breaks, so the runners refuse to
-  start while any stack is live — another checkout's, or one this checkout left
-  behind with `--keep` — and name the directory holding it
+- **One run at a time:** the published host ports are a single set and the
+  suites assert on sub-second lease and oplock breaks, so before either runner
+  creates anything it takes a lease on `/tmp/dittofs-smb-conformance.lease` and
+  holds it until the run ends. A second run is refused and told which run holds
+  it, whatever checkout it came from and whichever mode it would have used —
+  `--mode local` starts a native server and an unlabelled container, so no
+  Docker query would have attributed it to a conformance run at all. The lease
+  is released by the kernel, so a killed run leaves nothing to clear; if one was
+  killed while the server it started kept running, that server holds the lease,
+  and `lsof /tmp/dittofs-smb-conformance.lease` names it. A stack left behind
+  with `--keep` is refused separately, since no run owns it any more
 - **ptfconfig:** Generated from templates in `ptfconfig/`. Edit templates, then re-run
