@@ -923,8 +923,8 @@ func handleLoadSharesError(err error, stderr *os.File) bool {
 	// A persisted export policy no auth flavor can satisfy is an operator
 	// configuration error, not a share that can be skipped: the share would
 	// come up refusing every client. The error already names the share and the
-	// missing Kerberos configuration, so print it as-is and exit 78.
-	if errors.Is(err, runtime.ErrKerberosNotConfigured) {
+	// setting at fault, so print it as-is and exit 78.
+	if errors.Is(err, runtime.ErrExportAcceptsNoAuthFlavor) {
 		_, _ = fmt.Fprintln(stderr, err)
 		exitFn(EX_CONFIG)
 		return true

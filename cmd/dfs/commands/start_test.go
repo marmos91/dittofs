@@ -344,7 +344,7 @@ func TestStart_RequireKerberosWithoutKerberosExitCode(t *testing.T) {
 		t.Fatalf("os.Pipe: %v", err)
 	}
 
-	loadErr := fmt.Errorf("share %q: %w; enable Kerberos", "/krb-gone", runtime.ErrKerberosNotConfigured)
+	loadErr := fmt.Errorf("share %q: %w; enable Kerberos", "/krb-gone", runtime.ErrExportAcceptsNoAuthFlavor)
 	if !handleLoadSharesError(loadErr, w) {
 		t.Fatal("handleLoadSharesError returned stop=false on an unsatisfiable Kerberos policy")
 	}

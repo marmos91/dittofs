@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -297,6 +298,19 @@ func TestShareNFSConfig_PatchRequireKerberosNeedsKerberos(t *testing.T) {
 // adapter would read rather than only what was persisted.
 func setupShareNFSConfigTestWithRuntime(t *testing.T) (*runtime.Runtime, *ShareNFSConfigHandler) {
 	t.Helper()
+	// Kerberos on, because these tests tighten the export to show the change
+	// reaching the running share, and forbidding AUTH_SYS on a server with no
+	// Kerberos leaves no flavor at all — a policy the handler now refuses
+	// outright, which would stop the request before it could prove anything.
+	rt, handler, _, _ := setupShareNFSConfigTestWithKerberos(t, true)
+	return rt, handler
+}
+
+// setupShareNFSConfigTestWithKerberos is setupShareNFSConfigTestWithRuntime with
+// the server's Kerberos capability chosen by the caller, which is what decides
+// whether an export policy is satisfiable at all.
+func setupShareNFSConfigTestWithKerberos(t *testing.T, kerberos bool) (*runtime.Runtime, *ShareNFSConfigHandler, *store.GORMStore, string) {
+	t.Helper()
 
 	cpStore, err := store.New(&store.Config{
 		Type:   "sqlite",
@@ -328,8 +342,9 @@ func setupShareNFSConfigTestWithRuntime(t *testing.T) (*runtime.Runtime, *ShareN
 
 	rt := runtime.New(cpStore)
 	rt.RegisterShareForTesting("/export")
+	rt.SetKerberosEnabled(kerberos)
 
-	return rt, nfsConfigHandler(cpStore, rt)
+	return rt, nfsConfigHandler(cpStore, rt), cpStore, share.ID
 }
 
 // TestShareNFSConfig_PatchPushesExportPolicyToRunningShare covers the seam
@@ -454,5 +469,81 @@ func TestShareNFSConfig_PatchPushesDisableReaddirplusToRunningShare(t *testing.T
 	}
 	if !after.DisableReaddirplus {
 		t.Error("running share still has DisableReaddirplus=false; the READDIRPLUS downgrade stays inactive")
+	}
+}
+
+// TestShareNFSConfig_PatchNoAuthFlavorRefused pins the write-time guard on the
+// setting the earlier guard could not see.
+//
+// The guard is evaluated on the pair the request would produce, not on the flag
+// it carries, so the case that matters is the partial update: allow_auth_sys
+// arriving alone on a share whose require_kerberos is already stored. Checking
+// the incoming field alone lets that through, and the resulting export accepts
+// nothing.
+func TestShareNFSConfig_PatchNoAuthFlavorRefused(t *testing.T) {
+	tests := []struct {
+		name         string
+		kerberos     bool
+		storedKrb    bool
+		body         string
+		wantStatus   int
+		wantMentions []string
+	}{
+		{
+			name:         "forbidding AUTH_SYS without Kerberos leaves nothing",
+			body:         `{"allow_auth_sys":false}`,
+			wantStatus:   http.StatusBadRequest,
+			wantMentions: []string{"allow_auth_sys is off", "--allow-auth-sys true"},
+		},
+		{
+			name:         "allow_auth_sys alone onto a stored require_kerberos",
+			storedKrb:    true,
+			body:         `{"allow_auth_sys":false}`,
+			wantStatus:   http.StatusBadRequest,
+			wantMentions: []string{"require_kerberos is set and allow_auth_sys is off", "--require-kerberos false --allow-auth-sys true"},
+		},
+		{
+			name:         "requiring Kerberos the server does not have",
+			body:         `{"require_kerberos":true}`,
+			wantStatus:   http.StatusBadRequest,
+			wantMentions: []string{"require_kerberos is set", "--require-kerberos false"},
+		},
+		{
+			// The negative control: the same tightening is a sensible hardening
+			// once the server can actually offer RPCSEC_GSS, so a guard that
+			// refused it would be refusing on the wrong rule.
+			name:       "forbidding AUTH_SYS with Kerberos available is allowed",
+			kerberos:   true,
+			body:       `{"allow_auth_sys":false}`,
+			wantStatus: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, handler, cpStore, shareID := setupShareNFSConfigTestWithKerberos(t, tt.kerberos)
+			if tt.storedKrb {
+				opts := models.DefaultNFSExportOptions()
+				opts.RequireKerberos = true
+				cfg := &models.ShareAdapterConfig{ShareID: shareID, AdapterType: "nfs"}
+				if err := cfg.SetConfig(opts); err != nil {
+					t.Fatalf("SetConfig: %v", err)
+				}
+				if err := cpStore.SetShareAdapterConfig(context.Background(), cfg); err != nil {
+					t.Fatalf("SetShareAdapterConfig: %v", err)
+				}
+			}
+
+			w := doRequest(t, handler.Patch, http.MethodPatch, tt.body)
+			if w.Code != tt.wantStatus {
+				t.Fatalf("Patch(%s) status = %d, want %d, body = %s", tt.body, w.Code, tt.wantStatus, w.Body.String())
+			}
+			for _, want := range tt.wantMentions {
+				if !strings.Contains(w.Body.String(), want) {
+					t.Errorf("refusal does not mention %q, so it names the wrong cause or an unusable remedy: %s",
+						want, w.Body.String())
+				}
+			}
+		})
 	}
 }

@@ -166,8 +166,9 @@ func (h *ShareNFSConfigHandler) Patch(w http.ResponseWriter, r *http.Request) {
 	// share whose require_kerberos was already set, and every partial update.
 	if h.runtime != nil &&
 		runtime.ExportAcceptsNoAuthFlavor(opts.RequireKerberos, opts.AllowAuthSys, h.runtime.KerberosEnabled()) {
-		BadRequest(w, runtime.ErrKerberosNotConfigured.Error()+
-			": the resulting export would accept no auth flavor; allow AUTH_SYS, clear require_kerberos, or enable Kerberos")
+		cause, remedy := runtime.ExportNoAuthFlavorCause(share.Name, opts.RequireKerberos, opts.AllowAuthSys)
+		BadRequest(w, runtime.ErrExportAcceptsNoAuthFlavor.Error()+" ("+cause+
+			"): the resulting export would refuse every client; enable Kerberos, or run "+remedy)
 		return
 	}
 	if req.MinKerberosLevel != nil {

@@ -99,8 +99,8 @@ func TestLoadSharesFromStore_RequireKerberosWithoutKerberosStops(t *testing.T) {
 	if err == nil {
 		t.Fatal("LoadSharesFromStore returned nil; want a refusal naming the share")
 	}
-	if !errors.Is(err, ErrKerberosNotConfigured) {
-		t.Fatalf("error = %v; want errors.Is ErrKerberosNotConfigured", err)
+	if !errors.Is(err, ErrExportAcceptsNoAuthFlavor) {
+		t.Fatalf("error = %v; want errors.Is ErrExportAcceptsNoAuthFlavor", err)
 	}
 	if !strings.Contains(err.Error(), "/krb-gone") {
 		t.Fatalf("error %q does not name the share", err)
@@ -242,8 +242,8 @@ func TestLoadSharesFromStore_NoAuthSysWithoutKerberosStops(t *testing.T) {
 	if err == nil {
 		t.Fatal("LoadSharesFromStore returned nil; a share that accepts no auth flavor must stop the boot")
 	}
-	if !errors.Is(err, ErrKerberosNotConfigured) {
-		t.Fatalf("error = %v; want errors.Is ErrKerberosNotConfigured", err)
+	if !errors.Is(err, ErrExportAcceptsNoAuthFlavor) {
+		t.Fatalf("error = %v; want errors.Is ErrExportAcceptsNoAuthFlavor", err)
 	}
 	if !strings.Contains(err.Error(), "/no-authsys") {
 		t.Fatalf("error %q does not name the share", err)
