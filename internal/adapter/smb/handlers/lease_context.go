@@ -451,8 +451,21 @@ func ProcessLeaseCreateContext(
 		// open.c::delay_for_oplock); CREATE succeeds with granted state="".
 		// See smbtorture smb2.lease.request request_results matrix.
 		return nil, err
+	} else if errors.Is(err, lock.ErrLeaseDelegationConflict) {
+		// An NFS delegation on the same file that cannot coexist with the
+		// requested state. An expected denial: the CREATE succeeds with no
+		// lease, exactly as it does for a byte-range-lock conflict.
+		logger.Debug("ProcessLeaseCreateContext: lease denied by delegation conflict", "error", err)
+		grantedState = lock.LeaseStateNone
+		epoch = 0
 	} else if err != nil {
-		logger.Debug("ProcessLeaseCreateContext: lease request failed", "error", err)
+		// Anything else is a lock-manager or store failure — an unresolvable
+		// share, a lookup the persisted backstop could not complete. The CREATE
+		// still succeeds with no lease so the client keeps working uncached,
+		// but the cause is logged at Error: silently degrading every CREATE on
+		// a share to no-lease is otherwise indistinguishable from a client that
+		// simply was not granted one.
+		logger.Error("ProcessLeaseCreateContext: lease request failed", "error", err)
 		grantedState = lock.LeaseStateNone
 		epoch = 0
 	}
