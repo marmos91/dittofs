@@ -396,9 +396,28 @@ func (sm *StateManager) destroySessionLocked(sessionID types.SessionId4, force b
 		delete(sm.sessionsByClientID, session.ClientID)
 	}
 
-	// Clean up connection bindings for this session.
-	// Lock ordering: sm.mu (held by caller) before connMu.
+	sm.dropSessionBindingsLocked(sessionID)
+
+	logger.Info("Session destroyed",
+		"session_id", session.SessionID.String(),
+		"client_id", fmt.Sprintf("0x%x", session.ClientID),
+		"reason", reason)
+
+	return nil
+}
+
+// dropSessionBindingsLocked releases every connection binding a session holds,
+// and with them the callback state of any connection the session was the last
+// one on. Every path that retires a session calls this — DESTROY_SESSION, the
+// expiry reaper, and client purge — because a session removed from sessionsByID
+// without it leaves its bindings, writers and pending callback waiters behind,
+// and a connection that also carries another session never releases them: the
+// other session's teardown sees a binding still standing and declines.
+//
+// Caller holds sm.mu. Lock ordering: sm.mu before connMu.
+func (sm *StateManager) dropSessionBindingsLocked(sessionID types.SessionId4) {
 	sm.connMu.Lock()
+	defer sm.connMu.Unlock()
 	// Snapshot first: dropConnBindingLocked edits connBySession[sessionID] as
 	// it goes, which is the slice this would otherwise be ranging over.
 	connIDs := make([]uint64, 0, len(sm.connBySession[sessionID]))
@@ -409,14 +428,6 @@ func (sm *StateManager) destroySessionLocked(sessionID types.SessionId4, force b
 		sm.dropConnBindingLocked(connID, sessionID)
 	}
 	delete(sm.connBySession, sessionID)
-	sm.connMu.Unlock()
-
-	logger.Info("Session destroyed",
-		"session_id", session.SessionID.String(),
-		"client_id", fmt.Sprintf("0x%x", session.ClientID),
-		"reason", reason)
-
-	return nil
 }
 
 // GetSession returns the session for the given session ID, or nil if not found.
