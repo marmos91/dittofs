@@ -167,14 +167,30 @@ const (
 //
 // A name that is nothing but slashes folds to "/", which ValidateShareName then
 // rejects: it names no directory of its own.
+//
+// Every other byte is carried through untouched. A '%' in a name held by a
+// control-plane row is a character of that name, not an escape: reading it as
+// one would move the share onto a different journal directory and a different
+// registry key than the row it came from addresses. Callers holding a name that
+// really is a URL path segment use NormalizeShareNameFromURL instead.
 func NormalizeShareName(name string) string {
-	// Decode first: a name that arrived percent-encoded (a URL path segment)
-	// hides its leading slash from the fold otherwise.
+	return "/" + strings.TrimLeft(name, "/")
+}
+
+// NormalizeShareNameFromURL folds a share name that arrived as a percent-encoded
+// URL path segment, decoding it before the fold.
+//
+// The decode belongs here and nowhere else. A router matches on the escaped path
+// when the request carries one, so the segment reaches a handler still encoded
+// and its leading slashes are hidden from the fold until it is decoded. An
+// undecodable segment is folded as written rather than rejected, leaving the
+// name to fail ValidateShareName or a lookup on its own terms.
+func NormalizeShareNameFromURL(name string) string {
 	decoded, err := url.PathUnescape(name)
 	if err != nil {
 		decoded = name
 	}
-	return "/" + strings.TrimLeft(decoded, "/")
+	return NormalizeShareName(decoded)
 }
 
 // ValidateShareName validates a share name against the file-handle format.

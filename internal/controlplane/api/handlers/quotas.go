@@ -110,7 +110,7 @@ func parseIdentityID(w http.ResponseWriter, scope, idParam string) (identityID *
 // response and returns ok=false on any invalid input, following the same
 // convention as parseIdentityID.
 func parseQuotaTarget(w http.ResponseWriter, r *http.Request) (shareName, scope string, identityID *uint32, ok bool) {
-	shareName = metadata.NormalizeShareName(chi.URLParam(r, "name"))
+	shareName = metadata.NormalizeShareNameFromURL(chi.URLParam(r, "name"))
 	if shareName == "/" {
 		BadRequest(w, "Share name is required")
 		return "", "", nil, false
@@ -129,7 +129,7 @@ func parseQuotaTarget(w http.ResponseWriter, r *http.Request) (shareName, scope 
 
 // List handles GET /api/v1/shares/{name}/quotas.
 func (h *QuotaHandler) List(w http.ResponseWriter, r *http.Request) {
-	shareName := metadata.NormalizeShareName(chi.URLParam(r, "name"))
+	shareName := metadata.NormalizeShareNameFromURL(chi.URLParam(r, "name"))
 	if shareName == "/" {
 		BadRequest(w, "Share name is required")
 		return

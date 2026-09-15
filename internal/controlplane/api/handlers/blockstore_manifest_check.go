@@ -71,7 +71,7 @@ func (h *BlockStoreManifestCheckHandler) RunManifestCheck(w http.ResponseWriter,
 		return
 	}
 
-	name := metadata.NormalizeShareName(chi.URLParam(r, "name"))
+	name := metadata.NormalizeShareNameFromURL(chi.URLParam(r, "name"))
 	if name == "/" {
 		BadRequest(w, "share name is required")
 		return

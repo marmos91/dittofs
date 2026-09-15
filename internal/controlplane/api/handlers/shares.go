@@ -288,7 +288,10 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Normalize share name to always have leading slash
+	// The name is a JSON body field, not a path segment, so it is folded
+	// without being decoded: it is persisted and handed to AddShare as written,
+	// and a '%' in it is a character of the name. Decoding here would store one
+	// spelling and register another.
 	req.Name = metadata.NormalizeShareName(req.Name)
 
 	// Checked here as well as in AddShare below: this handler persists the share
@@ -655,7 +658,7 @@ func (h *ShareHandler) List(w http.ResponseWriter, r *http.Request) {
 // Get handles GET /api/v1/shares/{name}.
 // Gets a share by name (admin only).
 func (h *ShareHandler) Get(w http.ResponseWriter, r *http.Request) {
-	name := metadata.NormalizeShareName(chi.URLParam(r, "name"))
+	name := metadata.NormalizeShareNameFromURL(chi.URLParam(r, "name"))
 	if name == "/" {
 		BadRequest(w, "Share name is required")
 		return
@@ -679,7 +682,7 @@ func (h *ShareHandler) Get(w http.ResponseWriter, r *http.Request) {
 // Update handles PUT /api/v1/shares/{name}.
 // Updates a share (admin only).
 func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
-	name := metadata.NormalizeShareName(chi.URLParam(r, "name"))
+	name := metadata.NormalizeShareNameFromURL(chi.URLParam(r, "name"))
 	if name == "/" {
 		BadRequest(w, "Share name is required")
 		return
@@ -999,7 +1002,7 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 // Remove handles DELETE /api/v1/shares/{name}.
 // Deletes a share (admin only).
 func (h *ShareHandler) Remove(w http.ResponseWriter, r *http.Request) {
-	name := metadata.NormalizeShareName(chi.URLParam(r, "name"))
+	name := metadata.NormalizeShareNameFromURL(chi.URLParam(r, "name"))
 	if name == "/" {
 		BadRequest(w, "Share name is required")
 		return
@@ -1033,7 +1036,7 @@ func (h *ShareHandler) Remove(w http.ResponseWriter, r *http.Request) {
 // drop any active sessions. Idempotent at the runtime layer on
 // already-disabled shares.
 func (h *ShareHandler) Disable(w http.ResponseWriter, r *http.Request) {
-	name := metadata.NormalizeShareName(chi.URLParam(r, "name"))
+	name := metadata.NormalizeShareNameFromURL(chi.URLParam(r, "name"))
 	if name == "/" {
 		BadRequest(w, "Share name is required")
 		return
@@ -1070,7 +1073,7 @@ func (h *ShareHandler) Disable(w http.ResponseWriter, r *http.Request) {
 // Enable handles POST /api/v1/shares/{name}/enable.
 // Flips Enabled=true. Idempotent at the runtime layer (no-op on already-enabled).
 func (h *ShareHandler) Enable(w http.ResponseWriter, r *http.Request) {
-	name := metadata.NormalizeShareName(chi.URLParam(r, "name"))
+	name := metadata.NormalizeShareNameFromURL(chi.URLParam(r, "name"))
 	if name == "/" {
 		BadRequest(w, "Share name is required")
 		return
@@ -1104,7 +1107,7 @@ func (h *ShareHandler) Enable(w http.ResponseWriter, r *http.Request) {
 // SetUserPermission handles PUT /api/v1/shares/{name}/users/{username}.
 // Sets a user's permission for a share (admin only).
 func (h *ShareHandler) SetUserPermission(w http.ResponseWriter, r *http.Request) {
-	shareName := metadata.NormalizeShareName(chi.URLParam(r, "name"))
+	shareName := metadata.NormalizeShareNameFromURL(chi.URLParam(r, "name"))
 	username := chi.URLParam(r, "username")
 
 	if shareName == "/" {
@@ -1248,7 +1251,7 @@ func (h *ShareHandler) reconcileRootACL(ctx context.Context, shareName string) {
 // RemoveUserPermission handles DELETE /api/v1/shares/{name}/permissions/users/{username}.
 // Removes a user's permission for a share (admin only).
 func (h *ShareHandler) RemoveUserPermission(w http.ResponseWriter, r *http.Request) {
-	shareName := metadata.NormalizeShareName(chi.URLParam(r, "name"))
+	shareName := metadata.NormalizeShareNameFromURL(chi.URLParam(r, "name"))
 	username := chi.URLParam(r, "username")
 
 	if shareName == "/" {
@@ -1278,7 +1281,7 @@ func (h *ShareHandler) RemoveUserPermission(w http.ResponseWriter, r *http.Reque
 // SetGroupPermission handles PUT /api/v1/shares/{name}/groups/{groupname}.
 // Sets a group's permission for a share (admin only).
 func (h *ShareHandler) SetGroupPermission(w http.ResponseWriter, r *http.Request) {
-	shareName := metadata.NormalizeShareName(chi.URLParam(r, "name"))
+	shareName := metadata.NormalizeShareNameFromURL(chi.URLParam(r, "name"))
 	groupName := chi.URLParam(r, "groupname")
 
 	if shareName == "/" {
@@ -1354,7 +1357,7 @@ func (h *ShareHandler) SetGroupPermission(w http.ResponseWriter, r *http.Request
 // RemoveGroupPermission handles DELETE /api/v1/shares/{name}/permissions/groups/{groupname}.
 // Removes a group's permission for a share (admin only).
 func (h *ShareHandler) RemoveGroupPermission(w http.ResponseWriter, r *http.Request) {
-	shareName := metadata.NormalizeShareName(chi.URLParam(r, "name"))
+	shareName := metadata.NormalizeShareNameFromURL(chi.URLParam(r, "name"))
 	groupName := chi.URLParam(r, "groupname")
 
 	if shareName == "/" {
@@ -1385,7 +1388,7 @@ func (h *ShareHandler) RemoveGroupPermission(w http.ResponseWriter, r *http.Requ
 // Grants a permission on a share directly to a Windows/AD SID — a domain user or
 // group — with no local DittoFS user/group object (#1528). Admin only.
 func (h *ShareHandler) SetSIDPermission(w http.ResponseWriter, r *http.Request) {
-	shareName := metadata.NormalizeShareName(chi.URLParam(r, "name"))
+	shareName := metadata.NormalizeShareNameFromURL(chi.URLParam(r, "name"))
 	sidStr := chi.URLParam(r, "sid")
 
 	if shareName == "/" {
@@ -1471,7 +1474,7 @@ func (h *ShareHandler) SetSIDPermission(w http.ResponseWriter, r *http.Request) 
 // RemoveSIDPermission handles DELETE /api/v1/shares/{name}/permissions/sids/{sid}.
 // Removes a SID's permission on a share (admin only).
 func (h *ShareHandler) RemoveSIDPermission(w http.ResponseWriter, r *http.Request) {
-	shareName := metadata.NormalizeShareName(chi.URLParam(r, "name"))
+	shareName := metadata.NormalizeShareNameFromURL(chi.URLParam(r, "name"))
 	sidStr := chi.URLParam(r, "sid")
 
 	if shareName == "/" {
@@ -1509,7 +1512,7 @@ type PermissionResponse struct {
 // ListPermissions handles GET /api/v1/shares/{name}/permissions.
 // Returns all permissions configured for a share (admin only).
 func (h *ShareHandler) ListPermissions(w http.ResponseWriter, r *http.Request) {
-	shareName := metadata.NormalizeShareName(chi.URLParam(r, "name"))
+	shareName := metadata.NormalizeShareNameFromURL(chi.URLParam(r, "name"))
 	if shareName == "/" {
 		BadRequest(w, "Share name is required")
 		return
@@ -1684,7 +1687,7 @@ func (h *ShareHandler) shareStatus(ctx context.Context, name string) health.Shar
 // the share config does not exist and 200 with a [health.ShareStatus]
 // JSON body otherwise.
 func (h *ShareHandler) Status(w http.ResponseWriter, r *http.Request) {
-	name := metadata.NormalizeShareName(chi.URLParam(r, "name"))
+	name := metadata.NormalizeShareNameFromURL(chi.URLParam(r, "name"))
 	if name == "/" {
 		BadRequest(w, "Share name is required")
 		return
