@@ -276,7 +276,6 @@ func (h *BlockStoreHandler) Update(w http.ResponseWriter, r *http.Request) {
 	// path persisted the name instead. Those shares would resolve nothing once
 	// the name moves, so repoint them — onto the UUID, which cannot go stale
 	// the next time the store is renamed.
-	prevName := bs.Name
 	if renameTo != "" {
 		renamed, err := h.store.RenameBlockStore(r.Context(), name, renameTo)
 		switch {
@@ -293,18 +292,10 @@ func (h *BlockStoreHandler) Update(w http.ResponseWriter, r *http.Request) {
 		bs = renamed
 	}
 
-	// Evict the cached checker so the post-update response does not
-	// observe a stale probe from before the config change landed. A rename
-	// leaves an entry under the old name too.
+	// Evict the cached checkers so the post-update response does not observe
+	// a stale probe from before the config change landed.
 	if h.runtime != nil {
-		h.runtime.InvalidateBlockStoreChecker(name)
-		// Checkers are keyed by the store's name, and the route may address it
-		// by ID, so the name it was cached under is evicted explicitly rather
-		// than assumed to be the one in the URL.
-		h.runtime.InvalidateBlockStoreChecker(prevName)
-		if renameTo != "" {
-			h.runtime.InvalidateBlockStoreChecker(renameTo)
-		}
+		h.runtime.InvalidateBlockStoreCheckers()
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), HealthCheckTimeout)
@@ -323,14 +314,6 @@ func (h *BlockStoreHandler) Remove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Checkers are keyed by the store's name and the route may address it by
-	// ID, so resolve the name while the row still exists. A failed lookup is
-	// not fatal here: the delete below reports a missing store on its own.
-	cachedName := ""
-	if bs, err := h.store.GetBlockStore(r.Context(), name); err == nil {
-		cachedName = bs.Name
-	}
-
 	if err := h.store.DeleteBlockStore(r.Context(), name); err != nil {
 		if errors.Is(err, models.ErrStoreNotFound) {
 			NotFound(w, "Block store not found")
@@ -344,13 +327,10 @@ func (h *BlockStoreHandler) Remove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Evict any cached health checker so a subsequently-recreated
-	// store with the same name does not inherit a stale probe.
+	// Evict the cached checkers so a subsequently-recreated store with the
+	// same name does not inherit a stale probe.
 	if h.runtime != nil {
-		h.runtime.InvalidateBlockStoreChecker(name)
-		if cachedName != "" && cachedName != name {
-			h.runtime.InvalidateBlockStoreChecker(cachedName)
-		}
+		h.runtime.InvalidateBlockStoreCheckers()
 	}
 
 	WriteNoContent(w)

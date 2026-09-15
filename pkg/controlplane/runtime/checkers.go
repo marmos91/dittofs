@@ -55,6 +55,19 @@ func (c *checkerCache) Delete(key statusKey) {
 	delete(c.checkers, key)
 }
 
+// DeleteKind removes every cached checker of the given kind. Callers use
+// it when a mutation can move or remove a name, so the set of keys that
+// went stale cannot be named from the request alone.
+func (c *checkerCache) DeleteKind(kind string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for k := range c.checkers {
+		if k.kind == kind {
+			delete(c.checkers, k)
+		}
+	}
+}
+
 // getOrBuild returns the cached checker for key, calling build to
 // construct the inner checker only on the first miss. Taking a
 // factory avoids allocating an unused CheckerFunc closure on every
@@ -144,13 +157,23 @@ func (r *Runtime) InvalidateShareChecker(name string) {
 	r.statusCheckers.Delete(statusKey{kind: "share", name: name})
 }
 
-// InvalidateBlockStoreChecker evicts any cached health checker for
-// the named block store config.
-func (r *Runtime) InvalidateBlockStoreChecker(name string) {
+// InvalidateBlockStoreCheckers evicts every cached block-store health
+// checker. Any block-store mutation can invalidate a probe cached under a
+// name other than the one in the request: the route may address a store by
+// ID, a rename moves the name a checker was cached under, and a concurrent
+// rename can move it again between the lookup and the write. Evicting the
+// whole kind states the invariant directly — after a mutation no
+// block-store probe is trusted — instead of reconstructing which names
+// went stale.
+//
+// ponytail: costs one re-probe per configured block store on the next
+// status read; narrow it back to specific names only if a deployment with
+// enough block stores makes that measurable.
+func (r *Runtime) InvalidateBlockStoreCheckers() {
 	if r == nil || r.statusCheckers == nil {
 		return
 	}
-	r.statusCheckers.Delete(statusKey{kind: "block", name: name})
+	r.statusCheckers.DeleteKind("block")
 }
 
 // MetadataStoreChecker returns a cached [health.Checker] for the

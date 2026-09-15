@@ -713,3 +713,49 @@ func TestBlockStoreHandler_Remove_ByIDEvictsTheCheckerCachedUnderTheName(t *test
 		t.Error("the deleted store's name still reports healthy: its checker survived the delete")
 	}
 }
+
+// A mutation cannot name every checker it invalidates: the route may address
+// a store by ID, and a concurrent rename can move a name between the lookup
+// and the write, so the request alone does not identify which probes went
+// stale. Eviction therefore covers every block-store checker, not the keys
+// this request happens to know about.
+func TestBlockStoreHandler_Update_EvictsCheckersItCannotName(t *testing.T) {
+	cpStore, handler := setupBlockStoreTestWithRuntime(t)
+	ctx := context.Background()
+
+	id := uuid.New().String()
+	for _, n := range []struct{ id, name string }{{id, "edited"}, {uuid.New().String(), "bystander"}} {
+		if _, err := cpStore.CreateBlockStore(ctx, &models.BlockStoreConfig{
+			ID: n.id, Name: n.name, Type: "memory", CreatedAt: time.Now(),
+		}); err != nil {
+			t.Fatalf("CreateBlockStore(%s): %v", n.name, err)
+		}
+	}
+
+	// Warm both, then delete the bystander's row behind the cache's back so a
+	// surviving entry is distinguishable from a re-probed one.
+	for _, n := range []string{"edited", "bystander"} {
+		if got := handler.runtime.BlockStoreChecker(n).Healthcheck(ctx).Status; got != health.StatusHealthy {
+			t.Fatalf("warm-up %s = %v, want healthy", n, got)
+		}
+	}
+	if err := cpStore.DeleteBlockStore(ctx, "bystander"); err != nil {
+		t.Fatalf("DeleteBlockStore(bystander): %v", err)
+	}
+
+	renamed := "edited-again"
+	body, _ := json.Marshal(UpdateBlockStoreRequest{Name: &renamed})
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/store/block/"+id, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = withBlockStoreName(req, id)
+	w := httptest.NewRecorder()
+
+	handler.Update(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Update = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+
+	if got := handler.runtime.BlockStoreChecker("bystander").Healthcheck(ctx).Status; got == health.StatusHealthy {
+		t.Error("a checker the request never named survived: eviction is still keyed by the names this handler knows")
+	}
+}
