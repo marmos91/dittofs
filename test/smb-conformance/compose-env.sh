@@ -73,13 +73,16 @@ ERROR: an SMB conformance stack already exists from ${workdir:-an unknown direct
 The stack publishes fixed host ports and the suites are timing-sensitive, so
 only one may run at a time — including a stack an earlier run left behind with
 --keep, and one that is merely stopped, neither of which a new run can reuse.
-Wait for that run to finish, or clear it with:
-    docker compose -p ${project} down -v
-    docker rm -f smbtorture-run-\* wpts-local 2>/dev/null
+Wait for that run to finish, or clear it from anywhere with:
+    docker rm -f \$(docker ps -aq --filter label=com.docker.compose.project=${project})
+    docker volume rm \$(docker volume ls -q --filter label=com.docker.compose.project=${project})
 
-The second command is not redundant: `down -v` does not reap the one-off
-containers `docker compose run` creates, so a run killed mid-suite can leave
-one behind holding this project's label and blocking every retry.
+Both queries go by label rather than by name or Compose file, because
+neither of those is reliable here: `docker compose` has to run from the
+directory holding the compose file, and `docker rm` does not expand globs,
+so a name pattern silently removes nothing. The label also covers the
+one-off containers `docker compose run` creates, which `down -v` does not
+reap and which block every retry until they go.
 
 EOF
     exit 1
