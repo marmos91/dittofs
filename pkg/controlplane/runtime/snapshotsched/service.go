@@ -131,8 +131,10 @@ func (s *Service) Stop(ctx context.Context) bool {
 	case <-s.stopped:
 		return true
 	case <-ctx.Done():
-		logger.Warn("Snapshot scheduler: stop deadline reached with a tick still running",
-			"error", ctx.Err())
+		// Reported by the caller, not here: every caller already logs on a
+		// false return, and it knows what the lost join means for what it is
+		// about to do — close the stores, or abandon a boot. Logging in both
+		// places produced two warnings for one timeout.
 		return false
 	}
 }
