@@ -337,3 +337,24 @@ func TestMetadataStoreHandler_Create_DuplicateNameIsConflict_SQLite(t *testing.T
 		t.Errorf("duplicate create = %d, want %d, body = %s", w.Code, http.StatusConflict, w.Body.String())
 	}
 }
+
+// The config store resolves a token as an ID when no name matches, so a store
+// named after another store's ID must still be created rather than reported as
+// a collision.
+func TestMetadataStoreHandler_Create_NameSpellingAnotherStoreIDIsNotAConflict(t *testing.T) {
+	_, handler, _ := setupMetadataStoreHealthTest(t)
+
+	w := createMetadataStoreReq(t, handler, "first", "memory", nil)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("first create = %d, want %d, body = %s", w.Code, http.StatusCreated, w.Body.String())
+	}
+	var first MetadataStoreResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &first); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	w = createMetadataStoreReq(t, handler, first.ID, "memory", nil)
+	if w.Code != http.StatusCreated {
+		t.Errorf("create named after another store's ID = %d, want %d, body = %s", w.Code, http.StatusCreated, w.Body.String())
+	}
+}
