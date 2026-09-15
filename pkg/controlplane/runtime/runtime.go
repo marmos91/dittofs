@@ -944,24 +944,50 @@ func (r *Runtime) Serve(ctx context.Context) error {
 		SnapshotDrainer: r,
 		RollupStopper:   r,
 	})
-	// Only a startup error, which is why ctx.Err() has to be nil for this to
-	// run: Serve also returns ctx.Err() after its ordinary shutdown, and that
-	// path has already drained. A startup error returns before Serve reaches
-	// its shutdown hook, so the drain that stops and joins the snapshot
-	// scheduler never runs — and the scheduler reads and writes policies
-	// through the control-plane store the caller closes as soon as this
-	// returns, which is the overlap the drain exists to prevent.
+	// lifecycle.Serve returns its startup errors before it reaches its shutdown
+	// hook, so the drain that joins the workers started above never runs — and
+	// every one of them reads or writes the control-plane store the caller
+	// closes as soon as this returns, which is the overlap the drain exists to
+	// prevent.
+	//
+	// Run for any error rather than only one that arrives with ctx still live.
+	// Both joins below are idempotent and return at once when the work is
+	// already stopped, so repeating them after an ordinary shutdown costs
+	// nothing — whereas asking whether ctx was cancelled answers a different
+	// question than whether the shutdown hook ran, and gets the startup error
+	// that races cancellation wrong in the direction that skips the only join.
 	//
 	// Bounded, and detached from ctx rather than derived from it: the join has
 	// to outlive a cancellation to be a join, but an unbounded one hands a
 	// wedged tick the power to stop the process from ever exiting, which would
 	// also keep the store open forever.
-	if err != nil && ctx.Err() == nil {
-		stopCtx, cancelStop := context.WithTimeout(context.WithoutCancel(ctx), startupDrainTimeout)
-		defer cancelStop()
-		r.shutdownSnapshots(stopCtx)
+	if err != nil {
+		r.drainStartupWorkers(ctx)
 	}
 	return err
+}
+
+// drainStartupWorkers joins the background workers Serve starts before it hands
+// off to the lifecycle service, for the error returns that never reach the
+// lifecycle shutdown hook. Every worker it joins reads or writes the
+// control-plane store, and the caller closes that store as soon as Serve
+// returns.
+//
+// Both joins are idempotent and return at once when the work is already
+// stopped, so this is safe to run after a shutdown that already drained.
+func (r *Runtime) drainStartupWorkers(ctx context.Context) {
+	stopCtx, cancelStop := context.WithTimeout(context.WithoutCancel(ctx), startupDrainTimeout)
+	defer cancelStop()
+
+	// The settings watcher is started before the adapter load that is the
+	// likeliest startup failure, and it polls the same store on a timer. Stop
+	// waits for a poll already in flight, which is what makes it a join; it
+	// takes no context, so what it costs is one store round-trip rather than
+	// anything stopCtx bounds.
+	if r.settingsWatcher != nil {
+		r.settingsWatcher.Stop()
+	}
+	r.shutdownSnapshots(stopCtx)
 }
 
 // StopRollups stops + drains every share's block-store rollup worker pool.
