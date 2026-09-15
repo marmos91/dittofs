@@ -11,6 +11,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // ShareNFSConfigHandlerStore is the composite store interface required by
@@ -236,7 +237,7 @@ func (h *ShareNFSConfigHandler) Patch(w http.ResponseWriter, r *http.Request) {
 // lookupShare resolves the {name} path param to a stored share, writing a
 // 404/500 problem and returning ok=false on failure.
 func (h *ShareNFSConfigHandler) lookupShare(w http.ResponseWriter, r *http.Request) (*models.Share, bool) {
-	name := normalizeShareName(chi.URLParam(r, "name"))
+	name := metadata.NormalizeShareName(chi.URLParam(r, "name"))
 	share, err := h.store.GetShare(r.Context(), name)
 	if err != nil {
 		if errors.Is(err, models.ErrShareNotFound) {

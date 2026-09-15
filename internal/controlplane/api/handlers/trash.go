@@ -106,7 +106,7 @@ func (h *TrashHandler) resolveShare(w http.ResponseWriter, r *http.Request) (str
 		InternalServerError(w, "trash service not initialized")
 		return "", nil
 	}
-	name := normalizeShareName(chi.URLParam(r, "name"))
+	name := metadata.NormalizeShareName(chi.URLParam(r, "name"))
 	if name == "" {
 		BadRequest(w, "share name is required")
 		return "", nil

@@ -14,6 +14,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/controlplane/api/dto"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/schedule"
 )
 
@@ -50,7 +51,7 @@ func (h *SnapshotPolicyHandler) resolveShare(w http.ResponseWriter, r *http.Requ
 		InternalServerError(w, "runtime not initialized")
 		return ""
 	}
-	name := normalizeShareName(chi.URLParam(r, "name"))
+	name := metadata.NormalizeShareName(chi.URLParam(r, "name"))
 	if name == "" {
 		BadRequest(w, "share name is required")
 		return ""

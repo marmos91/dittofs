@@ -165,3 +165,49 @@ func TestAddShare_RejectsOverLongName(t *testing.T) {
 		}
 	})
 }
+
+// TestAddShare_LeadingSlashIsOneName guards the directory invariant
+// OpenShareJournal relies on: two shares never share a journal directory.
+// "alpha" and "/alpha" sanitize to the same directory, so they must not be two
+// shares — the name is normalized to one spelling at the seam, which makes the
+// second registration a duplicate instead of a second writer into one journal.
+func TestAddShare_LeadingSlashIsOneName(t *testing.T) {
+	ctx := context.Background()
+
+	mds := metamem.NewMemoryMetadataStoreWithDefaults()
+	t.Cleanup(func() { _ = mds.Close() })
+
+	svc := New()
+	defaults := journalDefaults(t, svc)
+	add := func(name string) error {
+		return svc.AddShare(
+			ctx,
+			&ShareConfig{Name: name, MetadataStore: "meta-test", Enabled: true, BlockStoreID: testBlockStoreID},
+			&metaStoreProvider{name: "meta-test", store: mds},
+			metaSvcRegistrar{},
+			memBlockStoreProvider{},
+			defaults,
+			nil,
+		)
+	}
+
+	// The premise: both spellings address one directory.
+	if unslashed, slashed := ShareJournalDir(defaults.JournalRoot, "alpha"), ShareJournalDir(defaults.JournalRoot, "/alpha"); unslashed != slashed {
+		t.Fatalf("expected both spellings to resolve to one directory, got %q and %q", unslashed, slashed)
+	}
+
+	if err := add("alpha"); err != nil {
+		t.Fatalf(`AddShare("alpha"): %v`, err)
+	}
+	if _, err := svc.GetShare("/alpha"); err != nil {
+		t.Fatalf(`a share added as "alpha" must be registered as "/alpha": %v`, err)
+	}
+
+	err := add("/alpha")
+	if err == nil {
+		t.Fatal(`AddShare("/alpha") was accepted alongside "alpha": both write into one journal directory`)
+	}
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf(`AddShare("/alpha") must be refused as a duplicate, got %v`, err)
+	}
+}

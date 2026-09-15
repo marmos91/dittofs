@@ -17,6 +17,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // BlockGCRuntime is the narrow Runtime surface needed by BlockStoreGCHandler.
@@ -147,7 +148,7 @@ func (h *BlockStoreGCHandler) RunGC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	name := normalizeShareName(chi.URLParam(r, "name"))
+	name := metadata.NormalizeShareName(chi.URLParam(r, "name"))
 	if name == "/" {
 		BadRequest(w, "share name is required")
 		return
@@ -250,7 +251,7 @@ func (h *BlockStoreGCHandler) GCStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	name := normalizeShareName(chi.URLParam(r, "name"))
+	name := metadata.NormalizeShareName(chi.URLParam(r, "name"))
 	if name == "/" {
 		BadRequest(w, "share name is required")
 		return

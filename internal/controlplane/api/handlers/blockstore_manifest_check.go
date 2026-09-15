@@ -12,6 +12,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // ManifestCheckRuntime is the narrow Runtime surface needed by
@@ -70,7 +71,7 @@ func (h *BlockStoreManifestCheckHandler) RunManifestCheck(w http.ResponseWriter,
 		return
 	}
 
-	name := normalizeShareName(chi.URLParam(r, "name"))
+	name := metadata.NormalizeShareName(chi.URLParam(r, "name"))
 	if name == "/" {
 		BadRequest(w, "share name is required")
 		return

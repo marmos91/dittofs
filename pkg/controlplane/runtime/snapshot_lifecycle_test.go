@@ -75,7 +75,7 @@ func setupSnapshotLifecycle(t *testing.T) *lifecycleFixture {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
 
-	shareName := "data"
+	shareName := "/data"
 	if err := rt.AddShare(ctx, &ShareConfig{
 		Name:          shareName,
 		MetadataStore: "memory",

@@ -10,6 +10,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // UsageRecomputeRuntime is the narrow Runtime surface needed by
@@ -58,7 +59,7 @@ func (h *UsageRecomputeHandler) Recompute(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	name := normalizeShareName(chi.URLParam(r, "name"))
+	name := metadata.NormalizeShareName(chi.URLParam(r, "name"))
 	if name == "/" {
 		BadRequest(w, "share name is required")
 		return

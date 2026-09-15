@@ -12,6 +12,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // BlockStoreRuntime is the narrow Runtime surface needed by
@@ -54,7 +55,7 @@ func (h *BlockStoreStatsHandler) Stats(w http.ResponseWriter, r *http.Request) {
 	// slash) when a share name is actually present.
 	shareName := chi.URLParam(r, "name")
 	if shareName != "" {
-		shareName = normalizeShareName(shareName)
+		shareName = metadata.NormalizeShareName(shareName)
 	}
 
 	stats, err := h.runtime.GetBlockStoreStats(shareName)
@@ -81,7 +82,7 @@ func (h *BlockStoreStatsHandler) Evict(w http.ResponseWriter, r *http.Request) {
 	// normalize when a per-share name is actually present.
 	shareName := chi.URLParam(r, "name")
 	if shareName != "" {
-		shareName = normalizeShareName(shareName)
+		shareName = metadata.NormalizeShareName(shareName)
 	}
 
 	var req BlockStoreEvictRequest
@@ -159,7 +160,7 @@ func (h *BlockStoreStatsHandler) Warm(w http.ResponseWriter, r *http.Request) {
 		BadRequest(w, "share name required")
 		return
 	}
-	shareName = normalizeShareName(shareName)
+	shareName = metadata.NormalizeShareName(shareName)
 
 	job, err := h.runtime.StartWarmBlockStore(r.Context(), shareName)
 	if err != nil {
