@@ -276,9 +276,16 @@ absolute file paths, not "review branch fix/1934-...". Otherwise it reviews
 
 ### The adversarial third pass
 
-A third pass when the change touches **security, authorization, concurrency,
-durability, or a gate shared by more than one caller**. Skip it for mechanical
-changes — an error-code substitution, a rename, a log line.
+A third pass, required when the change touches **security, authorization,
+concurrency, durability, or a gate shared by more than one caller**. Skip it for
+mechanical changes — an error-code substitution, a rename, a log line.
+
+```
+Agent(subagent_type: "general-purpose")   # security surface only, after the two above
+```
+
+It runs last, on the diff the first two have already been through, so that what
+it attacks is what you intend to ship.
 
 It is not a slower copy of the other two. On the #2586 SMB authorization fix
 each pass found a disjoint class and none was redundant. The simplifier found a

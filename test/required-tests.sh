@@ -21,6 +21,16 @@ MANIFEST="${SCRIPT_DIR}/required-tests.json"
 
 cd "$REPO_ROOT"
 
+# An empty manifest would run no packages, find nothing missing and report
+# success — clearing this file is the one edit that must not silently retire
+# every pin it holds.
+total=$(jq -r 'if (.packages | type) == "object" then (.packages | map(length) | add // 0) else "bad" end' "$MANIFEST")
+if [ "$total" = "bad" ] || [ "${total:-0}" -eq 0 ]; then
+	echo "required-tests.json names no tests — it holds the pins, so an empty one" >&2
+	echo "is a mistake rather than a state with nothing to check." >&2
+	exit 1
+fi
+
 status=0
 
 while read -r pkg; do
@@ -29,8 +39,15 @@ while read -r pkg; do
 	pattern="^($(echo "$names" | paste -sd '|' -))$"
 
 	echo "== ${pkg}"
-	# -count=1 because a cached pass is evidence about an older tree.
-	output=$(go test -count=1 -v -run "$pattern" "$pkg" 2>&1) || true
+	# -count=1 because a cached pass is evidence about an older tree. The exit
+	# status is kept as well as the output: only the selected tests ran, so a
+	# non-zero status means one of them failed, or TestMain or a teardown did,
+	# and the PASS lines alone would not show it.
+	if output=$(go test -count=1 -v -run "$pattern" "$pkg" 2>&1); then
+		rc=0
+	else
+		rc=$?
+	fi
 
 	missing=""
 	while read -r name; do
@@ -41,11 +58,15 @@ while read -r pkg; do
 		fi
 	done <<<"$names"
 
-	if [ -n "$missing" ]; then
+	if [ -n "$missing" ] || [ "$rc" -ne 0 ]; then
 		echo "$output" >&2
 		echo >&2
-		echo "these required tests did not pass in ${pkg}:" >&2
-		printf '%s' "$missing" >&2
+		if [ -n "$missing" ]; then
+			echo "these required tests did not pass in ${pkg}:" >&2
+			printf '%s' "$missing" >&2
+		else
+			echo "every required test in ${pkg} passed, but the package exited ${rc}" >&2
+		fi
 		status=1
 	fi
 done < <(jq -r '.packages | keys[]' "$MANIFEST")

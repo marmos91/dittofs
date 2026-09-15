@@ -55,13 +55,28 @@ is_doc_path() {
 # a large diff full of code as "no code found". That fails open on exactly the
 # big rewrite this script exists to catch, and only on the big ones — a short
 # diff finishes writing before the pipe closes and is judged correctly.
+#
+# A comment counts as prose only when the // is followed by whitespace or ends
+# the line. A directive is not prose: //go:build can remove a whole file from
+# the build, //go:embed changes what ships, //go:linkname changes what a symbol
+# resolves to. Requiring the space rejects every //word form at once, including
+# directives Go has not invented yet, and the two that do carry a space are
+# named. A comment written without the space reads as code and fails closed,
+# which costs an author one retyped commit subject.
 go_comments_only() {
 	local code
 	code=$(git show --format='' --unified=0 "$1" -- "$2" |
 		grep -E '^[+-]' |
 		grep -Ev '^(\+\+\+|---)' |
 		sed -E 's/^[+-][[:space:]]*//' |
-		grep -cvE '^(//|$)' || true)
+		awk '
+			/^$/                      { next }
+			/^\/\/ \+build/           { code++; next }
+			/^\/\/ #cgo/              { code++; next }
+			/^\/\/([[:space:]]|$)/    { next }
+			                          { code++ }
+			END                       { print code + 0 }
+		' || true)
 	[ "${code:-0}" -eq 0 ]
 }
 
