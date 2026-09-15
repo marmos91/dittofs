@@ -89,7 +89,7 @@ func (r *revalidateRuntime) GetUserStore() models.UserStore { return r.users }
 
 // newRevalidateHandler builds a handler holding one share, one session
 // authenticated as user, and (when withTree) one tree pinned at pinned.
-func newRevalidateHandler(t *testing.T, user *models.User, store *revalidateUserStore, pinned models.SharePermission, withTree bool) (*Handler, uint64, uint32) {
+func newRevalidateHandler(t *testing.T, user *models.User, store models.UserStore, pinned models.SharePermission, withTree bool) (*Handler, uint64, uint32) {
 	t.Helper()
 
 	rt, blockStoreID := newTestShareRuntime(t)

@@ -283,6 +283,40 @@ func (s *Session) UpdateIdentity(username, domain string, user *models.User, isG
 	s.authGen.Add(1)
 }
 
+// PublishUser replaces the session's user record with one an authorization
+// re-check has just read from the store, so everything that authorizes off the
+// session afterwards — the per-operation identity a file op resolves, a fresh
+// TREE_CONNECT — reads the current grants and group memberships rather than the
+// ones captured when the session authenticated. Written under the same lock
+// UpdateIdentity uses, so a concurrent reader never sees a half-published
+// pointer, and the memoized derived identity is dropped so the next operation
+// rebuilds its UID, GIDs and group SIDs from the new record.
+//
+// It refuses when the generation has moved: a re-authentication since the
+// caller read the record has already re-decided authorization for a principal
+// that may not be this one, and publishing over it would put one identity's
+// record on another's session. Reports whether it published.
+//
+// decision: publishing does not advance the generation. The principal is
+// unchanged — this is the same account's row read again, not a new
+// authentication — and a sweep pins its tree decisions to the generation it
+// snapshotted, so advancing here would make every sweep discard the work it
+// just did. It follows that a decision taken against the older copy of the
+// record is not invalidated by this write; nothing today holds one that
+// outlives the sweep, and a caller that ever does needs its own stamp rather
+// than this generation.
+func (s *Session) PublishUser(user *models.User, generation uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.authGen.Load() != generation {
+		return false
+	}
+	s.User = user
+	s.authIdentity = nil
+	s.authIdentityUser = nil
+	return true
+}
+
 // SetPACIdentity stores the Kerberos PAC group SIDs and user SID for the
 // session, replacing any previous set. Called when a session is first
 // established, before its ID has reached the client and anything else can

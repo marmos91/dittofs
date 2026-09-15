@@ -28,9 +28,11 @@ import (
 // replaces the tree; one that has dropped to none removes it, so the next
 // operation on that tree is refused and a fresh TREE_CONNECT re-decides access.
 //
-// Nothing here writes to the session's own user field. That field is read
-// unlocked on the dispatch path, so publishing a new record from this goroutine
-// would be a data race rather than a refresh.
+// The record is also published onto the session, so the identity a file
+// operation resolves per request — its UID, its supplementary GIDs, its group
+// SIDs — is the current one rather than the snapshot taken at SESSION_SETUP.
+// Publishing it is only safe because every reader on the authorization path
+// takes it through the locked accessor.
 //
 // Runs off the request path, from the adapter's auth-cache-invalidate
 // subscription.
@@ -145,6 +147,19 @@ func (h *Handler) RevalidateAuthorization(ctx context.Context) {
 			logger.Info("SMB session revoked: user disabled",
 				"sessionID", sessionID, "username", current.Username)
 		default:
+			// Publish the record onto the session as well as carrying it into
+			// the tree pass. Without this the sweep leaves the tree permissions
+			// current while the identity every file operation authorizes with
+			// stays at the SESSION_SETUP snapshot — so a UID or group change
+			// never reaches an in-flight operation, and a reconnect resolves a
+			// fresh TREE_CONNECT from the grants that were just withdrawn.
+			// Refused when a re-authentication landed during the lookup, for
+			// the same reason the revocation is.
+			if !sess.PublishUser(user, gen) {
+				logger.Debug("SMB session re-authenticated during authorization re-check, record not published",
+					"sessionID", sessionID)
+				return true
+			}
 			snap.User = user
 			surviving[sessionID] = survivingSession{snap: snap}
 		}
