@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,10 +31,9 @@ func (s *Service) AddShare(
 	localStoreDefaults *LocalStoreDefaults,
 	syncerDefaults *SyncerDefaults,
 ) error {
-	// Fold the name to one spelling before anything keys off it: spellings that
-	// differ only in their leading slashes share a journal directory, and this
-	// makes the second of them a duplicate at the reservation below instead of
-	// a second writer into the first one's journal.
+	// Fold the name before anything keys off it: spellings differing only in
+	// leading slashes share a journal directory, so the second one must fail the
+	// reservation below as a duplicate instead of opening the first one's journal.
 	config.Name = metadata.NormalizeShareName(config.Name)
 
 	// A share whose name cannot encode a file handle can never serve a file, so
@@ -374,6 +374,22 @@ func rootModeForDefaultPermission(perm string) uint32 {
 	}
 }
 
+// rootExists reports whether the metadata store already holds a root directory
+// for shareName. A lookup that fails for any reason other than the share being
+// absent is returned as an error rather than read as "absent": a share must not
+// be handed a fresh root because its store could not be read.
+func rootExists(ctx context.Context, store metadata.Store, shareName string) (bool, error) {
+	_, err := store.GetRootHandle(ctx, shareName)
+	switch {
+	case err == nil:
+		return true, nil
+	case metadata.IsNotFoundError(err):
+		return false, nil
+	default:
+		return false, err
+	}
+}
+
 // prepareShare validates config, resolves the metadata store, and creates the
 // root directory. Returns the built Share (not yet in the registry) and the
 // metadata store. The caller (AddShare) is responsible for inserting the share
@@ -415,6 +431,33 @@ func (s *Service) prepareShare(
 		rootAttr.Atime = now
 		rootAttr.Mtime = now
 		rootAttr.Ctime = now
+	}
+
+	// decision: the fold claims the journal directory and the name reservation,
+	// never an existing metadata namespace. A share keys its metadata — the root,
+	// every inode under it, every handle it has handed out — by the name as
+	// written, so minting a root under the folded name while the unfolded one
+	// already has one would leave the real files addressable by nothing. Refuse
+	// that share rather than serve it empty. Renaming the namespace would be the
+	// other way out; it reissues every handle, and a handle must survive a
+	// restart. The two spellings are compared in the store, not against the name
+	// as it was persisted, so correcting the persisted name alone does not
+	// silence this.
+	unfolded := strings.TrimPrefix(config.Name, "/")
+	foldedRoot, err := rootExists(ctx, metadataStore, config.Name)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to look up the root of share %q: %w", config.Name, err)
+	}
+	if !foldedRoot {
+		unfoldedRoot, err := rootExists(ctx, metadataStore, unfolded)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to look up the root of share %q: %w", unfolded, err)
+		}
+		if unfoldedRoot {
+			return nil, nil, fmt.Errorf(
+				"share %q would be served from a new, empty root: its files are keyed by %q, which this build addresses as %q",
+				config.Name, unfolded, config.Name)
+		}
 	}
 
 	rootFile, err := metadataStore.CreateRootDirectory(ctx, config.Name, rootAttr)

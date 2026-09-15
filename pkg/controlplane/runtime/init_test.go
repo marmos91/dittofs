@@ -3,10 +3,14 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"strings"
 	"testing"
+
+	"github.com/google/uuid"
 
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
+	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
@@ -579,5 +583,94 @@ func TestLoadSharesFromStore_LeadingSlashIsOneShare(t *testing.T) {
 	}
 	if skipped := rt.SkippedShares(); len(skipped) != 1 {
 		t.Fatalf("want the colliding share reported as skipped, got %v", skipped)
+	}
+}
+
+// A share whose metadata is keyed by the unfolded spelling of its name must not
+// be served from a fresh root under the folded one: that would leave every file
+// already under it addressable by nothing. The refusal is decided by what the
+// metadata store holds, so correcting the persisted name does not bypass it.
+func TestLoadSharesFromStore_RefusesToShadowAnUnfoldedNamespace(t *testing.T) {
+	for _, persisted := range []string{"alpha", "/alpha"} {
+		t.Run(persisted, func(t *testing.T) {
+			rt, s := setupTestRuntime(t)
+			ctx := context.Background()
+
+			meta, err := rt.GetMetadataStore("test-meta")
+			if err != nil {
+				t.Fatalf("GetMetadataStore: %v", err)
+			}
+
+			// Durable state of a share whose metadata was keyed by the name
+			// without its leading slash: a root, and one file under it.
+			const unfolded = "alpha"
+			root, err := meta.CreateRootDirectory(ctx, unfolded,
+				&metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o755})
+			if err != nil {
+				t.Fatalf("CreateRootDirectory: %v", err)
+			}
+			rootHandle, err := metadata.EncodeFileHandle(root)
+			if err != nil {
+				t.Fatalf("EncodeFileHandle: %v", err)
+			}
+			file := &metadata.File{
+				ID:        uuid.New(),
+				ShareName: unfolded,
+				Path:      "/legacy.txt",
+				FileAttr:  metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: 0o644, Size: 7},
+			}
+			fileHandle, err := metadata.EncodeFileHandle(file)
+			if err != nil {
+				t.Fatalf("EncodeFileHandle: %v", err)
+			}
+			if err := meta.UpdateAttrs(ctx, file); err != nil {
+				t.Fatalf("UpdateAttrs: %v", err)
+			}
+			if err := meta.SetChild(ctx, rootHandle, "legacy.txt", fileHandle); err != nil {
+				t.Fatalf("SetChild: %v", err)
+			}
+
+			blockID := createBlockStoreConfig(t, s, "unfolded-blocks")
+			metaStores, err := s.ListMetadataStores(ctx)
+			if err != nil {
+				t.Fatalf("ListMetadataStores: %v", err)
+			}
+			if _, err := s.CreateShare(ctx, &models.Share{
+				Name:            persisted,
+				MetadataStoreID: metaStores[0].ID,
+				BlockStoreID:    blockID,
+			}); err != nil {
+				t.Fatalf("CreateShare: %v", err)
+			}
+
+			if err := LoadSharesFromStore(ctx, rt, s); err != nil {
+				t.Fatalf("LoadSharesFromStore: %v", err)
+			}
+
+			reason, ok := rt.SkippedShares()[persisted]
+			if !ok {
+				t.Fatalf("a share whose metadata is keyed by %q must be reported as skipped, got %v",
+					unfolded, rt.SkippedShares())
+			}
+			if !strings.Contains(reason, unfolded) || !strings.Contains(reason, "/"+unfolded) {
+				t.Errorf("skip reason must name both spellings, got %q", reason)
+			}
+
+			// No second namespace: the folded name must not have acquired a root
+			// of its own, which is what would strand the files below.
+			if handle, err := meta.GetRootHandle(ctx, "/"+unfolded); err == nil {
+				t.Fatalf("a second root %q was minted; the files under %q are now unreachable",
+					string(handle), unfolded)
+			}
+
+			// The original root still holds the file.
+			entries, _, err := meta.ListChildren(ctx, rootHandle, "", 16, metadata.NamesOnly)
+			if err != nil {
+				t.Fatalf("ListChildren: %v", err)
+			}
+			if len(entries) != 1 || entries[0].Name != "legacy.txt" {
+				t.Fatalf("the persisted root lost its files: %v", entries)
+			}
+		})
 	}
 }
