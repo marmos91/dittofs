@@ -136,3 +136,34 @@ func TestV3ExportAuthPolicy_RequireKerberosRefusesAuthSys(t *testing.T) {
 			status, nfs_types.NFS3ErrAccess)
 	}
 }
+
+// TestV3StatusOnlyReply_MatchesTheProceduresFailureArm pins the length of a
+// refusal encoded before any handler runs against what that procedure's own
+// codec emits for a non-OK status. A reply shorter than the union's failure arm
+// is a decode error at the client, and RENAME and LINK carry the longest arms.
+func TestV3StatusOnlyReply_MatchesTheProceduresFailureArm(t *testing.T) {
+	cases := map[uint32]int{
+		nfs_types.NFSProcGetAttr: 4,  // status only
+		nfs_types.NFSProcFsInfo:  4,  // status only
+		nfs_types.NFSProcAccess:  8,  // + post_op_attr
+		nfs_types.NFSProcRead:    8,  // + post_op_attr
+		nfs_types.NFSProcWrite:   12, // + wcc_data
+		nfs_types.NFSProcCommit:  12, // + wcc_data
+		nfs_types.NFSProcLink:    16, // + post_op_attr + wcc_data
+		nfs_types.NFSProcRename:  20, // + two wcc_data
+	}
+	for proc, want := range cases {
+		reply := v3StatusOnlyReply(proc, nfs_types.NFS3ErrAccess)
+		if len(reply) != want {
+			t.Errorf("procedure %d reply = %d bytes, want %d", proc, len(reply), want)
+		}
+		if got := binary.BigEndian.Uint32(reply[0:4]); got != nfs_types.NFS3ErrAccess {
+			t.Errorf("procedure %d status = %d, want NFS3ERR_ACCES", proc, got)
+		}
+		for i, b := range reply[4:] {
+			if b != 0 {
+				t.Errorf("procedure %d byte %d = %d, want 0 (attribute absent)", proc, 4+i, b)
+			}
+		}
+	}
+}

@@ -72,22 +72,31 @@ func (c *NFSConnection) handleNFSProcedure(ctx context.Context, call *rpc.RPCCal
 	// PATHCONF) resolve no auth context at all. Tightening a share therefore
 	// takes effect on the next operation of an already-mounted client.
 	//
-	// A share that does not resolve has no policy to apply: the name is empty
-	// because no handle was carried (NULL) or the handle did not decode, or the
-	// share is gone. The handler answers all of those.
+	// An empty share name means the request carried no handle (NULL) or the
+	// handle did not decode, so there is no export to apply a policy to. A name
+	// that no longer resolves is different: the handle named a share the
+	// registry has since dropped, and serving it would run the operation with
+	// the policy unread, so it is refused as stale rather than let through.
 	//
 	// ponytail: one GetShare snapshot copy per RPC. Narrow it to a
 	// flavor-policy accessor only if this shows up in a profile.
 	if share != "" {
-		if shareRef, shareErr := c.server.Registry.GetShare(share); shareErr == nil {
-			if accessErr := nfsauth.CheckExportAccess(ctx, shareRef, handlerCtx.AuthFlavor, nil, nil); accessErr != nil {
-				logger.Warn("NFSv3 operation denied by export auth policy",
-					"procedure", procedure.Name,
-					"share", share,
-					"client", clientAddr,
-					"reason", accessErr)
-				return v3StatusOnlyReply(nfs_types.NFS3ErrAccess), nil
-			}
+		shareRef, shareErr := c.server.Registry.GetShare(share)
+		if shareErr != nil {
+			logger.Warn("NFSv3 operation refused: share no longer resolves",
+				"procedure", procedure.Name,
+				"share", share,
+				"client", clientAddr,
+				"error", shareErr)
+			return v3StatusOnlyReply(call.Procedure, nfs_types.NFS3ErrStale), nil
+		}
+		if accessErr := nfsauth.CheckExportAccess(ctx, shareRef, handlerCtx.AuthFlavor, nil, nil); accessErr != nil {
+			logger.Warn("NFSv3 operation denied by export auth policy",
+				"procedure", procedure.Name,
+				"share", share,
+				"client", clientAddr,
+				"reason", accessErr)
+			return v3StatusOnlyReply(call.Procedure, nfs_types.NFS3ErrAccess), nil
 		}
 	}
 
@@ -98,7 +107,7 @@ func (c *NFSConnection) handleNFSProcedure(ctx context.Context, call *rpc.RPCCal
 			"client", clientAddr,
 			"xid", fmt.Sprintf("0x%x", call.XID))
 
-		return v3StatusOnlyReply(nfs_types.NFS3ErrNotSupp), nil
+		return v3StatusOnlyReply(call.Procedure, nfs_types.NFS3ErrNotSupp), nil
 	}
 
 	// Duplicate-request cache (DRC) for non-idempotent procedures.
@@ -128,14 +137,47 @@ func (c *NFSConnection) handleNFSProcedure(ctx context.Context, call *rpc.RPCCal
 		})
 }
 
-// v3StatusOnlyReply encodes a bare NFSv3 error reply: the status followed by
-// empty WCC data (pre_op=false, post_op=false), which clients handle gracefully
-// per RFC 1813. It is what the dispatch layer answers with when a request is
-// refused before any procedure handler runs, so no procedure-specific response
-// type is available to encode.
-func v3StatusOnlyReply(status uint32) []byte {
-	reply := make([]byte, 12)
+// v3FailureArmBytes is the encoded size, in bytes after the 4-byte status word,
+// of each NFSv3 procedure's failure reply. RFC 1813 makes every result a union
+// discriminated on the status, and the failure arm still carries attributes for
+// most procedures: a post_op_attr contributes its 4-byte FALSE discriminant and
+// a wcc_data two of them. The sizes here are what this package's own response
+// codecs emit for a non-OK status, so a refusal answered before any handler runs
+// is indistinguishable on the wire from one the handler produced.
+//
+// A procedure missing from the table gets the status alone, which is what NULL
+// and GETATTR encode anyway.
+var v3FailureArmBytes = map[uint32]int{
+	nfs_types.NFSProcSetAttr:     8,  // wcc_data
+	nfs_types.NFSProcLookup:      4,  // post_op_attr (dir)
+	nfs_types.NFSProcAccess:      4,  // post_op_attr
+	nfs_types.NFSProcReadLink:    4,  // post_op_attr
+	nfs_types.NFSProcRead:        4,  // post_op_attr
+	nfs_types.NFSProcWrite:       8,  // wcc_data
+	nfs_types.NFSProcCreate:      8,  // wcc_data (dir)
+	nfs_types.NFSProcMkdir:       8,  // wcc_data (dir)
+	nfs_types.NFSProcSymlink:     8,  // wcc_data (dir)
+	nfs_types.NFSProcMknod:       8,  // wcc_data (dir)
+	nfs_types.NFSProcRemove:      8,  // wcc_data (dir)
+	nfs_types.NFSProcRmdir:       8,  // wcc_data (dir)
+	nfs_types.NFSProcRename:      16, // wcc_data for each of the two directories
+	nfs_types.NFSProcLink:        12, // post_op_attr (file) + wcc_data (dir)
+	nfs_types.NFSProcReadDir:     4,  // post_op_attr (dir)
+	nfs_types.NFSProcReadDirPlus: 4,  // post_op_attr (dir)
+	nfs_types.NFSProcPathConf:    4,  // post_op_attr
+	nfs_types.NFSProcCommit:      8,  // wcc_data
+}
+
+// v3StatusOnlyReply encodes an NFSv3 error reply for one procedure: the status
+// followed by that procedure's failure arm with every attribute marked absent.
+// It is what the dispatch layer answers with when a request is refused before
+// any procedure handler runs, so no response type is available to encode. A
+// reply shorter than the procedure's union arm is a decode error at the client,
+// so the length has to follow the procedure rather than be one fixed shape.
+func v3StatusOnlyReply(procedure, status uint32) []byte {
+	reply := make([]byte, 4+v3FailureArmBytes[procedure])
 	binary.BigEndian.PutUint32(reply[0:4], status)
-	// bytes 4-11: the two attr-present flags, already zero (false).
+	// The remaining bytes are the arm's attribute-present discriminants, all
+	// already zero (FALSE).
 	return reply
 }

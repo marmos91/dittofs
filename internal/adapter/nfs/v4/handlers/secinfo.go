@@ -179,14 +179,12 @@ func encodeSecInfoFlavors(kerberosEnabled bool, share *runtime.Share) []byte {
 	rawFlavors := []uint32{authSysFlavor, authNoneFlavor}
 
 	if share != nil {
-		// RequireKerberos refuses every non-GSS flavor; AllowAuthSys=false
-		// refuses only AUTH_SYS. Same two conditions, same order, as the
-		// checks in buildV4AuthContext.
-		switch {
-		case share.RequireKerberos:
+		// Either flag refuses every non-GSS flavor, AUTH_NONE included: a
+		// share that will not take AUTH_SYS will not take a caller with no
+		// credential at all. Advertising AUTH_NONE there would hand a client
+		// the one flavor SECINFO exists to steer it away from.
+		if share.RequireKerberos || !share.AllowAuthSys {
 			rawFlavors = nil
-		case !share.AllowAuthSys:
-			rawFlavors = []uint32{authNoneFlavor}
 		}
 		// MinKerberosLevel is a floor on the negotiated GSS service, so any
 		// weaker service is unusable on this share.

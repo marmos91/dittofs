@@ -92,8 +92,10 @@ func hasGSSService(entries []secInfoEntry, service uint32) bool {
 }
 
 // TestSecInfo_AllowAuthSysFalseDropsAuthSys pins the AllowAuthSys narrowing:
-// buildV4AuthContext answers NFS4ERR_WRONGSEC on AUTH_SYS for such a share, so
-// SECINFO must not offer it. AUTH_NONE is untouched by that field.
+// buildV4AuthContext answers NFS4ERR_WRONGSEC on every non-GSS flavor for such a
+// share, so SECINFO must offer none of them. A share that will not take AUTH_SYS
+// will not take a caller with no credential at all, and advertising AUTH_NONE
+// would hand the client the one flavor SECINFO exists to steer it away from.
 func TestSecInfo_AllowAuthSysFalseDropsAuthSys(t *testing.T) {
 	fx := newRealFSTestFixture(t, "/export")
 	fx.createTestFile(t, fx.rootHandle, "hello.txt", metadata.FileTypeRegular, 0o644, 0, 0)
@@ -107,8 +109,8 @@ func TestSecInfo_AllowAuthSysFalseDropsAuthSys(t *testing.T) {
 	if hasFlavor(entries, authSysFlavor) {
 		t.Errorf("SECINFO offered AUTH_SYS on an allow_auth_sys=false share: %+v", entries)
 	}
-	if !hasFlavor(entries, authNoneFlavor) {
-		t.Errorf("SECINFO dropped AUTH_NONE, which allow_auth_sys=false does not refuse: %+v", entries)
+	if hasFlavor(entries, authNoneFlavor) {
+		t.Errorf("SECINFO offered AUTH_NONE on an allow_auth_sys=false share, which refuses it: %+v", entries)
 	}
 }
 
@@ -178,11 +180,8 @@ func TestSecInfo_JunctionReportsTargetPolicy(t *testing.T) {
 	pseudoRoot := fx.handler.PseudoFS.GetRootHandle()
 	entries := secInfoOnName(t, fx, pseudoRoot, "export")
 
-	if hasFlavor(entries, authSysFlavor) {
-		t.Errorf("SECINFO across a junction offered AUTH_SYS, which the target share refuses: %+v", entries)
-	}
-	if !hasFlavor(entries, authNoneFlavor) {
-		t.Errorf("SECINFO across a junction dropped AUTH_NONE: %+v", entries)
+	if hasFlavor(entries, authSysFlavor) || hasFlavor(entries, authNoneFlavor) {
+		t.Errorf("SECINFO across a junction offered a non-GSS flavor the target share refuses: %+v", entries)
 	}
 }
 
