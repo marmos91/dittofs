@@ -59,9 +59,8 @@ func TestUmnt_LeavesSMBMountRecord(t *testing.T) {
 		t.Fatalf("Umnt: %v", err)
 	}
 
-	smb := rt.Mounts().ListByProtocol("smb")
-	if len(smb) != 1 {
-		t.Errorf("SMB mounts after NFS UMNT = %d, want 1", len(smb))
+	if n := len(rt.Mounts().ListByProtocol("smb")); n != 1 {
+		t.Errorf("SMB mounts after NFS UMNT = %d, want 1", n)
 	}
 	if n := len(rt.ListMounts()); n != 1 {
 		t.Errorf("total mounts = %d, want 1 (SMB only)", n)

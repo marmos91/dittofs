@@ -47,14 +47,12 @@ func (h *Handler) UmntAll(
 
 	logger.Info("Unmount-all request", "client_ip", clientIP)
 
-	// Remove this client's mount records from the registry
 	count := h.Registry.RemoveAllMounts(clientIP)
 
 	logger.Info("Unmount-all successful", "client_ip", clientIP, "removed", count)
 
-	// UMNTALL always returns void/success per RFC 1813
-	// Even if the removal found nothing, we return success because the
-	// client-side unmount has already occurred
+	// UMNTALL returns void/success per RFC 1813 even when nothing matched: the
+	// client-side unmount has already occurred.
 	return &UmountAllResponse{MountResponseBase: MountResponseBase{Status: MountOK}}, nil
 }
 

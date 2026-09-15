@@ -62,9 +62,9 @@ func (mt *Tracker) Remove(clientAddr, protocol, shareName string) bool {
 }
 
 // RemoveByClient removes every mount one client holds on one protocol and
-// returns how many went away. The protocol is part of the scope because a
-// client address is shared across adapters: the same IP can hold an NFS and an
-// SMB mount of the same share, and removing one must not touch the other.
+// returns how many went away. The protocol scopes it because one client address
+// is shared across adapters: the same IP can hold an NFS and an SMB mount of
+// the same share, and removing one must not touch the other.
 func (mt *Tracker) RemoveByClient(clientAddr, protocol string) int {
 	mt.mu.Lock()
 	defer mt.mu.Unlock()

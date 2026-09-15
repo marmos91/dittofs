@@ -981,8 +981,7 @@ func (r *Runtime) RemoveMount(clientAddr, shareName string) bool {
 }
 
 // RemoveAllMounts drops every NFS mount record held by one client and returns
-// how many went away. Other clients, and the client's own SMB records, are
-// left in place.
+// how many went away; other clients and the client's own SMB records stay.
 func (r *Runtime) RemoveAllMounts(clientAddr string) int {
 	return r.mountTracker.RemoveByClient(clientAddr, "nfs")
 }
