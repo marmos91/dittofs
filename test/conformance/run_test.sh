@@ -83,6 +83,35 @@ echo "3 new failures"
 exit 3
 EOF
 
+# Graders that also write the verdict sidecar, the way parse-results.sh does:
+# "category failures no_result". The exit status is the aggregate count.
+cat >"${FAKE_TEST}/fake/inconclusive2.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "inconclusive 0 2" > "${DITTOFS_RESULTS_DIR}/verdict"
+exit 2
+EOF
+
+cat >"${FAKE_TEST}/fake/mixed.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "failures 1 1" > "${DITTOFS_RESULTS_DIR}/verdict"
+exit 2
+EOF
+
+# Grades once, then dies before it could grade again. The second run is the one
+# that must not be described by the first run's verdict: same suite, same label,
+# so the same results directory, which is what makes the sidecar inheritable.
+export FAKE_STALE_MARK="${FAKE_TEST}/stale.mark"
+cat >"${FAKE_TEST}/fake/stale.sh" <<'EOF'
+#!/usr/bin/env bash
+if [ -e "${FAKE_STALE_MARK}" ]; then
+    echo "setup exploded before any test ran"
+    exit 9
+fi
+: > "${FAKE_STALE_MARK}"
+echo "inconclusive 0 2" > "${DITTOFS_RESULTS_DIR}/verdict"
+exit 2
+EOF
+
 cat >"${FAKE_TEST}/fake/teardown.sh" <<'EOF'
 #!/usr/bin/env bash
 echo "TEARDOWN RAN"
@@ -104,6 +133,33 @@ cat >"$FAKE_MANIFEST" <<'EOF'
       "tiers": { "pull_request": ["memory"], "push": "all" },
       "steps": [
         { "name": "run", "cmd": "fake/pass.sh", "args": ["--profile", "{profile}"], "root": false }
+      ]
+    },
+    "inconclusive": {
+      "description": "grades nothing: every test failed to reach the server",
+      "runner_dir": "fake",
+      "profiles": ["memory"],
+      "tiers": { "pull_request": "all", "push": "all" },
+      "steps": [
+        { "name": "run", "cmd": "fake/inconclusive2.sh", "args": [], "root": false }
+      ]
+    },
+    "mixed": {
+      "description": "one real regression alongside one ungraded test",
+      "runner_dir": "fake",
+      "profiles": ["memory"],
+      "tiers": { "pull_request": "all", "push": "all" },
+      "steps": [
+        { "name": "run", "cmd": "fake/mixed.sh", "args": [], "root": false }
+      ]
+    },
+    "stale": {
+      "description": "grades once, then fails before it can grade again",
+      "runner_dir": "fake",
+      "profiles": ["memory"],
+      "tiers": { "pull_request": "all", "push": "all" },
+      "steps": [
+        { "name": "run", "cmd": "fake/stale.sh", "args": [], "root": false }
       ]
     },
     "graded": {
@@ -292,6 +348,26 @@ assert_not_contains "--keep skips teardown" "TEARDOWN RAN" "$OUT"
 
 assert_contains "a graded failure is reported as a failure count" "3 new failure(s)" \
     "$(run_fake --suite graded --profile memory --variant 4.0)"
+
+# The count the status carries is an aggregate, and clamped. What a human reads
+# has to separate a regression from a test that never reached the server, so the
+# grader writes both counts beside the category and the summary renders them.
+OUT="$(run_fake --suite inconclusive --profile memory)"
+assert_contains "an ungraded run is not called a failure" "inconclusive — 2 test(s) produced no server result" "$OUT"
+assert_not_contains "and is not counted as new failures" "new failure(s)" "$OUT"
+
+OUT="$(run_fake --suite mixed --profile memory)"
+assert_contains "a mixed run reports the regression count, not the total" "1 new failure(s)" "$OUT"
+assert_contains "and still names the ungraded test" "1 inconclusive" "$OUT"
+
+# A stale sidecar must not be inherited. results_dir is keyed by suite and label,
+# not by invocation, so the second run of the SAME suite finds the first run's
+# verdict sitting there — and it died before writing one of its own.
+OUT="$(run_fake --suite stale --profile memory)"
+assert_contains "the first run is described by its own verdict" "produced no server result" "$OUT"
+OUT="$(run_fake --suite stale --profile memory)"
+assert_not_contains "a later run does not inherit the earlier verdict" "produced no server result" "$OUT"
+
 
 # A step that is not the graded one exits with a shell status, not a count. It
 # must stay red — nothing here weakens that — but calling it "N new failure(s)"
