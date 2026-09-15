@@ -113,11 +113,124 @@ scaffolding around them.
   holds a runner slot for the rest of the day. This is precisely the failure `integration-tests.yml`
   documents adding its 45-min cap to avoid, and it is *worse* here because Lint is 10 jobs.
 
-### 2.7 Correction to a plausible-looking claim
+### 2.7 Correction to a plausible-looking claim, and then a correction to that correction
 
 `actions/setup-go` with `cache: true` caches **both** `GOMODCACHE` and `GOCACHE` ("built-in caching
-and restoration for Go modules and build outputs"). All 17 jobs already use it. Build-cache sharing
-is therefore **already done** and is not an item in this plan.
+and restoration for Go modules and build outputs"). All 17 jobs already use it.
+
+An earlier draft concluded from this that build-cache sharing is "already done and not an item in
+this plan". That is true as written and **misleading in effect**. It is cached into *one*
+never-refreshed, first-writer-wins entry. See §2.8.
+
+### 2.8 The Go build cache is paid for and never received
+
+Read from the Actions cache API (`/actions/cache/usage` and a full paged pull of `/actions/caches`).
+Two independent investigations reached this from opposite ends; their entry counts differ by a few
+hundred because the cache was churning between the two pulls, which is itself the finding.
+
+**(a) The repo is over GitHub's 10 GB per-repo cache cap, and Nix NARs are 99.9% of the entries.**
+
+| | |
+| --- | --- |
+| Active cache | ~6,500-6,700 entries, **10.8-12.2 GB** against a **10 GB ceiling** |
+| magic-nix-cache NAR + narinfo | **~9.2-9.6 GB** |
+| Distinct Nix store objects behind them | **499** — so **~95% is duplicate** |
+| Worst single object | one 85 MB store path held **56 times = 4.65 GB = 46% of the entire budget** |
+| Everything else | `setup-go` 3 entries / ~0.9 GB, codeql 3 / 0.2 GB, gitleaks 1 / 5 MB |
+
+Eviction is not theoretical. Every NAR entry was last accessed inside a **~1 hour window**
+(oldest 14:40Z when queried at 15:46Z; a second pull saw a 49-minute window). Anything not read
+hourly is already gone. Entry counts moved 5,782 → 6,041 → 6,654 → 6,700 during a single session.
+
+Two multipliers produce the 56 copies: GHA per-branch cache scoping (7 distinct refs — unavoidable)
+**and** within-scope duplication (**19 copies on `refs/heads/develop` alone**), because concurrent
+Nix jobs all miss simultaneously and all upload under distinct random key suffixes.
+`magic-nix-cache-action@main` appears in **7 job definitions** across `conformance.yml`,
+`nfs-pynfs.yml` and `e2e-tests.yml`, several of them matrices — roughly 11 uploaders per push.
+
+Direct wall-clock cost is **~0** (`Install Nix` 8-10s, `Setup Nix cache` 9-11s). The damage is
+entirely indirect: it leaves no budget for any other cache. This is why it is Phase 0 and not a
+Phase 3 nicety.
+
+**(b) `setup-go`'s cache is frozen at 10 MB and cannot self-heal.**
+
+```
+480 MB  setup-go-Linux-x64-ubuntu24-go-1.26.0-f90f2b60...
+ 10 MB  setup-go-Linux-x64-ubuntu24-go-1.26.8-f90f2b60...   <- what "1.26.x" resolves to today
+412 MB  setup-go-Windows-x64-go-1.26.8-6310ae1a...
+```
+
+The key is `setup-go-${os}-${arch}-go-${resolved-version}-${sha256(go.sum)}` with **no run/SHA
+component and no `restore-keys`**, and `actions/cache` keys are write-once. Worse, a primary-key
+hit makes the action **skip the save** — visible in the `Format & Vet` log:
+
+```
+Cache Size: ~10 MB (10562882 B)
+Cache hit occurred on the primary key setup-go-Linux-x64-ubuntu24-go-1.26.8-f90f2b60..., not saving cache.
+```
+
+So the first job to finish pins the cache that every later job — and every later run — inherits,
+for the whole life of (Go version × `go.sum` hash). For scale: a full `GOCACHE` for this repo
+measured **4.3 GB** after one complete unit run, and **704 MB** after a plain `go build`. 10 MB is
+module metadata with no build cache in it at all.
+
+**The trigger is broader than the `go.sum` bump this repo already knows about.** The hosted runner
+image bumped Go **1.26.0 → 1.26.8** at 17:35Z on 2026-09-14, minting a fresh key with **no repo
+change whatsoever**. Note also the split: `go-version: "1.26.x"` resolves to 1.26.8 (the ~8 Linux
+jobs, 10 MB) while `go-version-file: go.mod` resolves to 1.26.0 (operator/CodeQL, 480 MB) — the
+healthy cache is attached to the jobs that need it least.
+
+**What a warm cache is worth — and the honest tension between two measurements.**
+
+| measurement | result |
+| --- | --- |
+| Local: `go test ./pkg/... ./internal/... ./cmd/...` cold → warm | **342s → 32s**, 140/142 packages `(cached)` |
+| Local: `go build ./pkg/... ./internal/... ./cmd/...` cold → warm | 109.9s → 8.1s |
+| CI natural experiment across the 17:35Z flip (same `go.sum`, 503 MB entry vs 10 MB entry) | **no signal**: `go vet` 90s → 82s, golangci 109s → 127s, Unit Tests 766s → 867s (overlapping ranges) |
+
+These are not in conflict; they measure different things. The CI experiment compared an inadequate
+cache against a more inadequate one — a single ~500 MB entry shared by `go vet`, golangci,
+`-race -covermode=atomic` tests and plain builds cannot hold four build configurations, because
+GOCACHE keys include `-race` and `-cover`. **The 342s → 32s figure is a ceiling from a same-machine,
+no-change re-run, not a CI projection.** What CI would see is bounded by per-commit invalidation
+fan-out, measured in §2.9.
+
+**Correction both investigations landed on independently:** `-coverprofile` / `-covermode=atomic`
+do **not** defeat Go's test cache on Go 1.26. A second run prints `ok ... (cached) coverage: 82.5%
+of statements`. Both expected otherwise. `unit-tests.yml`'s coverage flags are not the problem.
+
+### 2.9 Where the runner-seconds actually are, and what that rules out
+
+Summed from the jobs API (`completed_at - started_at`, skipped jobs excluded) for a representative
+**successful** PR run of each workflow:
+
+| Workflow | jobs | runner-sec | hermetically sandboxable? |
+| --- | ---: | ---: | --- |
+| Conformance Suites | 16 | **7,080** | No — docker-compose, `sudo` mounts, smbtorture/pjdfstest/wpts binaries |
+| NFS Protocol Conformance | 7 | **2,915** | No — pynfs via docker, kernel NFS client |
+| Windows Build | 1 | 667 | Yes, with a second toolchain |
+| Integration Tests | 1 | 409 | No — live postgres service, docker AD-DC/KDC |
+| Unit Tests | 1 | 390 | **Yes** |
+| Lint | 9 | 344 | Partly (~150s of Go vet/lint; rest is shellcheck + docs + jq) |
+| **Total** | **35** | **11,805** (~197 runner-min) | |
+
+**Only ~1,207s / 10% of runner-seconds, across 3 of 35 jobs, is Go compilation and testing.** The
+other 88% is shell, `sudo`, kernel mounts, docker-compose and foreign test binaries. This single
+table is what settles §3's build-system entry.
+
+**Per-commit invalidation fan-out** (reverse-dependency closure over the last 30 first-parent
+`develop` commits, each selected package weighted by its measured test elapsed time):
+
+- **5 of 30** commits touch a non-Go file and must fall back to running everything.
+- The other 25 select a median of **28 of 179** packages (min 5, max 109).
+- Time-weighted: **median 6.8%** of suite time, **mean 21%**, max 92.1%.
+
+**The graph is a funnel, and the funnel is where the work is.** `pkg/block/engine` (165.0s) and
+`pkg/block/journal` (151.3s) are together **52% of unit-test time**, and both sit downstream of
+`pkg/block` (fan-in 102). Block dataflow is the active work area, so **the commits that most need a
+fast gate are the ones any dependency-based technique helps least**: two journal commits each
+selected 69.9% of suite time, one selected 92.1%. A warm build cache is a big win on a median
+commit and a modest one on the commits actually being pushed right now. Say that, do not average it.
 
 ## 3. What is NOT wrong (do not touch)
 
@@ -130,13 +243,67 @@ is therefore **already done** and is not an item in this plan.
   (83e532d78, a `docs:`-titled commit that reverted security fixes and went green). High value.
 - **`golangci-lint skip-cache: true`.** Documents a real SA5011 false positive; 20s well spent.
 - **`-p 1` in integration tests.** Forced by a shared postgres DB. Removing it causes races.
-- **Test breadth.** 4475 test files, POSIX/WPTS/smbtorture conformance, E2E. That is the asset.
+- **Test breadth.** 1,195 tracked test files (1,099 under `pkg`/`internal`/`cmd`), POSIX/WPTS/smbtorture
+  conformance, E2E. That is the asset. Nothing here deletes coverage. *(An earlier draft said 4475;
+  that figure counted `.claude/worktrees/`. See §10.)*
+- **The build system.** Bazel/Pants/Please/Nx were considered and **rejected**. Per §2.9, only ~10%
+  of runner-seconds and 3 of 35 jobs are hermetically sandboxable; the other 88% is shell, `sudo`,
+  kernel mounts and docker-compose that Bazel could only wrap as `tags = ["manual", "no-sandbox"]`
+  and shell out to — what the workflows already do, plus a BUILD file. It removes **zero** jobs and
+  keeping BUILD files fresh **adds one**, into the ~20-slot pool §2.1 identifies as the bottleneck.
+  Nix already occupies the hermetic-build slot (packages, `devShells.ci`, `checks`, the `vendorHash`
+  bot, and a remote binary cache). Adopting Bazel means maintaining two. Measured mitigating detail:
+  **0 files import "C"** and sqlite is pure Go (`modernc`/`glebarez`), so the genuinely nasty part of
+  `rules_go` would not apply — it still is not worth an estimated 2-4 engineer-weeks plus a monthly
+  remote-cache bill against a pipeline that currently costs **$0**. Revisit only if Go packages
+  exceed ~600 (now **179**), modules exceed ~5 (now 2), the `go test` share of runner-seconds exceeds
+  ~50% (now **~10%**), CI spend exceeds ~$300/mo, or Phase 0 lands, verifies as restoring, and Unit
+  Tests *still* exceeds ~5 min. Nx is a JS/TS tool, Pants' Go backend is experimental, Please is
+  unmaintained relative to Bazel: the choice is Bazel or nothing, and today it is nothing.
   Nothing here deletes coverage.
 
 ## 4. The change set
 
 Ordered. **Consolidate before wiring required checks** — merging jobs changes check names, so
 configuring the gate first means configuring it against names about to be deleted.
+
+### Phase 0 — repair the cache budget (prerequisite, attacks execution not queue)
+
+Ordered first because Phases 0.2 and 0.3 need ~1-4 GB of cache budget per run and §2.8 shows there
+is currently none: the repo is over the 10 GB cap with a ~1 hour eviction horizon. Adding a Go build
+cache before fixing the Nix duplication just adds another entry to the churn.
+
+| # | Change | Saves | Confidence |
+| --- | --- | --- | --- |
+| 0.1 | **Get the Nix NAR store out of the Actions cache.** Either point it at Cachix / an S3 bucket (the repo already has S3 credential machinery), or drop `magic-nix-cache-action` from the jobs that only enter a dev shell — `conformance.yml:148` and `nfs-pynfs.yml:119` run `nix develop .#ci --command go build` and want a toolchain, not a 9 GB NAR store. Only the `pjdfstest`/`pynfs` derivation builds genuinely benefit. | frees **~9 GB** of a 10 GB budget; ~0s directly | Medium — the consuming jobs' Nix work is 12-23s/cell, so a bad outcome costs ~10-20s per cell. **Drop it from one matrix job and measure before doing all of them.** |
+| 0.2 | **Add an explicit rolling `~/.cache/go-build` cache** to every job running `go build`/`go test`/`go vet`, keyed per job and per commit with a `restore-keys` fallback. Do not rely on `setup-go`'s built-in cache for build objects — §2.8(b) shows why it cannot work. | bounded above by 342s → 32s locally; realistically a median-commit win per §2.9 fan-out | Medium — ceiling is measured, CI delivery is not |
+| 0.3 | **Verify it lands.** One step, no guessing. | — | None — pure observation |
+
+```yaml
+# 0.2 — in every job that runs go build / go test / go vet.
+# setup-go's own key is shared across all Go jobs and is write-once, so the first
+# job to finish pins a cache every other job then inherits (§2.8b). Key the build
+# cache per job and per commit, and fall back to the newest one.
+- uses: actions/cache@v4
+  with:
+    path: ~/.cache/go-build
+    key: gocache-${{ runner.os }}-${{ github.job }}-${{ github.sha }}
+    restore-keys: gocache-${{ runner.os }}-${{ github.job }}-
+```
+
+```yaml
+# 0.3 — a cache you did not watch restore is a cache you do not have.
+- run: |
+    go env GOCACHE && du -sh "$(go env GOCACHE)"
+    go test -count=1 ./pkg/block/journal/
+    go test ./pkg/block/journal/   # must print (cached)
+```
+
+Fork-PR runs restore from `develop`'s cache and write to a PR-scoped one they cannot leak back —
+both the correct security posture and the behaviour wanted here.
+
+**Phase 0 is independent of Phases 1-2** (no interaction: it changes no job names and no triggers),
+so it can land first, in parallel, or not at all without disturbing the gate work.
 
 ### Phase 1 — delete jobs (attacks the dominant cause)
 
@@ -145,7 +312,30 @@ configuring the gate first means configuring it against names about to be delete
 | 1.1 | Lint: 10 jobs → **5 job definitions, 4 active on a typical PR**. Group (a) Go-toolchain checks sharing checkout + `setup-go` (`format-vet`, `spec-citations`, `required-tests` — note `spec-citations` runs `go run` and `required-tests` runs `go test`, so the merged job **must** provision Go and its cache), (b) shell/harness (`e2e-harness` + the conditional ShellCheck pair), (c) manifest/docs (`conformance-manifest`, `new-package-tests`, `commit-type`). Keep each check a **named step** so a red job still says which check failed. | 5–6 slots/PR; Lint 21min → ~5min | Slight ↓ in granularity, mitigated by named steps |
 | 1.2 | Fold `nfs-pynfs.yml` into `conformance.yml` as a manifest-driven `pynfs` suite cell (complete the half-wired `outputs.pynfs`). One matrix, one Build Binaries, one Nix install. Add `pynfs` to `summary`'s `needs` so the existing aggregator gates it. | **3 jobs/push** (its matrix/grading/build) — the 4 pynfs cells remain; 1 workflow, 1 build, 1 Nix install | Neutral — same 4 cells, same grader, same KNOWN_FAILURES tables |
 | 1.3 | Remove the duplicate grader execution. Drop `run_test.sh` + `known-failures_test.sh` from `lint.yml`, keep `check-docs.sh` there; `conformance.yml`'s `graders` keeps the runner tests. | seconds of *duration*, **not a slot** — the `graders` job remains | None — each script still runs exactly once |
-| 1.4 | Windows Build: keep `go build ./...` + `go vet ./...` per-PR, reduce the test step to the windows-tagged files (5) plus `-race` on those. **Measure first** (§2.3 caveat). | 1477s → ~5–8min of *duration*; **no slot saved** unless the job is split | ↓ — see 5.1 |
+| 1.4 | Windows Build: **do not reduce the test scope.** Superseded by measurement — see below. Two corrections stand regardless: the job runs `go build ./cmd/dfs/` + `./cmd/dfsctl/` only and has **no `go vet` step at all**, so the "keep `go build ./...` + `go vet ./...`" mitigation in 5.1 names steps that would have to be **added**, not kept; and `go build` does not compile `_test.go`, so it is not the compile-coverage backstop 5.1 assumes. | **0** — withdrawn | N/A |
+
+**1.4 is withdrawn, with evidence.** The §2.3 caveat said "measure the test step before acting".
+Measured, per-package, comparing the Windows job (`-short -race -p2`) to the Linux job
+(`-race`, no `-short`):
+
+| package | Linux (full) | Windows (`-short`) | change |
+| --- | ---: | ---: | ---: |
+| `pkg/block/chunker` | 583s | **15s** | -97% |
+| `pkg/block/engine` | 673s | 220s | -67% |
+| `pkg/controlplane/runtime` | 206s | 119s | -42% |
+| `pkg/metadata/store/badger` | 341s | 297s | -13% (conformance suite, no guard) |
+| `pkg/metadata/store/sqlite` | 274s | 285s | ~flat |
+| `internal/adapter/nfs/v3/handlers` | 170s | 252s | **+48%** (Windows/`-p2` overhead) |
+| `pkg/block/journal` | 11s | **110s** | **10x** |
+| `pkg/controlplane/runtime/shares` | 7s | **106s** | **15x** |
+
+`-short` is already doing the cheap part of the pruning (chunker -97%). The two packages it does
+*not* help — `journal` and `runtime/shares` — got **10x and 15x slower on Windows**, which is real
+platform I/O signal, not padding. Both are **cross-platform packages with no `_windows.go` in the
+name**, so the windows-tagged-file list 1.4 proposed would have dropped exactly them. Step-level:
+`Run unit tests` is 1406s of the 1528s job (92%); the builds are 37s. The remaining saving does not
+offset masking a genuine Windows I/O regression. **Leave Windows Build as it is.**
+| 1.4b | **Restrict the CodeQL `pull_request` matrix to `go`.** `codeql.yml:33` runs `language: [actions, go, python]` unfiltered on every PR. The repo has 5 tracked Python files, none of them shipped product code (4 under `test/`, plus `scripts/gen-bench-charts.py`), and the workflow already runs weekly (`cron: 27 3 * * 1`) and on push-to-develop, so full-language coverage still lands on the merge path. | **2 slots**, one line | None — coverage retained on push + schedule |
 | 1.5 | Add `timeout-minutes: 10` to every Lint job. | prevents a 6h slot hold | None — pure safety |
 | 1.6 | Delete the dead `dfs-1.26.x` artifact upload and the single-entry `go-version` matrices. | seconds, clearer check names | None |
 
@@ -202,6 +392,21 @@ trap here; the diff-based derivation avoids it by construction.
    **Tier 2 — require only after the aggregator fix below:** `Unit Tests`, `Integration Tests`,
    and the conformance suite.
 
+   **Ordering hazard: Tier 1 as written names two checks that Phase 1.1 deletes.** 1.1 folds
+   `format-vet` into group (a) and `commit-type` into group (c) as *named steps*, so `Format & Vet`
+   and `Commit Type Matches Diff` stop being reported check names the moment Phase 1 lands. Requiring
+   them first leaves every PR at "Expected — waiting" on a check that no longer exists, and the only
+   way out is the admin bypass this section warns against three paragraphs down. Either require the
+   post-consolidation job names, or — better, and the reason the aggregator pattern below matters —
+   require **stable aggregator names** that outlive any regrouping. This is the same "consolidate
+   before wiring" rule stated at the head of §4, applied to §4's own tier list; the tiers were
+   written before 1.1 existed and were never re-read against it.
+
+   **`Required Tests` belongs in Tier 1 and is currently in no tier at all.** §3 calls
+   `required-tests.json` high value because 83e532d78 shipped through its absence. As written,
+   deleting a pinned authorization or encryption test fails only an *unrequired* check — the gate
+   would not gate the one thing it was built for.
+
    **`Conformance summary` is NOT currently a safe gate.** Its `needs:` is only
    `[wpts, smbtorture, pjdfstest, nfs-kerberos]` — it omits `matrix`, `graders`, and `build`. Worse,
    `wpts` and `smbtorture` `need:` only `matrix`, **not `build`**, so a failed `Build Binaries`
@@ -227,13 +432,33 @@ trap here; the diff-based derivation avoids it by construction.
    the exact change class that hits this. The gate would have to be bypassed on precisely the PRs
    that `commit-type-matches-diff` exists to police.
 
-   Fix: add one always-triggering **aggregator job** per gated workflow that `needs:` the
-   path-filtered jobs with `if: always()` and fails when any dependency failed, then mark **that**
-   job required. It always reports, so the required check is always satisfied — by real passes or by
-   a genuine failure. This also keeps the required check *name* stable while the jobs behind it
-   change, which is what lets Phase 1 and Phase 2 be done in either order safely.
-2. **Enable a merge queue** on `develop` and `main`. Adding `merge_group:` to the `on:` blocks is
-   necessary but **not sufficient** — two existing payload assumptions break under it:
+   Fix, and the first draft of this fix was **not constructible** — stating both so nobody
+   re-derives the broken one. An always-triggering aggregator that `needs:` the path-filtered jobs
+   cannot work while the filter sits on the workflow's `on:` block: on a docs-only PR the **whole
+   workflow** does not trigger, so no job runs, aggregator included, and `needs:` cannot reach across
+   workflows. The filter has to move before an aggregator means anything.
+
+   So: **move the path filter from the workflow to the jobs.** Drop `paths:` / `paths-ignore:` from
+   `on:` in `unit-tests.yml`, `integration-tests.yml` and `conformance.yml`, add a cheap
+   `changes` job using `dorny/paths-filter`, and gate the expensive jobs on its output with `if:`.
+   A job skipped by `if:` reports `skipped`, which **does not block** — that is the whole mechanism.
+   Then add the always-running aggregator with `if: always()` that fails when any dependency
+   failed, and require **that** name.
+
+   **This pattern already exists in this repo — extend it, do not invent it.** `lint.yml:204`
+   (`shellcheck-changes` → `shellcheck`) and `conformance.yml:425` (kerberos scoping) both already
+   use `dorny/paths-filter@v4` at job level, and `lint.yml` already carries the `fetch-depth: 0`
+   comment documenting the merge-base pitfall. Keeping the required check *name* stable while the
+   jobs behind it change is what lets Phase 1 and Phase 2 be done in either order safely.
+2. **Enable a merge queue on `develop`. Do *not* enable one on `main`.** `Protect main` has no
+   `pull_request` rule and nothing reaches `main` by PR: per CLAUDE.md the release flow is
+   `git branch -f main <commit> && git push origin main:main`. A required merge queue on `main`
+   blocks that push outright, so every release would either fail or depend permanently on the admin
+   bypass this section is trying to eliminate. Gate `develop`, where the PRs actually are, and leave
+   `main`'s fast-forward release path alone.
+
+   Adding `merge_group:` to the `on:` blocks is necessary but **not sufficient** — two existing
+   payload assumptions break under it:
 
    - **`conformance.yml` selects the wrong tier.** Its `EVENT` expression maps only `pull_request`
      and `schedule`, falling through to `'push'` for anything else. `suites.json` gives `push` the
@@ -248,9 +473,12 @@ trap here; the diff-based derivation avoids it by construction.
    Audit every workflow that gains `merge_group:` for this class of bug: an event-name ternary with
    no `merge_group` arm, or a payload field that only exists on `pull_request`/`push`.
 3. **Raise `required_approving_review_count` 0 → 1.**
-4. **Apply the same settings to `Protect main`.** The gate is only described for `Protect develop`,
-   but merges to `main` flow through it and the rulesets are separate. Gating one branch leaves the
-   other bypassable.
+
+   *(An earlier draft carried a fourth item, "apply the same settings to `Protect main`". It is
+   deleted: it contradicts item 2 above. Nothing reaches `main` by PR, so there is no PR gate to
+   apply there, and ruleset required checks would block the `git push origin main:main`
+   fast-forward exactly as a merge queue would. `main`'s protection is that it only ever
+   fast-forwards to a commit that already passed the gate on `develop`.)*
 
 Why this is the confidence story: required checks make green *necessary*; the merge queue makes the
 tested artifact the *merge result* rather than each PR against a stale base; `required-tests.json`
@@ -262,7 +490,33 @@ it needs new test code.
 | # | Change | Saves |
 | --- | --- | --- |
 | 3.1 | Drop `-v` from `unit-tests.yml:50`. Thousands of per-test log lines on the most contended job. Keep it on failure via `-json` or a rerun if needed. | ~10–20% of unit job |
-| 3.2 | Keep `-race` on Linux only. It is already the case after 1.4. | — |
+| 3.2 | ~~Keep `-race` on Linux only.~~ **Struck.** It contradicted 1.4 and 5.1, which kept `-race` on the reduced Windows set as the mitigation; with 1.4 withdrawn the premise ("already the case after 1.4") is gone too. Windows keeps `-short -race` exactly as today. | — |
+| 3.3 | **Add `-short` to `unit-tests.yml` on the `pull_request` path only; keep the full suite on push-to-develop.** The Linux unit job passes no `-short`; `windows-build.yml:59` does. The guards already exist (`chunker_test.go:78`, `boundary_stability_test.go:69`) and simply never fire on the job that needs them, which is why `pkg/block/chunker` is 583s on Linux and 15s on Windows. **The event scoping is not optional — see the trap below.** | **~460-500s** of the unit job's test step on PRs (estimated: no A/B run with `-short` added) |
+| 3.4 | Add guards to three large ungated tests: `TestChunker_MinDrivesEffectiveAverage` (72s), `TestChunker_ConstantMemory` (21s), `TestWarmReadIntegrity_AfterDrainUploads` (139s). Single `if testing.Short() { t.Skip(...) }` each, matching the pattern in their own files' siblings. | a further ~230s, taking the step to ~74% off (estimated) |
+| 3.5 | Add `gotestsum` to `flake.nix` and use `--format pkgname`. Measured absent from `.github/`, `flake.nix` and the Makefile. It gives per-package progress without per-test spam, which **dissolves the 3.1 tension** between dropping `-v` and keeping failures diagnosable — take this instead of 3.1, not as well as. | makes 3.1 safe rather than a trade |
+
+**Trap: 3.3 and Phase 1b together would delete a test.** If `-short` is applied unconditionally,
+the full-scale chunker property tests run **nowhere on a PR**: `windows-build.yml:59` already passes
+`-short`, and the only other full execution is `integration-tests.yml`'s `go test -tags=integration
+./...`, which Phase 1b scopes down to 7 packages. A plan headlined "without deleting a single test"
+would delete one, silently, as an emergent property of two items that are individually correct.
+Hence the `pull_request`-only scoping in 3.3, and hence the rule: **whenever an item narrows what a
+job runs, name the job that still runs the full set.** For 3.3 that is push-to-develop, within
+minutes of merge rather than nightly.
+
+**The `-short` tier has a known ceiling, and it is not "more guards".** Repo-wide there are 19
+`testing.Short()` call sites in 12 files (matching §2.3). Of those: **5 are dead** — the
+`pkg/snapshot/backup_bench_test.go` guards sit inside `func Benchmark*` bodies and **no CI job passes
+`-bench`**, so they cost zero and save zero; 4 more (`snapshot_concurrency_test.go`) guard tests that
+already run in 2-6s. Three memory-held "slow spots" are **refuted by measurement**:
+`backup_bench_test.go` (0s), `snapshot_concurrency_test.go` (2-6s/test),
+`parent_mtime_contention_test.go` (3.2s).
+
+**What `-short` must never be pointed at:** `pkg/metadata/store/{badger,sqlite}` (341s/274s) are the
+`storetest` conformance suite that CLAUDE.md makes the contract for any new metadata backend, and
+`internal/adapter/{nfs/v3,smb,nfs/v4}/handlers` (170+137+86 = 393s) are hundreds of sub-1.5s
+wire-and-permission cases. Both are correctness **breadth**, not stress — there is no scale knob to
+turn down, and gating them removes coverage rather than slowness.
 
 Note: `-v` output is the only place the job's per-test progress is visible. Before dropping it,
 confirm a failing run is still diagnosable from the failure output alone; otherwise keep `-v` and
@@ -325,16 +579,48 @@ The failure mode to avoid is "rerun until green", which is how green stops meani
   were queued. On a quiet repo the queue term shrinks and the critical path reverts to conformance's
   genuine ~29 min floor. The structural fix (fewer jobs) holds either way, but **do not promise
   "21 min → 5 min"** as a steady-state number.
-- **`Unit Tests`' 1152s is probably mostly real execution, not queue.** It is a single job, so it
-  cannot be inflated by intra-workflow stagger. That ~19 min is a floor that cannot be cut without
-  dropping `-race`. Do not treat it as queue-recoverable.
-- **The `-short` saving for Windows is unverified** (§2.3 caveat): the 13 guards sit in the most
-  expensive tests, so `-short` may already be doing the pruning. Measure the test step's duration
-  before acting on 1.4.
+- **A note on the three `Unit Tests` numbers in this document, which are not contradictions but
+  are easy to read as one.** 390s (§2.9) is the *execution* span of one representative successful
+  run (`started_at` → `completed_at`). ~950s is the *test step* on the run sampled for per-package
+  timing in 3.3. 1152s is the *whole-job wall clock including queue* on the congested run in §2.1.
+  Three spans, three runs. Any future edit citing a `Unit Tests` duration must say which span it
+  means, or this document reads as self-contradicting to anyone checking it.
+- **`Unit Tests`' execution time is real, not queue** — it is a single job, so it cannot be
+  inflated by intra-workflow stagger. But an earlier draft called it "a floor that cannot be cut
+  without dropping `-race`", and that is now **refuted twice over**: `-short` alone takes ~460-500s
+  off it (3.3), and neither `-race` nor `-coverprofile` defeats Go's test cache (§2.8), so the floor
+  is a consequence of the broken cache rather than a property of the suite. Do not treat it as
+  queue-recoverable; do not treat it as irreducible either.
+- **The `-short` question for Windows is now answered, and the answer went against 1.4** (§2.3
+  caveat, resolved in 1.4): `-short` already prunes chunker by 97%, while `journal` and
+  `runtime/shares` got 10x and 15x *slower* on Windows. 1.4 is withdrawn.
+- **Phase 0's CI delivery is the least-evidenced claim in this plan.** The 342s → 32s figure is a
+  local same-machine no-change re-run, and the one CI-side natural experiment available (§2.8)
+  found **no signal**. If Phase 0 lands, verifies as restoring via 0.3, and Unit Tests does not
+  move, then the build-cache theory is wrong — and that is also the trigger in §3 for reopening the
+  build-system question. This is the cleanest falsifier in the document; run 0.3 before believing
+  anything else in Phase 0.
+- **The fan-out measurement cuts against the headline for *this* team.** §2.9 measures a median
+  commit at 6.8% of suite time but the active block-dataflow commits at 69.9-92.1%. A cache win
+  reported as a median will overstate what the people actually pushing today will feel.
 
 ## 7. Verify
 
 ```bash
+# Phase 0.1: cache budget must fall well under the 10 GB cap, and NAR entries must stop dominating.
+gh api repos/marmos91/dittofs/actions/cache/usage \
+  --jq '"\(.active_caches_count) entries, \(.active_caches_size_in_bytes/1e9|floor) GB"'
+gh api --paginate "repos/marmos91/dittofs/actions/caches?per_page=100" \
+  --jq '.actions_caches[].key' | grep -c '\.nar' || true
+
+# Phase 0.2: an explicit go-build cache must exist and must NOT be a 10 MB stub.
+gh api --paginate "repos/marmos91/dittofs/actions/caches?per_page=100" \
+  --jq '.actions_caches[]|select(.key|startswith("gocache-"))|"\(.size_in_bytes) \(.key)"'
+
+# Phase 0.3: the probe step must print "(cached)" on its second go test.
+# Phase 3.3: -short must actually be on the unit job.
+grep -n 'go test' .github/workflows/unit-tests.yml
+
 # Phase 1: total job slots per push across ALL PR-triggered workflows (not just Lint).
 # Replace <sha> with the head commit of the PR under test.
 gh api "repos/marmos91/dittofs/actions/runs?head_sha=<sha>&per_page=100" \
@@ -362,7 +648,8 @@ grep -L 'merge_group' .github/workflows/{lint,unit-tests,integration-tests,confo
 ## 8. Open decisions
 
 1. **Windows suite destination**: reduce to windows-tagged files (1.4), push-to-develop only, or
-   path-triggered on Windows-touching PRs? Recommendation: reduce the set per 1.4, and keep a full
+   path-triggered on Windows-touching PRs? **Resolved: none of these — 1.4 is withdrawn** (see the
+   measured table under 1.4). Windows Build stays exactly as it is. Keep a full
    Windows run on push-to-develop. Measure the current test-step duration first.
 2. **Merge-queue batch size**: start at 1 (correctness) or 3 (throughput)? Recommendation: 1.
 3. **Required review count 0 → 1**: does the maintainer want a human gate, or is the check suite
