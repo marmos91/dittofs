@@ -304,3 +304,36 @@ func TestExportAuthPolicy_UnverifiedGSSRejected(t *testing.T) {
 		t.Fatalf("unverified RPCSEC_GSS GETATTR status = %d, want NFS4ERR_WRONGSEC (%d)", status, types.NFS4ERR_WRONGSEC)
 	}
 }
+
+// TestExportAuthPolicy_AllowAuthSysFalseRejectsAuthNone covers the flavor a
+// naming-AUTH_UNIX gate misses. A share that refuses AUTH_SYS refuses
+// everything weaker than it too, so an AUTH_NONE caller — carrying no
+// credential at all — must not reach the export either. Testing only for
+// AUTH_UNIX let one straight through.
+func TestExportAuthPolicy_AllowAuthSysFalseRejectsAuthNone(t *testing.T) {
+	fx := newRealFSTestFixture(t, "/export")
+	fileHandle := fx.createTestFile(t, fx.rootHandle, "f.txt", metadata.FileTypeRegular, 0o644, 1000, 1000)
+
+	// An anonymous caller: AUTH_NONE, no Unix credential asserted.
+	ctx := newRealFSContext(0, 0)
+	ctx.AuthFlavor = rpc.AuthNull
+	ctx.UID, ctx.GID = nil, nil
+	ctx.CurrentFH = append([]byte(nil), fileHandle...)
+
+	var requested []uint32
+	attrs.SetBit(&requested, attrs.FATTR4_TYPE)
+
+	// The default share permits AUTH_SYS, so the anonymous caller gets through.
+	if status := fx.handler.getAttrRealFS(ctx, requested).Status; status != types.NFS4_OK {
+		t.Fatalf("AUTH_NONE GETATTR on a permissive share = %d, want NFS4_OK (%d)", status, types.NFS4_OK)
+	}
+
+	if err := fx.rt.SetExportAuthPolicyForTesting("/export", false, false); err != nil {
+		t.Fatalf("SetExportAuthPolicyForTesting: %v", err)
+	}
+
+	if status := fx.handler.getAttrRealFS(ctx, requested).Status; status != types.NFS4ERR_WRONGSEC {
+		t.Fatalf("AUTH_NONE GETATTR on an AllowAuthSys=false share = %d, want NFS4ERR_WRONGSEC (%d)",
+			status, types.NFS4ERR_WRONGSEC)
+	}
+}

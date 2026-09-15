@@ -9,7 +9,6 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/auth"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc/gss"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
@@ -111,55 +110,20 @@ func (h *Handler) buildV4AuthContext(ctx *types.CompoundContext, handle []byte) 
 	// below still fails closed if the share is genuinely gone.
 	share, _ := h.Registry.GetShare(shareName)
 
-	// Enforce the per-share export auth-flavor policy. NFSv4.1 has no MOUNT
-	// call, so the RequireKerberos / AllowAuthSys checks the v3 MOUNT handler
-	// applies (mount/handlers/mount.go) never ran on v4 — a share that requires
-	// Kerberos was mountable over AUTH_SYS on v4.1, silently bypassing the
-	// requirement. Mirror the v3 logic here, at the first real-FS op that
-	// resolves the share handle, and surface the refusal as NFS4ERR_WRONGSEC so
+	// Enforce the per-share export access policy — which auth flavors this
+	// export accepts and the GSS protection floor. NFSv4.1 has no MOUNT call, so
+	// the checks the MOUNT handler applies never ran on v4: a share that requires
+	// Kerberos was usable over AUTH_SYS on v4.1, silently bypassing the
+	// requirement. This is the same decision MOUNT and the v3 operation path
+	// apply, so the three cannot drift. It runs at the first real-FS op that
+	// resolves the share handle, and the refusal surfaces as NFS4ERR_WRONGSEC so
 	// the client retries with the correct flavor (SECINFO).
+	//
+	// The netgroup allowlist is checked above with its own status, so no netgroup
+	// lookup is handed to the policy here.
 	if share != nil {
-		if !share.AllowAuthSys && ctx.AuthFlavor == rpc.AuthUnix {
-			return nil, "", &authStatusError{
-				status: types.NFS4ERR_WRONGSEC,
-				err:    fmt.Errorf("share %q does not allow AUTH_SYS", shareName),
-			}
-		}
-		if share.RequireKerberos && ctx.AuthFlavor != rpc.AuthRPCSECGSS {
-			return nil, "", &authStatusError{
-				status: types.NFS4ERR_WRONGSEC,
-				err:    fmt.Errorf("share %q requires Kerberos", shareName),
-			}
-		}
-		// Enforce the per-share GSS protection floor (min_kerberos_level). A
-		// share configured krb5i/krb5p must reject a GSS session negotiated at a
-		// weaker service level (e.g. plain krb5 authentication-only on a krb5p
-		// privacy share). The negotiated RPCSEC_GSS service level is carried in
-		// the request context by the GSS DATA dispatch, which attaches it to
-		// every RPCSEC_GSS request it processes — control messages and failures
-		// are answered there and never reach a handler.
-		//
-		// So a claimed GSS flavor with no session info was never processed as
-		// GSS, which happens when no GSS processor is configured and the
-		// dispatch leaves flavor 6 unintercepted. That credential is unverified
-		// and cannot stand in for Kerberos: RequireKerberos is satisfied by the
-		// flavor alone and AllowAuthSys does not apply to it, so skipping the
-		// check here would clear the share's entire Kerberos policy.
-		if ctx.AuthFlavor == rpc.AuthRPCSECGSS {
-			si := gss.SessionInfoFromContext(ctx.Context)
-			if si == nil {
-				return nil, "", &authStatusError{
-					status: types.NFS4ERR_WRONGSEC,
-					err:    fmt.Errorf("RPCSEC_GSS credential for share %q was not verified", shareName),
-				}
-			}
-			if !auth.MeetsMinKerberosLevel(share.MinKerberosLevel, si.Service) {
-				return nil, "", &authStatusError{
-					status: types.NFS4ERR_WRONGSEC,
-					err: fmt.Errorf("share %q requires min kerberos level %q (negotiated service %d)",
-						shareName, share.MinKerberosLevel, si.Service),
-				}
-			}
+		if accessErr := auth.CheckExportAccess(ctx.Context, share, ctx.AuthFlavor, nil, nil); accessErr != nil {
+			return nil, "", &authStatusError{status: types.NFS4ERR_WRONGSEC, err: accessErr}
 		}
 	}
 
