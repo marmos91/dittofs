@@ -13,12 +13,24 @@ import (
 
 // GroupHandler handles group management API endpoints.
 type GroupHandler struct {
-	store store.GroupStore
+	store    store.GroupStore
+	onChange func()
 }
 
-// NewGroupHandler creates a new GroupHandler.
-func NewGroupHandler(s store.GroupStore) *GroupHandler {
-	return &GroupHandler{store: s}
+// NewGroupHandler creates a new GroupHandler. The optional onChange callback is
+// invoked after a group or its membership changes. Share permission resolves
+// group grants through the member's group list, and adapters cache that result
+// per identity, so without this signal a membership or GID edit stays invisible
+// until the cached context ages out.
+func NewGroupHandler(s store.GroupStore, onChange func()) *GroupHandler {
+	return &GroupHandler{store: s, onChange: onChange}
+}
+
+// notifyChange fires the change callback when one is configured.
+func (h *GroupHandler) notifyChange() {
+	if h.onChange != nil {
+		h.onChange()
+	}
 }
 
 // CreateGroupRequest is the request body for POST /api/v1/groups.
@@ -72,6 +84,7 @@ func (h *GroupHandler) Create(w http.ResponseWriter, r *http.Request) {
 		HandleStoreError(w, err)
 		return
 	}
+	h.notifyChange()
 
 	WriteJSONCreated(w, groupToResponse(group))
 }
@@ -144,6 +157,7 @@ func (h *GroupHandler) Update(w http.ResponseWriter, r *http.Request) {
 		HandleStoreError(w, err)
 		return
 	}
+	h.notifyChange()
 
 	WriteJSONOK(w, groupToResponse(group))
 }
@@ -163,6 +177,7 @@ func (h *GroupHandler) Remove(w http.ResponseWriter, r *http.Request) {
 	// by addressing the group via its ID.
 	switch err := h.store.DeleteGroup(r.Context(), token); {
 	case err == nil:
+		h.notifyChange()
 		WriteNoContent(w)
 	case errors.Is(err, models.ErrCannotDeleteSysGroup):
 		Forbidden(w, "Cannot delete system group")
@@ -196,6 +211,7 @@ func (h *GroupHandler) AddMember(w http.ResponseWriter, r *http.Request) {
 		HandleStoreError(w, err)
 		return
 	}
+	h.notifyChange()
 
 	WriteNoContent(w)
 }
@@ -219,6 +235,7 @@ func (h *GroupHandler) RemoveMember(w http.ResponseWriter, r *http.Request) {
 		HandleStoreError(w, err)
 		return
 	}
+	h.notifyChange()
 
 	WriteNoContent(w)
 }

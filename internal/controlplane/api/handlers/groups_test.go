@@ -32,7 +32,7 @@ func setupGroupTest(t *testing.T) (store.Store, *GroupHandler) {
 		t.Fatalf("Failed to create store: %v", err)
 	}
 
-	handler := NewGroupHandler(cpStore)
+	handler := NewGroupHandler(cpStore, nil)
 	return cpStore, handler
 }
 

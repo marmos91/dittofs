@@ -43,13 +43,26 @@ func seedUser(t *testing.T, cpStore store.Store, username string) {
 	}
 }
 
-// TestUserMutationsInvalidateAuthCache verifies that every control-plane user
+// seedGroup creates a group directly in the store.
+func seedGroup(t *testing.T, cpStore store.Store, name string) {
+	t.Helper()
+	gid := uint32(9001)
+	if _, err := cpStore.CreateGroup(context.Background(), &models.Group{
+		Name: name,
+		GID:  &gid,
+	}); err != nil {
+		t.Fatalf("seed group %q: %v", name, err)
+	}
+}
+
+// TestIdentityMutationsInvalidateAuthCache verifies that every control-plane
 // mutation the NFS auth resolver can observe fires the auth-cache invalidation
 // event. The NFSv3 handler caches a resolved auth context keyed
 // Share+AuthFlavor+uid+gid+GIDs; without this event a client holding a cached
-// positive context keeps access after the user record is disabled, its UID
-// changed, its share grants rewritten, or the record deleted outright.
-func TestUserMutationsInvalidateAuthCache(t *testing.T) {
+// positive context keeps its old access after the user record is disabled, its
+// UID changed, its grants rewritten, the record deleted, or its group
+// membership edited.
+func TestIdentityMutationsInvalidateAuthCache(t *testing.T) {
 	cases := []struct {
 		name   string
 		method string
@@ -91,12 +104,49 @@ func TestUserMutationsInvalidateAuthCache(t *testing.T) {
 			path:   "/api/v1/users/target",
 			want:   http.StatusNoContent,
 		},
+		// Share permission resolves group grants through the member's group
+		// list, so a membership or group edit moves the same decision the user
+		// fields do and must invalidate the same caches.
+		{
+			name:   "create group",
+			method: http.MethodPost,
+			path:   "/api/v1/groups",
+			body:   `{"name":"newgroup","gid":7001}`,
+			want:   http.StatusCreated,
+		},
+		{
+			name:   "change group gid",
+			method: http.MethodPut,
+			path:   "/api/v1/groups/staff",
+			body:   `{"gid":7002}`,
+			want:   http.StatusOK,
+		},
+		{
+			name:   "add group member",
+			method: http.MethodPost,
+			path:   "/api/v1/groups/staff/members",
+			body:   `{"username":"target"}`,
+			want:   http.StatusNoContent,
+		},
+		{
+			name:   "remove group member",
+			method: http.MethodDelete,
+			path:   "/api/v1/groups/staff/members/target",
+			want:   http.StatusNoContent,
+		},
+		{
+			name:   "delete group",
+			method: http.MethodDelete,
+			path:   "/api/v1/groups/staff",
+			want:   http.StatusNoContent,
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			router, token, cpStore, calls := newInvalidateTestRouter(t)
 			seedUser(t, cpStore, "target")
+			seedGroup(t, cpStore, "staff")
 
 			rec := doAuthedRequest(t, router, token, tc.method, tc.path, tc.body)
 			if rec.Code != tc.want {

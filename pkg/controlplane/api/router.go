@@ -185,7 +185,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 			r.Route("/groups", func(r chi.Router) {
 				r.Use(apiMiddleware.RequireAdmin())
 
-				groupHandler := handlers.NewGroupHandler(cpStore)
+				groupHandler := handlers.NewGroupHandler(cpStore, rt.InvalidateAuthCache)
 				r.Post("/", groupHandler.Create)
 				r.Get("/", groupHandler.List)
 				r.Get("/{name}", groupHandler.Get)
