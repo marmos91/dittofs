@@ -570,3 +570,74 @@ func TestBlockStoreHandler_Update_EncryptionCannotBeRemoved(t *testing.T) {
 		}
 	})
 }
+
+// A PUT that changes the config and renames onto a name already in use answers
+// 409. The rename runs after the config write, so without a preflight the 409
+// would be returned with the new config already committed — a reply that reads
+// as "nothing happened" against a store that changed.
+func TestBlockStoreHandler_Update_ConflictingRenameLeavesConfigUntouched(t *testing.T) {
+	cpStore, handler := setupBlockStoreTest(t)
+	ctx := context.Background()
+
+	const original = `{"bucket":"b","region":"us-east-1","access_key_id":"AK","secret_access_key":"SK"}`
+	if _, err := cpStore.CreateBlockStore(ctx, &models.BlockStoreConfig{
+		ID: uuid.New().String(), Name: "blocks-a",
+		Type: "s3", Config: original, CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("CreateBlockStore blocks-a: %v", err)
+	}
+	if _, err := cpStore.CreateBlockStore(ctx, &models.BlockStoreConfig{
+		ID: uuid.New().String(), Name: "blocks-b",
+		Type: "s3", Config: original, CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("CreateBlockStore blocks-b: %v", err)
+	}
+
+	taken := "blocks-b"
+	rotated := `{"bucket":"b","region":"us-east-1","access_key_id":"AK2","secret_access_key":"SK2"}`
+	body, _ := json.Marshal(UpdateBlockStoreRequest{Name: &taken, Config: &rotated})
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/store/block/blocks-a", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = withBlockStoreName(req, "blocks-a")
+	w := httptest.NewRecorder()
+	handler.Update(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d, body = %s", w.Code, http.StatusConflict, w.Body.String())
+	}
+
+	after, err := cpStore.GetBlockStore(ctx, "blocks-a")
+	if err != nil {
+		t.Fatalf("GetBlockStore blocks-a: %v", err)
+	}
+	if after.Config != original {
+		t.Errorf("config changed despite the 409: got %s, want %s", after.Config, original)
+	}
+}
+
+// Renaming a store to the name it already has is not a collision with itself,
+// so the preflight must let a plain config change through.
+func TestBlockStoreHandler_Update_RenameToOwnNameIsNotAConflict(t *testing.T) {
+	cpStore, handler := setupBlockStoreTest(t)
+	ctx := context.Background()
+
+	if _, err := cpStore.CreateBlockStore(ctx, &models.BlockStoreConfig{
+		ID: uuid.New().String(), Name: "blocks-self",
+		Type: "s3", Config: `{"bucket":"b","region":"us-east-1","access_key_id":"AK","secret_access_key":"SK"}`,
+		CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("CreateBlockStore: %v", err)
+	}
+
+	same := "blocks-self"
+	body, _ := json.Marshal(UpdateBlockStoreRequest{Name: &same})
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/store/block/blocks-self", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = withBlockStoreName(req, "blocks-self")
+	w := httptest.NewRecorder()
+	handler.Update(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", w.Code, http.StatusOK, w.Body.String())
+	}
+}
