@@ -196,9 +196,43 @@ func (v *DittoServerValidator) ValidateCreate(ctx context.Context, ds *DittoServ
 }
 
 // ValidateUpdate implements admission.Validator for DittoServerValidator
-func (v *DittoServerValidator) ValidateUpdate(ctx context.Context, _, newObj *DittoServer) (admission.Warnings, error) {
+func (v *DittoServerValidator) ValidateUpdate(ctx context.Context, oldObj, newObj *DittoServer) (admission.Warnings, error) {
 	dittoserverlog.Info("validate update (with client)", "name", newObj.Name)
+	if err := validateContentSizeUnchanged(oldObj, newObj); err != nil {
+		return nil, err
+	}
 	return v.validateDittoServerWithClient(ctx, newObj)
+}
+
+// validateContentSizeUnchanged refuses adding or removing storage.contentSize on
+// a DittoServer that already exists.
+//
+// The field decides whether the StatefulSet carries a "content"
+// volumeClaimTemplate, and Kubernetes rejects any change to that list on an
+// existing StatefulSet. Accepting the edit would leave the ConfigMap already
+// rewritten to name a journal path the pod has no volume for, with every
+// later reconcile failing on the same forbidden update and no way forward from
+// the CRD. Refusing at admission keeps the running spec consistent and says
+// what the edit actually costs. Resizing an existing claim is a different
+// operation and stays allowed.
+func validateContentSizeUnchanged(oldObj, newObj *DittoServer) error {
+	if oldObj == nil {
+		return nil
+	}
+	had := oldObj.JournalVolumeEnabled()
+	wants := newObj.JournalVolumeEnabled()
+	if had == wants {
+		return nil
+	}
+	verb := "adding"
+	if had {
+		verb = "removing"
+	}
+	return fmt.Errorf(
+		"storage.contentSize cannot be added or removed on an existing DittoServer: %s it changes StatefulSet.spec.volumeClaimTemplates, which Kubernetes rejects. "+
+			"To apply it, delete the StatefulSet without touching its data (kubectl delete statefulset %s --cascade=orphan) and re-apply; "+
+			"the existing PVCs are retained and re-bound when the operator recreates it. Resizing an existing contentSize is allowed",
+		verb, newObj.Name)
 }
 
 // ValidateDelete implements admission.Validator for DittoServerValidator

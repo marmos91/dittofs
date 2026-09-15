@@ -377,6 +377,8 @@ func verifyStatefulSet(t *testing.T, ctx context.Context, r *DittoServerReconcil
 		t.Errorf("StatefulSet missing metadata volume claim template")
 	}
 
+	verifyJournalVolume(t, statefulSet, dittoServer)
+
 	if len(statefulSet.Spec.Template.Spec.Containers) != 1 {
 		t.Errorf("Expected 1 container, got %d", len(statefulSet.Spec.Template.Spec.Containers))
 		return
@@ -657,5 +659,42 @@ func setupDittoServerReconciler(t *testing.T, f fields) *DittoServerReconciler {
 		Client:   fakeClient,
 		Scheme:   s,
 		Recorder: record.NewFakeRecorder(100),
+	}
+}
+
+// verifyJournalVolume pins the content PVC to storage.contentSize in both
+// directions, and pins its mount to the path the rendered
+// blockstore.journal.path names. A claim or a mount that went missing would
+// leave the rendered journal path pointing at the pod's ephemeral layer, which
+// no config-rendering test can see.
+func verifyJournalVolume(t *testing.T, statefulSet *appsv1.StatefulSet, dittoServer *v1alpha1.DittoServer) {
+	t.Helper()
+
+	hasClaim := false
+	for _, vct := range statefulSet.Spec.VolumeClaimTemplates {
+		if vct.Name == "content" {
+			hasClaim = true
+		}
+	}
+
+	hasMount := false
+	for _, c := range statefulSet.Spec.Template.Spec.Containers {
+		for _, m := range c.VolumeMounts {
+			if m.Name != "content" {
+				continue
+			}
+			hasMount = true
+			if m.MountPath != v1alpha1.BlockMountPath {
+				t.Errorf("content mounted at %q, want the journal path %q", m.MountPath, v1alpha1.BlockMountPath)
+			}
+		}
+	}
+
+	want := dittoServer.JournalVolumeEnabled()
+	if hasClaim != want {
+		t.Errorf("content volume claim template present = %v, want %v (contentSize %q)", hasClaim, want, dittoServer.Spec.Storage.ContentSize)
+	}
+	if hasMount != want {
+		t.Errorf("content volume mount present = %v, want %v (contentSize %q)", hasMount, want, dittoServer.Spec.Storage.ContentSize)
 	}
 }

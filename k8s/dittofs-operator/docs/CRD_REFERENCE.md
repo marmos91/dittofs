@@ -87,6 +87,7 @@ The storage section configures PVCs for the DittoFS server pod's internal use.
 - `metadataSize` is required
 - `controlPlaneSize` is optional (defaults to `1Gi`)
 - `contentSize` is schema-optional, but omitting it produces an admission warning: every share needs a durable journal
+- `contentSize` cannot be **added or removed** after creation — it decides whether the StatefulSet carries the `content` volume claim, and Kubernetes rejects changes to `volumeClaimTemplates`. Admission refuses the edit; to apply it, `kubectl delete statefulset <name> --cascade=orphan` (PVCs are retained) and re-apply. Resizing an existing `contentSize` is allowed.
 
 **Examples:**
 ```yaml

@@ -2,6 +2,7 @@ package v1alpha1
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
@@ -694,5 +695,71 @@ func TestPerconaBackupMissingBucket(t *testing.T) {
 	_, err := validator.ValidateCreate(context.Background(), ds)
 	if err == nil {
 		t.Error("Expected error when Percona enabled without CRD")
+	}
+}
+
+// journalPVCSpec is a DittoServer that differs only in whether it asks for the
+// journal volume.
+func journalPVCSpec(contentSize string) *DittoServer {
+	return &DittoServer{
+		ObjectMeta: metav1.ObjectMeta{Name: "journal-pvc", Namespace: "default"},
+		Spec: DittoServerSpec{
+			Storage: StorageSpec{MetadataSize: "10Gi", ContentSize: contentSize},
+		},
+	}
+}
+
+// Without a content PVC the journal lands on ephemeral pod storage, so the
+// absence has to be said out loud — and must not be said when the PVC is there.
+func TestValidate_WarnsOnlyWhenTheJournalPVCIsAbsent(t *testing.T) {
+	const want = "storage.contentSize is unset"
+
+	warnings, err := journalPVCSpec("").validateDittoServer()
+	if err != nil {
+		t.Fatalf("a spec without contentSize must stay valid, got %v", err)
+	}
+	if !slices.ContainsFunc(warnings, func(w string) bool { return strings.Contains(w, want) }) {
+		t.Errorf("no warning naming %q when the journal PVC is absent, got %v", want, warnings)
+	}
+
+	warnings, err = journalPVCSpec("50Gi").validateDittoServer()
+	if err != nil {
+		t.Fatalf("a spec with contentSize must stay valid, got %v", err)
+	}
+	if slices.ContainsFunc(warnings, func(w string) bool { return strings.Contains(w, want) }) {
+		t.Errorf("warned about a journal PVC that was requested, got %v", warnings)
+	}
+}
+
+// Adding or removing the field changes the StatefulSet's volumeClaimTemplates,
+// which Kubernetes refuses on an existing object; admission has to say so
+// rather than let every later reconcile fail on it.
+func TestValidateContentSizeUnchanged(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		from, to string
+		wantErr  bool
+	}{
+		{"unset stays unset", "", "", false},
+		{"resize is allowed", "50Gi", "100Gi", false},
+		{"adding is refused", "", "50Gi", true},
+		{"removing is refused", "50Gi", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateContentSizeUnchanged(journalPVCSpec(tc.from), journalPVCSpec(tc.to))
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("validateContentSizeUnchanged(%q -> %q) = %v, wantErr %v", tc.from, tc.to, err, tc.wantErr)
+			}
+			if err != nil && !strings.Contains(err.Error(), "--cascade=orphan") {
+				t.Errorf("the refusal must name the way out, got: %v", err)
+			}
+		})
+	}
+}
+
+// A create has no previous object to compare against.
+func TestValidateContentSizeUnchanged_SkipsCreate(t *testing.T) {
+	if err := validateContentSizeUnchanged(nil, journalPVCSpec("50Gi")); err != nil {
+		t.Fatalf("a create must not be compared against a previous spec, got %v", err)
 	}
 }
