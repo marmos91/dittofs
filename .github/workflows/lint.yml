@@ -101,10 +101,13 @@ jobs:
   # `docs(planning): wave 4 fix-wave 1 landed`, carried 830 deletions across 15
   # files and reverted the security fixes from #2523 and #2526 — green, because
   # the regression tests were deleted in the same commit.
-  # Pull requests only: the check needs a base branch to bound the commit range.
+  # Runs on push as well as on pull requests, and the push case is the one that
+  # matters: 83e532d78 had no pull request behind it. Planning commits are
+  # pushed straight to develop, so a pull-request-only check would have watched
+  # the incident go by. The range is the pushed commits, or the pull request's
+  # commits back to the merge base.
   commit-type:
     name: Commit Type Matches Diff
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
 
     steps:
@@ -115,8 +118,17 @@ jobs:
 
       - name: Check that a docs commit changes only documentation
         env:
-          BASE_REF: ${{ github.base_ref }}
-        run: ./test/commit-type-matches-diff.sh "origin/${BASE_REF}"
+          BASE: >-
+            ${{ github.event_name == 'pull_request'
+                && format('origin/{0}', github.base_ref)
+                || github.event.before }}
+        run: |
+          # A branch's first push reports an all-zero "before" and has no range.
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+            echo "no base commit for this event; nothing to check"
+            exit 0
+          fi
+          ./test/commit-type-matches-diff.sh "$BASE"
 
   # The tests that pin an authorization or encryption gate are deleted by the
   # same edit that reopens the gate, so the suite goes green over the
