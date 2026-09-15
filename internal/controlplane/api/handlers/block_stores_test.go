@@ -642,3 +642,49 @@ func TestBlockStoreHandler_Update_RenameTargetResolvingByIDIsNotAConflict(t *tes
 		t.Fatalf("status = %d, want %d, body = %s", w.Code, http.StatusOK, w.Body.String())
 	}
 }
+
+// TestBlockStoreHandler_Update_RejectedRenameLeavesNothingBehind pins the
+// preflight that refuses a taken name before anything is written. The handler
+// writes the type and config before it renames, so without that check a PUT
+// carrying both a config change and a colliding name would answer 409 with the
+// config already committed — a reply that reads as "nothing happened" against a
+// store that changed. The preflight has no other test.
+func TestBlockStoreHandler_Update_RejectedRenameLeavesNothingBehind(t *testing.T) {
+	cpStore, handler := setupBlockStoreTest(t)
+	ctx := context.Background()
+
+	const original = `{"bucket":"original","access_key_id":"k","secret_access_key":"s","region":"us-east-1"}`
+	if _, err := cpStore.CreateBlockStore(ctx, &models.BlockStoreConfig{
+		Name: "mover", Type: "s3", Config: original,
+	}); err != nil {
+		t.Fatalf("CreateBlockStore(mover): %v", err)
+	}
+	if _, err := cpStore.CreateBlockStore(ctx, &models.BlockStoreConfig{
+		Name: "taken", Type: "s3", Config: original,
+	}); err != nil {
+		t.Fatalf("CreateBlockStore(taken): %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]any{
+		"name":   "taken",
+		"config": `{"bucket":"rewritten","access_key_id":"k","secret_access_key":"s","region":"us-east-1"}`,
+	})
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/store/block/mover", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = withBlockStoreName(req, "mover")
+	w := httptest.NewRecorder()
+
+	handler.Update(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("Update(rename onto a used name) = %d, want 409; body=%s", w.Code, w.Body.String())
+	}
+
+	got, err := cpStore.GetBlockStore(ctx, "mover")
+	if err != nil {
+		t.Fatalf("the store must survive a refused rename under its own name: %v", err)
+	}
+	if got.Config != original {
+		t.Errorf("config = %s, want it untouched (%s): the refused request persisted part of itself",
+			got.Config, original)
+	}
+}

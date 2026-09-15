@@ -276,6 +276,7 @@ func (h *BlockStoreHandler) Update(w http.ResponseWriter, r *http.Request) {
 	// path persisted the name instead. Those shares would resolve nothing once
 	// the name moves, so repoint them — onto the UUID, which cannot go stale
 	// the next time the store is renamed.
+	prevName := bs.Name
 	if renameTo != "" {
 		renamed, err := h.store.RenameBlockStore(r.Context(), name, renameTo)
 		switch {
@@ -297,6 +298,10 @@ func (h *BlockStoreHandler) Update(w http.ResponseWriter, r *http.Request) {
 	// leaves an entry under the old name too.
 	if h.runtime != nil {
 		h.runtime.InvalidateBlockStoreChecker(name)
+		// Checkers are keyed by the store's name, and the route may address it
+		// by ID, so the name it was cached under is evicted explicitly rather
+		// than assumed to be the one in the URL.
+		h.runtime.InvalidateBlockStoreChecker(prevName)
 		if renameTo != "" {
 			h.runtime.InvalidateBlockStoreChecker(renameTo)
 		}
