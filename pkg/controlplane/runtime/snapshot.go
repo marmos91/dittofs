@@ -48,8 +48,13 @@ type CreateSnapshotOpts struct {
 	// which inherits the original row's Name.
 	Name string
 
-	// NoVerify skips DrainAllUploads + VerifyRemoteDurability (the verify
-	// gate). Final state: ready with RemoteDurable=false. Restore reads
+	// NoVerify skips the verify gate: its DrainAllUploads and the
+	// VerifyRemoteDurability that follows. It does not skip the drain that
+	// runs before the metadata dump, which is unconditional because the dump
+	// has to carry the block locators that MarkSynced records for carved blocks.
+	// So a block store that cannot be reached fails snapshot creation either
+	// way, and NoVerify does not make one survivable.
+	// Final state: ready with RemoteDurable=false. Restore reads
 	// RemoteDurable=false and refuses unless AllowNonDurable is set.
 	NoVerify bool
 

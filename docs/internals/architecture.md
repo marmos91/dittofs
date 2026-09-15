@@ -599,10 +599,11 @@ file's existence is the GC hold; there is no separate hold record.
 
 ```
 CreateSnapshot ─→ persist Snapshot row (state=creating)
-              ─→ DrainAllUploads (skipped if NoVerify)
+              ─→ DrainAllUploads (always — the dump must carry every block locator)
               ─→ Dump metadata to metadata.dump
               ─→ Build hash manifest from CAS
-              ─→ VerifyRemoteDurability (skipped if NoVerify, concurrency = 16)
+              ─→ Verify gate: DrainAllUploads + VerifyRemoteDurability
+                 (both skipped if NoVerify, concurrency = 16)
               ─→ Update row state=ready (or failed) + remote_durable flag
 ```
 
@@ -613,8 +614,10 @@ record; callers poll `GET /snapshots/{id}` until `state != "creating"`.
 The CLI's `WaitForSnapshot` does that polling on the operator's
 behalf.
 
-`NoVerify=true` (CLI `--no-verify`) skips both the upload drain and
-the HEAD-probe phase. The snapshot still completes with
+`NoVerify=true` (CLI `--no-verify`) skips the verify gate — its upload
+drain and the HEAD-probe phase. It does not skip the drain that runs
+before the metadata dump, so a block store that cannot be reached fails
+snapshot creation either way. The snapshot still completes with
 `remote_durable=false`. Restore of a non-durable snapshot then
 requires the explicit `AllowNonDurable` flag (CLI `--force`).
 
