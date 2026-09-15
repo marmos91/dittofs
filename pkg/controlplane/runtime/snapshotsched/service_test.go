@@ -356,3 +356,27 @@ func TestStop_NeverStartedReturnsImmediately(t *testing.T) {
 		t.Fatal("Stop blocked on a scheduler that was never started")
 	}
 }
+
+// TestStop_ConcurrentCallersDoNotDoubleClose pins the idempotence the doc
+// comment claims. Stop is reachable from both the lifecycle drain and
+// Runtime.Shutdown, and the check-then-close it used to do let two callers both
+// observe stopCh open and both close it — `panic: close of closed channel`,
+// taking down the process during shutdown, which is exactly when nobody is
+// watching for it.
+func TestStop_ConcurrentCallersDoNotDoubleClose(t *testing.T) {
+	s := New(&fakeDeps{}, time.Minute)
+
+	const callers = 16
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	wg.Add(callers)
+	for i := 0; i < callers; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			s.Stop(context.Background())
+		}()
+	}
+	close(start)
+	wg.Wait() // a double close panics here rather than failing an assertion
+}

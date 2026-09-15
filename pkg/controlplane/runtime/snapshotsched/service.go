@@ -13,6 +13,7 @@ package snapshotsched
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -56,6 +57,10 @@ type Service struct {
 	deps     Deps
 	interval time.Duration
 	stopCh   chan struct{}
+	// stopOnce closes stopCh exactly once. Stop is reachable from both the
+	// lifecycle drain and Runtime.Shutdown, and a check-then-close lets two
+	// callers both find the channel open and both close it, which panics.
+	stopOnce sync.Once
 	// started guards the goroutine against a second Start and tells Stop
 	// whether there is anything to wait for.
 	started atomic.Bool
@@ -111,11 +116,7 @@ func (s *Service) Start(ctx context.Context) {
 // "stopped" to mean the tick has finished, not merely that it was asked to.
 // A scheduler that was never started returns immediately. Idempotent.
 func (s *Service) Stop(ctx context.Context) {
-	select {
-	case <-s.stopCh:
-	default:
-		close(s.stopCh)
-	}
+	s.stopOnce.Do(func() { close(s.stopCh) })
 	if !s.started.Load() {
 		return
 	}
