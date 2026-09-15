@@ -621,3 +621,63 @@ func TestLoadSharesWithKerberosCapability_PublishesBeforeLoading(t *testing.T) {
 		t.Fatalf("share %q did not load", shareName)
 	}
 }
+
+// TestStart_ClosesControlPlaneStoreOnFailedBoot asserts that a start which opens
+// the control-plane store and then aborts releases the handle. The store opens
+// SQLite in WAL mode, so the -wal/-shm sidecars outlive exactly a leaked handle.
+func TestStart_ClosesControlPlaneStoreOnFailedBoot(t *testing.T) {
+	tmp := t.TempDir()
+
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, "config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(tmp, "state"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(tmp, "data"))
+	t.Setenv(api.EnvControlPlaneSecret, "")
+	t.Setenv(models.EnvAdminInitialPassword, "")
+
+	dbPath := filepath.Join(tmp, "controlplane.db")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	// The metrics token file does not exist, so the boot fails in
+	// buildMetricsListener — well after the control-plane store is open and
+	// the runtime is built, which is the window the handle leaks in.
+	cfgBody := fmt.Sprintf(`database:
+  type: sqlite
+  sqlite:
+    path: %s
+controlplane:
+  host: 127.0.0.1
+  port: 0
+  jwt:
+    secret: "a-sufficiently-long-jwt-signing-secret-for-startup"
+metrics:
+  enabled: true
+  auth: token
+  token_file: %s
+`, dbPath, filepath.Join(tmp, "absent-metrics-token"))
+	if err := os.WriteFile(cfgPath, []byte(cfgBody), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	origCfgFile, origForeground := cfgFile, foreground
+	t.Cleanup(func() { cfgFile, foreground = origCfgFile, origForeground })
+	cfgFile = cfgPath
+	foreground = true
+
+	err := runStart(startCmd, nil)
+	if err == nil {
+		t.Fatal("expected start to fail on an unreadable metrics token file")
+	}
+	if !strings.Contains(err.Error(), "metrics token file") {
+		t.Fatalf("expected a metrics token file error, got: %v", err)
+	}
+
+	if _, statErr := os.Stat(dbPath); statErr != nil {
+		t.Fatalf("expected the control-plane database to exist at %s: %v", dbPath, statErr)
+	}
+	for _, sidecar := range []string{dbPath + "-wal", dbPath + "-shm"} {
+		if _, statErr := os.Stat(sidecar); !os.IsNotExist(statErr) {
+			t.Errorf("control-plane store still open: %s survived the aborted start (stat err: %v)",
+				sidecar, statErr)
+		}
+	}
+}
