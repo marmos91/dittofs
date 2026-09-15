@@ -273,14 +273,15 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 			// A binding that names no configured store is the one failure an
 			// operator can act on directly, and the construction error wraps it
 			// four levels deep. Say which share and which reference, matching
-			// how an unknown metadata store is reported. Checked only once the
-			// add has already failed, so the format sentinels above keep
+			// how an unknown metadata store is reported. Matched on the
+			// resolver's own sentinel so no other failure is relabelled, and
+			// only once the add has failed, so the format sentinels above keep
 			// stopping the boot ahead of it.
-			if ref := share.BlockStoreID; ref != "" && !blockStoreExists(ctx, s, ref) {
+			if errors.Is(err, models.ErrStoreNotFound) {
 				logger.Warn("Share references unknown block store",
 					"share", share.Name,
-					"block_store_id", ref)
-				rt.markShareSkipped(share.Name, "block store "+ref+" is not configured")
+					"block_store_id", share.BlockStoreID)
+				rt.markShareSkipped(share.Name, "block store "+share.BlockStoreID+" is not configured")
 				continue
 			}
 			logger.Warn("Failed to add share to runtime",
@@ -294,19 +295,6 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 	}
 
 	return nil
-}
-
-// blockStoreExists reports whether a share's block store reference names a
-// configured store. GetBlockStore resolves by name or ID, which covers both
-// forms the binding takes: the store's UUID, and the name that rows written by
-// the older update path hold.
-//
-// Only a genuine "not found" counts as missing. A DB or context error says
-// nothing about whether the store exists, so it is left to the load path to
-// report rather than being turned into a misleading report here.
-func blockStoreExists(ctx context.Context, s store.Store, ref string) bool {
-	_, err := s.GetBlockStore(ctx, ref)
-	return !errors.Is(err, models.ErrStoreNotFound)
 }
 
 // buildShareConfig assembles the runtime ShareConfig for a persisted share row,
