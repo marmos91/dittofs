@@ -3,10 +3,12 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -263,5 +265,75 @@ func TestMetadataStoreHandler_Get_IncludesStatus(t *testing.T) {
 	}
 	if !isValidHealthStatus(resp.Status.Status) {
 		t.Errorf("Get.Status.Status = %q, want a valid health.Status", resp.Status.Status)
+	}
+}
+
+// --- duplicate-name tests ---
+
+func createMetadataStoreReq(t *testing.T, handler *MetadataStoreHandler, name, storeType string, config map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	cfgJSON, err := json.Marshal(config)
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	body, err := json.Marshal(CreateMetadataStoreRequest{Name: name, Type: storeType, Config: string(cfgJSON)})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/store/metadata", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.Create(w, req)
+	return w
+}
+
+// A second create under a name already in use is a conflict whatever the
+// backend does with its data directory. Badger takes an exclusive lock on
+// that directory, so instantiating the store a second time fails before the
+// name is ever compared unless the name check runs first.
+func TestMetadataStoreHandler_Create_DuplicateNameIsConflict_Badger(t *testing.T) {
+	_, handler, _ := setupMetadataStoreHealthTest(t)
+
+	cfg := map[string]string{"path": t.TempDir()}
+
+	if w := createMetadataStoreReq(t, handler, "dup-badger", "badger", cfg); w.Code != http.StatusCreated {
+		t.Fatalf("first create = %d, want %d, body = %s", w.Code, http.StatusCreated, w.Body.String())
+	}
+
+	w := createMetadataStoreReq(t, handler, "dup-badger", "badger", cfg)
+	if w.Code != http.StatusConflict {
+		t.Errorf("duplicate create = %d, want %d, body = %s", w.Code, http.StatusConflict, w.Body.String())
+	}
+}
+
+// Backends that hold no exclusive handle reach the duplicate-name arm on their
+// own, so the conflict must keep answering 409 for them too.
+func TestMetadataStoreHandler_Create_DuplicateNameIsConflict_Memory(t *testing.T) {
+	_, handler, _ := setupMetadataStoreHealthTest(t)
+
+	if w := createMetadataStoreReq(t, handler, "dup-memory", "memory", nil); w.Code != http.StatusCreated {
+		t.Fatalf("first create = %d, want %d, body = %s", w.Code, http.StatusCreated, w.Body.String())
+	}
+
+	w := createMetadataStoreReq(t, handler, "dup-memory", "memory", nil)
+	if w.Code != http.StatusConflict {
+		t.Errorf("duplicate create = %d, want %d, body = %s", w.Code, http.StatusConflict, w.Body.String())
+	}
+}
+
+func TestMetadataStoreHandler_Create_DuplicateNameIsConflict_SQLite(t *testing.T) {
+	_, handler, _ := setupMetadataStoreHealthTest(t)
+
+	cfg := map[string]string{"path": filepath.Join(t.TempDir(), "meta.db")}
+
+	if w := createMetadataStoreReq(t, handler, "dup-sqlite", "sqlite", cfg); w.Code != http.StatusCreated {
+		t.Fatalf("first create = %d, want %d, body = %s", w.Code, http.StatusCreated, w.Body.String())
+	}
+
+	w := createMetadataStoreReq(t, handler, "dup-sqlite", "sqlite", cfg)
+	if w.Code != http.StatusConflict {
+		t.Errorf("duplicate create = %d, want %d, body = %s", w.Code, http.StatusConflict, w.Body.String())
 	}
 }
