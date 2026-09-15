@@ -20,6 +20,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
+# Scopes COMPOSE_PROJECT_NAME to this checkout and provides
+# require_exclusive_stack.
+# shellcheck source=compose-env.sh
+source "${SCRIPT_DIR}/compose-env.sh"
+
 VALID_PROFILES=("memory" "badger" "badger-s3" "postgres-s3")
 
 # --------------------------------------------------------------------------
@@ -285,6 +290,7 @@ if $DRY_RUN; then
     echo "  TEST_USER:    ${TEST_USER}"
     echo ""
     echo "  Results dir:  ${RESULTS_DIR}"
+    echo "  Stack:        ${COMPOSE_PROJECT_NAME}"
     echo ""
 
     # Show compose profiles that would activate
@@ -304,6 +310,13 @@ if $DRY_RUN; then
     echo ""
     exit 0
 fi
+
+# --------------------------------------------------------------------------
+# Exclusivity
+# --------------------------------------------------------------------------
+# Checked before anything is created, so a refusal leaves nothing behind and
+# cannot disturb the stack it is refusing to fight with.
+require_exclusive_stack
 
 # --------------------------------------------------------------------------
 # Cleanup handler

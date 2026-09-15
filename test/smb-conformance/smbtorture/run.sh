@@ -18,6 +18,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFORMANCE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+# Scopes COMPOSE_PROJECT_NAME to this checkout and provides
+# require_exclusive_stack.
+# shellcheck source=../compose-env.sh
+source "${CONFORMANCE_DIR}/compose-env.sh"
+
 VALID_PROFILES=("memory" "badger" "sqlite" "postgres" "memory-kerberos")
 
 # Name given to every one-off smbtorture container so it stays addressable (see
@@ -211,6 +216,7 @@ if $DRY_RUN; then
     echo "  Verbose:     ${VERBOSE}"
     echo ""
     echo "  Results dir:  ${RESULTS_DIR}"
+    echo "  Stack:        ${COMPOSE_PROJECT_NAME}"
     echo ""
     echo "  Docker image: quay.io/samba.org/samba-toolbox:v0.8"
     echo "  Target:       ${dry_target}"
@@ -218,6 +224,13 @@ if $DRY_RUN; then
     echo ""
     exit 0
 fi
+
+# --------------------------------------------------------------------------
+# Exclusivity
+# --------------------------------------------------------------------------
+# Checked before anything is created, so a refusal leaves nothing behind and
+# cannot disturb the stack it is refusing to fight with.
+require_exclusive_stack
 
 # --------------------------------------------------------------------------
 # Cleanup handler
@@ -250,6 +263,7 @@ echo -e "${BOLD}=== smbtorture Test Runner ===${NC}"
 echo ""
 log_info "Profile: ${PROFILE}"
 log_info "Filter:  ${FILTER:-smb2 (full suite)}"
+log_info "Stack:   ${COMPOSE_PROJECT_NAME}"
 if [[ "$(uname -m)" == "arm64" ]]; then
     log_warn "ARM64 detected -- smbtorture image will run under Rosetta/QEMU emulation (linux/amd64)"
 fi

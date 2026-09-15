@@ -399,7 +399,15 @@ test/smb-conformance/
 
 When working on fixing a specific test failure:
 
+The harness names its Compose project after the checkout it runs from, so a
+bare `docker compose` command in this directory will not find the containers.
+Source `compose-env.sh` first (it exports `COMPOSE_PROJECT_NAME`); the runner
+prints the name as `Stack:` in its banner.
+
 ```bash
+# 0. Address this checkout's stack
+source ./compose-env.sh
+
 # 1. Run tests and keep containers alive
 ./run.sh --profile memory --keep
 
@@ -422,4 +430,7 @@ docker compose down -v
 - **TRX output:** Check `results/<timestamp>/*.trx` for detailed WPTS error messages
 - **smbtorture output:** Check `results/smbtorture-<timestamp>/` for test logs
 - **Network:** WPTS shares the DittoFS network namespace (`network_mode: service:dittofs`)
+- **One stack at a time:** the published host ports are a single set and the
+  suites assert on sub-second lease and oplock breaks, so the runners refuse to
+  start while another checkout's stack is live and name the directory holding it
 - **ptfconfig:** Generated from templates in `ptfconfig/`. Edit templates, then re-run
