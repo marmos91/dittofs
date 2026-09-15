@@ -121,13 +121,17 @@ func TestSetFileAttributes_PreserveCtimeDoesNotRevertAConcurrentAdvance(t *testi
 		if err != nil {
 			t.Fatalf("round %d: GetFile: %v", i, err)
 		}
-		// The two writers are unordered, so the advance may not have landed yet;
-		// what must never happen is the stored value ending up older than a value
-		// that was already committed before this round began.
-		floor := base.Add(time.Duration(i) * time.Hour)
-		if i > 0 && got.Ctime.Before(floor) {
-			t.Fatalf("round %d: ChangeTime reverted to %v, below the %v already committed",
-				i, got.Ctime.UTC(), floor.UTC())
+		// The floor is this round's own advance, not the previous round's. Both
+		// writers have RETURNED by the wg.Wait above, so `advanced` is committed
+		// — there is no "may not have landed yet" left to allow for. Asserting
+		// against the previous round's value instead would accept exactly the
+		// defect: a stale PreserveCtime write landing after the advance reverts
+		// the stored value to the earlier one, which clears a floor set one
+		// round back and clears every round-0 check outright.
+		if got.Ctime.Before(advanced) {
+			t.Fatalf("round %d: ChangeTime is %v, below the %v this round already committed — "+
+				"the PreserveCtime write reverted a peer's advance",
+				i, got.Ctime.UTC(), advanced.UTC())
 		}
 	}
 }
@@ -206,5 +210,42 @@ func TestPreserveCtime_DoesNotDropAPendingDirectoryBump(t *testing.T) {
 		t.Errorf("directory ChangeTime moved backwards across a PreserveCtime write: "+
 			"before=%s after=%s — the pending bump was replaced by the durable row and then cleared",
 			before.Ctime.Format(time.RFC3339Nano), after.Ctime.Format(time.RFC3339Nano))
+	}
+}
+
+// A truncate must honour PreserveCtime like every other branch. The size branch
+// stamps ChangeTime because POSIX says a truncate changes it, but a caller that
+// asked for the stored value to be left alone has said the opposite — and an
+// SMB handle with a frozen ChangeTime sends exactly that pairing on a
+// SET_INFO EndOfFile. Held forward-only, this call's own `now` stamp is later
+// than anything it could be compared against, so it would win every time.
+func TestPreserveCtime_IsHonouredOnTruncate(t *testing.T) {
+	svc, ctx, handle, _ := setupPreserveCtimeFile(t)
+
+	before, err := svc.GetFile(ctx.Context, handle)
+	if err != nil || before == nil {
+		t.Fatalf("GetFile before: %v", err)
+	}
+
+	size := uint64(4096)
+	if _, err := svc.SetFileAttributes(ctx, handle, &metadata.SetAttrs{
+		Size: &size, PreserveCtime: true,
+	}); err != nil {
+		t.Fatalf("SetFileAttributes(Size, PreserveCtime): %v", err)
+	}
+
+	after, err := svc.GetFile(ctx.Context, handle)
+	if err != nil || after == nil {
+		t.Fatalf("GetFile after: %v", err)
+	}
+	if !after.Ctime.Equal(before.Ctime) {
+		t.Errorf("truncate stamped ChangeTime despite PreserveCtime: before=%s after=%s",
+			before.Ctime.Format(time.RFC3339Nano), after.Ctime.Format(time.RFC3339Nano))
+	}
+	if after.Size != size {
+		t.Errorf("Size=%d, want %d: the truncate itself must still apply", after.Size, size)
+	}
+	if !after.Mtime.After(before.Mtime) {
+		t.Errorf("Mtime did not advance: PreserveCtime holds the change time, not the modify time")
 	}
 }

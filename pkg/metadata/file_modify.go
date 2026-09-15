@@ -279,6 +279,20 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 	// OLDER time (e.g. an SMB frozen-timestamp restore) and resurrect the bump
 	// durably (#1573). Only the time-setting case needs this — a mode/owner-only
 	// change never lowers a timestamp, so a racing flush is harmless there.
+	// The change time as this call found it, before any branch below stamps
+	// `now` over it. PreserveCtime means "leave the stored value as it is", and
+	// what holdCtime must carry forward is the newest value that was NOT written
+	// by this call — a peer's commit, or a coalesced directory bump — never this
+	// call's own stamp, which is always the later of the two and would otherwise
+	// win the comparison.
+	// Through the same overlay a read would apply: this loaded the file from the
+	// store directly, which does not carry the coalesced directory bumps that
+	// Service.GetFile merges in, and those bumps are exactly the not-yet-flushed
+	// value the hold has to protect.
+	foundAttr := file.FileAttr
+	s.mergeDirTimes(handle, &foundAttr)
+	foundCtime := foundAttr.Ctime
+
 	dirTimeSet := file.Type == FileTypeDirectory &&
 		(attrs.Mtime != nil || attrs.Atime != nil || attrs.MtimeNow || attrs.AtimeNow)
 	if dirTimeSet {
@@ -547,6 +561,11 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 		// The server must do this even if the client doesn't send TIME_MODIFY_SET,
 		// because POSIX requires it and NFS clients may rely on server-side updates.
 		file.Mtime = now
+		// Stamped unconditionally, including under PreserveCtime: holdCtime is
+		// the one place that decides what a held change time ends up as, and it
+		// discards whatever this call stamped in favour of the value the call
+		// found. A second guard here would be a second answer to the same
+		// question, and the two could drift.
 		file.Ctime = now
 
 		// POSIX: Clear SUID/SGID bits on truncate for non-root users (like write)
@@ -654,14 +673,15 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 					Path:    file.Path,
 				}
 			}
-			// Forward only. The row is one of two places a newer value can be:
-			// another writer's commit, which is why this re-read exists, and the
-			// coalesced directory timestamps the caller's read already overlaid
-			// onto `file` but that have not been flushed yet. Assigning the row
-			// value outright would drop the second — and the Clear below then
-			// discards the pending bump for good, so a peer's visible
-			// ChangeTime moves backwards. That is the exact move a held
-			// timestamp exists to prevent, arriving through the fix for it.
+			// The newer of the two values this call did not write: the row as
+			// it stands now (a peer's commit, which is why this re-read
+			// exists) and the change time this call found, which carries any
+			// coalesced directory bump the caller's read had overlaid but that
+			// has not been flushed. Compared against foundCtime rather than
+			// file.Ctime because the branches above may have stamped `now`
+			// there; `now` is later than both by construction and would win
+			// every comparison, turning "hold the stored value" into "stamp it".
+			file.Ctime = foundCtime
 			if cur.Ctime.After(file.Ctime) {
 				file.Ctime = cur.Ctime
 			}
