@@ -513,7 +513,10 @@ func TestPendingCBReplies_RegisterDeliverCancel(t *testing.T) {
 	p := NewPendingCBReplies()
 
 	// Register and deliver
-	ch := p.Register(42)
+	ch, registered := p.Register(42)
+	if !registered {
+		t.Fatal("Register refused on an open table")
+	}
 	delivered := p.Deliver(42, []byte("reply-data"))
 	if !delivered {
 		t.Fatal("Deliver should return true for registered XID")
@@ -535,7 +538,10 @@ func TestPendingCBReplies_RegisterDeliverCancel(t *testing.T) {
 	}
 
 	// Register and cancel
-	ch2 := p.Register(100)
+	ch2, registered2 := p.Register(100)
+	if !registered2 {
+		t.Fatal("Register refused on an open table")
+	}
 	p.Cancel(100)
 
 	// Deliver after cancel should fail
@@ -983,7 +989,7 @@ func TestUnbindConnection_ReleasesCallbackWaiters(t *testing.T) {
 
 	const connID = uint64(7200)
 	pending := sm.RegisterConnWriter(connID, func([]byte) error { return nil })
-	replyCh := pending.Register(0xabcd)
+	replyCh, _ := pending.Register(0xabcd)
 
 	sm.UnbindConnection(connID)
 
@@ -1097,7 +1103,7 @@ func TestReapExpiredSessions_ReleasesBackchannelStateOfAnOrphanedConnection(t *t
 	orphanSession[0] = 0xC1
 
 	pending := sm.RegisterConnWriter(connID, func([]byte) error { return nil })
-	replyCh := pending.Register(0x5150)
+	replyCh, _ := pending.Register(0x5150)
 
 	// A binding to a session that no longer exists — what the reaper collects.
 	sm.connMu.Lock()
@@ -1141,7 +1147,7 @@ func TestDestroySession_ReleasesBackchannelStateOfItsLastConnection(t *testing.T
 
 	const connID = uint64(7422)
 	pending := sm.RegisterConnWriter(connID, func([]byte) error { return nil })
-	replyCh := pending.Register(0x9001)
+	replyCh, _ := pending.Register(0x9001)
 
 	sm.connMu.Lock()
 	binding := &BoundConnection{ConnectionID: connID, SessionID: sessionID}
@@ -1242,4 +1248,52 @@ func backchannelFaultOf(t *testing.T, sm *StateManager, clientID uint64) bool {
 	sm.connMu.Lock()
 	defer sm.connMu.Unlock()
 	return sm.backchannelFaults[clientID]
+}
+
+// TestPendingCBReplies_RegisterReportsARetiredTable pins the signal the panic
+// guard alone did not give. Returning a closed channel keeps a caller from
+// blocking forever, but a reply read off a closed channel looks exactly like a
+// client that answered with nothing: the sender wrote to a dead socket and then
+// scored the silence against the client, clearing CBPathUp and starting
+// revocation for a recall that never left the building.
+func TestPendingCBReplies_RegisterReportsARetiredTable(t *testing.T) {
+	p := NewPendingCBReplies()
+	p.FailAll()
+
+	ch, registered := p.Register(0x1234)
+	if registered {
+		t.Error("Register reported success on a table that had already been failed")
+	}
+	select {
+	case _, open := <-ch:
+		if open {
+			t.Error("the returned channel carried a value")
+		}
+	default:
+		t.Error("the returned channel is neither registered nor closed, so a caller would block on it")
+	}
+}
+
+// TestWorstCaseSendDuration_ExceedsEveryAttemptAndBackoff pins the arithmetic
+// the recall watchdog depends on. The outer wait must outlast the sender's own
+// schedule, or it expires mid-retry and reports a callback that may already
+// have reached the client as though nothing was attempted.
+func TestWorstCaseSendDuration_ExceedsEveryAttemptAndBackoff(t *testing.T) {
+	bs := &BackchannelSender{callbackTimeout: defaultBackchannelTimeout}
+
+	var want time.Duration
+	for i := 0; i < backchannelMaxRetries; i++ {
+		want += defaultBackchannelTimeout
+		if i < backchannelMaxRetries-1 {
+			want += backchannelRetryDelays[i]
+		}
+	}
+	if got := bs.worstCaseSendDuration(); got != want {
+		t.Errorf("worstCaseSendDuration() = %s, want %s", got, want)
+	}
+	if bs.worstCaseSendDuration()+recallResultGrace <= 30*time.Second {
+		t.Errorf("the derived wait (%s) is no longer than the fixed 30s it replaced, "+
+			"so it still expires while the sender is retrying",
+			bs.worstCaseSendDuration()+recallResultGrace)
+	}
 }

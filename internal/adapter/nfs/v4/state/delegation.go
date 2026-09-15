@@ -725,6 +725,12 @@ func (sm *StateManager) nextUntriedSender(clientID uint64, tried map[*Backchanne
 // attemptRecallV41 sends one CB_RECALL through one sender and waits for its
 // result. It starts the delegation's long timer on success; every other outcome
 // leaves the timer to the caller, which knows whether any session is left.
+// recallResultGrace is the margin added to a sender's worst-case retry schedule
+// before the recall gives up waiting for it. It covers scheduling delay only:
+// the wait exists to catch a sender that will never report at all, not to
+// out-wait one that is still working.
+const recallResultGrace = 5 * time.Second
+
 func (sm *StateManager) attemptRecallV41(deleg *DelegationState, sender *BackchannelSender, recallOp []byte) recallOutcome {
 	resultCh := make(chan error, 1)
 	req := CallbackRequest{
@@ -771,9 +777,16 @@ func (sm *StateManager) attemptRecallV41(deleg *DelegationState, sender *Backcha
 			"client_id", deleg.ClientID, "session_id", sender.sessionID.String())
 		return recallSenderLocal
 
-	case <-time.After(30 * time.Second):
-		logger.Warn("CB_RECALL (v4.1) result timeout",
-			"client_id", deleg.ClientID, "session_id", sender.sessionID.String())
+	case <-time.After(sender.worstCaseSendDuration() + recallResultGrace):
+		// Derived from the sender's own retry schedule rather than fixed, so
+		// this only fires when the sender is genuinely wedged. A shorter wait
+		// expired while the sender was still mid-retry — the callback may
+		// already have reached the client — and reporting that as a local
+		// outcome let the caller start the short revocation timer under a
+		// recall still in flight.
+		logger.Warn("CB_RECALL (v4.1) result timeout: sender did not report within its own retry schedule",
+			"client_id", deleg.ClientID, "session_id", sender.sessionID.String(),
+			"waited", sender.worstCaseSendDuration()+recallResultGrace)
 		return recallSenderLocal
 	}
 }

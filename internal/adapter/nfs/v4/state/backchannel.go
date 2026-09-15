@@ -126,16 +126,22 @@ func NewPendingCBReplies() *PendingCBReplies {
 // After FailAll the channel comes back already closed rather than joining a
 // table no reply can reach, so a caller that registers just too late fails at
 // once instead of waiting out its timeout.
-func (p *PendingCBReplies) Register(xid uint32) chan []byte {
+func (p *PendingCBReplies) Register(xid uint32) (chan []byte, bool) {
 	ch := make(chan []byte, 1)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed {
+		// The connection was retired between the caller picking it and getting
+		// here. The closed channel keeps a caller that ignores the flag from
+		// blocking forever, but the flag is what matters: a reply read off a
+		// closed channel is indistinguishable from a client that answered with
+		// nothing, and a caller that writes anyway is writing to a dead socket
+		// and would score the result against the client.
 		close(ch)
-		return ch
+		return ch, false
 	}
 	p.waiters[xid] = ch
-	return ch
+	return ch, true
 }
 
 // Deliver delivers a reply to the waiter for the given XID.
@@ -390,6 +396,17 @@ func (bs *BackchannelSender) sendCallbackWithRetry(ctx context.Context, req Call
 	bs.sm.setBackchannelFault(bs.clientID, true)
 }
 
+// worstCaseSendDuration is the longest sendCallbackWithRetry can run before it
+// is guaranteed to have reported: every attempt timing out, plus every backoff
+// between them.
+func (bs *BackchannelSender) worstCaseSendDuration() time.Duration {
+	total := time.Duration(backchannelMaxRetries) * bs.callbackTimeout
+	for i := 0; i < backchannelMaxRetries-1; i++ {
+		total += backchannelRetryDelays[i]
+	}
+	return total
+}
+
 // sendCallback is the core send logic for a single callback attempt.
 func (bs *BackchannelSender) sendCallback(ctx context.Context, req CallbackRequest) error {
 	// 1. Allocate slot 0 with monotonic seqid (simplified EOS)
@@ -422,7 +439,11 @@ func (bs *BackchannelSender) sendCallback(ctx context.Context, req CallbackReque
 	}
 
 	// 7. Register XID with PendingCBReplies
-	replyCh := pending.Register(xid)
+	replyCh, registered := pending.Register(xid)
+	if !registered {
+		return fmt.Errorf("%w: connection %d was retired before the callback was registered",
+			errCallbackNotAttempted, connID)
+	}
 
 	// 8. Write framed message (no lock held -- ConnWriter acquires writeMu internally)
 	if err := writer(framedMsg); err != nil {
@@ -440,7 +461,12 @@ func (bs *BackchannelSender) sendCallback(ctx context.Context, req CallbackReque
 		// Update pending to the new connection's PendingCBReplies so the
 		// timeout path below cancels the correct waiter.
 		pending = pending2
-		replyCh = pending.Register(xid)
+		var registered2 bool
+		replyCh, registered2 = pending.Register(xid)
+		if !registered2 {
+			return fmt.Errorf("%w: alternate connection %d was retired before the callback was registered",
+				errCallbackNotAttempted, connID2)
+		}
 		if err2 := writer2(framedMsg); err2 != nil {
 			pending.Cancel(xid)
 			return fmt.Errorf("write to alternate connection %d also failed: %w", connID2, err2)
@@ -573,7 +599,10 @@ func (bs *BackchannelSender) probeCallbackPath(ctx context.Context) error {
 		return fmt.Errorf("no back-bound connection for session %s", bs.sessionID.String())
 	}
 
-	replyCh := pending.Register(xid)
+	replyCh, registered := pending.Register(xid)
+	if !registered {
+		return fmt.Errorf("back-bound connection %d was retired before the probe was registered", connID)
+	}
 	if err := writer(framedMsg); err != nil {
 		pending.Cancel(xid)
 		return fmt.Errorf("write CB_NULL to back-bound connection %d: %w", connID, err)
