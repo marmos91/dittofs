@@ -903,7 +903,8 @@ func (r *Runtime) Metrics() *metrics.Metrics {
 // startupDrainTimeout bounds the snapshot drain run after a failed startup. The
 // process is already abandoning the boot, so this only has to be long enough for
 // a tick to finish its store round-trip, not for one to complete work.
-const startupDrainTimeout = 10 * time.Second
+// var rather than const so a test can shrink it; nothing else assigns it.
+var startupDrainTimeout = 10 * time.Second
 
 func (r *Runtime) Serve(ctx context.Context) error {
 	r.clientRegistry.StartSweeper(ctx)
@@ -989,11 +990,23 @@ func (r *Runtime) drainStartupWorkers(ctx context.Context) {
 
 	// The settings watcher is started before the adapter load that is the
 	// likeliest startup failure, and it polls the same store on a timer. Stop
-	// waits for a poll already in flight, which is what makes it a join; it
-	// takes no context, so what it costs is one store round-trip rather than
-	// anything stopCtx bounds.
+	// waits for a poll already in flight, which is what makes it a join — but it
+	// takes no context, and on a startup error the context that poll is running
+	// under is still live, so a store call that hangs would hang this join and
+	// with it the process. Bounded by stopCtx like the scheduler's, and it says
+	// which of the two happened.
 	if r.settingsWatcher != nil {
-		r.settingsWatcher.Stop()
+		stopped := make(chan struct{})
+		go func() {
+			defer close(stopped)
+			r.settingsWatcher.Stop()
+		}()
+		select {
+		case <-stopped:
+		case <-stopCtx.Done():
+			logger.Warn("startup drain: settings watcher was not joined before the store closes; " +
+				"a poll may still be running against it")
+		}
 	}
 	r.shutdownSnapshots(stopCtx)
 }

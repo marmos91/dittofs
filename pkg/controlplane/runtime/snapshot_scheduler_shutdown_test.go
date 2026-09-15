@@ -122,3 +122,35 @@ func TestDrainStartupWorkers_JoinsTheSettingsWatcher(t *testing.T) {
 			"polling the control-plane store the caller closes next")
 	}
 }
+
+// TestDrainStartupWorkers_BoundsTheSettingsWatcherJoin pins the bound on that
+// join. SettingsWatcher.Stop waits for a poll already in flight and takes no
+// context of its own, and on a startup error the context that poll runs under
+// is still live — so a store call that hangs would hang the drain, and with it
+// a process that is trying to abandon its boot.
+func TestDrainStartupWorkers_BoundsTheSettingsWatcherJoin(t *testing.T) {
+	rt := New(nil)
+	rt.settingsWatcher = NewSettingsWatcher(nil, time.Hour)
+	// A watcher whose goroutine never exits: stopped stays open, so Stop blocks
+	// forever. This is the shape of a poll wedged in the store.
+	rt.settingsWatcher.stopped = make(chan struct{})
+	rt.settingsWatcher.stopCh = make(chan struct{})
+
+	// The drain detaches from the caller's context on purpose — a join has to
+	// outlive a cancellation — so the bound that matters is its own.
+	defer func(d time.Duration) { startupDrainTimeout = d }(startupDrainTimeout)
+	startupDrainTimeout = 50 * time.Millisecond
+
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		rt.drainStartupWorkers(context.Background())
+	}()
+
+	select {
+	case <-returned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the startup drain never returned: a wedged settings-watcher poll held it, " +
+			"so the process cannot abandon a failed boot")
+	}
+}

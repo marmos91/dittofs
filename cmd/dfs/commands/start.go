@@ -151,16 +151,20 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// with a slow handler reaches this close the same way the forced-exit
 	// branch does. Nothing here waits for handlers to drain.
 	//
-	// Accepted, because the cost is bounded by what sql.DB.Close actually does:
-	// it stops new queries, lets connections already checked out finish rather
-	// than cutting them, and makes any later use return an error instead of
-	// panicking. A handler caught by it fails its request on a process that is
-	// milliseconds from exiting anyway.
+	// What sql.DB.Close actually does cuts both ways, and the second way is the
+	// one worth naming: it stops new queries and makes any later use return an
+	// error instead of panicking, but it does not cut a query already running —
+	// it WAITS for it. So this does not race a slow handler to a corrupt read;
+	// it blocks here until that handler's query finishes. A handler wedged on
+	// the store therefore holds the process in this defer rather than letting it
+	// exit, and the forced-exit path above has already returned by then.
 	//
-	// Withdraw it if a handler ever performs a write whose partial application
-	// outlives the process, or if this becomes a path the process continues
-	// past rather than exits from. The real fix is to join the API handlers
-	// before closing.
+	// Accepted because a control-plane query that never returns is a defect in
+	// its own right and this is where it becomes visible, rather than a quiet
+	// close under a request. Withdraw it if a handler ever performs a write
+	// whose partial application outlives the process, or if a wedged query
+	// becomes something the process has to survive rather than stop for. The
+	// real fix is to join the API handlers before closing.
 	defer func() {
 		cancel()
 		_ = cpStore.Close()
