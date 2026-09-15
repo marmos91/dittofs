@@ -788,3 +788,52 @@ func TestBlockStoreHandler_Create_EvictsTheCheckerCachedWhileTheNameWasAbsent(t 
 		t.Errorf("status = %v, want healthy: the not-found verdict cached before the create survived it", got)
 	}
 }
+
+// renameFailingStore fails only RenameBlockStore, standing in for a rename
+// that loses a race after the preflight cleared it.
+type renameFailingStore struct {
+	store.Store
+}
+
+func (s renameFailingStore) RenameBlockStore(context.Context, string, string) (*models.BlockStoreConfig, error) {
+	return nil, models.ErrStoreNotFound
+}
+
+// The config write lands before the rename is attempted, so a rename that
+// fails leaves the store mutated under its original name. That is still a
+// mutation, and the probes cached for it are still stale.
+func TestBlockStoreHandler_Update_EvictsWhenTheRenameFailsAfterTheConfigLanded(t *testing.T) {
+	cpStore, _ := setupBlockStoreTestWithRuntime(t)
+	ctx := context.Background()
+
+	const original = `{"bucket":"b","region":"us-east-1","access_key_id":"AK","secret_access_key":"SK"}`
+	if _, err := cpStore.CreateBlockStore(ctx, &models.BlockStoreConfig{
+		ID: uuid.New().String(), Name: "doomed-rename", Type: "s3",
+		Config: original, CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("CreateBlockStore: %v", err)
+	}
+
+	rt := runtime.New(cpStore)
+	handler := NewBlockStoreHandler(renameFailingStore{cpStore}, rt)
+
+	before := rt.BlockStoreChecker("doomed-rename").Healthcheck(ctx)
+
+	renamed := "never-lands"
+	rotated := `{"bucket":"rotated","region":"us-east-1","access_key_id":"AK2","secret_access_key":"SK2"}`
+	body, _ := json.Marshal(UpdateBlockStoreRequest{Name: &renamed, Config: &rotated})
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/store/block/doomed-rename", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = withBlockStoreName(req, "doomed-rename")
+	w := httptest.NewRecorder()
+
+	handler.Update(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("Update(rename that fails) = %d, want %d; body=%s", w.Code, http.StatusNotFound, w.Body.String())
+	}
+
+	after := rt.BlockStoreChecker("doomed-rename").Healthcheck(ctx)
+	if after.CheckedAt.Equal(before.CheckedAt) {
+		t.Error("the failed rename returned without evicting: the probe cached before the config write is still being served")
+	}
+}

@@ -279,6 +279,14 @@ func (h *BlockStoreHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The config has landed, so every cached probe is suspect from here on —
+	// including on the rename paths below that fail and return early, which
+	// leave the store mutated under its original name. Deferring the eviction
+	// covers each of those exits rather than only the one that reaches the end.
+	if h.runtime != nil {
+		defer h.runtime.InvalidateBlockStoreCheckers()
+	}
+
 	// A share's binding normally holds the store's UUID, but the older update
 	// path persisted the name instead. Those shares would resolve nothing once
 	// the name moves, so repoint them — onto the UUID, which cannot go stale
@@ -297,12 +305,6 @@ func (h *BlockStoreHandler) Update(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		bs = renamed
-	}
-
-	// Evict the cached checkers so the post-update response does not observe
-	// a stale probe from before the config change landed.
-	if h.runtime != nil {
-		h.runtime.InvalidateBlockStoreCheckers()
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), HealthCheckTimeout)
