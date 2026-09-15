@@ -139,16 +139,15 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@main
 
-      # No Nix cache here: this job only enters the dev shell, whose closure is
-      # stock nixpkgs and substitutes from cache.nixos.org, so there is nothing
-      # built locally worth pushing back. Pushing it anyway is what filled the
-      # 10 GB Actions cache with duplicate NARs and evicted the Go build cache.
-      # The jobs that build a repo-defined derivation keep it.
+      # No Nix cache here: .#build is the Go toolchain alone, all of it
+      # substituted from cache.nixos.org, so this job realizes nothing locally
+      # and has nothing worth pushing back. Entering .#ci instead would build
+      # pynfs and pjdfstest from source just to run `go build`.
       - name: Build DittoFS binaries
         run: |
           # Static binaries so they work outside the Nix environment.
-          nix develop .#ci --command sh -c "CGO_ENABLED=0 go build -o dfs cmd/dfs/main.go"
-          nix develop .#ci --command sh -c "CGO_ENABLED=0 go build -o dfsctl cmd/dfsctl/main.go"
+          nix develop .#build --command sh -c "CGO_ENABLED=0 go build -o dfs cmd/dfs/main.go"
+          nix develop .#build --command sh -c "CGO_ENABLED=0 go build -o dfsctl cmd/dfsctl/main.go"
 
       - name: Upload binaries
         uses: actions/upload-artifact@v7

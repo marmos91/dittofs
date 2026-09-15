@@ -476,6 +476,16 @@
         # without exec-ing into zsh.
         devShells.ci = devShell.overrideAttrs { shellHook = goEnv; };
 
+        # Go toolchain only, for jobs that compile the binaries and nothing
+        # else. The full shell carries the conformance suites — `pynfs` in
+        # commonBuildInputs, `pjdfstest` in linuxInputs — and both are built
+        # from source rather than substituted, so entering it to run `go build`
+        # compiles an NFS conformance suite first. This does not.
+        devShells.build = pkgs.mkShell {
+          buildInputs = [ pkgs.go_1_26 ];
+          shellHook = goEnv;
+        };
+
         # Packages for building DittoFS
         packages =
           let

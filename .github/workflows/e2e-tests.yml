@@ -101,11 +101,12 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@main
 
-      # No Nix cache here: this job only enters the dev shell, whose closure is
-      # stock nixpkgs and substitutes from cache.nixos.org, so there is nothing
-      # built locally worth pushing back. Pushing it anyway is what filled the
-      # 10 GB Actions cache with duplicate NARs and evicted the Go build cache.
-      # The jobs that build a repo-defined derivation keep it.
+      # Kept: this job runs the e2e suite inside .#ci, which carries nfs-utils,
+      # acl, attr and the dfs-mount helpers — and, unavoidably, pynfs and
+      # pjdfstest, which are built from source rather than substituted.
+      - name: Setup Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
       - name: Install system dependencies
         env:
           DEBIAN_FRONTEND: noninteractive
