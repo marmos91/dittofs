@@ -30,13 +30,10 @@ func (s *Service) AddShare(
 	localStoreDefaults *LocalStoreDefaults,
 	syncerDefaults *SyncerDefaults,
 ) error {
-	// Fold the name to one spelling before anything keys off it. "export" and
-	// "/export" address the same journal directory, so registering both would
-	// put two shares in one directory and interleave their writes; normalizing
-	// here makes the second one a duplicate at the reservation below instead.
-	// Callers that already normalize (the REST seam) see no change; a name that
-	// reaches this seam straight from persisted state is folded to the same
-	// spelling they use.
+	// Fold the name to one spelling before anything keys off it: spellings that
+	// differ only in their leading slashes share a journal directory, and this
+	// makes the second of them a duplicate at the reservation below instead of
+	// a second writer into the first one's journal.
 	config.Name = metadata.NormalizeShareName(config.Name)
 
 	// A share whose name cannot encode a file handle can never serve a file, so

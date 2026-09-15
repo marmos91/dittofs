@@ -175,11 +175,7 @@ func NormalizeShareName(name string) string {
 	if err != nil {
 		decoded = name
 	}
-	trimmed := strings.TrimLeft(decoded, "/")
-	if trimmed == "" {
-		return "/"
-	}
-	return "/" + trimmed
+	return "/" + strings.TrimLeft(decoded, "/")
 }
 
 // ValidateShareName validates a share name against the file-handle format.

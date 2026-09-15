@@ -644,7 +644,7 @@ func TestValidateShareName(t *testing.T) {
 		{"parent with leading slash", "/..", true},
 		{"parent with repeated slashes", "//..", true},
 
-		// normalizeShareName turns an empty or all-slash request into "/",
+		// NormalizeShareName turns an empty or all-slash request into "/",
 		// which names the shares tree itself rather than a share inside it.
 		{"root", "/", true},
 		{"repeated slashes only", "///", true},
