@@ -388,7 +388,8 @@ func resolveSharePermission(
 	if sess != nil {
 		user = sess.User
 	}
-	return resolveSharePermissionForUser(ctx, sess, user, share, defaultPerm, userStore)
+	perm, identifier, _ := resolveSharePermissionForUser(ctx, sess, user, share, defaultPerm, userStore)
+	return perm, identifier
 }
 
 // resolveSharePermissionForUser resolves against an explicitly supplied user
@@ -403,11 +404,11 @@ func resolveSharePermissionForUser(
 	share *runtime.Share,
 	defaultPerm models.SharePermission,
 	userStore models.UserStore,
-) (models.SharePermission, string) {
+) (models.SharePermission, string, bool) {
 	// No session at all — deny (the caller maps PermissionNone to
 	// STATUS_ACCESS_DENIED).
 	if sess == nil {
-		return models.PermissionNone, ""
+		return models.PermissionNone, "", true
 	}
 
 	// A disabled user keeps no access on any protocol. Every path that installs
@@ -419,7 +420,7 @@ func resolveSharePermissionForUser(
 	if user != nil && !user.Enabled {
 		logger.Debug("Share access denied (user disabled)",
 			"shareName", share.Name, "user", user.Username)
-		return models.PermissionNone, user.Username
+		return models.PermissionNone, user.Username, true
 	}
 
 	// 1. Root user bypass: UID 0 with a squash mode that allows root access gets
@@ -427,12 +428,18 @@ func resolveSharePermissionForUser(
 	if user != nil && isRootUser(user) && rootHasAdminAccess(share) {
 		logger.Debug("Root user granted admin access via squash mode",
 			"shareName", share.Name, "user", user.Username, "squash", share.Squash)
-		return models.PermissionAdmin, user.Username
+		return models.PermissionAdmin, user.Username, true
 	}
 
 	// 2. Local user/group resolution.
 	localPerm := defaultPerm
 	identifier := sess.Username
+	// resolved reports whether the permission below is a decision the store
+	// actually made. A failed lookup falls back to the share default, which is
+	// a grant a caller must not mistake for a resolved one: TREE_CONNECT may
+	// hand out the default on a fresh connect, but a re-check that writes the
+	// result back would promote an explicitly restricted tree to it.
+	resolved := true
 	switch {
 	case user != nil:
 		identifier = user.Username
@@ -440,6 +447,7 @@ func resolveSharePermissionForUser(
 			if perm, err := userStore.ResolveSharePermission(ctx.Context, user, share.Name); err != nil {
 				logger.Debug("Permission resolution failed, using default",
 					"shareName", share.Name, "user", user.Username, "error", err, "default", defaultPerm)
+				resolved = false
 			} else {
 				localPerm = perm
 			}
@@ -480,7 +488,7 @@ func resolveSharePermissionForUser(
 		}
 	}
 
-	return effective, identifier
+	return effective, identifier, resolved
 }
 
 // isRootUser checks if the user has UID 0 (root).

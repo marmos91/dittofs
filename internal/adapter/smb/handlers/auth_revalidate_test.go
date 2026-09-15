@@ -25,6 +25,9 @@ type revalidateUserStore struct {
 	user *models.User
 	err  error
 	perm models.SharePermission
+	// permErr fails the share-permission lookup while GetUser still succeeds,
+	// the shape a store outage takes once the user record is already cached.
+	permErr error
 }
 
 func (s *revalidateUserStore) GetUser(_ context.Context, _ string) (*models.User, error) {
@@ -35,6 +38,9 @@ func (s *revalidateUserStore) GetUser(_ context.Context, _ string) (*models.User
 }
 
 func (s *revalidateUserStore) ResolveSharePermission(_ context.Context, _ *models.User, _ string) (models.SharePermission, error) {
+	if s.permErr != nil {
+		return models.PermissionNone, s.permErr
+	}
 	return s.perm, nil
 }
 
@@ -374,5 +380,31 @@ func TestRevalidateAuthorization_RevokedSessionDrainsParkedCreate(t *testing.T) 
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("parked CREATE was never completed, so its async slot and replay reservation leak")
+	}
+}
+
+// TestRevalidateAuthorization_ResolverErrorDoesNotRaisePermission pins the
+// re-check against a failed lookup. The resolver answers a lookup error with the
+// share's default permission, which TREE_CONNECT may hand out on a fresh
+// connect; writing it back here would raise a tree the operator had restricted
+// to whatever the share grants everyone. The tree below is pinned at read while
+// the share defaults to read-write, so a fallback treated as a decision shows up
+// as exactly that promotion.
+func TestRevalidateAuthorization_ResolverErrorDoesNotRaisePermission(t *testing.T) {
+	store := &revalidateUserStore{
+		user:    enabledUser(),
+		permErr: errors.New("connection refused"),
+	}
+
+	h, _, treeID := newRevalidateHandler(t, enabledUser(), store, models.PermissionRead, true)
+	h.RevalidateAuthorization(context.Background())
+
+	tree, ok := h.GetTree(treeID)
+	if !ok {
+		t.Fatal("tree removed on a failed lookup; a store outage must not revoke access either")
+	}
+	if tree.Permission != models.PermissionRead {
+		t.Errorf("Permission = %v, want read: a failed lookup fell back to the share "+
+			"default and was written back as a new authorization decision", tree.Permission)
 	}
 }

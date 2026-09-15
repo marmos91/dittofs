@@ -174,7 +174,7 @@ func (h *Handler) revalidateTrees(ctx context.Context, userStore models.UserStor
 			return true
 		}
 
-		permission, _ := resolveSharePermissionForUser(
+		permission, _, resolved := resolveSharePermissionForUser(
 			&SMBHandlerContext{Context: ctx},
 			sess,
 			user,
@@ -182,6 +182,16 @@ func (h *Handler) revalidateTrees(ctx context.Context, userStore models.UserStor
 			models.ParseSharePermission(share.DefaultPermission),
 			userStore,
 		)
+		// A lookup that failed yields the share default, not a decision. Writing
+		// that back would raise a tree the operator had restricted to whatever
+		// the share grants everyone, turning a store outage into an escalation.
+		// Leave the tree on the permission it already carries; the sweep re-runs
+		// on the next mutation.
+		if !resolved {
+			logger.Warn("SMB tree permission re-check failed, tree left unchanged",
+				"treeID", tree.TreeID, "share", share.Name, "permission", tree.Permission)
+			return true
+		}
 		permission = capReadOnlyShare(share, permission)
 		if permission == tree.Permission {
 			return true
