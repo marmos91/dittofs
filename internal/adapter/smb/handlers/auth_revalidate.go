@@ -42,9 +42,14 @@ import (
 // survivingSession is a session the re-check kept, paired with the identity
 // generation the record was read at. The tree pass resolves against the record
 // but applies nothing once the generation has moved on.
+// survivingSession is the identity a session's trees re-resolve against: the
+// one snapshot the session pass read, with the user record replaced by the one
+// the store returned for it. Carrying the whole snapshot rather than the record
+// alone keeps the tree pass on a single identity — re-reading the session for
+// its name, guest flag or PAC SIDs would reintroduce the mixing the snapshot
+// exists to prevent, a sweep's worth of time after it was taken.
 type survivingSession struct {
-	user       *models.User
-	generation uint64
+	snap session.AuthzIdentity
 }
 
 // revokeIfCurrent retires the session only if its identity is still the one the
@@ -70,10 +75,11 @@ func (h *Handler) revokeIfCurrent(ctx context.Context, sess *session.Session, se
 }
 
 func (h *Handler) RevalidateAuthorization(ctx context.Context) {
+	// A nil store is not a reason to skip the sweep. Guest and anonymous
+	// sessions hold no user record to re-read, and their trees rest on the share
+	// default the tree pass re-resolves either way; only the per-session record
+	// lookup below needs a store.
 	userStore := h.Registry.GetUserStore()
-	if userStore == nil {
-		return
-	}
 
 	// One sweep at a time: see revalidateMu. Held across the whole sweep, both
 	// the resolve pass and the apply pass, because splitting them is exactly
@@ -92,11 +98,12 @@ func (h *Handler) RevalidateAuthorization(ctx context.Context) {
 		if !ok || sess.LoggedOff.Load() {
 			return true
 		}
-		current, gen := sess.AuthSnapshot()
+		snap := sess.AuthzIdentity()
+		current, gen := snap.User, snap.Generation
 		if current == nil {
 			// Guest and anonymous sessions carry no user record; their access
 			// rests on the share default, which the tree pass re-resolves.
-			surviving[sessionID] = survivingSession{generation: gen}
+			surviving[sessionID] = survivingSession{snap: snap}
 			return true
 		}
 
@@ -107,7 +114,12 @@ func (h *Handler) RevalidateAuthorization(ctx context.Context) {
 		// user as missing and retire every AD session on the next unrelated
 		// user edit.
 		if current.ID == "" {
-			surviving[sessionID] = survivingSession{user: current, generation: gen}
+			surviving[sessionID] = survivingSession{snap: snap}
+			return true
+		}
+
+		if userStore == nil {
+			surviving[sessionID] = survivingSession{snap: snap}
 			return true
 		}
 
@@ -133,7 +145,8 @@ func (h *Handler) RevalidateAuthorization(ctx context.Context) {
 			logger.Info("SMB session revoked: user disabled",
 				"sessionID", sessionID, "username", current.Username)
 		default:
-			surviving[sessionID] = survivingSession{user: user, generation: gen}
+			snap.User = user
+			surviving[sessionID] = survivingSession{snap: snap}
 		}
 		return true
 	})
@@ -215,10 +228,10 @@ func (h *Handler) revalidateTrees(ctx context.Context, userStore models.UserStor
 			return true
 		}
 
-		permission, _, resolved := resolveSharePermissionForUser(
+		permission, _, resolved := resolveSharePermissionForIdentity(
 			&SMBHandlerContext{Context: ctx},
 			sess,
-			survivor.user,
+			survivor.snap,
 			share,
 			models.ParseSharePermission(share.DefaultPermission),
 			userStore,
@@ -237,7 +250,7 @@ func (h *Handler) revalidateTrees(ctx context.Context, userStore models.UserStor
 		if permission == tree.Permission {
 			return true
 		}
-		updates = append(updates, treeUpdate{treeID: tree.TreeID, sessionID: tree.SessionID, permission: permission, generation: survivor.generation})
+		updates = append(updates, treeUpdate{treeID: tree.TreeID, sessionID: tree.SessionID, permission: permission, generation: survivor.snap.Generation})
 		return true
 	})
 
@@ -284,9 +297,17 @@ func (h *Handler) revalidateTrees(ctx context.Context, userStore models.UserStor
 		// against the old permission; the next one sees the new.
 		updated := *tree
 		updated.Permission = u.permission
+		// Swapped rather than stored: TREE_DISCONNECT or a session teardown can
+		// remove this tree between the read above and the write here, and a store
+		// would republish it under the same ID — a disconnected tree brought back
+		// to life by the sweep that was only meant to adjust it.
+		if !h.ReplaceTree(tree, &updated) {
+			logger.Debug("SMB tree changed during authorization re-check, permission not applied",
+				"treeID", u.treeID)
+			continue
+		}
 		logger.Info("SMB tree permission re-resolved",
 			"treeID", u.treeID, "share", updated.ShareName,
 			"from", tree.Permission, "to", u.permission)
-		h.StoreTree(&updated)
 	}
 }

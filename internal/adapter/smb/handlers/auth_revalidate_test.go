@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -42,11 +43,15 @@ type revalidateUserStore struct {
 	// on what the store says about it, so a test can re-authenticate the
 	// session at exactly that point.
 	onGetUser func()
+	// gotSIDs records the SIDs the last SID-grant lookup was asked about, so a
+	// test can tell which identity the resolution actually ran against.
+	gotSIDs []string
 }
 
 // ResolveSharePermissionForSIDs makes the fake satisfy sidSharePermissionResolver
 // so the SID arm of the resolver is exercised.
-func (s *revalidateUserStore) ResolveSharePermissionForSIDs(_ context.Context, _ []string, _ string) (models.SharePermission, error) {
+func (s *revalidateUserStore) ResolveSharePermissionForSIDs(_ context.Context, sids []string, _ string) (models.SharePermission, error) {
+	s.gotSIDs = append([]string(nil), sids...)
 	if s.sidErr != nil {
 		return models.PermissionNone, s.sidErr
 	}
@@ -105,7 +110,14 @@ func newRevalidateHandler(t *testing.T, user *models.User, store *revalidateUser
 	}
 
 	h := NewHandler()
-	h.Registry = &revalidateRuntime{smbRuntime: rt, users: store}
+	// Assigned only when non-nil: putting a typed nil pointer in the interface
+	// makes GetUserStore return something that is not nil, which is the whole
+	// condition a no-user-store test is trying to produce.
+	reg := &revalidateRuntime{smbRuntime: rt}
+	if store != nil {
+		reg.users = store
+	}
+	h.Registry = reg
 
 	sess := h.CreateSession("127.0.0.1:12345", false, user.Username, "")
 	sess.User = user
@@ -722,4 +734,149 @@ func countTrees(h *Handler) int {
 		return true
 	})
 	return n
+}
+
+// TestRevalidateAuthorization_UserlessSessionSweptWithoutUserStore covers the
+// sweep's entry guard. A guest or anonymous session holds no user record, so
+// there is nothing to re-read for it; its access rests entirely on the share
+// default, which the tree pass re-resolves. Returning early when no user store
+// is configured skipped that pass too, leaving such a tree pinned at whatever
+// permission it was granted with for as long as the connection lived.
+func TestRevalidateAuthorization_UserlessSessionSweptWithoutUserStore(t *testing.T) {
+	h, sessionID, treeID := newRevalidateHandler(t, enabledUser(), nil, models.PermissionAdmin, true)
+
+	sess, ok := h.GetSession(sessionID)
+	if !ok {
+		t.Fatal("fixture is wrong: no session")
+	}
+	// A guest session: no record, so the tree pass is the only thing that can
+	// re-decide its access.
+	sess.User = nil
+	sess.IsGuest = true
+
+	h.RevalidateAuthorization(context.Background())
+
+	tree, ok := h.GetTree(treeID)
+	if !ok {
+		t.Fatal("tree removed: the share default is read-write, not none")
+	}
+	if tree.Permission != models.PermissionReadWrite {
+		t.Errorf("Permission = %v, want read-write: the sweep returned before the tree "+
+			"pass, so a guest tree kept the admin grant it was connected with", tree.Permission)
+	}
+}
+
+// TestReplaceTree_DoesNotResurrectARemovedTree covers the republish primitive.
+// The sweep reads a tree, copies it, and writes the copy back under the same
+// ID. A plain store makes that write unconditional, so a TREE_DISCONNECT or a
+// session teardown landing in between is undone: the tree the client gave up
+// reappears, carrying a permission the sweep resolved for it.
+func TestReplaceTree_DoesNotResurrectARemovedTree(t *testing.T) {
+	h := NewHandler()
+
+	treeID := h.GenerateTreeID()
+	original := &TreeConnection{TreeID: treeID, SessionID: 7, ShareName: "/export", Permission: models.PermissionRead}
+	h.StoreTree(original)
+
+	updated := *original
+	updated.Permission = models.PermissionReadWrite
+	if !h.ReplaceTree(original, &updated) {
+		t.Fatal("ReplaceTree refused an unchanged tree: a re-resolve can never apply")
+	}
+	if got, _ := h.GetTree(treeID); got.Permission != models.PermissionReadWrite {
+		t.Errorf("Permission = %v, want read-write", got.Permission)
+	}
+
+	// The teardown the sweep races.
+	h.DeleteTree(treeID)
+
+	stale := updated
+	stale.Permission = models.PermissionAdmin
+	if h.ReplaceTree(&updated, &stale) {
+		t.Error("ReplaceTree swapped into a tree that was torn down")
+	}
+	if _, ok := h.GetTree(treeID); ok {
+		t.Error("the removed tree is back: a disconnected tree was republished by the re-check")
+	}
+}
+
+// TestResolveSharePermission_RunsOnOneIdentity covers the identity mixing the
+// snapshot exists to prevent. Resolution reads two halves of the identity — the
+// user record for the local grant, the PAC SIDs for the directory grant — and
+// merges the results. Read separately, a re-authentication landing between them
+// authorizes one principal's record beside another's group SIDs, a combination
+// the session never held.
+func TestResolveSharePermission_RunsOnOneIdentity(t *testing.T) {
+	store := &revalidateUserStore{user: enabledUser(), perm: models.PermissionRead}
+	h, sessionID, _ := newRevalidateHandler(t, enabledUser(), store, models.PermissionRead, false)
+
+	sess, ok := h.GetSession(sessionID)
+	if !ok {
+		t.Fatal("fixture is wrong: no session")
+	}
+	sess.SetPACIdentity([]string{"S-1-5-21-1-2-3-1104"}, "S-1-5-21-1-2-3-1200")
+
+	// What a caller decided about.
+	snap := sess.AuthzIdentity()
+
+	// The re-authentication that lands while the decision is in flight.
+	replacement := &models.User{ID: "user-2", Username: "bob", Enabled: true}
+	sess.UpdateIdentity("bob", "", replacement, false, false)
+	sess.SetPACIdentity([]string{"S-1-5-21-9-9-9-5104"}, "S-1-5-21-9-9-9-5200")
+
+	share, err := h.Registry.GetShare("/export")
+	if err != nil || share == nil {
+		t.Fatalf("GetShare: %v", err)
+	}
+	_, identifier, _ := resolveSharePermissionForIdentity(
+		&SMBHandlerContext{Context: context.Background()},
+		sess, snap, share, models.PermissionRead, store,
+	)
+
+	if identifier != "alice" {
+		t.Errorf("identifier = %q, want alice: the resolution followed the session past "+
+			"the identity it was handed", identifier)
+	}
+	for _, sid := range store.gotSIDs {
+		if strings.HasPrefix(sid, "S-1-5-21-9-9-9-") {
+			t.Fatalf("SID lookup used %q: the replacement principal's group grants were "+
+				"applied to the record the caller decided about", sid)
+		}
+	}
+	if len(store.gotSIDs) == 0 {
+		t.Fatal("no SID lookup ran, so this test cannot see which identity it used")
+	}
+}
+
+// TestTreeConnect_RefusesAfterSessionLoggedOff covers the teardown direction the
+// revocation check cannot see. LOGOFF marks the session and then removes its
+// trees, so a TREE_CONNECT already past the mark publishes after that sweep has
+// run: the client is handed a tree ID belonging to a session that is gone, and
+// the entry outlives it.
+func TestTreeConnect_RefusesAfterSessionLoggedOff(t *testing.T) {
+	store := &revalidateUserStore{user: enabledUser(), perm: models.PermissionReadWrite}
+	h, sessionID, _ := newRevalidateHandler(t, enabledUser(), store, models.PermissionReadWrite, false)
+
+	sess, ok := h.GetSession(sessionID)
+	if !ok {
+		t.Fatal("fixture is wrong: no session")
+	}
+	// LOGOFF's first act, reached directly: the handler is already past the
+	// dispatch gate, which is exactly the window the guard covers.
+	sess.LoggedOff.Store(true)
+
+	ctx := newTreeConnectTestContext(sessionID)
+	res, err := h.TreeConnect(ctx, buildTreeConnectRequestBody("\\\\server\\export"))
+	if err != nil {
+		t.Fatalf("TreeConnect: %v", err)
+	}
+	if res.Status != types.StatusUserSessionDeleted {
+		t.Errorf("Status = %#x, want STATUS_USER_SESSION_DELETED: a tree was published on "+
+			"a session that had already been torn down", res.Status)
+	}
+	if ctx.TreeID != 0 {
+		if _, alive := h.GetTree(ctx.TreeID); alive {
+			t.Error("the tree outlived the session that owned it")
+		}
+	}
 }

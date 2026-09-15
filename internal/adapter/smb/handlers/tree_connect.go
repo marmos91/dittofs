@@ -180,6 +180,23 @@ func (h *Handler) TreeConnect(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 	}
 	h.StoreTree(tree)
 
+	// Published first, then checked again, because a teardown races this in the
+	// one direction the check above cannot see. LOGOFF marks the session before
+	// it removes the trees, so a teardown that had already started when the
+	// check ran removes every tree except this one — it is not in the map yet —
+	// and the client is handed a tree ID on a session that no longer exists.
+	// Storing before the second look inverts that: either the teardown's sweep
+	// finds this tree and takes it, or this check sees the mark and withdraws it.
+	if sess != nil && (sess.LoggedOff.Load() || sess.IsExpiredOrRevoked()) {
+		h.DeleteTree(treeID)
+		logger.Warn("SMB TREE_CONNECT refused: session torn down while access was being resolved",
+			"share", shareName, "sessionID", ctx.SessionID)
+		if sess.LoggedOff.Load() {
+			return NewErrorResult(types.StatusUserSessionDeleted), nil
+		}
+		return NewErrorResult(types.StatusNetworkSessionExpired), nil
+	}
+
 	ctx.TreeID = treeID
 	ctx.ShareName = shareName
 
@@ -404,31 +421,33 @@ func resolveSharePermission(
 	defaultPerm models.SharePermission,
 	userStore models.UserStore,
 ) (models.SharePermission, string) {
-	var user *models.User
+	var snap session.AuthzIdentity
 	if sess != nil {
 		// Through the locked accessor: SESSION_SETUP re-authentication replaces
-		// this field under the session mutex, so reading it directly races a
+		// these fields under the session mutex, so reading them directly races a
 		// concurrent re-auth and can resolve access from a half-published
 		// identity.
-		user = sess.CurrentUser()
+		snap = sess.AuthzIdentity()
 	}
-	perm, identifier, _ := resolveSharePermissionForUser(ctx, sess, user, share, defaultPerm, userStore)
+	perm, identifier, _ := resolveSharePermissionForIdentity(ctx, sess, snap, share, defaultPerm, userStore)
 	return perm, identifier
 }
 
-// resolveSharePermissionForUser resolves against an explicitly supplied user
-// record rather than the session's own snapshot. An authorization re-check
-// passes a record it has just read from the store, so the grants and group
-// memberships consulted below are current ones rather than those captured when
-// the session authenticated.
-func resolveSharePermissionForUser(
+// resolveSharePermissionForIdentity resolves against a supplied identity rather
+// than reading the session again. An authorization re-check substitutes the
+// record it has just read from the store into the snapshot, so the grants and
+// group memberships consulted below are current ones rather than those captured
+// when the session authenticated, while every other identity field still comes
+// from the one read that produced the generation the re-check is pinned to.
+func resolveSharePermissionForIdentity(
 	ctx *SMBHandlerContext,
 	sess *session.Session,
-	user *models.User,
+	snap session.AuthzIdentity,
 	share *runtime.Share,
 	defaultPerm models.SharePermission,
 	userStore models.UserStore,
 ) (models.SharePermission, string, bool) {
+	user := snap.User
 	// No session at all — deny (the caller maps PermissionNone to
 	// STATUS_ACCESS_DENIED).
 	if sess == nil {
@@ -456,14 +475,9 @@ func resolveSharePermissionForUser(
 	}
 
 	// 2. Local user/group resolution.
-	// One snapshot of the identity fields for the whole resolution. The
-	// authorization sweep calls this from its own goroutine while SESSION_SETUP
-	// may be re-authenticating, so reading Username and IsGuest separately could
-	// mix an old and a new identity within a single decision.
-	_, snapUsername, snapIsGuest := sess.AuthIdentity()
 
 	localPerm := defaultPerm
-	identifier := snapUsername
+	identifier := snap.Username
 	// resolved reports whether the permission below is a decision the store
 	// actually made — across both lookups, the local one here and the SID grant
 	// further down. A failed lookup falls back to the share default, which is a
@@ -486,7 +500,7 @@ func resolveSharePermissionForUser(
 			logger.Debug("No userStore available, using default permission",
 				"shareName", share.Name, "user", user.Username, "default", defaultPerm)
 		}
-	case snapIsGuest:
+	case snap.IsGuest:
 		identifier = "guest"
 	}
 
@@ -502,10 +516,9 @@ func resolveSharePermissionForUser(
 		_, userExplicit = user.GetExplicitSharePermission(share.Name)
 	}
 	if r, ok := userStore.(sidSharePermissionResolver); ok && !userExplicit {
-		groupSIDs, userSID := sess.PACIdentity()
-		sids := groupSIDs
-		if userSID != "" {
-			sids = append(sids, userSID)
+		sids := snap.GroupSIDs
+		if snap.UserSID != "" {
+			sids = append(sids, snap.UserSID)
 		}
 		if len(sids) > 0 {
 			if sidPerm, err := r.ResolveSharePermissionForSIDs(ctx.Context, sids, share.Name); err != nil {

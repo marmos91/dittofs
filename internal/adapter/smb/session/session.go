@@ -415,25 +415,44 @@ func (s *Session) CurrentUser() *models.User {
 	return s.User
 }
 
-// AuthIdentity returns the identity fields authorization resolves against, read
-// together under the lock UpdateIdentity writes them through. Taking them one
-// accessor at a time would let a re-authentication land between two reads and
-// produce a pair that never existed — a username from the old identity beside
-// the new one's user record.
-func (s *Session) AuthIdentity() (user *models.User, username string, isGuest bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.User, s.Username, s.IsGuest
+// AuthzIdentity is one consistent view of every identity field an
+// authorization decision reads off a session: the DittoFS user record, the
+// name and guest flag the local resolver keys on, the Kerberos PAC SIDs the
+// directory resolver keys on, and the generation all four belong to.
+//
+// It is a single value because a decision that reads them through separate
+// accessors can combine halves of two identities. The local half and the SID
+// half are resolved independently and their results are merged, so an old user
+// record beside a new principal's group SIDs authorizes a combination that
+// never existed on the session.
+type AuthzIdentity struct {
+	User       *models.User
+	Username   string
+	IsGuest    bool
+	GroupSIDs  []string
+	UserSID    string
+	Generation uint64
 }
 
-// AuthSnapshot returns the session's user record together with the generation
-// it belongs to, read as one under the lock UpdateIdentity writes through. A
-// caller that releases the lock, consults the store, and then acts on the
-// record compares the generation again before applying its decision.
-func (s *Session) AuthSnapshot() (user *models.User, generation uint64) {
+// AuthzIdentity reads the whole authorization identity under the one lock
+// UpdateIdentity writes it through. A caller that releases the lock, consults
+// the store, and then acts on what it read compares Generation again before
+// applying its decision.
+func (s *Session) AuthzIdentity() AuthzIdentity {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.User, s.authGen.Load()
+	var groupSIDs []string
+	if len(s.pacGroupSIDs) > 0 {
+		groupSIDs = append([]string(nil), s.pacGroupSIDs...)
+	}
+	return AuthzIdentity{
+		User:       s.User,
+		Username:   s.Username,
+		IsGuest:    s.IsGuest,
+		GroupSIDs:  groupSIDs,
+		UserSID:    s.pacUserSID,
+		Generation: s.authGen.Load(),
+	}
 }
 
 // AuthGeneration reports the generation of the session's current identity.

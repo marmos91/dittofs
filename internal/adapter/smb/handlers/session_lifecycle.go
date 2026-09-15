@@ -1019,6 +1019,14 @@ func (h *Handler) StoreTree(tree *TreeConnection) {
 	h.trees.Store(tree.TreeID, tree)
 }
 
+// ReplaceTree swaps one tree connection for another under its ID and reports
+// whether the swap happened. It fails when the tree is no longer the one the
+// caller read, which is how a republish tells a tree that merely changed from
+// one that was torn down: a plain store would put a disconnected tree back.
+func (h *Handler) ReplaceTree(old, updated *TreeConnection) bool {
+	return h.trees.CompareAndSwap(old.TreeID, old, updated)
+}
+
 // StoreOpenFile stores an open file
 
 func (h *Handler) StoreOpenFile(file *OpenFile) {
