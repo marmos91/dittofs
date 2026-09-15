@@ -1188,6 +1188,13 @@ func (e *appInstanceEnv) survives(t *testing.T, id string) bool {
 // claim runs ProcessAppInstanceId for connection clientGUID on behalf of a
 // non-root, non-owner requester — one the POSIX permission path judges by the
 // file's "other" mode bits.
+// claimAs runs the failover with a caller-supplied AuthContext, so a test can
+// present one that was never identified.
+func (e *appInstanceEnv) claimAs(clientGUID [16]byte, authCtx *metadata.AuthContext) [16]byte {
+	return ProcessAppInstanceId(context.Background(), e.store, e.h,
+		appInstanceCtxs(e.appID), authCtx, clientGUID)
+}
+
 func (e *appInstanceEnv) claim(clientGUID [16]byte) [16]byte {
 	uid, gid := uint32(4242), uint32(4242)
 	authCtx := &metadata.AuthContext{
@@ -2682,6 +2689,44 @@ func TestSameOrUnknownClient_UnknownOnEitherSide(t *testing.T) {
 			if got := sameOrUnknownClient(tc.recorded, tc.conn); got != tc.wantSameOrUnknwn {
 				t.Errorf("sameOrUnknownClient(%x, %x) = %v, want %v — %s",
 					tc.recorded[:1], tc.conn[:1], got, tc.wantSameOrUnknwn, tc.why)
+			}
+		})
+	}
+}
+
+// TestProcessAppInstanceId_UnidentifiedContextDisplacesNothing pins the
+// authorizing half of the fail-closed rule, the counterpart to the recorded and
+// connection ClientGuid checks. Displacement is authorized by asking whether the
+// claiming user can read the file, and ComputeMaximalAccess answers that for a
+// context with no identity the way it answers for any "other" principal — which
+// on a world-readable file is yes. Testing only that an AuthContext is present
+// therefore let a request that was never identified force-close another client's
+// open on any 0o644 file, which is most of them.
+func TestProcessAppInstanceId_UnidentifiedContextDisplacesNothing(t *testing.T) {
+	incumbent := [16]byte{0x22}
+	claimant := [16]byte{0x11}
+
+	for _, tc := range []struct {
+		name    string
+		authCtx *metadata.AuthContext
+	}{
+		{"no context at all", nil},
+		{"context carrying no identity", &metadata.AuthContext{Context: context.Background()}},
+		{"identity carrying no UID", &metadata.AuthContext{
+			Context: context.Background(), Identity: &metadata.Identity{},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newAppInstanceEnv(t)
+			// 0o644: world-readable, so the maximal-access condition is
+			// satisfied for an anonymous principal and only the identity gate
+			// stands between this caller and the incumbent's open.
+			fileID := e.live(e.file(t, "live.txt", 0o644), incumbent)
+
+			e.claimAs(claimant, tc.authCtx)
+
+			if _, ok := e.h.GetOpenFile(fileID); !ok {
+				t.Error("an unidentified request displaced another client's open on a world-readable file")
 			}
 		})
 	}

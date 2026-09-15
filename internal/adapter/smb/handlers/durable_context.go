@@ -1009,7 +1009,20 @@ func ProcessAppInstanceId(
 	// no crypto state compares as different from every recorded GUID and would
 	// force-close other clients' opens — the same unknown-identity hole the
 	// recorded side closes, facing the other way.
-	if metaSvc == nil || authCtx == nil || connClientGUID == ([16]byte{}) {
+	//
+	// The identity is required to be established, not merely present:
+	// ComputeMaximalAccess treats a nil Identity or UID as an anonymous
+	// "other" principal, which carries read access on any world-readable file.
+	// A context with no UID would therefore satisfy the maximal-access
+	// condition on most files and displace an open without ever having been
+	// identified — the same unknown-identity hole again, now on the authorizing
+	// side rather than the matching side.
+	if metaSvc == nil || connClientGUID == ([16]byte{}) {
+		return appId
+	}
+	if authCtx == nil || authCtx.Identity == nil || authCtx.Identity.UID == nil {
+		logger.Debug("ProcessAppInstanceId: no established identity on the claiming context, displacing nothing",
+			"appInstanceId", fmt.Sprintf("%x", appId))
 		return appId
 	}
 	mayDisplace := func(metadataHandle []byte) bool {
@@ -1036,16 +1049,15 @@ func ProcessAppInstanceId(
 	// OpenFile concurrency contract forbids inside files.Range.
 	//
 	// The snapshot also carries each candidate's lease/oplock identity, taken
-	// BEFORE the force-close so the LeaseManager record can be released
-	// afterwards. closeFilesWithFilter removes the open from Handler.files but
-	// does NOT release the per-open lease/oplock (that is the session-wide
-	// releaseSessionLeasesAndNotifies path, which the AppInstanceId failover
-	// does not run). Without this release, the synthetic batch-oplock record of
-	// the displaced open lingers in the LeaseManager, and the *new* open (which
-	// immediately follows in the CREATE path) parks on a break of that orphaned
-	// oplock until the oplock timeout — and the AppInstanceId failover must be
-	// silent anyway (MS-SMB2 §3.3.5.9.13; smbtorture
-	// smb2.durable-v2-open.app-instance asserts break_info.count == 0).
+	// BEFORE the force-close, because the creates parked on it are signalled
+	// afterwards and the open it names is gone by then. The record itself is
+	// released by closeFilesWithFilter, which runs releaseHandleLeaseRecord for
+	// every open it removes; only the signal is left here. Without it the *new*
+	// open, which immediately follows in the CREATE path, waits on a break of
+	// the displaced open's oplock until the oplock timeout — and the
+	// AppInstanceId failover must be silent anyway (MS-SMB2 §3.3.5.9.13;
+	// smbtorture smb2.durable-v2-open.app-instance asserts
+	// break_info.count == 0).
 	type candidate struct {
 		fileID     [16]byte
 		metaHandle []byte
