@@ -9,6 +9,18 @@ import (
 // ManagedJWTSecretKey is the key used in auto-generated JWT secrets.
 const ManagedJWTSecretKey = "jwt-secret"
 
+// BlockMountPath is where the content PVC is mounted inside the dfs container,
+// and the path the rendered blockstore.journal.path names so every share's
+// journal lands on that volume rather than the pod's ephemeral layer.
+const BlockMountPath = "/data/store/block"
+
+// JournalVolumeEnabled reports whether a content PVC was requested — the one
+// thing that backs BlockMountPath with a volume, so it gates both the mount and
+// naming the path in the rendered config.
+func (ds *DittoServer) JournalVolumeEnabled() bool {
+	return ds.Spec.Storage.ContentSize != ""
+}
+
 const (
 	// TLSCertMountPath is where the control-plane server certificate Secret is
 	// mounted (read-only) inside the dfs container when native TLS is enabled.

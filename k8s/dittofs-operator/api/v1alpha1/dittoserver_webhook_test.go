@@ -585,6 +585,9 @@ func TestPerconaDisabled(t *testing.T) {
 		Spec: DittoServerSpec{
 			Storage: StorageSpec{
 				MetadataSize: "10Gi",
+				// Set so the journal-PVC warning stays out of the way; this
+				// case is about Percona, not storage.
+				ContentSize: "10Gi",
 			},
 			Identity: &IdentityConfig{
 				JWT: &JWTConfig{

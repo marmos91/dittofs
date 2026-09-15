@@ -106,9 +106,13 @@ type StorageSpec struct {
 	// +kubebuilder:example="10Gi"
 	MetadataSize string `json:"metadataSize"`
 
-	// Size for the block/content store PVC (mounted at /data/store/block).
-	// Holds local CAS chunks and the block-store append-log (the durable WAL
-	// replayed on crash recovery). Not needed for pure-S3 shares.
+	// Size for the block/content store PVC (mounted at /data/store/block),
+	// which the server is pointed at as blockstore.journal.path. Holds every
+	// share's journal: the append log that absorbs writes, plus the chunks
+	// carved from it that have not yet been evicted. Needed by every share,
+	// S3-backed ones included — the journal is the only copy of a byte until
+	// the block store has it. Without this PVC the journal lands on ephemeral
+	// pod storage and unflushed writes are lost when the pod is rescheduled.
 	// +kubebuilder:validation:Pattern=`^[0-9]+(Gi|Mi|Ti)$`
 	// +kubebuilder:example="50Gi"
 	ContentSize string `json:"contentSize,omitempty"`

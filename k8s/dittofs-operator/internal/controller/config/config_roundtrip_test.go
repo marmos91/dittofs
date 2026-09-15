@@ -85,6 +85,10 @@ var serverKnownKeys = map[string]bool{
 	// dead block we allowlist exactly the two keys the operator emits today.
 	"cache.path": true,
 	"cache.size": true,
+
+	// pkg/config BlockstoreConfig. Only the journal root is rendered; the
+	// remaining blockstore.journal.* tunables keep their server defaults.
+	"blockstore.journal.path": true,
 }
 
 // deadKeys are keys the operator must never emit because the server silently
@@ -155,6 +159,14 @@ func TestGenerateDittoFSConfig_NoDeadKeys(t *testing.T) {
 					TLS:                true,
 					CertSecretName:     "tls",
 					ClientCASecretName: "ca",
+				},
+			},
+		},
+		"content-pvc": {
+			Spec: dittoiov1alpha1.DittoServerSpec{
+				Storage: dittoiov1alpha1.StorageSpec{
+					MetadataSize: "10Gi",
+					ContentSize:  "50Gi",
 				},
 			},
 		},

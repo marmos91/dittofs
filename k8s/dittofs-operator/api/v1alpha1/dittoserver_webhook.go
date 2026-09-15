@@ -61,6 +61,10 @@ func (r *DittoServer) validateDittoServer() (admission.Warnings, error) {
 		return warnings, fmt.Errorf("storage.metadataSize is required")
 	}
 
+	if !r.JournalVolumeEnabled() {
+		warnings = append(warnings, "storage.contentSize is unset: every share keeps an on-disk journal, so without this PVC the journal lands on ephemeral pod storage and unflushed writes are lost when the pod is rescheduled")
+	}
+
 	// Validate JWT secretRef.key if secretRef.name is provided
 	// If no secretRef is provided, the controller will auto-generate a managed secret
 	if r.Spec.Identity != nil && r.Spec.Identity.JWT != nil &&

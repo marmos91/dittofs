@@ -22,6 +22,24 @@ type DittoFSConfig struct {
 	// is NOT rendered here — it is mounted as a file from a Kubernetes Secret and
 	// kerberos.keytab_path points at the mount.
 	Kerberos *KerberosConfig `yaml:"kerberos,omitempty"`
+
+	// Blockstore renders the top-level blockstore: block, pointing the journal
+	// at the mounted content volume. Omitted (nil pointer) when no content PVC
+	// was requested, leaving the server's own default in place.
+	Blockstore *BlockstoreConfig `yaml:"blockstore,omitempty"`
+}
+
+// BlockstoreConfig mirrors the dfs server blockstore: config keys
+// (pkg/config.BlockstoreConfig). Only the journal root is rendered; the
+// remaining tunables keep their server-side defaults.
+type BlockstoreConfig struct {
+	Journal BlockstoreJournalConfig `yaml:"journal"`
+}
+
+// BlockstoreJournalConfig mirrors the dfs server blockstore.journal: keys.
+// Path is the directory every share's journal hangs beneath.
+type BlockstoreJournalConfig struct {
+	Path string `yaml:"path"`
 }
 
 // KerberosConfig mirrors the dfs server kerberos: config keys (pkg/config).

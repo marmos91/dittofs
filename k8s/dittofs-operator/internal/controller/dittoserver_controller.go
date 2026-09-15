@@ -953,10 +953,10 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 				},
 			}
 
-			if dittoServer.Spec.Storage.ContentSize != "" {
+			if dittoServer.JournalVolumeEnabled() {
 				volumeMounts = append(volumeMounts, corev1.VolumeMount{
 					Name:      "content",
-					MountPath: "/data/store/block",
+					MountPath: dittoiov1alpha1.BlockMountPath,
 				})
 			}
 
@@ -1043,7 +1043,7 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 				},
 			}
 
-			if dittoServer.Spec.Storage.ContentSize != "" {
+			if dittoServer.JournalVolumeEnabled() {
 				contentSize, err := resource.ParseQuantity(dittoServer.Spec.Storage.ContentSize)
 				if err != nil {
 					return fmt.Errorf("invalid content size: %w", err)

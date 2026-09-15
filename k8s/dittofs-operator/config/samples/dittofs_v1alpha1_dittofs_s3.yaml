@@ -8,7 +8,9 @@ spec:
   replicas: 1
   storage:
     metadataSize: "10Gi"
-    # No contentSize needed - using S3 for payload
+    # Required even with an S3 block store: it backs blockstore.journal.path,
+    # and a share's journal is the only copy of a byte until S3 has it.
+    contentSize: "50Gi"
   identity:
     jwt:
       secretRef:

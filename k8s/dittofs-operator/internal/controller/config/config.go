@@ -45,6 +45,7 @@ func GenerateDittoFSConfig(dittoServer *dittoiov1alpha1.DittoServer) (string, er
 		Metrics:         buildMetricsConfig(dittoServer),
 		LDAP:            buildLDAPConfig(dittoServer),
 		Kerberos:        buildKerberosConfig(dittoServer),
+		Blockstore:      buildBlockstoreConfig(dittoServer),
 	}
 
 	// Add admin config with username only (password hash injected via env var)
@@ -172,6 +173,19 @@ func buildMetricsConfig(ds *dittoiov1alpha1.DittoServer) *MetricsConfig {
 	}
 
 	return cfg
+}
+
+// buildBlockstoreConfig renders the blockstore: block so every share's journal
+// lands on the mounted content volume instead of the pod's ephemeral layer.
+// Returns nil (no blockstore: key) when no content PVC was requested, since
+// nothing is mounted at that path to name.
+func buildBlockstoreConfig(ds *dittoiov1alpha1.DittoServer) *BlockstoreConfig {
+	if !ds.JournalVolumeEnabled() {
+		return nil
+	}
+	return &BlockstoreConfig{
+		Journal: BlockstoreJournalConfig{Path: dittoiov1alpha1.BlockMountPath},
+	}
 }
 
 // buildLDAPConfig renders the ldap: block when the CRD configures the LDAP/AD
