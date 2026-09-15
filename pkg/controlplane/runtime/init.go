@@ -246,18 +246,6 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 	}
 
 	for _, share := range shares {
-		// A binding that resolves to no store leaves the share absent from a
-		// server that otherwise reports healthy. Name it and the reference it
-		// could not resolve, rather than letting the AddShare failure below
-		// report it as a generic startup error.
-		if ref := share.BlockStoreID; ref != "" && !blockStoreExists(ctx, s, ref) {
-			logger.Warn("Share references unknown block store",
-				"share", share.Name,
-				"block_store_id", ref)
-			rt.markShareSkipped(share.Name, "block store "+ref+" is not configured")
-			continue
-		}
-
 		shareConfig, err := buildShareConfig(ctx, s, share)
 		if err != nil {
 			return err
@@ -281,6 +269,19 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 			if errors.Is(err, block.ErrFutureFormat) || errors.Is(err, journal.ErrFutureFormat) ||
 				errors.Is(err, sharesvc.ErrLegacyLocalFormat) {
 				return fmt.Errorf("share %q: %w", share.Name, err)
+			}
+			// A binding that names no configured store is the one failure an
+			// operator can act on directly, and the construction error wraps it
+			// four levels deep. Say which share and which reference, matching
+			// how an unknown metadata store is reported. Checked only once the
+			// add has already failed, so the format sentinels above keep
+			// stopping the boot ahead of it.
+			if ref := share.BlockStoreID; ref != "" && !blockStoreExists(ctx, s, ref) {
+				logger.Warn("Share references unknown block store",
+					"share", share.Name,
+					"block_store_id", ref)
+				rt.markShareSkipped(share.Name, "block store "+ref+" is not configured")
+				continue
 			}
 			logger.Warn("Failed to add share to runtime",
 				"share", share.Name,

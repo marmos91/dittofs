@@ -90,3 +90,40 @@ func TestLoadSharesFromStore_FormatErrorStops(t *testing.T) {
 		})
 	}
 }
+
+// A share can be broken two ways at once: an on-disk format this build cannot
+// read, and a block store binding that names nothing. The format sentinel is a
+// boot stop and must win — reporting the binding instead would leave the daemon
+// running and reporting healthy with the share absent, which is exactly what
+// the boot stop exists to prevent.
+func TestLoadSharesFromStore_FormatErrorWinsOverUnresolvableBlockStore(t *testing.T) {
+	rt, s := setupTestRuntime(t)
+	ctx := context.Background()
+
+	const metaName = "format-meta-both"
+	if _, err := s.CreateMetadataStore(ctx, &models.MetadataStoreConfig{
+		Name: metaName,
+		Type: "memory",
+	}); err != nil {
+		t.Fatalf("CreateMetadataStore: %v", err)
+	}
+	if err := rt.RegisterMetadataStore(metaName, &futureFormatStore{
+		MemoryMetadataStore: metadatamemory.NewMemoryMetadataStoreWithDefaults(),
+		sentinel:            sharesvc.ErrLegacyLocalFormat,
+	}); err != nil {
+		t.Fatalf("RegisterMetadataStore: %v", err)
+	}
+
+	if _, err := s.CreateShare(ctx, &models.Share{
+		Name:            "/broken-both-ways",
+		MetadataStoreID: metaName,
+		BlockStoreID:    "deleted-blocks",
+	}); err != nil {
+		t.Fatalf("CreateShare: %v", err)
+	}
+
+	err := LoadSharesFromStore(ctx, rt, s)
+	if !errors.Is(err, sharesvc.ErrLegacyLocalFormat) {
+		t.Fatalf("LoadSharesFromStore = %v; want errors.Is %v", err, sharesvc.ErrLegacyLocalFormat)
+	}
+}
