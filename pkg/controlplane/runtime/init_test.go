@@ -542,3 +542,42 @@ func TestLoadSharesFromStore_ReportsUnresolvableBlockStore(t *testing.T) {
 		t.Errorf("skip reason = %q, want %q", reason, want)
 	}
 }
+
+// TestLoadSharesFromStore_LeadingSlashIsOneShare drives the persisted-state
+// path: two share rows whose names differ only in a leading slash. Both
+// sanitize to one journal directory, so loading them must register one share
+// and skip the other — registering both puts two shares in one journal and
+// interleaves their writes.
+func TestLoadSharesFromStore_LeadingSlashIsOneShare(t *testing.T) {
+	rt, s := setupTestRuntime(t)
+	ctx := context.Background()
+
+	blockID := createBlockStoreConfig(t, s, "collide-blocks")
+	metaStores, err := s.ListMetadataStores(ctx)
+	if err != nil {
+		t.Fatalf("ListMetadataStores: %v", err)
+	}
+	for _, name := range []string{"alpha", "/alpha"} {
+		if _, err := s.CreateShare(ctx, &models.Share{
+			Name:            name,
+			MetadataStoreID: metaStores[0].ID,
+			BlockStoreID:    blockID,
+		}); err != nil {
+			t.Fatalf("CreateShare(%q): %v", name, err)
+		}
+	}
+
+	if err := LoadSharesFromStore(ctx, rt, s); err != nil {
+		t.Fatalf("LoadSharesFromStore: %v", err)
+	}
+
+	if got := rt.CountShares(); got != 1 {
+		t.Fatalf("two spellings of one journal directory registered %d shares, want 1", got)
+	}
+	if _, err := rt.GetShare("/alpha"); err != nil {
+		t.Fatalf(`the surviving share must be registered as "/alpha": %v`, err)
+	}
+	if skipped := rt.SkippedShares(); len(skipped) != 1 {
+		t.Fatalf("want the colliding share reported as skipped, got %v", skipped)
+	}
+}
