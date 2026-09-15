@@ -138,7 +138,7 @@ func TestReapExpiredSessions_StopsBackchannelSender(t *testing.T) {
 	if session == nil {
 		t.Fatal("GetSession returned nil")
 	}
-	sender := NewBackchannelSender(csResult.SessionID, clientID, 0x40000000, session.BackChannelSlots, sm)
+	sender := NewBackchannelSender(csResult.SessionID, clientID, 0x40000000, nil, session.BackChannelSlots, sm)
 	sm.mu.Lock()
 	session.backchannelSender = sender
 	sm.mu.Unlock()

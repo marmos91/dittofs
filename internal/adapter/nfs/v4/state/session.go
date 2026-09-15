@@ -248,6 +248,11 @@ func (sm *StateManager) CreateSession(
 		}
 	}
 
+	// The callback security parameters decide the credential every callback on
+	// this session carries, so they belong to the session from the moment it
+	// exists rather than only from a later BACKCHANNEL_CTL.
+	session.BackchannelSecParms = cbSecParms
+
 	// Store session in maps
 	sm.sessionsByID[session.SessionID] = session
 	sm.sessionsByClientID[clientID] = append(sm.sessionsByClientID[clientID], session)

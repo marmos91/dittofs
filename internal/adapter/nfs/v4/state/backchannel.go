@@ -142,6 +142,14 @@ type BackchannelSender struct {
 	// avoid a data race between the two goroutines.
 	cbProgram atomic.Uint32
 
+	// cbCred is the pre-encoded RPC credential every callback on this session
+	// carries, chosen from the client's callback security parameters. Like
+	// cbProgram it is read by the Run goroutine and rewritten by
+	// BACKCHANNEL_CTL, so it is accessed atomically. A nil value means the
+	// client offered nothing usable and the server's own AUTH_SYS credential
+	// applies.
+	cbCred atomic.Pointer[[]byte]
+
 	queue chan CallbackRequest
 	sm    *StateManager
 
@@ -165,6 +173,7 @@ func NewBackchannelSender(
 	sessionID types.SessionId4,
 	clientID uint64,
 	cbProgram uint32,
+	secParms []types.CallbackSecParms4,
 	slotTable *SlotTable,
 	sm *StateManager,
 ) *BackchannelSender {
@@ -178,7 +187,25 @@ func NewBackchannelSender(
 		callbackTimeout: defaultBackchannelTimeout,
 	}
 	bs.cbProgram.Store(cbProgram)
+	bs.setCred(secParms)
 	return bs
+}
+
+// setCred encodes and stores the credential callbacks on this session carry.
+func (bs *BackchannelSender) setCred(secParms []types.CallbackSecParms4) {
+	if cred := EncodeCallbackCred(secParms); cred != nil {
+		bs.cbCred.Store(&cred)
+		return
+	}
+	bs.cbCred.Store(nil)
+}
+
+// cred returns the pre-encoded callback credential, or nil for the server's own.
+func (bs *BackchannelSender) cred() []byte {
+	if p := bs.cbCred.Load(); p != nil {
+		return *p
+	}
+	return nil
 }
 
 // Run is the main loop for the BackchannelSender goroutine.
@@ -294,7 +321,7 @@ func (bs *BackchannelSender) sendCallback(ctx context.Context, req CallbackReque
 
 	// 4. Build RPC CALL message
 	xid := bs.nextXID.Add(1)
-	callMsg := BuildCBRPCCallMessage(xid, bs.cbProgram.Load(), types.NFS4_CALLBACK_VERSION, types.CB_PROC_COMPOUND, compoundArgs)
+	callMsg := BuildCBRPCCallMessage(xid, bs.cbProgram.Load(), types.NFS4_CALLBACK_VERSION, types.CB_PROC_COMPOUND, compoundArgs, bs.cred())
 
 	// 5. Add record marking
 	framedMsg := AddCBRecordMark(callMsg, true)
@@ -436,7 +463,7 @@ func encodeCBSequenceOp(sessionID types.SessionId4, seqID, slotID, highestSlotID
 // is a delegation the server cannot recall.
 func (bs *BackchannelSender) probeCallbackPath(ctx context.Context) error {
 	xid := bs.nextXID.Add(1)
-	callMsg := BuildCBRPCCallMessage(xid, bs.cbProgram.Load(), types.NFS4_CALLBACK_VERSION, types.CB_PROC_NULL, nil)
+	callMsg := BuildCBRPCCallMessage(xid, bs.cbProgram.Load(), types.NFS4_CALLBACK_VERSION, types.CB_PROC_NULL, nil, bs.cred())
 	framedMsg := AddCBRecordMark(callMsg, true)
 
 	connID, writer, pending, ok := bs.sm.getBackBoundConnWriter(bs.sessionID, 0)
@@ -610,6 +637,7 @@ func (sm *StateManager) StartBackchannelSender(ctx context.Context, sessionID ty
 		sessionID,
 		session.ClientID,
 		session.CbProgram,
+		session.BackchannelSecParms,
 		session.BackChannelSlots,
 		sm,
 	)
@@ -733,6 +761,7 @@ func (sm *StateManager) UpdateBackchannelParams(sessionID types.SessionId4, cbPr
 	// goroutine reads cbProgram without sm.mu, so the field is atomic.
 	if session.backchannelSender != nil {
 		session.backchannelSender.cbProgram.Store(cbProgram)
+		session.backchannelSender.setCred(secParms)
 	}
 
 	logger.Info("Backchannel params updated",

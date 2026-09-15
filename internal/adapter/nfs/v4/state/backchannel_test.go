@@ -70,6 +70,7 @@ func createTestBackchannelSender(t *testing.T) (*BackchannelSender, *StateManage
 		sessionID,
 		clientID,
 		0x40000000,
+		nil,
 		session.BackChannelSlots,
 		sm,
 	)

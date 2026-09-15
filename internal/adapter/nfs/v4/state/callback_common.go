@@ -87,7 +87,56 @@ func encodeAuthSysCred(buf *bytes.Buffer) {
 	_ = xdr.WriteXDROpaque(buf, body.Bytes())
 }
 
-// BuildCBRPCCallMessage builds an RPC CALL message with AUTH_SYS credentials.
+// EncodeCallbackCred encodes the RPC credential a callback is to carry, chosen
+// from the callback security parameters the client supplied in CREATE_SESSION
+// or BACKCHANNEL_CTL (RFC 8881 Sections 18.35, 18.36). The server must speak to
+// the client under one of the flavors the client named, and the AUTH_SYS
+// identity is the one that entry carries rather than the server's own.
+//
+// AUTH_SYS wins over AUTH_NONE when the client offers both: a client that
+// accepts AUTH_NONE for CB_NULL may still answer AUTH_BADCRED to CB_RECALL
+// under it, whereas AUTH_SYS is accepted for every callback procedure. AUTH_NONE
+// is used when it is the only flavor offered, because then it is the only thing
+// the client has agreed to.
+//
+// A nil result means nothing usable was offered (an empty list, or RPCSEC_GSS
+// only), and the caller falls back to the server's own AUTH_SYS credential.
+func EncodeCallbackCred(secParms []types.CallbackSecParms4) []byte {
+	for _, sp := range secParms {
+		if sp.CbSecFlavor != uint32(rpc.AuthUnix) {
+			continue
+		}
+		p := sp.AuthSysParms
+		if p == nil {
+			p = &types.AuthSysParms{}
+		}
+		var body bytes.Buffer
+		_ = xdr.WriteUint32(&body, p.Stamp)
+		_ = xdr.WriteXDRString(&body, p.MachineName)
+		_ = xdr.WriteUint32(&body, p.UID)
+		_ = xdr.WriteUint32(&body, p.GID)
+		_ = xdr.WriteUint32(&body, uint32(len(p.GIDs)))
+		for _, gid := range p.GIDs {
+			_ = xdr.WriteUint32(&body, gid)
+		}
+		var buf bytes.Buffer
+		_ = xdr.WriteUint32(&buf, uint32(rpc.AuthUnix))
+		_ = xdr.WriteXDROpaque(&buf, body.Bytes())
+		return buf.Bytes()
+	}
+	for _, sp := range secParms {
+		if sp.CbSecFlavor != uint32(rpc.AuthNull) {
+			continue
+		}
+		var buf bytes.Buffer
+		_ = xdr.WriteUint32(&buf, uint32(rpc.AuthNull))
+		_ = xdr.WriteUint32(&buf, 0)
+		return buf.Bytes()
+	}
+	return nil
+}
+
+// BuildCBRPCCallMessage builds an RPC CALL message for a callback.
 //
 // Wire format per RFC 5531:
 //
@@ -97,20 +146,23 @@ func encodeAuthSysCred(buf *bytes.Buffer) {
 //	Program:    [uint32]
 //	Version:    [uint32]
 //	Procedure:  [uint32]
-//	Cred:       AUTH_SYS (flavor=1, authsys_parms body)
+//	Cred:       cred, or AUTH_SYS (flavor=1, authsys_parms body) when nil
 //	Verf:       AUTH_NULL (flavor=0, length=0)
 //	Args:       [procedure args]
+//
+// cred is the pre-encoded flavor+body from EncodeCallbackCred; nil selects the
+// server's own AUTH_SYS credential, which is what a v4.0 callback carries since
+// it negotiates no security parameters.
 //
 // Every callback procedure carries the same credential, the CB_NULL reachability
 // probe included. A probe sent under a credential the payload does not use
 // proves nothing about the payload: Linux clients accept AUTH_NULL for CB_NULL
 // alone and answer AUTH_BADCRED to every other procedure, so a CB_NULL-only
 // AUTH_NULL probe reports a healthy backchannel that cannot carry one recall.
-// AUTH_SYS is accepted for all of them, which keeps the probe honest.
 //
 // The verifier stays AUTH_NULL: RFC 5531 Section 9.2 pairs AUTH_SYS credentials
 // with an AUTH_NONE verifier.
-func BuildCBRPCCallMessage(xid, prog, vers, proc uint32, args []byte) []byte {
+func BuildCBRPCCallMessage(xid, prog, vers, proc uint32, args, cred []byte) []byte {
 	var buf bytes.Buffer
 
 	// RPC header fields (writes to bytes.Buffer never fail)
@@ -121,7 +173,11 @@ func BuildCBRPCCallMessage(xid, prog, vers, proc uint32, args []byte) []byte {
 	_ = xdr.WriteUint32(&buf, vers)
 	_ = xdr.WriteUint32(&buf, proc)
 
-	encodeAuthSysCred(&buf)
+	if cred != nil {
+		_, _ = buf.Write(cred)
+	} else {
+		encodeAuthSysCred(&buf)
+	}
 
 	// Auth verifier: AUTH_NULL (flavor=0, length=0)
 	_ = xdr.WriteUint32(&buf, uint32(rpc.AuthNull))
