@@ -296,16 +296,14 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 }
 
 // blockStoreExists reports whether a share's block store reference names a
-// configured store, resolving it the same way the share loader does: by UUID
-// first, then by name for rows that hold the name instead.
+// configured store. GetBlockStore resolves by name or ID, which covers both
+// forms the binding takes: the store's UUID, and the name that rows written by
+// the older update path hold.
 //
-// Only a genuine "not found" on both lookups counts as missing. A DB or context
-// error says nothing about whether the store exists, so it is left to the load
-// path to report rather than being turned into a misleading report here.
+// Only a genuine "not found" counts as missing. A DB or context error says
+// nothing about whether the store exists, so it is left to the load path to
+// report rather than being turned into a misleading report here.
 func blockStoreExists(ctx context.Context, s store.Store, ref string) bool {
-	if _, err := s.GetBlockStoreByID(ctx, ref); !errors.Is(err, models.ErrStoreNotFound) {
-		return true
-	}
 	_, err := s.GetBlockStore(ctx, ref)
 	return !errors.Is(err, models.ErrStoreNotFound)
 }

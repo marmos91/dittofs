@@ -615,22 +615,23 @@ func TestBlockStoreHandler_Update_ConflictingRenameLeavesConfigUntouched(t *test
 	}
 }
 
-// Renaming a store to the name it already has is not a collision with itself,
-// so the preflight must let a plain config change through.
-func TestBlockStoreHandler_Update_RenameToOwnNameIsNotAConflict(t *testing.T) {
+// The preflight resolves its target with a name-or-ID lookup, but only a name
+// collides. A rename whose target resolves to a row under some other key — the
+// store's own UUID here — is not a conflict and must pass through.
+func TestBlockStoreHandler_Update_RenameTargetResolvingByIDIsNotAConflict(t *testing.T) {
 	cpStore, handler := setupBlockStoreTest(t)
 	ctx := context.Background()
 
+	id := uuid.New().String()
 	if _, err := cpStore.CreateBlockStore(ctx, &models.BlockStoreConfig{
-		ID: uuid.New().String(), Name: "blocks-self",
+		ID: id, Name: "blocks-self",
 		Type: "s3", Config: `{"bucket":"b","region":"us-east-1","access_key_id":"AK","secret_access_key":"SK"}`,
 		CreatedAt: time.Now(),
 	}); err != nil {
 		t.Fatalf("CreateBlockStore: %v", err)
 	}
 
-	same := "blocks-self"
-	body, _ := json.Marshal(UpdateBlockStoreRequest{Name: &same})
+	body, _ := json.Marshal(UpdateBlockStoreRequest{Name: &id})
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/store/block/blocks-self", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req = withBlockStoreName(req, "blocks-self")

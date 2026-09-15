@@ -65,7 +65,7 @@ func (s *GORMStore) DeleteBlockStore(ctx context.Context, name string) error {
 		// leaving a binding that resolves to nothing at the next restart.
 		var count int64
 		if err := tx.Model(&models.Share{}).
-			Where("block_store_id IN (?, ?)", store.ID, store.Name).
+			Where("block_store_id IN ?", []string{store.ID, store.Name}).
 			Count(&count).Error; err != nil {
 			return err
 		}
