@@ -85,17 +85,16 @@ func (h *MetadataStoreHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// lock error would point the operator at a running server instead of at
 	// the name they reused. The duplicate arm on the write below stays as the
 	// backstop for a name taken between this check and that write.
-	// The lookup resolves an ID as well as a name, so only a match on the name
-	// itself is the collision being tested for; a name that happens to spell
-	// another store's ID leaves the name free.
-	if existing, err := h.store.GetMetadataStore(r.Context(), req.Name); err == nil {
-		if existing.Name == req.Name {
-			Conflict(w, "Metadata store already exists")
-			return
-		}
-	} else if !errors.Is(err, models.ErrStoreNotFound) {
+	existing, err := h.store.GetMetadataStore(r.Context(), req.Name)
+	if err != nil && !errors.Is(err, models.ErrStoreNotFound) {
 		logger.Error("Failed to look up metadata store by name", "name", req.Name, "error", err)
 		InternalServerError(w, "Failed to create metadata store")
+		return
+	}
+	// The lookup also answers to an ID, but only a name collides: a store whose
+	// ID reads like the requested name leaves that name free.
+	if err == nil && existing.Name == req.Name {
+		Conflict(w, "Metadata store already exists")
 		return
 	}
 
@@ -103,7 +102,6 @@ func (h *MetadataStoreHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// This prevents inconsistent state where config exists but store cannot be instantiated
 	var metaStore metadata.Store
 	if h.runtime != nil {
-		var err error
 		metaStore, err = runtime.CreateMetadataStoreFromConfig(r.Context(), storeCfg.Type, storeCfg)
 		if err != nil {
 			logger.Error("Failed to create metadata store instance",
