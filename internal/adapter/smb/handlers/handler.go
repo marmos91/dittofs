@@ -475,6 +475,18 @@ func (f *OpenFile) GetPayloadID() metadata.PayloadID {
 	return f.PayloadID
 }
 
+// GetMetadataHandle returns the metadata store handle under the read lock.
+// SET_REPARSE_POINT repoints a live handle when it replaces a regular-file
+// placeholder with a symlink, so the field is a mutable slice header: a scan
+// over the handle table that compares handles across opens must read through
+// here rather than touching the field directly.
+
+func (f *OpenFile) GetMetadataHandle() metadata.FileHandle {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.MetadataHandle
+}
+
 // SetPayloadID publishes a new cached payload identifier under the write lock.
 
 func (f *OpenFile) SetPayloadID(id metadata.PayloadID) {
