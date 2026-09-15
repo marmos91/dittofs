@@ -51,8 +51,14 @@ unset _compose_repo_root
 require_exclusive_stack() {
     # A docker that cannot be reached reports nothing rather than aborting the
     # run here; the first compose command will fail with a better message.
+    # -a, not just running: a kept stack that a daemon restart or a manual
+    # `docker stop` left stopped still owns the bootstrapped volume, and the
+    # `docker compose up` below would adopt it and fail partway through on an
+    # existing admin password or store — the same unexplained mid-run collapse
+    # this check replaces. A stopped project is a blocker too, and the remedy
+    # printed below is the same `down -v` either way.
     local live
-    live="$(docker ps \
+    live="$(docker ps -a \
         --format '{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.project.working_dir"}}' \
         2>/dev/null |
         awk -F'|' '$1 ~ /^smb-conformance/ { print; exit }' || true)"
@@ -61,14 +67,19 @@ require_exclusive_stack() {
     local project="${live%%|*}" workdir="${live#*|}"
     cat >&2 <<EOF
 
-ERROR: an SMB conformance stack is already running from ${workdir:-an unknown directory}
+ERROR: an SMB conformance stack already exists from ${workdir:-an unknown directory}
        (Compose project ${project}).
 
 The stack publishes fixed host ports and the suites are timing-sensitive, so
 only one may run at a time — including a stack an earlier run left behind with
---keep, which a new run cannot reuse. Wait for that run to finish, or stop it
-with:
+--keep, and one that is merely stopped, neither of which a new run can reuse.
+Wait for that run to finish, or clear it with:
     docker compose -p ${project} down -v
+    docker rm -f smbtorture-run-\* wpts-local 2>/dev/null
+
+The second command is not redundant: `down -v` does not reap the one-off
+containers `docker compose run` creates, so a run killed mid-suite can leave
+one behind holding this project's label and blocking every retry.
 
 EOF
     exit 1
