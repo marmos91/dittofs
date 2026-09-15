@@ -80,3 +80,36 @@ func TestLoadSharesFromStore_RequireKerberosWithKerberosLoads(t *testing.T) {
 		t.Fatal("share with a satisfiable require_kerberos policy must load")
 	}
 }
+
+// TestLoadSharesFromStore_RequireKerberosOnDisabledShareLoads keeps the
+// refusal to shares that are actually served. MOUNT answers MNT3ERR_ACCES and
+// PUTFH answers NFS4ERR_STALE on a disabled share whatever its auth policy
+// says, so a disabled one carries no reachable misconfiguration and must not
+// stop the whole server — an operator who disabled a share for maintenance
+// would otherwise find the daemon refusing to boot over it.
+func TestLoadSharesFromStore_RequireKerberosOnDisabledShareLoads(t *testing.T) {
+	rt, s := setupTestRuntime(t)
+	ctx := context.Background()
+
+	persistRequireKerberosShare(t, ctx, s, "/krb-disabled")
+
+	// Enabled is declared `default:true`, so the column has to be cleared with
+	// an explicit update rather than at insert time.
+	share, err := s.GetShare(ctx, "/krb-disabled")
+	if err != nil {
+		t.Fatalf("GetShare: %v", err)
+	}
+	share.Enabled = false
+	if err := s.UpdateShare(ctx, share); err != nil {
+		t.Fatalf("UpdateShare: %v", err)
+	}
+	if reread, err := s.GetShare(ctx, "/krb-disabled"); err != nil || reread.Enabled {
+		t.Fatalf("share did not persist as disabled (err=%v)", err)
+	}
+
+	rt.SetKerberosEnabled(false)
+
+	if err := LoadSharesFromStore(ctx, rt, s); err != nil {
+		t.Fatalf("LoadSharesFromStore refused a disabled share: %v", err)
+	}
+}

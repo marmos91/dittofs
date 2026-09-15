@@ -269,7 +269,12 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 		// be negotiated — so it would export while refusing every client, and
 		// SECINFO would narrow to an empty flavor list. Refuse the boot rather
 		// than serve it or silently drop the policy.
-		if shareConfig.RequireKerberos && !rt.KerberosEnabled() {
+		//
+		// Only for a share that is actually served: MOUNT and PUTFH refuse a
+		// disabled share whatever its auth policy says, so stopping the whole
+		// server over one is a boot failure with no reachable misconfiguration
+		// behind it.
+		if shareConfig.RequireKerberos && shareConfig.Enabled && !rt.KerberosEnabled() {
 			return fmt.Errorf("share %q: %w; enable Kerberos (kerberos.enabled / "+
 				"DITTOFS_KERBEROS_ENABLED) or clear the policy with "+
 				"`dfsctl share nfs-config set %s --require-kerberos false`",
