@@ -458,18 +458,11 @@ func (bs *BackchannelSender) sendCallback(ctx context.Context, req CallbackReque
 	// 5. Add record marking
 	framedMsg := AddCBRecordMark(callMsg, true)
 
-	// 6. Find a back-bound connection (0 = no exclusion)
-	connID, writer, pending, ok := bs.sm.getBackBoundConnWriter(bs.sessionID, 0)
+	// 6/7. Find a back-bound connection and register the XID on its reply table.
+	connID, writer, pending, replyCh, ok := bs.selectBackBoundWaiter(xid)
 	if !ok {
 		return fmt.Errorf("%w: no back-bound connection for session %s",
 			errCallbackNotAttempted, bs.sessionID.String())
-	}
-
-	// 7. Register XID with PendingCBReplies
-	replyCh, registered := pending.Register(xid)
-	if !registered {
-		return fmt.Errorf("%w: connection %d was retired before the callback was registered",
-			errCallbackNotAttempted, connID)
 	}
 
 	// 8. Write framed message (no lock held -- ConnWriter acquires writeMu internally)
@@ -620,20 +613,47 @@ func encodeCBSequenceOp(sessionID types.SessionId4, seqID, slotID, highestSlotID
 // connection is the verdict, not an excuse for withholding one.
 var errCallbackNotAttempted = errors.New("callback not attempted on this session")
 
+// selectBackBoundWaiter picks a back-bound connection for this session and
+// registers xid on its reply table, returning both so the caller writes and
+// waits on the same connection.
+//
+// A connection can be retired between the lookup and the register — the two do
+// not share a hold on connMu — and that says nothing about the client's callback
+// path, only that this particular socket went away. Treating it as the answer
+// would report a send as never attempted, or a probe as a path failure, while a
+// second back-bound connection for the same session sat there usable: for a
+// recall that means revoking a delegation over a path that was still reachable,
+// and for a probe it means withholding delegations until the next parameter
+// update, because nothing retries a probe. So a retired table costs a candidate
+// rather than the attempt. Two candidates, because a session with more than two
+// back-bound connections retiring in sequence is a connection table churning
+// faster than a callback can be issued, and looping on it would spin.
+func (bs *BackchannelSender) selectBackBoundWaiter(xid uint32) (uint64, ConnWriter, *PendingCBReplies, chan []byte, bool) {
+	var exclude uint64
+	for attempt := 0; attempt < 2; attempt++ {
+		id, writer, pending, ok := bs.sm.getBackBoundConnWriter(bs.sessionID, exclude)
+		if !ok {
+			return 0, nil, nil, nil, false
+		}
+		if replyCh, registered := pending.Register(xid); registered {
+			return id, writer, pending, replyCh, true
+		}
+		logger.Debug("BackchannelSender: back-bound connection retired before registration, trying another",
+			"session_id", bs.sessionID.String(), "conn_id", id)
+		exclude = id
+	}
+	return 0, nil, nil, nil, false
+}
+
 func (bs *BackchannelSender) probeCallbackPath(ctx context.Context) error {
 	xid := nextCallbackXID.Add(1)
 	params := bs.currentParams()
 	callMsg := BuildCBRPCCallMessage(xid, params.program, types.NFS4_CALLBACK_VERSION, types.CB_PROC_NULL, nil, params.cred)
 	framedMsg := AddCBRecordMark(callMsg, true)
 
-	connID, writer, pending, ok := bs.sm.getBackBoundConnWriter(bs.sessionID, 0)
+	connID, writer, pending, replyCh, ok := bs.selectBackBoundWaiter(xid)
 	if !ok {
 		return fmt.Errorf("no back-bound connection for session %s", bs.sessionID.String())
-	}
-
-	replyCh, registered := pending.Register(xid)
-	if !registered {
-		return fmt.Errorf("back-bound connection %d was retired before the probe was registered", connID)
 	}
 	if err := writer(framedMsg); err != nil {
 		pending.Cancel(xid)

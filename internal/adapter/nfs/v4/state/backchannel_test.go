@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1379,6 +1380,21 @@ func TestEvictV41Client_ReleasesBackchannelStateOfItsLastConnection(t *testing.T
 	}
 }
 
+// setBindingActivity pins one binding's LastActivity so a test can decide which
+// connection the backchannel picks instead of inferring it from bind order.
+func setBindingActivity(t *testing.T, sm *StateManager, sessionID types.SessionId4, connID uint64, at time.Time) {
+	t.Helper()
+	sm.connMu.Lock()
+	defer sm.connMu.Unlock()
+	for _, b := range sm.connBySession[sessionID] {
+		if b.ConnectionID == connID {
+			b.LastActivity = at
+			return
+		}
+	}
+	t.Fatalf("no binding for connection %d on session %s", connID, sessionID.String())
+}
+
 // TestSendCallback_RetiredAlternateKeepsTheTransportError covers what the
 // verdict is when the first connection's write fails and the alternate is
 // retired before the callback can be registered on it.
@@ -1393,8 +1409,7 @@ func TestSendCallback_RetiredAlternateKeepsTheTransportError(t *testing.T) {
 	sender.callbackTimeout = 200 * time.Millisecond
 
 	// The alternate is still in the tables but its reply router has been
-	// retired, which is the race the send loses. It is bound first because the
-	// send picks the most recently active connection.
+	// retired, which is the race the send loses.
 	altConnID := uint64(7101)
 	altPending := sm.RegisterConnWriter(altConnID, func([]byte) error { return nil })
 	if _, err := sm.BindConnToSession(altConnID, sessionID, types.CDFC4_FORE_OR_BOTH); err != nil {
@@ -1410,6 +1425,15 @@ func TestSendCallback_RetiredAlternateKeepsTheTransportError(t *testing.T) {
 		t.Fatalf("BindConnToSession (fail): %v", err)
 	}
 
+	// Stamp the activity times rather than letting the two binds race the
+	// clock. Selection is "most recently active", compared with a strict After,
+	// so two binds that land inside one clock tick leave the FIRST one winning
+	// — and on a platform with a coarse clock that is the retired alternate,
+	// which sends this down the wrong branch and fails for a reason that has
+	// nothing to do with what it tests.
+	setBindingActivity(t, sm, sessionID, failConnID, time.Now())
+	setBindingActivity(t, sm, sessionID, altConnID, time.Now().Add(-time.Minute))
+
 	err := sender.sendCallback(context.Background(), CallbackRequest{
 		OpCode:  types.OP_CB_RECALL,
 		Payload: EncodeCBRecallOp(&types.Stateid4{Seqid: 1}, false, []byte{0x01}),
@@ -1422,5 +1446,57 @@ func TestSendCallback_RetiredAlternateKeepsTheTransportError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "broken pipe") {
 		t.Errorf("the transport failure was dropped from the error: %v", err)
+	}
+}
+
+// TestSendCallback_RetiredSelectionDoesNotStrandALiveConnection covers the race
+// between choosing a back-bound connection and registering the reply waiter on
+// it. The chosen one can be retired in that window, and that says nothing about
+// the client's callback path — only that this socket went away. Reporting the
+// send as never attempted would have the recall classify it as sender-local and
+// start the short revocation timer, while a second back-bound connection for
+// the same session sat there able to carry the callback.
+func TestSendCallback_RetiredSelectionDoesNotStrandALiveConnection(t *testing.T) {
+	sender, sm, sessionID := createTestBackchannelSender(t)
+	defer sm.Shutdown()
+	sender.callbackTimeout = 200 * time.Millisecond
+
+	// The preferred connection: most recently active, and retired.
+	deadConnID := uint64(7201)
+	deadPending := sm.RegisterConnWriter(deadConnID, func([]byte) error { return nil })
+	if _, err := sm.BindConnToSession(deadConnID, sessionID, types.CDFC4_FORE_OR_BOTH); err != nil {
+		t.Fatalf("BindConnToSession (dead): %v", err)
+	}
+	deadPending.FailAll()
+
+	// The one that is still usable. Its write is recorded rather than answered,
+	// so the send ends at its own reply timeout — which is not the point here;
+	// what matters is that it was reached at all.
+	var wroteOnLive atomic.Bool
+	liveConnID := uint64(7202)
+	sm.RegisterConnWriter(liveConnID, func([]byte) error {
+		wroteOnLive.Store(true)
+		return nil
+	})
+	if _, err := sm.BindConnToSession(liveConnID, sessionID, types.CDFC4_FORE_OR_BOTH); err != nil {
+		t.Fatalf("BindConnToSession (live): %v", err)
+	}
+
+	setBindingActivity(t, sm, sessionID, deadConnID, time.Now())
+	setBindingActivity(t, sm, sessionID, liveConnID, time.Now().Add(-time.Minute))
+
+	err := sender.sendCallback(context.Background(), CallbackRequest{
+		OpCode:  types.OP_CB_RECALL,
+		Payload: EncodeCBRecallOp(&types.Stateid4{Seqid: 1}, false, []byte{0x01}),
+	})
+	if err == nil {
+		t.Fatal("sendCallback succeeded although no reply was ever delivered")
+	}
+	if errors.Is(err, errCallbackNotAttempted) {
+		t.Errorf("a session with a usable back-bound connection was reported as never attempted: %v", err)
+	}
+	if !wroteOnLive.Load() {
+		t.Error("the live connection was never written to: a retired reply table cost the send " +
+			"rather than costing one candidate")
 	}
 }

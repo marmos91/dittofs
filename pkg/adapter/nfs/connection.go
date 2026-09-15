@@ -310,8 +310,15 @@ func (c *NFSConnection) noteNFSVersion(version string) {
 // resetIdleTimeout resets the connection deadline if an idle timeout is configured.
 func (c *NFSConnection) resetIdleTimeout(clientAddr string) {
 	if c.server.config.Timeouts.Idle > 0 {
-		if err := c.conn.SetDeadline(time.Now().Add(c.server.config.Timeouts.Idle)); err != nil {
-			logger.Warn("Failed to set deadline", "address", clientAddr, "error", err)
+		// Read deadline only. SetDeadline moves the write deadline too, and this
+		// runs on the read loop with no hold on writeMu — so a request arriving
+		// while a callback is blocked in Write would replace that write's
+		// deadline with the idle one, turning the callback budget into a bound
+		// nobody set and holding writeMu for it. Idle is a statement about not
+		// hearing from the client; what a write is allowed to cost is decided
+		// per write, in write().
+		if err := c.conn.SetReadDeadline(time.Now().Add(c.server.config.Timeouts.Idle)); err != nil {
+			logger.Warn("Failed to set read deadline", "address", clientAddr, "error", err)
 		}
 	}
 }

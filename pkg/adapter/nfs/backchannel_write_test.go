@@ -227,3 +227,79 @@ func createBackchannelSession(t *testing.T, sm *v4state.StateManager) v4types.Se
 	}
 	return cs.SessionID
 }
+
+// TestResetIdleTimeout_LeavesTheCallbackWriteDeadlineAlone pins the bound on a
+// callback write against the read loop. resetIdleTimeout runs there, holds no
+// write lock, and SetDeadline moves the write deadline with the read one — so a
+// request arriving while a callback is blocked in Write would push that write's
+// deadline out to the idle timeout. The callback budget would then be a number
+// nobody enforces, and writeMu stays held for the whole of it.
+func TestResetIdleTimeout_LeavesTheCallbackWriteDeadlineAlone(t *testing.T) {
+	srv := &NFSAdapter{
+		BaseAdapter: &adapter.BaseAdapter{},
+		config: NFSConfig{Timeouts: NFSTimeoutsConfig{
+			Write: 100 * time.Millisecond,
+			Idle:  time.Hour,
+		}},
+	}
+	c, clientConn := newPipeConnection(t, srv, 4200)
+
+	done := make(chan error, 1)
+	go func() { done <- c.write([]byte("callback-bytes"), 100*time.Millisecond) }()
+
+	// The writer is provably inside Write once the peer has taken a byte.
+	one := make([]byte, 1)
+	if _, err := io.ReadFull(clientConn, one); err != nil {
+		t.Fatalf("read the first byte: %v", err)
+	}
+
+	// What the read loop does on every arriving request.
+	c.resetIdleTimeout("test")
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("the blocked write returned without error; the pipe should never have drained")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the callback write outlived its deadline: resetIdleTimeout replaced it with the idle timeout, " +
+			"so writeMu is held for an hour and every reply behind it waits")
+	}
+}
+
+// TestWrite_ZeroTimeoutDoesNotInheritTheLastDeadline covers the other half of
+// the same rule. A callback installs an absolute deadline on the socket; a
+// connection configured for unbounded writes must not then fail a reply at it.
+func TestWrite_ZeroTimeoutDoesNotInheritTheLastDeadline(t *testing.T) {
+	srv := &NFSAdapter{
+		BaseAdapter: &adapter.BaseAdapter{},
+		config:      NFSConfig{Timeouts: NFSTimeoutsConfig{Write: 0}},
+	}
+	c, clientConn := newPipeConnection(t, srv, 4300)
+
+	// A bounded callback write that expires, leaving its deadline in the past.
+	if err := c.write([]byte("callback-bytes"), 20*time.Millisecond); err == nil {
+		t.Fatal("setup: the bounded write was expected to time out on an undrained pipe")
+	}
+
+	// A reply on the same connection, configured unbounded.
+	done := make(chan error, 1)
+	go func() { done <- c.write([]byte("reply"), 0) }()
+
+	// Drain in the background and never wait on it: when the write fails at the
+	// inherited deadline nothing reaches the pipe, and a test that joined this
+	// reader would hang instead of reporting the failure it just detected.
+	go func() {
+		buf := make([]byte, 5)
+		_, _ = io.ReadFull(clientConn, buf)
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("an unbounded write failed at the previous callback's deadline: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the unbounded write never completed")
+	}
+}

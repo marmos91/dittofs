@@ -135,10 +135,17 @@ func (c *NFSConnection) write(data []byte, timeout time.Duration) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 
+	// Every write states its own policy, including "no deadline": the previous
+	// write's absolute deadline is still installed on the socket, so a
+	// zero-timeout write that simply left it alone would inherit the last
+	// callback's ten seconds and fail at it — on a connection configured for
+	// unbounded writes.
+	deadline := time.Time{}
 	if timeout > 0 {
-		if err := c.conn.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
-			return fmt.Errorf("set write deadline: %w", err)
-		}
+		deadline = time.Now().Add(timeout)
+	}
+	if err := c.conn.SetWriteDeadline(deadline); err != nil {
+		return fmt.Errorf("set write deadline: %w", err)
 	}
 
 	if _, err := c.conn.Write(data); err != nil {
