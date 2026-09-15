@@ -450,6 +450,25 @@ metrics:
 	if !strings.Contains(err.Error(), "metrics token file") {
 		t.Fatalf("start stopped before the metrics listener, so it never got past the share load: %v", err)
 	}
+
+	// The stop point is only a proxy for "the load was reached": move the
+	// metrics setup above the share load and runStart would return this same
+	// error without ever loading a share, leaving the test green over the
+	// regression it exists to catch. Assert on something only a loaded share
+	// produces — AddShare opens the share's journal beneath JournalRoot, so the
+	// directory exists if and only if the share was added.
+	entries, rerr := os.ReadDir(filepath.Join(tmp, "journal"))
+	if rerr != nil {
+		t.Fatalf("read journal root: %v", rerr)
+	}
+	var journals []string
+	for _, e := range entries {
+		journals = append(journals, e.Name())
+	}
+	if len(journals) == 0 {
+		t.Fatal("journal root is empty: the share was never added, so this test proves " +
+			"nothing about the ordering it pins")
+	}
 }
 
 // seedRequireKerberosShare persists, into the control-plane database runStart
