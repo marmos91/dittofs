@@ -51,20 +51,13 @@ func OpenShareJournal(shareName string, defaults *LocalStoreDefaults) (*journal.
 }
 
 // checkUnderJournalRoot confirms a share directory sits strictly beneath the
-// journal root before anything is created there.
+// journal root before anything is created there: the share name arrives from an
+// operator and reaches the filesystem through this directory, so containment is
+// established at the sink rather than inferred from the name having been
+// escaped.
 //
-// The share name arrives from an operator and reaches the filesystem through
-// this directory, so containment is established at the sink rather than
-// inferred from the name having been escaped.
-//
-// Containment is decided by the path from the root down to the directory, not
-// by a string prefix: a relative path that stays put (".") or climbs ("..", or
-// anything under it) is outside. That keeps a directory which merely shares a
-// string prefix with the root ("/srv/blocksXX" against "/srv/blocks") out, since
-// reaching it means climbing first, and keeps the root itself out, since a
-// journal written there would sit beside the directory that keeps shares apart
-// instead of inside it — while a root of "/", which a prefix test can never
-// match because it already ends in a separator, still contains every share.
+// The root itself is outside, not inside: a journal written there would sit
+// beside the directory that keeps shares apart instead of within it.
 func checkUnderJournalRoot(root, shareDir string) error {
 	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(shareDir))
 	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
