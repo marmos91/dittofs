@@ -680,3 +680,36 @@ func TestBlockStoreHandler_Update_RenameByIDEvictsTheCheckerCachedUnderTheName(t
 		t.Error("the old name still reports healthy: the checker cached under it survived the rename")
 	}
 }
+
+// Delete resolves its target by name or ID, but the checker is cached under
+// the name alone. A DELETE addressed by ID must still evict that entry, or a
+// store recreated under the same name inherits the dead one's health for the
+// rest of the TTL window.
+func TestBlockStoreHandler_Remove_ByIDEvictsTheCheckerCachedUnderTheName(t *testing.T) {
+	cpStore, handler := setupBlockStoreTestWithRuntime(t)
+	ctx := context.Background()
+
+	id := uuid.New().String()
+	if _, err := cpStore.CreateBlockStore(ctx, &models.BlockStoreConfig{
+		ID: id, Name: "doomed", Type: "memory", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("CreateBlockStore: %v", err)
+	}
+
+	if got := handler.runtime.BlockStoreChecker("doomed").Healthcheck(ctx).Status; got != health.StatusHealthy {
+		t.Fatalf("warm-up status = %v, want healthy", got)
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/store/block/"+id, nil)
+	req = withBlockStoreName(req, id)
+	w := httptest.NewRecorder()
+
+	handler.Remove(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("Remove(by ID) = %d, want %d; body=%s", w.Code, http.StatusNoContent, w.Body.String())
+	}
+
+	if got := handler.runtime.BlockStoreChecker("doomed").Healthcheck(ctx).Status; got == health.StatusHealthy {
+		t.Error("the deleted store's name still reports healthy: its checker survived the delete")
+	}
+}

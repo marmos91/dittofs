@@ -323,6 +323,14 @@ func (h *BlockStoreHandler) Remove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Checkers are keyed by the store's name and the route may address it by
+	// ID, so resolve the name while the row still exists. A failed lookup is
+	// not fatal here: the delete below reports a missing store on its own.
+	cachedName := ""
+	if bs, err := h.store.GetBlockStore(r.Context(), name); err == nil {
+		cachedName = bs.Name
+	}
+
 	if err := h.store.DeleteBlockStore(r.Context(), name); err != nil {
 		if errors.Is(err, models.ErrStoreNotFound) {
 			NotFound(w, "Block store not found")
@@ -340,6 +348,9 @@ func (h *BlockStoreHandler) Remove(w http.ResponseWriter, r *http.Request) {
 	// store with the same name does not inherit a stale probe.
 	if h.runtime != nil {
 		h.runtime.InvalidateBlockStoreChecker(name)
+		if cachedName != "" && cachedName != name {
+			h.runtime.InvalidateBlockStoreChecker(cachedName)
+		}
 	}
 
 	WriteNoContent(w)
