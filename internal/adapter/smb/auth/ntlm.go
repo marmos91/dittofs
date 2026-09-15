@@ -4,10 +4,10 @@
 // defined in [MS-NLMP]. This file provides:
 //   - NTLM message detection and parsing
 //   - Challenge (Type 2) message building
+//   - NTLMv2 response verification against a stored NT hash
+//     (ValidateNTLMv2Response), returning the session base key
+//   - Session key derivation and the KEY_EXCH unwrap
 //   - Support for guest/anonymous authentication
-//
-// For production use with credential validation, additional implementation
-// of NTLMv2 response verification is required.
 package auth
 
 import (
