@@ -454,7 +454,14 @@ func ProcessLeaseCreateContext(
 	} else if errors.Is(err, lock.ErrLeaseDelegationConflict) {
 		// An NFS delegation on the same file that cannot coexist with the
 		// requested state. An expected denial: the CREATE succeeds with no
-		// lease, exactly as it does for a byte-range-lock conflict.
+		// lease.
+		//
+		// ponytail: unlike the byte-range-lock denial, which reports state=None
+		// with a nil error and so reaches the epoch echo below, this one carries
+		// an error and answers epoch=0 rather than echoing the client's
+		// requested epoch. Route it through the nil-error denial path once a
+		// rig exists that holds an NFS delegation and an SMB V2 lease request
+		// on the same file — until then the echo cannot be observed to work.
 		logger.Debug("ProcessLeaseCreateContext: lease denied by delegation conflict", "error", err)
 		grantedState = lock.LeaseStateNone
 		epoch = 0

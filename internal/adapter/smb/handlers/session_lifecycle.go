@@ -145,7 +145,8 @@ func (h *Handler) ReleaseAllLocksForSession(ctx context.Context, sessionID uint6
 		}
 
 		// Skip directories and pipes
-		if openFile.IsDirectory || openFile.IsPipe || len(openFile.MetadataHandle) == 0 {
+		metaHandle := openFile.GetMetadataHandle()
+		if openFile.IsDirectory || openFile.IsPipe || len(metaHandle) == 0 {
 			return true
 		}
 
@@ -153,7 +154,7 @@ func (h *Handler) ReleaseAllLocksForSession(ctx context.Context, sessionID uint6
 		metaSvc := h.Registry.GetMetadataService()
 
 		// UnlockAllForOpen doesn't return errors for missing locks
-		if unlockErr := metaSvc.UnlockAllForOpen(ctx, openFile.MetadataHandle, openFile.OpenID()); unlockErr != nil {
+		if unlockErr := metaSvc.UnlockAllForOpen(ctx, metaHandle, openFile.OpenID()); unlockErr != nil {
 			logger.Warn("ReleaseAllLocksForSession: failed to release locks",
 				"share", openFile.ShareName,
 				"path", openFile.Name().Path,
@@ -311,7 +312,7 @@ func (h *Handler) closeFilesWithFilter(
 			var leaseState uint32
 			var leaseEpoch uint16
 			if h.LeaseManager != nil && openFile.LeaseKey != ([16]byte{}) {
-				if state, epoch, found := h.LeaseManager.GetLeaseState(ctx, lock.FileHandle(openFile.MetadataHandle), openFile.ShareName, openFile.LeaseKey); found {
+				if state, epoch, found := h.LeaseManager.GetLeaseState(ctx, lock.FileHandle(openFile.GetMetadataHandle()), openFile.ShareName, openFile.LeaseKey); found {
 					leaseState = state
 					leaseEpoch = epoch
 				}

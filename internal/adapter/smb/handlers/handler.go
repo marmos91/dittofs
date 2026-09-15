@@ -423,18 +423,19 @@ func openHasLocks(metaSvc *metadata.Service, openFile *OpenFile) bool {
 	if openFile.HasByteRangeLocks.Load() {
 		return true
 	}
-	if metaSvc == nil || len(openFile.MetadataHandle) == 0 {
+	metaHandle := openFile.GetMetadataHandle()
+	if metaSvc == nil || len(metaHandle) == 0 {
 		// Cannot consult the lock manager — fail closed.
 		return true
 	}
-	lm, err := metaSvc.GetLockManagerForHandle(openFile.MetadataHandle)
+	lm, err := metaSvc.GetLockManagerForHandle(metaHandle)
 	if err != nil || lm == nil {
 		logger.Debug("openHasLocks: lock manager lookup failed, failing closed",
 			"error", err)
 		return true
 	}
 	openID := openFile.OpenID()
-	for _, fl := range lm.ListLocks(string(openFile.MetadataHandle)) {
+	for _, fl := range lm.ListLocks(string(metaHandle)) {
 		if fl.OpenID == openID {
 			return true
 		}

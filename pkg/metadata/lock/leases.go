@@ -379,8 +379,8 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, req leaseRequest) (gran
 			"fileHandle", req.handleKey,
 			"delegationType", deleg.DelegType.String(),
 			"requestedState", LeaseStateToString(req.state))
-		return LeaseStateNone, 0, fmt.Errorf("%w: %s delegation",
-			ErrLeaseDelegationConflict, deleg.DelegType.String())
+		return LeaseStateNone, 0, fmt.Errorf("%w (%s)",
+			ErrLeaseDelegationConflict, deleg.DelegType)
 	}
 
 	if handled, state, ep, serr := lm.resolveSameKeyLeaseLocked(req, locks); handled {
