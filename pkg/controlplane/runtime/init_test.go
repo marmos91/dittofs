@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
@@ -38,20 +37,6 @@ func setupTestRuntime(t *testing.T) (*Runtime, cpstore.Store) {
 	if err := rt.RegisterMetadataStore("test-meta", metaStore); err != nil {
 		t.Fatalf("failed to register metadata store: %v", err)
 	}
-
-	// Set local store defaults. Every share opens its journal beneath the
-	// root, so a test that adds a share cannot do without one.
-	rt.SetLocalStoreDefaults(&shares.LocalStoreDefaults{
-		JournalRoot: t.TempDir(),
-		MaxSize:     0, // unlimited
-	})
-
-	// Clean up all shares (and their BlockStores) when the test finishes.
-	t.Cleanup(func() {
-		for _, name := range rt.ListShares() {
-			_ = rt.RemoveShare(name)
-		}
-	})
 
 	return rt, s
 }

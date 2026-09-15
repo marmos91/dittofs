@@ -39,6 +39,20 @@ func TestShareJournalDir_EmptyRootYieldsEmpty(t *testing.T) {
 	}
 }
 
+// journalDefaults points a share's journal at a temp dir and releases the
+// journals the service opens beneath it when the test ends. A share holds its
+// journal open for as long as it is registered, and the release is registered
+// after the temp dir so cleanup's reverse order closes them before the dir is
+// removed — a platform that refuses to unlink an open file cannot remove the
+// root otherwise. CloseBlockStores is idempotent, so repeated use in one test
+// is harmless.
+func journalDefaults(t *testing.T, svc *Service) *LocalStoreDefaults {
+	t.Helper()
+	root := t.TempDir()
+	t.Cleanup(svc.CloseBlockStores)
+	return &LocalStoreDefaults{JournalRoot: root}
+}
+
 func TestOpenShareJournal_RefusesWithoutARoot(t *testing.T) {
 	if _, err := OpenShareJournal("/alpha", &LocalStoreDefaults{}); err == nil {
 		t.Fatal("got nil, want an error when no journal root is configured")

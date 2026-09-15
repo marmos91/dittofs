@@ -27,7 +27,7 @@ func TestAddShare_RequiresBlockStore(t *testing.T) {
 		&metaStoreProvider{name: "meta-test", store: mds},
 		metaSvcRegistrar{},
 		memBlockStoreProvider{},
-		&LocalStoreDefaults{JournalRoot: t.TempDir()},
+		journalDefaults(t, svc),
 		nil,
 	)
 	if err == nil {

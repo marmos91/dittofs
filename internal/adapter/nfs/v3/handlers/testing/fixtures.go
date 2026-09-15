@@ -150,6 +150,14 @@ func NewHandlerFixtureWithStore(
 
 	reg := runtime.New(cps)
 	reg.SetLocalStoreDefaults(&shares.LocalStoreDefaults{JournalRoot: t.TempDir()})
+	// A share holds its journal open until it is removed. Registered after the
+	// temp dir so cleanup's reverse order releases the journals before the dir
+	// is removed.
+	t.Cleanup(func() {
+		for _, name := range reg.ListShares() {
+			_ = reg.RemoveShare(name)
+		}
+	})
 
 	// Register the (optionally wrapped) metadata store. The block store/syncer
 	// above always reference the concrete inner store; the wrapper only changes
@@ -184,9 +192,11 @@ func NewHandlerFixtureWithStore(
 	// AddShare built a block store of its own from the config above. The fixture
 	// serves the engine built here instead, so close that one rather than leave
 	// its syncer and journal running for the rest of the test.
-	if added, err := reg.GetBlockStoreForShare(DefaultShareName); err == nil && added != nil {
-		_ = added.Close()
+	added, err := reg.GetBlockStoreForShare(DefaultShareName)
+	if err != nil {
+		t.Fatalf("Failed to resolve the share's block store: %v", err)
 	}
+	_ = added.Close()
 
 	// Publish the per-share BlockStore via the locked setter. GetShare returns
 	// a snapshot copy, so mutating its BlockStore field would not reach the

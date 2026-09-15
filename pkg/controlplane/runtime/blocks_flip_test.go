@@ -111,11 +111,22 @@ func registerSQLiteMeta(t *testing.T, rt *Runtime, cp cpstore.Store, name string
 	return mds
 }
 
-// setJournalRoot points the runtime's journal root at a temp dir. Every share
-// opens its own journal beneath it, so a test that adds a share needs one.
+// setJournalRoot points the runtime's journal root at a temp dir and drops
+// every share the test leaves behind. Each share opens its own journal beneath
+// the root, so a test that adds a share needs one — and the journal stays open
+// until the share is removed. The removal is registered after the temp dir so
+// cleanup's reverse order releases the journals before the dir is removed:
+// a platform that refuses to unlink an open file cannot remove the root
+// otherwise. Removing an already-removed share is a no-op, so a second call
+// on the same runtime is harmless.
 func setJournalRoot(t *testing.T, rt *Runtime) {
 	t.Helper()
 	rt.SetLocalStoreDefaults(&shares.LocalStoreDefaults{JournalRoot: t.TempDir()})
+	t.Cleanup(func() {
+		for _, name := range rt.ListShares() {
+			_ = rt.RemoveShare(name)
+		}
+	})
 }
 
 // newRuntimeWithBlockStore builds a runtime over an in-memory control-plane
@@ -191,16 +202,6 @@ func TestBlocksFlip_NewWriteCarvesToBlocks(t *testing.T) {
 	setJournalRoot(t, rt)
 
 	metaStore := registerSQLiteMeta(t, rt, cp, "sqlite-meta")
-	setJournalRoot(t, rt)
-	// Registered AFTER the journal root so t.Cleanup's LIFO order runs this
-	// (which Close()s the share's block store, releasing the log-blob fd)
-	// BEFORE the root's t.TempDir() RemoveAll. On Windows an open handle
-	// blocks unlink of blobs/*.blob; Unix tolerates unlink-while-open.
-	t.Cleanup(func() {
-		for _, name := range rt.ListShares() {
-			_ = rt.RemoveShare(name)
-		}
-	})
 
 	remoteCfg := &models.BlockStoreConfig{Name: "mem-remote", Type: "memory"}
 	remoteID, err := cp.CreateBlockStore(ctx, remoteCfg)
@@ -344,16 +345,6 @@ func TestBlocksFlip_GCUnionReclaimerFreesOwnerOnly(t *testing.T) {
 
 	metaA := registerSQLiteMeta(t, rt, cp, "meta-a")
 	metaB := registerSQLiteMeta(t, rt, cp, "meta-b")
-	setJournalRoot(t, rt)
-	// Registered AFTER the journal root so t.Cleanup's LIFO order runs this
-	// (which Close()s each share's block store, releasing the log-blob fds)
-	// BEFORE the root's t.TempDir() RemoveAll. On Windows an open handle
-	// blocks unlink of blobs/*.blob; Unix tolerates unlink-open.
-	t.Cleanup(func() {
-		for _, name := range rt.ListShares() {
-			_ = rt.RemoveShare(name)
-		}
-	})
 
 	// ONE remote config, shared (ref-counted) by both shares.
 	remoteID, err := cp.CreateBlockStore(ctx, &models.BlockStoreConfig{

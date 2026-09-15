@@ -35,11 +35,6 @@ func TestColdReadThenDeleteReclaimsLocal(t *testing.T) {
 	setJournalRoot(t, rt)
 	metaStore := registerSQLiteMeta(t, rt, cp, "sqlite-meta")
 	setJournalRoot(t, rt)
-	t.Cleanup(func() {
-		for _, name := range rt.ListShares() {
-			_ = rt.RemoveShare(name)
-		}
-	})
 
 	remoteCfg := &models.BlockStoreConfig{Name: "mem-remote", Type: "memory"}
 	remoteID, err := cp.CreateBlockStore(ctx, remoteCfg)

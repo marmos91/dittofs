@@ -381,5 +381,13 @@ func newReadinessRuntime(t *testing.T) (*runtime.Runtime, string) {
 	}
 	reg := runtime.New(cps)
 	reg.SetLocalStoreDefaults(&shares.LocalStoreDefaults{JournalRoot: t.TempDir()})
+	// A share holds its journal open until it is removed. Registered after the
+	// temp dir so cleanup's reverse order releases the journals before the dir
+	// is removed.
+	t.Cleanup(func() {
+		for _, name := range reg.ListShares() {
+			_ = reg.RemoveShare(name)
+		}
+	})
 	return reg, bsID
 }
