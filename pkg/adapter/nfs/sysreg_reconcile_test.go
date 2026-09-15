@@ -120,3 +120,27 @@ func waitSysreg(t *testing.T, a *NFSAdapter, want bool, cond string) {
 	t.Fatalf("sysreg sidecar never settled on running=%v with %s: running=%v, reconcile state=%d",
 		want, cond, running, state)
 }
+
+// After the group is torn down, a reconcile claims nothing. The adapter stops
+// its sidecars before closing the listener, so the accept loop keeps calling
+// reconcileSysreg during teardown with the setting still enabled — a state the
+// steady-state check can never match again, because StopAll empties the running
+// set. Claiming there would spawn a transition per connection that Reconcile
+// can only no-op.
+func TestReconcileSysregNoOpsAfterGroupTeardown(t *testing.T) {
+	a, setRegisterWithSystem := newSysregAdapter("127.0.0.1:1")
+	setRegisterWithSystem(true)
+	a.reconcileSysreg()
+	waitSysreg(t, a, true, "register-with-system enabled")
+
+	if err := a.sidecars.StopAll(context.Background()); err != nil {
+		t.Fatalf("StopAll: %v", err)
+	}
+
+	for range 100 {
+		a.reconcileSysreg()
+	}
+	if got := a.sysregState.Load(); got != sysregIdle {
+		t.Fatalf("reconcile claimed a transition against a torn-down group: state %d", got)
+	}
+}

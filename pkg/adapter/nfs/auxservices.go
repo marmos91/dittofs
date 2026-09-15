@@ -151,6 +151,16 @@ func (s *NFSAdapter) reconcileSysreg() {
 	if s.sidecars.IsRunning(sysregSidecarName) == want && s.sysregState.Load() == sysregIdle {
 		return
 	}
+	// Nothing can be applied once the group has been torn down: StopAll clears
+	// the base context and empties the running set, so Reconcile no-ops and the
+	// steady-state check above can never match again. Without this the accept
+	// loop would claim a transition per connection for the rest of the
+	// process's life — and the listener outlives StopAll, since Stop tears the
+	// sidecars down before closing it. Serve seeds the group before its own
+	// reconcile, so the initial start still runs.
+	if !s.sidecars.Ready() {
+		return
+	}
 	// Claim the transition, or hand this flip to the one already running: the
 	// swap marks dirty either way, and only the caller that found it idle owns
 	// the goroutine.
