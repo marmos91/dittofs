@@ -186,15 +186,18 @@ func NormalizeShareName(name string) string {
 // undecodable segment is folded as written rather than rejected, leaving the
 // name to fail ValidateShareName or a lookup on its own terms.
 //
-// decision: a share whose name contains a percent that forms a valid escape
-// cannot be addressed through a URL, and this seam is where that ends. A router
-// matches on the escaped path only where it differs from the default encoding
-// of the decoded one; "%25" decodes to "%" and re-encodes to "%25", so such a
-// segment arrives already decoded and this decode is the second. Escaping the
-// percent harder does not help — every spelling collapses the same way. Only
-// routing every request on its escaped path would fix it, which hands every
-// other path parameter in the API its encoded form instead; do that if a name
-// like that ever has to be managed over REST rather than merely served.
+// decision: this decodes once only while the router actually matched on the
+// escaped path, and whether it did is a property of the whole request path, not
+// of this segment. A request keeps its escaped path only where that differs from
+// the default encoding of the decoded one; "%25" decodes to "%" and re-encodes
+// to "%25", so a path escaped with nothing but those arrives already decoded and
+// this decode is the second. An escaped leading slash is enough to keep it, so a
+// name escaped whole — "%2Fa%252Fb" for "/a%2Fb" — survives while the same name
+// escaped with its leading slash stripped — "a%252Fb" — resolves to "/a/b"
+// instead. Callers must therefore escape the name with its leading slash
+// intact. Routing every request on its escaped path would remove the condition,
+// at the price of handing every other path parameter in the API its encoded
+// form; do that if a caller ever has to be free of it.
 func NormalizeShareNameFromURL(name string) string {
 	decoded, err := url.PathUnescape(name)
 	if err != nil {

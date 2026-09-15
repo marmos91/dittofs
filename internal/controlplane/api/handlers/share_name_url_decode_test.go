@@ -16,7 +16,8 @@ import (
 // sent; without the decode a request for a share whose name contains a slash
 // addresses no share at all.
 //
-// Decoding here is also the seam's ceiling: see the third case.
+// Decoding here is also the seam's ceiling: the last two cases are one name in
+// two spellings, and only the one that keeps the path escaped reaches it.
 func TestRESTSeam_DecodesTheShareNameInTheURLOnce(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -25,21 +26,22 @@ func TestRESTSeam_DecodesTheShareNameInTheURLOnce(t *testing.T) {
 	}{
 		{"an escaped slash reaches the share it names", "%2Fexport", "/export"},
 		{"an unescaped name is untouched", "export", "/export"},
-		// The router matches on the escaped path only when the raw segment
-		// differs from the default encoding of its decoded form. "%25" decodes
-		// to "%", which re-encodes to "%25", so the segment reaches the handler
-		// already decoded once and the seam's own decode is the second. A share
-		// whose name holds a percent that forms a valid escape therefore cannot
-		// be addressed through a URL at all.
-		{"a percent that forms a valid escape cannot be addressed", "a%252Fb", "/a/b"},
+		// The next two are one name, "/a%2Fb", in two spellings. Escaped whole
+		// it reaches its share: the escaped leading slash keeps the path in its
+		// escaped form, so the seam's decode is the only one applied.
+		{"a literal percent survives when the name is escaped whole", "%2Fa%252Fb", "/a%2Fb"},
+		// With that leading slash stripped, the remaining escapes are exactly
+		// what the default path encoder would produce, so the segment arrives
+		// already decoded and the seam's decode is the second one.
+		{"the same name loses its percent once the leading slash is stripped", "a%252Fb", "/a/b"},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := make(chan string, 1)
+			var reached string
 			h := NewSnapshotHandler(&fakeSnapshotRuntime{
 				listFn: func(_ context.Context, share string) ([]*models.Snapshot, error) {
-					got <- share
+					reached = share
 					return nil, nil
 				},
 			}, time.Second, nil)
@@ -51,13 +53,8 @@ func TestRESTSeam_DecodesTheShareNameInTheURLOnce(t *testing.T) {
 			if rec.Code != http.StatusOK {
 				t.Fatalf("GET /api/v1/shares/%s/snapshots: status %d, want 200", tc.segment, rec.Code)
 			}
-			select {
-			case share := <-got:
-				if share != tc.want {
-					t.Fatalf("GET /api/v1/shares/%s/snapshots addressed share %q, want %q", tc.segment, share, tc.want)
-				}
-			default:
-				t.Fatalf("GET /api/v1/shares/%s/snapshots reached no share", tc.segment)
+			if reached != tc.want {
+				t.Fatalf("GET /api/v1/shares/%s/snapshots addressed share %q, want %q", tc.segment, reached, tc.want)
 			}
 		})
 	}

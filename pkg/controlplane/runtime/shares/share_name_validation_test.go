@@ -167,13 +167,11 @@ func TestAddShare_RejectsOverLongName(t *testing.T) {
 	})
 }
 
-// TestAddShare_LeadingSlashIsOneName guards the directory invariant
-// OpenShareJournal relies on: two shares never share a journal directory.
-// "alpha" and "/alpha" sanitize to the same directory, so they must not be two
-// shares — the name is normalized to one spelling at the seam, which makes the
-// second registration a duplicate instead of a second writer into one journal.
-func TestAddShare_LeadingSlashIsOneName(t *testing.T) {
-	ctx := context.Background()
+// newAddShareFixture wires a service to a fresh in-memory metadata store and
+// returns it with its journal defaults and a closure that adds a share by name,
+// so a test about how two spellings of one name behave states only the names.
+func newAddShareFixture(t *testing.T) (*Service, *LocalStoreDefaults, func(name string) error) {
+	t.Helper()
 
 	mds := metamem.NewMemoryMetadataStoreWithDefaults()
 	t.Cleanup(func() { _ = mds.Close() })
@@ -182,7 +180,7 @@ func TestAddShare_LeadingSlashIsOneName(t *testing.T) {
 	defaults := journalDefaults(t, svc)
 	add := func(name string) error {
 		return svc.AddShare(
-			ctx,
+			context.Background(),
 			&ShareConfig{Name: name, MetadataStore: "meta-test", Enabled: true, BlockStoreID: testBlockStoreID},
 			&metaStoreProvider{name: "meta-test", store: mds},
 			metaSvcRegistrar{},
@@ -191,6 +189,16 @@ func TestAddShare_LeadingSlashIsOneName(t *testing.T) {
 			nil,
 		)
 	}
+	return svc, defaults, add
+}
+
+// TestAddShare_LeadingSlashIsOneName guards the directory invariant
+// OpenShareJournal relies on: two shares never share a journal directory.
+// "alpha" and "/alpha" sanitize to the same directory, so they must not be two
+// shares — the name is normalized to one spelling at the seam, which makes the
+// second registration a duplicate instead of a second writer into one journal.
+func TestAddShare_LeadingSlashIsOneName(t *testing.T) {
+	svc, defaults, add := newAddShareFixture(t)
 
 	// The premise: both spellings address one directory.
 	if unslashed, slashed := ShareJournalDir(defaults.JournalRoot, "alpha"), ShareJournalDir(defaults.JournalRoot, "/alpha"); unslashed != slashed {
@@ -220,29 +228,12 @@ func TestAddShare_LeadingSlashIsOneName(t *testing.T) {
 // registered under the decoded name writes into a directory no row addresses,
 // and the unfolded spelling would then open a second journal beside it.
 func TestAddShare_PercentInNameIsALiteral(t *testing.T) {
-	ctx := context.Background()
-
 	// The name as a control-plane row holds it, and the different name that
 	// reading its percent sign as an escape would produce.
 	const persisted = "a%2Fb"
 	const decoded = "a/b"
 
-	mds := metamem.NewMemoryMetadataStoreWithDefaults()
-	t.Cleanup(func() { _ = mds.Close() })
-
-	svc := New()
-	defaults := journalDefaults(t, svc)
-	add := func(name string) error {
-		return svc.AddShare(
-			ctx,
-			&ShareConfig{Name: name, MetadataStore: "meta-test", Enabled: true, BlockStoreID: testBlockStoreID},
-			&metaStoreProvider{name: "meta-test", store: mds},
-			metaSvcRegistrar{},
-			memBlockStoreProvider{},
-			defaults,
-			nil,
-		)
-	}
+	svc, defaults, add := newAddShareFixture(t)
 
 	literalDir := ShareJournalDir(defaults.JournalRoot, persisted)
 	decodedDir := ShareJournalDir(defaults.JournalRoot, decoded)
