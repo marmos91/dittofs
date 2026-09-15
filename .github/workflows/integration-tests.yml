@@ -134,9 +134,12 @@ jobs:
       # changes nothing about the rest, so compiling and running them here was
       # duplicated work — but it also means this job is no longer a second,
       # unshortened run of the whole suite. The unit job passes -short on a
-      # pull request, so tests behind a testing.Short() guard now run at full
-      # strength only on the push to develop. Widen this back to ./... if a
-      # defect ever reaches develop that the full PR-time run would have caught.
+      # pull request, so a short-guarded test keeps its full-strength PR run
+      # only where the tagged set happens to cover its package — true for the
+      # runtime and badger stores, not for the chunker, engine, compression,
+      # metadata or snapshot packages, whose guards now run unshortened on the
+      # push to develop alone. Widen this back to ./... if a defect ever
+      # reaches develop that the full PR-time run would have caught.
       #
       # -p 1 serializes package test binaries: several packages (metadata
       # store conformance, blockstore engine drain) share the single
