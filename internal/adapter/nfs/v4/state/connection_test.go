@@ -523,3 +523,33 @@ func TestBindConnToSession_UnlimitedConnections(t *testing.T) {
 		t.Errorf("expected 50 bindings, got %d", len(bindings))
 	}
 }
+
+// TestUnbindConnection_ReleasesBackchannelStateAfterLastBinding covers the order
+// a session destroy and a socket close arrive in. Destroying a session drops its
+// bindings one at a time, and dropping the last one removes the connection from
+// the binding index entirely. The socket then closes into UnbindConnection,
+// which found its cleanup behind a lookup of that index: no bindings, early
+// return, and the writer closure and pending-reply demultiplexer stayed on the
+// state manager for as long as it lived.
+func TestUnbindConnection_ReleasesBackchannelStateAfterLastBinding(t *testing.T) {
+	sm := NewStateManager(90 * time.Second)
+
+	const connID = uint64(4242)
+	sm.RegisterConnWriter(connID, func([]byte) error { return nil })
+
+	// The binding index no longer knows this connection, the way it would not
+	// after the session that owned its last binding was destroyed.
+	sm.UnbindConnection(connID)
+
+	sm.connMu.RLock()
+	_, hasWriter := sm.connWriters[connID]
+	_, hasReplies := sm.cbRepliesByConn[connID]
+	sm.connMu.RUnlock()
+
+	if hasWriter {
+		t.Error("connWriters still holds the closed connection's writer")
+	}
+	if hasReplies {
+		t.Error("cbRepliesByConn still holds the closed connection's pending replies")
+	}
+}

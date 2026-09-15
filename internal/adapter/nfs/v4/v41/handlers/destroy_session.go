@@ -29,10 +29,17 @@ func HandleDestroySession(d *Deps, ctx *types.CompoundContext, v41ctx *types.V41
 	// Verify the requesting client owns the target session (RFC 8881 Section 18.37.3).
 	// GetSession uses a read lock; we look up before the write-locking DestroySession.
 	//
-	// DESTROY_SESSION is session-exempt: it may be sent standalone (without a
-	// preceding SEQUENCE) so an owner can tear down a session over a different
-	// connection. The server MUST still confirm the requester owns the target
-	// session, otherwise an anonymous caller could destroy a victim's session.
+	// DESTROY_SESSION is session-exempt: it may be sent standalone, without a
+	// preceding SEQUENCE. The server MUST still confirm the requester owns the
+	// target session, otherwise an anonymous caller could destroy a victim's.
+	//
+	// How the requester is identified differs by path, and only one of them
+	// reaches across connections. With a SEQUENCE, the requesting session names
+	// the client, so an owner can tear down one of its sessions over another —
+	// any connection carrying a session of the same client will do. Standalone,
+	// there is nothing to name the client but the connection itself, so it is
+	// authorized only when that connection is bound to the target session; a
+	// standalone request on an unrelated connection is refused.
 	targetSess := d.StateManager.GetSession(args.SessionID)
 	if targetSess != nil {
 		requestingClientID, identified := resolveRequestingClientID(d, v41ctx, ctx, targetSess)

@@ -860,3 +860,58 @@ func TestGetBackchannelSender_SkipsSessionWithNoLiveBackBinding(t *testing.T) {
 			"through it would fail and revoke a delegation the client can still be reached about")
 	}
 }
+
+// TestBackchannelParams_ProgramAndCredMoveTogether pins the callback parameters
+// to one another. The client negotiates the program number and the credential
+// as a pair in BACKCHANNEL_CTL, and every callback carries both. Published
+// separately, a callback that loads them while the update is in flight sends the
+// new program with the old credential — a pair the client never agreed to, which
+// it rejects, and the rejection reads as a dead back channel.
+func TestBackchannelParams_ProgramAndCredMoveTogether(t *testing.T) {
+	bs := &BackchannelSender{}
+
+	const progA, progB = uint32(0x40000000), uint32(0x40000001)
+	parmsA := []types.CallbackSecParms4{{
+		CbSecFlavor:  uint32(rpc.AuthUnix),
+		AuthSysParms: &types.AuthSysParms{Stamp: 1, MachineName: "host-a", UID: 1000, GID: 1000},
+	}}
+	parmsB := []types.CallbackSecParms4{{
+		CbSecFlavor:  uint32(rpc.AuthUnix),
+		AuthSysParms: &types.AuthSysParms{Stamp: 2, MachineName: "host-bravo", UID: 2000, GID: 2000},
+	}}
+	credA, credB := EncodeCallbackCred(parmsA), EncodeCallbackCred(parmsB)
+	if bytes.Equal(credA, credB) {
+		t.Fatal("fixture is wrong: the two credentials encode identically, so a mixed pair would be invisible")
+	}
+
+	bs.setParams(progA, parmsA)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 20000; i++ {
+			if i%2 == 0 {
+				bs.setParams(progB, parmsB)
+			} else {
+				bs.setParams(progA, parmsA)
+			}
+		}
+	}()
+
+	for i := 0; i < 20000; i++ {
+		got := bs.currentParams()
+		switch got.program {
+		case progA:
+			if !bytes.Equal(got.cred, credA) {
+				t.Fatalf("program A carried credential B: the pair was torn")
+			}
+		case progB:
+			if !bytes.Equal(got.cred, credB) {
+				t.Fatalf("program B carried credential A: the pair was torn")
+			}
+		default:
+			t.Fatalf("program = %#x, want one of the two published values", got.program)
+		}
+	}
+	<-done
+}

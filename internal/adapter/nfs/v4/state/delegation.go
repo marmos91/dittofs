@@ -637,9 +637,56 @@ func (sm *StateManager) sendRecall(deleg *DelegationState) {
 }
 
 // sendRecallV41 sends CB_RECALL via the v4.1 BackchannelSender.
+// recallOutcome says what one attempt at a CB_RECALL settled.
+type recallOutcome int
+
+const (
+	// recallSent: the client was told, and the delegation is on the long timer.
+	recallSent recallOutcome = iota
+	// recallNoPath: this sender could not reach the client. Another session of
+	// the same client may still have a live back channel, so nothing has been
+	// concluded about the client as a whole and no timer has been started.
+	recallNoPath
+	// recallGaveUp: the attempt ended for a reason retrying cannot help, and it
+	// has already started its own revocation timer.
+	recallGaveUp
+)
+
 func (sm *StateManager) sendRecallV41(deleg *DelegationState, sender *BackchannelSender) {
 	recallOp := EncodeCBRecallOp(&deleg.Stateid, false, deleg.FileHandle)
 
+	// Selecting a sender and sending through it are not one step. The session
+	// chosen here holds a back-bound connection at selection time, and can lose
+	// it before the callback goes out; the retries inside the sender all stay on
+	// that same session, so they exhaust against a path that is already gone.
+	// A client with several sessions can still be reachable on a sibling, so one
+	// failure re-selects rather than concluding the client is unreachable —
+	// otherwise a delegation is revoked while the client was still listening.
+	switch sm.attemptRecallV41(deleg, sender, recallOp) {
+	case recallSent, recallGaveUp:
+		return
+	case recallNoPath:
+	}
+
+	if alt := sm.getBackchannelSender(deleg.ClientID); alt != nil && alt != sender {
+		logger.Debug("CB_RECALL (v4.1) re-selecting a sender after the chosen session lost its back channel",
+			"client_id", deleg.ClientID)
+		switch sm.attemptRecallV41(deleg, alt, recallOp) {
+		case recallSent, recallGaveUp:
+			return
+		case recallNoPath:
+		}
+	}
+
+	// No session of this client could carry the recall.
+	sm.setCBPathUp(deleg.ClientID, false)
+	sm.startRevocationTimer(deleg, 5*time.Second)
+}
+
+// attemptRecallV41 sends one CB_RECALL through one sender and waits for its
+// result. It starts the delegation's timer for every outcome except the one the
+// caller can still do something about.
+func (sm *StateManager) attemptRecallV41(deleg *DelegationState, sender *BackchannelSender, recallOp []byte) recallOutcome {
 	resultCh := make(chan error, 1)
 	req := CallbackRequest{
 		OpCode:   types.OP_CB_RECALL,
@@ -651,7 +698,7 @@ func (sm *StateManager) sendRecallV41(deleg *DelegationState, sender *Backchanne
 		logger.Warn("CB_RECALL: backchannel queue full, starting short revocation timer",
 			"client_id", deleg.ClientID)
 		sm.startRevocationTimer(deleg, 5*time.Second)
-		return
+		return recallGaveUp
 	}
 
 	select {
@@ -660,17 +707,13 @@ func (sm *StateManager) sendRecallV41(deleg *DelegationState, sender *Backchanne
 			logger.Warn("CB_RECALL (v4.1) failed",
 				"client_id", deleg.ClientID,
 				"error", err)
-			// The callback path this client was granted a delegation on no
-			// longer answers, so stop granting more until a probe says
-			// otherwise, exactly as the v4.0 path does.
-			sm.setCBPathUp(deleg.ClientID, false)
-			sm.startRevocationTimer(deleg, 5*time.Second)
-			return
+			return recallNoPath
 		}
 		sm.startRevocationTimer(deleg, sm.leaseDuration)
 		logger.Debug("CB_RECALL (v4.1) sent successfully",
 			"client_id", deleg.ClientID,
 			"deleg_type", deleg.DelegType)
+		return recallSent
 
 	case <-sender.stopCh:
 		// Backchannel sender stopped (session destroy or server shutdown).
@@ -679,11 +722,13 @@ func (sm *StateManager) sendRecallV41(deleg *DelegationState, sender *Backchanne
 		logger.Debug("CB_RECALL (v4.1) aborted: backchannel sender stopped",
 			"client_id", deleg.ClientID)
 		sm.startRevocationTimer(deleg, 5*time.Second)
+		return recallGaveUp
 
 	case <-time.After(30 * time.Second):
 		logger.Warn("CB_RECALL (v4.1) result timeout",
 			"client_id", deleg.ClientID)
 		sm.startRevocationTimer(deleg, 5*time.Second)
+		return recallGaveUp
 	}
 }
 

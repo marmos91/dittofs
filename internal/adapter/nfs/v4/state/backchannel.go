@@ -143,19 +143,18 @@ type BackchannelSender struct {
 	sessionID types.SessionId4
 	clientID  uint64
 
-	// cbProgram is the callback RPC program number. It is read by the Run
-	// goroutine (sendCallback) and updated by BackchannelCtl via
-	// StateManager.UpdateBackchannelParams, so it is accessed atomically to
-	// avoid a data race between the two goroutines.
-	cbProgram atomic.Uint32
-
-	// cbCred is the pre-encoded RPC credential every callback on this session
-	// carries, chosen from the client's callback security parameters. Like
-	// cbProgram it is read by the Run goroutine and rewritten by
-	// BACKCHANNEL_CTL, so it is accessed atomically. A nil value means the
-	// client offered nothing usable and the server's own AUTH_SYS credential
-	// applies.
-	cbCred atomic.Pointer[[]byte]
+	// params is the callback program number and the pre-encoded credential
+	// every callback on this session carries, held as one value. Both are read
+	// by the Run goroutine (sendCallback) and rewritten by BACKCHANNEL_CTL via
+	// StateManager.UpdateBackchannelParams, so the pointer is accessed
+	// atomically to avoid a data race between the two goroutines.
+	//
+	// One value rather than two, because the client negotiates them together. A
+	// callback that loaded them separately while BACKCHANNEL_CTL was rewriting
+	// them could pair the new program with the old credential, sending the
+	// client a combination it never agreed to and drawing a rejection that looks
+	// like a dead back channel.
+	params atomic.Pointer[cbParams]
 
 	queue chan CallbackRequest
 	sm    *StateManager
@@ -191,23 +190,30 @@ func NewBackchannelSender(
 		stopCh:          make(chan struct{}),
 		callbackTimeout: defaultBackchannelTimeout,
 	}
-	bs.cbProgram.Store(cbProgram)
-	bs.setCred(secParms)
+	bs.setParams(cbProgram, secParms)
 	return bs
 }
 
-// setCred encodes and stores the credential callbacks on this session carry.
-func (bs *BackchannelSender) setCred(secParms []types.CallbackSecParms4) {
-	cred := EncodeCallbackCred(secParms)
-	bs.cbCred.Store(&cred)
+// cbParams is one negotiated pair of callback parameters. A nil cred means the
+// client offered nothing usable and the server's own AUTH_SYS credential
+// applies.
+type cbParams struct {
+	program uint32
+	cred    []byte
 }
 
-// cred returns the pre-encoded callback credential, or nil for the server's own.
-func (bs *BackchannelSender) cred() []byte {
-	if p := bs.cbCred.Load(); p != nil {
+// setParams encodes the credential and publishes it with the program number as
+// a single value, so no callback can observe half of an update.
+func (bs *BackchannelSender) setParams(program uint32, secParms []types.CallbackSecParms4) {
+	bs.params.Store(&cbParams{program: program, cred: EncodeCallbackCred(secParms)})
+}
+
+// currentParams returns the callback parameters as one consistent pair.
+func (bs *BackchannelSender) currentParams() cbParams {
+	if p := bs.params.Load(); p != nil {
 		return *p
 	}
-	return nil
+	return cbParams{}
 }
 
 // Run is the main loop for the BackchannelSender goroutine.
@@ -323,7 +329,8 @@ func (bs *BackchannelSender) sendCallback(ctx context.Context, req CallbackReque
 
 	// 4. Build RPC CALL message
 	xid := nextCallbackXID.Add(1)
-	callMsg := BuildCBRPCCallMessage(xid, bs.cbProgram.Load(), types.NFS4_CALLBACK_VERSION, types.CB_PROC_COMPOUND, compoundArgs, bs.cred())
+	params := bs.currentParams()
+	callMsg := BuildCBRPCCallMessage(xid, params.program, types.NFS4_CALLBACK_VERSION, types.CB_PROC_COMPOUND, compoundArgs, params.cred)
 
 	// 5. Add record marking
 	framedMsg := AddCBRecordMark(callMsg, true)
@@ -465,7 +472,8 @@ func encodeCBSequenceOp(sessionID types.SessionId4, seqID, slotID, highestSlotID
 // is a delegation the server cannot recall.
 func (bs *BackchannelSender) probeCallbackPath(ctx context.Context) error {
 	xid := nextCallbackXID.Add(1)
-	callMsg := BuildCBRPCCallMessage(xid, bs.cbProgram.Load(), types.NFS4_CALLBACK_VERSION, types.CB_PROC_NULL, nil, bs.cred())
+	params := bs.currentParams()
+	callMsg := BuildCBRPCCallMessage(xid, params.program, types.NFS4_CALLBACK_VERSION, types.CB_PROC_NULL, nil, params.cred)
 	framedMsg := AddCBRecordMark(callMsg, true)
 
 	connID, writer, pending, ok := bs.sm.getBackBoundConnWriter(bs.sessionID, 0)
@@ -799,11 +807,26 @@ func (sm *StateManager) UpdateBackchannelParams(sessionID types.SessionId4, cbPr
 	session.CbProgram = cbProgram
 	session.BackchannelSecParms = secParms
 
-	// Update the sender's program number if it exists. The sender's Run
-	// goroutine reads cbProgram without sm.mu, so the field is atomic.
+	// Republish the program and credential as one pair. The sender's Run
+	// goroutine reads them without sm.mu, so the pair is atomic.
 	if session.backchannelSender != nil {
-		session.backchannelSender.cbProgram.Store(cbProgram)
-		session.backchannelSender.setCred(secParms)
+		session.backchannelSender.setParams(cbProgram, secParms)
+
+		// The verdict on this client's callback path was reached against the
+		// parameters that have just been replaced, so it no longer describes
+		// anything. Left standing, OPEN keeps granting delegations whose recall
+		// would travel on a credential nothing has tried. Cleared and re-probed:
+		// delegations pause until the new parameters answer a CB_NULL, rather
+		// than pausing forever, which is what clearing alone would do — the
+		// probe in StartBackchannelSender fires once per session and this
+		// session already has its sender.
+		if record := sm.clientRecordLocked(session.ClientID); record != nil {
+			record.CBPathUp = false
+		}
+		// Not the request's context: the probe deliberately outlives the
+		// BACKCHANNEL_CTL reply, and cancelling it when the compound finishes
+		// would leave the verdict cleared with nothing on the way to restore it.
+		go sm.probeV41CallbackPath(context.Background(), session.backchannelSender)
 	}
 
 	logger.Info("Backchannel params updated",

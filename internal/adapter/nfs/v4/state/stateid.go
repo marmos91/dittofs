@@ -322,6 +322,11 @@ func (sm *StateManager) ValidateStateid(stateid *types.Stateid4, currentFH []byt
 // sends it to TEST_STATEID and FREE_STATEID to clear the revoked state. The
 // code does not exist in RFC 7530, so a v4.0 client keeps NFS4ERR_BAD_STATEID.
 //
+// The argument is the caller's client ID, not the delegation owner's. A status
+// code is part of the reply to whoever asked, so it has to be one that client's
+// minor version defines: selecting it from the owner sends a v4.0 client a code
+// its protocol does not have whenever the delegation belongs to a v4.1 client.
+//
 // Caller must hold sm.mu (read or write).
 func (sm *StateManager) revokedDelegStatusLocked(clientID uint64) uint32 {
 	if record := sm.clientsByID[clientID]; record != nil && record.MinorVersion >= 1 {
@@ -339,16 +344,19 @@ func (sm *StateManager) validateDelegStateid(stateid *types.Stateid4, currentFH 
 		return nil, sm.stateidMissError(stateid.Other)
 	}
 
-	// Revoked delegations are no longer valid
-	if deleg.Revoked {
-		return nil, &NFS4StateError{
-			Status:  sm.revokedDelegStatusLocked(deleg.ClientID),
-			Message: "delegation has been revoked",
-		}
-	}
-
 	if err := checkStateidOwner(clientID, deleg.ClientID); err != nil {
 		return nil, err
+	}
+
+	// Revoked delegations are no longer valid. Checked after ownership because
+	// "this stateid is revoked" is information about another client's state: a
+	// caller that does not own the delegation learns only that the stateid is
+	// bad, which is what it would get if the delegation did not exist at all.
+	if deleg.Revoked {
+		return nil, &NFS4StateError{
+			Status:  sm.revokedDelegStatusLocked(clientID),
+			Message: "delegation has been revoked",
+		}
 	}
 
 	if err := checkStateidSeqid(stateid.Seqid, deleg.Stateid.Seqid); err != nil {
@@ -743,7 +751,7 @@ func (sm *StateManager) testDelegStateid(stateid *types.Stateid4, callerClientID
 	}
 
 	if deleg.Revoked {
-		return sm.revokedDelegStatusLocked(deleg.ClientID)
+		return sm.revokedDelegStatusLocked(callerClientID)
 	}
 
 	// Check seqid (seqid=0 means "any" per RFC 8881 Section 8.2.2)

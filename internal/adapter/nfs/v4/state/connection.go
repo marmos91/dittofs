@@ -238,6 +238,16 @@ func (sm *StateManager) UnbindConnection(connectionID uint64) {
 // unbindConnectionLocked removes a connection binding. Caller must hold sm.connMu.
 
 func (sm *StateManager) unbindConnectionLocked(connectionID uint64) {
+	// Backchannel state goes first, ahead of the binding lookup, because it
+	// outlives the bindings. Destroying a session drops its bindings one at a
+	// time, and dropping the last one removes the connection from the index
+	// entirely; the socket then closes into this function, finds no bindings and
+	// would return with the writer closure and the pending-reply demultiplexer
+	// still held for the life of the state manager. This is where the connection
+	// actually dies, so this is where they are released.
+	delete(sm.connWriters, connectionID)
+	delete(sm.cbRepliesByConn, connectionID)
+
 	bindings, ok := sm.connByID[connectionID]
 	if !ok {
 		return
@@ -246,10 +256,6 @@ func (sm *StateManager) unbindConnectionLocked(connectionID uint64) {
 	for _, b := range bindings {
 		sm.removeConnFromSessionLocked(connectionID, b.SessionID)
 	}
-
-	// Clean up backchannel state for this connection
-	delete(sm.connWriters, connectionID)
-	delete(sm.cbRepliesByConn, connectionID)
 }
 
 // removeConnBindingLocked drops one (connection, session) binding from the
