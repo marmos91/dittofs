@@ -58,10 +58,14 @@ func (s *GORMStore) DeleteBlockStore(ctx context.Context, name string) error {
 			return err
 		}
 
-		// Check if any shares reference this store
+		// Check if any shares reference this store. A share's binding normally
+		// holds the store's UUID, but the older update path persisted the name
+		// instead, and both still resolve at load time. Counting only the UUID
+		// would let the store be deleted out from under a name-bound share,
+		// leaving a binding that resolves to nothing at the next restart.
 		var count int64
 		if err := tx.Model(&models.Share{}).
-			Where("block_store_id = ?", store.ID).
+			Where("block_store_id IN (?, ?)", store.ID, store.Name).
 			Count(&count).Error; err != nil {
 			return err
 		}

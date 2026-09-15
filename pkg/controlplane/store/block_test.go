@@ -252,3 +252,43 @@ func TestShareBlockStore(t *testing.T) {
 		}
 	})
 }
+
+// TestDeleteBlockStoreNameBoundShare pins that a share whose binding holds the
+// store's name — as rows written by the older update path do — blocks the
+// delete just as a UUID-bound one does. Counting only the UUID let the store be
+// deleted and left the share pointing at nothing.
+func TestDeleteBlockStoreNameBoundShare(t *testing.T) {
+	store := createTestStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	meta := &models.MetadataStoreConfig{Name: "legacy-meta", Type: "memory"}
+	metaID, err := store.CreateMetadataStore(ctx, meta)
+	if err != nil {
+		t.Fatalf("create metadata store: %v", err)
+	}
+
+	if _, err := store.CreateBlockStore(ctx, &models.BlockStoreConfig{
+		Name: "legacy-blocks",
+		Type: "s3",
+	}); err != nil {
+		t.Fatalf("create block store: %v", err)
+	}
+
+	// The name, not the UUID — what the older REST update path persisted.
+	if _, err := store.CreateShare(ctx, &models.Share{
+		Name:            "/legacy-share",
+		MetadataStoreID: metaID,
+		BlockStoreID:    "legacy-blocks",
+	}); err != nil {
+		t.Fatalf("create share: %v", err)
+	}
+
+	if err := store.DeleteBlockStore(ctx, "legacy-blocks"); !errors.Is(err, models.ErrStoreInUse) {
+		t.Fatalf("delete a block store a name-bound share still uses: expected ErrStoreInUse, got %v", err)
+	}
+
+	if _, err := store.GetBlockStore(ctx, "legacy-blocks"); err != nil {
+		t.Fatalf("block store must survive the refused delete: %v", err)
+	}
+}
