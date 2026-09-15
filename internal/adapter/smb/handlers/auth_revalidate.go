@@ -228,6 +228,17 @@ func (h *Handler) revalidateTrees(ctx context.Context, userStore models.UserStor
 			return true
 		}
 
+		// A disabled share admits nobody, and nothing else in this pass would
+		// notice: permission resolution reads grants and the share default and
+		// never the enabled flag, so a disable would re-resolve to exactly the
+		// permission the tree already carries and change nothing. TREE_CONNECT
+		// refuses a disabled share outright, and an established tree has to
+		// reach the same answer.
+		if !share.Enabled {
+			updates = append(updates, treeUpdate{treeID: tree.TreeID, sessionID: tree.SessionID, permission: models.PermissionNone, generation: survivor.snap.Generation})
+			return true
+		}
+
 		permission, _, resolved := resolveSharePermissionForIdentity(
 			&SMBHandlerContext{Context: ctx},
 			sess,

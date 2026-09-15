@@ -351,12 +351,13 @@ func (s *Service) EnableShare(ctx context.Context, store ShareStore, name string
 	share.Enabled = true
 	s.mu.Unlock()
 
-	// decision: enabling raises no auth-cache invalidation. Every decision an
-	// adapter has cached for this share was taken while it was disabled, so it
-	// is a denial, and denials are not cached — MOUNT and TREE_CONNECT re-read
-	// the enabled flag from the registry on each attempt. The exemption holds
-	// only while re-enabling can widen access and never narrow it; withdraw it
-	// if enabling ever also restores a stored per-identity decision.
+	// decision: enabling raises no auth-cache invalidation. Disabling retired
+	// the decisions taken before it — the SMB sweep removes every tree on a
+	// disabled share — so there is nothing left for enabling to correct, and
+	// MOUNT and TREE_CONNECT re-read the enabled flag from the registry on each
+	// fresh attempt. The exemption holds only while re-enabling can widen
+	// access and never narrow it; withdraw it if enabling ever also restores a
+	// stored per-identity decision.
 	s.notifyShareChange()
 	return nil
 }

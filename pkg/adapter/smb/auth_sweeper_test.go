@@ -22,7 +22,7 @@ func TestAuthSweeper_RequestDoesNotBlockCaller(t *testing.T) {
 		}
 		<-release
 	})
-	t.Cleanup(func() { close(release); sw.stop() })
+	t.Cleanup(func() { close(release); sw.stop(nil) })
 
 	sw.request()
 	select {
@@ -63,7 +63,7 @@ func TestAuthSweeper_CoalescesBurst(t *testing.T) {
 		default:
 		}
 	})
-	t.Cleanup(sw.stop)
+	t.Cleanup(func() { sw.stop(nil) })
 
 	sw.request()
 	<-first
@@ -110,7 +110,7 @@ func TestAuthSweeper_StopJoinsInFlightSweep(t *testing.T) {
 
 	sw.request()
 	<-started
-	sw.stop()
+	sw.stop(nil)
 
 	if !sawCancel.Load() {
 		t.Error("stop did not cancel the in-flight sweep's context")
@@ -120,7 +120,7 @@ func TestAuthSweeper_StopJoinsInFlightSweep(t *testing.T) {
 	}
 
 	// Idempotent, and a request after stop must not panic or hang.
-	sw.stop()
+	sw.stop(nil)
 	sw.request()
 }
 
@@ -131,7 +131,7 @@ func TestAuthSweeper_StopWithNoSweepRunning(t *testing.T) {
 	sw := newAuthSweeper(func(context.Context) { sweeps.Add(1) })
 
 	done := make(chan struct{})
-	go func() { defer close(done); sw.stop() }()
+	go func() { defer close(done); sw.stop(nil) }()
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
@@ -179,10 +179,41 @@ func TestAdapter_AuthInvalidateIsOffloadedAndJoined(t *testing.T) {
 	}
 	// The worker is joined, so a second stop returns at once rather than hanging.
 	stopped := make(chan struct{})
-	go func() { defer close(stopped); sweeper.stop() }()
+	go func() { defer close(stopped); sweeper.stop(nil) }()
 	select {
 	case <-stopped:
 	case <-time.After(5 * time.Second):
 		t.Fatal("Stop did not join the sweep worker")
+	}
+}
+
+// TestAuthSweeper_StopGivesUpOnDeadline pins the shutdown bound. A sweep does
+// plenty no context reaches — the revalidate mutex, closing a revoked session's
+// opens, draining its parked locks — so an unbounded join lets one slow store
+// call hold shutdown open forever, and the caller's shutdown deadline does not
+// cover a Stop that never returns.
+func TestAuthSweeper_StopGivesUpOnDeadline(t *testing.T) {
+	stuck := make(chan struct{})
+	started := make(chan struct{})
+	sw := newAuthSweeper(func(context.Context) {
+		close(started)
+		<-stuck
+	})
+	t.Cleanup(func() { close(stuck); sw.stop(nil) })
+
+	sw.request()
+	<-started
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	done := make(chan bool, 1)
+	go func() { done <- sw.stop(ctx) }()
+	select {
+	case joined := <-done:
+		if joined {
+			t.Fatal("stop reported a join while the sweep was still stuck")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("stop ignored its deadline and hung on an unresponsive sweep")
 	}
 }

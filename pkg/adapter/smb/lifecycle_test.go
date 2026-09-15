@@ -38,6 +38,12 @@ func TestStop_ResolverUnsubsRaceConfigChange(t *testing.T) {
 			// The real writer, which takes the same lock and assigns
 			// foreignSIDProviderUnsub when a pipe manager is configured.
 			a.wireForeignSIDResolver(rt)
+			// shareUnsubscribers is the same class in the same function: it is
+			// appended by SetRuntime and read by Stop, and it is the slice that
+			// carries the auth-cache-invalidate subscription whose removal is
+			// what keeps a sweep from being queued during teardown. Recorded
+			// last so no other lock hold orders it against Stop's read.
+			a.addShareUnsubscriber(func() {})
 		}()
 
 		stopper := make(chan struct{})
@@ -103,5 +109,59 @@ func TestStop_WithNoScavenger(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("Stop hung with no scavenger loop running")
+	}
+}
+
+// TestStop_BoundedByContext is the twin guard at the adapter level: a scavenger
+// that ignores its cancellation must not turn Stop into a hang. The adapters
+// service stops each adapter serially, so one that never returns strands the
+// whole shutdown.
+func TestStop_BoundedByContext(t *testing.T) {
+	a := New(Config{})
+
+	stuck := make(chan struct{})
+	t.Cleanup(func() { close(stuck) })
+	started := make(chan struct{})
+	a.startScavenger(context.Background(), func(context.Context) {
+		close(started)
+		<-stuck
+	})
+	<-started
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	done := make(chan struct{})
+	go func() { defer close(done); _ = a.Stop(ctx) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop hung on a scavenger that ignored its cancellation")
+	}
+}
+
+// TestStartScavenger_RefusedAfterStop closes the Add-after-Wait window: a Serve
+// still in its prologue when shutdown lands would otherwise have the WaitGroup
+// counter rise from zero while Stop is already waiting on it, and would leave
+// behind a cancel Stop had read past.
+func TestStartScavenger_RefusedAfterStop(t *testing.T) {
+	a := New(Config{})
+	if err := a.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	ran := make(chan struct{})
+	a.startScavenger(context.Background(), func(context.Context) { close(ran) })
+
+	select {
+	case <-ran:
+		t.Fatal("startScavenger ran a loop after Stop")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	a.resolverMu.Lock()
+	cancel := a.scavengerCancel
+	a.resolverMu.Unlock()
+	if cancel != nil {
+		t.Error("a refused start still published its cancel")
 	}
 }

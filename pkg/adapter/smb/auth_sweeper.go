@@ -71,7 +71,24 @@ func (s *authSweeper) request() {
 // sweep can touch session or handler state after it. Idempotent — a
 // context.CancelFunc does nothing after its first call — and safe to call
 // concurrently with request: wake is never closed.
-func (s *authSweeper) stop() {
+//
+// ctx bounds the wait. A sweep does plenty that no context reaches — the
+// revalidate mutex, closing a revoked session's opens, draining its parked
+// locks — so an unbounded join would let one slow store call hold shutdown
+// open, and the caller's shutdown deadline does not cover a Stop that never
+// returns. It reports whether the goroutine was actually joined; false means
+// the sweep is still running and the caller has to treat handler state as
+// still in use. A nil ctx waits without a bound.
+func (s *authSweeper) stop(ctx context.Context) bool {
 	s.cancel()
-	<-s.done
+	if ctx == nil {
+		<-s.done
+		return true
+	}
+	select {
+	case <-s.done:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
