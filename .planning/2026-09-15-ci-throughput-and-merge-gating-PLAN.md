@@ -61,35 +61,58 @@ required_approving_review_count: 0
 Nothing stops a merge with 42 red checks, and nothing requires a green one to be read. Every
 question about "does green mean safe" is currently moot.
 
-### 2.3 Windows Build is ~99% a duplicate
+### 2.3 Windows Build is largely a duplicate, but `-short` prunes the *expensive* tests
 
 `windows-build.yml:59` runs `go test -short -race -p 2 -v ./...`.
 
 - `pkg`/`internal`/`cmd` contain **1099** test files.
-- `-short` guards exactly **13** call sites in that tree (`if testing.Short()`).
-- The rest of the 197 repo-wide `testing.Short()` references live in `test/e2e` (50) and
-  `test/integration`, which the untagged `./...` run does not compile.
+- `-short` guards **13** call sites in that tree, all `if testing.Short()` (19 `testing.Short()`
+  references total, 6 of them negations or bench guards).
+- The rest of the 197 repo-wide references live in `test/e2e` (50) and `test/integration`, which the
+  untagged `./...` run does not compile.
 
-So Windows re-runs ~1086 test files that Linux already ran, race-enabled, on the most contended
-and most expensive runner. Avg wall 1477s. The two `go build` steps are the part that is genuinely
+So Windows re-runs ~1086 test files that Linux already ran, race-enabled, on the most contended and
+most expensive runner. Avg wall 1477s. The two `go build` steps are the part that is genuinely
 Windows-specific.
+
+**Caveat that cuts the other way:** the 13 guards are not evenly spread — they sit in exactly the
+costly places (`pkg/snapshot/backup_bench_test.go` ×5, `pkg/controlplane/runtime/snapshot_concurrency_test.go`
+×4, `pkg/block/engine` soak/GC, `pkg/metadata/parent_mtime_contention_test.go`). `-short` may
+already be pruning the most expensive tests, so the Windows job could be cheaper than the file count
+suggests. **Measure the job's actual test-step duration before acting on 1.4** — the saving may be
+smaller than the wall-clock average implies.
 
 ### 2.4 Duplicate grader execution
 
 `test/conformance/run_test.sh` and `test/common/known-failures_test.sh` run in **both**
-`conformance.yml:123-126` and `lint.yml:75-78`.
+`conformance.yml:123-126` and `lint.yml:75-78`. The reviewer's recommendation is to drop the two
+steps from `lint.yml` and keep `check-docs.sh` there, since `check-docs.sh` is the docs-drift guard
+that `conformance.yml` (docs-ignored) structurally cannot provide. That inverts 1.3 below.
 
 ### 2.5 Duplicate build + scaffolding
 
 `conformance.yml` "Build Binaries" and `nfs-pynfs.yml` "Build Binaries" both nix-build `dfs` +
 `dfsctl` and both upload an artifact named `dfs-binaries`. `conformance.yml:83` computes a `pynfs`
 matrix output it never uses — dead. `nfs-pynfs.yml` re-resolves the same `suites.json` with its own
-matrix/grading/baseline jobs.
+matrix/grading/baseline jobs. The `conformance.yml` header already calls the merged layout the
+intended end state; the wiring is half-done.
 
 Note the cells are **not** duplicated: pynfs runs only in `nfs-pynfs.yml`. What is duplicated is the
 scaffolding around them.
 
-### 2.6 Correction to a plausible-looking claim
+### 2.6 Dead weight and missing guards
+
+- `unit-tests.yml` uploads artifact `dfs-1.26.x`; nothing downloads it. Every `download-artifact`
+  step in the repo reads `dfs-binaries`. Dead upload.
+- `unit-tests.yml:30` and `integration-tests.yml:35` carry a **single-entry** `matrix: go-version`
+  (`["1.26.x"]`) that expands to one job. Cosmetic, but it is what makes the required-check name
+  `Unit Tests (1.26.x)` instead of `Unit Tests`.
+- **`lint.yml` has zero `timeout-minutes` on any of its 10 jobs** (verified: `grep -c` returns 0).
+  Every other workflow caps its jobs; Lint does not, so a wedged job inherits the 6-hour default and
+  holds a runner slot for the rest of the day. This is precisely the failure `integration-tests.yml`
+  documents adding its 45-min cap to avoid, and it is *worse* here because Lint is 10 jobs.
+
+### 2.7 Correction to a plausible-looking claim
 
 `actions/setup-go` with `cache: true` caches **both** `GOMODCACHE` and `GOCACHE` ("built-in caching
 and restoration for Go modules and build outputs"). All 17 jobs already use it. Build-cache sharing
@@ -118,20 +141,82 @@ configuring the gate first means configuring it against names about to be delete
 
 | # | Change | Saves | Confidence |
 | --- | --- | --- | --- |
-| 1.1 | Lint: 10 jobs → 2. Group the script-only checks (spec-citations, conformance-manifest, new-package-tests, commit-type, required-tests, e2e-harness) into one job sharing a checkout; keep `golangci-lint` and `format-vet` separate (they need the Go toolchain). `shellcheck-changes`+`shellcheck` stay as-is (already gated). | 8 slots/PR; Lint 21min → ~5min | Neutral — same checks run |
-| 1.2 | Fold `nfs-pynfs.yml` into `conformance.yml` as a `pynfs` suite job. One matrix, one Build Binaries, one Nix install. Delete the dead `pynfs` output or use it. | 8 slots/PR, 1 workflow, 1 build | Slight ↑ — one manifest path |
-| 1.3 | Delete the duplicate grader run from `conformance.yml` (keep it in Lint, which runs on docs-only changes and `conformance.yml` does not). | 1 slot, seconds | None |
-| 1.4 | Windows Build: keep the two `go build` steps per-PR; move `go test -short -race ./...` to push-to-develop + nightly. | ~25min off most PR walls, 1 slot | ↓ on Windows-specific race detection — see 5.1 |
+| 1.1 | Lint: 10 jobs → 3. Group (a) Go-toolchain checks sharing checkout + `setup-go` (`format-vet`, `spec-citations`, `required-tests`), (b) shell/harness (`shellcheck*`, `e2e-harness`), (c) manifest/docs (`conformance-manifest`, `new-package-tests`, `commit-type`). Keep each check a **named step** so a red job still says which check failed. | 7 slots/PR; Lint 21min → ~5min | Slight ↓ in granularity, mitigated by named steps |
+| 1.2 | Fold `nfs-pynfs.yml` into `conformance.yml` as a manifest-driven `pynfs` suite cell (complete the half-wired `outputs.pynfs`). One matrix, one Build Binaries, one Nix install. Add `pynfs` to `summary`'s `needs` so the existing aggregator gates it. | 3 jobs/push + 1 workflow + 1 build + 1 Nix install | Neutral — same 4 cells, same grader, same KNOWN_FAILURES tables |
+| 1.3 | Remove the duplicate grader execution. Drop `run_test.sh` + `known-failures_test.sh` from `lint.yml`, keep `check-docs.sh` there; `conformance.yml`'s `graders` keeps the runner tests. | seconds, 1 duplicate | None — each script still runs exactly once |
+| 1.4 | Windows Build: keep `go build ./...` + `go vet ./...` per-PR, reduce the test step to the windows-tagged files (5) plus `-race` on those. **Measure first** (§2.3 caveat). | 1477s → ~5–8min | ↓ — see 5.1 |
+| 1.5 | Add `timeout-minutes: 10` to every Lint job. | prevents a 6h slot hold | None — pure safety |
+| 1.6 | Delete the dead `dfs-1.26.x` artifact upload and the single-entry `go-version` matrices. | seconds, clearer check names | None |
 
 **Expected: ~42 → ~22 jobs per push.** On a 20-slot pool that is the difference between a 20-minute
-queue and near-none.
+queue and near-none. Note the reviewer's correction: with `nfs-pynfs` merged the reduction is ~3 jobs
+from that workflow, not 8 — the 8 figure double-counted cells that are already `needs`-gated rather
+than independently scheduled.
+
+### Phase 1b — scope integration tests (confidence-neutral, do not hand-write the list)
+
+`integration-tests.yml:112` runs `-tags=integration ./...` under `-p 1`, which builds and serializes
+every package in the module including the 172 with no integration-tagged file.
+
+**A naive `go list -tags=integration` filter does not work** — I tested it: `-tags=integration`
+*includes* tagged files rather than selecting packages that have them, so
+`{{len .TestGoFiles}}` matches 143 of 179 packages and narrows almost nothing. The tag-sensitive
+set is the **difference** between the two tag states:
+
+```bash
+comm -13 \
+  <(go list -f '{{.ImportPath}} {{join .TestGoFiles " "}} {{join .XTestGoFiles " "}}' ./... | sort) \
+  <(go list -tags=integration -f '{{.ImportPath}} {{join .TestGoFiles " "}} {{join .XTestGoFiles " "}}' ./... | sort) \
+  | awk '{print $1}' | sort -u
+```
+
+Verified output: **7 packages** (`internal/controlplane/api/handlers`, `pkg/block/remote/s3`,
+`pkg/controlplane/runtime`, `pkg/controlplane/store`, `pkg/metadata/store/badger`,
+`pkg/metadata/store/metabench`, `pkg/metadata/store/postgres`) — down from 143. Run those, plus the
+untagged `test/integration/...` packages, and `-p 1`.
+
+The list must be **derived at runtime, never hand-written** — a hardcoded list silently stops running
+a new integration file in a package nobody remembered to add. That is the one real implementation
+trap here; the diff-based derivation avoids it by construction.
 
 ### Phase 2 — adopt the gate (attacks the confidence gap)
 
-1. **Add required status checks** to the `Protect develop` ruleset, against the *post-Phase-1* names:
-   `Conformance summary`, `golangci-lint`, `Format & Vet`, `Required Tests`, `Unit Tests`,
-   `Integration Tests`, `gitleaks`, `Commit Type Matches Diff`, and the merged Lint job.
-   Terminal/gate jobs only — not all 42.
+1. **Add required status checks** to the `Protect develop` ruleset. Split by what is safe today:
+
+   **Tier 1 — require now, zero plumbing.** These workflows trigger on every PR with no path
+   filter, so the check always reports:
+   - `golangci-lint`
+   - `Format & Vet`
+   - `gitleaks`
+   - `Commit Type Matches Diff`
+   - `Conformance summary` — already a genuine aggregator (`needs: [wpts, smbtorture, pjdfstest,
+     nfs-kerberos]`, `if: always()`, fails on any `failure`/`cancelled`). After 1.2, add `pynfs` to
+     its `needs` and it gates pynfs too.
+
+   **Tier 2 — require only after the path-filter fix below:** `Unit Tests`, `Integration Tests`.
+
+   **Do not require coverage.** `codecov` is `continue-on-error: true` and should stay that way — a
+   required coverage number invites gaming.
+
+   **Blocker to solve first: path filters make a required check deadlock a docs-only PR.**
+   `unit-tests.yml` and `integration-tests.yml` are `paths:`-filtered to Go files, and
+   `conformance.yml` is `paths-ignore:`-filtered for `**.md` / `docs/**`. A **workflow** that does
+   not trigger produces **no check at all**, and GitHub leaves a required check "Expected — waiting"
+   forever. (Contrast: a *job* skipped by `if:` reports `skipped`, which does **not** block.)
+
+   So marking `Unit Tests` required while its `paths:` filter stands means a documentation-only PR
+   can never merge. The maintainer merges with an admin bypass, bypassing becomes routine, and the
+   gate stops being a gate.
+
+   This is not hypothetical: 83e532d78 was a `docs:`-titled commit pushed straight to `develop` —
+   the exact change class that hits this. The gate would have to be bypassed on precisely the PRs
+   that `commit-type-matches-diff` exists to police.
+
+   Fix: add one always-triggering **aggregator job** that `needs:` the path-filtered jobs with
+   `if: always()` and fails when any dependency failed, then mark **that** job required. It always
+   reports, so the required check is always satisfied — by real passes or by a genuine failure. This
+   also keeps the required check *name* stable while the jobs behind it change, which is what lets
+   Phase 1 and Phase 2 be done in either order safely.
 2. **Enable a merge queue** on `develop` and `main`. Add `merge_group:` to the `on:` blocks of every
    workflow carrying a required check, or the queue waits for checks that never start.
 3. **Raise `required_approving_review_count` 0 → 1.**
@@ -148,10 +233,18 @@ it needs new test code.
 | 3.1 | Drop `-v` from `unit-tests.yml:50`. Thousands of per-test log lines on the most contended job. Keep it on failure via `-json` or a rerun if needed. | ~10–20% of unit job |
 | 3.2 | Keep `-race` on Linux only. It is already the case after 1.4. | — |
 
+Note: `-v` output is the only place the job's per-test progress is visible. Before dropping it,
+confirm a failing run is still diagnosable from the failure output alone; otherwise keep `-v` and
+accept the cost. This is a small win against a real debugging cost.
+
 ### Phase 4 — flake policy that does not normalise red
 
 `ci-health.yml` already re-runs failed conformance jobs once on develop. Keep it, but:
 
+- **Keep the retry scoped to postsubmit/periodic develop runs only**, and only `run_attempt == 1`.
+  Do **not** extend auto-retry to PR runs — a required check that auto-retries on red teaches
+  everyone that red is noise, which is the opposite of what Phase 2 is for.
+- Keep the `cancelled` exclusion (concurrency-superseded runs are benign).
 - Emit rerun events into a step summary or issue so a chronically-flaky suite is visible.
 - A rerun never counts as a first-attempt pass when judging suite health.
 - Add a **quarantine list** for known flakes (issue #2634 `TestReconcileSysregTogglesSidecar` is a
@@ -162,14 +255,24 @@ The failure mode to avoid is "rerun until green", which is how green stops meani
 
 ## 5. What could mask a defect
 
-1. **1.4 (Windows test run off the PR path).** Windows-specific race or path-separator bugs would
-   no longer block a PR. Mitigations: keep the build per-PR; run the Windows suite on push-to-develop
-   so a break is caught before it reaches `main`; optionally trigger the full Windows run on PRs that
-   touch `*_windows_test.go`, `filepath`, or `os.PathSeparator`.
+1. **1.4 (Windows test scope).** Reducing to windows-tagged files drops coverage of the Windows
+   branch of *cross-platform* tests (e.g. `pkg/controlplane/store/config_test.go`,
+   `pkg/block/journal/segment.go`). This is a genuine confidence trade, not a free win. Mitigations:
+   keep `-race` on the reduced set; keep `go build ./...` + `go vet ./...` (compile coverage is the
+   bulk of what a platform job uniquely provides); run the full Windows suite on push-to-develop
+   and nightly so a break cannot reach `main`.
 2. **Lint consolidation.** Only safe if every existing check is retained in the merged jobs. A
    dropped check is a silent coverage loss — verify by diffing the check list before/after.
 3. **Merge queue.** Batching means a batch failure can implicate several PRs. Configure max batch
    size 1–3 initially.
+4. **Merge queue vs. `cancel-in-progress: true`.** Every workflow here sets
+   `cancel-in-progress: true` with a group keyed on `github.ref`. A merge queue uses a synthetic
+   `gh-readonly-queue/...` ref, so the group key changes and cancellation behaves differently than
+   on a PR ref. Verify after enabling that a superseded queue entry cancels cleanly rather than
+   leaving a required check pending forever.
+5. **Aggregator jobs add a job each.** They are cheap (seconds, no checkout needed beyond the
+   minimal) but they do consume a slot. Net job count still falls sharply; do not let this argue
+   against the gate.
 
 ## 6. What would falsify this plan
 
@@ -181,6 +284,16 @@ The failure mode to avoid is "rerun until green", which is how green stops meani
   **Measure Phase 1 before committing to Phases 3–4.**
 - The exact free-tier concurrency ceiling was not readable via the API. Public repo implies minutes
   are free, which points at concurrency, but spending-limit throttling was not ruled out.
+- **Queue depth is bursty.** The 21-min Lint and 997s-grader measurements were taken when 24 runs
+  were queued. On a quiet repo the queue term shrinks and the critical path reverts to conformance's
+  genuine ~29 min floor. The structural fix (fewer jobs) holds either way, but **do not promise
+  "21 min → 5 min"** as a steady-state number.
+- **`Unit Tests`' 1152s is probably mostly real execution, not queue.** It is a single job, so it
+  cannot be inflated by intra-workflow stagger. That ~19 min is a floor that cannot be cut without
+  dropping `-race`. Do not treat it as queue-recoverable.
+- **The `-short` saving for Windows is unverified** (§2.3 caveat): the 13 guards sit in the most
+  expensive tests, so `-short` may already be doing the pruning. Measure the test step's duration
+  before acting on 1.4.
 
 ## 7. Verify
 
@@ -210,10 +323,51 @@ grep -L 'merge_group' .github/workflows/{lint,unit-tests,integration-tests,confo
 
 ## 8. Open decisions
 
-1. **Windows suite destination**: push-to-develop only, or path-triggered on Windows-touching PRs?
-   Recommendation: path-triggered, so Windows changes are still gated.
+1. **Windows suite destination**: reduce to windows-tagged files (1.4), push-to-develop only, or
+   path-triggered on Windows-touching PRs? Recommendation: reduce the set per 1.4, and keep a full
+   Windows run on push-to-develop. Measure the current test-step duration first.
 2. **Merge-queue batch size**: start at 1 (correctness) or 3 (throughput)? Recommendation: 1.
 3. **Required review count 0 → 1**: does the maintainer want a human gate, or is the check suite
    sufficient? This plan assumes yes.
 4. **Whether to spend on paid runners** instead of restructuring. Not required — the plan reaches
-   ~5–8 min on free runners — but it is the alternative if throughput must scale past ~20 PRs.
+   ~5–8 min on free runners in the quiet case — but it is the alternative if throughput must scale
+   past ~20 concurrent PRs.
+
+## 9. Provenance and confidence
+
+Two independent reviews were run against this plan; both are reflected above.
+
+**Council pass (oracle, forked context; reviewer, fresh context).** No `council-*` advisor profiles
+are installed on this machine, so this ran in the documented **degraded mode**: two advisors rather
+than a full roster, single pass, read-only. Labeled honestly rather than presented as a full council.
+
+**Findings the council added to the original draft:**
+
+- **`lint.yml` has no `timeout-minutes` on any job** (verified: `grep -c` → 0). A wedge holds a
+  runner slot for 6 hours. This became 1.5.
+- **The `dfs-1.26.x` artifact is uploaded and never downloaded** — every `download-artifact` in the
+  repo reads `dfs-binaries`. This became 1.6.
+- **The path-filter deadlock in Phase 2** (a required check on a path-filtered workflow can never be
+  satisfied on a docs-only PR). This is the single most important correction to the draft; it is
+  now the Tier-1/Tier-2 split.
+- **`-p 1 ./...` in integration tests serializes the whole module**, and the fix must derive its
+  package list at runtime or a new integration file silently stops running. This became Phase 1b.
+- **The `-short` guards sit in the *expensive* tests**, so the Windows saving may be smaller than
+  the wall-clock average suggests. This caveat now sits in §2.3 and §6.
+- **`Unit Tests`' 1152s is a single job and cannot be queue-inflated** — it is a genuine floor. Do
+  not present it as recoverable.
+
+**Corrections the council made to the parent's own evidence:**
+
+- `actions/setup-go cache: true` caches **both** `GOMODCACHE` and `GOCACHE`, so there is no cold
+  build-cache problem. The draft's original "add GOCACHE caching" item was wrong and was removed
+  rather than kept for its face value.
+- The `testing.Short()` counts were initially inflated by `.claude/worktrees/`; the numbers in §2.3
+  are worktree-excluded.
+- The `nfs-pynfs` merge saves ~3 jobs, not 8 — the higher figure double-counted cells already
+  `needs`-gated rather than independently scheduled.
+
+**Confidence:** high on the diagnosis (job timestamps are exact, the ruleset state was read from the
+API, and both reviewers independently reached the same dominant cause). Medium on the projected
+savings, which are estimates — §6 states what would falsify them. The structural recommendation
+(fewer jobs, then a real gate) does not depend on the exact magnitudes.
