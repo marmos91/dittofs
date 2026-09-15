@@ -188,3 +188,16 @@ func TestCheckUnderJournalRoot_AcceptsWhatIsInside(t *testing.T) {
 		}
 	}
 }
+
+// A journal root of "/" is degenerate but legal: everything below it is
+// contained, and only the root itself is not. String-prefix containment gets
+// this wrong because the root already ends in a separator.
+func TestCheckUnderJournalRoot_AcceptsSharesUnderTheFilesystemRoot(t *testing.T) {
+	root := string(filepath.Separator)
+	if dir := ShareJournalDir(root, "/export"); checkUnderJournalRoot(root, dir) != nil {
+		t.Errorf("checkUnderJournalRoot(%q, %q) refused a contained directory", root, dir)
+	}
+	if err := checkUnderJournalRoot(root, root); err == nil {
+		t.Errorf("checkUnderJournalRoot(%q, %q) = nil, want a refusal", root, root)
+	}
+}
