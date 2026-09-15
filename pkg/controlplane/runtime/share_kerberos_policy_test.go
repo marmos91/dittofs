@@ -68,8 +68,9 @@ func TestLoadSharesFromStore_RequireKerberosWithoutKerberosStops(t *testing.T) {
 
 // TestLoadSharesFromStore_RequireKerberosWithKerberosLoads pins the other
 // half: the same persisted policy on a server that does have Kerberos is
-// valid and must load. It also pins the ordering the guard depends on —
-// the server's Kerberos capability has to be known before shares load.
+// valid and must load. It sets the capability by hand, so it says nothing
+// about the order the server establishes it in — that is pinned at the boot
+// path itself, by TestLoadSharesWithKerberosCapability_PublishesBeforeLoading.
 func TestLoadSharesFromStore_RequireKerberosWithKerberosLoads(t *testing.T) {
 	rt, s := setupTestRuntime(t)
 	ctx := context.Background()
