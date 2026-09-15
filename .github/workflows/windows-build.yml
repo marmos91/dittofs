@@ -47,8 +47,16 @@ jobs:
       - name: Build dfsctl
         run: go build -v ./cmd/dfsctl/
 
+      # -p bounds how many packages are compiled and run at once. Each -race
+      # binary reserves a large shadow arena (a failure here showed one asking
+      # for 545 MB), so at the default parallelism several of them together
+      # exhaust the runner's commit limit and the job dies with errno=1455 —
+      # sometimes as a ThreadSanitizer allocation failure, sometimes as the Go
+      # compiler itself failing to fork. Either way it surfaces as FAIL lines
+      # naming packages that are not at fault. Capping parallelism trades wall
+      # clock for headroom and keeps every package, test and the race detector.
       - name: Run unit tests
-        run: go test -short -race -v ./...
+        run: go test -short -race -p 2 -v ./...
 
       - name: Build Summary
         if: always()
