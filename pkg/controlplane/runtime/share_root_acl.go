@@ -140,6 +140,12 @@ func (r *Runtime) ShareRootGrantACL(ctx context.Context, shareName string) (*acl
 // just a rebuild without that grant. Callers treat failures as non-fatal: the
 // control-plane permission record is the source of truth and a subsequent
 // reconcile self-heals the projection.
+//
+// This is a projection only. It raises no auth-cache invalidation: that signal
+// belongs to the grant mutation itself, which is authoritative and must reach
+// the adapters whether or not the projection succeeded. Four early returns and
+// the SetFileAttributes call below can each end this function without a write,
+// so an invalidation hung off its tail is one a revoke can silently skip.
 func (r *Runtime) ReconcileShareRootACL(ctx context.Context, shareName string) error {
 	// Defensive no-op for partially-wired runtimes (e.g. test harnesses that
 	// construct a Runtime without a control-plane store or metadata service).
@@ -169,9 +175,5 @@ func (r *Runtime) ReconcileShareRootACL(ctx context.Context, shareName string) e
 		return fmt.Errorf("reconcile root ACL for %q: set attributes: %w", shareName, err)
 	}
 
-	// A grant/revoke or default-permission change just altered who may access
-	// the share. Drop any cached per-identity authorization so active clients
-	// pick up the new policy without a server restart.
-	r.InvalidateAuthCache()
 	return nil
 }
