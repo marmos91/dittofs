@@ -649,9 +649,15 @@ const (
 	// recall the client-wide verdict is cleared.
 	recallNoPath
 	// recallSenderLocal: the attempt never got as far as the client — a full
-	// queue, a stopped sender, or no answer within the wait. It says nothing
-	// about whether the client is reachable, so it neither ends the search nor
-	// counts against the callback path.
+	// queue, a stopped or cancelled sender, no back-bound connection on this
+	// session, or the sender goroutine failing to report back within this
+	// function's own wait. It says nothing about whether the client is
+	// reachable, so it neither ends the search nor counts against the callback
+	// path.
+	//
+	// Not to be confused with the callback timeout inside sendCallback: there
+	// the request did go out on a socket and the client did not answer, which
+	// is evidence about the client and is classified as recallNoPath.
 	recallSenderLocal
 )
 

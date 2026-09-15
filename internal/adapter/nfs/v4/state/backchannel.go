@@ -198,6 +198,10 @@ type BackchannelSender struct {
 	// publish a verdict about parameters the session no longer has.
 	paramsGen atomic.Uint64
 
+	// probeInFlight admits one CB_NULL probe per session at a time. See
+	// probeV41CallbackPath.
+	probeInFlight atomic.Bool
+
 	queue chan CallbackRequest
 	sm    *StateManager
 
@@ -308,6 +312,9 @@ func (bs *BackchannelSender) Enqueue(req CallbackRequest) bool {
 // sendCallbackWithRetry sends a callback with exponential backoff retry.
 func (bs *BackchannelSender) sendCallbackWithRetry(ctx context.Context, req CallbackRequest) {
 	var lastErr error
+	// The first failure that actually reached a socket, if any. It outranks a
+	// later errCallbackNotAttempted when the two disagree about what happened.
+	var firstTransportErr error
 
 	for attempt := 0; attempt < backchannelMaxRetries; attempt++ {
 		if attempt > 0 {
@@ -340,13 +347,40 @@ func (bs *BackchannelSender) sendCallbackWithRetry(ctx context.Context, req Call
 			return
 		}
 		lastErr = err
+		if errors.Is(err, errCallbackNotAttempted) {
+			// Nothing reached a socket, so there is nothing a backoff can
+			// improve: this session has no back-bound connection and will not
+			// grow one while this goroutine sleeps. Retrying held the recall
+			// here for the whole backoff before the caller could try the
+			// client's next session, and marking a path fault would blame the
+			// client for a route that was never attempted. Reported straight
+			// through instead — unless an earlier attempt did reach the
+			// transport, whose failure is the honest verdict and must not be
+			// masked by this one.
+			if firstTransportErr != nil {
+				lastErr = firstTransportErr
+				break
+			}
+			if req.ResultCh != nil {
+				req.ResultCh <- err
+			}
+			return
+		}
+		if firstTransportErr == nil {
+			firstTransportErr = err
+		}
 		logger.Warn("BackchannelSender callback failed",
 			"session_id", bs.sessionID.String(),
 			"attempt", attempt+1,
 			"error", err)
 	}
 
-	// All retries exhausted
+	// All retries exhausted. A transport failure seen on any attempt outranks a
+	// later local one: the path did fail, and reporting the local error would
+	// have the caller treat a dead callback route as though it were never tried.
+	if firstTransportErr != nil {
+		lastErr = firstTransportErr
+	}
 	if req.ResultCh != nil {
 		req.ResultCh <- fmt.Errorf("backchannel callback failed after %d attempts: %w",
 			backchannelMaxRetries, lastErr)
@@ -575,6 +609,22 @@ func (bs *BackchannelSender) probeCallbackPath(ctx context.Context) error {
 // The verdict is a snapshot, not a subscription. It goes stale when the client
 // stops answering, which is why a failed CB_RECALL clears CBPathUp again.
 func (sm *StateManager) probeV41CallbackPath(ctx context.Context, bs *BackchannelSender) {
+	// One probe per session at a time. Each BACKCHANNEL_CTL used to launch
+	// another while the previous one was still waiting out its callback
+	// timeout, so a client that renegotiates repeatedly without ever answering
+	// CB_NULL accumulated a goroutine, an XID and a pending waiter per update —
+	// and every one of them wrote to the same connection. The generation check
+	// below discarded their verdicts but not their cost. The one in flight is
+	// kept rather than replaced: it is already waiting, and its verdict is
+	// discarded anyway if the parameters move under it.
+	if !bs.probeInFlight.CompareAndSwap(false, true) {
+		logger.Debug("CB_NULL probe skipped: one is already in flight for this session",
+			"client_id", fmt.Sprintf("0x%x", bs.clientID),
+			"session_id", bs.sessionID.String())
+		return
+	}
+	defer bs.probeInFlight.Store(false)
+
 	generation := bs.currentParams().generation
 	err := bs.probeCallbackPath(ctx)
 

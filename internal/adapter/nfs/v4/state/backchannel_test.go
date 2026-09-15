@@ -1201,3 +1201,45 @@ func TestSendCallback_NoBackBoundConnectionIsNotEvidenceAboutTheClient(t *testin
 			"against the client's callback path", err)
 	}
 }
+
+// TestSendCallbackWithRetry_NeverAttemptedIsReportedWithoutBackoff pins two
+// things the retry loop got wrong about a send that reached no socket. It must
+// not sleep through the backoff — the recall is held there while the caller
+// could be trying the client's next session, and no amount of waiting grows a
+// back-bound connection onto this one — and it must not mark a backchannel
+// fault, which blames the client for a route never attempted.
+func TestSendCallbackWithRetry_NeverAttemptedIsReportedWithoutBackoff(t *testing.T) {
+	sender, sm, _ := createTestBackchannelSender(t)
+
+	resultCh := make(chan error, 1)
+	start := time.Now()
+	sender.sendCallbackWithRetry(context.Background(), CallbackRequest{
+		OpCode:   types.OP_CB_RECALL,
+		Payload:  []byte{0x00},
+		ResultCh: resultCh,
+	})
+	elapsed := time.Since(start)
+
+	err := <-resultCh
+	if err == nil {
+		t.Fatal("precondition: the send succeeded, so there is no classification to check")
+	}
+	if !errors.Is(err, errCallbackNotAttempted) {
+		t.Errorf("error %q lost errCallbackNotAttempted through the retry loop", err)
+	}
+	// The first backoff alone is seconds long; anything near it means the loop
+	// retried a send that had nothing to retry.
+	if elapsed > time.Second {
+		t.Errorf("took %s: a never-attempted send was retried through the backoff", elapsed)
+	}
+	if faulted := backchannelFaultOf(t, sm, sender.clientID); faulted {
+		t.Error("a send that reached no socket marked the client's backchannel faulted")
+	}
+}
+
+func backchannelFaultOf(t *testing.T, sm *StateManager, clientID uint64) bool {
+	t.Helper()
+	sm.connMu.Lock()
+	defer sm.connMu.Unlock()
+	return sm.backchannelFaults[clientID]
+}
