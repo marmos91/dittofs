@@ -95,3 +95,30 @@ func TestShutdownSnapshots_JoinsTheScheduler(t *testing.T) {
 		t.Fatal("shutdownSnapshots returned before the tick's store call completed")
 	}
 }
+
+// TestDrainStartupWorkers_JoinsTheSettingsWatcher pins the second worker the
+// control-plane store's lifetime rests on. lifecycle.Serve starts the settings
+// watcher before it loads adapters, and returns an adapter-load failure without
+// running its shutdown hook — so on that path nothing else stops a watcher that
+// polls the same store on a timer, and the caller closes that store as soon as
+// Serve returns.
+func TestDrainStartupWorkers_JoinsTheSettingsWatcher(t *testing.T) {
+	rt := New(nil)
+	rt.settingsWatcher = NewSettingsWatcher(nil, time.Hour)
+	rt.settingsWatcher.Start(context.Background())
+
+	select {
+	case <-rt.settingsWatcher.stopped:
+		t.Fatal("the watcher reports stopped before anything stopped it")
+	default:
+	}
+
+	rt.drainStartupWorkers(context.Background())
+
+	select {
+	case <-rt.settingsWatcher.stopped:
+	default:
+		t.Fatal("the settings watcher outlived the startup drain, so it can still be " +
+			"polling the control-plane store the caller closes next")
+	}
+}
