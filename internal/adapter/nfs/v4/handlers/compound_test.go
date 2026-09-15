@@ -2041,6 +2041,55 @@ func TestCompound_BindConnToSession_LimitExceeded(t *testing.T) {
 	}
 }
 
+func TestCompound_SequenceBindConnToSession_LimitExceeded(t *testing.T) {
+	// The connection limit is also reachable with BIND_CONN_TO_SESSION following
+	// SEQUENCE, which this dispatcher accepts. The status must be NFS4ERR_DELAY
+	// there too -- NFS4ERR_RESOURCE is not an NFSv4.1 error in any COMPOUND shape.
+	//
+	// RFC 8881 Section 15.1.1.3 puts the retry obligation on the client for a
+	// NFS4ERR_DELAY raised by an operation other than the first in the request:
+	// the retry MUST carry a different slot ID or sequence value, so the server
+	// is explicitly excused from suppressing a cached DELAY on this path.
+	h, sessionID := createTestSessionWithConnectionID(t, 8040)
+	h.StateManager.SetMaxConnectionsPerSession(2)
+	bindConnection(t, h, sessionID, 8041, types.CDFC4_FORE)
+
+	if got := len(h.StateManager.GetConnectionBindings(sessionID)); got != 2 {
+		t.Fatalf("expected 2 bindings at limit, got %d", got)
+	}
+
+	ctx := newTestCompoundContext()
+	ctx.ConnectionID = 8042
+
+	ops := []compoundOp{
+		{opCode: types.OP_SEQUENCE, data: encodeSequenceArgs(sessionID, 0, 1, 0, false)},
+		{opCode: types.OP_BIND_CONN_TO_SESSION, data: encodeBindConnToSessionArgs(sessionID, types.CDFC4_FORE, false)},
+	}
+	data := buildCompoundArgsWithOps([]byte("seqbind"), 1, ops)
+
+	resp, err := h.ProcessCompound(ctx, data)
+	if err != nil {
+		t.Fatalf("ProcessCompound error: %v", err)
+	}
+
+	decoded, err := decodeCompoundResponse(resp)
+	if err != nil {
+		t.Fatalf("decode response error: %v", err)
+	}
+
+	// The COMPOUND status is the status of the last operation executed, so the
+	// BIND failure surfaces here. (decodeCompoundResponse reads opcode+status
+	// per result and cannot walk SEQUENCE's full result body, so the per-op
+	// results are not inspected.)
+	if decoded.Status != types.NFS4ERR_DELAY {
+		t.Errorf("compound status = %d, want NFS4ERR_DELAY (%d)", decoded.Status, types.NFS4ERR_DELAY)
+	}
+
+	if got := len(h.StateManager.GetConnectionBindings(sessionID)); got != 2 {
+		t.Errorf("bindings after refused bind = %d, want 2", got)
+	}
+}
+
 func TestCompound_BindConnToSession_ForeEnforcement(t *testing.T) {
 	// Bind 1 connection as BOTH (the only fore-capable connection),
 	// attempt to rebind as BACK only, verify NFS4ERR_INVAL.
