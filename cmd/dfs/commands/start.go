@@ -137,7 +137,12 @@ func runStart(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to initialize control plane store: %w", err)
 	}
 	// Registered before any other consumer takes a reference, so it closes last:
-	// after the netlogon defer and after the shutdown wait below returns.
+	// after the netlogon defer and after the shutdown wait below returns. The
+	// runtime's background workers reach this store too, and the ones that do
+	// are joined by the shutdown drain before Serve returns. Cancelling here
+	// rather than relying on the root defer keeps that true for a ctx-bound
+	// worker added later: the root cancel is registered before this and would
+	// otherwise run after it.
 	//
 	// decision: the forced-exit branch of that wait returns while the drain is
 	// still running, so on that one path the handle can close under an
@@ -147,7 +152,10 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// error rather than panicking — the process exits within milliseconds
 	// either way. Withdraw it if that branch ever becomes one the process
 	// continues past.
-	defer func() { _ = cpStore.Close() }()
+	defer func() {
+		cancel()
+		_ = cpStore.Close()
+	}()
 
 	// Ensure admin user exists. On first run the password is taken from
 	// DITTOFS_ADMIN_INITIAL_PASSWORD (env, plaintext, also enables SMB admin),
