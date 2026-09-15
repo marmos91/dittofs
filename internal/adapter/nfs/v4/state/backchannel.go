@@ -90,6 +90,21 @@ type PendingCBReplies struct {
 	waiters map[uint32]chan []byte
 }
 
+// FailAll releases every waiter and empties the table. Called when the
+// connection carrying them dies: the replies they are waiting for can no longer
+// arrive, and a closed channel reaches the waiter now rather than leaving it to
+// discover the loss when its own timeout expires. A sender blocked there is
+// holding up the recall behind it, which is how a dead connection turns into a
+// revoked delegation on a client that another session could still have reached.
+func (p *PendingCBReplies) FailAll() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for xid, ch := range p.waiters {
+		close(ch)
+		delete(p.waiters, xid)
+	}
+}
+
 // NewPendingCBReplies creates a new PendingCBReplies instance.
 func NewPendingCBReplies() *PendingCBReplies {
 	return &PendingCBReplies{
@@ -156,6 +171,13 @@ type BackchannelSender struct {
 	// like a dead back channel.
 	params atomic.Pointer[cbParams]
 
+	// paramsGen numbers the publications of params. A probe records the number
+	// it ran against and drops its verdict if it is no longer current: probes
+	// are asynchronous and BACKCHANNEL_CTL starts a new one without being able
+	// to stop the old, so without this an earlier probe can finish later and
+	// publish a verdict about parameters the session no longer has.
+	paramsGen atomic.Uint64
+
 	queue chan CallbackRequest
 	sm    *StateManager
 
@@ -200,12 +222,15 @@ func NewBackchannelSender(
 type cbParams struct {
 	program uint32
 	cred    []byte
+	// generation identifies this publication. See BackchannelSender.paramsGen.
+	generation uint64
 }
 
 // setParams encodes the credential and publishes it with the program number as
 // a single value, so no callback can observe half of an update.
 func (bs *BackchannelSender) setParams(program uint32, secParms []types.CallbackSecParms4) {
-	bs.params.Store(&cbParams{program: program, cred: EncodeCallbackCred(secParms)})
+	gen := bs.paramsGen.Add(1)
+	bs.params.Store(&cbParams{program: program, cred: EncodeCallbackCred(secParms), generation: gen})
 }
 
 // currentParams returns the callback parameters as one consistent pair.
@@ -517,7 +542,20 @@ func (bs *BackchannelSender) probeCallbackPath(ctx context.Context) error {
 // The verdict is a snapshot, not a subscription. It goes stale when the client
 // stops answering, which is why a failed CB_RECALL clears CBPathUp again.
 func (sm *StateManager) probeV41CallbackPath(ctx context.Context, bs *BackchannelSender) {
+	generation := bs.currentParams().generation
 	err := bs.probeCallbackPath(ctx)
+
+	// The parameters this probe ran against have since been replaced, so what it
+	// learned is about a configuration the session no longer has. Publishing it
+	// would either re-enable delegations on retired parameters or overwrite the
+	// verdict of the probe that replaced this one.
+	if bs.currentParams().generation != generation {
+		logger.Debug("CB_NULL result discarded: callback parameters changed while the probe was in flight",
+			"client_id", fmt.Sprintf("0x%x", bs.clientID),
+			"session_id", bs.sessionID.String())
+		return
+	}
+
 	sm.setCBPathUp(bs.clientID, err == nil)
 
 	if err != nil {

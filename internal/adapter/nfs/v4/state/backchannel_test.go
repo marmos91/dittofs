@@ -915,3 +915,129 @@ func TestBackchannelParams_ProgramAndCredMoveTogether(t *testing.T) {
 	}
 	<-done
 }
+
+// TestProbeV41CallbackPath_StaleVerdictDiscarded covers the probe that finishes
+// after the parameters it ran against were replaced. Probes are asynchronous and
+// BACKCHANNEL_CTL starts a new one without being able to stop the old, so an
+// earlier probe can land last and publish a verdict about a configuration the
+// session no longer has — re-enabling delegations on retired parameters, or
+// overwriting the verdict of the probe that replaced it.
+func TestProbeV41CallbackPath_StaleVerdictDiscarded(t *testing.T) {
+	sender, sm, sessionID := createTestBackchannelSender(t)
+	sender.callbackTimeout = 300 * time.Millisecond
+
+	clientConn, serverConn := net.Pipe()
+	defer func() { _ = clientConn.Close() }()
+	defer func() { _ = serverConn.Close() }()
+
+	connID := uint64(7100)
+	sm.RegisterConnWriter(connID, func(data []byte) error {
+		_, err := serverConn.Write(data)
+		return err
+	})
+	if _, err := sm.BindConnToSession(connID, sessionID, types.CDFC4_FORE_OR_BOTH); err != nil {
+		t.Fatalf("BindConnToSession: %v", err)
+	}
+	// Read the probe but never answer it, so it runs until its timeout and the
+	// verdict it would publish is "down".
+	go func() {
+		buf := make([]byte, 4096)
+		_, _ = clientConn.Read(buf)
+	}()
+
+	// The state a successful earlier probe left behind.
+	sm.setCBPathUp(sender.clientID, true)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sm.probeV41CallbackPath(context.Background(), sender)
+	}()
+
+	// BACKCHANNEL_CTL replacing the parameters while that probe is in flight.
+	time.Sleep(50 * time.Millisecond)
+	sender.setParams(0x40000001, []types.CallbackSecParms4{{CbSecFlavor: 0}})
+
+	<-done
+
+	sm.mu.RLock()
+	record := sm.clientsByID[sender.clientID]
+	sm.mu.RUnlock()
+	if record == nil {
+		t.Fatal("fixture is wrong: no client record")
+	}
+	if !record.CBPathUp {
+		t.Error("CBPathUp was cleared by a probe whose parameters had already been replaced: " +
+			"its verdict describes a configuration the session no longer has")
+	}
+}
+
+// TestUnbindConnection_ReleasesCallbackWaiters covers what a dying connection
+// owes the senders waiting on it. Dropping the demultiplexer makes replies
+// unroutable but leaves whoever is already waiting blocked until its own
+// timeout, and the recall behind it waits with it — a dead connection turning
+// into a revoked delegation on a client another session could still reach.
+func TestUnbindConnection_ReleasesCallbackWaiters(t *testing.T) {
+	sm := NewStateManager(90 * time.Second)
+
+	const connID = uint64(7200)
+	pending := sm.RegisterConnWriter(connID, func([]byte) error { return nil })
+	replyCh := pending.Register(0xabcd)
+
+	sm.UnbindConnection(connID)
+
+	select {
+	case _, open := <-replyCh:
+		if open {
+			t.Error("waiter received a reply rather than being released")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("waiter still blocked after its connection was torn down")
+	}
+}
+
+// TestNextUntriedSender_WalksEverySessionOfTheClient covers the search a recall
+// makes before giving up. One alternate is not enough: with three sessions the
+// selected one can have lost its binding and the first alternate can be
+// unreachable while a third still carries the recall. Stopping early revokes a
+// delegation from a client that was still listening.
+func TestNextUntriedSender_WalksEverySessionOfTheClient(t *testing.T) {
+	first, sm, firstSessionID := createTestBackchannelSender(t)
+	clientID := first.clientID
+
+	sm.mu.Lock()
+	sm.sessionsByID[firstSessionID].backchannelSender = first
+	sm.mu.Unlock()
+
+	// A second and third session for the same client, each with its own sender.
+	var extra []*BackchannelSender
+	sm.mu.Lock()
+	for i := 0; i < 2; i++ {
+		var sid types.SessionId4
+		sid[0] = byte(0xE0 + i)
+		sess := &Session{SessionID: sid, ClientID: clientID}
+		sender := &BackchannelSender{sessionID: sid, clientID: clientID, sm: sm}
+		sess.backchannelSender = sender
+		sm.sessionsByID[sid] = sess
+		sm.sessionsByClientID[clientID] = append(sm.sessionsByClientID[clientID], sess)
+		extra = append(extra, sender)
+	}
+	sm.mu.Unlock()
+
+	tried := map[*BackchannelSender]bool{first: true}
+	seen := map[*BackchannelSender]bool{}
+	for s := sm.nextUntriedSender(clientID, tried); s != nil; s = sm.nextUntriedSender(clientID, tried) {
+		if seen[s] {
+			t.Fatal("nextUntriedSender returned a sender it had already handed out")
+		}
+		seen[s] = true
+		tried[s] = true
+	}
+
+	for i, sender := range extra {
+		if !seen[sender] {
+			t.Errorf("alternate sender %d was never offered: the search stops before "+
+				"exhausting the client's sessions", i)
+		}
+	}
+}

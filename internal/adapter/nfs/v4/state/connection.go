@@ -245,6 +245,13 @@ func (sm *StateManager) unbindConnectionLocked(connectionID uint64) {
 	// would return with the writer closure and the pending-reply demultiplexer
 	// still held for the life of the state manager. This is where the connection
 	// actually dies, so this is where they are released.
+	if pending := sm.cbRepliesByConn[connectionID]; pending != nil {
+		// Release the waiters before dropping the table that routes to them.
+		// Dropping it alone only makes the replies unroutable; whoever is already
+		// waiting stays blocked until its own timeout, and the recall behind it
+		// waits with it.
+		pending.FailAll()
+	}
 	delete(sm.connWriters, connectionID)
 	delete(sm.cbRepliesByConn, connectionID)
 
