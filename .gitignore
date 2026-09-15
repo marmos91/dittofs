@@ -114,3 +114,6 @@ bench.yaml
 
 # One-off rig evidence (see .planning/perf/ for the analysis)
 rig-*/
+
+# Local port/credential overrides for the root compose stack.
+docker-compose.override.yml

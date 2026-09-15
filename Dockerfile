@@ -52,7 +52,7 @@ WORKDIR /app
 COPY --from=builder --chown=65532:65532 /build/dfs /app/dfs
 
 # Create data directories with proper permissions
-RUN mkdir -p /data/metadata /data/content /data/cache /config && \
+RUN mkdir -p /data/metadata /data/blocks /data/cache /data/state /config && \
     chown -R 65532:65532 /data /config
 
 # Run as non-root user
@@ -74,10 +74,11 @@ EXPOSE 12049/tcp 12445/tcp 8080/tcp 9090/tcp 5353/udp 3702/udp 5357/tcp
 
 # Volume mounts:
 # - /data/metadata: Metadata store (BadgerDB, etc.)
-# - /data/content: Content store for local filesystem backend
+# - /data/blocks: Journal root (the only copy of bytes not yet offloaded)
 # - /data/cache: Cache and WAL directory
+# - /data/state: Control plane database
 # - /config: Configuration file location
-VOLUME ["/data/metadata", "/data/content", "/data/cache", "/config"]
+VOLUME ["/data/metadata", "/data/blocks", "/data/cache", "/data/state", "/config"]
 
 # Health check using the REST API health endpoint
 # Checks liveness every 30s, allows 10s startup grace period

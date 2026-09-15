@@ -219,7 +219,8 @@ docker run -d \
   -e DITTOFS_ADMIN_INITIAL_PASSWORD=my-secure-password \
   -v ~/.config/dittofs/config.yaml:/config/config.yaml:ro \
   -v dittofs-metadata:/data/metadata \
-  -v dittofs-content:/data/content \
+  -v dittofs-blocks:/data/blocks \
+  -v dittofs-state:/data/state \
   -v dittofs-cache:/data/cache \
   marmos91c/dittofs:latest
 
@@ -227,6 +228,14 @@ curl http://localhost:8080/health
 # Always set DITTOFS_ADMIN_INITIAL_PASSWORD (above): the container's stdout is a pipe, so an
 # auto-generated password is NOT printed to `docker logs` and cannot be recovered.
 ```
+
+`dittofs-blocks` carries the journal, which holds the only copy of every byte that has not
+reached the block store yet — never leave it in the container's writable layer. These
+volumes only receive data if the config points at them: set `blockstore.journal.path` to
+`/data/blocks` and `database.sqlite.path` to `/data/state/controlplane.db`, and give the
+metadata store `/data/metadata` when you create it. The container starts with no stores
+and no shares; create them with `dfsctl` (see the [CLI reference](cli.md)) or use the
+Compose stack below, which does it for you.
 
 **Image tags:**
 
@@ -237,23 +246,77 @@ curl http://localhost:8080/health
 
 ### Docker Compose
 
-The repository ships a `docker-compose.yml` with backend profiles:
+The repository ships a `docker-compose.yml` that brings up a server **and provisions it** —
+a metadata store, a block store, one share `/export`, and the NFS and SMB adapters — so the
+stack is usable the moment it is healthy. Clone the repository and run it from the root:
 
 ```bash
-docker compose up -d                              # local filesystem backend (default)
-docker compose --profile s3-backend up -d         # S3 content via localstack
-docker compose --profile postgres-backend up -d   # PostgreSQL metadata
-docker compose logs -f dittofs
+docker compose up -d                                       # BadgerDB + memory block store
+COMPOSE_PROFILES=s3-backend docker compose up -d           # S3 content via Localstack
+COMPOSE_PROFILES=postgres-backend docker compose up -d     # PostgreSQL metadata
+docker compose logs -f dittofs bootstrap
 ```
 
-| Profile | Metadata | Content |
-|---------|----------|---------|
-| default | BadgerDB | local filesystem |
-| `s3-backend` | BadgerDB | S3 (localstack) |
-| `postgres-backend` | PostgreSQL | local filesystem |
+Select the backend through `COMPOSE_PROFILES` rather than `--profile`: the bootstrap
+service reads that variable to decide which stores to create, so `--profile` would start
+the extra container without provisioning against it.
 
-Make sure your `config.yaml` matches the profile you start. For a Prometheus + Grafana
-monitoring stack, enable the `monitoring` profile in the repository's `docker-compose.yml`.
+| Profile | Metadata | Block store |
+|---------|----------|-------------|
+| default | BadgerDB | `memory` |
+| `s3-backend` | BadgerDB | `s3` (Localstack) |
+| `postgres-backend` | PostgreSQL | `memory` |
+
+There is no filesystem block store: a share's durable home is `s3` or `memory`, always
+fronted by an on-disk journal. The journal, the metadata store and the control-plane
+database each get a named volume, so nothing that has to survive a restart lives in a
+container's writable layer.
+
+**None of these profiles is durable storage**, `s3-backend` included — and what the journal
+actually does is worth stating, because it is easy to mistake for a second copy. A write
+lands in the journal first and the syncer copies it to the block store in the background.
+The journal reclaims a segment's local bytes only when a write would push it past its size
+ceiling, or when an operator drains it explicitly, and only for segments that are fully
+synced. So an already-offloaded payload *may* still have a local copy — for exactly as long
+as nothing has needed the space — and nothing guarantees it. Once the journal reclaims that
+segment the bytes exist only in the block store.
+
+Localstack holds its bucket for the life of its container, so `docker compose down`
+followed by `up` comes back to an **empty bucket** while the metadata, which is on a volume,
+still names the objects that were in it. That destroys every already-offloaded payload
+outright; the journal is not a fallback for them, it has merely not been asked for the
+space yet. The two `memory` profiles are the same story with the block store in RAM.
+Localstack is an S3 stand-in for exercising the S3 path, not a place to keep bytes — point
+the block store at a real bucket (`dfsctl store block add --type s3 …`) for anything you
+care about.
+
+The stack is built from the checkout rather than pulled, because the compose file and the
+server have to agree on the store model and the published image trails the repository
+between releases.
+
+Once it is up:
+
+```bash
+# NFS (the share exports with root kept as root, so a root mount can write immediately)
+sudo mount -t nfs -o vers=4.1,tcp,port=12049 localhost:/export /mnt/point
+
+# SMB — the admin password is the one the stack was started with
+smbclient //localhost/export -p 12445 -U admin
+```
+
+The stack ships fixed development credentials — the admin password defaults to
+`dittofs-compose-dev-password`, the JWT secret to a fixed string — and exports the share
+with root kept as root, so a client claiming root over NFS writes as root without a
+password. Every published port is therefore bound to `127.0.0.1`; reaching the stack from
+another host means removing that prefix in `docker-compose.yml`, and an unattended export
+on a shared network is not what these defaults are for. Override
+`DITTOFS_ADMIN_INITIAL_PASSWORD` and `DITTOFS_CONTROLPLANE_SECRET` first. Localstack and
+PostgreSQL publish no host port at all, so the stack cannot collide with a PostgreSQL you
+already run.
+
+`docker compose down` stops the stack and keeps the volumes; `docker compose down -v`
+discards them too. Running `up` again re-runs the provisioning, which skips whatever is
+already there.
 
 ## Kubernetes operator
 

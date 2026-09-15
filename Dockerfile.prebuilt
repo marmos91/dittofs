@@ -4,7 +4,7 @@ RUN apk add --no-cache ca-certificates tzdata && \
     adduser -u 65532 -S -G dittofs -h /app dittofs
 WORKDIR /app
 COPY dfs-linux-amd64 /app/dfs
-RUN mkdir -p /data/metadata /data/content /data/cache /config && \
+RUN mkdir -p /data/metadata /data/blocks /data/cache /data/state /config && \
     chown -R 65532:65532 /app /data /config
 USER 65532:65532
 # Expose ports:
@@ -20,7 +20,7 @@ USER 65532:65532
 # Note: multicast discovery (5353/3702) only works on the host LAN / hostNetwork;
 # it does not traverse standard container/K8s overlay networks.
 EXPOSE 12049/tcp 12445/tcp 8080/tcp 9090/tcp 5353/udp 3702/udp 5357/tcp
-VOLUME ["/data/metadata", "/data/content", "/data/cache", "/config"]
+VOLUME ["/data/metadata", "/data/blocks", "/data/cache", "/data/state", "/config"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
 ENTRYPOINT ["/app/dfs"]

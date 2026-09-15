@@ -56,13 +56,14 @@ func (s *GORMStore) DeleteAdapter(ctx context.Context, adapterType string) error
 func (s *GORMStore) EnsureDefaultAdapters(ctx context.Context) (bool, error) {
 	created := false
 
-	// Default adapter configurations
+	// Default adapter configurations. Both ports are unprivileged so the
+	// server can bind them without running as root.
 	defaults := []struct {
 		adapterType string
 		port        int
 	}{
 		{"nfs", 12049},
-		{"smb", 1445},
+		{"smb", 12445},
 	}
 
 	for _, d := range defaults {

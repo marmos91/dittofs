@@ -1,0 +1,105 @@
+# DittoFS evaluation stack: a server, and a sidecar that provisions it.
+#
+#   docker compose up -d
+#   COMPOSE_PROFILES=s3-backend docker compose up -d
+#   COMPOSE_PROFILES=postgres-backend docker compose up -d
+#
+# The bootstrap service reads COMPOSE_PROFILES to decide which stores to create,
+# so a backend is selected through that variable rather than `--profile`.
+#
+# The server is built from this checkout because the compose stack and the
+# server have to agree on the store model.
+
+name: dittofs
+
+x-admin-password: &admin-password ${DITTOFS_ADMIN_INITIAL_PASSWORD:-dittofs-compose-dev-password}
+
+services:
+  dittofs:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: dittofs:compose
+    # Published on the loopback: the stack ships fixed credentials and exports
+    # the share with root kept as root, neither of which belongs on a network.
+    ports:
+      - "127.0.0.1:8080:8080"
+      # The NFS and SMB adapters are enabled on these ports on first start.
+      - "127.0.0.1:12049:12049"
+      - "127.0.0.1:12445:12445"
+    environment:
+      DITTOFS_CONTROLPLANE_SECRET: ${DITTOFS_CONTROLPLANE_SECRET:-dittofs-compose-dev-secret-min-32-chars}
+      DITTOFS_ADMIN_INITIAL_PASSWORD: *admin-password
+    volumes:
+      - ./docker/config.yaml:/config/config.yaml:ro
+      - dittofs-state:/data/state
+      - dittofs-metadata:/data/metadata
+      # The journal holds the only copy of every byte not yet in the block
+      # store, so it never lives in the container's writable layer.
+      - dittofs-journal:/data/blocks
+    # The image's own healthcheck polls every 30s, which makes the bootstrap
+    # wait far longer than the server takes to come up.
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health/ready"]
+      interval: 2s
+      timeout: 3s
+      start_period: 5s
+      retries: 30
+
+  # Creates the stores and the share, then exits. Provisioning goes through the
+  # REST API because the server image ships `dfs` only.
+  bootstrap:
+    image: curlimages/curl:8.11.1
+    restart: "no"
+    environment:
+      PROFILE: ${COMPOSE_PROFILES:-default}
+      DITTOFS_ADMIN_INITIAL_PASSWORD: *admin-password
+    volumes:
+      - ./docker/bootstrap.sh:/bootstrap.sh:ro
+    entrypoint: ["sh", "/bootstrap.sh"]
+    # The server reaches a backend only once this sidecar has created the store
+    # that names it, so the backends gate the sidecar rather than the server.
+    depends_on:
+      dittofs:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+        required: false
+      postgres:
+        condition: service_healthy
+        required: false
+
+  localstack:
+    image: localstack/localstack:4.13.1
+    environment:
+      SERVICES: s3
+      EAGER_SERVICE_LOADING: "1"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:4566/_localstack/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    profiles:
+      - s3-backend
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: dittofs
+      POSTGRES_PASSWORD: dittofs
+      POSTGRES_DB: dittofs
+    volumes:
+      - dittofs-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dittofs -d dittofs"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    profiles:
+      - postgres-backend
+
+volumes:
+  dittofs-state:
+  dittofs-metadata:
+  dittofs-journal:
+  dittofs-postgres:

@@ -1,0 +1,26 @@
+# Server configuration for the repository's docker-compose.yml. Only the
+# settings that differ from the built-in defaults are listed.
+#
+# The JWT secret and the initial admin password arrive from the compose file
+# through DITTOFS_CONTROLPLANE_SECRET and DITTOFS_ADMIN_INITIAL_PASSWORD, so no
+# credential is written here.
+
+logging:
+  # Defaults to a file under the state directory; `docker compose logs` reads stdout.
+  output: "stdout"
+
+controlplane:
+  # Reached from outside the container. The compose file publishes it on the
+  # host loopback only.
+  host: "0.0.0.0"
+
+database:
+  sqlite:
+    # Defaults under the container's home directory, which no volume backs.
+    path: "/data/state/controlplane.db"
+
+blockstore:
+  journal:
+    # Root under which each share gets its own journal directory. Holds the only
+    # copy of every byte that has not reached the block store yet.
+    path: "/data/blocks"
