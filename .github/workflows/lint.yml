@@ -13,28 +13,47 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-# Every job here is capped. The slowest of them, golangci-lint, has never
-# exceeded 145 seconds, so ten minutes is a hang detector rather than a budget:
-# without it a wedged job inherits the six-hour default and holds a runner slot
-# for the rest of the day instead of failing where it can be retried.
+# Ten jobs became three. Each one held a runner slot in a fan-out that queues
+# far longer than it executes, and seven of them spent most of their wall-clock
+# checking out and installing a Go toolchain to run a check lasting seconds.
+#
+# The grouping is by what a check needs, not by what it does: Go Checks is
+# everything that needs a toolchain, Repo Checks is everything that needs only
+# a full clone, ShellCheck owns its own path filter. Two consequences worth
+# knowing. Sharing one Go build cache means `go vet ./...` warms the compile
+# that required-tests.sh would otherwise pay for again. And every check step
+# carries `!cancelled()`, so one failing check no longer hides the rest — a red
+# job reports every check that failed, not just the first, which is the signal
+# ten separate jobs used to give for free. `!cancelled()` alone would be wrong:
+# writing any `if:` drops the implicit `success()` gate, so a failed checkout
+# would run every check against an empty directory and bury the one real error
+# under five spurious ones. Each check also requires the setup step it depends
+# on to have succeeded, which is skipped rather than failed when checkout goes,
+# so the one condition covers both.
+#
+# Every check below is a named step. When this job is red, the step name in the
+# log is the check that failed.
 jobs:
-  # Combine gofmt and go vet into a single fast job
-  format-vet:
-    name: Format & Vet
+  go-checks:
+    name: Go Checks
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Five checks that each used to own a job; the slowest four have summed to
+    # about 380s. Twenty minutes is a hang detector, not a budget.
+    timeout-minutes: 20
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
 
       - name: Set up Go
+        id: go
         uses: actions/setup-go@v7
         with:
           go-version: "1.26.x"
           cache: true  # Built-in Go module caching
 
       - name: Run gofmt
+        if: ${{ !cancelled() && steps.go.outcome == 'success' }}
         run: |
           if [ "$(gofmt -s -l . | wc -l)" -gt 0 ]; then
             echo "The following files need formatting:"
@@ -43,139 +62,22 @@ jobs:
           fi
 
       - name: Run go vet
+        if: ${{ !cancelled() && steps.go.outcome == 'success' }}
         run: go vet ./...
 
-  spec-citations:
-    name: Spec Citations
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-
-      - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version: "1.26.x"
-          cache: true  # Built-in Go module caching
-
       - name: Check MS-FSCC / MS-FSA / MS-SMB2 citations
+        if: ${{ !cancelled() && steps.go.outcome == 'success' }}
         run: go run ./test/spec-citations
 
-  # The conformance manifest is the single description of every suite. This job
-  # is what stops the documentation tables drifting away from it again — the
-  # conformance workflow itself ignores docs-only changes, so it cannot.
-  conformance-manifest:
-    name: Conformance Manifest
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-
-      - name: Check the generated documentation tables
-        run: ./test/conformance/check-docs.sh
-
-      - name: Test the common conformance runner
-        run: ./test/conformance/run_test.sh
-
-      - name: Test the shared known-failures parser
-        run: ./test/common/known-failures_test.sh
-
-  # Splitting a package is only real if each piece can be tested on its own, so
-  # a new package that carries no test has been moved rather than separated.
-  # Pull requests only: the check needs a base branch to tell new from existing.
-  new-package-tests:
-    name: New Package Tests
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0  # the check diffs package dirs against the merge base
-
-      - name: Check that every new package carries a test
-        env:
-          BASE_REF: ${{ github.base_ref }}
-        run: ./test/new-package-tests.sh "origin/${BASE_REF}"
-
-  # A docs: or chore(release): subject tells a reviewer that nothing executable
-  # moved, which makes it the one diff nobody opens. Commit 83e532d78, titled
-  # `docs(planning): wave 4 fix-wave 1 landed`, carried 830 deletions across 15
-  # files and reverted the security fixes from #2523 and #2526 — green, because
-  # the regression tests were deleted in the same commit.
-  # Runs on push as well as on pull requests, and the push case is the one that
-  # matters: 83e532d78 had no pull request behind it. Planning commits are
-  # pushed straight to develop, so a pull-request-only check would have watched
-  # the incident go by. The range is the pushed commits, or the pull request's
-  # commits back to the merge base.
-  commit-type:
-    name: Commit Type Matches Diff
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0  # the check walks every commit back to the merge base
-
-      - name: Check that a docs commit changes only documentation
-        env:
-          BASE: >-
-            ${{ github.event_name == 'pull_request'
-                && format('origin/{0}', github.base_ref)
-                || github.event.before }}
-        run: |
-          # A branch's first push reports an all-zero "before" and has no range.
-          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
-            echo "no base commit for this event; nothing to check"
-            exit 0
-          fi
-          ./test/commit-type-matches-diff.sh "$BASE"
-
-  # The tests that pin an authorization or encryption gate are deleted by the
-  # same edit that reopens the gate, so the suite goes green over the
-  # regression. These are named in a manifest and run by name instead.
-  required-tests:
-    name: Required Tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-
-      - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version: "1.26.x"
-          cache: true  # Built-in Go module caching
-
+      # The tests that pin an authorization or encryption gate are deleted by
+      # the same edit that reopens the gate, so the suite goes green over the
+      # regression. These are named in a manifest and run by name instead.
       - name: Run every test named in the manifest
+        if: ${{ !cancelled() && steps.go.outcome == 'success' }}
         run: ./test/required-tests.sh
 
-  golangci-lint:
-    name: golangci-lint
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-
-      - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version: "1.26.x"
-          cache: true  # Built-in Go module caching
-
       - name: golangci-lint
+        if: ${{ !cancelled() && steps.go.outcome == 'success' }}
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12.2
@@ -196,22 +98,98 @@ jobs:
           # validates the config locally at runtime.
           verify: false
 
-  shellcheck-changes:
-    name: Detect shell script changes
+  repo-checks:
+    name: Repo Checks
+    runs-on: ubuntu-latest
+    # Six checks whose separately measured maxima sum to about 70s: the
+    # conformance manifest 16s, the E2E harness self-test 34s, and the three
+    # diff checks under 10s apiece.
+    timeout-minutes: 10
+
+    steps:
+      # Full history: two of the checks below diff against a merge base.
+      - name: Checkout code
+        id: checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # The conformance manifest is the single description of every suite.
+      # These are what stop the documentation tables drifting away from it
+      # again — the conformance workflow itself ignores docs-only changes, so
+      # it cannot.
+      - name: Check the generated documentation tables
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        run: ./test/conformance/check-docs.sh
+
+      - name: Test the common conformance runner
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        run: ./test/conformance/run_test.sh
+
+      - name: Test the shared known-failures parser
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        run: ./test/common/known-failures_test.sh
+
+      # Splitting a package is only real if each piece can be tested on its
+      # own, so a new package that carries no test has been moved rather than
+      # separated. Pull requests only: the check needs a base branch to tell
+      # new from existing.
+      - name: Check that every new package carries a test
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' && github.event_name == 'pull_request' }}
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: ./test/new-package-tests.sh "origin/${BASE_REF}"
+
+      # A docs: or chore(release): subject tells a reviewer that nothing
+      # executable moved, which makes it the one diff nobody opens. Commit
+      # 83e532d78, titled `docs(planning): wave 4 fix-wave 1 landed`, carried
+      # 830 deletions across 15 files and reverted the security fixes from
+      # #2523 and #2526 — green, because the regression tests were deleted in
+      # the same commit.
+      # Runs on push as well as on pull requests, and the push case is the one
+      # that matters: 83e532d78 had no pull request behind it. Planning commits
+      # are pushed straight to develop, so a pull-request-only check would have
+      # watched the incident go by. The range is the pushed commits, or the
+      # pull request's commits back to the merge base.
+      - name: Check that a docs commit changes only documentation
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        env:
+          BASE: >-
+            ${{ github.event_name == 'pull_request'
+                && format('origin/{0}', github.base_ref)
+                || github.event.before }}
+        run: |
+          # A branch's first push reports an all-zero "before" and has no range.
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+            echo "no base commit for this event; nothing to check"
+            exit 0
+          fi
+          ./test/commit-type-matches-diff.sh "$BASE"
+
+      # The E2E harness is what decides whether a failing suite is visible at
+      # all, so it is exercised against deliberately failing, wedged and
+      # false-green stand-in test commands on every change.
+      - name: Run harness self-test
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        run: .github/scripts/run-e2e-selftest.sh
+
+  shellcheck:
+    name: ShellCheck
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    outputs:
-      has_changes: ${{ steps.filter.outputs.shell }}
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
         with:
-          # Full history so dorny/paths-filter can resolve the
-          # merge-base against main on push events. A shallow clone
-          # intermittently fails to reach it (git exit 128) when develop
-          # has diverged far from main.
+          # Full history so dorny/paths-filter can resolve the merge-base
+          # against main on push events. A shallow clone intermittently fails
+          # to reach it (git exit 128) when develop has diverged far from main.
           fetch-depth: 0
 
+      # The filter and the scan were two jobs, which cost a queue wait between
+      # them to decide whether the second should start at all. In one job the
+      # filter is a step, and skipping the scan costs nothing.
       - name: Check for .sh file changes
         uses: dorny/paths-filter@v4
         id: filter
@@ -220,34 +198,9 @@ jobs:
             shell:
               - '**/*.sh'
 
-  shellcheck:
-    name: ShellCheck
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    needs: shellcheck-changes
-    if: needs.shellcheck-changes.outputs.has_changes == 'true'
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-
       - name: Run ShellCheck
+        if: steps.filter.outputs.shell == 'true'
         uses: ludeeus/action-shellcheck@2.0.0
         with:
           scandir: .
           severity: warning
-
-  # The E2E harness is what decides whether a failing suite is visible at all,
-  # so it is exercised against deliberately failing, wedged and false-green
-  # stand-in test commands on every change.
-  e2e-harness:
-    name: E2E Harness Self-Test
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-
-      - name: Run harness self-test
-        run: .github/scripts/run-e2e-selftest.sh
