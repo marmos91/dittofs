@@ -95,8 +95,13 @@ type Adapter struct {
 	// change rebuilds and re-injects the resolver without a restart.
 	identityProviderUnsub func()
 
-	// resolverMu serializes wireIdentityResolver so concurrent identity-provider
-	// config changes cannot race on identityUnsub/identityProviderUnsub.
+	// resolverMu serializes every field an identity-provider config change and
+	// a shutdown can both reach: the identity, foreign-SID and netlogon
+	// subscriptions, the netlogon authenticator, the scavenger cancel and the
+	// auth sweep worker. wireIdentityResolver, wireForeignSIDResolver and
+	// wireNetlogonReload all run from SetRuntime / SetKerberosProvider /
+	// OnIdentityProviderConfigChange on arbitrary goroutines, so Stop reads
+	// none of them unlocked.
 	resolverMu sync.Mutex
 
 	// foreignSIDProviderUnsub is the unsubscribe function for the
@@ -120,6 +125,22 @@ type Adapter struct {
 	// kerberosProvider is retained for lifecycle management. It owns a
 	// background keytab-reload goroutine that must be stopped in Stop().
 	kerberosProvider *kerberos.Provider
+
+	// scavengerCancel stops the durable-handle scavenger started by Serve, and
+	// scavengerWG joins it. Written under resolverMu (Serve and Stop run on
+	// different goroutines) and cleared by Stop.
+	scavengerCancel context.CancelFunc
+	scavengerWG     sync.WaitGroup
+
+	// stopping is set by Stop under resolverMu so a Serve still in its prologue
+	// cannot start a scavenger the shutdown has already walked past.
+	stopping bool
+
+	// authSweep owns the goroutine that runs authorization re-check sweeps.
+	// Created on the first SetRuntime (which is where the subscription is
+	// made) and joined in Stop. Written and read under resolverMu, which
+	// SetRuntime and Stop can reach from different goroutines.
+	authSweep *authSweeper
 
 	// sidecars manages the adapter's auxiliary/companion services — the mDNS and
 	// WS-Discovery advertisers (issue #1609) — under one uniform lifecycle.
@@ -294,7 +315,7 @@ func (s *Adapter) SetRuntime(rtAny any) {
 		// Register for shares added dynamically after startup. Done before the
 		// initial loop so no share created between the two is missed.
 		unsubBreak := rt.OnShareChange(registerBreakCallbacks)
-		s.shareUnsubscribers = append(s.shareUnsubscribers, unsubBreak)
+		s.addShareUnsubscriber(unsubBreak)
 
 		// Register for existing shares at startup.
 		registerBreakCallbacks(rt.ListShares())
@@ -308,10 +329,23 @@ func (s *Adapter) SetRuntime(rtAny any) {
 	// neither per operation, so without this a disabled or deleted user keeps
 	// access for as long as the connection stays open, and a revoked share
 	// grant never takes effect on it at all.
-	unsubAuthInvalidate := rt.OnAuthCacheInvalidate(func() {
-		s.handler.RevalidateAuthorization(context.Background())
-	})
-	s.shareUnsubscribers = append(s.shareUnsubscribers, unsubAuthInvalidate)
+	//
+	// The sweep itself is handed to a worker rather than run here: the
+	// control-plane fires its subscribers synchronously, so running it inline
+	// blocks the operator's API call for the length of a walk over every
+	// session and every tree. See authSweeper for the coalescing that goes
+	// with the offload.
+	s.resolverMu.Lock()
+	if s.authSweep == nil {
+		s.authSweep = newAuthSweeper(func(ctx context.Context) {
+			s.handler.RevalidateAuthorization(ctx)
+		})
+	}
+	sweeper := s.authSweep
+	s.resolverMu.Unlock()
+
+	unsubAuthInvalidate := rt.OnAuthCacheInvalidate(sweeper.request)
+	s.addShareUnsubscriber(unsubAuthInvalidate)
 
 	// Register share change callback for cache invalidation
 	s.handler.RegisterShareChangeCallback()
@@ -556,7 +590,7 @@ func (s *Adapter) Serve(ctx context.Context) error {
 			durableTimeout,
 			s.handler.StartTime,
 		)
-		go scavenger.Run(ctx)
+		s.startScavenger(ctx, scavenger.Run)
 		logger.Info("SMB adapter: durable handle scavenger started",
 			"interval", DefaultDurableScavengerInterval,
 			"timeout_ms", durableTimeout)
@@ -568,6 +602,62 @@ func (s *Adapter) Serve(ctx context.Context) error {
 	s.startEnabledDiscovery(ctx)
 
 	return s.ServeWithFactory(ctx, s, s.preAcceptCheck, nil)
+}
+
+// startScavenger runs the durable-handle scavenger loop on a goroutine Stop can
+// end and then join.
+//
+// The loop gets a context of its own, derived from Serve's, so shutdown does
+// not depend on the caller cancelling the one it passed to Serve; the WaitGroup
+// is what makes Stop a rendezvous rather than a signal. Without the join the
+// loop outlives Stop and keeps reaching into DurableStore and the handler while
+// they are being torn down.
+//
+// run is a parameter so a test can stand a controllable loop in place of
+// DurableHandleScavenger.Run, but scavengerCancel is one slot: a second call
+// discards the first loop's cancel and that goroutine then ends only with
+// Serve's context — the leak this exists to close. Serve calls it once. Make
+// the cancel a slice before adding a second background loop here.
+// addShareUnsubscriber records a runtime subscription for Stop to drain.
+//
+// Under resolverMu because SetRuntime appends here while Stop reads and clears
+// the slice, and the slice carries the auth-cache-invalidate subscription whose
+// removal is what stops a sweep being queued during teardown. A subscription
+// registered after Stop has drained the slice is cancelled immediately rather
+// than stored, so it cannot outlive the adapter.
+func (s *Adapter) addShareUnsubscriber(unsub func()) {
+	s.resolverMu.Lock()
+	if s.stopping {
+		s.resolverMu.Unlock()
+		unsub()
+		return
+	}
+	s.shareUnsubscribers = append(s.shareUnsubscribers, unsub)
+	s.resolverMu.Unlock()
+}
+
+func (s *Adapter) startScavenger(ctx context.Context, run func(context.Context)) {
+	runCtx, cancel := context.WithCancel(ctx)
+
+	s.resolverMu.Lock()
+	// A shutdown arriving while Serve is still in its prologue would otherwise
+	// have Wait racing an Add from zero, and would leave behind a cancel Stop
+	// had already read past. Under the same lock Stop takes before it waits,
+	// either this Add is visible to that Wait or the start is refused.
+	if s.stopping {
+		s.resolverMu.Unlock()
+		cancel()
+		return
+	}
+	s.scavengerCancel = cancel
+	s.scavengerWG.Add(1)
+	s.resolverMu.Unlock()
+
+	go func() {
+		defer s.scavengerWG.Done()
+		defer cancel()
+		run(runCtx)
+	}()
 }
 
 // preAcceptCheck checks live settings for dynamic max_connections limit.
@@ -918,31 +1008,39 @@ func (s *Adapter) findDurableHandleStore() lock.DurableHandleStore {
 // provider (stopping its keytab hot-reload goroutine), then delegates to
 // BaseAdapter.Stop() for the shared shutdown sequence.
 func (s *Adapter) Stop(ctx context.Context) error {
-	// Unsubscribe from the identity mapping change callback registered by
-	// wireIdentityResolver (tracked separately from shareUnsubscribers).
-	if s.identityUnsub != nil {
-		s.identityUnsub()
-		s.identityUnsub = nil
-	}
-	if s.identityProviderUnsub != nil {
-		s.identityProviderUnsub()
-		s.identityProviderUnsub = nil
-	}
-	if s.foreignSIDProviderUnsub != nil {
-		s.foreignSIDProviderUnsub()
-		s.foreignSIDProviderUnsub = nil
-	}
-	// The netlogon hot-reload subscription and authenticator are written by
-	// wireNetlogonReload under resolverMu (callable from SetRuntime /
-	// SetNetlogonAuthenticator on other goroutines), so snapshot + detach them
-	// under the same lock to avoid a data race, then close outside the lock.
+	// Every subscription field below is written under resolverMu by
+	// wireIdentityResolver, wireForeignSIDResolver or wireNetlogonReload, each
+	// reachable from SetRuntime / SetKerberosProvider / an identity-provider
+	// config change on another goroutine. A config change concurrent with
+	// shutdown is therefore a data race on any field read here unlocked, so all
+	// of them are snapshotted and detached under one hold of the lock and
+	// invoked outside it — the unsubs re-enter the runtime, and the netlogon
+	// close tears down a DC connection.
 	s.resolverMu.Lock()
-	netlogonUnsub := s.netlogonProviderUnsub
-	s.netlogonProviderUnsub = nil
+	s.stopping = true
+	resolverUnsubs := []func(){
+		s.identityUnsub,
+		s.identityProviderUnsub,
+		s.foreignSIDProviderUnsub,
+		s.netlogonProviderUnsub,
+	}
+	s.identityUnsub, s.identityProviderUnsub = nil, nil
+	s.foreignSIDProviderUnsub, s.netlogonProviderUnsub = nil, nil
 	netlogonAuth := s.netlogonAuth
+	scavengerCancel := s.scavengerCancel
+	s.scavengerCancel = nil
 	s.resolverMu.Unlock()
-	if netlogonUnsub != nil {
-		netlogonUnsub()
+
+	for _, unsub := range resolverUnsubs {
+		if unsub != nil {
+			unsub()
+		}
+	}
+	// Stop the durable-handle scavenger. The join is below, after the
+	// subscriptions are gone, so the goroutine cannot still be reading
+	// DurableStore or the handler while the rest of the teardown runs.
+	if scavengerCancel != nil {
+		scavengerCancel()
 	}
 	// Tear down the NETLOGON secure channel so its DC connection / goroutines do
 	// not outlive the adapter.
@@ -960,10 +1058,24 @@ func (s *Adapter) Stop(ctx context.Context) error {
 
 	// Unsubscribe from share change notifications to prevent stale callbacks
 	// from accumulating across adapter restarts.
-	for _, unsub := range s.shareUnsubscribers {
+	s.resolverMu.Lock()
+	shareUnsubs := s.shareUnsubscribers
+	s.shareUnsubscribers = nil
+	s.resolverMu.Unlock()
+	for _, unsub := range shareUnsubs {
 		unsub()
 	}
-	s.shareUnsubscribers = nil
+
+	// Join the authorization sweep worker. Ordered after the unsubscribe above
+	// so nothing can queue a sweep once it has been stopped, and before the
+	// teardown below so no sweep is still reading session state while it runs.
+	s.resolverMu.Lock()
+	sweeper := s.authSweep
+	s.authSweep = nil
+	s.resolverMu.Unlock()
+	if sweeper != nil && !sweeper.stop(ctx) {
+		logger.Warn("SMB adapter: authorization sweep still running at shutdown deadline")
+	}
 
 	// Close the Kerberos provider to stop its keytab reload goroutine.
 	// Matches the NFS adapter's Stop() behavior (pkg/adapter/nfs/shutdown.go).
@@ -972,6 +1084,28 @@ func (s *Adapter) Stop(ctx context.Context) error {
 			logger.Debug("SMB adapter: error closing kerberos provider", "error", err)
 		}
 		s.kerberosProvider = nil
+	}
+
+	// Join the scavenger before handing off to the shared shutdown sequence.
+	// Its context is cancelled above, so this is a rendezvous rather than a
+	// wait; without it the goroutine can outlive Stop and touch DurableStore
+	// and the handler during teardown. Bounded by ctx for the same reason the
+	// sweep join is: its expiry pass walks every handle without checking for
+	// cancellation, and a Stop that never returns is worse than one that gives
+	// up on the join.
+	joined := make(chan struct{})
+	go func() {
+		s.scavengerWG.Wait()
+		close(joined)
+	}()
+	if ctx == nil {
+		<-joined
+	} else {
+		select {
+		case <-joined:
+		case <-ctx.Done():
+			logger.Warn("SMB adapter: durable handle scavenger still running at shutdown deadline")
+		}
 	}
 
 	return s.BaseAdapter.Stop(ctx)

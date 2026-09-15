@@ -588,6 +588,10 @@ func (s *Service) RemoveShare(name string) error {
 	}
 
 	s.notifyShareChange()
+	// The share is gone, so every access decision an adapter resolved against
+	// it is stale. Raised after the registry entry is dropped so a subscriber's
+	// re-resolve cannot find the share it is being told to forget.
+	s.InvalidateAuthCache()
 
 	return errors.Join(errs...)
 }

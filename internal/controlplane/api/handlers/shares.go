@@ -985,8 +985,10 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	// A default-permission change moves the EVERYONE@ ACE projected onto the
 	// root, so reproject; other field updates leave the root ACL untouched.
+	// read_only needs no reprojection and raises its own invalidation from
+	// runtime.UpdateShare, which is where the live value is written.
 	if req.DefaultPermission != nil {
-		h.reconcileRootACL(r.Context(), share.Name)
+		h.grantsChanged(r.Context(), share.Name)
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), HealthCheckTimeout)
@@ -1023,6 +1025,10 @@ func (h *ShareHandler) Remove(w http.ResponseWriter, r *http.Request) {
 	// same name does not observe a stale probe.
 	if h.runtime != nil {
 		h.runtime.InvalidateShareChecker(name)
+		// runtime.RemoveShare above already raised this, but only when the
+		// share was in the registry; it is ignored when it was not, and the
+		// grant rows are gone either way.
+		h.runtime.InvalidateAuthCache()
 	}
 
 	WriteNoContent(w)
@@ -1153,7 +1159,7 @@ func (h *ShareHandler) SetUserPermission(w http.ResponseWriter, r *http.Request)
 				NotFound(w, "User not found")
 				return
 			}
-			h.reconcileRootACL(r.Context(), shareName)
+			h.grantsChanged(r.Context(), shareName)
 			WriteNoContent(w)
 			return
 		}
@@ -1173,7 +1179,7 @@ func (h *ShareHandler) SetUserPermission(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	h.reconcileRootACL(r.Context(), shareName)
+	h.grantsChanged(r.Context(), shareName)
 	WriteNoContent(w)
 }
 
@@ -1231,18 +1237,26 @@ func samAccountName(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// reconcileRootACL projects the share's current permission grants onto its root
-// directory ACL so the filesystem permission layer agrees with the share-level
-// grants. Best-effort: a failure is logged, not surfaced, because the
+// grantsChanged completes a share-permission mutation: it reprojects the
+// share's grants onto its root directory ACL, then drops every adapter's cached
+// per-identity authorization so active clients re-resolve against the new
+// grants.
+//
+// The two halves have different standing. The ACL is a projection and its
+// reconcile is best-effort — a failure is logged, not surfaced, because the
 // control-plane permission record is authoritative and a later reconcile
-// self-heals the projection.
-func (h *ShareHandler) reconcileRootACL(ctx context.Context, shareName string) {
+// self-heals it. The invalidation is a consequence of the row that was just
+// written and therefore fires unconditionally, including when the projection
+// failed: a revoke that returned 204 having notified nobody leaves an SMB
+// connection holding the grant for its whole lifetime.
+func (h *ShareHandler) grantsChanged(ctx context.Context, shareName string) {
 	if h.runtime == nil {
 		return
 	}
 	if err := h.runtime.ReconcileShareRootACL(ctx, shareName); err != nil {
 		logger.Warn("Failed to reconcile share root ACL", "share", shareName, "error", err)
 	}
+	h.runtime.InvalidateAuthCache()
 }
 
 // RemoveUserPermission handles DELETE /api/v1/shares/{name}/permissions/users/{username}.
@@ -1271,7 +1285,7 @@ func (h *ShareHandler) RemoveUserPermission(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	h.reconcileRootACL(r.Context(), shareName)
+	h.grantsChanged(r.Context(), shareName)
 	WriteNoContent(w)
 }
 
@@ -1327,7 +1341,7 @@ func (h *ShareHandler) SetGroupPermission(w http.ResponseWriter, r *http.Request
 				NotFound(w, "Group not found")
 				return
 			}
-			h.reconcileRootACL(r.Context(), shareName)
+			h.grantsChanged(r.Context(), shareName)
 			WriteNoContent(w)
 			return
 		}
@@ -1347,7 +1361,7 @@ func (h *ShareHandler) SetGroupPermission(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	h.reconcileRootACL(r.Context(), shareName)
+	h.grantsChanged(r.Context(), shareName)
 	WriteNoContent(w)
 }
 
@@ -1377,7 +1391,7 @@ func (h *ShareHandler) RemoveGroupPermission(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	h.reconcileRootACL(r.Context(), shareName)
+	h.grantsChanged(r.Context(), shareName)
 	WriteNoContent(w)
 }
 
@@ -1464,7 +1478,7 @@ func (h *ShareHandler) SetSIDPermission(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	h.reconcileRootACL(r.Context(), shareName)
+	h.grantsChanged(r.Context(), shareName)
 	WriteNoContent(w)
 }
 
@@ -1492,7 +1506,7 @@ func (h *ShareHandler) RemoveSIDPermission(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	h.reconcileRootACL(r.Context(), shareName)
+	h.grantsChanged(r.Context(), shareName)
 	WriteNoContent(w)
 }
 

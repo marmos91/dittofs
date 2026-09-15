@@ -9,7 +9,29 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
+// UpdateShare applies a partial update to a registered share's live settings.
+//
+// readOnly and defaultPermission decide who may access the share and with what
+// ceiling, so changing either raises an auth-cache invalidation: adapters
+// resolve those once (SMB at TREE_CONNECT, NFSv3 into a TTL cache) and would
+// otherwise keep enforcing the previous values on established connections. The
+// retention knobs carry no authorization and raise nothing.
 func (s *Service) UpdateShare(name string, readOnly *bool, defaultPermission *string, retentionPolicy *block.RetentionPolicy, retentionTTL *time.Duration) error {
+	if err := s.applyShareUpdate(name, readOnly, defaultPermission, retentionPolicy, retentionTTL); err != nil {
+		return err
+	}
+	if readOnly != nil || defaultPermission != nil {
+		// Outside the registry lock: InvalidateAuthCache runs subscriber
+		// callbacks, which re-enter the service to read shares.
+		s.InvalidateAuthCache()
+	}
+	return nil
+}
+
+// applyShareUpdate writes the supplied fields onto the registered share. It
+// takes the registry lock itself; the notification UpdateShare raises is
+// deliberately outside it.
+func (s *Service) applyShareUpdate(name string, readOnly *bool, defaultPermission *string, retentionPolicy *block.RetentionPolicy, retentionTTL *time.Duration) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -289,6 +311,10 @@ func (s *Service) DisableShare(ctx context.Context, store ShareStore, name strin
 	s.mu.Unlock()
 
 	s.notifyShareChange()
+	// A disabled share admits nobody. Adapters pinned the access decision at
+	// establishment, so without this an established SMB tree or a cached NFSv3
+	// authorization keeps serving the share for the life of the connection.
+	s.InvalidateAuthCache()
 	return nil
 }
 
@@ -325,6 +351,13 @@ func (s *Service) EnableShare(ctx context.Context, store ShareStore, name string
 	share.Enabled = true
 	s.mu.Unlock()
 
+	// decision: enabling raises no auth-cache invalidation. Disabling retired
+	// the decisions taken before it — the SMB sweep removes every tree on a
+	// disabled share — so there is nothing left for enabling to correct, and
+	// MOUNT and TREE_CONNECT re-read the enabled flag from the registry on each
+	// fresh attempt. The exemption holds only while re-enabling can widen
+	// access and never narrow it; withdraw it if enabling ever also restores a
+	// stored per-identity decision.
 	s.notifyShareChange()
 	return nil
 }

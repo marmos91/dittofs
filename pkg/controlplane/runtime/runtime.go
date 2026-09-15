@@ -609,6 +609,12 @@ func (r *Runtime) AddShare(ctx context.Context, config *ShareConfig) error {
 	if err := r.ReconcileShareRootACL(ctx, config.Name); err != nil {
 		logger.Warn("failed to reconcile share root ACL", "share", config.Name, "error", err)
 	}
+	// A share created under a name that was just removed can find trees left
+	// over from the old one: the sweep a removal fires cannot re-resolve a tree
+	// whose share is gone, so it leaves it carrying the removed share's
+	// permission. Re-resolve them now that the name resolves again. Independent
+	// of the reconcile above, which is a projection and can fail.
+	r.InvalidateAuthCache()
 	// Reconstruct the local-only journal snapshot pin from the durable snapshot
 	// list so GC/eviction keep the segments backing every live snapshot's bytes
 	// across a restart, before any background reclaim runs. No-op for remote
@@ -794,8 +800,10 @@ func (r *Runtime) OnAuthCacheInvalidate(callback func()) func() {
 }
 
 // InvalidateAuthCache notifies registered adapters to drop cached authorization
-// after a permission-relevant share change that does not flow through
-// ReconcileShareRootACL (e.g. a squash-mode change).
+// and re-decide what they resolved once. Raised by whatever changed who may
+// access a share — a grant write, a share-level policy change, an identity
+// mapping — never by the root-ACL projection, which can fail without the
+// authority behind it having failed.
 func (r *Runtime) InvalidateAuthCache() {
 	r.sharesSvc.InvalidateAuthCache()
 }
@@ -1331,8 +1339,16 @@ func (r *Runtime) OnIdentityMappingChange(fn func()) func() {
 }
 
 // NotifyIdentityMappingChange fires all registered identity change callbacks.
+//
+// It also raises an auth-cache invalidation. The identity-change callback only
+// clears the adapters' name/SID resolver caches, and an identity or SID mapping
+// decides which local identity a principal authenticates as — so removing one
+// withdraws every grant that identity held. Without the invalidation an
+// established SMB session keeps the mapping it was admitted under for the life
+// of the connection.
 func (r *Runtime) NotifyIdentityMappingChange() {
 	r.identityChangeCallbacks.notify()
+	r.InvalidateAuthCache()
 }
 
 // OnIdentityProviderConfigChange registers a callback invoked when an identity
@@ -1345,8 +1361,14 @@ func (r *Runtime) OnIdentityProviderConfigChange(fn func()) func() {
 
 // NotifyIdentityProviderConfigChange fires all registered identity-provider
 // config change callbacks.
+//
+// It also raises an auth-cache invalidation: the callbacks rebuild the resolver
+// but re-decide nothing that was already resolved, and a directory config
+// change rewrites how group membership and foreign SIDs resolve — which is what
+// share grants are evaluated against.
 func (r *Runtime) NotifyIdentityProviderConfigChange() {
 	r.identityProviderChangeCallbacks.notify()
+	r.InvalidateAuthCache()
 }
 
 // --- Settings Access ---
