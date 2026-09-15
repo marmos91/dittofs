@@ -1297,3 +1297,31 @@ func TestWorstCaseSendDuration_ExceedsEveryAttemptAndBackoff(t *testing.T) {
 			bs.worstCaseSendDuration()+recallResultGrace)
 	}
 }
+
+// TestProbeV41CallbackPath_DeferredProbeRunsAfterTheOneInFlight pins the other
+// half of the one-probe-per-session rule. Admitting one at a time stops a client
+// renegotiating in a loop from accumulating goroutines, but a probe turned away
+// while another runs was asked for against parameters the running one does not
+// know about — and that one's verdict is discarded for a stale generation when
+// it finishes. Dropping the request outright means nothing ever evaluates the
+// new parameters and delegations stay withheld indefinitely.
+func TestProbeV41CallbackPath_DeferredProbeRunsAfterTheOneInFlight(t *testing.T) {
+	bs, sm, _ := createTestBackchannelSender(t)
+
+	// A probe is already running; the one that arrives now must record that it
+	// was turned away rather than simply disappearing.
+	bs.probeInFlight.Store(true)
+	sm.probeV41CallbackPath(context.Background(), bs)
+	if !bs.probeWanted.Load() {
+		t.Fatal("a probe turned away while another was in flight left no request behind, " +
+			"so the new callback parameters would never be evaluated")
+	}
+
+	// The in-flight one finishes. Its own run must pick that request up and
+	// clear it, so the hand-over happens exactly once.
+	bs.probeInFlight.Store(false)
+	sm.probeV41CallbackPath(context.Background(), bs)
+	if bs.probeWanted.Load() {
+		t.Error("the deferred request was still pending after a probe ran to completion")
+	}
+}

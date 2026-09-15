@@ -204,9 +204,11 @@ type BackchannelSender struct {
 	// publish a verdict about parameters the session no longer has.
 	paramsGen atomic.Uint64
 
-	// probeInFlight admits one CB_NULL probe per session at a time. See
+	// probeInFlight admits one CB_NULL probe per session at a time, and
+	// probeWanted records that another was asked for while it ran. See
 	// probeV41CallbackPath.
 	probeInFlight atomic.Bool
+	probeWanted   atomic.Bool
 
 	queue chan CallbackRequest
 	sm    *StateManager
@@ -332,13 +334,25 @@ func (bs *BackchannelSender) sendCallbackWithRetry(ctx context.Context, req Call
 
 			select {
 			case <-ctx.Done():
+				// A transport failure already seen outranks this: the callback
+				// did reach a socket and fail there, and reporting the
+				// cancellation instead would have the recall treat a dead path
+				// as one that was never tried.
 				if req.ResultCh != nil {
-					req.ResultCh <- fmt.Errorf("%w: %w", errCallbackNotAttempted, ctx.Err())
+					if firstTransportErr != nil {
+						req.ResultCh <- firstTransportErr
+					} else {
+						req.ResultCh <- fmt.Errorf("%w: %w", errCallbackNotAttempted, ctx.Err())
+					}
 				}
 				return
 			case <-bs.stopCh:
 				if req.ResultCh != nil {
-					req.ResultCh <- fmt.Errorf("%w: backchannel sender stopped", errCallbackNotAttempted)
+					if firstTransportErr != nil {
+						req.ResultCh <- firstTransportErr
+					} else {
+						req.ResultCh <- fmt.Errorf("%w: backchannel sender stopped", errCallbackNotAttempted)
+					}
 				}
 				return
 			case <-time.After(delay):
@@ -647,12 +661,26 @@ func (sm *StateManager) probeV41CallbackPath(ctx context.Context, bs *Backchanne
 	// kept rather than replaced: it is already waiting, and its verdict is
 	// discarded anyway if the parameters move under it.
 	if !bs.probeInFlight.CompareAndSwap(false, true) {
-		logger.Debug("CB_NULL probe skipped: one is already in flight for this session",
+		// Queued, not dropped. The probe already running was started against
+		// parameters that have since been replaced, so its verdict will be
+		// discarded for a stale generation — and if this one simply returned,
+		// nothing would ever evaluate the new parameters and delegations would
+		// stay withheld until the next control update that happened to arrive
+		// when no probe was running.
+		bs.probeWanted.Store(true)
+		logger.Debug("CB_NULL probe deferred: one is already in flight for this session",
 			"client_id", fmt.Sprintf("0x%x", bs.clientID),
 			"session_id", bs.sessionID.String())
 		return
 	}
-	defer bs.probeInFlight.Store(false)
+	defer func() {
+		bs.probeInFlight.Store(false)
+		// Whoever was turned away above asked for parameters this probe did not
+		// run against. Re-run for them, once, however many arrived.
+		if bs.probeWanted.CompareAndSwap(true, false) {
+			go sm.probeV41CallbackPath(context.Background(), bs)
+		}
+	}()
 
 	generation := bs.currentParams().generation
 	err := bs.probeCallbackPath(ctx)
