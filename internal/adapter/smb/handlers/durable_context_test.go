@@ -10,6 +10,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/acl"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
@@ -1153,6 +1154,29 @@ func (e *appInstanceEnv) file(t *testing.T, name string, mode uint32) metadata.F
 	t.Helper()
 	file, _, err := e.metaSvc.CreateFile(rootAuthCtx(), e.root, name,
 		&metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: mode})
+	if err != nil {
+		t.Fatalf("CreateFile %s: %v", name, err)
+	}
+	handle, err := metadata.EncodeFileHandle(file)
+	if err != nil {
+		t.Fatalf("EncodeFileHandle %s: %v", name, err)
+	}
+	return handle
+}
+
+// aclFile creates name under the share root with a DACL, owned by someone else,
+// and mode bits that would let the POSIX fallback answer "readable" on their own
+// — so the ACL is what decides whether the failover may displace an open on it.
+func (e *appInstanceEnv) aclFile(t *testing.T, name string, dacl *acl.ACL) metadata.FileHandle {
+	t.Helper()
+	file, _, err := e.metaSvc.CreateFile(rootAuthCtx(), e.root, name,
+		&metadata.FileAttr{
+			Type: metadata.FileTypeRegular,
+			Mode: 0o666,
+			UID:  9999,
+			GID:  9999,
+			ACL:  dacl,
+		})
 	if err != nil {
 		t.Fatalf("CreateFile %s: %v", name, err)
 	}
@@ -2817,6 +2841,62 @@ func TestProcessAppInstanceId_ClaimsThePersistedRowBeforeCleaningItUp(t *testing
 		}
 		if len(tracking.deleteCalls) != 0 {
 			t.Errorf("the failover deleted a row it had not claimed: %v", tracking.deleteCalls)
+		}
+	})
+}
+
+// TestProcessAppInstanceId_AuthorizesThroughTheDACL covers the branch the other
+// failover tests never reach. They create mode-only files, so they exercise the
+// POSIX fallback inside ComputeMaximalAccess and leave the ACL wiring untested —
+// on a gate whose entire job is deciding whether a cleartext AppInstanceId may
+// force another client's open closed. A regression there would leave these tests
+// green while displacing an open on a file the requester cannot read.
+//
+// Both files carry mode 0o666, so POSIX alone would answer "readable" for
+// either; only the DACL tells them apart.
+func TestProcessAppInstanceId_AuthorizesThroughTheDACL(t *testing.T) {
+	var otherClient [16]byte
+	otherClient[0] = 0x11
+	var connClient [16]byte
+	connClient[0] = 0x22
+
+	readable := &acl.ACL{ACEs: []acl.ACE{{
+		Type: acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
+		Who:  "EVERYONE@",
+		// The whole bundle HasMaximalReadAccess requires (accessMaskPosixRead):
+		// dropping READ_NAMED_ATTRS alone is enough to fail the gate, which is
+		// the gate erring closed rather than a defect.
+		AccessMask: acl.ACE4_READ_DATA | acl.ACE4_READ_NAMED_ATTRS | acl.ACE4_READ_ATTRIBUTES |
+			acl.ACE4_READ_ACL | acl.ACE4_SYNCHRONIZE,
+	}}}
+	unreadable := &acl.ACL{ACEs: []acl.ACE{{
+		Type:       acl.ACE4_ACCESS_DENIED_ACE_TYPE,
+		Who:        "EVERYONE@",
+		AccessMask: acl.ACE4_READ_DATA,
+	}}}
+
+	t.Run("an allow-read DACL authorizes the displacement", func(t *testing.T) {
+		e := newAppInstanceEnv(t)
+		handle := e.aclFile(t, "acl_readable.txt", readable)
+		e.persist(t, "h1", "/acl_readable.txt", handle, otherClient)
+
+		e.claim(connClient)
+
+		if e.survives(t, "h1") {
+			t.Error("an open on a file the requester may read was not displaced")
+		}
+	})
+
+	t.Run("a deny-read DACL refuses it, whatever the mode bits say", func(t *testing.T) {
+		e := newAppInstanceEnv(t)
+		handle := e.aclFile(t, "acl_unreadable.txt", unreadable)
+		e.persist(t, "h2", "/acl_unreadable.txt", handle, otherClient)
+
+		e.claim(connClient)
+
+		if !e.survives(t, "h2") {
+			t.Error("an open on a file the requester cannot read was displaced: the failover " +
+				"authorized on mode bits a DACL overrides")
 		}
 	})
 }

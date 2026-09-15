@@ -1182,6 +1182,27 @@ func ProcessAppInstanceId(
 
 	// 2) Force-close persisted (disconnected) durable handles with matching
 	// AppInstanceId, under the same two gates as the live opens above.
+	//
+	// Under durablePurgeMu, the same mutex the disconnect-persist and the
+	// create-path purge scans take (handler.go). This is a third read-then-
+	// mutate window on the durable store, and without it a disconnect can land
+	// its PutDurableHandle between the list below and the claims that follow,
+	// leaving a row this failover was supposed to displace. Unconditional here
+	// rather than gated on disconnectedByFile the way the purge scans are: this
+	// runs only for a CREATE carrying an AppInstanceId context, so it is not on
+	// any writer's hot path.
+	//
+	// decision: the mutex spans the list and the claims, not the live-open close
+	// above it. Holding it across that close would put a lock round every cache
+	// flush and lock release in the teardown, and take it in the opposite order
+	// from paths that already close opens while holding store locks. What stays
+	// open is a disconnect that completes after the list: its row is a match this
+	// failover never saw, and it survives as a live-locked entry until the
+	// scavenger evicts it. Withdraw this if that row ever becomes reconnectable
+	// by the displaced client, which is the thing the failover exists to prevent.
+	handler.durablePurgeMu.Lock()
+	defer handler.durablePurgeMu.Unlock()
+
 	existing, err := durableStore.GetDurableHandlesByAppInstanceId(ctx, appId)
 	if err != nil {
 		logger.Warn("ProcessAppInstanceId: store error", "error", err)
