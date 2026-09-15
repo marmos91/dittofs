@@ -11,9 +11,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
-// doQuota issues an authenticated request against a quota route and returns the
-// recorder.
-func doQuota(t *testing.T, router http.Handler, token, method, path, body string) *httptest.ResponseRecorder {
+// doAuthedRequest issues an authenticated JSON request and returns the recorder.
+func doAuthedRequest(t *testing.T, router http.Handler, token, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	r := httptest.NewRequest(method, path, strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/json")
@@ -29,7 +28,7 @@ func doQuota(t *testing.T, router http.Handler, token, method, path, body string
 // {scope}: a route that hard-codes the literal leaves chi.URLParam(r, "scope")
 // empty and the handler rejects its own scope.
 func TestQuotaRoutesBindScope(t *testing.T) {
-	router, jwtService, _ := newTestRouter(t, false)
+	router, jwtService, _, _ := newTestRouter(t, false)
 	token := tokenFor(t, jwtService, models.RoleAdmin)
 
 	cases := []struct {
@@ -44,7 +43,7 @@ func TestQuotaRoutesBindScope(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.scope, func(t *testing.T) {
-			rec := doQuota(t, router, token, http.MethodPut, tc.path, `{"limit_bytes":"1GiB"}`)
+			rec := doAuthedRequest(t, router, token, http.MethodPut, tc.path, `{"limit_bytes":"1GiB"}`)
 			if rec.Code != http.StatusOK {
 				t.Fatalf("PUT %s = %d, want 200 (body=%q)", tc.path, rec.Code, rec.Body.String())
 			}
@@ -66,14 +65,14 @@ func TestQuotaRoutesBindScope(t *testing.T) {
 				t.Errorf("identity_id = %s, want %s", gotID, tc.wantID)
 			}
 
-			if rec := doQuota(t, router, token, http.MethodGet, tc.path, ""); rec.Code != http.StatusOK {
+			if rec := doAuthedRequest(t, router, token, http.MethodGet, tc.path, ""); rec.Code != http.StatusOK {
 				t.Errorf("GET %s = %d, want 200 (body=%q)", tc.path, rec.Code, rec.Body.String())
 			}
 		})
 	}
 
 	// All three land in the listing.
-	rec := doQuota(t, router, token, http.MethodGet, "/api/v1/shares/tiered/quotas", "")
+	rec := doAuthedRequest(t, router, token, http.MethodGet, "/api/v1/shares/tiered/quotas", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET quotas = %d, want 200 (body=%q)", rec.Code, rec.Body.String())
 	}
@@ -94,7 +93,7 @@ func TestQuotaRoutesBindScope(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		if rec := doQuota(t, router, token, http.MethodDelete, tc.path, ""); rec.Code != http.StatusNoContent {
+		if rec := doAuthedRequest(t, router, token, http.MethodDelete, tc.path, ""); rec.Code != http.StatusNoContent {
 			t.Errorf("DELETE %s = %d, want 204 (body=%q)", tc.path, rec.Code, rec.Body.String())
 		}
 	}
@@ -104,7 +103,7 @@ func TestQuotaRoutesBindScope(t *testing.T) {
 // be wrong: a user/group quota missing its id must complain about the id, and
 // an unrecognised scope must be rejected with the offending value echoed.
 func TestQuotaRouteRejectsBadTarget(t *testing.T) {
-	router, jwtService, _ := newTestRouter(t, false)
+	router, jwtService, _, _ := newTestRouter(t, false)
 	token := tokenFor(t, jwtService, models.RoleAdmin)
 
 	cases := []struct {
@@ -119,7 +118,7 @@ func TestQuotaRouteRejectsBadTarget(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			rec := doQuota(t, router, token, http.MethodPut, tc.path, `{"limit_bytes":"1GiB"}`)
+			rec := doAuthedRequest(t, router, token, http.MethodPut, tc.path, `{"limit_bytes":"1GiB"}`)
 			if rec.Code != http.StatusBadRequest {
 				t.Fatalf("PUT %s = %d, want 400 (body=%q)", tc.path, rec.Code, rec.Body.String())
 			}

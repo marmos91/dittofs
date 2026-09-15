@@ -3,50 +3,27 @@ package api
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
-	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
-	"github.com/marmos91/dittofs/internal/controlplane/api/auth"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 )
 
-// newInvalidateTestRouter builds a router whose runtime has an auth-cache
-// invalidation counter attached at the same seam the NFS adapter subscribes to
-// (OnAuthCacheInvalidate -> Handler.ClearAuthCache). The counter stands in for
-// the handler because the v3 handler package transitively imports this one.
-func newInvalidateTestRouter(t *testing.T) (http.Handler, *auth.JWTService, store.Store, *atomic.Int64) {
+// newInvalidateTestRouter builds a router with an invalidation counter attached
+// at the same seam the NFS adapter subscribes to (OnAuthCacheInvalidate ->
+// Handler.ClearAuthCache). The counter stands in for the handler because the v3
+// handler package transitively imports this one. It also returns an admin token
+// and the store, so tests can seed fixtures.
+func newInvalidateTestRouter(t *testing.T) (http.Handler, string, store.Store, *atomic.Int64) {
 	t.Helper()
 
-	cpStore, err := store.New(&store.Config{
-		Type:   "sqlite",
-		SQLite: store.SQLiteConfig{Path: ":memory:"},
-	})
-	if err != nil {
-		t.Fatalf("create store: %v", err)
-	}
-
-	jwtService, err := auth.NewJWTService(auth.JWTConfig{
-		Secret:               "test-secret-key-for-testing-only-32chars",
-		Issuer:               "dittofs",
-		AccessTokenDuration:  15 * time.Minute,
-		RefreshTokenDuration: 7 * 24 * time.Hour,
-	})
-	if err != nil {
-		t.Fatalf("create jwt service: %v", err)
-	}
-
-	rt := runtime.New(cpStore)
+	router, jwtService, cpStore, rt := newTestRouter(t, false)
 
 	var calls atomic.Int64
 	rt.OnAuthCacheInvalidate(func() { calls.Add(1) })
 
-	router := NewRouter(rt, jwtService, cpStore, false, Timeouts{Restore: 30 * time.Minute, DrainStall: 5 * time.Minute})
-	return router, jwtService, cpStore, &calls
+	return router, tokenFor(t, jwtService, models.RoleAdmin), cpStore, &calls
 }
 
 // seedUser creates a plain enabled user directly in the store.
@@ -112,33 +89,21 @@ func TestUserMutationsInvalidateAuthCache(t *testing.T) {
 			name:   "delete user",
 			method: http.MethodDelete,
 			path:   "/api/v1/users/target",
-			body:   "",
 			want:   http.StatusNoContent,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			router, jwtService, cpStore, calls := newInvalidateTestRouter(t)
+			router, token, cpStore, calls := newInvalidateTestRouter(t)
 			seedUser(t, cpStore, "target")
 
-			var body *strings.Reader
-			if tc.body != "" {
-				body = strings.NewReader(tc.body)
-			} else {
-				body = strings.NewReader("")
-			}
-			req := httptest.NewRequest(tc.method, tc.path, body)
-			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("Authorization", "Bearer "+tokenFor(t, jwtService, models.RoleAdmin))
-			rec := httptest.NewRecorder()
-			router.ServeHTTP(rec, req)
-
+			rec := doAuthedRequest(t, router, token, tc.method, tc.path, tc.body)
 			if rec.Code != tc.want {
 				t.Fatalf("%s %s = %d, want %d (body=%q)", tc.method, tc.path, rec.Code, tc.want, rec.Body.String())
 			}
 
-			if got := calls.Load(); got == 0 {
+			if calls.Load() == 0 {
 				t.Errorf("%s %s did not fire the auth-cache invalidation event; "+
 					"an NFSv3 client holding a cached auth context keeps the old authorization until the TTL expires",
 					tc.method, tc.path)
@@ -151,15 +116,10 @@ func TestUserMutationsInvalidateAuthCache(t *testing.T) {
 // actual store change: a mutation that never reached the store must not fire
 // it, so the cache is not flushed on every rejected request.
 func TestFailedUserMutationDoesNotInvalidate(t *testing.T) {
-	router, jwtService, _, calls := newInvalidateTestRouter(t)
+	router, token, _, calls := newInvalidateTestRouter(t)
 
 	// No such user: Update returns 404 without touching the record.
-	req := httptest.NewRequest(http.MethodPut, "/api/v1/users/ghost", strings.NewReader(`{"enabled":false}`))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+tokenFor(t, jwtService, models.RoleAdmin))
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
-
+	rec := doAuthedRequest(t, router, token, http.MethodPut, "/api/v1/users/ghost", `{"enabled":false}`)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("PUT unknown user = %d, want %d (body=%q)", rec.Code, http.StatusNotFound, rec.Body.String())
 	}
@@ -174,16 +134,11 @@ func TestFailedUserMutationDoesNotInvalidate(t *testing.T) {
 // resolved auth context. Flushing on it would drop the whole cache on a routine
 // self-service operation for no authorization benefit.
 func TestPasswordChangeDoesNotInvalidateAuthCache(t *testing.T) {
-	router, jwtService, cpStore, calls := newInvalidateTestRouter(t)
+	router, token, cpStore, calls := newInvalidateTestRouter(t)
 	seedUser(t, cpStore, "target")
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/users/target/password",
-		strings.NewReader(`{"new_password":"another-s3cret-passphrase"}`))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+tokenFor(t, jwtService, models.RoleAdmin))
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
-
+	rec := doAuthedRequest(t, router, token, http.MethodPost, "/api/v1/users/target/password",
+		`{"new_password":"another-s3cret-passphrase"}`)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("password reset = %d, want %d (body=%q)", rec.Code, http.StatusNoContent, rec.Body.String())
 	}

@@ -34,10 +34,9 @@ type UserHandler struct {
 // misconfiguration gracefully (e.g., at startup).
 //
 // The optional onChange callback is invoked after a user record is created,
-// updated or deleted. Adapters resolve authorization from the user record and
-// cache the result per identity, so without this signal a disable, a UID change
-// or a share-grant rewrite stays invisible to clients holding a cached context
-// until it ages out.
+// updated or deleted. Adapters cache per-identity authorization derived from
+// the record, so without this signal a disable, a UID change or a share-grant
+// rewrite stays invisible until the cached context ages out.
 func NewUserHandler(s userStore, jwtService *auth.JWTService, onChange func()) (*UserHandler, error) {
 	if jwtService == nil {
 		return nil, errors.New("NewUserHandler: jwtService is required and must not be nil")
@@ -152,10 +151,9 @@ func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The record now exists. A UID that previously resolved to no user took the
-	// guest branch and the share default; it now resolves to this record, so any
-	// cached decision for it is stale. Deferred so the share grants applied
-	// below are covered by the same single notification.
+	// The record now exists: a UID that previously fell to the guest branch and
+	// the share default now resolves to it, so any cached decision for that UID
+	// is stale. Deferred so the share grants applied below share one notification.
 	defer h.notifyChange()
 
 	// Apply any requested share permissions. These are best-effort and
@@ -274,10 +272,9 @@ func (h *UserHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The record has changed. Deferred rather than called here so the group and
-	// share-grant writes below are covered by the same single notification, and
-	// so their error paths — which return early but leave this write persisted —
-	// still notify.
+	// The record has changed. Deferred so the group and share-grant writes below
+	// share one notification, and so their early-return error paths — which leave
+	// this write persisted — still notify.
 	defer h.notifyChange()
 
 	// Replace group memberships if the caller provided a Groups list.

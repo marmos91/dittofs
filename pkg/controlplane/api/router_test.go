@@ -15,8 +15,9 @@ import (
 )
 
 // newTestRouter builds a router + JWT service backed by an in-memory store,
-// returning the store so tests can seed fixtures (e.g. adapters).
-func newTestRouter(t *testing.T, pprofEnabled bool) (http.Handler, *auth.JWTService, store.Store) {
+// returning the store so tests can seed fixtures (e.g. adapters) and the
+// runtime so they can subscribe to its change events.
+func newTestRouter(t *testing.T, pprofEnabled bool) (http.Handler, *auth.JWTService, store.Store, *runtime.Runtime) {
 	t.Helper()
 
 	cpStore, err := store.New(&store.Config{
@@ -37,8 +38,9 @@ func newTestRouter(t *testing.T, pprofEnabled bool) (http.Handler, *auth.JWTServ
 		t.Fatalf("create jwt service: %v", err)
 	}
 
-	router := NewRouter(runtime.New(cpStore), jwtService, cpStore, pprofEnabled, Timeouts{Restore: 30 * time.Minute, DrainStall: 5 * time.Minute})
-	return router, jwtService, cpStore
+	rt := runtime.New(cpStore)
+	router := NewRouter(rt, jwtService, cpStore, pprofEnabled, Timeouts{Restore: 30 * time.Minute, DrainStall: 5 * time.Minute})
+	return router, jwtService, cpStore, rt
 }
 
 // tokenFor mints an access token for a user with the given role.
@@ -66,7 +68,7 @@ func tokenForUser(t *testing.T, jwtService *auth.JWTService, role models.UserRol
 // unauthenticated and non-admin requests and only serve admins. pprof dumps
 // can leak in-memory secrets and are DoS vectors, so they must not be open.
 func TestPprofRequiresAdminAuth(t *testing.T) {
-	router, jwtService, _ := newTestRouter(t, true)
+	router, jwtService, _, _ := newTestRouter(t, true)
 
 	cases := []struct {
 		name       string
@@ -103,7 +105,7 @@ func TestPprofRequiresAdminAuth(t *testing.T) {
 // plain share-user can find the port to mount) and never exposes adapter
 // Config.
 func TestAdapterPortsAuthenticatedNonAdmin(t *testing.T) {
-	router, jwtService, cpStore := newTestRouter(t, false)
+	router, jwtService, cpStore, _ := newTestRouter(t, false)
 
 	if _, err := cpStore.CreateAdapter(context.Background(), &models.AdapterConfig{
 		ID:        "nfs-adapter",
@@ -147,7 +149,7 @@ func TestAdapterPortsAuthenticatedNonAdmin(t *testing.T) {
 // TestPprofDisabledNotMounted verifies that with pprof disabled the route is
 // absent entirely (404), not merely auth-gated.
 func TestPprofDisabledNotMounted(t *testing.T) {
-	router, jwtService, _ := newTestRouter(t, false)
+	router, jwtService, _, _ := newTestRouter(t, false)
 
 	req := httptest.NewRequest(http.MethodGet, "/debug/pprof/goroutine?debug=1", nil)
 	req.Header.Set("Authorization", "Bearer "+tokenFor(t, jwtService, models.RoleAdmin))

@@ -131,9 +131,6 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 
 	// API handlers - use cpStore directly since API handlers have request context
 	authHandler := handlers.NewAuthHandler(cpStore, jwtService)
-	// A user record carries authorization the adapters cache per identity
-	// (enabled state, UID/GID, per-user share grants), so a mutation has to
-	// invalidate those caches the way a share-permission change already does.
 	userHandler, err := handlers.NewUserHandler(cpStore, jwtService, rt.InvalidateAuthCache)
 	if err != nil {
 		// This is a programming error - jwtService should always be provided
