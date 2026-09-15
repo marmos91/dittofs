@@ -121,6 +121,12 @@ type Adapter struct {
 	// background keytab-reload goroutine that must be stopped in Stop().
 	kerberosProvider *kerberos.Provider
 
+	// authSweep owns the goroutine that runs authorization re-check sweeps.
+	// Created on the first SetRuntime (which is where the subscription is
+	// made) and joined in Stop. Written and read under resolverMu, which
+	// SetRuntime and Stop can reach from different goroutines.
+	authSweep *authSweeper
+
 	// sidecars manages the adapter's auxiliary/companion services — the mDNS and
 	// WS-Discovery advertisers (issue #1609) — under one uniform lifecycle.
 	// Seeded with the Serve context and torn down in Stop. See discovery.go.
@@ -308,9 +314,22 @@ func (s *Adapter) SetRuntime(rtAny any) {
 	// neither per operation, so without this a disabled or deleted user keeps
 	// access for as long as the connection stays open, and a revoked share
 	// grant never takes effect on it at all.
-	unsubAuthInvalidate := rt.OnAuthCacheInvalidate(func() {
-		s.handler.RevalidateAuthorization(context.Background())
-	})
+	//
+	// The sweep itself is handed to a worker rather than run here: the
+	// control-plane fires its subscribers synchronously, so running it inline
+	// blocks the operator's API call for the length of a walk over every
+	// session and every tree. See authSweeper for the coalescing that goes
+	// with the offload.
+	s.resolverMu.Lock()
+	if s.authSweep == nil {
+		s.authSweep = newAuthSweeper(func(ctx context.Context) {
+			s.handler.RevalidateAuthorization(ctx)
+		})
+	}
+	sweeper := s.authSweep
+	s.resolverMu.Unlock()
+
+	unsubAuthInvalidate := rt.OnAuthCacheInvalidate(sweeper.request)
 	s.shareUnsubscribers = append(s.shareUnsubscribers, unsubAuthInvalidate)
 
 	// Register share change callback for cache invalidation
@@ -964,6 +983,17 @@ func (s *Adapter) Stop(ctx context.Context) error {
 		unsub()
 	}
 	s.shareUnsubscribers = nil
+
+	// Join the authorization sweep worker. Ordered after the unsubscribe above
+	// so nothing can queue a sweep once it has been stopped, and before the
+	// teardown below so no sweep is still reading session state while it runs.
+	s.resolverMu.Lock()
+	sweeper := s.authSweep
+	s.authSweep = nil
+	s.resolverMu.Unlock()
+	if sweeper != nil {
+		sweeper.stop()
+	}
 
 	// Close the Kerberos provider to stop its keytab reload goroutine.
 	// Matches the NFS adapter's Stop() behavior (pkg/adapter/nfs/shutdown.go).
