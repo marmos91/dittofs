@@ -120,6 +120,13 @@ func (p portmapSidecar) Name() string                    { return "portmapper" }
 func (p portmapSidecar) Start(ctx context.Context) error { return p.a.startPortmapper(ctx) }
 func (p portmapSidecar) Stop(context.Context) error      { p.a.stopPortmapper(); return nil }
 
+// Values of NFSAdapter.sysregState.
+const (
+	sysregIdle int32 = iota
+	sysregRunning
+	sysregDirty
+)
+
 // reconcileSysreg starts or stops the host-rpcbind registration to match the
 // live setting, so toggling it takes effect without restarting the adapter.
 // Called from Serve (initial start) and from applyNFSSettings (live toggle);
@@ -144,22 +151,19 @@ func (s *NFSAdapter) reconcileSysreg() {
 	if s.sidecars.IsRunning(sysregSidecarName) == want && s.sysregState.Load() == sysregIdle {
 		return
 	}
-	// Claim the transition, or hand this flip to the one already running.
-	for claimed := false; !claimed; {
-		switch st := s.sysregState.Load(); st {
-		case sysregIdle:
-			claimed = s.sysregState.CompareAndSwap(sysregIdle, sysregRunning)
-		default:
-			if s.sysregState.CompareAndSwap(st, sysregDirty) {
-				return
-			}
-		}
+	// Claim the transition, or hand this flip to the one already running: the
+	// swap marks dirty either way, and only the caller that found it idle owns
+	// the goroutine.
+	if s.sysregState.Swap(sysregDirty) != sysregIdle {
+		return
 	}
 	go func() {
 		for {
 			// Re-read per pass rather than capturing once: the value that
 			// matters is the one current when the pass begins, and a flip that
 			// landed during the previous pass is exactly what dirty records.
+			// Marking running before the read is what makes that true.
+			s.sysregState.Store(sysregRunning)
 			want := s.registerWithSystemEnabled()
 			err := s.sidecars.Reconcile(sysregSidecarName, want,
 				func(context.Context) auxsvc.Service { return sysregSidecar{s} })
@@ -172,18 +176,9 @@ func (s *NFSAdapter) reconcileSysreg() {
 			if s.sysregState.CompareAndSwap(sysregRunning, sysregIdle) {
 				return
 			}
-			s.sysregState.Store(sysregRunning)
 		}
 	}()
 }
-
-// Reconcile states for sysregState. A transition runs until it completes a pass
-// with no flip having arrived during it.
-const (
-	sysregIdle int32 = iota
-	sysregRunning
-	sysregDirty
-)
 
 const sysregSidecarName = "sysreg"
 

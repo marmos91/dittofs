@@ -172,10 +172,8 @@ type NFSAdapter struct {
 	// sysregState sequences the background registration reconcile so a burst of
 	// settings applies (one per accepted connection) collapses into a single
 	// in-flight transition instead of a goroutine per call, while still
-	// applying the last value a caller asked for. It holds one of sysregIdle,
-	// sysregRunning or sysregDirty: a caller that finds a transition already in
-	// flight marks it dirty rather than returning, and the running transition
-	// makes another pass so the flip it raced is applied instead of dropped.
+	// applying the last value a caller asked for. One of sysregIdle,
+	// sysregRunning or sysregDirty; see reconcileSysreg for the handoff.
 	sysregState atomic.Int32
 
 	// sysregAddr overrides the system rpcbind dial address. Empty means the

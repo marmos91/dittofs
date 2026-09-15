@@ -45,11 +45,10 @@ func TestReconcileSysregTogglesSidecar(t *testing.T) {
 }
 
 // A flip that lands while a transition is still talking to rpcbind is applied
-// rather than dropped. The sidecar's running state is published when the group
-// reserves its name, before Start runs, so a caller that reacts to that state
-// always issues its flip into an in-flight transition — the window this covers
-// is the normal case, not a rare one. slowSysregAddr holds the transition open
-// long enough for the flip to be issued deterministically.
+// rather than dropped. A caller that reacts to the sidecar's running state
+// always issues its flip into an in-flight transition (see waitRunning), so the
+// window this covers is the normal case, not a rare one. slowSysregAddr holds
+// the transition open long enough for the flip to be issued deterministically.
 func TestReconcileSysregAppliesFlipDuringTransition(t *testing.T) {
 	a, setRegisterWithSystem := newSysregAdapter(slowSysregAddr(t, 250*time.Millisecond))
 
@@ -105,9 +104,8 @@ func waitRunning(t *testing.T, a *NFSAdapter, want bool) {
 
 // waitSysreg waits for the reconciler to SETTLE on want, which is two facts,
 // not one: no transition is still in flight, and the sidecar's running state
-// matches. Waiting on the running state alone would pass while a transition is
-// mid-flight and could still move it — the group publishes that state when it
-// reserves the sidecar's name, before Start runs.
+// matches. Waiting on the running state alone (waitRunning) would pass while a
+// transition is mid-flight and could still move it.
 func waitSysreg(t *testing.T, a *NFSAdapter, want bool, cond string) {
 	t.Helper()
 	var running bool
