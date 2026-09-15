@@ -2224,9 +2224,10 @@ func TestCompound_Draining_RejectsNewRequests(t *testing.T) {
 	}
 }
 
-func TestCompound_BindConnToSession_SilentUnbind(t *testing.T) {
-	// Bind connection to session A, then bind same connection to session B,
-	// verify session A has 0 connections and session B has 1.
+func TestCompound_BindConnToSession_KeepsOtherSessionBinding(t *testing.T) {
+	// Bind a connection to session A, then bind the same connection to session
+	// B, and verify A keeps its binding: a connection's association with a
+	// session is not exclusive (RFC 8881 Section 2.10.3.1).
 	h := newTestHandler()
 
 	// Create session A
@@ -2307,10 +2308,10 @@ func TestCompound_BindConnToSession_SilentUnbind(t *testing.T) {
 		t.Fatalf("BIND_CONN_TO_SESSION failed: status=%d err=%v", dec3.Status, err)
 	}
 
-	// Verify session A has 0 connections (silently unbound)
+	// Verify session A still has its connection
 	bindingsA = h.StateManager.GetConnectionBindings(sessionA)
-	if len(bindingsA) != 0 {
-		t.Errorf("expected 0 bindings on session A after silent unbind, got %d", len(bindingsA))
+	if len(bindingsA) != 1 {
+		t.Errorf("expected session A to keep 1 binding, got %d", len(bindingsA))
 	}
 
 	// Verify session B has 2 connections (8061 auto-bound + 8060 rebound)

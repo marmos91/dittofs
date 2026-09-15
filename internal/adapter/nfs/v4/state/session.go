@@ -395,7 +395,7 @@ func (sm *StateManager) destroySessionLocked(sessionID types.SessionId4, force b
 	// Lock ordering: sm.mu (held by caller) before connMu.
 	sm.connMu.Lock()
 	for _, b := range sm.connBySession[sessionID] {
-		delete(sm.connByID, b.ConnectionID)
+		sm.removeConnBindingLocked(b.ConnectionID, sessionID)
 	}
 	delete(sm.connBySession, sessionID)
 	sm.connMu.Unlock()
@@ -513,11 +513,21 @@ func (sm *StateManager) reapExpiredSessions() {
 	// that no longer exist). This handles edge cases where a session was
 	// destroyed but the connection was not yet unbound.
 	sm.connMu.Lock()
-	for connID, binding := range sm.connByID {
-		if _, exists := sm.sessionsByID[binding.SessionID]; !exists {
-			delete(sm.connByID, connID)
-			sm.removeConnFromSessionLocked(connID, binding.SessionID)
+	type staleBinding struct {
+		connID    uint64
+		sessionID types.SessionId4
+	}
+	var stale []staleBinding
+	for connID, bindings := range sm.connByID {
+		for _, binding := range bindings {
+			if _, exists := sm.sessionsByID[binding.SessionID]; !exists {
+				stale = append(stale, staleBinding{connID, binding.SessionID})
+			}
 		}
+	}
+	for _, sb := range stale {
+		sm.removeConnBindingLocked(sb.connID, sb.sessionID)
+		sm.removeConnFromSessionLocked(sb.connID, sb.sessionID)
 	}
 	sm.connMu.Unlock()
 }

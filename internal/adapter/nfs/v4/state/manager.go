@@ -229,8 +229,11 @@ type StateManager struct {
 	// operations (connMu). Lock ordering: sm.mu before connMu (never reverse).
 	connMu sync.RWMutex
 
-	// connByID maps connectionID -> binding.
-	connByID map[uint64]*BoundConnection
+	// connByID maps connectionID -> its bindings, one per session the
+	// connection carries. A connection's association with a session is not
+	// exclusive (RFC 8881 Section 2.10.3.1): the same TCP connection may serve
+	// several sessions at once, including sessions of different clients.
+	connByID map[uint64][]*BoundConnection
 
 	// connBySession maps sessionID -> list of bindings.
 	connBySession map[types.SessionId4][]*BoundConnection
@@ -329,7 +332,7 @@ func NewStateManager(leaseDuration time.Duration, graceDuration ...time.Duration
 		serverIdentity:         newServerIdentity(epoch),
 		pendingReclaimPersists: make(map[string]*pendingReclaimPersist),
 		// Connection binding state
-		connByID:           make(map[uint64]*BoundConnection),
+		connByID:           make(map[uint64][]*BoundConnection),
 		connBySession:      make(map[types.SessionId4][]*BoundConnection),
 		maxConnsPerSession: 16,
 		// Backchannel state

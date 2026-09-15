@@ -116,6 +116,13 @@ func (c *NFSConnection) handleNFSv4Procedure(ctx context.Context, call *rpc.RPCC
 // This is called after every NFSv4 COMPOUND to detect BIND_CONN_TO_SESSION
 // or CREATE_SESSION auto-bind results that include back-channel direction.
 // The check is cheap (one map lookup) and idempotent (no-op if already registered).
+//
+// The ConnWriter and its reply demultiplexer are per connection, but the
+// sender is per session, and one connection may carry several sessions at
+// once. Starting a sender only on the COMPOUND that first registers the
+// writer would leave every later session on that connection without one, so
+// the two are registered independently and every back-bound session on the
+// connection gets its sender started.
 func (c *NFSConnection) maybeRegisterBackchannel(ctx context.Context) {
 	if c.server.v4Handler == nil || c.server.v4Handler.StateManager == nil {
 		return
@@ -123,43 +130,39 @@ func (c *NFSConnection) maybeRegisterBackchannel(ctx context.Context) {
 
 	sm := c.server.v4Handler.StateManager
 
-	// Check if this connection is bound with a back-channel direction
-	binding := sm.GetConnectionBinding(c.connectionID)
-	if binding == nil {
-		return
-	}
-	if binding.Direction != v4state.ConnDirBack && binding.Direction != v4state.ConnDirBoth {
-		return
-	}
-
-	// Already registered -- verify StateManager still has pending replies.
-	// If the connection was unbound/rebound, StateManager may have cleared
-	// the ConnWriter and PendingCBReplies, so we need to re-register.
-	if c.pendingCBReplies != nil {
-		if smPending := sm.GetPendingCBReplies(c.connectionID); smPending != nil {
-			return
+	// Collect the sessions this connection carries a back channel for.
+	var backBound []*v4state.BoundConnection
+	for _, b := range sm.GetConnectionBindingsForConn(c.connectionID) {
+		if b.Direction == v4state.ConnDirBack || b.Direction == v4state.ConnDirBoth {
+			backBound = append(backBound, b)
 		}
-		// Local state is stale: StateManager no longer tracks this connection.
-		// Clear the local flag so we can re-register the backchannel below.
-		c.pendingCBReplies = nil
+	}
+	if len(backBound) == 0 {
+		return
 	}
 
-	// Register ConnWriter: captures this NFSConnection's writeMu to prevent
-	// interleaving between fore-channel replies and backchannel callbacks.
-	writer := v4state.ConnWriter(func(data []byte) error {
-		c.writeMu.Lock()
-		defer c.writeMu.Unlock()
-		_, err := c.conn.Write(data)
-		return err
-	})
-	pending := sm.RegisterConnWriter(c.connectionID, writer)
-	c.pendingCBReplies = pending
+	// Register the ConnWriter once per connection. When the local handle is
+	// set but StateManager no longer tracks the connection (unbind/rebind
+	// cleared it), re-register rather than leaving the sender writerless.
+	if c.pendingCBReplies == nil || sm.GetPendingCBReplies(c.connectionID) == nil {
+		// Captures this NFSConnection's writeMu to prevent interleaving
+		// between fore-channel replies and backchannel callbacks.
+		writer := v4state.ConnWriter(func(data []byte) error {
+			c.writeMu.Lock()
+			defer c.writeMu.Unlock()
+			_, err := c.conn.Write(data)
+			return err
+		})
+		c.pendingCBReplies = sm.RegisterConnWriter(c.connectionID, writer)
+	}
 
-	// Start the BackchannelSender for this session (idempotent)
-	sm.StartBackchannelSender(ctx, binding.SessionID)
+	for _, b := range backBound {
+		// Idempotent: returns immediately when the session already has a sender.
+		sm.StartBackchannelSender(ctx, b.SessionID)
 
-	logger.Debug("Backchannel registered for connection",
-		"conn_id", c.connectionID,
-		"session_id", binding.SessionID.String(),
-		"direction", binding.Direction.String())
+		logger.Debug("Backchannel registered for connection",
+			"conn_id", c.connectionID,
+			"session_id", b.SessionID.String(),
+			"direction", b.Direction.String())
+	}
 }
