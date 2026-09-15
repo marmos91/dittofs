@@ -335,20 +335,29 @@ func (h *Handler) primeAuthContext(ctx *SMBHandlerContext, treeID uint32, sessio
 		// Hand the owning session to BuildAuthContextFromUser so it can reuse the
 		// session's memoized identity instead of re-deriving it per op.
 		ctx.session = sess
-		// Propagate guest-ness independent of User: guest sessions seed
-		// User=nil + IsGuest=true and BuildAuthContext relies on IsGuest
-		// to pick the nobody/nogroup (65534) arm instead of root.
-		ctx.IsGuest = sess.IsGuest
-		if sess.User != nil {
-			ctx.User = sess.User
+		// One locked read for every identity field the request will authorize
+		// with. SESSION_SETUP re-authentication and the authorization re-check
+		// both write these under the session mutex, so reading the fields
+		// directly is a data race on the user pointer and the PAC slice header
+		// alike; reading them through separate accessors is worse still, since a
+		// re-auth landing between two of them hands the operation a combination
+		// the session never held — one principal's user record beside another's
+		// group SIDs.
+		snap := sess.AuthzIdentity()
+		// Guest-ness and anonymity are propagated independent of User: guest
+		// and null sessions seed User=nil, and the flags are what a handle's
+		// frozen opener identity rebuilds the unprivileged nobody/nogroup
+		// (65534) arm from after a re-auth.
+		ctx.IsGuest = snap.IsGuest
+		ctx.IsNull = snap.IsNull
+		if snap.User != nil {
+			ctx.User = snap.User
 		}
 		// Carry the session's Kerberos PAC group SIDs onto the request context
 		// so BuildAuthContextFromUser can merge them into the identity. Follow-up
 		// ops (CREATE/READ/WRITE/QUERY_DIRECTORY) arrive keyed only by FileID and
 		// would otherwise lose the AD group set that was resolved at SESSION_SETUP.
-		// PACIdentity copies under the session lock — safe against a concurrent
-		// re-auth refreshing the set.
-		ctx.PACGroupSIDs, _ = sess.PACIdentity()
+		ctx.PACGroupSIDs = snap.GroupSIDs
 	}
 }
 
@@ -375,18 +384,13 @@ func (h *Handler) CaptureOpenerIdentity(ctx *SMBHandlerContext, openFile *OpenFi
 	if h == nil || ctx == nil || openFile == nil {
 		return
 	}
+	// All three come from the one locked snapshot primeAuthContext took at the
+	// head of this CREATE. Going back to the session for IsNull would read it
+	// unlocked, and would read it a re-authentication later than the user
+	// record beside it — freezing a pair the session never held.
 	openFile.OpenerUser = ctx.User
 	openFile.OpenerIsGuest = ctx.IsGuest
-	// IsNull mirrors the session-level "anonymous logon, not guest" state.
-	// SMBHandlerContext doesn't carry it explicitly; re-resolve from the
-	// session so a future re-auth to a real user doesn't lose the bit.
-	// Guard against tests that hand-build a Handler without a SessionManager.
-	if h.SessionManager == nil {
-		return
-	}
-	if sess, ok := h.GetSession(ctx.SessionID); ok && sess != nil {
-		openFile.OpenerIsNull = sess.IsNull
-	}
+	openFile.OpenerIsNull = ctx.IsNull
 }
 
 // buildOpenerAuthContext returns an AuthContext built from the OpenFile's

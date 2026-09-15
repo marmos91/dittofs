@@ -127,7 +127,7 @@ func (h *Handler) TreeConnect(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 	defaultPerm := models.ParseSharePermission(share.DefaultPermission)
 
 	// Resolve permission based on session type
-	permission, user := resolveSharePermission(ctx, sess, share, defaultPerm, h.Registry.GetUserStore())
+	permission, user, generation := resolveSharePermission(ctx, sess, share, defaultPerm, h.Registry.GetUserStore())
 
 	// Check for access denied
 	if permission == models.PermissionNone {
@@ -175,6 +175,19 @@ func (h *Handler) TreeConnect(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 	// for the user that was retired.
 	if sess != nil && sess.IsExpiredOrRevoked() {
 		logger.Warn("SMB TREE_CONNECT refused: session was revoked while access was being resolved",
+			"share", shareName, "sessionID", ctx.SessionID)
+		return NewErrorResult(types.StatusNetworkSessionExpired), nil
+	}
+	// The permission above was resolved against one identity, and resolving it
+	// takes two store round trips. A re-authentication landing inside that
+	// window re-decides authorization for a principal this answer was not about,
+	// and MS-SMB2 keeps tree connections across one — so publishing here would
+	// pin the previous principal's access onto the new one for the life of the
+	// connection. The client retries the TREE_CONNECT and gets an answer about
+	// the identity it now holds. This is the check the authorization re-check
+	// applies to its own tree updates, on the same generation.
+	if sess != nil && sess.AuthGeneration() != generation {
+		logger.Warn("SMB TREE_CONNECT refused: session re-authenticated while access was being resolved",
 			"share", shareName, "sessionID", ctx.SessionID)
 		return NewErrorResult(types.StatusNetworkSessionExpired), nil
 	}
@@ -414,13 +427,16 @@ func capReadOnlyShare(share *runtime.Share, permission models.SharePermission) m
 	return models.PermissionRead
 }
 
+// It also reports the identity generation the answer belongs to, so the caller
+// can refuse to publish a tree whose access was decided for a principal a
+// re-authentication has since replaced.
 func resolveSharePermission(
 	ctx *SMBHandlerContext,
 	sess *session.Session,
 	share *runtime.Share,
 	defaultPerm models.SharePermission,
 	userStore models.UserStore,
-) (models.SharePermission, string) {
+) (models.SharePermission, string, uint64) {
 	var snap session.AuthzIdentity
 	if sess != nil {
 		// Through the locked accessor: SESSION_SETUP re-authentication replaces
@@ -428,9 +444,69 @@ func resolveSharePermission(
 		// concurrent re-auth and can resolve access from a half-published
 		// identity.
 		snap = sess.AuthzIdentity()
+		snap.User = currentRecordFor(ctx.Context, snap.User, userStore)
 	}
 	perm, identifier, _ := resolveSharePermissionForIdentity(ctx, sess, snap, share, defaultPerm, userStore)
-	return perm, identifier
+	return perm, identifier, snap.Generation
+}
+
+// currentRecordFor returns the persisted user record to resolve a fresh
+// TREE_CONNECT against, given the one the session is carrying.
+//
+// A TREE_CONNECT is a new authorization decision, and permission resolution
+// reads grants and group membership off the record it is handed rather than the
+// database. Resolving against the session's snapshot therefore hands a
+// reconnecting client exactly the grants that were withdrawn since it
+// authenticated — and a client reconnects routinely, so a revocation that is
+// only applied to the established trees survives no longer than the next
+// TREE_CONNECT.
+//
+// decision: a lookup that fails, including one that reports the row gone,
+// leaves the session's own record standing rather than becoming a decision. A
+// store outage would otherwise revoke share access wholesale, and a deleted or
+// disabled account is already refused outright by the dispatch gate, which is a
+// stronger answer than anything decided here. The ceiling is that a deletion
+// the store cannot currently confirm leaves this resolution on the older record
+// until the store answers again. Withdraw the exemption for the missing-row
+// case only if the dispatch gate ever stops covering it. The re-check applies
+// the opposite policy to the same lookup — a missing row there revokes the
+// session — which is why askPersistedRecord reports the outcome rather than
+// deciding it.
+func currentRecordFor(ctx context.Context, user *models.User, userStore models.UserStore) *models.User {
+	current, asked, err := askPersistedRecord(ctx, user, userStore)
+	if !asked {
+		return user
+	}
+	if err != nil || current == nil {
+		logger.Debug("TREE_CONNECT could not re-read the user record, resolving against the session's copy",
+			"user", user.Username, "error", err)
+		return user
+	}
+	return current
+}
+
+// askPersistedRecord re-reads the store's record for the user a session is
+// carrying. It reports whether the store was asked at all, so a caller can tell
+// "no answer available" from "the store says this user is gone" — the two mean
+// opposite things to an authorization decision.
+//
+// decision: a principal resolved from the directory with no local account is
+// never offered to the store. Its record was synthesized and never persisted,
+// so it carries no primary key, and the store is keyed by name — a row that
+// comes back under that name is a different principal, not a fresher copy of
+// this one. The two callers would each be wrong in their own way without the
+// guard: the re-check would read "missing" as deletion and retire every AD
+// session on the next unrelated user edit, and TREE_CONNECT would resolve a
+// domain principal's access from a local account that merely shares its
+// sAMAccountName — the same substitution bindIdentityMatchesSession refuses on
+// the channel-bind path. Withdraw the exemption only if such a principal ever
+// gets a persisted row of its own, matched by SID rather than by name.
+func askPersistedRecord(ctx context.Context, user *models.User, userStore models.UserStore) (*models.User, bool, error) {
+	if user == nil || userStore == nil || user.ID == "" {
+		return nil, false, nil
+	}
+	current, err := userStore.GetUser(ctx, user.Username)
+	return current, true, err
 }
 
 // resolveSharePermissionForIdentity resolves against a supplied identity rather

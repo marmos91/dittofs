@@ -821,7 +821,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 			metaSvc := h.Registry.GetMetadataService()
 			reconnResult, status, reconnErr := ProcessDurableReconnectContext(
 				authCtx.Context, h.DurableStore, metaSvc, req.CreateContexts,
-				ctx.SessionID, sess.Username, sessionKeyHash,
+				ctx.SessionID, sess.CurrentUsername(), sessionKeyHash,
 				tree.ShareName, fullFilename, connClientGUID(ctx),
 			)
 			if reconnErr != nil {

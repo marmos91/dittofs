@@ -46,6 +46,17 @@ type revalidateUserStore struct {
 	// gotSIDs records the SIDs the last SID-grant lookup was asked about, so a
 	// test can tell which identity the resolution actually ran against.
 	gotSIDs []string
+	// resolveFromRecord makes the share-permission lookup answer from the
+	// record it is handed, the way the real store does — grants and group
+	// membership are read off the user object, not the database. That is what
+	// lets a test tell which record a resolution actually ran against: the
+	// session's stale copy and the persisted one give different answers, so the
+	// assertion can be on the access granted rather than on which pointer was
+	// passed.
+	resolveFromRecord bool
+	// gets counts the record lookups, so a test can tell a resolution that
+	// re-read the record from one that happened to agree with it.
+	gets int
 }
 
 // ResolveSharePermissionForSIDs makes the fake satisfy sidSharePermissionResolver
@@ -59,6 +70,7 @@ func (s *revalidateUserStore) ResolveSharePermissionForSIDs(_ context.Context, s
 }
 
 func (s *revalidateUserStore) GetUser(_ context.Context, _ string) (*models.User, error) {
+	s.gets++
 	if s.onGetUser != nil {
 		s.onGetUser()
 	}
@@ -68,12 +80,19 @@ func (s *revalidateUserStore) GetUser(_ context.Context, _ string) (*models.User
 	return s.user, nil
 }
 
-func (s *revalidateUserStore) ResolveSharePermission(_ context.Context, _ *models.User, _ string) (models.SharePermission, error) {
+func (s *revalidateUserStore) ResolveSharePermission(_ context.Context, user *models.User, shareName string) (models.SharePermission, error) {
 	if s.onResolve != nil {
 		s.onResolve()
 	}
 	if s.permErr != nil {
 		return models.PermissionNone, s.permErr
+	}
+	if s.resolveFromRecord {
+		if user == nil {
+			return models.PermissionNone, nil
+		}
+		perm, _ := user.GetExplicitSharePermission(shareName)
+		return perm, nil
 	}
 	return s.perm, nil
 }
@@ -245,7 +264,7 @@ func TestResolveSharePermission_DisabledUserDenied(t *testing.T) {
 		sess := session.NewSessionWithUser(1, "127.0.0.1", user, "")
 		share := &runtime.Share{Name: "/export", DefaultPermission: "read-write"}
 
-		perm, _ := resolveSharePermission(ctx, sess, share, models.PermissionReadWrite, nil)
+		perm, _, _ := resolveSharePermission(ctx, sess, share, models.PermissionReadWrite, nil)
 
 		if perm != models.PermissionNone {
 			t.Errorf("Permission = %v, want none for a disabled user", perm)
@@ -264,7 +283,7 @@ func TestResolveSharePermission_DisabledUserDenied(t *testing.T) {
 			DefaultPermission: "read-write",
 		}
 
-		perm, _ := resolveSharePermission(ctx, sess, share, models.PermissionReadWrite, nil)
+		perm, _, _ := resolveSharePermission(ctx, sess, share, models.PermissionReadWrite, nil)
 
 		if perm != models.PermissionNone {
 			t.Errorf("Permission = %v, want none for a disabled root user", perm)
@@ -338,7 +357,7 @@ func TestRevokedSessionRecoversOnReauth(t *testing.T) {
 		t.Fatal("session did not report as revoked")
 	}
 
-	sess.UpdateIdentity(user.Username, "", user, false, false)
+	sess.UpdateIdentity(user.Username, "", user, false, false, nil, "")
 
 	if sess.AuthRevoked() {
 		t.Error("re-authentication must clear the revocation, or the session can never recover")
@@ -634,7 +653,7 @@ func TestRevalidateAuthorization_ConcurrentReauthIsRaceFree(t *testing.T) {
 		defer wg.Done()
 		user := enabledUser()
 		for i := range 50 {
-			sess.UpdateIdentity(fmt.Sprintf("user-%d", i), "", user, false, false)
+			sess.UpdateIdentity(fmt.Sprintf("user-%d", i), "", user, false, false, nil, "")
 		}
 	}()
 	wg.Wait()
@@ -656,7 +675,7 @@ func TestRevalidateAuthorization_ReauthDuringLookupSurvives(t *testing.T) {
 	uid := uint32(1001)
 	replacement := &models.User{ID: "user-2", Username: "bob", UID: &uid, Enabled: true}
 	store.onGetUser = func() {
-		sess.UpdateIdentity(replacement.Username, "", replacement, false, false)
+		sess.UpdateIdentity(replacement.Username, "", replacement, false, false, nil, "")
 	}
 
 	h.RevalidateAuthorization(context.Background())
@@ -685,7 +704,7 @@ func TestRevalidateAuthorization_ReauthDuringResolveLeavesTree(t *testing.T) {
 	uid := uint32(1001)
 	replacement := &models.User{ID: "user-2", Username: "bob", UID: &uid, Enabled: true}
 	store.onResolve = func() {
-		sess.UpdateIdentity(replacement.Username, "", replacement, false, false)
+		sess.UpdateIdentity(replacement.Username, "", replacement, false, false, nil, "")
 	}
 
 	h.RevalidateAuthorization(context.Background())
@@ -821,8 +840,8 @@ func TestResolveSharePermission_RunsOnOneIdentity(t *testing.T) {
 
 	// The re-authentication that lands while the decision is in flight.
 	replacement := &models.User{ID: "user-2", Username: "bob", Enabled: true}
-	sess.UpdateIdentity("bob", "", replacement, false, false)
-	sess.SetPACIdentity([]string{"S-1-5-21-9-9-9-5104"}, "S-1-5-21-9-9-9-5200")
+	sess.UpdateIdentity("bob", "", replacement, false, false,
+		[]string{"S-1-5-21-9-9-9-5104"}, "S-1-5-21-9-9-9-5200")
 
 	share, err := h.Registry.GetShare("/export")
 	if err != nil || share == nil {

@@ -28,9 +28,11 @@ import (
 // replaces the tree; one that has dropped to none removes it, so the next
 // operation on that tree is refused and a fresh TREE_CONNECT re-decides access.
 //
-// Nothing here writes to the session's own user field. That field is read
-// unlocked on the dispatch path, so publishing a new record from this goroutine
-// would be a data race rather than a refresh.
+// The record is also published onto the session, so the identity a file
+// operation resolves per request — its UID, its supplementary GIDs, its group
+// SIDs — is the current one rather than the snapshot taken at SESSION_SETUP.
+// Publishing it is only safe because every reader on the authorization path
+// takes it through the locked accessor.
 //
 // Runs off the request path, from the adapter's auth-cache-invalidate
 // subscription.
@@ -39,15 +41,14 @@ import (
 // indexing them by username. Both tables are per-connection state bounded by the
 // client count, and the walk runs only on a control-plane mutation, not per
 // operation; index them if a deployment ever makes that walk visible.
-// survivingSession is a session the re-check kept, paired with the identity
-// generation the record was read at. The tree pass resolves against the record
-// but applies nothing once the generation has moved on.
 // survivingSession is the identity a session's trees re-resolve against: the
 // one snapshot the session pass read, with the user record replaced by the one
 // the store returned for it. Carrying the whole snapshot rather than the record
 // alone keeps the tree pass on a single identity — re-reading the session for
 // its name, guest flag or PAC SIDs would reintroduce the mixing the snapshot
-// exists to prevent, a sweep's worth of time after it was taken.
+// exists to prevent, a sweep's worth of time after it was taken. The snapshot
+// carries the generation the record was read at, and the tree pass applies
+// nothing once that has moved on.
 type survivingSession struct {
 	snap session.AuthzIdentity
 }
@@ -100,30 +101,18 @@ func (h *Handler) RevalidateAuthorization(ctx context.Context) {
 		}
 		snap := sess.AuthzIdentity()
 		current, gen := snap.User, snap.Generation
-		if current == nil {
-			// Guest and anonymous sessions carry no user record; their access
-			// rests on the share default, which the tree pass re-resolves.
+		// Not every session has a record the store can be asked about: a guest
+		// or anonymous one carries none, and a directory-resolved principal
+		// carries one that was never persisted. Both rest on what the tree pass
+		// re-resolves — the share default and the SID grants respectively — so
+		// they survive with the identity they have. askPersistedRecord holds
+		// that rule, and TREE_CONNECT reads it from the same place.
+		user, asked, err := askPersistedRecord(ctx, current, userStore)
+		if !asked {
 			surviving[sessionID] = survivingSession{snap: snap}
 			return true
 		}
 
-		// A directory-resolved principal with no local account is backed by a
-		// synthesized record that was never persisted, so it carries no primary
-		// key and there is no row to re-read. Its authorization comes from the
-		// SID grants the tree pass re-resolves. Looking it up would report the
-		// user as missing and retire every AD session on the next unrelated
-		// user edit.
-		if current.ID == "" {
-			surviving[sessionID] = survivingSession{snap: snap}
-			return true
-		}
-
-		if userStore == nil {
-			surviving[sessionID] = survivingSession{snap: snap}
-			return true
-		}
-
-		user, err := userStore.GetUser(ctx, current.Username)
 		switch {
 		case errors.Is(err, models.ErrUserNotFound):
 			if !h.revokeIfCurrent(ctx, sess, sessionID, gen) {
@@ -145,6 +134,19 @@ func (h *Handler) RevalidateAuthorization(ctx context.Context) {
 			logger.Info("SMB session revoked: user disabled",
 				"sessionID", sessionID, "username", current.Username)
 		default:
+			// Publish the record onto the session as well as carrying it into
+			// the tree pass. Without this the sweep leaves the tree permissions
+			// current while the identity every file operation authorizes with
+			// stays at the SESSION_SETUP snapshot — so a UID or group change
+			// never reaches an in-flight operation, and a reconnect resolves a
+			// fresh TREE_CONNECT from the grants that were just withdrawn.
+			// Refused when a re-authentication landed during the lookup, for
+			// the same reason the revocation is.
+			if !sess.PublishUser(user, gen) {
+				logger.Debug("SMB session re-authenticated during authorization re-check, record not published",
+					"sessionID", sessionID)
+				return true
+			}
 			snap.User = user
 			surviving[sessionID] = survivingSession{snap: snap}
 		}

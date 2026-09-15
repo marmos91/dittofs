@@ -153,7 +153,8 @@ func TestCompleteNTLMAuth_DomainUserPassthrough(t *testing.T) {
 	}
 
 	// PAC identity must be stamped from the DC result (groupSIDs, userSID).
-	pacGroupSIDs, pacUserSID := sess.PACIdentity()
+	pacIdentity := sess.AuthzIdentity()
+	pacGroupSIDs, pacUserSID := pacIdentity.GroupSIDs, pacIdentity.UserSID
 	if pacUserSID != sid {
 		t.Errorf("PAC user SID = %q, want %q", pacUserSID, sid)
 	}

@@ -10,7 +10,7 @@ import (
 // reprimePAC mirrors what primeAuthContext does: copy the session's current PAC
 // group SIDs onto the request context before building the auth context.
 func reprimePAC(ctx *SMBHandlerContext, sess *session.Session) {
-	ctx.PACGroupSIDs, _ = sess.PACIdentity()
+	ctx.PACGroupSIDs = sess.AuthzIdentity().GroupSIDs
 }
 
 func TestAuthIdentityCache_HitReturnsSamePointer(t *testing.T) {

@@ -451,8 +451,9 @@ func (sv *sessionSigningVerifier) VerifyRequest(hdr *header.SMB2Header, message 
 	// disconnect the connection. This applies regardless of the server's
 	// signing configuration because 3.1.1 implicitly requires message
 	// integrity for all authenticated sessions.
+	isGuest, isNull := sess.GuestOrNull()
 	if cs := sess.GetCryptoState(); !isSigned && sv.connCrypto != nil && sv.connCrypto.GetDialect() == types.Dialect0311 &&
-		!sess.IsGuest && !sess.IsNull &&
+		!isGuest && !isNull &&
 		cs != nil && cs.ShouldVerify() {
 		logger.Warn("SMB 3.1.1: unsigned unencrypted request from authenticated session, disconnecting",
 			"command", hdr.Command.String(),

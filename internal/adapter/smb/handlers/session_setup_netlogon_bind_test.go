@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/session"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/auth/netlogon"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
@@ -300,12 +299,12 @@ func TestReauth_DoesNotUseNetlogonFallback(t *testing.T) {
 func TestBindIdentityMatchesSession(t *testing.T) {
 	const sidA = "S-1-5-21-1-2-3-1107"
 	const sidB = "S-1-5-21-1-2-3-1200"
-	mk := func(username, sid string) *session.Session {
-		return &session.Session{User: &models.User{Username: username, SID: sid}}
+	mk := func(username, sid string) *models.User {
+		return &models.User{Username: username, SID: sid}
 	}
 	tests := []struct {
 		name string
-		sess *session.Session
+		sess *models.User
 		auth *models.User
 		want bool
 	}{

@@ -629,11 +629,13 @@ func (h *Handler) handleSessionBind(ctx *SMBHandlerContext, req *SessionSetupReq
 
 	// Step 8: guest / anonymous sessions cannot be bound (no real identity
 	// to authenticate against on the new channel).
-	if sess.IsGuest || sess.IsNull {
+	// One locked read: a concurrent SESSION_SETUP on this session writes both
+	// flags under the session mutex, and this is an authorization gate.
+	if bindIsGuest, bindIsNull := sess.GuestOrNull(); bindIsGuest || bindIsNull {
 		logger.Info("SESSION_SETUP bind rejected: session is guest/anonymous",
 			"sessionID", ctx.SessionID,
-			"isGuest", sess.IsGuest,
-			"isNull", sess.IsNull)
+			"isGuest", bindIsGuest,
+			"isNull", bindIsNull)
 		return NewErrorResult(types.StatusNotSupported), nil
 	}
 
@@ -785,17 +787,21 @@ func (h *Handler) handleNTLMNegotiateBinding(ctx *SMBHandlerContext, req *Sessio
 // DOMAIN\alice's session and inherit her authorization context (a privilege
 // escalation — control-plane accounts may legitimately have an empty SID). The
 // fallback is case-insensitive, matching Windows username semantics.
-func bindIdentityMatchesSession(sess *session.Session, authUser *models.User) bool {
-	if authUser == nil || sess == nil || sess.User == nil {
+// It takes the session's user record rather than the session so the caller
+// reads it once, through the locked accessor: SESSION_SETUP re-authentication
+// and the authorization re-check both replace that pointer under the session
+// mutex, and a gate that read it twice could compare one record and log another.
+func bindIdentityMatchesSession(sessUser *models.User, authUser *models.User) bool {
+	if authUser == nil || sessUser == nil {
 		return false
 	}
-	if authUser.SID != "" || sess.User.SID != "" {
+	if authUser.SID != "" || sessUser.SID != "" {
 		// Equal only when both are the same non-empty SID: a SID-vs-empty
 		// comparison is unequal, so a SID-less identity can never bind onto a
 		// SID-bearing session (and vice versa).
-		return authUser.SID == sess.User.SID
+		return authUser.SID == sessUser.SID
 	}
-	return strings.EqualFold(authUser.Username, sess.User.Username)
+	return strings.EqualFold(authUser.Username, sessUser.Username)
 }
 
 // completeSessionBind finalizes an SMB2 session bind after NTLM auth proved
@@ -831,10 +837,11 @@ func (h *Handler) completeSessionBind(
 	// the security subsystem, the server MUST return STATUS_ACCESS_DENIED").
 	// A mismatch is a security boundary — a bind must never attach a different
 	// identity to an existing session — so log it at Warn.
-	if !bindIdentityMatchesSession(sess, authUser) {
+	sessCurrent := sess.CurrentUser()
+	if !bindIdentityMatchesSession(sessCurrent, authUser) {
 		sessUser := "<nil>"
-		if sess.User != nil {
-			sessUser = sess.User.Username
+		if sessCurrent != nil {
+			sessUser = sessCurrent.Username
 		}
 		authUserName := "<nil>"
 		if authUser != nil {
@@ -1849,6 +1856,12 @@ func (h *Handler) configureSessionSigningWithKey(sess *session.Session, sessionK
 		return nil
 	}
 
+	// One locked read for the whole configuration below: this runs on the
+	// re-authentication path too, so a concurrent SESSION_SETUP on this session
+	// writes the flag under the mutex while these gates read it, and reading it
+	// four times could derive keys from two different answers.
+	_, isNullSession := sess.GuestOrNull()
+
 	// Determine the negotiated dialect from the connection's CryptoState.
 	// If CryptoState is nil (legacy 2.x path or tests), default to 2.0.2.
 	dialect := types.Dialect0202
@@ -1916,7 +1929,7 @@ func (h *Handler) configureSessionSigningWithKey(sess *session.Session, sessionK
 			// reach the handler; Samba's smbd_smb2_signing_key returns NULL
 			// for null sessions, so the unsigned-required gate doesn't fire
 			// there either.
-			cryptoState.SigningRequired = (h.SigningConfig.Required || dialect == types.Dialect0311) && !sess.IsNull
+			cryptoState.SigningRequired = (h.SigningConfig.Required || dialect == types.Dialect0311) && !isNullSession
 		}
 
 		// Encryption: activate encryptors for preferred/required modes on 3.x sessions.
@@ -1942,10 +1955,10 @@ func (h *Handler) configureSessionSigningWithKey(sess *session.Session, sessionK
 		//     decryption_key from an all-zeros session key — matching what
 		//     our zero-base-key path produces here.
 		allowAnonEncryption := false
-		if sess.IsNull && ctx != nil && ctx.ConnCryptoState != nil {
+		if isNullSession && ctx != nil && ctx.ConnCryptoState != nil {
 			allowAnonEncryption = ctx.ConnCryptoState.HasAuthenticatedSession()
 		}
-		if encryptionEnabled && (!sess.IsNull || allowAnonEncryption) {
+		if encryptionEnabled && (!isNullSession || allowAnonEncryption) {
 			// SMB 3.0/3.0.2 don't use negotiate contexts, so cipherId may be 0.
 			// Per MS-SMB2 spec, AES-128-CCM is the mandatory cipher for SMB 3.0.
 			encCipherId := cipherId
@@ -2039,7 +2052,7 @@ func (h *Handler) configureSessionSigningWithKey(sess *session.Session, sessionK
 	// branch above and smbtorture smb2.session.anon-encryption{1,2,3}).
 	// Guest sessions never enter this function (they have no session key),
 	// so only IsNull needs to be filtered here.
-	if !sess.IsNull && ctx != nil && ctx.ConnCryptoState != nil {
+	if !isNullSession && ctx != nil && ctx.ConnCryptoState != nil {
 		ctx.ConnCryptoState.SetHasAuthenticatedSession()
 	}
 
@@ -2131,18 +2144,19 @@ func (h *Handler) tryReauthUpdate(pending *PendingAuth, username, domain string,
 	}
 	// UpdateIdentity holds the session lock, so a concurrent request goroutine
 	// building an AuthContext never observes a half-updated identity. It also
-	// drops the memoized derived identity and (via the caller's SetPACIdentity
-	// below) clears any Kerberos PAC carried from a prior auth: a session that
-	// first authenticated via Kerberos (PAC group SIDs, possibly privileged) and
-	// then reauthenticated via NTLM as a lower-privileged or anonymous user must
-	// not retain the original AD group SIDs.
-	existingSess.UpdateIdentity(username, domain, user, isGuest, username == "" && !isGuest)
-	existingSess.SetPACIdentity(nil, "")
+	// drops the memoized derived identity and clears any Kerberos PAC carried
+	// from a prior auth: a session that first authenticated via Kerberos (PAC
+	// group SIDs, possibly privileged) and then reauthenticated via NTLM as a
+	// lower-privileged or anonymous user must not retain the original AD group
+	// SIDs. NTLM carries no PAC, so the empty SIDs go in the same write as the
+	// record they belong to rather than in a second one a request could resolve
+	// its identity inside.
+	existingSess.UpdateIdentity(username, domain, user, isGuest, username == "" && !isGuest, nil, "")
 
 	logger.Info("Session re-authenticated (identity updated, keys retained)",
 		"sessionID", existingSess.SessionID,
-		"username", existingSess.Username,
-		"domain", existingSess.Domain,
+		"username", username,
+		"domain", domain,
 		"signingEnabled", existingSess.ShouldSign(),
 		"encryptData", existingSess.ShouldEncrypt())
 

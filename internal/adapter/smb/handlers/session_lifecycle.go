@@ -300,7 +300,7 @@ func (h *Handler) closeFilesWithFilter(
 			username := ""
 			var sessionKeyHash [32]byte
 			if sess != nil {
-				username = sess.Username
+				username = sess.CurrentUsername()
 				sessionKeyHash = computeSessionKeyHash(sess)
 			}
 
@@ -946,12 +946,19 @@ func (h *Handler) buildCleanupAuthContext(ctx context.Context, sess *session.Ses
 		BypassTraverseChecking: true,
 	}
 
-	if sess != nil && sess.User != nil {
+	var user *models.User
+	if sess != nil {
+		// Through the locked accessor: cleanup runs on a teardown goroutine
+		// while SESSION_SETUP re-authentication and the authorization re-check
+		// both replace this pointer under the session mutex.
+		user = sess.CurrentUser()
+	}
+	if user != nil {
 		// Use session user's UID/GID from User object
-		uid, gid := uidGIDFromSessionUser(sess.User)
+		uid, gid := uidGIDFromSessionUser(user)
 		authCtx.Identity.UID = &uid
 		authCtx.Identity.GID = &gid
-		authCtx.Identity.Username = sess.User.Username
+		authCtx.Identity.Username = user.Username
 		authCtx.ClientAddr = sess.ClientAddr
 	} else {
 		// Fallback to root for cleanup operations when session info is unavailable.
@@ -1008,7 +1015,7 @@ func (h *Handler) CreateSessionWithUser(sessionID uint64, clientAddr string, use
 
 func (h *Handler) CreateSessionWithUserAndExpiry(sessionID uint64, clientAddr string, user *models.User, domain string, expiresAt time.Time) *session.Session {
 	sess := session.NewSessionWithUser(sessionID, clientAddr, user, domain)
-	sess.ExpiresAt = expiresAt
+	sess.SetExpiry(expiresAt)
 	h.SessionManager.StoreSession(sess)
 	return sess
 }

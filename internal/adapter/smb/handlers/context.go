@@ -143,9 +143,12 @@ type SMBHandlerContext struct {
 	// IsGuest indicates guest/anonymous session
 	IsGuest bool
 
-	// Username for authenticated sessions
-	Username string
-	Domain   string
+	// IsNull mirrors the session-level "anonymous logon, not guest" state.
+	// Populated from the same locked identity snapshot as IsGuest and User by
+	// primeAuthContext, so a CREATE freezing the opener identity onto its
+	// OpenFile records all three from one read rather than going back to the
+	// session for the last of them.
+	IsNull bool
 
 	// User is the authenticated DittoFS user (nil for guest sessions)
 	// This is set from the session during request handling.

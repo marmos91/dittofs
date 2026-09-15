@@ -820,7 +820,7 @@ func TestResolveSharePermission_RootBypass(t *testing.T) {
 		share := &runtime.Share{Name: "/export", Squash: models.SquashRootToAdmin, DefaultPermission: "read-write"}
 		defaultPerm := models.PermissionReadWrite
 
-		perm, username := resolveSharePermission(ctx, sess, share, defaultPerm, nil)
+		perm, username, _ := resolveSharePermission(ctx, sess, share, defaultPerm, nil)
 
 		if perm != models.PermissionAdmin {
 			t.Errorf("Root user should get PermissionAdmin, got %v", perm)
@@ -839,7 +839,7 @@ func TestResolveSharePermission_RootBypass(t *testing.T) {
 		share := &runtime.Share{Name: "/export", Squash: "", DefaultPermission: "read-write"}
 		defaultPerm := models.PermissionReadWrite
 
-		perm, _ := resolveSharePermission(ctx, sess, share, defaultPerm, nil)
+		perm, _, _ := resolveSharePermission(ctx, sess, share, defaultPerm, nil)
 
 		if perm == models.PermissionAdmin {
 			t.Error("Root user with empty (default root_to_guest) squash should not get admin bypass")
@@ -853,7 +853,7 @@ func TestResolveSharePermission_RootBypass(t *testing.T) {
 		share := &runtime.Share{Name: "/export", Squash: models.SquashRootToGuest, DefaultPermission: "read-write"}
 		defaultPerm := models.PermissionReadWrite
 
-		perm, _ := resolveSharePermission(ctx, sess, share, defaultPerm, nil)
+		perm, _, _ := resolveSharePermission(ctx, sess, share, defaultPerm, nil)
 
 		// Root bypass should NOT apply when squash mode denies root
 		// Without userStore, it falls back to default permission
@@ -869,7 +869,7 @@ func TestResolveSharePermission_RootBypass(t *testing.T) {
 		share := &runtime.Share{Name: "/export", Squash: "", DefaultPermission: "read-write"}
 		defaultPerm := models.PermissionReadWrite
 
-		perm, _ := resolveSharePermission(ctx, sess, share, defaultPerm, nil)
+		perm, _, _ := resolveSharePermission(ctx, sess, share, defaultPerm, nil)
 
 		// Non-root user should NOT get admin bypass
 		// Without userStore, it falls back to default permission
@@ -883,7 +883,7 @@ func TestResolveSharePermission_RootBypass(t *testing.T) {
 		share := &runtime.Share{Name: "/export", Squash: "", DefaultPermission: "read"}
 		defaultPerm := models.PermissionRead
 
-		perm, username := resolveSharePermission(ctx, sess, share, defaultPerm, nil)
+		perm, username, _ := resolveSharePermission(ctx, sess, share, defaultPerm, nil)
 
 		if perm != models.PermissionRead {
 			t.Errorf("Guest session should get default permission, got %v", perm)
@@ -900,7 +900,7 @@ func TestResolveSharePermission_RootBypass(t *testing.T) {
 		share := &runtime.Share{Name: "/export", Squash: "", DefaultPermission: "read-write"}
 		defaultPerm := models.PermissionReadWrite
 
-		perm, _ := resolveSharePermission(ctx, nil, share, defaultPerm, nil)
+		perm, _, _ := resolveSharePermission(ctx, nil, share, defaultPerm, nil)
 
 		if perm != models.PermissionNone {
 			t.Errorf("nil session should resolve to PermissionNone (deny), got %v", perm)

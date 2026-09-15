@@ -248,7 +248,15 @@ type Session struct {
 // concurrent reader (AuthContext build, share access) never observes a torn
 // or half-updated identity, and drops the memoized derived identity since
 // User/PAC may both change. Safe for concurrent use.
-func (s *Session) UpdateIdentity(username, domain string, user *models.User, isGuest, isNull bool) {
+//
+// The Kerberos PAC SIDs are written here rather than through a following
+// SetPACIdentity call because the two together are one identity: a Kerberos
+// re-authentication refreshes both and an NTLM one clears the PAC, so writing
+// them in two critical sections publishes a state the session never held — the
+// new principal's user record beside the old principal's group SIDs — which a
+// reader taking a correctly locked snapshot in that window would authorize.
+// The group SIDs are copied, so the caller's slice is never aliased.
+func (s *Session) UpdateIdentity(username, domain string, user *models.User, isGuest, isNull bool, pacGroupSIDs []string, pacUserSID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Username = username
@@ -256,10 +264,9 @@ func (s *Session) UpdateIdentity(username, domain string, user *models.User, isG
 	s.User = user
 	s.IsGuest = isGuest
 	s.IsNull = isNull
-	// User and PAC identity may both have changed; drop the memoized derived
-	// identity so the next consumer rebuilds from the new fields.
-	s.authIdentity = nil
-	s.authIdentityUser = nil
+	// Drops the memoized derived identity too: User and PAC may both have
+	// changed, so the next consumer rebuilds from the new fields.
+	s.setPACLocked(pacGroupSIDs, pacUserSID)
 	// Re-authentication re-decides authorization, so it clears a revocation the
 	// way a fresh ticket end-time clears an expiry. SESSION_SETUP refuses a
 	// disabled or deleted user outright, so reaching here means the account is
@@ -269,24 +276,65 @@ func (s *Session) UpdateIdentity(username, domain string, user *models.User, isG
 	s.authGen.Add(1)
 }
 
+// PublishUser replaces the session's user record with one an authorization
+// re-check has just read from the store, so everything that authorizes off the
+// session afterwards — the per-operation identity a file op resolves, a fresh
+// TREE_CONNECT — reads the current grants and group memberships rather than the
+// ones captured when the session authenticated. Written under the same lock
+// UpdateIdentity uses, so a concurrent reader never sees a half-published
+// pointer, and the memoized derived identity is dropped so the next operation
+// rebuilds its UID, GIDs and group SIDs from the new record.
+//
+// It refuses when the generation has moved: a re-authentication since the
+// caller read the record has already re-decided authorization for a principal
+// that may not be this one, and publishing over it would put one identity's
+// record on another's session. Reports whether it published.
+//
+// decision: publishing does not advance the generation. The principal is
+// unchanged — this is the same account's row read again, not a new
+// authentication — and a sweep pins its tree decisions to the generation it
+// snapshotted, so advancing here would make every sweep discard the work it
+// just did. It follows that a decision taken against the older copy of the
+// record is not invalidated by this write; nothing today holds one that
+// outlives the sweep, and a caller that ever does needs its own stamp rather
+// than this generation.
+func (s *Session) PublishUser(user *models.User, generation uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.authGen.Load() != generation {
+		return false
+	}
+	s.User = user
+	s.authIdentity = nil
+	s.authIdentityUser = nil
+	return true
+}
+
 // SetPACIdentity stores the Kerberos PAC group SIDs and user SID for the
-// session, replacing any previous set. Called on SESSION_SETUP and on
-// re-authentication (Kerberos reauth refreshes, NTLM reauth clears with a nil
-// slice and empty string). The group SIDs are copied so the caller's slice is
-// never aliased and a concurrent PACIdentity reader can never observe a torn
-// header. Safe for concurrent use.
+// session, replacing any previous set. Called when a session is first
+// established, before its ID has reached the client and anything else can
+// resolve an identity off it. Re-authentication writes the SIDs through
+// UpdateIdentity instead, so the record and the SIDs it belongs with are
+// published in one write. The group SIDs are copied so the caller's slice is
+// never aliased and a concurrent reader can never observe a torn header. Safe
+// for concurrent use.
 func (s *Session) SetPACIdentity(groupSIDs []string, userSID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.setPACLocked(groupSIDs, userSID)
+}
+
+// setPACLocked replaces the PAC identity and drops the memoized derived
+// identity, which folds the group SIDs in and so goes stale with them. Both
+// writers of the PAC go through it, so there is one copy of that rule. Caller
+// holds mu.
+func (s *Session) setPACLocked(groupSIDs []string, userSID string) {
 	if len(groupSIDs) == 0 {
 		s.pacGroupSIDs = nil
 	} else {
 		s.pacGroupSIDs = append([]string(nil), groupSIDs...)
 	}
 	s.pacUserSID = userSID
-	// The memoized identity folds in the PAC group SIDs, so any refresh (or the
-	// NTLM-reauth clear) must drop it. Both re-auth paths call SetPACIdentity, so
-	// this is the single chokepoint that keeps the cache from going stale.
 	s.authIdentity = nil
 	s.authIdentityUser = nil
 }
@@ -313,19 +361,6 @@ func (s *Session) SetCachedAuthIdentity(user *models.User, identity *metadata.Id
 	defer s.mu.Unlock()
 	s.authIdentityUser = user
 	s.authIdentity = identity
-}
-
-// PACIdentity returns a copy of the session's Kerberos PAC group SIDs and the
-// user SID. The slice is copied so the caller cannot mutate session state and
-// never shares a backing array with a concurrent SetPACIdentity. Returns
-// (nil, "") for sessions without PAC identity. Safe for concurrent use.
-func (s *Session) PACIdentity() (groupSIDs []string, userSID string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.pacGroupSIDs) > 0 {
-		groupSIDs = append([]string(nil), s.pacGroupSIDs...)
-	}
-	return groupSIDs, s.pacUserSID
 }
 
 // Credits tracks credit accounting for a session.
@@ -401,8 +436,33 @@ func (s *Session) SetBindIdentity(dialect types.Dialect, signingAlgo uint16, cip
 }
 
 // IsExpired returns true if the session has a Kerberos ticket that has expired.
+// Read under the lock SetExpiry writes through: this is the per-request
+// authorization gate, and a Kerberos re-authentication refreshes the end-time
+// on a live session while dispatch goroutines are consulting it.
 func (s *Session) IsExpired() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return !s.ExpiresAt.IsZero() && time.Now().After(s.ExpiresAt)
+}
+
+// SetExpiry records the Kerberos ticket end-time the session is valid until, or
+// the zero time for a session that never expires. Written under the lock
+// IsExpired reads through: re-authentication refreshes it right after
+// publishing the new identity, and a request landing between the two would
+// otherwise see the fresh principal beside the previous ticket's end-time and
+// be refused on a session that has just recovered.
+func (s *Session) SetExpiry(expiresAt time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ExpiresAt = expiresAt
+}
+
+// Expiry returns the ticket end-time under the same lock. Zero when the session
+// does not expire.
+func (s *Session) Expiry() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ExpiresAt
 }
 
 // CurrentUser returns the session's DittoFS user record under the lock that
@@ -413,6 +473,26 @@ func (s *Session) CurrentUser() *models.User {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.User
+}
+
+// GuestOrNull reports the session's guest and anonymous flags together, under
+// the lock re-authentication writes them through. It exists so the signing and
+// encryption gates, which need only these two bools, do not pay for a whole
+// identity snapshot — and do not read the fields directly, which races a
+// concurrent re-auth.
+func (s *Session) GuestOrNull() (isGuest, isNull bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.IsGuest, s.IsNull
+}
+
+// CurrentUsername returns the session's authenticated name under the lock
+// re-authentication writes it through. For log lines and for state keyed on the
+// name, where a whole identity snapshot would be waste.
+func (s *Session) CurrentUsername() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Username
 }
 
 // AuthzIdentity is one consistent view of every identity field an
@@ -429,6 +509,7 @@ type AuthzIdentity struct {
 	User       *models.User
 	Username   string
 	IsGuest    bool
+	IsNull     bool
 	GroupSIDs  []string
 	UserSID    string
 	Generation uint64
@@ -449,6 +530,7 @@ func (s *Session) AuthzIdentity() AuthzIdentity {
 		User:       s.User,
 		Username:   s.Username,
 		IsGuest:    s.IsGuest,
+		IsNull:     s.IsNull,
 		GroupSIDs:  groupSIDs,
 		UserSID:    s.pacUserSID,
 		Generation: s.authGen.Load(),

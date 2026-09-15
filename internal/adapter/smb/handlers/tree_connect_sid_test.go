@@ -63,7 +63,7 @@ func TestResolveSharePermission_SIDGrant(t *testing.T) {
 			grant:     map[string]models.SharePermission{groupSID: models.PermissionReadWrite},
 		}
 
-		perm, _ := resolveSharePermission(ctx, sess, share, models.PermissionNone, store)
+		perm, _, _ := resolveSharePermission(ctx, sess, share, models.PermissionNone, store)
 		if perm != models.PermissionReadWrite {
 			t.Errorf("PAC group-SID grant should authorize read-write, got %v", perm)
 		}
@@ -78,7 +78,7 @@ func TestResolveSharePermission_SIDGrant(t *testing.T) {
 			grant:     map[string]models.SharePermission{groupSID: models.PermissionReadWrite},
 		}
 
-		perm, _ := resolveSharePermission(ctx, sess, share, models.PermissionNone, store)
+		perm, _, _ := resolveSharePermission(ctx, sess, share, models.PermissionNone, store)
 		if perm != models.PermissionNone {
 			t.Errorf("unmatched PAC SIDs should deny (none), got %v", perm)
 		}
@@ -102,7 +102,7 @@ func TestResolveSharePermission_SIDGrant(t *testing.T) {
 			grant:     map[string]models.SharePermission{groupSID: models.PermissionReadWrite},
 		}
 
-		perm, _ := resolveSharePermission(ctx, sess, share, models.PermissionNone, store)
+		perm, _, _ := resolveSharePermission(ctx, sess, share, models.PermissionNone, store)
 		if perm != models.PermissionNone {
 			t.Errorf("explicit local 'none' must block; SID grant overrode it to %v", perm)
 		}
@@ -118,7 +118,7 @@ func TestResolveSharePermission_SIDGrant(t *testing.T) {
 			grant:     map[string]models.SharePermission{groupSID: models.PermissionReadWrite}, // ...SID grant is higher
 		}
 
-		perm, _ := resolveSharePermission(ctx, sess, share, models.PermissionNone, store)
+		perm, _, _ := resolveSharePermission(ctx, sess, share, models.PermissionNone, store)
 		if perm != models.PermissionReadWrite {
 			t.Errorf("higher SID grant should elevate local read to read-write, got %v", perm)
 		}
