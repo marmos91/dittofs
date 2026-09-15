@@ -37,6 +37,11 @@ type revalidateUserStore struct {
 	// onResolve, when set, runs on entry to the share-permission lookup so a
 	// test can observe how many sweeps are inside the resolve pass at once.
 	onResolve func()
+	// onGetUser, when set, runs on entry to the user lookup. It is the window
+	// the sweep leaves open between reading the session's identity and acting
+	// on what the store says about it, so a test can re-authenticate the
+	// session at exactly that point.
+	onGetUser func()
 }
 
 // ResolveSharePermissionForSIDs makes the fake satisfy sidSharePermissionResolver
@@ -49,6 +54,9 @@ func (s *revalidateUserStore) ResolveSharePermissionForSIDs(_ context.Context, _
 }
 
 func (s *revalidateUserStore) GetUser(_ context.Context, _ string) (*models.User, error) {
+	if s.onGetUser != nil {
+		s.onGetUser()
+	}
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -618,4 +626,100 @@ func TestRevalidateAuthorization_ConcurrentReauthIsRaceFree(t *testing.T) {
 		}
 	}()
 	wg.Wait()
+}
+
+// TestRevalidateAuthorization_ReauthDuringLookupSurvives pins the decision that
+// a re-authentication landing while the store lookup is in flight wins over the
+// record the sweep read. The store reports the old identity as deleted, which
+// without the generation check retires the session the client has just
+// successfully re-authenticated.
+func TestRevalidateAuthorization_ReauthDuringLookupSurvives(t *testing.T) {
+	store := &revalidateUserStore{err: models.ErrUserNotFound, perm: models.PermissionReadWrite}
+	h, sessionID, _ := newRevalidateHandler(t, enabledUser(), store, models.PermissionNone, false)
+
+	sess, ok := h.GetSession(sessionID)
+	if !ok {
+		t.Fatalf("session %d missing", sessionID)
+	}
+	uid := uint32(1001)
+	replacement := &models.User{ID: "user-2", Username: "bob", UID: &uid, Enabled: true}
+	store.onGetUser = func() {
+		sess.UpdateIdentity(replacement.Username, "", replacement, false, false)
+	}
+
+	h.RevalidateAuthorization(context.Background())
+
+	if sess.AuthRevoked() {
+		t.Fatal("session revoked on a record replaced by re-authentication mid-lookup; the re-authenticated identity must survive")
+	}
+	if got := sess.CurrentUser(); got == nil || got.Username != replacement.Username {
+		t.Fatalf("session identity = %v, want the re-authenticated user %q", got, replacement.Username)
+	}
+}
+
+// TestRevalidateAuthorization_ReauthDuringResolveLeavesTree is the same rule one
+// pass over: a permission resolved against the old record must not be written
+// onto a tree whose session has since re-authenticated, because MS-SMB2 keeps
+// tree connections across a re-authentication and the grant belongs to an
+// identity the session no longer holds.
+func TestRevalidateAuthorization_ReauthDuringResolveLeavesTree(t *testing.T) {
+	store := &revalidateUserStore{user: enabledUser(), perm: models.PermissionAdmin}
+	h, sessionID, treeID := newRevalidateHandler(t, enabledUser(), store, models.PermissionRead, true)
+
+	sess, ok := h.GetSession(sessionID)
+	if !ok {
+		t.Fatalf("session %d missing", sessionID)
+	}
+	uid := uint32(1001)
+	replacement := &models.User{ID: "user-2", Username: "bob", UID: &uid, Enabled: true}
+	store.onResolve = func() {
+		sess.UpdateIdentity(replacement.Username, "", replacement, false, false)
+	}
+
+	h.RevalidateAuthorization(context.Background())
+
+	tree, ok := h.GetTree(treeID)
+	if !ok {
+		t.Fatal("tree removed on a decision resolved for an identity the session no longer holds")
+	}
+	if tree.Permission != models.PermissionRead {
+		t.Fatalf("tree Permission = %v, want %v: the old identity's grant was applied to the re-authenticated one",
+			tree.Permission, models.PermissionRead)
+	}
+}
+
+// TestIPCShare_RevokedSessionRefused covers the publication path TREE_CONNECT's
+// own re-check does not reach. IPC$ returns before it, so a sweep that revokes
+// between the dispatch gate and here would otherwise leave a tree that outlives
+// the revocation, since re-authentication clears the flag and keeps trees.
+func TestIPCShare_RevokedSessionRefused(t *testing.T) {
+	store := &revalidateUserStore{user: enabledUser(), perm: models.PermissionReadWrite}
+	h, sessionID, _ := newRevalidateHandler(t, enabledUser(), store, models.PermissionNone, false)
+
+	sess, ok := h.GetSession(sessionID)
+	if !ok {
+		t.Fatalf("session %d missing", sessionID)
+	}
+	sess.RevokeAuth()
+
+	before := countTrees(h)
+	res, err := h.handleIPCShare(&SMBHandlerContext{Context: context.Background(), SessionID: sessionID})
+	if err != nil {
+		t.Fatalf("handleIPCShare: %v", err)
+	}
+	if res.Status != types.StatusNetworkSessionExpired {
+		t.Fatalf("IPC$ status = %#x, want %#x for a revoked session", res.Status, types.StatusNetworkSessionExpired)
+	}
+	if after := countTrees(h); after != before {
+		t.Fatalf("tree count %d -> %d: a revoked session published an IPC$ tree", before, after)
+	}
+}
+
+func countTrees(h *Handler) int {
+	n := 0
+	h.trees.Range(func(_, _ any) bool {
+		n++
+		return true
+	})
+	return n
 }

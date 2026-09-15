@@ -39,6 +39,36 @@ import (
 // indexing them by username. Both tables are per-connection state bounded by the
 // client count, and the walk runs only on a control-plane mutation, not per
 // operation; index them if a deployment ever makes that walk visible.
+// survivingSession is a session the re-check kept, paired with the identity
+// generation the record was read at. The tree pass resolves against the record
+// but applies nothing once the generation has moved on.
+type survivingSession struct {
+	user       *models.User
+	generation uint64
+}
+
+// revokeIfCurrent retires the session only if its identity is still the one the
+// caller decided about, and reports whether it did.
+//
+// decision: a re-authentication that landed while the store lookup was in
+// flight is better evidence than the record this sweep read, so it wins and the
+// session is left alone. SESSION_SETUP refuses a deleted or disabled account
+// outright, so an identity that completed authentication after the mutation
+// this sweep is reacting to was valid at that later moment. The ceiling is a
+// re-authentication that read the account before the mutation and published
+// after it: that session keeps its access until the next sweep. Close the
+// window by resolving authorization under the identity lock if a deployment
+// ever shows it being hit.
+func (h *Handler) revokeIfCurrent(ctx context.Context, sess *session.Session, sessionID, generation uint64) bool {
+	if sess.AuthGeneration() != generation {
+		logger.Debug("SMB session re-authenticated during authorization re-check, left intact",
+			"sessionID", sessionID)
+		return false
+	}
+	h.revokeSession(ctx, sess, sessionID)
+	return true
+}
+
 func (h *Handler) RevalidateAuthorization(ctx context.Context) {
 	userStore := h.Registry.GetUserStore()
 	if userStore == nil {
@@ -55,18 +85,18 @@ func (h *Handler) RevalidateAuthorization(ctx context.Context) {
 	// against. A surviving guest session maps to a nil record, which is what it
 	// authenticated with; a revoked session is absent, so the tree pass leaves
 	// it alone.
-	surviving := make(map[uint64]*models.User)
+	surviving := make(map[uint64]survivingSession)
 
 	h.SessionManager.RangeSessions(func(sessionID uint64, value any) bool {
 		sess, ok := value.(*session.Session)
 		if !ok || sess.LoggedOff.Load() {
 			return true
 		}
-		current := sess.CurrentUser()
+		current, gen := sess.AuthSnapshot()
 		if current == nil {
 			// Guest and anonymous sessions carry no user record; their access
 			// rests on the share default, which the tree pass re-resolves.
-			surviving[sessionID] = nil
+			surviving[sessionID] = survivingSession{generation: gen}
 			return true
 		}
 
@@ -77,16 +107,18 @@ func (h *Handler) RevalidateAuthorization(ctx context.Context) {
 		// user as missing and retire every AD session on the next unrelated
 		// user edit.
 		if current.ID == "" {
-			surviving[sessionID] = current
+			surviving[sessionID] = survivingSession{user: current, generation: gen}
 			return true
 		}
 
 		user, err := userStore.GetUser(ctx, current.Username)
 		switch {
 		case errors.Is(err, models.ErrUserNotFound):
+			if !h.revokeIfCurrent(ctx, sess, sessionID, gen) {
+				return true
+			}
 			logger.Info("SMB session revoked: user deleted",
 				"sessionID", sessionID, "username", current.Username)
-			h.revokeSession(ctx, sess, sessionID)
 		case err != nil:
 			// A store failure is not evidence that the account went away, and
 			// revoking on one would drop every SMB session on a transient
@@ -95,11 +127,13 @@ func (h *Handler) RevalidateAuthorization(ctx context.Context) {
 			logger.Warn("SMB authorization re-check failed, session left intact",
 				"sessionID", sessionID, "username", current.Username, "error", err)
 		case user == nil || !user.Enabled:
+			if !h.revokeIfCurrent(ctx, sess, sessionID, gen) {
+				return true
+			}
 			logger.Info("SMB session revoked: user disabled",
 				"sessionID", sessionID, "username", current.Username)
-			h.revokeSession(ctx, sess, sessionID)
 		default:
-			surviving[sessionID] = user
+			surviving[sessionID] = survivingSession{user: user, generation: gen}
 		}
 		return true
 	})
@@ -149,11 +183,12 @@ func (h *Handler) revokeSession(ctx context.Context, sess *session.Session, sess
 
 // revalidateTrees re-resolves each surviving session's pinned tree permissions
 // against the user records the session pass just read.
-func (h *Handler) revalidateTrees(ctx context.Context, userStore models.UserStore, surviving map[uint64]*models.User) {
+func (h *Handler) revalidateTrees(ctx context.Context, userStore models.UserStore, surviving map[uint64]survivingSession) {
 	type treeUpdate struct {
 		treeID     uint32
 		sessionID  uint64
 		permission models.SharePermission
+		generation uint64
 	}
 	var updates []treeUpdate
 
@@ -162,7 +197,7 @@ func (h *Handler) revalidateTrees(ctx context.Context, userStore models.UserStor
 		if !ok {
 			return true
 		}
-		user, alive := surviving[tree.SessionID]
+		survivor, alive := surviving[tree.SessionID]
 		if !alive {
 			// Either the session was revoked — already refused at dispatch, and
 			// its trees go with it on logoff or reconnect — or it is gone.
@@ -183,7 +218,7 @@ func (h *Handler) revalidateTrees(ctx context.Context, userStore models.UserStor
 		permission, _, resolved := resolveSharePermissionForUser(
 			&SMBHandlerContext{Context: ctx},
 			sess,
-			user,
+			survivor.user,
 			share,
 			models.ParseSharePermission(share.DefaultPermission),
 			userStore,
@@ -202,13 +237,22 @@ func (h *Handler) revalidateTrees(ctx context.Context, userStore models.UserStor
 		if permission == tree.Permission {
 			return true
 		}
-		updates = append(updates, treeUpdate{treeID: tree.TreeID, sessionID: tree.SessionID, permission: permission})
+		updates = append(updates, treeUpdate{treeID: tree.TreeID, sessionID: tree.SessionID, permission: permission, generation: survivor.generation})
 		return true
 	})
 
 	// Applied outside the Range: sync.Map permits mutation during one, but
 	// which entries a walk still visits afterwards is left undefined.
 	for _, u := range updates {
+		// The permission below was resolved against the record the session pass
+		// read. A re-authentication since then has re-decided authorization for
+		// itself, and MS-SMB2 keeps tree connections across one, so applying
+		// this decision would push the old identity's grants onto the new one.
+		if sess, ok := h.GetSession(u.sessionID); !ok || sess.AuthGeneration() != u.generation {
+			logger.Debug("SMB tree left unchanged: session re-authenticated during re-check",
+				"treeID", u.treeID, "sessionID", u.sessionID)
+			continue
+		}
 		// A permission of none removes the tree rather than being stored on it:
 		// downstream read-only checks read none as "not read-only", so pinning
 		// it would lift the ceiling instead of closing access.

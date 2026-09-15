@@ -157,6 +157,13 @@ type Session struct {
 	// goroutines reading it.
 	authRevoked atomic.Bool
 
+	// authGen advances on every identity change. An authorization re-check reads
+	// the user record, goes to the store, and comes back to act on what it read;
+	// the generation lets it tell whether the identity it decided about is still
+	// the one the session holds, rather than one a re-authentication replaced
+	// while the lookup was in flight.
+	authGen atomic.Uint64
+
 	// OriginConnID is the ConnID of the TCP connection that created this
 	// session via SESSION_SETUP. For SMB 2.x (below 3.0), session lookup
 	// is per-connection per MS-SMB2 §3.3.5.5, so a SESSION_SETUP from a
@@ -259,6 +266,7 @@ func (s *Session) UpdateIdentity(username, domain string, user *models.User, isG
 	// valid again; without this the session would keep failing every operation
 	// with no way back, since re-auth reuses this same session object.
 	s.authRevoked.Store(false)
+	s.authGen.Add(1)
 }
 
 // SetPACIdentity stores the Kerberos PAC group SIDs and user SID for the
@@ -416,6 +424,21 @@ func (s *Session) AuthIdentity() (user *models.User, username string, isGuest bo
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.User, s.Username, s.IsGuest
+}
+
+// AuthSnapshot returns the session's user record together with the generation
+// it belongs to, read as one under the lock UpdateIdentity writes through. A
+// caller that releases the lock, consults the store, and then acts on the
+// record compares the generation again before applying its decision.
+func (s *Session) AuthSnapshot() (user *models.User, generation uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.User, s.authGen.Load()
+}
+
+// AuthGeneration reports the generation of the session's current identity.
+func (s *Session) AuthGeneration() uint64 {
+	return s.authGen.Load()
 }
 
 // IsExpiredOrRevoked reports whether the session has lost its authorization,

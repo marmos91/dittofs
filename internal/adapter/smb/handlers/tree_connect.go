@@ -284,6 +284,15 @@ func (h *Handler) handleIPCShare(ctx *SMBHandlerContext) (*HandlerResult, error)
 		return NewErrorResult(types.StatusUserSessionDeleted), nil
 	}
 
+	// The dispatch gate refused this command only if the session had already
+	// lost authorization when it arrived. A sweep that revokes in between would
+	// otherwise leave this tree behind, and a later re-authentication clears the
+	// revocation while the tree survives it.
+	if sess.IsExpiredOrRevoked() {
+		logger.Debug("IPC$ access denied: session authorization revoked", "sessionID", ctx.SessionID)
+		return NewErrorResult(types.StatusNetworkSessionExpired), nil
+	}
+
 	// Create tree connection for IPC$ with PIPE share type
 	treeID := h.GenerateTreeID()
 	tree := &TreeConnection{
