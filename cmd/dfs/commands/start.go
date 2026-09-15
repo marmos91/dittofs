@@ -291,6 +291,17 @@ func runStart(cmd *cobra.Command, args []string) error {
 	}
 	logger.Info("Per-share BlockStores created during share loading")
 
+	// Build the metrics registry unconditionally so inline instruments (adapter
+	// RED, connection, auth counters) always record; only the /metrics listener
+	// is gated by config. The runtime carries the handle to every adapter.
+	//
+	// This has to precede every goroutine below that reaches the metrics
+	// handle: the GC sweeps read it without synchronisation, so installing it
+	// afterwards both races them and loses the first pass's counters.
+	m := metrics.New(Version, Commit)
+	m.RegisterProvider(rt)
+	rt.SetMetrics(m)
+
 	// One-time stranded-row reconcile migration (#1433): reaps file_blocks
 	// rows leaked by the pre-fix delete path and sweeps the now-orphaned
 	// chunks. Launched AFTER LoadSharesFromStore so ListShares() sees the
@@ -366,13 +377,6 @@ func runStart(cmd *cobra.Command, args []string) error {
 		"host", cfg.ControlPlane.Host,
 		"port", cfg.ControlPlane.Port,
 		"tls", apiServer.TLSEnabled())
-
-	// Build the metrics registry unconditionally so inline instruments (adapter
-	// RED, connection, auth counters) always record; only the /metrics listener
-	// is gated by config. The runtime carries the handle to every adapter.
-	m := metrics.New(Version, Commit)
-	m.RegisterProvider(rt)
-	rt.SetMetrics(m)
 
 	// Configure the Prometheus metrics endpoint (opt-in). It runs on its own
 	// listener, separate from the API server, so scrapers reach it without API
