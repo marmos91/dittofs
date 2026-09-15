@@ -34,6 +34,10 @@ TEST_DIR="$(cd "$(dirname "$MANIFEST")/.." && pwd)"
 # its exit code says nothing about how many tests regressed.
 GRADED_STEP="run"
 
+# Exit status the graded step uses for "nothing failed, but some tests were
+# never graded against the server". Kept in step with parse-results.sh.
+EXIT_INCONCLUSIVE=250
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -319,6 +323,14 @@ write_summary() {
     elif [[ -n "$failed_step" && "$failed_step" != "$GRADED_STEP" ]]; then
         verdict="${failed_step} failed (exit ${status}) — no tests were graded"
         icon=":construction:"
+    elif [[ "$status" -eq $EXIT_INCONCLUSIVE ]]; then
+        # Not a failure count. The graded step reports this when nothing failed
+        # and nothing was cut short, but some tests never reached the server, so
+        # there is no verdict for them either way. Saying "new failure(s)" here
+        # would send the reader hunting a regression in a suite that graded
+        # nothing — the same false label the graded step just stopped printing.
+        verdict="inconclusive — some tests produced no server result"
+        icon=":warning:"
     else
         verdict="${status} new failure(s)"
         icon=":x:"

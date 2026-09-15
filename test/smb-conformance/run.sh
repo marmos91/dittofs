@@ -282,6 +282,7 @@ if $DRY_RUN; then
     echo "  Filter:      ${FILTER}"
     echo "  Keep:        ${KEEP}"
     echo "  Verbose:     ${VERBOSE}"
+    echo "  Stack:       ${COMPOSE_PROJECT_NAME}"
     echo ""
     echo "  DITTOFS_HOST: ${DITTOFS_HOST}"
     echo "  SMB_PORT:     ${SMB_PORT}"
