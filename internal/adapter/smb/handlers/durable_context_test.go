@@ -2649,3 +2649,40 @@ func TestProcessAppInstanceId_ReleasesLocksOnPersistedHandle(t *testing.T) {
 		}
 	}
 }
+
+// TestSameOrUnknownClient_UnknownOnEitherSide pins the fail-closed rule the
+// AppInstanceId displacement check rests on. The predicate decides whether an
+// open can be *shown* to belong to a client other than the requesting one, and
+// its caller displaces the open only when it can. Both halves of that
+// comparison have to be known for the answer to mean anything: a zero on either
+// side is an absent identity, not a distinct one.
+//
+// The live half is the one that bites. A connection with no crypto state
+// carries no ClientGuid, and reading its zero as "not the recorded client"
+// hands a request whose own identity cannot be established the power to
+// force-close an open that demonstrably belongs to somebody else.
+func TestSameOrUnknownClient_UnknownOnEitherSide(t *testing.T) {
+	alice := [16]byte{0xA1}
+	bob := [16]byte{0xB0}
+	var unknown [16]byte
+
+	for _, tc := range []struct {
+		name             string
+		recorded, conn   [16]byte
+		wantSameOrUnknwn bool
+		why              string
+	}{
+		{"same client", alice, alice, true, "one client never displaces its own open"},
+		{"different clients", alice, bob, false, "the only case a displacement may proceed on"},
+		{"recorded unknown", unknown, alice, true, "an open recorded before the field was captured names no client"},
+		{"connection unknown", alice, unknown, true, "a connection with no crypto state names no client either"},
+		{"both unknown", unknown, unknown, true, "nothing is known about either side"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sameOrUnknownClient(tc.recorded, tc.conn); got != tc.wantSameOrUnknwn {
+				t.Errorf("sameOrUnknownClient(%x, %x) = %v, want %v — %s",
+					tc.recorded[:1], tc.conn[:1], got, tc.wantSameOrUnknwn, tc.why)
+			}
+		})
+	}
+}

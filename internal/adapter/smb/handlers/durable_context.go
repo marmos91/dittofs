@@ -897,13 +897,20 @@ func validateAndRestore(
 }
 
 // sameOrUnknownClient reports whether an open recorded against `recorded`
-// cannot be shown to belong to a client other than `conn`. A zero recorded
-// ClientGuid predates the field being captured and attributes the open to no
-// client at all, so it counts as unknown rather than as "different": the
-// identity condition cannot be evaluated for it, and an open it describes is
-// never displaced.
+// cannot be shown to belong to a client other than `conn`. The identity
+// condition needs both halves to be known, and a zero ClientGuid on either side
+// means it cannot be evaluated — so either one makes this unknown, and an open
+// it describes is never displaced.
+//
+// A zero `recorded` predates the field being captured and attributes the open
+// to no client at all. A zero `conn` is the live counterpart: a connection with
+// no crypto state carries no ClientGuid, and reading that as "not the recorded
+// client" would let a request whose own identity cannot be established
+// force-close an open that demonstrably belongs to someone else — the opposite
+// of the fail-closed rule the displacement check is here to enforce.
 func sameOrUnknownClient(recorded, conn [16]byte) bool {
-	return recorded == conn || recorded == ([16]byte{})
+	var unknown [16]byte
+	return recorded == conn || recorded == unknown || conn == unknown
 }
 
 // ProcessAppInstanceId processes the SMB2_CREATE_APP_INSTANCE_ID context.
