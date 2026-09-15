@@ -136,6 +136,18 @@ func runStart(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize control plane store: %w", err)
 	}
+	// Registered before any other consumer takes a reference, so it closes last:
+	// after the netlogon defer and after the shutdown wait below returns.
+	//
+	// decision: the forced-exit branch of that wait returns while the drain is
+	// still running, so on that one path the handle can close under an
+	// in-flight API request or adapter teardown. Accepted because that branch
+	// is already abandoning the drain, sql.DB.Close lets checked-out
+	// connections finish rather than cutting them, and a later use returns an
+	// error rather than panicking — the process exits within milliseconds
+	// either way. Withdraw it if that branch ever becomes one the process
+	// continues past.
+	defer func() { _ = cpStore.Close() }()
 
 	// Ensure admin user exists. On first run the password is taken from
 	// DITTOFS_ADMIN_INITIAL_PASSWORD (env, plaintext, also enables SMB admin),
