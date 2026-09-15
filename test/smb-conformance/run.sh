@@ -27,6 +27,12 @@ source "${SCRIPT_DIR}/compose-env.sh"
 
 VALID_PROFILES=("memory" "badger" "badger-s3" "postgres-s3")
 
+# The WPTS container started by --mode local, named per run: cleanup removes by
+# name, so a fixed name would let one run tear down another's client mid-suite.
+# The lease already keeps two runs from overlapping; the per-run name keeps the
+# removal from reaching anything this run did not start.
+WPTS_LOCAL_NAME="wpts-local-$$"
+
 # --------------------------------------------------------------------------
 # Colors
 # --------------------------------------------------------------------------
@@ -337,7 +343,7 @@ cleanup() {
             wait "$DITTOFS_PID" 2>/dev/null || true
         fi
         if ! $KEEP; then
-            docker rm -f wpts-local 2>/dev/null || true
+            docker rm -f "$WPTS_LOCAL_NAME" 2>/dev/null || true
         fi
     fi
 
@@ -478,7 +484,7 @@ run_local() {
 
     local wpts_exit=0
     # shellcheck disable=SC2086
-    docker run --rm --name wpts-local \
+    docker run --rm --name "$WPTS_LOCAL_NAME" \
         --platform linux/amd64 \
         ${docker_network} \
         -e Usage=RunTestCases \
