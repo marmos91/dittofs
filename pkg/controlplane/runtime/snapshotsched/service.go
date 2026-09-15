@@ -111,20 +111,29 @@ func (s *Service) Start(ctx context.Context) {
 }
 
 // Stop signals the scheduler goroutine to exit and waits for it, bounded by
-// ctx. Waiting is the point: a tick reads and writes snapshot policies through
-// the control-plane store, so a caller that is about to close that store needs
+// ctx. It reports whether the wait actually completed.
+//
+// Waiting is the point: a tick reads and writes snapshot policies through the
+// control-plane store, so a caller that is about to close that store needs
 // "stopped" to mean the tick has finished, not merely that it was asked to.
-// A scheduler that was never started returns immediately. Idempotent.
-func (s *Service) Stop(ctx context.Context) {
+// When ctx expires first this returns false, and the caller has been told
+// plainly that the guarantee does not hold on that path rather than being left
+// to infer it from a comment.
+//
+// A scheduler that was never started returns immediately. Idempotent, and safe
+// for concurrent callers.
+func (s *Service) Stop(ctx context.Context) bool {
 	s.stopOnce.Do(func() { close(s.stopCh) })
 	if !s.started.Load() {
-		return
+		return true
 	}
 	select {
 	case <-s.stopped:
+		return true
 	case <-ctx.Done():
 		logger.Warn("Snapshot scheduler: stop deadline reached with a tick still running",
 			"error", ctx.Err())
+		return false
 	}
 }
 
