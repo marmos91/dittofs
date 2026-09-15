@@ -110,15 +110,12 @@ func HandleDestroySession(d *Deps, ctx *types.CompoundContext, v41ctx *types.V41
 //
 //  1. v41ctx != nil: a preceding SEQUENCE identified the requesting session, so
 //     the requester is that session's owning client.
-//  2. The connection this request arrived on is bound to a session of the
-//     target's client (the common standalone case: an owner destroys a session
-//     over a connection bound to one of its own sessions). The requester is
-//     that client. One connection may carry several sessions, so every binding
-//     on it is searched rather than whichever session bound it last: taking
-//     only the newest would refuse an owner whose session is not the most
-//     recent binding. Clients sharing one connection are indistinguishable at
-//     this layer, which is what the SP4_MACH_CRED and SP4_SSV protections of
-//     RFC 8881 Section 18.37.3 exist for.
+//  2. The connection this request arrived on is bound to the session being
+//     destroyed, which RFC 8881 Section 18.37.3 requires of a standalone
+//     DESTROY_SESSION: "DESTROY_SESSION MUST be invoked on a connection that is
+//     associated with the session being destroyed." The requester is then the
+//     target's own client. One connection may carry several sessions, so every
+//     binding on it is searched rather than whichever bound last.
 //  3. ctx.ClientState != nil: the v4.0 connection layer set a client ID.
 //
 // The second return value is false when none of the above can associate the
@@ -133,21 +130,11 @@ func resolveRequestingClientID(d *Deps, v41ctx *types.V41RequestContext, ctx *ty
 	}
 	// Standalone DESTROY_SESSION (no SEQUENCE): authorize via the connection
 	// the request arrived on being associated with the target session.
-	if ctx.ConnectionID != 0 {
-		var other uint64
-		var haveOther bool
+	if ctx.ConnectionID != 0 && target != nil {
 		for _, binding := range d.StateManager.GetConnectionBindingsForConn(ctx.ConnectionID) {
-			boundSess := d.StateManager.GetSession(binding.SessionID)
-			if boundSess == nil {
-				continue
+			if binding.SessionID == target.SessionID {
+				return target.ClientID, true
 			}
-			if target != nil && boundSess.ClientID == target.ClientID {
-				return boundSess.ClientID, true
-			}
-			other, haveOther = boundSess.ClientID, true
-		}
-		if haveOther {
-			return other, true
 		}
 	}
 	if ctx.ClientState != nil {

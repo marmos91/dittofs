@@ -414,6 +414,14 @@ func (c *NFSConnection) handleConnectionClose() {
 
 	c.wg.Wait()
 
+	// Drop the NFSv4.1 session bindings this connection held, along with its
+	// callback writer and reply demultiplexer. A connection may be bound to
+	// several sessions at once, and every one of them would otherwise keep
+	// selecting a closed socket for its callbacks.
+	if c.server.v4Handler != nil && c.server.v4Handler.StateManager != nil && c.connectionID != 0 {
+		c.server.v4Handler.StateManager.UnbindConnection(c.connectionID)
+	}
+
 	// Deregister from the client registry.
 	if rt := c.server.Registry; rt != nil && c.clientID != "" {
 		rt.Clients().Deregister(c.clientID)

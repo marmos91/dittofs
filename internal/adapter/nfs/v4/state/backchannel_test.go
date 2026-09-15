@@ -434,8 +434,8 @@ func TestBackchannelSender_SeqIDAndXIDAreIndependent(t *testing.T) {
 	sender, sm, sessionID := createTestBackchannelSender(t)
 
 	// Pre-skew the XID counter to prove the two counters diverge and do not
-	// share state: after this, XIDs start at 6 while CB seqIDs still start at 1.
-	sender.nextXID.Add(5)
+	// share state: after this, XIDs run ahead while CB seqIDs still start at 1.
+	nextCallbackXID.Add(5)
 
 	clientConn, serverConn := net.Pipe()
 	defer func() { _ = clientConn.Close() }()
@@ -729,4 +729,52 @@ func cbSequenceSeqID(t *testing.T, body []byte) uint32 {
 		t.Fatalf("body too short for CB_SEQUENCE seqID: %d bytes", len(body))
 	}
 	return binary.BigEndian.Uint32(body[off : off+4])
+}
+
+// TestCallbackXIDsAreUniqueAcrossSenders drives two senders down their real
+// send path and pins that the XIDs they put on the wire differ. A connection
+// carries several sessions at once and its reply demultiplexer is keyed on XID
+// alone, so a counter per sender would have both mint the same first XID and
+// the second registration would strand the first sender's waiter.
+func TestCallbackXIDsAreUniqueAcrossSenders(t *testing.T) {
+	firstXID := func() uint32 {
+		sender, sm, sessionID := createTestBackchannelSender(t)
+
+		clientConn, serverConn := net.Pipe()
+		defer func() { _ = clientConn.Close() }()
+		defer func() { _ = serverConn.Close() }()
+
+		connID := uint64(4200)
+		sm.RegisterConnWriter(connID, func(data []byte) error {
+			_, err := serverConn.Write(data)
+			return err
+		})
+		if _, err := sm.BindConnToSession(connID, sessionID, types.CDFC4_FORE_OR_BOTH); err != nil {
+			t.Fatalf("BindConnToSession: %v", err)
+		}
+
+		go func() {
+			_ = sender.sendCallback(context.Background(), CallbackRequest{
+				OpCode:  types.OP_CB_RECALL,
+				Payload: EncodeCBRecallOp(&types.Stateid4{}, false, []byte("fh")),
+			})
+		}()
+
+		var headerBuf [4]byte
+		if _, err := io.ReadFull(clientConn, headerBuf[:]); err != nil {
+			t.Fatalf("read header: %v", err)
+		}
+		fragLen := binary.BigEndian.Uint32(headerBuf[:]) & 0x7FFFFFFF
+		body := make([]byte, fragLen)
+		if _, err := io.ReadFull(clientConn, body); err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		return binary.BigEndian.Uint32(body[0:4])
+	}
+
+	xidA := firstXID()
+	xidB := firstXID()
+	if xidA == xidB {
+		t.Errorf("two senders minted the same XID %d; callback XIDs must be unique per connection", xidA)
+	}
 }

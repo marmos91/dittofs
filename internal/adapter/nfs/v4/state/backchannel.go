@@ -39,6 +39,13 @@ const (
 	backchannelMaxRetries = 3
 )
 
+// nextCallbackXID mints the XID of every callback the server sends. A
+// connection's reply demultiplexer is keyed on XID alone while a sender belongs
+// to one session, and one connection may carry several sessions, so a counter
+// per sender would let two of them register the same XID and strand the
+// first one's waiter.
+var nextCallbackXID atomic.Uint32
+
 var backchannelRetryDelays = [backchannelMaxRetries]time.Duration{
 	5 * time.Second,
 	10 * time.Second,
@@ -156,8 +163,6 @@ type BackchannelSender struct {
 	slotTable *SlotTable
 
 	stopCh chan struct{}
-
-	nextXID atomic.Uint32
 
 	// nextCBSeqID is the per-slot CB_SEQUENCE seqID counter (RFC 8881
 	// §2.10.6.1). It is independent of nextXID: the backchannel uses a single
@@ -317,7 +322,7 @@ func (bs *BackchannelSender) sendCallback(ctx context.Context, req CallbackReque
 	compoundArgs := encodeCBCompoundV41([][]byte{cbSeqOp, req.Payload})
 
 	// 4. Build RPC CALL message
-	xid := bs.nextXID.Add(1)
+	xid := nextCallbackXID.Add(1)
 	callMsg := BuildCBRPCCallMessage(xid, bs.cbProgram.Load(), types.NFS4_CALLBACK_VERSION, types.CB_PROC_COMPOUND, compoundArgs, bs.cred())
 
 	// 5. Add record marking
@@ -459,7 +464,7 @@ func encodeCBSequenceOp(sessionID types.SessionId4, seqID, slotID, highestSlotID
 // the safe direction: the cost is a client that caches less, where the reverse
 // is a delegation the server cannot recall.
 func (bs *BackchannelSender) probeCallbackPath(ctx context.Context) error {
-	xid := bs.nextXID.Add(1)
+	xid := nextCallbackXID.Add(1)
 	callMsg := BuildCBRPCCallMessage(xid, bs.cbProgram.Load(), types.NFS4_CALLBACK_VERSION, types.CB_PROC_NULL, nil, bs.cred())
 	framedMsg := AddCBRecordMark(callMsg, true)
 
@@ -585,6 +590,14 @@ func (sm *StateManager) RegisterConnWriter(connectionID uint64, writer ConnWrite
 	defer sm.connMu.Unlock()
 
 	sm.connWriters[connectionID] = writer
+
+	// COMPOUNDs on one connection are dispatched concurrently, so two of them
+	// can reach first-time registration together. Handing the second one a
+	// fresh demultiplexer would strand every reply the first is already
+	// waiting on, so an existing one is reused.
+	if pending := sm.cbRepliesByConn[connectionID]; pending != nil {
+		return pending
+	}
 	pending := NewPendingCBReplies()
 	sm.cbRepliesByConn[connectionID] = pending
 	return pending
