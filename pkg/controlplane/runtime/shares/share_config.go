@@ -17,7 +17,7 @@ import (
 // otherwise keep enforcing the previous values on established connections. The
 // retention knobs carry no authorization and raise nothing.
 func (s *Service) UpdateShare(name string, readOnly *bool, defaultPermission *string, retentionPolicy *block.RetentionPolicy, retentionTTL *time.Duration) error {
-	if err := s.updateShareLocked(name, readOnly, defaultPermission, retentionPolicy, retentionTTL); err != nil {
+	if err := s.applyShareUpdate(name, readOnly, defaultPermission, retentionPolicy, retentionTTL); err != nil {
 		return err
 	}
 	if readOnly != nil || defaultPermission != nil {
@@ -28,7 +28,10 @@ func (s *Service) UpdateShare(name string, readOnly *bool, defaultPermission *st
 	return nil
 }
 
-func (s *Service) updateShareLocked(name string, readOnly *bool, defaultPermission *string, retentionPolicy *block.RetentionPolicy, retentionTTL *time.Duration) error {
+// applyShareUpdate writes the supplied fields onto the registered share. It
+// takes the registry lock itself; the notification UpdateShare raises is
+// deliberately outside it.
+func (s *Service) applyShareUpdate(name string, readOnly *bool, defaultPermission *string, retentionPolicy *block.RetentionPolicy, retentionTTL *time.Duration) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

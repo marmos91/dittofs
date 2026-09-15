@@ -53,16 +53,16 @@ func TestStop_ResolverUnsubsRaceConfigChange(t *testing.T) {
 	}
 }
 
-// TestStop_JoinsBackgroundLoop pins the durable-handle scavenger's missing
+// TestStop_JoinsScavenger pins the durable-handle scavenger's missing
 // join: the goroutine ended only when its context was cancelled, and nothing
 // waited for it, so it could outlive Stop and touch DurableStore and the
 // handler during teardown.
-func TestStop_JoinsBackgroundLoop(t *testing.T) {
+func TestStop_JoinsScavenger(t *testing.T) {
 	a := New(Config{})
 
 	started := make(chan struct{})
 	var returned atomic.Bool
-	a.startBackgroundLoop(context.Background(), func(ctx context.Context) {
+	a.startScavenger(context.Background(), func(ctx context.Context) {
 		close(started)
 		<-ctx.Done()
 		// Model the teardown work the scavenger does after its context ends:
@@ -76,20 +76,20 @@ func TestStop_JoinsBackgroundLoop(t *testing.T) {
 		t.Fatalf("Stop: %v", err)
 	}
 	if !returned.Load() {
-		t.Fatal("Stop returned while the background loop was still running")
+		t.Fatal("Stop returned while the scavenger loop was still running")
 	}
 
 	a.resolverMu.Lock()
 	cancel := a.scavengerCancel
 	a.resolverMu.Unlock()
 	if cancel != nil {
-		t.Error("Stop left the background loop's cancel attached")
+		t.Error("Stop left the scavenger loop's cancel attached")
 	}
 }
 
-// TestStop_WithNoBackgroundLoop covers an adapter stopped before Serve ever
+// TestStop_WithNoScavenger covers an adapter stopped before Serve ever
 // started one: the join must be a no-op rather than a hang.
-func TestStop_WithNoBackgroundLoop(t *testing.T) {
+func TestStop_WithNoScavenger(t *testing.T) {
 	a := New(Config{})
 
 	done := make(chan struct{})
@@ -102,6 +102,6 @@ func TestStop_WithNoBackgroundLoop(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("Stop hung with no background loop running")
+		t.Fatal("Stop hung with no scavenger loop running")
 	}
 }

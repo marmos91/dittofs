@@ -586,7 +586,7 @@ func (s *Adapter) Serve(ctx context.Context) error {
 			durableTimeout,
 			s.handler.StartTime,
 		)
-		s.startBackgroundLoop(ctx, scavenger.Run)
+		s.startScavenger(ctx, scavenger.Run)
 		logger.Info("SMB adapter: durable handle scavenger started",
 			"interval", DefaultDurableScavengerInterval,
 			"timeout_ms", durableTimeout)
@@ -600,15 +600,22 @@ func (s *Adapter) Serve(ctx context.Context) error {
 	return s.ServeWithFactory(ctx, s, s.preAcceptCheck, nil)
 }
 
-// startBackgroundLoop runs loop on a goroutine Stop can end and then join.
+// startScavenger runs the durable-handle scavenger loop on a goroutine Stop can
+// end and then join.
 //
 // The loop gets a context of its own, derived from Serve's, so shutdown does
-// not depend on the caller cancelling the one it passed to Serve; the
-// WaitGroup is what makes Stop a rendezvous rather than a signal. Without the
-// join the loop outlives Stop and keeps reaching into DurableStore and the
-// handler while they are being torn down.
-func (s *Adapter) startBackgroundLoop(ctx context.Context, loop func(context.Context)) {
-	loopCtx, cancel := context.WithCancel(ctx)
+// not depend on the caller cancelling the one it passed to Serve; the WaitGroup
+// is what makes Stop a rendezvous rather than a signal. Without the join the
+// loop outlives Stop and keeps reaching into DurableStore and the handler while
+// they are being torn down.
+//
+// run is a parameter so a test can stand a controllable loop in place of
+// DurableHandleScavenger.Run, but scavengerCancel is one slot: a second call
+// discards the first loop's cancel and that goroutine then ends only with
+// Serve's context — the leak this exists to close. Serve calls it once. Make
+// the cancel a slice before adding a second background loop here.
+func (s *Adapter) startScavenger(ctx context.Context, run func(context.Context)) {
+	runCtx, cancel := context.WithCancel(ctx)
 	s.resolverMu.Lock()
 	s.scavengerCancel = cancel
 	s.resolverMu.Unlock()
@@ -617,7 +624,7 @@ func (s *Adapter) startBackgroundLoop(ctx context.Context, loop func(context.Con
 	go func() {
 		defer s.scavengerWG.Done()
 		defer cancel()
-		loop(loopCtx)
+		run(runCtx)
 	}()
 }
 
@@ -978,30 +985,23 @@ func (s *Adapter) Stop(ctx context.Context) error {
 	// invoked outside it — the unsubs re-enter the runtime, and the netlogon
 	// close tears down a DC connection.
 	s.resolverMu.Lock()
-	identityUnsub := s.identityUnsub
-	s.identityUnsub = nil
-	identityProviderUnsub := s.identityProviderUnsub
-	s.identityProviderUnsub = nil
-	foreignSIDProviderUnsub := s.foreignSIDProviderUnsub
-	s.foreignSIDProviderUnsub = nil
-	netlogonUnsub := s.netlogonProviderUnsub
-	s.netlogonProviderUnsub = nil
+	resolverUnsubs := []func(){
+		s.identityUnsub,
+		s.identityProviderUnsub,
+		s.foreignSIDProviderUnsub,
+		s.netlogonProviderUnsub,
+	}
+	s.identityUnsub, s.identityProviderUnsub = nil, nil
+	s.foreignSIDProviderUnsub, s.netlogonProviderUnsub = nil, nil
 	netlogonAuth := s.netlogonAuth
 	scavengerCancel := s.scavengerCancel
 	s.scavengerCancel = nil
 	s.resolverMu.Unlock()
 
-	if identityUnsub != nil {
-		identityUnsub()
-	}
-	if identityProviderUnsub != nil {
-		identityProviderUnsub()
-	}
-	if foreignSIDProviderUnsub != nil {
-		foreignSIDProviderUnsub()
-	}
-	if netlogonUnsub != nil {
-		netlogonUnsub()
+	for _, unsub := range resolverUnsubs {
+		if unsub != nil {
+			unsub()
+		}
 	}
 	// Stop the durable-handle scavenger. The join is below, after the
 	// subscriptions are gone, so the goroutine cannot still be reading

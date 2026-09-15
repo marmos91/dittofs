@@ -1,9 +1,6 @@
 package smb
 
-import (
-	"context"
-	"sync"
-)
+import "context"
 
 // authSweeper runs authorization re-check sweeps on a goroutine of its own and
 // coalesces the requests that pile up while one is running.
@@ -24,8 +21,7 @@ type authSweeper struct {
 	wake   chan struct{}
 	cancel context.CancelFunc
 	// done closes when the goroutine has returned, so stop can join it.
-	done     chan struct{}
-	stopOnce sync.Once
+	done chan struct{}
 }
 
 // newAuthSweeper starts the sweep goroutine. sweep is handed a context that is
@@ -72,9 +68,10 @@ func (s *authSweeper) request() {
 }
 
 // stop cancels any sweep in flight and waits for the goroutine to return, so no
-// sweep can touch session or handler state after it. Idempotent, and safe to
-// call concurrently with request: wake is never closed.
+// sweep can touch session or handler state after it. Idempotent — a
+// context.CancelFunc does nothing after its first call — and safe to call
+// concurrently with request: wake is never closed.
 func (s *authSweeper) stop() {
-	s.stopOnce.Do(s.cancel)
+	s.cancel()
 	<-s.done
 }
