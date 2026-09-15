@@ -450,10 +450,11 @@ func resolveSharePermissionForUser(
 	localPerm := defaultPerm
 	identifier := sess.Username
 	// resolved reports whether the permission below is a decision the store
-	// actually made. A failed lookup falls back to the share default, which is
-	// a grant a caller must not mistake for a resolved one: TREE_CONNECT may
-	// hand out the default on a fresh connect, but a re-check that writes the
-	// result back would promote an explicitly restricted tree to it.
+	// actually made — across both lookups, the local one here and the SID grant
+	// further down. A failed lookup falls back to the share default, which is a
+	// grant a caller must not mistake for a resolved one: TREE_CONNECT may hand
+	// out the default on a fresh connect, but a re-check that writes the result
+	// back would promote an explicitly restricted tree to it.
 	resolved := true
 	switch {
 	case user != nil:
@@ -495,6 +496,11 @@ func resolveSharePermissionForUser(
 			if sidPerm, err := r.ResolveSharePermissionForSIDs(ctx.Context, sids, share.Name); err != nil {
 				logger.Debug("SID permission resolution failed, ignoring",
 					"shareName", share.Name, "error", err)
+				// Unresolved for the same reason the local lookup is: an AD
+				// principal can hold its whole grant here, so a failure leaves
+				// the permission below resting on the share default rather than
+				// on anything the store said.
+				resolved = false
 			} else if sidPerm.Level() > effective.Level() {
 				logger.Debug("Direct AD/SID grant elevates share permission",
 					"shareName", share.Name, "user", identifier, "from", effective, "to", sidPerm)

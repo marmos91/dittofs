@@ -28,6 +28,18 @@ type revalidateUserStore struct {
 	// permErr fails the share-permission lookup while GetUser still succeeds,
 	// the shape a store outage takes once the user record is already cached.
 	permErr error
+	// sidErr fails only the SID-grant lookup, which for an AD principal with no
+	// local account can carry its entire grant.
+	sidErr error
+}
+
+// ResolveSharePermissionForSIDs makes the fake satisfy sidSharePermissionResolver
+// so the SID arm of the resolver is exercised.
+func (s *revalidateUserStore) ResolveSharePermissionForSIDs(_ context.Context, _ []string, _ string) (models.SharePermission, error) {
+	if s.sidErr != nil {
+		return models.PermissionNone, s.sidErr
+	}
+	return models.PermissionNone, nil
 }
 
 func (s *revalidateUserStore) GetUser(_ context.Context, _ string) (*models.User, error) {
@@ -481,5 +493,45 @@ func TestTreeConnect_RefusesAfterSessionRevoked(t *testing.T) {
 	}
 	if ctx.TreeID != 0 {
 		t.Errorf("TreeID = %d, want 0: the tree was published anyway", ctx.TreeID)
+	}
+}
+
+// TestRevalidateAuthorization_SIDResolverErrorDoesNotRaisePermission covers the
+// second lookup. A Kerberos principal with no local account holds its whole
+// grant in the SID table: its synthesized record carries no per-user rows, so
+// the local lookup answers with the share default and the SID grant is the only
+// thing that can restrict or raise it. A failure there therefore leaves the
+// share default standing, and writing that back is the same promotion a failed
+// local lookup would cause.
+func TestRevalidateAuthorization_SIDResolverErrorDoesNotRaisePermission(t *testing.T) {
+	uid := uint32(4242)
+	// No ID: the sweep keeps a synthesized directory principal as-is rather
+	// than looking it up, so this is the record the tree re-resolve sees.
+	synth := &models.User{Username: "ad-user", UID: &uid, Enabled: true, SID: "S-1-5-21-1-2-3-1200"}
+	store := &revalidateUserStore{
+		user: synth,
+		// No per-user row, so the local lookup answers with the share default.
+		perm:   models.PermissionReadWrite,
+		sidErr: errors.New("connection refused"),
+	}
+
+	h, sessionID, treeID := newRevalidateHandler(t, synth, store, models.PermissionRead, true)
+
+	sess, ok := h.GetSession(sessionID)
+	if !ok {
+		t.Fatal("fixture is wrong: no session")
+	}
+	// A PAC identity is what puts the SID arm on the path at all.
+	sess.SetPACIdentity([]string{"S-1-5-21-1-2-3-1104"}, "S-1-5-21-1-2-3-1200")
+
+	h.RevalidateAuthorization(context.Background())
+
+	tree, ok := h.GetTree(treeID)
+	if !ok {
+		t.Fatal("tree removed on a failed SID lookup; an outage must not revoke access either")
+	}
+	if tree.Permission != models.PermissionRead {
+		t.Errorf("Permission = %v, want read: the SID lookup failed, so the share default "+
+			"was left standing and written back as an authorization decision", tree.Permission)
 	}
 }
