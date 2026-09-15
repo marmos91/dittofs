@@ -321,7 +321,22 @@ func (s *Service) serve(ctx context.Context, deps Deps) error {
 
 func (s *Service) shutdown(deps Deps) {
 	if deps.Settings != nil {
-		deps.Settings.Stop()
+		// Bounded, because Stop waits for a poll already in flight and takes no
+		// context of its own. On the API-error path the root context is still
+		// live, so a settings query wedged in the store would hold this shutdown
+		// — and with it Serve, and with it the caller's store close, which is
+		// the one thing that has to happen for the process to leave.
+		stopped := make(chan struct{})
+		go func() {
+			defer close(stopped)
+			deps.Settings.Stop()
+		}()
+		select {
+		case <-stopped:
+		case <-time.After(s.shutdownTimeout):
+			logger.Warn("settings watcher was not joined within the shutdown timeout; " +
+				"a poll may still be running against the control-plane store")
+		}
 	}
 
 	// Drain in-flight snapshot orchestration goroutines BEFORE stopping

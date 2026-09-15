@@ -131,6 +131,18 @@ func (s *Service) Stop(ctx context.Context) bool {
 	case <-s.stopped:
 		return true
 	case <-ctx.Done():
+		// Both channels can be ready at once — a deadline that expires in the
+		// same instant the last tick finishes — and a select with two ready
+		// cases picks uniformly, so arriving here does not mean the join was
+		// lost. Re-check before saying so: reporting a completed join as
+		// incomplete makes the caller warn that a tick is still running against
+		// stores it is about to close, which is the one thing this return value
+		// exists to tell it.
+		select {
+		case <-s.stopped:
+			return true
+		default:
+		}
 		// Reported by the caller, not here: every caller already logs on a
 		// false return, and it knows what the lost join means for what it is
 		// about to do — close the stores, or abandon a boot. Logging in both
