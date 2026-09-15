@@ -195,9 +195,6 @@ func TestBindConnToSession_ConnectionLimit(t *testing.T) {
 	if stateErr.Status != types.NFS4ERR_DELAY {
 		t.Errorf("status = %d, want %d (NFS4ERR_DELAY)", stateErr.Status, types.NFS4ERR_DELAY)
 	}
-	if stateErr.Status == types.NFS4ERR_RESOURCE {
-		t.Error("NFS4ERR_RESOURCE is not a valid NFSv4.1 error")
-	}
 }
 
 // ============================================================================
