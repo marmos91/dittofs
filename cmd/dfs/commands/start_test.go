@@ -396,7 +396,17 @@ func TestStart_RequireKerberosShareLoadsWhenKerberosResolvedFirst(t *testing.T) 
 	t.Setenv(api.EnvControlPlaneSecret, "")
 	t.Setenv(models.EnvAdminInitialPassword, "")
 
-	dbPath := filepath.Join(tmp, "controlplane.db")
+	// runStart opens the control-plane database and never closes it, so the
+	// handle is still live when the test returns. t.TempDir's cleanup would try
+	// to unlink it and fail the test on Windows, where an open file cannot be
+	// removed, so the database lives outside the managed directory and its
+	// removal is best-effort.
+	dbDir, err := os.MkdirTemp("", "dittofs-krb-boot-")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dbDir) })
+	dbPath := filepath.Join(dbDir, "controlplane.db")
 	tokenPath := filepath.Join(tmp, "metrics-token-that-does-not-exist")
 	cfgPath := filepath.Join(tmp, "config.yaml")
 	cfgBody := fmt.Sprintf(`database:
@@ -442,7 +452,7 @@ metrics:
 	cfgFile = cfgPath
 	foreground = true
 
-	err := runStart(startCmd, nil)
+	err = runStart(startCmd, nil)
 	if err == nil {
 		t.Fatal("start returned nil; it should have stopped on the unreadable metrics token file, " +
 			"so the share load was never reached (or it refused the share and returned early)")
@@ -486,6 +496,9 @@ func seedRequireKerberosShare(t *testing.T, dbPath string) {
 	if err != nil {
 		t.Fatalf("open control-plane store: %v", err)
 	}
+	// Windows refuses to unlink a file another handle still holds, and runStart
+	// opens this same database.
+	defer func() { _ = s.Close() }()
 
 	metaID, err := s.CreateMetadataStore(ctx, &models.MetadataStoreConfig{Name: "meta", Type: "memory"})
 	if err != nil {
