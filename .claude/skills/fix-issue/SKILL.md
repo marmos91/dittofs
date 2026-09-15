@@ -274,6 +274,40 @@ no git access to your working state. Hand it the actual diff content and
 absolute file paths, not "review branch fix/1934-...". Otherwise it reviews
 `develop` and reports nothing.
 
+### The adversarial third pass
+
+A third pass when the change touches **security, authorization, concurrency,
+durability, or a gate shared by more than one caller**. Skip it for mechanical
+changes — an error-code substitution, a rename, a log line.
+
+It is not a slower copy of the other two. On the #2586 SMB authorization fix
+each pass found a disjoint class and none was redundant. The simplifier found a
+rule duplicated in two places that had already drifted apart. The correctness
+reviewer found a data race and a fail-open in the LOCK exemption. The
+adversarial pass found two release blockers neither of the others did: revoking
+on any store error would have retired every Kerberos/AD session on the next
+unrelated user edit — a directory principal with no local account is backed by a
+record that is never persisted, so a lookup reports it missing — and a revoked
+session could never recover, because re-authentication reuses the same session
+object. It also caught a commit message that claimed more than its guard did.
+
+Run it by stating the change's claim as **one falsifiable sentence** and telling
+the agent to break it. Name the attack lines rather than asking for "a review":
+
+- does the trigger fire at all, on every path that should reach it?
+- what bypasses the gate — another caller, a cached result, a retry?
+- what does an exempt path still permit?
+- what *new* breakage does this introduce, in the cases that worked before?
+
+Require `file:line` citations for every claim, and require it to say plainly
+which clauses it could **not** break. That list is worth as much as the
+findings — it is the only part of the output that tells you where the change is
+actually solid, rather than merely unexamined.
+
+It costs real tokens (~270k on that run). Against a production outage that is
+nothing; against an error-code substitution it is pure waste. Apply it by
+surface, not universally.
+
 Then update whatever documentation the change invalidates. If any Cobra command
 or flag moved, regenerate — never hand-edit the generated file:
 
