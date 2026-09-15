@@ -56,8 +56,10 @@ type NFSConnection struct {
 	writeMu    sync.Mutex
 
 	// pendingCBReplies routes NFSv4.1 backchannel REPLY messages.
-	// nil unless the connection is bound for back-channel.
-	pendingCBReplies *state.PendingCBReplies
+	// nil unless the connection is bound for back-channel. The Serve read loop
+	// reads it on every message to demux replies while a concurrent dispatch
+	// goroutine installs it on the first back-channel bind, so it is atomic.
+	pendingCBReplies atomic.Pointer[state.PendingCBReplies]
 
 	// nfsVersion holds the NFS version string last published to the client
 	// registry for this connection. Read and written from the concurrent
@@ -94,7 +96,7 @@ func NewNFSConnection(server *NFSAdapter, conn net.Conn, connectionID uint64) *N
 
 // SetPendingCBReplies enables backchannel REPLY demuxing on this connection.
 func (c *NFSConnection) SetPendingCBReplies(p *state.PendingCBReplies) {
-	c.pendingCBReplies = p
+	c.pendingCBReplies.Store(p)
 }
 
 // Serve runs the read loop for this connection. It reads RPC requests
@@ -352,7 +354,7 @@ func (c *NFSConnection) readRequest(ctx context.Context) (*rpc.RPCCallMessage, [
 		return nil, nil, fmt.Errorf("read RPC message: %w", err)
 	}
 
-	if nfs_internal.DemuxBackchannelReply(message, c.connectionID, c.pendingCBReplies) {
+	if nfs_internal.DemuxBackchannelReply(message, c.connectionID, c.pendingCBReplies.Load()) {
 		return nil, nil, errBackchannelReply
 	}
 

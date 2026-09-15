@@ -142,7 +142,7 @@ func (c *NFSConnection) maybeRegisterBackchannel(ctx context.Context) {
 	// Register the ConnWriter once per connection. When the local handle is
 	// set but StateManager no longer tracks the connection (unbind/rebind
 	// cleared it), re-register rather than leaving the sender writerless.
-	if c.pendingCBReplies == nil || sm.GetPendingCBReplies(c.connectionID) == nil {
+	if c.pendingCBReplies.Load() == nil || sm.GetPendingCBReplies(c.connectionID) == nil {
 		// Captures this NFSConnection's writeMu to prevent interleaving
 		// between fore-channel replies and backchannel callbacks.
 		writer := v4state.ConnWriter(func(data []byte) error {
@@ -151,7 +151,7 @@ func (c *NFSConnection) maybeRegisterBackchannel(ctx context.Context) {
 			_, err := c.conn.Write(data)
 			return err
 		})
-		c.pendingCBReplies = sm.RegisterConnWriter(c.connectionID, writer)
+		c.pendingCBReplies.Store(sm.RegisterConnWriter(c.connectionID, writer))
 	}
 
 	for _, b := range backBound {
