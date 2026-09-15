@@ -454,7 +454,7 @@ metrics:
 
 	err = runStart(startCmd, nil)
 	if err == nil {
-		t.Fatal("start returned nil; it should have stopped on the unreadable metrics token file, " +
+		t.Fatal("start returned nil; it should have stopped on the missing metrics token file, " +
 			"so the share load was never reached (or it refused the share and returned early)")
 	}
 	if !strings.Contains(err.Error(), "metrics token file") {
@@ -665,7 +665,7 @@ metrics:
 
 	err := runStart(startCmd, nil)
 	if err == nil {
-		t.Fatal("expected start to fail on an unreadable metrics token file")
+		t.Fatal("expected start to fail on a missing metrics token file")
 	}
 	if !strings.Contains(err.Error(), "metrics token file") {
 		t.Fatalf("expected a metrics token file error, got: %v", err)

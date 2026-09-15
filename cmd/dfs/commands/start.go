@@ -50,6 +50,11 @@ var isTerminal = func(fd uintptr) bool {
 // Serving either would return zeros for stored files, so boot stops instead.
 const EX_CONFIG = 78
 
+// storeCloseTimeout bounds the control-plane store's close at shutdown. Long
+// enough for an ordinary query to finish, short enough that a wedged one does
+// not outlast the forced-exit deadline it would otherwise defeat.
+const storeCloseTimeout = 5 * time.Second
+
 // exitFn is the production exit path for the format-mismatch boot guard.
 // Indirected through a package-level var so the in-process boot-guard
 // test (start_test.go::TestStart_FutureFormatExitCode) can stub it to
@@ -151,23 +156,36 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// with a slow handler reaches this close the same way the forced-exit
 	// branch does. Nothing here waits for handlers to drain.
 	//
-	// What sql.DB.Close actually does cuts both ways, and the second way is the
-	// one worth naming: it stops new queries and makes any later use return an
+	// What sql.DB.Close actually does cuts both ways, and the second way is why
+	// this is bounded: it stops new queries and makes any later use return an
 	// error instead of panicking, but it does not cut a query already running —
-	// it WAITS for it. So this does not race a slow handler to a corrupt read;
-	// it blocks here until that handler's query finishes. A handler wedged on
-	// the store therefore holds the process in this defer rather than letting it
-	// exit, and the forced-exit path above has already returned by then.
+	// it WAITS for it. Left to run to completion it would hold the process in
+	// this defer behind a wedged handler, and the forced-exit path above has
+	// already given up waiting by then, so the one deadline the operator can
+	// see would be defeated by the cleanup that follows it.
 	//
-	// Accepted because a control-plane query that never returns is a defect in
-	// its own right and this is where it becomes visible, rather than a quiet
-	// close under a request. Withdraw it if a handler ever performs a write
-	// whose partial application outlives the process, or if a wedged query
-	// becomes something the process has to survive rather than stop for. The
-	// real fix is to join the API handlers before closing.
+	// So the close gets its own deadline, and losing it means exiting with the
+	// handle still open. That costs nothing here: the process is on its way out
+	// and the OS reclaims the descriptor either way, whereas not exiting is
+	// what an operator notices. Withdraw the bound if this ever becomes a path
+	// the process continues past rather than exits from, where an unclosed
+	// handle outlives the decision to abandon it. The real fix, which removes
+	// the choice, is to join the API handlers before closing — nothing here
+	// waits for them, and http.Server.Shutdown returns on its own deadline
+	// whether or not they have finished.
 	defer func() {
 		cancel()
-		_ = cpStore.Close()
+		closed := make(chan struct{})
+		go func() {
+			defer close(closed)
+			_ = cpStore.Close()
+		}()
+		select {
+		case <-closed:
+		case <-time.After(storeCloseTimeout):
+			logger.Warn("control-plane store did not close within its deadline; " +
+				"a request is still holding it and the process is exiting without it")
+		}
 	}()
 
 	// Ensure admin user exists. On first run the password is taken from
