@@ -15,6 +15,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/journal"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 )
 
 // TestStart_FutureFormatExitCode asserts the boot-guard contract:
@@ -312,5 +313,57 @@ controlplane:
 	// admin user, groups or adapters were bootstrapped.
 	if _, statErr := os.Stat(dbPath); !os.IsNotExist(statErr) {
 		t.Fatalf("failed start left a control-plane database at %s (stat err: %v)", dbPath, statErr)
+	}
+}
+
+// TestStart_RequireKerberosWithoutKerberosExitCode pins the other boot-stop
+// branch: a persisted share requiring Kerberos on a server without it is an
+// operator configuration error, so the start command prints the error — which
+// names the share and the missing Kerberos configuration — and exits 78.
+// Without this branch handleLoadSharesError would downgrade it to a warning
+// and the daemon would come up serving a share no client can authenticate to.
+func TestStart_RequireKerberosWithoutKerberosExitCode(t *testing.T) {
+	origExit := exitFn
+	t.Cleanup(func() { exitFn = origExit })
+	exitCh := make(chan int, 1)
+	exitFn = func(code int) {
+		select {
+		case exitCh <- code:
+		default:
+		}
+	}
+
+	origStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stderr = w
+	t.Cleanup(func() { os.Stderr = origStderr })
+
+	loadErr := fmt.Errorf("share %q: %w; enable Kerberos", "/krb-gone", runtime.ErrKerberosNotConfigured)
+	if !handleLoadSharesError(loadErr, w) {
+		t.Fatal("handleLoadSharesError returned stop=false on an unsatisfiable Kerberos policy")
+	}
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("close pipe writer: %v", err)
+	}
+	var stderrBuf bytes.Buffer
+	if _, err := stderrBuf.ReadFrom(r); err != nil {
+		t.Fatalf("read stderr pipe: %v", err)
+	}
+	_ = r.Close()
+
+	select {
+	case code := <-exitCh:
+		if code != EX_CONFIG {
+			t.Fatalf("exit code = %d; want %d", code, EX_CONFIG)
+		}
+	default:
+		t.Fatal("exitFn was never invoked")
+	}
+	if !strings.Contains(stderrBuf.String(), "/krb-gone") {
+		t.Fatalf("stderr %q does not name the share", stderrBuf.String())
 	}
 }

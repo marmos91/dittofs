@@ -271,6 +271,19 @@ func runStart(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Resolve identity-provider config: a DB row (managed via the API) wins over
+	// the file/env config; on first boot the file/env config seeds the DB. This
+	// sets the runtime's LDAP config and returns the effective Kerberos config to
+	// hand to the adapter factory.
+	//
+	// Resolved BEFORE loading shares because Kerberos availability is a server
+	// capability each persisted share's export auth-flavor policy is validated
+	// against: a share requiring Kerberos on a server without it is reachable by
+	// no flavor at all, and LoadSharesFromStore reads rt.KerberosEnabled() to
+	// refuse it.
+	effectiveKerberos := resolveIdentityProviders(ctx, cpStore, rt, cfg)
+	rt.SetKerberosEnabled(effectiveKerberos.Enabled)
+
 	// Load shares (per-share BlockStores are created during AddShare).
 	// Legacy-layout detection is a hard boot stop. Other share-loading
 	// failures stay best-effort (logged + ignored, the historical
@@ -327,12 +340,6 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// the same SID on every node yields identical local UID->SID encoding.
 	rt.SetPinnedMachineSID(cfg.Identity.MachineSID)
 
-	// Resolve identity-provider config: a DB row (managed via the API) wins over
-	// the file/env config; on first boot the file/env config seeds the DB. This
-	// sets the runtime's LDAP config and returns the effective Kerberos config to
-	// hand to the adapter factory.
-	effectiveKerberos := resolveIdentityProviders(ctx, cpStore, rt, cfg)
-
 	// Build the single, process-wide NETLOGON authenticator before the adapter
 	// factory so every SMB adapter instance shares it (one machine account per
 	// process). The online-join provider persists its rotated secret in the
@@ -358,7 +365,6 @@ func runStart(cmd *cobra.Command, args []string) error {
 		rt.SetNetlogonController(nlController)
 	}
 
-	rt.SetKerberosEnabled(effectiveKerberos.Enabled)
 	rt.SetAdapterFactory(createAdapterFactory(&effectiveKerberos, nlAuth))
 
 	// Create and set API server
@@ -900,6 +906,17 @@ func handleLoadSharesError(err error, stderr *os.File) bool {
 		return false
 	}
 	if handleFormatMismatch(err, stderr) {
+		return true
+	}
+	// A persisted export policy no auth flavor can satisfy is an operator
+	// configuration error, not a share that can be skipped: the share would
+	// come up refusing every client. Exit with the same config code the
+	// format-mismatch directive uses, printing the error, which names the
+	// share and the missing Kerberos configuration.
+	if errors.Is(err, runtime.ErrKerberosNotConfigured) {
+		_, _ = fmt.Fprintln(stderr, err.Error())
+		exitFn(EX_CONFIG)
+		// Unreachable in production (exitFn == os.Exit terminates).
 		return true
 	}
 	logger.Warn("Failed to load some shares", "error", err)
