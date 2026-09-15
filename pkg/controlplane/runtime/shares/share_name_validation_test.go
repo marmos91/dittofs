@@ -3,6 +3,8 @@ package shares
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -166,13 +168,11 @@ func TestAddShare_RejectsOverLongName(t *testing.T) {
 	})
 }
 
-// TestAddShare_LeadingSlashIsOneName guards the directory invariant
-// OpenShareJournal relies on: two shares never share a journal directory.
-// "alpha" and "/alpha" sanitize to the same directory, so they must not be two
-// shares — the name is normalized to one spelling at the seam, which makes the
-// second registration a duplicate instead of a second writer into one journal.
-func TestAddShare_LeadingSlashIsOneName(t *testing.T) {
-	ctx := context.Background()
+// newAddShareFixture wires a service to a fresh in-memory metadata store and
+// returns it with its journal defaults and a closure that adds a share by name,
+// so a test about how two spellings of one name behave states only the names.
+func newAddShareFixture(t *testing.T) (*Service, *LocalStoreDefaults, func(name string) error) {
+	t.Helper()
 
 	mds := metamem.NewMemoryMetadataStoreWithDefaults()
 	t.Cleanup(func() { _ = mds.Close() })
@@ -181,7 +181,7 @@ func TestAddShare_LeadingSlashIsOneName(t *testing.T) {
 	defaults := journalDefaults(t, svc)
 	add := func(name string) error {
 		return svc.AddShare(
-			ctx,
+			context.Background(),
 			&ShareConfig{Name: name, MetadataStore: "meta-test", Enabled: true, BlockStoreID: testBlockStoreID},
 			&metaStoreProvider{name: "meta-test", store: mds},
 			metaSvcRegistrar{},
@@ -190,6 +190,16 @@ func TestAddShare_LeadingSlashIsOneName(t *testing.T) {
 			nil,
 		)
 	}
+	return svc, defaults, add
+}
+
+// TestAddShare_LeadingSlashIsOneName guards the directory invariant
+// OpenShareJournal relies on: two shares never share a journal directory.
+// "alpha" and "/alpha" sanitize to the same directory, so they must not be two
+// shares — the name is normalized to one spelling at the seam, which makes the
+// second registration a duplicate instead of a second writer into one journal.
+func TestAddShare_LeadingSlashIsOneName(t *testing.T) {
+	svc, defaults, add := newAddShareFixture(t)
 
 	// The premise: both spellings address one directory.
 	if unslashed, slashed := ShareJournalDir(defaults.JournalRoot, "alpha"), ShareJournalDir(defaults.JournalRoot, "/alpha"); unslashed != slashed {
@@ -209,5 +219,104 @@ func TestAddShare_LeadingSlashIsOneName(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf(`AddShare("/alpha") must be refused as a duplicate, got %v`, err)
+	}
+}
+
+// TestAddShare_PercentInNameIsALiteral guards the same directory invariant for
+// a name a control-plane row can actually hold: "a%2Fb". The fold must leave
+// the percent sign alone, so both spellings of that name open the directory the
+// name itself sanitizes to and not the one its decoded reading would — a share
+// registered under the decoded name writes into a directory no row addresses,
+// and the unfolded spelling would then open a second journal beside it.
+func TestAddShare_PercentInNameIsALiteral(t *testing.T) {
+	// The name as a control-plane row holds it, and the different name that
+	// reading its percent sign as an escape would produce.
+	const persisted = "a%2Fb"
+	const decoded = "a/b"
+
+	svc, defaults, add := newAddShareFixture(t)
+
+	literalDir := ShareJournalDir(defaults.JournalRoot, persisted)
+	decodedDir := ShareJournalDir(defaults.JournalRoot, decoded)
+
+	// Name the directories outright rather than only comparing two calls to the
+	// helper that produces them, so a sanitizer that stopped escaping would show
+	// up here and not only in the tests that cover the sanitizer directly.
+	if got := filepath.Base(literalDir); got != "a%252Fb" {
+		t.Fatalf("share %q must live in %q, got %q", persisted, "a%252Fb", got)
+	}
+	if got := filepath.Base(decodedDir); got != "a%2Fb" {
+		t.Fatalf("share %q must live in %q, got %q", decoded, "a%2Fb", got)
+	}
+
+	// The premise: both spellings of the persisted name address one directory,
+	// and it is not the one the decoded reading addresses.
+	if slashed := ShareJournalDir(defaults.JournalRoot, "/"+persisted); literalDir != slashed {
+		t.Fatalf("expected both spellings of %q to resolve to one directory, got %q and %q", persisted, literalDir, slashed)
+	}
+	if literalDir == decodedDir {
+		t.Fatalf("premise broken: %q and %q must address different directories, both gave %q", persisted, decoded, literalDir)
+	}
+
+	if err := add(persisted); err != nil {
+		t.Fatalf("AddShare(%q): %v", persisted, err)
+	}
+
+	// The share opened the directory its own name sanitizes to, not the one the
+	// decoded reading would have picked.
+	if _, err := os.Stat(literalDir); err != nil {
+		t.Fatalf("share %q did not open its own journal directory %q: %v", persisted, literalDir, err)
+	}
+	if _, err := os.Stat(decodedDir); err == nil {
+		t.Fatalf("share %q opened the journal directory %q of its decoded reading %q", persisted, decodedDir, decoded)
+	}
+
+	// ...and it is registered under the name as written.
+	if _, err := svc.GetShare("/" + persisted); err != nil {
+		t.Fatalf("a share added as %q must be registered as %q: %v", persisted, "/"+persisted, err)
+	}
+	if _, err := svc.GetShare("/" + decoded); err == nil {
+		t.Fatalf("share %q was registered under its decoded reading %q", persisted, "/"+decoded)
+	}
+
+	// The slashed spelling addresses that same directory, so it must be refused
+	// as a duplicate rather than opening a second journal in it.
+	err := add("/" + persisted)
+	if err == nil {
+		t.Fatalf("AddShare(%q) was accepted alongside %q: both write into %q", "/"+persisted, persisted, literalDir)
+	}
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("AddShare(%q) must be refused as a duplicate, got %v", "/"+persisted, err)
+	}
+}
+
+// TestAddShare_RefusesAShareRootedUnderItsDecodedName guards the upgrade a build
+// that folded by decoding leaves behind. Such a build keyed "/a%20b"'s root by
+// "/a b"; this one addresses it as "/a%20b" and finds no root there, so without
+// the check it would mint a fresh empty one and serve the share with its files
+// reachable by nothing.
+func TestAddShare_RefusesAShareRootedUnderItsDecodedName(t *testing.T) {
+	const persisted = "/a%20b"
+	const decoded = "/a b"
+
+	svc, _, add := newAddShareFixture(t)
+
+	// Stand in for the earlier build: the share's root is already keyed by the
+	// name that build folded to.
+	if err := add(decoded); err != nil {
+		t.Fatalf("AddShare(%q): %v", decoded, err)
+	}
+
+	err := add(persisted)
+	if err == nil {
+		t.Fatalf("AddShare(%q) was accepted although its files are keyed by %q", persisted, decoded)
+	}
+	// The message has to name both keys, or an operator cannot tell which
+	// spelling holds the data.
+	if !strings.Contains(err.Error(), persisted) || !strings.Contains(err.Error(), decoded) {
+		t.Fatalf("refusal must name both %q and %q, got %v", persisted, decoded, err)
+	}
+	if _, gerr := svc.GetShare(persisted); gerr == nil {
+		t.Fatalf("share %q was registered despite the refusal", persisted)
 	}
 }

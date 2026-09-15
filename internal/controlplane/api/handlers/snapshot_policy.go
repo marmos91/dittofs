@@ -51,7 +51,7 @@ func (h *SnapshotPolicyHandler) resolveShare(w http.ResponseWriter, r *http.Requ
 		InternalServerError(w, "runtime not initialized")
 		return ""
 	}
-	name := metadata.NormalizeShareName(chi.URLParam(r, "name"))
+	name := metadata.NormalizeShareNameFromURL(chi.URLParam(r, "name"))
 	if name == "" {
 		BadRequest(w, "share name is required")
 		return ""

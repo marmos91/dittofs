@@ -55,7 +55,7 @@ func (h *BlockStoreStatsHandler) Stats(w http.ResponseWriter, r *http.Request) {
 	// slash) when a share name is actually present.
 	shareName := chi.URLParam(r, "name")
 	if shareName != "" {
-		shareName = metadata.NormalizeShareName(shareName)
+		shareName = metadata.NormalizeShareNameFromURL(shareName)
 	}
 
 	stats, err := h.runtime.GetBlockStoreStats(shareName)
@@ -82,7 +82,7 @@ func (h *BlockStoreStatsHandler) Evict(w http.ResponseWriter, r *http.Request) {
 	// normalize when a per-share name is actually present.
 	shareName := chi.URLParam(r, "name")
 	if shareName != "" {
-		shareName = metadata.NormalizeShareName(shareName)
+		shareName = metadata.NormalizeShareNameFromURL(shareName)
 	}
 
 	var req BlockStoreEvictRequest
@@ -160,7 +160,7 @@ func (h *BlockStoreStatsHandler) Warm(w http.ResponseWriter, r *http.Request) {
 		BadRequest(w, "share name required")
 		return
 	}
-	shareName = metadata.NormalizeShareName(shareName)
+	shareName = metadata.NormalizeShareNameFromURL(shareName)
 
 	job, err := h.runtime.StartWarmBlockStore(r.Context(), shareName)
 	if err != nil {

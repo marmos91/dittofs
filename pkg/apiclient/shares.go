@@ -9,11 +9,24 @@ import (
 	"github.com/marmos91/dittofs/pkg/health"
 )
 
-// normalizeShareNameForAPI strips all leading slashes from share names for API URLs.
-// This removes all leading slashes (e.g., "///export" becomes "export") to ensure
-// valid URL paths. The server will normalize them back to include the leading slash.
+// normalizeShareNameForAPI spells a share name for the path segment it is about
+// to become, once the caller has escaped it.
+//
+// An ordinary name is sent with its leading slashes stripped ("///export"
+// becomes "export"); the server folds the slash back on.
+//
+// A name holding a percent cannot be sent that way. The server decodes the
+// segment, and it only receives one still encoded while the request path differs
+// from the default encoding of its decoded form — which a bare "a%252Fb" does
+// not, so it would arrive as "a%2Fb" and be decoded a second time into "a/b",
+// naming a different share. Keeping one leading slash makes the escaped segment
+// "%2Fa%252Fb", which does differ, and the name survives the trip.
 func normalizeShareNameForAPI(name string) string {
-	return strings.TrimLeft(name, "/")
+	trimmed := strings.TrimLeft(name, "/")
+	if strings.Contains(trimmed, "%") {
+		return "/" + trimmed
+	}
+	return trimmed
 }
 
 // Share represents a share in the system.

@@ -243,7 +243,7 @@ func (h *ShareNFSConfigHandler) Patch(w http.ResponseWriter, r *http.Request) {
 // lookupShare resolves the {name} path param to a stored share, writing a
 // 404/500 problem and returning ok=false on failure.
 func (h *ShareNFSConfigHandler) lookupShare(w http.ResponseWriter, r *http.Request) (*models.Share, bool) {
-	name := metadata.NormalizeShareName(chi.URLParam(r, "name"))
+	name := metadata.NormalizeShareNameFromURL(chi.URLParam(r, "name"))
 	share, err := h.store.GetShare(r.Context(), name)
 	if err != nil {
 		if errors.Is(err, models.ErrShareNotFound) {
