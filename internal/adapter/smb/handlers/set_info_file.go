@@ -1844,6 +1844,17 @@ func buildFrozenAttrs(openFile *OpenFile) *metadata.SetAttrs {
 //
 // Takes openFile.mu (read); see applyFrozenTimestamps for rationale. A caller
 // that already holds the lock must call holdFrozenCtimeLocked instead.
+//
+// decision: this is not an atomic freeze-and-write. The lock is released before
+// the caller's SetFileAttributes runs, so a SET_INFO that freezes ChangeTime in
+// that gap leaves the in-flight write stamping a value that is now frozen.
+// Closing it means holding a per-handle lock across a metadata-store write,
+// which puts a store round-trip inside a lock every pipelined operation on the
+// handle contends for. The window is one freeze landing between a flag read and
+// a store write on the same handle, and it costs a single stale ChangeTime that
+// the next operation on that handle corrects. Withdraw this if ChangeTime ever
+// becomes load-bearing for a client's cache-validity decision, where one stale
+// value is not self-correcting.
 func holdFrozenCtime(openFile *OpenFile, attrs *metadata.SetAttrs) {
 	if attrs.Ctime != nil {
 		return

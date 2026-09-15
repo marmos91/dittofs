@@ -633,13 +633,29 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 		// against concurrent writers; on one whose in-transaction read takes no
 		// row lock this narrows the window rather than closing it, the same
 		// residue RestoreChangeTimeIfUnchanged documents.
-		holdCtime := func(tx Transaction) {
+		// The re-read's failure is the operation's failure. Falling back to the
+		// pre-transaction snapshot would write a Ctime this call has already
+		// been told not to trust, and UpdateAttrs is allowed to create a row
+		// that is missing — so a file deleted between the two reads would be
+		// recreated carrying the stale value, which is a worse outcome than
+		// refusing the attribute change.
+		holdCtime := func(tx Transaction) error {
 			if !attrs.PreserveCtime || attrs.Ctime != nil {
-				return
+				return nil
 			}
-			if cur, curErr := tx.GetFile(ctx.Context, handle); curErr == nil && cur != nil {
-				file.Ctime = cur.Ctime
+			cur, curErr := tx.GetFile(ctx.Context, handle)
+			if curErr != nil {
+				return curErr
 			}
+			if cur == nil {
+				return &StoreError{
+					Code:    ErrNotFound,
+					Message: "file disappeared while its change time was being held",
+					Path:    file.Path,
+				}
+			}
+			file.Ctime = cur.Ctime
+			return nil
 		}
 		// A size change (truncate/grow) is data-paired: the new size must
 		// survive a crash together with the block data, or a read past the new
@@ -659,7 +675,9 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 			mu := s.pendingWrites.GetFlushLock(handle)
 			mu.Lock()
 			err := store.WithTransaction(ctx.Context, func(tx Transaction) error {
-				holdCtime(tx)
+				if hErr := holdCtime(tx); hErr != nil {
+					return hErr
+				}
 				if blocksPruned {
 					return tx.SetManifest(ctx.Context, file)
 				}
@@ -676,7 +694,9 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 			}
 		} else {
 			if err := withRelaxedTransaction(store, ctx.Context, func(tx Transaction) error {
-				holdCtime(tx)
+				if hErr := holdCtime(tx); hErr != nil {
+					return hErr
+				}
 				return tx.UpdateAttrs(ctx.Context, file)
 			}); err != nil {
 				return nil, err

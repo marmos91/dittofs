@@ -66,6 +66,21 @@ func TestSetFileAttributes_PreserveCtimeDoesNotRevertAConcurrentAdvance(t *testi
 	base := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 	const rounds = 300
 
+	// Seed the stored Ctime to base. Without this it starts at the file's
+	// creation time — now, years after base — and every floor derived from base
+	// sits below it, so a stale write reverting to that creation time lands
+	// *above* the floor and the assertion below never fires. The test would pass
+	// on a build that reverts ChangeTime on every single round.
+	if _, err := svc.SetFileAttributes(ctx, handle, &metadata.SetAttrs{Ctime: &base}); err != nil {
+		t.Fatalf("seeding Ctime: %v", err)
+	}
+	if seeded, err := svc.GetFile(context.Background(), handle); err != nil {
+		t.Fatalf("reading back the seed: %v", err)
+	} else if !seeded.Ctime.Equal(base) {
+		t.Fatalf("seed did not land: Ctime=%v, want %v — every floor below would be vacuous",
+			seeded.Ctime.UTC(), base.UTC())
+	}
+
 	for i := range rounds {
 		advanced := base.Add(time.Duration(i+1) * time.Hour)
 
