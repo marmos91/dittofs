@@ -1,5 +1,7 @@
 package runtime
 
+import "strings"
+
 // ExportAcceptsNoAuthFlavor reports whether a share's NFS export policy leaves
 // no auth flavor a client could ever use.
 //
@@ -31,7 +33,7 @@ func ExportAcceptsNoAuthFlavor(requireKerberos, allowAuthSys, kerberosEnabled bo
 // two-flag case therefore gets a command that sets both, so following the
 // remedy actually produces a share that serves.
 func ExportNoAuthFlavorCause(shareName string, requireKerberos, allowAuthSys bool) (cause, remedy string) {
-	set := "`dfsctl share nfs-config set " + shareName + " "
+	set := "`dfsctl share nfs-config set " + shellQuote(shareName) + " "
 	switch {
 	case requireKerberos && !allowAuthSys:
 		return "require_kerberos is set and allow_auth_sys is off",
@@ -41,4 +43,13 @@ func ExportNoAuthFlavorCause(shareName string, requireKerberos, allowAuthSys boo
 	default:
 		return "allow_auth_sys is off", set + "--allow-auth-sys true`"
 	}
+}
+
+// shellQuote wraps a share name so the remedy above survives being copied into
+// a shell. A share name is validated for the handle format, not for the shell:
+// it may hold spaces, which split one argument into several, and it may hold
+// command substitutions, which a shell would run. Single quotes suspend all of
+// that, and the one character they cannot carry is closed, escaped and reopened.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
