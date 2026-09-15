@@ -737,15 +737,33 @@ func (sm *StateManager) probeV41CallbackPath(ctx context.Context, bs *Backchanne
 			"session_id", bs.sessionID.String())
 		return
 	}
-	defer func() {
-		bs.probeInFlight.Store(false)
-		// Whoever was turned away above asked for parameters this probe did not
-		// run against. Re-run for them, once, however many arrived.
-		if bs.probeWanted.CompareAndSwap(true, false) {
-			go sm.probeV41CallbackPath(context.Background(), bs)
-		}
-	}()
+	// The in-flight flag is held across the re-run rather than released and
+	// re-taken. Releasing first and then consuming probeWanted is not a handoff:
+	// a caller arriving in that window takes the flag and starts its own probe,
+	// and this goroutine's CAS then consumes THAT caller's request and starts a
+	// second one alongside it — two overlapping CB_NULLs on one session,
+	// publishing verdicts in whatever order they finish. Looping while holding
+	// the flag means the successor cannot start until this one is finished, and
+	// a caller that arrives meanwhile is queued rather than raced.
+	defer bs.probeInFlight.Store(false)
 
+	for {
+		sm.runV41Probe(ctx, bs)
+		// Whoever was turned away asked for parameters this probe did not run
+		// against. Re-run for them, once, however many arrived.
+		if !bs.probeWanted.CompareAndSwap(true, false) {
+			return
+		}
+		// A deferred re-run is about parameters that have changed since the
+		// caller was turned away, so it reads them fresh; the caller's context
+		// is gone, which is why this one is detached.
+		ctx = context.Background()
+	}
+}
+
+// runV41Probe is one CB_NULL round trip and its verdict. The caller owns the
+// one-probe-per-session guard.
+func (sm *StateManager) runV41Probe(ctx context.Context, bs *BackchannelSender) {
 	generation := bs.currentParams().generation
 	err := bs.probeCallbackPath(ctx)
 

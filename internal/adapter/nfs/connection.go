@@ -200,12 +200,20 @@ func DemuxBackchannelReply(message []byte, connectionID uint64, pending func() *
 		return false
 	}
 
+	// From here the message is a REPLY, and a REPLY is never a CALL. Even with
+	// no table left to route it to, it has to be consumed: returning false hands
+	// a msg_type=REPLY to rpc.ReadCall, which rejects it and closes the socket —
+	// and a v4.1 connection carries other sessions, so one late reply to a
+	// callback whose session has already been torn down would take them with it.
+	xid := binary.BigEndian.Uint32(message[0:4])
 	table := pending()
 	if table == nil {
-		return false
+		logger.Debug("Backchannel REPLY with no pending-reply table (dropped)",
+			"xid", fmt.Sprintf("0x%x", xid),
+			"conn_id", connectionID)
+		pool.Put(message)
+		return true
 	}
-
-	xid := binary.BigEndian.Uint32(message[0:4])
 
 	// Copy the message bytes for delivery since the buffer is pooled
 	replyBytes := make([]byte, len(message))
