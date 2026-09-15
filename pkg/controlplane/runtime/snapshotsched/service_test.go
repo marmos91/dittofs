@@ -380,3 +380,35 @@ func TestStop_ConcurrentCallersDoNotDoubleClose(t *testing.T) {
 	close(start)
 	wg.Wait() // a double close panics here rather than failing an assertion
 }
+
+// TestStop_ReportsWhetherItJoined pins the signal the bounded wait has to give
+// its caller. Returning nothing left the drain unable to tell a completed join
+// from an expired deadline, so it closed the stores either way while a comment
+// above it claimed the tick had finished. The claim has to come from the code.
+func TestStop_ReportsWhetherItJoined(t *testing.T) {
+	t.Run("never started joins immediately", func(t *testing.T) {
+		s := New(&fakeDeps{}, time.Minute)
+		if !s.Stop(context.Background()) {
+			t.Error("a scheduler that never started reported an incomplete join")
+		}
+	})
+
+	t.Run("expired deadline reports no join", func(t *testing.T) {
+		deps := newBlockingDeps()
+		s := New(deps, time.Millisecond)
+		s.Start(context.Background())
+		<-deps.entered // a tick is now inside the store and will not leave
+
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		if s.Stop(ctx) {
+			t.Error("Stop reported a completed join while a tick was still inside the store")
+		}
+
+		close(deps.release)
+		<-deps.returned
+		if !s.Stop(context.Background()) {
+			t.Error("Stop reported an incomplete join after the tick returned")
+		}
+	})
+}
