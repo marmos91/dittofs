@@ -185,6 +185,16 @@ func NormalizeShareName(name string) string {
 // and its leading slashes are hidden from the fold until it is decoded. An
 // undecodable segment is folded as written rather than rejected, leaving the
 // name to fail ValidateShareName or a lookup on its own terms.
+//
+// decision: a share whose name contains a percent that forms a valid escape
+// cannot be addressed through a URL, and this seam is where that ends. A router
+// matches on the escaped path only where it differs from the default encoding
+// of the decoded one; "%25" decodes to "%" and re-encodes to "%25", so such a
+// segment arrives already decoded and this decode is the second. Escaping the
+// percent harder does not help — every spelling collapses the same way. Only
+// routing every request on its escaped path would fix it, which hands every
+// other path parameter in the API its encoded form instead; do that if a name
+// like that ever has to be managed over REST rather than merely served.
 func NormalizeShareNameFromURL(name string) string {
 	decoded, err := url.PathUnescape(name)
 	if err != nil {
