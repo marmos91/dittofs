@@ -1126,23 +1126,20 @@ func ProcessAppInstanceId(
 		}
 	}
 
-	// Release the LeaseManager records of the opens that were actually closed
-	// (mirrors the explicit CLOSE path in close.go) so no orphaned oplock/lease
-	// lingers to break the claiming open. An open the filter declined keeps its
-	// lease, because it also kept its handle.
+	// Wake the creates parked on each displaced open's lease. The lease record
+	// itself is already gone: closeFilesWithFilter runs releaseHandleLeaseRecord
+	// for every open it removed, which releases the record and unregisters the
+	// oplock file id. Repeating that here released it a second time and, worse,
+	// skipped that helper's "any other open on the same file shares this key"
+	// scan — so a displaced open sharing a lease key with one the filter
+	// declined tore the lease out from under the survivor that still held it.
+	// Signalling is the one step that helper does not do, and it is idempotent:
+	// a create woken while a sibling still holds the lease simply parks again.
 	for _, c := range candidates {
 		if !closed[c.fileID] || handler.LeaseManager == nil || c.leaseKey == ([16]byte{}) {
 			continue
 		}
-		fileHandle := lock.FileHandle(c.metaHandle)
-		if err := handler.LeaseManager.ReleaseLeaseForHandle(ctx, fileHandle, c.leaseKey, c.shareName); err != nil {
-			logger.Debug("ProcessAppInstanceId: failed to release displaced lease",
-				"leaseKey", fmt.Sprintf("%x", c.leaseKey), "error", err)
-		}
-		if !c.isLease {
-			handler.LeaseManager.UnregisterOplockFileID(c.leaseKey)
-		}
-		handler.LeaseManager.SignalParkedCreates(fileHandle, c.shareName)
+		handler.LeaseManager.SignalParkedCreates(lock.FileHandle(c.metaHandle), c.shareName)
 	}
 
 	// 2) Force-close persisted (disconnected) durable handles with matching
