@@ -316,6 +316,20 @@ func (sm *StateManager) ValidateStateid(stateid *types.Stateid4, currentFH []byt
 	return openState, nil
 }
 
+// revokedDelegStatusLocked returns the status a revoked delegation's stateid
+// draws. NFS4ERR_DELEG_REVOKED (RFC 8881 Section 15.1.5.3) tells a v4.1 client
+// the lock was taken back because it did not return it on recall, which is what
+// sends it to TEST_STATEID and FREE_STATEID to clear the revoked state. The
+// code does not exist in RFC 7530, so a v4.0 client keeps NFS4ERR_BAD_STATEID.
+//
+// Caller must hold sm.mu (read or write).
+func (sm *StateManager) revokedDelegStatusLocked(clientID uint64) uint32 {
+	if record := sm.clientsByID[clientID]; record != nil && record.MinorVersion >= 1 {
+		return types.NFS4ERR_DELEG_REVOKED
+	}
+	return types.NFS4ERR_BAD_STATEID
+}
+
 // validateDelegStateid validates a delegation stateid (type 0x03).
 // Returns nil OpenState on success (delegation validated, caller should proceed).
 // Caller must hold sm.mu.RLock.
@@ -328,7 +342,7 @@ func (sm *StateManager) validateDelegStateid(stateid *types.Stateid4, currentFH 
 	// Revoked delegations are no longer valid
 	if deleg.Revoked {
 		return nil, &NFS4StateError{
-			Status:  types.NFS4ERR_BAD_STATEID,
+			Status:  sm.revokedDelegStatusLocked(deleg.ClientID),
 			Message: "delegation has been revoked",
 		}
 	}
@@ -729,7 +743,7 @@ func (sm *StateManager) testDelegStateid(stateid *types.Stateid4, callerClientID
 	}
 
 	if deleg.Revoked {
-		return types.NFS4ERR_BAD_STATEID
+		return sm.revokedDelegStatusLocked(deleg.ClientID)
 	}
 
 	// Check seqid (seqid=0 means "any" per RFC 8881 Section 8.2.2)

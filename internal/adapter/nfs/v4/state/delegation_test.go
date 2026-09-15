@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"io"
 	"net"
 	"sync"
@@ -1655,5 +1656,60 @@ func TestLockT_IgnoresOwnDelegation(t *testing.T) {
 
 	if denied, err = sm.TestLock(clientID+1, []byte("other-owner"), fileHandle, types.WRITE_LT, 0, 100); err != nil || denied == nil {
 		t.Fatalf("LOCKT from another client must see the delegation; denied=%v err=%v", denied, err)
+	}
+}
+
+// TestRevokedDelegStateid_StatusByMinorVersion pins the status a revoked
+// delegation's stateid draws. A v4.1 client needs NFS4ERR_DELEG_REVOKED to know
+// the lock was taken back on recall and to go clear it with TEST_STATEID and
+// FREE_STATEID; RFC 7530 has no such code, so v4.0 keeps NFS4ERR_BAD_STATEID.
+func TestRevokedDelegStateid_StatusByMinorVersion(t *testing.T) {
+	tests := []struct {
+		name   string
+		v41    bool
+		expect uint32
+	}{
+		{"v4.1 client", true, types.NFS4ERR_DELEG_REVOKED},
+		{"v4.0 client", false, types.NFS4ERR_BAD_STATEID},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sm := NewStateManager(90 * time.Second)
+
+			var clientID uint64
+			if tt.v41 {
+				clientID, _ = registerV41Client(t, sm)
+			} else {
+				var verifier [8]byte
+				copy(verifier[:], "verify01")
+				cb := CallbackInfo{Program: 0x40000000, NetID: "tcp", Addr: "10.0.0.1.8.1"}
+				res, err := sm.SetClientID("revoked-deleg-"+t.Name(), verifier, cb, "10.0.0.1:1234")
+				if err != nil {
+					t.Fatalf("SetClientID error: %v", err)
+				}
+				clientID = res.ClientID
+			}
+
+			fh := []byte("fh-revoked-status-" + tt.name)
+			deleg := sm.GrantDelegation(clientID, fh, types.OPEN_DELEGATE_READ)
+			sm.RevokeDelegation(deleg.Stateid.Other)
+
+			sm.mu.RLock()
+			_, err := sm.validateDelegStateid(&deleg.Stateid, fh, clientID)
+			tested := sm.testDelegStateid(&deleg.Stateid, clientID)
+			sm.mu.RUnlock()
+
+			var stateErr *NFS4StateError
+			if !errors.As(err, &stateErr) {
+				t.Fatalf("validateDelegStateid err = %v, want an NFS4StateError", err)
+			}
+			if stateErr.Status != tt.expect {
+				t.Errorf("validateDelegStateid status = %d, want %d", stateErr.Status, tt.expect)
+			}
+			if tested != tt.expect {
+				t.Errorf("testDelegStateid = %d, want %d", tested, tt.expect)
+			}
+		})
 	}
 }
