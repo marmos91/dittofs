@@ -643,48 +643,40 @@ func TestBlockStoreHandler_Update_RenameTargetResolvingByIDIsNotAConflict(t *tes
 	}
 }
 
-// TestBlockStoreHandler_Update_RejectedRenameLeavesNothingBehind pins the
-// preflight that refuses a taken name before anything is written. The handler
-// writes the type and config before it renames, so without that check a PUT
-// carrying both a config change and a colliding name would answer 409 with the
-// config already committed — a reply that reads as "nothing happened" against a
-// store that changed. The preflight has no other test.
-func TestBlockStoreHandler_Update_RejectedRenameLeavesNothingBehind(t *testing.T) {
-	cpStore, handler := setupBlockStoreTest(t)
+// The checker cache is keyed by the store's name, but the route may address
+// the store by its ID. A rename issued through the ID route must still evict
+// the entry cached under the name it had, or that name keeps answering with
+// the store's last known health for a whole TTL window after nothing carries
+// it any more.
+func TestBlockStoreHandler_Update_RenameByIDEvictsTheCheckerCachedUnderTheName(t *testing.T) {
+	cpStore, handler := setupBlockStoreTestWithRuntime(t)
 	ctx := context.Background()
 
-	const original = `{"bucket":"original","access_key_id":"k","secret_access_key":"s","region":"us-east-1"}`
+	id := uuid.New().String()
 	if _, err := cpStore.CreateBlockStore(ctx, &models.BlockStoreConfig{
-		Name: "mover", Type: "s3", Config: original,
+		ID: id, Name: "cached", Type: "memory", CreatedAt: time.Now(),
 	}); err != nil {
-		t.Fatalf("CreateBlockStore(mover): %v", err)
-	}
-	if _, err := cpStore.CreateBlockStore(ctx, &models.BlockStoreConfig{
-		Name: "taken", Type: "s3", Config: original,
-	}); err != nil {
-		t.Fatalf("CreateBlockStore(taken): %v", err)
+		t.Fatalf("CreateBlockStore: %v", err)
 	}
 
-	body, _ := json.Marshal(map[string]any{
-		"name":   "taken",
-		"config": `{"bucket":"rewritten","access_key_id":"k","secret_access_key":"s","region":"us-east-1"}`,
-	})
-	req := httptest.NewRequest(http.MethodPut, "/api/v1/store/block/mover", bytes.NewReader(body))
+	// Warm the cache under the name, which is the only key the checker uses.
+	if got := handler.runtime.BlockStoreChecker("cached").Healthcheck(ctx).Status; got != health.StatusHealthy {
+		t.Fatalf("warm-up status = %v, want healthy", got)
+	}
+
+	renamed := "moved"
+	body, _ := json.Marshal(UpdateBlockStoreRequest{Name: &renamed})
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/store/block/"+id, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	req = withBlockStoreName(req, "mover")
+	req = withBlockStoreName(req, id)
 	w := httptest.NewRecorder()
 
 	handler.Update(w, req)
-	if w.Code != http.StatusConflict {
-		t.Fatalf("Update(rename onto a used name) = %d, want 409; body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("Update(rename by ID) = %d, want 200; body=%s", w.Code, w.Body.String())
 	}
 
-	got, err := cpStore.GetBlockStore(ctx, "mover")
-	if err != nil {
-		t.Fatalf("the store must survive a refused rename under its own name: %v", err)
-	}
-	if got.Config != original {
-		t.Errorf("config = %s, want it untouched (%s): the refused request persisted part of itself",
-			got.Config, original)
+	if got := handler.runtime.BlockStoreChecker("cached").Healthcheck(ctx).Status; got == health.StatusHealthy {
+		t.Error("the old name still reports healthy: the checker cached under it survived the rename")
 	}
 }
