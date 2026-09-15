@@ -279,11 +279,14 @@ func (h *BlockStoreHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The config has landed, so every cached probe is suspect from here on —
-	// including on the rename paths below that fail and return early, which
-	// leave the store mutated under its original name. Deferring the eviction
-	// covers each of those exits rather than only the one that reaches the end.
+	// The config has landed, so two separate windows need clearing. Evicting
+	// now drops the probes cached before the write, which a concurrent status
+	// read would otherwise be served for the rest of the TTL. Evicting again
+	// on the way out drops anything cached during the work below — those
+	// probes read a store the rename had not moved yet — and covers the rename
+	// failure paths, which return with the store mutated under its old name.
 	if h.runtime != nil {
+		h.runtime.InvalidateBlockStoreCheckers()
 		defer h.runtime.InvalidateBlockStoreCheckers()
 	}
 
