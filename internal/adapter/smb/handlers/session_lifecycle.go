@@ -145,7 +145,7 @@ func (h *Handler) ReleaseAllLocksForSession(ctx context.Context, sessionID uint6
 		}
 
 		// Skip directories and pipes
-		if openFile.IsDirectory || openFile.IsPipe || len(openFile.MetadataHandle) == 0 {
+		if openFile.IsDirectory || openFile.IsPipe || len(openFile.Handle()) == 0 {
 			return true
 		}
 
@@ -153,7 +153,7 @@ func (h *Handler) ReleaseAllLocksForSession(ctx context.Context, sessionID uint6
 		metaSvc := h.Registry.GetMetadataService()
 
 		// UnlockAllForOpen doesn't return errors for missing locks
-		if unlockErr := metaSvc.UnlockAllForOpen(ctx, openFile.MetadataHandle, openFile.OpenID()); unlockErr != nil {
+		if unlockErr := metaSvc.UnlockAllForOpen(ctx, openFile.Handle(), openFile.OpenID()); unlockErr != nil {
 			logger.Warn("ReleaseAllLocksForSession: failed to release locks",
 				"share", openFile.ShareName,
 				"path", openFile.Name().Path,
@@ -311,7 +311,7 @@ func (h *Handler) closeFilesWithFilter(
 			var leaseState uint32
 			var leaseEpoch uint16
 			if h.LeaseManager != nil && openFile.LeaseKey != ([16]byte{}) {
-				if state, epoch, found := h.LeaseManager.GetLeaseState(ctx, lock.FileHandle(openFile.MetadataHandle), openFile.ShareName, openFile.LeaseKey); found {
+				if state, epoch, found := h.LeaseManager.GetLeaseState(ctx, lock.FileHandle(openFile.Handle()), openFile.ShareName, openFile.LeaseKey); found {
 					leaseState = state
 					leaseEpoch = epoch
 				}
@@ -381,7 +381,11 @@ func (h *Handler) closeFilesWithFilter(
 		// on a closing handle wait for the catch-all session/tree drain
 		// which fires STATUS_CANCELLED — failing smb2.lock.cancel-logoff
 		// which expects RANGE_NOT_LOCKED or OK.
-		if !openFile.IsDirectory && len(openFile.MetadataHandle) > 0 {
+		// One snapshot for the whole teardown of this open: the lock release
+		// below and the lease break further down must name the same file, and
+		// SET_REPARSE_POINT can republish the handle between them.
+		metaHandle := openFile.Handle()
+		if !openFile.IsDirectory && len(metaHandle) > 0 {
 			if h.PendingLockRegistry != nil {
 				for _, parked := range h.PendingLockRegistry.UnregisterAllForOwner(openFile.OpenID()) {
 					if parked.Callback != nil {
@@ -395,7 +399,7 @@ func (h *Handler) closeFilesWithFilter(
 					}
 				}
 			}
-			_ = metaSvc.UnlockAllForOpen(ctx, openFile.MetadataHandle, openFile.OpenID())
+			_ = metaSvc.UnlockAllForOpen(ctx, metaHandle, openFile.OpenID())
 		}
 
 		// Flush cache if needed
@@ -599,8 +603,8 @@ func (h *Handler) handleDeleteOnClose(ctx context.Context, sess *session.Session
 	_, removed, err := h.removeElectedTarget(ctx, authCtx, openFile, target, caller)
 
 	if err == nil && removed {
-		if h.LeaseManager != nil && len(openFile.MetadataHandle) > 0 {
-			lockFileHandle := lock.FileHandle(openFile.MetadataHandle)
+		if metaHandle := openFile.Handle(); h.LeaseManager != nil && len(metaHandle) > 0 {
+			lockFileHandle := lock.FileHandle(metaHandle)
 			// Exclude the closing session: its leases on this file are about to
 			// be released anyway, and firing self-breaks creates spurious
 			// notifications that leak into later tests (observed regressing

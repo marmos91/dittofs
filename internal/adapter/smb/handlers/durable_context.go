@@ -1029,7 +1029,11 @@ func ProcessAppInstanceId(
 		if len(metadataHandle) == 0 {
 			return false
 		}
-		file, err := metaSvc.GetFile(ctx, metadataHandle)
+		// GetFileForRead, not GetFile: the check below reads attributes and
+		// ACL only, and on the badger backend GetFile derives File.Path by
+		// walking parent edges — a walk per candidate, on the synchronous
+		// CREATE path.
+		file, err := metaSvc.GetFileForRead(ctx, metadataHandle)
 		if err != nil || file == nil {
 			logger.Debug("ProcessAppInstanceId: cannot resolve the matched open's file, leaving it open",
 				"appInstanceId", fmt.Sprintf("%x", appId), "error", err)
@@ -1111,16 +1115,24 @@ func ProcessAppInstanceId(
 				if !ok {
 					return false
 				}
+				// Re-test the two conditions that selected this open, rather
+				// than trusting the FileID to still mean what it meant when the
+				// candidate was taken. A durable reconnect restores an open
+				// under its original FileID, so the entry in this table can
+				// name an open that left and came back — one this failover was
+				// never entitled to close.
+				if f.AppInstanceId != appId || sameOrUnknownClient(f.ClientGUID, connClientGUID) {
+					logger.Debug("ProcessAppInstanceId: matched open no longer meets the failover conditions, not displacing it",
+						"appInstanceId", fmt.Sprintf("%x", appId))
+					return false
+				}
 				// Confirm the open still holds the file the access check
 				// cleared. A SET_REPARSE_POINT that swapped this open's
 				// metadata handle in the meantime means read access was
 				// established against a different file, so this open is left
 				// alone rather than closed on an authorization that no longer
 				// describes it.
-				f.mu.RLock()
-				current := f.MetadataHandle
-				f.mu.RUnlock()
-				if !bytes.Equal(current, want) {
+				if current := f.Handle(); !bytes.Equal(current, want) {
 					logger.Debug("ProcessAppInstanceId: matched open changed file since it was authorized, not displacing it",
 						"appInstanceId", fmt.Sprintf("%x", appId))
 					return false
@@ -1167,24 +1179,36 @@ func ProcessAppInstanceId(
 		if sameOrUnknownClient(h.ClientGUID, connClientGUID) || !mayDisplace(h.MetadataHandle) {
 			continue
 		}
+		// Claim the row before acting on it, the way reconnect claims one.
+		// Between the listing above and this point a DHnC/DH2C reconnect can
+		// take the same row and restore the open, byte-range locks included —
+		// and releasing locks off the listed snapshot would then strip them
+		// from a live handle while the delete quietly removed nothing. A claim
+		// that comes back empty means someone else got there first, which is
+		// the whole answer: there is nothing left here to close.
+		claimed, claimErr := durableStore.ConsumeDurableHandle(ctx, h.ID)
+		if claimErr != nil {
+			logger.Warn("ProcessAppInstanceId: failed to claim handle",
+				"handleID", h.ID, "error", claimErr)
+			continue
+		}
+		if claimed == nil {
+			logger.Debug("ProcessAppInstanceId: handle was claimed elsewhere before it could be displaced",
+				"handleID", h.ID)
+			continue
+		}
 		persistedClosed++
 
 		cleanupFile := (&OpenFile{
-			FileID:         h.FileID,
-			ShareName:      h.ShareName,
-			MetadataHandle: h.MetadataHandle,
-			PayloadID:      metadata.PayloadID(h.PayloadID),
-		}).WithName(OpenName{Path: h.Path})
+			FileID:         claimed.FileID,
+			ShareName:      claimed.ShareName,
+			MetadataHandle: claimed.MetadataHandle,
+			PayloadID:      metadata.PayloadID(claimed.PayloadID),
+		}).WithName(OpenName{Path: claimed.Path})
 		handler.flushFileCache(ctx, cleanupFile)
-		if err := metaSvc.UnlockAllForOpen(ctx, h.MetadataHandle, h.LockOpenID()); err != nil {
+		if err := metaSvc.UnlockAllForOpen(ctx, claimed.MetadataHandle, claimed.LockOpenID()); err != nil {
 			logger.Debug("ProcessAppInstanceId: failed to release locks",
-				"id", h.ID, "path", h.Path, "error", err)
-		}
-
-		if delErr := durableStore.DeleteDurableHandle(ctx, h.ID); delErr != nil {
-			logger.Warn("ProcessAppInstanceId: failed to delete handle",
-				"handleID", h.ID,
-				"error", delErr)
+				"id", claimed.ID, "path", claimed.Path, "error", err)
 		}
 	}
 	if persistedClosed > 0 {

@@ -2674,10 +2674,10 @@ func TestSameOrUnknownClient_UnknownOnEitherSide(t *testing.T) {
 	var unknown [16]byte
 
 	for _, tc := range []struct {
-		name             string
-		recorded, conn   [16]byte
-		wantSameOrUnknwn bool
-		why              string
+		name              string
+		recorded, conn    [16]byte
+		wantSameOrUnknown bool
+		why               string
 	}{
 		{"same client", alice, alice, true, "one client never displaces its own open"},
 		{"different clients", alice, bob, false, "the only case a displacement may proceed on"},
@@ -2686,9 +2686,9 @@ func TestSameOrUnknownClient_UnknownOnEitherSide(t *testing.T) {
 		{"both unknown", unknown, unknown, true, "nothing is known about either side"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := sameOrUnknownClient(tc.recorded, tc.conn); got != tc.wantSameOrUnknwn {
+			if got := sameOrUnknownClient(tc.recorded, tc.conn); got != tc.wantSameOrUnknown {
 				t.Errorf("sameOrUnknownClient(%x, %x) = %v, want %v — %s",
-					tc.recorded[:1], tc.conn[:1], got, tc.wantSameOrUnknwn, tc.why)
+					tc.recorded[:1], tc.conn[:1], got, tc.wantSameOrUnknown, tc.why)
 			}
 		})
 	}
@@ -2730,4 +2730,93 @@ func TestProcessAppInstanceId_UnidentifiedContextDisplacesNothing(t *testing.T) 
 			}
 		})
 	}
+}
+
+// claimTrackingStore records how the failover retires a persisted row, and can
+// simulate a reconnect that claimed the row first by making the claim come back
+// empty.
+type claimTrackingStore struct {
+	lock.DurableHandleStore
+	stolen       map[string]bool
+	consumeCalls []string
+	deleteCalls  []string
+}
+
+func (s *claimTrackingStore) ConsumeDurableHandle(ctx context.Context, id string) (*lock.PersistedDurableHandle, error) {
+	s.consumeCalls = append(s.consumeCalls, id)
+	if s.stolen[id] {
+		// What a reconnect that got there first leaves behind: the row is gone
+		// and this caller has no claim on it.
+		return nil, nil
+	}
+	return s.DurableHandleStore.ConsumeDurableHandle(ctx, id)
+}
+
+func (s *claimTrackingStore) DeleteDurableHandle(ctx context.Context, id string) error {
+	s.deleteCalls = append(s.deleteCalls, id)
+	return s.DurableHandleStore.DeleteDurableHandle(ctx, id)
+}
+
+// claimThrough runs the failover against a caller-supplied durable store, so a
+// test can watch how it retires a row.
+func claimThrough(t *testing.T, e *appInstanceEnv, store lock.DurableHandleStore, clientGUID [16]byte) {
+	t.Helper()
+	uid, gid := uint32(4242), uint32(4242)
+	ProcessAppInstanceId(context.Background(), store, e.h, appInstanceCtxs(e.appID),
+		&metadata.AuthContext{
+			Context:  context.Background(),
+			Identity: &metadata.Identity{UID: &uid, GID: &gid},
+		}, clientGUID)
+}
+
+// TestProcessAppInstanceId_ClaimsThePersistedRowBeforeCleaningItUp pins the
+// seam that decides whether the failover may act on a persisted handle at all.
+// Between listing the rows by AppInstanceId and tearing one down, a DHnC/DH2C
+// reconnect can take that row and restore the open with its byte-range locks;
+// cleanup driven off the listing would then release locks belonging to a live
+// handle while its own delete removed nothing. Claiming atomically is the whole
+// defence, so this asserts the claim happens and that losing it stops the
+// teardown — not the lock release itself, which the claim is what gates.
+func TestProcessAppInstanceId_ClaimsThePersistedRowBeforeCleaningItUp(t *testing.T) {
+	var otherClient [16]byte
+	otherClient[0] = 0x11
+	var connClient [16]byte
+	connClient[0] = 0x22
+
+	t.Run("the row it claims is the one it retires", func(t *testing.T) {
+		e := newAppInstanceEnv(t)
+		handle := e.file(t, "claimed.txt", 0o666)
+		e.persist(t, "h1", "/claimed.txt", handle, otherClient)
+
+		tracking := &claimTrackingStore{DurableHandleStore: e.store, stolen: map[string]bool{}}
+		e.h.DurableStore = tracking
+		claimThrough(t, e, tracking, connClient)
+
+		if len(tracking.consumeCalls) != 1 || tracking.consumeCalls[0] != "h1" {
+			t.Errorf("the failover did not claim the row it displaced: consume calls %v", tracking.consumeCalls)
+		}
+		if len(tracking.deleteCalls) != 0 {
+			t.Errorf("the row was retired by an unconditional delete rather than a claim: %v", tracking.deleteCalls)
+		}
+		if e.survives(t, "h1") {
+			t.Error("the displaced row is still in the store")
+		}
+	})
+
+	t.Run("a row claimed elsewhere is left alone", func(t *testing.T) {
+		e := newAppInstanceEnv(t)
+		handle := e.file(t, "reconnected.txt", 0o666)
+		e.persist(t, "h1", "/reconnected.txt", handle, otherClient)
+
+		tracking := &claimTrackingStore{DurableHandleStore: e.store, stolen: map[string]bool{"h1": true}}
+		e.h.DurableStore = tracking
+		claimThrough(t, e, tracking, connClient)
+
+		if len(tracking.consumeCalls) != 1 {
+			t.Errorf("expected exactly one claim attempt, got %v", tracking.consumeCalls)
+		}
+		if len(tracking.deleteCalls) != 0 {
+			t.Errorf("the failover deleted a row it had not claimed: %v", tracking.deleteCalls)
+		}
+	})
 }
