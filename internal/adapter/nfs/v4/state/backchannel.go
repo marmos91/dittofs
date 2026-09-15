@@ -88,9 +88,15 @@ type CallbackRequest struct {
 type PendingCBReplies struct {
 	mu      sync.Mutex
 	waiters map[uint32]chan []byte
+	// closed marks the connection behind this table as gone. It is what makes
+	// a late Register safe: a sender reads the table under the connection lock
+	// and registers after releasing it, so a teardown can land in between and
+	// would otherwise leave that sender waiting on a demultiplexer nothing
+	// writes to any more.
+	closed bool
 }
 
-// FailAll releases every waiter and empties the table. Called when the
+// FailAll releases every waiter and refuses future ones. Called when the
 // connection carrying them dies: the replies they are waiting for can no longer
 // arrive, and a closed channel reaches the waiter now rather than leaving it to
 // discover the loss when its own timeout expires. A sender blocked there is
@@ -99,6 +105,7 @@ type PendingCBReplies struct {
 func (p *PendingCBReplies) FailAll() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.closed = true
 	for xid, ch := range p.waiters {
 		close(ch)
 		delete(p.waiters, xid)
@@ -114,26 +121,38 @@ func NewPendingCBReplies() *PendingCBReplies {
 
 // Register registers an XID and returns a channel that will receive the reply.
 // The returned channel has capacity 1 to prevent blocking the read loop.
+//
+// After FailAll the channel comes back already closed rather than joining a
+// table no reply can reach, so a caller that registers just too late fails at
+// once instead of waiting out its timeout.
 func (p *PendingCBReplies) Register(xid uint32) chan []byte {
 	ch := make(chan []byte, 1)
 	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		close(ch)
+		return ch
+	}
 	p.waiters[xid] = ch
-	p.mu.Unlock()
 	return ch
 }
 
 // Deliver delivers a reply to the waiter for the given XID.
 // Returns true if a waiter was found and the reply was delivered.
+//
+// The send stays under the mutex. Releasing it first and sending afterwards
+// races FailAll closing the same channel, and a send on a closed channel panics
+// in the read loop that called this. It cannot block: the channel has capacity
+// one and the XID is removed from the table here, so there is never a second
+// sender for it.
 func (p *PendingCBReplies) Deliver(xid uint32, reply []byte) bool {
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	ch, ok := p.waiters[xid]
-	if ok {
-		delete(p.waiters, xid)
-	}
-	p.mu.Unlock()
 	if !ok {
 		return false
 	}
+	delete(p.waiters, xid)
 	ch <- reply
 	return true
 }
@@ -545,18 +564,16 @@ func (sm *StateManager) probeV41CallbackPath(ctx context.Context, bs *Backchanne
 	generation := bs.currentParams().generation
 	err := bs.probeCallbackPath(ctx)
 
-	// The parameters this probe ran against have since been replaced, so what it
-	// learned is about a configuration the session no longer has. Publishing it
-	// would either re-enable delegations on retired parameters or overwrite the
-	// verdict of the probe that replaced this one.
-	if bs.currentParams().generation != generation {
+	// The parameters this probe ran against may since have been replaced, in
+	// which case what it learned is about a configuration the session no longer
+	// has. Publishing it would either re-enable delegations on retired
+	// parameters or overwrite the verdict of the probe that replaced this one.
+	if !sm.setCBPathUpIfCurrent(bs, generation, err == nil) {
 		logger.Debug("CB_NULL result discarded: callback parameters changed while the probe was in flight",
 			"client_id", fmt.Sprintf("0x%x", bs.clientID),
 			"session_id", bs.sessionID.String())
 		return
 	}
-
-	sm.setCBPathUp(bs.clientID, err == nil)
 
 	if err != nil {
 		logger.Info("CB_NULL failed, delegations stay disabled for client",
@@ -581,6 +598,28 @@ func (sm *StateManager) setCBPathUp(clientID uint64, up bool) {
 	if record := sm.clientRecordLocked(clientID); record != nil {
 		record.CBPathUp = up
 	}
+}
+
+// setCBPathUpIfCurrent publishes a probe verdict, but only if the callback
+// parameters the probe ran against are still the ones the sender holds. It
+// reports whether the verdict was published.
+//
+// The generation is re-read under sm.mu together with the write rather than
+// before it: a caller that checks the generation and then calls setCBPathUp
+// leaves a window in which the parameters are replaced between the two, and the
+// retired verdict lands on the record anyway.
+//
+// Thread-safe: acquires sm.mu.Lock.
+func (sm *StateManager) setCBPathUpIfCurrent(bs *BackchannelSender, generation uint64, up bool) bool {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if bs.currentParams().generation != generation {
+		return false
+	}
+	if record := sm.clientRecordLocked(bs.clientID); record != nil {
+		record.CBPathUp = up
+	}
+	return true
 }
 
 // SetMaxConnectionsPerSession sets the maximum number of connections per session.

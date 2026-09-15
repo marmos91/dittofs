@@ -1041,3 +1041,89 @@ func TestNextUntriedSender_WalksEverySessionOfTheClient(t *testing.T) {
 		}
 	}
 }
+
+// TestSetCBPathUpIfCurrent_RefusesARetiredGeneration pins the publish side of
+// the stale-probe guard. Reading the generation and writing the record are one
+// step, not two: a probe that checks the generation itself and then calls the
+// setter leaves a window in which UpdateBackchannelParams lands between the
+// two, and the verdict of a probe against parameters the session no longer has
+// is written onto the client record anyway.
+func TestSetCBPathUpIfCurrent_RefusesARetiredGeneration(t *testing.T) {
+	bs, sm, _ := createTestBackchannelSender(t)
+
+	generation := bs.currentParams().generation
+	if !sm.setCBPathUpIfCurrent(bs, generation, true) {
+		t.Fatal("a verdict on the current generation was not published")
+	}
+	if !cbPathUpOf(t, sm, bs.clientID) {
+		t.Fatal("CBPathUp was not set by a published verdict")
+	}
+
+	// The session renegotiates its callback parameters, as CREATE_SESSION or a
+	// BIND_CONN_TO_SESSION would. The in-flight probe's generation is now stale.
+	bs.setParams(0x40000001, []types.CallbackSecParms4{{CbSecFlavor: 0}})
+
+	if sm.setCBPathUpIfCurrent(bs, generation, false) {
+		t.Error("a verdict from a retired generation was published")
+	}
+	if !cbPathUpOf(t, sm, bs.clientID) {
+		t.Error("a retired verdict overwrote the record it should not have touched")
+	}
+}
+
+func cbPathUpOf(t *testing.T, sm *StateManager, clientID uint64) bool {
+	t.Helper()
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	record := sm.clientRecordLocked(clientID)
+	if record == nil {
+		t.Fatalf("no client record for 0x%x", clientID)
+	}
+	return record.CBPathUp
+}
+
+// TestReapExpiredSessions_ReleasesBackchannelStateOfAnOrphanedConnection covers
+// the second way a connection is retired. The socket-close path releases the
+// writer and the pending-reply demultiplexer, but the reaper drops orphaned
+// bindings directly; when it drops a connection's last one, the connection is
+// just as gone, and anything waiting on a callback reply over it waits out its
+// own timeout instead of being released.
+func TestReapExpiredSessions_ReleasesBackchannelStateOfAnOrphanedConnection(t *testing.T) {
+	sm := NewStateManager(90 * time.Second)
+
+	const connID = uint64(7311)
+	var orphanSession types.SessionId4
+	orphanSession[0] = 0xC1
+
+	pending := sm.RegisterConnWriter(connID, func([]byte) error { return nil })
+	replyCh := pending.Register(0x5150)
+
+	// A binding to a session that no longer exists — what the reaper collects.
+	sm.connMu.Lock()
+	binding := &BoundConnection{ConnectionID: connID, SessionID: orphanSession}
+	sm.connByID[connID] = append(sm.connByID[connID], binding)
+	sm.connBySession[orphanSession] = append(sm.connBySession[orphanSession], binding)
+	sm.connMu.Unlock()
+
+	sm.reapExpiredSessions()
+
+	select {
+	case _, open := <-replyCh:
+		if open {
+			t.Error("waiter received a reply rather than being released")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("waiter still blocked after the reaper dropped its connection's last binding")
+	}
+
+	sm.connMu.Lock()
+	_, writerHeld := sm.connWriters[connID]
+	_, repliesHeld := sm.cbRepliesByConn[connID]
+	sm.connMu.Unlock()
+	if writerHeld {
+		t.Error("the callback writer outlived the connection the reaper retired")
+	}
+	if repliesHeld {
+		t.Error("the pending-reply demultiplexer outlived the connection the reaper retired")
+	}
+}
