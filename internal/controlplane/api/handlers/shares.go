@@ -291,10 +291,9 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// The name is a JSON body field, not a path segment, so it is folded without
 	// being decoded: it is persisted and handed to AddShare as written, and a
 	// '%' in it is a character of the name rather than an escape. Decoding here
-	// would store one spelling and register another. A name holding a percent is
-	// then addressable over the rest of this API only by a caller that escapes
-	// it with its leading slash intact — see NormalizeShareNameFromURL — while
-	// NFS and SMB serve it regardless, keying off the registry name directly.
+	// would store one spelling and register another. A name holding a percent
+	// reaches the rest of this API only from a caller that escapes it with its
+	// leading slash intact; see NormalizeShareNameFromURL.
 	req.Name = metadata.NormalizeShareName(req.Name)
 
 	// Checked here as well as in AddShare below: this handler persists the share

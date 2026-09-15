@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -238,6 +239,16 @@ func TestAddShare_PercentInNameIsALiteral(t *testing.T) {
 	literalDir := ShareJournalDir(defaults.JournalRoot, persisted)
 	decodedDir := ShareJournalDir(defaults.JournalRoot, decoded)
 
+	// Name the directories outright rather than only comparing two calls to the
+	// helper that produces them, so a sanitizer that stopped escaping would show
+	// up here and not only in the tests that cover the sanitizer directly.
+	if got := filepath.Base(literalDir); got != "a%252Fb" {
+		t.Fatalf("share %q must live in %q, got %q", persisted, "a%252Fb", got)
+	}
+	if got := filepath.Base(decodedDir); got != "a%2Fb" {
+		t.Fatalf("share %q must live in %q, got %q", decoded, "a%2Fb", got)
+	}
+
 	// The premise: both spellings of the persisted name address one directory,
 	// and it is not the one the decoded reading addresses.
 	if slashed := ShareJournalDir(defaults.JournalRoot, "/"+persisted); literalDir != slashed {
@@ -276,5 +287,36 @@ func TestAddShare_PercentInNameIsALiteral(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("AddShare(%q) must be refused as a duplicate, got %v", "/"+persisted, err)
+	}
+}
+
+// TestAddShare_RefusesAShareRootedUnderItsDecodedName guards the upgrade a build
+// that folded by decoding leaves behind. Such a build keyed "/a%20b"'s root by
+// "/a b"; this one addresses it as "/a%20b" and finds no root there, so without
+// the check it would mint a fresh empty one and serve the share with its files
+// reachable by nothing.
+func TestAddShare_RefusesAShareRootedUnderItsDecodedName(t *testing.T) {
+	const persisted = "/a%20b"
+	const decoded = "/a b"
+
+	svc, _, add := newAddShareFixture(t)
+
+	// Stand in for the earlier build: the share's root is already keyed by the
+	// name that build folded to.
+	if err := add(decoded); err != nil {
+		t.Fatalf("AddShare(%q): %v", decoded, err)
+	}
+
+	err := add(persisted)
+	if err == nil {
+		t.Fatalf("AddShare(%q) was accepted although its files are keyed by %q", persisted, decoded)
+	}
+	// The message has to name both keys, or an operator cannot tell which
+	// spelling holds the data.
+	if !strings.Contains(err.Error(), persisted) || !strings.Contains(err.Error(), decoded) {
+		t.Fatalf("refusal must name both %q and %q, got %v", persisted, decoded, err)
+	}
+	if _, gerr := svc.GetShare(persisted); gerr == nil {
+		t.Fatalf("share %q was registered despite the refusal", persisted)
 	}
 }
