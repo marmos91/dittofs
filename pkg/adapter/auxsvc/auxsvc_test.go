@@ -469,7 +469,11 @@ func TestGroup_StopAllAcceptsNilContext(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	if err := g.StopAll(nil); err != nil {
+	// The nil context is the behaviour under test: StopAll documents nil as
+	// "use the configured shutdown budget" and adapters forward their own ctx.
+	//nolint:staticcheck // SA1012: passing nil is the case under test
+	err := g.StopAll(nil)
+	if err != nil {
 		t.Fatalf("StopAll(nil): %v", err)
 	}
 	if got := svc.stopCalls.Load(); got != 1 {
