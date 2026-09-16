@@ -3,7 +3,6 @@ package session
 import (
 	"sync"
 	"sync/atomic"
-	"time"
 )
 
 // Manager manages SMB2 sessions and provides unified credit tracking.
@@ -178,7 +177,6 @@ func (m *Manager) GrantCredits(sessionID uint64, requested uint16, creditCharge 
 			return 1
 		}
 	}
-	session.credits.LastActivity.Store(time.Now().Unix())
 
 	// Record consumption
 	session.ConsumeCredits(creditCharge)

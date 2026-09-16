@@ -378,7 +378,6 @@ type Credits struct {
 	// Request tracking for adaptive algorithm
 	OutstandingRequests atomic.Int64  // Currently processing requests
 	TotalRequests       atomic.Uint64 // Total requests ever processed
-	LastActivity        atomic.Int64  // Unix timestamp of last activity
 
 	// Monitoring
 	HighWaterMark uint32 // Maximum Outstanding ever reached
@@ -399,7 +398,6 @@ func NewSession(sessionID uint64, clientAddr string, isGuest bool, username, dom
 	}
 	s.cryptoState.Store(&SessionCryptoState{nonce: &nonceState{}})
 	s.newlyCreated.Store(true)
-	s.credits.LastActivity.Store(time.Now().Unix())
 	return s
 }
 
@@ -419,7 +417,6 @@ func NewSessionWithUser(sessionID uint64, clientAddr string, user *models.User, 
 	}
 	s.cryptoState.Store(&SessionCryptoState{nonce: &nonceState{}})
 	s.newlyCreated.Store(true)
-	s.credits.LastActivity.Store(time.Now().Unix())
 	return s
 }
 
@@ -567,7 +564,6 @@ func (s *Session) AuthRevoked() bool {
 func (s *Session) RequestStarted() {
 	s.credits.OutstandingRequests.Add(1)
 	s.credits.TotalRequests.Add(1)
-	s.credits.LastActivity.Store(time.Now().Unix())
 }
 
 // RequestCompleted records that a request has finished processing.
