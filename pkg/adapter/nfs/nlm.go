@@ -241,7 +241,7 @@ func (s *NFSAdapter) createRoutingNLMService(metaSvc *metadata.Service) *routing
 
 	// Set the unlock callback
 	nlmSvc.SetUnlockCallback(func(handle []byte) {
-		go s.processNLMWaiters(metadata.FileHandle(handle))
+		s.goTracked(func() { s.processNLMWaiters(metadata.FileHandle(handle)) })
 	})
 
 	return nlmSvc
@@ -662,7 +662,7 @@ func (s *NFSAdapter) performNSMStartup(ctx context.Context) {
 
 	// Send SM_NOTIFY to all registered clients in background
 	// Per CONTEXT.md: Parallel notification for fastest recovery
-	go func() {
+	s.goTracked(func() {
 		results := s.nsmNotifier.NotifyAllClients(ctx)
 
 		// Count successes and failures
@@ -682,7 +682,7 @@ func (s *NFSAdapter) performNSMStartup(ctx context.Context) {
 				"success", successCount,
 				"failed", failedCount)
 		}
-	}()
+	})
 }
 
 // initGSSProcessor initializes the RPCSEC_GSS processor if Kerberos is configured.

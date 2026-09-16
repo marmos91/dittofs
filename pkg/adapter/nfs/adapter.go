@@ -191,6 +191,22 @@ type NFSAdapter struct {
 	// blockingQueue manages pending NLM blocking lock requests
 	blockingQueue *blocking.BlockingQueue
 
+	// bgTasks tracks the detached NLM/NSM lock work the adapter spawns: the
+	// blocked-waiter drain fired from a byte-range release, and the startup
+	// SM_NOTIFY sweep. Both mutate per-share lock managers and the blocking
+	// queue outside any connection's lifetime, so Stop waits on them before
+	// returning and handing the metadata service back to be torn down.
+	bgTasks sync.WaitGroup
+
+	// bgTasksMu serialises bgTasks.Add against the Wait in Stop, and
+	// bgTasksClosed records that the wait has begun. A WaitGroup may not take a
+	// positive delta once Wait is running on a zero counter, and the spawners
+	// run on connection goroutines that Stop is concurrent with, so the flag —
+	// not a ShutdownCtx check — is what makes the hand-off safe: past it, a
+	// task is dropped rather than started behind the wait.
+	bgTasksMu     sync.Mutex
+	bgTasksClosed bool
+
 	// nextConnID is a global atomic counter for assigning unique connection IDs.
 	// Incremented at TCP accept() time and passed to each NFSConnection.
 	nextConnID atomic.Uint64
@@ -686,7 +702,7 @@ func (s *NFSAdapter) SetRuntime(rtAny any) {
 	// stamp it onto lock managers already created at boot (shares loaded before
 	// this adapter existed), mirroring the grace-coordinator catch-up below.
 	byteRangeReleaseHook := func(handleKey string) {
-		go s.processNLMWaiters(metadata.FileHandle(handleKey))
+		s.goTracked(func() { s.processNLMWaiters(metadata.FileHandle(handleKey)) })
 	}
 	metadataService.SetByteRangeReleaseHook(byteRangeReleaseHook)
 	for _, shareName := range rt.ListShares() {

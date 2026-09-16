@@ -64,5 +64,45 @@ func (s *NFSAdapter) Stop(ctx context.Context) error {
 
 	// Delegate to BaseAdapter for shared shutdown (listener close, context cancel,
 	// connection wait, force-close)
-	return s.BaseAdapter.Stop(ctx)
+	err := s.BaseAdapter.Stop(ctx)
+
+	// Only now is ShutdownCtx cancelled, so the tracked NLM/NSM tasks abandon
+	// their in-flight callbacks and drain promptly. Waiting here rather than
+	// earlier keeps the wait bounded, and it still happens before Stop returns
+	// and the caller releases the metadata service and per-share lock managers
+	// those tasks mutate.
+	s.waitForBackgroundTasks()
+
+	return err
+}
+
+// goTracked runs fn in a goroutine the adapter can wait for in Stop, and drops
+// it when shutdown has already begun.
+//
+// The work it carries -- draining blocked NLM waiters, the startup SM_NOTIFY
+// sweep -- outlives the request that triggers it and touches lock-manager state
+// the adapter is about to release, so it must not run detached.
+func (s *NFSAdapter) goTracked(fn func()) {
+	s.bgTasksMu.Lock()
+	if s.bgTasksClosed {
+		s.bgTasksMu.Unlock()
+		return
+	}
+	s.bgTasks.Add(1)
+	s.bgTasksMu.Unlock()
+
+	go func() {
+		defer s.bgTasks.Done()
+		fn()
+	}()
+}
+
+// waitForBackgroundTasks closes the adapter to new tracked tasks and waits for
+// the ones already running. Stop may be called more than once; closing is
+// idempotent and the second wait returns immediately.
+func (s *NFSAdapter) waitForBackgroundTasks() {
+	s.bgTasksMu.Lock()
+	s.bgTasksClosed = true
+	s.bgTasksMu.Unlock()
+	s.bgTasks.Wait()
 }
