@@ -509,15 +509,6 @@ func (sm *StateManager) LockNew(
 	lockOwner.LastSeqID = lockSeqid
 	openState.Owner.LastSeqID = openSeqid
 
-	// A granted lock is reclaimable state in its own right. An OPEN normally
-	// wrote the durable recovery row already, but not always: an incarnation
-	// that reclaimed its opens wrote nothing, so a lock taken afterwards is the
-	// first state it holds in this epoch while the row still carries the
-	// previous window's reclaim-complete mark. Without this the next restart
-	// would not wait on the client. A no-op after the first success, and on a
-	// reclaim.
-	sm.ensureClientRecoveryLocked(lockOwner.ClientID, reclaim)
-
 	return &LockResult{
 		Stateid:       lockState.Stateid,
 		OwnerClientID: lockOwner.ClientID,
@@ -717,6 +708,23 @@ func (sm *StateManager) acquireLock(ctx context.Context, lockState *LockState, l
 			sm.mu.Lock()
 		}
 		return nil, staleErr
+	}
+
+	// A granted lock is reclaimable state in its own right. An OPEN normally
+	// wrote the durable recovery row already, but not always: an incarnation
+	// that reclaimed its opens wrote nothing, so a lock taken afterwards is the
+	// first state it holds in this epoch while the row still carries the
+	// previous window's reclaim-complete mark. Without this the next restart
+	// would not wait on the client. A no-op after the first success, and on a
+	// reclaim.
+	//
+	// It runs here, in the seam both LOCK forms share, because "the first state
+	// this epoch" is not the same as "the first LockNew". LockExisting grants a
+	// new byte-range interval onto a lock state that a reclaim already rebuilt,
+	// so a non-reclaim LockExisting is the first new state for a client whose
+	// only other LOCK was a reclaim — and it never passes through LockNew.
+	if denied == nil {
+		sm.ensureClientRecoveryLocked(lockState.LockOwner.ClientID, reclaim)
 	}
 
 	return denied, nil

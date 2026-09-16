@@ -104,7 +104,15 @@ func (sm *StateManager) ensureClientRecoveryLocked(clientID uint64, reclaim bool
 		return
 	}
 	record := sm.clientRecordLocked(clientID)
-	if record == nil || !record.Confirmed || record.RecoveryPersisted {
+	if record == nil || !record.Confirmed {
+		return
+	}
+	if record.RecoveryPersisted {
+		// The row this latch stands for is being written right now, or is
+		// already durable. Recorded so a write that turns out to fail can tell
+		// that an operation was suppressed while it was in flight, and so has no
+		// later operation coming to retry it; see the failure path below.
+		record.recoveryPersistWaiting = true
 		return
 	}
 	key := sm.recoveryKeyForClientLocked(clientID)
@@ -112,6 +120,7 @@ func (sm *StateManager) ensureClientRecoveryLocked(clientID uint64, reclaim bool
 		return
 	}
 	record.RecoveryPersisted = true
+	record.recoveryPersistWaiting = false
 	// This row supersedes any reclaim-complete mark still queued for the key.
 	// State taken in this epoch is state the next restart has to wait on, and a
 	// pending retry validates only that the client still holds the key — which
@@ -134,21 +143,32 @@ func (sm *StateManager) ensureClientRecoveryLocked(clientID uint64, reclaim bool
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), recoveryPersistTimeout)
 		defer cancel()
-		if err := store.PutClientRecovery(ctx, rec); err == nil {
-			return
-		} else {
+		err := store.PutClientRecovery(ctx, rec)
+		if err != nil {
 			logger.Error("client-recovery persistence failed: client holds state in memory but NOT durably reclaimable across restart",
 				"client_id", clientID,
 				"client_id_str", key,
 				"error", err)
 		}
+
 		sm.mu.Lock()
 		defer sm.mu.Unlock()
 		// Only this incarnation's latch may be cleared. A client that
 		// re-registered while the write was in flight owns a different record,
 		// and its own write governs its own latch.
-		if cur := sm.clientRecordLocked(clientID); cur == record {
-			cur.RecoveryPersisted = false
+		cur := sm.clientRecordLocked(clientID)
+		if cur != record || err == nil {
+			return
+		}
+		cur.RecoveryPersisted = false
+		// A state operation that arrived while this write was in flight was
+		// suppressed by the latch, so it scheduled no retry of its own. With no
+		// later operation the client would hold state with no durable row and
+		// the next restart would never wait on it, so the write is re-driven
+		// here. A second failure re-enters with the flag clear and stops,
+		// leaving the latch clear for the next operation to retry.
+		if cur.recoveryPersistWaiting {
+			sm.ensureClientRecoveryLocked(clientID, false)
 		}
 	}()
 }

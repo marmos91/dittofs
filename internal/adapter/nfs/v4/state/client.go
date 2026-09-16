@@ -194,6 +194,14 @@ type ClientRecord struct {
 	// a failed write leaves it clear so the next OPEN retries.
 	RecoveryPersisted bool
 
+	// recoveryPersistWaiting is set when a state operation found
+	// RecoveryPersisted already set, meaning the row was already durable or a
+	// write for it was in flight. A write that then fails reads it to detect
+	// that an operation was suppressed while it was in flight — that operation
+	// scheduled no retry, so the failed write re-drives itself rather than
+	// waiting for one that never comes. Cleared whenever a write is started.
+	recoveryPersistWaiting bool
+
 	// CBPathUp indicates whether the callback path to this client has been
 	// verified via CB_NULL. Defaults to false (not verified).
 	// Set to true after a successful CB_NULL on SETCLIENTID_CONFIRM.
