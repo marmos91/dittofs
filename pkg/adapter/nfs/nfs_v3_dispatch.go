@@ -3,6 +3,7 @@ package nfs
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"time"
 
@@ -133,7 +134,20 @@ func (c *NFSConnection) handleNFSProcedure(ctx context.Context, call *rpc.RPCCal
 				// release leaves a later legitimate retry free to run.
 				return nil, false, err
 			}
-			return result.Data, true, err
+			// A cancelled request's reply is not a decision the server made, it
+			// is what the cancellation was encoded as: the handlers answer one
+			// with a non-nil response carrying NFS3ErrIO plus the context error.
+			// Caching that poisons the client's retransmission — the mutation
+			// never ran, and the retry is answered from the cache with the
+			// fabricated failure instead of being executed. The deferred release
+			// leaves the reservation, so the retransmit runs for real.
+			//
+			// A non-cancellation error is different and must still be cached: a
+			// handler reports a real status (NFS3ErrStale, NFS3ErrAccess) by
+			// returning it alongside a non-nil error, and replaying that is
+			// exactly what the cache is for.
+			cancelled := errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+			return result.Data, !cancelled, err
 		})
 }
 
