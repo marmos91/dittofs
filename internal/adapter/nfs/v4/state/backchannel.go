@@ -213,11 +213,18 @@ type BackchannelSender struct {
 	// publish a verdict about parameters the session no longer has.
 	paramsGen atomic.Uint64
 
-	// probeInFlight admits one CB_NULL probe per session at a time, and
-	// probeWanted records that another was asked for while it ran. See
-	// probeV41CallbackPath.
-	probeInFlight atomic.Bool
-	probeWanted   atomic.Bool
+	// probeMu guards the one-CB_NULL-per-session admission below. A mutex, not
+	// a pair of atomics: the decision to stop and the release of probeRunning
+	// have to be one step, and two lock-free flags cannot make them one. Two
+	// attempts at that handoff traded an overlap race for a lost-wakeup race —
+	// release-then-check lets a caller start a second probe alongside this one,
+	// check-then-release lets a request arrive between the check and the release
+	// and be consumed by nobody, leaving the new parameters unprobed and
+	// delegations off until something else happens to run a probe. This is one
+	// probe per BACKCHANNEL_CTL, so the lock costs nothing worth having.
+	probeMu      sync.Mutex
+	probeRunning bool // a probe is running; a second caller queues instead
+	probeQueued  bool // someone asked while one ran; the runner re-runs for them
 
 	queue chan CallbackRequest
 	sm    *StateManager
@@ -507,7 +514,22 @@ func (bs *BackchannelSender) sendCallback(ctx context.Context, req CallbackReque
 	case <-timeoutCtx.Done():
 		pending.Cancel(xid)
 		return fmt.Errorf("backchannel callback timed out after %s", bs.callbackTimeout)
-	case replyBytes := <-replyCh:
+	case replyBytes, open := <-replyCh:
+		if !open {
+			// FailAll closed the waiter: this connection was retired while the
+			// callback was in flight. The bytes did reach a transport, so this
+			// is not "never attempted" in the literal sense — but what happened
+			// to them is unknown, and the one thing it is NOT is evidence that
+			// the client stopped answering. Falling through to ValidateCBReply
+			// would read the closed channel as a malformed reply, which the
+			// retry loop classifies as no callback path at all: CBPathUp
+			// cleared and a delegation revoked because a socket on this side
+			// went away. The sentinel keeps the outcome local, where it
+			// belongs, and leaves the client's verdict to a send that reached
+			// a conclusion.
+			return fmt.Errorf("%w: connection %d was retired while the callback was in flight",
+				errCallbackNotAttempted, connID)
+		}
 		// 10. Validate CB_COMPOUND reply
 		if err := ValidateCBReply(replyBytes); err != nil {
 			return fmt.Errorf("backchannel callback reply validation failed: %w", err)
@@ -724,36 +746,40 @@ func (sm *StateManager) probeV41CallbackPath(ctx context.Context, bs *Backchanne
 	// below discarded their verdicts but not their cost. The one in flight is
 	// kept rather than replaced: it is already waiting, and its verdict is
 	// discarded anyway if the parameters move under it.
-	if !bs.probeInFlight.CompareAndSwap(false, true) {
+	bs.probeMu.Lock()
+	if bs.probeRunning {
 		// Queued, not dropped. The probe already running was started against
 		// parameters that have since been replaced, so its verdict will be
 		// discarded for a stale generation — and if this one simply returned,
 		// nothing would ever evaluate the new parameters and delegations would
 		// stay withheld until the next control update that happened to arrive
 		// when no probe was running.
-		bs.probeWanted.Store(true)
+		bs.probeQueued = true
+		bs.probeMu.Unlock()
 		logger.Debug("CB_NULL probe deferred: one is already in flight for this session",
 			"client_id", fmt.Sprintf("0x%x", bs.clientID),
 			"session_id", bs.sessionID.String())
 		return
 	}
-	// The in-flight flag is held across the re-run rather than released and
-	// re-taken. Releasing first and then consuming probeWanted is not a handoff:
-	// a caller arriving in that window takes the flag and starts its own probe,
-	// and this goroutine's CAS then consumes THAT caller's request and starts a
-	// second one alongside it — two overlapping CB_NULLs on one session,
-	// publishing verdicts in whatever order they finish. Looping while holding
-	// the flag means the successor cannot start until this one is finished, and
-	// a caller that arrives meanwhile is queued rather than raced.
-	defer bs.probeInFlight.Store(false)
+	bs.probeRunning = true
+	bs.probeMu.Unlock()
 
 	for {
 		sm.runV41Probe(ctx, bs)
-		// Whoever was turned away asked for parameters this probe did not run
-		// against. Re-run for them, once, however many arrived.
-		if !bs.probeWanted.CompareAndSwap(true, false) {
+
+		// Deciding to stop and releasing the flag are one critical section. Any
+		// other order leaves a window: release first and a caller starts a
+		// second probe beside this one; decide first and a caller's request
+		// lands after the decision and is consumed by nobody.
+		bs.probeMu.Lock()
+		if !bs.probeQueued {
+			bs.probeRunning = false
+			bs.probeMu.Unlock()
 			return
 		}
+		bs.probeQueued = false
+		bs.probeMu.Unlock()
+
 		// A deferred re-run is about parameters that have changed since the
 		// caller was turned away, so it reads them fresh; the caller's context
 		// is gone, which is why this one is detached.

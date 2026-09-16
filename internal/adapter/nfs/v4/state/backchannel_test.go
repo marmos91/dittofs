@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1314,19 +1315,67 @@ func TestProbeV41CallbackPath_DeferredProbeRunsAfterTheOneInFlight(t *testing.T)
 
 	// A probe is already running; the one that arrives now must record that it
 	// was turned away rather than simply disappearing.
-	bs.probeInFlight.Store(true)
+	bs.probeMu.Lock()
+	bs.probeRunning = true
+	bs.probeMu.Unlock()
+
 	sm.probeV41CallbackPath(context.Background(), bs)
-	if !bs.probeWanted.Load() {
+
+	bs.probeMu.Lock()
+	queued := bs.probeQueued
+	bs.probeMu.Unlock()
+	if !queued {
 		t.Fatal("a probe turned away while another was in flight left no request behind, " +
 			"so the new callback parameters would never be evaluated")
 	}
 
 	// The in-flight one finishes. Its own run must pick that request up and
 	// clear it, so the hand-over happens exactly once.
-	bs.probeInFlight.Store(false)
+	bs.probeMu.Lock()
+	bs.probeRunning = false
+	bs.probeMu.Unlock()
+
 	sm.probeV41CallbackPath(context.Background(), bs)
-	if bs.probeWanted.Load() {
+
+	bs.probeMu.Lock()
+	queued, running := bs.probeQueued, bs.probeRunning
+	bs.probeMu.Unlock()
+	if queued {
 		t.Error("the deferred request was still pending after a probe ran to completion")
+	}
+	if running {
+		t.Error("the probe left itself marked as running, so no later probe can ever start")
+	}
+}
+
+// TestProbeV41CallbackPath_ARequestArrivingAtTheEndIsNotLost covers the window
+// that a lock-free handoff cannot close. A caller that finds a probe running
+// queues and returns; if the runner has already decided to stop by then, and
+// the two steps are not one, the request is consumed by nobody and the new
+// callback parameters go unprobed until something else happens to run one.
+func TestProbeV41CallbackPath_ARequestArrivingAtTheEndIsNotLost(t *testing.T) {
+	bs, sm, _ := createTestBackchannelSender(t)
+
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sm.probeV41CallbackPath(context.Background(), bs)
+		}()
+	}
+	wg.Wait()
+
+	// Whatever interleaving happened, the guard must come to rest: nothing
+	// running, and no request left for a runner that has already gone.
+	bs.probeMu.Lock()
+	queued, running := bs.probeQueued, bs.probeRunning
+	bs.probeMu.Unlock()
+	if running {
+		t.Error("the guard is still marked running with every caller returned: no probe can start again")
+	}
+	if queued {
+		t.Error("a request outlived every runner, so the parameters that asked for it are never probed")
 	}
 }
 
@@ -1555,5 +1604,40 @@ func TestProbeCallbackPath_ARetiredSocketIsNotTheClientsVerdict(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "timed out") {
 		t.Errorf("verdict is %q, want the CB_NULL timeout", err)
+	}
+}
+
+// TestSendCallback_ARetiredWaiterIsALocalOutcome covers a connection retired
+// while a callback is already on the wire. FailAll closes the waiter, and a
+// receive from a closed channel yields nil — which ValidateCBReply reads as a
+// malformed reply and the retry loop classifies as no callback path at all.
+// That clears CBPathUp and revokes a delegation because a socket on THIS side
+// went away, which is the one thing it is not evidence of.
+func TestSendCallback_ARetiredWaiterIsALocalOutcome(t *testing.T) {
+	sender, sm, sessionID := createTestBackchannelSender(t)
+	defer sm.Shutdown()
+	sender.callbackTimeout = 5 * time.Second
+
+	connID := uint64(7401)
+	var pending *PendingCBReplies
+	pending = sm.RegisterConnWriter(connID, func([]byte) error {
+		// The write lands, and the connection is retired right behind it.
+		go pending.FailAll()
+		return nil
+	})
+	if _, err := sm.BindConnToSession(connID, sessionID, types.CDFC4_FORE_OR_BOTH); err != nil {
+		t.Fatalf("BindConnToSession: %v", err)
+	}
+
+	err := sender.sendCallback(context.Background(), CallbackRequest{
+		OpCode:  types.OP_CB_RECALL,
+		Payload: EncodeCBRecallOp(&types.Stateid4{Seqid: 1}, false, []byte{0x01}),
+	})
+	if err == nil {
+		t.Fatal("sendCallback succeeded although the waiter was closed without a reply")
+	}
+	if !errors.Is(err, errCallbackNotAttempted) {
+		t.Errorf("a connection retired under an in-flight callback was reported as a client "+
+			"verdict rather than a local one: %v", err)
 	}
 }
