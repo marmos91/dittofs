@@ -13,7 +13,10 @@ import (
 // control-plane fires its auth-cache subscribers synchronously, so a sweep run
 // inline holds up the operator's API call for the length of the walk.
 func TestAuthSweeper_RequestDoesNotBlockCaller(t *testing.T) {
-	sweeping := make(chan struct{})
+	// Buffered: the sweep signals without blocking, so an unbuffered channel
+	// drops the signal whenever the worker reaches the send before this
+	// goroutine parks on the receive.
+	sweeping := make(chan struct{}, 1)
 	release := make(chan struct{})
 	sw := newAuthSweeper(func(context.Context) {
 		select {
