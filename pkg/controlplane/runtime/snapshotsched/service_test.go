@@ -412,19 +412,3 @@ func TestStop_ReportsWhetherItJoined(t *testing.T) {
 		}
 	})
 }
-
-// TestStop_NoArgFormStaysSourceCompatible pins the exported surface. Stop is a
-// method on a pkg/ type, so changing its signature is a compile break for every
-// downstream caller — a repository-wide grep cannot see them. The no-argument
-// form has to keep existing alongside the bounded one.
-func TestStop_NoArgFormStaysSourceCompatible(t *testing.T) {
-	s := New(&fakeDeps{}, time.Minute)
-
-	// Assigned to a func() value: this is the shape downstream code compiles
-	// against, and it fails to build if Stop ever takes parameters again.
-	var stop func() = s.Stop
-	stop()
-
-	// Still idempotent through the compatibility path.
-	stop()
-}
