@@ -2,7 +2,6 @@ package handlers_test
 
 import (
 	"bytes"
-	"context"
 	"testing"
 	"time"
 
@@ -408,18 +407,16 @@ func TestSetAttr_Symlink(t *testing.T) {
 // somebody else splits exactly this way.
 func TestSetAttr_PartialFailureStillReclaimsTruncatedBlocks(t *testing.T) {
 	fx := handlertesting.NewHandlerFixture(t)
-	ctxBg := context.Background()
-
 	const originalSize = 1 << 20
 	const truncatedSize = 4096
 
 	fileHandle := fx.CreateFile("groupwritable.bin", bytes.Repeat([]byte{0xAB}, originalSize))
 
-	file, err := fx.MetadataService.GetFile(ctxBg, fileHandle)
+	file, err := fx.MetadataService.GetFile(t.Context(), fileHandle)
 	require.NoError(t, err)
 	payloadID := string(file.PayloadID)
 
-	size, ok := fx.LocalStore.FileSize(ctxBg, journal.FileID(payloadID))
+	size, ok := fx.LocalStore.FileSize(t.Context(), journal.FileID(payloadID))
 	require.True(t, ok, "payload absent from the local tier before SETATTR")
 	require.EqualValues(t, originalSize, size)
 
@@ -446,13 +443,13 @@ func TestSetAttr_PartialFailureStillReclaimsTruncatedBlocks(t *testing.T) {
 		"test setup: the mode change must be the phase that fails")
 
 	// The size change committed regardless of the rejected mode change...
-	after, err := fx.MetadataService.GetFile(ctxBg, fileHandle)
+	after, err := fx.MetadataService.GetFile(t.Context(), fileHandle)
 	require.NoError(t, err)
 	require.EqualValues(t, truncatedSize, after.Size,
 		"test setup: the size phase must have committed for this test to mean anything")
 
 	// ...so the bytes past it must not still be held by the block store.
-	held, stillThere := fx.LocalStore.FileSize(ctxBg, journal.FileID(payloadID))
+	held, stillThere := fx.LocalStore.FileSize(t.Context(), journal.FileID(payloadID))
 	require.True(t, stillThere, "the surviving head of the payload was dropped entirely")
 	assert.LessOrEqualf(t, held, int64(truncatedSize),
 		"payload %q still holds %d bytes in the local tier after a truncate to %d: the blocks past the committed new size leaked",

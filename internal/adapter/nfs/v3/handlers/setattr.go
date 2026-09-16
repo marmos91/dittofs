@@ -236,10 +236,6 @@ func (h *Handler) SetAttr(
 	// with the SetFileAttributes mutation(s) (H9). For the two-phase size+other
 	// case, Before comes from the first (size) call and After from the second.
 	var setWcc *metadata.DirWcc
-	// sizeApplied records that the size mutation committed. In the two-phase
-	// case that stays true when the second phase is rejected: nothing rolls the
-	// size back, so the blocks past it are orphaned from that point on and the
-	// reclaim below must run whether or not the whole SETATTR succeeds.
 	sizeApplied := false
 	if hasSize && hasOtherAttrs {
 		// Apply size change first (separate call per RFC 5661)
@@ -286,9 +282,9 @@ func (h *Handler) SetAttr(
 		otherWcc, err = metaSvc.SetFileAttributes(authCtx, fileHandle, &otherAttrs)
 		if err != nil {
 			// The client is about to be told the whole SETATTR failed while the
-			// size change stands. RFC 1813 gives the reply one status and one
-			// wcc_data pair, so there is no way to say so on the wire; the
-			// refetched AttrAfter below at least reports the new size.
+			// size change stands. The reply carries one status and one wcc_data
+			// pair (RFC 1813), so that cannot be said on the wire; the refetched
+			// AttrAfter below at least reports the new size.
 			logger.WarnCtx(ctx.Context, "SETATTR partially applied: size committed, remaining attributes rejected",
 				"handle", fmt.Sprintf("%x", req.Handle),
 				"size", *req.NewAttr.Size,
@@ -317,8 +313,9 @@ func (h *Handler) SetAttr(
 	// No-ops unless a genuine shrink; best-effort (metadata already committed).
 	// Same helper as NFSv4 SETATTR / CREATE-truncate and SMB SetEndOfFile.
 	//
-	// Runs before the error branch below, because the size phase committing is
-	// what orphans the blocks — a later phase failing does not give them back.
+	// Gated on sizeApplied rather than on overall success, and placed before the
+	// error branch below: the size phase commits on its own, so a later phase
+	// being rejected leaves the blocks past the new size orphaned all the same.
 	//
 	// decision: the reclaim inherits the request context, so a SETATTR
 	// cancelled between the two store calls commits the size and then fails to
