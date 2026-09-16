@@ -190,6 +190,12 @@ type NFSAdapter struct {
 	// exactly once and no waiter parks until adapter shutdown after a toggle.
 	udpStop context.CancelFunc
 
+	// udpDone is closed once the current UDP generation's read loop and every
+	// datagram handler it spawned have returned. Published with udpConn under
+	// sidecarMu; udpSidecar.Stop waits on it so teardown does not race handlers
+	// that are still touching adapter and runtime state.
+	udpDone chan struct{}
+
 	// blockingQueue manages pending NLM blocking lock requests
 	blockingQueue *blocking.BlockingQueue
 

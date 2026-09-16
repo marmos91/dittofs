@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"runtime/debug"
+	"sync"
 
 	mount_handlers "github.com/marmos91/dittofs/internal/adapter/nfs/mount/handlers"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
@@ -58,9 +59,11 @@ func (s *NFSAdapter) startUDP(ctx context.Context) error {
 	// goroutine below parks until adapter shutdown on every enable/disable
 	// toggle, leaking one parked goroutine per generation.
 	stopCtx, stopCancel := context.WithCancel(ctx)
+	done := make(chan struct{})
 	s.sidecarMu.Lock()
 	s.udpConn = conn
 	s.udpStop = stopCancel
+	s.udpDone = done
 	s.sidecarMu.Unlock()
 
 	logger.Info("NFS UDP transport listening (NLM/NSM/MOUNT)", "port", nfsPort)
@@ -72,7 +75,10 @@ func (s *NFSAdapter) startUDP(ctx context.Context) error {
 		_ = conn.Close()
 	}()
 
-	go s.serveUDP(ctx, conn)
+	go func() {
+		defer close(done)
+		s.serveUDP(ctx, conn)
+	}()
 	return nil
 }
 
@@ -93,6 +99,13 @@ func (s *NFSAdapter) serveUDP(ctx context.Context, conn *net.UDPConn) {
 		limit = defaultUDPHandlerLimit
 	}
 	sem := make(chan struct{}, limit)
+
+	// Handlers are joined before the loop returns, so the generation's done
+	// channel — which udpSidecar.Stop waits on — covers the in-flight ones too.
+	// Without this a datagram handler keeps touching adapter and runtime state
+	// after teardown has been reported complete.
+	var inflight sync.WaitGroup
+	defer inflight.Wait()
 
 	for {
 		n, src, err := conn.ReadFromUDP(buf)
@@ -115,12 +128,19 @@ func (s *NFSAdapter) serveUDP(ctx context.Context, conn *net.UDPConn) {
 		// Copy out of the shared read buffer before handing to a goroutine.
 		msg := make([]byte, n)
 		copy(msg, buf[:n])
+		inflight.Add(1)
 		go func(src *net.UDPAddr, msg []byte) {
+			defer inflight.Done()
 			defer func() { <-sem }()
-			pc.handleUDPDatagram(ctx, conn, src, msg)
+			udpDispatch(pc, ctx, conn, src, msg)
 		}(src, msg)
 	}
 }
+
+// udpDispatch routes one received datagram. It is a package var so lifecycle
+// tests can stand in a handler they can hold in flight and observe that the
+// shutdown path waits for it.
+var udpDispatch = (*NFSConnection).handleUDPDatagram
 
 // handleUDPDatagram parses a single RPC-over-UDP message and routes it to the
 // NLM, NSM, or MOUNT handler, then sends the reply back to the source address.

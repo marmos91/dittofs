@@ -2,6 +2,7 @@ package nfs
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/adapter/auxsvc"
@@ -222,16 +223,19 @@ type udpSidecar struct{ a *NFSAdapter }
 
 func (u udpSidecar) Name() string                    { return "nfs-udp" }
 func (u udpSidecar) Start(ctx context.Context) error { return u.a.startUDP(ctx) }
-func (u udpSidecar) Stop(context.Context) error {
-	// Claim conn and cancel func together: each generation is stopped exactly
-	// once (a disable racing a re-enable can no longer snapshot the newer conn)
-	// and the per-generation shutdown ctx fires so the conn-close waiter and
-	// the read loop exit instead of parking until adapter shutdown.
+func (u udpSidecar) Stop(ctx context.Context) error {
+	// Claim conn, cancel func and done channel together: each generation is
+	// stopped exactly once (a disable racing a re-enable can no longer snapshot
+	// the newer conn) and the per-generation shutdown ctx fires so the
+	// conn-close waiter and the read loop exit instead of parking until adapter
+	// shutdown.
 	u.a.sidecarMu.Lock()
 	udpConn := u.a.udpConn
 	udpStop := u.a.udpStop
+	udpDone := u.a.udpDone
 	u.a.udpConn = nil
 	u.a.udpStop = nil
+	u.a.udpDone = nil
 	u.a.sidecarMu.Unlock()
 	if udpStop != nil {
 		udpStop()
@@ -239,7 +243,19 @@ func (u udpSidecar) Stop(context.Context) error {
 	if udpConn != nil {
 		_ = udpConn.Close()
 	}
-	return nil
+	// Closing the socket only unblocks the read: the loop and the datagram
+	// handlers it spawned are still running, and they touch adapter and runtime
+	// state that teardown is about to dismantle. Wait for them, bounded by the
+	// caller's context so one wedged handler cannot hold shutdown open forever.
+	if udpDone == nil {
+		return nil
+	}
+	select {
+	case <-udpDone:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("nfs-udp: datagram handlers still running: %w", ctx.Err())
+	}
 }
 
 // nsmSidecar wraps NSM startup: it loads persisted registrations and sends
