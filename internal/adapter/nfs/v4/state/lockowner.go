@@ -509,6 +509,15 @@ func (sm *StateManager) LockNew(
 	lockOwner.LastSeqID = lockSeqid
 	openState.Owner.LastSeqID = openSeqid
 
+	// A granted lock is reclaimable state in its own right. An OPEN normally
+	// wrote the durable recovery row already, but not always: an incarnation
+	// that reclaimed its opens wrote nothing, so a lock taken afterwards is the
+	// first state it holds in this epoch while the row still carries the
+	// previous window's reclaim-complete mark. Without this the next restart
+	// would not wait on the client. A no-op after the first success, and on a
+	// reclaim.
+	sm.ensureClientRecoveryLocked(lockOwner.ClientID, reclaim)
+
 	return &LockResult{
 		Stateid:       lockState.Stateid,
 		OwnerClientID: lockOwner.ClientID,

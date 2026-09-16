@@ -68,38 +68,10 @@ func (sm *StateManager) recoveryKeyForClientLocked(clientID uint64) string {
 	return rec.ClientIDString
 }
 
-// persistClientRecoveryLocked stores a durable recovery record for a confirmed
-// client. Best-effort under sm.mu, bounded by recoveryPersistTimeout: a failure
-// logs a durability ALARM and returns the error, but the operation that took
-// the state STILL succeeds (the in-memory record is authoritative for this
-// process). No-op returning nil when no recovery store is wired.
-// Caller must hold sm.mu.
-func (sm *StateManager) persistClientRecoveryLocked(clientID uint64, clientIDString string, bootVerifier [8]byte, principal string) error {
-	if sm.recoveryStore == nil {
-		return nil
-	}
-	rec := &lock.V4ClientRecoveryRecord{
-		ClientID:       clientID,
-		ClientIDString: clientIDString,
-		BootVerifier:   bootVerifier,
-		Principal:      principal,
-		ConfirmedAt:    time.Now(),
-		ServerEpoch:    sm.serverEpoch,
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), recoveryPersistTimeout)
-	defer cancel()
-	if err := sm.recoveryStore.PutClientRecovery(ctx, rec); err != nil {
-		logger.Error("client-recovery persistence failed: client holds state in memory but NOT durably reclaimable across restart",
-			"client_id", clientID,
-			"client_id_str", clientIDString,
-			"error", err)
-		return err
-	}
-	return nil
-}
-
 // ensureClientRecoveryLocked writes the durable recovery record the first time
-// a confirmed client takes state a later restart could let it reclaim.
+// a confirmed client takes state in the current epoch that a later restart
+// could let it reclaim. Both sites that create such state — a new open state
+// and a new byte-range lock — call it.
 //
 // The boot roster is built from these records, so writing one at confirm time
 // put every client that ever registered on it, including clients holding
@@ -111,23 +83,24 @@ func (sm *StateManager) persistClientRecoveryLocked(clientID uint64, clientIDStr
 // "this identity held something reclaimable", which is what lets the end of the
 // grace window retire whatever is left on the roster.
 //
-// A byte-range LOCK needs an open stateid, which only resolves against an
-// in-memory open state, so reaching LOCK means the OPEN that created that state
-// already ran through here. The OPEN site is therefore the only one needed.
-//
 // A reclaim writes nothing. The row that put the client on the roster is
 // already durable, and the reclaim marks it complete so a second restart inside
 // one window does not re-wait on it; rewriting the row here would clear that
 // mark, which is exactly what kept a returning client's row from ever latching
-// when the write hung off confirm. The mark is cleared again by the first
-// non-reclaim OPEN, because state taken in the current epoch is state the next
-// restart has to wait on.
+// when the write hung off confirm. The mark is cleared again by the client's
+// first non-reclaim OPEN or LOCK, because state taken in the current epoch is
+// state the next restart has to wait on.
 //
-// The write happens once per client incarnation: the in-memory latch keeps
-// every later OPEN off the store, and a failed write leaves it clear so the
-// next OPEN retries. Caller must hold sm.mu.
-func (sm *StateManager) ensureClientRecoveryLocked(clientID uint64, claimType uint32) {
-	if sm.recoveryStore == nil || claimType == types.CLAIM_PREVIOUS {
+// The store write runs after the caller releases sm.mu, the same discipline
+// recordReclaimCompleteLocked follows: this sits on the OPEN and LOCK paths,
+// and a store taking the full recoveryPersistTimeout would otherwise hold the
+// global state lock for that long on every one of them. The latch is claimed
+// before the write so concurrent operations queue no second write for the same
+// incarnation, and cleared again if the write fails so the next one retries.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) ensureClientRecoveryLocked(clientID uint64, reclaim bool) {
+	if sm.recoveryStore == nil || reclaim {
 		return
 	}
 	record := sm.clientRecordLocked(clientID)
@@ -138,17 +111,46 @@ func (sm *StateManager) ensureClientRecoveryLocked(clientID uint64, claimType ui
 	if key == "" {
 		return
 	}
-	if err := sm.persistClientRecoveryLocked(clientID, key, record.Verifier, record.Principal); err == nil {
-		record.RecoveryPersisted = true
-		// This row supersedes any reclaim-complete mark still queued for the
-		// key. State taken in this epoch is state the next restart has to wait
-		// on, and a pending retry validates only that the client still holds
-		// the key — which it does — so left armed it would stamp the mark back
-		// onto the row just written. Dropping the entry stops the chain. A
-		// write already in flight is not recalled, and costs at most one
-		// restart that does not wait on this client.
-		delete(sm.pendingReclaimPersists, key)
+	record.RecoveryPersisted = true
+	// This row supersedes any reclaim-complete mark still queued for the key.
+	// State taken in this epoch is state the next restart has to wait on, and a
+	// pending retry validates only that the client still holds the key — which
+	// it does — so left armed it would stamp the mark back onto the row being
+	// written. A write already past that validation is not recalled, and leaves
+	// the row marked complete: the next restart then does not wait on this
+	// client, which for a client with no other prior row means no window at all
+	// and a refused reclaim.
+	delete(sm.pendingReclaimPersists, key)
+
+	store := sm.recoveryStore
+	rec := &lock.V4ClientRecoveryRecord{
+		ClientID:       clientID,
+		ClientIDString: key,
+		BootVerifier:   record.Verifier,
+		Principal:      record.Principal,
+		ConfirmedAt:    time.Now(),
+		ServerEpoch:    sm.serverEpoch,
 	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), recoveryPersistTimeout)
+		defer cancel()
+		if err := store.PutClientRecovery(ctx, rec); err == nil {
+			return
+		} else {
+			logger.Error("client-recovery persistence failed: client holds state in memory but NOT durably reclaimable across restart",
+				"client_id", clientID,
+				"client_id_str", key,
+				"error", err)
+		}
+		sm.mu.Lock()
+		defer sm.mu.Unlock()
+		// Only this incarnation's latch may be cleared. A client that
+		// re-registered while the write was in flight owns a different record,
+		// and its own write governs its own latch.
+		if cur := sm.clientRecordLocked(clientID); cur == record {
+			cur.RecoveryPersisted = false
+		}
+	}()
 }
 
 // deleteClientRecoveryLocked removes a client's durable recovery record on
@@ -374,14 +376,18 @@ func (sm *StateManager) validateReclaimVerifier(clientIDString string, bootVerif
 	if !ok {
 		// decision: an identity with no pre-restart record reclaims ungated.
 		// Since a record is written when a client takes state rather than when
-		// it registers, the ungated set now includes clients that registered
-		// before the restart holding nothing. That costs nothing the gate was
-		// buying: what it refuses is a reclaim by a client whose verifier
-		// changed, and a client that held nothing has nothing to lose by
-		// rebooting — the same free reclaim was already available to it through
-		// the unchanged-verifier path. Revisit if reclaim ever gains a per-file
-		// durable record, at which point the gate could refuse on evidence
-		// rather than on registration having happened.
+		// it registers, the ungated set now also holds clients that registered
+		// before the restart holding nothing, and clients whose row write
+		// failed. That is a real narrowing, not a free one: a reclaim skips the
+		// share-reservation conflict scan, so during a window the boot verifier
+		// is the only thing separating a real reclaimer from anyone who knows
+		// the victim's nfs_client_id4 string. What bounds the loss is that the
+		// gate only ever refused a CHANGED verifier — an attacker supplying a
+		// matching one walks through either way — and that it never covered
+		// v4.1 at all, since the reclaimer is resolved through v40ClientLocked.
+		// Withdraw the exemption if reclaim ever gains a per-file durable
+		// record, which would let the check run on evidence rather than on
+		// registration having happened.
 		return nil
 	}
 	if want == bootVerifier {
@@ -452,6 +458,11 @@ func (sm *StateManager) LoadClientRecovery(ctx context.Context, armGrace bool) i
 	sm.bootRecoveryVerifiers = verifiers
 	sm.mu.Unlock()
 
+	// Every loaded row is a purge candidate, reclaim-complete included: that flag
+	// says the identity finished reclaiming in an earlier window, not that it is
+	// still around.
+	bootKeys := slices.Collect(maps.Keys(verifiers))
+
 	// decision: a start that opens no window leaves the loaded rows alone. The
 	// purge below is the only thing that retires a row for a client that never
 	// returns, and it is deliberately tied to the end of a reclaim window
@@ -459,32 +470,31 @@ func (sm *StateManager) LoadClientRecovery(ctx context.Context, armGrace bool) i
 	// to call an identity gone. A start that never waits has learned nothing
 	// about these clients, so it must not delete the rows they would reclaim
 	// from on a later start; the next start that does open a window retires
-	// them. Reconsider if rows are ever seen accumulating across starts that
-	// repeatedly find nothing reclaimable.
+	// them. The retained_rows count logged on both of those paths is what would
+	// show rows accumulating across starts that repeatedly find nothing
+	// reclaimable, which is the evidence that would overturn this.
 	if len(expectedStrings) == 0 {
-		logger.Info("client-recovery boot load: no waitable prior clients; v4 grace not seeded")
+		logger.Info("client-recovery boot load: no waitable prior clients; v4 grace not seeded",
+			"retained_rows", len(bootKeys))
 		return 0
 	}
 
 	if !armGrace {
 		logger.Info("client-recovery boot load: no reclaimable state on this start; v4 grace not seeded",
-			"prior_clients", len(expectedStrings))
+			"prior_clients", len(expectedStrings),
+			"retained_rows", len(bootKeys))
 		return 0
 	}
 
-	// Every loaded row is a purge candidate, reclaim-complete included: that flag
-	// says the identity finished reclaiming in an earlier window, not that it is
-	// still around.
-	bootKeys := slices.Collect(maps.Keys(verifiers))
-
 	sm.mu.Lock()
-	gp := NewGracePeriodState(sm.graceDuration, func() {
+	var gp *GracePeriodState
+	gp = NewGracePeriodState(sm.graceDuration, func() {
 		logger.Info("NFSv4 grace period ended (boot-loaded roster)")
 		// Off the caller's goroutine on purpose. This callback fires from
 		// whatever ended the window, which includes DESTROY_CLIENTID holding
 		// sm.mu and the reclaiming OPEN that drains the roster, and the purge
 		// both takes sm.mu and does one bounded store round-trip per stale row.
-		go sm.purgeUnreturnedRecoveryRecords(bootKeys)
+		go sm.purgeUnreturnedRecoveryRecords(gp, bootKeys)
 	})
 	sm.gracePeriod = gp
 	sm.mu.Unlock()
@@ -531,11 +541,17 @@ func (sm *StateManager) LoadClientRecovery(ctx context.Context, armGrace bool) i
 // safe: a client that registers just after keeps its row, and one that is
 // destroyed just after has its row dropped by the destroy path itself.
 //
+// The window that installed this purge is the only one allowed to run it.
+// StartGracePeriod replaces sm.gracePeriod outright, so a window installed over
+// this one would leave this one's timer armed; firing the purge from that
+// orphan would delete rows for clients the live window is still waiting on.
+//
 // Caller must NOT hold sm.mu.
-func (sm *StateManager) purgeUnreturnedRecoveryRecords(bootKeys []string) {
+func (sm *StateManager) purgeUnreturnedRecoveryRecords(gp *GracePeriodState, bootKeys []string) {
 	sm.mu.RLock()
 	store := sm.recoveryStore
-	if store == nil {
+	current := sm.gracePeriod
+	if store == nil || current != gp {
 		sm.mu.RUnlock()
 		return
 	}
