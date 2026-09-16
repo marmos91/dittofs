@@ -121,6 +121,12 @@ echo "failures 0 1 0" > "${DITTOFS_RESULTS_DIR}/verdict"
 exit 1
 EOF
 
+cat >"${FAKE_TEST}/fake/ungraded.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "ungraded 0 0 0" > "${DITTOFS_RESULTS_DIR}/verdict"
+exit 1
+EOF
+
 cat >"${FAKE_TEST}/fake/refused.sh" <<'EOF'
 #!/usr/bin/env bash
 echo "refused 0 0 0" > "${DITTOFS_RESULTS_DIR}/verdict"
@@ -184,6 +190,15 @@ cat >"$FAKE_MANIFEST" <<'EOF'
       "tiers": { "pull_request": "all", "push": "all" },
       "steps": [
         { "name": "run", "cmd": "fake/truncated.sh", "args": [], "root": false }
+      ]
+    },
+    "ungraded": {
+      "description": "produced no output at all, so nothing could be graded",
+      "runner_dir": "fake",
+      "profiles": ["memory"],
+      "tiers": { "pull_request": "all", "push": "all" },
+      "steps": [
+        { "name": "run", "cmd": "fake/ungraded.sh", "args": [], "root": false }
       ]
     },
     "refused": {
@@ -413,6 +428,13 @@ assert_contains "and not as a new failure" "0 new failure(s)" "$OUT"
 OUT="$(run_fake --suite refused --profile memory)"
 assert_contains "a refused run says no tests were graded" "no tests were graded" "$OUT"
 assert_not_contains "and is never called a new failure" "new failure(s)" "$OUT"
+
+# A suite that produced no parsable output graded nothing either, and that is
+# the most misleading thing to call a failure count: there is not even a test
+# to point at.
+OUT="$(run_fake --suite ungraded --profile memory)"
+assert_contains "an empty run says there were no results" "no test results at all" "$OUT"
+assert_not_contains "and is not a new failure either" "new failure(s)" "$OUT"
 
 # A stale sidecar must not be inherited. results_dir is keyed by suite and label,
 # not by invocation, so the second run of the SAME suite finds the first run's

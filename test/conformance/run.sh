@@ -350,6 +350,10 @@ write_summary() {
                 verdict="refused to run — another instance of this stack is live; no tests were graded"
                 icon=":construction:"
                 ;;
+            ungraded)
+                verdict="no test results at all — the suite produced no output to grade"
+                icon=":construction:"
+                ;;
             inconclusive)
                 verdict="inconclusive — ${n_noresult} test(s) produced no server result"
                 icon=":warning:"

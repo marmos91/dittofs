@@ -590,6 +590,14 @@ if [[ "$TOTAL" -eq 0 ]]; then
     echo "WARNING: No test results found in smbtorture output."
     echo "smbtorture may not have run correctly. Check the output file:"
     echo "  ${OUTPUT_FILE}"
+    # The last exit that leaves without a verdict, and the one that needs it
+    # most: nothing was graded at all. Without the sidecar the common runner
+    # falls back to rendering this status as a failure count, which is the
+    # false label this script exists to remove — here at its most misleading,
+    # because there is not even a test to point at.
+    if [[ -n "$RESULTS_DIR" ]] && [[ -d "$RESULTS_DIR" ]]; then
+        echo "ungraded 0 0 0" > "${RESULTS_DIR}/verdict"
+    fi
     exit 1
 fi
 
