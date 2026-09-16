@@ -53,7 +53,13 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # Cancel a superseded PR run: a new commit replaces the old one, and only the
+  # tip matters. Do NOT cancel a develop run: each push is a distinct commit
+  # someone wants tested, and cancelling it means it never is -- which left most
+  # develop runs cancelled and the develop-red alarm blind. The cost is runner
+  # contention: develop runs now queue instead of superseding, bounded by the
+  # single running + single pending slot GitHub keeps per group.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # pynfs still has its own workflow while its tree is being reworked, but its

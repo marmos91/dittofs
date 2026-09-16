@@ -12,8 +12,9 @@
 #     no human touch. No paging.
 #
 #   warn-on-pr (pull_request): if develop is currently RED (any monitored
-#     conformance workflow's latest completed develop run failed), post/update a
-#     single loud (warn-only, non-blocking) comment on the PR; clear it on green.
+#     conformance workflow's latest develop run that reached a verdict failed),
+#     post/update a single loud (warn-only, non-blocking) comment on the PR;
+#     clear it on green.
 
 name: CI Health
 
@@ -38,9 +39,11 @@ jobs:
   # Flake self-heal: re-run a red conformance run's failed jobs once.
   # Only postsubmit/periodic runs (push or schedule on develop) qualify, and
   # only the first attempt — attempt 2 is left as the final word.
-  # `cancelled` is excluded: conformance workflows set cancel-in-progress, so a
-  # newer develop push cancels the in-flight run (benign; the superseding run
-  # reports the true status).
+  # `cancelled` is excluded: a run can still be cancelled by a timeout or by
+  # hand, and neither says the code is broken. Develop pushes no longer
+  # supersede one another (see the concurrency policy in the monitored
+  # workflows), so a cancelled develop run is no longer the routine
+  # concurrency artifact it once was.
   # ---------------------------------------------------------------------------
   retry:
     name: retry conformance flake
@@ -104,16 +107,21 @@ jobs:
         run: |
           MARKER="<!-- ci-health:develop-red-warning -->"
 
-          # develop is RED if any monitored conformance workflow's latest
-          # completed run on develop failed. `none` (never ran) and `cancelled`
-          # (concurrency-superseded) are benign — treated as not-red.
+          # develop is RED if any monitored conformance workflow's latest run
+          # on develop that reached a verdict failed. `--status completed`
+          # includes cancelled runs, so asking for the single newest one often
+          # returns a run that was superseded and says nothing about the code --
+          # the alarm went quiet exactly when merges were landing fast. Look back
+          # over recent runs for the newest non-cancelled verdict instead.
+          # `none` (no run has reached a verdict) stays benign.
           RED=""
           for wf in $(jq -r '.workflows | keys[]' test/conformance/suites.json); do
             CONC=$(gh run list --repo "$REPO" --workflow "$wf" --branch develop \
-              --status completed -L 1 --json conclusion --jq '.[0].conclusion // "none"' \
+              --status completed -L 20 --json conclusion \
+              --jq 'map(select(.conclusion != "cancelled")) | .[0].conclusion // "none"' \
               || echo "none")
             echo "  $wf -> $CONC"
-            if [ "$CONC" != "success" ] && [ "$CONC" != "none" ] && [ "$CONC" != "cancelled" ]; then
+            if [ "$CONC" != "success" ] && [ "$CONC" != "none" ]; then
               RED="$RED $wf"
             fi
           done
