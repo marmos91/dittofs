@@ -188,6 +188,40 @@ func (s *NFSAdapter) systemRegMappings() []*xdr.Mapping {
 	return out
 }
 
+// sysregRegistrar is the subset of the sysreg package the adapter drives:
+// probe the host rpcbind, then SET or UNSET the service mappings. It is an
+// interface so a test can substitute a fake and drive a registration against a
+// shutdown without touching the host's rpcbind.
+type sysregRegistrar interface {
+	Ping(ctx context.Context, addr string) error
+	Register(ctx context.Context, addr string, mappings []*xdr.Mapping) error
+	Unregister(ctx context.Context, addr string, mappings []*xdr.Mapping) error
+}
+
+// sysregClient is the production sysregRegistrar, backed by the real package.
+type sysregClient struct{}
+
+func (sysregClient) Ping(ctx context.Context, addr string) error {
+	return sysreg.Ping(ctx, addr)
+}
+
+func (sysregClient) Register(ctx context.Context, addr string, mappings []*xdr.Mapping) error {
+	return sysreg.Register(ctx, addr, mappings)
+}
+
+func (sysregClient) Unregister(ctx context.Context, addr string, mappings []*xdr.Mapping) error {
+	return sysreg.Unregister(ctx, addr, mappings)
+}
+
+// sysregRegistrarFor returns the configured registrar, or the real sysreg
+// client when none was injected.
+func (s *NFSAdapter) sysregRegistrarFor() sysregRegistrar {
+	if s.sysregRegistrar != nil {
+		return s.sysregRegistrar
+	}
+	return sysregClient{}
+}
+
 func (s *NFSAdapter) startSystemPortmapRegistration(ctx context.Context) {
 	if !s.registerWithSystemEnabled() {
 		return
@@ -198,7 +232,8 @@ func (s *NFSAdapter) startSystemPortmapRegistration(ctx context.Context) {
 	defer cancel()
 
 	addr := s.systemPortmapAddr()
-	if err := sysreg.Ping(ctx, addr); err != nil {
+	reg := s.sysregRegistrarFor()
+	if err := reg.Ping(ctx, addr); err != nil {
 		logger.Warn("No system portmapper reachable; NFSv3 locking needs `nolock`",
 			"addr", addr, "error", err)
 		return
@@ -209,9 +244,24 @@ func (s *NFSAdapter) startSystemPortmapRegistration(ctx context.Context) {
 	// also runs kernel NFS) does not stop the critical NLM registration. We mark
 	// the registration active and unregister on shutdown regardless of partial
 	// failures, since whatever landed must be cleaned up.
+	//
+	// The claim and the registration are one critical section against the
+	// teardown below: a shutdown either runs entirely before this (and
+	// unregisters nothing) or entirely after it (and unregisters everything that
+	// landed). Letting them interleave is how Register's remaining SETs land
+	// after the Unregister and leak.
+	//
+	// ponytail: both paths hold sysregMu across a bounded rpcbind round trip
+	// (systemRegTimeout here, 5s in the teardown), so a shutdown can wait out an
+	// in-flight registration. Acceptable only because both are already bounded by
+	// their own timeouts; narrow the lock to the flag if a caller ever needs to
+	// unregister concurrently with a registration.
 	mappings := s.systemRegMappings()
-	s.sysregActive.Store(true)
-	if err := sysreg.Register(ctx, addr, mappings); err != nil {
+	s.sysregMu.Lock()
+	s.sysregActive = true
+	err := reg.Register(ctx, addr, mappings)
+	s.sysregMu.Unlock()
+	if err != nil {
 		logger.Warn("Some services failed to register with system portmapper",
 			"addr", addr, "error", err)
 		return
@@ -223,19 +273,23 @@ func (s *NFSAdapter) startSystemPortmapRegistration(ctx context.Context) {
 // stopSystemPortmapRegistration unregisters DittoFS's services from the system
 // rpcbind. No-op when system registration was never active.
 func (s *NFSAdapter) stopSystemPortmapRegistration() {
-	if !s.sysregActive.Load() {
-		return
-	}
-	s.sysregActive.Store(false)
-
 	// Use a fresh bounded context: the adapter's lifecycle ctx is already
 	// cancelled during shutdown, but unregistering stale NLM/NSM mappings is
 	// important enough to spend a few seconds on.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	// The clear and the unregistration are one critical section against the
+	// registration above, for the reason stated there.
+	s.sysregMu.Lock()
+	defer s.sysregMu.Unlock()
+	if !s.sysregActive {
+		return
+	}
+	s.sysregActive = false
+
 	mappings := s.systemRegMappings()
-	if err := sysreg.Unregister(ctx, s.systemPortmapAddr(), mappings); err != nil {
+	if err := s.sysregRegistrarFor().Unregister(ctx, s.systemPortmapAddr(), mappings); err != nil {
 		logger.Warn("Failed to unregister services from system portmapper", "error", err)
 		return
 	}

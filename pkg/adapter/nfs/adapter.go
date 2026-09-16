@@ -165,9 +165,21 @@ type NFSAdapter struct {
 	// sysregActive is true once DittoFS's services have been registered with the
 	// host's system rpcbind (adapters.nfs.portmapper.register_with_system), so
 	// shutdown knows to unregister them. Stays false when the feature is
-	// disabled or no system portmapper was reachable at startup. Atomic because
-	// Stop() may race Serve() (Stop is documented safe to call concurrently).
-	sysregActive atomic.Bool
+	// disabled or no system portmapper was reachable at startup. Guarded by
+	// sysregMu, which serialises the claim against the teardown.
+	sysregActive bool
+
+	// sysregMu serialises startSystemPortmapRegistration's claim-and-register
+	// against stopSystemPortmapRegistration's clear-and-unregister. Without it a
+	// shutdown landing mid-Register reads the claim, clears it and unregisters,
+	// and Register's remaining SETs then land with the claim already cleared --
+	// nothing will unregister them.
+	sysregMu sync.Mutex
+
+	// sysregRegistrar is the system-rpcbind client; nil means the real sysreg
+	// package. A test substitutes a fake to drive a registration and a shutdown
+	// concurrently without touching the host's rpcbind.
+	sysregRegistrar sysregRegistrar
 
 	// sysregState sequences the background registration reconcile so a burst of
 	// settings applies (one per accepted connection) collapses into a single
