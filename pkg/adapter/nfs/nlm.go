@@ -479,9 +479,11 @@ func (s *NFSAdapter) processNLMWaiters(handle metadata.FileHandle) {
 		// The waiter's own Lock is deliberately NOT repointed at enhancedLock.
 		// A queued waiter is shared with the blocking queue, and the swap was an
 		// unsynchronized write to a struct another goroutine reads. Nothing
-		// needs it: enhancedLock differs only in carrying the lock type, and the
-		// grant callback reads owner, handle, range and Exclusive, which are
-		// identical in both.
+		// needs it: the grant callback reads only the waiter's owner, file
+		// handle, byte range and Exclusive, and those are the same in both.
+		// enhancedLock is not otherwise interchangeable — it carries its own
+		// generated ID, AcquiredAt and lock type — so do not treat the two as
+		// equivalent if a future callback needs more of the lock.
 
 		// Send GRANTED callback
 		// ProcessGrantedCallback releases the lock on failure
