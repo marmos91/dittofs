@@ -1192,48 +1192,62 @@ func ProcessAppInstanceId(
 	// runs only for a CREATE carrying an AppInstanceId context, so it is not on
 	// any writer's hot path.
 	//
-	// decision: the mutex spans the list and the claims, not the live-open close
-	// above it. Holding it across that close would put a lock round every cache
-	// flush and lock release in the teardown, and take it in the opposite order
-	// from paths that already close opens while holding store locks. What stays
+	// decision: the mutex spans the list and the claims only — not the live-open
+	// close above it, and not the cleanup below. Holding it across either would
+	// put a blocking store round inside it, and across the close it would also
+	// invert the order used by paths that already close opens while holding
+	// store locks. What stays
 	// open is a disconnect that completes after the list: its row is a match this
 	// failover never saw, and it survives as a live-locked entry until the
 	// scavenger evicts it. Withdraw this if that row ever becomes reconnectable
 	// by the displaced client, which is the thing the failover exists to prevent.
-	handler.durablePurgeMu.Lock()
-	defer handler.durablePurgeMu.Unlock()
+	// Two phases, because the mutex is only needed to make the list-and-claim
+	// window atomic. Holding it across the cleanup below would put a blocking
+	// block-store flush inside it and serialize every durable disconnect
+	// persist in the server behind one AppInstanceId CREATE. Once a row is
+	// claimed it belongs to this call and nothing else can reach it, so the
+	// cleanup needs no lock at all.
+	claimedRows := func() []*lock.PersistedDurableHandle {
+		handler.durablePurgeMu.Lock()
+		defer handler.durablePurgeMu.Unlock()
 
-	existing, err := durableStore.GetDurableHandlesByAppInstanceId(ctx, appId)
-	if err != nil {
-		logger.Warn("ProcessAppInstanceId: store error", "error", err)
-		return appId
-	}
+		existing, err := durableStore.GetDurableHandlesByAppInstanceId(ctx, appId)
+		if err != nil {
+			logger.Warn("ProcessAppInstanceId: store error", "error", err)
+			return nil
+		}
 
-	var persistedClosed int
-	for _, h := range existing {
-		if sameOrUnknownClient(h.ClientGUID, connClientGUID) || !mayDisplace(h.MetadataHandle) {
-			continue
+		var claimed []*lock.PersistedDurableHandle
+		for _, h := range existing {
+			if sameOrUnknownClient(h.ClientGUID, connClientGUID) || !mayDisplace(h.MetadataHandle) {
+				continue
+			}
+			// Claim the row before acting on it, the way reconnect claims one.
+			// Between the listing above and this point a DHnC/DH2C reconnect
+			// can take the same row and restore the open, byte-range locks
+			// included — and releasing locks off the listed snapshot would then
+			// strip them from a live handle while the delete quietly removed
+			// nothing. A claim that comes back empty means someone else got
+			// there first, which is the whole answer: there is nothing left
+			// here to close.
+			row, claimErr := durableStore.ConsumeDurableHandle(ctx, h.ID)
+			if claimErr != nil {
+				logger.Warn("ProcessAppInstanceId: failed to claim handle",
+					"handleID", h.ID, "error", claimErr)
+				continue
+			}
+			if row == nil {
+				logger.Debug("ProcessAppInstanceId: handle was claimed elsewhere before it could be displaced",
+					"handleID", h.ID)
+				continue
+			}
+			claimed = append(claimed, row)
 		}
-		// Claim the row before acting on it, the way reconnect claims one.
-		// Between the listing above and this point a DHnC/DH2C reconnect can
-		// take the same row and restore the open, byte-range locks included —
-		// and releasing locks off the listed snapshot would then strip them
-		// from a live handle while the delete quietly removed nothing. A claim
-		// that comes back empty means someone else got there first, which is
-		// the whole answer: there is nothing left here to close.
-		claimed, claimErr := durableStore.ConsumeDurableHandle(ctx, h.ID)
-		if claimErr != nil {
-			logger.Warn("ProcessAppInstanceId: failed to claim handle",
-				"handleID", h.ID, "error", claimErr)
-			continue
-		}
-		if claimed == nil {
-			logger.Debug("ProcessAppInstanceId: handle was claimed elsewhere before it could be displaced",
-				"handleID", h.ID)
-			continue
-		}
-		persistedClosed++
+		return claimed
+	}()
 
+	persistedClosed := len(claimedRows)
+	for _, claimed := range claimedRows {
 		cleanupFile := (&OpenFile{
 			FileID:         claimed.FileID,
 			ShareName:      claimed.ShareName,
