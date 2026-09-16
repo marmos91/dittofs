@@ -122,7 +122,11 @@ func waitSysreg(t *testing.T, a *NFSAdapter, want bool, cond string) {
 	var running bool
 	var state int32
 	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
-		running, state = a.sidecars.IsRunning(sysregSidecarName), a.sysregState.Load()
+		// Idle is read FIRST, for the reason reconcileSysreg states: a transition
+		// holds the state non-idle until after its mutation is visible, so reading
+		// the running state first can pair a pre-mutation value with the idle the
+		// same transition published after settling.
+		state, running = a.sysregState.Load(), a.sidecars.IsRunning(sysregSidecarName)
 		if running == want && state == sysregIdle {
 			return
 		}
