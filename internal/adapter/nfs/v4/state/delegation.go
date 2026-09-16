@@ -745,8 +745,10 @@ func (sm *StateManager) attemptRecallV41(deleg *DelegationState, sender *Backcha
 		return recallSenderLocal
 	}
 
-	select {
-	case err := <-resultCh:
+	// One place that turns a result into an outcome, because two select branches
+	// need it: the normal receive, and the watchdog, where a result can have
+	// been queued in the same instant the timer fired.
+	classify := func(err error) recallOutcome {
 		if err != nil {
 			// Not every failure is the client's. A send that never reached the
 			// wire for this session says nothing about whether the client is
@@ -769,6 +771,11 @@ func (sm *StateManager) attemptRecallV41(deleg *DelegationState, sender *Backcha
 			"client_id", deleg.ClientID,
 			"deleg_type", deleg.DelegType)
 		return recallSent
+	}
+
+	select {
+	case err := <-resultCh:
+		return classify(err)
 
 	case <-sender.stopCh:
 		// This sender stopped (session destroy or server shutdown). Its session
@@ -778,6 +785,16 @@ func (sm *StateManager) attemptRecallV41(deleg *DelegationState, sender *Backcha
 		return recallSenderLocal
 
 	case <-time.After(sender.worstCaseSendDuration() + recallResultGrace):
+		// The timer and a queued result can be ready together, and a select with
+		// two ready cases picks uniformly — so arriving here does not mean the
+		// sender failed to report. Taking the timeout anyway starts the short
+		// revocation timer on a recall that had already succeeded, and leaves
+		// its result sitting unread in the channel.
+		select {
+		case err := <-resultCh:
+			return classify(err)
+		default:
+		}
 		// Derived from the sender's own retry schedule rather than fixed, so
 		// this only fires when the sender is genuinely wedged. A shorter wait
 		// expired while the sender was still mid-retry — the callback may

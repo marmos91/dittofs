@@ -512,17 +512,24 @@ func (bs *BackchannelSender) sendCallback(ctx context.Context, req CallbackReque
 
 	select {
 	case <-timeoutCtx.Done():
-		// Same uniform pick as in the probe: a deadline expiring alongside a
-		// retired reply table must not be reported as the client failing to
-		// answer, because the retry loop reads that as no callback path and
-		// revokes a delegation over a socket on this side.
+		// A deadline that fires alongside something on the reply channel is not
+		// a timeout. Two cases, and both were being reported as the client
+		// failing to answer: a retired table, which is a socket on this side
+		// going away, and an actual reply that landed in the same instant —
+		// classifying THAT as failed clears CBPathUp and revokes a delegation
+		// the client answered for.
 		select {
-		case _, open := <-replyCh:
+		case replyBytes, open := <-replyCh:
 			if !open {
 				pending.Cancel(xid)
 				return fmt.Errorf("%w: connection %d was retired while the callback was in flight",
 					errCallbackNotAttempted, connID)
 			}
+			if err := ValidateCBReply(replyBytes); err != nil {
+				return fmt.Errorf("backchannel callback reply validation failed: %w", err)
+			}
+			bs.sm.setBackchannelFault(bs.clientID, false)
+			return nil
 		default:
 		}
 		pending.Cancel(xid)
@@ -712,20 +719,25 @@ func (bs *BackchannelSender) probeCallbackPath(ctx context.Context) error {
 		select {
 		case <-timeoutCtx.Done():
 			cancel()
-			// Both can be ready at once — the deadline expiring in the same
-			// instant the connection is retired — and a select with two ready
-			// cases picks uniformly. Taking the timeout branch there would
-			// publish "the client does not answer callbacks" about a socket
-			// that went away on this side, and nothing re-probes until the next
-			// parameter update. Ask first.
+			// Both can be ready at once, and a select with two ready cases picks
+			// uniformly — so arriving here does not mean nothing answered. A
+			// retired table means a socket on this side went away, which is not
+			// the client's verdict; a reply that landed in the same instant IS
+			// the client's verdict, and calling it a timeout publishes "does not
+			// answer callbacks" about a client that just did. Nothing re-probes
+			// until the next parameter update, so that one stands. Ask first.
 			select {
-			case _, open := <-replyCh:
+			case replyBytes, open := <-replyCh:
 				if !open {
 					pending.Cancel(xid)
 					lastErr = fmt.Errorf("back-bound connection %d was retired while CB_NULL was in flight", connID)
 					exclude = connID
 					continue
 				}
+				if err := ValidateCBReply(replyBytes); err != nil {
+					return fmt.Errorf("CB_NULL reply: %w", err)
+				}
+				return nil
 			default:
 			}
 			pending.Cancel(xid)

@@ -151,8 +151,29 @@ func (c *NFSConnection) write(data []byte, timeout time.Duration) error {
 		return fmt.Errorf("set write deadline: %w", err)
 	}
 
-	if _, err := c.conn.Write(data); err != nil {
-		return err
+	n, err := c.conn.Write(data)
+	if err == nil {
+		return nil
 	}
-	return nil
+	if n > 0 && n < len(data) {
+		// A deadline can expire mid-message, and Write reports how far it got.
+		// What is on the wire then is the front of a record-marked message with
+		// no end, so every reply framed after it lands inside a record the peer
+		// is still trying to parse — a corrupted stream that reads as a protocol
+		// error somewhere unrelated, on a socket selection would otherwise keep
+		// offering for the next callback.
+		//
+		// There is no way to un-send those bytes, so the connection is the thing
+		// that has to go. Closing it is what makes the framing damage stop at
+		// this message: the read loop unwinds, handleConnectionClose unbinds it,
+		// and the next callback selects a different path.
+		logger.Warn("partial write on the NFS connection, closing it to stop the framing damage",
+			"conn_id", c.connectionID,
+			"wrote", n,
+			"message_bytes", len(data),
+			"error", err)
+		_ = c.conn.Close()
+		return fmt.Errorf("partial write (%d of %d bytes), connection closed: %w", n, len(data), err)
+	}
+	return err
 }
