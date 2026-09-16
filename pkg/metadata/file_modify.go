@@ -326,6 +326,14 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 	// GETATTR/LOOKUP on this directory would report right now (#1573).
 	s.mergeDirTimes(handle, &file.FileAttr)
 
+	// Which timestamp columns the commit below must write back. Seeded from the
+	// overlay just applied, which counts as one of this call's own changes: an
+	// explicit directory-timestamp set clears the pending entry at the end of
+	// this function, so a bump the write does not carry is lost outright.
+	atimeSet := !file.Atime.Equal(pre.Atime)
+	mtimeSet := !file.Mtime.Equal(pre.Mtime)
+	creationTimeSet := false
+
 	// Capture pre-op attributes: a copy of the file as observed by this
 	// operation, before any mutation is applied below. This is exactly the
 	// state WCC "before" must describe.
@@ -439,6 +447,22 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 	eaAuthorizedByHandle := ctx.EAAuthorizedByHandle &&
 		onlyEAMutations && !acl.HasExplicitDeny(file.ACL)
 
+	// True when the ownership gate below is the only thing that authorizes this
+	// call, and so the only decision the write closure has to recheck against
+	// the row its transaction reads. Root, a right the open handle carries, and
+	// the operations POSIX gates on write permission rather than on ownership
+	// all hold whoever owns the file, so a peer chown landing in the window
+	// leaves their authorization intact.
+	//
+	// decision: an owner whose call is ALSO write-permission-gated takes the
+	// exemption even though the switch below lets ownership answer before the
+	// write check runs, so the write check is not what stands behind it. That
+	// is the behaviour a truncate, a utimes-to-now and an EA write had before
+	// the recheck existed, and ownership short-circuits by design. Withdraw it
+	// if the switch ever stops letting ownership answer first.
+	ownershipAuthorized := isOwner && !isRoot &&
+		!eaAuthorizedByHandle && !timestampAuthorizedByHandle && !writePermSufficient
+
 	switch {
 	case isOwner || isRoot:
 		// Ownership answers for everything below.
@@ -459,6 +483,11 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 
 	now := time.Now()
 	modified := false
+
+	// Set by either POSIX setid strip below. The strip is a read-modify-write,
+	// so the commit re-applies it to the row rather than copying a mode derived
+	// from the pre-transaction read over a concurrent chmod.
+	clearSetIDBits := false
 	// The mode a chmod asks the ACL to be adjusted for, once the SUID/SGID
 	// stripping above has had its say. Nil when this call is not a chmod. The
 	// later ModeOrMask/ModeAndNotMask bits are deliberately not included: they
@@ -570,6 +599,7 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 	if ownershipChanged && file.Type != FileTypeDirectory && file.Type != FileTypeSymlink {
 		// Clear SUID (04000) and SGID (02000) bits
 		file.Mode &= ^uint32(0o6000)
+		clearSetIDBits = true
 	}
 
 	if attrs.Size != nil {
@@ -619,6 +649,7 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 		// The server must do this even if the client doesn't send TIME_MODIFY_SET,
 		// because POSIX requires it and NFS clients may rely on server-side updates.
 		file.Mtime = now
+		mtimeSet = true
 		// Stamped unconditionally, including under PreserveCtime: the write
 		// closure below is the one place that decides what a held change time
 		// ends up as, and it keeps the row's own value over whatever this call
@@ -629,31 +660,37 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 		// POSIX: Clear SUID/SGID bits on truncate for non-root users (like write)
 		if file.Type == FileTypeRegular && !isRoot {
 			file.Mode &= ^uint32(0o6000)
+			clearSetIDBits = true
 		}
 	}
 
 	if attrs.Atime != nil {
 		file.Atime = *attrs.Atime
+		atimeSet = true
 		modified = true
 	}
 
 	if attrs.Mtime != nil {
 		file.Mtime = *attrs.Mtime
+		mtimeSet = true
 		modified = true
 	}
 
 	if attrs.AtimeNow {
 		file.Atime = now
+		atimeSet = true
 		modified = true
 	}
 
 	if attrs.MtimeNow {
 		file.Mtime = now
+		mtimeSet = true
 		modified = true
 	}
 
 	if attrs.CreationTime != nil {
 		file.CreationTime = *attrs.CreationTime
+		creationTimeSet = true
 		modified = true
 	}
 
@@ -721,12 +758,19 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 		// rather than closing it, the same residue
 		// RestoreChangeTimeIfUnchanged documents.
 		//
-		// Which fields changed is decided by comparing against `pre` rather
-		// than by restating the conditions above, so a branch added later
-		// cannot be forgotten here. The three reference-typed fields are
-		// keyed off the request instead: they are replaced wholesale when the
-		// caller asks for them and are never touched otherwise, which is
-		// cheaper to establish than deep equality.
+		// Which fields it copies is decided by what the caller asked for, never
+		// by whether the value this call computed differs from the one it read.
+		// A request whose value already equals the pre-read value is still a
+		// request: skipping the column there leaves a concurrent writer's value
+		// standing while this call reports success, which is the same lost
+		// update in the other direction. Ownership is the one field still keyed
+		// off a diff, because the code above only ever moves it when the
+		// request differs from what it read, so the two are the same test.
+		//
+		// A read-modify-write — the mode masks, the setid strip, the EA
+		// mutations — is re-applied to the row instead of copied from the
+		// pre-read copy, so it composes with whatever the peer committed rather
+		// than replacing it.
 		//
 		// The re-read's failure is the operation's failure. Falling back to the
 		// pre-transaction snapshot would write back a row this call has already
@@ -735,6 +779,19 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 		// recreated carrying the stale state, which is a worse outcome than
 		// refusing the attribute change.
 		writeRow := func(tx Transaction) error {
+			// Before the read, so the mutations below fold onto the committed
+			// map on a backend that refuses the second writer only once the
+			// update is reached. Taken only for an EA write: every other field
+			// here is either replaced outright or a bit operation the store's
+			// own conflict handling already covers.
+			if len(attrs.EAMutations) > 0 {
+				if locker, ok := tx.(FileRowLocker); ok {
+					if err := locker.LockFileRow(ctx.Context, handle); err != nil {
+						return err
+					}
+				}
+			}
+
 			row, err := tx.GetFile(ctx.Context, handle)
 			if err != nil {
 				return err
@@ -755,13 +812,14 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 			// The ownership gate above ran against the copy read before the
 			// transaction, so an owner-authorized change would otherwise land
 			// on a row a concurrent chown has since handed to someone else —
-			// the gate and the write describing different files. Root and a
-			// handle-authorized timestamp write do not depend on ownership and
-			// are left alone. No isolation level catches this: the chown
-			// committed before this transaction opened, so its row is simply
-			// what the snapshot sees and nothing conflicts.
-			if !isRoot && !timestampAuthorizedByHandle &&
-				(row.UID != pre.UID || row.GID != pre.GID) {
+			// the gate and the write describing different files. Every other
+			// justification holds whoever owns the file, so refusing those here
+			// would be a spurious EPERM on an operation whose authorization
+			// never read the owner — see ownershipAuthorized above. No
+			// isolation level catches this: the chown committed before this
+			// transaction opened, so its row is simply what the snapshot sees
+			// and nothing conflicts.
+			if ownershipAuthorized && (row.UID != pre.UID || row.GID != pre.GID) {
 				return &StoreError{
 					Code:    ErrPermissionDenied,
 					Message: "ownership changed while the attribute change was being applied",
@@ -769,19 +827,25 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 				}
 			}
 
-			// decision: the EA map is replaced wholesale from the pre-read copy
-			// rather than merged onto the row, so two concurrent EA writers can
-			// still lose each other's keys. SetFileAttributes takes no row lock
-			// — xattr.go's own path takes LockFileRow for exactly this — and
-			// adding one here would put the lock on every chmod and utimes as
-			// well. Withdraw the exemption if EA writes ever arrive on this
-			// path concurrently rather than through xattr.go.
+			// Folded onto the row under the lock taken above rather than copied
+			// from the pre-read map, so a peer's concurrent EA write keeps its
+			// own keys instead of being replaced wholesale. Re-applying the
+			// same mutations on a retry lands the same map.
 			if len(attrs.EAMutations) > 0 {
-				row.EAs = file.EAs
+				row.ApplyEAMutations(attrs.EAMutations)
 			}
 
-			if file.Mode != pre.Mode {
+			if attrs.Mode != nil {
 				row.Mode = file.Mode
+			}
+			if attrs.ModeOrMask != nil {
+				row.Mode |= *attrs.ModeOrMask & dosAttributeModeBits
+			}
+			if attrs.ModeAndNotMask != nil {
+				row.Mode &^= *attrs.ModeAndNotMask & dosAttributeModeBits
+			}
+			if clearSetIDBits {
+				row.Mode &^= 0o6000
 			}
 			if file.UID != pre.UID {
 				row.UID = file.UID
@@ -789,16 +853,16 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 			if file.GID != pre.GID {
 				row.GID = file.GID
 			}
-			if file.Hidden != pre.Hidden {
+			if attrs.Hidden != nil {
 				row.Hidden = file.Hidden
 			}
-			if !file.Atime.Equal(pre.Atime) {
+			if atimeSet {
 				row.Atime = file.Atime
 			}
-			if !file.Mtime.Equal(pre.Mtime) {
+			if mtimeSet {
 				row.Mtime = file.Mtime
 			}
-			if !file.CreationTime.Equal(pre.CreationTime) {
+			if creationTimeSet {
 				row.CreationTime = file.CreationTime
 			}
 			// A held change time means the stored value is the authority — a
