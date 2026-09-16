@@ -10,6 +10,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/acl"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
@@ -1106,55 +1107,263 @@ func TestProcessAppInstanceId_NotPresent(t *testing.T) {
 		{Name: "MxAc", Data: make([]byte, 8)},
 	}
 
-	appId := ProcessAppInstanceId(context.Background(), store, nil, contexts)
+	appId := ProcessAppInstanceId(context.Background(), store, nil, contexts, nil, [16]byte{})
 	if appId != ([16]byte{}) {
 		t.Errorf("Expected zero AppInstanceId when not present, got %x", appId)
 	}
 }
 
-func TestProcessAppInstanceId_ForceClosesOldHandles(t *testing.T) {
+// appInstanceCtxs builds the CREATE context list carrying appId.
+func appInstanceCtxs(appId [16]byte) []CreateContext {
+	data := make([]byte, 20)
+	binary.LittleEndian.PutUint16(data[0:2], 20) // StructureSize
+	copy(data[4:20], appId[:])
+	return []CreateContext{{Name: AppInstanceIdTag, Data: data}}
+}
+
+// appInstanceEnv is the fixture for the ProcessAppInstanceId displacement
+// gates: a real metadata store (so maximal access is evaluated for real),
+// a durable-handle store, and a file the persisted handles point at.
+type appInstanceEnv struct {
+	h       *Handler
+	store   *mockDurableStore
+	metaSvc *metadata.Service
+	share   string
+	root    metadata.FileHandle
+	appID   [16]byte
+}
+
+func newAppInstanceEnv(t *testing.T) *appInstanceEnv {
+	t.Helper()
+	h, rt, smbCtx, rootHandle, _ := setupDaclTest(t)
 	store := newMockDurableStore()
-	ctx := context.Background()
+	h.DurableStore = store
+	return &appInstanceEnv{
+		h:       h,
+		store:   store,
+		metaSvc: rt.GetMetadataService(),
+		share:   smbCtx.ShareName,
+		root:    rootHandle,
+		appID:   [16]byte{0xC0, 0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xCB, 0xCC, 0xCD, 0xCE, 0xCF},
+	}
+}
 
-	appId := [16]byte{0xC0, 0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xCB, 0xCC, 0xCD, 0xCE, 0xCF}
+// file creates name under the share root owned by root with the given mode and
+// returns its metadata handle.
+func (e *appInstanceEnv) file(t *testing.T, name string, mode uint32) metadata.FileHandle {
+	t.Helper()
+	file, _, err := e.metaSvc.CreateFile(rootAuthCtx(), e.root, name,
+		&metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: mode})
+	if err != nil {
+		t.Fatalf("CreateFile %s: %v", name, err)
+	}
+	handle, err := metadata.EncodeFileHandle(file)
+	if err != nil {
+		t.Fatalf("EncodeFileHandle %s: %v", name, err)
+	}
+	return handle
+}
 
-	// Pre-populate with handles matching this AppInstanceId
-	_ = store.PutDurableHandle(ctx, &lock.PersistedDurableHandle{
-		ID:            "old-001",
-		AppInstanceId: appId,
-		ShareName:     "/share1",
-		Path:          "old1.txt",
+// aclFile creates name under the share root with a DACL, owned by someone else,
+// and mode bits that would let the POSIX fallback answer "readable" on their own
+// — so the ACL is what decides whether the failover may displace an open on it.
+func (e *appInstanceEnv) aclFile(t *testing.T, name string, dacl *acl.ACL) metadata.FileHandle {
+	t.Helper()
+	file, _, err := e.metaSvc.CreateFile(rootAuthCtx(), e.root, name,
+		&metadata.FileAttr{
+			Type: metadata.FileTypeRegular,
+			Mode: 0o666,
+			UID:  9999,
+			GID:  9999,
+			ACL:  dacl,
+		})
+	if err != nil {
+		t.Fatalf("CreateFile %s: %v", name, err)
+	}
+	handle, err := metadata.EncodeFileHandle(file)
+	if err != nil {
+		t.Fatalf("EncodeFileHandle %s: %v", name, err)
+	}
+	return handle
+}
+
+// persist records a disconnected durable handle for the file at metaHandle,
+// opened by the client identified by clientGUID.
+func (e *appInstanceEnv) persist(t *testing.T, id, path string, metaHandle metadata.FileHandle, clientGUID [16]byte) {
+	t.Helper()
+	if err := e.store.PutDurableHandle(context.Background(), &lock.PersistedDurableHandle{
+		ID:             id,
+		AppInstanceId:  e.appID,
+		ShareName:      e.share,
+		Path:           path,
+		MetadataHandle: metaHandle,
+		ClientGUID:     clientGUID,
+	}); err != nil {
+		t.Fatalf("PutDurableHandle %s: %v", id, err)
+	}
+}
+
+func (e *appInstanceEnv) survives(t *testing.T, id string) bool {
+	t.Helper()
+	h, _ := e.store.GetDurableHandle(context.Background(), id)
+	return h != nil
+}
+
+// claim runs ProcessAppInstanceId for connection clientGUID on behalf of a
+// non-root, non-owner requester — one the POSIX permission path judges by the
+// file's "other" mode bits.
+// claimAs runs the failover with a caller-supplied AuthContext, so a test can
+// present one that was never identified.
+func (e *appInstanceEnv) claimAs(clientGUID [16]byte, authCtx *metadata.AuthContext) [16]byte {
+	return ProcessAppInstanceId(context.Background(), e.store, e.h,
+		appInstanceCtxs(e.appID), authCtx, clientGUID)
+}
+
+func (e *appInstanceEnv) claim(clientGUID [16]byte) [16]byte {
+	uid, gid := uint32(4242), uint32(4242)
+	authCtx := &metadata.AuthContext{
+		Context:  context.Background(),
+		Identity: &metadata.Identity{UID: &uid, GID: &gid},
+	}
+	return ProcessAppInstanceId(context.Background(), e.store, e.h,
+		appInstanceCtxs(e.appID), authCtx, clientGUID)
+}
+
+// live registers an open on fileHandle held by clientGUID and returns its
+// FileID.
+func (e *appInstanceEnv) live(fileHandle metadata.FileHandle, clientGUID [16]byte) [16]byte {
+	fileID := [16]byte{0x0A, 0x0B, 0x0C, 0x0D}
+	e.h.StoreOpenFile((&OpenFile{
+		FileID:         fileID,
+		SessionID:      1,
+		TreeID:         1,
+		ShareName:      e.share,
+		MetadataHandle: fileHandle,
+		AppInstanceId:  e.appID,
+		ClientGUID:     clientGUID,
+	}).WithName(OpenName{Path: "/live.txt"}))
+	return fileID
+}
+
+// TestProcessAppInstanceId_ForceClosesOldHandles covers the conditions that
+// decide whether a persisted durable handle carrying a matching AppInstanceId
+// is actually displaced (MS-SMB2 §3.3.5.9.13): the requester must be a
+// different client, and must have GENERIC_READ on the file the matched open
+// holds. Matching the AppInstanceId alone authorizes nothing — it is a
+// cleartext application-instance identifier, not a secret.
+func TestProcessAppInstanceId_ForceClosesOldHandles(t *testing.T) {
+	claimant := [16]byte{0x11}
+	incumbent := [16]byte{0x22}
+
+	t.Run("different client with read access displaces", func(t *testing.T) {
+		e := newAppInstanceEnv(t)
+		e.persist(t, "readable", "readable.txt", e.file(t, "readable.txt", 0o644), incumbent)
+
+		if got := e.claim(claimant); got != e.appID {
+			t.Errorf("returned AppInstanceId %x, want %x", got, e.appID)
+		}
+		if e.survives(t, "readable") {
+			t.Error("a different client that can read the file must displace the handle")
+		}
 	})
-	_ = store.PutDurableHandle(ctx, &lock.PersistedDurableHandle{
-		ID:            "old-002",
-		AppInstanceId: appId,
-		ShareName:     "/share1",
-		Path:          "old2.txt",
+
+	t.Run("requester without read access displaces nothing", func(t *testing.T) {
+		e := newAppInstanceEnv(t)
+		// 0o600: root owns it, so a non-root, non-group requester falls to the
+		// "other" bits and is granted neither read nor write.
+		e.persist(t, "private", "private.txt", e.file(t, "private.txt", 0o600), incumbent)
+
+		e.claim(claimant)
+		if !e.survives(t, "private") {
+			t.Error("a requester with no read access on the file must not displace the handle")
+		}
 	})
 
-	// Build AppInstanceId context
-	appIdData := make([]byte, 20)
-	binary.LittleEndian.PutUint16(appIdData[0:2], 20) // StructureSize
-	copy(appIdData[4:20], appId[:])
+	t.Run("same client displaces nothing", func(t *testing.T) {
+		e := newAppInstanceEnv(t)
+		// Same file permissions and same requester as the displacing case
+		// above: only the ClientGuid differs.
+		e.persist(t, "own", "own.txt", e.file(t, "own.txt", 0o644), claimant)
 
-	contexts := []CreateContext{
-		{Name: AppInstanceIdTag, Data: appIdData},
-	}
+		e.claim(claimant)
+		if !e.survives(t, "own") {
+			t.Error("an open belonging to the claiming client itself must not be displaced")
+		}
+	})
 
-	result := ProcessAppInstanceId(ctx, store, nil, contexts)
-	if result != appId {
-		t.Errorf("Expected AppInstanceId %x, got %x", appId, result)
-	}
+	t.Run("claiming connection with no client identity displaces nothing", func(t *testing.T) {
+		e := newAppInstanceEnv(t)
+		// The other side of the identity gate: a connection carrying no
+		// ClientGuid cannot be distinguished from the incumbent's client, so it
+		// displaces nothing rather than everything.
+		e.persist(t, "victim", "victim.txt", e.file(t, "victim.txt", 0o644), incumbent)
 
-	// Verify old handles were force-closed (deleted from store)
-	h1, _ := store.GetDurableHandle(ctx, "old-001")
-	h2, _ := store.GetDurableHandle(ctx, "old-002")
-	if h1 != nil {
-		t.Error("Expected old-001 to be deleted")
-	}
-	if h2 != nil {
-		t.Error("Expected old-002 to be deleted")
-	}
+		e.claim([16]byte{})
+		if !e.survives(t, "victim") {
+			t.Error("a connection with no ClientGuid must not displace another client's open")
+		}
+	})
+
+	t.Run("handle with no recorded client displaces nothing", func(t *testing.T) {
+		e := newAppInstanceEnv(t)
+		// A row written before the ClientGUID field was captured attributes the
+		// open to no client, so the different-client condition cannot be
+		// evaluated for it and it is left alone.
+		e.persist(t, "legacy", "legacy.txt", e.file(t, "legacy.txt", 0o644), [16]byte{})
+
+		e.claim(claimant)
+		if !e.survives(t, "legacy") {
+			t.Error("an open with no recorded ClientGuid must not be displaced")
+		}
+	})
+
+	t.Run("handle with no recorded file displaces nothing", func(t *testing.T) {
+		e := newAppInstanceEnv(t)
+		e.persist(t, "unresolvable", "gone.txt", nil, incumbent)
+
+		e.claim(claimant)
+		if !e.survives(t, "unresolvable") {
+			t.Error("access that cannot be established must leave the handle alone")
+		}
+	})
+}
+
+// TestProcessAppInstanceId_LiveOpenGates mirrors the persisted-handle gates on
+// the live-open path: an open still present in Handler.files is displaced only
+// when it belongs to another client and the requester can read its file.
+func TestProcessAppInstanceId_LiveOpenGates(t *testing.T) {
+	claimant := [16]byte{0x11}
+	incumbent := [16]byte{0x22}
+
+	t.Run("different client with read access displaces", func(t *testing.T) {
+		e := newAppInstanceEnv(t)
+		fileID := e.live(e.file(t, "live.txt", 0o644), incumbent)
+
+		e.claim(claimant)
+		if _, ok := e.h.GetOpenFile(fileID); ok {
+			t.Error("a different client that can read the file must displace the live open")
+		}
+	})
+
+	t.Run("requester without read access displaces nothing", func(t *testing.T) {
+		e := newAppInstanceEnv(t)
+		fileID := e.live(e.file(t, "live.txt", 0o600), incumbent)
+
+		e.claim(claimant)
+		if _, ok := e.h.GetOpenFile(fileID); !ok {
+			t.Error("a requester with no read access on the file must not displace the live open")
+		}
+	})
+
+	t.Run("same client displaces nothing", func(t *testing.T) {
+		e := newAppInstanceEnv(t)
+		fileID := e.live(e.file(t, "live.txt", 0o644), claimant)
+
+		e.claim(claimant)
+		if _, ok := e.h.GetOpenFile(fileID); !ok {
+			t.Error("an open belonging to the claiming client itself must not be displaced")
+		}
+	})
 }
 
 // TestProcessDurableReconnectContext_OriginalFileIDRestored locks in the
@@ -2438,6 +2647,7 @@ func TestProcessAppInstanceId_ReleasesLocksOnPersistedHandle(t *testing.T) {
 		OriginalFileID: origFileID, // full FileID — lock owner key
 		MetadataHandle: fileHandle,
 		AppInstanceId:  appID,
+		ClientGUID:     [16]byte{0x22},
 		ShareName:      smbCtx.ShareName,
 		Path:           "/locked.txt",
 		DisconnectedAt: time.Now(),
@@ -2454,7 +2664,8 @@ func TestProcessAppInstanceId_ReleasesLocksOnPersistedHandle(t *testing.T) {
 
 	// Call ProcessAppInstanceId — this should displace the persisted handle
 	// and release its byte-range lock.
-	ProcessAppInstanceId(context.Background(), h.DurableStore, h, newOpenCtxs)
+	ProcessAppInstanceId(context.Background(), h.DurableStore, h, newOpenCtxs,
+		rootAuthCtx(), [16]byte{0x11})
 
 	// The persisted handle must have been deleted.
 	remaining, _ := mock.GetDurableHandle(context.Background(), "test-handle")
@@ -2468,4 +2679,224 @@ func TestProcessAppInstanceId_ReleasesLocksOnPersistedHandle(t *testing.T) {
 			t.Errorf("lock under openID %q still present after ProcessAppInstanceId — UnlockAllForOpen not called correctly", openID)
 		}
 	}
+}
+
+// TestSameOrUnknownClient_UnknownOnEitherSide pins the fail-closed rule the
+// AppInstanceId displacement check rests on. The predicate decides whether an
+// open can be *shown* to belong to a client other than the requesting one, and
+// its caller displaces the open only when it can. Both halves of that
+// comparison have to be known for the answer to mean anything: a zero on either
+// side is an absent identity, not a distinct one.
+//
+// The live half is the one that bites. A connection with no crypto state
+// carries no ClientGuid, and reading its zero as "not the recorded client"
+// hands a request whose own identity cannot be established the power to
+// force-close an open that demonstrably belongs to somebody else.
+func TestSameOrUnknownClient_UnknownOnEitherSide(t *testing.T) {
+	alice := [16]byte{0xA1}
+	bob := [16]byte{0xB0}
+	var unknown [16]byte
+
+	for _, tc := range []struct {
+		name              string
+		recorded, conn    [16]byte
+		wantSameOrUnknown bool
+		why               string
+	}{
+		{"same client", alice, alice, true, "one client never displaces its own open"},
+		{"different clients", alice, bob, false, "the only case a displacement may proceed on"},
+		{"recorded unknown", unknown, alice, true, "an open recorded before the field was captured names no client"},
+		{"connection unknown", alice, unknown, true, "a connection with no crypto state names no client either"},
+		{"both unknown", unknown, unknown, true, "nothing is known about either side"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sameOrUnknownClient(tc.recorded, tc.conn); got != tc.wantSameOrUnknown {
+				t.Errorf("sameOrUnknownClient(%x, %x) = %v, want %v — %s",
+					tc.recorded[:1], tc.conn[:1], got, tc.wantSameOrUnknown, tc.why)
+			}
+		})
+	}
+}
+
+// TestProcessAppInstanceId_UnidentifiedContextDisplacesNothing pins the
+// authorizing half of the fail-closed rule, the counterpart to the recorded and
+// connection ClientGuid checks. Displacement is authorized by asking whether the
+// claiming user can read the file, and ComputeMaximalAccess answers that for a
+// context with no identity the way it answers for any "other" principal — which
+// on a world-readable file is yes. Testing only that an AuthContext is present
+// therefore let a request that was never identified force-close another client's
+// open on any 0o644 file, which is most of them.
+func TestProcessAppInstanceId_UnidentifiedContextDisplacesNothing(t *testing.T) {
+	incumbent := [16]byte{0x22}
+	claimant := [16]byte{0x11}
+
+	for _, tc := range []struct {
+		name    string
+		authCtx *metadata.AuthContext
+	}{
+		{"no context at all", nil},
+		{"context carrying no identity", &metadata.AuthContext{Context: context.Background()}},
+		{"identity carrying no UID", &metadata.AuthContext{
+			Context: context.Background(), Identity: &metadata.Identity{},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newAppInstanceEnv(t)
+			// 0o644: world-readable, so the maximal-access condition is
+			// satisfied for an anonymous principal and only the identity gate
+			// stands between this caller and the incumbent's open.
+			fileID := e.live(e.file(t, "live.txt", 0o644), incumbent)
+
+			e.claimAs(claimant, tc.authCtx)
+
+			if _, ok := e.h.GetOpenFile(fileID); !ok {
+				t.Error("an unidentified request displaced another client's open on a world-readable file")
+			}
+		})
+	}
+}
+
+// claimTrackingStore records how the failover retires a persisted row, and can
+// simulate a reconnect that claimed the row first by making the claim come back
+// empty.
+type claimTrackingStore struct {
+	lock.DurableHandleStore
+	stolen       map[string]bool
+	consumeCalls []string
+	deleteCalls  []string
+}
+
+func (s *claimTrackingStore) ConsumeDurableHandle(ctx context.Context, id string) (*lock.PersistedDurableHandle, error) {
+	s.consumeCalls = append(s.consumeCalls, id)
+	if s.stolen[id] {
+		// What a reconnect that got there first leaves behind: the row is gone
+		// and this caller has no claim on it.
+		return nil, nil
+	}
+	return s.DurableHandleStore.ConsumeDurableHandle(ctx, id)
+}
+
+func (s *claimTrackingStore) DeleteDurableHandle(ctx context.Context, id string) error {
+	s.deleteCalls = append(s.deleteCalls, id)
+	return s.DurableHandleStore.DeleteDurableHandle(ctx, id)
+}
+
+// claimThrough runs the failover against a caller-supplied durable store, so a
+// test can watch how it retires a row.
+func claimThrough(t *testing.T, e *appInstanceEnv, store lock.DurableHandleStore, clientGUID [16]byte) {
+	t.Helper()
+	uid, gid := uint32(4242), uint32(4242)
+	ProcessAppInstanceId(context.Background(), store, e.h, appInstanceCtxs(e.appID),
+		&metadata.AuthContext{
+			Context:  context.Background(),
+			Identity: &metadata.Identity{UID: &uid, GID: &gid},
+		}, clientGUID)
+}
+
+// TestProcessAppInstanceId_ClaimsThePersistedRowBeforeCleaningItUp pins the
+// seam that decides whether the failover may act on a persisted handle at all.
+// Between listing the rows by AppInstanceId and tearing one down, a DHnC/DH2C
+// reconnect can take that row and restore the open with its byte-range locks;
+// cleanup driven off the listing would then release locks belonging to a live
+// handle while its own delete removed nothing. Claiming atomically is the whole
+// defence, so this asserts the claim happens and that losing it stops the
+// teardown — not the lock release itself, which the claim is what gates.
+func TestProcessAppInstanceId_ClaimsThePersistedRowBeforeCleaningItUp(t *testing.T) {
+	var otherClient [16]byte
+	otherClient[0] = 0x11
+	var connClient [16]byte
+	connClient[0] = 0x22
+
+	t.Run("the row it claims is the one it retires", func(t *testing.T) {
+		e := newAppInstanceEnv(t)
+		handle := e.file(t, "claimed.txt", 0o666)
+		e.persist(t, "h1", "/claimed.txt", handle, otherClient)
+
+		tracking := &claimTrackingStore{DurableHandleStore: e.store, stolen: map[string]bool{}}
+		e.h.DurableStore = tracking
+		claimThrough(t, e, tracking, connClient)
+
+		if len(tracking.consumeCalls) != 1 || tracking.consumeCalls[0] != "h1" {
+			t.Errorf("the failover did not claim the row it displaced: consume calls %v", tracking.consumeCalls)
+		}
+		if len(tracking.deleteCalls) != 0 {
+			t.Errorf("the row was retired by an unconditional delete rather than a claim: %v", tracking.deleteCalls)
+		}
+		if e.survives(t, "h1") {
+			t.Error("the displaced row is still in the store")
+		}
+	})
+
+	t.Run("a row claimed elsewhere is left alone", func(t *testing.T) {
+		e := newAppInstanceEnv(t)
+		handle := e.file(t, "reconnected.txt", 0o666)
+		e.persist(t, "h1", "/reconnected.txt", handle, otherClient)
+
+		tracking := &claimTrackingStore{DurableHandleStore: e.store, stolen: map[string]bool{"h1": true}}
+		e.h.DurableStore = tracking
+		claimThrough(t, e, tracking, connClient)
+
+		if len(tracking.consumeCalls) != 1 {
+			t.Errorf("expected exactly one claim attempt, got %v", tracking.consumeCalls)
+		}
+		if len(tracking.deleteCalls) != 0 {
+			t.Errorf("the failover deleted a row it had not claimed: %v", tracking.deleteCalls)
+		}
+	})
+}
+
+// TestProcessAppInstanceId_AuthorizesThroughTheDACL covers the branch the other
+// failover tests never reach. They create mode-only files, so they exercise the
+// POSIX fallback inside ComputeMaximalAccess and leave the ACL wiring untested —
+// on a gate whose entire job is deciding whether a cleartext AppInstanceId may
+// force another client's open closed. A regression there would leave these tests
+// green while displacing an open on a file the requester cannot read.
+//
+// Both files carry mode 0o666, so POSIX alone would answer "readable" for
+// either; only the DACL tells them apart.
+func TestProcessAppInstanceId_AuthorizesThroughTheDACL(t *testing.T) {
+	var otherClient [16]byte
+	otherClient[0] = 0x11
+	var connClient [16]byte
+	connClient[0] = 0x22
+
+	readable := &acl.ACL{ACEs: []acl.ACE{{
+		Type: acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
+		Who:  "EVERYONE@",
+		// The whole bundle HasMaximalReadAccess requires (accessMaskPosixRead):
+		// dropping READ_NAMED_ATTRS alone is enough to fail the gate, which is
+		// the gate erring closed rather than a defect.
+		AccessMask: acl.ACE4_READ_DATA | acl.ACE4_READ_NAMED_ATTRS | acl.ACE4_READ_ATTRIBUTES |
+			acl.ACE4_READ_ACL | acl.ACE4_SYNCHRONIZE,
+	}}}
+	unreadable := &acl.ACL{ACEs: []acl.ACE{{
+		Type:       acl.ACE4_ACCESS_DENIED_ACE_TYPE,
+		Who:        "EVERYONE@",
+		AccessMask: acl.ACE4_READ_DATA,
+	}}}
+
+	t.Run("an allow-read DACL authorizes the displacement", func(t *testing.T) {
+		e := newAppInstanceEnv(t)
+		handle := e.aclFile(t, "acl_readable.txt", readable)
+		e.persist(t, "h1", "/acl_readable.txt", handle, otherClient)
+
+		e.claim(connClient)
+
+		if e.survives(t, "h1") {
+			t.Error("an open on a file the requester may read was not displaced")
+		}
+	})
+
+	t.Run("a deny-read DACL refuses it, whatever the mode bits say", func(t *testing.T) {
+		e := newAppInstanceEnv(t)
+		handle := e.aclFile(t, "acl_unreadable.txt", unreadable)
+		e.persist(t, "h2", "/acl_unreadable.txt", handle, otherClient)
+
+		e.claim(connClient)
+
+		if !e.survives(t, "h2") {
+			t.Error("an open on a file the requester cannot read was displaced: the failover " +
+				"authorized on mode bits a DACL overrides")
+		}
+	})
 }

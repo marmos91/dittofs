@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -895,6 +896,43 @@ func validateAndRestore(
 	return restored, types.StatusSuccess, nil
 }
 
+// sameOrUnknownClient reports whether an open recorded against `recorded`
+// cannot be shown to belong to a client other than `conn`. The identity
+// condition needs both halves to be known, and a zero ClientGuid on either side
+// means it cannot be evaluated — so either one makes this unknown, and an open
+// it describes is never displaced.
+//
+// A zero `recorded` predates the field being captured and attributes the open
+// to no client at all. A zero `conn` is the live counterpart: a connection with
+// no crypto state carries no ClientGuid, and reading that as "not the recorded
+// client" would let a request whose own identity cannot be established
+// force-close an open that demonstrably belongs to someone else — the opposite
+// of the fail-closed rule the displacement check is here to enforce.
+// decision: `recorded` is the ClientGuid that established the open, and the
+// spec's fourth condition names a different value —
+// Open.Session.Connection.ClientGuid, the GUID of the connection the open's
+// session is on now (MS-SMB2 3.3.5.9.13). The two diverge only for an open that
+// reconnected from a different ClientGuid, and this server allows that on a
+// non-lease DHnC/DH2C reconnect: the ClientGuid gate on reconnect is applied to
+// lease-backed handles alone, because a lease is scoped per (ClientGuid,
+// LeaseKey) and the smbtorture reopen ladders pin that. For an open that never
+// moved clients — every open in the durable reconnect tests, and every open a
+// single-client application instance holds — the two values are the same and
+// this condition is the spec's. Withdraw it when reconnect gates on ClientGuid
+// for the whole 3.x family per 3.3.5.9.7, which is the change that makes the
+// establishing GUID and the current one the same value again; until then the
+// gap is that a displaced-and-reconnected open is judged by where it came from.
+func sameOrUnknownClient(recorded, conn [16]byte) bool {
+	var unknown [16]byte
+	return recorded == conn || recorded == unknown || conn == unknown
+}
+
+// durableCleanupTimeout bounds the cleanup that follows a claimed durable row.
+// The row is gone by then, so nothing retries this — long enough for a cache
+// flush and a lock release, short enough that a CREATE cannot be held open by a
+// store that has stopped answering.
+const durableCleanupTimeout = 30 * time.Second
+
 // ProcessAppInstanceId processes the SMB2_CREATE_APP_INSTANCE_ID context.
 // Per MS-SMB2 §3.3.5.9.13, when a CREATE arrives carrying an AppInstanceId
 // matching an existing open's AppInstanceId, the server MUST force-close the
@@ -909,12 +947,23 @@ func validateAndRestore(
 //     Subsequent CLOSE on the tree1 handle MUST return STATUS_FILE_CLOSED —
 //     this requires the live handle to be removed from Handler.files.
 //
+// An AppInstanceId match alone never displaces anything. Two further
+// conditions gate the forced close:
+//
+//   - The open must belong to a different client: only an open whose recorded
+//     ClientGuid differs from connClientGUID — the GUID of the connection
+//     carrying this CREATE — is a candidate, so a client reusing its own
+//     AppInstanceId never closes its own handles.
+//   - The requester, as authCtx, must be able to read the matched open's file.
+//
 // Returns the parsed AppInstanceId (zero value if not present or zero).
 func ProcessAppInstanceId(
 	ctx context.Context,
 	durableStore lock.DurableHandleStore,
 	handler *Handler,
 	contexts []CreateContext,
+	authCtx *metadata.AuthContext,
+	connClientGUID [16]byte,
 ) [16]byte {
 	appCtx := FindCreateContext(contexts, AppInstanceIdTag)
 	if appCtx == nil {
@@ -931,49 +980,184 @@ func ProcessAppInstanceId(
 		return [16]byte{}
 	}
 
+	// decision: GENERIC_READ on the matched open's own file is what authorizes
+	// closing it — never the AppInstanceId match on its own. An AppInstanceId
+	// is an application-instance identifier that travels in the clear in every
+	// CREATE that carries one, so anyone who reads one off the wire could
+	// otherwise close a handle they have no access to and drop its persisted
+	// durable state with it. A requester whose access cannot be established at
+	// all — no identity, no metadata service, no recorded metadata handle, or a
+	// store that declines to answer — displaces nothing; the claiming CREATE
+	// then contends with the surviving open the way any other open would, which
+	// is a degraded failover rather than someone else's handle closed out from
+	// under them.
+	//
+	// The check and the close are separate steps, so clearing an open is not
+	// enough on its own: the close below re-reads the open's handle under its
+	// lock and declines any open that no longer holds the file the check
+	// cleared. That narrows the gap to the span between the re-check returning
+	// and the close helper's own unlocked reads of the same field; it does not
+	// erase it, and this comment does not claim it does. What closes it
+	// completely is authorizing against the file this CREATE names rather than
+	// against each matched open's file — which is what §3.3.5.9.13 actually
+	// says, and which becomes equivalent once the path and share conditions
+	// below are implemented, because the two files are then the same file.
+	// Until then the residual gap moves an open's own reparse, never another
+	// client's: only SET_REPARSE_POINT on that open reassigns the field, and
+	// only the open's own holder can issue it, so a requester cannot steer it.
+	//
+	// GENERIC_READ is the right MS-SMB2 §3.3.5.9.13 names for this gate, and
+	// only that section naming a different one would overturn it.
+	//
+	// Ceiling: this is partial authorization, not the whole of §3.3.5.9.13. The
+	// section narrows the match set by target path name and by share before any
+	// of the above applies, and neither narrowing exists here yet — so an
+	// application that reuses one AppInstanceId across several files still
+	// force-closes every open carrying it that the requester can read, not only
+	// the open of the file this CREATE names. Read access bounds the damage; it
+	// does not confine it to the claimed file. It also protects only files the
+	// requester genuinely cannot read, so on a world-readable share the gate
+	// refuses almost nobody. Adding the path and share conditions is what
+	// closes both gaps.
+	var metaSvc *metadata.Service
+	if handler != nil && handler.Registry != nil {
+		metaSvc = handler.Registry.GetMetadataService()
+	}
+	// A connection with no ClientGuid of its own cannot be told apart from any
+	// other client, so the different-client condition is unevaluable in this
+	// direction too and nothing is displaced. Without this, a context carrying
+	// no crypto state compares as different from every recorded GUID and would
+	// force-close other clients' opens — the same unknown-identity hole the
+	// recorded side closes, facing the other way.
+	//
+	// The identity is required to be established, not merely present:
+	// ComputeMaximalAccess treats a nil Identity or UID as an anonymous
+	// "other" principal, which carries read access on any world-readable file.
+	// A context with no UID would therefore satisfy the maximal-access
+	// condition on most files and displace an open without ever having been
+	// identified — the same unknown-identity hole again, now on the authorizing
+	// side rather than the matching side.
+	if metaSvc == nil || connClientGUID == ([16]byte{}) {
+		return appId
+	}
+	if authCtx == nil || authCtx.Identity == nil || authCtx.Identity.UID == nil {
+		logger.Debug("ProcessAppInstanceId: no established identity on the claiming context, displacing nothing",
+			"appInstanceId", fmt.Sprintf("%x", appId))
+		return appId
+	}
+	mayDisplace := func(metadataHandle []byte) bool {
+		if len(metadataHandle) == 0 {
+			return false
+		}
+		// GetFileForRead, not GetFile: the check below reads attributes and
+		// ACL only, and on the badger backend GetFile derives File.Path by
+		// walking parent edges — a walk per candidate, on the synchronous
+		// CREATE path.
+		file, err := metaSvc.GetFileForRead(ctx, metadataHandle)
+		if err != nil || file == nil {
+			logger.Debug("ProcessAppInstanceId: cannot resolve the matched open's file, leaving it open",
+				"appInstanceId", fmt.Sprintf("%x", appId), "error", err)
+			return false
+		}
+		return metaSvc.HasMaximalReadAccess(file, authCtx)
+	}
+
 	// 1) Force-close live opens with matching AppInstanceId. Uses
 	// closeFilesWithFilter with isDisconnect=false so the open is fully
 	// closed (locks released, caches flushed, file removed from
 	// Handler.files) — NOT persisted into the durable store, since the new
 	// AppInstanceId open is claiming this handle.
-	if handler != nil {
-		// Snapshot the lease/oplock identity of each displaced open BEFORE the
-		// force-close so we can release its LeaseManager record afterwards.
-		// closeFilesWithFilter removes the open from Handler.files but does NOT
-		// release the per-open lease/oplock (that is the session-wide
-		// releaseSessionLeasesAndNotifies path, which the AppInstanceId failover
-		// does not run). Without this release, the synthetic batch-oplock record
-		// of the displaced open lingers in the LeaseManager, and the *new* open
-		// (which immediately follows in the CREATE path) parks on a break of that
-		// orphaned oplock until the oplock timeout — and the AppInstanceId
-		// failover must be silent anyway (MS-SMB2 §3.3.5.9.13; smbtorture
-		// smb2.durable-v2-open.app-instance asserts break_info.count == 0).
-		type displacedLease struct {
-			fileHandle lock.FileHandle
-			leaseKey   [16]byte
-			shareName  string
-			isLease    bool
-		}
-		var displaced []displacedLease
-		if handler.LeaseManager != nil {
-			handler.files.Range(func(_, value any) bool {
-				f := value.(*OpenFile)
-				if f.AppInstanceId == appId && f.LeaseKey != ([16]byte{}) && len(f.MetadataHandle) > 0 {
-					displaced = append(displaced, displacedLease{
-						fileHandle: lock.FileHandle(f.MetadataHandle),
-						leaseKey:   f.LeaseKey,
-						shareName:  f.ShareName,
-						isLease:    f.OplockLevel == OplockLevelLease,
-					})
-				}
-				return true
+	//
+	// Candidates are collected in one pass over the open-file table and
+	// authorized afterwards: mayDisplace reads the metadata store, which the
+	// OpenFile concurrency contract forbids inside files.Range.
+	//
+	// The snapshot also carries each candidate's lease/oplock identity, taken
+	// BEFORE the force-close, because the creates parked on it are signalled
+	// afterwards and the open it names is gone by then. The record itself is
+	// released by closeFilesWithFilter, which runs releaseHandleLeaseRecord for
+	// every open it removes; only the signal is left here. Without it the *new*
+	// open, which immediately follows in the CREATE path, waits on a break of
+	// the displaced open's oplock until the oplock timeout — and the
+	// AppInstanceId failover must be silent anyway (MS-SMB2 §3.3.5.9.13;
+	// smbtorture smb2.durable-v2-open.app-instance asserts
+	// break_info.count == 0).
+	type candidate struct {
+		fileID     [16]byte
+		metaHandle []byte
+		leaseKey   [16]byte
+		shareName  string
+	}
+	var candidates []candidate
+	handler.files.Range(func(_, value any) bool {
+		f := value.(*OpenFile)
+		if f.AppInstanceId == appId && !sameOrUnknownClient(f.ClientGUID, connClientGUID) {
+			// MetadataHandle is reassigned under the open's lock when
+			// SET_REPARSE_POINT turns a placeholder into a symlink, so copy it
+			// under that lock rather than treating it as immutable: the handle
+			// authorized below has to be the one the close acts on.
+			f.mu.RLock()
+			metaHandle := f.MetadataHandle
+			f.mu.RUnlock()
+			candidates = append(candidates, candidate{
+				fileID:     f.FileID,
+				metaHandle: metaHandle,
+				leaseKey:   f.LeaseKey,
+				shareName:  f.ShareName,
 			})
 		}
+		return true
+	})
 
+	// authorized maps each cleared open's FileID to the metadata handle the
+	// access check was made against, so the close can confirm it is still
+	// acting on that same file.
+	authorized := make(map[[16]byte][]byte, len(candidates))
+	for _, c := range candidates {
+		if !mayDisplace(c.metaHandle) {
+			logger.Debug("ProcessAppInstanceId: requester cannot read the matched open's file, not displacing it",
+				"appInstanceId", fmt.Sprintf("%x", appId),
+				"shareName", c.shareName)
+			continue
+		}
+		authorized[c.fileID] = c.metaHandle
+	}
+
+	closed := make(map[[16]byte]bool, len(authorized))
+	if len(authorized) > 0 {
 		liveClosed := handler.closeFilesWithFilter(
 			ctx,
 			0, // no specific sessionID — match across sessions
-			func(f *OpenFile) bool { return f.AppInstanceId == appId },
+			func(f *OpenFile) bool {
+				want, ok := authorized[f.FileID]
+				if !ok {
+					return false
+				}
+				// Re-test the two conditions that selected this open, rather
+				// than trusting the FileID to still mean what it meant when the
+				// candidate was taken. A durable reconnect restores an open
+				// under its original FileID, so the entry in this table can
+				// name an open that left and came back — one this failover was
+				// never entitled to close.
+				if f.AppInstanceId != appId || sameOrUnknownClient(f.ClientGUID, connClientGUID) {
+					logger.Debug("ProcessAppInstanceId: matched open no longer meets the failover conditions, not displacing it",
+						"appInstanceId", fmt.Sprintf("%x", appId))
+					return false
+				}
+				// Confirm the open still holds the file the access check
+				// cleared. A SET_REPARSE_POINT that swapped this open's
+				// metadata handle in the meantime means read access was
+				// established against a different file, so this open is left
+				// alone rather than closed on an authorization that no longer
+				// describes it.
+				if current := f.Handle(); !bytes.Equal(current, want) {
+					logger.Debug("ProcessAppInstanceId: matched open changed file since it was authorized, not displacing it",
+						"appInstanceId", fmt.Sprintf("%x", appId))
+					return false
+				}
+				closed[f.FileID] = true
+				return true
+			},
 			"ProcessAppInstanceId",
 			false, // explicit close, not transport disconnect
 		)
@@ -982,62 +1166,172 @@ func ProcessAppInstanceId(
 				"appInstanceId", fmt.Sprintf("%x", appId),
 				"count", liveClosed)
 		}
+	}
 
-		// Release the displaced opens' LeaseManager records (mirrors the
-		// explicit CLOSE path in close.go) so no orphaned oplock/lease lingers
-		// to break the claiming open.
-		for _, d := range displaced {
-			if err := handler.LeaseManager.ReleaseLeaseForHandle(ctx, d.fileHandle, d.leaseKey, d.shareName); err != nil {
-				logger.Debug("ProcessAppInstanceId: failed to release displaced lease",
-					"leaseKey", fmt.Sprintf("%x", d.leaseKey), "error", err)
-			}
-			if !d.isLease {
-				handler.LeaseManager.UnregisterOplockFileID(d.leaseKey)
-			}
-			handler.LeaseManager.SignalParkedCreates(d.fileHandle, d.shareName)
+	// Wake the creates parked on each displaced open's lease. The lease record
+	// itself is already gone: closeFilesWithFilter runs releaseHandleLeaseRecord
+	// for every open it removed, which releases the record and unregisters the
+	// oplock file id. Repeating that here released it a second time and, worse,
+	// skipped that helper's "any other open on the same file shares this key"
+	// scan — so a displaced open sharing a lease key with one the filter
+	// declined tore the lease out from under the survivor that still held it.
+	// Signalling is the one step that helper does not do, and it is idempotent:
+	// a create woken while a sibling still holds the lease simply parks again.
+	for _, c := range candidates {
+		if !closed[c.fileID] || handler.LeaseManager == nil || c.leaseKey == ([16]byte{}) {
+			continue
 		}
+		handler.LeaseManager.SignalParkedCreates(lock.FileHandle(c.metaHandle), c.shareName)
 	}
 
 	// 2) Force-close persisted (disconnected) durable handles with matching
-	// AppInstanceId.
-	existing, err := durableStore.GetDurableHandlesByAppInstanceId(ctx, appId)
-	if err != nil {
-		logger.Warn("ProcessAppInstanceId: store error", "error", err)
+	// AppInstanceId, under the same two gates as the live opens above.
+	//
+	// Under durablePurgeMu, the same mutex the disconnect-persist and the
+	// create-path purge scans take (handler.go). This is a third read-then-
+	// mutate window on the durable store, and without it a disconnect can land
+	// its PutDurableHandle between the list below and the claims that follow,
+	// leaving a row this failover was supposed to displace. Unconditional here
+	// rather than gated on disconnectedByFile the way the purge scans are: this
+	// runs only for a CREATE carrying an AppInstanceId context, so it is not on
+	// any writer's hot path.
+	//
+	// decision: the mutex spans the list and the claims only — not the live-open
+	// close above it, and not the cleanup below. Holding it across either would
+	// put a blocking store round inside it, and across the close it would also
+	// invert the order used by paths that already close opens while holding
+	// store locks. What stays
+	// open is a disconnect that completes after the list: its row is a match this
+	// failover never saw, and it survives as a live-locked entry until the
+	// scavenger evicts it. Withdraw this if that row ever becomes reconnectable
+	// by the displaced client, which is the thing the failover exists to prevent.
+	// Two phases, because the mutex is only needed to make the list-and-claim
+	// window atomic. Holding it across the cleanup below would put a blocking
+	// block-store flush inside it and serialize every durable disconnect
+	// persist in the server behind one AppInstanceId CREATE. Once a row is
+	// claimed it belongs to this call and nothing else can reach it, so the
+	// cleanup needs no lock at all.
+	// Authorized BEFORE the mutex. mayDisplace reads the metadata store and
+	// evaluates an ACL per row, and durablePurgeMu is process-wide: holding it
+	// across one store round-trip per candidate blocks every disconnect persist
+	// and every WRITE/SET_INFO purge window in the server for the duration. The
+	// listing is repeated inside the lock and only rows that were authorized out
+	// here are claimed, so a row that appears in between is left alone rather
+	// than displaced unauthorized.
+	preList, preErr := durableStore.GetDurableHandlesByAppInstanceId(ctx, appId)
+	if preErr != nil {
+		logger.Warn("ProcessAppInstanceId: store error", "error", preErr)
 		return appId
 	}
-
-	if len(existing) == 0 {
-		return appId
+	persistedAuthorized := make(map[string]bool, len(preList))
+	for _, h := range preList {
+		if sameOrUnknownClient(h.ClientGUID, connClientGUID) {
+			continue
+		}
+		persistedAuthorized[h.ID] = mayDisplace(h.MetadataHandle)
 	}
 
-	logger.Debug("ProcessAppInstanceId: force-closing persisted handles",
-		"appInstanceId", fmt.Sprintf("%x", appId),
-		"count", len(existing))
+	claimedRows := func() []*lock.PersistedDurableHandle {
+		handler.durablePurgeMu.Lock()
+		defer handler.durablePurgeMu.Unlock()
 
-	for _, h := range existing {
-		if handler != nil {
-			cleanupFile := (&OpenFile{
-				FileID:         h.FileID,
-				ShareName:      h.ShareName,
-				MetadataHandle: h.MetadataHandle,
-				PayloadID:      metadata.PayloadID(h.PayloadID),
-			}).WithName(OpenName{Path: h.Path})
-			handler.flushFileCache(ctx, cleanupFile)
-			if len(h.MetadataHandle) > 0 && handler.Registry != nil {
-				if metaSvc := handler.Registry.GetMetadataService(); metaSvc != nil {
-					if err := metaSvc.UnlockAllForOpen(ctx, h.MetadataHandle, h.LockOpenID()); err != nil {
-						logger.Debug("ProcessAppInstanceId: failed to release locks",
-							"id", h.ID, "path", h.Path, "error", err)
-					}
-				}
+		existing, err := durableStore.GetDurableHandlesByAppInstanceId(ctx, appId)
+		if err != nil {
+			logger.Warn("ProcessAppInstanceId: store error", "error", err)
+			return nil
+		}
+
+		var claimed []*lock.PersistedDurableHandle
+		for _, h := range existing {
+			if sameOrUnknownClient(h.ClientGUID, connClientGUID) || !persistedAuthorized[h.ID] {
+				continue
 			}
+			// decision: the row is destroyed before its cleanup runs, so a crash
+			// in between loses it while its byte-range locks remain. The other
+			// order is worse: cleaning up first and deleting after leaves a
+			// window in which a reconnect restores the open — and then the
+			// cleanup strips locks from a LIVE handle while the delete removes
+			// nothing, which damages a working client silently. This way the
+			// residue is orphaned locks whose owner is gone, and lock recovery
+			// releases those at the end of the grace period on the next boot.
+			// Withdraw it if a claimed row ever carries state that grace does
+			// not reconcile.
+			//
+			// Claim the row before acting on it, the way reconnect claims one.
+			// Between the listing above and this point a DHnC/DH2C reconnect
+			// can take the same row and restore the open, byte-range locks
+			// included — and releasing locks off the listed snapshot would then
+			// strip them from a live handle while the delete quietly removed
+			// nothing. A claim that comes back empty means someone else got
+			// there first, which is the whole answer: there is nothing left
+			// here to close.
+			row, claimErr := durableStore.ConsumeDurableHandle(ctx, h.ID)
+			if claimErr != nil {
+				logger.Warn("ProcessAppInstanceId: failed to claim handle",
+					"handleID", h.ID, "error", claimErr)
+				continue
+			}
+			if row == nil {
+				logger.Debug("ProcessAppInstanceId: handle was claimed elsewhere before it could be displaced",
+					"handleID", h.ID)
+				continue
+			}
+			// decision: the disconnected-handle count is deliberately NOT
+			// adjusted here. Two attempts at reconciling it were both wrong, and
+			// the invariant says why (disconnected_state_machine.go): only the
+			// add side is load-bearing, an over-count costs one slow-path scan
+			// and then converges when a purge counts the survivors back, and an
+			// under-count makes hasDisconnectedHandles answer false for a file
+			// that has one — after which its locks survive every later scan.
+			//
+			// Decrementing on consume risks exactly that under-count: legacy
+			// rows with a zero DisconnectedAt were never counted, so subtracting
+			// for one takes a different row's, and the scavenger's own forget
+			// runs without this mutex. The phantom this leaves is the documented
+			// over-count, which is the safe direction. Withdraw only if a
+			// counted-rows invariant is ever enforced at the add side, so a
+			// decrement can be matched to something that was added.
+			claimed = append(claimed, row)
 		}
+		return claimed
+	}()
 
-		if delErr := durableStore.DeleteDurableHandle(ctx, h.ID); delErr != nil {
-			logger.Warn("ProcessAppInstanceId: failed to delete handle",
-				"handleID", h.ID,
-				"error", delErr)
+	persistedClosed := len(claimedRows)
+	if persistedClosed > 0 {
+		// Detached from the request, and bounded. The row is already gone, so
+		// there is nothing left for the scavenger to retry — a client that
+		// disconnects in this gap would otherwise have the cleanup abandoned on
+		// its context error and leave the displaced open's byte-range locks
+		// standing until the process restarts. The bound is because a cleanup
+		// that cannot finish must still not hold a CREATE open indefinitely.
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), durableCleanupTimeout)
+		defer cancel()
+
+		for _, claimed := range claimedRows {
+			cleanupFile := (&OpenFile{
+				FileID:         claimed.FileID,
+				ShareName:      claimed.ShareName,
+				MetadataHandle: claimed.MetadataHandle,
+				PayloadID:      metadata.PayloadID(claimed.PayloadID),
+			}).WithName(OpenName{Path: claimed.Path})
+			// Locks first. The row is already consumed, so nothing retries this
+			// cleanup — and a cache flush that spends the whole budget would
+			// leave UnlockAllForOpen with an expired context and the displaced
+			// open's byte-range locks standing until the process restarts,
+			// blocking later opens of that file. The flush losing its budget
+			// costs cached data on a handle that is gone; the unlock losing it
+			// costs every future opener.
+			if err := metaSvc.UnlockAllForOpen(cleanupCtx, claimed.MetadataHandle, claimed.LockOpenID()); err != nil {
+				logger.Debug("ProcessAppInstanceId: failed to release locks",
+					"id", claimed.ID, "path", claimed.Path, "error", err)
+			}
+			handler.flushFileCache(cleanupCtx, cleanupFile)
 		}
+	}
+	if persistedClosed > 0 {
+		logger.Debug("ProcessAppInstanceId: force-closed persisted handles",
+			"appInstanceId", fmt.Sprintf("%x", appId),
+			"count", persistedClosed)
 	}
 
 	return appId

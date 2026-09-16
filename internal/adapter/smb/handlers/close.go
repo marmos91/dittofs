@@ -685,6 +685,23 @@ func (h *Handler) releaseHandleLeaseRecord(ctx context.Context, openFile *OpenFi
 	if leaseKey == ([16]byte{}) {
 		return
 	}
+	h.releaseHandleLeaseRecordOn(ctx, openFile, openFile.Handle(), caller)
+}
+
+// releaseHandleLeaseRecordOn is releaseHandleLeaseRecord against a caller-supplied
+// metadata handle, for a teardown that authorized one earlier and must not act on
+// a different file by the time it gets here. One snapshot spans the sibling scan
+// and the release: deciding "no other open holds this key on this file" against
+// one handle and then releasing against another tears out a record a survivor
+// still holds, or leaves this open's behind.
+func (h *Handler) releaseHandleLeaseRecordOn(ctx context.Context, openFile *OpenFile, metaHandle []byte, caller string) {
+	if h.LeaseManager == nil {
+		return
+	}
+	leaseKey := openFile.LeaseKey
+	if leaseKey == ([16]byte{}) {
+		return
+	}
 
 	// Check if any other open on the SAME FILE shares this lease key.
 	// Two opens on the same file share one lease record (requestLeaseImpl
@@ -699,7 +716,7 @@ func (h *Handler) releaseHandleLeaseRecord(ctx context.Context, openFile *OpenFi
 		if other.LeaseKey != leaseKey {
 			return true
 		}
-		if bytes.Equal(other.MetadataHandle, openFile.MetadataHandle) {
+		if bytes.Equal(other.Handle(), metaHandle) {
 			hasOtherOpenSameFile = true
 			return false
 		}
@@ -714,7 +731,7 @@ func (h *Handler) releaseHandleLeaseRecord(ctx context.Context, openFile *OpenFi
 
 	// Last open on this file with this lease key — release only this handle's
 	// lease record. Other files sharing the key keep theirs.
-	if err := h.LeaseManager.ReleaseLeaseForHandle(ctx, lock.FileHandle(openFile.MetadataHandle), leaseKey, openFile.ShareName); err != nil {
+	if err := h.LeaseManager.ReleaseLeaseForHandle(ctx, lock.FileHandle(metaHandle), leaseKey, openFile.ShareName); err != nil {
 		logger.Debug(caller+": failed to release lease",
 			"path", openFile.Name().Path,
 			"leaseKey", fmt.Sprintf("%x", leaseKey),
