@@ -154,3 +154,49 @@ func TestDrainStartupWorkers_BoundsTheSettingsWatcherJoin(t *testing.T) {
 			"so the process cannot abandon a failed boot")
 	}
 }
+
+// TestSettingsWatcher_ConcurrentStopIsSafeAndJoins pins what makes it safe to
+// call Stop from both shutdown paths. Each of them bounds its own wait and keeps
+// running after it expires, so the two calls genuinely overlap — and an
+// unsynchronized check-then-close of stopCh is two goroutines racing to close
+// one channel, which panics the process during the shutdown meant to be orderly.
+//
+// Every caller must also come back joined: a second Stop that returns early
+// because the channel is already closed tells its caller the poll has finished
+// when it may still be in the store.
+//
+// What this test does NOT do is reliably reproduce the double close. That needs
+// two goroutines inside one select window, and eight racing calls do not hit it
+// dependably — so treat this as a smoke test for the joining contract, not as a
+// regression detector for the panic. The argument for the lock is that the code
+// is correct under concurrent callers by construction rather than by their
+// happening not to overlap, which they now do.
+func TestSettingsWatcher_ConcurrentStopIsSafeAndJoins(t *testing.T) {
+	w := NewSettingsWatcher(nil, time.Hour)
+	w.Start(context.Background())
+
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			w.Stop()
+		}()
+	}
+
+	done := make(chan struct{})
+	go func() { defer close(done); wg.Wait() }()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("concurrent Stop calls did not all return")
+	}
+
+	select {
+	case <-w.stopped:
+	default:
+		t.Error("Stop returned while the polling goroutine was still running: " +
+			"a caller that believes it joined will close the store under the poll")
+	}
+}
