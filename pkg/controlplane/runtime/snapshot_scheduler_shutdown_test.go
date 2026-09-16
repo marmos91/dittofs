@@ -382,3 +382,51 @@ func TestDrainStartupWorkers_AWedgedWatcherDoesNotSkipTheSnapshotDrain(t *testin
 			"so the store closes under a running tick")
 	}
 }
+
+// TestShutdownSnapshots_SchedulerJoinDoesNotSpendTheWholeBudget pins the inner
+// half of the budget split. drainStartupWorkers gives the snapshot side its own
+// window, but inside shutdownSnapshots the scheduler join and the goroutine
+// drain were still sharing one: a tick wedged in a store call that ignores
+// cancellation spent all of it, and the drain then ran under an expired context
+// and returned without waiting — the same defect one level in.
+//
+// With no in-flight snapshots the drain returns as soon as the scheduler join
+// does, so the elapsed time is the scheduler join's budget. Sharing spends the
+// caller's whole window; splitting spends half.
+func TestShutdownSnapshots_SchedulerJoinDoesNotSpendTheWholeBudget(t *testing.T) {
+	deps := &blockingSchedDeps{
+		entered:  make(chan struct{}),
+		release:  make(chan struct{}),
+		returned: make(chan struct{}),
+	}
+
+	rt := New(nil)
+	svc := snapshotsched.New(deps, time.Millisecond)
+	rt.mu.Lock()
+	rt.snapSchedSvc = svc
+	rt.mu.Unlock()
+	svc.Start(context.Background())
+
+	select {
+	case <-deps.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("scheduler never entered a tick")
+	}
+	// Never released: this tick is wedged for the whole of the shutdown.
+	defer close(deps.release)
+
+	const budget = 600 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+
+	start := time.Now()
+	rt.shutdownSnapshots(ctx)
+	elapsed := time.Since(start)
+
+	// Half the window plus slack, and well clear of the whole window.
+	if elapsed > budget*3/4 {
+		t.Fatalf("the scheduler join spent %v of a %v budget: it is sharing the window with "+
+			"the goroutine drain, so a wedged tick leaves the drain an expired context and it "+
+			"never waits at all", elapsed, budget)
+	}
+}
