@@ -348,6 +348,14 @@ func (r *Runtime) Shutdown(ctx context.Context) error {
 	if ts != nil {
 		ts.Stop()
 	}
+	// The settings watcher too, not only the scheduler: this is an exported
+	// shutdown, so a caller that never went through lifecycle.Serve reaches it
+	// here and closes the stores next. Stop is idempotent, so the lifecycle
+	// drain having already run costs nothing.
+	if r.settingsWatcher != nil {
+		r.settingsWatcher.Stop()
+	}
+
 	// The snapshot scheduler is stopped by shutdownSnapshots below, which is
 	// the seam the lifecycle drain also routes through.
 

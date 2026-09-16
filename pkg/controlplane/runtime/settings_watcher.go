@@ -60,6 +60,12 @@ type SettingsWatcher struct {
 	// stopping it: the caller then closes the store under a query that is still
 	// running, which is the outcome the join exists to prevent.
 	cancelPoll context.CancelFunc
+	// retired is set by Stop and cleared by nothing: a watcher told to stop must
+	// not be startable again by a Start that was already in flight. Without it
+	// a Stop that wins the mutex returns on the constructor's already-closed
+	// `stopped`, and the Start behind it then launches a goroutine no caller
+	// holds a handle to.
+	retired bool
 }
 
 // OnNFSSettingsChange registers a callback invoked whenever NFS settings change
@@ -122,12 +128,25 @@ func (w *SettingsWatcher) LoadInitial(ctx context.Context) error {
 func (w *SettingsWatcher) Start(ctx context.Context) {
 	// Re-create the channels as fresh, open channels. stopped was created
 	// already-closed (so Stop-before-Start is safe); the goroutine below will
-	// close it on exit. Resetting stopCh allows a Start→Stop→Start→Stop cycle.
+	// close it on exit.
+	//
+	// One way only: a watcher that has been stopped stays stopped. The restart
+	// this used to allow had no caller — lifecycle.serve starts one watcher once
+	// — and supporting it is what makes a Stop that wins the mutex unable to
+	// prevent the launch behind it.
 	// Derived, so Stop can cancel the polls without disturbing the caller's
 	// context — which on a startup error is still very much alive.
 	pollCtx, cancelPoll := context.WithCancel(ctx)
 
 	w.lifecycleMu.Lock()
+	if w.retired {
+		// A Stop got here first. Launching now would produce a poller that
+		// nothing can join, on a store the caller is about to close.
+		w.lifecycleMu.Unlock()
+		cancelPoll()
+		logger.Debug("Settings watcher not started: it was already stopped")
+		return
+	}
 	w.stopped = make(chan struct{})
 	w.stopCh = make(chan struct{})
 	w.cancelPoll = cancelPoll
@@ -161,6 +180,7 @@ func (w *SettingsWatcher) Start(ctx context.Context) {
 // Stop signals the polling goroutine to stop and waits for it to exit.
 func (w *SettingsWatcher) Stop() {
 	w.lifecycleMu.Lock()
+	w.retired = true
 	stopCh, stopped, cancelPoll := w.stopCh, w.stopped, w.cancelPoll
 	select {
 	case <-stopCh:

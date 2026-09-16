@@ -248,3 +248,33 @@ func TestSettingsWatcher_StopCancelsAPollInFlight(t *testing.T) {
 			"that bounds this wait closes the store while that query is still running")
 	}
 }
+
+// TestSettingsWatcher_StartAfterStopDoesNotLaunch pins the one-way transition.
+// Start and Stop can race: if Stop wins the mutex it closes the constructor's
+// stopCh and returns on the already-closed stopped channel, and a Start behind
+// it would then install fresh channels and launch a poller no caller holds a
+// handle to — against a control-plane store the caller is about to close.
+func TestSettingsWatcher_StartAfterStopDoesNotLaunch(t *testing.T) {
+	blocked := &blockedSettingsStore{entered: make(chan struct{})}
+	w := NewSettingsWatcher(blocked, time.Millisecond)
+
+	w.Stop()
+	w.Start(context.Background())
+
+	// If Start launched anything, it would reach the store.
+	select {
+	case <-blocked.entered:
+		t.Fatal("a watcher that had already been stopped started polling: nothing can join it now")
+	case <-time.After(250 * time.Millisecond):
+	}
+
+	// And a second Stop still returns rather than waiting on a goroutine that
+	// was never launched.
+	done := make(chan struct{})
+	go func() { defer close(done); w.Stop() }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop blocked after a refused Start")
+	}
+}
