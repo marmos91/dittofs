@@ -332,6 +332,7 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 	// this function, so a bump the write does not carry is lost outright.
 	atimeSet := !file.Atime.Equal(pre.Atime)
 	mtimeSet := !file.Mtime.Equal(pre.Mtime)
+	ctimeSet := !file.Ctime.Equal(pre.Ctime)
 	creationTimeSet := false
 
 	// Capture pre-op attributes: a copy of the file as observed by this
@@ -447,21 +448,28 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 	eaAuthorizedByHandle := ctx.EAAuthorizedByHandle &&
 		onlyEAMutations && !acl.HasExplicitDeny(file.ACL)
 
-	// True when the ownership gate below is the only thing that authorizes this
-	// call, and so the only decision the write closure has to recheck against
-	// the row its transaction reads. Root, a right the open handle carries, and
-	// the operations POSIX gates on write permission rather than on ownership
-	// all hold whoever owns the file, so a peer chown landing in the window
-	// leaves their authorization intact.
+	// True when the ownership gate below is what authorizes this call, and so
+	// the one decision the write closure has to recheck against the row its
+	// transaction reads. A right the open handle carries was granted at open
+	// and a later chown does not revoke it, so those two are left alone.
 	//
-	// decision: an owner whose call is ALSO write-permission-gated takes the
-	// exemption even though the switch below lets ownership answer before the
-	// write check runs, so the write check is not what stands behind it. That
-	// is the behaviour a truncate, a utimes-to-now and an EA write had before
-	// the recheck existed, and ownership short-circuits by design. Withdraw it
-	// if the switch ever stops letting ownership answer first.
+	// A write-permission-gated operation is NOT exempt merely for being one:
+	// the switch below lets ownership answer first, so an owner reaches a
+	// truncate or a utimes-to-now without the write check ever running, and
+	// exempting them would let a caller keep operating on a file a peer chown
+	// has handed to someone else — the hole the recheck exists to close. Only
+	// a caller who is not the owner got there through checkWritePermission.
+	//
+	// decision: for that caller the recheck is skipped outright rather than
+	// re-run against the row, so a chown that moves them between the group and
+	// other bit triples is not caught and their truncate or utimes proceeds on
+	// permission they no longer have. Re-running it here means a share-options
+	// read on the store's own connection from inside an open transaction, and
+	// the guard is already blind to the peer chmod that changes the same
+	// answer. Close it if the permission decision can ever be recomputed from
+	// the row alone.
 	ownershipAuthorized := isOwner && !isRoot &&
-		!eaAuthorizedByHandle && !timestampAuthorizedByHandle && !writePermSufficient
+		!eaAuthorizedByHandle && !timestampAuthorizedByHandle
 
 	switch {
 	case isOwner || isRoot:
@@ -656,6 +664,7 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 		// stamped. A second guard here would be a second answer to the same
 		// question, and the two could drift.
 		file.Ctime = now
+		ctimeSet = true
 
 		// POSIX: Clear SUID/SGID bits on truncate for non-root users (like write)
 		if file.Type == FileTypeRegular && !isRoot {
@@ -696,6 +705,7 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 
 	if attrs.Ctime != nil {
 		file.Ctime = *attrs.Ctime
+		ctimeSet = true
 		modified = true
 	}
 
@@ -743,6 +753,7 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 	if modified {
 		if attrs.Ctime == nil && !attrs.PreserveCtime {
 			file.Ctime = now
+			ctimeSet = true
 		}
 
 		// writeRow re-reads the inode inside the transaction and copies onto it
@@ -779,11 +790,14 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 		// recreated carrying the stale state, which is a worse outcome than
 		// refusing the attribute change.
 		writeRow := func(tx Transaction) error {
-			// Before the read, so the mutations below fold onto the committed
-			// map on a backend that refuses the second writer only once the
-			// update is reached. Taken only for an EA write: every other field
-			// here is either replaced outright or a bit operation the store's
-			// own conflict handling already covers.
+			// Before the read, so the fold below runs against the committed map
+			// on a backend that refuses the second writer only once its update
+			// is reached — the same reason xattr.go's own EA path takes it.
+			// Scoped to an EA write rather than taken unconditionally: every
+			// other field here is either replaced outright or recomputed from
+			// the row on each attempt, so the store's conflict-and-retry is
+			// what orders those and a lock on every chmod and utimes would buy
+			// nothing.
 			if len(attrs.EAMutations) > 0 {
 				if locker, ok := tx.(FileRowLocker); ok {
 					if err := locker.LockFileRow(ctx.Context, handle); err != nil {
@@ -879,7 +893,7 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 				if pendingDirCtime.After(row.Ctime) {
 					row.Ctime = pendingDirCtime
 				}
-			case !file.Ctime.Equal(pre.Ctime):
+			case ctimeSet:
 				row.Ctime = file.Ctime
 			}
 			// An explicit ACL replaces the stored one outright. A chmod only

@@ -118,6 +118,14 @@ func TestSetFileAttributes_TimestampEqualToPreReadIsStillWritten(t *testing.T) {
 			field: func(a *metadata.FileAttr) time.Time { return a.CreationTime },
 			set:   func(v time.Time) *metadata.SetAttrs { return &metadata.SetAttrs{CreationTime: &v} },
 		},
+		{
+			// Ctime is decided by its own switch in the commit, so it needs its
+			// own row here: the switch hands a held change time to the row and
+			// an explicit one to the caller, and only the second is a request.
+			name:  "Ctime",
+			field: func(a *metadata.FileAttr) time.Time { return a.Ctime },
+			set:   func(v time.Time) *metadata.SetAttrs { return &metadata.SetAttrs{Ctime: &v} },
+		},
 	}
 
 	for _, tc := range cases {
@@ -296,30 +304,51 @@ func TestSetFileAttributes_WritePermittedOpSurvivesConcurrentChown(t *testing.T)
 	}
 }
 
-// The other half of the same rule: a call that ownership alone authorized still
-// has to be refused, or the gate and the write describe different files.
-func TestSetFileAttributes_OwnerAuthorizedChmodRefusedAfterConcurrentChown(t *testing.T) {
-	svc, ws, handle := lostUpdateFixture(t, "o.bin", 0o600)
-	root := rootAuth()
+// The other half of the same rule: a call that ownership authorized still has
+// to be refused, or the gate and the write describe different files.
+//
+// A truncate and a utimes-to-now are gated on write permission when a stranger
+// asks for them, but an owner reaches both without the write check ever running
+// — the authorization switch lets ownership answer first. Exempting them for
+// being write-permission-gated would therefore exempt a decision nothing but
+// ownership ever made, which is the hole the recheck exists to close: mode 0600
+// grants the caller nothing once the file belongs to someone else.
+func TestSetFileAttributes_OwnerAuthorizedOpRefusedAfterConcurrentChown(t *testing.T) {
+	cases := []struct {
+		name  string
+		attrs func() *metadata.SetAttrs
+	}{
+		{"Chmod", func() *metadata.SetAttrs { m := uint32(0o640); return &metadata.SetAttrs{Mode: &m} }},
+		{"MtimeNow", func() *metadata.SetAttrs { return &metadata.SetAttrs{MtimeNow: true} }},
+		{"Truncate", func() *metadata.SetAttrs { size := uint64(0); return &metadata.SetAttrs{Size: &size} }},
+	}
 
-	owner := uint32(1000)
-	_, err := svc.SetFileAttributes(root, handle, &metadata.SetAttrs{UID: &owner})
-	require.NoError(t, err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, ws, handle := lostUpdateFixture(t, "o.bin", 0o600)
+			root := rootAuth()
 
-	assertFired := windowPeer(t, ws, func() {
-		next := uint32(3000)
-		_, hookErr := svc.SetFileAttributes(root, handle, &metadata.SetAttrs{UID: &next})
-		require.NoError(t, hookErr)
-	})
+			owner := uint32(1000)
+			_, err := svc.SetFileAttributes(root, handle, &metadata.SetAttrs{UID: &owner})
+			require.NoError(t, err)
 
-	mode := uint32(0o640)
-	_, err = svc.SetFileAttributes(nonRootAuth(1000, 1000), handle, &metadata.SetAttrs{Mode: &mode})
-	require.Error(t, err, "the chmod was authorized by ownership a peer chown has since moved")
-	assertFired()
+			assertFired := windowPeer(t, ws, func() {
+				next := uint32(3000)
+				_, hookErr := svc.SetFileAttributes(root, handle, &metadata.SetAttrs{UID: &next})
+				require.NoError(t, hookErr)
+			})
 
-	var storeErr *metadata.StoreError
-	require.ErrorAs(t, err, &storeErr)
-	require.Equal(t, metadata.ErrPermissionDenied, storeErr.Code)
+			_, err = svc.SetFileAttributes(nonRootAuth(1000, 1000), handle, tc.attrs())
+			require.Error(t, err,
+				"%s was authorized by ownership a peer chown has since moved, and mode 0600 grants "+
+					"uid 1000 nothing on the new owner's file", tc.name)
+			assertFired()
+
+			var storeErr *metadata.StoreError
+			require.ErrorAs(t, err, &storeErr)
+			require.Equal(t, metadata.ErrPermissionDenied, storeErr.Code)
+		})
+	}
 }
 
 // Two EA writers naming different attributes must not lose each other's keys.
