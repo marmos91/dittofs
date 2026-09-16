@@ -2,6 +2,7 @@ package nfs
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/adapter/auxsvc"
@@ -222,14 +223,16 @@ type udpSidecar struct{ a *NFSAdapter }
 
 func (u udpSidecar) Name() string                    { return "nfs-udp" }
 func (u udpSidecar) Start(ctx context.Context) error { return u.a.startUDP(ctx) }
-func (u udpSidecar) Stop(context.Context) error {
-	// Claim conn and cancel func together: each generation is stopped exactly
-	// once (a disable racing a re-enable can no longer snapshot the newer conn)
-	// and the per-generation shutdown ctx fires so the conn-close waiter and
-	// the read loop exit instead of parking until adapter shutdown.
+func (u udpSidecar) Stop(ctx context.Context) error {
+	// Claim conn, cancel func and done channel together: each generation is
+	// stopped exactly once (a disable racing a re-enable can no longer snapshot
+	// the newer conn) and the per-generation shutdown ctx fires so the
+	// conn-close waiter and the read loop exit instead of parking until adapter
+	// shutdown.
 	u.a.sidecarMu.Lock()
 	udpConn := u.a.udpConn
 	udpStop := u.a.udpStop
+	udpDone := u.a.udpDone
 	u.a.udpConn = nil
 	u.a.udpStop = nil
 	u.a.sidecarMu.Unlock()
@@ -239,6 +242,28 @@ func (u udpSidecar) Stop(context.Context) error {
 	if udpConn != nil {
 		_ = udpConn.Close()
 	}
+	// Closing the socket only unblocks the read: the loop and the datagram
+	// handlers it spawned are still running, and they touch adapter and runtime
+	// state that teardown is about to dismantle. Wait for them, bounded by the
+	// caller's context so one wedged handler cannot hold shutdown open forever.
+	// A nil channel means nothing was bound, so there is nothing to wait for.
+	if udpDone != nil {
+		select {
+		case <-udpDone:
+		case <-ctx.Done():
+			// udpDone is deliberately left published. Clearing it with the
+			// others would strand this generation: the handlers outlive the
+			// timeout, and a later Stop with more time would find nothing to
+			// join and report the transport down while they still run.
+			return fmt.Errorf("nfs-udp: datagram handlers still running: %w", ctx.Err())
+		}
+	}
+	// Joined (or never bound): retire the generation so a re-enable starts clean.
+	u.a.sidecarMu.Lock()
+	if u.a.udpDone == udpDone {
+		u.a.udpDone = nil
+	}
+	u.a.sidecarMu.Unlock()
 	return nil
 }
 

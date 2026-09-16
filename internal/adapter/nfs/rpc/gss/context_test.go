@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jcmturner/gofork/encoding/asn1"
+	"github.com/jcmturner/gokrb5/v8/messages"
 	"github.com/jcmturner/gokrb5/v8/types"
 )
 
@@ -387,4 +389,50 @@ func TestContextStoreStopIdempotent(t *testing.T) {
 		}
 	}()
 	store.Stop()
+}
+
+// Establishment and use are two gates on the same quantity, and they must not
+// disagree. AP-REQ verification admits a ticket while it is no more than the
+// configured clock skew past its end time, so a context built from such a
+// ticket has to be usable — a stricter bound on the request path would refuse
+// the first call on a context that had just been granted, destroy it, and leave
+// the client re-establishing it for as long as the clocks disagree.
+//
+// gokrb5's own Ticket.Valid is the authority on what establishment admits, so
+// the test asks it rather than restating the arithmetic the fix uses.
+func TestContextIsUsableForEveryTicketEstablishmentAdmits(t *testing.T) {
+	const skew = 5 * time.Minute
+	now := time.Now().UTC()
+
+	for _, pastEnd := range []time.Duration{
+		-time.Hour,   // a healthy ticket, far from its end
+		-time.Second, // about to lapse
+		0,            // exactly at its end
+		time.Second,  // just past, within skew
+		skew - time.Second,
+		skew + time.Minute, // past the allowance: establishment must refuse it
+	} {
+		endTime := now.Add(-pastEnd)
+		ticket := messages.Ticket{
+			// Named so Valid can build its KRB_AP_ERR on the refusal path.
+			Realm: "EXAMPLE.COM",
+			SName: types.PrincipalName{NameType: 1, NameString: []string{"nfs"}},
+			DecryptedEncPart: messages.EncTicketPart{
+				// A 32-bit flag field with nothing set: Valid reads the Invalid bit.
+				Flags:     asn1.BitString{Bytes: make([]byte, 4), BitLength: 32},
+				StartTime: now.Add(-time.Hour),
+				EndTime:   endTime,
+			},
+		}
+		admitted, _ := ticket.Valid(skew)
+
+		// The bound the verifier records for such a ticket.
+		gssCtx := &GSSContext{ExpiresAt: endTime.Add(skew)}
+		usable := !gssCtx.Expired(now)
+
+		if admitted != usable {
+			t.Fatalf("ticket ending %v ago: establishment admits=%v but context usable=%v — "+
+				"the two gates disagree, so a context can be born dead", pastEnd, admitted, usable)
+		}
+	}
 }

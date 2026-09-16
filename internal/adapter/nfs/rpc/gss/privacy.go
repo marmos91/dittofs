@@ -28,7 +28,6 @@ import (
 	"fmt"
 
 	"github.com/jcmturner/gokrb5/v8/crypto"
-	"github.com/jcmturner/gokrb5/v8/gssapi"
 	"github.com/jcmturner/gokrb5/v8/types"
 	"github.com/marmos91/dittofs/internal/logger"
 )
@@ -102,111 +101,96 @@ func UnwrapPrivacy(sessionKey types.EncryptionKey, credSeqNum uint32, requestBod
 		return nil, 0, fmt.Errorf("unexpected acceptor flag set: expecting token from initiator")
 	}
 
-	// 4. Handle based on Sealed flag
-	var plaintext []byte
-
-	if flags&wrapFlagSealed != 0 {
-		// SEALED: Encrypted Wrap token per RFC 4121 Section 4.2.4
-		// Wire format: header (16 bytes) | ciphertext
-		// Ciphertext = encrypt(plaintext | filler | header_copy)
-		// After decryption, we get: plaintext | filler | header_copy (16 bytes)
-
-		ciphertext := wrapTokenBytes[wrapTokenHdrLen:]
-
-		// Handle RRC (Right Rotation Count) - rotate left to undo the right rotation
-		// The token was rotated right by RRC bytes, so we rotate left to restore original order
-		if rrc > 0 && len(ciphertext) > 0 {
-			ciphertext = rotateLeft(ciphertext, int(rrc))
-		}
-
-		logger.Debug("Decrypting sealed Wrap token",
-			"ciphertext_len", len(ciphertext),
-			"rrc", rrc,
-			"key_type", sessionKey.KeyType,
-		)
-
-		// Decrypt using initiator seal key usage (24)
-		decrypted, err := crypto.DecryptMessage(ciphertext, sessionKey, KeyUsageInitiatorSeal)
-		if err != nil {
-			return nil, 0, fmt.Errorf("decrypt Wrap token: %w", err)
-		}
-
-		logger.Debug("Decrypted Wrap token payload",
-			"decrypted_len", len(decrypted),
-			"first_16", hex.EncodeToString(firstN(decrypted, 16)),
-			"last_16", hex.EncodeToString(lastN(decrypted, 16)),
-		)
-
-		// Per RFC 4121 Section 4.2.4:
-		// Decrypted content = plaintext | filler | header_copy (16 bytes)
-		// The header_copy is the original 16-byte header with RRC=0
-		// EC field contains the filler size for sealed tokens
-		if len(decrypted) < wrapTokenHdrLen {
-			return nil, 0, fmt.Errorf("decrypted data too short for header: %d bytes", len(decrypted))
-		}
-
-		// Extract header_copy (last 16 bytes of decrypted data)
-		headerCopy := decrypted[len(decrypted)-wrapTokenHdrLen:]
-
-		// Verify header_copy matches original header (except EC/RRC which should be 0 in the copy)
-		// Per RFC 4121: "the RRC field in the to-be-encrypted header contains the hex value 00 00"
-		expectedHeader := make([]byte, wrapTokenHdrLen)
-		copy(expectedHeader, wrapTokenBytes[:wrapTokenHdrLen])
-		// Set EC and RRC to 0 for comparison (they're 0 in the header_copy inside ciphertext)
-		binary.BigEndian.PutUint16(expectedHeader[4:6], 0) // EC = 0
-		binary.BigEndian.PutUint16(expectedHeader[6:8], 0) // RRC = 0
-
-		if !bytes.Equal(headerCopy[:2], expectedHeader[:2]) { // Token ID
-			return nil, 0, fmt.Errorf("header_copy token ID mismatch: got %s, expected %s",
-				hex.EncodeToString(headerCopy[:2]), hex.EncodeToString(expectedHeader[:2]))
-		}
-		if headerCopy[2] != expectedHeader[2] { // Flags
-			return nil, 0, fmt.Errorf("header_copy flags mismatch: got 0x%02x, expected 0x%02x",
-				headerCopy[2], expectedHeader[2])
-		}
-
-		// Verify sequence number in header_copy matches
-		copySeqNum := binary.BigEndian.Uint64(headerCopy[8:16])
-		if copySeqNum != sndSeqNum {
-			return nil, 0, fmt.Errorf("header_copy seq_num mismatch: got %d, expected %d", copySeqNum, sndSeqNum)
-		}
-
-		// Plaintext is everything before the header_copy
-		// Note: filler (if any) is between plaintext and header_copy, but EC tells us filler size
-		// For sealed tokens, EC = filler size. The plaintext ends at (len - headerLen - ec)
-		fillerSize := int(ec)
-		plaintextEnd := len(decrypted) - wrapTokenHdrLen - fillerSize
-		if plaintextEnd < 0 {
-			return nil, 0, fmt.Errorf("invalid EC value %d: would make plaintext negative", ec)
-		}
-		plaintext = decrypted[:plaintextEnd]
-
-		logger.Debug("Extracted plaintext from sealed Wrap token",
-			"plaintext_len", len(plaintext),
-			"filler_size", fillerSize,
-		)
-
-	} else {
-		// NOT SEALED: Integrity-only Wrap token (like krb5i but in Wrap format)
-		// Wire format: header (16 bytes) | plaintext | checksum
-		// Use gokrb5's WrapToken for non-sealed tokens (it handles this case correctly)
-
-		var wrapToken gssapi.WrapToken
-		if err := wrapToken.Unmarshal(wrapTokenBytes, false /* from initiator */); err != nil {
-			return nil, 0, fmt.Errorf("unmarshal non-sealed Wrap token: %w", err)
-		}
-
-		// Verify integrity using initiator seal key usage (24)
-		ok, err := wrapToken.Verify(sessionKey, KeyUsageInitiatorSeal)
-		if err != nil {
-			return nil, 0, fmt.Errorf("verify non-sealed Wrap token: %w", err)
-		}
-		if !ok {
-			return nil, 0, fmt.Errorf("non-sealed Wrap token verification failed")
-		}
-
-		plaintext = wrapToken.Payload
+	// 4. Require the Sealed flag.
+	//
+	// krb5p is bought for confidentiality, so the token has to deliver it. A
+	// Wrap token without the Sealed flag carries its payload in the clear, and
+	// that flag lives in the cleartext header -- nothing binds it to the service
+	// the client declared. Accepting one lets a caller on a share that requires
+	// krb5p declare svc_privacy and still put filenames and WRITE data on the
+	// wire unencrypted, while the server accounts for the call as
+	// privacy-protected. The declared service is authenticated; the token is
+	// what has to match it.
+	if flags&wrapFlagSealed == 0 {
+		return nil, 0, fmt.Errorf("krb5p requires a sealed Wrap token: flags 0x%02x leaves the payload in the clear", flags)
 	}
+
+	// SEALED: Encrypted Wrap token per RFC 4121 Section 4.2.4
+	// Wire format: header (16 bytes) | ciphertext
+	// Ciphertext = encrypt(plaintext | filler | header_copy)
+	// After decryption, we get: plaintext | filler | header_copy (16 bytes)
+	ciphertext := wrapTokenBytes[wrapTokenHdrLen:]
+
+	// Handle RRC (Right Rotation Count) - rotate left to undo the right rotation
+	// The token was rotated right by RRC bytes, so we rotate left to restore original order
+	if rrc > 0 && len(ciphertext) > 0 {
+		ciphertext = rotateLeft(ciphertext, int(rrc))
+	}
+
+	logger.Debug("Decrypting sealed Wrap token",
+		"ciphertext_len", len(ciphertext),
+		"rrc", rrc,
+		"key_type", sessionKey.KeyType,
+	)
+
+	// Decrypt using initiator seal key usage (24)
+	decrypted, err := crypto.DecryptMessage(ciphertext, sessionKey, KeyUsageInitiatorSeal)
+	if err != nil {
+		return nil, 0, fmt.Errorf("decrypt Wrap token: %w", err)
+	}
+
+	logger.Debug("Decrypted Wrap token payload",
+		"decrypted_len", len(decrypted),
+		"first_16", hex.EncodeToString(firstN(decrypted, 16)),
+		"last_16", hex.EncodeToString(lastN(decrypted, 16)),
+	)
+
+	// Per RFC 4121 Section 4.2.4:
+	// Decrypted content = plaintext | filler | header_copy (16 bytes)
+	// The header_copy is the original 16-byte header with RRC=0
+	// EC field contains the filler size for sealed tokens
+	if len(decrypted) < wrapTokenHdrLen {
+		return nil, 0, fmt.Errorf("decrypted data too short for header: %d bytes", len(decrypted))
+	}
+
+	// Extract header_copy (last 16 bytes of decrypted data)
+	headerCopy := decrypted[len(decrypted)-wrapTokenHdrLen:]
+
+	// Verify header_copy against the wire header, which travels in the
+	// clear. Only RRC is exempt: it is applied to the ciphertext after
+	// encryption, so per RFC 4121 §4.2.4 the to-be-encrypted copy carries
+	// the hex value 00 00 there. Every other field, EC included, carries its
+	// real value in the copy and is therefore integrity-protected by the
+	// encryption. Binding the cleartext EC to the encrypted copy is what
+	// stops an attacker who holds no key from shortening an authenticated
+	// message by raising EC, which is what trims the filler off the
+	// decrypted plaintext below.
+	wireHeader := wrapTokenBytes[:wrapTokenHdrLen]
+	if !bytes.Equal(headerCopy[:6], wireHeader[:6]) { // Token ID, flags, filler, EC
+		return nil, 0, fmt.Errorf("header_copy mismatch: got %s, expected %s",
+			hex.EncodeToString(headerCopy[:6]), hex.EncodeToString(wireHeader[:6]))
+	}
+
+	// Verify sequence number in header_copy matches
+	copySeqNum := binary.BigEndian.Uint64(headerCopy[8:16])
+	if copySeqNum != sndSeqNum {
+		return nil, 0, fmt.Errorf("header_copy seq_num mismatch: got %d, expected %d", copySeqNum, sndSeqNum)
+	}
+
+	// Plaintext is everything before the filler and the header_copy.
+	// For sealed tokens EC is the filler size, so plaintext ends at
+	// (len - headerLen - ec).
+	fillerSize := int(ec)
+	plaintextEnd := len(decrypted) - wrapTokenHdrLen - fillerSize
+	if plaintextEnd < 0 {
+		return nil, 0, fmt.Errorf("invalid EC value %d: would make plaintext negative", ec)
+	}
+	plaintext := decrypted[:plaintextEnd]
+
+	logger.Debug("Extracted plaintext from sealed Wrap token",
+		"plaintext_len", len(plaintext),
+		"filler_size", fillerSize,
+	)
 
 	// 5. Extract seq_num from plaintext (first 4 bytes per RFC 2203)
 	// The plaintext is: XDR(seq_num) | procedure_args
@@ -301,11 +285,11 @@ func WrapPrivacy(sessionKey types.EncryptionKey, seqNum uint32, replyBody []byte
 	binary.BigEndian.PutUint16(header[6:8], rrc)
 	binary.BigEndian.PutUint64(header[8:16], uint64(seqNum))
 
-	// 4. Build header_copy for encryption (with EC=0, RRC=0)
-	// Per RFC 4121: "the RRC field in the to-be-encrypted header contains the hex value 00 00"
+	// 4. Build header_copy for encryption. It is the wire header with RRC
+	// zeroed; EC keeps its real value so the receiver can bind the cleartext
+	// EC to the encrypted copy (RFC 4121 §4.2.4).
 	headerCopy := make([]byte, wrapTokenHdrLen)
 	copy(headerCopy, header)
-	binary.BigEndian.PutUint16(headerCopy[4:6], 0) // EC = 0 in copy
 	binary.BigEndian.PutUint16(headerCopy[6:8], 0) // RRC = 0 in copy
 
 	// 5. Build to-be-encrypted: plaintext | filler | header_copy

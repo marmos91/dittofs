@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
@@ -105,6 +106,8 @@ func (h *Handler) handleSetSparse(ctx *SMBHandlerContext, body []byte) (*Handler
 	// a concurrent SET_SPARSE / SET_COMPRESSION cannot clobber it with a stale
 	// Mode snapshot.
 	attrs := modeBitMaskAttrs(modeDOSSparse, setSparse)
+	// A mode-bit flip is an attribute write, so hold a frozen ChangeTime.
+	holdFrozenCtime(openFile, &attrs)
 	if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &attrs); err != nil {
 		logger.Warn("IOCTL FSCTL_SET_SPARSE: failed to persist mode",
 			"path", path, "error", err)
@@ -479,13 +482,49 @@ func (h *Handler) handleSetZeroData(ctx *SMBHandlerContext, body []byte) (*Handl
 		}
 	}
 
-	if err := h.zeroFillRange(authCtx, openFile, fileOffset, beyond); err != nil {
-		if errors.Is(err, errZeroFillCancelled) {
+	committed, fillErr := h.zeroFillRange(authCtx, openFile, fileOffset, beyond)
+	// The fill runs through the ordinary write chain, and CommitWrite stamps
+	// Mtime and ChangeTime from inside the write transaction where no SetAttrs
+	// reaches. Put the frozen values back afterwards the way WRITE does
+	// (MS-FSA §2.1.5.15.2).
+	//
+	// Deferred, and conditional on a chunk having actually committed. Deferred
+	// because the fill commits chunk by chunk, so a failure partway has already
+	// stamped the chunks that landed and the failure return needs the restore
+	// as much as the success return does. Conditional because the restore
+	// writes every frozen timestamp back explicitly, which drags a value some
+	// other opener advanced after the freeze backwards — acceptable as the
+	// price of undoing this operation's own stamp, but not on a failure that
+	// stamped nothing, where it would be a backwards write performed by an
+	// operation that changed no file state at all.
+	//
+	// The restore runs on a context detached from cancellation, because the
+	// case it most needs to cover is the cancelled one: the fill checks for
+	// cancellation between chunks, so a cancel after the first commit is
+	// exactly when timestamps have been stamped and the request is about to
+	// return without repairing them. Carrying the cancelled context here would
+	// mean the write that repairs the damage is the one write guaranteed to
+	// fail. Values are kept so the auth identity travels with it; only the
+	// cancellation is dropped, and a timeout bounds the detour so a wedged
+	// store cannot hold the handler open.
+	//
+	// A no-op on a handle with nothing frozen.
+	if committed {
+		restoreAuth := *authCtx
+		detached, cancelRestore := context.WithTimeout(
+			context.WithoutCancel(authCtx.Context), frozenRestoreTimeout)
+		restoreAuth.Context = detached
+		defer cancelRestore()
+		defer h.restoreFrozenTimestamps(&restoreAuth, openFile)
+	}
+
+	if fillErr != nil {
+		if errors.Is(fillErr, errZeroFillCancelled) {
 			return NewErrorResult(types.StatusCancelled), nil
 		}
 		logger.Warn("IOCTL FSCTL_SET_ZERO_DATA: write failed",
-			"path", path, "error", err)
-		return NewErrorResult(types.StatusFor(common.ClassifyBlockStoreError(err))), nil
+			"path", path, "error", fillErr)
+		return NewErrorResult(types.StatusFor(common.ClassifyBlockStoreError(fillErr))), nil
 	}
 
 	// SMB requires immediate cross-session metadata visibility (unlike NFS
@@ -502,6 +541,12 @@ func (h *Handler) handleSetZeroData(ctx *SMBHandlerContext, body []byte) (*Handl
 	return NewResult(types.StatusSuccess, resp), nil
 }
 
+// frozenRestoreTimeout bounds the frozen-timestamp restore that follows a
+// zero-fill. The restore deliberately outlives a cancelled request, so it needs
+// a deadline of its own to keep a wedged metadata store from holding the
+// handler open after the client has gone.
+const frozenRestoreTimeout = 5 * time.Second
+
 // zeroFillChunkSize is the chunk we use to issue zero-fill writes. A single
 // 1 MiB scratch buffer keeps the steady-state RAM cost bounded while still
 // amortising the per-write metadata round-trip on multi-MB zero ranges.
@@ -515,7 +560,11 @@ var errZeroFillCancelled = errors.New("zero-fill cancelled")
 // PrepareWrite/WriteAt/CommitWrite chain. The write is chunked so we never
 // allocate more than zeroFillChunkSize regardless of how large the requested
 // range is — smbtorture's hole-punch tests exercise multi-MB ranges.
-func (h *Handler) zeroFillRange(authCtx *metadata.AuthContext, openFile *OpenFile, start, end uint64) error {
+//
+// Reports whether any chunk committed. A caller repairing timestamps the
+// commits stamped needs to tell "failed having changed nothing" from "failed
+// partway", because those want different repairs.
+func (h *Handler) zeroFillRange(authCtx *metadata.AuthContext, openFile *OpenFile, start, end uint64) (bool, error) {
 	// SET_ZERO_DATA writes zeros through the handle's data stream; like WRITE it
 	// is handle-based (#1240). The open already authorized write against the DACL
 	// ceiling (the caller gated on FILE_WRITE_DATA), so the metadata layer must
@@ -524,32 +573,34 @@ func (h *Handler) zeroFillRange(authCtx *metadata.AuthContext, openFile *OpenFil
 	metaSvc := h.Registry.GetMetadataService()
 	blockStore, err := common.ResolveForWrite(authCtx.Context, h.Registry, openFile.MetadataHandle)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	chunkLen := min(uint64(zeroFillChunkSize), end-start)
 	zeros := make([]byte, chunkLen)
 
+	committed := false
 	for offset := start; offset < end; {
 		if err := authCtx.Context.Err(); err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return errZeroFillCancelled
+				return committed, errZeroFillCancelled
 			}
-			return err
+			return committed, err
 		}
 		remaining := min(end-offset, uint64(len(zeros)))
 		newSize := offset + remaining
 		writeOp, err := metaSvc.PrepareWrite(authCtx, openFile.MetadataHandle, newSize)
 		if err != nil {
-			return err
+			return committed, err
 		}
 		if err := common.WriteToBlockStore(authCtx.Context, blockStore, writeOp.PayloadID, zeros[:remaining], offset); err != nil {
-			return err
+			return committed, err
 		}
 		if _, err := metaSvc.CommitWrite(authCtx, writeOp); err != nil {
-			return err
+			return committed, err
 		}
+		committed = true
 		offset += remaining
 	}
-	return nil
+	return committed, nil
 }

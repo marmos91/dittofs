@@ -145,7 +145,7 @@ type Adapter struct {
 	authSweep *authSweeper
 
 	// sidecars manages the adapter's auxiliary/companion services — the mDNS and
-	// WS-Discovery advertisers  — under one uniform lifecycle.
+	// WS-Discovery advertisers — under one uniform lifecycle.
 	// Seeded with the Serve context and torn down in Stop. See discovery.go.
 	sidecars *auxsvc.Group
 

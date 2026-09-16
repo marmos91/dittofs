@@ -21,6 +21,7 @@ type mockVerifier struct {
 	sessionKey        types.EncryptionKey
 	apRepToken        []byte
 	hasAcceptorSubkey bool
+	expiresAt         time.Time
 	err               error
 }
 
@@ -49,6 +50,7 @@ func (v *mockVerifier) VerifyToken(gssToken []byte) (*VerifiedContext, error) {
 		SessionKey:        v.sessionKey,
 		APRepToken:        v.apRepToken,
 		HasAcceptorSubkey: v.hasAcceptorSubkey,
+		ExpiresAt:         v.expiresAt,
 	}, nil
 }
 
@@ -1266,5 +1268,102 @@ func TestGSSLifecycle_Full(t *testing.T) {
 
 	if staleResult.Err == nil {
 		t.Fatal("Step 6: expected error for stale context handle after DESTROY")
+	}
+}
+
+// A security context must not outlive the Kerberos ticket it was built from.
+// Idle eviction cannot enforce that: a client sending steady traffic refreshes
+// LastUsed forever, so a busy context stayed usable long after the KDC stopped
+// vouching for its ticket. The DATA call must be refused with CTXPROBLEM, which
+// sends the client back to the KDC, and the handle must be dropped.
+func TestProcessDATARejectsContextPastTicketExpiry(t *testing.T) {
+	verifier := newMockVerifier("alice", "EXAMPLE.COM")
+	verifier.expiresAt = time.Now().Add(-time.Minute)
+	mapper := newTestMapper()
+	proc := NewGSSProcessor(verifier, mapper, 100, 10*time.Minute)
+	defer proc.Stop()
+
+	initCred := &RPCGSSCredV1{GSSProc: RPCGSSInit, SeqNum: 0, Service: RPCGSSSvcNone}
+	credBody, err := EncodeGSSCred(initCred)
+	if err != nil {
+		t.Fatalf("encode INIT cred: %v", err)
+	}
+	initResult := proc.Process(context.Background(), credBody, nil, nil, encodeOpaqueToken([]byte("mock-ap-req-token")))
+	if initResult.Err != nil {
+		t.Fatalf("INIT failed: %v", initResult.Err)
+	}
+
+	handle := extractContextHandle(t, proc)
+	dataCred := &RPCGSSCredV1{GSSProc: RPCGSSData, SeqNum: 1, Service: RPCGSSSvcNone, Handle: handle}
+	dataCredBody, err := EncodeGSSCred(dataCred)
+	if err != nil {
+		t.Fatalf("encode DATA cred: %v", err)
+	}
+
+	result := processDATA(t, proc, mockVerifierSessionKey, dataCredBody, []byte("test-procedure-arguments"))
+	if result.Err == nil {
+		t.Fatal("DATA accepted on a context whose ticket had already expired")
+	}
+	if result.AuthStat != AuthStatCtxProblem {
+		t.Fatalf("expected AuthStat %d (CTXPROBLEM), got %d", AuthStatCtxProblem, result.AuthStat)
+	}
+	if _, found := proc.contexts.Lookup(handle); found {
+		t.Fatal("expired context left in the store: the handle can be retried")
+	}
+}
+
+// Retiring a context is server state, so only a caller holding the session key
+// may trigger it. Someone who has merely observed a handle on the wire must get
+// the same CREDPROBLEM any forged call gets, and must not be able to destroy
+// the context by guessing that its ticket has lapsed.
+func TestProcessDATAExpiredContextStillNeedsAValidMIC(t *testing.T) {
+	verifier := newMockVerifier("alice", "EXAMPLE.COM")
+	verifier.expiresAt = time.Now().Add(-time.Minute)
+	proc := NewGSSProcessor(verifier, newTestMapper(), 100, 10*time.Minute)
+	defer proc.Stop()
+
+	handle := establishContext(t, proc, RPCGSSSvcNone)
+	dataCred := &RPCGSSCredV1{GSSProc: RPCGSSData, SeqNum: 1, Service: RPCGSSSvcNone, Handle: handle}
+	dataCredBody, err := EncodeGSSCred(dataCred)
+	if err != nil {
+		t.Fatalf("encode DATA cred: %v", err)
+	}
+
+	res := proc.Process(context.Background(), dataCredBody, nil, dataCredBody, []byte("forged-args"))
+	if res.Err == nil {
+		t.Fatal("unsigned DATA accepted on an expired context")
+	}
+	if res.AuthStat != AuthStatCredProblem {
+		t.Fatalf("expected AuthStatCredProblem (%d) for an unsigned call, got %d — the expiry gate leaks whether the handle exists",
+			AuthStatCredProblem, res.AuthStat)
+	}
+	if _, found := proc.contexts.Lookup(handle); !found {
+		t.Fatal("an unauthenticated caller destroyed the context")
+	}
+}
+
+// The periodic sweep reclaims a context past its ticket's end time even when it
+// is nowhere near the idle TTL.
+func TestContextStoreCleanupEvictsPastTicketExpiry(t *testing.T) {
+	store := NewContextStore(0, time.Hour)
+	defer store.Stop()
+
+	now := time.Now()
+	ctx := &GSSContext{
+		Handle:    []byte("expired-handle"),
+		Principal: "alice",
+		CreatedAt: now,
+		LastUsed:  now,
+		ExpiresAt: now.Add(-time.Minute),
+	}
+	store.Store(ctx)
+
+	store.cleanup()
+
+	if _, found := store.Lookup(ctx.Handle); found {
+		t.Fatal("context past its ticket end time survived the sweep")
+	}
+	if store.Count() != 0 {
+		t.Fatalf("expected 0 contexts after sweep, got %d", store.Count())
 	}
 }

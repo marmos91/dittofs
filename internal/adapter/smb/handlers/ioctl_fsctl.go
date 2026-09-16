@@ -117,9 +117,15 @@ func (h *Handler) handleSetCompression(ctx *SMBHandlerContext, body []byte) (*Ha
 	// modeBitMaskAttrs): a concurrent SET_COMPRESSION / SET_SPARSE cannot clobber
 	// it with a stale Mode snapshot.
 	attrs := modeBitMaskAttrs(modeDOSCompressed, compressed)
+	// A mode-bit flip is an attribute write, so hold a frozen ChangeTime.
+	holdFrozenCtime(openFile, &attrs)
 	if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &attrs); err != nil {
+		// The mode bit is the whole of the compression state — GET_COMPRESSION
+		// reads it back out of the store and nothing mirrors it on the handle —
+		// so a swallowed failure here reports a compression change the file did
+		// not take. Surface it, as SET_SPARSE does for the same mode-bit write.
 		logger.Warn("FSCTL_SET_COMPRESSION: failed to persist mode", "error", err)
-		// Non-fatal: per-handle state is still set
+		return NewErrorResult(types.StatusForErr(err)), nil
 	}
 
 	resp := buildIoctlResponse(FsctlSetCompression, fileID, nil)

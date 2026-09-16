@@ -338,6 +338,26 @@ run_one() {
 # the phrase that means a test which used to pass now fails — on a toolchain
 # that could not download a dependency, and sends the reader hunting a
 # regression against a suite that never ran.
+# suite_writes_verdict says whether this suite's graded step writes the verdict
+# sidecar on every path. Only such a suite can have a MISSING sidecar read as
+# "the parser never ran": for a suite whose parser never writes one, the file is
+# always absent, and that reading would turn every real regression into "no test
+# was graded" — the false-negative twin of the false "N new failure(s)" the
+# sidecar was added to remove.
+#
+# decision: this names the suites known to LACK the contract, rather than the
+# ones known to have it. Getting membership wrong in this direction costs a
+# coarse summary on a suite that is already coarse; getting it wrong in the
+# other direction hides a regression, and a suite added later is far more
+# likely to write the sidecar than not. Delete an entry when that suite's
+# parser starts writing one.
+suite_writes_verdict() {
+    case "$1" in
+        wpts|pynfs|pjdfstest) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
 write_summary() {
     local label="$1" status="$2" results_dir="$3" failed_step="${4:-}"
     local verdict icon
@@ -347,6 +367,12 @@ write_summary() {
     elif [[ -n "$failed_step" && "$failed_step" != "$GRADED_STEP" ]]; then
         verdict="${failed_step} failed (exit ${status}) — no tests were graded"
         icon=":construction:"
+    elif [[ ! -r "${results_dir}/verdict" ]] && ! suite_writes_verdict "$SUITE"; then
+        # A suite that never writes a sidecar cannot have its absence read as a
+        # signal. Those still render the graded step's exit status as a failure
+        # count, which is what it has always meant for them.
+        verdict="${status} new failure(s)"
+        icon=":x:"
     elif [[ ! -r "${results_dir}/verdict" ]]; then
         # No sidecar means the graded step never reached its parser: it died in a
         # build, a bootstrap, a compose up, or was refused before it started.

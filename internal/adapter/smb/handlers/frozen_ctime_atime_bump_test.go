@@ -73,10 +73,10 @@ func grantFullAccess(h *Handler, smbCtx *SMBHandlerContext, openFile *OpenFile) 
 	h.primeAuthContextFromOpenFile(smbCtx, openFile)
 }
 
-// assertFrozenCtimeSurvived reads the file back from the store and checks that
-// op left the frozen ChangeTime alone while still landing its LastAccessTime
-// bump.
-func assertFrozenCtimeSurvived(t *testing.T, h *Handler, openFile *OpenFile, frozen time.Time, op string) {
+// assertCtimeUnmoved reads the file back and reports the ChangeTime a client
+// would observe now, failing if op moved it off the frozen instant. Returns the
+// file so callers can layer further assertions on the same read.
+func assertCtimeUnmoved(t *testing.T, h *Handler, openFile *OpenFile, frozen time.Time, op string) *metadata.File {
 	t.Helper()
 	file, err := h.Registry.GetMetadataService().GetFile(context.Background(), openFile.MetadataHandle)
 	if err != nil {
@@ -85,6 +85,15 @@ func assertFrozenCtimeSurvived(t *testing.T, h *Handler, openFile *OpenFile, fro
 	if !file.Ctime.Equal(frozen) {
 		t.Errorf("ChangeTime = %v after %s; want the frozen %v", file.Ctime.UTC(), op, frozen)
 	}
+	return file
+}
+
+// assertFrozenCtimeSurvived reads the file back from the store and checks that
+// op left the frozen ChangeTime alone while still landing its LastAccessTime
+// bump.
+func assertFrozenCtimeSurvived(t *testing.T, h *Handler, openFile *OpenFile, frozen time.Time, op string) {
+	t.Helper()
+	file := assertCtimeUnmoved(t, h, openFile, frozen, op)
 	if !file.Atime.After(frozen) {
 		t.Errorf("LastAccessTime = %v after %s; the bump should still have landed", file.Atime.UTC(), op)
 	}

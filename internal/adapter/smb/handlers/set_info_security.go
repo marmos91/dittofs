@@ -184,6 +184,9 @@ func (h *Handler) setSecurityInfo(
 		return setInfoStatus(types.StatusSuccess), nil
 	}
 
+	// An owner, group or ACL change is an attribute write, so hold a frozen
+	// ChangeTime.
+	holdFrozenCtime(openFile, setAttrs)
 	_, err = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs)
 	if err != nil {
 		logger.Debug("SET_INFO: failed to set security info", "path", openFile.Name().Path, "error", err)

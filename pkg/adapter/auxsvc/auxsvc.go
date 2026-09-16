@@ -244,7 +244,18 @@ func (g *Group) StopOne(name string) error {
 // teardown, so ordering that matters (e.g. unregister from the system rpcbind
 // before closing the portmapper) is preserved: services registered earlier stop
 // later. The first Stop error is returned; every service is still stopped.
+//
+// A nil ctx is accepted, like BaseAdapter.Stop: the adapter's Stop forwards its
+// own ctx here, and callers are allowed to pass nil to mean "use the configured
+// shutdown budget". Substitute stopTimeout so no Service ever receives a nil ctx
+// and dereferences it.
 func (g *Group) StopAll(ctx context.Context) error {
+	if ctx == nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.Background(), stopTimeout)
+		defer cancel()
+	}
+
 	g.mu.Lock()
 	names := make([]string, len(g.order))
 	for i, n := range g.order {

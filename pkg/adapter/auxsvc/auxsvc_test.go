@@ -443,6 +443,47 @@ func TestGroup_StopAllClearsBaseContextSoLateReconcileNoOps(t *testing.T) {
 	}
 }
 
+// ctxReadingService mimics the NFS UDP sidecar: its Stop selects on the
+// caller's context, so a nil context panics rather than stopping gracefully.
+type ctxReadingService struct{ fakeService }
+
+func (c *ctxReadingService) Stop(ctx context.Context) error {
+	// select on ctx.Done() is exactly what a nil context cannot survive.
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	return c.fakeService.Stop(ctx)
+}
+
+// StopAll is reachable with a nil ctx: BaseAdapter.Stop documents nil as
+// "use the configured shutdown budget" and the adapters forward their own ctx
+// straight through. A sidecar that reads ctx.Done() must still stop.
+func TestGroup_StopAllAcceptsNilContext(t *testing.T) {
+	g := NewGroup()
+	g.SetBaseContext(context.Background())
+
+	svc := &ctxReadingService{fakeService: fakeService{name: "nfs-udp"}}
+	if err := g.Start(svc); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// The nil context is the behaviour under test: StopAll documents nil as
+	// "use the configured shutdown budget" and adapters forward their own ctx.
+	//nolint:staticcheck // SA1012: passing nil is the case under test
+	err := g.StopAll(nil)
+	if err != nil {
+		t.Fatalf("StopAll(nil): %v", err)
+	}
+	if got := svc.stopCalls.Load(); got != 1 {
+		t.Fatalf("Stop called %d times, want 1", got)
+	}
+	if g.IsRunning("nfs-udp") {
+		t.Fatal("service should be stopped")
+	}
+}
+
 func idx(ss []string, want string) int {
 	for i, s := range ss {
 		if s == want {

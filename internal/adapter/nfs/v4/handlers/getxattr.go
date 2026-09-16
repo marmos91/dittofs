@@ -53,7 +53,7 @@ func (h *Handler) handleGetXattr(ctx *types.CompoundContext, reader io.Reader) *
 
 	authCtx, _, err := h.buildV4AuthContext(ctx, ctx.CurrentFH)
 	if err != nil {
-		return xattrErr(types.OP_GETXATTR, types.NFS4ERR_SERVERFAULT)
+		return xattrErr(types.OP_GETXATTR, nfs4StatusForAuthError(err))
 	}
 
 	backend, err := xattrBackendForHandler(h)

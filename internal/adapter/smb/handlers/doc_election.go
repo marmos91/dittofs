@@ -133,13 +133,16 @@ func (h *Handler) electDeleteOnClose(openFile *OpenFile) (docDecision, docTarget
 	// preserved so the eventual closer can compare it for dir-lease
 	// suppression (test_unlink_different_* vs test_unlink_same_*).
 	otherHandleExists := false
-	if len(openFile.MetadataHandle) > 0 {
+	ownHandle := openFile.GetMetadataHandle()
+	if len(ownHandle) > 0 {
 		h.files.Range(func(_, value any) bool {
 			other := value.(*OpenFile)
 			if other.FileID == openFile.FileID || other.docLeaving {
 				return true
 			}
-			if !bytes.Equal(other.MetadataHandle, openFile.MetadataHandle) {
+			// Guard the read: SET_REPARSE_POINT repoints a live handle's
+			// MetadataHandle when a placeholder becomes a symlink.
+			if !bytes.Equal(other.GetMetadataHandle(), ownHandle) {
 				return true
 			}
 			otherHandleExists = true

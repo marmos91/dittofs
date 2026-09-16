@@ -97,9 +97,9 @@ func (h *Handler) buildV4AuthContext(ctx *types.CompoundContext, handle []byte) 
 	// protocol, so the check the v3 MOUNT handler performs never runs for a v4
 	// client: without it here a netgroup-restricted share is reachable from any
 	// address over PUTROOTFH/PUTFH/LOOKUP. This gates every operation that
-	// builds an auth context, including a LOOKUP that crosses from the pseudo-fs
-	// into a share; operations that act on the current filehandle without one
-	// are gated in the PUTFH handler.
+	// builds an auth context. Operations that act on the current filehandle
+	// without one are gated where that handle enters the compound instead, by
+	// shareEntryStatus.
 	if err := h.checkNetgroupAccess(ctx, shareName); err != nil {
 		return nil, "", err
 	}
@@ -185,6 +185,45 @@ func (h *Handler) buildV4AuthContext(ctx *types.CompoundContext, handle []byte) 
 	}
 
 	return authCtx, shareName, nil
+}
+
+// shareEntryStatus reports the NFSv4 status a compound must answer with when a
+// share's file handle is about to enter the current filehandle, or NFS4_OK when
+// it may. A disabled share answers NFS4ERR_STALE (clients reacquire fresh
+// handles after a restore plus an explicit re-enable); a client outside the
+// share's netgroup allowlist answers NFS4ERR_ACCESS.
+//
+// It exists because the operations that act on the current filehandle without
+// building an auth context of their own -- LOCK, LOCKT, LOCKU,
+// GET_DIR_DELEGATION -- never reach buildV4AuthContext, so the only place to
+// refuse them is where the handle enters the compound. There are exactly two
+// such places: PUTFH, and a LOOKUP that crosses an export junction out of the
+// pseudo-fs. Both call this, so the two cannot drift apart.
+//
+// decision: this covers the share's enabled state and its netgroup client
+// allowlist, not the export auth-flavor policy (AllowAuthSys, RequireKerberos,
+// MinKerberosLevel), which is applied in buildV4AuthContext alone. Those four
+// operations therefore still reach a Kerberos-only share over AUTH_SYS. The
+// exemption is worth only what an operation carrying no auth context can do --
+// widen this to auth.CheckExportAccess once the status a flavor refusal should
+// carry at handle-entry time is settled, since NFS4ERR_WRONGSEC from PUTFH
+// sends a client to SECINFO rather than to a stronger flavor.
+func (h *Handler) shareEntryStatus(ctx *types.CompoundContext, shareName string) uint32 {
+	if h.Registry == nil {
+		return types.NFS4_OK
+	}
+
+	if share, err := h.Registry.GetShare(shareName); err == nil && share != nil && !share.Enabled {
+		logger.Warn("NFSv4 refused a handle for a disabled share",
+			"share", share.Name, "client", ctx.ClientAddr)
+		return types.NFS4ERR_STALE
+	}
+
+	if ngErr := h.checkNetgroupAccess(ctx, shareName); ngErr != nil {
+		return nfs4StatusForAuthError(ngErr)
+	}
+
+	return types.NFS4_OK
 }
 
 // checkNetgroupAccess returns NFS4ERR_ACCESS unless the compound's peer is in

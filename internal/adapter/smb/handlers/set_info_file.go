@@ -449,7 +449,7 @@ func (h *Handler) setFileInfoFromStore(
 		// FILE_DELETE_ON_CLOSE create option: that is held per-handle as
 		// InitialDeleteOnClose, is deliberately invisible to this scan, and is
 		// promoted only at CLOSE, matching 2.1.5.5 phase 1.
-		if h.isFileDeletePending(openFile.MetadataHandle) {
+		if h.isFileDeletePending(openFile.GetMetadataHandle()) {
 			logger.Debug("SET_INFO: rename of a link already marked for deletion",
 				"path", openFile.Name().Path)
 			return setInfoStatus(types.StatusAccessDenied), nil
@@ -667,7 +667,7 @@ func (h *Handler) setFileInfoFromStore(
 		// under the mutex, so a child whose holder is mid-CLOSE is observed as
 		// either fully present (live → ACCESS_DENIED) or fully gone (→ proceed).
 		if openFile.IsDirectory && h.LeaseManager != nil && len(openFile.MetadataHandle) > 0 {
-			children := h.snapshotOpenChildren(openFile.MetadataHandle)
+			children := h.snapshotOpenChildren(openFile.GetMetadataHandle())
 			for _, child := range children {
 				if err := h.LeaseManager.BreakHandleLeasesOnOpenAsync(
 					lock.FileHandle(child), openFile.ShareName, lock.BreakReasonSharingViolation,
@@ -695,7 +695,7 @@ func (h *Handler) setFileInfoFromStore(
 			// Authoritative recheck under the scan mutex (Fix B): serialized vs
 			// a concurrent CLOSE removing the last open child from h.files.
 			h.renameScanMu.Lock()
-			openChild := h.anyOpenChild(openFile.MetadataHandle)
+			openChild := h.anyOpenChild(openFile.GetMetadataHandle())
 			h.renameScanMu.Unlock()
 			if openChild {
 				logger.Debug("SET_INFO: dir rename blocked by open child",
@@ -1255,7 +1255,7 @@ func (h *Handler) setFileInfoFromStore(
 			switch {
 			case deletePending:
 				h.NotifyRegistry.MarkDirectoryDeletePending(openFile.ShareName, openFile.Name().Path)
-			case !h.isFileDeletePending(openFile.MetadataHandle):
+			case !h.isFileDeletePending(openFile.GetMetadataHandle()):
 				h.NotifyRegistry.ClearDeletePendingMark(openFile.ShareName, openFile.Name().Path)
 			}
 		}
@@ -1540,6 +1540,8 @@ func (h *Handler) setFileInfoFromStore(
 		// round-trips.
 		metaSvc := h.Registry.GetMetadataService()
 		setAttrs := &metadata.SetAttrs{EAMutations: eaMutationsFromEntries(entries)}
+		// An EA write is an attribute write, so hold a frozen ChangeTime.
+		holdFrozenCtime(openFile, setAttrs)
 		if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs); err != nil {
 			logger.Debug("SET_INFO: FileFullEaInformation persist failed",
 				"path", openFile.Name().Path, "error", err)
@@ -1747,7 +1749,8 @@ func (h *Handler) restoreParentDirFrozenTimestamps(authCtx *metadata.AuthContext
 
 	h.files.Range(func(key, value any) bool {
 		openFile := value.(*OpenFile)
-		if !openFile.IsDirectory || string(openFile.MetadataHandle) != parentHandleStr {
+		openHandle := openFile.GetMetadataHandle()
+		if !openFile.IsDirectory || string(openHandle) != parentHandleStr {
 			return true // continue
 		}
 
@@ -1761,7 +1764,7 @@ func (h *Handler) restoreParentDirFrozenTimestamps(authCtx *metadata.AuthContext
 		// identity of whoever drove the child operation.
 		if _, err := metaSvc.SetFileAttributes(
 			withTimestampHandleAuth(authCtx, openFile.GrantedAccess),
-			openFile.MetadataHandle, restoreAttrs); err != nil {
+			openHandle, restoreAttrs); err != nil {
 			logger.Debug("restoreParentDirFrozenTimestamps: failed",
 				"path", openFile.Name().Path, "error", err)
 		} else {

@@ -149,18 +149,43 @@ func (h *Handler) lookupInPseudoFS(ctx *types.CompoundContext, name string) *typ
 
 	// Check for export junction crossing
 	if child.IsExport && h.Registry != nil {
-		// Get the real share root handle from runtime
+		// decision: a junction whose share the registry cannot find exits
+		// NFS4ERR_NOENT here, before the gate below ever sees it. A junction
+		// outlives its share for the whole teardown -- RemoveShare drops the
+		// registry entry and only then fires the share-change callback that
+		// rebuilds the pseudo-fs -- and a share configured but not yet loaded
+		// looks identical. Both are a missing export, which is NOENT; the gate
+		// would call them NFS4ERR_ACCESS, because its netgroup lookup fails
+		// closed on a share it cannot find and an absence is then
+		// indistinguishable from a refusal. The ordering exempts nothing: no
+		// handle is installed on this path, and the gate still runs on every
+		// share that resolves. Reorder it only once a registry miss is
+		// distinguishable from a netgroup denial.
 		realHandle, err := h.Registry.GetRootHandle(child.ShareName)
 		if err != nil {
 			logger.Debug("NFSv4 LOOKUP junction crossing failed",
 				"share", child.ShareName,
 				"error", err,
 				"client", ctx.ClientAddr)
-			// If the share is configured but not yet loaded, return NOENT
 			return &types.CompoundResult{
 				Status: types.NFS4ERR_NOENT,
 				OpCode: types.OP_LOOKUP,
 				Data:   encodeStatusOnly(types.NFS4ERR_NOENT),
+			}
+		}
+
+		// Apply the same gate PUTFH does before handing out the share's root
+		// handle. Crossing the junction puts a real share handle into the
+		// current filehandle without building an auth context, so the checks
+		// buildV4AuthContext performs never run on this path and the operations
+		// that then act on that handle without an auth context of their own
+		// (LOCK, LOCKT, LOCKU, GET_DIR_DELEGATION) would reach a disabled or
+		// netgroup-restricted share from any address.
+		if st := h.shareEntryStatus(ctx, child.ShareName); st != types.NFS4_OK {
+			return &types.CompoundResult{
+				Status: st,
+				OpCode: types.OP_LOOKUP,
+				Data:   encodeStatusOnly(st),
 			}
 		}
 

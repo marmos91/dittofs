@@ -63,35 +63,19 @@ func (h *Handler) handlePutFH(ctx *types.CompoundContext, reader io.Reader) *typ
 		}
 	}
 
-	// If the handle traces back to a known runtime share and
-	// that share is disabled, refuse with NFS4ERR_STALE. Clients reacquire
-	// fresh handles after restore + explicit re-enable. Handles that do not
-	// decode to a known share fall through unchanged — PUTFH stays
-	// permissive for pseudo-fs and boot-verifier flows.
+	// If the handle traces back to a known runtime share, apply the gate that
+	// covers the operations acting on the current filehandle without an auth
+	// context of their own. Handles that do not decode to a known share fall
+	// through unchanged — PUTFH stays permissive for pseudo-fs and
+	// boot-verifier flows.
 	if h.Registry != nil {
 		shareName, err := h.Registry.GetShareNameForHandle(ctx.Context, metadata.FileHandle(handle))
 		if err == nil {
-			if share, sErr := h.Registry.GetShare(shareName); sErr == nil && share != nil && !share.Enabled {
-				logger.Warn("NFSv4 PUTFH refused: share disabled",
-					"share", share.Name, "client", ctx.ClientAddr)
+			if st := h.shareEntryStatus(ctx, shareName); st != types.NFS4_OK {
 				return &types.CompoundResult{
-					Status: types.NFS4ERR_STALE,
+					Status: st,
 					OpCode: types.OP_PUTFH,
-					Data:   encodeStatusOnly(types.NFS4ERR_STALE),
-				}
-			}
-
-			// Enforce the share's netgroup client allowlist here as well as in
-			// buildV4AuthContext: operations that act on the current filehandle
-			// without building an auth context (LOCK, LOCKT, LOCKU,
-			// GET_DIR_DELEGATION) would otherwise reach a restricted share from
-			// any address. PUTFH is the only way such an operation can name a
-			// share handle, so gating it covers them all.
-			if ngErr := h.checkNetgroupAccess(ctx, shareName); ngErr != nil {
-				return &types.CompoundResult{
-					Status: nfs4StatusForAuthError(ngErr),
-					OpCode: types.OP_PUTFH,
-					Data:   encodeStatusOnly(nfs4StatusForAuthError(ngErr)),
+					Data:   encodeStatusOnly(st),
 				}
 			}
 		}

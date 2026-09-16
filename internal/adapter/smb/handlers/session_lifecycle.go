@@ -148,7 +148,7 @@ func (h *Handler) ReleaseAllLocksForSession(ctx context.Context, sessionID uint6
 		// and the unlock must name the same handle: SET_REPARSE_POINT can
 		// republish it between two reads, and unlocking the new one leaves this
 		// open's byte-range locks on the old.
-		metaHandle := openFile.Handle()
+		metaHandle := openFile.GetMetadataHandle()
 		if openFile.IsDirectory || openFile.IsPipe || len(metaHandle) == 0 {
 			return true
 		}
@@ -324,7 +324,7 @@ func (h *Handler) closeFilesWithFilter(
 			var leaseState uint32
 			var leaseEpoch uint16
 			if h.LeaseManager != nil && openFile.LeaseKey != ([16]byte{}) {
-				if state, epoch, found := h.LeaseManager.GetLeaseState(ctx, lock.FileHandle(openFile.Handle()), openFile.ShareName, openFile.LeaseKey); found {
+				if state, epoch, found := h.LeaseManager.GetLeaseState(ctx, lock.FileHandle(openFile.GetMetadataHandle()), openFile.ShareName, openFile.LeaseKey); found {
 					leaseState = state
 					leaseEpoch = epoch
 				}
@@ -397,7 +397,7 @@ func (h *Handler) closeFilesWithFilter(
 		// One snapshot for the whole teardown of this open: the lock release
 		// below and the lease break further down must name the same file, and
 		// SET_REPARSE_POINT can republish the handle between them.
-		metaHandle := openFile.Handle()
+		metaHandle := openFile.GetMetadataHandle()
 		if !openFile.IsDirectory && len(metaHandle) > 0 {
 			if h.PendingLockRegistry != nil {
 				for _, parked := range h.PendingLockRegistry.UnregisterAllForOwner(openFile.OpenID()) {
@@ -516,6 +516,22 @@ func (h *Handler) closeFilesWithFilter(
 	// sync.Map the rename scan never reads, and the in-flight ops for a
 	// teardown handle are not waited on here.
 	//
+	// ponytail: teardown drops a handle without draining its in-flight ops,
+	// unlike CLOSE, which drains first. Draining here would deadlock against
+	// the very work this function performs: an in-flight SET_INFO rename holds
+	// a handle-op registration while parked in WaitForOtherKeyBreaks, and that
+	// wait ends only on an ack or CLOSE from a lease holder — which, on a
+	// logoff or a dropped transport, only the lease release a few lines below
+	// can supply. Waiting first would make teardown wait for the rename while
+	// the rename waits for teardown, resolved only by the break timeout. The
+	// ceiling is that an op still running observes its handle gone from
+	// `files`: it keeps the *OpenFile it already holds, so it completes against
+	// a detached handle, and its late write or cache flush can land after the
+	// AppInstanceId failover path has handed the file to a new open. Upgrade to
+	// a drain only once a parked break-wait can be cancelled by the teardown
+	// that will satisfy it — cancel this session's waits, then drain, so the
+	// wait cannot be circular.
+	//
 	// releaseHandleLeaseRecord runs after every map removal so its "any other
 	// open on the same file shares this key" scan sees the shrunk table —
 	// otherwise sibling opens of the same file/key (all still present in the
@@ -616,7 +632,7 @@ func (h *Handler) handleDeleteOnClose(ctx context.Context, sess *session.Session
 	_, removed, err := h.removeElectedTarget(ctx, authCtx, openFile, target, caller)
 
 	if err == nil && removed {
-		if metaHandle := openFile.Handle(); h.LeaseManager != nil && len(metaHandle) > 0 {
+		if metaHandle := openFile.GetMetadataHandle(); h.LeaseManager != nil && len(metaHandle) > 0 {
 			lockFileHandle := lock.FileHandle(metaHandle)
 			// Exclude the closing session: its leases on this file are about to
 			// be released anyway, and firing self-breaks creates spurious
