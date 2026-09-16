@@ -52,3 +52,78 @@ func TestCheckEncryptionRequired_GlobalMode(t *testing.T) {
 		})
 	}
 }
+
+// TestCheckEncryptionRequired_NullGuestNotExempt pins that a null or guest
+// session is not exempt from encryption enforcement: a share that demands
+// encryption rejects their unencrypted traffic, and a globally-required server
+// rejects it for any post-session-setup request. Anonymous SMB3 encryption
+// derives its key from a fixed all-zero secret, so such a session is expected
+// to encrypt like any other — the request can never be made compliant by
+// downgrading it to cleartext. NEGOTIATE and SESSION_SETUP stay exempt because
+// no keys exist yet at that point in the exchange.
+func TestCheckEncryptionRequired_NullGuestNotExempt(t *testing.T) {
+	mgr := session.NewDefaultManager()
+	h := handlers.NewHandlerWithSessionManager(mgr)
+	connInfo := &ConnInfo{Handler: h, SessionManager: mgr}
+
+	// A tree connected to a share that requires encryption.
+	const encTreeID = uint32(0x77)
+	h.StoreTree(&handlers.TreeConnection{
+		TreeID:      encTreeID,
+		ShareName:   "/encrypted-share",
+		EncryptData: true,
+	})
+	// A tree connected to a share that does not require encryption.
+	const plainTreeID = uint32(0x78)
+	h.StoreTree(&handlers.TreeConnection{
+		TreeID:      plainTreeID,
+		ShareName:   "/plain-share",
+		EncryptData: false,
+	})
+
+	guest := session.NewSession(0x2001, "127.0.0.1:1", true, "guest", "DOMAIN")
+	mgr.StoreSession(guest)
+	null := session.NewSession(0x2002, "127.0.0.1:2", false, "", "DOMAIN")
+	mgr.StoreSession(null)
+
+	cases := []struct {
+		name        string
+		mode        string
+		command     types.Command
+		sessionID   uint64
+		treeID      uint32
+		isEncrypted bool
+		want        types.Status
+	}{
+		// Per-share EncryptData rejects null/guest traffic outright, in any mode.
+		{"guest_encrypt_share_denied", "preferred", types.SMB2Read, guest.SessionID, encTreeID, false, types.StatusAccessDenied},
+		{"null_encrypt_share_denied", "preferred", types.SMB2Read, null.SessionID, encTreeID, false, types.StatusAccessDenied},
+		{"guest_encrypt_share_denied_global_required", "required", types.SMB2Read, guest.SessionID, encTreeID, false, types.StatusAccessDenied},
+		// Global required mode rejects null/guest post-session-setup traffic.
+		{"guest_global_required_denied", "required", types.SMB2Read, guest.SessionID, 0, false, types.StatusAccessDenied},
+		{"null_global_required_denied", "required", types.SMB2Read, null.SessionID, 0, false, types.StatusAccessDenied},
+		// SESSION_SETUP and NEGOTIATE stay exempt: no keys exist yet.
+		{"guest_session_setup_exempt", "required", types.SMB2SessionSetup, guest.SessionID, 0, false, 0},
+		{"null_negotiate_exempt", "required", types.SMB2Negotiate, null.SessionID, 0, false, 0},
+		// An already-encrypted request is always allowed.
+		{"guest_encrypt_share_encrypted_ok", "required", types.SMB2Read, guest.SessionID, encTreeID, true, 0},
+		// Where nothing demands encryption, null/guest traffic is still allowed.
+		{"null_plain_share_preferred_ok", "preferred", types.SMB2Read, null.SessionID, plainTreeID, false, 0},
+		{"guest_plain_share_disabled_ok", "disabled", types.SMB2Read, guest.SessionID, plainTreeID, false, 0},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h.EncryptionConfig.Mode = c.mode
+			reqHeader := &header.SMB2Header{
+				Command:   c.command,
+				SessionID: c.sessionID,
+				TreeID:    c.treeID,
+			}
+			got := checkEncryptionRequired(reqHeader, connInfo, c.isEncrypted)
+			if got != c.want {
+				t.Errorf("checkEncryptionRequired = 0x%08x, want 0x%08x", got, c.want)
+			}
+		})
+	}
+}

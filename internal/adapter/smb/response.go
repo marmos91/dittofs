@@ -713,16 +713,15 @@ func checkEncryptionRequired(reqHeader *header.SMB2Header, connInfo *ConnInfo, i
 		return 0
 	}
 
-	// Per MS-SMB2 3.3.5.2.9: anonymous/null sessions bypass encryption requirements.
-	// Anonymous sessions have no session key and therefore cannot encrypt/decrypt.
-	// Also skip encryption enforcement for guest sessions (no signing key).
-	if reqHeader.SessionID != 0 {
-		if sess, ok := connInfo.Handler.GetSession(reqHeader.SessionID); ok {
-			if isGuest, isNull := sess.GuestOrNull(); isNull || isGuest {
-				return 0
-			}
-		}
-	}
+	// decision: null and guest sessions are NOT exempt from encryption
+	// enforcement, even though they cannot derive a session key from a logon
+	// secret. Anonymous SMB3 encryption is real — it derives its key from 16
+	// zero bytes — and both Windows Server 2022 and Samba accept it, so a
+	// share that demands encryption is never served in cleartext to such a
+	// session. The denial here is terminal for the session: it can never make
+	// the request compliant, which is the point — fail closed rather than
+	// expose share data. Overturn this if Windows is observed serving an
+	// EncryptData share in cleartext to an anonymous or guest session.
 
 	// Global encryption enforcement: when mode is "required", all post-session-setup
 	// messages must be encrypted.
