@@ -347,14 +347,15 @@ write_summary() {
     elif [[ -n "$failed_step" && "$failed_step" != "$GRADED_STEP" ]]; then
         verdict="${failed_step} failed (exit ${status}) — no tests were graded"
         icon=":construction:"
-    elif [[ "$status" -ge 125 && "$status" -le 127 && ! -r "${results_dir}/verdict" ]]; then
-        # Docker and the shell reserve 125-127 for "could not run the thing at
-        # all" — but the grader also exits with a COUNT, capped at 254, so those
-        # three values are ambiguous on their own. A run with exactly 125 new
-        # failures is a graded run, and it writes a verdict; a run Docker refused
-        # to start writes nothing. So the sidecar decides, and this branch is
-        # only for its absence.
-        verdict="the graded step could not run (exit ${status}); no result was produced"
+    elif [[ ! -r "${results_dir}/verdict" ]]; then
+        # No sidecar means the graded step never reached its parser: it died in a
+        # build, a bootstrap, a compose up, or was refused before it started.
+        # parse-results.sh writes the verdict whenever it runs at all, before it
+        # exits with its count — so the absence is the signal, and it does not
+        # depend on reading an exit status that is ambiguous with a failure
+        # count. Anything that DID grade says so in the sidecar, including a
+        # docker failure discovered after parsing.
+        verdict="the graded step produced no verdict (exit ${status}); no test was graded"
         icon=":construction:"
     elif [[ -r "${results_dir}/verdict" ]]; then
         # The graded step writes its own counts here because the exit status
@@ -373,6 +374,15 @@ write_summary() {
                 ;;
             ungraded)
                 verdict="no test results at all — the suite produced no output to grade"
+                icon=":construction:"
+                ;;
+            infrastructure)
+                # The graded step said so itself. It parses before it discovers
+                # the docker failure, so a verdict exists and the exit status is
+                # ambiguous with a failure count — the category is what settles
+                # it, which is why the step writes one rather than leaving the
+                # summary to guess.
+                verdict="the graded step hit an infrastructure failure; its results are not a verdict"
                 icon=":construction:"
                 ;;
             inconclusive)

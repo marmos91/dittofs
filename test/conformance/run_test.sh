@@ -76,10 +76,14 @@ echo "args: $*"
 exit 0
 EOF
 
-# Stands in for a grader: exits with the number of new failures.
+# Stands in for a grader: writes its verdict and exits with the number of new
+# failures. Both halves matter — parse-results.sh writes the sidecar whenever it
+# runs at all, before exiting with its count, which is what lets the summary
+# treat a MISSING sidecar as "never reached the parser".
 cat >"${FAKE_TEST}/fake/fail3.sh" <<'EOF'
 #!/usr/bin/env bash
 echo "3 new failures"
+echo "failures 3 0 0" > "${DITTOFS_RESULTS_DIR}/verdict"
 exit 3
 EOF
 
@@ -129,9 +133,19 @@ EOF
 
 cat >"${FAKE_TEST}/fake/infra.sh" <<'EOF'
 #!/usr/bin/env bash
-# Docker could not start the thing: no verdict written, and one of the three
-# exit codes reserved for that.
+# The real sequence: the runner parses whatever output exists and writes a
+# verdict, THEN discovers the docker failure and overwrites the category. The
+# status and the counts disagree here, and the category is what settles it.
+echo "failures 0 0 0" > "${DITTOFS_RESULTS_DIR}/verdict"
+echo "infrastructure 0 0 0" > "${DITTOFS_RESULTS_DIR}/verdict"
 exit 125
+EOF
+
+cat >"${FAKE_TEST}/fake/earlyfail.sh" <<'EOF'
+#!/usr/bin/env bash
+# A failure before the parser ever runs — a build, a bootstrap, a compose up.
+# set -e exits 1 and nothing writes a verdict.
+exit 1
 EOF
 
 cat >"${FAKE_TEST}/fake/graded125.sh" <<'EOF'
@@ -223,6 +237,15 @@ cat >"$FAKE_MANIFEST" <<'EOF'
       "tiers": { "pull_request": "all", "push": "all" },
       "steps": [
         { "name": "run", "cmd": "fake/infra.sh", "args": [], "root": false }
+      ]
+    },
+    "earlyfail": {
+      "description": "fails before the parser runs, so writes no verdict",
+      "runner_dir": "fake",
+      "profiles": ["memory"],
+      "tiers": { "pull_request": "all", "push": "all" },
+      "steps": [
+        { "name": "run", "cmd": "fake/earlyfail.sh", "args": [], "root": false }
       ]
     },
     "graded125": {
@@ -473,9 +496,15 @@ assert_not_contains "and is never called a new failure" "new failure(s)" "$OUT"
 # An infrastructure failure outranks whatever the parser managed to write: a
 # verdict from a partial output file would report a graded result for a run
 # Docker stopped.
+# The runner parses first and finds the docker failure second, so a verdict
+# EXISTS when the infra exit lands. The category is what settles it.
 OUT="$(run_fake --suite infra --profile memory)"
-assert_contains "a docker-level failure says the step could not run" "could not run" "$OUT"
+assert_contains "an infrastructure failure says its results are not a verdict" "not a verdict" "$OUT"
 assert_not_contains "and is not a failure count" "new failure(s)" "$OUT"
+
+# A failure before the parser runs writes nothing, and exits 1 rather than 125.
+OUT="$(run_fake --suite earlyfail --profile memory)"
+assert_not_contains "a pre-parser failure is not called a new failure" "new failure(s)" "$OUT"
 
 # 125 is also a legitimate failure COUNT, and that run graded something — so the
 # sidecar decides, not the numeric status.

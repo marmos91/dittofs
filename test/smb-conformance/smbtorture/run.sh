@@ -275,6 +275,14 @@ cleanup() {
         log_warn "Containers left running (--keep). Clean up with: cd ${CONFORMANCE_DIR} && docker compose -p ${COMPOSE_PROJECT_NAME} down -v"
     fi
 
+    # A run that never reached parse-results.sh leaves no verdict, and the
+    # common runner would render its exit status as a failure count. Only when
+    # absent: anything that graded has already written its own, including the
+    # infrastructure category above.
+    if [[ -n "${RESULTS_DIR:-}" && -d "${RESULTS_DIR}" && ! -r "${RESULTS_DIR}/verdict" ]]; then
+        echo "ungraded 0 0 0" > "${RESULTS_DIR}/verdict"
+    fi
+
     # Released last. A retry that acquires the claim while this teardown is
     # still running would have its stack removed by the `down -v` above, or its
     # startup overlapped by a local process still stopping — which is the
@@ -902,6 +910,14 @@ echo ""
 # the crash. record_rc only records 125-127 into _smbtorture_infra.
 if [[ $_smbtorture_infra -ge 125 ]]; then
     log_error "smbtorture had infrastructure failures (exit code $_smbtorture_infra)"
+    # Said on the sidecar, not left to the exit code. parse-results.sh has
+    # already written a verdict from whatever output existed, so the status and
+    # the sidecar disagree here — and the status alone cannot settle it, because
+    # the grader also exits with a count and 125 is a legitimate number of new
+    # failures. Overwriting the category is the only unambiguous signal.
+    if [[ -n "${RESULTS_DIR:-}" && -d "${RESULTS_DIR}" ]]; then
+        echo "infrastructure 0 0 0" > "${RESULTS_DIR}/verdict"
+    fi
     exit "$_smbtorture_infra"
 fi
 
