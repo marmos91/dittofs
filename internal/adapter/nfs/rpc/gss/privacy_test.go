@@ -524,3 +524,75 @@ func TestHandleDataWithPrivacy(t *testing.T) {
 		t.Fatalf("expected service %d, got %d", RPCGSSSvcPrivacy, result.Service)
 	}
 }
+
+// A sealed Wrap token's 16-byte header travels in the clear; only the copy
+// appended inside the ciphertext is integrity-protected. EC is what trims the
+// filler off the decrypted plaintext, so raising it on the wire shortens an
+// authenticated message without the attacker holding any key. UnwrapPrivacy
+// must reject such a token rather than hand a truncated body to NFS.
+func TestUnwrapPrivacyRejectsTamperedEC(t *testing.T) {
+	key := testSessionKey()
+	seqNum := uint32(42)
+	originalArgs := []byte("procedure-arguments-that-must-not-be-truncated")
+
+	requestBody := buildInitiatorPrivData(t, key, seqNum, originalArgs)
+
+	// The token is accepted intact.
+	args, _, err := UnwrapPrivacy(key, seqNum, requestBody)
+	if err != nil {
+		t.Fatalf("untampered UnwrapPrivacy failed: %v", err)
+	}
+	if !bytes.Equal(args, originalArgs) {
+		t.Fatalf("untampered args mismatch: got %q, want %q", args, originalArgs)
+	}
+
+	// Raise EC in the cleartext header. requestBody is an XDR opaque: a 4-byte
+	// length prefix then the Wrap token, whose EC field is octets 4..6.
+	const stolenOctets = 8
+	tampered := append([]byte(nil), requestBody...)
+	binary.BigEndian.PutUint16(tampered[8:10], stolenOctets)
+
+	args, _, err = UnwrapPrivacy(key, seqNum, tampered)
+	if err == nil {
+		t.Fatalf("tampered EC accepted: returned %d argument octets (original %d) with no integrity failure",
+			len(args), len(originalArgs))
+	}
+}
+
+// RRC is applied to the ciphertext after encryption, so the encrypted copy of
+// the header carries zero there while the wire header carries the real count.
+// A receiver that compared the two fields verbatim would reject every rotated
+// token a real client sends.
+func TestUnwrapPrivacyAcceptsRotatedToken(t *testing.T) {
+	key := testSessionKey()
+	seqNum := uint32(7)
+	originalArgs := []byte("rotated-payload")
+
+	requestBody := buildInitiatorPrivData(t, key, seqNum, originalArgs)
+
+	// Rotate the ciphertext right by rrc octets and record the count in the
+	// cleartext header, exactly as RFC 4121 section 4.2.5 describes.
+	const rrc = 5
+	tokenLen := binary.BigEndian.Uint32(requestBody[0:4])
+	token := append([]byte(nil), requestBody[4:4+tokenLen]...)
+	body := token[wrapTokenHdrLen:]
+	rotated := make([]byte, len(body))
+	split := len(body) - rrc%len(body)
+	copy(rotated, body[split:])
+	copy(rotated[rrc%len(body):], body[:split])
+	copy(body, rotated)
+	binary.BigEndian.PutUint16(token[6:8], rrc)
+
+	var buf bytes.Buffer
+	if err := writeOpaque(&buf, token); err != nil {
+		t.Fatalf("writeOpaque: %v", err)
+	}
+
+	args, _, err := UnwrapPrivacy(key, seqNum, buf.Bytes())
+	if err != nil {
+		t.Fatalf("rotated token rejected: %v", err)
+	}
+	if !bytes.Equal(args, originalArgs) {
+		t.Fatalf("rotated args mismatch: got %q, want %q", args, originalArgs)
+	}
+}

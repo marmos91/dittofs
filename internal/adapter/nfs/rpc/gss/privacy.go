@@ -148,13 +148,14 @@ func UnwrapPrivacy(sessionKey types.EncryptionKey, credSeqNum uint32, requestBod
 		// Extract header_copy (last 16 bytes of decrypted data)
 		headerCopy := decrypted[len(decrypted)-wrapTokenHdrLen:]
 
-		// Verify header_copy matches original header (except EC/RRC which should be 0 in the copy)
-		// Per RFC 4121: "the RRC field in the to-be-encrypted header contains the hex value 00 00"
+		// Verify header_copy matches the wire header. Only RRC differs: it is
+		// applied to the ciphertext after encryption, so per RFC 4121 §4.2.4 the
+		// to-be-encrypted copy carries the hex value 00 00 there. Every other
+		// field, EC included, carries its real value in the copy and is therefore
+		// integrity-protected by the encryption.
 		expectedHeader := make([]byte, wrapTokenHdrLen)
 		copy(expectedHeader, wrapTokenBytes[:wrapTokenHdrLen])
-		// Set EC and RRC to 0 for comparison (they're 0 in the header_copy inside ciphertext)
-		binary.BigEndian.PutUint16(expectedHeader[4:6], 0) // EC = 0
-		binary.BigEndian.PutUint16(expectedHeader[6:8], 0) // RRC = 0
+		binary.BigEndian.PutUint16(expectedHeader[6:8], 0) // RRC = 0 in the copy
 
 		if !bytes.Equal(headerCopy[:2], expectedHeader[:2]) { // Token ID
 			return nil, 0, fmt.Errorf("header_copy token ID mismatch: got %s, expected %s",
@@ -164,6 +165,19 @@ func UnwrapPrivacy(sessionKey types.EncryptionKey, credSeqNum uint32, requestBod
 			return nil, 0, fmt.Errorf("header_copy flags mismatch: got 0x%02x, expected 0x%02x",
 				headerCopy[2], expectedHeader[2])
 		}
+		if headerCopy[3] != expectedHeader[3] { // Filler octet (0xFF)
+			return nil, 0, fmt.Errorf("header_copy filler mismatch: got 0x%02x, expected 0x%02x",
+				headerCopy[3], expectedHeader[3])
+		}
+
+		// The wire EC is what trims the filler off the decrypted plaintext, and
+		// the wire header travels in the clear. Binding it to the encrypted copy
+		// is what stops an attacker who holds no key from shortening an
+		// authenticated message by raising EC.
+		copyEC := binary.BigEndian.Uint16(headerCopy[4:6])
+		if copyEC != ec {
+			return nil, 0, fmt.Errorf("header_copy EC mismatch: got %d, expected %d", copyEC, ec)
+		}
 
 		// Verify sequence number in header_copy matches
 		copySeqNum := binary.BigEndian.Uint64(headerCopy[8:16])
@@ -171,9 +185,9 @@ func UnwrapPrivacy(sessionKey types.EncryptionKey, credSeqNum uint32, requestBod
 			return nil, 0, fmt.Errorf("header_copy seq_num mismatch: got %d, expected %d", copySeqNum, sndSeqNum)
 		}
 
-		// Plaintext is everything before the header_copy
-		// Note: filler (if any) is between plaintext and header_copy, but EC tells us filler size
-		// For sealed tokens, EC = filler size. The plaintext ends at (len - headerLen - ec)
+		// Plaintext is everything before the filler and the header_copy.
+		// For sealed tokens EC is the filler size, so plaintext ends at
+		// (len - headerLen - ec).
 		fillerSize := int(ec)
 		plaintextEnd := len(decrypted) - wrapTokenHdrLen - fillerSize
 		if plaintextEnd < 0 {
@@ -301,11 +315,11 @@ func WrapPrivacy(sessionKey types.EncryptionKey, seqNum uint32, replyBody []byte
 	binary.BigEndian.PutUint16(header[6:8], rrc)
 	binary.BigEndian.PutUint64(header[8:16], uint64(seqNum))
 
-	// 4. Build header_copy for encryption (with EC=0, RRC=0)
-	// Per RFC 4121: "the RRC field in the to-be-encrypted header contains the hex value 00 00"
+	// 4. Build header_copy for encryption. It is the wire header with RRC
+	// zeroed; EC keeps its real value so the receiver can bind the cleartext
+	// EC to the encrypted copy (RFC 4121 §4.2.4).
 	headerCopy := make([]byte, wrapTokenHdrLen)
 	copy(headerCopy, header)
-	binary.BigEndian.PutUint16(headerCopy[4:6], 0) // EC = 0 in copy
 	binary.BigEndian.PutUint16(headerCopy[6:8], 0) // RRC = 0 in copy
 
 	// 5. Build to-be-encrypted: plaintext | filler | header_copy
