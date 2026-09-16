@@ -615,28 +615,9 @@ func (h *Handler) dispatchV41(compCtx *types.CompoundContext, tag []byte, numOps
 		}
 	}()
 
-	// Check if the connection is draining (returns NFS4ERR_DELAY to redirect
-	// client to another connection). SEQUENCE itself always works on draining
-	// connections so it is checked after SEQUENCE validation succeeds.
-	if compCtx.ConnectionID != 0 && h.StateManager.IsConnectionDraining(compCtx.ConnectionID) {
-		logger.Debug("NFSv4.1 COMPOUND connection draining",
-			"connection_id", compCtx.ConnectionID,
-			"client", compCtx.ClientAddr)
-		// Return SEQUENCE result plus a DELAY error for the compound
-		results := []types.CompoundResult{*seqResult}
-		encoded, encErr := encodeCompoundResponse(types.NFS4ERR_DELAY, tag, results)
-		if encErr != nil {
-			return nil, encErr
-		}
-		responseBytes = encoded
-		return encoded, nil
-	}
-
 	// Reply-size accounting starts with the fixed header and the SEQUENCE result,
 	// so the budget the remaining ops are measured against is what is actually
-	// left of it. It runs after the drain check, because a draining connection
-	// is a transient condition the client answers by moving connection, while an
-	// overrun budget is a property of the session it negotiated.
+	// left of it.
 	//
 	// A SEQUENCE reply that already overruns the budget is answered on SEQUENCE
 	// itself, which RFC 8881 Section 2.10.6.4 permits, and is left uncached: the
@@ -644,6 +625,12 @@ func (h *Handler) dispatchV41(compCtx *types.CompoundContext, tag []byte, numOps
 	// SEQUENCE or CB_SEQUENCE operation". Returning before responseBytes is
 	// assigned leaves the reply uncached while the defer above still releases
 	// the slot.
+	//
+	// This runs before the drain check below because the draining reply is the
+	// same reply — the fixed header and the SEQUENCE result, with the overall
+	// status carrying the error — so a budget that admits SEQUENCE admits the
+	// drain answer too, and one that refuses it must refuse it here rather than
+	// let the drain path encode a reply the session cannot accept.
 	var limits *replyLimits
 	if sess != nil && v41ctx != nil {
 		limits = &replyLimits{
@@ -661,6 +648,24 @@ func (h *Handler) dispatchV41(compCtx *types.CompoundContext, tag []byte, numOps
 			overflow(seqResult, status)
 			return encodeCompoundResponse(status, tag, []types.CompoundResult{*seqResult})
 		}
+	}
+
+	// Check if the connection is draining (returns NFS4ERR_DELAY to redirect
+	// client to another connection). SEQUENCE itself always works on draining
+	// connections so it is checked after SEQUENCE validation succeeds, and the
+	// reply it builds is the SEQUENCE reply the budget above already admitted.
+	if compCtx.ConnectionID != 0 && h.StateManager.IsConnectionDraining(compCtx.ConnectionID) {
+		logger.Debug("NFSv4.1 COMPOUND connection draining",
+			"connection_id", compCtx.ConnectionID,
+			"client", compCtx.ClientAddr)
+		// Return SEQUENCE result plus a DELAY error for the compound
+		results := []types.CompoundResult{*seqResult}
+		encoded, encErr := encodeCompoundResponse(types.NFS4ERR_DELAY, tag, results)
+		if encErr != nil {
+			return nil, encErr
+		}
+		responseBytes = encoded
+		return encoded, nil
 	}
 
 	// Dispatch the remaining ops (the SEQUENCE result is prepended below).

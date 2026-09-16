@@ -1326,3 +1326,114 @@ func TestCompound_V41_ExemptOpAfterSequence(t *testing.T) {
 		t.Errorf("result[1] status = %d, want NFS4_OK", eidStatus)
 	}
 }
+
+// createSessionWithReplyBudgets creates a session whose fore channel negotiates
+// the given ca_maxresponsesize and ca_maxresponsesize_cached, so the reply-size
+// rules can be tripped on a reply whose contents are known. The session is
+// created over connID so the caller can drive it on a connection the state
+// manager knows about.
+func createSessionWithReplyBudgets(t *testing.T, h *Handler, ownerID string, connID uint64, maxResp, maxCached uint32) types.SessionId4 {
+	t.Helper()
+	clientID, seqID := registerExchangeID(t, h, ownerID)
+
+	ctx := newTestCompoundContext()
+	ctx.ConnectionID = connID
+
+	var argBuf bytes.Buffer
+	args := types.CreateSessionArgs{
+		ClientID:   clientID,
+		SequenceID: seqID,
+		ForeChannelAttrs: types.ChannelAttrs{
+			MaxRequestSize:        1048576,
+			MaxResponseSize:       maxResp,
+			MaxResponseSizeCached: maxCached,
+			MaxOperations:         16,
+			MaxRequests:           64,
+		},
+		BackChannelAttrs: types.ChannelAttrs{
+			MaxRequestSize:  4096,
+			MaxResponseSize: 4096,
+			MaxOperations:   2,
+			MaxRequests:     1,
+		},
+		CbProgram:  0x40000000,
+		CbSecParms: []types.CallbackSecParms4{{CbSecFlavor: 0}},
+	}
+	if err := args.Encode(&argBuf); err != nil {
+		t.Fatalf("encode CreateSessionArgs: %v", err)
+	}
+
+	ops := []compoundOp{{opCode: types.OP_CREATE_SESSION, data: argBuf.Bytes()}}
+	resp, err := h.ProcessCompound(ctx, buildCompoundArgsWithOps([]byte("cs"), 1, ops))
+	if err != nil {
+		t.Fatalf("CREATE_SESSION ProcessCompound error: %v", err)
+	}
+	reader := bytes.NewReader(resp)
+	status, _ := xdr.DecodeUint32(reader)
+	if status != types.NFS4_OK {
+		t.Fatalf("CREATE_SESSION overall status = %d, want NFS4_OK", status)
+	}
+	_, _ = xdr.DecodeOpaque(reader) // tag
+	_, _ = xdr.DecodeUint32(reader) // numResults
+	_, _ = xdr.DecodeUint32(reader) // opcode
+
+	var csRes types.CreateSessionRes
+	if err := csRes.Decode(reader); err != nil {
+		t.Fatalf("decode CreateSessionRes: %v", err)
+	}
+	if csRes.Status != types.NFS4_OK {
+		t.Fatalf("CREATE_SESSION status = %d, want NFS4_OK", csRes.Status)
+	}
+	if csRes.ForeChannelAttrs.MaxResponseSizeCached != maxCached {
+		t.Fatalf("negotiated MaxResponseSizeCached = %d, want %d",
+			csRes.ForeChannelAttrs.MaxResponseSizeCached, maxCached)
+	}
+	return csRes.SessionID
+}
+
+// TestSequence_DrainingReplyObeysTheReplyBudget checks that the reply a
+// draining connection receives is measured against the session's negotiated
+// sizes like any other.
+//
+// The drain answer is a SEQUENCE result plus an overall NFS4ERR_DELAY, and it
+// is encoded on a path that returns early. That path used to bypass the
+// reply-size check and still hand the bytes to CompleteSlotRequest, so a
+// draining connection could cache and send a reply larger than
+// ca_maxresponsesize_cached — including the case where the client negotiated a
+// zero cache budget, which by definition no cached reply fits under. The check
+// now runs before the drain branch, so the overrun is answered on SEQUENCE.
+func TestSequence_DrainingReplyObeysTheReplyBudget(t *testing.T) {
+	h := newTestHandler()
+	const connID = 8060
+	// A cache budget no SEQUENCE reply fits under, with the client asking for
+	// the reply to be cached: every cached reply is one byte too many.
+	sessionID := createSessionWithReplyBudgets(t, h, "draining-budget-client", connID, 1048576, 0)
+
+	if err := h.StateManager.SetConnectionDraining(connID, true); err != nil {
+		t.Fatalf("SetConnectionDraining error: %v", err)
+	}
+
+	ctx := newTestCompoundContext()
+	ctx.ConnectionID = connID
+
+	resp, err := h.ProcessCompound(ctx, buildCompoundArgsWithOps([]byte("drain"), 1, []compoundOp{
+		{opCode: types.OP_SEQUENCE, data: encodeSequenceArgs(sessionID, 0, 1, 0, true)},
+		{opCode: types.OP_PUTROOTFH},
+	}))
+	if err != nil {
+		t.Fatalf("ProcessCompound error: %v", err)
+	}
+
+	decoded, _ := decodeSequenceRes(t, resp)
+	if decoded.Status != types.NFS4ERR_REP_TOO_BIG_TO_CACHE {
+		t.Errorf("status = %d, want NFS4ERR_REP_TOO_BIG_TO_CACHE (%d); the drain path "+
+			"must not send a reply the negotiated cache budget refuses",
+			decoded.Status, types.NFS4ERR_REP_TOO_BIG_TO_CACHE)
+	}
+	if decoded.NumResults != 1 {
+		t.Fatalf("numResults = %d, want 1 (SEQUENCE only)", decoded.NumResults)
+	}
+	if decoded.Results[0].OpCode != types.OP_SEQUENCE {
+		t.Errorf("result opcode = %d, want OP_SEQUENCE (%d)", decoded.Results[0].OpCode, types.OP_SEQUENCE)
+	}
+}
