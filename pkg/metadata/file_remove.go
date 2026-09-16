@@ -178,15 +178,13 @@ func (s *Service) RemoveFile(ctx *AuthContext, parentHandle FileHandle, name str
 
 		// Handle link count.
 		//
-		// Both branches below stamp lastLink and returnFile.PayloadID
-		// unconditionally rather than only on the branch that needs them. The
-		// transaction is retried on a transient conflict, and the conflict that
-		// retries this one is a concurrent CreateHardLink on this very inode —
-		// the event that also flips which branch the re-read link count takes.
-		// A flag left set by the previous attempt would then describe the
-		// branch that was rolled back: an empty PayloadID from a decrement
-		// attempt orphans the content the last-link attempt did free, and a
-		// lastLink from a last-link attempt discards buffered WRITE state for a
+		// Both branches stamp lastLink and returnFile.PayloadID, even where the
+		// value is the empty one, because the transaction is retried and the
+		// conflict that retries it — a concurrent CreateHardLink on this inode —
+		// is the same event that flips which branch the re-read count takes. A
+		// value left behind by the rolled-back attempt would then describe the
+		// other branch: an empty PayloadID orphans the content the last-link
+		// attempt freed, and a set lastLink discards buffered WRITE state for a
 		// file a surviving hard link still names.
 		if linkCount > 1 {
 			// File has other hard links, just decrement count

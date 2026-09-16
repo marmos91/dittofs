@@ -279,12 +279,7 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 	// OLDER time (e.g. an SMB frozen-timestamp restore) and resurrect the bump
 	// durably (#1573). Only the time-setting case needs this — a mode/owner-only
 	// change never lowers a timestamp, so a racing flush is harmless there.
-	// The change time as this call found it, before any branch below stamps
-	// `now` over it. PreserveCtime means "leave the stored value as it is", and
-	// what holdCtime must carry forward is the newest value that was NOT written
-	// by this call — a peer's commit, or a coalesced directory bump — never this
-	// call's own stamp, which is always the later of the two and would otherwise
-	// win the comparison.
+	//
 	// Ctime counts as an explicit directory-timestamp set like the others. It
 	// was missing, and the omission had a consequence: a restore that freezes
 	// ONLY the change time (restoreParentDirFrozenTimestamps sends Ctime alone
@@ -629,10 +624,10 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 		// The server must do this even if the client doesn't send TIME_MODIFY_SET,
 		// because POSIX requires it and NFS clients may rely on server-side updates.
 		file.Mtime = now
-		// Stamped unconditionally, including under PreserveCtime: holdCtime is
-		// the one place that decides what a held change time ends up as, and it
-		// discards whatever this call stamped in favour of the value the call
-		// found. A second guard here would be a second answer to the same
+		// Stamped unconditionally, including under PreserveCtime: the write
+		// closure below is the one place that decides what a held change time
+		// ends up as, and it keeps the row's own value over whatever this call
+		// stamped. A second guard here would be a second answer to the same
 		// question, and the two could drift.
 		file.Ctime = now
 
@@ -717,32 +712,19 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 		if attrs.Ctime == nil && !attrs.PreserveCtime {
 			file.Ctime = now
 		}
-		// Holding ChangeTime means writing back whatever the row holds, not
-		// whatever this call read before it began. `file` was loaded before the
-		// transaction opened and every field of it is about to be rewritten, so
-		// leaving Ctime untouched in memory would still revert an advance another
-		// writer committed in between — the backwards move a held timestamp exists
-		// to avoid, and the one NFSv4's change attribute must never make. Re-read
-		// it inside the transaction and write back what the row holds, so the
-		// write carries the current value forward — the CURRENT value, not the
-		// later of two: a peer that deliberately lowered it has said what the
-		// change time is, and taking a maximum would roll that back. Exact on a backend whose transaction serialises the read
-		// against concurrent writers; on one whose in-transaction read takes no
-		// row lock this narrows the window rather than closing it, the same
-		// residue RestoreChangeTimeIfUnchanged documents.
-		// The re-read's failure is the operation's failure. Falling back to the
-		// pre-transaction snapshot would write a Ctime this call has already
-		// been told not to trust, and UpdateAttrs is allowed to create a row
-		// that is missing — so a file deleted between the two reads would be
-		// recreated carrying the stale value, which is a worse outcome than
-		// refusing the attribute change.
-		// rowToWrite re-reads the inode inside the transaction and copies onto
-		// it exactly the fields this call changed, so every other column comes
-		// from committed state instead of from the copy read before the
-		// transaction opened. Writing that earlier copy back reverts whatever a
-		// concurrent writer committed in the gap — a chmod undoing a WRITE's
-		// size and mtime — and no isolation level can help, because the stale
-		// row is already in hand before the transaction starts.
+
+		// writeRow re-reads the inode inside the transaction and copies onto it
+		// exactly the fields this call changed, so every other column comes from
+		// committed state instead of from the copy read before the transaction
+		// opened. Writing that earlier copy back reverts whatever a concurrent
+		// writer committed in the gap — a chmod undoing a WRITE's size and
+		// mtime, the backwards move NFSv4's change attribute must never make —
+		// and no isolation level can help, because the stale row is already in
+		// hand before the transaction starts. Exact on a backend whose
+		// transaction serialises the read against concurrent writers; on one
+		// whose in-transaction read takes no row lock this narrows the window
+		// rather than closing it, the same residue
+		// RestoreChangeTimeIfUnchanged documents.
 		//
 		// Which fields changed is decided by comparing against `pre` rather
 		// than by restating the conditions above, so a branch added later
@@ -750,19 +732,25 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 		// keyed off the request instead: they are replaced wholesale when the
 		// caller asks for them and are never touched otherwise, which is
 		// cheaper to establish than deep equality.
-		rowToWrite := func(tx Transaction) (*File, error) {
-			row, rErr := tx.GetFile(ctx.Context, handle)
-			if rErr != nil {
-				return nil, rErr
+		//
+		// The re-read's failure is the operation's failure. Falling back to the
+		// pre-transaction snapshot would write back a row this call has already
+		// been told not to trust, and UpdateAttrs is allowed to create a row
+		// that is missing — so a file deleted between the two reads would be
+		// recreated carrying the stale state, which is a worse outcome than
+		// refusing the attribute change.
+		writeRow := func(tx Transaction) error {
+			row, err := tx.GetFile(ctx.Context, handle)
+			if err != nil {
+				return err
 			}
 			if row == nil {
-				return nil, &StoreError{
+				return &StoreError{
 					Code:    ErrNotFound,
 					Message: "file disappeared while its attributes were being written",
 					Path:    file.Path,
 				}
 			}
-			rowCtime := row.Ctime
 
 			if file.Mode != pre.Mode {
 				row.Mode = file.Mode
@@ -785,7 +773,21 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 			if !file.CreationTime.Equal(pre.CreationTime) {
 				row.CreationTime = file.CreationTime
 			}
-			if !file.Ctime.Equal(pre.Ctime) {
+			// A held change time means the stored value is the authority — a
+			// peer's commit stands, higher or lower — so the row keeps its own
+			// Ctime whatever the branches above stamped.
+			//
+			// Lifted only by a directory bump that is recorded but not yet
+			// flushed: that value is newer than the row by construction, and
+			// the Clear that follows an explicit directory-time set would
+			// otherwise discard it for good, moving a peer's visible change
+			// time backwards.
+			switch {
+			case attrs.PreserveCtime && attrs.Ctime == nil:
+				if pendingDirCtime.After(row.Ctime) {
+					row.Ctime = pendingDirCtime
+				}
+			case !file.Ctime.Equal(pre.Ctime):
 				row.Ctime = file.Ctime
 			}
 			// A chmod rewrites the mode's OWNER@/GROUP@/EVERYONE@ ACEs, so an
@@ -804,28 +806,18 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 				row.ObjectID = file.ObjectID
 			}
 
-			// A held change time means the stored value is the authority — a
-			// peer's commit stands, higher or lower — so the row's own Ctime is
-			// left in place whatever the branches above stamped.
-			//
-			// Lifted only by a directory bump that is recorded but not yet
-			// flushed: that value is newer than the row by construction, and
-			// the Clear that follows an explicit directory-time set would
-			// otherwise discard it for good, moving a peer's visible change
-			// time backwards.
-			if attrs.PreserveCtime && attrs.Ctime == nil {
-				row.Ctime = rowCtime
-				if pendingDirCtime.After(row.Ctime) {
-					row.Ctime = pendingDirCtime
-				}
-			}
-
 			// The post-op attributes this call reports must describe the row it
 			// actually wrote. Recorded beside `file` rather than onto it: the
 			// transaction is retried on a transient conflict, and a later
 			// attempt still has to compare this call's mutations against `pre`.
 			writtenAttr = CopyFileAttr(&row.FileAttr)
-			return row, nil
+
+			// Only a size change prunes blocks, so the relaxed path below never
+			// reaches SetManifest.
+			if blocksPruned {
+				return tx.SetManifest(ctx.Context, row)
+			}
+			return tx.UpdateAttrs(ctx.Context, row)
 		}
 		// A size change (truncate/grow) is data-paired: the new size must
 		// survive a crash together with the block data, or a read past the new
@@ -844,16 +836,7 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 			// file between the two — silently undoing the truncate (#1753).
 			mu := s.pendingWrites.GetFlushLock(handle)
 			mu.Lock()
-			err := store.WithTransaction(ctx.Context, func(tx Transaction) error {
-				row, rErr := rowToWrite(tx)
-				if rErr != nil {
-					return rErr
-				}
-				if blocksPruned {
-					return tx.SetManifest(ctx.Context, row)
-				}
-				return tx.UpdateAttrs(ctx.Context, row)
-			})
+			err := store.WithTransaction(ctx.Context, writeRow)
 			if err == nil {
 				// Discard, don't flush: a buffered MaxSize would resurrect the
 				// pre-truncate size on the next flush.
@@ -864,13 +847,7 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 				return nil, err
 			}
 		} else {
-			if err := withRelaxedTransaction(store, ctx.Context, func(tx Transaction) error {
-				row, rErr := rowToWrite(tx)
-				if rErr != nil {
-					return rErr
-				}
-				return tx.UpdateAttrs(ctx.Context, row)
-			}); err != nil {
+			if err := withRelaxedTransaction(store, ctx.Context, writeRow); err != nil {
 				return nil, err
 			}
 			// Invalidate cached file in pending writes to ensure subsequent

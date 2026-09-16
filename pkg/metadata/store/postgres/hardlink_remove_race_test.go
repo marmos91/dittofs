@@ -5,63 +5,13 @@ package postgres_test
 import (
 	"context"
 	"os"
-	"strconv"
-	"strings"
 	"sync"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/postgres"
 )
 
-// newRaceTestStore builds a PostgresMetadataStore from DITTOFS_TEST_POSTGRES_DSN.
-func newRaceTestStore(t *testing.T) *postgres.PostgresMetadataStore {
-	t.Helper()
-	dsn := os.Getenv("DITTOFS_TEST_POSTGRES_DSN")
-	if dsn == "" {
-		t.Skip("DITTOFS_TEST_POSTGRES_DSN not set, skipping PostgreSQL hard-link race test")
-	}
-	cfg := &postgres.PostgresMetadataStoreConfig{SSLMode: "disable", AutoMigrate: true}
-	for _, kv := range strings.Fields(dsn) {
-		parts := strings.SplitN(kv, "=", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		switch parts[0] {
-		case "host":
-			cfg.Host = parts[1]
-		case "port":
-			p, err := strconv.Atoi(parts[1])
-			if err != nil {
-				t.Fatalf("parse port: %v", err)
-			}
-			cfg.Port = p
-		case "user":
-			cfg.User = parts[1]
-		case "password":
-			cfg.Password = parts[1]
-		case "dbname", "database":
-			cfg.Database = parts[1]
-		case "sslmode", "ssl_mode":
-			cfg.SSLMode = parts[1]
-		}
-	}
-	caps := metadata.FilesystemCapabilities{
-		MaxReadSize: 1048576, PreferredReadSize: 1048576,
-		MaxWriteSize: 1048576, PreferredWriteSize: 1048576,
-		MaxFileSize: 9223372036854775807, MaxFilenameLen: 255,
-		MaxPathLen: 4096, MaxHardLinkCount: 32767,
-		SupportsHardLinks: true, SupportsSymlinks: true,
-		CaseSensitive: true, CasePreserving: true, TimestampResolution: 1,
-	}
-	store, err := postgres.NewPostgresMetadataStore(context.Background(), cfg, caps)
-	if err != nil {
-		t.Fatalf("NewPostgresMetadataStore: %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	return store
-}
-
+// rootAuthCtx is the UID 0 caller every operation in this test runs as.
 func rootAuthCtx() *metadata.AuthContext {
 	return &metadata.AuthContext{
 		Context:    context.Background(),
@@ -89,7 +39,10 @@ func rootAuthCtx() *metadata.AuthContext {
 // the inode is the failure; the link count is reported alongside it because a
 // count of 1 after both operations is what the survivor is entitled to.
 func TestRemoveFileHardLinkRace_PayloadFreedWhileLinked(t *testing.T) {
-	store := newRaceTestStore(t)
+	if os.Getenv("DITTOFS_TEST_POSTGRES_DSN") == "" {
+		t.Skip("DITTOFS_TEST_POSTGRES_DSN not set, skipping PostgreSQL hard-link race test")
+	}
+	store := newPostgresStore(t)
 	ctx := context.Background()
 
 	const shareName = "/racetest"

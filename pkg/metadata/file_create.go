@@ -177,14 +177,18 @@ func (s *Service) CreateHardLink(ctx *AuthContext, dirHandle FileHandle, name st
 			}
 		}
 
-		// Add to directory's children
-		if err := tx.SetChild(ctx.Context, dirHandle, name, targetHandle); err != nil {
-			return err
-		}
-
-		// Increment target's link count. A failed read must abort: writing an
-		// nlink below the number of directory entries pointing at the file lets
-		// a later unlink free content that is still referenced.
+		// Increment target's link count BEFORE inserting the directory entry.
+		// Both statements lock the target inode — the entry through the
+		// parent_child_map foreign key, which takes FOR KEY SHARE, and the
+		// count through a plain UPDATE, which takes FOR UPDATE. Taking the
+		// weaker lock first and upgrading leaves a remove that takes the
+		// stronger one directly to deadlock against this, which postgres
+		// resolves only after a full deadlock_timeout. Same order as RemoveFile
+		// means neither waits on the other's escalation.
+		//
+		// A failed read must abort: writing an nlink below the number of
+		// directory entries pointing at the file lets a later unlink free
+		// content that is still referenced.
 		linkCount, err := tx.GetLinkCount(ctx.Context, targetHandle)
 		if err != nil {
 			return err
@@ -207,11 +211,15 @@ func (s *Service) CreateHardLink(ctx *AuthContext, dirHandle FileHandle, name st
 			return err
 		}
 
-		// Update timestamps. The target row is re-read inside the transaction
-		// so only Ctime carries over from this operation and every other column
-		// comes from committed state — the copy read before the transaction
-		// opened would write back whatever a concurrent WRITE committed in the
-		// meantime.
+		// Add to directory's children
+		if err := tx.SetChild(ctx.Context, dirHandle, name, targetHandle); err != nil {
+			return err
+		}
+
+		// Update timestamps. Re-read the target inside the transaction so only
+		// Ctime carries over from this operation: the copy read before the
+		// transaction opened would write back over whatever a concurrent WRITE
+		// has committed since.
 		now := time.Now()
 		txTarget := target
 		if fresh, tErr := tx.GetFile(ctx.Context, targetHandle); tErr == nil && fresh != nil {
