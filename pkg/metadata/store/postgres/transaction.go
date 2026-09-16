@@ -21,6 +21,28 @@ import (
 // are retried; non-transient errors return immediately. The deadline and
 // jittered backoff are shared with the sqlite backend in internal/txretry.
 
+// txOptions runs every transaction at REPEATABLE READ.
+//
+// The metadata service reads a value inside a transaction, branches on it, and
+// writes an absolute result back — RemoveFile reads nlink and writes nlink-1,
+// CreateHardLink reads it and writes nlink+1, SetFileAttributes reads a row and
+// writes the whole row. That shape is only atomic if a writer that committed
+// after the read is refused. badger refuses it with SSI, sqlite with a single
+// writer, memory with a store-wide mutex; at postgres's READ COMMITTED default
+// nothing refused it, so the second UPDATE simply overwrote the first and
+// RemoveFile could free a payload a surviving hard link still referenced.
+//
+// REPEATABLE READ makes postgres refuse it too: an UPDATE or DELETE that
+// reaches a row changed since this transaction's snapshot raises 40001, which
+// withTransaction already retries against the committed state. SERIALIZABLE
+// would additionally order read-only predicates, but nothing here needs that —
+// the remaining read-then-write pairs all touch the row they later write, and
+// the only phantom that matters (two creates racing for one name) is already
+// refused by the parent_child_map unique index. SERIALIZABLE also aborts plain
+// SELECTs, which several closures swallow rather than propagate, so a conflict
+// there would be lost instead of retried.
+var txOptions = pgx.TxOptions{IsoLevel: pgx.RepeatableRead}
+
 // ============================================================================
 // Transaction Support
 // ============================================================================
@@ -111,7 +133,7 @@ func (s *PostgresMetadataStore) withTransaction(ctx context.Context, fn func(tx 
 		// when the pool is exhausted. This is critical under high concurrent load
 		// (e.g., POSIX compliance tests) where all connections might be in use.
 		acquireCtx, cancel := context.WithTimeout(ctx, poolConnectionAcquireTimeout)
-		tx, err := s.pool.Begin(acquireCtx)
+		tx, err := s.pool.BeginTx(acquireCtx, txOptions)
 		cancel() // Release timer resources immediately after Begin returns
 
 		if err != nil {
@@ -392,13 +414,13 @@ func (tx *postgresTransaction) SetFilesystemCapabilities(capabilities metadata.F
 // LockFileRow implements metadata.FileRowLocker so a read-modify-write of one
 // inode's attributes serialises.
 //
-// Postgres runs this transaction at READ COMMITTED, where a bare read followed
-// by an UPDATE loses a concurrent writer's change without reporting anything:
-// the second UPDATE waits for the first to commit and then writes attributes
-// computed from the pre-image it read earlier. Taking the row here, before that
-// read, makes the second transaction wait at the lock instead, so its read sees
-// the committed value. sqlite and badger need no equivalent — they refuse the
-// second writer and their retry re-reads.
+// At REPEATABLE READ a bare read followed by an UPDATE of the same row is
+// refused rather than lost, but it is refused with a 40001 that costs the whole
+// transaction a retry. Taking the row up front makes the second transaction
+// wait at the lock and then read the committed value, so a contended
+// read-modify-write of one inode's attributes makes progress on its first
+// attempt. sqlite and badger need no equivalent — they refuse the second writer
+// and their retry re-reads.
 //
 // No rows come back when the handle names nothing; the caller's read reports
 // that as ErrNotFound.

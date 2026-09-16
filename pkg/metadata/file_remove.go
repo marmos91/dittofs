@@ -176,10 +176,22 @@ func (s *Service) RemoveFile(ctx *AuthContext, parentHandle FileHandle, name str
 			return lcErr
 		}
 
-		// Handle link count
+		// Handle link count.
+		//
+		// Both branches below stamp lastLink and returnFile.PayloadID
+		// unconditionally rather than only on the branch that needs them. The
+		// transaction is retried on a transient conflict, and the conflict that
+		// retries this one is a concurrent CreateHardLink on this very inode —
+		// the event that also flips which branch the re-read link count takes.
+		// A flag left set by the previous attempt would then describe the
+		// branch that was rolled back: an empty PayloadID from a decrement
+		// attempt orphans the content the last-link attempt did free, and a
+		// lastLink from a last-link attempt discards buffered WRITE state for a
+		// file a surviving hard link still names.
 		if linkCount > 1 {
 			// File has other hard links, just decrement count
 			// Empty PayloadID signals caller NOT to delete content
+			lastLink = false
 			returnFile.PayloadID = ""
 			returnFile.Nlink = linkCount - 1
 			returnFile.Ctime = now
@@ -197,6 +209,7 @@ func (s *Service) RemoveFile(ctx *AuthContext, parentHandle FileHandle, name str
 		} else {
 			// Last link - set nlink=0 but keep metadata for POSIX compliance
 			lastLink = true
+			returnFile.PayloadID = file.PayloadID
 			returnFile.Nlink = 0
 			returnFile.Ctime = now
 
@@ -205,7 +218,9 @@ func (s *Service) RemoveFile(ctx *AuthContext, parentHandle FileHandle, name str
 				return err
 			}
 
-			// Update file's ctime and nlink
+			// Update file's ctime and nlink. Nlink stays 0 on a later
+			// decrement attempt, which no backend persists from the attribute
+			// row — SetLinkCount above is the sole authority for the count.
 			file.Ctime = now
 			file.Nlink = 0
 			if err := tx.UpdateAttrs(ctx.Context, file); err != nil {

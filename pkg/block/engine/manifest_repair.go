@@ -231,6 +231,15 @@ func applyPayloadRepairs(ctx context.Context, store metadata.Store, f *metadata.
 	payloadID := string(f.PayloadID)
 
 	return store.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		// The transaction is retried on a transient conflict and the rollback
+		// undoes the row writes, not the per-action verdicts recorded here.
+		// Clearing them first keeps the report describing the attempt that
+		// actually committed rather than accumulating across attempts.
+		for i := range actions {
+			actions[i].Applied = false
+			actions[i].SkipReason = ""
+		}
+
 		cur, err := tx.GetFile(ctx, handle)
 		if metadata.IsNotFoundError(err) {
 			// Unlinked between the scan and the write. There is nothing left
