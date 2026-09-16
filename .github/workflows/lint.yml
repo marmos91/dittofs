@@ -170,6 +170,27 @@ jobs:
           fi
           ./test/commit-type-matches-diff.sh "$BASE"
 
+      # The trailer arrives by default rather than by choice: the agent harness
+      # instructs sessions to append an AI co-author line, the project forbids
+      # it, and which instruction a session followed is invisible in the diff.
+      # It reached develop once already, from a branch whose author had removed
+      # it before the merge — a squash body concatenates the individual commit
+      # messages, so a cleanup landing after the squash cleans nothing. Sharing
+      # the range above means this also covers pushes straight to develop.
+      - name: Check that no commit credits an AI tool
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        env:
+          BASE: >-
+            ${{ github.event_name == 'pull_request'
+                && format('origin/{0}', github.base_ref)
+                || github.event.before }}
+        run: |
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+            echo "no base commit for this event; nothing to check"
+            exit 0
+          fi
+          ./test/no-ai-attribution.sh "$BASE"
+
       # The E2E harness is what decides whether a failing suite is visible at
       # all, so it is exercised against deliberately failing, wedged and
       # false-green stand-in test commands on every change.
