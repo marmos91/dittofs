@@ -18,11 +18,12 @@ import (
 // sub-interfaces required to manage users plus their group memberships and
 // share permissions. store.Store satisfies it because Store embeds all of these.
 //
-// The share-permission mutations on it complete themselves: the store the
-// router supplies is the runtime's grant-completing wrapper, which reprojects
-// the share root ACL and invalidates the adapters' auth caches after a
-// successful write, so a grant written here lands identically to the same grant
-// written through the share permission routes.
+// The mutations on it that move a projected grant identity complete themselves:
+// the store the router supplies is the runtime's grant-completing wrapper, which
+// reprojects the share root ACL and invalidates the adapters' auth caches after a
+// successful share-permission write or a user UID change, so a grant written
+// here lands identically to the same grant written through the share permission
+// routes.
 type userStore interface {
 	store.UserStore
 	store.GroupStore
