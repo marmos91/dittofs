@@ -8,7 +8,7 @@ package handlers
 import (
 	"context"
 
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/auth"
 )
 
 // NLMHandlerContext contains context for NLM procedure handlers.
@@ -53,19 +53,19 @@ type NLMHandlerContext struct {
 	Data []byte
 }
 
-// Identity returns the requester's Unix credentials as the identity the
-// metadata layer authorizes lock operations against, or nil when the call
-// carried none (AUTH_NULL) and only the file's world permissions apply.
+// Credentials returns what the client presented on the RPC, for the lock
+// service to resolve into the share's effective identity. A nil UID means the
+// call carried no credentials (AUTH_NULL, or an AUTH_UNIX credential that did
+// not parse).
 //
-// These are the credentials as the client presented them: NLM builds no
-// per-share auth context, so no export squash policy has been applied to them.
-func (c *NLMHandlerContext) Identity() *metadata.Identity {
-	if c.UID == nil {
-		return nil
-	}
-	return &metadata.Identity{
-		UID:  c.UID,
-		GID:  c.GID,
-		GIDs: c.GIDs,
+// Deliberately NOT an identity: these are unresolved, unsquashed and
+// client-supplied, and authorizing against them directly is what let a client
+// claiming uid 0 take the root bypass.
+func (c *NLMHandlerContext) Credentials() auth.Credentials {
+	return auth.Credentials{
+		UID:        c.UID,
+		GID:        c.GID,
+		GIDs:       c.GIDs,
+		ClientAddr: c.ClientAddr,
 	}
 }

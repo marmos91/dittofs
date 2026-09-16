@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
+	"github.com/marmos91/dittofs/internal/adapter/nfs/auth"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/blocking"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/types"
-	"github.com/marmos91/dittofs/pkg/metadata"
 	metaerrors "github.com/marmos91/dittofs/pkg/metadata/errors"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
@@ -14,19 +14,21 @@ import (
 // deniedLockService stands in for a lock service whose access gate refuses the
 // caller, and records the identity the handler threaded to it.
 type deniedLockService struct {
-	gotCaller *metadata.Identity
+	gotCaller auth.Credentials
+	called    bool
 }
 
-func (d *deniedLockService) denial(caller *metadata.Identity) error {
+func (d *deniedLockService) denial(caller auth.Credentials) error {
 	d.gotCaller = caller
+	d.called = true
 	return &metaerrors.StoreError{Code: metaerrors.ErrAccessDenied, Message: "lock permission denied"}
 }
 
-func (d *deniedLockService) LockFileNLM(_ context.Context, caller *metadata.Identity, _ []byte, _ lock.LockOwner, _, _ uint64, _, _ bool) (*lock.LockResult, error) {
+func (d *deniedLockService) LockFileNLM(_ context.Context, caller auth.Credentials, _ []byte, _ lock.LockOwner, _, _ uint64, _, _ bool) (*lock.LockResult, error) {
 	return nil, d.denial(caller)
 }
 
-func (d *deniedLockService) TestLockNLM(_ context.Context, caller *metadata.Identity, _ []byte, _ lock.LockOwner, _, _ uint64, _ bool) (bool, *lock.UnifiedLockConflict, error) {
+func (d *deniedLockService) TestLockNLM(_ context.Context, caller auth.Credentials, _ []byte, _ lock.LockOwner, _, _ uint64, _ bool) (bool, *lock.UnifiedLockConflict, error) {
 	return false, nil, d.denial(caller)
 }
 
@@ -84,8 +86,11 @@ func TestLock_PermissionRefusalIsEncodableAndTerminal(t *testing.T) {
 	if _, err := EncodeLockResponse(resp); err != nil {
 		t.Fatalf("the refusal must be encodable for the client to ever see it: %v", err)
 	}
-	if svc.gotCaller == nil || svc.gotCaller.UID == nil || *svc.gotCaller.UID != 2000 {
-		t.Fatalf("handler did not thread the AUTH_UNIX identity to the lock service: %+v", svc.gotCaller)
+	if !svc.called || svc.gotCaller.UID == nil || *svc.gotCaller.UID != 2000 {
+		t.Fatalf("handler did not thread the AUTH_UNIX credentials to the lock service: %+v", svc.gotCaller)
+	}
+	if svc.gotCaller.ClientAddr != "10.0.0.7:51234" {
+		t.Fatalf("client address lost on the way to the lock service: %q", svc.gotCaller.ClientAddr)
 	}
 	if len(svc.gotCaller.GIDs) != 1 || svc.gotCaller.GIDs[0] != 4000 {
 		t.Fatalf("supplementary groups lost on the way to the lock service: %+v", svc.gotCaller.GIDs)
@@ -130,7 +135,10 @@ func TestLock_NoCredentialsYieldsNilIdentity(t *testing.T) {
 	if _, err := h.Lock(ctx, deniedLockReq()); err != nil {
 		t.Fatalf("Lock returned a transport error: %v", err)
 	}
-	if svc.gotCaller != nil {
-		t.Fatalf("AUTH_NULL must reach the lock service as no identity, got %+v", svc.gotCaller)
+	if !svc.called {
+		t.Fatal("the lock service was never called")
+	}
+	if svc.gotCaller.UID != nil {
+		t.Fatalf("AUTH_NULL must reach the lock service with no UID, got %d", *svc.gotCaller.UID)
 	}
 }

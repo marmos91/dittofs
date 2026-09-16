@@ -100,7 +100,7 @@ func (h *Handler) Test(ctx *NLMHandlerContext, req *TestRequest) (*TestResponse,
 	// Call NLMService to test lock
 	granted, conflict, err := h.nlmService.TestLockNLM(
 		ctx.Context,
-		ctx.Identity(),
+		ctx.Credentials(),
 		handle,
 		owner,
 		req.Lock.Offset,

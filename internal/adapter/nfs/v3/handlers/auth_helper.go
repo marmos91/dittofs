@@ -74,73 +74,26 @@ func BuildAuthContextWithMapping(
 	reg nfsRuntime,
 	shareName string,
 ) (*metadata.AuthContext, error) {
-	ctx := nfsCtx.Context
-	clientAddr := nfsCtx.ClientAddr
-	authFlavor := nfsCtx.AuthFlavor
-
-	// Map auth flavor to auth method string
 	authMethod := "anonymous"
-	if authFlavor == rpc.AuthUnix {
+	if nfsCtx.AuthFlavor == rpc.AuthUnix {
 		authMethod = "unix"
 	}
 
-	// Build identity from Unix credentials (before mapping)
-	originalIdentity := &metadata.Identity{
-		UID:  nfsCtx.UID,
-		GID:  nfsCtx.GID,
-		GIDs: nfsCtx.GIDs,
-	}
-
-	// Set username from UID if available (for logging/auditing)
-	if originalIdentity.UID != nil {
-		originalIdentity.Username = fmt.Sprintf("uid:%d", *originalIdentity.UID)
-	}
-
-	// Get share and identity store
-	share, shareErr := reg.GetShare(shareName)
-	if shareErr != nil {
-		return nil, fmt.Errorf("failed to get share: %w", shareErr)
-	}
-
-	// Resolve permissions (export-squash policy, shared with NFSv4). The GID set
-	// (supplementary + primary) lets a direct AD/SID grant match by GID (#1528).
-	identityStore := reg.GetIdentityStore()
-	permGIDs := append([]uint32(nil), nfsCtx.GIDs...)
-	if nfsCtx.GID != nil {
-		permGIDs = append(permGIDs, *nfsCtx.GID)
-	}
-	permResult, err := auth.ResolveSharePermission(ctx, identityStore, share, shareName, clientAddr, nfsCtx.UID, permGIDs)
+	effectiveAuthCtx, err := auth.BuildAuthContext(nfsCtx.Context, reg, shareName, auth.Credentials{
+		UID:        nfsCtx.UID,
+		GID:        nfsCtx.GID,
+		GIDs:       nfsCtx.GIDs,
+		ClientAddr: nfsCtx.ClientAddr,
+		AuthMethod: authMethod,
+	})
 	if err != nil {
 		return nil, err
 	}
-	if permResult.Username != "" {
-		originalIdentity.Username = permResult.Username
-	}
 
-	// Apply share-level identity mapping (all_squash, root_squash)
-	effectiveIdentity, err := reg.ApplyIdentityMapping(shareName, originalIdentity)
-	if err != nil {
-		return nil, fmt.Errorf("failed to apply identity mapping: %w", err)
-	}
-
-	// Create auth context with the effective (mapped) identity
-	effectiveAuthCtx := &metadata.AuthContext{
-		Context:       ctx,
-		ClientAddr:    clientAddr,
-		AuthMethod:    authMethod,
-		Identity:      effectiveIdentity,
-		ShareReadOnly: permResult.ReadOnly,
-	}
-
-	// Log identity mapping
-	origUID, effUID := formatUID(originalIdentity.UID), formatUID(effectiveIdentity.UID)
-	origGID, effGID := formatUID(originalIdentity.GID), formatUID(effectiveIdentity.GID)
-
-	if origUID != effUID || origGID != effGID {
-		logger.DebugCtx(ctx, "Identity mapping applied", "share", shareName, "original_uid", origUID, "uid", effUID, "original_gid", origGID, "gid", effGID)
-	} else {
-		logger.DebugCtx(ctx, "Auth context created", "share", shareName, "uid", effUID, "gid", effGID)
-	}
+	logger.DebugCtx(nfsCtx.Context, "Auth context created",
+		"share", shareName,
+		"uid", formatUID(effectiveAuthCtx.Identity.UID),
+		"gid", formatUID(effectiveAuthCtx.Identity.GID))
 
 	return effectiveAuthCtx, nil
 }

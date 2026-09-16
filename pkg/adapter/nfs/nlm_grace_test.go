@@ -15,7 +15,7 @@ import (
 // the NLM lock path proceeds to the grace gate.
 type graceFileChecker struct{}
 
-func (graceFileChecker) CheckLockAccess(_ context.Context, _ []byte, _ *metadata.Identity) error {
+func (graceFileChecker) CheckLockAccess(_ *metadata.AuthContext, _ []byte) error {
 	return nil
 }
 
@@ -35,7 +35,7 @@ func TestGracePeriod_NLMLockDenied(t *testing.T) {
 	svc, _ := newGraceNLMService([]string{"client-1"})
 
 	owner := lock.LockOwner{OwnerID: "nlm:client-1", ClientID: "client-1", ShareName: "share-a"}
-	_, err := svc.LockFileNLM(context.Background(), nil, []byte("share-a:file-1"), owner, 0, 100, true, false)
+	_, err := svc.LockFileNLM(context.Background(), testAuthCtx(), []byte("share-a:file-1"), owner, 0, 100, true, false)
 
 	require.Error(t, err, "new lock during grace must be denied")
 	require.True(t, errors.IsGracePeriodError(err),
@@ -48,7 +48,7 @@ func TestGracePeriod_NLMReclaimAllowed(t *testing.T) {
 	svc, lm := newGraceNLMService([]string{"client-1"})
 
 	owner := lock.LockOwner{OwnerID: "nlm:client-1", ClientID: "client-1", ShareName: "share-a"}
-	res, err := svc.LockFileNLM(context.Background(), nil, []byte("share-a:file-1"), owner, 0, 100, true, true)
+	res, err := svc.LockFileNLM(context.Background(), testAuthCtx(), []byte("share-a:file-1"), owner, 0, 100, true, true)
 
 	require.NoError(t, err, "reclaim during grace must be allowed")
 	require.NotNil(t, res)
@@ -57,4 +57,14 @@ func TestGracePeriod_NLMReclaimAllowed(t *testing.T) {
 	// The reclaim must have been recorded against the client.
 	require.Contains(t, lm.GetReclaimedClients(), "client-1",
 		"a successful reclaim must MarkReclaimed the owning client")
+}
+
+// testAuthCtx is the resolved identity a per-share nlmService is handed; the
+// routing layer builds the real one from the share's policy.
+func testAuthCtx() *metadata.AuthContext {
+	return &metadata.AuthContext{
+		Context:    context.Background(),
+		AuthMethod: "unix",
+		Identity:   &metadata.Identity{UID: metadata.Uint32Ptr(0), GID: metadata.Uint32Ptr(0)},
+	}
 }

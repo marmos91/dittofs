@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
+	"github.com/marmos91/dittofs/internal/adapter/nfs/auth"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/blocking"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/types"
-	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
@@ -16,11 +16,11 @@ type recordingLockService struct {
 	unlockCalls int
 }
 
-func (r *recordingLockService) LockFileNLM(_ context.Context, _ *metadata.Identity, _ []byte, _ lock.LockOwner, _, _ uint64, _, _ bool) (*lock.LockResult, error) {
+func (r *recordingLockService) LockFileNLM(_ context.Context, _ auth.Credentials, _ []byte, _ lock.LockOwner, _, _ uint64, _, _ bool) (*lock.LockResult, error) {
 	return &lock.LockResult{Success: true}, nil
 }
 
-func (r *recordingLockService) TestLockNLM(_ context.Context, _ *metadata.Identity, _ []byte, _ lock.LockOwner, _, _ uint64, _ bool) (bool, *lock.UnifiedLockConflict, error) {
+func (r *recordingLockService) TestLockNLM(_ context.Context, _ auth.Credentials, _ []byte, _ lock.LockOwner, _, _ uint64, _ bool) (bool, *lock.UnifiedLockConflict, error) {
 	return true, nil, nil
 }
 
@@ -145,11 +145,11 @@ func TestCancel_SpoofedCallerFromDifferentHostIsRejected(t *testing.T) {
 // conflictLockService always reports a conflict so blocking locks get queued.
 type conflictLockService struct{}
 
-func (c *conflictLockService) LockFileNLM(_ context.Context, _ *metadata.Identity, _ []byte, _ lock.LockOwner, _, _ uint64, _, _ bool) (*lock.LockResult, error) {
+func (c *conflictLockService) LockFileNLM(_ context.Context, _ auth.Credentials, _ []byte, _ lock.LockOwner, _, _ uint64, _, _ bool) (*lock.LockResult, error) {
 	return &lock.LockResult{Success: false}, nil
 }
 
-func (c *conflictLockService) TestLockNLM(_ context.Context, _ *metadata.Identity, _ []byte, _ lock.LockOwner, _, _ uint64, _ bool) (bool, *lock.UnifiedLockConflict, error) {
+func (c *conflictLockService) TestLockNLM(_ context.Context, _ auth.Credentials, _ []byte, _ lock.LockOwner, _, _ uint64, _ bool) (bool, *lock.UnifiedLockConflict, error) {
 	return false, nil, nil
 }
 

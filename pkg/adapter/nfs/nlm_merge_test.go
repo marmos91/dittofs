@@ -26,7 +26,7 @@ func TestNLM_AbuttingLocksMergeIntoOneRange(t *testing.T) {
 
 	// [25,100) then [50,125): overlapping, so one lock spanning [25,125).
 	for _, r := range [][2]uint64{{25, 75}, {50, 75}} {
-		_, err := svc.LockFileNLM(context.Background(), nil, handle, owner, r[0], r[1], true, false)
+		_, err := svc.LockFileNLM(context.Background(), testAuthCtx(), handle, owner, r[0], r[1], true, false)
 		require.NoErrorf(t, err, "LockFileNLM(%d,%d)", r[0], r[1])
 	}
 
@@ -48,9 +48,9 @@ func TestNLM_OtherOwnerRangeNotAbsorbed(t *testing.T) {
 	first := lock.LockOwner{OwnerID: "nlm:client-1", ClientID: "client-1", ShareName: "share-a"}
 	second := lock.LockOwner{OwnerID: "nlm:client-2", ClientID: "client-2", ShareName: "share-a"}
 
-	_, err := svc.LockFileNLM(context.Background(), nil, handle, first, 0, 100, false, false)
+	_, err := svc.LockFileNLM(context.Background(), testAuthCtx(), handle, first, 0, 100, false, false)
 	require.NoError(t, err)
-	_, err = svc.LockFileNLM(context.Background(), nil, handle, second, 100, 100, false, false)
+	_, err = svc.LockFileNLM(context.Background(), testAuthCtx(), handle, second, 100, 100, false, false)
 	require.NoError(t, err)
 
 	require.Len(t, lm.ListUnifiedLocks(string(handle)), 2,

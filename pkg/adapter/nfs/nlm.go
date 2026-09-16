@@ -2,10 +2,12 @@ package nfs
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"os"
 	"slices"
 
+	"github.com/marmos91/dittofs/internal/adapter/nfs/auth"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/blocking"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/callback"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/nsm"
@@ -25,11 +27,11 @@ import (
 // lockAccessChecker authorizes a byte-range lock without the NLM service
 // importing the metadata service directly.
 type lockAccessChecker interface {
-	// CheckLockAccess reports whether caller may take or test an advisory
-	// byte-range lock on the file the handle names. It covers existence too: a
-	// handle naming nothing yields a not-found StoreError. See
-	// metadata.CheckByteRangeLockAccess for the rule and its ceiling.
-	CheckLockAccess(ctx context.Context, handle []byte, caller *metadata.Identity) error
+	// CheckLockAccess reports whether authCtx's identity may take or test an
+	// advisory byte-range lock on the file the handle names. It covers
+	// existence too: a handle naming nothing yields a not-found StoreError.
+	// See metadata.CheckByteRangeLockAccess for the rule.
+	CheckLockAccess(authCtx *metadata.AuthContext, handle []byte) error
 }
 
 // nlmService provides NLM-specific lock operations using LockManager directly.
@@ -64,7 +66,7 @@ func (s *nlmService) SetUnlockCallback(fn func(handle []byte)) {
 
 func (s *nlmService) LockFileNLM(
 	ctx context.Context,
-	caller *metadata.Identity,
+	authCtx *metadata.AuthContext,
 	handle []byte,
 	owner lock.LockOwner,
 	offset, length uint64,
@@ -75,7 +77,7 @@ func (s *nlmService) LockFileNLM(
 		return nil, err
 	}
 
-	if err := s.fileChecker.CheckLockAccess(ctx, handle, caller); err != nil {
+	if err := s.fileChecker.CheckLockAccess(authCtx, handle); err != nil {
 		return nil, err
 	}
 
@@ -147,7 +149,7 @@ func (s *nlmService) LockFileNLM(
 
 func (s *nlmService) TestLockNLM(
 	ctx context.Context,
-	caller *metadata.Identity,
+	authCtx *metadata.AuthContext,
 	handle []byte,
 	owner lock.LockOwner,
 	offset, length uint64,
@@ -157,7 +159,7 @@ func (s *nlmService) TestLockNLM(
 		return false, nil, err
 	}
 
-	if err := s.fileChecker.CheckLockAccess(ctx, handle, caller); err != nil {
+	if err := s.fileChecker.CheckLockAccess(authCtx, handle); err != nil {
 		return false, nil, err
 	}
 
@@ -220,21 +222,11 @@ type metadataFileChecker struct {
 	metaSvc *metadata.Service
 }
 
-// CheckLockAccess builds the auth context for the NLM caller and defers the
-// policy to the metadata layer, so the lock gate reads the same mode bits, ACL
-// and read-only ceilings as every other operation on the file.
-func (c *metadataFileChecker) CheckLockAccess(ctx context.Context, handle []byte, caller *metadata.Identity) error {
-	// A call with no AUTH_UNIX credentials arrives as no identity, and is
-	// authorized as anonymous: only the file's world permissions apply.
-	authMethod := "anonymous"
-	if caller != nil {
-		authMethod = "unix"
-	}
-	return c.metaSvc.CheckByteRangeLockAccess(&metadata.AuthContext{
-		Context:    ctx,
-		AuthMethod: authMethod,
-		Identity:   caller,
-	}, metadata.FileHandle(handle))
+// CheckLockAccess defers the policy to the metadata layer, so the lock gate
+// reads the same mode bits, ACL and read-only ceilings as every other operation
+// on the file.
+func (c *metadataFileChecker) CheckLockAccess(authCtx *metadata.AuthContext, handle []byte) error {
+	return c.metaSvc.CheckByteRangeLockAccess(authCtx, metadata.FileHandle(handle))
 }
 
 // createRoutingNLMService creates a routingNLMService that routes NLM operations
@@ -262,42 +254,56 @@ type routingNLMService struct {
 	fileChecker lockAccessChecker
 	onUnlock    func(handle []byte)
 
-	// rt resolves the share's export squash policy for the lock gate. Nil only
-	// in tests that drive a service directly, where no squash applies.
+	// rt resolves the share's identity and squash policy for the lock gate. Nil
+	// only in tests that drive a per-share service directly.
 	rt *runtime.Runtime
 }
 
-// squash applies the share's export squash policy to the credentials the NLM
-// client presented, so the lock gate authorizes the same effective identity
-// every other NFS operation on the share does.
+// resolve turns the credentials the NLM client presented into the effective
+// identity for the share, through the same builder every NFSv3 operation on
+// that share uses.
 //
-// Without it the gate is close to inert: AUTH_SYS credentials are whatever the
-// client says, and an unmapped uid 0 takes the root bypass inside the
-// permission check. The default policy is root_to_guest, so a client claiming
-// root reaches the gate as the anonymous user and is refused exactly like any
-// other stranger.
+// It is the same code, not an equivalent one, on purpose. Two builders let the
+// two gates disagree about one user on one file: a user whose read access comes
+// through a named or SID ACE resolves to a principal on the read path, and
+// would resolve to a bare uid here -- so the read succeeds and the lock on the
+// file just read is refused. That is diagnosed as "NLM is broken", not as an
+// authorization gap.
 //
-// decision: a share whose policy cannot be resolved squashes the caller to no
-// identity rather than passing the raw credentials through. The failure means
-// the share is gone or mid-reconfiguration; the caller then gets the file's
-// world permissions only, which is the direction that cannot grant a lock the
-// policy would have refused.
-func (s *routingNLMService) squash(shareName string, caller *metadata.Identity) *metadata.Identity {
+// It also applies the export squash policy, without which the gate is close to
+// inert: AUTH_SYS credentials are whatever the client says, and an unmapped
+// uid 0 takes the root bypass inside the permission check.
+//
+// decision: a share whose policy will not resolve authorizes as no identity
+// rather than passing the presented credentials through. The failure means the
+// share is gone or mid-reconfiguration; the caller then gets the file's world
+// permissions only, which is the direction that cannot grant a lock the policy
+// would have refused. A share-level denial is returned as-is, so the caller
+// learns it cannot use the share at all rather than being quietly demoted.
+func (s *routingNLMService) resolve(ctx context.Context, shareName string, caller auth.Credentials) (*metadata.AuthContext, error) {
+	anonymous := &metadata.AuthContext{
+		Context:    ctx,
+		ClientAddr: caller.ClientAddr,
+		AuthMethod: "anonymous",
+		Identity:   &metadata.Identity{},
+	}
 	if s.rt == nil {
-		return caller
+		return anonymous, nil
 	}
-	if caller == nil {
-		// AUTH_NULL: no credentials. ApplyIdentityMapping maps a nil UID to the
-		// share's configured anonymous identity.
-		caller = &metadata.Identity{}
-	}
-	mapped, err := s.rt.ApplyIdentityMapping(shareName, caller)
+
+	authCtx, err := auth.BuildAuthContext(ctx, s.rt, shareName, caller)
 	if err != nil {
-		logger.Warn("NLM: cannot resolve share squash policy; authorizing lock as anonymous",
+		if stderrors.Is(err, auth.ErrShareAccessDenied) {
+			return nil, &errors.StoreError{
+				Code:    errors.ErrAccessDenied,
+				Message: "share access denied",
+			}
+		}
+		logger.Warn("NLM: cannot resolve share identity policy; authorizing lock as anonymous",
 			"share", shareName, "error", err)
-		return &metadata.Identity{}
+		return anonymous, nil
 	}
-	return mapped
+	return authCtx, nil
 }
 
 // SetUnlockCallback sets the unlock notification callback.
@@ -308,7 +314,7 @@ func (s *routingNLMService) SetUnlockCallback(fn func(handle []byte)) {
 // LockFileNLM acquires a lock for NLM protocol, routing to the correct share's lock manager.
 func (s *routingNLMService) LockFileNLM(
 	ctx context.Context,
-	caller *metadata.Identity,
+	caller auth.Credentials,
 	handle []byte,
 	owner lock.LockOwner,
 	offset, length uint64,
@@ -319,13 +325,17 @@ func (s *routingNLMService) LockFileNLM(
 	if err != nil {
 		return nil, err
 	}
-	return svc.LockFileNLM(ctx, s.squash(shareName, caller), handle, owner, offset, length, exclusive, reclaim)
+	authCtx, err := s.resolve(ctx, shareName, caller)
+	if err != nil {
+		return nil, err
+	}
+	return svc.LockFileNLM(ctx, authCtx, handle, owner, offset, length, exclusive, reclaim)
 }
 
 // TestLockNLM tests if a lock could be granted, routing to the correct share's lock manager.
 func (s *routingNLMService) TestLockNLM(
 	ctx context.Context,
-	caller *metadata.Identity,
+	caller auth.Credentials,
 	handle []byte,
 	owner lock.LockOwner,
 	offset, length uint64,
@@ -335,7 +345,11 @@ func (s *routingNLMService) TestLockNLM(
 	if err != nil {
 		return false, nil, err
 	}
-	return svc.TestLockNLM(ctx, s.squash(shareName, caller), handle, owner, offset, length, exclusive)
+	authCtx, err := s.resolve(ctx, shareName, caller)
+	if err != nil {
+		return false, nil, err
+	}
+	return svc.TestLockNLM(ctx, authCtx, handle, owner, offset, length, exclusive)
 }
 
 // UnlockFileNLM releases a lock, routing to the correct share's lock manager.

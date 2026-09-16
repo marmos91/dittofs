@@ -114,7 +114,7 @@ func (h *Handler) Lock(ctx *NLMHandlerContext, req *LockRequest) (*LockResponse,
 	// Call NLMService to acquire lock (cross-protocol lease checks happen at lock manager level)
 	result, err := h.nlmService.LockFileNLM(
 		ctx.Context,
-		ctx.Identity(),
+		ctx.Credentials(),
 		handle,
 		owner,
 		req.Lock.Offset,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/marmos91/dittofs/internal/adapter/nfs/auth"
 	"github.com/marmos91/dittofs/pkg/adapter"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
@@ -76,6 +77,16 @@ func lockGateFixture(t *testing.T, mode uint32) (*routingNLMService, []byte) {
 	return s.createRoutingNLMService(metaSvc), handle
 }
 
+// creds are the AUTH_UNIX credentials an NLM client presents, before any share
+// policy is applied to them.
+func creds(uid uint32) auth.Credentials {
+	return auth.Credentials{
+		UID:        metadata.Uint32Ptr(uid),
+		GID:        metadata.Uint32Ptr(uid),
+		ClientAddr: "127.0.0.1:1",
+	}
+}
+
 func nlmOwner(name string) lock.LockOwner {
 	return lock.LockOwner{OwnerID: "nlm:" + name + ":1:aa", ClientID: name}
 }
@@ -87,7 +98,7 @@ func TestNLMLock_DeniedWithoutReadOrOwnership(t *testing.T) {
 	t.Parallel()
 
 	svc, handle := lockGateFixture(t, 0o600)
-	stranger := &metadata.Identity{UID: metadata.Uint32Ptr(2000), GID: metadata.Uint32Ptr(2000)}
+	stranger := creds(2000)
 
 	_, err := svc.LockFileNLM(context.Background(), stranger, handle, nlmOwner("stranger"), 0, 100, true, false)
 	require.Error(t, err, "a caller with neither read access nor ownership must not take a lock")
@@ -105,7 +116,7 @@ func TestNLMLock_DeniedWithoutCredentials(t *testing.T) {
 
 	svc, handle := lockGateFixture(t, 0o600)
 
-	_, err := svc.LockFileNLM(context.Background(), nil, handle, nlmOwner("anon"), 0, 100, true, false)
+	_, err := svc.LockFileNLM(context.Background(), auth.Credentials{ClientAddr: "127.0.0.1:1"}, handle, nlmOwner("anon"), 0, 100, true, false)
 	require.Error(t, err, "an uncredentialed caller must not lock a file it cannot read")
 	require.True(t, metaerrors.IsAccessDeniedError(err), "want a permission denial, got %v", err)
 }
@@ -118,7 +129,7 @@ func TestNLMLock_GrantedToOwnerWhateverTheMode(t *testing.T) {
 
 	// 0100 denies read to everyone, its owner included.
 	svc, handle := lockGateFixture(t, 0o100)
-	owner := &metadata.Identity{UID: metadata.Uint32Ptr(1000), GID: metadata.Uint32Ptr(1000)}
+	owner := creds(1000)
 
 	res, err := svc.LockFileNLM(context.Background(), owner, handle, nlmOwner("owner"), 0, 100, true, false)
 	require.NoError(t, err)
@@ -132,7 +143,7 @@ func TestNLMLock_ReadAccessIsEnoughForAWriteLock(t *testing.T) {
 	t.Parallel()
 
 	svc, handle := lockGateFixture(t, 0o644)
-	reader := &metadata.Identity{UID: metadata.Uint32Ptr(2000), GID: metadata.Uint32Ptr(2000)}
+	reader := creds(2000)
 
 	res, err := svc.LockFileNLM(context.Background(), reader, handle, nlmOwner("reader"), 0, 100, true, false)
 	require.NoError(t, err)
@@ -153,7 +164,7 @@ func TestNLMLock_RootIsSquashedBeforeTheGate(t *testing.T) {
 	t.Parallel()
 
 	svc, handle := lockGateFixture(t, 0o600)
-	root := &metadata.Identity{UID: metadata.Uint32Ptr(0), GID: metadata.Uint32Ptr(0)}
+	root := creds(0)
 
 	_, err := svc.LockFileNLM(context.Background(), root, handle, nlmOwner("fakeroot"), 0, 100, true, false)
 	require.Error(t, err, "a client claiming uid 0 must be squashed, not handed the root bypass")
