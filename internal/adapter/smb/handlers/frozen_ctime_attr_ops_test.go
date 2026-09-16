@@ -166,6 +166,32 @@ func TestFrozenChangeTime_SurvivesSetZeroData(t *testing.T) {
 	assertCtimeUnmoved(t, h, openFile, frozen, "FSCTL_SET_ZERO_DATA")
 }
 
+// TestFrozenChangeTime_SurvivesSetInfoLink pins SET_INFO FileLinkInformation.
+// Adding a name to an inode raises its link count, which CreateHardLink stamps
+// a ChangeTime for from inside its own transaction — so like SET_ZERO_DATA this
+// one is beyond the reach of PreserveCtime.
+func TestFrozenChangeTime_SurvivesSetInfoLink(t *testing.T) {
+	h, smbCtx, _, fileID := setupReparseShare(t)
+	openFile, ok := h.GetOpenFile(fileID)
+	if !ok {
+		t.Fatal("open file missing")
+	}
+	grantFullAccess(h, smbCtx, openFile)
+	frozen := freezeCtimeOnSeededFile(t, h, smbCtx, openFile)
+
+	authCtx, err := BuildAuthContext(smbCtx)
+	if err != nil {
+		t.Fatalf("BuildAuthContext: %v", err)
+	}
+	buf := encodeFileLinkInfoWire(t, false, [8]byte{}, "link2")
+	resp, err := h.setFileInfoFromStore(smbCtx, authCtx, openFile, types.FileLinkInformation, buf)
+	if err != nil || resp.GetStatus() != types.StatusSuccess {
+		t.Fatalf("SET_INFO Link: err=%v status=%v", err, resp.GetStatus())
+	}
+
+	assertCtimeUnmoved(t, h, openFile, frozen, "SET_INFO FileLinkInformation")
+}
+
 // TestFrozenChangeTime_AttrOpsDoNotRollBackAPeersAdvance guards the other
 // direction: holding a ChangeTime must leave the stored value alone, not write
 // the frozen one back over an advance another opener made after the freeze.

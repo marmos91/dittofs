@@ -461,6 +461,13 @@ func (h *Handler) handleFileLinkInformation(
 		return setInfoStatus(types.StatusForErr(err)), nil
 	}
 
+	// A new name raises the inode's link count, and CreateHardLink stamps the
+	// target's ChangeTime for that from inside its own transaction — POSIX
+	// behaviour for link(2), and beyond the reach of a SetAttrs flag. A
+	// ChangeTime this handle froze must not move (MS-FSA §2.1.5.15.2), so put
+	// it back the way WRITE does after CommitWrite.
+	h.restoreFrozenTimestamps(authCtx, openFile)
+
 	// Break parent directory leases on the destination parent to None
 	// (MS-FSA 2.1.5.15.7 ("FileLinkInformation"): directory contents changed). Parent-key suppression
 	// only — no ClientID exclusion per Samba dirlease_should_break. Single

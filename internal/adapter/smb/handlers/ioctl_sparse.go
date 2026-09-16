@@ -105,6 +105,10 @@ func (h *Handler) handleSetSparse(ctx *SMBHandlerContext, body []byte) (*Handler
 	// a concurrent SET_SPARSE / SET_COMPRESSION cannot clobber it with a stale
 	// Mode snapshot.
 	attrs := modeBitMaskAttrs(modeDOSSparse, setSparse)
+	// Flipping the sparse bit is a metadata change, so the store would stamp
+	// ChangeTime for it; a ChangeTime this handle froze must not move
+	// (MS-FSA §2.1.5.15.2).
+	holdFrozenCtime(openFile, &attrs)
 	if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &attrs); err != nil {
 		logger.Warn("IOCTL FSCTL_SET_SPARSE: failed to persist mode",
 			"path", path, "error", err)
@@ -497,6 +501,12 @@ func (h *Handler) handleSetZeroData(ctx *SMBHandlerContext, body []byte) (*Handl
 		logger.Debug("IOCTL FSCTL_SET_ZERO_DATA: deferred metadata flush failed (non-fatal)",
 			"path", path, "error", flushErr)
 	}
+
+	// The zero-fill above runs through the ordinary write chain, and CommitWrite
+	// stamps Mtime and ChangeTime from inside the write transaction where no
+	// SetAttrs reaches. Put the frozen values back the way WRITE does
+	// (MS-FSA §2.1.5.15.2).
+	h.restoreFrozenTimestamps(authCtx, openFile)
 
 	resp := buildIoctlResponse(FsctlSetZeroData, fileID, nil)
 	return NewResult(types.StatusSuccess, resp), nil

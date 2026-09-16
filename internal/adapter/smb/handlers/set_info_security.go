@@ -184,6 +184,10 @@ func (h *Handler) setSecurityInfo(
 		return setInfoStatus(types.StatusSuccess), nil
 	}
 
+	// An owner, group or ACL change is a metadata change the store stamps
+	// ChangeTime for, and a ChangeTime this handle froze must not move
+	// (MS-FSA §2.1.5.15.2).
+	holdFrozenCtime(openFile, setAttrs)
 	_, err = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs)
 	if err != nil {
 		logger.Debug("SET_INFO: failed to set security info", "path", openFile.Name().Path, "error", err)
