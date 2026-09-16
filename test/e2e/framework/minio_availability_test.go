@@ -16,9 +16,11 @@ import (
 // anything, which is how an unpullable minio image reached NewMinioHelper's
 // t.Fatalf and reddened every E2E run.
 func TestImageObtainable_RefusesAnUnpullableImage(t *testing.T) {
-	if _, err := testcontainers.NewDockerProvider(); err != nil {
+	provider, err := testcontainers.NewDockerProvider()
+	if err != nil {
 		t.Skipf("Docker unavailable: %v", err)
 	}
+	defer func() { _ = provider.Close() }()
 
 	// A syntactically valid reference to a repository that does not exist. A
 	// short parent deadline bounds the probe even when the failure is not a
