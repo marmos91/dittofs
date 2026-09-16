@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/types"
+	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
@@ -14,12 +15,12 @@ type captureLockService struct {
 	gotOwner lock.LockOwner
 }
 
-func (c *captureLockService) LockFileNLM(_ context.Context, _ []byte, owner lock.LockOwner, _, _ uint64, _, _ bool) (*lock.LockResult, error) {
+func (c *captureLockService) LockFileNLM(_ context.Context, _ *metadata.Identity, _ []byte, owner lock.LockOwner, _, _ uint64, _, _ bool) (*lock.LockResult, error) {
 	c.gotOwner = owner
 	return &lock.LockResult{Success: true}, nil
 }
 
-func (c *captureLockService) TestLockNLM(_ context.Context, _ []byte, _ lock.LockOwner, _, _ uint64, _ bool) (bool, *lock.UnifiedLockConflict, error) {
+func (c *captureLockService) TestLockNLM(_ context.Context, _ *metadata.Identity, _ []byte, _ lock.LockOwner, _, _ uint64, _ bool) (bool, *lock.UnifiedLockConflict, error) {
 	return true, nil, nil
 }
 

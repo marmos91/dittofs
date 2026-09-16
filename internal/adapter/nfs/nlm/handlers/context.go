@@ -5,7 +5,11 @@
 // handlers for NLM v4 procedures.
 package handlers
 
-import "context"
+import (
+	"context"
+
+	"github.com/marmos91/dittofs/pkg/metadata"
+)
 
 // NLMHandlerContext contains context for NLM procedure handlers.
 //
@@ -47,4 +51,21 @@ type NLMHandlerContext struct {
 	// Some procedures (like FREE_ALL) need to decode request data directly
 	// rather than receiving pre-decoded structures.
 	Data []byte
+}
+
+// Identity returns the requester's Unix credentials as the identity the
+// metadata layer authorizes lock operations against, or nil when the call
+// carried none (AUTH_NULL) and only the file's world permissions apply.
+//
+// These are the credentials as the client presented them: NLM builds no
+// per-share auth context, so no export squash policy has been applied to them.
+func (c *NLMHandlerContext) Identity() *metadata.Identity {
+	if c.UID == nil {
+		return nil
+	}
+	return &metadata.Identity{
+		UID:  c.UID,
+		GID:  c.GID,
+		GIDs: c.GIDs,
+	}
 }

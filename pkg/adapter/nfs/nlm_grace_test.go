@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/errors"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 	"github.com/stretchr/testify/require"
@@ -16,6 +17,10 @@ type graceFileChecker struct{}
 
 func (graceFileChecker) GetFile(_ context.Context, _ []byte) (bool, bool, error) {
 	return true, false, nil
+}
+
+func (graceFileChecker) CheckLockAccess(_ context.Context, _ []byte, _ *metadata.Identity) error {
+	return nil
 }
 
 // newGraceNLMService builds an nlmService backed by a grace-aware lock manager
@@ -34,7 +39,7 @@ func TestGracePeriod_NLMLockDenied(t *testing.T) {
 	svc, _ := newGraceNLMService([]string{"client-1"})
 
 	owner := lock.LockOwner{OwnerID: "nlm:client-1", ClientID: "client-1", ShareName: "share-a"}
-	_, err := svc.LockFileNLM(context.Background(), []byte("share-a:file-1"), owner, 0, 100, true, false)
+	_, err := svc.LockFileNLM(context.Background(), nil, []byte("share-a:file-1"), owner, 0, 100, true, false)
 
 	require.Error(t, err, "new lock during grace must be denied")
 	require.True(t, errors.IsGracePeriodError(err),
@@ -47,7 +52,7 @@ func TestGracePeriod_NLMReclaimAllowed(t *testing.T) {
 	svc, lm := newGraceNLMService([]string{"client-1"})
 
 	owner := lock.LockOwner{OwnerID: "nlm:client-1", ClientID: "client-1", ShareName: "share-a"}
-	res, err := svc.LockFileNLM(context.Background(), []byte("share-a:file-1"), owner, 0, 100, true, true)
+	res, err := svc.LockFileNLM(context.Background(), nil, []byte("share-a:file-1"), owner, 0, 100, true, true)
 
 	require.NoError(t, err, "reclaim during grace must be allowed")
 	require.NotNil(t, res)

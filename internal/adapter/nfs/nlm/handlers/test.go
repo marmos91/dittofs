@@ -8,6 +8,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/types"
 	nlm_xdr "github.com/marmos91/dittofs/internal/adapter/nfs/nlm/xdr"
 	"github.com/marmos91/dittofs/internal/logger"
+	metaerrors "github.com/marmos91/dittofs/pkg/metadata/errors"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
@@ -99,6 +100,7 @@ func (h *Handler) Test(ctx *NLMHandlerContext, req *TestRequest) (*TestResponse,
 	// Call NLMService to test lock
 	granted, conflict, err := h.nlmService.TestLockNLM(
 		ctx.Context,
+		ctx.Identity(),
 		handle,
 		owner,
 		req.Lock.Offset,
@@ -107,6 +109,17 @@ func (h *Handler) Test(ctx *NLMHandlerContext, req *TestRequest) (*TestResponse,
 	)
 
 	if err != nil {
+		// A permission denial answers the question TEST asks -- this caller
+		// cannot hold the lock -- so it is NLM4_DENIED, not a server fault.
+		if metaerrors.IsAccessDeniedError(err) {
+			logger.Warn("NLM TEST denied: permission",
+				"client", ctx.ClientAddr,
+				"owner", ownerID)
+			return &TestResponse{
+				Cookie: req.Cookie,
+				Status: types.NLM4Denied,
+			}, nil
+		}
 		// System error - return as NLM4Failed
 		logger.Warn("NLM TEST failed",
 			"client", ctx.ClientAddr,

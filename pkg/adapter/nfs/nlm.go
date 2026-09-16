@@ -25,6 +25,11 @@ import (
 // This avoids an import cycle between the NFS adapter and the metadata package.
 type fileChecker interface {
 	GetFile(ctx context.Context, handle []byte) (exists bool, isDir bool, err error)
+
+	// CheckLockAccess reports whether caller may take or test an advisory
+	// byte-range lock on the file the handle names. It subsumes the existence
+	// check: a handle naming nothing yields a not-found StoreError.
+	CheckLockAccess(ctx context.Context, handle []byte, caller *metadata.Identity) error
 }
 
 // nlmService provides NLM-specific lock operations using LockManager directly.
@@ -53,19 +58,11 @@ func lockTypeFromExclusive(exclusive bool) lock.LockType {
 	return lock.LockTypeShared
 }
 
-func (s *nlmService) checkFileExists(ctx context.Context, handle []byte) error {
-	exists, _, err := s.fileChecker.GetFile(ctx, handle)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		return &errors.StoreError{
-			Code:    errors.ErrNotFound,
-			Message: "file not found",
-			Path:    string(handle),
-		}
-	}
-	return nil
+// checkLockAccess validates that the file exists and that the caller is
+// permitted to lock it. Both LOCK and TEST run it; see
+// metadata.CheckByteRangeLockAccess for the rule it applies and its ceiling.
+func (s *nlmService) checkLockAccess(ctx context.Context, handle []byte, caller *metadata.Identity) error {
+	return s.fileChecker.CheckLockAccess(ctx, handle, caller)
 }
 
 func (s *nlmService) SetUnlockCallback(fn func(handle []byte)) {
@@ -74,6 +71,7 @@ func (s *nlmService) SetUnlockCallback(fn func(handle []byte)) {
 
 func (s *nlmService) LockFileNLM(
 	ctx context.Context,
+	caller *metadata.Identity,
 	handle []byte,
 	owner lock.LockOwner,
 	offset, length uint64,
@@ -84,7 +82,7 @@ func (s *nlmService) LockFileNLM(
 		return nil, err
 	}
 
-	if err := s.checkFileExists(ctx, handle); err != nil {
+	if err := s.checkLockAccess(ctx, handle, caller); err != nil {
 		return nil, err
 	}
 
@@ -156,6 +154,7 @@ func (s *nlmService) LockFileNLM(
 
 func (s *nlmService) TestLockNLM(
 	ctx context.Context,
+	caller *metadata.Identity,
 	handle []byte,
 	owner lock.LockOwner,
 	offset, length uint64,
@@ -165,7 +164,7 @@ func (s *nlmService) TestLockNLM(
 		return false, nil, err
 	}
 
-	if err := s.checkFileExists(ctx, handle); err != nil {
+	if err := s.checkLockAccess(ctx, handle, caller); err != nil {
 		return false, nil, err
 	}
 
@@ -180,6 +179,13 @@ func (s *nlmService) TestLockNLM(
 	return true, nil, nil
 }
 
+// decision: UNLOCK is deliberately not gated on lock access, unlike LOCK and
+// TEST. It can only release a lock the same owner ID already holds, which the
+// gate admitted, and the caller_name binding in the handler already refuses a
+// release from a host other than the one that took it. Gating it would only add
+// a way to strand a lock forever when a file's mode changes under a client that
+// still holds it. Revisit if an owner ID ever becomes forgeable from a host
+// that passes the binding check.
 func (s *nlmService) UnlockFileNLM(
 	ctx context.Context,
 	handle []byte,
@@ -219,6 +225,23 @@ func (s *nlmService) CancelBlockingLock(
 // avoiding import cycles with the metadata package.
 type metadataFileChecker struct {
 	metaSvc *metadata.Service
+}
+
+// CheckLockAccess builds the auth context for the NLM caller and defers the
+// policy to the metadata layer, so the lock gate reads the same mode bits, ACL
+// and read-only ceilings as every other operation on the file.
+func (c *metadataFileChecker) CheckLockAccess(ctx context.Context, handle []byte, caller *metadata.Identity) error {
+	authCtx := &metadata.AuthContext{
+		Context:    ctx,
+		AuthMethod: "unix",
+		Identity:   caller,
+	}
+	if caller == nil || caller.UID == nil {
+		// No AUTH_UNIX credentials on the call (AUTH_NULL): the caller is
+		// anonymous and gets only the file's world permissions.
+		authCtx.AuthMethod = "anonymous"
+	}
+	return c.metaSvc.CheckByteRangeLockAccess(authCtx, metadata.FileHandle(handle))
 }
 
 func (c *metadataFileChecker) GetFile(ctx context.Context, handle []byte) (bool, bool, error) {
@@ -262,6 +285,7 @@ func (s *routingNLMService) SetUnlockCallback(fn func(handle []byte)) {
 // LockFileNLM acquires a lock for NLM protocol, routing to the correct share's lock manager.
 func (s *routingNLMService) LockFileNLM(
 	ctx context.Context,
+	caller *metadata.Identity,
 	handle []byte,
 	owner lock.LockOwner,
 	offset, length uint64,
@@ -272,12 +296,13 @@ func (s *routingNLMService) LockFileNLM(
 	if err != nil {
 		return nil, err
 	}
-	return svc.LockFileNLM(ctx, handle, owner, offset, length, exclusive, reclaim)
+	return svc.LockFileNLM(ctx, caller, handle, owner, offset, length, exclusive, reclaim)
 }
 
 // TestLockNLM tests if a lock could be granted, routing to the correct share's lock manager.
 func (s *routingNLMService) TestLockNLM(
 	ctx context.Context,
+	caller *metadata.Identity,
 	handle []byte,
 	owner lock.LockOwner,
 	offset, length uint64,
@@ -287,7 +312,7 @@ func (s *routingNLMService) TestLockNLM(
 	if err != nil {
 		return false, nil, err
 	}
-	return svc.TestLockNLM(ctx, handle, owner, offset, length, exclusive)
+	return svc.TestLockNLM(ctx, caller, handle, owner, offset, length, exclusive)
 }
 
 // UnlockFileNLM releases a lock, routing to the correct share's lock manager.
@@ -392,6 +417,13 @@ func (s *NFSAdapter) processNLMWaiters(handle metadata.FileHandle) {
 			lockType,
 		)
 
+		// decision: the grant is not re-gated on lock access. The waiter was
+		// only queued because its LOCK passed the gate, and re-checking here
+		// would deny a lock the client was already told was pending -- with no
+		// NLM status to say so, since the request has already been answered
+		// NLM4_BLOCKED. The exposure is a permission revoked while a blocking
+		// request waits; withdraw this if a revocation is ever required to take
+		// effect on already-queued waiters, which means draining them instead.
 		err := lm.AddUnifiedLock(handleKey, enhancedLock)
 		if err != nil {
 			// Lock still conflicts - try next waiter
