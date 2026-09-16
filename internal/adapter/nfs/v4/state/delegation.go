@@ -687,6 +687,16 @@ func (sm *StateManager) sendRecallV41(deleg *DelegationState, sender *Backchanne
 	var failedGen uint64
 	for s := sender; s != nil; s = sm.nextUntriedSender(deleg.ClientID, tried) {
 		tried[s] = true
+		// decision: the generation is sampled before the attempt, not returned
+		// from it, so a BACKCHANNEL_CTL that replaces the parameters while the
+		// request is queued makes this stamp older than the one the send ran
+		// under. setCBPathUpIfCurrent then discards the verdict instead of
+		// applying it, and CBPathUp stays true on a path that did fail. That is
+		// the safe direction of the two: the guard exists to stop an old
+		// failure marking a NEW path down, and a dropped failure only costs a
+		// retry on the next recall, which re-derives the verdict under the
+		// current generation. Withdraw it if a dropped failure ever has to be
+		// observed the first time rather than converged on.
 		gen := s.currentParams().generation
 		switch sm.attemptRecallV41(deleg, s, recallOp) {
 		case recallSent:
