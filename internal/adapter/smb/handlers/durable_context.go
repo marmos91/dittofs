@@ -1220,6 +1220,17 @@ func ProcessAppInstanceId(
 			if sameOrUnknownClient(h.ClientGUID, connClientGUID) || !mayDisplace(h.MetadataHandle) {
 				continue
 			}
+			// decision: the row is destroyed before its cleanup runs, so a crash
+			// in between loses it while its byte-range locks remain. The other
+			// order is worse: cleaning up first and deleting after leaves a
+			// window in which a reconnect restores the open — and then the
+			// cleanup strips locks from a LIVE handle while the delete removes
+			// nothing, which damages a working client silently. This way the
+			// residue is orphaned locks whose owner is gone, and lock recovery
+			// releases those at the end of the grace period on the next boot.
+			// Withdraw it if a claimed row ever carries state that grace does
+			// not reconcile.
+			//
 			// Claim the row before acting on it, the way reconnect claims one.
 			// Between the listing above and this point a DHnC/DH2C reconnect
 			// can take the same row and restore the open, byte-range locks
