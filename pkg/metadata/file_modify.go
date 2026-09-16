@@ -1318,10 +1318,10 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 		// and the restore would then write a zero ChangeTime.
 		//
 		// The "before" read covers the window only on backends whose
-		// transaction serialises it against concurrent writers. Under READ
-		// COMMITTED with an unlocked read — postgres — a write can still commit
-		// between this read and the row lock the update takes, narrowing the
-		// window rather than closing it.
+		// transaction serialises it against concurrent writers, which is all of
+		// them: postgres runs this transaction at REPEATABLE READ, so a write
+		// that commits between this read and the row lock the update takes
+		// aborts the update rather than being erased by it.
 		pre, err := tx.GetFile(ctx.Context, srcHandle)
 		if err != nil {
 			return err

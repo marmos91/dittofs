@@ -52,7 +52,9 @@ import (
 // a per-site choice is how the read-then-write sites came to be unprotected in
 // the first place.
 //
-// Two known ceilings come with it, both measured rather than assumed:
+// Two known ceilings come with it. Neither has been observed failing — both
+// are read off the code — so each names the observation that would promote it
+// from a ceiling to a bug. The 2.6x above is measured; these two are not.
 //
 // The retry budget is computed once, before the first attempt, so a
 // transaction whose FIRST attempt runs longer than txretry.Budget has no

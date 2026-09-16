@@ -53,10 +53,10 @@ func (w *windowStore) WithTransaction(ctx context.Context, fn func(tx metadata.T
 // the advance committed in the window is erased and the ChangeTime lands back at
 // the pre-advance value.
 //
-// What this does NOT pin: anything about postgres. There the pre-read is a plain
-// SELECT under READ COMMITTED, so a writer can still commit between that read
-// and the row lock the update takes. What closes this window on sqlite, badger
-// and memory is the store's isolation, not anything about how Move is written.
+// What this does NOT pin: anything about postgres. What closes this window on
+// sqlite, badger and memory is the store's isolation, not anything about how
+// Move is written, and postgres closes it differently — it refuses the update
+// at REPEATABLE READ and retries — which this sqlite-backed hook cannot drive.
 func TestRenameCtime_AdvanceInsideMoveWindowIsNotErased(t *testing.T) {
 	ws := &windowStore{SQLiteMetadataStore: newSQLiteRenameStore(t)}
 	svc, rootHandle, share := registerRenameStore(t, ws)
