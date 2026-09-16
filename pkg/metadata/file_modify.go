@@ -220,14 +220,14 @@ func (s *Service) ReadSymlink(ctx *AuthContext, handle FileHandle) (string, *Fil
 // overwritten by a value newer than its own, or wins it and is left alone.
 // Comparing outside the transaction would only move the window rather than
 // narrow it. What makes this safe is the store's isolation, not the shape of
-// this function: under READ COMMITTED with an unlocked read — postgres — the
-// pair is not atomic and the window stays open.
+// this function — and every backend now provides it, postgres because its
+// transactions run at REPEATABLE READ.
 //
 // On the losing path nothing is written at all. On the winning path the row
 // read in this transaction is written back with nothing but ChangeTime changed,
-// which spares a concurrent size or mtime advance only where that read is
-// serialised against the writer. Where it is not, a write committing between the
-// read and the update is overwritten wholesale — the residual half of the
+// which spares a concurrent size or mtime advance because that read is
+// serialised against the writer. Were it not, a write committing between the
+// read and the update would be overwritten wholesale — the residual half of the
 // lost-update shape the rename path shares, which writing the in-transaction
 // row narrows but only the store's isolation can close.
 //
@@ -459,6 +459,11 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 
 	now := time.Now()
 	modified := false
+	// The mode a chmod asks the ACL to be adjusted for, once the SUID/SGID
+	// stripping above has had its say. Nil when this call is not a chmod. The
+	// later ModeOrMask/ModeAndNotMask bits are deliberately not included: they
+	// carry DOS attribute flags, which no ACE expresses.
+	var aclAdjustMode *uint32
 	// Set when a size-down truncate prunes the block list, so the commit
 	// below rewrites the stored manifest instead of only the attrs.
 	blocksPruned := false
@@ -487,10 +492,13 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 		file.Mode = newMode
 
 		// RFC 7530 Section 6.4.1: chmod adjusts OWNER@/GROUP@/EVERYONE@ ACEs
-		// to match the new mode bits when an ACL is present.
+		// to match the new mode bits when an ACL is present. The adjustment is
+		// redone against the committed row inside the transaction; this one
+		// keeps the in-memory copy consistent for the post-op attributes.
 		if file.ACL != nil {
 			file.ACL = acl.AdjustACLForMode(file.ACL, newMode)
 		}
+		aclAdjustMode = &newMode
 
 		modified = true
 	}
@@ -752,6 +760,34 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 				}
 			}
 
+			// The ownership gate above ran against the copy read before the
+			// transaction, so an owner-authorized change would otherwise land
+			// on a row a concurrent chown has since handed to someone else —
+			// the gate and the write describing different files. Root and a
+			// handle-authorized timestamp write do not depend on ownership and
+			// are left alone. No isolation level catches this: the chown
+			// committed before this transaction opened, so its row is simply
+			// what the snapshot sees and nothing conflicts.
+			if !isRoot && !timestampAuthorizedByHandle &&
+				(row.UID != pre.UID || row.GID != pre.GID) {
+				return &StoreError{
+					Code:    ErrPermissionDenied,
+					Message: "ownership changed while the attribute change was being applied",
+					Path:    file.Path,
+				}
+			}
+
+			// decision: the EA map is replaced wholesale from the pre-read copy
+			// rather than merged onto the row, so two concurrent EA writers can
+			// still lose each other's keys. SetFileAttributes takes no row lock
+			// — xattr.go's own path takes LockFileRow for exactly this — and
+			// adding one here would put the lock on every chmod and utimes as
+			// well. Withdraw the exemption if EA writes ever arrive on this
+			// path concurrently rather than through xattr.go.
+			if len(attrs.EAMutations) > 0 {
+				row.EAs = file.EAs
+			}
+
 			if file.Mode != pre.Mode {
 				row.Mode = file.Mode
 			}
@@ -790,13 +826,17 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 			case !file.Ctime.Equal(pre.Ctime):
 				row.Ctime = file.Ctime
 			}
-			// A chmod rewrites the mode's OWNER@/GROUP@/EVERYONE@ ACEs, so an
-			// explicit ACL and a mode change both replace the stored one.
-			if attrs.ACL != nil || attrs.Mode != nil {
+			// An explicit ACL replaces the stored one outright. A chmod only
+			// rewrites the mode's OWNER@/GROUP@/EVERYONE@ ACEs, and it has to
+			// rewrite them on the ACL the row actually holds: the adjustment
+			// made before the transaction opened was computed from a copy that
+			// a concurrent ACL write may since have superseded, and copying it
+			// over would discard that write wholesale.
+			switch {
+			case attrs.ACL != nil:
 				row.ACL = file.ACL
-			}
-			if len(attrs.EAMutations) > 0 {
-				row.EAs = file.EAs
+			case aclAdjustMode != nil && row.ACL != nil:
+				row.ACL = acl.AdjustACLForMode(row.ACL, *aclAdjustMode)
 			}
 			if attrs.Size != nil {
 				row.Size = file.Size
