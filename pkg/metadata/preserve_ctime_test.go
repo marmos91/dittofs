@@ -269,7 +269,7 @@ func TestPreserveCtime_IsHonouredOnTruncate(t *testing.T) {
 // snapshot forward would still pass. Driving the lowering into the window
 // between that read and the transaction needs a store hook this package does
 // not have; the concurrent direction is covered by
-// TestSetFileAttributes_PreserveCtimeSurvivesAConcurrentAdvance, which drives a
+// TestSetFileAttributes_PreserveCtimeDoesNotRevertAConcurrentAdvance, which drives a
 // real race in the raising direction.
 func TestPreserveCtime_HoldsALoweredValue(t *testing.T) {
 	svc, ctx, handle, _ := setupPreserveCtimeFile(t)
