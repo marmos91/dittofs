@@ -589,14 +589,14 @@ func lastN(b []byte, n int) []byte {
 //
 // DATA handling:
 //  1. Look up the context by handle (RPCSEC_GSS_CREDPROBLEM if not found)
-//     and refuse it if it has outlived its ticket (RPCSEC_GSS_CTXPROBLEM)
 //  2. Verify the call-header MIC (RPCSEC_GSS_CREDPROBLEM on failure)
 //  3. Enforce the negotiated service level (no downgrade)
-//  4. Check for MAXSEQ exceeded (context must be destroyed per RFC 2203)
-//  5. Validate the sequence number (silent discard if invalid per RFC 2203 Section 5.3.3.1)
-//  6. Unwrap based on service level (svc_none / svc_integrity / svc_privacy)
-//  7. Map principal to Unix identity via IdentityMapper
-//  8. Return unwrapped procedure arguments and identity
+//  4. Refuse a context past its ticket's end time (context destroyed, RPCSEC_GSS_CTXPROBLEM)
+//  5. Check for MAXSEQ exceeded (context must be destroyed per RFC 2203)
+//  6. Validate the sequence number (silent discard if invalid per RFC 2203 Section 5.3.3.1)
+//  7. Unwrap based on service level (svc_none / svc_integrity / svc_privacy)
+//  8. Map principal to Unix identity via IdentityMapper
+//  9. Return unwrapped procedure arguments and identity
 func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verifBody []byte, headerPreimage []byte, requestBody []byte) *GSSProcessResult {
 	// 1. Look up context by handle
 	gssCtx, found := p.contexts.Lookup(cred.Handle)
@@ -608,23 +608,6 @@ func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verif
 		return &GSSProcessResult{
 			Err:      fmt.Errorf("RPCSEC_GSS_CREDPROBLEM: context not found"),
 			AuthStat: AuthStatCredProblem,
-		}
-	}
-
-	// 1b. Refuse a context that has outlived the ticket it was built from (see
-	// GSSContext.ExpiresAt) and drop it so the handle cannot be retried.
-	// CTXPROBLEM tells the client to establish a new context, which sends it
-	// back to the KDC for a fresh ticket.
-	if gssCtx.Expired(time.Now()) {
-		logger.Debug("GSS DATA: context outlived its ticket",
-			"principal", gssCtx.Principal,
-			"realm", gssCtx.Realm,
-			"expired_at", gssCtx.ExpiresAt.String(),
-		)
-		p.contexts.Delete(cred.Handle)
-		return &GSSProcessResult{
-			Err:      fmt.Errorf("RPCSEC_GSS_CTXPROBLEM: context expired"),
-			AuthStat: AuthStatCtxProblem,
 		}
 	}
 
@@ -679,7 +662,30 @@ func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verif
 		"principal", gssCtx.Principal,
 	)
 
-	// 4. Check for MAXSEQ exceeded -- context must be destroyed per RFC 2203
+	// 4. Refuse a context that has outlived the ticket it was built from (see
+	// GSSContext.ExpiresAt) and drop it so the handle cannot be retried.
+	// CTXPROBLEM tells the client to establish a new context, which sends it
+	// back to the KDC for a fresh ticket.
+	//
+	// This sits behind the header MIC, alongside the MAXSEQ gate it mirrors, so
+	// that only a caller holding the session key can retire a context: an
+	// unauthenticated holder of a stolen handle must not be able to destroy
+	// server state or learn which handles exist. The Linux client applies its own
+	// end-time check in the same place, after the token's integrity is verified.
+	if gssCtx.Expired(time.Now()) {
+		logger.Debug("GSS DATA: context outlived its ticket",
+			"principal", gssCtx.Principal,
+			"realm", gssCtx.Realm,
+			"expired_at", gssCtx.ExpiresAt.String(),
+		)
+		p.contexts.Delete(cred.Handle)
+		return &GSSProcessResult{
+			Err:      fmt.Errorf("RPCSEC_GSS_CTXPROBLEM: context expired"),
+			AuthStat: AuthStatCtxProblem,
+		}
+	}
+
+	// 5. Check for MAXSEQ exceeded -- context must be destroyed per RFC 2203
 	if cred.SeqNum >= MAXSEQ {
 		logger.Debug("GSS DATA: sequence number exceeds MAXSEQ, destroying context",
 			"seq_num", cred.SeqNum,
@@ -692,7 +698,7 @@ func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verif
 		}
 	}
 
-	// 5. Validate sequence number via sliding window
+	// 6. Validate sequence number via sliding window
 	if !gssCtx.SeqWindow.Accept(cred.SeqNum) {
 		// Per RFC 2203 Section 5.3.3.1: silent discard for sequence violations
 		logger.Debug("GSS DATA: sequence number rejected (duplicate or out of window)",
@@ -704,7 +710,7 @@ func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verif
 		}
 	}
 
-	// 6. Unwrap based on credential's service level (per-call, per RFC 2203 Section 5.3.3.4).
+	// 7. Unwrap based on credential's service level (per-call, per RFC 2203 Section 5.3.3.4).
 	// The session key from the context is used for cryptographic operations.
 	var processedData []byte
 	switch cred.Service {
@@ -745,7 +751,7 @@ func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verif
 		}
 	}
 
-	// 7. Map principal to Unix identity via centralized resolver or legacy mapper.
+	// 8. Map principal to Unix identity via centralized resolver or legacy mapper.
 	ident, identErr := p.resolveIdentity(ctx, gssCtx.Principal, gssCtx.Realm)
 	if identErr != nil {
 		return &GSSProcessResult{Err: identErr}

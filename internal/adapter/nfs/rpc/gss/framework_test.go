@@ -1312,6 +1312,36 @@ func TestProcessDATARejectsContextPastTicketExpiry(t *testing.T) {
 	}
 }
 
+// Retiring a context is server state, so only a caller holding the session key
+// may trigger it. Someone who has merely observed a handle on the wire must get
+// the same CREDPROBLEM any forged call gets, and must not be able to destroy
+// the context by guessing that its ticket has lapsed.
+func TestProcessDATAExpiredContextStillNeedsAValidMIC(t *testing.T) {
+	verifier := newMockVerifier("alice", "EXAMPLE.COM")
+	verifier.expiresAt = time.Now().Add(-time.Minute)
+	proc := NewGSSProcessor(verifier, newTestMapper(), 100, 10*time.Minute)
+	defer proc.Stop()
+
+	handle := establishContext(t, proc, RPCGSSSvcNone)
+	dataCred := &RPCGSSCredV1{GSSProc: RPCGSSData, SeqNum: 1, Service: RPCGSSSvcNone, Handle: handle}
+	dataCredBody, err := EncodeGSSCred(dataCred)
+	if err != nil {
+		t.Fatalf("encode DATA cred: %v", err)
+	}
+
+	res := proc.Process(context.Background(), dataCredBody, nil, dataCredBody, []byte("forged-args"))
+	if res.Err == nil {
+		t.Fatal("unsigned DATA accepted on an expired context")
+	}
+	if res.AuthStat != AuthStatCredProblem {
+		t.Fatalf("expected AuthStatCredProblem (%d) for an unsigned call, got %d — the expiry gate leaks whether the handle exists",
+			AuthStatCredProblem, res.AuthStat)
+	}
+	if _, found := proc.contexts.Lookup(handle); !found {
+		t.Fatal("an unauthenticated caller destroyed the context")
+	}
+}
+
 // The periodic sweep reclaims a context past its ticket's end time even when it
 // is nowhere near the idle TTL.
 func TestContextStoreCleanupEvictsPastTicketExpiry(t *testing.T) {
