@@ -860,7 +860,7 @@ func TestCompoundV41_SessionClientIDKeysOwners(t *testing.T) {
 	// Byte-range conflicts are only detected when a lock manager is present;
 	// without one LOCKT reports every range as free and proves nothing.
 	fx.handler.StateManager.SetLockManager(lock.NewManager())
-	sessionID := createSessionOn(t, fx.handler, "v41-owner-keying-client")
+	sessionID := createReclaimedSessionOn(t, fx.handler, "v41-owner-keying-client")
 
 	// SEQUENCE + OPEN, with open_owner4.clientid = 0 -- the value a conforming
 	// v4.1 client is free to send.

@@ -37,12 +37,28 @@ func createTestSession(t *testing.T) (*Handler, types.SessionId4) {
 // newTestHandler.
 func createSessionOn(t *testing.T, h *Handler, ownerID string) types.SessionId4 {
 	t.Helper()
+	sessionID, _ := createSessionOnClient(t, h, ownerID)
+	return sessionID
+}
+
+// createSessionOnClient is createSessionOn, also returning the client ID behind
+// the session for tests that must act on the client itself.
+func createSessionOnClient(t *testing.T, h *Handler, ownerID string) (types.SessionId4, uint64) {
+	t.Helper()
 	clientID, seqID := registerExchangeID(t, h, ownerID)
 	secParms := []types.CallbackSecParms4{{CbSecFlavor: 0}} // AUTH_NONE
-	sessionID := runCreateSession(t, h, encodeCreateSessionArgsWithSec(clientID, seqID, 0, secParms)).SessionID
+	res := runCreateSession(t, h, encodeCreateSessionArgsWithSec(clientID, seqID, 0, secParms))
+	return res.SessionID, clientID
+}
 
-	// A conformant v4.1 client sends RECLAIM_COMPLETE before its first
-	// non-reclaim locking operation, and is held in grace until it does.
+// createReclaimedSessionOn is createSessionOn followed by the RECLAIM_COMPLETE a
+// conformant v4.1 client sends before its first non-reclaim locking operation.
+// Tests that go on to OPEN or LOCK need it, because the client is held in grace
+// until it arrives; tests about RECLAIM_COMPLETE itself must not have it sent
+// for them, which is why the plain helper stays.
+func createReclaimedSessionOn(t *testing.T, h *Handler, ownerID string) types.SessionId4 {
+	t.Helper()
+	sessionID, clientID := createSessionOnClient(t, h, ownerID)
 	if err := h.StateManager.ReclaimComplete(clientID, false); err != nil {
 		t.Fatalf("ReclaimComplete(%s): %v", ownerID, err)
 	}

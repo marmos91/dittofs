@@ -23,8 +23,8 @@ func TestCompoundV41_ReadRejectsAnotherClientsStateid(t *testing.T) {
 	const filename = "v41-cross-client-read.txt"
 
 	fx := newIOTestFixture(t, "/export")
-	sessionA := createSessionOn(t, fx.handler, "cross-client-a")
-	sessionB := createSessionOn(t, fx.handler, "cross-client-b")
+	sessionA := createReclaimedSessionOn(t, fx.handler, "cross-client-a")
+	sessionB := createReclaimedSessionOn(t, fx.handler, "cross-client-b")
 
 	// Client A opens the file and keeps the stateid.
 	openArgs := encodeOpenArgs(
