@@ -997,9 +997,13 @@ func DeriveSigningKey(sessionBaseKey [16]byte, flags NegotiateFlag, encryptedKey
 	return exportedSessionKey
 }
 
-// VerifyNTLMSSPMechListMIC checks an NTLMSSP mechListMIC against the expected
-// signature computed by ComputeNTLMSSPMechListMIC over the same inputs
-// (exported session key, mechList bytes, negotiate flags). Returns nil when
+// VerifyNTLMSSPMechListMIC checks a mechListMIC the CLIENT produced. It does
+// NOT verify what ComputeNTLMSSPMechListMIC emits, and the two are not
+// interchangeable: NTLMSSP derives a separate signing and sealing key per
+// direction, so this computes the expected signature under the
+// client-to-server keys while the emitter uses server-to-client. Verifying a
+// client's MIC with the emitter's derivation rejects every client that sends
+// one. Returns nil when
 // the received MIC matches; ErrAuthenticationFailed on a mismatch. The
 // received MIC is the 16-byte NTLMSSP signature form (legacy or NTLM2 layout
 // per the negotiated flags), not the GSS-API MICToken form the Kerberos path
