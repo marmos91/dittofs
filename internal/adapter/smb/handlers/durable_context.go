@@ -1252,10 +1252,14 @@ func ProcessAppInstanceId(
 			// window in which a reconnect restores the open — and then the
 			// cleanup strips locks from a LIVE handle while the delete removes
 			// nothing, which damages a working client silently. This way the
-			// residue is orphaned locks whose owner is gone, and lock recovery
-			// releases those at the end of the grace period on the next boot.
-			// Withdraw it if a claimed row ever carries state that grace does
-			// not reconcile.
+			// residue is orphaned locks whose owner is gone. Nothing reclaims
+			// them while the server stays up — the row they belonged to is the
+			// thing a retry or the scavenger would have worked from — so they
+			// can block later opens of that file until the process restarts and
+			// lock recovery releases them at the end of the grace period. That
+			// is the cost, stated plainly rather than as "it reconciles".
+			// Withdraw it for a retryable claim (a tombstone the scavenger can
+			// still see) if that ever bites in practice; #2676 carries it.
 			//
 			// Claim the row before acting on it, the way reconnect claims one.
 			// Between the listing above and this point a DHnC/DH2C reconnect
@@ -1276,21 +1280,22 @@ func ProcessAppInstanceId(
 					"handleID", h.ID)
 				continue
 			}
-			// decision: the disconnected-handle count is deliberately NOT
-			// adjusted here. Two attempts at reconciling it were both wrong, and
-			// the invariant says why (disconnected_state_machine.go): only the
-			// add side is load-bearing, an over-count costs one slow-path scan
-			// and then converges when a purge counts the survivors back, and an
+			// Counted down only for a row that was counted up, which is what
+			// makes this safe: only disconnected rows are ever counted, and a
+			// row with no DisconnectedAt is not one — subtracting for it would
+			// steal a genuinely disconnected handle's count on the same file and
+			// let a later data change skip purging it. The same guard, for the
+			// same reason, as durable_scavenger.go:199.
+			//
+			// Two earlier attempts here were unguarded and did exactly that.
+			// The invariant they broke is in disconnected_state_machine.go: only
+			// the add side is load-bearing, an over-count costs one slow-path
+			// scan and converges when a purge counts the survivors back, and an
 			// under-count makes hasDisconnectedHandles answer false for a file
 			// that has one — after which its locks survive every later scan.
-			//
-			// Decrementing on consume risks exactly that under-count: legacy
-			// rows with a zero DisconnectedAt were never counted, so subtracting
-			// for one takes a different row's, and the scavenger's own forget
-			// runs without this mutex. The phantom this leaves is the documented
-			// over-count, which is the safe direction. Withdraw only if a
-			// counted-rows invariant is ever enforced at the add side, so a
-			// decrement can be matched to something that was added.
+			if !row.DisconnectedAt.IsZero() {
+				handler.forgetDisconnectedHandle(row.MetadataHandle)
+			}
 			claimed = append(claimed, row)
 		}
 		return claimed
