@@ -11,7 +11,6 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	v41handlers "github.com/marmos91/dittofs/internal/adapter/nfs/v4/v41/handlers"
-	"github.com/marmos91/dittofs/pkg/adapter/nfs/identity"
 )
 
 // V40OpHandler is the type signature for individual NFSv4 operation handlers.
@@ -51,11 +50,6 @@ type Handler struct {
 	// is available. When true, SECINFO responses include krb5/krb5i/krb5p
 	// pseudo-flavors in addition to AUTH_SYS and AUTH_NONE.
 	KerberosEnabled bool
-
-	// IdentityMapper is an optional identity resolver for FATTR4_OWNER
-	// and FATTR4_OWNER_GROUP encoding. When non-nil, UIDs/GIDs are
-	// reverse-resolved to user@domain format. When nil, numeric format is used.
-	IdentityMapper identity.IdentityMapper
 
 	// blockedOpsMu protects blockedOps from concurrent read/write access.
 	blockedOpsMu sync.RWMutex
