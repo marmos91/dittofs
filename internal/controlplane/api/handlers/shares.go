@@ -1252,34 +1252,25 @@ func samAccountName(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// grantsChanged reprojects the share's effective grants onto its root directory
-// ACL, then drops every adapter's cached per-identity authorization so active
-// clients re-resolve.
+// reconcileRootACL reprojects the share's effective grants onto its root
+// directory ACL.
 //
 // It exists for the share's default-permission change, which moves the
-// EVERYONE@ ACE without writing any grant row. The per-principal mutations do
-// NOT call it: the store handed to this handler completes them on the write
-// itself (Runtime.ShareGrantStore), which is what keeps the user routes — which
-// write the same grants and never reach this handler — projecting identically.
+// EVERYONE@ ACE without writing any grant row, and so has no write for the
+// grant-completing store to carry it. The per-principal mutations do NOT call
+// it: the store handed to this handler completes them on the write itself
+// (Runtime.ShareGrantStore), which is what keeps the user routes — which write
+// the same grants and never reach this handler — projecting identically.
 //
-// The two halves have different standing. The ACL is a projection and its
-// reconcile is best-effort — a failure is logged, not surfaced, because the
-// control-plane permission record is authoritative and a later reconcile
-// self-heals it. The invalidation is a consequence of the change that was just
-// written and therefore fires unconditionally, including when the projection
-// failed: a change that returned 200 having notified nobody leaves an SMB
-// connection holding the old access for its whole lifetime.
-func (h *ShareHandler) grantsChanged(ctx context.Context, shareName string) {
-	if h.runtime == nil {
-		return
-	}
-	h.reconcileRootACL(ctx, shareName)
-	h.runtime.InvalidateAuthCache()
-}
-
-// reconcileRootACL is the projection half on its own, for the callers whose
-// invalidation is already raised where the live value is written. Firing a
-// second one costs a second sweep over every session and every tree.
+// The projection is best-effort — a failure is logged, not surfaced, because
+// the control-plane permission record is authoritative and a later reconcile
+// self-heals it. The auth-cache invalidation is deliberately NOT raised here:
+// it is a consequence of the change that was just written and belongs where the
+// live default-permission value is written, in shares.Service.UpdateShare.
+// Raising a second one here does not coalesce — the SMB sweeper takes its wake
+// token when a sweep starts, and this reconcile separates the two signals by
+// long enough that the first sweep is always already running — so it would
+// queue a full extra walk of every session and tree.
 func (h *ShareHandler) reconcileRootACL(ctx context.Context, shareName string) {
 	if h.runtime == nil {
 		return
