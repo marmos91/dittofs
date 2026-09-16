@@ -353,7 +353,7 @@ run_one() {
 # parser starts writing one.
 suite_writes_verdict() {
     case "$1" in
-        wpts|pynfs|posix) return 1 ;;
+        wpts|pynfs|pjdfstest) return 1 ;;
         *) return 0 ;;
     esac
 }

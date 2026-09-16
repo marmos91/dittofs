@@ -346,6 +346,32 @@ while IFS= read -r cmd; do
 done < <(jq -r '.suites[].steps[].cmd' "${SCRIPT_DIR}/suites.json")
 assert_eq "every declared step command is executable" "" "$MISSING"
 
+# suite_writes_verdict names suites that LACK the sidecar contract, and anything
+# it does not name is assumed to write one. A misspelt or stale name therefore
+# falls through to that default arm and claims the contract the suite does not
+# have — the direction that turns a real regression into "no test was graded".
+# The name has to be a suite the manifest actually defines.
+KNOWN_SUITES="$(jq -r '.suites | keys[]' "${SCRIPT_DIR}/suites.json")"
+PREDICATE_SUITES="$(sed -n '/^suite_writes_verdict()/,/^}/p' "$RUNNER" \
+    | sed -n 's/^ *\([a-z0-9|_-]*\)) return 1 ;;/\1/p' | tr '|' ' ')"
+UNKNOWN=""
+for s in $PREDICATE_SUITES; do
+    grep -qx "$s" <<<"$KNOWN_SUITES" || UNKNOWN="${UNKNOWN} ${s}"
+done
+assert_eq "every suite named in suite_writes_verdict exists in the manifest" "" "$UNKNOWN"
+
+# And the claim itself has to hold: a suite listed here whose graded step does
+# write a sidecar has its failure count thrown away. Every suite hands off to a
+# parse-results.sh beside its own run script, so that file is where the sidecar
+# would be written.
+HAS_VERDICT=""
+for s in $PREDICATE_SUITES; do
+    cmd="$(jq -r --arg s "$s" '.suites[$s].steps[] | select(.name == "run") | .cmd' "${SCRIPT_DIR}/suites.json")"
+    parser="${SCRIPT_DIR}/../$(dirname "$cmd")/parse-results.sh"
+    grep -q 'verdict"' "$parser" 2>/dev/null && HAS_VERDICT="${HAS_VERDICT} ${s}"
+done
+assert_eq "no suite listed as verdict-less writes a verdict" "" "$HAS_VERDICT"
+
 # The runner tells a graded failure from an infrastructure one by the step's
 # name, so a suite with no step called "run" would have every failure reported
 # as setup breakage. And a graded step marked "always" would have its failure
