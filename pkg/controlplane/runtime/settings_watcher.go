@@ -55,6 +55,11 @@ type SettingsWatcher struct {
 	lifecycleMu sync.Mutex
 	stopCh      chan struct{}
 	stopped     chan struct{} // closed when polling goroutine exits
+	// cancelPoll aborts a poll already inside the control-plane store. Without
+	// it Stop can only stop WAITING for that poll, which is not the same as
+	// stopping it: the caller then closes the store under a query that is still
+	// running, which is the outcome the join exists to prevent.
+	cancelPoll context.CancelFunc
 }
 
 // OnNFSSettingsChange registers a callback invoked whenever NFS settings change
@@ -118,14 +123,20 @@ func (w *SettingsWatcher) Start(ctx context.Context) {
 	// Re-create the channels as fresh, open channels. stopped was created
 	// already-closed (so Stop-before-Start is safe); the goroutine below will
 	// close it on exit. Resetting stopCh allows a Start→Stop→Start→Stop cycle.
+	// Derived, so Stop can cancel the polls without disturbing the caller's
+	// context — which on a startup error is still very much alive.
+	pollCtx, cancelPoll := context.WithCancel(ctx)
+
 	w.lifecycleMu.Lock()
 	w.stopped = make(chan struct{})
 	w.stopCh = make(chan struct{})
+	w.cancelPoll = cancelPoll
 	stopCh, stopped := w.stopCh, w.stopped
 	w.lifecycleMu.Unlock()
 
 	go func() {
 		defer close(stopped)
+		defer cancelPoll()
 
 		ticker := time.NewTicker(w.pollInterval)
 		defer ticker.Stop()
@@ -134,14 +145,14 @@ func (w *SettingsWatcher) Start(ctx context.Context) {
 
 		for {
 			select {
-			case <-ctx.Done():
+			case <-pollCtx.Done():
 				logger.Debug("Settings watcher stopping (context cancelled)")
 				return
 			case <-stopCh:
 				logger.Debug("Settings watcher stopping (stop signal)")
 				return
 			case <-ticker.C:
-				w.pollWithRecover(ctx)
+				w.pollWithRecover(pollCtx)
 			}
 		}
 	}()
@@ -150,7 +161,7 @@ func (w *SettingsWatcher) Start(ctx context.Context) {
 // Stop signals the polling goroutine to stop and waits for it to exit.
 func (w *SettingsWatcher) Stop() {
 	w.lifecycleMu.Lock()
-	stopCh, stopped := w.stopCh, w.stopped
+	stopCh, stopped, cancelPoll := w.stopCh, w.stopped, w.cancelPoll
 	select {
 	case <-stopCh:
 		// Already signalled by an earlier Stop, which may still be waiting for
@@ -160,6 +171,14 @@ func (w *SettingsWatcher) Stop() {
 		close(stopCh)
 	}
 	w.lifecycleMu.Unlock()
+
+	// Cancel before waiting. A poll already inside the store returns on a
+	// cancelled context, so the wait below is a join that completes rather than
+	// one a caller has to abandon — and abandoning it is what leaves the store
+	// closing under a live query.
+	if cancelPoll != nil {
+		cancelPoll()
+	}
 
 	<-stopped
 	logger.Debug("Settings watcher stopped")
