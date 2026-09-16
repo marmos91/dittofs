@@ -148,3 +148,24 @@ func TestIdempotencyTokenValidation(t *testing.T) {
 		assert.False(t, isRetry, "File with zero token should not match non-zero request")
 	})
 }
+
+// ============================================================================
+// Write Verifier Tests
+// ============================================================================
+
+// TestWriteVerifierDistinguishesInstancesWithinOneSecond pins that two server
+// instances started in the same wall-clock second get different write
+// verifiers.
+//
+// RFC 1813 3.3.7/3.3.21: an identical verifier is the client's positive signal
+// NOT to re-send its UNSTABLE writes. A crash-restart cycle that completes
+// inside one second and mints the same verifier therefore tells the client the
+// data it lost is safe.
+func TestWriteVerifierDistinguishesInstancesWithinOneSecond(t *testing.T) {
+	first := newWriteVerifier()
+	time.Sleep(2 * time.Millisecond)
+	second := newWriteVerifier()
+
+	assert.NotEqual(t, first, second,
+		"two verifiers minted milliseconds apart are identical: a restart within the same second is invisible to the client")
+}
