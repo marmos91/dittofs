@@ -589,3 +589,39 @@ func TestSessionSetup_FailedReauth_ClearsBindsOnOtherConnections(t *testing.T) {
 		}
 	}
 }
+
+// TestCompleteNTLMAuth_RefusesALoggedOffSessionAtTheCompletionSeam drives the
+// window the callers' earlier check cannot cover: the pending auth is already
+// armed when LOGOFF marks the session off, so the TYPE_3 arrives at
+// completeNTLMAuth with a live-looking pending entry on a zombie session. The
+// re-check at the completion seam is what refuses it — removing that check
+// lets the handshake run to completion and this test fails.
+func TestCompleteNTLMAuth_RefusesALoggedOffSessionAtTheCompletionSeam(t *testing.T) {
+	h := NewHandler()
+	sess := h.CreateSession("127.0.0.1:12345", false, "alice", "DOMAIN")
+	ctx := newTestContext(sess.SessionID)
+
+	// Arm the handshake directly, as TYPE_1 would, then log the session off
+	// before the TYPE_3 is processed.
+	h.StorePendingAuth(&PendingAuth{
+		SessionID:  sess.SessionID,
+		ConnID:     ctx.ConnID,
+		ClientAddr: "127.0.0.1:12345",
+		IsReauth:   true,
+	})
+	sess.MarkLoggedOff()
+
+	authMsg := buildNTLMAuthenticateForTest("alice", "DOMAIN", nil)
+	result, err := h.completeNTLMAuth(ctx, authMsg)
+	if err != nil {
+		t.Fatalf("completeNTLMAuth unexpected error: %v", err)
+	}
+	if result.Status != types.StatusUserSessionDeleted {
+		t.Errorf("status = 0x%x, want StatusUserSessionDeleted (0x%x): the completion seam "+
+			"let a handshake finish on a session the client had already logged off",
+			uint32(result.Status), uint32(types.StatusUserSessionDeleted))
+	}
+	if _, ok := h.GetPendingAuth(sess.SessionID, ctx.ConnID); ok {
+		t.Error("the refused completion left its pending auth armed on the zombie")
+	}
+}

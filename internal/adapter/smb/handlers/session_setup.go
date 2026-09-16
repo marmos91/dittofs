@@ -1175,6 +1175,31 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 
+	// Re-check the logged-off state here rather than relying on the callers'
+	// earlier check: that one runs before the pending-auth lookup, and LOGOFF
+	// marks the session off without holding anything the lookup takes, so a
+	// TYPE_3 landing in the window between them still finds the pending auth
+	// and completes a handshake for a session the client has already logged
+	// off. The state is monotonic (nothing ever clears it), so re-reading it
+	// here is enough to close the window; a lock is not needed to make the
+	// transition visible.
+	//
+	// Checked on the session this completion would write to: a bind targets
+	// BindingSessionID, everything else the session that seeded the entry.
+	authSessionID := pending.SessionID
+	if pending.IsBinding {
+		authSessionID = pending.BindingSessionID
+	}
+	if sess, ok := h.GetSession(authSessionID); ok && sess.LoggedOff.Load() {
+		logger.Debug("SESSION_SETUP: refusing to complete a handshake on a logged-off session",
+			"sessionID", authSessionID, "connID", ctx.ConnID)
+		h.DeletePendingAuth(ctx.SessionID, ctx.ConnID)
+		if ctx.ConnCryptoState != nil {
+			ctx.ConnCryptoState.DeleteSessionPreauthHash(authSessionID)
+		}
+		return NewErrorResult(types.StatusUserSessionDeleted), nil
+	}
+
 	// Every failing exit from here frees the handshake's preauth hash. Not only
 	// the ones inside completeSessionBind — a malformed TYPE_3, a failed NTLM
 	// validation, a MIC failure or a user lookup all return before that function
