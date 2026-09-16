@@ -1276,14 +1276,21 @@ func ProcessAppInstanceId(
 					"handleID", h.ID)
 				continue
 			}
-			// Counted down here, under the same mutex the claim took. Doing it
-			// after the lock is released opens a sequence that loses a DIFFERENT
-			// row's count: a concurrent purge reconciles this file to zero, a
-			// concurrent disconnect persists a new row and counts it back to
-			// one, and the late decrement then zeroes that — after which the new
-			// row's file passes the fast-path gate and its locks survive every
-			// later scan.
-			handler.forgetDisconnectedHandle(row.MetadataHandle)
+			// decision: the disconnected-handle count is deliberately NOT
+			// adjusted here. Two attempts at reconciling it were both wrong, and
+			// the invariant says why (disconnected_state_machine.go): only the
+			// add side is load-bearing, an over-count costs one slow-path scan
+			// and then converges when a purge counts the survivors back, and an
+			// under-count makes hasDisconnectedHandles answer false for a file
+			// that has one — after which its locks survive every later scan.
+			//
+			// Decrementing on consume risks exactly that under-count: legacy
+			// rows with a zero DisconnectedAt were never counted, so subtracting
+			// for one takes a different row's, and the scavenger's own forget
+			// runs without this mutex. The phantom this leaves is the documented
+			// over-count, which is the safe direction. Withdraw only if a
+			// counted-rows invariant is ever enforced at the add side, so a
+			// decrement can be matched to something that was added.
 			claimed = append(claimed, row)
 		}
 		return claimed
@@ -1307,11 +1314,18 @@ func ProcessAppInstanceId(
 				MetadataHandle: claimed.MetadataHandle,
 				PayloadID:      metadata.PayloadID(claimed.PayloadID),
 			}).WithName(OpenName{Path: claimed.Path})
-			handler.flushFileCache(cleanupCtx, cleanupFile)
+			// Locks first. The row is already consumed, so nothing retries this
+			// cleanup — and a cache flush that spends the whole budget would
+			// leave UnlockAllForOpen with an expired context and the displaced
+			// open's byte-range locks standing until the process restarts,
+			// blocking later opens of that file. The flush losing its budget
+			// costs cached data on a handle that is gone; the unlock losing it
+			// costs every future opener.
 			if err := metaSvc.UnlockAllForOpen(cleanupCtx, claimed.MetadataHandle, claimed.LockOpenID()); err != nil {
 				logger.Debug("ProcessAppInstanceId: failed to release locks",
 					"id", claimed.ID, "path", claimed.Path, "error", err)
 			}
+			handler.flushFileCache(cleanupCtx, cleanupFile)
 		}
 	}
 	if persistedClosed > 0 {
