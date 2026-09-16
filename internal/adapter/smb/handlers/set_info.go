@@ -465,6 +465,10 @@ func (h *Handler) handleFileLinkInformation(
 	// matching parent dir lease (same-key holder does not get broken).
 	PropagateOpenFileParentLeaseKey(authCtx, openFile)
 
+	// Capture the stored ChangeTime before CreateHardLink stamps it, so the
+	// frozen restore below can tell that stamp from a peer's advance.
+	preOpCtime := h.frozenPreOpCtime(authCtx, openFile)
+
 	if _, err := metaSvc.CreateHardLink(authCtx, dstDir, linkName, openFile.MetadataHandle); err != nil {
 		logger.Debug("SET_INFO: CreateHardLink failed",
 			"src", openFile.Name().Path, "dst", newPath, "error", err)
@@ -475,7 +479,7 @@ func (h *Handler) handleFileLinkInformation(
 	// target's ChangeTime for that from inside its own transaction — POSIX
 	// link(2) behaviour, beyond the reach of a SetAttrs flag. Put the frozen
 	// values back the way WRITE does (MS-FSA §2.1.5.15.2).
-	h.restoreFrozenTimestamps(authCtx, openFile)
+	h.restoreFrozenTimestamps(authCtx, openFile, preOpCtime)
 
 	// Break parent directory leases on the destination parent to None
 	// (MS-FSA 2.1.5.15.7 ("FileLinkInformation"): directory contents changed). Parent-key suppression

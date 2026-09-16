@@ -177,10 +177,17 @@ func TestFrozenChangeTime_SurvivesQueryDirectoryAtimeBump(t *testing.T) {
 
 // A freeze binds the handle that set it, not the file. When another opener
 // legitimately advances ChangeTime after the freeze, the frozen handle's next
-// access-time bump must leave that newer value alone — not restore the value it
-// froze. NFSv4 encodes its change attribute from Ctime (RFC 7530 §5.8.1.4
-// requires it to increase), so dragging the stored value backwards lets a
-// client keep serving a cache it should have dropped.
+// RESTORING operation must leave that newer value alone — not write the value
+// it froze back over it. NFSv4 encodes its change attribute from Ctime
+// (RFC 7530 §5.8.1.4 requires it to increase), so dragging the stored value
+// backwards lets a client keep serving a cache it should have dropped.
+//
+// FSCTL_SET_ZERO_DATA drives this deliberately: it writes through CommitWrite,
+// which stamps ChangeTime where no PreserveCtime reaches, so the handler repairs
+// it with restoreFrozenTimestamps afterwards. That is the mechanism that can
+// walk a peer's advance backwards. A hold-only operation cannot violate this
+// property at all — it writes no value — so driving the assertion through one
+// (READ, FSCTL_SET_SPARSE) proves nothing about the restore.
 func TestFrozenChangeTime_DoesNotRollBackAPeersAdvance(t *testing.T) {
 	h, smbCtx, _, fileID := setupReparseShare(t)
 	openFile, ok := h.GetOpenFile(fileID)
@@ -189,11 +196,12 @@ func TestFrozenChangeTime_DoesNotRollBackAPeersAdvance(t *testing.T) {
 	}
 	grantFullAccess(h, smbCtx, openFile)
 
+	// SET_ZERO_DATA clamps to the current size, so the file needs bytes before
+	// the punch has anything to do.
 	if resp, err := h.Write(smbCtx, &WriteRequest{FileID: fileID, Offset: 0, Data: make([]byte, 4096)}); err != nil ||
 		resp.GetStatus() != types.StatusSuccess {
 		t.Fatalf("seed Write: err=%v resp=%v", err, resp)
 	}
-	openFile.SmbAtimeWrittenAt = time.Time{}
 
 	frozen := freezeCtimeOnSeededFile(t, h, smbCtx, openFile)
 
@@ -211,17 +219,22 @@ func TestFrozenChangeTime_DoesNotRollBackAPeersAdvance(t *testing.T) {
 		t.Fatalf("peer ChangeTime advance: %v", err)
 	}
 
-	resp, err := h.Read(smbCtx, &ReadRequest{FileID: fileID, Offset: 0, Length: 4096})
-	if err != nil || resp.GetStatus() != types.StatusSuccess {
-		t.Fatalf("Read: err=%v status=%v", err, resp.GetStatus())
+	input := make([]byte, fileZeroDataBufSize)
+	// FileOffset 0, BeyondFinalZero 4096, both little-endian uint64.
+	input[8] = 0x00
+	input[9] = 0x10
+	body := buildIoctlRequestBody(FsctlSetZeroData, fileID, input, 0)
+	res, err := h.handleSetZeroData(smbCtx, body)
+	if err != nil || res.Status != types.StatusSuccess {
+		t.Fatalf("handleSetZeroData: err=%v status=0x%08x", err, uint32(res.Status))
 	}
 
 	file, err := metaSvc.GetFile(context.Background(), openFile.MetadataHandle)
 	if err != nil {
-		t.Fatalf("GetFile after READ: %v", err)
+		t.Fatalf("GetFile after FSCTL_SET_ZERO_DATA: %v", err)
 	}
 	if file.Ctime.Before(advanced) {
-		t.Errorf("READ moved ChangeTime backwards to %v; the peer had advanced it to %v",
+		t.Errorf("FSCTL_SET_ZERO_DATA moved ChangeTime backwards to %v; the peer had advanced it to %v",
 			file.Ctime.UTC(), advanced.UTC())
 	}
 }

@@ -459,6 +459,12 @@ func (h *Handler) executeCopyChunks(
 		}
 	}
 
+	// Capture the destination's stored ChangeTime before any chunk stamps it,
+	// so the frozen restore below can tell this copy's own stamps from a peer's
+	// advance. One read for the whole operation: the restore runs once, after
+	// the loop.
+	preOpCtime := h.frozenPreOpCtime(authCtx, dstOpen)
+
 	for i, chunk := range chunks {
 		// Validate source range: SourceOffset + Length must not exceed source file size
 		if chunk.SourceOffset+uint64(chunk.Length) > srcSize {
@@ -569,7 +575,7 @@ func (h *Handler) executeCopyChunks(
 	dstOpen.SetPayloadID(lastWritePayloadID)
 
 	// Per MS-FSA §2.1.5.15.2 ("FileBasicInformation"): restore frozen timestamps after writes
-	h.restoreFrozenTimestamps(authCtx, dstOpen)
+	h.restoreFrozenTimestamps(authCtx, dstOpen, preOpCtime)
 
 	// Update LastAccessTime on both the source (read) and the destination
 	// (written through, and so also accessed), per MS-FSA 2.1.4.20 ("Algorithm

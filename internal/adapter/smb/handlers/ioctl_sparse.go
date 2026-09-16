@@ -482,6 +482,10 @@ func (h *Handler) handleSetZeroData(ctx *SMBHandlerContext, body []byte) (*Handl
 		}
 	}
 
+	// Capture the stored ChangeTime before the fill stamps it, so the frozen
+	// restore below can tell the fill's own stamp from a peer's advance.
+	preOpCtime := h.frozenPreOpCtime(authCtx, openFile)
+
 	committed, fillErr := h.zeroFillRange(authCtx, openFile, fileOffset, beyond)
 	// The fill runs through the ordinary write chain, and CommitWrite stamps
 	// Mtime and ChangeTime from inside the write transaction where no SetAttrs
@@ -515,7 +519,7 @@ func (h *Handler) handleSetZeroData(ctx *SMBHandlerContext, body []byte) (*Handl
 			context.WithoutCancel(authCtx.Context), frozenRestoreTimeout)
 		restoreAuth.Context = detached
 		defer cancelRestore()
-		defer h.restoreFrozenTimestamps(&restoreAuth, openFile)
+		defer h.restoreFrozenTimestamps(&restoreAuth, openFile, preOpCtime)
 	}
 
 	if fillErr != nil {

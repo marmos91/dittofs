@@ -520,6 +520,10 @@ func (h *Handler) setFileInfoFromStore(
 			// was handed at CREATE, so put the pre-rename value back.
 			metaSvc := h.Registry.GetMetadataService()
 
+			// Capture the stored ChangeTime before Move stamps it, so the frozen
+			// restore below can tell Move's own stamp from a peer's advance.
+			preOpCtime := h.frozenPreOpCtime(authCtx, openFile)
+
 			var clobberedStream *metadata.File
 			var renameWcc *metadata.RenameWcc
 			clobberedStream, renameWcc, err = metaSvc.Move(authCtx, toDir, oldFileName, toDir, toName)
@@ -542,7 +546,7 @@ func (h *Handler) setFileInfoFromStore(
 			// Move's LastChangeTime stamp is an automatic update, so a
 			// timestamp frozen on this handle has to be put back the same way
 			// WRITE and truncate put theirs back.
-			h.restoreFrozenTimestamps(authCtx, openFile)
+			h.restoreFrozenTimestamps(authCtx, openFile, preOpCtime)
 
 			// Clear delete-on-close after rename. Written under the handle
 			// lock: the delete-pending gates and the CLOSE delete-on-close
@@ -989,6 +993,10 @@ func (h *Handler) setFileInfoFromStore(
 			}
 		}
 
+		// Capture the stored ChangeTime before Move stamps it, so the frozen
+		// restore below can tell Move's own stamp from a peer's advance.
+		preOpCtime := h.frozenPreOpCtime(authCtx, openFile)
+
 		// Move stamps the renamed inode's LastChangeTime. A client holding
 		// this handle open must keep observing the ChangeTime it was handed at
 		// CREATE, so put the pre-rename value back.
@@ -1015,7 +1023,7 @@ func (h *Handler) setFileInfoFromStore(
 		// Move's LastChangeTime stamp is an automatic update, so a timestamp
 		// frozen on this handle has to be put back the same way WRITE and
 		// truncate put theirs back.
-		h.restoreFrozenTimestamps(authCtx, openFile)
+		h.restoreFrozenTimestamps(authCtx, openFile, preOpCtime)
 
 		// Per MS-FSA §2.1.5.15.2 ("FileBasicInformation"): Restore frozen timestamps on parent directories.
 		// Move updates both source and destination parent directory timestamps.
@@ -1356,6 +1364,11 @@ func (h *Handler) setFileInfoFromStore(
 		// Best-effort: a snapshot failure only forfeits reclaim, not the op.
 		preFile, _ := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle)
 
+		// Capture the stored ChangeTime before SetFileAttributes stamps it, so
+		// the frozen restore below can tell the truncate's own stamp from a
+		// peer's advance.
+		preOpCtime := h.frozenPreOpCtime(authCtx, openFile)
+
 		_, err = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs)
 		if err != nil {
 			logger.Debug("SET_INFO: failed to set EOF", "path", openFile.Name().Path, "error", err)
@@ -1373,7 +1386,7 @@ func (h *Handler) setFileInfoFromStore(
 		}
 
 		// Restore frozen timestamps after truncation (which updates Mtime/Ctime)
-		h.restoreFrozenTimestamps(authCtx, openFile)
+		h.restoreFrozenTimestamps(authCtx, openFile, preOpCtime)
 
 		// Samba parity (fileio.c): SET_INFO EndOfFile also flushes the
 		// pending delayed-write window.
@@ -1476,6 +1489,10 @@ func (h *Handler) setFileInfoFromStore(
 				metaSvc := h.Registry.GetMetadataService()
 				if curFile, getErr := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle); getErr == nil &&
 					requested < curFile.Size {
+					// Capture the stored ChangeTime before SetFileAttributes stamps
+					// it, so the frozen restore below can tell this truncate's own
+					// stamp from a peer's advance.
+					preOpCtime := h.frozenPreOpCtime(authCtx, openFile)
 					// Allocation-driven truncate is a size-changing data write —
 					// authorize it from the open handle's GrantedAccess, not the
 					// file's POSIX mode (handle-based SMB write authorization).
@@ -1495,7 +1512,7 @@ func (h *Handler) setFileInfoFromStore(
 						logger.Warn("SET_INFO: allocation-driven block truncate reclaim failed",
 							"path", openFile.Name().Path, "size", requested, "error", rErr)
 					}
-					h.restoreFrozenTimestamps(authCtx, openFile)
+					h.restoreFrozenTimestamps(authCtx, openFile, preOpCtime)
 					flushSmbDelayedWrite(openFile)
 					h.StoreOpenFile(openFile)
 					h.breakParentDirLeasesForContentChange(ctx, authCtx, openFile)
@@ -1712,15 +1729,47 @@ func withTimestampHandleAuth(authCtx *metadata.AuthContext, grantedAccess uint32
 	return &scoped
 }
 
+// frozenPreOpCtime returns the stored ChangeTime of openFile's file, read
+// before an operation that is about to stamp over it, for restoreFrozenTimestamps
+// to compare against.
+//
+// It reads only when the handle actually has ChangeTime frozen, so the common
+// case — every WRITE, CLOSE and truncate on a handle that never used the -1
+// sentinel — pays a mutex-guarded bool read and no store round trip.
+//
+// The zero time is returned when there is no freeze or the read fails. Both
+// mean "do not restore ChangeTime": there is nothing to restore in the first
+// case, and an unverified restore in the second is the backwards write the gate
+// exists to prevent.
+func (h *Handler) frozenPreOpCtime(authCtx *metadata.AuthContext, openFile *OpenFile) time.Time {
+	if !openFile.IsCtimeFrozen() {
+		return time.Time{}
+	}
+	file, err := h.Registry.GetMetadataService().GetFile(authCtx.Context, openFile.MetadataHandle)
+	if err != nil {
+		logger.Debug("frozenPreOpCtime: read failed",
+			"path", openFile.Name().Path, "error", err)
+		return time.Time{}
+	}
+	return file.Ctime
+}
+
 // restoreFrozenTimestamps restores timestamps that are frozen via SET_INFO -1 sentinel.
 // Called after operations that unconditionally update timestamps (WRITE, truncate).
+//
+// preOpCtime is the file's stored ChangeTime as it stood immediately before the
+// operation this restore is undoing, obtained from frozenPreOpCtime ahead of
+// that operation. ChangeTime is restored only while the stored value is still
+// the frozen one, so a peer opener that advanced it after the freeze keeps its
+// advance rather than having it dragged backwards — see
+// Service.RestoreFrozenTimestamps. A zero value skips the ChangeTime restore.
 //
 // All reads of the freeze flags / Frozen* pointers go through buildFrozenAttrs
 // (which takes openFile.mu read), snapshotMtimeFrozen (likewise), or the local
 // snapshot taken under openFile.mu — so a concurrent SET_INFO freeze/thaw on
 // the same handle cannot tear our view.
 
-func (h *Handler) restoreFrozenTimestamps(authCtx *metadata.AuthContext, openFile *OpenFile) {
+func (h *Handler) restoreFrozenTimestamps(authCtx *metadata.AuthContext, openFile *OpenFile, preOpCtime time.Time) {
 	restoreAttrs := buildFrozenAttrs(openFile)
 	if restoreAttrs == nil {
 		return
@@ -1762,9 +1811,9 @@ func (h *Handler) restoreFrozenTimestamps(authCtx *metadata.AuthContext, openFil
 	// one that froze them, and freezing required FILE_WRITE_ATTRIBUTES on it, so
 	// carry that grant through rather than letting the restore succeed or fail
 	// on who owns the file.
-	if _, err := metaSvc.SetFileAttributes(
-		withTimestampHandleAuth(authCtx, openFile.GrantedAccess),
-		openFile.MetadataHandle, restoreAttrs); err != nil {
+	scopedAuth := withTimestampHandleAuth(authCtx, openFile.GrantedAccess)
+	if err := metaSvc.RestoreFrozenTimestamps(
+		scopedAuth.Context, openFile.MetadataHandle, preOpCtime, restoreAttrs); err != nil {
 		logger.Debug("restoreFrozenTimestamps: failed", "path", openFile.Name().Path, "error", err)
 		return
 	}

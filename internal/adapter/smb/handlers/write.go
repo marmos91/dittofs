@@ -470,6 +470,10 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// Step 11: Commit write operation
 	// ========================================================================
 
+	// Capture the stored ChangeTime before CommitWrite stamps it, so the frozen
+	// restore below can tell this write's own stamp apart from a peer's advance.
+	preOpCtime := h.frozenPreOpCtime(authCtx, openFile)
+
 	_, err = metaSvc.CommitWrite(authCtx, writeOp)
 	if err != nil {
 		logger.Warn("WRITE: commit failed", "path", path, "error", err)
@@ -522,7 +526,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 
 	// Per MS-FSA §2.1.5.15.2 ("FileBasicInformation"): If timestamps are frozen via SET_INFO with -1,
 	// CommitWrite unconditionally updated Mtime/Ctime. Restore frozen values.
-	h.restoreFrozenTimestamps(authCtx, openFile)
+	h.restoreFrozenTimestamps(authCtx, openFile, preOpCtime)
 
 	// Arm the SMB delayed-write window so QUERY_INFO masks the just-bumped
 	// Mtime until the 2-second timer expires (Samba parity).

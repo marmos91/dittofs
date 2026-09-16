@@ -253,6 +253,81 @@ func (s *Service) RestoreChangeTimeIfUnchanged(ctx context.Context, handle FileH
 	})
 }
 
+// RestoreFrozenTimestamps puts timestamps a handle froze back into the file
+// after an operation stamped over them.
+//
+// ChangeTime is gated: it is written only while preOpCtime — the value the file
+// held immediately before the operation this restore is undoing — is still the
+// frozen value. That is the whole test for "nobody else moved it": the
+// operation's own stamp is indistinguishable from a peer's advance once it has
+// landed, so the only point at which they can be told apart is before it. A
+// peer that advanced ChangeTime between the freeze and the operation therefore
+// keeps its advance, instead of having it dragged backwards — and NFSv4 encodes
+// its change attribute from Ctime, where a value that goes backwards lets a
+// client keep serving a cache it should have dropped.
+//
+// A zero preOpCtime means the caller could not read the file before its
+// operation. ChangeTime is then left alone rather than restored unverified,
+// because an unverified restore is exactly the backwards write this guards.
+//
+// The remaining fields are written unconditionally: none carries a forward-only
+// contract. LastWriteTime and LastAccessTime are expected to move in either
+// direction, and CreationTime is not restamped by the operations that reach
+// here.
+//
+// The read and the write share one transaction, so the comparison cannot be
+// invalidated between them, and the row read in that transaction is written
+// back wholesale, which spares a concurrent size or mode advance on a store
+// whose transaction serialises the read against the writer.
+//
+// There is no permission check. The values restored are ones this file already
+// held, and the handle asking for them held FILE_WRITE_ATTRIBUTES when it froze
+// them; re-authorizing the restore would let a file that changed owner between
+// the freeze and the operation be refused its own timestamp, which is the
+// failure the SMB layer carries a grant through to avoid.
+//
+// decision: the gate reads the pre-operation value from the caller rather than
+// from inside this transaction, so a peer that advances ChangeTime after the
+// caller's operation committed but before this transaction opens is still
+// overwritten by the frozen value. Closing that means reading the pre-op value
+// inside the same transaction as the operation's own stamp, which is a change
+// to CommitWrite and CreateHardLink rather than to this function. The window is
+// one store round trip on the restoring handle, against a peer advance landing
+// inside it, and the current behaviour it replaces has no window at all.
+func (s *Service) RestoreFrozenTimestamps(ctx context.Context, handle FileHandle, preOpCtime time.Time, want *SetAttrs) error {
+	store, err := s.storeForHandle(handle)
+	if err != nil {
+		return err
+	}
+	return withRelaxedTransaction(store, ctx, func(tx Transaction) error {
+		current, err := tx.GetFile(ctx, handle)
+		if err != nil {
+			return err
+		}
+		changed := false
+		if want.Ctime != nil && !preOpCtime.IsZero() && preOpCtime.Equal(*want.Ctime) {
+			current.Ctime = *want.Ctime
+			changed = true
+		}
+		if want.Mtime != nil {
+			current.Mtime = *want.Mtime
+			changed = true
+		}
+		if want.Atime != nil {
+			current.Atime = *want.Atime
+			changed = true
+		}
+		if want.CreationTime != nil {
+			current.CreationTime = *want.CreationTime
+			changed = true
+		}
+		if !changed {
+			return nil
+		}
+		return tx.UpdateAttrs(ctx, current)
+	})
+}
+
 // SetFileAttributes updates file attributes with validation and access control.
 //
 // Only attributes with non-nil pointers in attrs are modified. The returned

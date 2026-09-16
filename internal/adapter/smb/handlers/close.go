@@ -253,6 +253,9 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 			logger.Warn("CLOSE: failed to build auth context for metadata flush", "path", closePath, "error", authErr)
 		} else {
 			metaSvc := h.Registry.GetMetadataService()
+			// Capture the stored ChangeTime before the flush below stamps it, so
+			// the frozen restore can tell that stamp from a peer's advance.
+			preOpCtime := h.frozenPreOpCtime(authCtx, openFile)
 			// STRICT (durable=true): CLOSE is a durability point (MS-SMB2 3.3.5.10,
 			// #1267). The client treats a successful CLOSE as a guarantee its
 			// metadata reached stable storage, so the fsync must stay inline — this
@@ -299,7 +302,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 			// frozen timestamps), restore any timestamps that were frozen via SET_INFO -1.
 			// The deferred commit flush sets Mtime/Ctime to the WRITE time, but if the
 			// handle has frozen timestamps, those must be preserved.
-			h.restoreFrozenTimestamps(authCtx, openFile)
+			h.restoreFrozenTimestamps(authCtx, openFile, preOpCtime)
 		}
 	}
 
