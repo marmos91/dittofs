@@ -1,8 +1,6 @@
 package kerberos
 
 import (
-	"bytes"
-	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -12,14 +10,10 @@ import (
 	krb5config "github.com/jcmturner/gokrb5/v8/config"
 	"github.com/jcmturner/gokrb5/v8/keytab"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/auth"
 	dconfig "github.com/marmos91/dittofs/pkg/config"
 )
 
 // Provider manages Kerberos keytab, krb5.conf, and service principal state.
-//
-// Provider implements the auth.AuthProvider interface, allowing it to be used
-// in an auth.Authenticator chain alongside other authentication mechanisms.
 //
 // It is the shared Kerberos resource used by the RPCSEC_GSS context manager
 // and other components that need access to the Kerberos configuration.
@@ -195,62 +189,6 @@ func (p *Provider) Close() error {
 		p.keytabManager.Stop()
 	}
 	return nil
-}
-
-// Compile-time check that Provider implements auth.AuthProvider.
-var _ auth.AuthProvider = (*Provider)(nil)
-
-// spnegoOID is the ASN.1 encoded OID for SPNEGO (1.3.6.1.5.5.2):
-// OID tag (0x06), length (0x06), then the OID bytes.
-var spnegoOID = []byte{0x06, 0x06, 0x2b, 0x06, 0x01, 0x05, 0x05, 0x02}
-
-// CanHandle returns true if the token is a Kerberos/SPNEGO authentication token.
-//
-// Detection is based on ASN.1 structure:
-//   - SPNEGO tokens start with ASN.1 Application tag 0x60 followed by the
-//     SPNEGO OID (1.3.6.1.5.5.2)
-//   - Raw Kerberos AP-REQ tokens start with ASN.1 Application tag [14] (0x6E)
-//
-// This is a fast check that does not perform full token parsing.
-func (p *Provider) CanHandle(token []byte) bool {
-	if len(token) < 2 {
-		return false
-	}
-
-	// SPNEGO initiation token: ASN.1 Application [0] (0x60) containing the SPNEGO OID
-	if token[0] == 0x60 && bytes.Contains(token, spnegoOID) {
-		return true
-	}
-
-	// Raw Kerberos AP-REQ: ASN.1 Application [14] (0x6E)
-	return token[0] == 0x6E
-}
-
-// Authenticate identifies a Kerberos/SPNEGO token and returns a preliminary AuthResult.
-//
-// Full token validation (AP-REQ verification, SPNEGO negotiation) is handled by
-// protocol-specific layers (gss.Krb5Verifier for NFS, SMB auth handler). This
-// method only identifies the mechanism; callers should use the protocol-specific
-// authenticators for full authentication.
-func (p *Provider) Authenticate(_ context.Context, token []byte) (*auth.AuthResult, error) {
-	if !p.CanHandle(token) {
-		return nil, auth.ErrUnsupportedMechanism
-	}
-
-	return &auth.AuthResult{
-		Identity: auth.Identity{
-			Attributes: map[string]string{
-				"mechanism": "kerberos",
-			},
-		},
-		Authenticated: false,
-		Provider:      p.Name(),
-	}, nil
-}
-
-// Name returns the provider name for logging and diagnostics.
-func (p *Provider) Name() string {
-	return "kerberos"
 }
 
 // loadKeytab reads and parses a keytab file.

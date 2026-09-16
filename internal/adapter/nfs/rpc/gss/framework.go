@@ -856,14 +856,8 @@ func (p *GSSProcessor) resolveIdentity(ctx context.Context, principal, realm str
 				Username: resolved.Username,
 				Domain:   resolved.Domain,
 			}, nil
-		} else {
-			nobody := pkgidentity.NobodyIdentity()
-			return &metadata.Identity{
-				UID:      &nobody.UID,
-				GID:      &nobody.GID,
-				Username: nobody.Username,
-			}, nil
 		}
+		return nobodyIdentity(), nil
 	}
 
 	// Legacy static mapper fallback.
@@ -876,7 +870,7 @@ func (p *GSSProcessor) resolveIdentity(ctx context.Context, principal, realm str
 			return nil, fmt.Errorf("identity mapping returned nil for %s", principalKey)
 		}
 		if !resolved.Found {
-			resolved = nfsidentity.NobodyIdentity()
+			return nobodyIdentity(), nil
 		}
 		return &metadata.Identity{
 			UID:      &resolved.UID,
@@ -888,6 +882,16 @@ func (p *GSSProcessor) resolveIdentity(ctx context.Context, principal, realm str
 	}
 
 	return nil, fmt.Errorf("no identity mapper configured for %s", principalKey)
+}
+
+// nobodyIdentity is the fallback identity for a principal no mapper resolved.
+func nobodyIdentity() *metadata.Identity {
+	nobody := pkgidentity.NobodyIdentity()
+	return &metadata.Identity{
+		UID:      &nobody.UID,
+		GID:      &nobody.GID,
+		Username: nobody.Username,
+	}
 }
 
 // handleDestroy processes RPCSEC_GSS_DESTROY.

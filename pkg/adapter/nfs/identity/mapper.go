@@ -96,16 +96,3 @@ func ParsePrincipal(principal string) (name, domain string) {
 
 	return principal[:idx], principal[idx+1:]
 }
-
-// NobodyIdentity returns a ResolvedIdentity for the "nobody" user.
-//
-// This is commonly used as a fallback identity for anonymous or unmapped
-// principals. Uses the standard UID/GID 65534.
-func NobodyIdentity() *ResolvedIdentity {
-	return &ResolvedIdentity{
-		Username: "nobody",
-		UID:      65534,
-		GID:      65534,
-		Found:    true,
-	}
-}

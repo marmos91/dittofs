@@ -52,9 +52,9 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 │                           └──────────┘  │
 │  ┌────────────┐  ┌───────────────────┐  │
 │  │   Store    │  │   Auth Layer      │  │
-│  │ (Persist)  │  │   pkg/auth/       │  │
-│  │ 9 sub-ifs  │  │ AuthProvider,     │  │
-│  │            │  │ IdentityMapper    │  │
+│  │ (Persist)  │  │  pkg/auth/        │  │
+│  │ 9 sub-ifs  │  │ kerberos,         │  │
+│  │            │  │ sid               │  │
 │  └────────────┘  └───────────────────┘  │
 └───────┬───────────────────┬─────────────┘
         │                   │
@@ -116,13 +116,10 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 - Thread-safe, supports graceful shutdown
 
 **4. Auth** (`pkg/auth/`)
-- Centralized authentication abstractions shared across all protocols
-- `AuthProvider` interface: `CanHandle(token)` + `Authenticate(ctx, token)`
-- `Authenticator`: Chains multiple providers, tries each in order
-- `Identity`: Protocol-neutral authenticated identity (Unix creds, Kerberos, NTLM, anonymous)
-- `IdentityMapper` interface: Converts `AuthResult` to protocol-specific identity
+- Shared authentication and identity primitives used across protocols
 - Sub-packages:
-  - `kerberos/`: Kerberos `AuthProvider` with keytab management and hot-reload
+  - `kerberos/`: Kerberos `Provider` — keytab and krb5.conf state with hot-reload
+  - `sid/`: Windows SID types, encoding, and cross-protocol mapping
 
 **5. MetadataService** (`pkg/metadata/`)
 - **Central service for all metadata operations**
@@ -999,13 +996,12 @@ dittofs/
 │   │   ├── nfs/                  # NFS adapter implementation
 │   │   └── smb/                  # SMB adapter implementation
 │   │
-│   ├── auth/                     # Centralized authentication abstractions
-│   │   ├── auth.go               # AuthProvider, Authenticator, AuthResult
-│   │   ├── identity.go           # Identity model, IdentityMapper interface
-│   │   └── kerberos/             # Kerberos AuthProvider
-│   │       ├── provider.go       # Provider (implements AuthProvider)
-│   │       ├── keytab.go         # Keytab hot-reload manager
-│   │       └── doc.go            # Package doc
+│   ├── auth/                     # Shared authentication primitives
+│   │   ├── kerberos/             # Kerberos Provider
+│   │   │   ├── provider.go       # Provider (keytab/krb5.conf state)
+│   │   │   ├── keytab.go         # Keytab hot-reload manager
+│   │   │   └── doc.go            # Package doc
+│   │   └── sid/                  # Windows SID types and mapping
 │   │
 │   ├── metadata/                 # Metadata layer
 │   │   ├── service.go            # MetadataService (business logic, routing)

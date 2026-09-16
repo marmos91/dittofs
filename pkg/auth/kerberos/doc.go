@@ -1,9 +1,8 @@
-// Package kerberos provides the Kerberos AuthProvider implementation for DittoFS.
+// Package kerberos provides Kerberos keytab and configuration state for DittoFS.
 //
-// The Provider type implements the auth.AuthProvider interface and manages:
+// The Provider type manages:
 //   - Keytab and krb5.conf loading with environment variable overrides
 //   - Hot-reload capability for keytab rotation
-//   - SPNEGO/Kerberos token detection for the auth provider chain
 //
 // This package does NOT contain RPCSEC_GSS wire protocol logic (see
 // internal/adapter/nfs/rpc/gss/) or the GSS context state machine.

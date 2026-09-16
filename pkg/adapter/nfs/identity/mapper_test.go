@@ -86,29 +86,3 @@ func TestParsePrincipal_MultipleAt(t *testing.T) {
 		t.Fatalf("expected domain=REALM, got %s", domain)
 	}
 }
-
-// ============================================================================
-// NobodyIdentity tests
-// ============================================================================
-
-func TestNobodyIdentity_Values(t *testing.T) {
-	id := NobodyIdentity()
-	if id.Username != "nobody" {
-		t.Fatalf("expected Username=nobody, got %s", id.Username)
-	}
-	if id.UID != 65534 {
-		t.Fatalf("expected UID=65534, got %d", id.UID)
-	}
-	if id.GID != 65534 {
-		t.Fatalf("expected GID=65534, got %d", id.GID)
-	}
-	if !id.Found {
-		t.Fatal("expected Found=true")
-	}
-	if len(id.GIDs) != 0 {
-		t.Fatalf("expected empty GIDs, got %v", id.GIDs)
-	}
-	if id.Domain != "" {
-		t.Fatalf("expected empty Domain, got %s", id.Domain)
-	}
-}
