@@ -130,3 +130,35 @@ func TestJunctionLookup_DisabledShare_ReturnsStale(t *testing.T) {
 		t.Fatalf("CurrentFH was advanced to the disabled share's root handle %x", ctx.CurrentFH)
 	}
 }
+
+// TestJunctionLookup_RemovedShare_ReturnsNoent pins the status a junction that
+// has outlived its share answers with. RemoveShare deletes the registry entry
+// and only fires the share-change callback that rebuilds the pseudo-fs after
+// the rest of the teardown, so the junction stays walkable while every registry
+// lookup misses; a share configured but not yet loaded looks the same. That is
+// a missing export -- NFS4ERR_NOENT -- and not the NFS4ERR_ACCESS the entry
+// gate reports, whose netgroup lookup fails closed on a share it cannot find.
+//
+// This drives the real Runtime rather than a fake, because what the status
+// turns on is what RemoveShare actually leaves behind for CheckNetgroupAccess
+// to find, which a fake would only restate.
+func TestJunctionLookup_RemovedShare_ReturnsNoent(t *testing.T) {
+	h, rootHandle, rt := newPutFHTestHandler(t, "/gone")
+	if err := rt.RemoveShare("/gone"); err != nil {
+		t.Fatalf("RemoveShare: %v", err)
+	}
+	// The pseudo-fs is deliberately left un-rebuilt: that is the window.
+
+	ctx := &types.CompoundContext{
+		Context:    context.Background(),
+		ClientAddr: "127.0.0.1:1234",
+		CurrentFH:  h.PseudoFS.GetRootHandle(),
+	}
+	res := h.handleLookup(ctx, bytes.NewReader(encodeLookupNameBytes(t, "gone")))
+	if res.Status != types.NFS4ERR_NOENT {
+		t.Fatalf("Status = %d, want NFS4ERR_NOENT (%d)", res.Status, types.NFS4ERR_NOENT)
+	}
+	if bytes.Equal(ctx.CurrentFH, rootHandle) {
+		t.Errorf("CurrentFH advanced to the removed share's root handle: %x", ctx.CurrentFH)
+	}
+}

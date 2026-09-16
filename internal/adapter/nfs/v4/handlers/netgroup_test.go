@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"net"
 	"testing"
 
@@ -38,10 +37,6 @@ type fakeNetgroupRuntime struct {
 	allowed bool
 	err     error
 
-	// shareGone makes every registry lookup miss, modelling a junction whose
-	// share has already been removed.
-	shareGone bool
-
 	gotShare string
 	gotIP    net.IP
 	calls    int
@@ -51,30 +46,16 @@ func (f *fakeNetgroupRuntime) CheckNetgroupAccess(_ context.Context, shareName s
 	f.calls++
 	f.gotShare = shareName
 	f.gotIP = clientIP
-	if f.shareGone {
-		// The Runtime denies with a wrapped ErrShareNotFound rather than a bare
-		// false, so a share it cannot find fails closed and is diagnosable.
-		return false, fmt.Errorf("share %q not found", shareName)
-	}
 	return f.allowed, f.err
 }
 
 // GetShare and GetRootHandle are the rest of what a junction crossing touches.
-// The share is enabled, so the netgroup verdict is the only thing under test --
-// unless shareGone is set, which models a junction that has outlived its share:
-// every registry lookup misses, the way it does between RemoveShare deleting the
-// registry entry and the share-change callback rebuilding the pseudo-fs.
+// The share is enabled, so the netgroup verdict is the only thing under test.
 func (f *fakeNetgroupRuntime) GetShare(name string) (*runtime.Share, error) {
-	if f.shareGone {
-		return nil, fmt.Errorf("share %q not found", name)
-	}
 	return &runtime.Share{Name: name, Enabled: true}, nil
 }
 
 func (f *fakeNetgroupRuntime) GetRootHandle(shareName string) (metadata.FileHandle, error) {
-	if f.shareGone {
-		return nil, fmt.Errorf("share %q not found", shareName)
-	}
 	return metadata.FileHandle(shareName + ":00000000-0000-0000-0000-000000000001"), nil
 }
 
@@ -337,35 +318,6 @@ func TestV4Netgroup_JunctionLookupChecksTheJunctionsShare(t *testing.T) {
 	}
 	if !rt.gotIP.Equal(net.ParseIP("10.0.0.5")) {
 		t.Errorf("checked IP = %v, want 10.0.0.5", rt.gotIP)
-	}
-	if !bytes.Equal(ctx.CurrentFH, pseudoRoot) {
-		t.Errorf("CurrentFH moved off the pseudo-fs root: %x", ctx.CurrentFH)
-	}
-}
-
-// TestV4Netgroup_JunctionLookupRemovedShareReportsNoent covers a junction that
-// has outlived its share. RemoveShare deletes the registry entry and only fires
-// the share-change callback that rebuilds the pseudo-fs after the rest of the
-// teardown, so the junction stays walkable while every registry lookup misses;
-// a share that is configured but not yet loaded looks the same. Both are a
-// missing export, which is NFS4ERR_NOENT -- not the NFS4ERR_ACCESS the gate
-// reports, because its netgroup lookup fails closed on a share it cannot find.
-func TestV4Netgroup_JunctionLookupRemovedShareReportsNoent(t *testing.T) {
-	rt := &fakeNetgroupRuntime{shareGone: true}
-	pfs := pseudofs.New()
-	pfs.Rebuild([]string{"/export"})
-	h := &Handler{Registry: rt, PseudoFS: pfs}
-
-	pseudoRoot := pfs.GetRootHandle()
-	ctx := &types.CompoundContext{
-		Context:    context.Background(),
-		ClientAddr: "10.0.0.5:1234",
-		CurrentFH:  pseudoRoot,
-	}
-
-	res := h.handleLookup(ctx, bytes.NewReader(encodeLookupNameBytes(t, "export")))
-	if res.Status != types.NFS4ERR_NOENT {
-		t.Fatalf("Status = %d, want NFS4ERR_NOENT (%d)", res.Status, types.NFS4ERR_NOENT)
 	}
 	if !bytes.Equal(ctx.CurrentFH, pseudoRoot) {
 		t.Errorf("CurrentFH moved off the pseudo-fs root: %x", ctx.CurrentFH)

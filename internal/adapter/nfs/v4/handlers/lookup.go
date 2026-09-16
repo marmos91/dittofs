@@ -149,17 +149,18 @@ func (h *Handler) lookupInPseudoFS(ctx *types.CompoundContext, name string) *typ
 
 	// Check for export junction crossing
 	if child.IsExport && h.Registry != nil {
-		// Resolve the share's root handle first, and install it only once the
-		// gate below has passed. A junction can outlive its share: the pseudo-fs
-		// is rebuilt from a share-change callback that RemoveShare fires only
-		// after the whole teardown, so the registry entry is gone for the entire
-		// time the junction is still walkable, and a share can also be
-		// configured but not yet loaded. Both must answer NFS4ERR_NOENT the way
-		// a missing export does. The gate cannot distinguish them from a
-		// refusal -- its netgroup lookup fails closed on a share it cannot find
-		// -- so running it first would report a removed export as a permission
-		// denial. Resolving here leaks nothing: the handle is returned only
-		// below.
+		// decision: a junction whose share the registry cannot find exits
+		// NFS4ERR_NOENT here, before the gate below ever sees it. A junction
+		// outlives its share for the whole teardown -- RemoveShare drops the
+		// registry entry and only then fires the share-change callback that
+		// rebuilds the pseudo-fs -- and a share configured but not yet loaded
+		// looks identical. Both are a missing export, which is NOENT; the gate
+		// would call them NFS4ERR_ACCESS, because its netgroup lookup fails
+		// closed on a share it cannot find and an absence is then
+		// indistinguishable from a refusal. The ordering exempts nothing: no
+		// handle is installed on this path, and the gate still runs on every
+		// share that resolves. Reorder it only once a registry miss is
+		// distinguishable from a netgroup denial.
 		realHandle, err := h.Registry.GetRootHandle(child.ShareName)
 		if err != nil {
 			logger.Debug("NFSv4 LOOKUP junction crossing failed",
