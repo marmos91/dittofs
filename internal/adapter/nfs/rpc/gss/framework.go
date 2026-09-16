@@ -884,7 +884,7 @@ func (p *GSSProcessor) resolveIdentity(ctx context.Context, principal, realm str
 	return nil, fmt.Errorf("no identity mapper configured for %s", principalKey)
 }
 
-// nobodyIdentity is the fallback identity for a principal no mapper resolved.
+// nobodyIdentity is the fallback for a principal that no mapper resolved.
 func nobodyIdentity() *metadata.Identity {
 	nobody := pkgidentity.NobodyIdentity()
 	return &metadata.Identity{
