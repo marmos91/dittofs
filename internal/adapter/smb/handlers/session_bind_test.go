@@ -8,6 +8,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
 	"github.com/marmos91/dittofs/internal/adapter/smb/signing"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
 // buildBindRequestBody builds a SESSION_SETUP request body with the binding
@@ -16,6 +17,15 @@ func buildBindRequestBody() []byte {
 	body := buildSessionSetupRequestBody(nil)
 	body[sessionSetupFlagsOffset] = SMB2_SESSION_FLAG_BINDING
 	// Zero PreviousSessionID explicitly so parsing matches the test scenario.
+	binary.LittleEndian.PutUint64(body[16:24], 0)
+	return body
+}
+
+// buildBindRequestBodyWithToken is buildBindRequestBody carrying a caller-chosen
+// security buffer, for driving the first leg with a token that does not parse.
+func buildBindRequestBodyWithToken(token []byte) []byte {
+	body := buildSessionSetupRequestBody(token)
+	body[sessionSetupFlagsOffset] = SMB2_SESSION_FLAG_BINDING
 	binary.LittleEndian.PutUint64(body[16:24], 0)
 	return body
 }
@@ -313,4 +323,155 @@ func TestSessionSetup_BindRoutesKerberosToken(t *testing.T) {
 	if result.Status != types.StatusLogonFailure {
 		t.Fatalf("status=0x%x, want StatusLogonFailure (Kerberos bind routing; NTLM path would return InvalidParameter)", result.Status)
 	}
+}
+
+// TestSessionSetup_BindRejectsLoggedOffSession covers the path the non-binding
+// zombie guard does not reach. A binding SESSION_SETUP is routed to
+// handleSessionBind before that guard runs, and this handler only asked whether
+// the session exists. A LoggedOff session therefore accepted the bind
+// handshake and could have a channel attached to it — a session that is not
+// re-authable acquiring a new connection to be not re-authable on.
+func TestSessionSetup_BindRejectsLoggedOffSession(t *testing.T) {
+	h := NewHandler()
+
+	sess := h.CreateSession("127.0.0.1:1", false, "alice", "")
+	sess.LoggedOff.Store(true)
+
+	sessionID := sess.SessionID
+	ctx := newTestContext(sessionID)
+	result, err := h.SessionSetup(ctx, buildBindRequestBody())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != types.StatusUserSessionDeleted {
+		t.Errorf("status=0x%08x, want StatusUserSessionDeleted (0x%08x): a logged-off "+
+			"session accepted a bind", uint32(result.Status), uint32(types.StatusUserSessionDeleted))
+	}
+	if _, stored := h.GetPendingAuth(sessionID, ctx.ConnID); stored {
+		t.Error("a PendingAuth was stored for a logged-off session on the binding path")
+	}
+}
+
+// TestSessionSetup_BindClearsAHandshakeTheSessionOutlived covers the bind whose
+// first leg landed while the session was still live. The TYPE_1 leg stores its
+// handshake, LOGOFF or a failed re-auth marks the session off, and the TYPE_3
+// leg then hits the logged-off refusal — which returns ahead of the completion
+// path that is the only thing that frees that record. Left behind, it sits in
+// the table until the connection itself dies.
+func TestSessionSetup_BindClearsAHandshakeTheSessionOutlived(t *testing.T) {
+	h := NewHandler()
+
+	sess := h.CreateSession("127.0.0.1:1", false, "alice", "")
+	sessionID := sess.SessionID
+	ctx := newTestContext(sessionID)
+
+	h.StorePendingAuth(&PendingAuth{
+		SessionID:        sessionID,
+		ConnID:           ctx.ConnID,
+		ClientAddr:       "127.0.0.1:1",
+		IsBinding:        true,
+		BindingSessionID: sessionID,
+	})
+	sess.LoggedOff.Store(true)
+
+	result, err := h.SessionSetup(ctx, buildBindRequestBody())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != types.StatusUserSessionDeleted {
+		t.Errorf("status=0x%08x, want StatusUserSessionDeleted (0x%08x)",
+			uint32(result.Status), uint32(types.StatusUserSessionDeleted))
+	}
+	if _, stored := h.GetPendingAuth(sessionID, ctx.ConnID); stored {
+		t.Error("the refused bind left its first leg's handshake in the pending-auth table")
+	}
+}
+
+// recordingCryptoState notes which sessions had their preauth hash freed.
+type recordingCryptoState struct {
+	*mockCryptoState
+	freed []uint64
+}
+
+func (r *recordingCryptoState) DeleteSessionPreauthHash(sessionID uint64) {
+	r.freed = append(r.freed, sessionID)
+}
+
+// TestBind_FreesThePreauthHashOnAnEarlyFailure covers the failing exits that
+// never reach completeSessionBind at all. handleSessionBind seeds the target
+// session's preauth hash on the first leg; a malformed TYPE_3 then returns from
+// completeNTLMAuth long before the bind completion runs, and only the completion
+// path frees that entry. Point-fixing the returns inside completeSessionBind
+// left every earlier one leaking a 64-byte hash per attempt, on a connection
+// that lives until transport teardown.
+func TestBind_FreesThePreauthHashOnAnEarlyFailure(t *testing.T) {
+	h := NewHandler()
+	h.NtlmEnabled = true
+
+	sess := h.CreateSession("127.0.0.1:1", false, "alice", "")
+	sess.User = &models.User{Username: "alice", Enabled: true}
+
+	ctx := newTestContext(sess.SessionID)
+	crypto := &recordingCryptoState{mockCryptoState: &mockCryptoState{dialect: types.Dialect0311}}
+	ctx.ConnCryptoState = crypto
+
+	// The first leg's state, as handleSessionBind leaves it.
+	h.StorePendingAuth(&PendingAuth{
+		SessionID:        sess.SessionID,
+		ConnID:           ctx.ConnID,
+		IsBinding:        true,
+		BindingSessionID: sess.SessionID,
+	})
+
+	// A TYPE_3 that cannot be parsed: completeNTLMAuth refuses it and returns
+	// before any bind completion.
+	result, err := h.SessionSetup(ctx, buildSessionSetupRequestBody([]byte("not an NTLM message")))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Status.IsError() {
+		t.Fatalf("status=0x%08x, want an error: a malformed TYPE_3 must not complete a bind",
+			uint32(result.Status))
+	}
+
+	for _, id := range crypto.freed {
+		if id == sess.SessionID {
+			return
+		}
+	}
+	t.Errorf("preauth hash freed for %v, not for the bind target %d — a bind that failed before "+
+		"completeSessionBind kept its first leg's hash", crypto.freed, sess.SessionID)
+}
+
+// TestBind_FreesThePreauthHashOnAMalformedFirstLeg covers the one bind exit that
+// happens before any PendingAuth exists. handleSessionBind seeds the session's
+// preauth hash and then dispatches; a TYPE_1 that is not a valid NTLM NEGOTIATE
+// is refused right there, so neither the completion path nor the defer keyed on
+// the pending record is ever reached. On a long-lived connection that is one
+// 64-byte entry per session ID a client cares to name.
+func TestBind_FreesThePreauthHashOnAMalformedFirstLeg(t *testing.T) {
+	h := NewHandler()
+	h.NtlmEnabled = true
+
+	sess := h.CreateSession("127.0.0.1:1", false, "alice", "")
+	ctx := newTestContext(sess.SessionID)
+	crypto := &recordingCryptoState{mockCryptoState: &mockCryptoState{dialect: types.Dialect0311}}
+	ctx.ConnCryptoState = crypto
+
+	result, err := h.SessionSetup(ctx, buildBindRequestBodyWithToken([]byte("not an NTLM negotiate")))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Status.IsError() {
+		t.Fatalf("status=0x%08x, want an error: a malformed TYPE_1 must not start a bind",
+			uint32(result.Status))
+	}
+
+	for _, id := range crypto.freed {
+		if id == sess.SessionID {
+			return
+		}
+	}
+	t.Errorf("preauth hash freed for %v, not for %d — a bind refused before any pending record "+
+		"exists kept its seeded hash", crypto.freed, sess.SessionID)
 }

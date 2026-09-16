@@ -697,6 +697,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 	} else if h.DurableStore != nil {
 		appInstanceId = ProcessAppInstanceId(
 			authCtx.Context, h.DurableStore, h, req.CreateContexts,
+			tree.ShareName, filename,
 		)
 	}
 
@@ -827,7 +828,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 	// requested reservation [MS-SMB2] 2.2.13.2.2 (zero for directories), so a
 	// freshly-created empty file opened with in.alloc_size reports a non-zero
 	// out.alloc_size (smb2.durable-open.alloc-size).
-	allocationSize := effectiveAllocationSize(size, openFile.RequestedAllocSize)
+	allocationSize := effectiveAllocationSize(size, openFile.GetRequestedAllocSize())
 
 	resp := &CreateResponse{
 		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},

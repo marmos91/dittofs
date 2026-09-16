@@ -1088,7 +1088,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 					// allocReservationFor), so this collapses to the file's
 					// cluster-aligned size for them
 					// (smb2.durable-open.alloc-size).
-					AllocationSize: effectiveAllocationSize(size, restored.RequestedAllocSize),
+					AllocationSize: effectiveAllocationSize(size, restored.GetRequestedAllocSize()),
 					EndOfFile:      size,
 					FileAttributes: FileAttrToSMBAttributes(&respFile.FileAttr),
 					FileID:         smbFileID,
@@ -1459,6 +1459,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	if h.DurableStore != nil {
 		appInstanceId = ProcessAppInstanceId(
 			authCtx.Context, h.DurableStore, h, req.CreateContexts,
+			tree.ShareName, filename,
 		)
 	}
 

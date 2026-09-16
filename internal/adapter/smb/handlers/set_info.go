@@ -218,10 +218,20 @@ func (h *Handler) SetInfo(ctx *SMBHandlerContext, req *SetInfoRequest) (*SetInfo
 		case types.FileRenameInformation,
 			types.FileLinkInformation,
 			types.FileDispositionInformation, types.FileDispositionInformationEx,
-			types.FileEndOfFileInformation, types.FileAllocationInformation,
-			types.FileFullEaInformation:
+			types.FileEndOfFileInformation, types.FileAllocationInformation:
 			// These have specific access checks in their handlers or
 			// are validated by the metadata layer
+		case types.FileFullEaInformation:
+			// decision: an EA write is exempt from the FILE_WRITE_ATTRIBUTES
+			// gate because FILE_WRITE_EA is the right that governs it — the two
+			// are distinct in MS-FSCC 2.6, and MS-FSA 2.1.5.15.6 names only
+			// FILE_WRITE_EA for this info class. Demanding both would refuse a
+			// handle opened with write-EA access alone, which is a legitimate
+			// open. The exemption is not a hole: the case arm below applies the
+			// FILE_WRITE_EA check itself, so removing that check without
+			// removing this exemption would leave EA writes ungated entirely.
+			// Withdraw it if an info class is ever routed here that the arm
+			// below does not gate.
 		default:
 			if !hasAccessRight(openFile.GrantedAccess, uint32(types.FileWriteAttributes)) {
 				return setInfoStatus(types.StatusAccessDenied), nil

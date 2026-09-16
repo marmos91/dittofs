@@ -465,6 +465,27 @@ func (f *OpenFile) IsAtimeFrozen() bool {
 	return f.AtimeFrozen
 }
 
+// GetRequestedAllocSize returns the per-handle allocation reservation under
+// the read lock. SET_INFO FileAllocationInformation publishes it on a live
+// handle, so QUERY_INFO readers on other channels must not touch the field
+// directly.
+
+func (f *OpenFile) GetRequestedAllocSize() uint64 {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.RequestedAllocSize
+}
+
+// GetCreateOptions returns the open's create options under the read lock.
+// SET_INFO FileModeInformation overlays the mode bits on a live handle, so
+// QUERY_INFO readers must not touch the field directly.
+
+func (f *OpenFile) GetCreateOptions() types.CreateOptions {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.CreateOptions
+}
+
 // GetPayloadID returns the cached payload identifier under the read lock.
 // WRITE, SET_REPARSE_POINT and COPYCHUNK publish it on a live handle, so
 // readers on other channels must not touch the field directly.

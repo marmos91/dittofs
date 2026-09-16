@@ -207,3 +207,87 @@ func TestSetFileAttributes_TimestampHandleGrantOwnerUnchanged(t *testing.T) {
 	_, err := f.service.SetFileAttributes(owner, handle, &metadata.SetAttrs{Mtime: &stampTime})
 	require.NoError(t, err, "owner must still be able to set an explicit timestamp without any handle grant")
 }
+
+// TestSetFileAttributes_EAOnlyMutationGrantsNonOwnerWithWrite pins the EA-only
+// carve-out in the SetAttrs authorization, which the SMB-side gate tests cannot
+// reach: they authenticate as UID 0, so the root bypass grants the write whether
+// or not the carve-out exists, and the existing metadata EA case pairs the
+// mutations with an explicit Mtime, which deliberately falls outside the branch.
+//
+// The rule: a caller with POSIX write permission but no ownership may mutate
+// extended attributes alone. SMB authorizes the open handle's FILE_WRITE_EA bit
+// at the handler layer, so requiring ownership here would refuse a write the
+// protocol has already granted.
+//
+// Mode 0o666 is what makes the case meaningful — the non-owner has write but
+// not ownership, so only the carve-out can authorize this.
+func TestSetFileAttributes_EAOnlyMutationGrantsNonOwnerWithWrite(t *testing.T) {
+	f := newTestFixture(t)
+	handle := newForeignOwnedFile(t, f, "ea_only.txt", 0o666)
+
+	nonOwner := f.authContext(1001, 1001)
+	_, err := f.service.SetFileAttributes(nonOwner, handle, &metadata.SetAttrs{
+		EAMutations: []metadata.EAMutation{{Name: "$KERNEL.PURGE.ESBCACHE", Value: []byte("v")}},
+	})
+	require.NoError(t, err, "a non-owner with POSIX write must be able to mutate EAs alone")
+
+	// The carve-out is EA-only: pairing the same mutation with an ownership
+	// attribute must still be refused, or it would be a general write bypass.
+	_, err = f.service.SetFileAttributes(nonOwner, handle, &metadata.SetAttrs{
+		EAMutations: []metadata.EAMutation{{Name: "$KERNEL.PURGE.ESBCACHE", Value: []byte("v")}},
+		Mode:        func() *uint32 { m := uint32(0o600); return &m }(),
+	})
+	requirePermissionDenied(t, err)
+}
+
+// TestSetFileAttributes_EAAuthorizedByHandleGrantsNonOwnerWithoutWrite covers
+// the right SMB actually names for extended attributes. FILE_WRITE_EA and
+// FILE_WRITE_DATA are distinct in MS-FSCC 2.6, so a handle opened to mutate EAs
+// carries no claim on the file's data and cannot borrow the write bypass: the
+// flag it sets has to be its own, and it has to be enough on its own, because a
+// non-owner with no POSIX write permission is exactly the caller the protocol
+// expects to succeed here.
+func TestSetFileAttributes_EAAuthorizedByHandleGrantsNonOwnerWithoutWrite(t *testing.T) {
+	f := newTestFixture(t)
+	// 0o644: the non-owner can read but not write, so POSIX alone refuses and
+	// only the handle grant can authorize the mutation.
+	handle := newForeignOwnedFile(t, f, "handle_ea.txt", 0o644)
+
+	mutation := []metadata.EAMutation{{Name: "$KERNEL.PURGE.ESBCACHE", Value: []byte("v")}}
+
+	denyCtx := f.authContext(1001, 1001)
+	_, err := f.service.SetFileAttributes(denyCtx, handle, &metadata.SetAttrs{EAMutations: mutation})
+	require.Error(t, err, "precondition: a non-owner without POSIX write must be refused without the handle grant")
+	// EACCES: an EA-only SetAttrs is one of the cases POSIX lets write permission
+	// answer for instead of ownership, so without the handle grant it reaches the
+	// write check and is refused there on the file's mode.
+	requireErrorCode(t, err, metadata.ErrAccessDenied)
+
+	authCtx := f.authContext(1001, 1001)
+	authCtx.EAAuthorizedByHandle = true
+	_, err = f.service.SetFileAttributes(authCtx, handle, &metadata.SetAttrs{EAMutations: mutation})
+	require.NoError(t, err, "FILE_WRITE_EA on the handle must authorize an EA-only mutation")
+
+	// Scoped to EA-only: the same grant paired with anything else is refused,
+	// or it would be the general write bypass under another name.
+	mode := uint32(0o600)
+	scopeCtx := f.authContext(1001, 1001)
+	scopeCtx.EAAuthorizedByHandle = true
+	_, err = f.service.SetFileAttributes(scopeCtx, handle, &metadata.SetAttrs{
+		EAMutations: mutation,
+		Mode:        &mode,
+	})
+	require.Error(t, err, "the EA grant must not authorize a mode change riding alongside")
+	requirePermissionDenied(t, err)
+
+	// And it must not confer write on the file's data.
+	size := uint64(0)
+	dataCtx := f.authContext(1001, 1001)
+	dataCtx.EAAuthorizedByHandle = true
+	_, err = f.service.SetFileAttributes(dataCtx, handle, &metadata.SetAttrs{Size: &size})
+	require.Error(t, err, "the EA grant must not authorize a truncate")
+	// EACCES rather than EPERM, and the difference is the point: the EA grant did
+	// not stand in for anything here, so the request fell through to the ordinary
+	// POSIX write check, which refused it on the file's mode.
+	requireErrorCode(t, err, metadata.ErrAccessDenied)
+}
