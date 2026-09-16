@@ -1540,8 +1540,7 @@ func (h *Handler) setFileInfoFromStore(
 		// round-trips.
 		metaSvc := h.Registry.GetMetadataService()
 		setAttrs := &metadata.SetAttrs{EAMutations: eaMutationsFromEntries(entries)}
-		// An EA write is a metadata change the store stamps ChangeTime for, and
-		// a ChangeTime this handle froze must not move (MS-FSA §2.1.5.15.2).
+		// An EA write is an attribute write, so hold a frozen ChangeTime.
 		holdFrozenCtime(openFile, setAttrs)
 		if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs); err != nil {
 			logger.Debug("SET_INFO: FileFullEaInformation persist failed",
