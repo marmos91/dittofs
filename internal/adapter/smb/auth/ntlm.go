@@ -1005,7 +1005,8 @@ func DeriveSigningKey(sessionBaseKey [16]byte, flags NegotiateFlag, encryptedKey
 // per the negotiated flags), not the GSS-API MICToken form the Kerberos path
 // uses.
 func VerifyNTLMSSPMechListMIC(exportedSessionKey [16]byte, mechListBytes, receivedMIC []byte, flags NegotiateFlag) error {
-	expected := ComputeNTLMSSPMechListMIC(exportedSessionKey, mechListBytes, flags, nil)
+	expected := computeNTLMSSPMechListMIC(exportedSessionKey, mechListBytes, flags,
+		clientSignMagic, clientSealMagic, nil)
 	if len(receivedMIC) != len(expected) {
 		return ErrAuthenticationFailed
 	}
@@ -1051,6 +1052,8 @@ func VerifyAuthMessageMIC(exportedSessionKey [16]byte, negotiateMessage, challen
 const (
 	serverSignMagic = "session key to server-to-client signing key magic constant\x00"
 	serverSealMagic = "session key to server-to-client sealing key magic constant\x00"
+	clientSignMagic = "session key to client-to-server signing key magic constant\x00"
+	clientSealMagic = "session key to client-to-server sealing key magic constant\x00"
 )
 
 // NTLMSSPMechListMICDebug holds the intermediate values computed during a
@@ -1093,6 +1096,17 @@ type NTLMSSPMechListMICDebug struct {
 //
 // If dbg is non-nil it is populated with intermediates for diagnosis.
 func ComputeNTLMSSPMechListMIC(exportedSessionKey [16]byte, mechListBytes []byte, flags NegotiateFlag, dbg *NTLMSSPMechListMICDebug) []byte {
+	return computeNTLMSSPMechListMIC(exportedSessionKey, mechListBytes, flags, serverSignMagic, serverSealMagic, dbg)
+}
+
+// computeNTLMSSPMechListMIC is ComputeNTLMSSPMechListMIC with the key
+// derivation's direction supplied by the caller. NTLMSSP derives a separate
+// signing and sealing key per direction (MS-NLMP 3.4.5.2, 3.4.5.3), and a
+// signature only verifies under the keys of the side that produced it: the
+// server's own mechListMIC is server-to-client, the one a client sends is
+// client-to-server. The legacy branch takes no magic constant at all — without
+// extended session security both directions share one key — so it ignores both.
+func computeNTLMSSPMechListMIC(exportedSessionKey [16]byte, mechListBytes []byte, flags NegotiateFlag, signMagic, sealMagic string, dbg *NTLMSSPMechListMICDebug) []byte {
 	// Without NTLMSSP_NEGOTIATE_EXTENDED_SESSIONSECURITY ("NTLM2") the
 	// signature layout is the legacy MS-NLMP §3.4.4.1 form:
 	//   Version(4) | RandomPad(4) | Checksum=CRC32(4) | SeqNum(4)
@@ -1110,7 +1124,7 @@ func ComputeNTLMSSPMechListMIC(exportedSessionKey [16]byte, mechListBytes []byte
 
 	h := md5.New()
 	h.Write(exportedSessionKey[:])
-	h.Write([]byte(serverSignMagic))
+	h.Write([]byte(signMagic))
 	var signKey [16]byte
 	copy(signKey[:], h.Sum(nil))
 
@@ -1144,7 +1158,7 @@ func ComputeNTLMSSPMechListMIC(exportedSessionKey [16]byte, mechListBytes []byte
 
 		sh := md5.New()
 		sh.Write(sealInput)
-		sh.Write([]byte(serverSealMagic))
+		sh.Write([]byte(sealMagic))
 		copy(sealKey[:], sh.Sum(nil))
 
 		if cipher, err := rc4.NewCipher(sealKey[:]); err == nil {
