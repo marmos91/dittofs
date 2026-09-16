@@ -100,3 +100,69 @@ func TestBlockingQueue_RemoveClientWaiters_NoMatchIsSafe(t *testing.T) {
 		t.Fatalf("want 0 removed on empty queue, got %d", removed)
 	}
 }
+
+func TestBlockingQueue_EnqueueDedupesRetransmit(t *testing.T) {
+	t.Parallel()
+
+	bq := NewBlockingQueue(100)
+
+	first := newWaiter("clientA", "nlm:clientA:1:aa", 0)
+	first.Cookie = []byte{1}
+	if err := bq.Enqueue("file1", first); err != nil {
+		t.Fatal(err)
+	}
+
+	// The same blocking LOCK arrives again (lost reply / UDP retransmit): same
+	// owner, same range, fresh cookie and callback host.
+	retry := newWaiter("clientA", "nlm:clientA:1:aa", 0)
+	retry.Cookie = []byte{2}
+	retry.CallbackHost = "10.0.0.7"
+	if err := bq.Enqueue("file1", retry); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := bq.TotalWaiters(); got != 1 {
+		t.Fatalf("retransmitted LOCK queued a duplicate waiter: want 1, got %d", got)
+	}
+
+	waiters := bq.GetWaiters("file1")
+	if len(waiters) != 1 || waiters[0] != first {
+		t.Fatalf("want the original waiter retained, got %+v", waiters)
+	}
+	if string(waiters[0].Cookie) != string(retry.Cookie) {
+		t.Fatalf("retransmit must refresh the cookie: want %v, got %v", retry.Cookie, waiters[0].Cookie)
+	}
+	if waiters[0].CallbackHost != "10.0.0.7" {
+		t.Fatalf("retransmit must refresh the callback host, got %q", waiters[0].CallbackHost)
+	}
+
+	// One CANCEL must leave nothing behind.
+	if !bq.Cancel("file1", "nlm:clientA:1:aa", 0, 10) {
+		t.Fatal("CANCEL did not find the waiter")
+	}
+	if got := bq.TotalWaiters(); got != 0 {
+		t.Fatalf("CANCEL left %d stale waiter(s) queued", got)
+	}
+}
+
+func TestBlockingQueue_EnqueueKeepsDistinctRanges(t *testing.T) {
+	t.Parallel()
+
+	bq := NewBlockingQueue(100)
+
+	if err := bq.Enqueue("file1", newWaiter("clientA", "nlm:clientA:1:aa", 0)); err != nil {
+		t.Fatal(err)
+	}
+	// Same owner, different range: a genuinely distinct request.
+	if err := bq.Enqueue("file1", newWaiter("clientA", "nlm:clientA:1:aa", 100)); err != nil {
+		t.Fatal(err)
+	}
+	// Different owner, same range.
+	if err := bq.Enqueue("file1", newWaiter("clientB", "nlm:clientB:1:cc", 0)); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := bq.TotalWaiters(); got != 3 {
+		t.Fatalf("want 3 distinct waiters, got %d", got)
+	}
+}

@@ -59,12 +59,46 @@ func (bq *BlockingQueue) Enqueue(fileHandle string, waiter *Waiter) error {
 	defer bq.mu.Unlock()
 
 	queue := bq.queues[fileHandle]
+
+	// A retransmitted blocking LOCK must reuse the waiter it already queued
+	// rather than adding a second one. NLM runs over UDP (and over a TCP
+	// connection a client may re-establish), so the same request arrives
+	// repeatedly whenever the reply is lost; without this, one client's retry
+	// loop fills the per-file queue, is granted the same range several times,
+	// and leaves stale entries behind when CANCEL removes only the first
+	// match. Identity is (owner, offset, length) -- the same triple CANCEL
+	// matches on -- so a reused waiter is exactly the one a later CANCEL or
+	// grant would find. The queue position and QueuedAt are preserved so a
+	// retransmit does not lose the FIFO place the first attempt earned; only
+	// the reply-routing fields, which a reconnecting client can legitimately
+	// change, are refreshed.
+	if existing := findWaiter(queue, waiter.Lock.Owner.OwnerID, waiter.Lock.Offset, waiter.Lock.Length); existing != nil {
+		existing.Cookie = waiter.Cookie
+		existing.CallbackHost = waiter.CallbackHost
+		existing.CallbackProg = waiter.CallbackProg
+		existing.CallbackVers = waiter.CallbackVers
+		return nil
+	}
+
 	if len(queue) >= bq.maxQueue {
 		return ErrQueueFull
 	}
 
 	waiter.QueuedAt = time.Now()
 	bq.queues[fileHandle] = append(queue, waiter)
+	return nil
+}
+
+// findWaiter returns the queued waiter matching the given owner and byte
+// range, or nil when the queue holds none. Callers must hold bq.mu.
+func findWaiter(queue []*Waiter, ownerID string, offset, length uint64) *Waiter {
+	for _, w := range queue {
+		if w.Lock.Owner.OwnerID == ownerID &&
+			w.Lock.Offset == offset &&
+			w.Lock.Length == length {
+			return w
+		}
+	}
 	return nil
 }
 
