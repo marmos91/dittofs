@@ -149,6 +149,30 @@ func (h *Handler) lookupInPseudoFS(ctx *types.CompoundContext, name string) *typ
 
 	// Check for export junction crossing
 	if child.IsExport && h.Registry != nil {
+		// Resolve the share's root handle first, and install it only once the
+		// gate below has passed. A junction can outlive its share: the pseudo-fs
+		// is rebuilt from a share-change callback that RemoveShare fires only
+		// after the whole teardown, so the registry entry is gone for the entire
+		// time the junction is still walkable, and a share can also be
+		// configured but not yet loaded. Both must answer NFS4ERR_NOENT the way
+		// a missing export does. The gate cannot distinguish them from a
+		// refusal -- its netgroup lookup fails closed on a share it cannot find
+		// -- so running it first would report a removed export as a permission
+		// denial. Resolving here leaks nothing: the handle is returned only
+		// below.
+		realHandle, err := h.Registry.GetRootHandle(child.ShareName)
+		if err != nil {
+			logger.Debug("NFSv4 LOOKUP junction crossing failed",
+				"share", child.ShareName,
+				"error", err,
+				"client", ctx.ClientAddr)
+			return &types.CompoundResult{
+				Status: types.NFS4ERR_NOENT,
+				OpCode: types.OP_LOOKUP,
+				Data:   encodeStatusOnly(types.NFS4ERR_NOENT),
+			}
+		}
+
 		// Apply the same gate PUTFH does before handing out the share's root
 		// handle. Crossing the junction puts a real share handle into the
 		// current filehandle without building an auth context, so the checks
@@ -161,21 +185,6 @@ func (h *Handler) lookupInPseudoFS(ctx *types.CompoundContext, name string) *typ
 				Status: st,
 				OpCode: types.OP_LOOKUP,
 				Data:   encodeStatusOnly(st),
-			}
-		}
-
-		// Get the real share root handle from runtime
-		realHandle, err := h.Registry.GetRootHandle(child.ShareName)
-		if err != nil {
-			logger.Debug("NFSv4 LOOKUP junction crossing failed",
-				"share", child.ShareName,
-				"error", err,
-				"client", ctx.ClientAddr)
-			// If the share is configured but not yet loaded, return NOENT
-			return &types.CompoundResult{
-				Status: types.NFS4ERR_NOENT,
-				OpCode: types.OP_LOOKUP,
-				Data:   encodeStatusOnly(types.NFS4ERR_NOENT),
 			}
 		}
 
