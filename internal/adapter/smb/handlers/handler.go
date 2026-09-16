@@ -477,10 +477,28 @@ func (f *OpenFile) GetPayloadID() metadata.PayloadID {
 }
 
 // GetMetadataHandle returns the metadata store handle under the read lock.
-// SET_REPARSE_POINT repoints a live handle when it replaces a regular-file
-// placeholder with a symlink, so the field is a mutable slice header: a scan
-// over the handle table that compares handles across opens must read through
-// here rather than touching the field directly.
+// This doc is the single statement of when MetadataHandle may be read
+// directly; other sites point here rather than restating it.
+//
+// The field is a mutable slice header with exactly one writer on a live open:
+// the SET_REPARSE_POINT handler repoints it under mu when it replaces a
+// regular-file placeholder with a symlink, so an unsynchronized read can
+// observe it mid-swap. Every read of an open this goroutine did not receive as
+// its own request target -- a handle-table scan, a comparison across opens, a
+// session-teardown sweep -- MUST come through here.
+//
+// decision: a handler reading the open its own request resolved is exempt and
+// touches the field directly. That exemption is a scope judgement, not a proof
+// of safety. The dispatcher pre-registers handle ops in wire order but then
+// runs one goroutine per request, so a client may legally pipeline an
+// FSCTL_SET_REPARSE_POINT against the same FileID that a READ, WRITE or
+// SET_INFO is reading, and nothing serializes the two against each other. The
+// exemption rests only on no known client interleaving that FSCTL with I/O on
+// the same handle, and on the cost of routing every own-open read in the
+// handler package through this accessor. Withdraw it if a torn handle is ever
+// observed; retire it for good by unexporting MetadataHandle behind this
+// accessor and a setter, the way name already is, which is the only change
+// that makes the rule enforced rather than advisory.
 
 func (f *OpenFile) GetMetadataHandle() metadata.FileHandle {
 	f.mu.RLock()

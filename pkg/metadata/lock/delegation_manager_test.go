@@ -371,6 +371,10 @@ func TestManager_RequestLease_ChecksDelegationConflict(t *testing.T) {
 		[16]byte{1, 2, 3}, [16]byte{}, "smb:client2", "conn2", "/export",
 		LeaseStateRead, false)
 	require.Error(t, err, "lease should return error when conflicting delegation exists")
+	// The sentinel, not the text, is what lets the SMB lease-create path tell an
+	// expected delegation denial from an infrastructure failure it must log at
+	// Error. Assert on it so that routing cannot silently change.
+	assert.ErrorIs(t, err, ErrLeaseDelegationConflict)
 	assert.Contains(t, err.Error(), "delegation")
 	assert.Equal(t, LeaseStateNone, grantedState,
 		"lease should be denied when conflicting delegation exists")

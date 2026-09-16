@@ -35,10 +35,9 @@ import (
 // also repoints the handle itself when a placeholder becomes a symlink, and
 // SET_INFO rename rewrites the name/path/parent triple. Reach the handle
 // through GetMetadataHandle, the payload through GetPayloadID / SetPayloadID
-// and the triple through Name / SetName. Any read of MetadataHandle on an open
-// pulled out of the handle table MUST go through GetMetadataHandle: the field
-// is a slice header, so an unsynchronized read can observe it mid-swap. A
-// request reading the handle it already owns is left direct.
+// and the triple through Name / SetName. GetMetadataHandle carries the single
+// statement of when MetadataHandle may be read directly, including which reads
+// are exempt; it is not restated here so the two cannot drift apart.
 type OpenFile struct {
 	// mu guards the mutable fields listed in the struct comment above. Held
 	// across QueryDirectory enumeration R-M-W, freeze/thaw bookkeeping in
