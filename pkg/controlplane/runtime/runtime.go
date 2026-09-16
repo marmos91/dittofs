@@ -352,8 +352,24 @@ func (r *Runtime) Shutdown(ctx context.Context) error {
 	// shutdown, so a caller that never went through lifecycle.Serve reaches it
 	// here and closes the stores next. Stop is idempotent, so the lifecycle
 	// drain having already run costs nothing.
+	//
+	// Bounded like the lifecycle drain's copy, and for the same reason: Stop
+	// cancels the poll before waiting, so the join should complete — but a store
+	// call that ignores cancellation would otherwise hold this shutdown open
+	// forever, and a caller that cannot finish teardown cannot close the store
+	// either.
 	if r.settingsWatcher != nil {
-		r.settingsWatcher.Stop()
+		stopped := make(chan struct{})
+		go func() {
+			defer close(stopped)
+			r.settingsWatcher.Stop()
+		}()
+		select {
+		case <-stopped:
+		case <-time.After(startupDrainTimeout):
+			logger.Warn("shutdown: settings watcher was not joined; a poll may still be running " +
+				"against the control-plane store")
+		}
 	}
 
 	// The snapshot scheduler is stopped by shutdownSnapshots below, which is

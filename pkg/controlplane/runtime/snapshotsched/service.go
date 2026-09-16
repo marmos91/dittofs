@@ -72,6 +72,10 @@ type Service struct {
 	// loop not to start another one, and on the API-error path the context the
 	// ticks run under is still live — so without this, Stop's wait is something
 	// the caller has to abandon rather than a join that completes.
+	// cancelMu guards cancelTick. started is atomic, but the cancel it implies
+	// is an ordinary pointer write — a Stop racing a Start would read it with no
+	// synchronization at all, which is a data race and can see nil.
+	cancelMu   sync.Mutex
 	cancelTick context.CancelFunc
 	// now is the clock, overridable in tests for deterministic due/prune.
 	now func() time.Time
@@ -101,7 +105,9 @@ func (s *Service) Start(ctx context.Context) {
 	// Derived, so Stop can cancel the ticks without disturbing the caller's
 	// context — which on a startup or API error is still very much alive.
 	tickCtx, cancelTick := context.WithCancel(ctx)
+	s.cancelMu.Lock()
 	s.cancelTick = cancelTick
+	s.cancelMu.Unlock()
 
 	go func() {
 		defer close(s.stopped)
@@ -150,8 +156,11 @@ func (s *Service) Stop(ctx context.Context) bool {
 	// Cancelled as well as signalled: stopCh stops the loop starting another
 	// tick, and this one ends a tick already inside the store, so the wait below
 	// is a join that completes rather than one the caller abandons.
-	if s.cancelTick != nil {
-		s.cancelTick()
+	s.cancelMu.Lock()
+	cancelTick := s.cancelTick
+	s.cancelMu.Unlock()
+	if cancelTick != nil {
+		cancelTick()
 	}
 	if !s.started.Load() {
 		return true
