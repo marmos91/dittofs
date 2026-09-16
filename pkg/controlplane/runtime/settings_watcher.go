@@ -45,8 +45,16 @@ type SettingsWatcher struct {
 	smbCallbacks []func(*models.SMBAdapterSettings)
 
 	pollInterval time.Duration
-	stopCh       chan struct{}
-	stopped      chan struct{} // closed when polling goroutine exits
+
+	// lifecycleMu guards stopCh and stopped, which Start replaces and Stop
+	// closes. Stop is reached from two shutdown paths that both bound their
+	// wait and keep running after it — the lifecycle drain and the runtime's
+	// startup drain — so an unsynchronized check-then-close here is two
+	// goroutines racing to close the same channel, which panics the process
+	// during the shutdown it was supposed to make orderly.
+	lifecycleMu sync.Mutex
+	stopCh      chan struct{}
+	stopped     chan struct{} // closed when polling goroutine exits
 }
 
 // OnNFSSettingsChange registers a callback invoked whenever NFS settings change
@@ -110,10 +118,14 @@ func (w *SettingsWatcher) Start(ctx context.Context) {
 	// Re-create the channels as fresh, open channels. stopped was created
 	// already-closed (so Stop-before-Start is safe); the goroutine below will
 	// close it on exit. Resetting stopCh allows a Start→Stop→Start→Stop cycle.
+	w.lifecycleMu.Lock()
 	w.stopped = make(chan struct{})
 	w.stopCh = make(chan struct{})
+	stopCh, stopped := w.stopCh, w.stopped
+	w.lifecycleMu.Unlock()
+
 	go func() {
-		defer close(w.stopped)
+		defer close(stopped)
 
 		ticker := time.NewTicker(w.pollInterval)
 		defer ticker.Stop()
@@ -125,7 +137,7 @@ func (w *SettingsWatcher) Start(ctx context.Context) {
 			case <-ctx.Done():
 				logger.Debug("Settings watcher stopping (context cancelled)")
 				return
-			case <-w.stopCh:
+			case <-stopCh:
 				logger.Debug("Settings watcher stopping (stop signal)")
 				return
 			case <-ticker.C:
@@ -137,15 +149,19 @@ func (w *SettingsWatcher) Start(ctx context.Context) {
 
 // Stop signals the polling goroutine to stop and waits for it to exit.
 func (w *SettingsWatcher) Stop() {
+	w.lifecycleMu.Lock()
+	stopCh, stopped := w.stopCh, w.stopped
 	select {
-	case <-w.stopCh:
-		// Already stopped
-		return
+	case <-stopCh:
+		// Already signalled by an earlier Stop, which may still be waiting for
+		// the goroutine. Fall through to the same wait rather than returning:
+		// a caller that gets an immediate return believes it joined.
 	default:
-		close(w.stopCh)
+		close(stopCh)
 	}
-	// Wait for goroutine to exit
-	<-w.stopped
+	w.lifecycleMu.Unlock()
+
+	<-stopped
 	logger.Debug("Settings watcher stopped")
 }
 

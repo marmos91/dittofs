@@ -184,7 +184,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 		case <-closed:
 		case <-time.After(storeCloseTimeout):
 			logger.Warn("control-plane store did not close within its deadline; " +
-				"a request is still holding it and the process is exiting without it")
+				"an operation is still holding it and the process is exiting without it")
 		}
 	}()
 
