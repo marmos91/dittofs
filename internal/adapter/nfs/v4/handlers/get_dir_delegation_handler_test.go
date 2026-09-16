@@ -48,7 +48,7 @@ func encodePutFHArgs(fh []byte) []byte {
 }
 
 func TestGetDirDelegation_Success(t *testing.T) {
-	h, sessionID := createTestSession(t)
+	h, sessionID := createReclaimedTestSession(t)
 	ctx := newTestCompoundContext()
 
 	dirFH := testDirFH(t)
@@ -121,7 +121,7 @@ func TestGetDirDelegation_Success(t *testing.T) {
 }
 
 func TestGetDirDelegation_Unavail_LimitReached(t *testing.T) {
-	h, sessionID := createTestSession(t)
+	h, sessionID := createReclaimedTestSession(t)
 	ctx := newTestCompoundContext()
 
 	// Set max delegations to 1 and fill it so next grant hits the limit
@@ -192,7 +192,7 @@ func TestGetDirDelegation_Unavail_LimitReached(t *testing.T) {
 }
 
 func TestGetDirDelegation_Unavail_Disabled(t *testing.T) {
-	h, sessionID := createTestSession(t)
+	h, sessionID := createReclaimedTestSession(t)
 	ctx := newTestCompoundContext()
 
 	// Disable delegations

@@ -68,6 +68,21 @@ func HandleGetDirDelegation(
 		}
 	}
 
+	// A directory delegation is a lock (RFC 8881 Section 1.7), so it is new
+	// state and waits on both grace conditions like OPEN and LOCK do. The error
+	// table in Section 18.39 lists NFS4ERR_GRACE among GET_DIR_DELEGATION's
+	// valid replies.
+	if graceErr := d.StateManager.CheckGraceForNewState(session.ClientID); graceErr != nil {
+		logger.Debug("GET_DIR_DELEGATION: blocked by grace",
+			"client_id", session.ClientID,
+			"client", ctx.ClientAddr)
+		return &types.CompoundResult{
+			Status: types.NFS4ERR_GRACE,
+			OpCode: types.OP_GET_DIR_DELEGATION,
+			Data:   EncodeStatusOnly(types.NFS4ERR_GRACE),
+		}
+	}
+
 	// Extract notification types bitmask from bitmap4
 	// The bitmap4 is a []uint32; the first word contains the notification bits
 	var notifMask uint32

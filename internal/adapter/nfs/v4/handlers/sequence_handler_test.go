@@ -32,6 +32,15 @@ func createTestSession(t *testing.T) (*Handler, types.SessionId4) {
 	return h, createSessionOn(t, h, "seq-test-client")
 }
 
+// createReclaimedTestSession is createTestSession with the RECLAIM_COMPLETE a
+// conformant v4.1 client sends before taking any new lock state, for tests that
+// go on to obtain some. Tests about RECLAIM_COMPLETE itself use the plain one.
+func createReclaimedTestSession(t *testing.T) (*Handler, types.SessionId4) {
+	t.Helper()
+	h := newTestHandler()
+	return h, createReclaimedSessionOn(t, h, "seq-test-client")
+}
+
 // createSessionOn performs EXCHANGE_ID + CREATE_SESSION on an existing handler,
 // for tests whose handler is built around a real share rather than by
 // newTestHandler.
