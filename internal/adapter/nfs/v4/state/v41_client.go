@@ -468,6 +468,7 @@ func (sm *StateManager) purgeV41Client(record *ClientRecord) {
 	for _, session := range sm.sessionsByClientID[record.ClientID] {
 		sm.stopBackchannelSender(session.SessionID)
 		delete(sm.sessionsByID, session.SessionID)
+		sm.dropSessionBindingsLocked(session.SessionID)
 	}
 	delete(sm.sessionsByClientID, record.ClientID)
 

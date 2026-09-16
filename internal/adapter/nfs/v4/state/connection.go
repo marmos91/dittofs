@@ -134,9 +134,14 @@ func negotiateDirection(clientDir uint32) (ConnectionDirection, uint32) {
 // Per RFC 8881 Section 18.34, the server:
 //   - Validates the session exists
 //   - Negotiates the channel direction (generous policy)
-//   - Silently unbinds the connection from a previous session if needed
+//   - Rebinds in place when the connection is already bound to this session
 //   - Enforces a per-session connection limit (NFS4ERR_DELAY)
 //   - Ensures at least one fore-channel connection remains (NFS4ERR_INVAL)
+//
+// Binding leaves the connection's other session bindings alone: RFC 8881
+// Section 2.10.3.1 states a connection's association with a session is not
+// exclusive, and a client that runs several sessions over one connection
+// would otherwise lose the back channel of every session but the newest.
 //
 // Thread-safe: acquires sm.mu.RLock then sm.connMu.Lock.
 func (sm *StateManager) BindConnToSession(connectionID uint64, sessionID types.SessionId4, clientDir uint32) (*BindConnResult, error) {
@@ -154,11 +159,6 @@ func (sm *StateManager) BindConnToSession(connectionID uint64, sessionID types.S
 
 	sm.connMu.Lock()
 	defer sm.connMu.Unlock()
-
-	// If connection already bound to a different session, silently unbind
-	if existing, ok := sm.connByID[connectionID]; ok && existing.SessionID != sessionID {
-		sm.unbindConnectionLocked(connectionID)
-	}
 
 	// Check connection limit: count bindings for this session, allow rebind
 	bindings := sm.connBySession[sessionID]
@@ -204,8 +204,9 @@ func (sm *StateManager) BindConnToSession(connectionID uint64, sessionID types.S
 
 	now := time.Now()
 
-	// Remove old binding for this connID from session list (rebind case)
+	// Remove the old binding for this (connection, session) pair (rebind case)
 	sm.removeConnFromSessionLocked(connectionID, sessionID)
+	sm.removeConnBindingLocked(connectionID, sessionID)
 
 	// Create or update binding
 	binding := &BoundConnection{
@@ -217,7 +218,7 @@ func (sm *StateManager) BindConnToSession(connectionID uint64, sessionID types.S
 		LastActivity: now,
 	}
 
-	sm.connByID[connectionID] = binding
+	sm.connByID[connectionID] = append(sm.connByID[connectionID], binding)
 	sm.connBySession[sessionID] = append(sm.connBySession[sessionID], binding)
 
 	return &BindConnResult{ServerDir: serverDir}, nil
@@ -237,17 +238,79 @@ func (sm *StateManager) UnbindConnection(connectionID uint64) {
 // unbindConnectionLocked removes a connection binding. Caller must hold sm.connMu.
 
 func (sm *StateManager) unbindConnectionLocked(connectionID uint64) {
-	binding, ok := sm.connByID[connectionID]
+	// Backchannel state goes first, ahead of the binding lookup, because it
+	// outlives the bindings. Destroying a session drops its bindings one at a
+	// time, and dropping the last one removes the connection from the index
+	// entirely; the socket then closes into this function, finds no bindings and
+	// would return with the writer closure and the pending-reply demultiplexer
+	// still held for the life of the state manager. This is where the connection
+	// actually dies, so this is where they are released.
+	sm.releaseBackchannelStateLocked(connectionID)
+
+	bindings, ok := sm.connByID[connectionID]
 	if !ok {
 		return
 	}
-	sessionID := binding.SessionID
 	delete(sm.connByID, connectionID)
-	sm.removeConnFromSessionLocked(connectionID, sessionID)
+	for _, b := range bindings {
+		sm.removeConnFromSessionLocked(connectionID, b.SessionID)
+	}
+}
 
-	// Clean up backchannel state for this connection
+// releaseBackchannelStateLocked drops a connection's callback writer and fails
+// every caller waiting on a reply over it. Caller must hold sm.connMu.
+//
+// Every path that retires a connection routes through here, not only the socket
+// close: a binding reaped as orphaned can be the connection's last one, and the
+// writer and demultiplexer left behind would outlive the socket they name.
+//
+// The waiters are released before the table that routes to them is dropped.
+// Dropping it alone only makes the replies unroutable; whoever is already
+// waiting stays blocked until its own timeout, and the recall behind it waits
+// with it.
+func (sm *StateManager) releaseBackchannelStateLocked(connectionID uint64) {
+	if pending := sm.cbRepliesByConn[connectionID]; pending != nil {
+		pending.FailAll()
+	}
 	delete(sm.connWriters, connectionID)
 	delete(sm.cbRepliesByConn, connectionID)
+}
+
+// dropConnBindingLocked removes one (connection, session) binding and releases
+// the connection's callback state when that was its last binding.
+//
+// Every path that tears a binding down goes through here — socket close,
+// DESTROY_SESSION, and the reaper's orphan sweep — because the connection is
+// equally gone in all three and the writer and pending-reply table are held per
+// connection, not per binding. BindConnToSession is the one caller that removes
+// a binding directly: its rebind re-adds one in the same breath, and releasing
+// the writer it just registered would leave the rebound connection mute.
+//
+// Caller must hold sm.connMu.
+func (sm *StateManager) dropConnBindingLocked(connectionID uint64, sessionID types.SessionId4) {
+	sm.removeConnBindingLocked(connectionID, sessionID)
+	sm.removeConnFromSessionLocked(connectionID, sessionID)
+	if _, stillBound := sm.connByID[connectionID]; !stillBound {
+		sm.releaseBackchannelStateLocked(connectionID)
+	}
+}
+
+// removeConnBindingLocked drops one (connection, session) binding from the
+// connection index, leaving the connection's bindings to other sessions in
+// place. Caller must hold sm.connMu.
+func (sm *StateManager) removeConnBindingLocked(connectionID uint64, sessionID types.SessionId4) {
+	bindings := sm.connByID[connectionID]
+	for i, b := range bindings {
+		if b.SessionID == sessionID {
+			bindings = append(bindings[:i], bindings[i+1:]...)
+			break
+		}
+	}
+	if len(bindings) == 0 {
+		delete(sm.connByID, connectionID)
+		return
+	}
+	sm.connByID[connectionID] = bindings
 }
 
 // removeConnFromSessionLocked removes a connection from the session binding list.
@@ -288,7 +351,10 @@ func (sm *StateManager) GetConnectionBindings(sessionID types.SessionId4) []*Bou
 	return result
 }
 
-// GetConnectionBinding returns a copy of the binding for a specific connection.
+// GetConnectionBinding returns a copy of the most recent binding for a
+// specific connection, or nil when the connection is bound to no session.
+// A connection may carry several sessions; use GetConnectionBindingsForConn
+// when every one of them matters.
 //
 // Thread-safe: acquires sm.connMu.RLock.
 
@@ -296,12 +362,33 @@ func (sm *StateManager) GetConnectionBinding(connectionID uint64) *BoundConnecti
 	sm.connMu.RLock()
 	defer sm.connMu.RUnlock()
 
-	binding, ok := sm.connByID[connectionID]
-	if !ok {
+	bindings := sm.connByID[connectionID]
+	if len(bindings) == 0 {
 		return nil
 	}
-	copied := *binding
+	copied := *bindings[len(bindings)-1]
 	return &copied
+}
+
+// GetConnectionBindingsForConn returns a copy of every binding a connection
+// holds, one per session it carries.
+//
+// Thread-safe: acquires sm.connMu.RLock.
+
+func (sm *StateManager) GetConnectionBindingsForConn(connectionID uint64) []*BoundConnection {
+	sm.connMu.RLock()
+	defer sm.connMu.RUnlock()
+
+	bindings := sm.connByID[connectionID]
+	if len(bindings) == 0 {
+		return nil
+	}
+	result := make([]*BoundConnection, len(bindings))
+	for i, b := range bindings {
+		copied := *b
+		result[i] = &copied
+	}
+	return result
 }
 
 // UpdateConnectionActivity updates the LastActivity timestamp for a connection.
@@ -312,8 +399,9 @@ func (sm *StateManager) UpdateConnectionActivity(connectionID uint64) {
 	sm.connMu.Lock()
 	defer sm.connMu.Unlock()
 
-	if binding, ok := sm.connByID[connectionID]; ok {
-		binding.LastActivity = time.Now()
+	now := time.Now()
+	for _, binding := range sm.connByID[connectionID] {
+		binding.LastActivity = now
 	}
 }
 
@@ -326,11 +414,13 @@ func (sm *StateManager) SetConnectionDraining(connectionID uint64, draining bool
 	sm.connMu.Lock()
 	defer sm.connMu.Unlock()
 
-	binding, ok := sm.connByID[connectionID]
-	if !ok {
+	bindings := sm.connByID[connectionID]
+	if len(bindings) == 0 {
 		return fmt.Errorf("connection %d not found", connectionID)
 	}
-	binding.Draining = draining
+	for _, binding := range bindings {
+		binding.Draining = draining
+	}
 	return nil
 }
 
@@ -342,8 +432,10 @@ func (sm *StateManager) IsConnectionDraining(connectionID uint64) bool {
 	sm.connMu.RLock()
 	defer sm.connMu.RUnlock()
 
-	if binding, ok := sm.connByID[connectionID]; ok {
-		return binding.Draining
+	for _, binding := range sm.connByID[connectionID] {
+		if binding.Draining {
+			return true
+		}
 	}
 	return false
 }

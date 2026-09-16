@@ -289,7 +289,7 @@ func TestBuildCBRPCCallMessage(t *testing.T) {
 	proc := uint32(1)
 	args := []byte{0xCA, 0xFE}
 
-	msg := BuildCBRPCCallMessage(xid, prog, vers, proc, args)
+	msg := BuildCBRPCCallMessage(xid, prog, vers, proc, args, nil)
 
 	reader := bytes.NewReader(msg)
 
@@ -1139,7 +1139,7 @@ func readCBCred(t *testing.T, msg []byte) (uint32, []byte) {
 // callbacks on the flavor rejects AUTH_NULL, and one that parses the body
 // rejects a malformed one, so both halves have to hold.
 func TestBuildCBRPCCallMessage_CredIsParseableAuthSys(t *testing.T) {
-	flavor, body := readCBCred(t, BuildCBRPCCallMessage(1, 0x40000000, 1, types.CB_PROC_COMPOUND, []byte{0xCA, 0xFE}))
+	flavor, body := readCBCred(t, BuildCBRPCCallMessage(1, 0x40000000, 1, types.CB_PROC_COMPOUND, []byte{0xCA, 0xFE}, nil))
 
 	if flavor != rpc.AuthUnix {
 		t.Fatalf("cred flavor = %d, want %d (AUTH_SYS)", flavor, rpc.AuthUnix)
@@ -1170,8 +1170,8 @@ func TestBuildCBRPCCallMessage_CredIsParseableAuthSys(t *testing.T) {
 // the payload does not use certifies a backchannel that can still reject every
 // recall, and the rejection only surfaces once a delegation needs recalling.
 func TestBuildCBRPCCallMessage_ProbeAndPayloadShareCredential(t *testing.T) {
-	probeFlavor, probeBody := readCBCred(t, BuildCBRPCCallMessage(1, 0x40000000, 1, types.CB_PROC_NULL, nil))
-	payloadFlavor, payloadBody := readCBCred(t, BuildCBRPCCallMessage(2, 0x40000000, 1, types.CB_PROC_COMPOUND, []byte{0xCA, 0xFE}))
+	probeFlavor, probeBody := readCBCred(t, BuildCBRPCCallMessage(1, 0x40000000, 1, types.CB_PROC_NULL, nil, nil))
+	payloadFlavor, payloadBody := readCBCred(t, BuildCBRPCCallMessage(2, 0x40000000, 1, types.CB_PROC_COMPOUND, []byte{0xCA, 0xFE}, nil))
 
 	if probeFlavor != payloadFlavor {
 		t.Errorf("CB_NULL probe cred flavor = %d, CB_COMPOUND = %d; the probe must use the credential it vouches for",
@@ -1251,4 +1251,73 @@ func TestSendCBRecall_EchoesCallbackIdent(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("no CB_COMPOUND received")
 	}
+}
+
+// TestEncodeCallbackCred pins which flavor the server speaks to the client
+// under, and that an AUTH_SYS identity comes from the client's own parameters
+// rather than from the server.
+func TestEncodeCallbackCred(t *testing.T) {
+	authSys := types.CallbackSecParms4{
+		CbSecFlavor:  1,
+		AuthSysParms: &types.AuthSysParms{Stamp: 13, MachineName: "fake name", UID: 17, GID: 19},
+	}
+	authNone := types.CallbackSecParms4{CbSecFlavor: 0}
+	gssOnly := types.CallbackSecParms4{CbSecFlavor: 6, RpcGssData: []byte{0x01}}
+
+	t.Run("nothing offered falls back to the server credential", func(t *testing.T) {
+		if cred := EncodeCallbackCred(nil); cred != nil {
+			t.Errorf("empty parms: got %v, want nil", cred)
+		}
+		if cred := EncodeCallbackCred([]types.CallbackSecParms4{gssOnly}); cred != nil {
+			t.Errorf("gss-only: got %v, want nil", cred)
+		}
+	})
+
+	t.Run("auth_none alone is honoured", func(t *testing.T) {
+		msg := BuildCBRPCCallMessage(1, 0x40000000, 1, types.CB_PROC_COMPOUND, nil,
+			EncodeCallbackCred([]types.CallbackSecParms4{authNone}))
+		flavor, body := readCBCred(t, msg)
+		if flavor != 0 {
+			t.Errorf("flavor = %d, want 0 (AUTH_NONE)", flavor)
+		}
+		if len(body) != 0 {
+			t.Errorf("body = %v, want empty", body)
+		}
+	})
+
+	t.Run("auth_sys carries the client's identity", func(t *testing.T) {
+		msg := BuildCBRPCCallMessage(1, 0x40000000, 1, types.CB_PROC_COMPOUND, nil,
+			EncodeCallbackCred([]types.CallbackSecParms4{authSys}))
+		flavor, body := readCBCred(t, msg)
+		if flavor != 1 {
+			t.Fatalf("flavor = %d, want 1 (AUTH_SYS)", flavor)
+		}
+		r := bytes.NewReader(body)
+		var stamp, nameLen, uid, gid, nGids uint32
+		_ = binary.Read(r, binary.BigEndian, &stamp)
+		_ = binary.Read(r, binary.BigEndian, &nameLen)
+		name := make([]byte, (nameLen+3)&^uint32(3))
+		if _, err := io.ReadFull(r, name); err != nil {
+			t.Fatalf("read machinename: %v", err)
+		}
+		_ = binary.Read(r, binary.BigEndian, &uid)
+		_ = binary.Read(r, binary.BigEndian, &gid)
+		if err := binary.Read(r, binary.BigEndian, &nGids); err != nil {
+			t.Fatalf("read gids count: %v", err)
+		}
+		if stamp != 13 || uid != 17 || gid != 19 || nGids != 0 {
+			t.Errorf("stamp=%d uid=%d gid=%d gids=%d, want 13/17/19/0", stamp, uid, gid, nGids)
+		}
+		if got := string(name[:nameLen]); got != "fake name" {
+			t.Errorf("machinename = %q, want %q", got, "fake name")
+		}
+	})
+
+	t.Run("auth_sys wins when both are offered", func(t *testing.T) {
+		msg := BuildCBRPCCallMessage(1, 0x40000000, 1, types.CB_PROC_COMPOUND, nil,
+			EncodeCallbackCred([]types.CallbackSecParms4{authNone, authSys}))
+		if flavor, _ := readCBCred(t, msg); flavor != 1 {
+			t.Errorf("flavor = %d, want 1 (AUTH_SYS)", flavor)
+		}
+	})
 }

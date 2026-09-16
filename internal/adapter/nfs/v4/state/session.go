@@ -248,6 +248,11 @@ func (sm *StateManager) CreateSession(
 		}
 	}
 
+	// The callback security parameters decide the credential every callback on
+	// this session carries, so they belong to the session from the moment it
+	// exists rather than only from a later BACKCHANNEL_CTL.
+	session.BackchannelSecParms = cbSecParms
+
 	// Store session in maps
 	sm.sessionsByID[session.SessionID] = session
 	sm.sessionsByClientID[clientID] = append(sm.sessionsByClientID[clientID], session)
@@ -391,14 +396,7 @@ func (sm *StateManager) destroySessionLocked(sessionID types.SessionId4, force b
 		delete(sm.sessionsByClientID, session.ClientID)
 	}
 
-	// Clean up connection bindings for this session.
-	// Lock ordering: sm.mu (held by caller) before connMu.
-	sm.connMu.Lock()
-	for _, b := range sm.connBySession[sessionID] {
-		delete(sm.connByID, b.ConnectionID)
-	}
-	delete(sm.connBySession, sessionID)
-	sm.connMu.Unlock()
+	sm.dropSessionBindingsLocked(sessionID)
 
 	logger.Info("Session destroyed",
 		"session_id", session.SessionID.String(),
@@ -406,6 +404,30 @@ func (sm *StateManager) destroySessionLocked(sessionID types.SessionId4, force b
 		"reason", reason)
 
 	return nil
+}
+
+// dropSessionBindingsLocked releases every connection binding a session holds,
+// and with them the callback state of any connection the session was the last
+// one on. Every path that retires a session calls this — DESTROY_SESSION, the
+// expiry reaper, and client purge — because a session removed from sessionsByID
+// without it leaves its bindings, writers and pending callback waiters behind,
+// and a connection that also carries another session never releases them: the
+// other session's teardown sees a binding still standing and declines.
+//
+// Caller holds sm.mu. Lock ordering: sm.mu before connMu.
+func (sm *StateManager) dropSessionBindingsLocked(sessionID types.SessionId4) {
+	sm.connMu.Lock()
+	defer sm.connMu.Unlock()
+	// Snapshot first: dropConnBindingLocked edits connBySession[sessionID] as
+	// it goes, which is the slice this would otherwise be ranging over.
+	connIDs := make([]uint64, 0, len(sm.connBySession[sessionID]))
+	for _, b := range sm.connBySession[sessionID] {
+		connIDs = append(connIDs, b.ConnectionID)
+	}
+	for _, connID := range connIDs {
+		sm.dropConnBindingLocked(connID, sessionID)
+	}
+	delete(sm.connBySession, sessionID)
 }
 
 // GetSession returns the session for the given session ID, or nil if not found.
@@ -513,11 +535,20 @@ func (sm *StateManager) reapExpiredSessions() {
 	// that no longer exist). This handles edge cases where a session was
 	// destroyed but the connection was not yet unbound.
 	sm.connMu.Lock()
-	for connID, binding := range sm.connByID {
-		if _, exists := sm.sessionsByID[binding.SessionID]; !exists {
-			delete(sm.connByID, connID)
-			sm.removeConnFromSessionLocked(connID, binding.SessionID)
+	type staleBinding struct {
+		connID    uint64
+		sessionID types.SessionId4
+	}
+	var stale []staleBinding
+	for connID, bindings := range sm.connByID {
+		for _, binding := range bindings {
+			if _, exists := sm.sessionsByID[binding.SessionID]; !exists {
+				stale = append(stale, staleBinding{connID, binding.SessionID})
+			}
 		}
+	}
+	for _, sb := range stale {
+		sm.dropConnBindingLocked(sb.connID, sb.sessionID)
 	}
 	sm.connMu.Unlock()
 }

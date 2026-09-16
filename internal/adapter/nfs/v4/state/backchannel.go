@@ -13,7 +13,9 @@ package state
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -39,6 +41,13 @@ const (
 	backchannelMaxRetries = 3
 )
 
+// nextCallbackXID mints the XID of every callback the server sends. A
+// connection's reply demultiplexer is keyed on XID alone while a sender belongs
+// to one session, and one connection may carry several sessions, so a counter
+// per sender would let two of them register the same XID and strand the
+// first one's waiter.
+var nextCallbackXID atomic.Uint32
+
 var backchannelRetryDelays = [backchannelMaxRetries]time.Duration{
 	5 * time.Second,
 	10 * time.Second,
@@ -50,8 +59,17 @@ var backchannelRetryDelays = [backchannelMaxRetries]time.Duration{
 // ============================================================================
 
 // ConnWriter writes data to a connection. The implementation must acquire
-// the connection's writeMu to prevent interleaving with fore-channel replies.
+// the connection's writeMu to prevent interleaving with fore-channel replies,
+// and must bound the write by CallbackWriteTimeout.
 type ConnWriter func(data []byte) error
+
+// CallbackWriteTimeout is the budget one ConnWriter call may spend on the
+// socket. A callback write holds the connection's write lock, so an unbounded
+// one blocks every fore-channel reply behind it and the connection close that
+// waits on those replies. worstCaseSendDuration charges each attempt for it,
+// so a writer that runs longer than this expires the recall watchdog while its
+// own callback is still on the wire.
+const CallbackWriteTimeout = defaultBackchannelTimeout
 
 // ============================================================================
 // CallbackRequest -- a single callback to be sent via backchannel
@@ -81,6 +99,28 @@ type CallbackRequest struct {
 type PendingCBReplies struct {
 	mu      sync.Mutex
 	waiters map[uint32]chan []byte
+	// closed marks the connection behind this table as gone. It is what makes
+	// a late Register safe: a sender reads the table under the connection lock
+	// and registers after releasing it, so a teardown can land in between and
+	// would otherwise leave that sender waiting on a demultiplexer nothing
+	// writes to any more.
+	closed bool
+}
+
+// FailAll releases every waiter and refuses future ones. Called when the
+// connection carrying them dies: the replies they are waiting for can no longer
+// arrive, and a closed channel reaches the waiter now rather than leaving it to
+// discover the loss when its own timeout expires. A sender blocked there is
+// holding up the recall behind it, which is how a dead connection turns into a
+// revoked delegation on a client that another session could still have reached.
+func (p *PendingCBReplies) FailAll() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.closed = true
+	for xid, ch := range p.waiters {
+		close(ch)
+		delete(p.waiters, xid)
+	}
 }
 
 // NewPendingCBReplies creates a new PendingCBReplies instance.
@@ -92,26 +132,44 @@ func NewPendingCBReplies() *PendingCBReplies {
 
 // Register registers an XID and returns a channel that will receive the reply.
 // The returned channel has capacity 1 to prevent blocking the read loop.
-func (p *PendingCBReplies) Register(xid uint32) chan []byte {
+//
+// After FailAll the channel comes back already closed rather than joining a
+// table no reply can reach, so a caller that registers just too late fails at
+// once instead of waiting out its timeout.
+func (p *PendingCBReplies) Register(xid uint32) (chan []byte, bool) {
 	ch := make(chan []byte, 1)
 	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		// The connection was retired between the caller picking it and getting
+		// here. The closed channel keeps a caller that ignores the flag from
+		// blocking forever, but the flag is what matters: a reply read off a
+		// closed channel is indistinguishable from a client that answered with
+		// nothing, and a caller that writes anyway is writing to a dead socket
+		// and would score the result against the client.
+		close(ch)
+		return ch, false
+	}
 	p.waiters[xid] = ch
-	p.mu.Unlock()
-	return ch
+	return ch, true
 }
 
 // Deliver delivers a reply to the waiter for the given XID.
 // Returns true if a waiter was found and the reply was delivered.
+//
+// The send stays under the mutex. Releasing it first and sending afterwards
+// races FailAll closing the same channel, and a send on a closed channel panics
+// in the read loop that called this. It cannot block: the channel has capacity
+// one and the XID is removed from the table here, so there is never a second
+// sender for it.
 func (p *PendingCBReplies) Deliver(xid uint32, reply []byte) bool {
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	ch, ok := p.waiters[xid]
-	if ok {
-		delete(p.waiters, xid)
-	}
-	p.mu.Unlock()
 	if !ok {
 		return false
 	}
+	delete(p.waiters, xid)
 	ch <- reply
 	return true
 }
@@ -136,11 +194,38 @@ type BackchannelSender struct {
 	sessionID types.SessionId4
 	clientID  uint64
 
-	// cbProgram is the callback RPC program number. It is read by the Run
-	// goroutine (sendCallback) and updated by BackchannelCtl via
-	// StateManager.UpdateBackchannelParams, so it is accessed atomically to
-	// avoid a data race between the two goroutines.
-	cbProgram atomic.Uint32
+	// params is the callback program number and the pre-encoded credential
+	// every callback on this session carries, held as one value. Both are read
+	// by the Run goroutine (sendCallback) and rewritten by BACKCHANNEL_CTL via
+	// StateManager.UpdateBackchannelParams, so the pointer is accessed
+	// atomically to avoid a data race between the two goroutines.
+	//
+	// One value rather than two, because the client negotiates them together. A
+	// callback that loaded them separately while BACKCHANNEL_CTL was rewriting
+	// them could pair the new program with the old credential, sending the
+	// client a combination it never agreed to and drawing a rejection that looks
+	// like a dead back channel.
+	params atomic.Pointer[cbParams]
+
+	// paramsGen numbers the publications of params. A probe records the number
+	// it ran against and drops its verdict if it is no longer current: probes
+	// are asynchronous and BACKCHANNEL_CTL starts a new one without being able
+	// to stop the old, so without this an earlier probe can finish later and
+	// publish a verdict about parameters the session no longer has.
+	paramsGen atomic.Uint64
+
+	// probeMu guards the one-CB_NULL-per-session admission below. A mutex, not
+	// a pair of atomics: the decision to stop and the release of probeRunning
+	// have to be one step, and two lock-free flags cannot make them one. Two
+	// attempts at that handoff traded an overlap race for a lost-wakeup race —
+	// release-then-check lets a caller start a second probe alongside this one,
+	// check-then-release lets a request arrive between the check and the release
+	// and be consumed by nobody, leaving the new parameters unprobed and
+	// delegations off until something else happens to run a probe. This is one
+	// probe per BACKCHANNEL_CTL, so the lock costs nothing worth having.
+	probeMu      sync.Mutex
+	probeRunning bool // a probe is running; a second caller queues instead
+	probeQueued  bool // someone asked while one ran; the runner re-runs for them
 
 	queue chan CallbackRequest
 	sm    *StateManager
@@ -149,12 +234,11 @@ type BackchannelSender struct {
 
 	stopCh chan struct{}
 
-	nextXID atomic.Uint32
-
 	// nextCBSeqID is the per-slot CB_SEQUENCE seqID counter (RFC 8881
-	// §2.10.6.1). It is independent of nextXID: the backchannel uses a single
-	// slot, so a single monotonic counter incrementing by exactly 1 per send
-	// is correct. Zero-value starts at 0, giving first seqID=1 on first Add(1).
+	// §2.10.6.1). It is independent of nextCallbackXID, the package-level RPC
+	// XID counter: the backchannel uses a single slot, so a single monotonic
+	// counter incrementing by exactly 1 per send is correct. Zero-value starts
+	// at 0, giving first seqID=1 on first Add(1).
 	nextCBSeqID atomic.Uint32
 
 	callbackTimeout time.Duration
@@ -165,6 +249,7 @@ func NewBackchannelSender(
 	sessionID types.SessionId4,
 	clientID uint64,
 	cbProgram uint32,
+	secParms []types.CallbackSecParms4,
 	slotTable *SlotTable,
 	sm *StateManager,
 ) *BackchannelSender {
@@ -177,8 +262,33 @@ func NewBackchannelSender(
 		stopCh:          make(chan struct{}),
 		callbackTimeout: defaultBackchannelTimeout,
 	}
-	bs.cbProgram.Store(cbProgram)
+	bs.setParams(cbProgram, secParms)
 	return bs
+}
+
+// cbParams is one negotiated pair of callback parameters. A nil cred means the
+// client offered nothing usable and the server's own AUTH_SYS credential
+// applies.
+type cbParams struct {
+	program uint32
+	cred    []byte
+	// generation identifies this publication. See BackchannelSender.paramsGen.
+	generation uint64
+}
+
+// setParams encodes the credential and publishes it with the program number as
+// a single value, so no callback can observe half of an update.
+func (bs *BackchannelSender) setParams(program uint32, secParms []types.CallbackSecParms4) {
+	gen := bs.paramsGen.Add(1)
+	bs.params.Store(&cbParams{program: program, cred: EncodeCallbackCred(secParms), generation: gen})
+}
+
+// currentParams returns the callback parameters as one consistent pair.
+func (bs *BackchannelSender) currentParams() cbParams {
+	if p := bs.params.Load(); p != nil {
+		return *p
+	}
+	return cbParams{}
 }
 
 // Run is the main loop for the BackchannelSender goroutine.
@@ -228,6 +338,9 @@ func (bs *BackchannelSender) Enqueue(req CallbackRequest) bool {
 // sendCallbackWithRetry sends a callback with exponential backoff retry.
 func (bs *BackchannelSender) sendCallbackWithRetry(ctx context.Context, req CallbackRequest) {
 	var lastErr error
+	// The first failure that actually reached a socket, if any. It outranks a
+	// later errCallbackNotAttempted when the two disagree about what happened.
+	var firstTransportErr error
 
 	for attempt := 0; attempt < backchannelMaxRetries; attempt++ {
 		if attempt > 0 {
@@ -239,13 +352,25 @@ func (bs *BackchannelSender) sendCallbackWithRetry(ctx context.Context, req Call
 
 			select {
 			case <-ctx.Done():
+				// A transport failure already seen outranks this: the callback
+				// did reach a socket and fail there, and reporting the
+				// cancellation instead would have the recall treat a dead path
+				// as one that was never tried.
 				if req.ResultCh != nil {
-					req.ResultCh <- ctx.Err()
+					if firstTransportErr != nil {
+						req.ResultCh <- firstTransportErr
+					} else {
+						req.ResultCh <- fmt.Errorf("%w: %w", errCallbackNotAttempted, ctx.Err())
+					}
 				}
 				return
 			case <-bs.stopCh:
 				if req.ResultCh != nil {
-					req.ResultCh <- fmt.Errorf("backchannel sender stopped")
+					if firstTransportErr != nil {
+						req.ResultCh <- firstTransportErr
+					} else {
+						req.ResultCh <- fmt.Errorf("%w: backchannel sender stopped", errCallbackNotAttempted)
+					}
 				}
 				return
 			case <-time.After(delay):
@@ -260,13 +385,50 @@ func (bs *BackchannelSender) sendCallbackWithRetry(ctx context.Context, req Call
 			return
 		}
 		lastErr = err
+		if errors.Is(err, errCallbackRejected) {
+			// The client answered. Retrying replays a request it already
+			// rejected, and the transport is demonstrably fine — so this
+			// outranks an earlier transport error rather than being masked by
+			// one: a path that carried a reply is not a dead path.
+			if req.ResultCh != nil {
+				req.ResultCh <- err
+			}
+			return
+		}
+		if errors.Is(err, errCallbackNotAttempted) {
+			// Nothing reached a socket, so there is nothing a backoff can
+			// improve: this session has no back-bound connection and will not
+			// grow one while this goroutine sleeps. Retrying held the recall
+			// here for the whole backoff before the caller could try the
+			// client's next session, and marking a path fault would blame the
+			// client for a route that was never attempted. Reported straight
+			// through instead — unless an earlier attempt did reach the
+			// transport, whose failure is the honest verdict and must not be
+			// masked by this one.
+			if firstTransportErr != nil {
+				lastErr = firstTransportErr
+				break
+			}
+			if req.ResultCh != nil {
+				req.ResultCh <- err
+			}
+			return
+		}
+		if firstTransportErr == nil {
+			firstTransportErr = err
+		}
 		logger.Warn("BackchannelSender callback failed",
 			"session_id", bs.sessionID.String(),
 			"attempt", attempt+1,
 			"error", err)
 	}
 
-	// All retries exhausted
+	// All retries exhausted. A transport failure seen on any attempt outranks a
+	// later local one: the path did fail, and reporting the local error would
+	// have the caller treat a dead callback route as though it were never tried.
+	if firstTransportErr != nil {
+		lastErr = firstTransportErr
+	}
 	if req.ResultCh != nil {
 		req.ResultCh <- fmt.Errorf("backchannel callback failed after %d attempts: %w",
 			backchannelMaxRetries, lastErr)
@@ -274,6 +436,21 @@ func (bs *BackchannelSender) sendCallbackWithRetry(ctx context.Context, req Call
 
 	// Mark backchannel fault on persistent failure
 	bs.sm.setBackchannelFault(bs.clientID, true)
+}
+
+// worstCaseSendDuration is the longest sendCallbackWithRetry can run before it
+// is guaranteed to have reported: every attempt timing out, plus every backoff
+// between them.
+func (bs *BackchannelSender) worstCaseSendDuration() time.Duration {
+	// An attempt spends up to two writes before it waits for the reply: the
+	// connection it picked, and the alternate it falls back to when that write
+	// fails. Each is bounded by the same budget as the reply wait
+	// (CallbackWriteTimeout), so all three are charged at callbackTimeout.
+	total := time.Duration(backchannelMaxRetries) * 3 * bs.callbackTimeout
+	for i := 0; i < backchannelMaxRetries-1; i++ {
+		total += backchannelRetryDelays[i]
+	}
+	return total
 }
 
 // sendCallback is the core send logic for a single callback attempt.
@@ -293,20 +470,19 @@ func (bs *BackchannelSender) sendCallback(ctx context.Context, req CallbackReque
 	compoundArgs := encodeCBCompoundV41([][]byte{cbSeqOp, req.Payload})
 
 	// 4. Build RPC CALL message
-	xid := bs.nextXID.Add(1)
-	callMsg := BuildCBRPCCallMessage(xid, bs.cbProgram.Load(), types.NFS4_CALLBACK_VERSION, types.CB_PROC_COMPOUND, compoundArgs)
+	xid := nextCallbackXID.Add(1)
+	params := bs.currentParams()
+	callMsg := BuildCBRPCCallMessage(xid, params.program, types.NFS4_CALLBACK_VERSION, types.CB_PROC_COMPOUND, compoundArgs, params.cred)
 
 	// 5. Add record marking
 	framedMsg := AddCBRecordMark(callMsg, true)
 
-	// 6. Find a back-bound connection (0 = no exclusion)
-	connID, writer, pending, ok := bs.sm.getBackBoundConnWriter(bs.sessionID, 0)
+	// 6/7. Find a back-bound connection and register the XID on its reply table.
+	connID, writer, pending, replyCh, ok := bs.selectBackBoundWaiter(xid, 0)
 	if !ok {
-		return fmt.Errorf("no back-bound connection for session %s", bs.sessionID.String())
+		return fmt.Errorf("%w: no back-bound connection for session %s",
+			errCallbackNotAttempted, bs.sessionID.String())
 	}
-
-	// 7. Register XID with PendingCBReplies
-	replyCh := pending.Register(xid)
 
 	// 8. Write framed message (no lock held -- ConnWriter acquires writeMu internally)
 	if err := writer(framedMsg); err != nil {
@@ -324,7 +500,17 @@ func (bs *BackchannelSender) sendCallback(ctx context.Context, req CallbackReque
 		// Update pending to the new connection's PendingCBReplies so the
 		// timeout path below cancels the correct waiter.
 		pending = pending2
-		replyCh = pending.Register(xid)
+		var registered2 bool
+		replyCh, registered2 = pending.Register(xid)
+		if !registered2 {
+			// Not "never attempted": the write above did reach a transport and
+			// failed there, which is evidence about this client's callback
+			// path. Reporting the retired alternate alone would have the recall
+			// classify the whole send as local and leave CBPathUp standing, so
+			// the original failure is what propagates.
+			return fmt.Errorf("write to back-bound connection %d failed and alternate %d was retired before the callback was registered: %w",
+				connID, connID2, err)
+		}
 		if err2 := writer2(framedMsg); err2 != nil {
 			pending.Cancel(xid)
 			return fmt.Errorf("write to alternate connection %d also failed: %w", connID2, err2)
@@ -337,12 +523,47 @@ func (bs *BackchannelSender) sendCallback(ctx context.Context, req CallbackReque
 
 	select {
 	case <-timeoutCtx.Done():
+		// A deadline that fires alongside something on the reply channel is not
+		// a timeout. Two cases, and both were being reported as the client
+		// failing to answer: a retired table, which is a socket on this side
+		// going away, and an actual reply that landed in the same instant —
+		// classifying THAT as failed clears CBPathUp and revokes a delegation
+		// the client answered for.
+		select {
+		case replyBytes, open := <-replyCh:
+			if !open {
+				pending.Cancel(xid)
+				return fmt.Errorf("%w: connection %d was retired while the callback was in flight",
+					errCallbackNotAttempted, connID)
+			}
+			if err := ValidateCBReply(replyBytes); err != nil {
+				return fmt.Errorf("%w: %w", errCallbackRejected, err)
+			}
+			bs.sm.setBackchannelFault(bs.clientID, false)
+			return nil
+		default:
+		}
 		pending.Cancel(xid)
 		return fmt.Errorf("backchannel callback timed out after %s", bs.callbackTimeout)
-	case replyBytes := <-replyCh:
+	case replyBytes, open := <-replyCh:
+		if !open {
+			// FailAll closed the waiter: this connection was retired while the
+			// callback was in flight. The bytes did reach a transport, so this
+			// is not "never attempted" in the literal sense — but what happened
+			// to them is unknown, and the one thing it is NOT is evidence that
+			// the client stopped answering. Falling through to ValidateCBReply
+			// would read the closed channel as a malformed reply, which the
+			// retry loop classifies as no callback path at all: CBPathUp
+			// cleared and a delegation revoked because a socket on this side
+			// went away. The sentinel keeps the outcome local, where it
+			// belongs, and leaves the client's verdict to a send that reached
+			// a conclusion.
+			return fmt.Errorf("%w: connection %d was retired while the callback was in flight",
+				errCallbackNotAttempted, connID)
+		}
 		// 10. Validate CB_COMPOUND reply
 		if err := ValidateCBReply(replyBytes); err != nil {
-			return fmt.Errorf("backchannel callback reply validation failed: %w", err)
+			return fmt.Errorf("%w: %w", errCallbackRejected, err)
 		}
 		// Success -- clear backchannel fault
 		bs.sm.setBackchannelFault(bs.clientID, false)
@@ -434,38 +655,136 @@ func encodeCBSequenceOp(sessionID types.SessionId4, seqID, slotID, highestSlotID
 // connection is judged unreachable and gets no delegation. Withholding one is
 // the safe direction: the cost is a client that caches less, where the reverse
 // is a delegation the server cannot recall.
+// errCallbackNotAttempted marks a callback failure that carries no evidence
+// about the client: the send never reached the wire for this session, because
+// the sender was stopped or cancelled or because this session has no back-bound
+// connection at all. A recall must not count one of these against the client's
+// callback path — another of its sessions may still carry the recall, and
+// clearing CBPathUp on this would withhold delegations from a client that never
+// stopped answering.
+//
+// probeCallbackPath deliberately does not use it: there, a missing back-bound
+// connection is the verdict, not an excuse for withholding one.
+var errCallbackNotAttempted = errors.New("callback not attempted on this session")
+
+// errCallbackRejected marks a callback the client ANSWERED and the answer was
+// not one this server accepts — an RPC or NFS error status, or a reply that
+// does not decode. The delegation is as unrecalled as if the send had failed,
+// so the caller still revokes; what must not follow is clearing CBPathUp or
+// raising a backchannel fault, because the peer demonstrably received the
+// callback and replied to it. Retrying does not help either: the same request
+// gets the same rejection.
+var errCallbackRejected = errors.New("callback rejected by the client")
+
+// selectBackBoundWaiter picks a back-bound connection for this session and
+// registers xid on its reply table, returning both so the caller writes and
+// waits on the same connection.
+//
+// A connection can be retired between the lookup and the register — the two do
+// not share a hold on connMu — and that says nothing about the client's callback
+// path, only that this particular socket went away. Treating it as the answer
+// would report a send as never attempted, or a probe as a path failure, while a
+// second back-bound connection for the same session sat there usable: for a
+// recall that means revoking a delegation over a path that was still reachable,
+// and for a probe it means withholding delegations until the next parameter
+// update, because nothing retries a probe. So a retired table costs a candidate
+// rather than the attempt. Two candidates, because a session with more than two
+// back-bound connections retiring in sequence is a connection table churning
+// faster than a callback can be issued, and looping on it would spin.
+func (bs *BackchannelSender) selectBackBoundWaiter(xid uint32, exclude uint64) (uint64, ConnWriter, *PendingCBReplies, chan []byte, bool) {
+	for attempt := 0; attempt < 2; attempt++ {
+		id, writer, pending, ok := bs.sm.getBackBoundConnWriter(bs.sessionID, exclude)
+		if !ok {
+			return 0, nil, nil, nil, false
+		}
+		if replyCh, registered := pending.Register(xid); registered {
+			return id, writer, pending, replyCh, true
+		}
+		logger.Debug("BackchannelSender: back-bound connection retired before registration, trying another",
+			"session_id", bs.sessionID.String(), "conn_id", id)
+		exclude = id
+	}
+	return 0, nil, nil, nil, false
+}
+
 func (bs *BackchannelSender) probeCallbackPath(ctx context.Context) error {
-	xid := bs.nextXID.Add(1)
-	callMsg := BuildCBRPCCallMessage(xid, bs.cbProgram.Load(), types.NFS4_CALLBACK_VERSION, types.CB_PROC_NULL, nil)
+	xid := nextCallbackXID.Add(1)
+	params := bs.currentParams()
+	callMsg := BuildCBRPCCallMessage(xid, params.program, types.NFS4_CALLBACK_VERSION, types.CB_PROC_NULL, nil, params.cred)
 	framedMsg := AddCBRecordMark(callMsg, true)
 
-	connID, writer, pending, ok := bs.sm.getBackBoundConnWriter(bs.sessionID, 0)
-	if !ok {
-		return fmt.Errorf("no back-bound connection for session %s", bs.sessionID.String())
-	}
-
-	replyCh := pending.Register(xid)
-	if err := writer(framedMsg); err != nil {
-		pending.Cancel(xid)
-		return fmt.Errorf("write CB_NULL to back-bound connection %d: %w", connID, err)
-	}
-
-	timeoutCtx, cancel := context.WithTimeout(ctx, bs.callbackTimeout)
-	defer cancel()
-
-	select {
-	case <-timeoutCtx.Done():
-		pending.Cancel(xid)
-		return fmt.Errorf("CB_NULL timed out after %s", bs.callbackTimeout)
-	case <-bs.stopCh:
-		pending.Cancel(xid)
-		return fmt.Errorf("backchannel sender stopped")
-	case replyBytes := <-replyCh:
-		if err := ValidateCBReply(replyBytes); err != nil {
-			return fmt.Errorf("CB_NULL reply: %w", err)
+	// A verdict here is durable in a way a send's is not: it is published on the
+	// client record, and nothing re-probes until the next parameter update. So a
+	// socket that went away must not be reported as the client failing to answer
+	// — with a second back-bound connection for this session sitting usable, that
+	// withholds delegations indefinitely on the strength of the wrong connection.
+	// A write failure and a reply table retired mid-wait both cost a candidate;
+	// a timeout does not, because a client that took the bytes and said nothing
+	// is exactly what this is asking about.
+	var lastErr error
+	var exclude uint64
+	for attempt := 0; attempt < 2; attempt++ {
+		connID, writer, pending, replyCh, ok := bs.selectBackBoundWaiter(xid, exclude)
+		if !ok {
+			break
 		}
-		return nil
+		if err := writer(framedMsg); err != nil {
+			pending.Cancel(xid)
+			lastErr = fmt.Errorf("write CB_NULL to back-bound connection %d: %w", connID, err)
+			exclude = connID
+			continue
+		}
+
+		timeoutCtx, cancel := context.WithTimeout(ctx, bs.callbackTimeout)
+		select {
+		case <-timeoutCtx.Done():
+			cancel()
+			// Both can be ready at once, and a select with two ready cases picks
+			// uniformly — so arriving here does not mean nothing answered. A
+			// retired table means a socket on this side went away, which is not
+			// the client's verdict; a reply that landed in the same instant IS
+			// the client's verdict, and calling it a timeout publishes "does not
+			// answer callbacks" about a client that just did. Nothing re-probes
+			// until the next parameter update, so that one stands. Ask first.
+			select {
+			case replyBytes, open := <-replyCh:
+				if !open {
+					pending.Cancel(xid)
+					lastErr = fmt.Errorf("back-bound connection %d was retired while CB_NULL was in flight", connID)
+					exclude = connID
+					continue
+				}
+				if err := ValidateCBReply(replyBytes); err != nil {
+					return fmt.Errorf("CB_NULL reply: %w", err)
+				}
+				return nil
+			default:
+			}
+			pending.Cancel(xid)
+			return fmt.Errorf("CB_NULL timed out after %s", bs.callbackTimeout)
+		case <-bs.stopCh:
+			cancel()
+			pending.Cancel(xid)
+			return fmt.Errorf("backchannel sender stopped")
+		case replyBytes, open := <-replyCh:
+			cancel()
+			if !open {
+				// FailAll closed the waiter: the connection was retired while
+				// this was waiting on it, which says nothing about the client.
+				lastErr = fmt.Errorf("back-bound connection %d was retired while CB_NULL was in flight", connID)
+				exclude = connID
+				continue
+			}
+			if err := ValidateCBReply(replyBytes); err != nil {
+				return fmt.Errorf("CB_NULL reply: %w", err)
+			}
+			return nil
+		}
 	}
+	if lastErr != nil {
+		return lastErr
+	}
+	return fmt.Errorf("no back-bound connection for session %s", bs.sessionID.String())
 }
 
 // probeV41CallbackPath runs probeCallbackPath and records the verdict on the
@@ -480,8 +799,71 @@ func (bs *BackchannelSender) probeCallbackPath(ctx context.Context) error {
 // The verdict is a snapshot, not a subscription. It goes stale when the client
 // stops answering, which is why a failed CB_RECALL clears CBPathUp again.
 func (sm *StateManager) probeV41CallbackPath(ctx context.Context, bs *BackchannelSender) {
+	// One probe per session at a time. Each BACKCHANNEL_CTL used to launch
+	// another while the previous one was still waiting out its callback
+	// timeout, so a client that renegotiates repeatedly without ever answering
+	// CB_NULL accumulated a goroutine, an XID and a pending waiter per update —
+	// and every one of them wrote to the same connection. The generation check
+	// below discarded their verdicts but not their cost. The one in flight is
+	// kept rather than replaced: it is already waiting, and its verdict is
+	// discarded anyway if the parameters move under it.
+	bs.probeMu.Lock()
+	if bs.probeRunning {
+		// Queued, not dropped. The probe already running was started against
+		// parameters that have since been replaced, so its verdict will be
+		// discarded for a stale generation — and if this one simply returned,
+		// nothing would ever evaluate the new parameters and delegations would
+		// stay withheld until the next control update that happened to arrive
+		// when no probe was running.
+		bs.probeQueued = true
+		bs.probeMu.Unlock()
+		logger.Debug("CB_NULL probe deferred: one is already in flight for this session",
+			"client_id", fmt.Sprintf("0x%x", bs.clientID),
+			"session_id", bs.sessionID.String())
+		return
+	}
+	bs.probeRunning = true
+	bs.probeMu.Unlock()
+
+	for {
+		sm.runV41Probe(ctx, bs)
+
+		// Deciding to stop and releasing the flag are one critical section. Any
+		// other order leaves a window: release first and a caller starts a
+		// second probe beside this one; decide first and a caller's request
+		// lands after the decision and is consumed by nobody.
+		bs.probeMu.Lock()
+		if !bs.probeQueued {
+			bs.probeRunning = false
+			bs.probeMu.Unlock()
+			return
+		}
+		bs.probeQueued = false
+		bs.probeMu.Unlock()
+
+		// A deferred re-run is about parameters that have changed since the
+		// caller was turned away, so it reads them fresh; the caller's context
+		// is gone, which is why this one is detached.
+		ctx = context.Background()
+	}
+}
+
+// runV41Probe is one CB_NULL round trip and its verdict. The caller owns the
+// one-probe-per-session guard.
+func (sm *StateManager) runV41Probe(ctx context.Context, bs *BackchannelSender) {
+	generation := bs.currentParams().generation
 	err := bs.probeCallbackPath(ctx)
-	sm.setCBPathUp(bs.clientID, err == nil)
+
+	// The parameters this probe ran against may since have been replaced, in
+	// which case what it learned is about a configuration the session no longer
+	// has. Publishing it would either re-enable delegations on retired
+	// parameters or overwrite the verdict of the probe that replaced this one.
+	if !sm.setCBPathUpIfCurrent(bs, generation, err == nil) {
+		logger.Debug("CB_NULL result discarded: callback parameters changed while the probe was in flight",
+			"client_id", fmt.Sprintf("0x%x", bs.clientID),
+			"session_id", bs.sessionID.String())
+		return
+	}
 
 	if err != nil {
 		logger.Info("CB_NULL failed, delegations stay disabled for client",
@@ -506,6 +888,28 @@ func (sm *StateManager) setCBPathUp(clientID uint64, up bool) {
 	if record := sm.clientRecordLocked(clientID); record != nil {
 		record.CBPathUp = up
 	}
+}
+
+// setCBPathUpIfCurrent publishes a probe verdict, but only if the callback
+// parameters the probe ran against are still the ones the sender holds. It
+// reports whether the verdict was published.
+//
+// The generation is re-read under sm.mu together with the write rather than
+// before it: a caller that checks the generation and then calls setCBPathUp
+// leaves a window in which the parameters are replaced between the two, and the
+// retired verdict lands on the record anyway.
+//
+// Thread-safe: acquires sm.mu.Lock.
+func (sm *StateManager) setCBPathUpIfCurrent(bs *BackchannelSender, generation uint64, up bool) bool {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if bs.currentParams().generation != generation {
+		return false
+	}
+	if record := sm.clientRecordLocked(bs.clientID); record != nil {
+		record.CBPathUp = up
+	}
+	return true
 }
 
 // SetMaxConnectionsPerSession sets the maximum number of connections per session.
@@ -561,6 +965,14 @@ func (sm *StateManager) RegisterConnWriter(connectionID uint64, writer ConnWrite
 	defer sm.connMu.Unlock()
 
 	sm.connWriters[connectionID] = writer
+
+	// COMPOUNDs on one connection are dispatched concurrently, so two of them
+	// can reach first-time registration together. Handing the second one a
+	// fresh demultiplexer would strand every reply the first is already
+	// waiting on, so an existing one is reused.
+	if pending := sm.cbRepliesByConn[connectionID]; pending != nil {
+		return pending
+	}
 	pending := NewPendingCBReplies()
 	sm.cbRepliesByConn[connectionID] = pending
 	return pending
@@ -595,6 +1007,18 @@ func (sm *StateManager) GetPendingCBReplies(connectionID uint64) *PendingCBRepli
 // Thread-safe: acquires sm.mu.Lock.
 
 func (sm *StateManager) StartBackchannelSender(ctx context.Context, sessionID types.SessionId4) {
+	// Every COMPOUND on a back-bound connection reaches here, and all but the
+	// first find the sender already running, so settle that under a read lock
+	// rather than serializing the whole fore channel behind sm.mu. The write
+	// path below re-checks, which is what makes the race between the two
+	// harmless.
+	sm.mu.RLock()
+	started := sm.sessionsByID[sessionID] != nil && sm.sessionsByID[sessionID].backchannelSender != nil
+	sm.mu.RUnlock()
+	if started {
+		return
+	}
+
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
@@ -610,6 +1034,7 @@ func (sm *StateManager) StartBackchannelSender(ctx context.Context, sessionID ty
 		sessionID,
 		session.ClientID,
 		session.CbProgram,
+		session.BackchannelSecParms,
 		session.BackChannelSlots,
 		sm,
 	)
@@ -654,12 +1079,32 @@ func (sm *StateManager) getBackchannelSender(clientID uint64) *BackchannelSender
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
+	// A sender exists per back-bound session, so a client with several sessions
+	// has several. Pick one whose session still has a back-bound connection:
+	// returning the first sender found would keep choosing a session whose
+	// connection has since closed, and every recall through it would fail with
+	// no back-bound connection and revoke the delegation while a sibling session
+	// of the same client still had a live path to the client.
+	//
+	// Lock ordering: sm.mu is held here and getBackBoundConnWriter takes
+	// connMu, which is the documented direction (manager.go, sm.mu before
+	// connMu, never reverse).
+	var fallback *BackchannelSender
 	for _, session := range sm.sessionsByClientID[clientID] {
-		if session.backchannelSender != nil {
+		if session.backchannelSender == nil {
+			continue
+		}
+		if fallback == nil {
+			fallback = session.backchannelSender
+		}
+		if _, _, _, ok := sm.getBackBoundConnWriter(session.SessionID, 0); ok {
 			return session.backchannelSender
 		}
 	}
-	return nil
+	// No session has a live back binding. Returning a sender anyway keeps the
+	// caller on its existing "no back-bound connection" path, which is the
+	// honest outcome, rather than the different one a nil sender takes.
+	return fallback
 }
 
 // getBackBoundConnWriter finds a back-bound connection for the session,
@@ -679,37 +1124,43 @@ func (sm *StateManager) getBackBoundConnWriter(sessionID types.SessionId4, exclu
 // back-bound connection. Caller must hold sm.connMu.RLock.
 
 func (sm *StateManager) getBackBoundConnWriterLocked(sessionID types.SessionId4, excludeConnID uint64) (uint64, ConnWriter, *PendingCBReplies, bool) {
-	bindings := sm.connBySession[sessionID]
-	var bestConn *BoundConnection
-	var bestTime time.Time
-
-	for _, b := range bindings {
+	// Most recently active FIRST, but not most recently active ONLY. A binding
+	// exists before its writer and reply table are registered, and it outlives
+	// them when the connection is retired — so the freshest binding is regularly
+	// the one that cannot carry a callback. Answering "no path" on that basis,
+	// while an older live connection on the same session sits usable, is how a
+	// recall ends up revoking a delegation and a probe ends up publishing a down
+	// verdict that nothing re-runs.
+	//
+	// So: rank the candidates and walk them, rather than picking one and
+	// testing it.
+	candidates := make([]*BoundConnection, 0, len(sm.connBySession[sessionID]))
+	for _, b := range sm.connBySession[sessionID] {
 		if b.ConnectionID == excludeConnID {
 			continue
 		}
 		if b.Direction != ConnDirBack && b.Direction != ConnDirBoth {
 			continue
 		}
-		if bestConn == nil || b.LastActivity.After(bestTime) {
-			bestConn = b
-			bestTime = b.LastActivity
+		candidates = append(candidates, b)
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].LastActivity.After(candidates[j].LastActivity)
+	})
+
+	for _, b := range candidates {
+		writer, ok := sm.connWriters[b.ConnectionID]
+		if !ok {
+			continue
 		}
+		pending := sm.cbRepliesByConn[b.ConnectionID]
+		if pending == nil {
+			continue
+		}
+		return b.ConnectionID, writer, pending, true
 	}
 
-	if bestConn == nil {
-		return 0, nil, nil, false
-	}
-
-	writer, ok := sm.connWriters[bestConn.ConnectionID]
-	if !ok {
-		return 0, nil, nil, false
-	}
-	pending := sm.cbRepliesByConn[bestConn.ConnectionID]
-	if pending == nil {
-		return 0, nil, nil, false
-	}
-
-	return bestConn.ConnectionID, writer, pending, true
+	return 0, nil, nil, false
 }
 
 // UpdateBackchannelParams stores new callback parameters on a session.
@@ -729,10 +1180,26 @@ func (sm *StateManager) UpdateBackchannelParams(sessionID types.SessionId4, cbPr
 	session.CbProgram = cbProgram
 	session.BackchannelSecParms = secParms
 
-	// Update the sender's program number if it exists. The sender's Run
-	// goroutine reads cbProgram without sm.mu, so the field is atomic.
+	// Republish the program and credential as one pair. The sender's Run
+	// goroutine reads them without sm.mu, so the pair is atomic.
 	if session.backchannelSender != nil {
-		session.backchannelSender.cbProgram.Store(cbProgram)
+		session.backchannelSender.setParams(cbProgram, secParms)
+
+		// The verdict on this client's callback path was reached against the
+		// parameters that have just been replaced, so it no longer describes
+		// anything. Left standing, OPEN keeps granting delegations whose recall
+		// would travel on a credential nothing has tried. Cleared and re-probed:
+		// delegations pause until the new parameters answer a CB_NULL, rather
+		// than pausing forever, which is what clearing alone would do — the
+		// probe in StartBackchannelSender fires once per session and this
+		// session already has its sender.
+		if record := sm.clientRecordLocked(session.ClientID); record != nil {
+			record.CBPathUp = false
+		}
+		// Not the request's context: the probe deliberately outlives the
+		// BACKCHANNEL_CTL reply, and cancelling it when the compound finishes
+		// would leave the verdict cleared with nothing on the way to restore it.
+		go sm.probeV41CallbackPath(context.Background(), session.backchannelSender)
 	}
 
 	logger.Info("Backchannel params updated",

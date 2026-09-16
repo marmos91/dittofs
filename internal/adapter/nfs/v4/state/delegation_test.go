@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"io"
 	"net"
 	"sync"
@@ -1655,5 +1656,132 @@ func TestLockT_IgnoresOwnDelegation(t *testing.T) {
 
 	if denied, err = sm.TestLock(clientID+1, []byte("other-owner"), fileHandle, types.WRITE_LT, 0, 100); err != nil || denied == nil {
 		t.Fatalf("LOCKT from another client must see the delegation; denied=%v err=%v", denied, err)
+	}
+}
+
+// TestRevokedDelegStateid_StatusByMinorVersion pins the status a revoked
+// delegation's stateid draws. A v4.1 client needs NFS4ERR_DELEG_REVOKED to know
+// the lock was taken back on recall and to go clear it with TEST_STATEID and
+// FREE_STATEID; RFC 7530 has no such code, so v4.0 keeps NFS4ERR_BAD_STATEID.
+func TestRevokedDelegStateid_StatusByMinorVersion(t *testing.T) {
+	tests := []struct {
+		name   string
+		v41    bool
+		expect uint32
+	}{
+		{"v4.1 client", true, types.NFS4ERR_DELEG_REVOKED},
+		{"v4.0 client", false, types.NFS4ERR_BAD_STATEID},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sm := NewStateManager(90 * time.Second)
+
+			var clientID uint64
+			if tt.v41 {
+				clientID, _ = registerV41Client(t, sm)
+			} else {
+				var verifier [8]byte
+				copy(verifier[:], "verify01")
+				cb := CallbackInfo{Program: 0x40000000, NetID: "tcp", Addr: "10.0.0.1.8.1"}
+				res, err := sm.SetClientID("revoked-deleg-"+t.Name(), verifier, cb, "10.0.0.1:1234")
+				if err != nil {
+					t.Fatalf("SetClientID error: %v", err)
+				}
+				clientID = res.ClientID
+			}
+
+			fh := []byte("fh-revoked-status-" + tt.name)
+			deleg := sm.GrantDelegation(clientID, fh, types.OPEN_DELEGATE_READ)
+			sm.RevokeDelegation(deleg.Stateid.Other)
+
+			sm.mu.RLock()
+			_, err := sm.validateDelegStateid(&deleg.Stateid, fh, clientID)
+			tested := sm.testDelegStateid(&deleg.Stateid, clientID)
+			sm.mu.RUnlock()
+
+			var stateErr *NFS4StateError
+			if !errors.As(err, &stateErr) {
+				t.Fatalf("validateDelegStateid err = %v, want an NFS4StateError", err)
+			}
+			if stateErr.Status != tt.expect {
+				t.Errorf("validateDelegStateid status = %d, want %d", stateErr.Status, tt.expect)
+			}
+			if tested != tt.expect {
+				t.Errorf("testDelegStateid = %d, want %d", tested, tt.expect)
+			}
+		})
+	}
+}
+
+// TestRevokedDelegStateid_StatusFollowsTheCaller covers what the owner-only
+// test above cannot: it asks as the delegation's owner, so caller and owner are
+// the same client and the status reads the same either way.
+//
+// They come apart in two ways. checkStateidOwner admits a caller whose client
+// ID is zero — a v4.0 request with no resolved client state — so such a caller
+// reaches the revoked branch while owning nothing; selecting the status from the
+// owner hands it NFS4ERR_DELEG_REVOKED, a code RFC 7530 does not define. And a
+// different, identified client must not learn that another client's stateid is
+// revoked rather than simply bad, which is what checking ownership first gives.
+func TestRevokedDelegStateid_StatusFollowsTheCaller(t *testing.T) {
+	sm := NewStateManager(90 * time.Second)
+
+	ownerID, _ := registerV41Client(t, sm)
+	fh := []byte("fh-revoked-caller")
+	deleg := sm.GrantDelegation(ownerID, fh, types.OPEN_DELEGATE_READ)
+	sm.RevokeDelegation(deleg.Stateid.Other)
+
+	// A second client under its own owner ID. registerV41Client derives the
+	// owner from the test name, so calling it twice re-runs EXCHANGE_ID for the
+	// same owner: that replaces the first client rather than adding a second,
+	// and the owner record this test needs intact disappears.
+	var verifier [8]byte
+	copy(verifier[:], "verify02")
+	stranger, err := sm.ExchangeID([]byte("stranger-"+t.Name()), verifier, 0, nil, "10.0.0.2:12345")
+	if err != nil {
+		t.Fatalf("ExchangeID: %v", err)
+	}
+	strangerID := stranger.ClientID
+	if strangerID == ownerID {
+		t.Fatal("fixture is wrong: the second client reused the first one's ID")
+	}
+	sm.mu.RLock()
+	ownerRec := sm.clientsByID[ownerID]
+	sm.mu.RUnlock()
+	if ownerRec == nil || ownerRec.MinorVersion < 1 {
+		t.Fatal("fixture is wrong: the owner is not a live v4.1 client, so the " +
+			"status would read the same whichever client it was chosen from")
+	}
+
+	tests := []struct {
+		name   string
+		caller uint64
+	}{
+		{"unidentified v4.0 caller", 0},
+		{"a different v4.1 client", strangerID},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sm.mu.RLock()
+			_, err := sm.validateDelegStateid(&deleg.Stateid, fh, tt.caller)
+			tested := sm.testDelegStateid(&deleg.Stateid, tt.caller)
+			sm.mu.RUnlock()
+
+			var stateErr *NFS4StateError
+			if !errors.As(err, &stateErr) {
+				t.Fatalf("validateDelegStateid err = %v, want an NFS4StateError", err)
+			}
+			if stateErr.Status != types.NFS4ERR_BAD_STATEID {
+				t.Errorf("validateDelegStateid status = %d, want NFS4ERR_BAD_STATEID (%d): "+
+					"the status was chosen from the delegation's owner, not the caller",
+					stateErr.Status, types.NFS4ERR_BAD_STATEID)
+			}
+			if tested != types.NFS4ERR_BAD_STATEID {
+				t.Errorf("testDelegStateid = %d, want NFS4ERR_BAD_STATEID (%d): same",
+					tested, types.NFS4ERR_BAD_STATEID)
+			}
+		})
 	}
 }

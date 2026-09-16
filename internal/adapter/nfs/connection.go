@@ -185,9 +185,14 @@ func ReadRPCRecord(r io.Reader, firstHeader *FragmentHeader, clientAddr string) 
 // Returns true if the message was a backchannel reply and was handled (or dropped).
 // Returns false if the message is a normal CALL that should be processed normally.
 //
-// When pending is nil (no backchannel bound), always returns false.
-func DemuxBackchannelReply(message []byte, connectionID uint64, pending *state.PendingCBReplies) bool {
-	if len(message) < 8 || pending == nil {
+// The demultiplexer is resolved through pending rather than passed in, and only
+// once the message has turned out to be a REPLY: the fore channel is every
+// message on a v3 or v4.0 connection and most of them on a v4.1 one, and it has
+// no reason to pay for the lookup. A REPLY is consumed either way — with no
+// table it is dropped rather than routed — because handing one back as a CALL
+// makes rpc.ReadCall reject it and close a connection other sessions are using.
+func DemuxBackchannelReply(message []byte, connectionID uint64, pending func() *state.PendingCBReplies) bool {
+	if len(message) < 8 {
 		return false
 	}
 
@@ -196,14 +201,27 @@ func DemuxBackchannelReply(message []byte, connectionID uint64, pending *state.P
 		return false
 	}
 
+	// From here the message is a REPLY, and a REPLY is never a CALL. Even with
+	// no table left to route it to, it has to be consumed: returning false hands
+	// a msg_type=REPLY to rpc.ReadCall, which rejects it and closes the socket —
+	// and a v4.1 connection carries other sessions, so one late reply to a
+	// callback whose session has already been torn down would take them with it.
 	xid := binary.BigEndian.Uint32(message[0:4])
+	table := pending()
+	if table == nil {
+		logger.Debug("Backchannel REPLY with no pending-reply table (dropped)",
+			"xid", fmt.Sprintf("0x%x", xid),
+			"conn_id", connectionID)
+		pool.Put(message)
+		return true
+	}
 
 	// Copy the message bytes for delivery since the buffer is pooled
 	replyBytes := make([]byte, len(message))
 	copy(replyBytes, message)
 	pool.Put(message) // Return pooled buffer
 
-	if pending.Deliver(xid, replyBytes) {
+	if table.Deliver(xid, replyBytes) {
 		logger.Debug("Backchannel REPLY routed",
 			"xid", fmt.Sprintf("0x%x", xid),
 			"conn_id", connectionID)

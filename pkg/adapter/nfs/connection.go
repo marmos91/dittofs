@@ -55,10 +55,6 @@ type NFSConnection struct {
 	wg         sync.WaitGroup
 	writeMu    sync.Mutex
 
-	// pendingCBReplies routes NFSv4.1 backchannel REPLY messages.
-	// nil unless the connection is bound for back-channel.
-	pendingCBReplies *state.PendingCBReplies
-
 	// nfsVersion holds the NFS version string last published to the client
 	// registry for this connection. Read and written from the concurrent
 	// dispatch goroutines, so it is atomic.
@@ -92,9 +88,20 @@ func NewNFSConnection(server *NFSAdapter, conn net.Conn, connectionID uint64) *N
 	}
 }
 
-// SetPendingCBReplies enables backchannel REPLY demuxing on this connection.
-func (c *NFSConnection) SetPendingCBReplies(p *state.PendingCBReplies) {
-	c.pendingCBReplies = p
+// pendingCBReplies returns the reply demultiplexer for this connection, or nil
+// when it carries no back channel.
+//
+// Read out of the StateManager on every backchannel reply rather than copied
+// onto the connection when the back channel is registered: a copy and the
+// table it came from drift apart the moment a teardown lands between a
+// concurrent registration and its publication, and the read loop would then
+// deliver replies into a table no sender waits on. Only reply messages get
+// here, so the fore channel does not pay for the lookup.
+func (c *NFSConnection) pendingCBReplies() *state.PendingCBReplies {
+	if c.server.v4Handler == nil || c.server.v4Handler.StateManager == nil {
+		return nil
+	}
+	return c.server.v4Handler.StateManager.GetPendingCBReplies(c.connectionID)
 }
 
 // Serve runs the read loop for this connection. It reads RPC requests
@@ -303,8 +310,15 @@ func (c *NFSConnection) noteNFSVersion(version string) {
 // resetIdleTimeout resets the connection deadline if an idle timeout is configured.
 func (c *NFSConnection) resetIdleTimeout(clientAddr string) {
 	if c.server.config.Timeouts.Idle > 0 {
-		if err := c.conn.SetDeadline(time.Now().Add(c.server.config.Timeouts.Idle)); err != nil {
-			logger.Warn("Failed to set deadline", "address", clientAddr, "error", err)
+		// Read deadline only. SetDeadline moves the write deadline too, and this
+		// runs on the read loop with no hold on writeMu — so a request arriving
+		// while a callback is blocked in Write would replace that write's
+		// deadline with the idle one, turning the callback budget into a bound
+		// nobody set and holding writeMu for it. Idle is a statement about not
+		// hearing from the client; what a write is allowed to cost is decided
+		// per write, in write().
+		if err := c.conn.SetReadDeadline(time.Now().Add(c.server.config.Timeouts.Idle)); err != nil {
+			logger.Warn("Failed to set read deadline", "address", clientAddr, "error", err)
 		}
 	}
 }
@@ -412,7 +426,31 @@ func (c *NFSConnection) handleConnectionClose() {
 			"stack", stack)
 	}
 
+	// Drop the NFSv4.1 session bindings this connection held, along with its
+	// callback writer and reply demultiplexer. A connection may be bound to
+	// several sessions at once, and every one of them would otherwise keep
+	// selecting a closed socket for its callbacks.
+	//
+	// Ahead of the wait, not after it: an in-flight handler can be blocked on a
+	// callback reply that this socket was the only path for, and waiting for it
+	// first means waiting out that handler's callback timeout before releasing
+	// the waiter it is stuck on. Unbinding first fails those waiters, and the
+	// handlers the wait is for then unwind on their own.
+	if c.server.v4Handler != nil && c.server.v4Handler.StateManager != nil && c.connectionID != 0 {
+		c.server.v4Handler.StateManager.UnbindConnection(c.connectionID)
+	}
+
 	c.wg.Wait()
+
+	// Unbound a second time, because the first one raced the handlers this wait
+	// was for: a BIND_CONN_TO_SESSION or CREATE_SESSION still in flight above
+	// can register a binding and a writer after the early unbind, and nothing
+	// would remove them. The socket is closed below, so a binding surviving
+	// here is a dead connection left in the tables for a later callback to
+	// select. Unbinding an already-unbound connection is a no-op.
+	if c.server.v4Handler != nil && c.server.v4Handler.StateManager != nil && c.connectionID != 0 {
+		c.server.v4Handler.StateManager.UnbindConnection(c.connectionID)
+	}
 
 	// Deregister from the client registry.
 	if rt := c.server.Registry; rt != nil && c.clientID != "" {

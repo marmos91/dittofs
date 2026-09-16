@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 
+	v4state "github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/logger"
 )
@@ -28,13 +29,21 @@ func HandleDestroySession(d *Deps, ctx *types.CompoundContext, v41ctx *types.V41
 	// Verify the requesting client owns the target session (RFC 8881 Section 18.37.3).
 	// GetSession uses a read lock; we look up before the write-locking DestroySession.
 	//
-	// DESTROY_SESSION is session-exempt: it may be sent standalone (without a
-	// preceding SEQUENCE) so an owner can tear down a session over a different
-	// connection. The server MUST still confirm the requester owns the target
-	// session, otherwise an anonymous caller could destroy a victim's session.
+	// DESTROY_SESSION is session-exempt: it may be sent standalone, without a
+	// preceding SEQUENCE. The server MUST still confirm the requester owns the
+	// target session, otherwise an anonymous caller could destroy a victim's
+	// session.
+	//
+	// How the requester is identified differs by path, and only one of them
+	// reaches across connections. With a SEQUENCE, the requesting session names
+	// the client, so an owner can tear down one of its sessions over another —
+	// any connection carrying a session of the same client will do. Standalone,
+	// there is nothing to name the client but the connection itself, so it is
+	// authorized only when that connection is bound to the target session; a
+	// standalone request on an unrelated connection is refused.
 	targetSess := d.StateManager.GetSession(args.SessionID)
 	if targetSess != nil {
-		requestingClientID, identified := resolveRequestingClientID(d, v41ctx, ctx)
+		requestingClientID, identified := resolveRequestingClientID(d, v41ctx, ctx, targetSess)
 		if !identified {
 			// The caller has no resolvable association with any session/client
 			// (no SEQUENCE, the connection is not bound to a session, and no
@@ -109,16 +118,18 @@ func HandleDestroySession(d *Deps, ctx *types.CompoundContext, v41ctx *types.V41
 //
 //  1. v41ctx != nil: a preceding SEQUENCE identified the requesting session, so
 //     the requester is that session's owning client.
-//  2. The connection this request arrived on is bound to a session (the common
-//     standalone case: an owner destroys a session over a connection that is
-//     itself bound to one of its sessions). The requester is the client that
-//     owns the bound session.
+//  2. The connection this request arrived on is bound to the session being
+//     destroyed, which RFC 8881 Section 18.37.3 requires of a standalone
+//     DESTROY_SESSION: "DESTROY_SESSION MUST be invoked on a connection that is
+//     associated with the session being destroyed." The requester is then the
+//     target's own client. One connection may carry several sessions, so every
+//     binding on it is searched rather than whichever bound last.
 //  3. ctx.ClientState != nil: the v4.0 connection layer set a client ID.
 //
 // The second return value is false when none of the above can associate the
 // caller with a client. In that case the caller is anonymous with respect to
 // session state and MUST NOT be allowed to destroy an existing session.
-func resolveRequestingClientID(d *Deps, v41ctx *types.V41RequestContext, ctx *types.CompoundContext) (uint64, bool) {
+func resolveRequestingClientID(d *Deps, v41ctx *types.V41RequestContext, ctx *types.CompoundContext, target *v4state.Session) (uint64, bool) {
 	if v41ctx != nil {
 		if reqSess := d.StateManager.GetSession(v41ctx.SessionID); reqSess != nil {
 			return reqSess.ClientID, true
@@ -126,12 +137,11 @@ func resolveRequestingClientID(d *Deps, v41ctx *types.V41RequestContext, ctx *ty
 		return 0, false
 	}
 	// Standalone DESTROY_SESSION (no SEQUENCE): authorize via the connection
-	// the request arrived on. If that connection is bound to a session, the
-	// owner of that session is the requester.
-	if ctx.ConnectionID != 0 {
-		if binding := d.StateManager.GetConnectionBinding(ctx.ConnectionID); binding != nil {
-			if boundSess := d.StateManager.GetSession(binding.SessionID); boundSess != nil {
-				return boundSess.ClientID, true
+	// the request arrived on being associated with the target session.
+	if ctx.ConnectionID != 0 && target != nil {
+		for _, binding := range d.StateManager.GetConnectionBindingsForConn(ctx.ConnectionID) {
+			if binding.SessionID == target.SessionID {
+				return target.ClientID, true
 			}
 		}
 	}

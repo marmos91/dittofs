@@ -3,6 +3,7 @@ package state
 import (
 	"bytes"
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -637,9 +638,100 @@ func (sm *StateManager) sendRecall(deleg *DelegationState) {
 }
 
 // sendRecallV41 sends CB_RECALL via the v4.1 BackchannelSender.
+// recallOutcome says what one attempt at a CB_RECALL settled.
+type recallOutcome int
+
+const (
+	// recallSent: the client was told, and the delegation is on the long timer.
+	recallSent recallOutcome = iota
+	// recallNoPath: the send reached the transport and failed there. That is
+	// evidence about the client's callback path, so if no session can carry the
+	// recall the client-wide verdict is cleared.
+	recallNoPath
+	// recallSenderLocal: the attempt never got as far as the client — a full
+	// queue, a stopped or cancelled sender, no back-bound connection on this
+	// session, or the sender goroutine failing to report back within this
+	// function's own wait. It says nothing about whether the client is
+	// reachable, so it neither ends the search nor counts against the callback
+	// path.
+	//
+	// Not to be confused with the callback timeout inside sendCallback: there
+	// the request did go out on a socket and the client did not answer, which
+	// is evidence about the client and is classified as recallNoPath.
+	recallSenderLocal
+)
+
 func (sm *StateManager) sendRecallV41(deleg *DelegationState, sender *BackchannelSender) {
 	recallOp := EncodeCBRecallOp(&deleg.Stateid, false, deleg.FileHandle)
 
+	// Selecting a sender and sending through it are not one step. The session
+	// chosen holds a back-bound connection at selection time and can lose it
+	// before the callback goes out, and the retries inside a sender all stay on
+	// that one session. So every session of this client is tried before the
+	// client is called unreachable: revoking a delegation while a sibling
+	// session still had a live path is the failure this exists to avoid.
+	//
+	// ponytail: each attempt carries its own wait, so the total wait scales with
+	// the client's session count. Give the loop one shared deadline if a
+	// deployment ever runs enough sessions per client for that to delay
+	// revocation noticeably.
+	tried := make(map[*BackchannelSender]bool)
+	pathFailed := false
+	for s := sender; s != nil; s = sm.nextUntriedSender(deleg.ClientID, tried) {
+		tried[s] = true
+		switch sm.attemptRecallV41(deleg, s, recallOp) {
+		case recallSent:
+			return
+		case recallNoPath:
+			pathFailed = true
+		case recallSenderLocal:
+		}
+	}
+
+	// Nothing carried it. The verdict is cleared only if a send actually failed
+	// on a transport — a queue that was full or a sender that had stopped is no
+	// evidence that the client stopped answering, and clearing on it would
+	// withhold delegations from a client that is fine.
+	if pathFailed {
+		sm.setCBPathUp(deleg.ClientID, false)
+	}
+	sm.startRevocationTimer(deleg, 5*time.Second)
+}
+
+// nextUntriedSender returns a sender for this client that the caller has not
+// used yet, preferring a session that still has a back-bound connection.
+//
+// Thread-safe: acquires sm.mu.RLock.
+func (sm *StateManager) nextUntriedSender(clientID uint64, tried map[*BackchannelSender]bool) *BackchannelSender {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	var fallback *BackchannelSender
+	for _, session := range sm.sessionsByClientID[clientID] {
+		bs := session.backchannelSender
+		if bs == nil || tried[bs] {
+			continue
+		}
+		if fallback == nil {
+			fallback = bs
+		}
+		if _, _, _, ok := sm.getBackBoundConnWriter(session.SessionID, 0); ok {
+			return bs
+		}
+	}
+	return fallback
+}
+
+// attemptRecallV41 sends one CB_RECALL through one sender and waits for its
+// result. It starts the delegation's long timer on success; every other outcome
+// leaves the timer to the caller, which knows whether any session is left.
+// recallResultGrace is the margin added to a sender's worst-case retry schedule
+// before the recall gives up waiting for it. It covers scheduling delay only:
+// the wait exists to catch a sender that will never report at all, not to
+// out-wait one that is still working.
+const recallResultGrace = 5 * time.Second
+
+func (sm *StateManager) attemptRecallV41(deleg *DelegationState, sender *BackchannelSender, recallOp []byte) recallOutcome {
 	resultCh := make(chan error, 1)
 	req := CallbackRequest{
 		OpCode:   types.OP_CB_RECALL,
@@ -648,42 +740,79 @@ func (sm *StateManager) sendRecallV41(deleg *DelegationState, sender *Backchanne
 	}
 
 	if !sender.Enqueue(req) {
-		logger.Warn("CB_RECALL: backchannel queue full, starting short revocation timer",
-			"client_id", deleg.ClientID)
-		sm.startRevocationTimer(deleg, 5*time.Second)
-		return
+		logger.Warn("CB_RECALL: backchannel queue full",
+			"client_id", deleg.ClientID, "session_id", sender.sessionID.String())
+		return recallSenderLocal
 	}
 
-	select {
-	case err := <-resultCh:
+	// One place that turns a result into an outcome, because two select branches
+	// need it: the normal receive, and the watchdog, where a result can have
+	// been queued in the same instant the timer fired.
+	classify := func(err error) recallOutcome {
 		if err != nil {
+			// Not every failure is the client's. A send that never reached the
+			// wire for this session says nothing about whether the client is
+			// answering, and counting it as a dead path would clear CBPathUp
+			// and withhold delegations from a client still listening on another
+			// session.
+			outcome := recallNoPath
+			switch {
+			case errors.Is(err, errCallbackNotAttempted):
+				outcome = recallSenderLocal
+			case errors.Is(err, errCallbackRejected):
+				// The client received this callback and refused it. The
+				// delegation is as unrecalled as if the send had failed, so the
+				// revocation timer still starts — but the callback path carried
+				// a reply, and marking it dead would withhold every future
+				// delegation from a client that is answering.
+				outcome = recallSenderLocal
+			}
 			logger.Warn("CB_RECALL (v4.1) failed",
 				"client_id", deleg.ClientID,
+				"session_id", sender.sessionID.String(),
+				"counts_against_path", outcome == recallNoPath,
 				"error", err)
-			// The callback path this client was granted a delegation on no
-			// longer answers, so stop granting more until a probe says
-			// otherwise, exactly as the v4.0 path does.
-			sm.setCBPathUp(deleg.ClientID, false)
-			sm.startRevocationTimer(deleg, 5*time.Second)
-			return
+			return outcome
 		}
 		sm.startRevocationTimer(deleg, sm.leaseDuration)
 		logger.Debug("CB_RECALL (v4.1) sent successfully",
 			"client_id", deleg.ClientID,
 			"deleg_type", deleg.DelegType)
+		return recallSent
+	}
+
+	select {
+	case err := <-resultCh:
+		return classify(err)
 
 	case <-sender.stopCh:
-		// Backchannel sender stopped (session destroy or server shutdown).
-		// Abort the wait immediately instead of leaking this goroutine for up
-		// to 30 seconds on the timer below.
+		// This sender stopped (session destroy or server shutdown). Its session
+		// is gone, not the client: another one may still be running.
 		logger.Debug("CB_RECALL (v4.1) aborted: backchannel sender stopped",
-			"client_id", deleg.ClientID)
-		sm.startRevocationTimer(deleg, 5*time.Second)
+			"client_id", deleg.ClientID, "session_id", sender.sessionID.String())
+		return recallSenderLocal
 
-	case <-time.After(30 * time.Second):
-		logger.Warn("CB_RECALL (v4.1) result timeout",
-			"client_id", deleg.ClientID)
-		sm.startRevocationTimer(deleg, 5*time.Second)
+	case <-time.After(sender.worstCaseSendDuration() + recallResultGrace):
+		// The timer and a queued result can be ready together, and a select with
+		// two ready cases picks uniformly — so arriving here does not mean the
+		// sender failed to report. Taking the timeout anyway starts the short
+		// revocation timer on a recall that had already succeeded, and leaves
+		// its result sitting unread in the channel.
+		select {
+		case err := <-resultCh:
+			return classify(err)
+		default:
+		}
+		// Derived from the sender's own retry schedule rather than fixed, so
+		// this only fires when the sender is genuinely wedged. A shorter wait
+		// expired while the sender was still mid-retry — the callback may
+		// already have reached the client — and reporting that as a local
+		// outcome let the caller start the short revocation timer under a
+		// recall still in flight.
+		logger.Warn("CB_RECALL (v4.1) result timeout: sender did not report within its own retry schedule",
+			"client_id", deleg.ClientID, "session_id", sender.sessionID.String(),
+			"waited", sender.worstCaseSendDuration()+recallResultGrace)
+		return recallSenderLocal
 	}
 }
 

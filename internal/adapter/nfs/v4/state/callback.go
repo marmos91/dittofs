@@ -231,7 +231,7 @@ func SendCBRecall(ctx context.Context, callback CallbackInfo, stateid *types.Sta
 
 	// Build and send RPC CALL message
 	xid := uint32(time.Now().UnixNano() & 0xFFFFFFFF)
-	callMsg := BuildCBRPCCallMessage(xid, callback.Program, types.NFS4_CALLBACK_VERSION, types.CB_PROC_COMPOUND, compoundArgs)
+	callMsg := BuildCBRPCCallMessage(xid, callback.Program, types.NFS4_CALLBACK_VERSION, types.CB_PROC_COMPOUND, compoundArgs, nil)
 
 	framedMsg := AddCBRecordMark(callMsg, true)
 	if _, err := conn.Write(framedMsg); err != nil {
@@ -274,7 +274,7 @@ func SendCBNull(ctx context.Context, callback CallbackInfo) error {
 
 	// Build and send RPC CALL message for CB_NULL (procedure 0, no args)
 	xid := uint32(time.Now().UnixNano() & 0xFFFFFFFF)
-	callMsg := BuildCBRPCCallMessage(xid, callback.Program, types.NFS4_CALLBACK_VERSION, types.CB_PROC_NULL, nil)
+	callMsg := BuildCBRPCCallMessage(xid, callback.Program, types.NFS4_CALLBACK_VERSION, types.CB_PROC_NULL, nil, nil)
 
 	framedMsg := AddCBRecordMark(callMsg, true)
 	if _, err := conn.Write(framedMsg); err != nil {

@@ -114,22 +114,66 @@ func (c *NFSConnection) sendReply(xid uint32, data []byte) error {
 //   - Write deadline cannot be set
 //   - Network write fails
 func (c *NFSConnection) writeReply(xid uint32, reply []byte) error {
-	// Serialize all connection writes to prevent corruption
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-
-	if c.server.config.Timeouts.Write > 0 {
-		deadline := time.Now().Add(c.server.config.Timeouts.Write)
-		if err := c.conn.SetWriteDeadline(deadline); err != nil {
-			return fmt.Errorf("set write deadline: %w", err)
-		}
-	}
-
-	_, err := c.conn.Write(reply)
-	if err != nil {
+	if err := c.write(reply, c.server.config.Timeouts.Write); err != nil {
 		return fmt.Errorf("write reply: %w", err)
 	}
 
 	logger.Debug("Sent reply", "xid", fmt.Sprintf("0x%x", xid), "bytes", bytesize.ByteSize(len(reply)))
 	return nil
+}
+
+// write puts one complete message on the wire under the connection's write
+// lock, bounded by the given timeout. A zero timeout means unbounded, and it
+// CLEARS any deadline a previous write installed rather than inheriting it —
+// a socket carries the last absolute deadline set on it, so "leave it alone"
+// would fail an unbounded write at the previous callback's expiry.
+//
+// Every write on this socket goes through here, fore-channel replies and
+// back-channel callbacks alike, because they contend for the same lock and an
+// unbounded one is not a slow write but a stuck connection: it holds writeMu,
+// so the replies behind it never go out, the handlers that owe them never
+// finish, and handleConnectionClose waits on those handlers before it closes
+// the socket that would have unblocked the write.
+func (c *NFSConnection) write(data []byte, timeout time.Duration) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
+	// Every write states its own policy, including "no deadline": the previous
+	// write's absolute deadline is still installed on the socket, so a
+	// zero-timeout write that simply left it alone would inherit the last
+	// callback's ten seconds and fail at it — on a connection configured for
+	// unbounded writes.
+	deadline := time.Time{}
+	if timeout > 0 {
+		deadline = time.Now().Add(timeout)
+	}
+	if err := c.conn.SetWriteDeadline(deadline); err != nil {
+		return fmt.Errorf("set write deadline: %w", err)
+	}
+
+	n, err := c.conn.Write(data)
+	if err == nil {
+		return nil
+	}
+	if n > 0 && n < len(data) {
+		// A deadline can expire mid-message, and Write reports how far it got.
+		// What is on the wire then is the front of a record-marked message with
+		// no end, so every reply framed after it lands inside a record the peer
+		// is still trying to parse — a corrupted stream that reads as a protocol
+		// error somewhere unrelated, on a socket selection would otherwise keep
+		// offering for the next callback.
+		//
+		// There is no way to un-send those bytes, so the connection is the thing
+		// that has to go. Closing it is what makes the framing damage stop at
+		// this message: the read loop unwinds, handleConnectionClose unbinds it,
+		// and the next callback selects a different path.
+		logger.Warn("partial write on the NFS connection, closing it to stop the framing damage",
+			"conn_id", c.connectionID,
+			"wrote", n,
+			"message_bytes", len(data),
+			"error", err)
+		_ = c.conn.Close()
+		return fmt.Errorf("partial write (%d of %d bytes), connection closed: %w", n, len(data), err)
+	}
+	return err
 }

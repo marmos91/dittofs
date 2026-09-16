@@ -131,10 +131,13 @@ func TestBindConnToSession_RebindDirection(t *testing.T) {
 }
 
 // ============================================================================
-// TestBindConnToSession_SilentUnbindFromOtherSession
+// TestBindConnToSession_KeepsOtherSessionBinding
 // ============================================================================
 
-func TestBindConnToSession_SilentUnbindFromOtherSession(t *testing.T) {
+// A connection's association with a session is not exclusive (RFC 8881
+// Section 2.10.3.1): binding it to a second session must leave the first
+// binding standing, or the first session loses its back channel.
+func TestBindConnToSession_KeepsOtherSessionBinding(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 	_, sessionA := setupClientAndSession(t, sm)
 	_, sessionB := setupClientAndSession(t, sm)
@@ -145,22 +148,32 @@ func TestBindConnToSession_SilentUnbindFromOtherSession(t *testing.T) {
 		t.Fatalf("bind to A error: %v", err)
 	}
 
-	// Bind conn 300 to session B (should silently unbind from A)
+	// Bind conn 300 to session B as well
 	_, err = sm.BindConnToSession(300, sessionB, types.CDFC4_FORE)
 	if err != nil {
 		t.Fatalf("bind to B error: %v", err)
 	}
 
-	// Verify removed from session A
-	bindingsA := sm.GetConnectionBindings(sessionA)
-	if len(bindingsA) != 0 {
-		t.Errorf("session A should have 0 bindings, got %d", len(bindingsA))
+	if bindingsA := sm.GetConnectionBindings(sessionA); len(bindingsA) != 1 {
+		t.Errorf("session A should still have 1 binding, got %d", len(bindingsA))
+	}
+	if bindingsB := sm.GetConnectionBindings(sessionB); len(bindingsB) != 1 {
+		t.Errorf("session B should have 1 binding, got %d", len(bindingsB))
+	}
+	if forConn := sm.GetConnectionBindingsForConn(300); len(forConn) != 2 {
+		t.Errorf("conn 300 should carry 2 sessions, got %d", len(forConn))
 	}
 
-	// Verify present in session B
-	bindingsB := sm.GetConnectionBindings(sessionB)
-	if len(bindingsB) != 1 {
-		t.Errorf("session B should have 1 binding, got %d", len(bindingsB))
+	// Dropping the connection clears it from both sessions.
+	sm.UnbindConnection(300)
+	if bindingsA := sm.GetConnectionBindings(sessionA); len(bindingsA) != 0 {
+		t.Errorf("session A should have 0 bindings after unbind, got %d", len(bindingsA))
+	}
+	if bindingsB := sm.GetConnectionBindings(sessionB); len(bindingsB) != 0 {
+		t.Errorf("session B should have 0 bindings after unbind, got %d", len(bindingsB))
+	}
+	if forConn := sm.GetConnectionBindingsForConn(300); len(forConn) != 0 {
+		t.Errorf("conn 300 should carry no sessions after unbind, got %d", len(forConn))
 	}
 }
 
@@ -508,5 +521,35 @@ func TestBindConnToSession_UnlimitedConnections(t *testing.T) {
 	bindings := sm.GetConnectionBindings(sessionID)
 	if len(bindings) != 50 {
 		t.Errorf("expected 50 bindings, got %d", len(bindings))
+	}
+}
+
+// TestUnbindConnection_ReleasesBackchannelStateAfterLastBinding covers the order
+// a session destroy and a socket close arrive in. Destroying a session drops its
+// bindings one at a time, and dropping the last one removes the connection from
+// the binding index entirely. The socket then closes into UnbindConnection,
+// which found its cleanup behind a lookup of that index: no bindings, early
+// return, and the writer closure and pending-reply demultiplexer stayed on the
+// state manager for as long as it lived.
+func TestUnbindConnection_ReleasesBackchannelStateAfterLastBinding(t *testing.T) {
+	sm := NewStateManager(90 * time.Second)
+
+	const connID = uint64(4242)
+	sm.RegisterConnWriter(connID, func([]byte) error { return nil })
+
+	// The binding index no longer knows this connection, the way it would not
+	// after the session that owned its last binding was destroyed.
+	sm.UnbindConnection(connID)
+
+	sm.connMu.RLock()
+	_, hasWriter := sm.connWriters[connID]
+	_, hasReplies := sm.cbRepliesByConn[connID]
+	sm.connMu.RUnlock()
+
+	if hasWriter {
+		t.Error("connWriters still holds the closed connection's writer")
+	}
+	if hasReplies {
+		t.Error("cbRepliesByConn still holds the closed connection's pending replies")
 	}
 }
