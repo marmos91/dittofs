@@ -130,6 +130,10 @@ jobs:
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         run: ./test/common/known-failures_test.sh
 
+      - name: Test the conformance admission lease
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        run: ./test/smb-conformance/compose-env_test.sh
+
       # Splitting a package is only real if each piece can be tested on its
       # own, so a new package that carries no test has been moved rather than
       # separated. Pull requests only: the check needs a base branch to tell

@@ -26,9 +26,41 @@ Comprehensive SMB3 protocol conformance testing for the DittoFS SMB adapter. Thi
   - Ubuntu: `sudo apt-get install -y gettext-base`
   - Alpine: `apk add gettext`
 - **Go 1.26+** (for E2E tests and local mode)
+- **perl** for the host-wide admission lease (`compose-env.sh`), which takes an
+  `flock` on a fixed path so only one conformance run is in flight per host.
+  Present by default on macOS and most Linux images; `flock(1)` is not used
+  because it is util-linux and absent on macOS.
+  - Ubuntu: `sudo apt-get install -y perl`
+  - Alpine: `apk add perl`
 - **smbclient** (for smbclient E2E tests)
   - Ubuntu: `sudo apt-get install -y smbclient`
   - macOS: `brew install samba`
+
+## Exclusivity
+
+The harness publishes fixed host ports (445, 8080) and the suites assert on
+lease and oplock breaks within a second of the request, so only one conformance
+run may be in flight per host. Admission is three mechanisms, each covering a
+case the others cannot:
+
+| Mechanism | Covers |
+| --- | --- |
+| Host-wide lease (`compose-env.sh`, fd 9 + `flock`) | One run at a time across **every** checkout on the machine, and a killed harness whose surviving native server still holds the ports |
+| Per-checkout `mkdir` claim | Two runs from the **same** checkout starting in the same instant |
+| Leftover-stack scan (`docker ps -a` / volume labels) | A stack that outlived its run — left with `--keep`, or merely stopped — which holds no lease yet still owns the bootstrapped volume |
+
+A run that cannot be admitted refuses before it creates anything, and names what
+blocked it. The lease is released by the kernel when its holder exits, so a
+killed run leaves nothing to clean up by hand; if a run was killed while it
+still had processes alive, the refusal names `lsof` on the lease path.
+
+Test the admission logic without Docker:
+
+```bash
+make -C test/smb-conformance test-admission
+# or
+./test/smb-conformance/compose-env_test.sh
+```
 
 ## WPTS BVT
 

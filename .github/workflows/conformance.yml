@@ -128,6 +128,9 @@ jobs:
       - name: Test the smbtorture grader
         run: ./test/smb-conformance/smbtorture/parse-results_test.sh
 
+      - name: Test the conformance admission lease
+        run: ./test/smb-conformance/compose-env_test.sh
+
   build:
     name: Build Binaries
     runs-on: ubuntu-latest

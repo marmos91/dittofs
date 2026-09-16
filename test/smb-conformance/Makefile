@@ -5,10 +5,13 @@
 
 PROFILE ?= memory
 
-.PHONY: help test test-quick test-full build clean dry-run local keep
+.PHONY: help test test-quick test-full build clean dry-run local keep test-admission
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
+
+test-admission: ## Test the host-wide admission lease (no Docker needed)
+	./compose-env_test.sh
 
 test: ## Run BVT tests with current profile (default: memory)
 	./run.sh --profile $(PROFILE)

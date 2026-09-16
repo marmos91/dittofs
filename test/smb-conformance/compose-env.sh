@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # Scopes the conformance Compose stack to the checkout it is run from, and
-# refuses to start a second one.
+# admits one conformance run at a time on the host.
 #
 # Compose names a project after the directory it is invoked from, so the main
 # checkout and every worktree of this repository all resolve to one project
@@ -20,8 +20,13 @@
 # suites contending for the same CPU. Serial is the intended mode, so a run
 # that starts while a stack is already up refuses before it creates anything
 # and names the directory holding that stack, instead of failing to bind a port
-# somewhere in the middle of bootstrap. Two runs starting in the same instant
-# still reach the port — see the decision recorded at the check itself.
+# somewhere in the middle of bootstrap.
+#
+# Three mechanisms admit a run, and each answers a question the others cannot:
+# the host-wide lease (one run at a time anywhere on the machine), the atomic
+# per-checkout claim (two runs from one checkout cannot both proceed), and the
+# leftover scan (a stack that outlived its run still owns the bootstrapped
+# volume). See the decision at each.
 
 # ponytail: cksum is POSIX and present everywhere the harness runs; the value
 # only has to separate a handful of checkouts on one machine. Reach for a real
@@ -29,10 +34,101 @@
 _compose_repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 COMPOSE_PROJECT_NAME="smb-conformance-$(printf '%s' "$_compose_repo_root" | cksum | cut -d' ' -f1)"
 export COMPOSE_PROJECT_NAME
+
+# The lease that admits one run at a time. Fixed, host-wide path: what is
+# contended is the host — ports 445 and 8080, and the single DittoFS the whole
+# run talks to — not anything owned by a checkout or a user. The override
+# exists so the lease can be exercised without disturbing a real run.
+CONFORMANCE_LEASE_FILE="${DITTOFS_CONFORMANCE_LEASE:-/tmp/dittofs-smb-conformance.lease}"
+
+# Recorded in the lease file, so a refused run can name what it lost to rather
+# than printing a bare "already running".
+_conformance_lease_owner="$_compose_repo_root"
 unset _compose_repo_root
 
-# require_exclusive_stack — abort when any conformance stack is live, naming the
-# directory it was started from.
+# Takes the lease, or aborts. Held on file descriptor 9, which the kernel drops
+# when the last process holding it closes it: there is nothing to reap after a
+# killed run, and no stale lock for the next run to time out or override.
+#
+# decision: descriptor 9 is inherited, so the lease outlives this shell for as
+# long as any process the run started still holds it — the native server that
+# `--mode local` leaves running when the harness is killed outright, or the
+# client container's CLI. That is the semantic wanted, not a leak: what the
+# lease guards is the host ports and the one server under test, and those are
+# still in use by exactly those processes. It does mean the pid recorded below
+# may be gone while the lease is still held, so the refusal points at lsof
+# rather than claiming the holder is the recorded pid.
+#
+# decision: the lock belongs to the inode, not to the path, so removing the
+# file while a run holds it lets the next run create a fresh inode at the same
+# path, lock that one, and be admitted beside a live run. Nothing here can see
+# that — a contender sees only its own consistent inode, and comparing the
+# locked inode against the path catches nothing, which was measured rather than
+# assumed. The residual is accepted because the harness never removes the file
+# and no /tmp sweeper reaches one touched by every run, so closing it means a
+# lock with no path at all — an abstract socket or a fixed loopback port. Take
+# one of those if a lease is ever actually observed to be bypassed this way.
+#
+# ponytail: perl rather than flock(1), which is util-linux and absent from
+# macOS, where this harness also runs. The lock lives on the open file
+# description that the redirection shares with perl, so it survives perl
+# exiting and is released only when this shell closes descriptor 9. Swap in
+# flock(1) if the harness ever stops supporting macOS.
+_acquire_conformance_lease() {
+    # The group's redirection discards exec's own message and is restored with
+    # the group; the descriptor exec opens outlives it.
+    if ! { exec 9>>"$CONFORMANCE_LEASE_FILE"; } 2>/dev/null; then
+        echo "ERROR: cannot open the conformance lease at ${CONFORMANCE_LEASE_FILE}." >&2
+        echo "       Set DITTOFS_CONFORMANCE_LEASE to a writable path." >&2
+        exit 1
+    fi
+
+    local rc=0
+    perl -e 'use Fcntl ":flock"; exit(flock(STDIN, LOCK_EX|LOCK_NB) ? 0 : 1)' <&9 || rc=$?
+    if [[ "$rc" -eq 0 ]]; then
+        printf 'pid %s  %s  started %s\n' \
+            "$$" "$_conformance_lease_owner" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            >"$CONFORMANCE_LEASE_FILE"
+        return 0
+    fi
+
+    # No perl is the safe direction — the run is refused rather than admitted
+    # blind — but reporting it as a held lease sends the reader hunting for a
+    # run that does not exist.
+    if [[ "$rc" -eq 127 ]]; then
+        echo "ERROR: taking the conformance lease needs perl, which is not on PATH." >&2
+        exit 1
+    fi
+
+    local holder
+    holder="$(head -1 "$CONFORMANCE_LEASE_FILE" 2>/dev/null)"
+    cat >&2 <<EOF
+
+ERROR: another SMB conformance run holds the lease at ${CONFORMANCE_LEASE_FILE}.
+       Holder: ${holder:-unknown (it has not recorded itself yet)}
+
+The harness publishes fixed host ports and the suites are timing-sensitive, so
+only one run may be in flight at a time, in any checkout and in either mode.
+
+Wait for that run to finish; the lease is released by the kernel, so there is
+nothing to clean up by hand. If the run above was killed, the lease is still
+held by whatever it left behind — the native server \`--mode local\` starts, or
+the client container. Find what that is with:
+    lsof ${CONFORMANCE_LEASE_FILE}
+
+EOF
+    exit 1
+}
+
+# require_exclusive_stack — admit this run, or abort naming what blocks it, and
+# hold admission for the run's duration.
+#
+# Every live stack conflicts, this checkout's own included. Nothing of this run
+# exists yet when the check runs, so a container carrying our project name is a
+# stack left behind by an earlier run, and adopting it is not a shortcut: the
+# server is already bootstrapped, so the second run's bootstrap fails partway
+# through on an existing admin password or an existing store, which is the same
+# unexplained mid-run collapse this check exists to replace.
 #
 # Every live stack conflicts, this checkout's own included. Nothing of this run
 # exists yet when the check runs, so a container carrying our project name is a
@@ -142,16 +238,23 @@ release_exclusive_stack() {
     STACK_CLAIM_DIR=""
 }
 
-# decision: this scan is advisory and deliberately not atomic with the compose
-# up that follows. It exists for the case the claim cannot see — a stack left by
-# an earlier run, or by a DIFFERENT checkout, whose project name is not the one
-# claim_exclusive_stack holds. Two different checkouts starting together both
-# pass here and then race for the fixed host ports; the loser fails at its bind,
-# which is loud and attributable to a port rather than to the server under test.
-# Same-checkout concurrency is what the claim covers, and that one is atomic.
-# Take a host-wide lock across every checkout only if a port-bind loss is ever
-# mistaken for a server fault in practice.
+# decision: admission is the lease plus this scan; the two answer different
+# questions and neither substitutes for the other. The lease admits one run at
+# a time across every checkout — which is what the claim cannot do, since it is
+# keyed on a per-checkout project name — and it outlives a killed harness for as
+# long as anything that harness started still holds the ports. What the lease
+# cannot see is a stack that outlived the run that made it: a `--keep` stack, or
+# one merely stopped, carries no live process and so holds no lease, yet it
+# still owns the bootstrapped volume. The scan below is that case.
+#
+# The scan stays advisory and deliberately not atomic with the compose up that
+# follows, which is now acceptable because the lease carries the atomicity:
+# two checkouts starting together cannot both hold it. The scan is left
+# non-atomic rather than turned into a second lock because it reads docker
+# state, and a lock over that would be held across the compose up below.
 require_exclusive_stack() {
+    _acquire_conformance_lease
+
     # A docker that cannot be reached reports nothing rather than aborting the
     # run here; the first compose command will fail with a better message.
     # -a, not just running: a kept stack that a daemon restart or a manual
