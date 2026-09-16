@@ -143,8 +143,11 @@ type GSSContext struct {
 	// ContextStore its own bound if a second Verifier implementation ever ships.
 	ExpiresAt time.Time
 
-	// LastUsed is the time of the last DATA request on this context.
-	// Updated on each successful Lookup for LRU-based eviction.
+	// LastUsed is the time of the last authenticated request on this context,
+	// used for LRU-based eviction. It is NOT refreshed by Lookup: the handle
+	// travels in the clear, so a mere observer could otherwise replay it to
+	// keep the context alive. Authenticated call sites refresh it via Touch
+	// once the call-header MIC has verified.
 	LastUsed time.Time
 
 	// mu protects LastUsed updates.
@@ -258,9 +261,9 @@ func (cs *ContextStore) Store(ctx *GSSContext) {
 				}
 				continue
 			}
-			// At or over cap: evict within the incoming principal (which decrements
+			// At or over cap: evict within the incoming identity (which decrements
 			// count) then retry claiming.
-			cs.evictOldestForPrincipal(ctx.Principal)
+			cs.evictOldestForPrincipal(ctx)
 		}
 	} else {
 		cs.count.Add(1)
@@ -357,14 +360,19 @@ func (cs *ContextStore) cleanup() {
 	})
 }
 
-// evictOldestForPrincipal frees one slot for a context of the given principal.
-// It evicts that principal's oldest context when it has one, so a principal
-// cannot retire another principal's contexts; when the principal holds none it
-// falls back to the globally oldest, which is what a new principal's first
+// evictOldestForPrincipal frees one slot for a context of the given identity.
+// It evicts that identity's oldest context when it has one, so a principal
+// cannot retire another principal's contexts; when the identity holds none it
+// falls back to the globally oldest, which is what a new identity's first
 // context (or an empty store) needs to make room.
-func (cs *ContextStore) evictOldestForPrincipal(principal string) {
+//
+// Identity is principal AND realm: the store keeps them as separate fields and
+// resolves a caller to "principal@realm", so two realms each issuing a principal
+// of the same name are distinct identities. Matching on Principal alone would
+// let one realm evict the other's contexts.
+func (cs *ContextStore) evictOldestForPrincipal(incoming *GSSContext) {
 	cs.evictOldestMatching(func(ctx *GSSContext) bool {
-		return ctx.Principal == principal
+		return ctx.Principal == incoming.Principal && ctx.Realm == incoming.Realm
 	}, true)
 }
 

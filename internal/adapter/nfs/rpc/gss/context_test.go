@@ -364,6 +364,39 @@ func TestContextEvictionStaysWithinPrincipal(t *testing.T) {
 	}
 }
 
+// The eviction scope is principal AND realm, not principal alone: the store
+// keeps the two as separate fields and resolves a caller to "principal@realm",
+// so two realms each issuing a principal of the same name are distinct
+// identities. Matching on Principal alone would let one realm evict the other's
+// contexts by looping INIT under a shared name.
+func TestContextEvictionStaysWithinPrincipalAndRealm(t *testing.T) {
+	store := NewContextStore(2, 10*time.Minute)
+	defer store.Stop()
+
+	// Same principal name, two realms. The victim's context is the oldest, so
+	// global (or principal-only) eviction would drop it first.
+	victim := newTestContext("alice", "REALM-A")
+	victim.LastUsed = time.Now().Add(-5 * time.Minute)
+	store.Store(victim)
+
+	attacker := newTestContext("alice", "REALM-B")
+	attacker.LastUsed = time.Now().Add(-3 * time.Minute)
+	store.Store(attacker)
+
+	// The attacker floods INIT under the same principal name but its own realm.
+	// At the cap it must only ever evict its own realm's contexts.
+	for i := 0; i < 10; i++ {
+		store.Store(newTestContext("alice", "REALM-B"))
+	}
+
+	if store.Count() > 2 {
+		t.Fatalf("store exceeded cap: got %d", store.Count())
+	}
+	if _, ok := store.Lookup(victim.Handle); !ok {
+		t.Fatal("a context was evicted by a same-named principal from another realm")
+	}
+}
+
 // A new principal with no stored context must still be able to make room: the
 // per-principal rule cannot refuse admission when the store is full.
 func TestContextEvictionFallsBackForNewPrincipal(t *testing.T) {
