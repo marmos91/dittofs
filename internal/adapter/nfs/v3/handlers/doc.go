@@ -218,7 +218,8 @@ func (h *Handler) dirWccPair(
 //
 // Returns:
 //   - file: The retrieved file (nil on error)
-//   - status: NFS3OK on success, NFS3ErrIO on cancellation, NFS3ErrStale on not found
+//   - status: NFS3OK on success; NFS3ErrIO on cancellation or an unclassifiable
+//     backend fault; NFS3ErrStale when the handle genuinely does not resolve
 //   - error: Context error if cancelled, nil otherwise
 func (h *Handler) getFileOrError(
 	ctx *NFSHandlerContext,
@@ -239,8 +240,27 @@ func (h *Handler) getFileOrError(
 			return nil, types.NFS3ErrIO, ctx.Context.Err()
 		}
 
-		logger.DebugCtx(ctx.Context, operationName+" failed: handle not found", "handle", fmt.Sprintf("%x", handleBytes), "client", clientIP, "error", err)
-		return nil, types.NFS3ErrStale, nil
+		// Only a handle the store genuinely cannot resolve is stale. The
+		// resolver reports that as a typed StoreError: ErrNotFound from the
+		// backend lookup (handle-addressed, so "no such file" means the handle
+		// no longer resolves) or ErrStaleHandle when the handle names a share
+		// that no longer exists. A malformed handle is ErrInvalidHandle and
+		// owes the client BADHANDLE; a backend I/O or decode fault is neither
+		// and owes it IO. Mapping those to STALE as well would tell the client
+		// to discard a valid handle and revalidate the whole path over a
+		// transient server-side failure, and would hide the status the wire
+		// actually requires.
+		switch {
+		case metadata.IsStaleHandleError(err), metadata.IsNotFoundError(err):
+			logger.DebugCtx(ctx.Context, operationName+" failed: handle not found", "handle", fmt.Sprintf("%x", handleBytes), "client", clientIP, "error", err)
+			return nil, types.NFS3ErrStale, nil
+		case metadata.IsInvalidHandleError(err):
+			logger.WarnCtx(ctx.Context, operationName+" failed: malformed handle", "handle", fmt.Sprintf("%x", handleBytes), "client", clientIP, "error", err)
+			return nil, types.NFS3ErrBadHandle, nil
+		default:
+			logger.WarnCtx(ctx.Context, operationName+" failed: handle resolution error", "handle", fmt.Sprintf("%x", handleBytes), "client", clientIP, "error", err)
+			return nil, types.NFS3ErrIO, nil
+		}
 	}
 
 	return file, types.NFS3OK, nil

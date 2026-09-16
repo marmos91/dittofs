@@ -210,8 +210,21 @@ func (h *Handler) ReadDirPlus(
 			logger.DebugCtx(ctx.Context, "READDIRPLUS cancelled during directory lookup", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
 			return &ReadDirPlusResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 		}
-		logger.WarnCtx(ctx.Context, "READDIRPLUS failed: handle not found", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", err)
-		return &ReadDirPlusResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
+		// Only a typed not-found/stale resolution is evidence the handle was
+		// revoked; a malformed handle owes BADHANDLE and a backend I/O fault
+		// owes IO, neither of which should make the client discard a valid
+		// handle.
+		switch {
+		case metadata.IsStaleHandleError(err), metadata.IsNotFoundError(err):
+			logger.WarnCtx(ctx.Context, "READDIRPLUS failed: handle not found", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", err)
+			return &ReadDirPlusResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
+		case metadata.IsInvalidHandleError(err):
+			logger.WarnCtx(ctx.Context, "READDIRPLUS failed: malformed handle", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", err)
+			return &ReadDirPlusResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
+		default:
+			logger.WarnCtx(ctx.Context, "READDIRPLUS failed: handle resolution error", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", err)
+			return &ReadDirPlusResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
+		}
 	}
 
 	// Verify handle is actually a directory

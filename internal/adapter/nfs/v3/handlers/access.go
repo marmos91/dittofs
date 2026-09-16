@@ -117,11 +117,30 @@ func (h *Handler) Access(
 			return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 		}
 
-		logger.DebugCtx(ctx.Context, "ACCESS failed: handle not found",
-			"handle", fmt.Sprintf("%x", req.Handle),
-			"client", clientIP,
-			"error", err)
-		return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
+		// Only a typed not-found/stale resolution is evidence the handle was
+		// revoked; a malformed handle owes BADHANDLE and a backend I/O fault
+		// owes IO, neither of which should make the client discard a valid
+		// handle.
+		switch {
+		case metadata.IsStaleHandleError(err), metadata.IsNotFoundError(err):
+			logger.DebugCtx(ctx.Context, "ACCESS failed: handle not found",
+				"handle", fmt.Sprintf("%x", req.Handle),
+				"client", clientIP,
+				"error", err)
+			return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
+		case metadata.IsInvalidHandleError(err):
+			logger.WarnCtx(ctx.Context, "ACCESS failed: malformed handle",
+				"handle", fmt.Sprintf("%x", req.Handle),
+				"client", clientIP,
+				"error", err)
+			return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
+		default:
+			logger.WarnCtx(ctx.Context, "ACCESS failed: handle resolution error",
+				"handle", fmt.Sprintf("%x", req.Handle),
+				"client", clientIP,
+				"error", err)
+			return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
+		}
 	}
 
 	// Check for cancellation before the permission check

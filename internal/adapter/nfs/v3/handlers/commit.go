@@ -125,8 +125,21 @@ func (h *Handler) Commit(
 			logger.DebugCtx(ctx.Context, "COMMIT cancelled during file lookup", "handle", xdr.LazyHandle(req.Handle), "client", clientIP, "error", ctx.Context.Err())
 			return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 		}
-		logger.WarnCtx(ctx.Context, "COMMIT failed: handle not found", "handle", xdr.LazyHandle(req.Handle), "client", clientIP, "error", err)
-		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
+		// Only a typed not-found/stale resolution is evidence the handle was
+		// revoked; a malformed handle owes BADHANDLE and a backend I/O fault
+		// owes IO, neither of which should make the client discard a valid
+		// handle.
+		switch {
+		case metadata.IsStaleHandleError(err), metadata.IsNotFoundError(err):
+			logger.WarnCtx(ctx.Context, "COMMIT failed: handle not found", "handle", xdr.LazyHandle(req.Handle), "client", clientIP, "error", err)
+			return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
+		case metadata.IsInvalidHandleError(err):
+			logger.WarnCtx(ctx.Context, "COMMIT failed: malformed handle", "handle", xdr.LazyHandle(req.Handle), "client", clientIP, "error", err)
+			return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
+		default:
+			logger.WarnCtx(ctx.Context, "COMMIT failed: handle resolution error", "handle", xdr.LazyHandle(req.Handle), "client", clientIP, "error", err)
+			return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
+		}
 	}
 
 	// Capture pre-operation attributes for WCC data
