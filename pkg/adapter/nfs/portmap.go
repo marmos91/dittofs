@@ -273,12 +273,6 @@ func (s *NFSAdapter) startSystemPortmapRegistration(ctx context.Context) {
 // stopSystemPortmapRegistration unregisters DittoFS's services from the system
 // rpcbind. No-op when system registration was never active.
 func (s *NFSAdapter) stopSystemPortmapRegistration() {
-	// Use a fresh bounded context: the adapter's lifecycle ctx is already
-	// cancelled during shutdown, but unregistering stale NLM/NSM mappings is
-	// important enough to spend a few seconds on.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
 	// The clear and the unregistration are one critical section against the
 	// registration above, for the reason stated there.
 	s.sysregMu.Lock()
@@ -287,6 +281,18 @@ func (s *NFSAdapter) stopSystemPortmapRegistration() {
 		return
 	}
 	s.sysregActive = false
+
+	// The bounded context is opened only once the lock is held, so the wait for
+	// an in-flight registration (up to systemRegTimeout) does not eat into the
+	// time budget for the unregistration itself. Starting the clock first lets a
+	// shutdown that queued behind a slow Register reach rpcbind with an already
+	// expired deadline and leave the mappings it was called to remove.
+	//
+	// Fresh context rather than the adapter's: the lifecycle ctx is already
+	// cancelled during shutdown, but unregistering stale NLM/NSM mappings is
+	// important enough to spend a few seconds on.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
 	mappings := s.systemRegMappings()
 	if err := s.sysregRegistrarFor().Unregister(ctx, s.systemPortmapAddr(), mappings); err != nil {
