@@ -278,3 +278,40 @@ func TestSettingsWatcher_StartAfterStopDoesNotLaunch(t *testing.T) {
 		t.Fatal("Stop blocked after a refused Start")
 	}
 }
+
+// TestSettingsWatcher_SecondStartDoesNotStrandTheFirst pins Start's idempotence.
+// Start used to replace the channel pair every call, so a second one left the
+// first goroutine listening on channels no longer reachable from the watcher —
+// and Stop, which captures the newest pair, joined only the second. The first
+// kept polling the control-plane store after shutdown, with nothing able to
+// reach it.
+func TestSettingsWatcher_SecondStartDoesNotStrandTheFirst(t *testing.T) {
+	blocked := &blockedSettingsStore{entered: make(chan struct{})}
+	w := NewSettingsWatcher(blocked, time.Millisecond)
+
+	w.Start(context.Background())
+	select {
+	case <-blocked.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the watcher never entered a poll")
+	}
+
+	firstStopped := w.stopped
+	w.Start(context.Background())
+	if w.stopped != firstStopped {
+		t.Fatal("a second Start replaced the channel pair: Stop can no longer join the first goroutine")
+	}
+
+	done := make(chan struct{})
+	go func() { defer close(done); w.Stop() }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop did not return")
+	}
+	select {
+	case <-w.stopped:
+	default:
+		t.Error("the polling goroutine outlived Stop")
+	}
+}

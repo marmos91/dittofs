@@ -66,6 +66,11 @@ type SettingsWatcher struct {
 	// `stopped`, and the Start behind it then launches a goroutine no caller
 	// holds a handle to.
 	retired bool
+	// running is set while a polling goroutine exists. A second Start used to
+	// replace the channel pair and leave the first goroutine listening on the
+	// old one, which Stop then never joined — a poller nothing could reach,
+	// still reading the control-plane store after shutdown.
+	running bool
 }
 
 // OnNFSSettingsChange registers a callback invoked whenever NFS settings change
@@ -134,19 +139,26 @@ func (w *SettingsWatcher) Start(ctx context.Context) {
 	// this used to allow had no caller — lifecycle.serve starts one watcher once
 	// — and supporting it is what makes a Stop that wins the mutex unable to
 	// prevent the launch behind it.
+	//
 	// Derived, so Stop can cancel the polls without disturbing the caller's
 	// context — which on a startup error is still very much alive.
 	pollCtx, cancelPoll := context.WithCancel(ctx)
 
 	w.lifecycleMu.Lock()
-	if w.retired {
-		// A Stop got here first. Launching now would produce a poller that
-		// nothing can join, on a store the caller is about to close.
+	if w.retired || w.running {
+		// Either a Stop got here first — launching now produces a poller nothing
+		// can join, on a store the caller is about to close — or one is already
+		// polling, and replacing its channels would strand it the same way.
+		reason := "already running"
+		if w.retired {
+			reason = "already stopped"
+		}
 		w.lifecycleMu.Unlock()
 		cancelPoll()
-		logger.Debug("Settings watcher not started: it was already stopped")
+		logger.Debug("Settings watcher not started", "reason", reason)
 		return
 	}
+	w.running = true
 	w.stopped = make(chan struct{})
 	w.stopCh = make(chan struct{})
 	w.cancelPoll = cancelPoll
@@ -181,6 +193,7 @@ func (w *SettingsWatcher) Start(ctx context.Context) {
 func (w *SettingsWatcher) Stop() {
 	w.lifecycleMu.Lock()
 	w.retired = true
+	w.running = false
 	stopCh, stopped, cancelPoll := w.stopCh, w.stopped, w.cancelPoll
 	select {
 	case <-stopCh:
