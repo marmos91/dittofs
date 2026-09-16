@@ -1370,7 +1370,7 @@ Flags:
       --max-sessions int            Maximum concurrent SMB sessions
       --mdns-enabled                Advertise the SMB service over mDNS/DNS-SD (_smb._tcp) for macOS Finder / Linux Avahi (applied immediately)
       --min-dialect string          Minimum SMB dialect
-      --oplock-break-timeout int    Oplock break timeout in seconds
+      --oplock-break-timeout int    Oplock break timeout in seconds (traditional oplocks only; lease breaks use a fixed 5s bound)
       --session-timeout int         SMB session timeout in seconds
       --signing string              SMB message signing mode: disabled|enabled|required
       --wsdiscovery-enabled         Advertise the host over WS-Discovery so it appears in the Windows Explorer Network view (applied immediately)

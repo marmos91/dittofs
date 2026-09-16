@@ -308,7 +308,7 @@ func registerSMBUpdateFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&settingsMinDialect, "min-dialect", "", "Minimum SMB dialect")
 	cmd.Flags().StringVar(&settingsMaxDialect, "max-dialect", "", "Maximum SMB dialect")
 	cmd.Flags().IntVar(&settingsSessionTimeout, "session-timeout", 0, "SMB session timeout in seconds")
-	cmd.Flags().IntVar(&settingsOplockBreakTimeout, "oplock-break-timeout", 0, "Oplock break timeout in seconds")
+	cmd.Flags().IntVar(&settingsOplockBreakTimeout, "oplock-break-timeout", 0, "Oplock break timeout in seconds (traditional oplocks only; lease breaks use a fixed 5s bound)")
 	cmd.Flags().IntVar(&settingsMaxConnections, "max-connections", 0, "Maximum concurrent connections")
 	cmd.Flags().IntVar(&settingsMaxSessions, "max-sessions", 0, "Maximum concurrent SMB sessions")
 	cmd.Flags().BoolVar(&settingsEnableEncryption, "enable-encryption", false, "Enable SMB encryption")

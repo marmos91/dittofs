@@ -13,6 +13,56 @@ import (
 // Unified Caching Break Operations
 // ============================================================================
 
+// BreakCallbacks provides typed callback methods for cross-protocol coordination.
+//
+// Protocol adapters register implementations to receive notifications when
+// lock breaks are required. Each method corresponds to a different break type:
+//   - OnOpLockBreak: OpLock/lease must be broken (e.g., NFS delegation recall)
+//   - OnByteRangeRevoke: Byte-range lock must be revoked
+//   - OnAccessConflict: Access mode conflict detected
+//
+// NFS adapter typically only registers OnOpLockBreak (for delegation recall).
+// SMB adapter registers all three callbacks.
+//
+// Callbacks are invoked synchronously during lock operations. Implementations
+// should be lightweight or offload heavy work to background goroutines.
+type BreakCallbacks interface {
+	// OnOpLockBreak is called when an oplock/lease must be broken.
+	//
+	// Parameters:
+	//   - handleKey: The file handle key for the affected file
+	//   - lock: The lock whose oplock must be broken
+	//   - breakToState: The target lease state after break (e.g., LeaseStateRead or LeaseStateNone)
+	OnOpLockBreak(handleKey string, lock *UnifiedLock, breakToState uint32)
+
+	// OnByteRangeRevoke is called when a byte-range lock must be revoked
+	// due to a cross-protocol conflict.
+	//
+	// Parameters:
+	//   - handleKey: The file handle key for the affected file
+	//   - lock: The byte-range lock that conflicts
+	//   - reason: Human-readable reason for the revocation
+	OnByteRangeRevoke(handleKey string, lock *UnifiedLock, reason string)
+
+	// OnAccessConflict is called when an SMB access mode conflict is detected.
+	//
+	// Parameters:
+	//   - handleKey: The file handle key for the affected file
+	//   - existingLock: The lock holding the conflicting access mode
+	//   - requestedMode: The access mode that was requested
+	OnAccessConflict(handleKey string, existingLock *UnifiedLock, requestedMode AccessMode)
+
+	// OnDelegationRecall is called when a delegation must be recalled.
+	//
+	// The client holding the delegation should return it or the server
+	// will force-revoke it after the recall timeout expires.
+	//
+	// Parameters:
+	//   - handleKey: The file handle key for the affected file
+	//   - lock: The lock whose delegation must be recalled
+	OnDelegationRecall(handleKey string, lock *UnifiedLock)
+}
+
 // CheckAndBreakCachingForWrite breaks all leases AND all delegations.
 // Used for cross-protocol writes (e.g., NFS write breaking SMB leases).
 func (lm *Manager) CheckAndBreakCachingForWrite(handleKey string, excludeOwner *LockOwner) error {

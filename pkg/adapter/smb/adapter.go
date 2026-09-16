@@ -511,6 +511,17 @@ func (s *Adapter) applySMBSettings(rt *runtime.Runtime) {
 	// Directory leasing: apply from settings
 	s.handler.DirectoryLeasingEnabled = settings.DirectoryLeasingEnabled
 
+	// Oplock break timeout: the setting bounds how long a conflicting CREATE
+	// waits for a traditional oplock holder to ACK before the break is
+	// force-completed. Clamp to the advertised 5-120s range so a stale or
+	// out-of-range DB row cannot collapse the wait to zero or park a CREATE
+	// indefinitely. Lease breaks keep their compiled-in 5s bound.
+	if settings.OplockBreakTimeout > 0 {
+		s.handler.OplockBreakWaitTimeout = clampOplockBreakTimeout(settings.OplockBreakTimeout)
+		logger.Debug("SMB adapter: oplock break timeout from settings",
+			"timeout", s.handler.OplockBreakWaitTimeout)
+	}
+
 	// Derive EncryptionEnabled from EncryptionConfig.Mode to keep the two in sync.
 	// EncryptionEnabled controls CapEncryption in NEGOTIATE for SMB 3.0/3.0.2.
 	s.handler.EncryptionEnabled = (s.handler.EncryptionConfig.Mode != "disabled")
@@ -548,6 +559,20 @@ func (s *Adapter) applySMBSettings(rt *runtime.Runtime) {
 	// Network discovery: start/stop the mDNS and WS-Discovery advertisers live to
 	// match settings. No-op until Serve has started the auxsvc group.
 	s.reconcileDiscovery()
+}
+
+// clampOplockBreakTimeout converts the configured oplock_break_timeout seconds
+// into a duration, clamped to the range the settings API advertises. Clamping
+// here rather than trusting the stored value means a stale or hand-edited DB
+// row cannot collapse the wait to zero or park a CREATE indefinitely.
+func clampOplockBreakTimeout(seconds int) time.Duration {
+	r := models.DefaultSMBSettingsValidRange()
+	if seconds < r.OplockBreakTimeoutMin {
+		seconds = r.OplockBreakTimeoutMin
+	} else if seconds > r.OplockBreakTimeoutMax {
+		seconds = r.OplockBreakTimeoutMax
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 // Serve starts the SMB server and blocks until the context is cancelled
