@@ -322,6 +322,11 @@ fi
 # cannot disturb the stack it is refusing to fight with.
 require_exclusive_stack
 
+# And hold it. The check above is advisory — two runs from the same checkout
+# can both pass it and the second joins the first's project. This is the atomic
+# half: mkdir either creates the claim or does not.
+claim_exclusive_stack
+
 # Claimed here, before the first path that can bring the stack up — the s3 and
 # postgres profiles start their own containers before dittofs, so claiming at
 # the dittofs start left those runs with the flag false and the EXIT trap
@@ -340,6 +345,8 @@ STACK_OWNED=true
 # --------------------------------------------------------------------------
 cleanup() {
     local exit_code=$?
+
+    release_exclusive_stack
 
     if [[ "$MODE" == "compose" ]] && ! $KEEP && $STACK_OWNED; then
         log_step "Cleaning up containers..."

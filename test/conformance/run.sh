@@ -347,6 +347,14 @@ write_summary() {
     elif [[ -n "$failed_step" && "$failed_step" != "$GRADED_STEP" ]]; then
         verdict="${failed_step} failed (exit ${status}) — no tests were graded"
         icon=":construction:"
+    elif [[ "$status" -ge 125 && "$status" -le 127 ]]; then
+        # Docker and the shell reserve 125-127 for "could not run the thing at
+        # all". The parser may already have written a verdict from a partial
+        # output file, and describing the run by that verdict would report a
+        # graded result for a run the infrastructure stopped — the same false
+        # label as calling a non-result a failure, one layer further out.
+        verdict="the graded step could not run (exit ${status}); no result was produced"
+        icon=":construction:"
     elif [[ -r "${results_dir}/verdict" ]]; then
         # The graded step writes its own counts here because the exit status
         # cannot carry them: it is one number, clamped at 254, and it says

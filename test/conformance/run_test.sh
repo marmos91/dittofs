@@ -127,6 +127,13 @@ echo "ungraded 0 0 0" > "${DITTOFS_RESULTS_DIR}/verdict"
 exit 1
 EOF
 
+cat >"${FAKE_TEST}/fake/infra.sh" <<'EOF'
+#!/usr/bin/env bash
+# A verdict written from a partial output file, then a Docker-level failure.
+echo "failures 2 0 0" > "${DITTOFS_RESULTS_DIR}/verdict"
+exit 125
+EOF
+
 cat >"${FAKE_TEST}/fake/refused.sh" <<'EOF'
 #!/usr/bin/env bash
 echo "refused 0 0 0" > "${DITTOFS_RESULTS_DIR}/verdict"
@@ -199,6 +206,15 @@ cat >"$FAKE_MANIFEST" <<'EOF'
       "tiers": { "pull_request": "all", "push": "all" },
       "steps": [
         { "name": "run", "cmd": "fake/ungraded.sh", "args": [], "root": false }
+      ]
+    },
+    "infra": {
+      "description": "wrote a verdict, then failed at the docker level",
+      "runner_dir": "fake",
+      "profiles": ["memory"],
+      "tiers": { "pull_request": "all", "push": "all" },
+      "steps": [
+        { "name": "run", "cmd": "fake/infra.sh", "args": [], "root": false }
       ]
     },
     "refused": {
@@ -437,6 +453,13 @@ assert_not_contains "and is never called a new failure" "new failure(s)" "$OUT"
 # A suite that produced no parsable output graded nothing either, and that is
 # the most misleading thing to call a failure count: there is not even a test
 # to point at.
+# An infrastructure failure outranks whatever the parser managed to write: a
+# verdict from a partial output file would report a graded result for a run
+# Docker stopped.
+OUT="$(run_fake --suite infra --profile memory)"
+assert_contains "a docker-level failure says the step could not run" "could not run" "$OUT"
+assert_not_contains "and does not report the partial verdict" "2 new failure(s)" "$OUT"
+
 OUT="$(run_fake --suite ungraded --profile memory)"
 assert_contains "an empty run says there were no results" "no test results at all" "$OUT"
 assert_not_contains "and is not a new failure either" "new failure(s)" "$OUT"
