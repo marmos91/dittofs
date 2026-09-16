@@ -46,9 +46,11 @@ type RenameWcc struct {
 	// update backwards.
 	//
 	// That holds on backends whose transaction serialises the read against
-	// concurrent writers. Under READ COMMITTED with an unlocked read — postgres
-	// — a write can still land between the "before" read and the row lock, so
-	// the window is narrowed rather than closed (#2324).
+	// concurrent writers, which is all of them: badger by SSI, sqlite by its
+	// single writer, memory by a store-wide mutex, and postgres because its
+	// transactions run at REPEATABLE READ, where a write landing between the
+	// "before" read and the row lock aborts the update rather than being
+	// silently overwritten by it.
 	SourcePreCtime time.Time
 	SourceCtime    time.Time
 }

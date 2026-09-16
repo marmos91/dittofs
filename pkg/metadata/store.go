@@ -373,10 +373,9 @@ type Transactor interface {
 // A backend whose transaction already serialises such a pair does not implement
 // it: sqlite and badger both refuse the second writer (SQLITE_BUSY, an SSI
 // conflict) and their retry loop re-runs the whole body, so the retried attempt
-// re-reads. Postgres under READ COMMITTED does neither — the second UPDATE
-// waits for the first to commit and then writes a value computed from the
-// pre-image, losing the first write with no error — so it takes the lock before
-// the read instead.
+// re-reads. Postgres refuses it too, at REPEATABLE READ, but only when the
+// update is reached — so it takes the lock first, which moves the refusal to
+// the top of the transaction instead of after the caller's own work.
 type FileRowLocker interface {
 	// LockFileRow blocks until this transaction holds the file's row, and
 	// reports nil when the handle names no row: the caller's own read is what

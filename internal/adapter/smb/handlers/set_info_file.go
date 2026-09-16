@@ -1661,9 +1661,10 @@ func applyFrozenTimestamps(openFile *OpenFile, file *metadata.File) {
 // backends that truncate timestamps on the way in.
 //
 // The first of those holds on backends whose transaction serialises the read
-// against concurrent writers. Under READ COMMITTED with an unlocked read —
-// postgres — a write can still land inside the rename's own window, so there the
-// erasure is narrowed rather than eliminated (#2324).
+// against concurrent writers, which is all of them — postgres because its
+// transactions run at REPEATABLE READ, where a write landing inside the
+// rename's own window aborts the rename's update rather than being erased by
+// it.
 //
 // There is no permission check on the restore. An explicit timestamp write is
 // ownership-gated in the metadata layer while the rename itself is authorized
