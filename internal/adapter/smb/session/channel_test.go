@@ -169,3 +169,63 @@ func TestSession_AddChannel_ConcurrentCap(t *testing.T) {
 		t.Fatalf("ChannelCount=%d, want %d", got, MaxChannelsPerSession)
 	}
 }
+
+// TestSession_AddChannel_RefusesALoggedOffSession pins the refusal at the
+// registration itself rather than at the callers that check LoggedOff before
+// asking. A bind handshake is several round trips long, and a LOGOFF arriving
+// inside one leaves the caller's check stale by the time it attaches: without
+// this the session would take a channel whose connection it can never
+// authenticate, its signing key having already been retired.
+func TestSession_AddChannel_RefusesALoggedOffSession(t *testing.T) {
+	s := NewSession(1, "", false, "", "")
+	s.LoggedOff.Store(true)
+
+	if s.AddChannel(&Channel{ConnID: 1}) {
+		t.Fatal("a logged-off session accepted a new channel")
+	}
+	if got := s.ChannelCount(); got != 0 {
+		t.Fatalf("ChannelCount=%d, want 0: the refused channel was registered anyway", got)
+	}
+}
+
+// TestSession_RemoveChannelRetiringLast_RefusesALaterAddChannel pins the second
+// way a session reaches the retired state. LOGOFF sets LoggedOff explicitly;
+// transport teardown does not — it removes the closing connection's channel and
+// deletes the session once none are left. A bind on another connection that has
+// already passed its own session lookup would otherwise register a channel in
+// between, on a session the teardown is about to delete.
+func TestSession_RemoveChannelRetiringLast_RefusesALaterAddChannel(t *testing.T) {
+	s := NewSession(1, "", false, "", "")
+	if !s.AddChannel(&Channel{ConnID: 1}) {
+		t.Fatal("setup: the first channel was refused")
+	}
+
+	if !s.RemoveChannelRetiringLast(1) {
+		t.Fatal("removing the only channel must report the session retired")
+	}
+	if s.AddChannel(&Channel{ConnID: 2}) {
+		t.Error("a session whose last channel closed accepted a new one: transport teardown is about to delete it")
+	}
+	if got := s.ChannelCount(); got != 0 {
+		t.Errorf("ChannelCount=%d, want 0: the refused channel was registered anyway", got)
+	}
+}
+
+// TestSession_RemoveChannelRetiringLast_KeepsASurvivingSession is the other half:
+// a session that still holds a channel is not retired and still takes new ones,
+// so the multichannel survival rule (MS-SMB2 §3.3.7.1) is unaffected.
+func TestSession_RemoveChannelRetiringLast_KeepsASurvivingSession(t *testing.T) {
+	s := NewSession(1, "", false, "", "")
+	s.AddChannel(&Channel{ConnID: 1})
+	s.AddChannel(&Channel{ConnID: 2})
+
+	if s.RemoveChannelRetiringLast(1) {
+		t.Fatal("a session with a surviving channel was reported retired")
+	}
+	if s.LoggedOff.Load() {
+		t.Error("a session with a surviving channel must not be marked logged off")
+	}
+	if !s.AddChannel(&Channel{ConnID: 3}) {
+		t.Error("a surviving session refused a new channel")
+	}
+}

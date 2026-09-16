@@ -910,11 +910,21 @@ func validateAndRestore(
 //     this requires the live handle to be removed from Handler.files.
 //
 // Returns the parsed AppInstanceId (zero value if not present or zero).
+//
+// shareName and filePath identify the file the incoming CREATE claims. The
+// force-close filter matches on share + path in addition to the AppInstanceId
+// (MS-SMB2 §3.3.5.9.13 match conditions), so an AppInstanceId reused for a
+// different file — on the same or another share — never displaces an unrelated
+// open. Opens with an empty recorded path are never displaced at all: the
+// filter requires a recorded path match, so for those opens the AppInstanceId
+// match alone is never sufficient and the failover does not touch them.
 func ProcessAppInstanceId(
 	ctx context.Context,
 	durableStore lock.DurableHandleStore,
 	handler *Handler,
 	contexts []CreateContext,
+	shareName string,
+	filePath string,
 ) [16]byte {
 	appCtx := FindCreateContext(contexts, AppInstanceIdTag)
 	if appCtx == nil {
@@ -952,18 +962,35 @@ func ProcessAppInstanceId(
 			fileHandle lock.FileHandle
 			leaseKey   [16]byte
 			shareName  string
-			isLease    bool
 		}
 		var displaced []displacedLease
+		claimsFile := func(f *OpenFile) bool {
+			if f.AppInstanceId != appId {
+				return false
+			}
+			// Share and path compare case-insensitively: SMB namespaces are
+			// case-insensitive, so different-case spellings of the same file
+			// must still match (MS-SMB2 2.2.1.1 object names). Names that are
+			// not well-formed UTF-8 compare byte-exactly instead: SMB permits
+			// unpaired surrogates, which simple case folding would collapse to
+			// U+FFFD and report as equal, displacing a handle on a different
+			// file.
+			if !metadata.EqualFoldName(f.ShareName, shareName) {
+				return false
+			}
+			if !metadata.EqualFoldName(f.Name().Path, filePath) {
+				return false
+			}
+			return true
+		}
 		if handler.LeaseManager != nil {
 			handler.files.Range(func(_, value any) bool {
 				f := value.(*OpenFile)
-				if f.AppInstanceId == appId && f.LeaseKey != ([16]byte{}) && len(f.MetadataHandle) > 0 {
+				if claimsFile(f) && f.LeaseKey != ([16]byte{}) && len(f.MetadataHandle) > 0 {
 					displaced = append(displaced, displacedLease{
 						fileHandle: lock.FileHandle(f.MetadataHandle),
 						leaseKey:   f.LeaseKey,
 						shareName:  f.ShareName,
-						isLease:    f.OplockLevel == OplockLevelLease,
 					})
 				}
 				return true
@@ -973,7 +1000,7 @@ func ProcessAppInstanceId(
 		liveClosed := handler.closeFilesWithFilter(
 			ctx,
 			0, // no specific sessionID — match across sessions
-			func(f *OpenFile) bool { return f.AppInstanceId == appId },
+			claimsFile,
 			"ProcessAppInstanceId",
 			false, // explicit close, not transport disconnect
 		)
@@ -983,44 +1010,67 @@ func ProcessAppInstanceId(
 				"count", liveClosed)
 		}
 
-		// Release the displaced opens' LeaseManager records (mirrors the
-		// explicit CLOSE path in close.go) so no orphaned oplock/lease lingers
-		// to break the claiming open.
+		// Only the signal. The records themselves are already gone:
+		// closeFilesWithFilter runs releaseHandleLeaseRecord for every open it
+		// removes, and that helper declines when another live open on the same
+		// file still holds the key — two opens share one record, so releasing
+		// by handle here would tear it out from under a survivor whose only
+		// difference is its AppInstanceId. It would also unregister an oplock
+		// the helper's sibling scan had deliberately kept.
+		//
+		// The signal is the one step the helper does not take, and it is
+		// idempotent: a create woken while a sibling still holds the lease
+		// simply parks again. Without it a create parked on a displaced open's
+		// lease waits out the oplock timeout, and MS-SMB2 §3.3.5.9.13 requires
+		// this failover to be silent.
 		for _, d := range displaced {
-			if err := handler.LeaseManager.ReleaseLeaseForHandle(ctx, d.fileHandle, d.leaseKey, d.shareName); err != nil {
-				logger.Debug("ProcessAppInstanceId: failed to release displaced lease",
-					"leaseKey", fmt.Sprintf("%x", d.leaseKey), "error", err)
-			}
-			if !d.isLease {
-				handler.LeaseManager.UnregisterOplockFileID(d.leaseKey)
-			}
 			handler.LeaseManager.SignalParkedCreates(d.fileHandle, d.shareName)
 		}
 	}
 
 	// 2) Force-close persisted (disconnected) durable handles with matching
-	// AppInstanceId.
+	// AppInstanceId. Scoped to the claimed share + path like the live filter:
+	// a persisted record for a different file never displaces this CREATE's
+	// target, so an AppInstanceId reused across files leaves those handles
+	// alone.
+	var persistedClosed int
+	// Displaced handles that carried a lease, for the release pass after every
+	// row is deleted — see the comment at that loop.
+	var displacedLeases []*OpenFile
+
+	// Under durablePurgeMu, the mutex the disconnect-persist and the create-path
+	// purge scans take (handler.go). This is another read-then-mutate window on
+	// the durable store: without it a disconnect can publish a matching row
+	// after the scan, so the failover leaves it behind — or between the sibling
+	// check and the release, so a newly persisted handle keeps a lease record
+	// this pass then removes. Unconditional rather than gated on
+	// disconnectedByFile the way the purge scans are: this runs only for a
+	// CREATE carrying an AppInstanceId context, never on a writer's hot path.
+	if handler != nil {
+		handler.durablePurgeMu.Lock()
+		defer handler.durablePurgeMu.Unlock()
+	}
+
 	existing, err := durableStore.GetDurableHandlesByAppInstanceId(ctx, appId)
 	if err != nil {
 		logger.Warn("ProcessAppInstanceId: store error", "error", err)
 		return appId
 	}
 
-	if len(existing) == 0 {
-		return appId
-	}
-
-	logger.Debug("ProcessAppInstanceId: force-closing persisted handles",
-		"appInstanceId", fmt.Sprintf("%x", appId),
-		"count", len(existing))
-
 	for _, h := range existing {
+		// Case-insensitive share/path match, same as the live-open filter.
+		if !metadata.EqualFoldName(h.ShareName, shareName) || !metadata.EqualFoldName(h.Path, filePath) {
+			continue
+		}
+		persistedClosed++
 		if handler != nil {
 			cleanupFile := (&OpenFile{
 				FileID:         h.FileID,
 				ShareName:      h.ShareName,
 				MetadataHandle: h.MetadataHandle,
 				PayloadID:      metadata.PayloadID(h.PayloadID),
+				LeaseKey:       h.LeaseKey,
+				OplockLevel:    h.OplockLevel,
 			}).WithName(OpenName{Path: h.Path})
 			handler.flushFileCache(ctx, cleanupFile)
 			if len(h.MetadataHandle) > 0 && handler.Registry != nil {
@@ -1031,6 +1081,10 @@ func ProcessAppInstanceId(
 					}
 				}
 			}
+
+			if len(h.MetadataHandle) > 0 && h.LeaseKey != ([16]byte{}) {
+				displacedLeases = append(displacedLeases, cleanupFile)
+			}
 		}
 
 		if delErr := durableStore.DeleteDurableHandle(ctx, h.ID); delErr != nil {
@@ -1040,7 +1094,61 @@ func ProcessAppInstanceId(
 		}
 	}
 
+	// Lease records last, once every displaced row is gone. The disconnect kept
+	// each record on purpose so a reconnect could restore it; deleting the rows
+	// rules that out, and a record nothing will reclaim is one the next CREATE
+	// parks behind until the oplock timeout — a failover MS-SMB2 §3.3.5.9.13
+	// requires to be silent, stalling the create it exists to let through.
+	//
+	// After the deletions, because a record is shared: two handles on one file
+	// with one lease key share a single record, and releasing it out from under
+	// a survivor is the same invariant broken the other way. The survivor can be
+	// live (releaseHandleLeaseRecord scans the open-file table for that) or
+	// another DISCONNECTED handle, which that helper cannot see at all — so the
+	// persisted side is checked here, against a store the deletions have already
+	// been applied to.
+	for _, displaced := range displacedLeases {
+		if handler.leaseKeyHasPersistedSibling(ctx, durableStore, displaced) {
+			logger.Debug("ProcessAppInstanceId: another disconnected handle shares this lease key, keeping the record",
+				"path", displaced.Name().Path, "leaseKey", fmt.Sprintf("%x", displaced.LeaseKey))
+			continue
+		}
+		handler.releaseHandleLeaseRecord(ctx, displaced, "ProcessAppInstanceId")
+		if handler.LeaseManager != nil {
+			handler.LeaseManager.SignalParkedCreates(lock.FileHandle(displaced.MetadataHandle), displaced.ShareName)
+		}
+	}
+
+	if persistedClosed > 0 {
+		logger.Debug("ProcessAppInstanceId: force-closed persisted handles",
+			"appInstanceId", fmt.Sprintf("%x", appId),
+			"count", persistedClosed)
+	}
+
 	return appId
+}
+
+// leaseKeyHasPersistedSibling reports whether another DISCONNECTED durable
+// handle still holds this open's lease key on this file. releaseHandleLeaseRecord
+// answers the same question for live opens by scanning the open-file table; a
+// persisted sibling is not in that table, so it has to be asked of the store.
+//
+// A store error answers yes: keeping a record that could be released costs the
+// next CREATE an oplock timeout, and releasing one a survivor still holds costs
+// that survivor its lease silently. Erring toward the visible failure.
+func (h *Handler) leaseKeyHasPersistedSibling(ctx context.Context, durableStore lock.DurableHandleStore, openFile *OpenFile) bool {
+	siblings, err := durableStore.GetDurableHandlesByFileHandle(ctx, openFile.MetadataHandle)
+	if err != nil {
+		logger.Warn("cannot tell whether a disconnected handle still holds this lease key, keeping the record",
+			"path", openFile.Name().Path, "error", err)
+		return true
+	}
+	for _, s := range siblings {
+		if s.LeaseKey == openFile.LeaseKey && metadata.EqualFoldName(s.ShareName, openFile.ShareName) {
+			return true
+		}
+	}
+	return false
 }
 
 // buildPersistedDurableHandle creates a PersistedDurableHandle from an OpenFile

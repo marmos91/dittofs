@@ -116,21 +116,28 @@ func DecodeWriteRequest(body []byte) (*WriteRequest, error) {
 	// Data typically starts at offset 48 in the body (or wherever DataOffset-64 points)
 
 	if req.Length > 0 {
-		// Calculate where data starts in body
+		// Data must sit exactly where DataOffset says. Clamping a bad offset
+		// to 48 would substitute bytes the client did not place in the
+		// message — per MS-SMB2 3.3.5.13 the server must fail the request
+		// with STATUS_INVALID_PARAMETER instead of writing guessed content.
 		dataStart := int(req.DataOffset) - 64
-
-		// Clamp to valid range - data can't start before byte 48 (after fixed fields)
-		dataStart = max(dataStart, 48)
-
-		// Try to extract data from calculated offset
-		if dataStart+int(req.Length) <= len(body) {
-			req.Data = body[dataStart : dataStart+int(req.Length)]
-		} else if len(body) > 48 && int(req.Length) <= len(body)-48 {
-			// Fallback: data might be right after the 48-byte fixed structure
-			req.Data = body[48 : 48+int(req.Length)]
-		} else {
-			return nil, fmt.Errorf("write request body too short: need %d bytes, have %d", req.Length, len(body)-48)
+		if dataStart < 48 {
+			return nil, fmt.Errorf("write request DataOffset %d points before the fixed structure (body offset %d, minimum 48)",
+				req.DataOffset, dataStart)
 		}
+		// In uint64, so the arithmetic cannot wrap before the comparison. On a
+		// 32-bit build `int(req.Length)` of a wire value like 0x80000000 is
+		// negative, dataStart+that is below len(body), the check passes, and the
+		// slice below panics — on a request anyone can send.
+		available := uint64(len(body)) - uint64(dataStart)
+		if uint64(req.Length) > available {
+			// "have" is what is left FROM the offset, not the whole body: the
+			// body length alone reads as plenty whenever DataOffset is large,
+			// which is exactly the case that gets here.
+			return nil, fmt.Errorf("write request body too short: need %d bytes at body offset %d, have %d",
+				req.Length, dataStart, available)
+		}
+		req.Data = body[dataStart : dataStart+int(req.Length)]
 	}
 
 	return req, nil
@@ -185,6 +192,18 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// ========================================================================
 	// Step 2: Handle named pipe writes (IPC$ RPC)
 	// ========================================================================
+
+	// Per MS-SMB2 3.3.5.13: Channel selects an RDMA read/write. This transport
+	// has no RDMA support, so any nonzero channel cannot be honored — serving
+	// the payload inline would bypass the RDMA semantics the client asked for.
+	// Fail with STATUS_INVALID_PARAMETER instead of decoding-then-ignoring.
+	// Ahead of the pipe dispatch because a named pipe is served by the same
+	// transport and can honor RDMA no better than a file can.
+	if req.Channel != 0 {
+		logger.Debug("WRITE: RDMA channel requested on non-RDMA transport",
+			"fileID", lazyFileID(req.FileID), "channel", req.Channel)
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
+	}
 
 	if openFile.IsPipe {
 		return h.handlePipeWrite(ctx, req, openFile)
@@ -303,6 +322,11 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// with 0 bytes written. Skip the prepare/write/commit cycle.
 	if len(req.Data) == 0 {
 		logger.Debug("WRITE: zero-length write (no-op)", "path", path, "offset", req.Offset)
+		// A no-op for the data, but still a successful WRITE, so MS-FSA 2.1.5.4
+		// applies the same way it does below: CurrentByteOffset becomes
+		// ByteOffset + BytesWritten, which here is the offset itself. Leaving it
+		// alone would report the position of the write before this one.
+		recordReadProgress(openFile, req.Offset, 0)
 		return &WriteResponse{
 			SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
 			Count:           0,
@@ -527,9 +551,13 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// IsAtimeFrozen takes openFile.mu (read), so this probe is serialized
 	// against a concurrent SET_INFO freezing the access time.
 	if !openFile.IsAtimeFrozen() && noteSmbAccess(openFile, now) {
+		// Both sides of the rebase wanted: the frozen ChangeTime is held across
+		// the bump (#2626), and a dropped bump is visible at Debug.
 		attrs := &metadata.SetAttrs{Atime: &now}
 		holdFrozenCtime(openFile, attrs)
-		_, _ = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, attrs)
+		if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, attrs); err != nil {
+			logger.Debug("WRITE: atime update failed", "path", path, "error", err)
+		}
 	}
 	if len(parentHandle) > 0 && noteSmbParentAccess(openFile, now) {
 		// decision: the parent's bump does not hold ChangeTime the way the file's
@@ -541,7 +569,9 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 		// The end state is correct either way; what remains is a window in which a
 		// reader sees a ChangeTime the freeze forbids. Fold them if that window is
 		// ever shown to matter.
-		_, _ = metaSvc.SetFileAttributes(authCtx, parentHandle, &metadata.SetAttrs{Atime: &now})
+		if _, err := metaSvc.SetFileAttributes(authCtx, parentHandle, &metadata.SetAttrs{Atime: &now}); err != nil {
+			logger.Debug("WRITE: parent atime update failed", "path", path, "error", err)
+		}
 		// Per MS-FSA §2.1.5.15.2 ("FileBasicInformation"): Restore frozen timestamps on the parent directory
 		// if any open handle has them frozen. The SetFileAttributes call above
 		// unconditionally updates atime; if a handle has atime frozen, restore it.
@@ -582,6 +612,12 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 		"path", path,
 		"offset", req.Offset,
 		"bytes", len(req.Data))
+
+	// Per MS-FSA 2.1.5.4 ("Server Requests a Write"): on success advance
+	// CurrentByteOffset to ByteOffset + BytesWritten — the write-side
+	// counterpart of READ's recordReadProgress, so QUERY_INFO
+	// FilePositionInformation reports the position after the last pipelined op.
+	recordReadProgress(openFile, req.Offset, uint64(len(req.Data)))
 
 	return &WriteResponse{
 		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},

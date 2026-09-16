@@ -622,7 +622,12 @@ func (c *Connection) removeChannelsAndPartition(sessions []uint64, clientAddr st
 			c.deleteOwnSessionConn(sessionID)
 			continue
 		}
-		sess.RemoveChannel(c.ID)
+		// Removing the channel and learning it was the last one is one step:
+		// a bind completing on another connection must either register before
+		// the count (and keep the session alive on its channel) or be refused.
+		// Between a bare remove and a separate count it would attach a channel
+		// to a session this loop has already consigned to CleanupSession.
+		lastChannel := sess.RemoveChannelRetiringLast(c.ID)
 		// Reap any half-finished bind auth state for THIS connection. Pending
 		// auth is keyed by (SessionID, ConnID), so this drops only this
 		// channel's entry and leaves other channels' binds intact. For dying
@@ -633,7 +638,7 @@ func (c *Connection) removeChannelsAndPartition(sessions []uint64, clientAddr st
 		// (now-closed) connection — otherwise it belongs to a surviving
 		// channel and break fan-out must keep using it.
 		c.deleteOwnSessionConn(sessionID)
-		if sess.ChannelCount() > 0 {
+		if !lastChannel {
 			logger.Debug("Connection close: session survives on remaining channels",
 				"address", clientAddr,
 				"sessionID", sessionID,

@@ -354,11 +354,16 @@ func TestSessionSetup_FullHandshake(t *testing.T) {
 		}
 	})
 
-	t.Run("RejectsAuthenticateWithoutPendingAuth", func(t *testing.T) {
+	t.Run("RejectsAuthenticateOnUnknownSessionID", func(t *testing.T) {
 		h := NewHandler()
 
-		// Skip NEGOTIATE, go straight to AUTHENTICATE with a non-zero session ID
-		ctx := newTestContext(12345) // Random session ID with no pending auth
+		// A nonzero SessionId the server never allocated. Per MS-SMB2 3.3.5.5
+		// step 4, the non-binding path looks the session up in
+		// Connection.SessionTable and fails with STATUS_USER_SESSION_DELETED
+		// when it is absent — before the mechanism processing of steps 5-7. So
+		// the unknown ID is answered here, not by whatever token happens to be
+		// in the security buffer.
+		ctx := newTestContext(12345)
 
 		authenticate := validNTLMAuthenticateMessage()
 		body := buildSessionSetupRequestBody(authenticate)
@@ -368,7 +373,27 @@ func TestSessionSetup_FullHandshake(t *testing.T) {
 			t.Fatalf("Unexpected error: %v", err)
 		}
 
-		// Type 3 without prior Type 1/2 exchange is a protocol violation per MS-SMB2 3.3.5.5
+		if result.Status != types.StatusUserSessionDeleted {
+			t.Errorf("Should reject with STATUS_USER_SESSION_DELETED, got 0x%x", result.Status)
+		}
+	})
+
+	t.Run("RejectsAuthenticateWithoutPendingAuth", func(t *testing.T) {
+		h := NewHandler()
+
+		// SessionId zero, so the session lookup above does not apply and the
+		// request reaches mechanism processing: a Type 3 with no prior Type 1/2
+		// exchange is a protocol violation per MS-SMB2 3.3.5.5.
+		ctx := newTestContext(0)
+
+		authenticate := validNTLMAuthenticateMessage()
+		body := buildSessionSetupRequestBody(authenticate)
+
+		result, err := h.SessionSetup(ctx, body)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
 		if result.Status != types.StatusLogonFailure {
 			t.Errorf("Should reject with STATUS_LOGON_FAILURE, got 0x%x", result.Status)
 		}
@@ -1306,4 +1331,75 @@ func TestBuildAuthenticatedResponse_MICEmission(t *testing.T) {
 			t.Errorf("raw-NTLM session should carry empty security buffer, got %d bytes", len(secBuf))
 		}
 	})
+}
+
+// TestSessionSetup_UnknownSessionIDRejectedOnEveryMechanism pins the rule at
+// the level it is advertised. MS-SMB2 3.3.5.5 step 4 rejects a nonzero
+// SessionId absent from the session table before mechanism processing begins,
+// so the answer must not depend on what the security buffer holds. The check
+// used to live inside the NTLM Type-1 handler, which SPNEGO Kerberos and the
+// no-token guest fallback never reach — both routed around it and minted a
+// session under the client-supplied ID.
+func TestSessionSetup_UnknownSessionIDRejectedOnEveryMechanism(t *testing.T) {
+	const unknownSessionID = 0x4141414141414141
+
+	cases := []struct {
+		name  string
+		token []byte
+	}{
+		{"NTLM negotiate", validNTLMNegotiateMessage()},
+		{"SPNEGO Kerberos", spnegoKerberosInitToken(t)},
+		{"no recognized token (guest fallback)", []byte{0x00}},
+		{"empty security buffer", nil},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := NewHandler()
+			ctx := newTestContext(unknownSessionID)
+
+			result, err := h.SessionSetup(ctx, buildSessionSetupRequestBody(tc.token))
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			if result.Status != types.StatusUserSessionDeleted {
+				t.Errorf("Status = 0x%x, want STATUS_USER_SESSION_DELETED: this mechanism "+
+					"authenticated under a SessionId the server never allocated", result.Status)
+			}
+			if _, ok := h.GetSession(unknownSessionID); ok {
+				t.Error("a session was created under the client-supplied SessionId")
+			}
+		})
+	}
+}
+
+// spnegoKerberosInitToken builds a SPNEGO NegTokenInit advertising Kerberos V5
+// with a non-empty mech token — the shape SessionSetup routes to
+// handleKerberosAuth, and therefore the shape that bypassed the unknown-
+// SessionId check while it lived in the NTLM handler. The token body is opaque
+// bytes: the rejection under test happens before any of it is interpreted.
+func spnegoKerberosInitToken(t *testing.T) []byte {
+	t.Helper()
+
+	type negTokenInit struct {
+		MechTypes []asn1.ObjectIdentifier `asn1:"explicit,optional,tag:0"`
+		MechToken []byte                  `asn1:"explicit,optional,tag:2"`
+	}
+	type initialContextToken struct {
+		ThisMech asn1.ObjectIdentifier
+		Init     []negTokenInit `asn1:"optional,explicit,tag:0"`
+	}
+
+	bs, err := asn1.Marshal(initialContextToken{
+		ThisMech: asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 2},
+		Init: []negTokenInit{{
+			MechTypes: []asn1.ObjectIdentifier{{1, 2, 840, 113554, 1, 2, 2}},
+			MechToken: []byte{0x6e, 0x01, 0x00},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("marshal SPNEGO init: %v", err)
+	}
+	bs[0] = 0x60 // APPLICATION 0
+	return bs
 }

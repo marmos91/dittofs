@@ -100,6 +100,24 @@ func (s *Session) AddChannel(c *Channel) bool {
 	}
 	s.channelsMu.Lock()
 	defer s.channelsMu.Unlock()
+	// decision: a logged-off session takes no new channel. The session object
+	// outlives LOGOFF so an in-flight response can still be signed, but its
+	// signing key is retired — a channel attached now is a connection bound to
+	// a session that can never authenticate anything on it. Refused here rather
+	// than at each bind completion so the window between a caller's own
+	// LoggedOff check and its AddChannel does not let one through.
+	//
+	// Both ways into that state set the flag under this same mutex —
+	// MarkLoggedOff for LOGOFF, RemoveChannelRetiringLast for a transport
+	// teardown that took the last channel — so the load and the insert below
+	// cannot straddle either transition: either the retirement wins and this
+	// refuses, or this wins and the channel is registered a moment before the
+	// flag is set — indistinguishable from one bound just before the LOGOFF
+	// arrived, which is the case the session must keep anyway, because the
+	// LOGOFF response is signed with that channel's key.
+	if s.LoggedOff.Load() {
+		return false
+	}
 	if _, replacing := s.channels[c.ConnID]; !replacing {
 		if len(s.channels) >= MaxChannelsPerSession {
 			return false
@@ -107,6 +125,16 @@ func (s *Session) AddChannel(c *Channel) bool {
 	}
 	s.channels[c.ConnID] = c
 	return true
+}
+
+// MarkLoggedOff retires the session, under the channel mutex so the transition
+// cannot interleave with a channel registration. The session object stays in
+// the manager: an in-flight response still has to be signed, and its channels
+// carry the keys that sign it, so neither is torn down here.
+func (s *Session) MarkLoggedOff() {
+	s.channelsMu.Lock()
+	defer s.channelsMu.Unlock()
+	s.LoggedOff.Store(true)
 }
 
 // GetChannel returns the channel for the given ConnID, or nil if none is
@@ -122,6 +150,28 @@ func (s *Session) RemoveChannel(connID uint64) {
 	s.channelsMu.Lock()
 	defer s.channelsMu.Unlock()
 	delete(s.channels, connID)
+}
+
+// RemoveChannelRetiringLast unregisters a channel and reports whether it was the
+// session's last one, retiring the session in the same critical section when it
+// was. For a caller that deletes the session on a true answer.
+//
+// The removal, the count and the retirement are one step because a concurrent
+// AddChannel must land on one side of the decision or the other. Landing before
+// it is fine — the count sees the new channel and the session survives on it.
+// Landing after a separate count would register a channel on a session the
+// caller has already decided to delete, and nothing else stops it: transport
+// teardown never sets LoggedOff, so AddChannel's own refusal does not cover
+// this way into the same retired state the way it covers LOGOFF.
+func (s *Session) RemoveChannelRetiringLast(connID uint64) bool {
+	s.channelsMu.Lock()
+	defer s.channelsMu.Unlock()
+	delete(s.channels, connID)
+	if len(s.channels) > 0 {
+		return false
+	}
+	s.LoggedOff.Store(true)
+	return true
 }
 
 // ListChannels returns a snapshot of all channels currently bound to the

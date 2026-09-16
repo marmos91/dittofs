@@ -162,7 +162,7 @@ func (h *Handler) Logoff(ctx *SMBHandlerContext, req *LogoffRequest) (*LogoffRes
 	// the next request arrives before the deferred session delete executes:
 	// the signing verifier and dispatch layer check this flag to return
 	// STATUS_USER_SESSION_DELETED instead of STATUS_ACCESS_DENIED.
-	sess.LoggedOff.Store(true)
+	sess.MarkLoggedOff()
 
 	// ========================================================================
 	// Step 2: Partial cleanup — close files, trees, pending auth

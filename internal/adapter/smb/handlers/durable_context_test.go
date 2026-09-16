@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/lease"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
@@ -1106,7 +1107,7 @@ func TestProcessAppInstanceId_NotPresent(t *testing.T) {
 		{Name: "MxAc", Data: make([]byte, 8)},
 	}
 
-	appId := ProcessAppInstanceId(context.Background(), store, nil, contexts)
+	appId := ProcessAppInstanceId(context.Background(), store, nil, contexts, "/share1", "file.txt")
 	if appId != ([16]byte{}) {
 		t.Errorf("Expected zero AppInstanceId when not present, got %x", appId)
 	}
@@ -1141,19 +1142,21 @@ func TestProcessAppInstanceId_ForceClosesOldHandles(t *testing.T) {
 		{Name: AppInstanceIdTag, Data: appIdData},
 	}
 
-	result := ProcessAppInstanceId(ctx, store, nil, contexts)
+	result := ProcessAppInstanceId(ctx, store, nil, contexts, "/share1", "old1.txt")
 	if result != appId {
 		t.Errorf("Expected AppInstanceId %x, got %x", appId, result)
 	}
 
-	// Verify old handles were force-closed (deleted from store)
+	// Verify old-001 was force-closed (deleted from store). The failover is
+	// scoped to the claimed share + path, so only the handle at the claimed
+	// path is displaced; old-002 carries a different path and stays.
 	h1, _ := store.GetDurableHandle(ctx, "old-001")
 	h2, _ := store.GetDurableHandle(ctx, "old-002")
 	if h1 != nil {
 		t.Error("Expected old-001 to be deleted")
 	}
-	if h2 != nil {
-		t.Error("Expected old-002 to be deleted")
+	if h2 == nil {
+		t.Error("Expected old-002 to survive: it claims a different path")
 	}
 }
 
@@ -2454,7 +2457,7 @@ func TestProcessAppInstanceId_ReleasesLocksOnPersistedHandle(t *testing.T) {
 
 	// Call ProcessAppInstanceId — this should displace the persisted handle
 	// and release its byte-range lock.
-	ProcessAppInstanceId(context.Background(), h.DurableStore, h, newOpenCtxs)
+	ProcessAppInstanceId(context.Background(), h.DurableStore, h, newOpenCtxs, smbCtx.ShareName, "/locked.txt")
 
 	// The persisted handle must have been deleted.
 	remaining, _ := mock.GetDurableHandle(context.Background(), "test-handle")
@@ -2467,5 +2470,169 @@ func TestProcessAppInstanceId_ReleasesLocksOnPersistedHandle(t *testing.T) {
 		if l.OpenID == openID {
 			t.Errorf("lock under openID %q still present after ProcessAppInstanceId — UnlockAllForOpen not called correctly", openID)
 		}
+	}
+}
+
+// TestProcessAppInstanceId_ReleasesTheLeaseOnAPersistedHandle covers what the
+// disconnect deliberately left behind. Persisting a durable handle keeps its
+// lease/oplock record on purpose, so a reconnect can restore the lease — but
+// once this failover deletes the row, no reconnect is ever coming. A record
+// nothing will reclaim is one the next CREATE parks behind until the oplock
+// timeout, which turns a failover MS-SMB2 §3.3.5.9.13 requires to be silent
+// into a stall on the very create it exists to let through.
+func TestProcessAppInstanceId_ReleasesTheLeaseOnAPersistedHandle(t *testing.T) {
+	h, rt, smbCtx, rootHandle, rootAuth := setupDaclTest(t)
+	h.DurableStore = newMockDurableStore()
+	// A real LeaseManager, so the record this test is about actually exists.
+	h.LeaseManager = lease.NewLeaseManager(&staticLockResolver{mgr: lock.NewManager()}, nil)
+	metaSvc := rt.GetMetadataService()
+
+	if _, _, err := metaSvc.CreateFile(rootAuth, rootHandle, "leased.txt",
+		&metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: 0o644}); err != nil {
+		t.Fatalf("CreateFile: %v", err)
+	}
+	file, _, err := h.lookupCaseInsensitive(rootAuthCtx(), metaSvc, rootHandle, "leased.txt")
+	if err != nil || file == nil {
+		t.Fatalf("lookup leased.txt: file=%v err=%v", file, err)
+	}
+	fileHandle, err := metadata.EncodeFileHandle(file)
+	if err != nil {
+		t.Fatalf("EncodeFileHandle: %v", err)
+	}
+
+	// The lease the disconnected open held, still registered because the
+	// disconnect kept it for a reconnect that this failover is about to rule out.
+	leaseKey := [16]byte{0xC0, 0xFF, 0xEE}
+	if _, _, err := h.LeaseManager.RequestLease(
+		context.Background(),
+		lock.FileHandle(fileHandle),
+		leaseKey,
+		[16]byte{},
+		42,
+		[16]byte{},
+		"disconnected-open",
+		"client-1",
+		smbCtx.ShareName,
+		lock.LeaseStateRead|lock.LeaseStateHandle,
+		false,
+	); err != nil {
+		t.Fatalf("RequestLease: %v", err)
+	}
+	if _, _, found := h.LeaseManager.GetLeaseState(context.Background(),
+		lock.FileHandle(fileHandle), smbCtx.ShareName, leaseKey); !found {
+		t.Fatal("setup: the lease record is not registered, so this test proves nothing")
+	}
+
+	appID := [16]byte{0xAA, 0xBB, 0xCC, 0xDE}
+	mock := h.DurableStore.(*mockDurableStore)
+	_ = mock.PutDurableHandle(context.Background(), &lock.PersistedDurableHandle{
+		ID:             "leased-handle",
+		FileID:         [16]byte{0x11, 0x22},
+		OriginalFileID: [16]byte{0x11, 0x22},
+		MetadataHandle: fileHandle,
+		AppInstanceId:  appID,
+		ShareName:      smbCtx.ShareName,
+		Path:           "/leased.txt",
+		OplockLevel:    OplockLevelLease,
+		LeaseKey:       leaseKey,
+		LeaseState:     uint32(lock.LeaseStateRead | lock.LeaseStateHandle),
+		DisconnectedAt: time.Now(),
+		TimeoutMs:      60000,
+	})
+
+	appIDBytes := make([]byte, 20)
+	binary.LittleEndian.PutUint16(appIDBytes[0:2], 20)
+	copy(appIDBytes[4:20], appID[:])
+	ProcessAppInstanceId(context.Background(), h.DurableStore, h,
+		[]CreateContext{{Name: AppInstanceIdTag, Data: appIDBytes}},
+		smbCtx.ShareName, "/leased.txt")
+
+	if remaining, _ := mock.GetDurableHandle(context.Background(), "leased-handle"); remaining != nil {
+		t.Fatal("the persisted handle was not displaced, so the lease assertion below means nothing")
+	}
+	if _, _, found := h.LeaseManager.GetLeaseState(context.Background(),
+		lock.FileHandle(fileHandle), smbCtx.ShareName, leaseKey); found {
+		t.Error("the displaced handle's lease record outlived its durable row: the next CREATE " +
+			"parks behind a lease no reconnect can ever reclaim")
+	}
+}
+
+// TestProcessAppInstanceId_KeepsALeaseASecondDisconnectedHandleHolds is the
+// other half of the release rule. Two durable handles on one file can share a
+// single lease record, and releaseHandleLeaseRecord only knows how to look for
+// a LIVE sibling — it scans the open-file table. A second DISCONNECTED handle
+// is not in that table, so displacing one row would delete a record the
+// survivor still needs, and it would reconnect without its lease: silent, and
+// suffered by a client that did nothing.
+func TestProcessAppInstanceId_KeepsALeaseASecondDisconnectedHandleHolds(t *testing.T) {
+	h, rt, smbCtx, rootHandle, rootAuth := setupDaclTest(t)
+	h.DurableStore = newMockDurableStore()
+	h.LeaseManager = lease.NewLeaseManager(&staticLockResolver{mgr: lock.NewManager()}, nil)
+	metaSvc := rt.GetMetadataService()
+
+	if _, _, err := metaSvc.CreateFile(rootAuth, rootHandle, "shared.txt",
+		&metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: 0o644}); err != nil {
+		t.Fatalf("CreateFile: %v", err)
+	}
+	file, _, err := h.lookupCaseInsensitive(rootAuthCtx(), metaSvc, rootHandle, "shared.txt")
+	if err != nil || file == nil {
+		t.Fatalf("lookup shared.txt: file=%v err=%v", file, err)
+	}
+	fileHandle, err := metadata.EncodeFileHandle(file)
+	if err != nil {
+		t.Fatalf("EncodeFileHandle: %v", err)
+	}
+
+	leaseKey := [16]byte{0x5A, 0xFE}
+	if _, _, err := h.LeaseManager.RequestLease(
+		context.Background(), lock.FileHandle(fileHandle), leaseKey, [16]byte{},
+		42, [16]byte{}, "two-handles", "client-1", smbCtx.ShareName,
+		lock.LeaseStateRead|lock.LeaseStateHandle, false,
+	); err != nil {
+		t.Fatalf("RequestLease: %v", err)
+	}
+
+	mock := h.DurableStore.(*mockDurableStore)
+	displacedApp := [16]byte{0xAA, 0x01}
+	// The row this failover displaces, and a sibling on the same file sharing
+	// the same lease key under a DIFFERENT AppInstanceId — untouched by it.
+	for _, row := range []*lock.PersistedDurableHandle{
+		{
+			ID: "displaced", FileID: [16]byte{0x01}, OriginalFileID: [16]byte{0x01},
+			MetadataHandle: fileHandle, AppInstanceId: displacedApp,
+			ShareName: smbCtx.ShareName, Path: "/shared.txt",
+			OplockLevel: OplockLevelLease, LeaseKey: leaseKey,
+			DisconnectedAt: time.Now(), TimeoutMs: 60000,
+		},
+		{
+			ID: "survivor", FileID: [16]byte{0x02}, OriginalFileID: [16]byte{0x02},
+			MetadataHandle: fileHandle, AppInstanceId: [16]byte{0xBB, 0x02},
+			ShareName: smbCtx.ShareName, Path: "/shared.txt",
+			OplockLevel: OplockLevelLease, LeaseKey: leaseKey,
+			DisconnectedAt: time.Now(), TimeoutMs: 60000,
+		},
+	} {
+		if err := mock.PutDurableHandle(context.Background(), row); err != nil {
+			t.Fatalf("PutDurableHandle %s: %v", row.ID, err)
+		}
+	}
+
+	appIDBytes := make([]byte, 20)
+	binary.LittleEndian.PutUint16(appIDBytes[0:2], 20)
+	copy(appIDBytes[4:20], displacedApp[:])
+	ProcessAppInstanceId(context.Background(), h.DurableStore, h,
+		[]CreateContext{{Name: AppInstanceIdTag, Data: appIDBytes}},
+		smbCtx.ShareName, "/shared.txt")
+
+	if remaining, _ := mock.GetDurableHandle(context.Background(), "displaced"); remaining != nil {
+		t.Fatal("the matching handle was not displaced, so the lease assertion below means nothing")
+	}
+	if survivor, _ := mock.GetDurableHandle(context.Background(), "survivor"); survivor == nil {
+		t.Fatal("the sibling under a different AppInstanceId was displaced too")
+	}
+	if _, _, found := h.LeaseManager.GetLeaseState(context.Background(),
+		lock.FileHandle(fileHandle), smbCtx.ShareName, leaseKey); !found {
+		t.Error("the lease record was released although a second disconnected handle still holds " +
+			"that key on this file: it will reconnect without its lease")
 	}
 }
