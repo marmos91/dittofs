@@ -69,8 +69,8 @@ type LinkResponse struct {
 // Creates a hard link to an existing file in a target directory.
 // Delegates to MetadataService.CreateHardLink after cross-share validation.
 // Adds directory entry, increments nlink; returns file attrs and dir WCC data.
-// Errors: NFS3ErrNoEnt, NFS3ErrExist, NFS3ErrIsDir, NFS3ErrNotDir, NFS3ErrAcces,
-// NFS3ErrXDev.
+// Errors: NFS3ErrNoEnt, NFS3ErrStale (either handle does not resolve), NFS3ErrExist,
+// NFS3ErrIsDir, NFS3ErrNotDir, NFS3ErrAcces, NFS3ErrXDev.
 func (h *Handler) Link(
 	ctx *NFSHandlerContext,
 	req *LinkRequest,
@@ -135,10 +135,9 @@ func (h *Handler) Link(
 		return nil, ctx.Context.Err()
 	}
 
-	fileAttr, err := metaSvc.GetFile(ctx.Context, fileHandle)
-	if err != nil {
-		logger.WarnCtx(ctx.Context, "LINK failed: source file not found", "file_handle", fmt.Sprintf("%x", req.FileHandle), "client", clientIP, "error", err)
-		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
+	fileAttr, status, err := h.getFileOrError(ctx, fileHandle, "LINK", req.FileHandle)
+	if fileAttr == nil {
+		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
 	}
 
 	// Hard links to directories are not allowed (prevents filesystem cycles)
@@ -152,10 +151,9 @@ func (h *Handler) Link(
 		return nil, ctx.Context.Err()
 	}
 
-	dirFile, err := metaSvc.GetFile(ctx.Context, dirHandle)
-	if err != nil {
-		logger.WarnCtx(ctx.Context, "LINK failed: target directory not found", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", err)
-		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
+	dirFile, status, err := h.getFileOrError(ctx, dirHandle, "LINK", req.DirHandle)
+	if dirFile == nil {
+		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
 	}
 
 	// Capture pre-operation directory attributes for WCC

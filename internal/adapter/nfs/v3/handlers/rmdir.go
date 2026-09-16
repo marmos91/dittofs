@@ -65,7 +65,8 @@ type RmdirResponse struct {
 // Removes an empty directory from a parent directory (must contain only "." and "..").
 // Delegates to MetadataService.RemoveDirectory after verifying parent is a directory.
 // Removes directory entry and metadata from parent; returns parent WCC data.
-// Errors: NFS3ErrNoEnt, NFS3ErrNotDir, NFS3ErrNotEmpty, NFS3ErrAcces, NFS3ErrIO.
+// Errors: NFS3ErrNoEnt, NFS3ErrStale (parent handle does not resolve), NFS3ErrNotDir,
+// NFS3ErrNotEmpty, NFS3ErrAcces, NFS3ErrIO.
 func (h *Handler) Rmdir(
 	ctx *NFSHandlerContext,
 	req *RmdirRequest,
@@ -101,10 +102,9 @@ func (h *Handler) Rmdir(
 		return &RmdirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	parentFile, err := metaSvc.GetFile(ctx.Context, parentHandle)
-	if err != nil {
-		logger.WarnCtx(ctx.Context, "RMDIR failed: parent not found", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", err)
-		return &RmdirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
+	parentFile, status, err := h.getFileOrError(ctx, parentHandle, "RMDIR", req.DirHandle)
+	if parentFile == nil {
+		return &RmdirResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
 	}
 
 	// Capture pre-operation attributes for WCC data

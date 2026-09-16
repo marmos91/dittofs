@@ -70,7 +70,8 @@ type LookupResponse struct {
 // Resolves a filename in a directory to a file handle and attributes.
 // Delegates to MetadataService.Lookup which atomically checks permissions and finds the child.
 // No side effects; read-only, high-frequency path resolution operation.
-// Errors: NFS3ErrNoEnt (not found), NFS3ErrNotDir, NFS3ErrAcces, NFS3ErrIO.
+// Errors: NFS3ErrNoEnt (name not found), NFS3ErrStale (directory handle does not
+// resolve), NFS3ErrNotDir, NFS3ErrAcces, NFS3ErrIO.
 func (h *Handler) Lookup(
 	ctx *NFSHandlerContext,
 	req *LookupRequest,
@@ -122,13 +123,9 @@ func (h *Handler) Lookup(
 		return &LookupResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	dirFile, err := metaSvc.GetFile(ctx.Context, dirHandle)
-	if err != nil {
-		logger.WarnCtx(ctx.Context, "LOOKUP failed: directory not found",
-			"handle", fmt.Sprintf("%x", req.DirHandle),
-			"client", clientIP,
-			"error", err)
-		return &LookupResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
+	dirFile, status, err := h.getFileOrError(ctx, dirHandle, "LOOKUP", req.DirHandle)
+	if dirFile == nil {
+		return &LookupResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
 	}
 
 	// Verify parent is actually a directory

@@ -79,7 +79,7 @@ type CommitResponse struct {
 // Flushes cached unstable writes to stable storage for a file byte range.
 // Delegates to BlockStore.Flush and MetadataService.FlushPendingWriteForFile.
 // Triggers cache-to-store transfer; returns WCC data and server boot-time write verifier.
-// Errors: NFS3ErrNoEnt (file not found), NFS3ErrIsDir (directory handle),
+// Errors: NFS3ErrStale (handle does not resolve), NFS3ErrIsDir (directory handle),
 // NFS3ErrAccess / NFS3ErrRofs (no write permission on the file or its share),
 // NFS3ErrIO (flush failure).
 func (h *Handler) Commit(
@@ -117,8 +117,8 @@ func (h *Handler) Commit(
 
 	file, err := metaSvc.GetFileCached(ctx.Context, handle)
 	if err != nil {
-		logger.WarnCtx(ctx.Context, "COMMIT failed: file not found", "handle", xdr.LazyHandle(req.Handle), "client", clientIP, "error", err)
-		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
+		logger.WarnCtx(ctx.Context, "COMMIT failed: handle not found", "handle", xdr.LazyHandle(req.Handle), "client", clientIP, "error", err)
+		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
 	// Capture pre-operation attributes for WCC data

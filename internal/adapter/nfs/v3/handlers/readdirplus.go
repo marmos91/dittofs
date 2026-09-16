@@ -151,7 +151,8 @@ type DirPlusEntry struct {
 // Lists directory entries with full attributes and file handles, eliminating LOOKUP+GETATTR round trips.
 // Delegates to MetadataService.ReadDirectory and GetFile per entry; checks cookie verifier for staleness.
 // No side effects; read-only with periodic cancellation checks (every 50 entries) for large directories.
-// Errors: NFS3ErrNotDir, NFS3ErrBadCookie, NFS3ErrNotSupp (share-level disable), NFS3ErrIO.
+// Errors: NFS3ErrStale (handle does not resolve), NFS3ErrNotDir, NFS3ErrBadCookie,
+// NFS3ErrNotSupp (share-level disable), NFS3ErrIO.
 func (h *Handler) ReadDirPlus(
 	ctx *NFSHandlerContext,
 	req *ReadDirPlusRequest,
@@ -201,8 +202,8 @@ func (h *Handler) ReadDirPlus(
 
 	dirFile, err := metaSvc.GetFile(ctx.Context, dirHandle)
 	if err != nil {
-		logger.WarnCtx(ctx.Context, "READDIRPLUS failed: directory not found", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", err)
-		return &ReadDirPlusResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
+		logger.WarnCtx(ctx.Context, "READDIRPLUS failed: handle not found", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", err)
+		return &ReadDirPlusResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
 	// Verify handle is actually a directory
