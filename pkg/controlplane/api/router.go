@@ -136,8 +136,11 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 	// endpoints and the share_permissions field on user create/update — and both
 	// must reproject the share root ACL. grantStore carries that completion on
 	// the write itself, so neither handler can grant access that the filesystem
-	// layer never learns about. Only the handlers that write grants take it;
-	// cpStore stays undecorated for the optional-interface assertions below.
+	// layer never learns about. It also carries the completion for an identity
+	// change, which moves the Unix id a grant's root-ACL ACE is keyed on without
+	// writing any grant row. Only the handlers that mutate grants or the ids
+	// they project under take it; cpStore stays undecorated for the
+	// optional-interface assertions below.
 	grantStore := rt.ShareGrantStore(cpStore)
 
 	userHandler, err := handlers.NewUserHandler(grantStore, jwtService, rt.InvalidateAuthCache)
@@ -194,7 +197,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 			r.Route("/groups", func(r chi.Router) {
 				r.Use(apiMiddleware.RequireAdmin())
 
-				groupHandler := handlers.NewGroupHandler(cpStore, rt.InvalidateAuthCache)
+				groupHandler := handlers.NewGroupHandler(grantStore, rt.InvalidateAuthCache)
 				r.Post("/", groupHandler.Create)
 				r.Get("/", groupHandler.List)
 				r.Get("/{name}", groupHandler.Get)

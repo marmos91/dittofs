@@ -56,6 +56,12 @@ type UserResponse struct {
 	MustChangePassword bool       `json:"must_change_password"`
 	CreatedAt          time.Time  `json:"created_at"`
 	LastLogin          *time.Time `json:"last_login,omitempty"`
+
+	// Warnings carries non-fatal operator-facing messages about the request
+	// that just completed — a share_permissions entry that was skipped rather
+	// than applied. Omitted when empty, so a response without one says the
+	// requested permissions all landed.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // RefreshRequest is the request body for POST /api/v1/auth/refresh.

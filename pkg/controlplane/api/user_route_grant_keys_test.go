@@ -119,6 +119,7 @@ func TestUserRouteReportsSkippedSharePermissions(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("user update = %d, want %d (body=%q)", rec.Code, http.StatusOK, rec.Body.String())
 	}
+	body = userBody{}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode response %q: %v", rec.Body.String(), err)
 	}

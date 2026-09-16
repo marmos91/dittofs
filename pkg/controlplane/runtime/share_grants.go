@@ -114,3 +114,69 @@ func (g *shareGrantStore) DeleteSIDSharePermissionsByDisplayName(ctx context.Con
 	g.grantsChanged(ctx, shareName)
 	return nil
 }
+
+// UpdateUser completes an identity change the same way a grant write does. A
+// user's grants project onto a share root as ACEs keyed on the user's Unix id,
+// so moving that id orphans every ACE built from the old one: the grant row is
+// untouched by the update, no grant write fires, and the grantee is left
+// holding a live grant with no ACE on a root owned by uid 0 mode 0755. The
+// reprojection belongs here rather than in the user handler so every caller of
+// the identity mutation gets it, exactly as the grant writes do.
+//
+// Only a persisted change reprojects, and only when the id actually moved — a
+// profile edit that leaves UID alone changes no projected key.
+func (g *shareGrantStore) UpdateUser(ctx context.Context, user *models.User) error {
+	prev, err := g.Store.GetUserByID(ctx, user.ID)
+	if err != nil {
+		return err
+	}
+	if err := g.Store.UpdateUser(ctx, user); err != nil {
+		return err
+	}
+	if sameUnixID(prev.UID, user.UID) {
+		return nil
+	}
+	perms, err := g.Store.GetUserSharePermissions(ctx, user.Username)
+	if err != nil {
+		logger.Warn("Failed to list share grants after a uid change", "user", user.Username, "error", err)
+		return nil
+	}
+	for _, p := range perms {
+		g.grantsChanged(ctx, p.ShareName)
+	}
+	return nil
+}
+
+// UpdateGroup is UpdateUser for a group's GID: a group grant projects under the
+// group's Unix id just as a user grant does.
+func (g *shareGrantStore) UpdateGroup(ctx context.Context, group *models.Group) error {
+	prev, err := g.Store.GetGroupByID(ctx, group.ID)
+	if err != nil {
+		return err
+	}
+	if err := g.Store.UpdateGroup(ctx, group); err != nil {
+		return err
+	}
+	if sameUnixID(prev.GID, group.GID) {
+		return nil
+	}
+	perms, err := g.Store.GetGroupSharePermissions(ctx, group.Name)
+	if err != nil {
+		logger.Warn("Failed to list share grants after a gid change", "group", group.Name, "error", err)
+		return nil
+	}
+	for _, p := range perms {
+		g.grantsChanged(ctx, p.ShareName)
+	}
+	return nil
+}
+
+// sameUnixID reports whether two optional Unix ids are the same id. Both nil is
+// the same id; one nil is a move to or from the id-less state, which changes
+// the projected key (the projection falls back to a default id).
+func sameUnixID(a, b *uint32) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}

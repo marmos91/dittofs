@@ -891,7 +891,7 @@ func TestUserHandler_Create_WithSharePerms(t *testing.T) {
 
 	if _, err := cpStore.CreateShare(ctx, &models.Share{
 		ID:                uuid.New().String(),
-		Name:              "myshare",
+		Name:              "/myshare",
 		DefaultPermission: "none",
 		Enabled:           true,
 	}); err != nil {
@@ -978,7 +978,7 @@ func TestUserHandler_Update_WithSharePerms(t *testing.T) {
 
 	if _, err := cpStore.CreateShare(ctx, &models.Share{
 		ID:                uuid.New().String(),
-		Name:              "target",
+		Name:              "/target",
 		DefaultPermission: "none",
 		Enabled:           true,
 	}); err != nil {
