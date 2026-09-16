@@ -33,6 +33,13 @@ func lockGateFixture(t *testing.T, mode uint32) (*routingNLMService, []byte) {
 		DefaultPermission: string(models.PermissionReadWrite),
 		Enabled:           true,
 		RootAttr:          &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o755},
+		// The share-creation API fills these from NFSExportOptions, whose
+		// getters default to root_to_guest and uid/gid 65534; ShareConfig is a
+		// plain struct with no such defaulting, so a test that leaves them zero
+		// would squash root to uid 0 and silently re-grant the root bypass.
+		Squash:       models.SquashRootToGuest,
+		AnonymousUID: 65534,
+		AnonymousGID: 65534,
 	}))
 
 	metaSvc := rt.GetMetadataService()
@@ -134,4 +141,25 @@ func TestNLMLock_ReadAccessIsEnoughForAWriteLock(t *testing.T) {
 	granted, _, err := svc.TestLockNLM(context.Background(), reader, handle, nlmOwner("reader"), 200, 100, true)
 	require.NoError(t, err)
 	require.True(t, granted)
+}
+
+// TestNLMLock_RootIsSquashedBeforeTheGate is what makes the gate worth having.
+// AUTH_SYS credentials are whatever the client sends, and uid 0 takes the root
+// bypass inside the permission check, so a gate reached with unsquashed
+// credentials refuses nobody: any client can claim root. The share's export
+// squash policy defaults to root_to_guest, and it has to be applied before the
+// check, not after.
+func TestNLMLock_RootIsSquashedBeforeTheGate(t *testing.T) {
+	t.Parallel()
+
+	svc, handle := lockGateFixture(t, 0o600)
+	root := &metadata.Identity{UID: metadata.Uint32Ptr(0), GID: metadata.Uint32Ptr(0)}
+
+	_, err := svc.LockFileNLM(context.Background(), root, handle, nlmOwner("fakeroot"), 0, 100, true, false)
+	require.Error(t, err, "a client claiming uid 0 must be squashed, not handed the root bypass")
+	require.True(t, metaerrors.IsAccessDeniedError(err), "want a permission refusal, got %v", err)
+
+	_, _, err = svc.TestLockNLM(context.Background(), root, handle, nlmOwner("fakeroot"), 0, 100, true)
+	require.Error(t, err, "TEST must squash the same way LOCK does")
+	require.True(t, metaerrors.IsAccessDeniedError(err), "want a permission refusal, got %v", err)
 }

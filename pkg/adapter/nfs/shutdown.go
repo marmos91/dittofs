@@ -71,7 +71,7 @@ func (s *NFSAdapter) Stop(ctx context.Context) error {
 	// earlier keeps the wait bounded, and it still happens before Stop returns
 	// and the caller releases the metadata service and per-share lock managers
 	// those tasks mutate.
-	s.waitForBackgroundTasks()
+	s.waitForBackgroundTasks(ctx)
 
 	return err
 }
@@ -92,11 +92,36 @@ func (s *NFSAdapter) goTracked(fn func()) {
 }
 
 // waitForBackgroundTasks closes the adapter to new tracked tasks and waits for
-// the ones already running. Stop may be called more than once; closing is
-// idempotent and the second wait returns immediately.
-func (s *NFSAdapter) waitForBackgroundTasks() {
+// the ones already running, up to the deadline on ctx. Stop may be called more
+// than once; closing is idempotent and the second wait returns immediately.
+//
+// The tasks are bounded on their own -- each runs on ShutdownCtx, cancelled by
+// the time this is called -- but Stop was handed a deadline and must not
+// overrun it waiting on something slow to notice.
+func (s *NFSAdapter) waitForBackgroundTasks(ctx context.Context) {
 	s.bgTasksMu.Lock()
 	s.bgTasksClosed = true
 	s.bgTasksMu.Unlock()
-	s.bgTasks.Wait()
+
+	done := make(chan struct{})
+	go func() {
+		s.bgTasks.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+		logger.Warn("NFS shutdown deadline reached with NLM/NSM background tasks still running")
+	}
+}
+
+// reopenBackgroundTasks lets a stopped adapter track tasks again. Production
+// builds a fresh adapter per start, but an adapter registered directly and
+// restarted would otherwise stay latched shut and silently drop every
+// blocked-waiter drain for the rest of its life.
+func (s *NFSAdapter) reopenBackgroundTasks() {
+	s.bgTasksMu.Lock()
+	s.bgTasksClosed = false
+	s.bgTasksMu.Unlock()
 }

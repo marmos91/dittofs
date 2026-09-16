@@ -390,9 +390,12 @@ func IsGracePeriodError(err error) bool {
 }
 
 // IsAccessDeniedError returns true if the error is a permission denial
-// (POSIX EACCES), whether from file mode bits, an ACL, or a read-only ceiling.
+// (POSIX EACCES), whether from file mode bits or an ACL.
+//
+// ErrReadOnly is deliberately not included: it is a distinct outcome (EROFS),
+// and every caller so far wants to tell the two apart.
 func IsAccessDeniedError(err error) bool {
-	return hasCode(err, ErrAccessDenied, ErrReadOnly)
+	return hasCode(err, ErrAccessDenied)
 }
 
 // IsLockLimitError returns true if the error is due to lock limits.

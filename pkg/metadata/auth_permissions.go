@@ -1214,10 +1214,18 @@ func buildEvalContext(ownerUID, ownerGID uint32, identity *Identity) *acl.Evalua
 // motivated the gate. Withdraw the parity argument only if a client is found
 // that expects DittoFS to be stricter than the server it was written for.
 //
-// Export squashing is not applied here: NLM has no share-authorization context
-// of its own, so the AUTH_UNIX credentials arrive unmapped and a root_squash
-// export still evaluates this gate as uid 0. Narrow that when NLM gains the
-// per-share auth context NFSv3 builds in BuildAuthContextWithMapping.
+// ctx.Identity must already be the share's effective identity: the AUTH_SYS
+// uid a client sends is whatever it chooses, and uid 0 takes the root bypass
+// inside the permission check, so a caller reaching here unsquashed is barely
+// gated at all. The NLM path squashes in routingNLMService.squash.
+//
+// Known ceiling: that identity carries uid and gids only, not the resolved
+// principal NFSv3 builds in BuildAuthContextWithMapping. A file whose ACL
+// grants read through a named or SID ACE rather than through OWNER@/GROUP@/
+// EVERYONE@ or the mode bits therefore evaluates as that bare uid, and a user
+// who can read it over NFSv3 can be refused the lock. Narrow this when NLM
+// gains the full per-share auth context; until then it fails closed, which is
+// the direction to be wrong in for a gate.
 //
 // Returns nil when the lock may proceed, a not-found StoreError when the handle
 // names nothing, and ErrAccessDenied otherwise.

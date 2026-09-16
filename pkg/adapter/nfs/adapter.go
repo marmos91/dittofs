@@ -832,6 +832,10 @@ func (s *NFSAdapter) SetRuntime(rtAny any) {
 // Thread safety:
 // Serve() should only be called once per NFSAdapter instance.
 func (s *NFSAdapter) Serve(ctx context.Context) error {
+	// A previous Stop latched the background-task group shut; reopen it so a
+	// restarted adapter still drains blocked NLM waiters.
+	s.reopenBackgroundTasks()
+
 	logger.Debug("NFS config", "max_connections", s.config.MaxConnections, "read_timeout", s.config.Timeouts.Read, "write_timeout", s.config.Timeouts.Write, "idle_timeout", s.config.Timeouts.Idle)
 
 	// Build the server TLS config (loads + parses the cert files now, so a bad

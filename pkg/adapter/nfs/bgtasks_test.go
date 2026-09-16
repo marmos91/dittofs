@@ -1,6 +1,7 @@
 package nfs
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -26,7 +27,7 @@ func TestGoTracked_ShutdownWaitsForRunningTask(t *testing.T) {
 
 	waited := make(chan struct{})
 	go func() {
-		s.waitForBackgroundTasks()
+		s.waitForBackgroundTasks(context.Background())
 		close(waited)
 	}()
 
@@ -58,7 +59,7 @@ func TestGoTracked_DropsTasksAfterShutdown(t *testing.T) {
 	t.Parallel()
 
 	s := &NFSAdapter{BaseAdapter: &adapter.BaseAdapter{}}
-	s.waitForBackgroundTasks()
+	s.waitForBackgroundTasks(context.Background())
 
 	ran := make(chan struct{})
 	s.goTracked(func() { close(ran) })
@@ -70,5 +71,53 @@ func TestGoTracked_DropsTasksAfterShutdown(t *testing.T) {
 	}
 
 	// A second shutdown is a no-op rather than a panic or a hang.
-	s.waitForBackgroundTasks()
+	s.waitForBackgroundTasks(context.Background())
+}
+
+// TestWaitForBackgroundTasks_HonoursTheShutdownDeadline: Stop is handed a
+// deadline and must not overrun it waiting on a task slow to notice shutdown.
+func TestWaitForBackgroundTasks_HonoursTheShutdownDeadline(t *testing.T) {
+	t.Parallel()
+
+	s := &NFSAdapter{BaseAdapter: &adapter.BaseAdapter{}}
+
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	s.goTracked(func() { <-release })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	returned := make(chan struct{})
+	go func() {
+		s.waitForBackgroundTasks(ctx)
+		close(returned)
+	}()
+
+	select {
+	case <-returned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown ignored its deadline and blocked on a task that never finished")
+	}
+}
+
+// TestReopenBackgroundTasks_RestartTracksAgain: a restarted adapter must not
+// stay latched shut, silently dropping every blocked-waiter drain thereafter.
+func TestReopenBackgroundTasks_RestartTracksAgain(t *testing.T) {
+	t.Parallel()
+
+	s := &NFSAdapter{BaseAdapter: &adapter.BaseAdapter{}}
+	s.waitForBackgroundTasks(context.Background())
+
+	s.reopenBackgroundTasks()
+
+	ran := make(chan struct{})
+	s.goTracked(func() { close(ran) })
+
+	select {
+	case <-ran:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a restarted adapter did not track new background tasks")
+	}
+	s.waitForBackgroundTasks(context.Background())
 }
