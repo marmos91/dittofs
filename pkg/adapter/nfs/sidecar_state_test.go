@@ -165,3 +165,55 @@ func TestUDPSidecarStopGivesUpOnWedgedHandler(t *testing.T) {
 		t.Fatal("expected Stop to report the wedged handler rather than block")
 	}
 }
+
+// A Stop that gives up must not strand the generation. If the claimed done
+// channel were cleared along with the conn, the handlers would outlive the
+// timeout with nothing left to join them, and the next Stop — the one with more
+// time, or the one the lifecycle group issues during shutdown — would report
+// the transport down while they were still running.
+func TestUDPSidecarStopAfterTimeoutStillJoins(t *testing.T) {
+	release := make(chan struct{})
+	var released bool
+	t.Cleanup(func() {
+		if !released {
+			close(release)
+		}
+	})
+	var finished atomic.Bool
+	a := udpAdapterWithHandlerInFlight(t, func() {
+		<-release
+		finished.Store(true)
+	})
+
+	// First Stop gives up: the handler is still blocked.
+	timedOut, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := (udpSidecar{a}).Stop(timedOut); err == nil {
+		t.Fatal("expected the first Stop to report the still-running handler")
+	}
+
+	// A second Stop must still wait for that same handler, not wave it through.
+	stopped := make(chan error, 1)
+	go func() { stopped <- (udpSidecar{a}).Stop(context.Background()) }()
+
+	select {
+	case err := <-stopped:
+		t.Fatalf("second Stop reported the transport down while the handler was still running (err=%v, finished=%v)",
+			err, finished.Load())
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	released = true
+	close(release)
+	select {
+	case err := <-stopped:
+		if err != nil {
+			t.Fatalf("second Stop: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("second Stop did not return after the handler completed")
+	}
+	if !finished.Load() {
+		t.Fatal("second Stop returned before the in-flight handler completed")
+	}
+}

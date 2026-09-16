@@ -235,7 +235,6 @@ func (u udpSidecar) Stop(ctx context.Context) error {
 	udpDone := u.a.udpDone
 	u.a.udpConn = nil
 	u.a.udpStop = nil
-	u.a.udpDone = nil
 	u.a.sidecarMu.Unlock()
 	if udpStop != nil {
 		udpStop()
@@ -252,9 +251,19 @@ func (u udpSidecar) Stop(ctx context.Context) error {
 		select {
 		case <-udpDone:
 		case <-ctx.Done():
+			// udpDone is deliberately left published. Clearing it with the
+			// others would strand this generation: the handlers outlive the
+			// timeout, and a later Stop with more time would find nothing to
+			// join and report the transport down while they still run.
 			return fmt.Errorf("nfs-udp: datagram handlers still running: %w", ctx.Err())
 		}
 	}
+	// Joined (or never bound): retire the generation so a re-enable starts clean.
+	u.a.sidecarMu.Lock()
+	if u.a.udpDone == udpDone {
+		u.a.udpDone = nil
+	}
+	u.a.sidecarMu.Unlock()
 	return nil
 }
 
