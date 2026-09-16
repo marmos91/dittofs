@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"encoding/hex"
+	"maps"
 	"slices"
 	"time"
 
@@ -139,6 +140,14 @@ func (sm *StateManager) ensureClientRecoveryLocked(clientID uint64, claimType ui
 	}
 	if err := sm.persistClientRecoveryLocked(clientID, key, record.Verifier, record.Principal); err == nil {
 		record.RecoveryPersisted = true
+		// This row supersedes any reclaim-complete mark still queued for the
+		// key. State taken in this epoch is state the next restart has to wait
+		// on, and a pending retry validates only that the client still holds
+		// the key — which it does — so left armed it would stamp the mark back
+		// onto the row just written. Dropping the entry stops the chain. A
+		// write already in flight is not recalled, and costs at most one
+		// restart that does not wait on this client.
+		delete(sm.pendingReclaimPersists, key)
 	}
 }
 
@@ -422,17 +431,12 @@ func (sm *StateManager) LoadClientRecovery(ctx context.Context, armGrace bool) i
 	}
 
 	expectedStrings := make([]string, 0, len(records))
-	bootKeys := make([]string, 0, len(records))
 	verifiers := make(map[string][8]byte, len(records))
 	for _, rec := range records {
 		// Snapshot every prior verifier (including reclaim-complete ones) so the
 		// CLAIM_PREVIOUS verifier gate can detect a rebooted client regardless of
 		// whether it is still on the waitable roster.
 		verifiers[rec.ClientIDString] = rec.BootVerifier
-		// Every loaded row is a purge candidate, reclaim-complete included: that
-		// flag says the identity finished reclaiming in an earlier window, not
-		// that it is still around.
-		bootKeys = append(bootKeys, rec.ClientIDString)
 		if rec.ReclaimComplete {
 			// Already reclaimed in a prior (very recent) grace window; do not
 			// wait on it again.
@@ -467,6 +471,11 @@ func (sm *StateManager) LoadClientRecovery(ctx context.Context, armGrace bool) i
 			"prior_clients", len(expectedStrings))
 		return 0
 	}
+
+	// Every loaded row is a purge candidate, reclaim-complete included: that flag
+	// says the identity finished reclaiming in an earlier window, not that it is
+	// still around.
+	bootKeys := slices.Collect(maps.Keys(verifiers))
 
 	sm.mu.Lock()
 	gp := NewGracePeriodState(sm.graceDuration, func() {
@@ -526,18 +535,17 @@ func (sm *StateManager) LoadClientRecovery(ctx context.Context, armGrace bool) i
 func (sm *StateManager) purgeUnreturnedRecoveryRecords(bootKeys []string) {
 	sm.mu.RLock()
 	store := sm.recoveryStore
+	if store == nil {
+		sm.mu.RUnlock()
+		return
+	}
 	live := make(map[string]struct{}, len(sm.clientsByID))
-	if store != nil {
-		for clientID := range sm.clientsByID {
-			if key := sm.recoveryKeyForClientLocked(clientID); key != "" {
-				live[key] = struct{}{}
-			}
+	for clientID := range sm.clientsByID {
+		if key := sm.recoveryKeyForClientLocked(clientID); key != "" {
+			live[key] = struct{}{}
 		}
 	}
 	sm.mu.RUnlock()
-	if store == nil {
-		return
-	}
 
 	for _, key := range bootKeys {
 		if _, ok := live[key]; ok {
