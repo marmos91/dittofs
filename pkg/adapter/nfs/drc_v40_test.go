@@ -57,13 +57,12 @@ func TestIsV40Compound(t *testing.T) {
 // TestV40Compound_ReleasesDRCSlotOnPanic checks that the in-progress slot a
 // v4.0 COMPOUND reserves is released even when the handler panics.
 //
-// This matters more than the usual panic-safety argument. lookup matches an
-// in-progress entry before it considers the entry's age, and the TTL sweep only
-// runs when a shard is at capacity, so a slot left behind is not reclaimed by
-// time: every later retransmission of that exact request is answered with a
-// silent drop. Request panics are recovered per request and leave the
-// connection open, so the client keeps its source port, keeps producing the
-// same cache key, and the request stays wedged for the life of the connection.
+// This matters more than the usual panic-safety argument. A slot left behind
+// answers every later retransmission of that exact request with a silent drop
+// until it ages past drcInProgressTTL, and the cap-driven sweep only runs when
+// a shard is at capacity, so nothing else reclaims it sooner. Request panics
+// are recovered per request and leave the connection open, so the client keeps
+// its source port and keeps producing the same cache key.
 //
 // The adapter here has no runtime, so v4Handler is nil and ProcessCompound
 // panics -- which is exactly the situation being pinned.

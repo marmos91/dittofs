@@ -232,6 +232,91 @@ func TestDRC_TTLEviction(t *testing.T) {
 	}
 }
 
+// TestDRC_InProgressSlotExpires proves a reservation stops answering
+// duplicates once it is older than drcInProgressTTL.
+//
+// Without the age check a reservation that was never released is matched on
+// identity alone: every later retransmission of that exact request is answered
+// with a silent drop, and since evictIfNeeded's sweep only runs on a full
+// shard, nothing reclaims the slot. The bound is what turns "for the life of
+// the connection" into "for drcInProgressTTL".
+func TestDRC_InProgressSlotExpires(t *testing.T) {
+	d := newDuplicateRequestCache()
+	now := time.Unix(2000, 0)
+	d.now = func() time.Time { return now }
+
+	const srcAddr = "10.0.0.5:5050"
+	const xid = uint32(11)
+	body := []byte("rename(...)")
+
+	if res, _ := d.lookup(srcAddr, xid, body); res != drcMiss {
+		t.Fatal("first lookup did not reserve a slot")
+	}
+
+	// Within the bound the original may still be executing, so a duplicate is
+	// dropped rather than run a second time.
+	now = now.Add(d.inProgressTTL - time.Nanosecond)
+	if res, _ := d.lookup(srcAddr, xid, body); res != drcInProgressDup {
+		t.Fatalf("within the in-progress bound lookup = %v, want drcInProgressDup", res)
+	}
+
+	// Past it the reservation is stale: the request runs again instead of
+	// being swallowed forever.
+	now = now.Add(2 * time.Nanosecond)
+	if res, _ := d.lookup(srcAddr, xid, body); res != drcMiss {
+		t.Fatalf("past the in-progress bound lookup = %v, want drcMiss", res)
+	}
+}
+
+// TestDRC_InProgressBound pins the constant from both sides, since each
+// direction is a different failure. Too short and a handler still running when
+// its reservation expires has the retransmission execute a second copy -- the
+// double execution the cache exists to prevent. Too long and a reservation
+// that was never released goes back to wedging its request for what is, on a
+// long-lived mount, indistinguishable from forever.
+func TestDRC_InProgressBound(t *testing.T) {
+	d := newDuplicateRequestCache()
+	if d.inProgressTTL <= d.ttl {
+		t.Fatalf("inProgressTTL (%v) must exceed the reply ttl (%v)", d.inProgressTTL, d.ttl)
+	}
+	if d.inProgressTTL > 5*time.Minute {
+		t.Fatalf("inProgressTTL (%v) is long enough to wedge a request indefinitely", d.inProgressTTL)
+	}
+}
+
+// TestDRC_CapSweepKeepsYoungReservations proves the cap-driven sweep judges a
+// reservation by its own bound. Judging every entry by the reply TTL would
+// retire a slot eight seconds into the request holding it whenever the shard
+// filled, and the retransmission would run a second copy of an operation the
+// server is still performing.
+func TestDRC_CapSweepKeepsYoungReservations(t *testing.T) {
+	d := newDuplicateRequestCache()
+	d.maxPerShard = 4
+	now := time.Unix(3000, 0)
+	d.now = func() time.Time { return now }
+
+	const srcAddr = "10.0.0.6:6060"
+	const xid = uint32(13)
+	held := []byte("mkdir(held)")
+
+	// The reservation under test, then enough completed entries on the same
+	// shard to put it at its cap. They share (srcAddr, xid) so they share a
+	// shard, and differ in body so they are distinct entries.
+	if res, _ := d.lookup(srcAddr, xid, held); res != drcMiss {
+		t.Fatal("first lookup did not reserve a slot")
+	}
+	now = now.Add(2 * d.ttl) // past the reply TTL, far inside the reservation bound
+	for i := 0; i < d.maxPerShard; i++ {
+		body := []byte{byte(i)}
+		d.lookup(srcAddr, xid, body)
+		d.record(srcAddr, xid, body, []byte{0})
+	}
+
+	if res, _ := d.lookup(srcAddr, xid, held); res != drcInProgressDup {
+		t.Fatalf("after a cap sweep the held reservation lookup = %v, want drcInProgressDup", res)
+	}
+}
+
 // TestDRC_CapEviction proves the per-shard entry cap is enforced (no unbounded
 // growth). A fixed (srcAddr, xid) pins every request to one shard, while a
 // varying body yields distinct keys, so the cap is exercised on a single shard.

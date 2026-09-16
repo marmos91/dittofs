@@ -32,11 +32,11 @@ func drcTestCall(xid uint32) *rpc.RPCCallMessage {
 // TestWithDRC_ReleasesReservationOnPanic is the reason the cache protocol lives
 // in one place.
 //
-// lookup matches an in-progress entry before it considers age, so a
-// reservation that outlives its request answers every later retransmission of
-// that exact request with a silent drop, for as long as the connection lives.
-// A handler that panics is recovered per request and leaves the connection
-// open, so only an unconditional release covers that path.
+// A reservation that outlives its request answers every later retransmission
+// of that exact request with a silent drop until it ages past
+// drcInProgressTTL. A handler that panics is recovered per request and leaves
+// the connection open, so only an unconditional release returns that request
+// to service before the bound expires.
 func TestWithDRC_ReleasesReservationOnPanic(t *testing.T) {
 	adapter, conn := drcTestConn(t)
 	const clientAddr = "10.9.8.7:1234"
@@ -134,5 +134,40 @@ func TestWithDRC_BypassRunsHandlerEveryTime(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Errorf("handler ran %d times; an ineligible request must not be cached", calls)
+	}
+}
+
+// TestV3Dispatch_RoutesThroughDRC pins the v3 path to the shared protocol:
+// one dispatch of a non-idempotent procedure leaves a recorded reply, so a
+// retransmission of it replays instead of re-executing.
+//
+// The release on a panicking handler is pinned above rather than here: the v3
+// dispatch produces a reply for every procedure it accepts, and provoking a
+// panic inside the reservation needs a runtime the adapter does not have in a
+// unit test. Both paths reserve and release through withDRC, so that is the
+// seam the panic test covers.
+func TestV3Dispatch_RoutesThroughDRC(t *testing.T) {
+	adapter, conn := drcTestConn(t)
+	const clientAddr = "10.4.5.6:2049"
+	// Not a decodable file handle, so the dispatch answers from the handler
+	// without needing a runtime behind it.
+	body := []byte{0xff, 0xff, 0xff, 0xff}
+	call := drcTestCall(0xC0DE)
+
+	if !isCacheable(call.Procedure) {
+		t.Fatalf("procedure %d is not cacheable; this test reserves no slot", call.Procedure)
+	}
+
+	reply, _ := conn.handleNFSProcedure(context.Background(), call, body, clientAddr)
+	if len(reply) == 0 {
+		t.Fatal("dispatch produced no reply; nothing could have been recorded")
+	}
+
+	res, cached := adapter.drc.lookup(clientAddr, call.XID, body)
+	if res != drcReplay {
+		t.Fatalf("retransmission lookup = %v, want drcReplay (the v3 dispatch bypassed the cache)", res)
+	}
+	if string(cached) != string(reply) {
+		t.Fatalf("replayed %v, want the recorded reply %v", cached, reply)
 	}
 }

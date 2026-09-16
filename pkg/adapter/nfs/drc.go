@@ -71,6 +71,29 @@ const (
 	// seconds of retention catches the retransmit window without holding stale
 	// replies. Mirrors the short lifetime of nfsd reply-cache DONE entries.
 	drcTTL = 8 * time.Second
+
+	// drcInProgressTTL bounds how long a reservation is allowed to answer
+	// duplicates with a drop. A duplicate arriving while the original is
+	// genuinely still executing must be dropped, so this cannot be the reply
+	// TTL: it has to exceed the slowest handler that can hold a slot, or a
+	// retransmission would re-run a non-idempotent operation the server is
+	// still performing. It is bounded above by wanting a wedged request to
+	// come back on its own within a support call rather than lasting as long
+	// as the connection does, which is what an unreleased reservation would
+	// otherwise do.
+	//
+	// decision: what the bound retires is the entry, not the request. A
+	// handler that never returns has each expiry start another execution of
+	// it, and because an entry carries no owner, the first executor's release
+	// can drop a successor's reservation and its record can promote one — so
+	// the request can also be answered twice on one XID. All of that needs a
+	// handler that has already overrun this bound, where the alternative is
+	// the request staying dropped for as long as the connection lives.
+	//
+	// ponytail: no owner token on an entry, which is what would make each of
+	// those exact rather than merely rare. Add one if a handler is ever
+	// expected to overrun this bound.
+	drcInProgressTTL = 2 * time.Minute
 )
 
 // drcState is the lifecycle of a cache entry, mirroring nfsd's RC_INPROG /
@@ -128,17 +151,19 @@ type drcShard struct {
 // NFSv3 procedures. It is partitioned into drcShardCount independently-locked
 // shards keyed by client/XID. Safe for concurrent use.
 type duplicateRequestCache struct {
-	shards      [drcShardCount]drcShard
-	maxPerShard int
-	ttl         time.Duration
-	now         func() time.Time // injectable clock for tests
+	shards        [drcShardCount]drcShard
+	maxPerShard   int
+	ttl           time.Duration
+	inProgressTTL time.Duration
+	now           func() time.Time // injectable clock for tests
 }
 
 func newDuplicateRequestCache() *duplicateRequestCache {
 	d := &duplicateRequestCache{
-		maxPerShard: drcMaxEntries / drcShardCount,
-		ttl:         drcTTL,
-		now:         time.Now,
+		maxPerShard:   drcMaxEntries / drcShardCount,
+		ttl:           drcTTL,
+		inProgressTTL: drcInProgressTTL,
+		now:           time.Now,
 	}
 	for i := range d.shards {
 		d.shards[i].entries = make(map[drcKey]*drcEntry)
@@ -187,6 +212,16 @@ func isCacheable(procedure uint32) bool {
 	return ok
 }
 
+// boundFor returns how long an entry in this state stays valid: a recorded
+// reply is worth replaying for the retransmit window, while a reservation has
+// to outlive the request it is held for.
+func (d *duplicateRequestCache) boundFor(state drcState) time.Duration {
+	if state == drcInProgress {
+		return d.inProgressTTL
+	}
+	return d.ttl
+}
+
 // lookup classifies an incoming request and, on a miss, atomically reserves an
 // in-progress slot so concurrent duplicates are detected. The key is built from
 // the source address, XID and a checksum of the request body.
@@ -200,14 +235,19 @@ func (d *duplicateRequestCache) lookup(srcAddr string, xid uint32, body []byte) 
 	defer s.mu.Unlock()
 
 	if e, ok := s.entries[key]; ok {
+		fresh := d.now().Sub(e.inserted) < d.boundFor(e.state)
 		switch {
-		case e.state == drcInProgress:
+		case e.state == drcInProgress && fresh:
 			return drcInProgressDup, nil
-		case d.now().Sub(e.inserted) < d.ttl:
+		case e.state == drcDone && fresh:
 			return drcReplay, e.reply
 		default:
-			// DONE but past TTL: expire lazily and fall through so a long-after
-			// XID reuse is treated as a fresh request, not a false replay.
+			// Past its bound: expire lazily and fall through so the request is
+			// treated as a fresh one. For a DONE entry that keeps a long-after
+			// XID reuse from being answered with a false replay; for an
+			// in-progress one it is the only thing that reclaims a reservation
+			// that was never released, since evictIfNeeded sweeps only a shard
+			// that is already at its cap.
 			delete(s.entries, key)
 		}
 	}
@@ -259,9 +299,14 @@ func (d *duplicateRequestCache) abort(srcAddr string, xid uint32, body []byte) {
 
 // evictIfNeeded enforces the per-shard entry cap. The cap is per-shard by
 // design (drcMaxEntries/drcShardCount): a global counter would re-introduce the
-// cross-shard contention the sharding removes. It first drops TTL-expired
-// entries; if still at capacity it evicts the oldest entry (approximate LRU by
-// insertion/completion time). Caller must hold s.mu.
+// cross-shard contention the sharding removes. It first drops entries past
+// their own bound; if still at capacity it evicts the oldest entry
+// (approximate LRU by insertion/completion time). Caller must hold s.mu.
+//
+// The sweep judges a reservation by drcInProgressTTL rather than by the reply
+// TTL, or a full shard would retire a reservation seconds into the request it
+// is holding and let the retransmission run a second copy of it — the bound
+// drcInProgressTTL exists to keep well clear of.
 func (d *duplicateRequestCache) evictIfNeeded(s *drcShard) {
 	if len(s.entries) < d.maxPerShard {
 		return
@@ -269,7 +314,7 @@ func (d *duplicateRequestCache) evictIfNeeded(s *drcShard) {
 
 	now := d.now()
 	for k, e := range s.entries {
-		if now.Sub(e.inserted) >= d.ttl {
+		if now.Sub(e.inserted) >= d.boundFor(e.state) {
 			delete(s.entries, k)
 		}
 	}
@@ -277,17 +322,25 @@ func (d *duplicateRequestCache) evictIfNeeded(s *drcShard) {
 		return
 	}
 
-	// Still full: evict the single oldest entry to make room.
-	var oldestKey drcKey
-	var oldest time.Time
-	first := true
+	// Still full: evict one entry to make room, oldest first but preferring a
+	// recorded reply over a reservation. Dropping a reply costs a
+	// retransmission its replay; dropping a reservation lets a duplicate run a
+	// second copy of a request that is still executing, which is worse. A
+	// shard holding nothing but reservations has no such choice.
+	var victim drcKey
+	var victimAge time.Time
+	var found, victimDone bool
 	for k, e := range s.entries {
-		if first || e.inserted.Before(oldest) {
-			oldestKey, oldest, first = k, e.inserted, false
+		done := e.state == drcDone
+		if victimDone && !done {
+			continue
+		}
+		if !found || (done && !victimDone) || e.inserted.Before(victimAge) {
+			victim, victimAge, found, victimDone = k, e.inserted, true, done
 		}
 	}
-	if !first {
-		delete(s.entries, oldestKey)
+	if found {
+		delete(s.entries, victim)
 	}
 }
 
@@ -295,13 +348,13 @@ func (d *duplicateRequestCache) evictIfNeeded(s *drcShard) {
 //
 // The cache has a three-phase protocol — look up, reserve, then either record
 // the reply or release the reservation — and getting the last phase wrong is
-// not a visible failure. lookup matches an in-progress entry before it
-// considers age, so a reservation left behind answers every later
-// retransmission of that exact request with a silent drop, for as long as the
-// connection lives. Holding the protocol in one place is what makes the
-// release unconditional: it is deferred, so it covers early returns and a
-// handler that panics and is recovered per request, and it is a no-op once the
-// reply has been recorded.
+// not a visible failure: a reservation left behind answers every later
+// retransmission of that exact request with a silent drop until it ages past
+// drcInProgressTTL, which is minutes of a wedged request rather than a
+// refused one. Holding the protocol in one place is what makes the release
+// unconditional: it is deferred, so it covers early returns and a handler that
+// panics and is recovered per request, and it is a no-op once the reply has
+// been recorded.
 //
 // fn reports whether its reply may be recorded. That decision stays with the
 // caller because the programs disagree on it: NFSv3 caches whatever reply it
