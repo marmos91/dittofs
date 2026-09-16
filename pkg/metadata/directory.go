@@ -259,9 +259,16 @@ func (s *Service) RemoveDirectory(ctx *AuthContext, parentHandle FileHandle, nam
 			return err
 		}
 
-		// Update parent's link count (removing ".." reference)
+		// Update parent's link count (removing ".." reference).
+		//
+		// The read is tx-critical: swallowing its error commits the rmdir with
+		// the parent's nlink still counting a ".." that is gone, and every
+		// other caller of this pair treats a failed count the same way.
 		parentLinkCount, err := tx.GetLinkCount(ctx.Context, parentHandle)
-		if err == nil && parentLinkCount > 0 {
+		if err != nil {
+			return err
+		}
+		if parentLinkCount > 0 {
 			if err := tx.SetLinkCount(ctx.Context, parentHandle, parentLinkCount-1); err != nil {
 				return err
 			}

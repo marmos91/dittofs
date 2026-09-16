@@ -168,6 +168,24 @@ func (s *Service) RemoveFile(ctx *AuthContext, parentHandle FileHandle, name str
 		// making the content eligible for deletion. Reading via tx.GetLinkCount
 		// also registers the key for the backend's read-write conflict
 		// detection so a racing writer triggers an automatic retry.
+		// The inode as committed right now. `file` was read before the
+		// transaction opened, and an unlink changes nothing on it but Ctime and
+		// the link count, so every other column must come from here — writing
+		// the earlier copy back reverts whatever a concurrent WRITE committed
+		// in the gap, and a retry would re-apply that same stale copy rather
+		// than correct it.
+		txFile, fErr := tx.GetFile(ctx.Context, fileHandle)
+		if fErr != nil {
+			return fErr
+		}
+		if txFile == nil {
+			return &StoreError{
+				Code:    ErrNotFound,
+				Message: "file disappeared while it was being removed",
+				Path:    name,
+			}
+		}
+
 		linkCount, lcErr := tx.GetLinkCount(ctx.Context, fileHandle)
 		if lcErr != nil {
 			// Never guess the count. Assuming "last link" would report the
@@ -200,14 +218,14 @@ func (s *Service) RemoveFile(ctx *AuthContext, parentHandle FileHandle, name str
 			}
 
 			// Update file's ctime
-			file.Ctime = now
-			if err := tx.UpdateAttrs(ctx.Context, file); err != nil {
+			txFile.Ctime = now
+			if err := tx.UpdateAttrs(ctx.Context, txFile); err != nil {
 				return err
 			}
 		} else {
 			// Last link - set nlink=0 but keep metadata for POSIX compliance
 			lastLink = true
-			returnFile.PayloadID = file.PayloadID
+			returnFile.PayloadID = txFile.PayloadID
 			returnFile.Nlink = 0
 			returnFile.Ctime = now
 
@@ -216,12 +234,12 @@ func (s *Service) RemoveFile(ctx *AuthContext, parentHandle FileHandle, name str
 				return err
 			}
 
-			// Update file's ctime and nlink. Nlink stays 0 on a later
-			// decrement attempt, which no backend persists from the attribute
-			// row — SetLinkCount above is the sole authority for the count.
-			file.Ctime = now
-			file.Nlink = 0
-			if err := tx.UpdateAttrs(ctx.Context, file); err != nil {
+			// Update file's ctime and nlink. SetLinkCount above is the count's
+			// only authority on read; the row is re-read per attempt, so this
+			// zero cannot reach a later decrement attempt either.
+			txFile.Ctime = now
+			txFile.Nlink = 0
+			if err := tx.UpdateAttrs(ctx.Context, txFile); err != nil {
 				return err
 			}
 		}

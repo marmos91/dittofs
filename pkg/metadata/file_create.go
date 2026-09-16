@@ -149,8 +149,9 @@ func (s *Service) CreateHardLink(ctx *AuthContext, dirHandle FileHandle, name st
 	wcc := &DirWcc{}
 
 	// Serialize concurrent links onto this exact (dir, name) so the
-	// in-transaction existence recheck stays atomic on a READ COMMITTED store,
-	// matching the create path. Released once the commit returns.
+	// in-transaction existence recheck stays atomic on a store that does not
+	// abort read-write conflicts, matching the create path. Released once the
+	// commit returns.
 	unlockCreateName := s.lockCreateName(dirHandle, name)
 
 	// Execute all write operations in a single transaction for better performance.
@@ -184,7 +185,9 @@ func (s *Service) CreateHardLink(ctx *AuthContext, dirHandle FileHandle, name st
 		// weaker lock first and upgrading leaves a remove that takes the
 		// stronger one directly to deadlock against this, which postgres
 		// resolves only after a full deadlock_timeout. Same order as RemoveFile
-		// means neither waits on the other's escalation.
+		// means neither waits on the other's escalation. Move still takes them
+		// the other way round, so a link racing a rename of one inode is not
+		// covered by this.
 		//
 		// A failed read must abort: writing an nlink below the number of
 		// directory entries pointing at the file lets a later unlink free
@@ -220,10 +223,22 @@ func (s *Service) CreateHardLink(ctx *AuthContext, dirHandle FileHandle, name st
 		// Ctime carries over from this operation: the copy read before the
 		// transaction opened would write back over whatever a concurrent WRITE
 		// has committed since.
+		//
+		// The re-read's failure is the operation's failure. Falling back to
+		// that earlier copy would write it back after all, and UpdateAttrs is
+		// allowed to create a row that is missing — so a target unlinked
+		// between the two reads would be recreated carrying stale state.
 		now := time.Now()
-		txTarget := target
-		if fresh, tErr := tx.GetFile(ctx.Context, targetHandle); tErr == nil && fresh != nil {
-			txTarget = fresh
+		txTarget, tErr := tx.GetFile(ctx.Context, targetHandle)
+		if tErr != nil {
+			return tErr
+		}
+		if txTarget == nil {
+			return &StoreError{
+				Code:    ErrNotFound,
+				Message: "hard link target disappeared while the link was being created",
+				Path:    name,
+			}
 		}
 		txTarget.Ctime = now
 		if err := tx.UpdateAttrs(ctx.Context, txTarget); err != nil {
@@ -464,8 +479,8 @@ func (s *Service) createEntry(
 	// bump per-parent so the counter stays exact and atomic with the child write;
 	// file creates never take this lock and stay fully concurrent.
 	// Serialize concurrent creates of this exact (parent, name) so the
-	// in-transaction existence recheck below is atomic even on a store whose
-	// create transaction runs at READ COMMITTED. Held across the recheck and the
+	// in-transaction existence recheck below is atomic even on a store that does
+	// not abort read-write conflicts. Held across the recheck and the
 	// commit — a losing racer then rechecks against the committed row and returns
 	// ErrAlreadyExists — and released once the commit returns, before the
 	// post-commit cache/timestamp work. Distinct names stay concurrent.

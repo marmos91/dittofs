@@ -78,6 +78,12 @@ func CloneWholeFile(
 	selfClone := false
 	var copied []block.ChunkRef
 	err := metadataStore.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		// Cleared per attempt: the transaction is retried on a transient
+		// conflict and the post-commit work below is gated on these, so a value
+		// left by a rolled-back attempt would describe work that never landed.
+		selfClone = false
+		copied = nil
+
 		// Bind the active txn into the context so the per-share coordinator's
 		// RefCount UPDATEs (driven by engine.CopyPayload) join the same txn as
 		// the destination UpdateAttrs and commit/roll back together.
