@@ -471,7 +471,11 @@ func (sm *StateManager) LoadClientRecovery(ctx context.Context, armGrace bool) i
 	sm.mu.Lock()
 	gp := NewGracePeriodState(sm.graceDuration, func() {
 		logger.Info("NFSv4 grace period ended (boot-loaded roster)")
-		sm.purgeUnreturnedRecoveryRecords(bootKeys)
+		// Off the caller's goroutine on purpose. This callback fires from
+		// whatever ended the window, which includes DESTROY_CLIENTID holding
+		// sm.mu and the reclaiming OPEN that drains the roster, and the purge
+		// both takes sm.mu and does one bounded store round-trip per stale row.
+		go sm.purgeUnreturnedRecoveryRecords(bootKeys)
 	})
 	sm.gracePeriod = gp
 	sm.mu.Unlock()
@@ -512,6 +516,11 @@ func (sm *StateManager) LoadClientRecovery(ctx context.Context, armGrace bool) i
 // against a client count in the tens, and one store delete per stale row.
 // Batch the deletes or index clients by recovery key if a deployment ever boots
 // with enough of either for this to show up.
+//
+// Runs on its own goroutine, so the live set is read a moment after the window
+// closed rather than at the instant it closed. Both directions of that skew are
+// safe: a client that registers just after keeps its row, and one that is
+// destroyed just after has its row dropped by the destroy path itself.
 //
 // Caller must NOT hold sm.mu.
 func (sm *StateManager) purgeUnreturnedRecoveryRecords(bootKeys []string) {
