@@ -188,8 +188,9 @@ func ReadRPCRecord(r io.Reader, firstHeader *FragmentHeader, clientAddr string) 
 // The demultiplexer is resolved through pending rather than passed in, and only
 // once the message has turned out to be a REPLY: the fore channel is every
 // message on a v3 or v4.0 connection and most of them on a v4.1 one, and it has
-// no reason to pay for the lookup. When it resolves to nil (no backchannel
-// bound), the message falls through as a CALL.
+// no reason to pay for the lookup. A REPLY is consumed either way — with no
+// table it is dropped rather than routed — because handing one back as a CALL
+// makes rpc.ReadCall reject it and close a connection other sessions are using.
 func DemuxBackchannelReply(message []byte, connectionID uint64, pending func() *state.PendingCBReplies) bool {
 	if len(message) < 8 {
 		return false

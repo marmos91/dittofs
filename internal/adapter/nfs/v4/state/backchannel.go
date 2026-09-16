@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -1104,37 +1105,43 @@ func (sm *StateManager) getBackBoundConnWriter(sessionID types.SessionId4, exclu
 // back-bound connection. Caller must hold sm.connMu.RLock.
 
 func (sm *StateManager) getBackBoundConnWriterLocked(sessionID types.SessionId4, excludeConnID uint64) (uint64, ConnWriter, *PendingCBReplies, bool) {
-	bindings := sm.connBySession[sessionID]
-	var bestConn *BoundConnection
-	var bestTime time.Time
-
-	for _, b := range bindings {
+	// Most recently active FIRST, but not most recently active ONLY. A binding
+	// exists before its writer and reply table are registered, and it outlives
+	// them when the connection is retired — so the freshest binding is regularly
+	// the one that cannot carry a callback. Answering "no path" on that basis,
+	// while an older live connection on the same session sits usable, is how a
+	// recall ends up revoking a delegation and a probe ends up publishing a down
+	// verdict that nothing re-runs.
+	//
+	// So: rank the candidates and walk them, rather than picking one and
+	// testing it.
+	candidates := make([]*BoundConnection, 0, len(sm.connBySession[sessionID]))
+	for _, b := range sm.connBySession[sessionID] {
 		if b.ConnectionID == excludeConnID {
 			continue
 		}
 		if b.Direction != ConnDirBack && b.Direction != ConnDirBoth {
 			continue
 		}
-		if bestConn == nil || b.LastActivity.After(bestTime) {
-			bestConn = b
-			bestTime = b.LastActivity
+		candidates = append(candidates, b)
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].LastActivity.After(candidates[j].LastActivity)
+	})
+
+	for _, b := range candidates {
+		writer, ok := sm.connWriters[b.ConnectionID]
+		if !ok {
+			continue
 		}
+		pending := sm.cbRepliesByConn[b.ConnectionID]
+		if pending == nil {
+			continue
+		}
+		return b.ConnectionID, writer, pending, true
 	}
 
-	if bestConn == nil {
-		return 0, nil, nil, false
-	}
-
-	writer, ok := sm.connWriters[bestConn.ConnectionID]
-	if !ok {
-		return 0, nil, nil, false
-	}
-	pending := sm.cbRepliesByConn[bestConn.ConnectionID]
-	if pending == nil {
-		return 0, nil, nil, false
-	}
-
-	return bestConn.ConnectionID, writer, pending, true
+	return 0, nil, nil, false
 }
 
 // UpdateBackchannelParams stores new callback parameters on a session.

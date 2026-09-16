@@ -1641,3 +1641,44 @@ func TestSendCallback_ARetiredWaiterIsALocalOutcome(t *testing.T) {
 			"verdict rather than a local one: %v", err)
 	}
 }
+
+// TestGetBackBoundConnWriter_SkipsABindingWithNoWriter pins that selection ranks
+// candidates rather than testing one. A binding exists before its writer and
+// reply table are registered and outlives them once the connection is retired,
+// so the most recently active binding is regularly the one that cannot carry a
+// callback. Answering "no path" on that basis — with an older live connection on
+// the same session sitting usable — is how a recall revokes a delegation and a
+// probe publishes a down verdict nothing re-runs.
+func TestGetBackBoundConnWriter_SkipsABindingWithNoWriter(t *testing.T) {
+	_, sm, sessionID := createTestBackchannelSender(t)
+
+	// The freshest binding, with no writer registered for it yet.
+	bare := uint64(7601)
+	sm.connMu.Lock()
+	b1 := &BoundConnection{ConnectionID: bare, SessionID: sessionID, Direction: ConnDirBoth}
+	sm.connByID[bare] = append(sm.connByID[bare], b1)
+	sm.connBySession[sessionID] = append(sm.connBySession[sessionID], b1)
+	sm.connMu.Unlock()
+
+	// An older one that is fully usable.
+	usable := uint64(7602)
+	sm.RegisterConnWriter(usable, func([]byte) error { return nil })
+	if _, err := sm.BindConnToSession(usable, sessionID, types.CDFC4_FORE_OR_BOTH); err != nil {
+		t.Fatalf("BindConnToSession: %v", err)
+	}
+
+	setBindingActivity(t, sm, sessionID, bare, time.Now())
+	setBindingActivity(t, sm, sessionID, usable, time.Now().Add(-time.Minute))
+
+	connID, writer, pending, ok := sm.getBackBoundConnWriter(sessionID, 0)
+	if !ok {
+		t.Fatal("no back-bound connection found although one is registered and usable: " +
+			"a binding with no writer was treated as the session having no path")
+	}
+	if connID != usable {
+		t.Errorf("selected connection %d, want the usable %d", connID, usable)
+	}
+	if writer == nil || pending == nil {
+		t.Error("selection returned a connection without a writer or reply table")
+	}
+}
