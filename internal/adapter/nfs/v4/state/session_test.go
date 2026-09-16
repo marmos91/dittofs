@@ -1231,6 +1231,12 @@ func TestReaper_ExpiredLeaseReleasesOpenState(t *testing.T) {
 		t.Fatalf("CreateSession error: %v", err)
 	}
 
+	// A conformant v4.1 client sends RECLAIM_COMPLETE before its first
+	// non-reclaim lock, and is held in grace until it does.
+	if err := sm.ReclaimComplete(clientID, false); err != nil {
+		t.Fatalf("ReclaimComplete error: %v", err)
+	}
+
 	lm := lock.NewManager()
 	sm.SetLockManagerResolver(func(_ []byte) lock.LockManager { return lm })
 

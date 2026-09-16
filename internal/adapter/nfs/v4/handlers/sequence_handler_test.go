@@ -39,7 +39,14 @@ func createSessionOn(t *testing.T, h *Handler, ownerID string) types.SessionId4 
 	t.Helper()
 	clientID, seqID := registerExchangeID(t, h, ownerID)
 	secParms := []types.CallbackSecParms4{{CbSecFlavor: 0}} // AUTH_NONE
-	return runCreateSession(t, h, encodeCreateSessionArgsWithSec(clientID, seqID, 0, secParms)).SessionID
+	sessionID := runCreateSession(t, h, encodeCreateSessionArgsWithSec(clientID, seqID, 0, secParms)).SessionID
+
+	// A conformant v4.1 client sends RECLAIM_COMPLETE before its first
+	// non-reclaim locking operation, and is held in grace until it does.
+	if err := h.StateManager.ReclaimComplete(clientID, false); err != nil {
+		t.Fatalf("ReclaimComplete(%s): %v", ownerID, err)
+	}
+	return sessionID
 }
 
 // runCreateSession sends the given CREATE_SESSION args as a single-op COMPOUND

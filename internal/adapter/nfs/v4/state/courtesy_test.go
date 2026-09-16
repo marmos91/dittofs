@@ -33,6 +33,11 @@ func courtesyClient(t *testing.T, sm *StateManager, ownerID string) uint64 {
 		defaultForeAttrs(), defaultBackAttrs(), 0, nil); err != nil {
 		t.Fatalf("CreateSession(%s): %v", ownerID, err)
 	}
+	// A conformant v4.1 client sends RECLAIM_COMPLETE before its first
+	// non-reclaim lock, and is held in grace until it does.
+	if err := sm.ReclaimComplete(res.ClientID, false); err != nil {
+		t.Fatalf("ReclaimComplete: %v", err)
+	}
 	return res.ClientID
 }
 
