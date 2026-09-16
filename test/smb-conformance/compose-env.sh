@@ -97,6 +97,13 @@ claim_exclusive_stack() {
         owner="$(cat "${dir}/pid" 2>/dev/null || true)"
     fi
 
+    # Same reason the container-scan refusal writes one: this exits from inside
+    # the graded step, and without a verdict the common runner renders the exit
+    # status as "1 new failure(s)" for a run in which no test started.
+    if [[ -n "${DITTOFS_RESULTS_DIR:-}" && -d "${DITTOFS_RESULTS_DIR}" ]]; then
+        echo "refused 0 0 0" > "${DITTOFS_RESULTS_DIR}/verdict"
+    fi
+
     cat >&2 <<EOF
 
 ERROR: another run already holds this stack (Compose project ${COMPOSE_PROJECT_NAME},
@@ -116,6 +123,15 @@ release_exclusive_stack() {
     STACK_CLAIM_DIR=""
 }
 
+# decision: this scan is advisory and deliberately not atomic with the compose
+# up that follows. It exists for the case the claim cannot see — a stack left by
+# an earlier run, or by a DIFFERENT checkout, whose project name is not the one
+# claim_exclusive_stack holds. Two different checkouts starting together both
+# pass here and then race for the fixed host ports; the loser fails at its bind,
+# which is loud and attributable to a port rather than to the server under test.
+# Same-checkout concurrency is what the claim covers, and that one is atomic.
+# Take a host-wide lock across every checkout only if a port-bind loss is ever
+# mistaken for a server fault in practice.
 require_exclusive_stack() {
     # A docker that cannot be reached reports nothing rather than aborting the
     # run here; the first compose command will fail with a better message.

@@ -2,6 +2,12 @@
 # Orchestrates DittoFS + Microsoft WindowsProtocolTestSuites (WPTS) + smbtorture
 #
 # Usage:
+#   Source compose-env.sh first. The harness names its Compose project after the
+#   checkout it runs from, so a bare `docker compose` here targets a DIFFERENT
+#   project ("smb-conformance") and will neither find the runner's containers nor
+#   clean them up:
+#
+#   . ./compose-env.sh
 #   docker compose up -d dittofs                   # Start DittoFS only
 #   docker compose --profile test up               # Start DittoFS + WPTS
 #   docker compose --profile smbtorture up         # Start DittoFS + smbtorture
