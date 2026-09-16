@@ -1232,6 +1232,14 @@ func ProcessAppInstanceId(
 	}
 
 	claimedRows := func() []*lock.PersistedDurableHandle {
+		// Nothing out here was authorized, and the claim below skips every row
+		// that is not — so the second listing could only produce an empty set.
+		// Returning first keeps a CREATE with no displaceable row from taking
+		// the process-wide mutex and paying a store round trip for it.
+		if len(persistedAuthorized) == 0 {
+			return nil
+		}
+
 		handler.durablePurgeMu.Lock()
 		defer handler.durablePurgeMu.Unlock()
 
