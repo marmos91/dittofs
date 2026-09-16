@@ -86,6 +86,21 @@ type CallbackRequest struct {
 
 	// ResultCh receives the result of the callback send. Buffered (capacity 1).
 	ResultCh chan error
+
+	// Started is closed by the sender when it dequeues this request and begins
+	// processing it, or left nil by callers that do not care. Sends are
+	// serialised, so a request can sit in the queue behind another callback for
+	// that callback's whole retry schedule; a caller whose own deadline is a
+	// budget for the send uses this to tell "still queued" from "being sent",
+	// rather than spending its send budget on the queue wait.
+	Started chan struct{}
+}
+
+// signalStarted closes the dequeue signal, if the caller asked for one.
+func (req CallbackRequest) signalStarted() {
+	if req.Started != nil {
+		close(req.Started)
+	}
 }
 
 // ============================================================================
@@ -317,6 +332,9 @@ func (bs *BackchannelSender) Run(ctx context.Context) {
 				"session_id", bs.sessionID.String())
 			return
 		case req := <-bs.queue:
+			// Signal the dequeue before any work, so a caller waiting on it
+			// starts its own send budget at the moment the queue wait ends.
+			req.signalStarted()
 			bs.sendCallbackWithRetry(ctx, req)
 		}
 	}

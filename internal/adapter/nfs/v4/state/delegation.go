@@ -748,18 +748,33 @@ func (sm *StateManager) nextUntriedSender(clientID uint64, tried map[*Backchanne
 // attemptRecallV41 sends one CB_RECALL through one sender and waits for its
 // result. It starts the delegation's long timer on success; every other outcome
 // leaves the timer to the caller, which knows whether any session is left.
+//
+// The wait has two bounds because a sender serialises its sends and the recall
+// spends two different kinds of time before its result arrives: time queued
+// behind the callback in flight, and time being sent. Only the second is what
+// worstCaseSendDuration describes, so the first is bounded separately and the
+// send watchdog starts when the request is dequeued rather than when it was
+// enqueued. Bounding only the total would revoke a delegation whose callback
+// was still deliverable, because the queue wait is charged against a budget
+// that exists to cover the send.
+//
 // recallResultGrace is the margin added to a sender's worst-case retry schedule
 // before the recall gives up waiting for it. It covers scheduling delay only:
 // the wait exists to catch a sender that will never report at all, not to
 // out-wait one that is still working.
-const recallResultGrace = 5 * time.Second
+//
+// A var rather than a const so a test can shrink the margin and still exercise
+// the same two-phase wait; nothing outside a test writes it.
+var recallResultGrace = 5 * time.Second
 
 func (sm *StateManager) attemptRecallV41(deleg *DelegationState, sender *BackchannelSender, recallOp []byte) recallOutcome {
 	resultCh := make(chan error, 1)
+	started := make(chan struct{})
 	req := CallbackRequest{
 		OpCode:   types.OP_CB_RECALL,
 		Payload:  recallOp,
 		ResultCh: resultCh,
+		Started:  started,
 	}
 
 	if !sender.Enqueue(req) {
@@ -802,6 +817,28 @@ func (sm *StateManager) attemptRecallV41(deleg *DelegationState, sender *Backcha
 			"client_id", deleg.ClientID,
 			"deleg_type", deleg.DelegType)
 		return recallSent
+	}
+
+	// Queue wait. The sender serialises sends, so this request can sit behind
+	// another callback for that callback's whole retry schedule before its own
+	// begins. The queue wait is bounded by that same schedule: waiting longer
+	// than one full in-flight callback means the sender is not draining the
+	// queue at all, which is a wedged sender and a local outcome rather than
+	// evidence about the client.
+	select {
+	case <-started:
+		// Dequeued; the send watchdog below starts now, not at enqueue.
+	case err := <-resultCh:
+		return classify(err)
+	case <-sender.stopCh:
+		logger.Debug("CB_RECALL (v4.1) aborted while queued: backchannel sender stopped",
+			"client_id", deleg.ClientID, "session_id", sender.sessionID.String())
+		return recallSenderLocal
+	case <-time.After(sender.worstCaseSendDuration() + recallResultGrace):
+		logger.Warn("CB_RECALL (v4.1) never dequeued: sender did not begin the request within one retry schedule",
+			"client_id", deleg.ClientID, "session_id", sender.sessionID.String(),
+			"waited", sender.worstCaseSendDuration()+recallResultGrace)
+		return recallSenderLocal
 	}
 
 	select {
