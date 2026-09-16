@@ -5,6 +5,7 @@ package postgres_test
 import (
 	"context"
 	"os"
+	"strconv"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -20,9 +21,23 @@ func postgresTestConfig() (*postgres.PostgresMetadataStoreConfig, metadata.Files
 	if dbName == "" {
 		dbName = "dittofs_test"
 	}
+	// Host and port take the same override shape as the database name, so the
+	// suite can run against an instance that is not on the CI default port.
+	host := os.Getenv("DITTOFS_TEST_PG_HOST")
+	if host == "" {
+		host = "localhost"
+	}
+	port := 5432
+	if p := os.Getenv("DITTOFS_TEST_PG_PORT"); p != "" {
+		parsed, err := strconv.Atoi(p)
+		if err != nil {
+			panic("DITTOFS_TEST_PG_PORT: " + err.Error())
+		}
+		port = parsed
+	}
 	cfg := &postgres.PostgresMetadataStoreConfig{
-		Host:        "localhost",
-		Port:        5432,
+		Host:        host,
+		Port:        port,
 		Database:    dbName,
 		User:        "postgres",
 		Password:    "postgres",
