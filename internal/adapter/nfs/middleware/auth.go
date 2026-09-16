@@ -18,7 +18,7 @@ import (
 // this layer only extracts the wire credentials: the UID-to-user resolution
 // that turns them into an authorization decision happens later, when the
 // per-operation auth context is built (auth.BuildAuthContext).
-var unixTranslator = nfsauth.NewUnixTranslator(nil)
+var unixTranslator = nfsauth.NewUnixTranslator()
 
 // ExtractHandlerContext creates an NFSHandlerContext from an RPC call message.
 // This centralizes authentication extraction logic and ensures consistent
