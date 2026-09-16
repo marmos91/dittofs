@@ -104,6 +104,18 @@ func (s *Service) Start(ctx context.Context) {
 			case <-s.stopCh:
 				return
 			case <-ticker.C:
+				// Re-checked, because a select with two ready cases picks
+				// uniformly: a tick due in the same instant Stop is requested
+				// has an even chance of winning, and then creates or prunes a
+				// snapshot during a shutdown that is already closing the
+				// stores under it.
+				select {
+				case <-ctx.Done():
+					return
+				case <-s.stopCh:
+					return
+				default:
+				}
 				s.tick(ctx)
 			}
 		}
