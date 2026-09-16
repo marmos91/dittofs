@@ -143,8 +143,8 @@ func runStart(cmd *cobra.Command, args []string) error {
 	}
 	// Registered before any other consumer takes a reference, so it closes last:
 	// after the netlogon defer and after the shutdown wait below returns. The
-	// runtime's background workers reach this store too, and the ones that do
-	// are joined by the shutdown drain before Serve returns. Cancelling here
+	// runtime's background workers reach this store too, and the shutdown drain
+	// waits for them — within its own deadline, which it can lose. Cancelling here
 	// rather than relying on the root defer keeps that true for a ctx-bound
 	// worker added later: the root cancel is registered before this and would
 	// otherwise run after it.
@@ -154,7 +154,10 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// returns when its own deadline expires whether or not handlers have
 	// finished, and API handlers hold cpStore directly, so an ordinary SIGTERM
 	// with a slow handler reaches this close the same way the forced-exit
-	// branch does. Nothing here waits for handlers to drain.
+	// branch does. Nothing here waits for handlers to drain. The metrics server
+	// is a second such reader and is not waited for either: its collector calls
+	// Runtime.MetricsSnapshot, which lists snapshots out of this store for every
+	// share, so a scrape in flight races this close exactly as a handler does.
 	//
 	// What sql.DB.Close actually does cuts both ways, and the second way is why
 	// this is bounded: it stops new queries and makes any later use return an

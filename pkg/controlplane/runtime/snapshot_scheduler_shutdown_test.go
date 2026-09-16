@@ -315,3 +315,70 @@ func TestSettingsWatcher_SecondStartDoesNotStrandTheFirst(t *testing.T) {
 		t.Error("the polling goroutine outlived Stop")
 	}
 }
+
+// TestDrainStartupWorkers_AWedgedWatcherDoesNotSkipTheSnapshotDrain pins the
+// budget split between the drain's two joins. Both are bounded, and while they
+// shared one window the first to hang spent it: the snapshot drain then ran
+// under an already-expired context, so it returned without waiting and the
+// store closed under a tick still inside it. That is the failure this path
+// exists to prevent, skipped on precisely the boot where it matters.
+//
+// The wedged watcher here never returns from Stop, so it always exhausts its
+// own window. The scheduler tick is released after that window has passed but
+// while a second one would still be open — so it is joined only if the drain
+// gave the snapshot side a budget of its own.
+func TestDrainStartupWorkers_AWedgedWatcherDoesNotSkipTheSnapshotDrain(t *testing.T) {
+	defer func(d time.Duration) { startupDrainTimeout = d }(startupDrainTimeout)
+	startupDrainTimeout = 500 * time.Millisecond
+
+	deps := &blockingSchedDeps{
+		entered:  make(chan struct{}),
+		release:  make(chan struct{}),
+		returned: make(chan struct{}),
+	}
+
+	rt := New(nil)
+	svc := snapshotsched.New(deps, time.Millisecond)
+	rt.mu.Lock()
+	rt.snapSchedSvc = svc
+	rt.mu.Unlock()
+	svc.Start(context.Background())
+
+	select {
+	case <-deps.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("scheduler never entered a tick")
+	}
+
+	// A watcher whose goroutine never exits: Stop blocks for the whole window.
+	rt.settingsWatcher = NewSettingsWatcher(nil, time.Hour)
+	rt.settingsWatcher.stopped = make(chan struct{})
+	rt.settingsWatcher.stopCh = make(chan struct{})
+
+	// Released after the watcher's window is spent, inside where a second one
+	// would run. Sharing a single window puts this after every deadline.
+	go func() {
+		time.Sleep(startupDrainTimeout + startupDrainTimeout/2)
+		close(deps.release)
+	}()
+
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		rt.drainStartupWorkers(context.Background())
+	}()
+
+	select {
+	case <-drained:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the startup drain never returned")
+	}
+
+	select {
+	case <-deps.returned:
+	default:
+		t.Fatal("the startup drain returned with a scheduler tick still in the control-plane " +
+			"store: the wedged settings-watcher join spent the snapshot drain's budget too, " +
+			"so the store closes under a running tick")
+	}
+}

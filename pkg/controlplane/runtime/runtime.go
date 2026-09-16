@@ -1016,17 +1016,26 @@ func (r *Runtime) Serve(ctx context.Context) error {
 // Both joins are idempotent and return at once when the work is already
 // stopped, so this is safe to run after a shutdown that already drained.
 func (r *Runtime) drainStartupWorkers(ctx context.Context) {
-	stopCtx, cancelStop := context.WithTimeout(context.WithoutCancel(ctx), startupDrainTimeout)
-	defer cancelStop()
+	parent := context.WithoutCancel(ctx)
 
 	// The settings watcher is started before the adapter load that is the
 	// likeliest startup failure, and it polls the same store on a timer. Stop
 	// waits for a poll already in flight, which is what makes it a join — but it
 	// takes no context, and on a startup error the context that poll is running
 	// under is still live, so a store call that hangs would hang this join and
-	// with it the process. Bounded by stopCtx like the scheduler's, and it says
-	// which of the two happened.
+	// with it the process. Bounded like the scheduler's, and it says which of
+	// the two happened.
+	//
+	// decision: this join gets its own budget rather than sharing one window
+	// with the snapshot drain below. A single window covering both is spent by
+	// whichever join hangs first, and the second one then receives an
+	// already-expired context and returns without waiting at all — so the
+	// hardest failure would silently skip the drain this path exists to
+	// perform. The cost is that a boot failing with both workers wedged takes
+	// two windows to give up instead of one. Withdraw the split if the
+	// failed-boot path ever needs a hard ceiling on total time.
 	if r.settingsWatcher != nil {
+		watchCtx, cancelWatch := context.WithTimeout(parent, startupDrainTimeout)
 		stopped := make(chan struct{})
 		go func() {
 			defer close(stopped)
@@ -1040,12 +1049,16 @@ func (r *Runtime) drainStartupWorkers(ctx context.Context) {
 		// is worse than a query that finds the store closed under it. Same
 		// condition as the other two: withdraw the bound if a poll ever performs
 		// a write whose partial application outlives the process.
-		case <-stopCtx.Done():
+		case <-watchCtx.Done():
 			logger.Warn("startup drain: settings watcher was not joined before the store closes; " +
 				"a poll may still be running against it")
 		}
+		cancelWatch()
 	}
-	r.shutdownSnapshots(stopCtx)
+
+	snapCtx, cancelSnap := context.WithTimeout(parent, startupDrainTimeout)
+	defer cancelSnap()
+	r.shutdownSnapshots(snapCtx)
 }
 
 // StopRollups stops + drains every share's block-store rollup worker pool.
