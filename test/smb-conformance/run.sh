@@ -266,6 +266,10 @@ render_ptfconfig() {
 # --------------------------------------------------------------------------
 # Results directory
 # --------------------------------------------------------------------------
+# Set once this run has created the Compose stack; the EXIT cleanup tears down
+# only what it owns. Declared before the trap so an early exit can read it.
+STACK_OWNED=false
+
 RESULTS_DIR="${SCRIPT_DIR}/results/$(date +%Y-%m-%d_%H%M%S)"
 
 # --------------------------------------------------------------------------
@@ -324,7 +328,7 @@ require_exclusive_stack
 cleanup() {
     local exit_code=$?
 
-    if [[ "$MODE" == "compose" ]] && ! $KEEP; then
+    if [[ "$MODE" == "compose" ]] && ! $KEEP && $STACK_OWNED; then
         log_step "Cleaning up containers..."
         cd "$SCRIPT_DIR"
         docker compose down -v 2>/dev/null || true
@@ -392,6 +396,13 @@ run_compose() {
             ;;
     esac
 
+    # Claimed before the stack exists, so an `up` that dies partway through
+    # still tears down what it made. The flag is what makes `down -v` safe: two
+    # runs from the same checkout share one COMPOSE_PROJECT_NAME, so a run that
+    # adopted someone else's containers would otherwise destroy them on exit —
+    # the exact interference the admission check exists to prevent, arriving
+    # through the cleanup instead.
+    STACK_OWNED=true
     PROFILE="$PROFILE" docker compose up -d dittofs
     wait_until "docker compose exec dittofs wget -q --spider http://localhost:8080/health/ready" 60 "DittoFS"
 

@@ -41,13 +41,20 @@ unset _compose_repo_root
 # through on an existing admin password or an existing store, which is the same
 # unexplained mid-run collapse this check exists to replace.
 #
-# decision: admission is not atomic with the `docker compose up` that follows,
-# so two runs starting in the same instant can both read an empty table and then
-# race for the published ports. The loser fails at bind — loud, and attributable
-# to a port rather than to the server under test, which is the outcome this
-# check is for. A host-level lock would close the window; take one only if that
-# race is ever actually observed, since it adds a lock file to reap after a
-# killed run.
+# decision: admission is not atomic with the `docker compose up` that follows, so
+# two runs starting in the same instant can both read an empty table. What
+# happens next depends on where they started from, and only one of the two cases
+# is loud: from different checkouts the project names differ and the loser fails
+# at its port bind, attributable to a port rather than to the server under test.
+# From the SAME checkout the project name is identical, so the second `up` does
+# not lose a port — it joins the first run's project. That is why the EXIT
+# cleanup only tears down a stack this run created (STACK_OWNED): without it the
+# second run's `down -v` would destroy the first run's server, which is the
+# interference this check exists to prevent, arriving through the cleanup.
+#
+# What remains open is two same-checkout runs sharing one server and grading each
+# other's traffic. A host-level lock would close it; take one only if that is
+# ever actually observed, since it adds a lock file to reap after a killed run.
 require_exclusive_stack() {
     # A docker that cannot be reached reports nothing rather than aborting the
     # run here; the first compose command will fail with a better message.

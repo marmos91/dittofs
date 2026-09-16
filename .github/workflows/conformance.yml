@@ -247,7 +247,13 @@ jobs:
       - name: Add step summary
         if: always()
         run: |
-          RESULTS_DIR=$(ls -td test/smb-conformance/results/smbtorture-*/ 2>/dev/null | head -1 || true)
+          # Launched through the common runner, which injects its own results
+          # directory — so the runner writes here rather than into its
+          # timestamped one. The fallback keeps a direct invocation working.
+          RESULTS_DIR="test/conformance/results/smbtorture/${{ matrix.profile }}"
+          if [ ! -f "$RESULTS_DIR/summary.txt" ]; then
+            RESULTS_DIR=$(ls -td test/smb-conformance/results/smbtorture-*/ 2>/dev/null | head -1 || true)
+          fi
           {
             echo "## smbtorture: ${{ matrix.profile }}"
             if [ -n "$RESULTS_DIR" ] && [ -f "$RESULTS_DIR/summary.txt" ]; then

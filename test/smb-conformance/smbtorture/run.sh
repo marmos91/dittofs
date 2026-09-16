@@ -18,6 +18,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFORMANCE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+# Set once this run has created the Compose stack; the EXIT cleanup tears down
+# only what it owns. Declared here so the trap can read it on an early exit.
+STACK_OWNED=false
+
 # Scopes COMPOSE_PROJECT_NAME to this checkout and provides
 # require_exclusive_stack.
 # shellcheck source=../compose-env.sh
@@ -248,7 +252,9 @@ cleanup() {
     if ! $KEEP; then
         log_step "Cleaning up containers..."
         cd "$CONFORMANCE_DIR"
-        docker compose down -v 2>/dev/null || true
+        if $STACK_OWNED; then
+            docker compose down -v 2>/dev/null || true
+        fi
     else
         log_warn "Containers left running (--keep). Clean up with: cd ${CONFORMANCE_DIR} && docker compose -p ${COMPOSE_PROJECT_NAME} down -v"
     fi
@@ -289,6 +295,9 @@ if $KERBEROS; then
     docker compose build kdc
 
     log_step "Starting KDC..."
+    # See the note in test/smb-conformance/run.sh: only a run that created the
+    # stack may tear it down.
+    STACK_OWNED=true
     docker compose up -d kdc
     # klist parses the full keytab; only succeeds once kadmin has finished
     # writing and flushing the file, avoiding a partial-read race.

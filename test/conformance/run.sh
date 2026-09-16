@@ -241,11 +241,14 @@ run_one() {
         # fall back to calling the aggregate status a failure count. The whole
         # mechanism is only worth what the consumer can find.
         results_dir="$(cd "$results_dir" && pwd)"
-        # The directory is keyed by suite and label, not by invocation, so a
-        # verdict left by an earlier run is still sitting here. A run that dies
-        # before the graded step would otherwise be reported with that verdict
-        # instead of its own failure.
-        rm -f "${results_dir}/verdict"
+        # Cleared, not just created. The directory is keyed by suite and label
+        # rather than by invocation, and the runners append to their artifacts
+        # (tee -a on smbtorture-output.txt, >> on timeouts.txt) — so a second
+        # run would parse the first run's failures as its own, and a run that
+        # dies before the graded step would be described by the first run's
+        # verdict. Scoped to the one suite/label directory this script owns.
+        rm -rf "${results_dir:?}"
+        mkdir -p "$results_dir"
         clear_orphan_server
     fi
 
