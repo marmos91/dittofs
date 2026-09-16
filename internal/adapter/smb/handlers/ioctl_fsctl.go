@@ -117,9 +117,7 @@ func (h *Handler) handleSetCompression(ctx *SMBHandlerContext, body []byte) (*Ha
 	// modeBitMaskAttrs): a concurrent SET_COMPRESSION / SET_SPARSE cannot clobber
 	// it with a stale Mode snapshot.
 	attrs := modeBitMaskAttrs(modeDOSCompressed, compressed)
-	// Same as FSCTL_SET_SPARSE: a mode-bit flip is a metadata change the store
-	// stamps ChangeTime for, and a frozen ChangeTime must not move
-	// (MS-FSA §2.1.5.15.2).
+	// A mode-bit flip is an attribute write, so hold a frozen ChangeTime.
 	holdFrozenCtime(openFile, &attrs)
 	if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &attrs); err != nil {
 		logger.Warn("FSCTL_SET_COMPRESSION: failed to persist mode", "error", err)

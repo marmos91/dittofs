@@ -461,11 +461,10 @@ func (h *Handler) handleFileLinkInformation(
 		return setInfoStatus(types.StatusForErr(err)), nil
 	}
 
-	// A new name raises the inode's link count, and CreateHardLink stamps the
+	// The new name raises the inode's link count, and CreateHardLink stamps the
 	// target's ChangeTime for that from inside its own transaction — POSIX
-	// behaviour for link(2), and beyond the reach of a SetAttrs flag. A
-	// ChangeTime this handle froze must not move (MS-FSA §2.1.5.15.2), so put
-	// it back the way WRITE does after CommitWrite.
+	// link(2) behaviour, beyond the reach of a SetAttrs flag. Put the frozen
+	// values back the way WRITE does (MS-FSA §2.1.5.15.2).
 	h.restoreFrozenTimestamps(authCtx, openFile)
 
 	// Break parent directory leases on the destination parent to None

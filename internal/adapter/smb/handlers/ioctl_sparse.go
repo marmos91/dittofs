@@ -491,11 +491,13 @@ func (h *Handler) handleSetZeroData(ctx *SMBHandlerContext, body []byte) (*Handl
 	// on a handle with nothing frozen.
 	//
 	// decision: a cancelled context is left with the timestamps moved. The
-	// restore is a metadata write, so it cannot land once the context that
-	// would carry it is dead, and there is no other context this operation is
-	// entitled to use. Revisit if a cancelled SET_ZERO_DATA is ever shown to
-	// leave a frozen ChangeTime moved for longer than the handle lives —
-	// CLOSE's own restore is what bounds it today.
+	// restore is itself a metadata write, so it cannot land once the context
+	// that would carry it is dead, and this operation is entitled to no other.
+	// What repairs it afterwards is the next WRITE, COPYCHUNK or SET_INFO on
+	// the handle, each of which restores; a handle that does nothing further
+	// carries the moved value until it closes, and CLOSE restores only when it
+	// had something to flush. Withdraw this if a client is ever shown to read
+	// ChangeTime between a cancelled SET_ZERO_DATA and the next operation.
 	defer h.restoreFrozenTimestamps(authCtx, openFile)
 
 	if err := h.zeroFillRange(authCtx, openFile, fileOffset, beyond); err != nil {
