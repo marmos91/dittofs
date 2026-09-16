@@ -248,6 +248,15 @@ cat >"$FAKE_MANIFEST" <<'EOF'
         { "name": "run", "cmd": "fake/earlyfail.sh", "args": [], "root": false }
       ]
     },
+    "wpts": {
+      "description": "a suite whose parser writes no verdict; its exit IS the failure count",
+      "runner_dir": "fake",
+      "profiles": ["memory"],
+      "tiers": { "pull_request": "all", "push": "all" },
+      "steps": [
+        { "name": "run", "cmd": "fake/earlyfail.sh", "args": [], "root": false }
+      ]
+    },
     "graded125": {
       "description": "graded 125 new failures, which collides with the docker exit range",
       "runner_dir": "fake",
@@ -505,6 +514,16 @@ assert_not_contains "and is not a failure count" "new failure(s)" "$OUT"
 # A failure before the parser runs writes nothing, and exits 1 rather than 125.
 OUT="$(run_fake --suite earlyfail --profile memory)"
 assert_not_contains "a pre-parser failure is not called a new failure" "new failure(s)" "$OUT"
+
+# The absent sidecar only means "the parser never ran" for a suite whose parser
+# writes one. For a suite that never does, reading the absence that way turns
+# every real regression into "no test was graded" — the false-negative twin of
+# the false "N new failure(s)" the sidecar removed.
+OUT="$(run_fake --suite wpts --profile memory)"
+assert_contains "a suite that writes no verdict still reports its failure count" \
+    "new failure(s)" "$OUT"
+assert_not_contains "and a real regression there is not called ungraded" \
+    "no test was graded" "$OUT"
 
 # 125 is also a legitimate failure COUNT, and that run graded something — so the
 # sidecar decides, not the numeric status.
