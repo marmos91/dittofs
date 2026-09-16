@@ -2900,3 +2900,70 @@ func TestProcessAppInstanceId_AuthorizesThroughTheDACL(t *testing.T) {
 		}
 	})
 }
+
+// TestReleaseHandleLeaseRecord_KeepsAKeyADisconnectedSiblingHolds drives the
+// sibling branch directly, because the failover test above does not reach it:
+// that one proves the release happens, and passes with this guard hard-disabled.
+//
+// The guard itself is what stops a live open's close from taking the lease
+// record a disconnected durable handle on the same file will restore on
+// reconnect. releaseHandleLeaseRecord finds a live sibling by scanning the
+// open-file table; a persisted one is not in that table, so it has to be asked
+// of the store — behind the exact-negative count, so an ordinary close pays a
+// map read rather than a store round trip.
+func TestReleaseHandleLeaseRecord_KeepsAKeyADisconnectedSiblingHolds(t *testing.T) {
+	h, rt, smbCtx, rootHandle, rootAuth := setupDaclTest(t)
+	h.DurableStore = newMockDurableStore()
+	h.LeaseManager = lease.NewLeaseManager(&staticLockResolver{mgr: lock.NewManager()}, nil)
+	metaSvc := rt.GetMetadataService()
+
+	if _, _, err := metaSvc.CreateFile(rootAuth, rootHandle, "sib.txt",
+		&metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: 0o644}); err != nil {
+		t.Fatalf("CreateFile: %v", err)
+	}
+	file, _, err := h.lookupCaseInsensitive(rootAuthCtx(), metaSvc, rootHandle, "sib.txt")
+	if err != nil || file == nil {
+		t.Fatalf("lookup sib.txt: %v", err)
+	}
+	fileHandle, err := metadata.EncodeFileHandle(file)
+	if err != nil {
+		t.Fatalf("EncodeFileHandle: %v", err)
+	}
+
+	leaseKey := [16]byte{0xD1, 0xCE}
+	if _, _, err := h.LeaseManager.RequestLease(
+		context.Background(), lock.FileHandle(fileHandle), leaseKey, [16]byte{},
+		7, [16]byte{}, "owner", "client-1", smbCtx.ShareName,
+		lock.LeaseStateRead|lock.LeaseStateHandle, false,
+	); err != nil {
+		t.Fatalf("RequestLease: %v", err)
+	}
+
+	// A disconnected durable handle holding the same key on the same file,
+	// counted the way the disconnect path counts it.
+	if err := h.DurableStore.PutDurableHandle(context.Background(), &lock.PersistedDurableHandle{
+		ID: "sibling", FileID: [16]byte{0x09}, OriginalFileID: [16]byte{0x09},
+		MetadataHandle: fileHandle, ShareName: smbCtx.ShareName, Path: "/sib.txt",
+		OplockLevel: OplockLevelLease, LeaseKey: leaseKey,
+		DisconnectedAt: time.Now(), TimeoutMs: 60000,
+	}); err != nil {
+		t.Fatalf("PutDurableHandle: %v", err)
+	}
+	h.noteDisconnectedHandle(fileHandle)
+
+	// The last LIVE open on that file closes.
+	closing := (&OpenFile{
+		FileID:         [16]byte{0x0A},
+		ShareName:      smbCtx.ShareName,
+		MetadataHandle: fileHandle,
+		LeaseKey:       leaseKey,
+		OplockLevel:    OplockLevelLease,
+	}).WithName(OpenName{Path: "/sib.txt"})
+	h.releaseHandleLeaseRecord(context.Background(), closing, "test")
+
+	if _, _, found := h.LeaseManager.GetLeaseState(context.Background(),
+		lock.FileHandle(fileHandle), smbCtx.ShareName, leaseKey); !found {
+		t.Error("closing the last live open released a lease record a disconnected durable " +
+			"handle still holds on that file: it will reconnect without its lease")
+	}
+}

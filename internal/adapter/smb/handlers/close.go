@@ -728,7 +728,13 @@ func (h *Handler) releaseHandleLeaseRecordOn(ctx context.Context, openFile *Open
 	// is not in h.files — the table above only knows about live opens. Its
 	// reconnect restores the lease from that record, so releasing it here takes
 	// the lease from a client that is entitled to come back for it.
+	// hasDisconnectedHandles first: it is exact in the negative and costs one
+	// map read, where leaseKeyHasPersistedSibling costs a durable-store round
+	// trip. Every close of the last live handle carrying a lease reaches here,
+	// and almost none of them have a disconnected sibling — putting the store
+	// lookup ahead of the gate would charge the common case for the rare one.
 	if !hasOtherOpenSameFile && h.DurableStore != nil &&
+		h.hasDisconnectedHandles(openFile.MetadataHandle) &&
 		h.leaseKeyHasPersistedSibling(ctx, h.DurableStore, openFile) {
 		logger.Debug(caller+": lease handle closed (a disconnected durable handle shares the key on this file)",
 			"path", openFile.Name().Path)
