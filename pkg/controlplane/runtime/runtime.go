@@ -1340,12 +1340,20 @@ func (r *Runtime) OnIdentityMappingChange(fn func()) func() {
 
 // NotifyIdentityMappingChange fires all registered identity change callbacks.
 //
-// It also raises an auth-cache invalidation. The identity-change callback only
-// clears the adapters' name/SID resolver caches, and an identity or SID mapping
-// decides which local identity a principal authenticates as — so removing one
-// withdraws every grant that identity held. Without the invalidation an
-// established SMB session keeps the mapping it was admitted under for the life
-// of the connection.
+// It also raises an auth-cache invalidation, which re-reads each session's user
+// record and re-resolves every tree's share permission against it.
+//
+// decision: that is less than it sounds, and deliberately so. The sweep looks
+// the session's user up by the username it authenticated as and reuses the PAC
+// SIDs stored on the session, so it picks up a changed or deleted user record
+// and changed grants — but it does not re-run the principal-to-username mapping
+// itself. A session admitted under a mapping that has since been deleted keeps
+// the identity it was admitted with until it re-authenticates. Remapping an
+// established session would mean publishing a new user record onto it, and that
+// field is read unlocked on the dispatch path. Withdraw this exemption by
+// revoking the affected sessions outright, which is the same machinery
+// RevalidateAuthorization already uses for a deleted user, if a mapping delete
+// ever needs to take effect mid-connection.
 func (r *Runtime) NotifyIdentityMappingChange() {
 	r.identityChangeCallbacks.notify()
 	r.InvalidateAuthCache()
@@ -1366,6 +1374,13 @@ func (r *Runtime) OnIdentityProviderConfigChange(fn func()) func() {
 // but re-decide nothing that was already resolved, and a directory config
 // change rewrites how group membership and foreign SIDs resolve — which is what
 // share grants are evaluated against.
+//
+// decision: as with NotifyIdentityMappingChange, the sweep re-resolves an
+// established session's grants but not its identity. It carries the session's
+// stored PAC SIDs into the new resolution rather than rebuilding them from the
+// changed provider, so a directory change reaches an established session only
+// through the grants it re-evaluates. Same withdrawal condition: revoke the
+// affected sessions if a provider change has to land mid-connection.
 func (r *Runtime) NotifyIdentityProviderConfigChange() {
 	r.identityProviderChangeCallbacks.notify()
 	r.InvalidateAuthCache()

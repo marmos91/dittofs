@@ -314,6 +314,16 @@ func (s *Service) DisableShare(ctx context.Context, store ShareStore, name strin
 	// A disabled share admits nobody. Adapters pinned the access decision at
 	// establishment, so without this an established SMB tree or a cached NFSv3
 	// authorization keeps serving the share for the life of the connection.
+	//
+	// ponytail: the revocation rides a state-read sweep, so a disable followed
+	// by an enable inside one sweep's window coalesces to a single pass that
+	// reads Enabled=true and removes nothing — the trees the disable was meant
+	// to drop survive. Disable is specified as an event ("adapters drop any
+	// active sessions") and implemented as state, and only the enabled flag can
+	// flip back fast enough for that to matter. Give the share a generation the
+	// disable bumps and the tree pass compares against, if an operator kicking
+	// clients off with a disable/enable cycle turns out to be a real workflow
+	// rather than a race in a script.
 	s.InvalidateAuthCache()
 	return nil
 }

@@ -985,10 +985,11 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	// A default-permission change moves the EVERYONE@ ACE projected onto the
 	// root, so reproject; other field updates leave the root ACL untouched.
-	// read_only needs no reprojection and raises its own invalidation from
-	// runtime.UpdateShare, which is where the live value is written.
+	// Projection only: both read_only and default_permission raise their own
+	// invalidation from runtime.UpdateShare above, where the live value is
+	// written.
 	if req.DefaultPermission != nil {
-		h.grantsChanged(r.Context(), share.Name)
+		h.reconcileRootACL(r.Context(), share.Name)
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), HealthCheckTimeout)
@@ -1008,8 +1009,12 @@ func (h *ShareHandler) Remove(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Remove from runtime first (if runtime is available)
+	removedFromRuntime := false
 	if h.runtime != nil {
-		_ = h.runtime.RemoveShare(name) // Ignore error if not found in runtime
+		// A share absent from the registry is not an error here — the DB row is
+		// authoritative — but whether it was there decides who raises the
+		// invalidation below.
+		removedFromRuntime = h.runtime.RemoveShare(name) == nil
 	}
 
 	if err := h.store.DeleteShare(r.Context(), name); err != nil {
@@ -1025,10 +1030,12 @@ func (h *ShareHandler) Remove(w http.ResponseWriter, r *http.Request) {
 	// same name does not observe a stale probe.
 	if h.runtime != nil {
 		h.runtime.InvalidateShareChecker(name)
-		// runtime.RemoveShare above already raised this, but only when the
-		// share was in the registry; it is ignored when it was not, and the
-		// grant rows are gone either way.
-		h.runtime.InvalidateAuthCache()
+		// runtime.RemoveShare raises the invalidation itself when the share was
+		// registered. Raise it here only when it was not, so the normal DELETE
+		// costs one sweep rather than two; the grant rows are gone either way.
+		if !removedFromRuntime {
+			h.runtime.InvalidateAuthCache()
+		}
 	}
 
 	WriteNoContent(w)
@@ -1253,10 +1260,20 @@ func (h *ShareHandler) grantsChanged(ctx context.Context, shareName string) {
 	if h.runtime == nil {
 		return
 	}
+	h.reconcileRootACL(ctx, shareName)
+	h.runtime.InvalidateAuthCache()
+}
+
+// reconcileRootACL is the projection half on its own, for the callers whose
+// invalidation is already raised where the live value is written. Firing a
+// second one costs a second sweep over every session and every tree.
+func (h *ShareHandler) reconcileRootACL(ctx context.Context, shareName string) {
+	if h.runtime == nil {
+		return
+	}
 	if err := h.runtime.ReconcileShareRootACL(ctx, shareName); err != nil {
 		logger.Warn("Failed to reconcile share root ACL", "share", shareName, "error", err)
 	}
-	h.runtime.InvalidateAuthCache()
 }
 
 // RemoveUserPermission handles DELETE /api/v1/shares/{name}/permissions/users/{username}.

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
@@ -43,6 +44,54 @@ func TestRevalidateAuthorization_DisabledShareRemovesTree(t *testing.T) {
 
 	if _, ok := h.GetTree(treeID); ok {
 		t.Error("tree survived on a disabled share; the disable never reached the connection")
+	}
+}
+
+// missingShareRuntime reports the share as gone, which is what RemoveShare
+// leaves the registry in — it deletes the entry before the invalidation fires.
+type missingShareRuntime struct {
+	smbRuntime
+	users models.UserStore
+}
+
+func (r *missingShareRuntime) GetUserStore() models.UserStore { return r.users }
+
+func (r *missingShareRuntime) GetShare(string) (*runtime.Share, error) {
+	return nil, errors.New("share not found")
+}
+
+// TestRevalidateAuthorization_RemovedShareRemovesTree is the same class as the
+// disabled-share case above, with a different trigger. Leaving a tree alone
+// because its share no longer resolves made the removal's invalidation inert:
+// every later pass takes the same branch, so the tree keeps the removed share's
+// permission, its opens and its byte-range locks until the connection drops,
+// and only a same-name re-create ever disturbs it.
+func TestRevalidateAuthorization_RemovedShareRemovesTree(t *testing.T) {
+	store := &revalidateUserStore{user: enabledUser(), perm: models.PermissionReadWrite}
+	h, _, treeID := newRevalidateHandler(t, enabledUser(), store, models.PermissionReadWrite, true)
+	h.Registry = &missingShareRuntime{smbRuntime: h.Registry, users: store}
+
+	h.RevalidateAuthorization(context.Background())
+
+	if _, ok := h.GetTree(treeID); ok {
+		t.Error("tree survived after its share was removed; the removal invalidation reached a sweep that could not act on it")
+	}
+}
+
+// TestRevalidateAuthorization_CancelledSweepLeavesTreesAlone pins what makes
+// Stop's bounded join defensible: a cancelled sweep abandons its walk rather
+// than running it out, so a join that reaches its deadline means the worker is
+// wedged and not merely slow.
+func TestRevalidateAuthorization_CancelledSweepLeavesTreesAlone(t *testing.T) {
+	store := &revalidateUserStore{user: enabledUser(), perm: models.PermissionNone}
+	h, _, treeID := newRevalidateHandler(t, enabledUser(), store, models.PermissionReadWrite, true)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	h.RevalidateAuthorization(ctx)
+
+	if _, ok := h.GetTree(treeID); !ok {
+		t.Error("a cancelled sweep still applied a revocation; it must abandon the walk instead")
 	}
 }
 
