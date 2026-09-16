@@ -68,6 +68,11 @@ type Service struct {
 	// wait for a tick that is already inside the store rather than only
 	// signalling it.
 	stopped chan struct{}
+	// cancelTick aborts a tick already inside the store. stopCh only tells the
+	// loop not to start another one, and on the API-error path the context the
+	// ticks run under is still live — so without this, Stop's wait is something
+	// the caller has to abandon rather than a join that completes.
+	cancelTick context.CancelFunc
 	// now is the clock, overridable in tests for deterministic due/prune.
 	now func() time.Time
 }
@@ -93,13 +98,19 @@ func (s *Service) Start(ctx context.Context) {
 	if !s.started.CompareAndSwap(false, true) {
 		return
 	}
+	// Derived, so Stop can cancel the ticks without disturbing the caller's
+	// context — which on a startup or API error is still very much alive.
+	tickCtx, cancelTick := context.WithCancel(ctx)
+	s.cancelTick = cancelTick
+
 	go func() {
 		defer close(s.stopped)
+		defer cancelTick()
 		ticker := time.NewTicker(s.interval)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-ctx.Done():
+			case <-tickCtx.Done():
 				return
 			case <-s.stopCh:
 				return
@@ -110,13 +121,13 @@ func (s *Service) Start(ctx context.Context) {
 				// snapshot during a shutdown that is already closing the
 				// stores under it.
 				select {
-				case <-ctx.Done():
+				case <-tickCtx.Done():
 					return
 				case <-s.stopCh:
 					return
 				default:
 				}
-				s.tick(ctx)
+				s.tick(tickCtx)
 			}
 		}
 	}()
@@ -136,6 +147,12 @@ func (s *Service) Start(ctx context.Context) {
 // for concurrent callers.
 func (s *Service) Stop(ctx context.Context) bool {
 	s.stopOnce.Do(func() { close(s.stopCh) })
+	// Cancelled as well as signalled: stopCh stops the loop starting another
+	// tick, and this one ends a tick already inside the store, so the wait below
+	// is a join that completes rather than one the caller abandons.
+	if s.cancelTick != nil {
+		s.cancelTick()
+	}
 	if !s.started.Load() {
 		return true
 	}
