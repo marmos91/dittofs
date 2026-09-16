@@ -90,3 +90,12 @@ func (w *Waiter) Cancel() {
 	defer w.mu.Unlock()
 	w.cancelled = true
 }
+
+// matches reports whether w is the waiter identified by this owner and byte
+// range -- the identity Enqueue dedupes a retransmitted LOCK on, and the one
+// CANCEL removes by. One definition, because the two depend on agreeing.
+func (w *Waiter) matches(ownerID string, offset, length uint64) bool {
+	return w.Lock.Owner.OwnerID == ownerID &&
+		w.Lock.Offset == offset &&
+		w.Lock.Length == length
+}

@@ -11,13 +11,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// graceFileChecker is a fileChecker stub that reports every handle as an
-// existing regular file, so the NLM lock path proceeds to the grace gate.
+// graceFileChecker is a lockAccessChecker stub that authorizes every handle, so
+// the NLM lock path proceeds to the grace gate.
 type graceFileChecker struct{}
-
-func (graceFileChecker) GetFile(_ context.Context, _ []byte) (bool, bool, error) {
-	return true, false, nil
-}
 
 func (graceFileChecker) CheckLockAccess(_ context.Context, _ []byte, _ *metadata.Identity) error {
 	return nil

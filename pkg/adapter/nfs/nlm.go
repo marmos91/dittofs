@@ -21,30 +21,29 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
-// fileChecker provides file existence checking without importing pkg/metadata.
-// This avoids an import cycle between the NFS adapter and the metadata package.
-type fileChecker interface {
-	GetFile(ctx context.Context, handle []byte) (exists bool, isDir bool, err error)
-
+// lockAccessChecker authorizes a byte-range lock without the NLM service
+// importing the metadata service directly.
+type lockAccessChecker interface {
 	// CheckLockAccess reports whether caller may take or test an advisory
-	// byte-range lock on the file the handle names. It subsumes the existence
-	// check: a handle naming nothing yields a not-found StoreError.
+	// byte-range lock on the file the handle names. It covers existence too: a
+	// handle naming nothing yields a not-found StoreError. See
+	// metadata.CheckByteRangeLockAccess for the rule and its ceiling.
 	CheckLockAccess(ctx context.Context, handle []byte, caller *metadata.Identity) error
 }
 
 // nlmService provides NLM-specific lock operations using LockManager directly.
 //
-// Wraps a single share's lock.Manager and a fileChecker for validating file
-// existence before lock operations.
+// Wraps a single share's lock.Manager and a lockAccessChecker that authorizes
+// each lock operation.
 //
 // Thread Safety: Safe for concurrent use (delegates to thread-safe Manager).
 type nlmService struct {
 	lockMgr     *lock.Manager
-	fileChecker fileChecker
+	fileChecker lockAccessChecker
 	onUnlock    func(handle []byte)
 }
 
-func newNLMService(lockMgr *lock.Manager, fc fileChecker) *nlmService {
+func newNLMService(lockMgr *lock.Manager, fc lockAccessChecker) *nlmService {
 	return &nlmService{
 		lockMgr:     lockMgr,
 		fileChecker: fc,
@@ -56,13 +55,6 @@ func lockTypeFromExclusive(exclusive bool) lock.LockType {
 		return lock.LockTypeExclusive
 	}
 	return lock.LockTypeShared
-}
-
-// checkLockAccess validates that the file exists and that the caller is
-// permitted to lock it. Both LOCK and TEST run it; see
-// metadata.CheckByteRangeLockAccess for the rule it applies and its ceiling.
-func (s *nlmService) checkLockAccess(ctx context.Context, handle []byte, caller *metadata.Identity) error {
-	return s.fileChecker.CheckLockAccess(ctx, handle, caller)
 }
 
 func (s *nlmService) SetUnlockCallback(fn func(handle []byte)) {
@@ -82,7 +74,7 @@ func (s *nlmService) LockFileNLM(
 		return nil, err
 	}
 
-	if err := s.checkLockAccess(ctx, handle, caller); err != nil {
+	if err := s.fileChecker.CheckLockAccess(ctx, handle, caller); err != nil {
 		return nil, err
 	}
 
@@ -164,7 +156,7 @@ func (s *nlmService) TestLockNLM(
 		return false, nil, err
 	}
 
-	if err := s.checkLockAccess(ctx, handle, caller); err != nil {
+	if err := s.fileChecker.CheckLockAccess(ctx, handle, caller); err != nil {
 		return false, nil, err
 	}
 
@@ -221,7 +213,7 @@ func (s *nlmService) CancelBlockingLock(
 	return nil
 }
 
-// metadataFileChecker adapts MetadataService to the fileChecker interface,
+// metadataFileChecker adapts MetadataService to the lockAccessChecker interface,
 // avoiding import cycles with the metadata package.
 type metadataFileChecker struct {
 	metaSvc *metadata.Service
@@ -231,25 +223,17 @@ type metadataFileChecker struct {
 // policy to the metadata layer, so the lock gate reads the same mode bits, ACL
 // and read-only ceilings as every other operation on the file.
 func (c *metadataFileChecker) CheckLockAccess(ctx context.Context, handle []byte, caller *metadata.Identity) error {
-	authCtx := &metadata.AuthContext{
+	// A call with no AUTH_UNIX credentials arrives as no identity, and is
+	// authorized as anonymous: only the file's world permissions apply.
+	authMethod := "anonymous"
+	if caller != nil {
+		authMethod = "unix"
+	}
+	return c.metaSvc.CheckByteRangeLockAccess(&metadata.AuthContext{
 		Context:    ctx,
-		AuthMethod: "unix",
+		AuthMethod: authMethod,
 		Identity:   caller,
-	}
-	if caller == nil || caller.UID == nil {
-		// No AUTH_UNIX credentials on the call (AUTH_NULL): the caller is
-		// anonymous and gets only the file's world permissions.
-		authCtx.AuthMethod = "anonymous"
-	}
-	return c.metaSvc.CheckByteRangeLockAccess(authCtx, metadata.FileHandle(handle))
-}
-
-func (c *metadataFileChecker) GetFile(ctx context.Context, handle []byte) (bool, bool, error) {
-	file, err := c.metaSvc.GetFile(ctx, metadata.FileHandle(handle))
-	if err != nil {
-		return false, false, err
-	}
-	return true, file.Type == metadata.FileTypeDirectory, nil
+	}, metadata.FileHandle(handle))
 }
 
 // createRoutingNLMService creates a routingNLMService that routes NLM operations
@@ -273,7 +257,7 @@ func (s *NFSAdapter) createRoutingNLMService(metaSvc *metadata.Service) *routing
 // routingNLMService routes NLM operations to the correct per-share lock manager.
 type routingNLMService struct {
 	metaSvc     *metadata.Service
-	fileChecker fileChecker
+	fileChecker lockAccessChecker
 	onUnlock    func(handle []byte)
 }
 
@@ -521,14 +505,10 @@ func (s *NFSAdapter) initNSMHandler(rt *runtime.Runtime, metadataService *metada
 		OnClientCrash: onClientCrash,
 	})
 
-	// A server can start with no share at all, or with none whose metadata
-	// store can persist client registrations, and a share that supplies one can
-	// be added at any time afterwards. Without this the store stays nil for the
-	// adapter's whole life and every SM_MON registration is memory-only: lost
-	// on restart, and with it the SM_NOTIFY a rebooted client needs to reclaim
-	// its locks. Re-scan on every share change until a store is found; once one
-	// is installed the scan stops, because the registrations it already holds
-	// must not be stranded by swapping to a different store.
+	// A share supplying a registration store can be added at any time after
+	// startup; see SetClientStore for what is lost until one is. The scan stops
+	// once a store is installed, so a later share never displaces the
+	// registrations the first one already holds.
 	if clientStore == nil {
 		unsubNSMStore := rt.OnShareChange(func([]string) {
 			if s.nsmHandler.GetClientStore() != nil {

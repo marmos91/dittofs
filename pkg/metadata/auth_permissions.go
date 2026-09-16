@@ -1240,15 +1240,5 @@ func (s *Service) CheckByteRangeLockAccess(ctx *AuthContext, handle FileHandle) 
 		return nil
 	}
 
-	granted, err := s.checkFilePermissionsFile(ctx, handle, file, PermissionRead)
-	if err != nil {
-		return err
-	}
-	if granted&PermissionRead == 0 {
-		return &StoreError{
-			Code:    ErrAccessDenied,
-			Message: "lock permission denied",
-		}
-	}
-	return nil
+	return s.checkPermissionFile(ctx, handle, file, PermissionRead, "lock permission denied")
 }

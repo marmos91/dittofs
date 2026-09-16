@@ -198,12 +198,10 @@ type NFSAdapter struct {
 	// returning and handing the metadata service back to be torn down.
 	bgTasks sync.WaitGroup
 
-	// bgTasksMu serialises bgTasks.Add against the Wait in Stop, and
-	// bgTasksClosed records that the wait has begun. A WaitGroup may not take a
-	// positive delta once Wait is running on a zero counter, and the spawners
-	// run on connection goroutines that Stop is concurrent with, so the flag —
-	// not a ShutdownCtx check — is what makes the hand-off safe: past it, a
-	// task is dropped rather than started behind the wait.
+	// bgTasksMu and bgTasksClosed make the hand-off to Stop safe: a WaitGroup
+	// may not take a positive delta once Wait is running on a zero counter, and
+	// the spawners run on connection goroutines Stop is concurrent with. Past
+	// the flag a task is dropped rather than started behind the wait.
 	bgTasksMu     sync.Mutex
 	bgTasksClosed bool
 

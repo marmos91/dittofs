@@ -84,17 +84,11 @@ func (s *NFSAdapter) Stop(ctx context.Context) error {
 // the adapter is about to release, so it must not run detached.
 func (s *NFSAdapter) goTracked(fn func()) {
 	s.bgTasksMu.Lock()
+	defer s.bgTasksMu.Unlock()
 	if s.bgTasksClosed {
-		s.bgTasksMu.Unlock()
 		return
 	}
-	s.bgTasks.Add(1)
-	s.bgTasksMu.Unlock()
-
-	go func() {
-		defer s.bgTasks.Done()
-		fn()
-	}()
+	s.bgTasks.Go(fn)
 }
 
 // waitForBackgroundTasks closes the adapter to new tracked tasks and waits for
