@@ -239,6 +239,12 @@ func TestWiringRefusedAfterStop(t *testing.T) {
 
 	a.resolverMu.Lock()
 	defer a.resolverMu.Unlock()
+	// The foreign-SID path is the one this fixture actually drives to the
+	// subscription: an adapter built from a bare Config has a pipe manager but
+	// no Kerberos provider and no netlogon authenticator, so the other two
+	// return at their own guards here whether or not the fence exists. They are
+	// asserted anyway because they carry the identical check ahead of those
+	// guards, and a fence removed from one of them should still show up.
 	if a.foreignSIDProviderUnsub != nil {
 		t.Error("wireForeignSIDResolver subscribed after Stop")
 	}
