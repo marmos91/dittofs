@@ -62,12 +62,17 @@ func (bq *BlockingQueue) Enqueue(fileHandle string, waiter *Waiter) error {
 
 	// A retransmitted blocking LOCK keeps the waiter it already queued. NLM
 	// runs over UDP (and over a TCP connection a client may re-establish), so
-	// the same request arrives again whenever the reply is lost, and appending
-	// would let one client's retry loop fill the per-file queue and be granted
-	// the same range several times. The already-queued waiter is kept as it
-	// stands and the retransmission's is discarded, so the request holds the
-	// FIFO place its first attempt earned. Enqueue still reports success: from
-	// the client's side the request is queued, which is what NLM4_BLOCKED says.
+	// the same request arrives again whenever the reply is lost; appending
+	// would queue one client's retries several times over and grant it the
+	// same range once per copy, leaving stale entries behind when CANCEL
+	// removes only the first. The already-queued waiter is kept as it stands
+	// and the retransmission's is discarded, so the request holds the FIFO
+	// place its first attempt earned. Enqueue still reports success: from the
+	// client's side the request is queued, which is what NLM4_BLOCKED says.
+	//
+	// This buys idempotence for a repeated request, not protection from a
+	// client that floods the queue -- every field of the owner ID is
+	// client-supplied, so distinct owners still fill it to maxQueue.
 	//
 	// decision: the retransmit does not refresh the queued waiter's cookie or
 	// callback target, though it carries its own. Two reasons, and either
@@ -80,7 +85,7 @@ func (bq *BlockingQueue) Enqueue(fileHandle string, waiter *Waiter) error {
 	// client which genuinely moves mid-wait is granted at its original address;
 	// revisit if a client is found that survives such a move, since it would
 	// then need the whole waiter made safe to mutate, not just this write.
-	if findWaiter(queue, waiter.Lock.Owner.OwnerID, waiter.Lock.Offset, waiter.Lock.Length) != nil {
+	if findRetransmission(queue, waiter) != nil {
 		return nil
 	}
 
@@ -93,11 +98,11 @@ func (bq *BlockingQueue) Enqueue(fileHandle string, waiter *Waiter) error {
 	return nil
 }
 
-// findWaiter returns the queued waiter with the given owner and byte range, or
-// nil when the queue holds none. Callers must hold bq.mu.
-func findWaiter(queue []*Waiter, ownerID string, offset, length uint64) *Waiter {
+// findRetransmission returns the queued waiter that req repeats, or nil when
+// the queue holds none. Callers must hold bq.mu.
+func findRetransmission(queue []*Waiter, req *Waiter) *Waiter {
 	for _, w := range queue {
-		if w.matches(ownerID, offset, length) {
+		if w.isRetransmissionOf(req) {
 			return w
 		}
 	}

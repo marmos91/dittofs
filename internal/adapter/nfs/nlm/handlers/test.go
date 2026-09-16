@@ -109,15 +109,20 @@ func (h *Handler) Test(ctx *NLMHandlerContext, req *TestRequest) (*TestResponse,
 	)
 
 	if err != nil {
-		// A permission denial answers the question TEST asks -- this caller
-		// cannot hold the lock -- so it is NLM4_DENIED, not a server fault.
+		// A permission refusal answers the question TEST asks -- this caller
+		// cannot hold the lock -- so it is not a server fault. It is reported
+		// as NLM4_DENIED_NOLOCKS, not NLM4_DENIED, for two reasons: the DENIED
+		// arm of the nlm4_testres union carries the conflicting holder and
+		// there is none to name, and a client reads DENIED as "retry later"
+		// (EAGAIN) where NOLOCKS is terminal (ENOLCK), which is the truth for
+		// a refusal no amount of waiting changes.
 		if metaerrors.IsAccessDeniedError(err) {
-			logger.Warn("NLM TEST denied: permission",
+			logger.Warn("NLM TEST refused: permission",
 				"client", ctx.ClientAddr,
 				"owner", ownerID)
 			return &TestResponse{
 				Cookie: req.Cookie,
-				Status: types.NLM4Denied,
+				Status: types.NLM4DeniedNoLocks,
 			}, nil
 		}
 		// System error - return as NLM4Failed

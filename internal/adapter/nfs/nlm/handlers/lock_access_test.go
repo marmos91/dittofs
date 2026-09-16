@@ -68,7 +68,7 @@ func deniedLockReq() *LockRequest {
 // TestLock_PermissionDenialIsNLM4Denied: a refusal to authorize the lock is an
 // authorization outcome, so the client must see NLM4_DENIED rather than
 // NLM4_FAILED, which reads as a broken server and invites a retry loop.
-func TestLock_PermissionDenialIsNLM4Denied(t *testing.T) {
+func TestLock_PermissionRefusalIsEncodableAndTerminal(t *testing.T) {
 	t.Parallel()
 
 	svc := &deniedLockService{}
@@ -78,8 +78,11 @@ func TestLock_PermissionDenialIsNLM4Denied(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Lock returned a transport error: %v", err)
 	}
-	if resp.Status != types.NLM4Denied {
-		t.Fatalf("want NLM4_DENIED (%d), got %d", types.NLM4Denied, resp.Status)
+	if resp.Status != types.NLM4DeniedNoLocks {
+		t.Fatalf("want NLM4_DENIED_NOLOCKS (%d), got %d", types.NLM4DeniedNoLocks, resp.Status)
+	}
+	if _, err := EncodeLockResponse(resp); err != nil {
+		t.Fatalf("the refusal must be encodable for the client to ever see it: %v", err)
 	}
 	if svc.gotCaller == nil || svc.gotCaller.UID == nil || *svc.gotCaller.UID != 2000 {
 		t.Fatalf("handler did not thread the AUTH_UNIX identity to the lock service: %+v", svc.gotCaller)
@@ -89,7 +92,7 @@ func TestLock_PermissionDenialIsNLM4Denied(t *testing.T) {
 	}
 }
 
-func TestTest_PermissionDenialIsNLM4Denied(t *testing.T) {
+func TestTest_PermissionRefusalIsEncodableAndTerminal(t *testing.T) {
 	t.Parallel()
 
 	svc := &deniedLockService{}
@@ -100,8 +103,17 @@ func TestTest_PermissionDenialIsNLM4Denied(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Test returned a transport error: %v", err)
 	}
-	if resp.Status != types.NLM4Denied {
-		t.Fatalf("want NLM4_DENIED (%d), got %d", types.NLM4Denied, resp.Status)
+	if resp.Status != types.NLM4DeniedNoLocks {
+		t.Fatalf("want NLM4_DENIED_NOLOCKS (%d), got %d", types.NLM4DeniedNoLocks, resp.Status)
+	}
+	// The DENIED arm of the nlm4_testres union carries the conflicting holder,
+	// and a permission refusal has none to name. Encoding a holder-less DENIED
+	// fails, and the client gets an RPC fault instead of an answer -- so the
+	// status is only right if it survives the encoder, on every dialect width.
+	for _, vers := range []uint32{1, 3, 4} {
+		if _, err := EncodeTestResponse(resp, vers); err != nil {
+			t.Fatalf("refusal does not encode at NLM v%d: %v", vers, err)
+		}
 	}
 }
 

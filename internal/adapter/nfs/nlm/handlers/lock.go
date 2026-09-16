@@ -135,16 +135,18 @@ func (h *Handler) Lock(ctx *NLMHandlerContext, req *LockRequest) (*LockResponse,
 				Status: types.NLM4DeniedGrace,
 			}, nil
 		}
-		// A permission denial is an authorization outcome, not a server
-		// fault: report NLM4_DENIED so the client sees EACCES-equivalent
-		// refusal rather than retrying against an apparently broken server.
+		// A permission refusal is an authorization outcome, not a server
+		// fault. NLM4_DENIED_NOLOCKS rather than NLM4_DENIED, so it matches
+		// what TEST must answer (whose DENIED arm needs a conflicting holder
+		// this has none of) and so the client reads it as terminal (ENOLCK)
+		// rather than as a conflict worth retrying (EAGAIN).
 		if metaerrors.IsAccessDeniedError(err) {
-			logger.Warn("NLM LOCK denied: permission",
+			logger.Warn("NLM LOCK refused: permission",
 				"client", ctx.ClientAddr,
 				"owner", ownerID)
 			return &LockResponse{
 				Cookie: req.Cookie,
-				Status: types.NLM4Denied,
+				Status: types.NLM4DeniedNoLocks,
 			}, nil
 		}
 		// System error

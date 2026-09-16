@@ -92,10 +92,24 @@ func (w *Waiter) Cancel() {
 }
 
 // matches reports whether w is the waiter identified by this owner and byte
-// range -- the identity Enqueue dedupes a retransmitted LOCK on, and the one
-// CANCEL removes by. One definition, because the two depend on agreeing.
+// range. This is what NLM_CANCEL removes by: CANCEL is specified to be
+// idempotent, so it stays deliberately permissive about the lock type.
 func (w *Waiter) matches(ownerID string, offset, length uint64) bool {
 	return w.Lock.Owner.OwnerID == ownerID &&
 		w.Lock.Offset == offset &&
 		w.Lock.Length == length
+}
+
+// isRetransmissionOf reports whether w is the already-queued form of req: the
+// same owner and range, asking for the same kind of lock.
+//
+// Deliberately stricter than matches. A shared and an exclusive request over
+// one range from one owner are different requests, and treating the second as
+// a retransmission of the first would answer it NLM4_BLOCKED and then grant it
+// the wrong lock type -- a GRANTED the client rejects (Linux nlm_compare_locks
+// compares fl_type) over a lock the server keeps holding, with no owner left
+// to release it.
+func (w *Waiter) isRetransmissionOf(req *Waiter) bool {
+	return w.Exclusive == req.Exclusive &&
+		w.matches(req.Lock.Owner.OwnerID, req.Lock.Offset, req.Lock.Length)
 }

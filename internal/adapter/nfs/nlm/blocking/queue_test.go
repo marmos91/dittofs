@@ -169,3 +169,44 @@ func TestBlockingQueue_EnqueueKeepsDistinctRanges(t *testing.T) {
 		t.Fatalf("want 3 distinct waiters, got %d", got)
 	}
 }
+
+// TestBlockingQueue_EnqueueKeepsDistinctLockTypes: a shared and an exclusive
+// request over one range from one owner are different requests. Collapsing them
+// answers the second NLM4_BLOCKED and then grants it the wrong lock type -- a
+// GRANTED the client rejects, over a lock the server keeps holding.
+func TestBlockingQueue_EnqueueKeepsDistinctLockTypes(t *testing.T) {
+	t.Parallel()
+
+	bq := NewBlockingQueue(100)
+
+	shared := newWaiter("clientA", "nlm:clientA:1:aa", 0)
+	shared.Exclusive = false
+	if err := bq.Enqueue("file1", shared); err != nil {
+		t.Fatal(err)
+	}
+
+	exclusive := newWaiter("clientA", "nlm:clientA:1:aa", 0)
+	exclusive.Exclusive = true
+	if err := bq.Enqueue("file1", exclusive); err != nil {
+		t.Fatal(err)
+	}
+
+	waiters := bq.GetWaiters("file1")
+	if len(waiters) != 2 {
+		t.Fatalf("an exclusive request was swallowed by a queued shared one: want 2 waiters, got %d", len(waiters))
+	}
+	if waiters[0].Exclusive || !waiters[1].Exclusive {
+		t.Fatalf("want the shared request first and the exclusive second, got %v/%v",
+			waiters[0].Exclusive, waiters[1].Exclusive)
+	}
+
+	// The retransmit of each is still deduped.
+	retryShared := newWaiter("clientA", "nlm:clientA:1:aa", 0)
+	retryShared.Exclusive = false
+	if err := bq.Enqueue("file1", retryShared); err != nil {
+		t.Fatal(err)
+	}
+	if got := bq.TotalWaiters(); got != 2 {
+		t.Fatalf("retransmitted shared LOCK queued a duplicate: want 2, got %d", got)
+	}
+}
