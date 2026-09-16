@@ -464,10 +464,6 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 	// later ModeOrMask/ModeAndNotMask bits are deliberately not included: they
 	// carry DOS attribute flags, which no ACE expresses.
 	var aclAdjustMode *uint32
-	// Set when a size-down truncate prunes the block list, so the commit
-	// below rewrites the stored manifest instead of only the attrs.
-	blocksPruned := false
-
 	// Apply requested changes
 	if attrs.Mode != nil {
 		newMode := *attrs.Mode
@@ -609,22 +605,13 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 		// ignored on read. Block refcounts are reconciled by the block-store
 		// GC, the same as RemoveFile, which drops a file's entire block list
 		// without inline decrements.
-		if *attrs.Size < file.Size && len(file.Blocks) > 0 {
-			file.Blocks = block.PruneChunkRefsToSize(file.Blocks, *attrs.Size)
-			// The manifest actually changed (tail pruned), so the write below
-			// must persist the shortened block list, not just the attrs.
-			blocksPruned = true
-			// Keep ObjectID (the Merkle root over Blocks) consistent with the
-			// trimmed list, or zero it when no blocks remain so the file reads
-			// as "never quiesced" instead of carrying a stale dedup pointer.
-			if !file.ObjectID.IsZero() {
-				if len(file.Blocks) == 0 {
-					file.ObjectID = block.ObjectID{}
-				} else {
-					file.ObjectID = block.ComputeObjectID(file.Blocks)
-				}
-			}
-		}
+		// The prune itself is derived inside the transaction, from the row that
+		// attempt actually read: a list trimmed from this pre-transaction copy
+		// would be written back over whatever a concurrent WRITE committed in
+		// the gap, discarding its new ranges, and on a retry it would re-apply
+		// the same stale trim rather than re-deriving it. Deciding it here
+		// cannot see that writer at all — the row is already in hand before the
+		// transaction opens.
 		file.Size = *attrs.Size
 		modified = true
 
@@ -760,6 +747,11 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 				}
 			}
 
+			// Per attempt, not per call: a retry re-derives the prune from the
+			// row it just read, and a stale true from an earlier attempt would
+			// send an unchanged manifest through SetManifest.
+			pruneManifest := false
+
 			// The ownership gate above ran against the copy read before the
 			// transaction, so an owner-authorized change would otherwise land
 			// on a row a concurrent chown has since handed to someone else —
@@ -841,9 +833,28 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 			if attrs.Size != nil {
 				row.Size = file.Size
 			}
-			if blocksPruned {
-				row.Blocks = file.Blocks
-				row.ObjectID = file.ObjectID
+			// Derive the prune from the row this attempt read, so a retry
+			// re-derives it and a concurrent writer's ranges are not discarded.
+			// The manifest changed only when the trim actually dropped
+			// something, which is also what selects SetManifest over UpdateAttrs
+			// below: a pure grow keeps the stored list and takes the relaxed
+			// path.
+			if attrs.Size != nil {
+				pruned := block.PruneChunkRefsToSize(row.Blocks, *attrs.Size)
+				if len(pruned) != len(row.Blocks) {
+					row.Blocks = pruned
+					// Keep ObjectID (the Merkle root over Blocks) consistent with
+					// the trimmed list, or zero it when no blocks remain so the
+					// file reads as "never quiesced" instead of carrying a stale
+					// dedup pointer.
+					switch {
+					case len(pruned) == 0 && !row.ObjectID.IsZero():
+						row.ObjectID = block.ObjectID{}
+					case len(pruned) > 0:
+						row.ObjectID = block.ComputeObjectID(pruned)
+					}
+					pruneManifest = true
+				}
 			}
 
 			// The post-op attributes this call reports must describe the row it
@@ -852,9 +863,7 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 			// attempt still has to compare this call's mutations against `pre`.
 			writtenAttr = CopyFileAttr(&row.FileAttr)
 
-			// Only a size change prunes blocks, so the relaxed path below never
-			// reaches SetManifest.
-			if blocksPruned {
+			if pruneManifest {
 				return tx.SetManifest(ctx.Context, row)
 			}
 			return tx.UpdateAttrs(ctx.Context, row)
