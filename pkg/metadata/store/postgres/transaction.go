@@ -41,6 +41,16 @@ import (
 // refused by the parent_child_map unique index. SERIALIZABLE also aborts plain
 // SELECTs, which several closures swallow rather than propagate, so a conflict
 // there would be lost instead of retried.
+//
+// ponytail: one isolation level for every transaction, including the ones that
+// were already atomic under READ COMMITTED because they are a single statement
+// holding its own row lock — ApplyDataWrite is the one that matters. Those now
+// restart on a conflict instead of waiting at the lock, which costs nothing
+// when writers are spread over many inodes (measured at within 2%) and about
+// 2.6x when ten of them hammer four. Split the level per call site only if a
+// profile on real write concurrency shows the hot-inode case actually arising;
+// a per-site choice is how the read-then-write sites came to be unprotected in
+// the first place.
 var txOptions = pgx.TxOptions{IsoLevel: pgx.RepeatableRead}
 
 // ============================================================================
