@@ -40,10 +40,15 @@ jobs:
   # Only postsubmit/periodic runs (push or schedule on develop) qualify, and
   # only the first attempt — attempt 2 is left as the final word.
   # `cancelled` is excluded: a run can still be cancelled by a timeout or by
-  # hand, and neither says the code is broken. Develop pushes no longer
-  # supersede one another (see the concurrency policy in the monitored
-  # workflows), so a cancelled develop run is no longer the routine
-  # concurrency artifact it once was.
+  # hand, and neither says the code is broken.
+  #
+  # Develop runs are still cancelled by concurrency, just far less often. The
+  # monitored workflows set `cancel-in-progress` false for non-PR events, which
+  # protects a run that is already executing but NOT one still queued: GitHub
+  # replaces a pending run when a newer one is queued to the same group. So a
+  # burst of develop pushes can still cancel the intermediate runs, and a
+  # cancelled conclusion stays possible. Do not drop the `cancelled` filters
+  # below on the assumption that develop cancellation is now impossible.
   # ---------------------------------------------------------------------------
   retry:
     name: retry conformance flake
