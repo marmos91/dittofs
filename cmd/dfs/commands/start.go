@@ -50,6 +50,11 @@ var isTerminal = func(fd uintptr) bool {
 // Serving either would return zeros for stored files, so boot stops instead.
 const EX_CONFIG = 78
 
+// storeCloseTimeout bounds the control-plane store's close at shutdown. Long
+// enough for an ordinary query to finish, short enough that a wedged one does
+// not outlast the forced-exit deadline it would otherwise defeat.
+const storeCloseTimeout = 5 * time.Second
+
 // exitFn is the production exit path for the format-mismatch boot guard.
 // Indirected through a package-level var so the in-process boot-guard
 // test (start_test.go::TestStart_FutureFormatExitCode) can stub it to
@@ -136,6 +141,52 @@ func runStart(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize control plane store: %w", err)
 	}
+	// Registered before any other consumer takes a reference, so it closes last:
+	// after the netlogon defer and after the shutdown wait below returns. The
+	// runtime's background workers reach this store too, and the ones that do
+	// are joined by the shutdown drain before Serve returns. Cancelling here
+	// rather than relying on the root defer keeps that true for a ctx-bound
+	// worker added later: the root cancel is registered before this and would
+	// otherwise run after it.
+	//
+	// decision: the handle can close while an API request is still using it,
+	// and on more than the one path this originally named. http.Server.Shutdown
+	// returns when its own deadline expires whether or not handlers have
+	// finished, and API handlers hold cpStore directly, so an ordinary SIGTERM
+	// with a slow handler reaches this close the same way the forced-exit
+	// branch does. Nothing here waits for handlers to drain.
+	//
+	// What sql.DB.Close actually does cuts both ways, and the second way is why
+	// this is bounded: it stops new queries and makes any later use return an
+	// error instead of panicking, but it does not cut a query already running —
+	// it WAITS for it. Left to run to completion it would hold the process in
+	// this defer behind a wedged handler, and the forced-exit path above has
+	// already given up waiting by then, so the one deadline the operator can
+	// see would be defeated by the cleanup that follows it.
+	//
+	// So the close gets its own deadline, and losing it means exiting with the
+	// handle still open. That costs nothing here: the process is on its way out
+	// and the OS reclaims the descriptor either way, whereas not exiting is
+	// what an operator notices. Withdraw the bound if this ever becomes a path
+	// the process continues past rather than exits from, where an unclosed
+	// handle outlives the decision to abandon it. The real fix, which removes
+	// the choice, is to join the API handlers before closing — nothing here
+	// waits for them, and http.Server.Shutdown returns on its own deadline
+	// whether or not they have finished.
+	defer func() {
+		cancel()
+		closed := make(chan struct{})
+		go func() {
+			defer close(closed)
+			_ = cpStore.Close()
+		}()
+		select {
+		case <-closed:
+		case <-time.After(storeCloseTimeout):
+			logger.Warn("control-plane store did not close within its deadline; " +
+				"an operation is still holding it and the process is exiting without it")
+		}
+	}()
 
 	// Ensure admin user exists. On first run the password is taken from
 	// DITTOFS_ADMIN_INITIAL_PASSWORD (env, plaintext, also enables SMB admin),

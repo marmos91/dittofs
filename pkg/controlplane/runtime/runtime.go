@@ -344,14 +344,20 @@ func (r *Runtime) Shutdown(ctx context.Context) error {
 	// idempotent so a double-stop (this + ctx cancellation) is harmless.
 	r.mu.RLock()
 	ts := r.trashSvc
-	ss := r.snapSchedSvc
 	r.mu.RUnlock()
 	if ts != nil {
 		ts.Stop()
 	}
-	if ss != nil {
-		ss.Stop()
+	// The settings watcher too, not only the scheduler: this is an exported
+	// shutdown, so a caller that never went through lifecycle.Serve reaches it
+	// here and closes the stores next. Stop is idempotent, so the lifecycle
+	// drain having already run costs nothing.
+	if r.settingsWatcher != nil {
+		r.settingsWatcher.Stop()
 	}
+
+	// The snapshot scheduler is stopped by shutdownSnapshots below, which is
+	// the seam the lifecycle drain also routes through.
 
 	// Cancel any in-flight async GC so a long mark/sweep does not outlive the
 	// stores it operates on.
@@ -894,6 +900,12 @@ func (r *Runtime) Metrics() *metrics.Metrics {
 	return r.metrics
 }
 
+// startupDrainTimeout bounds the snapshot drain run after a failed startup. The
+// process is already abandoning the boot, so this only has to be long enough for
+// a tick to finish its store round-trip, not for one to complete work.
+// var rather than const so a test can shrink it; nothing else assigns it.
+var startupDrainTimeout = 10 * time.Second
+
 func (r *Runtime) Serve(ctx context.Context) error {
 	r.clientRegistry.StartSweeper(ctx)
 
@@ -902,9 +914,10 @@ func (r *Runtime) Serve(ctx context.Context) error {
 	// an explicit Trash().Stop() from Runtime.Shutdown.
 	r.Trash().Start(ctx)
 
-	// Launch the snapshot scheduler unless disabled. Same lifecycle as the
-	// reaper: exits on ctx cancellation or SnapshotScheduler().Stop() from
-	// Runtime.Shutdown. Policy-free fleets pay one ListPolicies query per tick.
+	// Launch the snapshot scheduler unless disabled. Stopped and joined by
+	// shutdownSnapshots, which both the lifecycle drain and Runtime.Shutdown
+	// call; it also exits on ctx cancellation if neither ever runs.
+	// Policy-free fleets pay one ListPolicies query per tick.
 	if !r.snapSchedDisabled {
 		r.SnapshotScheduler().Start(ctx)
 	}
@@ -931,7 +944,7 @@ func (r *Runtime) Serve(ctx context.Context) error {
 		logger.Error("restore recovery returned error (continuing startup)", "error", err)
 	}
 
-	return r.lifecycleSvc.Serve(ctx, lifecycle.Deps{
+	err := r.lifecycleSvc.Serve(ctx, lifecycle.Deps{
 		Settings:        r.settingsWatcher,
 		AdapterLoader:   r.adaptersSvc,
 		MetadataFlusher: r.metadataService,
@@ -940,6 +953,62 @@ func (r *Runtime) Serve(ctx context.Context) error {
 		SnapshotDrainer: r,
 		RollupStopper:   r,
 	})
+	// lifecycle.Serve returns its startup errors before it reaches its shutdown
+	// hook, so the drain that joins the workers started above never runs — and
+	// every one of them reads or writes the control-plane store the caller
+	// closes as soon as this returns, which is the overlap the drain exists to
+	// prevent.
+	//
+	// Run for any error rather than only one that arrives with ctx still live.
+	// Both joins below are idempotent and return at once when the work is
+	// already stopped, so repeating them after an ordinary shutdown costs
+	// nothing — whereas asking whether ctx was cancelled answers a different
+	// question than whether the shutdown hook ran, and gets the startup error
+	// that races cancellation wrong in the direction that skips the only join.
+	//
+	// Bounded, and detached from ctx rather than derived from it: the join has
+	// to outlive a cancellation to be a join, but an unbounded one hands a
+	// wedged tick the power to stop the process from ever exiting, which would
+	// also keep the store open forever.
+	if err != nil {
+		r.drainStartupWorkers(ctx)
+	}
+	return err
+}
+
+// drainStartupWorkers joins the background workers Serve starts before it hands
+// off to the lifecycle service, for the error returns that never reach the
+// lifecycle shutdown hook. Every worker it joins reads or writes the
+// control-plane store, and the caller closes that store as soon as Serve
+// returns.
+//
+// Both joins are idempotent and return at once when the work is already
+// stopped, so this is safe to run after a shutdown that already drained.
+func (r *Runtime) drainStartupWorkers(ctx context.Context) {
+	stopCtx, cancelStop := context.WithTimeout(context.WithoutCancel(ctx), startupDrainTimeout)
+	defer cancelStop()
+
+	// The settings watcher is started before the adapter load that is the
+	// likeliest startup failure, and it polls the same store on a timer. Stop
+	// waits for a poll already in flight, which is what makes it a join — but it
+	// takes no context, and on a startup error the context that poll is running
+	// under is still live, so a store call that hangs would hang this join and
+	// with it the process. Bounded by stopCtx like the scheduler's, and it says
+	// which of the two happened.
+	if r.settingsWatcher != nil {
+		stopped := make(chan struct{})
+		go func() {
+			defer close(stopped)
+			r.settingsWatcher.Stop()
+		}()
+		select {
+		case <-stopped:
+		case <-stopCtx.Done():
+			logger.Warn("startup drain: settings watcher was not joined before the store closes; " +
+				"a poll may still be running against it")
+		}
+	}
+	r.shutdownSnapshots(stopCtx)
 }
 
 // StopRollups stops + drains every share's block-store rollup worker pool.

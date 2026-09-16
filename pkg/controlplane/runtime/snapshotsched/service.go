@@ -13,6 +13,8 @@ package snapshotsched
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -55,6 +57,22 @@ type Service struct {
 	deps     Deps
 	interval time.Duration
 	stopCh   chan struct{}
+	// stopOnce closes stopCh exactly once. Stop is reachable from both the
+	// lifecycle drain and Runtime.Shutdown, and a check-then-close lets two
+	// callers both find the channel open and both close it, which panics.
+	stopOnce sync.Once
+	// started guards the goroutine against a second Start and tells Stop
+	// whether there is anything to wait for.
+	started atomic.Bool
+	// stopped is closed by the scheduler goroutine as it returns, so Stop can
+	// wait for a tick that is already inside the store rather than only
+	// signalling it.
+	stopped chan struct{}
+	// cancelTick aborts a tick already inside the store. stopCh only tells the
+	// loop not to start another one, and on the API-error path the context the
+	// ticks run under is still live — so without this, Stop's wait is something
+	// the caller has to abandon rather than a join that completes.
+	cancelTick context.CancelFunc
 	// now is the clock, overridable in tests for deterministic due/prune.
 	now func() time.Time
 }
@@ -69,35 +87,96 @@ func New(deps Deps, pollInterval time.Duration) *Service {
 		deps:     deps,
 		interval: pollInterval,
 		stopCh:   make(chan struct{}),
+		stopped:  make(chan struct{}),
 		now:      time.Now,
 	}
 }
 
 // Start launches the scheduler goroutine. It ticks at the poll interval until
-// ctx is cancelled or Stop is called.
+// ctx is cancelled or Stop is called. A second Start is a no-op.
 func (s *Service) Start(ctx context.Context) {
+	if !s.started.CompareAndSwap(false, true) {
+		return
+	}
+	// Derived, so Stop can cancel the ticks without disturbing the caller's
+	// context — which on a startup or API error is still very much alive.
+	tickCtx, cancelTick := context.WithCancel(ctx)
+	s.cancelTick = cancelTick
+
 	go func() {
+		defer close(s.stopped)
+		defer cancelTick()
 		ticker := time.NewTicker(s.interval)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-ctx.Done():
+			case <-tickCtx.Done():
 				return
 			case <-s.stopCh:
 				return
 			case <-ticker.C:
-				s.tick(ctx)
+				// Re-checked, because a select with two ready cases picks
+				// uniformly: a tick due in the same instant Stop is requested
+				// has an even chance of winning, and then creates or prunes a
+				// snapshot during a shutdown that is already closing the
+				// stores under it.
+				select {
+				case <-tickCtx.Done():
+					return
+				case <-s.stopCh:
+					return
+				default:
+				}
+				s.tick(tickCtx)
 			}
 		}
 	}()
 }
 
-// Stop signals the scheduler goroutine to exit. Idempotent.
-func (s *Service) Stop() {
+// Stop signals the scheduler goroutine to exit and waits for it, bounded by
+// ctx. It reports whether the wait actually completed.
+//
+// Waiting is the point: a tick reads and writes snapshot policies through the
+// control-plane store, so a caller that is about to close that store needs
+// "stopped" to mean the tick has finished, not merely that it was asked to.
+// When ctx expires first this returns false, and the caller has been told
+// plainly that the guarantee does not hold on that path rather than being left
+// to infer it from a comment.
+//
+// A scheduler that was never started returns immediately. Idempotent, and safe
+// for concurrent callers.
+func (s *Service) Stop(ctx context.Context) bool {
+	s.stopOnce.Do(func() { close(s.stopCh) })
+	// Cancelled as well as signalled: stopCh stops the loop starting another
+	// tick, and this one ends a tick already inside the store, so the wait below
+	// is a join that completes rather than one the caller abandons.
+	if s.cancelTick != nil {
+		s.cancelTick()
+	}
+	if !s.started.Load() {
+		return true
+	}
 	select {
-	case <-s.stopCh:
-	default:
-		close(s.stopCh)
+	case <-s.stopped:
+		return true
+	case <-ctx.Done():
+		// Both channels can be ready at once — a deadline that expires in the
+		// same instant the last tick finishes — and a select with two ready
+		// cases picks uniformly, so arriving here does not mean the join was
+		// lost. Re-check before saying so: reporting a completed join as
+		// incomplete makes the caller warn that a tick is still running against
+		// stores it is about to close, which is the one thing this return value
+		// exists to tell it.
+		select {
+		case <-s.stopped:
+			return true
+		default:
+		}
+		// Reported by the caller, not here: every caller already logs on a
+		// false return, and it knows what the lost join means for what it is
+		// about to do — close the stores, or abandon a boot. Logging in both
+		// places produced two warnings for one timeout.
+		return false
 	}
 }
 
