@@ -125,11 +125,17 @@ func DecodeWriteRequest(body []byte) (*WriteRequest, error) {
 			return nil, fmt.Errorf("write request DataOffset %d points before the fixed structure (body offset %d, minimum 48)",
 				req.DataOffset, dataStart)
 		}
-		// In uint64, so the arithmetic cannot wrap before the comparison. On a
-		// 32-bit build `int(req.Length)` of a wire value like 0x80000000 is
-		// negative, dataStart+that is below len(body), the check passes, and the
-		// slice below panics — on a request anyone can send.
-		available := uint64(len(body)) - uint64(dataStart)
+		// Range first, THEN subtract. Converting both sides to uint64 stops the
+		// signed wrap a 32-bit build has on `int(req.Length)`, but it introduces
+		// an unsigned one: a DataOffset past the end of the body makes
+		// len(body)-dataStart underflow to an enormous number, after which a
+		// small Length passes and the slice panics — on every architecture, from
+		// a request anyone can send. One bound is not a substitute for the other.
+		if dataStart > len(body) {
+			return nil, fmt.Errorf("write request DataOffset %d points past the end of the message (body offset %d, have %d)",
+				req.DataOffset, dataStart, len(body))
+		}
+		available := uint64(len(body) - dataStart)
 		if uint64(req.Length) > available {
 			// "have" is what is left FROM the offset, not the whole body: the
 			// body length alone reads as plenty whenever DataOffset is large,
@@ -551,8 +557,8 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// IsAtimeFrozen takes openFile.mu (read), so this probe is serialized
 	// against a concurrent SET_INFO freezing the access time.
 	if !openFile.IsAtimeFrozen() && noteSmbAccess(openFile, now) {
-		// Both sides of the rebase wanted: the frozen ChangeTime is held across
-		// the bump (#2626), and a dropped bump is visible at Debug.
+		// A frozen ChangeTime is held across the bump, and a dropped bump is
+		// visible at Debug.
 		attrs := &metadata.SetAttrs{Atime: &now}
 		holdFrozenCtime(openFile, attrs)
 		if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, attrs); err != nil {

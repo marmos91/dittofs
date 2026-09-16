@@ -1188,11 +1188,16 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 	if pending.IsBinding {
 		preauthSessionID = pending.BindingSessionID
 	}
+	// Unconditional, not only on failure. Deletion is idempotent, and the
+	// success paths do not all free it: configureSessionSigningWithKey does,
+	// but the guest fallback completes successfully without ever deriving a
+	// session key and so never reaches it — leaving one entry per attempt on a
+	// connection that lives until teardown. Freeing here covers every exit and
+	// costs a map delete on the paths that already freed it.
 	defer func() {
-		if ctx.ConnCryptoState == nil || retErr == nil && (result == nil || !result.Status.IsError()) {
-			return
+		if ctx.ConnCryptoState != nil {
+			ctx.ConnCryptoState.DeleteSessionPreauthHash(preauthSessionID)
 		}
-		ctx.ConnCryptoState.DeleteSessionPreauthHash(preauthSessionID)
 	}()
 
 	// Remove pending auth (handshake complete)

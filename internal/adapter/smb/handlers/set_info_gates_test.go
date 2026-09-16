@@ -537,20 +537,34 @@ func TestWrite_ZeroLength_AdvancesPositionInfo(t *testing.T) {
 // target (a dependency refuses to), so this pins the refusal rather than
 // reproducing the wrap; on any arch the request must be rejected, not sliced.
 func TestDecodeWriteRequest_HugeLengthIsRefusedNotSliced(t *testing.T) {
-	for _, length := range []uint32{0x80000000, 0xFFFFFFFF} {
-		body := make([]byte, 48+16)
-		binary.LittleEndian.PutUint16(body[0:], 49)    // StructureSize
-		binary.LittleEndian.PutUint16(body[2:], 64+48) // DataOffset: payload at 48
-		binary.LittleEndian.PutUint32(body[4:], length)
-		binary.LittleEndian.PutUint64(body[8:], 0)
+	for _, tc := range []struct {
+		name       string
+		dataOffset uint16
+		length     uint32
+	}{
+		// A length that wraps int on a 32-bit build.
+		{"huge length", 64 + 48, 0x80000000},
+		{"max length", 64 + 48, 0xFFFFFFFF},
+		// A DataOffset past the end of the message. len(body)-dataStart
+		// underflows in uint64, and then even a tiny length fits "available".
+		{"offset past the end", 64 + 4096, 1},
+		{"offset past the end, zero-ish length", 64 + 200, 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := make([]byte, 48+16)
+			binary.LittleEndian.PutUint16(body[0:], 49) // StructureSize
+			binary.LittleEndian.PutUint16(body[2:], tc.dataOffset)
+			binary.LittleEndian.PutUint32(body[4:], tc.length)
+			binary.LittleEndian.PutUint64(body[8:], 0)
 
-		req, err := DecodeWriteRequest(body)
-		if err == nil {
-			t.Errorf("Length=%#x: decode succeeded with %d payload bytes available; "+
-				"want a refusal", length, len(body)-48)
-		}
-		if req != nil && len(req.Data) > len(body) {
-			t.Errorf("Length=%#x: decoded Data is longer than the message", length)
-		}
+			req, err := DecodeWriteRequest(body)
+			if err == nil {
+				t.Errorf("decode succeeded with DataOffset=%d and Length=%#x on a %d-byte body; "+
+					"want a refusal", tc.dataOffset, tc.length, len(body))
+			}
+			if req != nil && len(req.Data) > len(body) {
+				t.Error("decoded Data is longer than the message")
+			}
+		})
 	}
 }

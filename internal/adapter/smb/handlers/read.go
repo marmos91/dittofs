@@ -461,9 +461,9 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	if !openFile.IsAtimeFrozen() {
 		now := time.Now()
 		if noteSmbAccess(openFile, now) {
-			// Both sides of the rebase wanted: the frozen ChangeTime is held
-			// across the bump (#2626), and a dropped bump is a lost timestamp
-			// update rather than an expected error, so it is visible at Debug.
+			// A frozen ChangeTime is held across the bump, and a dropped bump is
+			// a lost timestamp update rather than an expected error, so it is
+			// visible at Debug.
 			attrs := &metadata.SetAttrs{Atime: &now}
 			holdFrozenCtime(openFile, attrs)
 			if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, attrs); err != nil {
