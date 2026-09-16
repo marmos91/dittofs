@@ -37,10 +37,16 @@ func ProcessGrantedCallback(
 	waiter *blocking.Waiter,
 	lm *lock.Manager,
 ) bool {
+	// Read the waiter once, under its mutex. The queue can cancel it or (on a
+	// retransmit) leave it to be removed at any point after GetWaiters handed
+	// out the pointer, so every field below comes from this one snapshot rather
+	// than a fresh read per use.
+	w := waiter.Snapshot()
+
 	// Check if cancelled while we were processing
-	if waiter.IsCancelled() {
+	if w.Cancelled {
 		logger.Debug("Skipping callback for cancelled waiter",
-			"owner", waiter.Lock.Owner.OwnerID)
+			"owner", w.Lock.Owner.OwnerID)
 		return false
 	}
 
@@ -50,29 +56,29 @@ func ProcessGrantedCallback(
 	// than a stale or hardcoded port. If resolution fails the grant cannot be
 	// delivered: release the lock (same as a failed callback) so it is not
 	// orphaned, and re-drive remaining waiters via the normal release hook.
-	addr, err := callbackAddrResolver(ctx, waiter.CallbackHost, waiter.CallbackVers)
+	addr, err := callbackAddrResolver(ctx, w.CallbackHost, w.CallbackVers)
 	if err != nil {
 		logger.Warn("NLM_GRANTED: cannot resolve client callback address, releasing lock",
-			"host", waiter.CallbackHost,
-			"owner", waiter.Lock.Owner.OwnerID,
+			"host", w.CallbackHost,
+			"owner", w.Lock.Owner.OwnerID,
 			"error", err)
-		handleKey := string(waiter.Lock.FileHandle)
-		_ = lm.RemoveUnifiedLock(handleKey, waiter.Lock.Owner,
-			waiter.Lock.Offset, waiter.Lock.Length)
+		handleKey := string(w.Lock.FileHandle)
+		_ = lm.RemoveUnifiedLock(handleKey, w.Lock.Owner,
+			w.Lock.Offset, w.Lock.Length)
 		return false
 	}
 
 	// Build NLM_GRANTED args
 	args := &types.NLM4GrantedArgs{
-		Cookie:    waiter.Cookie,
-		Exclusive: waiter.Exclusive,
+		Cookie:    w.Cookie,
+		Exclusive: w.Exclusive,
 		Lock: types.NLM4Lock{
-			CallerName: waiter.CallerName,
-			FH:         waiter.FileHandle,
-			OH:         waiter.OH,
-			Svid:       waiter.Svid,
-			Offset:     waiter.Lock.Offset,
-			Length:     waiter.Lock.Length,
+			CallerName: w.CallerName,
+			FH:         w.FileHandle,
+			OH:         w.OH,
+			Svid:       w.Svid,
+			Offset:     w.Lock.Offset,
+			Length:     w.Lock.Length,
 		},
 	}
 
@@ -80,8 +86,8 @@ func ProcessGrantedCallback(
 	start := time.Now()
 
 	// Send callback
-	err = SendGrantedCallback(ctx, addr, waiter.CallbackProg,
-		waiter.CallbackVers, args)
+	err = SendGrantedCallback(ctx, addr, w.CallbackProg,
+		w.CallbackVers, args)
 
 	duration := time.Since(start)
 
@@ -89,20 +95,20 @@ func ProcessGrantedCallback(
 		logger.Warn("NLM_GRANTED callback failed, releasing lock",
 			"error", err,
 			"addr", addr,
-			"owner", waiter.Lock.Owner.OwnerID,
+			"owner", w.Lock.Owner.OwnerID,
 			"duration", duration)
 
 		// Per CONTEXT.md locked decision: release lock immediately if callback fails
-		handleKey := string(waiter.Lock.FileHandle)
-		_ = lm.RemoveUnifiedLock(handleKey, waiter.Lock.Owner,
-			waiter.Lock.Offset, waiter.Lock.Length)
+		handleKey := string(w.Lock.FileHandle)
+		_ = lm.RemoveUnifiedLock(handleKey, w.Lock.Owner,
+			w.Lock.Offset, w.Lock.Length)
 
 		return false
 	}
 
 	logger.Debug("NLM_GRANTED callback succeeded",
 		"addr", addr,
-		"owner", waiter.Lock.Owner.OwnerID,
+		"owner", w.Lock.Owner.OwnerID,
 		"duration", duration)
 
 	return true

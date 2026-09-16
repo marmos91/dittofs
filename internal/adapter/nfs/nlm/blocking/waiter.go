@@ -23,8 +23,11 @@ import (
 //   - Match against NLM_CANCEL requests
 //
 // Thread Safety:
-// The Cancelled field is protected by an internal mutex and can be safely
-// accessed concurrently via IsCancelled() and Cancel() methods.
+// A queued waiter is handed to the grant path by pointer, which builds an
+// NLM_GRANTED callback from it while the queue may still be mutating it, so
+// every field is guarded by mu rather than by bq.mu. Read the whole struct at
+// once with Snapshot(); write through the methods below. The queue's own
+// readers (matches, isRetransmissionOf) go through Snapshot too.
 type Waiter struct {
 	// Lock is the requested lock specification
 	Lock *lock.UnifiedLock
@@ -65,8 +68,52 @@ type Waiter struct {
 	// cancelled indicates if this waiter has been cancelled
 	cancelled bool
 
-	// mu protects the cancelled field
+	// mu protects every field above. It is taken on its own, never while
+	// holding bq.mu in the other order, so bq.mu -> mu is the only nesting.
 	mu sync.Mutex
+}
+
+// WaiterSnapshot is a point-in-time copy of a Waiter, taken under its mutex.
+// The grant path builds an NLM_GRANTED callback from a snapshot so it never
+// reads a field that the queue is concurrently rewriting. The byte slices are
+// copied shallowly: they are set once at construction and never mutated in
+// place, so sharing the backing array is safe.
+type WaiterSnapshot struct {
+	Lock         *lock.UnifiedLock
+	Cookie       []byte
+	Exclusive    bool
+	CallbackHost string
+	CallbackProg uint32
+	CallbackVers uint32
+	CallerName   string
+	Svid         int32
+	OH           []byte
+	FileHandle   []byte
+	QueuedAt     time.Time
+	Cancelled    bool
+}
+
+// Snapshot returns a consistent copy of the waiter's fields. Reading the whole
+// struct this way, rather than field by field, is what makes the cancellation
+// check and the callback it guards see one state: a waiter cancelled between
+// two separate reads would otherwise be checked as live and then dialed.
+func (w *Waiter) Snapshot() WaiterSnapshot {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return WaiterSnapshot{
+		Lock:         w.Lock,
+		Cookie:       w.Cookie,
+		Exclusive:    w.Exclusive,
+		CallbackHost: w.CallbackHost,
+		CallbackProg: w.CallbackProg,
+		CallbackVers: w.CallbackVers,
+		CallerName:   w.CallerName,
+		Svid:         w.Svid,
+		OH:           w.OH,
+		FileHandle:   w.FileHandle,
+		QueuedAt:     w.QueuedAt,
+		Cancelled:    w.cancelled,
+	}
 }
 
 // IsCancelled returns true if this waiter has been cancelled.
@@ -91,13 +138,21 @@ func (w *Waiter) Cancel() {
 	w.cancelled = true
 }
 
+// setQueuedAt stamps the waiter with the time it entered the queue.
+func (w *Waiter) setQueuedAt(t time.Time) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.QueuedAt = t
+}
+
 // matches reports whether w is the waiter identified by this owner and byte
 // range. This is what NLM_CANCEL removes by: CANCEL is specified to be
 // idempotent, so it stays deliberately permissive about the lock type.
 func (w *Waiter) matches(ownerID string, offset, length uint64) bool {
-	return w.Lock.Owner.OwnerID == ownerID &&
-		w.Lock.Offset == offset &&
-		w.Lock.Length == length
+	s := w.Snapshot()
+	return s.Lock.Owner.OwnerID == ownerID &&
+		s.Lock.Offset == offset &&
+		s.Lock.Length == length
 }
 
 // isRetransmissionOf reports whether w is the already-queued form of req: the
@@ -110,6 +165,9 @@ func (w *Waiter) matches(ownerID string, offset, length uint64) bool {
 // compares fl_type) over a lock the server keeps holding, with no owner left
 // to release it.
 func (w *Waiter) isRetransmissionOf(req *Waiter) bool {
-	return w.Exclusive == req.Exclusive &&
-		w.matches(req.Lock.Owner.OwnerID, req.Lock.Offset, req.Lock.Length)
+	queued, incoming := w.Snapshot(), req.Snapshot()
+	return queued.Exclusive == incoming.Exclusive &&
+		queued.Lock.Owner.OwnerID == incoming.Lock.Owner.OwnerID &&
+		queued.Lock.Offset == incoming.Lock.Offset &&
+		queued.Lock.Length == incoming.Lock.Length
 }

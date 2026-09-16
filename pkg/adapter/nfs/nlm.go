@@ -430,14 +430,19 @@ func (s *NFSAdapter) processNLMWaiters(handle metadata.FileHandle) {
 		"waiters", len(waiters))
 
 	for _, waiter := range waiters {
+		// Read the waiter once under its mutex. It stays queued while we work,
+		// so a CANCEL or an NSM crash drain can rewrite it between any two
+		// field reads.
+		w := waiter.Snapshot()
+
 		// Skip if cancelled
-		if waiter.IsCancelled() {
+		if w.Cancelled {
 			continue
 		}
 
 		// Try to acquire the lock for this waiter
 		lockType := metadata.LockTypeShared
-		if waiter.Exclusive {
+		if w.Exclusive {
 			lockType = metadata.LockTypeExclusive
 		}
 
@@ -449,10 +454,10 @@ func (s *NFSAdapter) processNLMWaiters(handle metadata.FileHandle) {
 
 		// Try to add the lock
 		enhancedLock := lock.NewUnifiedLock(
-			waiter.Lock.Owner,
+			w.Lock.Owner,
 			lock.FileHandle(handle),
-			waiter.Lock.Offset,
-			waiter.Lock.Length,
+			w.Lock.Offset,
+			w.Lock.Length,
 			lockType,
 		)
 
@@ -467,17 +472,16 @@ func (s *NFSAdapter) processNLMWaiters(handle metadata.FileHandle) {
 		if err != nil {
 			// Lock still conflicts - try next waiter
 			logger.Debug("NLM waiter still conflicts, skipping",
-				"owner", waiter.Lock.Owner.OwnerID)
+				"owner", w.Lock.Owner.OwnerID)
 			continue
 		}
 
 		// The waiter's own Lock is deliberately NOT repointed at enhancedLock.
-		// A queued waiter is shared with the blocking queue, which reads its
-		// identity fields under bq.mu, and this goroutine holds no such lock --
-		// the swap was an unsynchronized write to a struct another goroutine
-		// reads. Nothing needs it: enhancedLock differs only in carrying the
-		// lock type, and the grant callback reads owner, handle, range and
-		// Exclusive, which are identical in both.
+		// A queued waiter is shared with the blocking queue, and the swap was an
+		// unsynchronized write to a struct another goroutine reads. Nothing
+		// needs it: enhancedLock differs only in carrying the lock type, and the
+		// grant callback reads owner, handle, range and Exclusive, which are
+		// identical in both.
 
 		// Send GRANTED callback
 		// ProcessGrantedCallback releases the lock on failure
@@ -491,7 +495,7 @@ func (s *NFSAdapter) processNLMWaiters(handle metadata.FileHandle) {
 			// Remove waiter from queue
 			s.blockingQueue.RemoveWaiter(handleKey, waiter)
 			logger.Debug("NLM waiter granted and notified",
-				"owner", waiter.Lock.Owner.OwnerID)
+				"owner", w.Lock.Owner.OwnerID)
 		}
 		// If callback failed, ProcessGrantedCallback already released the lock
 	}

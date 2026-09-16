@@ -75,16 +75,12 @@ func (bq *BlockingQueue) Enqueue(fileHandle string, waiter *Waiter) error {
 	// client-supplied, so distinct owners still fill it to maxQueue.
 	//
 	// decision: the retransmit does not refresh the queued waiter's cookie or
-	// callback target, though it carries its own. Two reasons, and either
-	// alone is sufficient. A queued waiter is handed to the grant path by
-	// pointer and read there without bq.mu, so writing to it here would race a
-	// GRANTED callback already being built from it. And the callback target is
-	// what the caller_name binding exists to pin: letting a retransmit move it
-	// would hand anyone who can replay a LOCK under another client's
-	// caller_name a way to redirect that client's GRANTED. The cost is that a
-	// client which genuinely moves mid-wait is granted at its original address;
-	// revisit if a client is found that survives such a move, since it would
-	// then need the whole waiter made safe to mutate, not just this write.
+	// callback target, though it carries its own. The callback target is what
+	// the caller_name binding exists to pin: letting a retransmit move it would
+	// hand anyone who can replay a LOCK under another client's caller_name a way
+	// to redirect that client's GRANTED. The cost is that a client which
+	// genuinely moves mid-wait is granted at its original address; revisit if a
+	// client is found that survives such a move.
 	if findRetransmission(queue, waiter) != nil {
 		return nil
 	}
@@ -93,7 +89,7 @@ func (bq *BlockingQueue) Enqueue(fileHandle string, waiter *Waiter) error {
 		return ErrQueueFull
 	}
 
-	waiter.QueuedAt = time.Now()
+	waiter.setQueuedAt(time.Now())
 	bq.queues[fileHandle] = append(queue, waiter)
 	return nil
 }
@@ -218,7 +214,7 @@ func (bq *BlockingQueue) RemoveClientWaiters(clientID string) int {
 	for fileHandle, queue := range bq.queues {
 		remaining := queue[:0:0] // new backing array; never alias the original
 		for _, w := range queue {
-			if w.CallerName == clientID {
+			if w.Snapshot().CallerName == clientID {
 				w.Cancel()
 				removed++
 				continue
