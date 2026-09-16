@@ -6,8 +6,8 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 )
 
-// result builds a CompoundResult whose encoded size is 4 + dataLen bytes.
-func result(dataLen int) *types.CompoundResult {
+// sizedResult builds a CompoundResult whose encoded size is 4 + dataLen bytes.
+func sizedResult(dataLen int) *types.CompoundResult {
 	return &types.CompoundResult{
 		Status: types.NFS4_OK,
 		OpCode: types.OP_GETATTR,
@@ -64,6 +64,12 @@ func TestReplyLimits_Account(t *testing.T) {
 			wantFinal: types.NFS4_OK,
 		},
 		{
+			name:      "a zero cache budget caches nothing rather than everything",
+			limits:    &replyLimits{max: 8192, maxCached: 0, cacheThis: true},
+			dataLens:  []int{0},
+			wantFinal: types.NFS4ERR_REP_TOO_BIG_TO_CACHE,
+		},
+		{
 			name:      "cache budget enforced when cachethis is true",
 			limits:    &replyLimits{max: 8192, maxCached: 10, cacheThis: true},
 			dataLens:  []int{100},
@@ -75,19 +81,13 @@ func TestReplyLimits_Account(t *testing.T) {
 			dataLens:  []int{100},
 			wantFinal: types.NFS4ERR_REP_TOO_BIG,
 		},
-		{
-			name:      "zero budget disables each check independently",
-			limits:    &replyLimits{max: 0, maxCached: 0, cacheThis: true},
-			dataLens:  []int{1 << 20},
-			wantFinal: types.NFS4_OK,
-		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			var got uint32
 			for _, n := range tc.dataLens {
-				got = tc.limits.account(result(n))
+				got = tc.limits.account(sizedResult(n))
 			}
 			if got != tc.wantFinal {
 				t.Errorf("account() = %d, want %d", got, tc.wantFinal)
@@ -101,7 +101,7 @@ func TestReplyLimits_Account(t *testing.T) {
 // caller told the reply was too big must not also be handed a partial result or
 // a stateid it cannot have seen.
 func TestOverflow_DropsOperationOutput(t *testing.T) {
-	r := result(100)
+	r := sizedResult(100)
 	r.Stateid = &types.Stateid4{Seqid: 7}
 
 	overflow(r, types.NFS4ERR_REP_TOO_BIG)
@@ -123,7 +123,7 @@ func TestOverflow_DropsOperationOutput(t *testing.T) {
 // while the two agree, and they are computed in different functions.
 func TestCompoundSizeHelpers_MatchEncoder(t *testing.T) {
 	for _, tag := range [][]byte{nil, []byte("a"), []byte("ab"), []byte("abc"), []byte("abcd"), []byte("abcde")} {
-		results := []types.CompoundResult{*result(12), *result(33)}
+		results := []types.CompoundResult{*sizedResult(12), *sizedResult(33)}
 
 		want := compoundHeaderSize(tag)
 		for i := range results {
@@ -137,5 +137,19 @@ func TestCompoundSizeHelpers_MatchEncoder(t *testing.T) {
 		if uint32(len(encoded)) != want {
 			t.Errorf("tag %q: encoded %d bytes, size helpers predicted %d", tag, len(encoded), want)
 		}
+	}
+}
+
+// TestReplyLimits_SaturatesRatherThanWraps checks the counter refuses a result
+// big enough to wrap it. An unsaturated uint32 add would land back near zero and
+// report the reply as fitting comfortably inside the budget.
+func TestReplyLimits_SaturatesRatherThanWraps(t *testing.T) {
+	l := &replyLimits{size: ^uint32(0) - 8, max: 8192}
+
+	if got := l.account(sizedResult(64)); got != types.NFS4ERR_REP_TOO_BIG {
+		t.Errorf("account() = %d, want %d", got, types.NFS4ERR_REP_TOO_BIG)
+	}
+	if l.size != ^uint32(0) {
+		t.Errorf("size = %d, want it pinned at the maximum", l.size)
 	}
 }

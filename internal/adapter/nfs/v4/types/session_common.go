@@ -537,8 +537,8 @@ type AuthSysParms struct {
 //
 // gsshandle4_t is `opaque<>`, so the three members occupy three separate XDR
 // items: a fixed 32-bit service enum followed by two length-prefixed opaques.
-// The struct as a whole carries no length prefix, so it cannot be read or
-// written as a single opaque without misaligning everything that follows it.
+// The struct carries no length prefix of its own, so reading or writing it as a
+// single opaque misaligns everything that follows it.
 type GssCbHandles4 struct {
 	Service          uint32
 	HandleFromServer []byte
@@ -605,7 +605,7 @@ func (c *CallbackSecParms4) Encode(buf *bytes.Buffer) error {
 		if h == nil {
 			h = &GssCbHandles4{}
 		}
-		if err := binary.Write(buf, binary.BigEndian, h.Service); err != nil {
+		if err := xdr.WriteUint32(buf, h.Service); err != nil {
 			return fmt.Errorf("encode gss_cb_handles gcbp_service: %w", err)
 		}
 		if err := xdr.WriteXDROpaque(buf, h.HandleFromServer); err != nil {
