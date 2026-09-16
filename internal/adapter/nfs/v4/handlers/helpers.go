@@ -9,6 +9,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/auth"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
@@ -193,21 +194,21 @@ func (h *Handler) buildV4AuthContext(ctx *types.CompoundContext, handle []byte) 
 // handles after a restore plus an explicit re-enable); a client outside the
 // share's netgroup allowlist answers NFS4ERR_ACCESS.
 //
-// It exists because the operations that act on the current filehandle without
-// building an auth context of their own -- LOCK, LOCKT, LOCKU,
-// GET_DIR_DELEGATION -- never reach buildV4AuthContext, so the only place to
-// refuse them is where the handle enters the compound. There are exactly two
-// such places: PUTFH, and a LOOKUP that crosses an export junction out of the
+// It exists because a compound may enter a share's handle and then run only
+// operations that make no metadata call of their own, so no auth context is
+// ever built for it. There are exactly two places a share handle enters the
+// compound: PUTFH, and a LOOKUP that crosses an export junction out of the
 // pseudo-fs. Both call this, so the two cannot drift apart.
 //
-// decision: this covers the share's enabled state and its netgroup client
-// allowlist, not the export auth-flavor policy (AllowAuthSys, RequireKerberos,
-// MinKerberosLevel), which is applied in buildV4AuthContext alone. Those four
-// operations therefore still reach a Kerberos-only share over AUTH_SYS. The
-// exemption is worth only what an operation carrying no auth context can do --
-// widen this to auth.CheckExportAccess once the status a flavor refusal should
-// carry at handle-entry time is settled, since NFS4ERR_WRONGSEC from PUTFH
-// sends a client to SECINFO rather than to a stronger flavor.
+// It deliberately covers only what can be decided from the handle and the
+// peer: the share's enabled state and its netgroup client allowlist. The
+// export auth-flavor policy (AllowAuthSys, RequireKerberos, MinKerberosLevel)
+// needs the request's auth flavor, so it is applied by buildV4AuthContext, and
+// the operations that act on the current filehandle without a metadata call of
+// their own -- LOCK, LOCKT, LOCKU, GET_DIR_DELEGATION -- call
+// currentFHAccessStatus to reach it rather than duplicating the check here.
+// Returning NFS4ERR_WRONGSEC from PUTFH would send a client to SECINFO rather
+// than to a stronger flavor, which is why the flavor gate is not folded in.
 func (h *Handler) shareEntryStatus(ctx *types.CompoundContext, shareName string) uint32 {
 	if h.Registry == nil {
 		return types.NFS4_OK
@@ -224,6 +225,54 @@ func (h *Handler) shareEntryStatus(ctx *types.CompoundContext, shareName string)
 	}
 
 	return types.NFS4_OK
+}
+
+// currentFHAccessStatus applies the export access policy to the compound's
+// current filehandle, reporting the NFS4 status to answer with -- NFS4_OK when
+// the operation may proceed.
+//
+// LOCK, LOCKT, LOCKU and GET_DIR_DELEGATION mutate or observe state through
+// the StateManager without making a metadata call, so unlike every other
+// real-FS operation they never reached buildV4AuthContext and so never reached
+// its export auth-flavor check: a share that requires Kerberos, or disallows
+// AUTH_SYS, stayed reachable over AUTH_SYS through them. Calling this routes
+// them through the same gate as the rest of the protocol, and the refusal
+// carries the status that gate already maps (NFS4ERR_WRONGSEC for a flavor
+// rejection, NFS4ERR_ACCESS for a share permission denial) instead of a
+// second, divergent answer.
+//
+// Call it immediately before the operation touches state, not on entry: a
+// malformed request must still answer NFS4ERR_BADXDR and a request with no
+// current filehandle NFS4ERR_NOFILEHANDLE, and a policy refusal ahead of those
+// preconditions would report the wrong thing to a client that never got far
+// enough to be refused.
+//
+// A pseudo-fs handle names no share and carries no export policy, so it is
+// allowed through: the callers reject it separately with NFS4ERR_INVAL.
+func (h *Handler) currentFHAccessStatus(ctx *types.CompoundContext) uint32 {
+	if pseudofs.IsPseudoFSHandle(ctx.CurrentFH) {
+		return types.NFS4_OK
+	}
+
+	if _, _, err := h.buildV4AuthContext(ctx, ctx.CurrentFH); err != nil {
+		return nfs4StatusForAuthError(err)
+	}
+	return types.NFS4_OK
+}
+
+// refuseCurrentFHAccess returns the status-only refusal for op when the export
+// access policy forbids the compound's current filehandle, or nil when the
+// operation may proceed. See currentFHAccessStatus for where it belongs.
+func (h *Handler) refuseCurrentFHAccess(ctx *types.CompoundContext, op uint32) *types.CompoundResult {
+	status := h.currentFHAccessStatus(ctx)
+	if status == types.NFS4_OK {
+		return nil
+	}
+	return &types.CompoundResult{
+		Status: status,
+		OpCode: op,
+		Data:   encodeStatusOnly(status),
+	}
 }
 
 // checkNetgroupAccess returns NFS4ERR_ACCESS unless the compound's peer is in

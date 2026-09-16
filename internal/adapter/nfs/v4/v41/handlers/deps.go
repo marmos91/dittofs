@@ -15,6 +15,19 @@ import (
 type Deps struct {
 	// StateManager is the central NFSv4 state coordinator.
 	StateManager *state.StateManager
+
+	// CheckCurrentFHAccess applies the export access policy to the compound's
+	// current filehandle, reporting the NFS4 status to answer with. It is wired
+	// to the v4 handlers' currentFHAccessStatus at construction, because export
+	// policy is resolved from the runtime Registry, which this package does not
+	// hold.
+	//
+	// GET_DIR_DELEGATION grants state through the StateManager without making a
+	// metadata call, so it never builds an auth context and would otherwise
+	// reach a share whose export auth-flavor policy forbids this request's
+	// flavor. A nil value refuses the operation: an unwired policy gate must not
+	// read as "no policy".
+	CheckCurrentFHAccess func(ctx *types.CompoundContext) uint32
 }
 
 // EncodeStatusOnly XDR-encodes a status-only response (just the nfsstat4).

@@ -83,6 +83,28 @@ func HandleGetDirDelegation(
 		}
 	}
 
+	// Apply the export access policy before granting state. GET_DIR_DELEGATION
+	// creates a delegation through the StateManager without a metadata call, so
+	// it never builds an auth context and would otherwise reach a share whose
+	// flavor policy forbids this request's flavor. It runs after the
+	// preconditions above so a malformed or session-less request still answers
+	// BADXDR / NOFILEHANDLE / BADSESSION rather than a policy refusal.
+	if d.CheckCurrentFHAccess == nil {
+		logger.Error("GET_DIR_DELEGATION: no export access policy wired", "client", ctx.ClientAddr)
+		return &types.CompoundResult{
+			Status: types.NFS4ERR_SERVERFAULT,
+			OpCode: types.OP_GET_DIR_DELEGATION,
+			Data:   EncodeStatusOnly(types.NFS4ERR_SERVERFAULT),
+		}
+	}
+	if status := d.CheckCurrentFHAccess(ctx); status != types.NFS4_OK {
+		return &types.CompoundResult{
+			Status: status,
+			OpCode: types.OP_GET_DIR_DELEGATION,
+			Data:   EncodeStatusOnly(status),
+		}
+	}
+
 	// Extract notification types bitmask from bitmap4
 	// The bitmap4 is a []uint32; the first word contains the notification bits
 	var notifMask uint32

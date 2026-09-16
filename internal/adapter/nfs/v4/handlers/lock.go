@@ -168,6 +168,10 @@ func (h *Handler) handleLock(ctx *types.CompoundContext, reader io.Reader) *type
 			"lock_owner_clientid", lockOwnerClientID,
 			"client", ctx.ClientAddr)
 
+		if refused := h.refuseCurrentFHAccess(ctx, types.OP_LOCK); refused != nil {
+			return refused
+		}
+
 		result, stateErr = h.StateManager.LockNew(
 			ctx.Context,
 			lockOwnerClientID, lockOwnerData, lockSeqid,
@@ -207,6 +211,10 @@ func (h *Handler) handleLock(ctx *types.CompoundContext, reader io.Reader) *type
 			"lock_seqid", lockSeqid,
 			"stateid_seqid", lockStateid.Seqid,
 			"client", ctx.ClientAddr)
+
+		if refused := h.refuseCurrentFHAccess(ctx, types.OP_LOCK); refused != nil {
+			return refused
+		}
 
 		result, stateErr = h.StateManager.LockExisting(
 			ctx.Context,
@@ -384,6 +392,12 @@ func (h *Handler) handleLockT(ctx *types.CompoundContext, reader io.Reader) *typ
 		"clientid", clientID,
 		"client", ctx.ClientAddr)
 
+	// Apply the export access policy; see currentFHAccessStatus for why it runs
+	// here rather than on entry.
+	if refused := h.refuseCurrentFHAccess(ctx, types.OP_LOCKT); refused != nil {
+		return refused
+	}
+
 	// Delegate to StateManager (no state created)
 	denied, stateErr := h.StateManager.TestLock(clientID, ownerData, ctx.CurrentFH, lockType, offset, length)
 	if stateErr != nil {
@@ -501,6 +515,12 @@ func (h *Handler) handleLockU(ctx *types.CompoundContext, reader io.Reader) *typ
 		"offset", offset,
 		"length", length,
 		"client", ctx.ClientAddr)
+
+	// Apply the export access policy; see currentFHAccessStatus for why it runs
+	// here rather than on entry.
+	if refused := h.refuseCurrentFHAccess(ctx, types.OP_LOCKU); refused != nil {
+		return refused
+	}
 
 	// Delegate to StateManager
 	unlockResult, stateErr := h.StateManager.UnlockFile(

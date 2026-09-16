@@ -119,7 +119,8 @@ func NewHandler(registry nfsRuntime, pfs *pseudofs.PseudoFS, stateManager ...*st
 
 	// Initialize v4.1 handler dependencies
 	v41d := &v41handlers.Deps{
-		StateManager: sm,
+		StateManager:         sm,
+		CheckCurrentFHAccess: h.currentFHAccessStatus,
 	}
 	h.v41Deps = v41d
 
