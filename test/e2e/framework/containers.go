@@ -314,6 +314,40 @@ const (
 	minioSecretKey = "minioadmin"
 )
 
+// minioImage is the tag NewMinioHelper starts and CheckMinioAvailable probes.
+// Kept in one place so the guard checks exactly the image the helper will use.
+const minioImage = "minio/minio:RELEASE.2024-09-13T20-26-02Z"
+
+// imagePullTimeout bounds the registry probe in imageObtainable. It mirrors the
+// three-minute container wait the emulator helpers already allow, so a slow pull
+// that would have succeeded at container-start time is not refused here.
+const imagePullTimeout = 3 * time.Minute
+
+// imageObtainable reports whether the Docker daemon can supply image: already
+// present locally, or pullable from its registry. The emulator guards use it to
+// refuse an image they cannot actually start — NewMinioHelper turns a failed
+// container start into a hard test failure, so a guard that assumes Docker can
+// pull any tag converts "emulator unavailable" into a permanently red run.
+func imageObtainable(ctx context.Context, image string) bool {
+	provider, err := testcontainers.NewDockerProvider()
+	if err != nil {
+		return false
+	}
+	defer func() { _ = provider.Close() }()
+
+	if images, err := provider.ListImages(ctx); err == nil {
+		for _, img := range images {
+			if img.Name == image {
+				return true
+			}
+		}
+	}
+
+	pullCtx, cancel := context.WithTimeout(ctx, imagePullTimeout)
+	defer cancel()
+	return provider.PullImage(pullCtx, image) == nil
+}
+
 // sharedMinioHelper is the MinIO container reused across the test run, mirroring
 // sharedLocalstackHelper.
 var sharedMinioHelper *LocalstackHelper
@@ -347,7 +381,7 @@ func NewMinioHelper(t *testing.T) *LocalstackHelper {
 	}
 
 	req := testcontainers.ContainerRequest{
-		Image:        "minio/minio:RELEASE.2024-09-13T20-26-02Z",
+		Image:        minioImage,
 		ExposedPorts: []string{"9000/tcp"},
 		Env: map[string]string{
 			"MINIO_ROOT_USER":     minioAccessKey,
@@ -394,8 +428,12 @@ func NewMinioHelper(t *testing.T) *LocalstackHelper {
 	return helper
 }
 
-// CheckMinioAvailable reports whether MinIO can be used (external instance
-// reachable, or testcontainers available to start one on demand).
+// CheckMinioAvailable reports whether MinIO can be used: an external instance is
+// reachable, or the minio image the helper starts can actually be obtained. The
+// no-endpoint branch must establish that second fact rather than assume it — a
+// guard that returns true unconditionally there waves through the one case it
+// exists to catch, and NewMinioHelper's t.Fatalf on the failed pull turns an
+// unavailable emulator into a permanently red run instead of a skip.
 func CheckMinioAvailable(t *testing.T) bool {
 	t.Helper()
 
@@ -414,7 +452,7 @@ func CheckMinioAvailable(t *testing.T) bool {
 		return err == nil
 	}
 
-	return true
+	return imageObtainable(context.Background(), minioImage)
 }
 
 // PostgresHelper manages PostgreSQL container for E2E tests.
