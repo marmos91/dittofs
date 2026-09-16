@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
@@ -481,8 +482,6 @@ func (h *Handler) handleSetZeroData(ctx *SMBHandlerContext, body []byte) (*Handl
 		}
 	}
 
-	// The zero-fill below runs through the ordinary write chain, and CommitWrite
-	// stamps Mtime and ChangeTime from inside the write transaction where no
 	committed, fillErr := h.zeroFillRange(authCtx, openFile, fileOffset, beyond)
 	// The fill runs through the ordinary write chain, and CommitWrite stamps
 	// Mtime and ChangeTime from inside the write transaction where no SetAttrs
@@ -499,9 +498,24 @@ func (h *Handler) handleSetZeroData(ctx *SMBHandlerContext, body []byte) (*Handl
 	// stamped nothing, where it would be a backwards write performed by an
 	// operation that changed no file state at all.
 	//
+	// The restore runs on a context detached from cancellation, because the
+	// case it most needs to cover is the cancelled one: the fill checks for
+	// cancellation between chunks, so a cancel after the first commit is
+	// exactly when timestamps have been stamped and the request is about to
+	// return without repairing them. Carrying the cancelled context here would
+	// mean the write that repairs the damage is the one write guaranteed to
+	// fail. Values are kept so the auth identity travels with it; only the
+	// cancellation is dropped, and a timeout bounds the detour so a wedged
+	// store cannot hold the handler open.
+	//
 	// A no-op on a handle with nothing frozen.
 	if committed {
-		defer h.restoreFrozenTimestamps(authCtx, openFile)
+		restoreAuth := *authCtx
+		detached, cancelRestore := context.WithTimeout(
+			context.WithoutCancel(authCtx.Context), frozenRestoreTimeout)
+		restoreAuth.Context = detached
+		defer cancelRestore()
+		defer h.restoreFrozenTimestamps(&restoreAuth, openFile)
 	}
 
 	if fillErr != nil {
@@ -526,6 +540,12 @@ func (h *Handler) handleSetZeroData(ctx *SMBHandlerContext, body []byte) (*Handl
 	resp := buildIoctlResponse(FsctlSetZeroData, fileID, nil)
 	return NewResult(types.StatusSuccess, resp), nil
 }
+
+// frozenRestoreTimeout bounds the frozen-timestamp restore that follows a
+// zero-fill. The restore deliberately outlives a cancelled request, so it needs
+// a deadline of its own to keep a wedged metadata store from holding the
+// handler open after the client has gone.
+const frozenRestoreTimeout = 5 * time.Second
 
 // zeroFillChunkSize is the chunk we use to issue zero-fill writes. A single
 // 1 MiB scratch buffer keeps the steady-state RAM cost bounded while still
