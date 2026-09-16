@@ -15,6 +15,7 @@
 package handlers
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -155,4 +156,45 @@ func TestFrozenChangeTime_SurvivesSetZeroData(t *testing.T) {
 	}
 
 	assertCtimeUnmoved(t, h, openFile, frozen, "FSCTL_SET_ZERO_DATA")
+}
+
+// TestZeroFillRange_ReportsWhetherAnythingCommitted pins the signal the
+// frozen-timestamp repair in handleSetZeroData gates on.
+//
+// restoreFrozenTimestamps writes every frozen timestamp back explicitly, which
+// drags a value another opener advanced after the freeze backwards. That is the
+// accepted price of undoing a stamp the operation itself made, but a fill that
+// committed no chunk made no stamp, and performing the write there would move a
+// peer's timestamps backwards on an operation that changed no file state. The
+// handler therefore restores only when this reports true.
+func TestZeroFillRange_ReportsWhetherAnythingCommitted(t *testing.T) {
+	h, smbCtx, _, fileID := setupReparseShare(t)
+	openFile, ok := h.GetOpenFile(fileID)
+	if !ok {
+		t.Fatal("open file missing")
+	}
+	grantFullAccess(h, smbCtx, openFile)
+	authCtx, err := BuildAuthContext(smbCtx)
+	if err != nil {
+		t.Fatalf("BuildAuthContext: %v", err)
+	}
+
+	if committed, err := h.zeroFillRange(authCtx, openFile, 0, 4096); err != nil || !committed {
+		t.Errorf("a fill that wrote [0,4096) reported committed=%v err=%v; want true, nil", committed, err)
+	}
+
+	// Cancelled before the first chunk: the loop's context check fires ahead of
+	// any PrepareWrite, so nothing is stamped and nothing is to repair.
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	deadCtx := *authCtx
+	deadCtx.Context = cancelled
+	committed, err := h.zeroFillRange(&deadCtx, openFile, 0, 4096)
+	if committed {
+		t.Error("a fill cancelled before its first chunk reported committed=true; " +
+			"the handler would restore frozen timestamps over a peer's advance for an operation that wrote nothing")
+	}
+	if err == nil {
+		t.Error("a cancelled fill returned a nil error")
+	}
 }
