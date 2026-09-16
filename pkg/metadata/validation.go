@@ -186,20 +186,28 @@ func NormalizeShareName(name string) string {
 // undecodable segment is folded as written rather than rejected, leaving the
 // name to fail ValidateShareName or a lookup on its own terms.
 //
-// decision: this decodes once only while the router actually matched on the
-// escaped path, and whether it did is a property of the whole request path, not
-// of this segment. A request keeps its escaped path only where that differs from
-// the default encoding of the decoded one; "%25" decodes to "%" and re-encodes
-// to "%25", so a path escaped with nothing but those arrives already decoded and
-// this decode is the second. Any one escape the default encoding would not
-// reproduce holds the whole path in its escaped form, and an escaped leading
-// slash is the one a caller can always rely on: "%2Fa%252Fb" names "/a%2Fb"
-// while the same name with that slash stripped — "a%252Fb" — names "/a/b"
-// instead. Escaping the name with one leading slash intact is therefore the
-// spelling to use; pkg/apiclient produces it. Routing every request on its
-// escaped path would remove the condition altogether, at the price of handing
-// every other path parameter in the API its encoded form; do that if a caller
-// ever has to be free of it.
+// decision: this decodes once only while the request reached the router with its
+// path still escaped, which is a property of the whole path rather than of this
+// segment, so the rule belongs to the caller that spells the URL.
+//
+// A path stays escaped only where its raw form differs from the default encoding
+// of its decoded one. "%25" decodes to "%", which re-encodes to "%25", so a path
+// escaped with nothing but those is indistinguishable from its decoded form,
+// arrives already decoded, and makes this decode the second one. Any single
+// escape the default encoding would not reproduce holds the whole path escaped,
+// and an escaped leading slash is the one a caller can always supply:
+// "%2Fa%252Fb" names "/a%2Fb" while the same name with that slash stripped —
+// "a%252Fb" — names "/a/b". Escaping the name with one leading slash intact is
+// therefore the spelling to use, and pkg/apiclient produces it.
+//
+// Nothing has to be switched on for that to hold: the router prefers the escaped
+// path whenever there is one, with no opt-in and no middleware. Read a grep for
+// such an opt-in as evidence of nothing — this is behaviour of the router's own
+// dispatch, and TestShareNameSpellingsReachTheShareTheyName drives the built
+// router rather than restating it here. Taking the condition away altogether
+// would mean routing every request on its escaped path, which hands every other
+// path parameter in the API its encoded form; do that only if a caller ever has
+// to be free of spelling around it.
 func NormalizeShareNameFromURL(name string) string {
 	decoded, err := url.PathUnescape(name)
 	if err != nil {

@@ -290,33 +290,39 @@ func TestAddShare_PercentInNameIsALiteral(t *testing.T) {
 	}
 }
 
-// TestAddShare_RefusesAShareRootedUnderItsDecodedName guards the upgrade a build
-// that folded by decoding leaves behind. Such a build keyed "/a%20b"'s root by
-// "/a b"; this one addresses it as "/a%20b" and finds no root there, so without
-// the check it would mint a fresh empty one and serve the share with its files
-// reachable by nothing.
-func TestAddShare_RefusesAShareRootedUnderItsDecodedName(t *testing.T) {
-	const persisted = "/a%20b"
+// TestAddShare_PercentNameDoesNotBlockItsDecodedSibling pins that two lawful
+// share names in a decode relationship coexist. "/a b" and "/a%20b" sanitize to
+// different journal directories and key different metadata, so each owns its own
+// root; neither may refuse the other, and which one loads first must not decide
+// it.
+func TestAddShare_PercentNameDoesNotBlockItsDecodedSibling(t *testing.T) {
+	const literal = "/a%20b"
 	const decoded = "/a b"
 
-	svc, _, add := newAddShareFixture(t)
+	for _, order := range [][2]string{{decoded, literal}, {literal, decoded}} {
+		t.Run(order[0]+" first", func(t *testing.T) {
+			svc, defaults, add := newAddShareFixture(t)
 
-	// Stand in for the earlier build: the share's root is already keyed by the
-	// name that build folded to.
-	if err := add(decoded); err != nil {
-		t.Fatalf("AddShare(%q): %v", decoded, err)
-	}
+			for _, name := range order {
+				if err := add(name); err != nil {
+					t.Fatalf("AddShare(%q) after %q: %v", name, order[0], err)
+				}
+				if _, err := svc.GetShare(name); err != nil {
+					t.Fatalf("GetShare(%q): %v", name, err)
+				}
+			}
 
-	err := add(persisted)
-	if err == nil {
-		t.Fatalf("AddShare(%q) was accepted although its files are keyed by %q", persisted, decoded)
-	}
-	// The message has to name both keys, or an operator cannot tell which
-	// spelling holds the data.
-	if !strings.Contains(err.Error(), persisted) || !strings.Contains(err.Error(), decoded) {
-		t.Fatalf("refusal must name both %q and %q, got %v", persisted, decoded, err)
-	}
-	if _, gerr := svc.GetShare(persisted); gerr == nil {
-		t.Fatalf("share %q was registered despite the refusal", persisted)
+			// Each owns its own directory, which is what makes them two shares.
+			litDir := ShareJournalDir(defaults.JournalRoot, literal)
+			decDir := ShareJournalDir(defaults.JournalRoot, decoded)
+			if litDir == decDir {
+				t.Fatalf("premise broken: %q and %q both resolve to %q", literal, decoded, litDir)
+			}
+			for _, dir := range []string{litDir, decDir} {
+				if _, err := os.Stat(dir); err != nil {
+					t.Fatalf("journal directory %q was not opened: %v", dir, err)
+				}
+			}
+		})
 	}
 }
