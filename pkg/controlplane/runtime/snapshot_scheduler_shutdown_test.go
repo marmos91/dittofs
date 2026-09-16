@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"testing"
+
+	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
@@ -198,5 +200,51 @@ func TestSettingsWatcher_ConcurrentStopIsSafeAndJoins(t *testing.T) {
 	default:
 		t.Error("Stop returned while the polling goroutine was still running: " +
 			"a caller that believes it joined will close the store under the poll")
+	}
+}
+
+// blockedSettingsStore stands in for a control-plane store whose query is not
+// coming back on its own. Only GetAdapter is reached by the watcher's poll; any
+// other method would panic on the nil embedded interface, which is the point —
+// it says exactly what this fake supports.
+type blockedSettingsStore struct {
+	store.Store
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (b *blockedSettingsStore) GetAdapter(ctx context.Context, _ string) (*models.AdapterConfig, error) {
+	b.once.Do(func() { close(b.entered) })
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// TestSettingsWatcher_StopCancelsAPollInFlight pins the difference between a
+// join and a timeout. A bounded wait that expires does not stop the worker, it
+// only stops waiting — and the caller then closes the control-plane store under
+// a poll still inside it, which is the outcome the join exists to prevent.
+// Cancelling the poll's context is what turns the wait into one that completes.
+func TestSettingsWatcher_StopCancelsAPollInFlight(t *testing.T) {
+	blocked := &blockedSettingsStore{entered: make(chan struct{})}
+	w := NewSettingsWatcher(blocked, time.Millisecond)
+	w.Start(context.Background())
+
+	select {
+	case <-blocked.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the watcher never entered a poll")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		w.Stop()
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop never returned: it is waiting on a poll it did not cancel, so a caller " +
+			"that bounds this wait closes the store while that query is still running")
 	}
 }
