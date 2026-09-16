@@ -63,10 +63,11 @@ func freezeCtimeOnSeededFile(t *testing.T, h *Handler, smbCtx *SMBHandlerContext
 	return past
 }
 
-// grantFullAccess gives the handle the rights READ/WRITE and the
-// explicit-timestamp SET_INFO path require.
+// grantFullAccess gives the handle the rights READ/WRITE, the
+// explicit-timestamp SET_INFO path, and the EA path require.
 func grantFullAccess(h *Handler, smbCtx *SMBHandlerContext, openFile *OpenFile) {
 	access := uint32(types.FileReadData | types.FileWriteData |
+		types.FileWriteEA | types.FileReadEA |
 		types.FileReadAttributes | types.FileWriteAttributes | types.Delete)
 	openFile.DesiredAccess = access
 	openFile.GrantedAccess = access
