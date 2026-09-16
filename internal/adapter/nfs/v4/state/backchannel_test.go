@@ -1733,3 +1733,42 @@ func TestSendCallbackWithRetry_ARejectedReplyIsNotADeadPath(t *testing.T) {
 			"must not be retried", n)
 	}
 }
+
+// TestSendCallback_AStoppedSenderDoesNotWaitOutTheTimeout covers a session
+// destroyed while one of its callbacks is on the wire. The reply table can
+// outlive the session — a connection carrying another session keeps it — so the
+// waiter is not failed, and without watching stopCh the send holds its sender
+// for the whole callback timeout after the session it belongs to is gone.
+func TestSendCallback_AStoppedSenderDoesNotWaitOutTheTimeout(t *testing.T) {
+	sender, sm, sessionID := createTestBackchannelSender(t)
+	defer sm.Shutdown()
+	sender.callbackTimeout = 30 * time.Second // never reached if stopCh works
+
+	connID := uint64(7801)
+	sm.RegisterConnWriter(connID, func([]byte) error { return nil })
+	if _, err := sm.BindConnToSession(connID, sessionID, types.CDFC4_FORE_OR_BOTH); err != nil {
+		t.Fatalf("BindConnToSession: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- sender.sendCallback(context.Background(), CallbackRequest{
+			OpCode:  types.OP_CB_RECALL,
+			Payload: EncodeCBRecallOp(&types.Stateid4{Seqid: 1}, false, []byte{0x01}),
+		})
+	}()
+
+	// Let the write land, then retire the session.
+	time.Sleep(50 * time.Millisecond)
+	close(sender.stopCh)
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, errCallbackNotAttempted) {
+			t.Errorf("a callback abandoned because its session was destroyed was not reported "+
+				"as a local outcome: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("sendCallback ignored its sender stopping and is waiting out the callback timeout")
+	}
+}

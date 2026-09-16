@@ -677,13 +677,23 @@ func (sm *StateManager) sendRecallV41(deleg *DelegationState, sender *Backchanne
 	// revocation noticeably.
 	tried := make(map[*BackchannelSender]bool)
 	pathFailed := false
+	// The sender whose transport failed, and the callback-parameter generation
+	// it failed against. A BACKCHANNEL_CTL can publish new parameters while this
+	// recall is in flight, and its CB_NULL probe can establish that the NEW ones
+	// work — clearing the verdict afterwards on the strength of a failure
+	// against the OLD ones withholds delegations until something else happens to
+	// probe again.
+	var failedOn *BackchannelSender
+	var failedGen uint64
 	for s := sender; s != nil; s = sm.nextUntriedSender(deleg.ClientID, tried) {
 		tried[s] = true
+		gen := s.currentParams().generation
 		switch sm.attemptRecallV41(deleg, s, recallOp) {
 		case recallSent:
 			return
 		case recallNoPath:
 			pathFailed = true
+			failedOn, failedGen = s, gen
 		case recallSenderLocal:
 		}
 	}
@@ -692,8 +702,11 @@ func (sm *StateManager) sendRecallV41(deleg *DelegationState, sender *Backchanne
 	// on a transport — a queue that was full or a sender that had stopped is no
 	// evidence that the client stopped answering, and clearing on it would
 	// withhold delegations from a client that is fine.
-	if pathFailed {
-		sm.setCBPathUp(deleg.ClientID, false)
+	if pathFailed && failedOn != nil {
+		if !sm.setCBPathUpIfCurrent(failedOn, failedGen, false) {
+			logger.Debug("CB_RECALL: path verdict discarded, callback parameters changed since the failure",
+				"client_id", deleg.ClientID)
+		}
 	}
 	sm.startRevocationTimer(deleg, 5*time.Second)
 }

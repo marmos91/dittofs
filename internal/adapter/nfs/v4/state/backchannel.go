@@ -176,10 +176,18 @@ func (p *PendingCBReplies) Deliver(xid uint32, reply []byte) bool {
 
 // Cancel removes a waiter for the given XID without delivering a reply.
 // Used on timeout or error to clean up resources.
-func (p *PendingCBReplies) Cancel(xid uint32) {
+// Cancel removes a waiter and reports whether the table had already been
+// retired. That answer is the difference between two outcomes a caller must not
+// confuse: a client that went quiet, and a socket on this side that went away.
+// FailAll closes the waiters and marks the table closed under this same mutex,
+// so asking here settles both as one observation rather than leaving a window
+// between the check and the removal.
+func (p *PendingCBReplies) Cancel(xid uint32) (retired bool) {
 	p.mu.Lock()
 	delete(p.waiters, xid)
+	retired = p.closed
 	p.mu.Unlock()
+	return retired
 }
 
 // ============================================================================
@@ -522,6 +530,15 @@ func (bs *BackchannelSender) sendCallback(ctx context.Context, req CallbackReque
 	defer cancel()
 
 	select {
+	case <-bs.stopCh:
+		// This session is gone — DESTROY_SESSION or shutdown. Waiting out the
+		// callback timeout for a reply nobody will route holds the sender for
+		// up to that long after its session was destroyed, and the outcome is
+		// local either way. The probe already waits on this; the send did not.
+		pending.Cancel(xid)
+		return fmt.Errorf("%w: backchannel sender stopped while the callback was in flight",
+			errCallbackNotAttempted)
+
 	case <-timeoutCtx.Done():
 		// A deadline that fires alongside something on the reply channel is not
 		// a timeout. Two cases, and both were being reported as the client
@@ -543,7 +560,15 @@ func (bs *BackchannelSender) sendCallback(ctx context.Context, req CallbackReque
 			return nil
 		default:
 		}
-		pending.Cancel(xid)
+		if pending.Cancel(xid) {
+			// The table was retired while this waited. Teardown can land between
+			// the reply check above and here, and reporting that as a timeout
+			// has the retry loop call it no callback path at all — CBPathUp
+			// cleared and a delegation revoked because a socket on this side
+			// went away.
+			return fmt.Errorf("%w: connection %d was retired while the callback was in flight",
+				errCallbackNotAttempted, connID)
+		}
 		return fmt.Errorf("backchannel callback timed out after %s", bs.callbackTimeout)
 	case replyBytes, open := <-replyCh:
 		if !open {
