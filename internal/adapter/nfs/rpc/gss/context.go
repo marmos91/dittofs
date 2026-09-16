@@ -236,8 +236,12 @@ func NewContextStore(maxContexts int, contextTTL time.Duration) *ContextStore {
 // CRITICAL: This MUST be called BEFORE the INIT reply is sent to the client.
 // See ContextStore documentation for rationale.
 //
-// If the store is at capacity (maxContexts), the oldest context (by LastUsed)
-// is evicted first. This ensures the store does not grow unboundedly.
+// If the store is at capacity (maxContexts), a slot is freed by evicting the
+// oldest context belonging to the incoming context's own principal. Only when
+// that principal holds no other context does it fall back to evicting the
+// globally oldest. A principal can therefore only ever retire its own contexts,
+// so one principal cannot loop RPCSEC_GSS_INIT to evict every other principal's
+// contexts, while the global cap still bounds total growth.
 //
 // Parameters:
 //   - ctx: The context to store (must have a non-nil Handle)
@@ -254,8 +258,9 @@ func (cs *ContextStore) Store(ctx *GSSContext) {
 				}
 				continue
 			}
-			// At or over cap: evict oldest (which decrements count) then retry claiming.
-			cs.evictOldest()
+			// At or over cap: evict within the incoming principal (which decrements
+			// count) then retry claiming.
+			cs.evictOldestForPrincipal(ctx.Principal)
 		}
 	} else {
 		cs.count.Add(1)
@@ -265,8 +270,11 @@ func (cs *ContextStore) Store(ctx *GSSContext) {
 
 // Lookup retrieves a GSS context by its handle.
 //
-// On a successful lookup, the context's LastUsed timestamp is updated
-// to support LRU eviction. This is O(1) via sync.Map.
+// It does NOT refresh the context's LastUsed timestamp: a handle travels in the
+// clear in every RPCSEC_GSS credential, so a peer that merely observes one on
+// the wire could otherwise replay it to hold the context off idle eviction with
+// requests that never authenticate. LastUsed is refreshed by the call site,
+// via Touch, once the call-header MIC has verified. This is O(1) via sync.Map.
 //
 // Parameters:
 //   - handle: The 16-byte context handle from the RPCSEC_GSS credential
@@ -280,9 +288,7 @@ func (cs *ContextStore) Lookup(handle []byte) (*GSSContext, bool) {
 		return nil, false
 	}
 
-	ctx := val.(*GSSContext)
-	ctx.Touch()
-	return ctx, true
+	return val.(*GSSContext), true
 }
 
 // Delete removes a GSS context from the store.
@@ -351,31 +357,61 @@ func (cs *ContextStore) cleanup() {
 	})
 }
 
-// evictOldest removes the context with the oldest LastUsed timestamp.
+// evictOldestForPrincipal frees one slot for a context of the given principal.
+// It evicts that principal's oldest context when it has one, so a principal
+// cannot retire another principal's contexts; when the principal holds none it
+// falls back to the globally oldest, which is what a new principal's first
+// context (or an empty store) needs to make room.
+func (cs *ContextStore) evictOldestForPrincipal(principal string) {
+	cs.evictOldestMatching(func(ctx *GSSContext) bool {
+		return ctx.Principal == principal
+	}, true)
+}
+
+// evictOldest removes the globally oldest context, regardless of principal.
 func (cs *ContextStore) evictOldest() {
+	cs.evictOldestMatching(func(*GSSContext) bool { return true }, false)
+}
+
+// evictOldestMatching removes the context with the oldest LastUsed timestamp
+// among those the predicate admits. When requireMatch is true and no context
+// matches, nothing is evicted rather than falling back — the caller has already
+// decided which set is eligible. When requireMatch is false, the predicate
+// admits every context and a match always exists in a non-empty store.
+func (cs *ContextStore) evictOldestMatching(match func(*GSSContext) bool, requireMatch bool) {
 	var oldestKey interface{}
 	var oldestTime time.Time
-	first := true
+	found := false
 
 	cs.contexts.Range(func(key, value interface{}) bool {
 		ctx := value.(*GSSContext)
+		if !match(ctx) {
+			return true
+		}
 		lastUsed := ctx.GetLastUsed()
-		if first || lastUsed.Before(oldestTime) {
+		if !found || lastUsed.Before(oldestTime) {
 			oldestKey = key
 			oldestTime = lastUsed
-			first = false
+			found = true
 		}
 		return true
 	})
 
-	if oldestKey != nil {
-		if val, ok := cs.contexts.Load(oldestKey); ok {
-			ctx := val.(*GSSContext)
-			logger.Debug("GSS context evicted (max contexts reached)",
-				"principal", ctx.Principal,
-				"realm", ctx.Realm,
-			)
+	if !found {
+		if requireMatch {
+			// No context of the requested principal: fall back to the global
+			// oldest so a brand-new principal's first context still fits.
+			cs.evictOldest()
 		}
-		cs.Delete([]byte(oldestKey.(string)))
+		return
 	}
+
+	if val, ok := cs.contexts.Load(oldestKey); ok {
+		ctx := val.(*GSSContext)
+		logger.Debug("GSS context evicted (max contexts reached)",
+			"principal", ctx.Principal,
+			"realm", ctx.Realm,
+		)
+	}
+	cs.Delete([]byte(oldestKey.(string)))
 }

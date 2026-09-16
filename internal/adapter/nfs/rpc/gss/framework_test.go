@@ -662,6 +662,60 @@ func TestProcessDATAGenuineMICAccepted(t *testing.T) {
 	}
 }
 
+// TestProcessDATAMICFailureDoesNotRefreshIdleClock is the regression for the
+// second finding: LastUsed must advance only after the call-header MIC verifies.
+// A replayed context handle travels in the clear, so refreshing the idle clock
+// on an unauthenticated request would let an observer hold a context off idle
+// eviction (and pick whose context looks oldest) without any session key.
+func TestProcessDATAMICFailureDoesNotRefreshIdleClock(t *testing.T) {
+	verifier := newMockVerifier("alice", "EXAMPLE.COM")
+	proc := NewGSSProcessor(verifier, newTestMapper(), 100, 10*time.Minute)
+	defer proc.Stop()
+
+	handle := establishContext(t, proc, RPCGSSSvcNone)
+
+	// Age the stored context so a refresh would be visible.
+	stored, ok := proc.contexts.Lookup(handle)
+	if !ok {
+		t.Fatal("context not found after INIT")
+	}
+	aged := time.Now().Add(-5 * time.Minute)
+	stored.mu.Lock()
+	stored.LastUsed = aged
+	stored.mu.Unlock()
+
+	dataCred := &RPCGSSCredV1{
+		GSSProc: RPCGSSData,
+		SeqNum:  1,
+		Service: RPCGSSSvcNone,
+		Handle:  handle,
+	}
+	dataCredBody, err := EncodeGSSCred(dataCred)
+	if err != nil {
+		t.Fatalf("encode DATA cred: %v", err)
+	}
+
+	// A MIC over a different preimage fails verification.
+	badMIC := signHeaderMIC(t, mockVerifierSessionKey, []byte("attacker-chosen-preimage"))
+	res := proc.Process(context.Background(), dataCredBody, badMIC, dataCredBody, []byte("args"))
+	if res.Err == nil {
+		t.Fatal("expected the forged MIC to be rejected")
+	}
+	if got := stored.GetLastUsed(); !got.Equal(aged) {
+		t.Fatalf("a MIC-failing request refreshed LastUsed: want %v, got %v", aged, got)
+	}
+
+	// A genuine MIC must refresh it.
+	goodMIC := signHeaderMIC(t, mockVerifierSessionKey, dataCredBody)
+	res = proc.Process(context.Background(), dataCredBody, goodMIC, dataCredBody, []byte("args"))
+	if res.Err != nil {
+		t.Fatalf("genuine MIC should pass: %v", res.Err)
+	}
+	if got := stored.GetLastUsed(); !got.After(aged) {
+		t.Fatalf("an authenticated request did not refresh LastUsed: was %v", got)
+	}
+}
+
 // TestProcessDATAServiceDowngradeRejected covers C-MED: a context established
 // at a stronger service (privacy/integrity) must not accept a weaker per-call
 // service. A valid header MIC is supplied so the rejection is attributable to

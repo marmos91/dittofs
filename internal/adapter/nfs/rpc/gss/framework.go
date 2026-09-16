@@ -644,6 +644,12 @@ func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verif
 		}
 	}
 
+	// The call is authenticated: refresh the idle-eviction clock. This sits
+	// after the MIC so a replayed handle — which travels in the clear and is
+	// not a secret — cannot hold a context off idle eviction with a request
+	// that then fails authentication.
+	gssCtx.Touch()
+
 	// 3. Enforce the negotiated service level (no downgrade).
 	//
 	// RFC 2203 Section 5.3.3.4 permits per-call service selection, but a

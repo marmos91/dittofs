@@ -298,7 +298,7 @@ func TestContextConcurrentAccess(t *testing.T) {
 	}
 }
 
-func TestContextLookupUpdatesLastUsed(t *testing.T) {
+func TestContextLookupDoesNotUpdateLastUsed(t *testing.T) {
 	store := NewContextStore(100, 10*time.Minute)
 	defer store.Stop()
 
@@ -307,15 +307,80 @@ func TestContextLookupUpdatesLastUsed(t *testing.T) {
 	ctx.LastUsed = originalTime
 	store.Store(ctx)
 
-	// Lookup should update LastUsed
+	// Lookup must not refresh LastUsed: the handle travels in the clear, so a
+	// replay of it must not hold the context off idle eviction. The authenticated
+	// call site refreshes via Touch instead.
 	found, ok := store.Lookup(ctx.Handle)
 	if !ok {
 		t.Fatal("expected context to be found")
 	}
 
-	lastUsed := found.GetLastUsed()
-	if !lastUsed.After(originalTime) {
-		t.Fatalf("expected LastUsed to be updated after lookup, was %v (original %v)", lastUsed, originalTime)
+	if got := found.GetLastUsed(); !got.Equal(originalTime) {
+		t.Fatalf("Lookup refreshed LastUsed: want %v, got %v", originalTime, got)
+	}
+
+	// Touch is the authenticated refresh; it must still move the clock.
+	found.Touch()
+	if got := found.GetLastUsed(); !got.After(originalTime) {
+		t.Fatalf("Touch did not update LastUsed: was %v", got)
+	}
+}
+
+// A principal that keeps establishing contexts must only ever retire its own,
+// so a caller holding no session keys cannot evict another principal's contexts
+// by looping RPCSEC_GSS_INIT. This is the cross-principal eviction finding.
+func TestContextEvictionStaysWithinPrincipal(t *testing.T) {
+	store := NewContextStore(3, 10*time.Minute)
+	defer store.Stop()
+
+	// A victim holds two contexts, the attacker one. The attacker's is the
+	// oldest, so global eviction would drop it first — the fix must not.
+	victimOld := newTestContext("victim", "EXAMPLE.COM")
+	victimOld.LastUsed = time.Now().Add(-5 * time.Minute)
+	store.Store(victimOld)
+
+	victimNew := newTestContext("victim", "EXAMPLE.COM")
+	victimNew.LastUsed = time.Now().Add(-4 * time.Minute)
+	store.Store(victimNew)
+
+	attacker := newTestContext("attacker", "EXAMPLE.COM")
+	attacker.LastUsed = time.Now().Add(-3 * time.Minute)
+	store.Store(attacker)
+
+	// The attacker keeps looping INIT. At the cap it must only ever evict its
+	// own contexts; the victim's two must survive.
+	for i := 0; i < 10; i++ {
+		store.Store(newTestContext("attacker", "EXAMPLE.COM"))
+	}
+
+	if store.Count() > 3 {
+		t.Fatalf("store exceeded cap: got %d", store.Count())
+	}
+	if _, ok := store.Lookup(victimOld.Handle); !ok {
+		t.Fatal("victim's oldest context was evicted by another principal")
+	}
+	if _, ok := store.Lookup(victimNew.Handle); !ok {
+		t.Fatal("victim's newest context was evicted by another principal")
+	}
+}
+
+// A new principal with no stored context must still be able to make room: the
+// per-principal rule cannot refuse admission when the store is full.
+func TestContextEvictionFallsBackForNewPrincipal(t *testing.T) {
+	store := NewContextStore(2, 10*time.Minute)
+	defer store.Stop()
+
+	store.Store(newTestContext("alice", "EXAMPLE.COM"))
+	store.Store(newTestContext("bob", "EXAMPLE.COM"))
+
+	carol := newTestContext("carol", "EXAMPLE.COM")
+	store.Store(carol)
+
+	if store.Count() > 2 {
+		t.Fatalf("store exceeded cap: got %d", store.Count())
+	}
+	if _, ok := store.Lookup(carol.Handle); !ok {
+		t.Fatal("a new principal's context must be admitted by evicting the globally oldest")
 	}
 }
 
