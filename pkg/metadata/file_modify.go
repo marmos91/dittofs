@@ -501,6 +501,11 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 	// later ModeOrMask/ModeAndNotMask bits are deliberately not included: they
 	// carry DOS attribute flags, which no ACE expresses.
 	var aclAdjustMode *uint32
+
+	// True when a decision below read the file's own GID, which is the only
+	// thing that makes a peer chgrp able to invalidate it. Ownership itself is
+	// a UID comparison, so an owner stays the owner across a chgrp.
+	groupConsulted := false
 	// Apply requested changes
 	if attrs.Mode != nil {
 		newMode := *attrs.Mode
@@ -515,7 +520,13 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 			}
 			// Strip SGID bit if caller is not a member of the file's group
 			if newMode&0o2000 != 0 {
-				// For SGID, caller must be owner AND member of file's group
+				// For SGID, caller must be owner AND member of file's group.
+				// This membership test is the one place an ownership-authorized
+				// call reads the file's GID, so the row it commits to has to
+				// still carry the group the answer was computed against.
+				if isOwner {
+					groupConsulted = true
+				}
 				if !isOwner || !identity.HasGID(file.GID) {
 					newMode &= ^uint32(0o2000)
 				}
@@ -573,9 +584,14 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 				"old_uid", file.UID,
 				"new_uid", *attrs.UID)
 			file.UID = *attrs.UID
-			modified = true
 			ownershipChanged = true
 		}
+		// Set whether or not the value moved. Naming the owner this call has
+		// already read is still a request, and only an open transaction can
+		// write it back over a chown that landed in the gap. ownershipChanged
+		// stays keyed off the move, because it drives the POSIX setid strip,
+		// which answers to an ownership change and not to a chown request.
+		modified = true
 	}
 
 	if attrs.GID != nil {
@@ -593,9 +609,9 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 		}
 		if *attrs.GID != file.GID {
 			file.GID = *attrs.GID
-			modified = true
 			ownershipChanged = true
 		}
+		modified = true
 	}
 
 	// POSIX: Clear SUID/SGID bits when ownership changes on non-directory files
@@ -774,9 +790,7 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 		// A request whose value already equals the pre-read value is still a
 		// request: skipping the column there leaves a concurrent writer's value
 		// standing while this call reports success, which is the same lost
-		// update in the other direction. Ownership is the one field still keyed
-		// off a diff, because the code above only ever moves it when the
-		// request differs from what it read, so the two are the same test.
+		// update in the other direction.
 		//
 		// A read-modify-write — the mode masks, the setid strip, the EA
 		// mutations — is re-applied to the row instead of copied from the
@@ -833,7 +847,13 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 			// isolation level catches this: the chown committed before this
 			// transaction opened, so its row is simply what the snapshot sees
 			// and nothing conflicts.
-			if ownershipAuthorized && (row.UID != pre.UID || row.GID != pre.GID) {
+			//
+			// Only on the fields the decision actually read. Ownership is a UID
+			// comparison, so a peer chgrp leaves the owner the owner and must
+			// not refuse them; the file's GID matters only to the SGID grant,
+			// which records that it read it.
+			if ownershipAuthorized &&
+				(row.UID != pre.UID || (groupConsulted && row.GID != pre.GID)) {
 				return &StoreError{
 					Code:    ErrPermissionDenied,
 					Message: "ownership changed while the attribute change was being applied",
@@ -861,10 +881,10 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 			if clearSetIDBits {
 				row.Mode &^= 0o6000
 			}
-			if file.UID != pre.UID {
+			if attrs.UID != nil {
 				row.UID = file.UID
 			}
-			if file.GID != pre.GID {
+			if attrs.GID != nil {
 				row.GID = file.GID
 			}
 			if attrs.Hidden != nil {
