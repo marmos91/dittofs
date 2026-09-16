@@ -927,6 +927,12 @@ func sameOrUnknownClient(recorded, conn [16]byte) bool {
 	return recorded == conn || recorded == unknown || conn == unknown
 }
 
+// durableCleanupTimeout bounds the cleanup that follows a claimed durable row.
+// The row is gone by then, so nothing retries this — long enough for a cache
+// flush and a lock release, short enough that a CREATE cannot be held open by a
+// store that has stopped answering.
+const durableCleanupTimeout = 30 * time.Second
+
 // ProcessAppInstanceId processes the SMB2_CREATE_APP_INSTANCE_ID context.
 // Per MS-SMB2 §3.3.5.9.13, when a CREATE arrives carrying an AppInstanceId
 // matching an existing open's AppInstanceId, the server MUST force-close the
@@ -1205,6 +1211,26 @@ func ProcessAppInstanceId(
 	// persist in the server behind one AppInstanceId CREATE. Once a row is
 	// claimed it belongs to this call and nothing else can reach it, so the
 	// cleanup needs no lock at all.
+	// Authorized BEFORE the mutex. mayDisplace reads the metadata store and
+	// evaluates an ACL per row, and durablePurgeMu is process-wide: holding it
+	// across one store round-trip per candidate blocks every disconnect persist
+	// and every WRITE/SET_INFO purge window in the server for the duration. The
+	// listing is repeated inside the lock and only rows that were authorized out
+	// here are claimed, so a row that appears in between is left alone rather
+	// than displaced unauthorized.
+	preList, preErr := durableStore.GetDurableHandlesByAppInstanceId(ctx, appId)
+	if preErr != nil {
+		logger.Warn("ProcessAppInstanceId: store error", "error", preErr)
+		return appId
+	}
+	persistedAuthorized := make(map[string]bool, len(preList))
+	for _, h := range preList {
+		if sameOrUnknownClient(h.ClientGUID, connClientGUID) {
+			continue
+		}
+		persistedAuthorized[h.ID] = mayDisplace(h.MetadataHandle)
+	}
+
 	claimedRows := func() []*lock.PersistedDurableHandle {
 		handler.durablePurgeMu.Lock()
 		defer handler.durablePurgeMu.Unlock()
@@ -1217,7 +1243,7 @@ func ProcessAppInstanceId(
 
 		var claimed []*lock.PersistedDurableHandle
 		for _, h := range existing {
-			if sameOrUnknownClient(h.ClientGUID, connClientGUID) || !mayDisplace(h.MetadataHandle) {
+			if sameOrUnknownClient(h.ClientGUID, connClientGUID) || !persistedAuthorized[h.ID] {
 				continue
 			}
 			// decision: the row is destroyed before its cleanup runs, so a crash
@@ -1256,17 +1282,33 @@ func ProcessAppInstanceId(
 	}()
 
 	persistedClosed := len(claimedRows)
-	for _, claimed := range claimedRows {
-		cleanupFile := (&OpenFile{
-			FileID:         claimed.FileID,
-			ShareName:      claimed.ShareName,
-			MetadataHandle: claimed.MetadataHandle,
-			PayloadID:      metadata.PayloadID(claimed.PayloadID),
-		}).WithName(OpenName{Path: claimed.Path})
-		handler.flushFileCache(ctx, cleanupFile)
-		if err := metaSvc.UnlockAllForOpen(ctx, claimed.MetadataHandle, claimed.LockOpenID()); err != nil {
-			logger.Debug("ProcessAppInstanceId: failed to release locks",
-				"id", claimed.ID, "path", claimed.Path, "error", err)
+	if persistedClosed > 0 {
+		// Detached from the request, and bounded. The row is already gone, so
+		// there is nothing left for the scavenger to retry — a client that
+		// disconnects in this gap would otherwise have the cleanup abandoned on
+		// its context error and leave the displaced open's byte-range locks
+		// standing until the process restarts. The bound is because a cleanup
+		// that cannot finish must still not hold a CREATE open indefinitely.
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), durableCleanupTimeout)
+		defer cancel()
+
+		for _, claimed := range claimedRows {
+			cleanupFile := (&OpenFile{
+				FileID:         claimed.FileID,
+				ShareName:      claimed.ShareName,
+				MetadataHandle: claimed.MetadataHandle,
+				PayloadID:      metadata.PayloadID(claimed.PayloadID),
+			}).WithName(OpenName{Path: claimed.Path})
+			handler.flushFileCache(cleanupCtx, cleanupFile)
+			if err := metaSvc.UnlockAllForOpen(cleanupCtx, claimed.MetadataHandle, claimed.LockOpenID()); err != nil {
+				logger.Debug("ProcessAppInstanceId: failed to release locks",
+					"id", claimed.ID, "path", claimed.Path, "error", err)
+			}
+			// The row was counted when it was persisted, and only the conflict
+			// purge and the scavenger reconcile that count. Consuming it here
+			// without saying so leaves a phantom per displaced file, which sends
+			// every later operation on it through a durable-store scan.
+			handler.forgetDisconnectedHandle(claimed.MetadataHandle)
 		}
 	}
 	if persistedClosed > 0 {
