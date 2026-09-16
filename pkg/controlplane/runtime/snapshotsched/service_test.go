@@ -288,7 +288,7 @@ func TestStop_WaitsForATickAlreadyInFlight(t *testing.T) {
 
 	stopReturned := make(chan struct{})
 	go func() {
-		s.Stop(context.Background())
+		s.Stop()
 		close(stopReturned)
 	}()
 
@@ -330,7 +330,7 @@ func TestStop_BoundedByContext(t *testing.T) {
 	defer cancel()
 	done := make(chan struct{})
 	go func() {
-		s.Stop(ctx)
+		s.StopContext(ctx)
 		close(done)
 	}()
 	select {
@@ -347,7 +347,7 @@ func TestStop_NeverStartedReturnsImmediately(t *testing.T) {
 	s := New(&fakeDeps{}, time.Minute)
 	done := make(chan struct{})
 	go func() {
-		s.Stop(context.Background())
+		s.Stop()
 		close(done)
 	}()
 	select {
@@ -374,7 +374,7 @@ func TestStop_ConcurrentCallersDoNotDoubleClose(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			s.Stop(context.Background())
+			s.Stop()
 		}()
 	}
 	close(start)
@@ -388,7 +388,7 @@ func TestStop_ConcurrentCallersDoNotDoubleClose(t *testing.T) {
 func TestStop_ReportsWhetherItJoined(t *testing.T) {
 	t.Run("never started joins immediately", func(t *testing.T) {
 		s := New(&fakeDeps{}, time.Minute)
-		if !s.Stop(context.Background()) {
+		if !s.StopContext(context.Background()) {
 			t.Error("a scheduler that never started reported an incomplete join")
 		}
 	})
@@ -401,14 +401,30 @@ func TestStop_ReportsWhetherItJoined(t *testing.T) {
 
 		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 		defer cancel()
-		if s.Stop(ctx) {
+		if s.StopContext(ctx) {
 			t.Error("Stop reported a completed join while a tick was still inside the store")
 		}
 
 		close(deps.release)
 		<-deps.returned
-		if !s.Stop(context.Background()) {
+		if !s.StopContext(context.Background()) {
 			t.Error("Stop reported an incomplete join after the tick returned")
 		}
 	})
+}
+
+// TestStop_NoArgFormStaysSourceCompatible pins the exported surface. Stop is a
+// method on a pkg/ type, so changing its signature is a compile break for every
+// downstream caller — a repository-wide grep cannot see them. The no-argument
+// form has to keep existing alongside the bounded one.
+func TestStop_NoArgFormStaysSourceCompatible(t *testing.T) {
+	s := New(&fakeDeps{}, time.Minute)
+
+	// Assigned to a func() value: this is the shape downstream code compiles
+	// against, and it fails to build if Stop ever takes parameters again.
+	var stop func() = s.Stop
+	stop()
+
+	// Still idempotent through the compatibility path.
+	stop()
 }

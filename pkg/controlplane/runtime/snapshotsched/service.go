@@ -139,8 +139,21 @@ func (s *Service) Start(ctx context.Context) {
 	}()
 }
 
-// Stop signals the scheduler goroutine to exit and waits for it, bounded by
-// ctx. It reports whether the wait actually completed.
+// Stop signals the scheduler goroutine to exit and waits for it, without a
+// deadline. Kept as the source-compatible entry point: this is an exported
+// method on a pkg/ type, so changing its signature breaks every downstream
+// caller that compiled against it, and only the callers in this repository
+// could have been updated.
+//
+// It waits unbounded, so it is the wrong call for a caller that is about to
+// close the store the ticks read — use StopContext there, which bounds the join
+// and says whether it completed.
+func (s *Service) Stop() {
+	s.StopContext(context.Background())
+}
+
+// StopContext signals the scheduler goroutine to exit and waits for it, bounded
+// by ctx. It reports whether the wait actually completed.
 //
 // Waiting is the point: a tick reads and writes snapshot policies through the
 // control-plane store, so a caller that is about to close that store needs
@@ -151,7 +164,7 @@ func (s *Service) Start(ctx context.Context) {
 //
 // A scheduler that was never started returns immediately. Idempotent, and safe
 // for concurrent callers.
-func (s *Service) Stop(ctx context.Context) bool {
+func (s *Service) StopContext(ctx context.Context) bool {
 	s.stopOnce.Do(func() { close(s.stopCh) })
 	// Cancelled as well as signalled: stopCh stops the loop starting another
 	// tick, and this one ends a tick already inside the store, so the wait below

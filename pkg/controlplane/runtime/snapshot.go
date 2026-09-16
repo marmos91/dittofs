@@ -953,7 +953,7 @@ func (r *Runtime) shutdownSnapshots(ctx context.Context) {
 				defer cancel()
 			}
 		}
-		if !ss.Stop(schedCtx) {
+		if !ss.StopContext(schedCtx) {
 			logger.Warn("snapshot drain: scheduler was not joined before the stores close; " +
 				"a tick may still be running against them")
 		}
