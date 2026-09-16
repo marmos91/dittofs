@@ -262,11 +262,6 @@ func (sm *StateManager) CreateSession(
 		record.Confirmed = true
 		record.Lease = NewLeaseState(record.ClientID, sm.leaseDuration, nil)
 		record.LastRenewal = time.Now()
-
-		// Persist a durable client-recovery record. v4.1 has no
-		// nfs_client_id4 string; the stable identity is co_ownerid, so the
-		// record is keyed by its string form. Best-effort under sm.mu.
-		sm.persistClientRecoveryLocked(record.ClientID, v41RecoveryKey(record.OwnerID), record.Verifier, record.Principal)
 	}
 
 	// Increment sequence ID

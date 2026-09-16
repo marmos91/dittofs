@@ -132,8 +132,8 @@ type ClientRecord struct {
 	// Principal is the RPCSEC_GSS / AUTH_SYS principal that established this
 	// client (best-effort; "uid:N" for AUTH_SYS, the GSS principal otherwise,
 	// "" when unknown). Captured at SETCLIENTID or EXCHANGE_ID and persisted
-	// into the durable client-recovery record at confirm time as a
-	// lease-stealing guard.
+	// into the durable client-recovery record when the client first takes
+	// reclaimable state, as a lease-stealing guard.
 	Principal string
 
 	// ImplDomain is the implementation domain from nfs_impl_id4
@@ -184,6 +184,14 @@ type ClientRecord struct {
 	// gets a fresh record with it clear. A pending reclaim-complete persist
 	// retry also re-validates against this flag before writing durably.
 	ReclaimComplete bool
+
+	// RecoveryPersisted records that this client's durable recovery row has
+	// been written for this incarnation. The row is written the first time the
+	// client takes reclaimable state, not at confirm, so this latch is what
+	// keeps every later OPEN off the store. A client that re-registers gets a
+	// fresh record with it clear, and a failed write leaves it clear so the
+	// next OPEN retries.
+	RecoveryPersisted bool
 
 	// CBPathUp indicates whether the callback path to this client has been
 	// verified via CB_NULL. Defaults to false (not verified).
@@ -687,13 +695,6 @@ func (sm *StateManager) ConfirmClientID(clientID uint64, confirmVerifier [8]byte
 		"client_id", clientID,
 		"client_id_str", record.ClientIDString,
 		"client_addr", record.ClientAddr)
-
-	// Persist a durable client-recovery record so this client can reclaim its
-	// state after an ungraceful server restart. Best-effort under
-	// sm.mu: a persist failure logs a durability alarm but the confirm STILL
-	// succeeds (the in-memory record is authoritative for this process). No-op
-	// when no recovery store is wired.
-	sm.persistClientRecoveryLocked(record.ClientID, record.ClientIDString, record.Verifier, record.Principal)
 
 	// Verify callback path asynchronously via CB_NULL.
 	// This runs in a goroutine so SETCLIENTID_CONFIRM returns immediately.

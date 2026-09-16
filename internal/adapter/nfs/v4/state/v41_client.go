@@ -439,8 +439,9 @@ func applyImplInfo(record *ClientRecord, clientImplId []types.NfsImplId4) {
 func (sm *StateManager) purgeV41Client(record *ClientRecord) {
 	// Drop the durable recovery record: a purged client (eviction, DESTROY_CLIENTID,
 	// or reboot-replace) cannot reclaim under this identity. Best-effort; no-op when
-	// the client was never confirmed (no record was ever persisted) or no store wired.
-	if record.Confirmed {
+	// this incarnation never took state (no record was ever persisted for it) or no
+	// store wired.
+	if record.RecoveryPersisted {
 		sm.deleteClientRecoveryLocked(v41RecoveryKey(record.OwnerID))
 	}
 

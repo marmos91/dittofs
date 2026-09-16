@@ -111,10 +111,10 @@ func (s *spyRecoveryStore) snapshotReclaims() []string {
 }
 
 // ---------------------------------------------------------------------------
-// Persist on confirm (v4.0 SETCLIENTID_CONFIRM)
+// Persist on the first OPEN, not on confirm (v4.0)
 // ---------------------------------------------------------------------------
 
-func TestClientRecovery_PersistOnConfirmV40(t *testing.T) {
+func TestClientRecovery_PersistOnFirstOpenV40(t *testing.T) {
 	spy := newSpyRecoveryStore()
 	sm := NewStateManager(5 * time.Second)
 	sm.SetClientRecoveryStore(spy, 42)
@@ -126,6 +126,15 @@ func TestClientRecovery_PersistOnConfirmV40(t *testing.T) {
 	}
 	if err := sm.ConfirmClientID(res.ClientID, res.ConfirmVerifier); err != nil {
 		t.Fatalf("ConfirmClientID: %v", err)
+	}
+
+	// Confirmed and holding nothing: no row yet.
+	if puts := spy.snapshotPuts(); len(puts) != 0 {
+		t.Fatalf("confirm alone must write no recovery record, got %d", len(puts))
+	}
+
+	if _, err := sm.OpenFile(res.ClientID, []byte("owner"), 1, []byte("fh"), 1, 0, types.CLAIM_NULL); err != nil {
+		t.Fatalf("OpenFile: %v", err)
 	}
 
 	puts := spy.snapshotPuts()
@@ -153,8 +162,10 @@ func TestClientRecovery_PersistOnConfirmV40(t *testing.T) {
 	}
 }
 
-// A persist failure must NOT fail the confirm (best-effort durability).
-func TestClientRecovery_ConfirmSucceedsDespitePersistError(t *testing.T) {
+// A persist failure must NOT fail the OPEN that triggered it (best-effort
+// durability), and must leave the write to be retried by the next OPEN rather
+// than latched as done.
+func TestClientRecovery_OpenSucceedsDespitePersistError(t *testing.T) {
 	spy := newSpyRecoveryStore()
 	spy.putErr = errors.New("backend down")
 	sm := NewStateManager(5 * time.Second)
@@ -167,8 +178,25 @@ func TestClientRecovery_ConfirmSucceedsDespitePersistError(t *testing.T) {
 	if err := sm.ConfirmClientID(res.ClientID, res.ConfirmVerifier); err != nil {
 		t.Fatalf("ConfirmClientID must succeed despite persist error, got: %v", err)
 	}
+	if _, err := sm.OpenFile(res.ClientID, []byte("owner"), 1, []byte("fh"), 1, 0, types.CLAIM_NULL); err != nil {
+		t.Fatalf("OpenFile must succeed despite persist error, got: %v", err)
+	}
 	if sm.GetClient(res.ClientID) == nil {
 		t.Fatal("client must be confirmed in memory despite persist error")
+	}
+	if rec := sm.GetClient(res.ClientID); rec.RecoveryPersisted {
+		t.Fatal("a failed write must leave RecoveryPersisted clear so the next OPEN retries")
+	}
+
+	// The backend comes back: the next OPEN lands the write.
+	spy.mu.Lock()
+	spy.putErr = nil
+	spy.mu.Unlock()
+	if _, err := sm.OpenFile(res.ClientID, []byte("owner"), 2, []byte("fh2"), 1, 0, types.CLAIM_NULL); err != nil {
+		t.Fatalf("OpenFile(2): %v", err)
+	}
+	if puts := spy.snapshotPuts(); len(puts) != 1 || puts[0].ClientIDString != "client-B" {
+		t.Fatalf("expected the retry to write one record for client-B, got %v", puts)
 	}
 }
 
@@ -206,6 +234,13 @@ func TestClientRecovery_DeleteOnLeaseExpiry(t *testing.T) {
 	}
 	if err := sm.ConfirmClientID(res.ClientID, res.ConfirmVerifier); err != nil {
 		t.Fatalf("ConfirmClientID: %v", err)
+	}
+	// Take state so a durable row exists to be deleted.
+	if _, err := sm.OpenFile(res.ClientID, []byte("owner"), 1, []byte("fh"), 1, 0, types.CLAIM_NULL); err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	if _, ok := spy.records["client-exp"]; !ok {
+		t.Fatal("first OPEN should have written the recovery record")
 	}
 
 	// Directly trigger the lease-expiry callback (deterministic, no timer wait).
@@ -432,9 +467,17 @@ func TestClientRecovery_V41PersistAndReclaimComplete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExchangeID: %v", err)
 	}
-	// First CREATE_SESSION confirms + persists.
+	// First CREATE_SESSION confirms; it must NOT write a recovery record.
 	if _, _, err := sm.CreateSession(exch.ClientID, exch.SequenceID, 0, defaultForeAttrs(), defaultBackAttrs(), 0, nil, "uid:0"); err != nil {
 		t.Fatalf("CreateSession: %v", err)
+	}
+	if puts := spy.snapshotPuts(); len(puts) != 0 {
+		t.Fatalf("CREATE_SESSION alone must write no recovery record, got %d", len(puts))
+	}
+
+	// Taking an open is what puts the client on the durable roster.
+	if _, err := sm.OpenFile(exch.ClientID, []byte("v41-open-owner"), 0, []byte("fh"), 1, 0, types.CLAIM_NULL); err != nil {
+		t.Fatalf("OpenFile: %v", err)
 	}
 
 	key := v41RecoveryKey(owner)
@@ -496,6 +539,10 @@ func TestClientRecovery_V41DestroyDeletes(t *testing.T) {
 	if _, _, err := sm.CreateSession(exch.ClientID, exch.SequenceID, 0, defaultForeAttrs(), defaultBackAttrs(), 0, nil); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
+	// Take state so a durable row exists for DESTROY_CLIENTID to delete.
+	if _, err := sm.OpenFile(exch.ClientID, []byte("destroy-open-owner"), 0, []byte("fh"), 1, 0, types.CLAIM_NULL); err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
 	// Destroy requires no active sessions; tear them down first.
 	for _, s := range sm.ListSessionsForClient(exch.ClientID) {
 		if err := sm.DestroySession(s.SessionID); err != nil {
@@ -540,6 +587,10 @@ func TestClientRecovery_ReclaimPersistRetriedAfterFailure(t *testing.T) {
 	}
 	if _, _, err := sm.CreateSession(exch.ClientID, exch.SequenceID, 0, defaultForeAttrs(), defaultBackAttrs(), 0, nil, "uid:0"); err != nil {
 		t.Fatalf("CreateSession: %v", err)
+	}
+	// Take state so a durable row exists to be marked reclaim-complete.
+	if _, err := sm.OpenFile(exch.ClientID, []byte("retry-open-owner"), 0, []byte("fh"), 1, 0, types.CLAIM_NULL); err != nil {
+		t.Fatalf("OpenFile: %v", err)
 	}
 	if err := sm.ReclaimComplete(exch.ClientID, false); err != nil {
 		t.Fatalf("ReclaimComplete: %v", err)
