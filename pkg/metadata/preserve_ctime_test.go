@@ -261,10 +261,17 @@ func TestPreserveCtime_IsHonouredOnTruncate(t *testing.T) {
 
 // A held change time must not undo a peer's deliberate LOWERING of it. SMB's
 // restoreFrozenTimestamps writes an explicitly older ChangeTime, and a
-// PreserveCtime write that had read a higher value before it must leave that
-// restore standing rather than carrying its own snapshot forward. The stored
-// value is the authority — that is what "hold it" means, in both directions.
-func TestPreserveCtime_DoesNotUndoADeliberateLowering(t *testing.T) {
+// PreserveCtime write must leave that restore standing. The stored value is the
+// authority — that is what "hold it" means, in both directions.
+//
+// Sequential, and named for it: the lowering commits before the held write's
+// first read, so an implementation that carried its own pre-transaction
+// snapshot forward would still pass. Driving the lowering into the window
+// between that read and the transaction needs a store hook this package does
+// not have; the concurrent direction is covered by
+// TestSetFileAttributes_PreserveCtimeSurvivesAConcurrentAdvance, which drives a
+// real race in the raising direction.
+func TestPreserveCtime_HoldsALoweredValue(t *testing.T) {
 	svc, ctx, handle, _ := setupPreserveCtimeFile(t)
 
 	// A peer restores an explicitly older ChangeTime, the way a frozen-timestamp

@@ -658,8 +658,10 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 		// leaving Ctime untouched in memory would still revert an advance another
 		// writer committed in between — the backwards move a held timestamp exists
 		// to avoid, and the one NFSv4's change attribute must never make. Re-read
-		// it inside the transaction and keep whichever value is later, so the
-		// write carries the current value forward. Exact on a backend whose transaction serialises the read
+		// it inside the transaction and write back what the row holds, so the
+		// write carries the current value forward — the CURRENT value, not the
+		// later of two: a peer that deliberately lowered it has said what the
+		// change time is, and taking a maximum would roll that back. Exact on a backend whose transaction serialises the read
 		// against concurrent writers; on one whose in-transaction read takes no
 		// row lock this narrows the window rather than closing it, the same
 		// residue RestoreChangeTimeIfUnchanged documents.
@@ -756,8 +758,16 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 	// overlay that would otherwise resurrect the newer create time (#1573). Runs
 	// under the flush lock acquired above, so no concurrent flush can re-persist
 	// the bump between the store write and this Clear.
+	//
+	// Conditional on the bump this call actually accounted for, because the
+	// flush lock does not hold the writers back: recordDirTimes runs after a
+	// create's or remove's transaction and takes no lock at all, so one can land
+	// between the read above and here. An unconditional Clear would drop that
+	// newer bump from the overlay and from durable state both — a create whose
+	// directory timestamp simply vanishes. ClearIfFlushed keeps the entry when
+	// a newer bump raced in, and the next flush picks it up.
 	if dirTimeSet {
-		s.dirTimes.Clear(handle)
+		s.dirTimes.ClearIfFlushed(handle, pendingDirCtime)
 	}
 
 	// Post-op attributes reflect the resulting file state (mutated in place
