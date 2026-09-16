@@ -189,14 +189,36 @@ func (s *Service) CreateHardLink(ctx *AuthContext, dirHandle FileHandle, name st
 		if err != nil {
 			return err
 		}
+
+		// A count of zero means the last name for this inode is already gone.
+		// The inode row outlives its names so an open descriptor can still stat
+		// it, but its content has been reported free to whoever removed it, so
+		// a new name here would resolve to blocks that are being deleted. POSIX
+		// link(2) reports ENOENT for exactly this.
+		if linkCount == 0 {
+			return &StoreError{
+				Code:    ErrNotFound,
+				Message: "cannot create a hard link to a file whose last link was removed",
+				Path:    name,
+			}
+		}
+
 		if err := tx.SetLinkCount(ctx.Context, targetHandle, linkCount+1); err != nil {
 			return err
 		}
 
-		// Update timestamps
+		// Update timestamps. The target row is re-read inside the transaction
+		// so only Ctime carries over from this operation and every other column
+		// comes from committed state — the copy read before the transaction
+		// opened would write back whatever a concurrent WRITE committed in the
+		// meantime.
 		now := time.Now()
-		target.Ctime = now
-		if err := tx.UpdateAttrs(ctx.Context, target); err != nil {
+		txTarget := target
+		if fresh, tErr := tx.GetFile(ctx.Context, targetHandle); tErr == nil && fresh != nil {
+			txTarget = fresh
+		}
+		txTarget.Ctime = now
+		if err := tx.UpdateAttrs(ctx.Context, txTarget); err != nil {
 			return err
 		}
 
