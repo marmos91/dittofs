@@ -131,7 +131,16 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 
 	// API handlers - use cpStore directly since API handlers have request context
 	authHandler := handlers.NewAuthHandler(cpStore, jwtService)
-	userHandler, err := handlers.NewUserHandler(cpStore, jwtService, rt.InvalidateAuthCache)
+
+	// Share grants are written from two route families — the share permission
+	// endpoints and the share_permissions field on user create/update — and both
+	// must reproject the share root ACL. grantStore carries that completion on
+	// the write itself, so neither handler can grant access that the filesystem
+	// layer never learns about. Only the handlers that write grants take it;
+	// cpStore stays undecorated for the optional-interface assertions below.
+	grantStore := rt.ShareGrantStore(cpStore)
+
+	userHandler, err := handlers.NewUserHandler(grantStore, jwtService, rt.InvalidateAuthCache)
 	if err != nil {
 		// This is a programming error - jwtService should always be provided
 		panic("failed to create user handler: " + err.Error())
@@ -210,7 +219,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 			r.Route("/shares", func(r chi.Router) {
 				r.Use(apiMiddleware.RequireAdmin())
 
-				shareHandler := handlers.NewShareHandler(cpStore, rt)
+				shareHandler := handlers.NewShareHandler(grantStore, rt)
 				r.Post("/", shareHandler.Create)
 				r.Get("/", shareHandler.List)
 				r.Get("/{name}", shareHandler.Get)

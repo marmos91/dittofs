@@ -24,6 +24,11 @@ import (
 )
 
 // ShareHandlerStore is the composite interface required by ShareHandler.
+//
+// Its share-permission mutations complete themselves: the store the router
+// supplies is the runtime's grant-completing wrapper, which reprojects the
+// share root ACL and invalidates the adapters' auth caches after a successful
+// write. Handlers therefore write grants and nothing else.
 // ShareHandler needs share CRUD, permission management, store config lookups
 // (to validate metadata/block store references), and user/group lookups
 // (to resolve permission display names).
@@ -1171,7 +1176,6 @@ func (h *ShareHandler) SetUserPermission(w http.ResponseWriter, r *http.Request)
 				NotFound(w, "User not found")
 				return
 			}
-			h.grantsChanged(r.Context(), shareName)
 			WriteNoContent(w)
 			return
 		}
@@ -1190,8 +1194,6 @@ func (h *ShareHandler) SetUserPermission(w http.ResponseWriter, r *http.Request)
 		InternalServerError(w, "Failed to set user permission")
 		return
 	}
-
-	h.grantsChanged(r.Context(), shareName)
 	WriteNoContent(w)
 }
 
@@ -1249,18 +1251,23 @@ func samAccountName(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// grantsChanged completes a share-permission mutation: it reprojects the
-// share's grants onto its root directory ACL, then drops every adapter's cached
-// per-identity authorization so active clients re-resolve against the new
-// grants.
+// grantsChanged reprojects the share's effective grants onto its root directory
+// ACL, then drops every adapter's cached per-identity authorization so active
+// clients re-resolve.
+//
+// It exists for the share's default-permission change, which moves the
+// EVERYONE@ ACE without writing any grant row. The per-principal mutations do
+// NOT call it: the store handed to this handler completes them on the write
+// itself (Runtime.ShareGrantStore), which is what keeps the user routes — which
+// write the same grants and never reach this handler — projecting identically.
 //
 // The two halves have different standing. The ACL is a projection and its
 // reconcile is best-effort — a failure is logged, not surfaced, because the
 // control-plane permission record is authoritative and a later reconcile
-// self-heals it. The invalidation is a consequence of the row that was just
+// self-heals it. The invalidation is a consequence of the change that was just
 // written and therefore fires unconditionally, including when the projection
-// failed: a revoke that returned 204 having notified nobody leaves an SMB
-// connection holding the grant for its whole lifetime.
+// failed: a change that returned 200 having notified nobody leaves an SMB
+// connection holding the old access for its whole lifetime.
 func (h *ShareHandler) grantsChanged(ctx context.Context, shareName string) {
 	if h.runtime == nil {
 		return
@@ -1306,8 +1313,6 @@ func (h *ShareHandler) RemoveUserPermission(w http.ResponseWriter, r *http.Reque
 		InternalServerError(w, "Failed to delete user permission")
 		return
 	}
-
-	h.grantsChanged(r.Context(), shareName)
 	WriteNoContent(w)
 }
 
@@ -1363,7 +1368,6 @@ func (h *ShareHandler) SetGroupPermission(w http.ResponseWriter, r *http.Request
 				NotFound(w, "Group not found")
 				return
 			}
-			h.grantsChanged(r.Context(), shareName)
 			WriteNoContent(w)
 			return
 		}
@@ -1382,8 +1386,6 @@ func (h *ShareHandler) SetGroupPermission(w http.ResponseWriter, r *http.Request
 		InternalServerError(w, "Failed to set group permission")
 		return
 	}
-
-	h.grantsChanged(r.Context(), shareName)
 	WriteNoContent(w)
 }
 
@@ -1412,8 +1414,6 @@ func (h *ShareHandler) RemoveGroupPermission(w http.ResponseWriter, r *http.Requ
 		InternalServerError(w, "Failed to delete group permission")
 		return
 	}
-
-	h.grantsChanged(r.Context(), shareName)
 	WriteNoContent(w)
 }
 
@@ -1499,8 +1499,6 @@ func (h *ShareHandler) SetSIDPermission(w http.ResponseWriter, r *http.Request) 
 		InternalServerError(w, "Failed to set SID permission")
 		return
 	}
-
-	h.grantsChanged(r.Context(), shareName)
 	WriteNoContent(w)
 }
 
@@ -1527,8 +1525,6 @@ func (h *ShareHandler) RemoveSIDPermission(w http.ResponseWriter, r *http.Reques
 		InternalServerError(w, "Failed to delete SID permission")
 		return
 	}
-
-	h.grantsChanged(r.Context(), shareName)
 	WriteNoContent(w)
 }
 

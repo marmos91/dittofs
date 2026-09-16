@@ -14,6 +14,12 @@ import (
 // userStore is the minimal store surface needed by UserHandler. It composes the
 // sub-interfaces required to manage users plus their group memberships and
 // share permissions. store.Store satisfies it because Store embeds all of these.
+//
+// The share-permission mutations on it complete themselves: the store the
+// router supplies is the runtime's grant-completing wrapper, which reprojects
+// the share root ACL and invalidates the adapters' auth caches after a
+// successful write, so a grant written here lands identically to the same grant
+// written through the share permission routes.
 type userStore interface {
 	store.UserStore
 	store.GroupStore
@@ -308,6 +314,10 @@ func (h *UserHandler) Update(w http.ResponseWriter, r *http.Request) {
 // best-effort: invalid permissions and unresolvable share names are skipped so
 // a bad entry never blocks user create/update. Logged at debug per the
 // expected-error logging convention.
+//
+// Each write also reprojects the share's root ACL, because the store carries
+// that completion (see userStore) — without it a grant made here would leave
+// the grantee unable to traverse a share root owned by uid 0.
 func (h *UserHandler) applySharePerms(r *http.Request, userID string, perms map[string]models.SharePermission) {
 	for shareName, perm := range perms {
 		if !perm.IsValid() {
