@@ -1,12 +1,15 @@
 package handlers_test
 
 import (
+	"bytes"
+	"context"
 	"testing"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers"
 	handlertesting "github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers/testing"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -388,4 +391,70 @@ func TestSetAttr_Symlink(t *testing.T) {
 	require.NoError(t, err)
 	// Just verify we get a valid response with some status
 	assert.NotNil(t, resp)
+}
+
+// TestSetAttr_PartialFailureStillReclaimsTruncatedBlocks pins that a SETATTR
+// which shrinks a file AND changes another attribute reclaims the truncated
+// block data even when the second change is rejected.
+//
+// The handler applies size and the remaining attributes in two separate store
+// calls. The size call commits on its own; a rejection of the second call
+// cannot undo it. The block data past the new size is therefore orphaned the
+// moment the size call succeeds, and the per-share block store holds it for as
+// long as the file exists unless a later SETATTR happens to shrink it again.
+//
+// The trigger needs no fault injection: POSIX allows a non-owner with write
+// permission to truncate but not to chmod, so a group-writable file owned by
+// somebody else splits exactly this way.
+func TestSetAttr_PartialFailureStillReclaimsTruncatedBlocks(t *testing.T) {
+	fx := handlertesting.NewHandlerFixture(t)
+	ctxBg := context.Background()
+
+	const originalSize = 1 << 20
+	const truncatedSize = 4096
+
+	fileHandle := fx.CreateFile("groupwritable.bin", bytes.Repeat([]byte{0xAB}, originalSize))
+
+	file, err := fx.MetadataService.GetFile(ctxBg, fileHandle)
+	require.NoError(t, err)
+	payloadID := string(file.PayloadID)
+
+	size, ok := fx.LocalStore.FileSize(ctxBg, journal.FileID(payloadID))
+	require.True(t, ok, "payload absent from the local tier before SETATTR")
+	require.EqualValues(t, originalSize, size)
+
+	// Hand the file to another owner, group-writable, as root.
+	otherUID := uint32(2000)
+	groupWritable := uint32(0664)
+	resp, err := fx.Handler.SetAttr(fx.ContextWithUID(0, 0), &handlers.SetAttrRequest{
+		Handle:  fileHandle,
+		NewAttr: metadata.SetAttrs{UID: &otherUID, Mode: &groupWritable},
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, types.NFS3OK, resp.Status, "test setup: chown+chmod as root should succeed")
+
+	// The caller shares the file's group so the truncate is permitted, but does
+	// not own it so the chmod is not.
+	newSize := uint64(truncatedSize)
+	deniedMode := uint32(0600)
+	resp, err = fx.Handler.SetAttr(fx.Context(), &handlers.SetAttrRequest{
+		Handle:  fileHandle,
+		NewAttr: metadata.SetAttrs{Size: &newSize, Mode: &deniedMode},
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, types.NFS3ErrPerm, resp.Status,
+		"test setup: the mode change must be the phase that fails")
+
+	// The size change committed regardless of the rejected mode change...
+	after, err := fx.MetadataService.GetFile(ctxBg, fileHandle)
+	require.NoError(t, err)
+	require.EqualValues(t, truncatedSize, after.Size,
+		"test setup: the size phase must have committed for this test to mean anything")
+
+	// ...so the bytes past it must not still be held by the block store.
+	held, stillThere := fx.LocalStore.FileSize(ctxBg, journal.FileID(payloadID))
+	require.True(t, stillThere, "the surviving head of the payload was dropped entirely")
+	assert.LessOrEqualf(t, held, int64(truncatedSize),
+		"payload %q still holds %d bytes in the local tier after a truncate to %d: the blocks past the committed new size leaked",
+		payloadID, held, truncatedSize)
 }
