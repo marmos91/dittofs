@@ -185,12 +185,13 @@ type ClientRecord struct {
 	// retry also re-validates against this flag before writing durably.
 	ReclaimComplete bool
 
-	// RecoveryPersisted records that this client's durable recovery row has
-	// been written for this incarnation. The row is written the first time the
-	// client takes reclaimable state, not at confirm, so this latch is what
-	// keeps every later OPEN off the store. A client that re-registers gets a
-	// fresh record with it clear, and a failed write leaves it clear so the
-	// next OPEN retries.
+	// RecoveryPersisted records that this client's durable recovery row has been
+	// written for this incarnation. The row is written on the first OPEN that
+	// takes state in the current epoch rather than at confirm, so this latch is
+	// what keeps every later OPEN off the store. A reclaim leaves it clear: it
+	// writes nothing, and the client's next non-reclaim OPEN is what re-stamps
+	// the row. A client that re-registers gets a fresh record with it clear, and
+	// a failed write leaves it clear so the next OPEN retries.
 	RecoveryPersisted bool
 
 	// CBPathUp indicates whether the callback path to this client has been

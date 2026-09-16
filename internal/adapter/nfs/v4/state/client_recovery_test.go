@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"errors"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -799,5 +800,183 @@ func TestClientRecovery_ReclaimPersistRescheduleAdoptsExistingChain(t *testing.T
 	}
 	if delay != reclaimPersistRetryBase {
 		t.Errorf("adopted chain delay = %v, want the fresh %v", delay, reclaimPersistRetryBase)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The roster reflects reclaimable state, and grace end retires what is left
+// ---------------------------------------------------------------------------
+
+// snapshotRecordKeys returns the identity strings the store currently holds.
+func (s *spyRecoveryStore) snapshotRecordKeys() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	keys := make([]string, 0, len(s.records))
+	for k := range s.records {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// confirmV40 registers and confirms a v4.0 client, returning its client ID.
+func confirmV40(t *testing.T, sm *StateManager, id string, verf [8]byte) uint64 {
+	t.Helper()
+	res, err := sm.SetClientID(id, verf, CallbackInfo{}, "10.0.0.1:1", "uid:0")
+	if err != nil {
+		t.Fatalf("SetClientID(%s): %v", id, err)
+	}
+	if err := sm.ConfirmClientID(res.ClientID, res.ConfirmVerifier); err != nil {
+		t.Fatalf("ConfirmClientID(%s): %v", id, err)
+	}
+	return res.ClientID
+}
+
+// A client that registers and never takes any state must leave nothing behind
+// for the next boot to wait on. Before the record moved to the OPEN path every
+// confirm wrote a row, so such a client sat on the roster forever.
+func TestClientRecovery_StatelessClientIsNotOnTheBootRoster(t *testing.T) {
+	spy := newSpyRecoveryStore()
+
+	// First server instance: "opener" takes an open, "idler" only registers.
+	sm := NewStateManager(5*time.Second, 30*time.Second)
+	sm.SetClientRecoveryStore(spy, 1)
+	opener := confirmV40(t, sm, "opener", [8]byte{0xa1})
+	confirmV40(t, sm, "idler", [8]byte{0xb2})
+	if _, err := sm.OpenFile(opener, []byte("owner"), 1, []byte("fh"), 1, 0, types.CLAIM_NULL); err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+
+	if got := spy.snapshotRecordKeys(); len(got) != 1 || got[0] != "opener" {
+		t.Fatalf("durable rows = %v, want only [opener]: a client holding nothing must write no row", got)
+	}
+
+	// Restart: only the client that held something is waited on.
+	sm2 := NewStateManager(5*time.Second, 30*time.Second)
+	sm2.SetClientRecoveryStore(spy, 2)
+	if n := sm2.LoadClientRecovery(context.Background(), true); n != 1 {
+		t.Fatalf("boot roster seeded %d clients, want 1 (only the one that held state)", n)
+	}
+	sm2.mu.RLock()
+	roster := sm2.gracePeriod.expectedClientStrings
+	onRoster := roster["idler"]
+	sm2.mu.RUnlock()
+	if onRoster {
+		t.Fatal("idler held no state and must not be on the reclaim roster")
+	}
+}
+
+// The grace window must end as soon as the clients that actually held state
+// have reclaimed, instead of running its full duration waiting on a client that
+// had nothing to reclaim in the first place.
+func TestClientRecovery_GraceExitsEarlyWhenEveryStatefulClientReclaims(t *testing.T) {
+	spy := newSpyRecoveryStore()
+	verf := [8]byte{0xa1}
+
+	sm := NewStateManager(5*time.Second, 30*time.Second)
+	sm.SetClientRecoveryStore(spy, 1)
+	opener := confirmV40(t, sm, "opener", verf)
+	confirmV40(t, sm, "idler", [8]byte{0xb2})
+	if _, err := sm.OpenFile(opener, []byte("owner"), 1, []byte("fh"), 1, 0, types.CLAIM_NULL); err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+
+	// Restart with a 30s window: only an early exit can end it inside this test.
+	sm2 := NewStateManager(5*time.Second, 30*time.Second)
+	sm2.SetClientRecoveryStore(spy, 2)
+	sm2.LoadClientRecovery(context.Background(), true)
+	if !sm2.IsInGrace() {
+		t.Fatal("restart with a stateful prior client must open the grace window")
+	}
+
+	back := confirmV40(t, sm2, "opener", verf)
+	if _, err := sm2.OpenFile(back, []byte("owner"), 1, []byte("fh"), 1, 0, types.CLAIM_PREVIOUS); err != nil {
+		t.Fatalf("CLAIM_PREVIOUS reclaim: %v", err)
+	}
+
+	if sm2.IsInGrace() {
+		t.Fatal("grace must end early once every client that held state has reclaimed, " +
+			"not run its full duration waiting on a client that held nothing")
+	}
+}
+
+// A client that held state and never comes back has its row retired when the
+// window ends, while a client that comes back and reclaims keeps its row and
+// can still reclaim on the restart after that.
+func TestClientRecovery_GraceEndRetiresRowsOfClientsThatNeverReturn(t *testing.T) {
+	spy := newSpyRecoveryStore()
+	returnerVerf := [8]byte{0xc1}
+
+	// First instance: two clients, both holding an open.
+	sm := NewStateManager(5*time.Second, 30*time.Second)
+	sm.SetClientRecoveryStore(spy, 1)
+	returner := confirmV40(t, sm, "returner", returnerVerf)
+	goner := confirmV40(t, sm, "goner", [8]byte{0xd2})
+	for _, id := range []uint64{returner, goner} {
+		if _, err := sm.OpenFile(id, []byte("owner"), 1, []byte("fh"), 1, 0, types.CLAIM_NULL); err != nil {
+			t.Fatalf("OpenFile: %v", err)
+		}
+	}
+	if got := spy.snapshotRecordKeys(); len(got) != 2 {
+		t.Fatalf("durable rows = %v, want both clients", got)
+	}
+
+	// Second instance: only "returner" comes back. A short window so the hard
+	// timer, not an early exit, is what ends it.
+	sm2 := NewStateManager(5*time.Second, 200*time.Millisecond)
+	sm2.SetClientRecoveryStore(spy, 2)
+	if n := sm2.LoadClientRecovery(context.Background(), true); n != 2 {
+		t.Fatalf("boot roster seeded %d clients, want 2", n)
+	}
+	back := confirmV40(t, sm2, "returner", returnerVerf)
+	if _, err := sm2.OpenFile(back, []byte("owner"), 1, []byte("fh"), 1, 0, types.CLAIM_PREVIOUS); err != nil {
+		t.Fatalf("CLAIM_PREVIOUS reclaim: %v", err)
+	}
+
+	deadline := time.After(5 * time.Second)
+	for {
+		keys := spy.snapshotRecordKeys()
+		if len(keys) == 1 && keys[0] == "returner" {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("durable rows = %v after grace ended, want only [returner]: "+
+				"the row of a client that never returned was not retired", keys)
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	if sm2.IsInGrace() {
+		t.Fatal("grace should have ended before the purge ran")
+	}
+
+	// The reclaim itself writes nothing, so the row keeps the reclaim-complete
+	// mark and the third boot has nothing to wait on. Taking fresh state in this
+	// epoch is what re-arms it.
+	spy.mu.Lock()
+	complete := spy.records["returner"].ReclaimComplete
+	spy.mu.Unlock()
+	if !complete {
+		t.Fatal("the reclaim must leave the durable row marked reclaim-complete")
+	}
+	if _, err := sm2.OpenFile(back, []byte("owner"), 2, []byte("fh-new"), 1, 0, types.CLAIM_NULL); err != nil {
+		t.Fatalf("OpenFile(CLAIM_NULL) after grace: %v", err)
+	}
+	spy.mu.Lock()
+	epoch, complete := spy.records["returner"].ServerEpoch, spy.records["returner"].ReclaimComplete
+	spy.mu.Unlock()
+	if epoch != 2 || complete {
+		t.Fatalf("returner row = {epoch %d, reclaim_complete %v}, want {2, false}: "+
+			"state taken in this epoch must re-arm the row", epoch, complete)
+	}
+
+	sm3 := NewStateManager(5*time.Second, 30*time.Second)
+	sm3.SetClientRecoveryStore(spy, 3)
+	if n := sm3.LoadClientRecovery(context.Background(), true); n != 1 {
+		t.Fatalf("third boot seeded %d clients, want 1 (only returner)", n)
+	}
+	back3 := confirmV40(t, sm3, "returner", returnerVerf)
+	if _, err := sm3.OpenFile(back3, []byte("owner"), 1, []byte("fh"), 1, 0, types.CLAIM_PREVIOUS); err != nil {
+		t.Fatalf("returner must still be able to reclaim after surviving a purge: %v", err)
 	}
 }

@@ -114,11 +114,19 @@ func (sm *StateManager) persistClientRecoveryLocked(clientID uint64, clientIDStr
 // in-memory open state, so reaching LOCK means the OPEN that created that state
 // already ran through here. The OPEN site is therefore the only one needed.
 //
+// A reclaim writes nothing. The row that put the client on the roster is
+// already durable, and the reclaim marks it complete so a second restart inside
+// one window does not re-wait on it; rewriting the row here would clear that
+// mark, which is exactly what kept a returning client's row from ever latching
+// when the write hung off confirm. The mark is cleared again by the first
+// non-reclaim OPEN, because state taken in the current epoch is state the next
+// restart has to wait on.
+//
 // The write happens once per client incarnation: the in-memory latch keeps
 // every later OPEN off the store, and a failed write leaves it clear so the
 // next OPEN retries. Caller must hold sm.mu.
-func (sm *StateManager) ensureClientRecoveryLocked(clientID uint64) {
-	if sm.recoveryStore == nil {
+func (sm *StateManager) ensureClientRecoveryLocked(clientID uint64, claimType uint32) {
+	if sm.recoveryStore == nil || claimType == types.CLAIM_PREVIOUS {
 		return
 	}
 	record := sm.clientRecordLocked(clientID)
