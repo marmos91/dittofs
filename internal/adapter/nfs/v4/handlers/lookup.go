@@ -149,15 +149,14 @@ func (h *Handler) lookupInPseudoFS(ctx *types.CompoundContext, name string) *typ
 
 	// Check for export junction crossing
 	if child.IsExport && h.Registry != nil {
-		// Enforce the share's netgroup client allowlist before handing out its
-		// root handle. Crossing the junction puts a real share handle into the
-		// current filehandle without building an auth context, so the check
-		// buildV4AuthContext performs never runs on this path: the operations
+		// Apply the same gate PUTFH does before handing out the share's root
+		// handle. Crossing the junction puts a real share handle into the
+		// current filehandle without building an auth context, so the checks
+		// buildV4AuthContext performs never run on this path and the operations
 		// that then act on that handle without an auth context of their own
-		// (LOCK, LOCKT, LOCKU, GET_DIR_DELEGATION) would reach a restricted
-		// share from any address.
-		if ngErr := h.checkNetgroupAccess(ctx, child.ShareName); ngErr != nil {
-			st := nfs4StatusForAuthError(ngErr)
+		// (LOCK, LOCKT, LOCKU, GET_DIR_DELEGATION) would reach a disabled or
+		// netgroup-restricted share from any address.
+		if st := h.shareEntryStatus(ctx, child.ShareName); st != types.NFS4_OK {
 			return &types.CompoundResult{
 				Status: st,
 				OpCode: types.OP_LOOKUP,

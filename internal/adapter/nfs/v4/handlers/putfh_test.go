@@ -105,3 +105,28 @@ func TestPUTFH_EnabledShare_Succeeds(t *testing.T) {
 		t.Errorf("CurrentFH mismatch: got %x, want %x", ctx.CurrentFH, rootHandle)
 	}
 }
+
+// TestJunctionLookup_DisabledShare_ReturnsStale covers the second way a share
+// handle enters a compound. PUTFH refuses a disabled share's handle, but a
+// LOOKUP that crosses the export junction out of the pseudo-fs installs the
+// share root handle directly and answered NFS4_OK, so the quiesce PUTFH
+// enforces was skippable by walking the pseudo-fs instead.
+func TestJunctionLookup_DisabledShare_ReturnsStale(t *testing.T) {
+	h, rootHandle, rt := newPutFHTestHandler(t, "/disabled")
+	if err := rt.SetEnabledForTesting("/disabled", false); err != nil {
+		t.Fatalf("SetEnabledForTesting: %v", err)
+	}
+
+	ctx := &types.CompoundContext{
+		Context:    context.Background(),
+		ClientAddr: "127.0.0.1:1234",
+		CurrentFH:  h.PseudoFS.GetRootHandle(),
+	}
+	res := h.handleLookup(ctx, bytes.NewReader(encodeLookupNameBytes(t, "disabled")))
+	if res.Status != types.NFS4ERR_STALE {
+		t.Fatalf("Status = %d, want NFS4ERR_STALE (%d)", res.Status, types.NFS4ERR_STALE)
+	}
+	if bytes.Equal(ctx.CurrentFH, rootHandle) {
+		t.Fatalf("CurrentFH was advanced to the disabled share's root handle %x", ctx.CurrentFH)
+	}
+}

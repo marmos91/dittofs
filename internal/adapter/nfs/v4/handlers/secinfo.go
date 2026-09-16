@@ -120,6 +120,14 @@ func (h *Handler) secInfoLookupStatus(ctx *types.CompoundContext, name string) (
 		// the refusing share's own -- which is the one the client needs.
 		status = types.NFS4_OK
 	}
+
+	// decision: NFS4ERR_STALE and NFS4ERR_ACCESS from shareEntryStatus are NOT
+	// laundered the same way when the name is an export junction. Neither is
+	// answerable by picking a different security flavor -- a disabled share has
+	// nothing to offer and a netgroup allowlist keys on the peer address -- so a
+	// flavor list would be a list of flavors that all fail. RFC 7530 Section
+	// 13.2 lists both on SECINFO. Revisit if a refusal is ever introduced that
+	// a flavor change could clear.
 	return status, target
 }
 

@@ -7,8 +7,10 @@ import (
 	"net"
 	"testing"
 
+	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -45,6 +47,16 @@ func (f *fakeNetgroupRuntime) CheckNetgroupAccess(_ context.Context, shareName s
 	f.gotShare = shareName
 	f.gotIP = clientIP
 	return f.allowed, f.err
+}
+
+// GetShare and GetRootHandle are the rest of what a junction crossing touches.
+// The share is enabled, so the netgroup verdict is the only thing under test.
+func (f *fakeNetgroupRuntime) GetShare(name string) (*runtime.Share, error) {
+	return &runtime.Share{Name: name, Enabled: true}, nil
+}
+
+func (f *fakeNetgroupRuntime) GetRootHandle(shareName string) (metadata.FileHandle, error) {
+	return metadata.FileHandle(shareName + ":00000000-0000-0000-0000-000000000001"), nil
 }
 
 // checkStatus runs checkNetgroupAccess against the fake and returns the NFSv4
@@ -272,5 +284,42 @@ func TestV4Netgroup_XattrOpsReportAccessNotServerfault(t *testing.T) {
 				t.Fatalf("%s status = %d, want NFS4ERR_ACCESS (%d)", tc.op, status, types.NFS4ERR_ACCESS)
 			}
 		})
+	}
+}
+
+// TestV4Netgroup_JunctionLookupChecksTheJunctionsShare pins WHICH share the
+// junction gate asks about and on WHICH verdict it refuses. The end-to-end test
+// above denies through the fail-closed path (an unresolvable netgroup), so it
+// would pass just as well if the gate named the wrong share; this one denies on
+// a plain non-membership verdict and asserts the share and the peer IP the
+// check was handed.
+func TestV4Netgroup_JunctionLookupChecksTheJunctionsShare(t *testing.T) {
+	rt := &fakeNetgroupRuntime{allowed: false}
+	pfs := pseudofs.New()
+	pfs.Rebuild([]string{"/export"})
+	h := &Handler{Registry: rt, PseudoFS: pfs}
+
+	pseudoRoot := pfs.GetRootHandle()
+	ctx := &types.CompoundContext{
+		Context:    context.Background(),
+		ClientAddr: "10.0.0.5:1234",
+		CurrentFH:  pseudoRoot,
+	}
+
+	res := h.handleLookup(ctx, bytes.NewReader(encodeLookupNameBytes(t, "export")))
+	if res.Status != types.NFS4ERR_ACCESS {
+		t.Fatalf("Status = %d, want NFS4ERR_ACCESS (%d)", res.Status, types.NFS4ERR_ACCESS)
+	}
+	if rt.calls != 1 {
+		t.Fatalf("CheckNetgroupAccess calls = %d, want 1", rt.calls)
+	}
+	if rt.gotShare != "/export" {
+		t.Errorf("checked share = %q, want /export (the junction's own share)", rt.gotShare)
+	}
+	if !rt.gotIP.Equal(net.ParseIP("10.0.0.5")) {
+		t.Errorf("checked IP = %v, want 10.0.0.5", rt.gotIP)
+	}
+	if !bytes.Equal(ctx.CurrentFH, pseudoRoot) {
+		t.Errorf("CurrentFH moved off the pseudo-fs root: %x", ctx.CurrentFH)
 	}
 }
