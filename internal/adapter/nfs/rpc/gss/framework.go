@@ -930,6 +930,10 @@ func (p *GSSProcessor) handleDestroy(cred *RPCGSSCredV1, verifBody []byte, heade
 				AuthStat: AuthStatCredProblem,
 			}
 		}
+		// Authenticated: refresh the idle clock. The context is deleted below on
+		// the success path, but a sequence-window rejection returns before that
+		// and leaves it alive, and only a key-holder reaches this point.
+		gssCtx.Touch()
 		if !gssCtx.SeqWindow.Accept(cred.SeqNum) {
 			logger.Debug("GSS DESTROY: sequence number rejected (duplicate or out of window)",
 				"seq_num", cred.SeqNum,
