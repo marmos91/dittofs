@@ -79,15 +79,15 @@ func BenchmarkPostgresWritePath(b *testing.B) {
 	const nFiles = 5000
 	ctx := context.Background()
 
-	run := func(b *testing.B, op func(tx metadata.Transaction, h metadata.FileHandle) error) {
+	run := func(b *testing.B, files int, op func(tx metadata.Transaction, h metadata.FileHandle) error) {
 		store := pgStore(b)
-		_, handles := benchSeed(b, store, nFiles)
+		_, handles := benchSeed(b, store, files)
 		var ops int64
 		b.ResetTimer()
 		b.RunParallel(func(pb *testing.PB) {
 			rng := rand.New(rand.NewSource(rand.Int63()))
 			for pb.Next() {
-				h := handles[rng.Intn(nFiles)]
+				h := handles[rng.Intn(files)]
 				if err := store.WithTransaction(ctx, func(tx metadata.Transaction) error {
 					return op(tx, h)
 				}); err != nil {
@@ -102,21 +102,41 @@ func BenchmarkPostgresWritePath(b *testing.B) {
 		}
 	}
 
+	getFilePutFile := func(tx metadata.Transaction, h metadata.FileHandle) error {
+		f, err := tx.GetFile(ctx, h)
+		if err != nil {
+			return err
+		}
+		f.Size = 4096
+		f.Mtime = time.Now()
+		f.Ctime = f.Mtime
+		return tx.UpdateAttrs(ctx, f)
+	}
+
 	b.Run("getfile_putfile", func(b *testing.B) {
-		run(b, func(tx metadata.Transaction, h metadata.FileHandle) error {
-			f, err := tx.GetFile(ctx, h)
-			if err != nil {
-				return err
-			}
-			f.Size = 4096
-			f.Mtime = time.Now()
-			f.Ctime = f.Mtime
-			return tx.UpdateAttrs(ctx, f)
-		})
+		run(b, nFiles, getFilePutFile)
 	})
 
 	b.Run("applydatawrite", func(b *testing.B) {
-		run(b, func(tx metadata.Transaction, h metadata.FileHandle) error {
+		run(b, nFiles, func(tx metadata.Transaction, h metadata.FileHandle) error {
+			_, err := tx.(metadata.DataWriteApplier).ApplyDataWrite(ctx, h, 4096, time.Now(), false)
+			return err
+		})
+	})
+
+	// The scattered cases above almost never put two writers on one row, so
+	// they measure the per-op SQL cost and say nothing about what conflict
+	// handling costs. These two aim every writer at a handful of rows, which is
+	// where a transaction's isolation level decides whether a conflicting
+	// writer waits at a lock or restarts the whole transaction.
+	const nHotFiles = 4
+
+	b.Run("getfile_putfile_hot", func(b *testing.B) {
+		run(b, nHotFiles, getFilePutFile)
+	})
+
+	b.Run("applydatawrite_hot", func(b *testing.B) {
+		run(b, nHotFiles, func(tx metadata.Transaction, h metadata.FileHandle) error {
 			_, err := tx.(metadata.DataWriteApplier).ApplyDataWrite(ctx, h, 4096, time.Now(), false)
 			return err
 		})
