@@ -299,6 +299,107 @@ func TestAPIConfig_PprofRateDefaults(t *testing.T) {
 	}
 }
 
+// TestAPIServer_StopDrainsInflightHandlers pins the shutdown fence: Stop must
+// not return while a request that outlived http.Server.Shutdown's deadline is
+// still running, because the caller closes the control-plane store the handlers
+// read directly once Stop reports. Two branches: a handler that finishes inside
+// the drain bound is joined (Stop returns nil), and one that does not is
+// abandoned after the bound (Stop returns an error) rather than blocking the
+// process. The store close is ordered after whichever branch Stop took.
+func TestAPIServer_StopDrainsInflightHandlers(t *testing.T) {
+	t.Run("handler finishes inside the drain bound", func(t *testing.T) {
+		cpStore, cfg := testSetup(t, 18101)
+		server, err := NewServer(cfg, nil, cpStore, Timeouts{Restore: 30 * time.Minute})
+		if err != nil {
+			t.Fatalf("NewServer: %v", err)
+		}
+		server.drainTimeout = 5 * time.Second
+
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		// Insert the blocking handler inside the in-flight tracker, so the
+		// request is counted exactly as a real one would be.
+		server.server.Handler = server.trackInflight(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			close(entered)
+			<-release
+			w.WriteHeader(http.StatusOK)
+		}))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		startErr := make(chan error, 1)
+		go func() { startErr <- server.Start(ctx) }()
+		waitForServerReady(t, fmt.Sprintf("localhost:%d", cfg.Port), startErr, 5*time.Second)
+
+		go func() { _, _ = http.Get(fmt.Sprintf("http://localhost:%d/health", cfg.Port)) }()
+		<-entered
+
+		// Shutdown's own deadline expires immediately, so the drain is what has
+		// to keep Stop waiting for the handler.
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+		defer shutdownCancel()
+		stopReturned := make(chan error, 1)
+		go func() { stopReturned <- server.Stop(shutdownCtx) }()
+
+		select {
+		case err := <-stopReturned:
+			t.Fatalf("Stop returned before the in-flight handler finished: %v", err)
+		case <-time.After(200 * time.Millisecond):
+		}
+
+		close(release)
+		select {
+		case <-stopReturned:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Stop did not return after the handler finished")
+		}
+	})
+
+	t.Run("handler outlasts the drain bound", func(t *testing.T) {
+		cpStore, cfg := testSetup(t, 18102)
+		server, err := NewServer(cfg, nil, cpStore, Timeouts{Restore: 30 * time.Minute})
+		if err != nil {
+			t.Fatalf("NewServer: %v", err)
+		}
+		server.drainTimeout = 100 * time.Millisecond
+
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		defer close(release)
+		server.server.Handler = server.trackInflight(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			close(entered)
+			<-release
+		}))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		startErr := make(chan error, 1)
+		go func() { startErr <- server.Start(ctx) }()
+		waitForServerReady(t, fmt.Sprintf("localhost:%d", cfg.Port), startErr, 5*time.Second)
+
+		go func() { _, _ = http.Get(fmt.Sprintf("http://localhost:%d/health", cfg.Port)) }()
+		<-entered
+
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+		defer shutdownCancel()
+		select {
+		case err := <-stopReturnedChan(server, shutdownCtx):
+			if err == nil {
+				t.Fatal("Stop returned nil, want an error for an undrained handler")
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("Stop did not give up on the undrained handler")
+		}
+	})
+}
+
+// stopReturnedChan runs Stop in a goroutine and returns its result channel.
+func stopReturnedChan(s *Server, ctx context.Context) <-chan error {
+	ch := make(chan error, 1)
+	go func() { ch <- s.Stop(ctx) }()
+	return ch
+}
+
 // TestNewServer_PprofSamplingWired verifies NewServer actually applies the
 // mutex sampling fraction to the Go runtime when Pprof is enabled — the gap
 // that left /debug/pprof/mutex header-only. SetMutexProfileFraction(-1) leaves

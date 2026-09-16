@@ -141,6 +141,10 @@ func runStart(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize control plane store: %w", err)
 	}
+	// Declared before the store-close defer so that defer can drain it: the API
+	// handlers hold cpStore directly, so the close must not run until they are
+	// done. Assigned far below, once the runtime is up.
+	var apiServer *api.Server
 	// Registered before any other consumer takes a reference, so it closes last:
 	// after the netlogon defer and after the shutdown wait below returns. The
 	// runtime's background workers reach this store too, and the shutdown drain
@@ -149,21 +153,27 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// worker added later: the root cancel is registered before this and would
 	// otherwise run after it.
 	//
-	// decision: the handle can close while an API request is still using it,
-	// and on more than the one path this originally named. http.Server.Shutdown
-	// returns when its own deadline expires whether or not handlers have
-	// finished, and API handlers hold cpStore directly, so an ordinary SIGTERM
-	// with a slow handler reaches this close the same way the forced-exit
-	// branch does. Nothing here waits for handlers to drain. The metrics server
-	// is a second such reader and is not waited for either: its collector calls
-	// Runtime.MetricsSnapshot, which lists snapshots out of this store for every
-	// share, so a scrape in flight races this close exactly as a handler does.
+	// decision: the API handlers are joined before this close, but two other
+	// synchronous readers of this store are not, so the handle can still close
+	// under one of them. The API drain below waits (bounded) for requests the
+	// API server was tracking, which covers the ordinary SIGTERM-with-a-slow-
+	// handler case: http.Server.Shutdown returns on its own deadline whether or
+	// not the handlers behind it finished, and the drain is what waits for them
+	// anyway. What it does not cover: the metrics scrape handler, whose
+	// collector calls Runtime.MetricsSnapshot (which lists snapshots out of this
+	// store for every share) and which runs on its own listener that nothing
+	// joins; and quotaGracePersister, which data-plane requests call
+	// synchronously on a fresh context.Background(), so cancelling the root
+	// context does not stop it. Both are the same shape as the API case was —
+	// a reader outliving the close — and both are cheaper to fold into one
+	// shutdown fence than to fix one at a time; withdraw this note when that
+	// fence exists.
 	//
 	// What sql.DB.Close actually does cuts both ways, and the second way is why
 	// this is bounded: it stops new queries and makes any later use return an
 	// error instead of panicking, but it does not cut a query already running —
 	// it WAITS for it. Left to run to completion it would hold the process in
-	// this defer behind a wedged handler, and the forced-exit path above has
+	// this defer behind a wedged reader, and the forced-exit path above has
 	// already given up waiting by then, so the one deadline the operator can
 	// see would be defeated by the cleanup that follows it.
 	//
@@ -172,12 +182,25 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// and the OS reclaims the descriptor either way, whereas not exiting is
 	// what an operator notices. Withdraw the bound if this ever becomes a path
 	// the process continues past rather than exits from, where an unclosed
-	// handle outlives the decision to abandon it. The real fix, which removes
-	// the choice, is to join the API handlers before closing — nothing here
-	// waits for them, and http.Server.Shutdown returns on its own deadline
-	// whether or not they have finished.
+	// handle outlives the decision to abandon it.
 	defer func() {
 		cancel()
+		// Join the API handlers before closing the store they read directly.
+		// Stop already drains on the normal path, but the forced-exit branch
+		// above returns while Serve — and with it Stop — may still be running,
+		// so the drain is repeated here (idempotent, and free once the counter
+		// is empty). Bounded, so a wedged handler cannot hold the process in
+		// this defer; losing the bound means the store closes under that
+		// handler, which is the same cost the close's own deadline already
+		// accepts.
+		if apiServer != nil {
+			drainCtx, drainCancel := context.WithTimeout(context.Background(), storeCloseTimeout)
+			if !apiServer.Drain(drainCtx) {
+				logger.Warn("API handlers did not drain within their deadline; " +
+					"closing the control-plane store with a request possibly still in flight")
+			}
+			drainCancel()
+		}
 		closed := make(chan struct{})
 		go func() {
 			defer close(closed)
@@ -419,7 +442,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	rt.SetAdapterFactory(createAdapterFactory(&effectiveKerberos, nlAuth))
 
 	// Create and set API server
-	apiServer, err := api.NewServer(cfg.ControlPlane, rt, cpStore, api.Timeouts{
+	apiServer, err = api.NewServer(cfg.ControlPlane, rt, cpStore, api.Timeouts{
 		Restore:    cfg.Snapshot.RestoreHTTPTimeout,
 		DrainStall: cfg.ControlPlane.DrainStallTimeout,
 	})
