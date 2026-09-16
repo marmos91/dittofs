@@ -1235,9 +1235,31 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 				// closure more than once, and only the committing attempt's
 				// value must survive.
 				clobberedNlink = newCount
-				// Update ctime on the file being unlinked (affects remaining hard links)
-				dstFile.Ctime = now
-				if err := tx.UpdateAttrs(ctx.Context, dstFile); err != nil {
+				// Update ctime on the file being unlinked (affects remaining
+				// hard links).
+				//
+				// Write the row this transaction read, not the copy taken
+				// before it opened. Ctime is the only column an overwriting
+				// rename changes on the victim, so every other one must come
+				// from committed state: writing the earlier snapshot back
+				// would restore whatever Size or Mtime a concurrent write to
+				// the victim had already committed. No isolation level closes
+				// this — the stale copy is in hand before the transaction
+				// starts, so its snapshot already contains that write and the
+				// update conflicts with nothing.
+				//
+				// The re-read also feeds the clobbered-victim report below,
+				// whose PayloadID must name the content actually committed.
+				// Assigned unconditionally: an optimistic backend may run this
+				// closure more than once, and only the committing attempt's
+				// value must survive.
+				victim, err := tx.GetFile(ctx.Context, dstHandle)
+				if err != nil {
+					return err
+				}
+				dstFile = victim
+				victim.Ctime = now
+				if err := tx.UpdateAttrs(ctx.Context, victim); err != nil {
 					return err
 				}
 			}

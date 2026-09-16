@@ -158,3 +158,54 @@ func TestSetFileAttributes_ACLCommittedInWindowSurvivesChmod(t *testing.T) {
 			"OWNER@/GROUP@/EVERYONE@ entries and nothing else, ACEs=%+v", after.ACL.ACEs)
 	require.Equal(t, newMode, after.Mode&0o777, "the chmod itself must still land")
 }
+
+// TestMove_SizeCommittedInWindowSurvivesOverwritingRename pins that an
+// overwriting rename stamps the victim's ChangeTime on the row its own
+// transaction read, not on the copy Move took before opening one.
+//
+// Move reads the destination inode outside the transaction to run the sticky-bit
+// and type checks, and the only column it means to change on that row is Ctime.
+// Writing the earlier copy back therefore reverts every other column to what the
+// check-time read saw — here a Size a WRITE has since committed. The victim has
+// a second hard link so the row outlives the rename and can be read back; with
+// no surviving link the inode is gone and the revert is unobservable rather than
+// absent.
+//
+// No isolation level closes this one either: the stale copy is in hand before
+// the transaction opens, so the transaction's own snapshot already contains the
+// write and the update conflicts with nothing.
+func TestMove_SizeCommittedInWindowSurvivesOverwritingRename(t *testing.T) {
+	ws := &windowStore{SQLiteMetadataStore: newSQLiteRenameStore(t)}
+	svc, rootHandle, share := registerRenameStore(t, ws)
+	root := rootAuth()
+
+	victim, _, err := svc.CreateFile(root, rootHandle, "dst.bin", &metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: 0o666})
+	require.NoError(t, err)
+	victimHandle, err := metadata.EncodeShareHandle(share, victim.ID)
+	require.NoError(t, err)
+	// A second name keeps the inode alive across the rename that unlinks
+	// "dst.bin", so the committed row can be read back afterwards.
+	_, err = svc.CreateHardLink(root, rootHandle, "survivor.bin", victimHandle)
+	require.NoError(t, err)
+
+	_, _, err = svc.CreateFile(root, rootHandle, "src.bin", &metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: 0o666})
+	require.NoError(t, err)
+
+	const grown = uint64(4096)
+	hookFired := false
+	ws.beforeTx = func() {
+		hookFired = true
+		size := grown
+		_, hookErr := svc.SetFileAttributes(root, victimHandle, &metadata.SetAttrs{Size: &size})
+		require.NoError(t, hookErr)
+	}
+
+	_, _, err = svc.Move(root, rootHandle, "src.bin", rootHandle, "dst.bin")
+	require.NoError(t, err)
+	require.True(t, hookFired, "the window hook never fired, so nothing committed inside Move's window")
+
+	after, err := svc.GetFile(root.Context, victimHandle)
+	require.NoError(t, err)
+	require.NotNil(t, after)
+	require.Equal(t, grown, after.Size, "the overwriting rename reverted the victim's Size to the copy it read before its transaction")
+}
