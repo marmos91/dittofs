@@ -7,6 +7,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/nsm/callback"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/nsm/types"
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
@@ -211,13 +212,28 @@ func (h *Handler) GetClientStore() lock.ClientRegistrationStore {
 //
 // Passing nil is a no-op: a store already in use is never withdrawn, because
 // the registrations it holds outlive the share that happened to supply it.
-func (h *Handler) SetClientStore(store lock.ClientRegistrationStore) {
+//
+// Clients monitored before the store arrived are written to it here. Without
+// that they would stay memory-only for good, since SM_MON only persists on the
+// call that registers a client and the startup load has already run -- so the
+// very clients that registered during the window this method exists to close
+// would be the ones still missing from the next restart's SM_NOTIFY.
+func (h *Handler) SetClientStore(ctx context.Context, store lock.ClientRegistrationStore) {
 	if store == nil {
 		return
 	}
+
 	h.clientStoreMu.Lock()
-	defer h.clientStoreMu.Unlock()
 	h.clientStore = store
+	h.clientStoreMu.Unlock()
+
+	for _, reg := range h.tracker.GetNSMClients() {
+		persisted := lock.ToPersistedClientRegistration(reg, uint64(reg.SMState))
+		if err := store.PutClientRegistration(ctx, persisted); err != nil {
+			logger.Warn("NSM: could not persist an already-monitored client to the new store",
+				"client_id", reg.ClientID, "error", err)
+		}
+	}
 }
 
 // GetServerName returns the configured server hostname.

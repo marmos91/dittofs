@@ -561,7 +561,7 @@ func (s *NFSAdapter) initNSMHandler(rt *runtime.Runtime, metadataService *metada
 				return
 			}
 			if found := resolveClientRegistrationStore(rt); found != nil {
-				s.nsmHandler.SetClientStore(found)
+				s.nsmHandler.SetClientStore(context.Background(), found)
 				logger.Info("NSM client registration store resolved from a share added after startup")
 			}
 		})
