@@ -160,11 +160,5 @@ type LockQuery = lock.LockQuery
 // OpLock is re-exported from the lock package.
 type OpLock = lock.OpLock
 
-// OpLockBreakScanner is re-exported from the lock package.
-type OpLockBreakScanner = lock.OpLockBreakScanner
-
-// OpLockBreakCallback is re-exported from the lock package.
-type OpLockBreakCallback = lock.OpLockBreakCallback
-
 // NLMHolderInfo is re-exported from the lock package.
 type NLMHolderInfo = lock.NLMHolderInfo

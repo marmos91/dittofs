@@ -421,24 +421,18 @@ func (h *Handler) breakAndMaybeParkCreate(ctx *SMBHandlerContext, d *createDraft
 	// semantics; existing breaking3 / timeout-disconnect tests rely on it).
 	// smbtorture batch22a / batch22b assert te ∈ [34, 50] when the holder
 	// does not ack — verifying the 35 s grace.
-	breakWaitTimeout := lease.AsyncCreateBreakWaitTimeout
-	if h.LeaseManager.AnyHolderIsTraditionalOplock(lockFileHandle, shareName) {
-		breakWaitTimeout = lease.TraditionalOplockBreakWaitTimeout
-	}
-
-	// Deferred-open resume for the share-violation case: the parked CREATE
-	// waits for the live share-mode conflict to clear (holder CLOSE) rather
-	// than force-completing the holder's lease on timeout. The holder may
-	// release at any time within the deferred-open window, so the ceiling is
-	// the longer ~35 s grace (Samba defer_open retry window); ack-sane exits
-	// early when the holder's break drains without the conflict clearing, so
-	// it does not actually wait the full ceiling. The non-violation paths
-	// (default / destructive break-to-Write, smbtorture breaking3 /
-	// timeout-disconnect / batch22) keep the existing force-complete wait.
+	//
+	// The share-violation case also takes the traditional bound: its deferred-open
+	// resume waits for the live share-mode conflict to clear (holder CLOSE) rather
+	// than force-completing the holder's lease on timeout. The holder may release
+	// at any time within the deferred-open window, so the ceiling is the longer
+	// ~35 s grace (Samba defer_open retry window); ack-sane exits early when the
+	// holder's break drains without the conflict clearing, so it does not actually
+	// wait the full ceiling. The non-violation paths (default / destructive
+	// break-to-Write, smbtorture breaking3 / timeout-disconnect / batch22) keep the
+	// existing force-complete wait.
+	breakWaitTimeout := h.selectBreakWaitTimeout(lockFileHandle, shareName, reason)
 	shareConflictWait := reason == lock.BreakReasonSharingViolation
-	if shareConflictWait {
-		breakWaitTimeout = lease.TraditionalOplockBreakWaitTimeout
-	}
 
 	// Per MS-SMB2 §3.3.4.2 ("Sending an Interim Response for an Asynchronous Operation")
 	// and smbtorture compound_async.getinfo_middle:
@@ -643,9 +637,9 @@ func (h *Handler) recheckExistingFileGates(d *createDraft, effectiveAccess uint3
 // slots left; registry rejected the entry). Callers fall back to sync wait.
 //
 // breakWaitTimeout bounds the server-side wait for the break to drain (or
-// auto-downgrade on expiry). Callers pass TraditionalOplockBreakWaitTimeout
-// (~35 s, MS-SMB2 §3.3.4.6) when the holder is a traditional oplock and
-// AsyncCreateBreakWaitTimeout (~5 s) otherwise.
+// auto-downgrade on expiry). Callers pass the traditional-oplock bound
+// (Handler.traditionalOplockBreakWait, MS-SMB2 §3.3.4.6) when the holder is a
+// traditional oplock and AsyncCreateBreakWaitTimeout (~5 s) otherwise.
 //
 // shareConflictWait selects the deferred-open resume semantics for the
 // share-violation case (reason == BreakReasonSharingViolation): instead of

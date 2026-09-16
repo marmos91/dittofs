@@ -184,6 +184,14 @@ type Handler struct {
 	// Defaults to true.
 	DirectoryLeasingEnabled bool
 
+	// OplockBreakWaitTimeout overrides how long a conflicting CREATE waits for
+	// a traditional SMB oplock holder to acknowledge a break before the break
+	// is force-completed (MS-SMB2 §3.3.4.6 step 4, default 35s). Set from the
+	// live oplock_break_timeout setting; zero keeps the compiled-in default.
+	// It does NOT apply to SMB2.1+ lease breaks, whose 5s wait is pinned by
+	// MS-SMB2 §3.3.4.7 timing windows.
+	OplockBreakWaitTimeout time.Duration
+
 	// Cached share list for pipe CREATE operations (IPC$).
 	// Protected by sharesCacheMu. Invalidated via Runtime.OnShareChange().
 	cachedShares     []rpc.ShareInfo1
@@ -633,6 +641,32 @@ func NewHandlerWithSessionManager(sessionManager *session.Manager) *Handler {
 	h.nextFileID.Store(1)
 
 	return h
+}
+
+// traditionalOplockBreakWait returns the wait bound for a traditional SMB
+// oplock break: the configured override when set, otherwise the compiled-in
+// MS-SMB2 §3.3.4.6 default. Lease breaks are not covered — their 5s bound is
+// pinned by the §3.3.4.7 timing windows.
+func (h *Handler) traditionalOplockBreakWait() time.Duration {
+	if h.OplockBreakWaitTimeout > 0 {
+		return h.OplockBreakWaitTimeout
+	}
+	return lease.TraditionalOplockBreakWaitTimeout
+}
+
+// selectBreakWaitTimeout picks how long a conflicting CREATE waits for an
+// existing holder to acknowledge its break. Traditional oplocks and
+// share-violation deferred-opens get the traditional bound (configurable);
+// SMB2.1+ leases keep the shorter fixed bound that the §3.3.4.7 timing windows
+// and the breaking3 / timeout-disconnect tests rely on.
+func (h *Handler) selectBreakWaitTimeout(handleKey lock.FileHandle, shareName string, reason lock.BreakReason) time.Duration {
+	if reason == lock.BreakReasonSharingViolation {
+		return h.traditionalOplockBreakWait()
+	}
+	if h.LeaseManager.AnyHolderIsTraditionalOplock(handleKey, shareName) {
+		return h.traditionalOplockBreakWait()
+	}
+	return lease.AsyncCreateBreakWaitTimeout
 }
 
 // sessionDomain returns the domain to stamp on an authenticated SMB session.

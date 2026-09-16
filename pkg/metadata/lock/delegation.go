@@ -264,32 +264,14 @@ func (lm *Manager) RevokeDelegation(handleKey string, delegationID string) error
 	return nil
 }
 
-// revokeTimedOutLease removes all in-memory lease records matching leaseKey
-// from handleKey, deletes their persisted records (best-effort), and signals
-// WaitForBreakCompletion waiters. Called by OpLockBreakScanner after the
-// persistent record has already been deleted by the scanner's DeleteLock call;
-// this method handles the in-memory half.
-//
-// This is the lease analogue of RevokeDelegation: same mutex discipline,
-// same signalBreakWait call so parked CREATEs unblock immediately rather
-// than waiting for their context deadline.
-func (lm *Manager) revokeTimedOutLease(handleKey string, leaseKey [16]byte) {
-	// Best-effort delete of each removed record's persisted copy: the scanner
-	// already deleted the canonical PersistedLock by ID; this handles any
-	// sibling records sharing the same LeaseKey.
-	lm.removeMatchingLocksAndSignal(handleKey, true, func(l *UnifiedLock) bool {
-		return l.Lease != nil && l.Lease.LeaseKey == leaseKey
-	})
-}
-
 // removeMatchingLocksAndSignal removes every UnifiedLock on handleKey for which
 // match returns true, then wakes any WaitForBreakCompletion / parked-CREATE
 // waiters. When deletePersisted is true, each removed lock's persisted record is
 // deleted (best-effort). Returns true if at least one lock matched.
 //
-// Shared by RevokeDelegation and revokeTimedOutLease: same mutex discipline,
-// same post-unlock signalBreakWait so parked CREATEs unblock immediately rather
-// than waiting for their context deadline.
+// Used by RevokeDelegation: same mutex discipline, same post-unlock
+// signalBreakWait so parked CREATEs unblock immediately rather than waiting for
+// their context deadline.
 func (lm *Manager) removeMatchingLocksAndSignal(handleKey string, deletePersisted bool, match func(*UnifiedLock) bool) bool {
 	lm.mu.Lock()
 	old := lm.unifiedLocks[handleKey]
