@@ -64,8 +64,10 @@ func (bq *BlockingQueue) Enqueue(fileHandle string, waiter *Waiter) error {
 	// runs over UDP (and over a TCP connection a client may re-establish), so
 	// the same request arrives again whenever the reply is lost, and appending
 	// would let one client's retry loop fill the per-file queue and be granted
-	// the same range several times. The queued waiter is returned to the caller
-	// unchanged, keeping the FIFO place the first attempt earned.
+	// the same range several times. The already-queued waiter is kept as it
+	// stands and the retransmission's is discarded, so the request holds the
+	// FIFO place its first attempt earned. Enqueue still reports success: from
+	// the client's side the request is queued, which is what NLM4_BLOCKED says.
 	//
 	// decision: the retransmit does not refresh the queued waiter's cookie or
 	// callback target, though it carries its own. Two reasons, and either
