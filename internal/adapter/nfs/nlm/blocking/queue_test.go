@@ -113,10 +113,10 @@ func TestBlockingQueue_EnqueueDedupesRetransmit(t *testing.T) {
 	}
 
 	// The same blocking LOCK arrives again (lost reply / UDP retransmit): same
-	// owner, same range, fresh cookie and callback host.
+	// owner, same range, different cookie and callback host.
 	retry := newWaiter("clientA", "nlm:clientA:1:aa", 0)
 	retry.Cookie = []byte{2}
-	retry.CallbackHost = "10.0.0.7"
+	retry.CallbackHost = "10.0.0.99"
 	if err := bq.Enqueue("file1", retry); err != nil {
 		t.Fatal(err)
 	}
@@ -129,11 +129,14 @@ func TestBlockingQueue_EnqueueDedupesRetransmit(t *testing.T) {
 	if len(waiters) != 1 || waiters[0] != first {
 		t.Fatalf("want the original waiter retained, got %+v", waiters)
 	}
-	if string(waiters[0].Cookie) != string(retry.Cookie) {
-		t.Fatalf("retransmit must refresh the cookie: want %v, got %v", retry.Cookie, waiters[0].Cookie)
+	// The queued waiter is handed to the grant path by pointer and read there
+	// without the queue lock, and its callback target is pinned by the
+	// caller_name binding; a retransmit must not rewrite either.
+	if string(waiters[0].Cookie) != string(first.Cookie) {
+		t.Fatalf("retransmit rewrote the queued waiter's cookie: got %v", waiters[0].Cookie)
 	}
-	if waiters[0].CallbackHost != "10.0.0.7" {
-		t.Fatalf("retransmit must refresh the callback host, got %q", waiters[0].CallbackHost)
+	if waiters[0].CallbackHost != "" {
+		t.Fatalf("retransmit redirected the queued waiter's callback host to %q", waiters[0].CallbackHost)
 	}
 
 	// One CANCEL must leave nothing behind.

@@ -60,19 +60,25 @@ func (bq *BlockingQueue) Enqueue(fileHandle string, waiter *Waiter) error {
 
 	queue := bq.queues[fileHandle]
 
-	// A retransmitted blocking LOCK reuses the waiter it already queued. NLM
+	// A retransmitted blocking LOCK keeps the waiter it already queued. NLM
 	// runs over UDP (and over a TCP connection a client may re-establish), so
 	// the same request arrives again whenever the reply is lost, and appending
 	// would let one client's retry loop fill the per-file queue and be granted
-	// the same range several times. Queue position and QueuedAt are kept so a
-	// retry does not lose the FIFO place the first attempt earned; only the
-	// reply-routing fields, which a reconnecting client can legitimately
-	// change, are refreshed.
-	if existing := findWaiter(queue, waiter.Lock.Owner.OwnerID, waiter.Lock.Offset, waiter.Lock.Length); existing != nil {
-		existing.Cookie = waiter.Cookie
-		existing.CallbackHost = waiter.CallbackHost
-		existing.CallbackProg = waiter.CallbackProg
-		existing.CallbackVers = waiter.CallbackVers
+	// the same range several times. The queued waiter is returned to the caller
+	// unchanged, keeping the FIFO place the first attempt earned.
+	//
+	// decision: the retransmit does not refresh the queued waiter's cookie or
+	// callback target, though it carries its own. Two reasons, and either
+	// alone is sufficient. A queued waiter is handed to the grant path by
+	// pointer and read there without bq.mu, so writing to it here would race a
+	// GRANTED callback already being built from it. And the callback target is
+	// what the caller_name binding exists to pin: letting a retransmit move it
+	// would hand anyone who can replay a LOCK under another client's
+	// caller_name a way to redirect that client's GRANTED. The cost is that a
+	// client which genuinely moves mid-wait is granted at its original address;
+	// revisit if a client is found that survives such a move, since it would
+	// then need the whole waiter made safe to mutate, not just this write.
+	if findWaiter(queue, waiter.Lock.Owner.OwnerID, waiter.Lock.Offset, waiter.Lock.Length) != nil {
 		return nil
 	}
 
