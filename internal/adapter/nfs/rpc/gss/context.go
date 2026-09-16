@@ -127,6 +127,18 @@ type GSSContext struct {
 	// CreatedAt is the time the context was established.
 	CreatedAt time.Time
 
+	// ExpiresAt is the end time of the Kerberos ticket the context was built
+	// from. Past it the context is refused and destroyed, regardless of how
+	// recently it was used: idle eviction alone would let a client that keeps
+	// sending traffic hold an authenticated context indefinitely on a ticket
+	// the KDC has long since let lapse.
+	//
+	// decision: the zero value means unbounded, and only a Verifier that
+	// reports no end time can produce it — the production Krb5Verifier refuses
+	// such a ticket outright, so in a real server this is never zero. Give
+	// ContextStore its own bound if a second Verifier implementation ever ships.
+	ExpiresAt time.Time
+
 	// LastUsed is the time of the last DATA request on this context.
 	// Updated on each successful Lookup for LRU-based eviction.
 	LastUsed time.Time
@@ -141,6 +153,12 @@ func (c *GSSContext) Touch() {
 	c.mu.Lock()
 	c.LastUsed = time.Now()
 	c.mu.Unlock()
+}
+
+// Expired reports whether the context has outlived the Kerberos ticket it was
+// built from. A context with no recorded end time never expires this way.
+func (c *GSSContext) Expired(now time.Time) bool {
+	return !c.ExpiresAt.IsZero() && now.After(c.ExpiresAt)
 }
 
 // GetLastUsed returns the LastUsed timestamp.
@@ -307,11 +325,21 @@ func (cs *ContextStore) cleanupLoop() {
 	}
 }
 
-// cleanup removes contexts whose LastUsed exceeds the TTL.
+// cleanup removes contexts whose LastUsed exceeds the TTL, and those that have
+// outlived their Kerberos ticket however recently they were used.
 func (cs *ContextStore) cleanup() {
 	now := time.Now()
 	cs.contexts.Range(func(key, value interface{}) bool {
 		ctx := value.(*GSSContext)
+		if ctx.Expired(now) {
+			logger.Debug("GSS context ticket expired",
+				"principal", ctx.Principal,
+				"realm", ctx.Realm,
+				"expired_at", ctx.ExpiresAt.String(),
+			)
+			cs.Delete([]byte(key.(string)))
+			return true
+		}
 		lastUsed := ctx.GetLastUsed()
 		if now.Sub(lastUsed) > cs.contextTTL {
 			logger.Debug("GSS context expired",

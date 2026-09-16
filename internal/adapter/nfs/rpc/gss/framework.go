@@ -43,6 +43,11 @@ type VerifiedContext struct {
 	// HasAcceptorSubkey indicates whether the AP-REP contains a subkey.
 	// When true, MIC tokens must have FLAG_ACCEPTOR_SUBKEY set per RFC 4121.
 	HasAcceptorSubkey bool
+
+	// ExpiresAt is the end time of the Kerberos ticket the client presented.
+	// The security context it establishes must not outlive it, however busy
+	// the client keeps it.
+	ExpiresAt time.Time
 }
 
 // Verifier abstracts the GSS token verification step, allowing the
@@ -101,6 +106,16 @@ func (v *Krb5Verifier) VerifyToken(gssToken []byte) (*VerifiedContext, error) {
 		return nil, fmt.Errorf("kerberos authenticate: %w", err)
 	}
 
+	// The ticket's end time bounds every context this AP-REQ establishes. A
+	// ticket that carries none cannot be bounded, so it is refused rather than
+	// granted an unbounded context: gokrb5's AP-REQ verification already
+	// rejects a ticket outside its validity interval, so a zero end time here
+	// means the ticket is malformed, not merely long-lived.
+	expiresAt := authResult.APReq.Ticket.DecryptedEncPart.EndTime
+	if expiresAt.IsZero() {
+		return nil, fmt.Errorf("ticket carries no end time")
+	}
+
 	// Check if mutual authentication is required (AP-Options bit 2)
 	mutualRequired := len(authResult.APReq.APOptions.Bytes) > 0 &&
 		(authResult.APReq.APOptions.Bytes[0]&apOptionsMutualRequired) != 0
@@ -144,6 +159,7 @@ func (v *Krb5Verifier) VerifyToken(gssToken []byte) (*VerifiedContext, error) {
 		SessionKey:        authResult.SessionKey,
 		APRepToken:        apRepToken,
 		HasAcceptorSubkey: hasAcceptorSubkey,
+		ExpiresAt:         expiresAt,
 	}, nil
 }
 
@@ -501,6 +517,7 @@ func (p *GSSProcessor) handleInit(cred *RPCGSSCredV1, requestBody []byte) *GSSPr
 		HasAcceptorSubkey: verified.HasAcceptorSubkey,
 		CreatedAt:         now,
 		LastUsed:          now,
+		ExpiresAt:         verified.ExpiresAt,
 	}
 
 	// CRITICAL: Store context BEFORE building reply.
@@ -590,6 +607,25 @@ func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verif
 		return &GSSProcessResult{
 			Err:      fmt.Errorf("RPCSEC_GSS_CREDPROBLEM: context not found"),
 			AuthStat: AuthStatCredProblem,
+		}
+	}
+
+	// 1b. Refuse a context that has outlived the ticket it was built from, and
+	// drop it so the handle cannot be retried. Idle eviction does not cover
+	// this: a client sending steady traffic refreshes LastUsed forever, which
+	// would keep an authenticated context alive on a ticket the KDC stopped
+	// vouching for. CTXPROBLEM tells the client to establish a new context,
+	// which sends it back to the KDC for a fresh ticket.
+	if gssCtx.Expired(time.Now()) {
+		logger.Debug("GSS DATA: context outlived its ticket",
+			"principal", gssCtx.Principal,
+			"realm", gssCtx.Realm,
+			"expired_at", gssCtx.ExpiresAt.String(),
+		)
+		p.contexts.Delete(cred.Handle)
+		return &GSSProcessResult{
+			Err:      fmt.Errorf("RPCSEC_GSS_CTXPROBLEM: context expired"),
+			AuthStat: AuthStatCtxProblem,
 		}
 	}
 
