@@ -1682,3 +1682,54 @@ func TestGetBackBoundConnWriter_SkipsABindingWithNoWriter(t *testing.T) {
 		t.Error("selection returned a connection without a writer or reply table")
 	}
 }
+
+// TestSendCallbackWithRetry_ARejectedReplyIsNotADeadPath covers the difference
+// between "we could not reach the client" and "the client answered and said no".
+// A reply that fails validation — an RPC or NFS error status, or one that does
+// not decode — arrived over a working callback path. Treating it as a transport
+// failure retries a request the client already refused, and then classifies the
+// path as dead: CBPathUp cleared and a backchannel fault raised against a client
+// that demonstrably received the callback and replied to it.
+func TestSendCallbackWithRetry_ARejectedReplyIsNotADeadPath(t *testing.T) {
+	sender, sm, sessionID := createTestBackchannelSender(t)
+	defer sm.Shutdown()
+	sender.callbackTimeout = 2 * time.Second
+
+	var writes atomic.Int32
+	connID := uint64(7701)
+	var pending *PendingCBReplies
+	pending = sm.RegisterConnWriter(connID, func(data []byte) error {
+		writes.Add(1)
+		// Answer with bytes that are a reply, but not one this server accepts.
+		xid := binary.BigEndian.Uint32(data[4:8])
+		go pending.Deliver(xid, []byte{0x00, 0x00, 0x00, 0x00})
+		return nil
+	})
+	if _, err := sm.BindConnToSession(connID, sessionID, types.CDFC4_FORE_OR_BOTH); err != nil {
+		t.Fatalf("BindConnToSession: %v", err)
+	}
+
+	resultCh := make(chan error, 1)
+	sender.sendCallbackWithRetry(context.Background(), CallbackRequest{
+		OpCode:   types.OP_CB_RECALL,
+		Payload:  EncodeCBRecallOp(&types.Stateid4{Seqid: 1}, false, []byte{0x01}),
+		ResultCh: resultCh,
+	})
+
+	var err error
+	select {
+	case err = <-resultCh:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no result reported")
+	}
+	if err == nil {
+		t.Fatal("a rejected reply was reported as a successful callback")
+	}
+	if !errors.Is(err, errCallbackRejected) {
+		t.Errorf("a reply the client sent was classified as a transport failure: %v", err)
+	}
+	if n := writes.Load(); n != 1 {
+		t.Errorf("the callback was written %d times; a request the client already refused "+
+			"must not be retried", n)
+	}
+}

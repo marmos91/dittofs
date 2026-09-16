@@ -756,7 +756,15 @@ func (sm *StateManager) attemptRecallV41(deleg *DelegationState, sender *Backcha
 			// and withhold delegations from a client still listening on another
 			// session.
 			outcome := recallNoPath
-			if errors.Is(err, errCallbackNotAttempted) {
+			switch {
+			case errors.Is(err, errCallbackNotAttempted):
+				outcome = recallSenderLocal
+			case errors.Is(err, errCallbackRejected):
+				// The client received this callback and refused it. The
+				// delegation is as unrecalled as if the send had failed, so the
+				// revocation timer still starts — but the callback path carried
+				// a reply, and marking it dead would withhold every future
+				// delegation from a client that is answering.
 				outcome = recallSenderLocal
 			}
 			logger.Warn("CB_RECALL (v4.1) failed",

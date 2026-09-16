@@ -385,6 +385,16 @@ func (bs *BackchannelSender) sendCallbackWithRetry(ctx context.Context, req Call
 			return
 		}
 		lastErr = err
+		if errors.Is(err, errCallbackRejected) {
+			// The client answered. Retrying replays a request it already
+			// rejected, and the transport is demonstrably fine — so this
+			// outranks an earlier transport error rather than being masked by
+			// one: a path that carried a reply is not a dead path.
+			if req.ResultCh != nil {
+				req.ResultCh <- err
+			}
+			return
+		}
 		if errors.Is(err, errCallbackNotAttempted) {
 			// Nothing reached a socket, so there is nothing a backoff can
 			// improve: this session has no back-bound connection and will not
@@ -527,7 +537,7 @@ func (bs *BackchannelSender) sendCallback(ctx context.Context, req CallbackReque
 					errCallbackNotAttempted, connID)
 			}
 			if err := ValidateCBReply(replyBytes); err != nil {
-				return fmt.Errorf("backchannel callback reply validation failed: %w", err)
+				return fmt.Errorf("%w: %w", errCallbackRejected, err)
 			}
 			bs.sm.setBackchannelFault(bs.clientID, false)
 			return nil
@@ -553,7 +563,7 @@ func (bs *BackchannelSender) sendCallback(ctx context.Context, req CallbackReque
 		}
 		// 10. Validate CB_COMPOUND reply
 		if err := ValidateCBReply(replyBytes); err != nil {
-			return fmt.Errorf("backchannel callback reply validation failed: %w", err)
+			return fmt.Errorf("%w: %w", errCallbackRejected, err)
 		}
 		// Success -- clear backchannel fault
 		bs.sm.setBackchannelFault(bs.clientID, false)
@@ -656,6 +666,15 @@ func encodeCBSequenceOp(sessionID types.SessionId4, seqID, slotID, highestSlotID
 // probeCallbackPath deliberately does not use it: there, a missing back-bound
 // connection is the verdict, not an excuse for withholding one.
 var errCallbackNotAttempted = errors.New("callback not attempted on this session")
+
+// errCallbackRejected marks a callback the client ANSWERED and the answer was
+// not one this server accepts — an RPC or NFS error status, or a reply that
+// does not decode. The delegation is as unrecalled as if the send had failed,
+// so the caller still revokes; what must not follow is clearing CBPathUp or
+// raising a backchannel fault, because the peer demonstrably received the
+// callback and replied to it. Retrying does not help either: the same request
+// gets the same rejection.
+var errCallbackRejected = errors.New("callback rejected by the client")
 
 // selectBackBoundWaiter picks a back-bound connection for this session and
 // registers xid on its reply table, returning both so the caller writes and
