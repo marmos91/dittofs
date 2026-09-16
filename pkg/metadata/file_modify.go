@@ -85,7 +85,7 @@ func (s *Service) Lookup(ctx *AuthContext, dirHandle FileHandle, name string) (*
 	return s.GetFile(ctx.Context, childHandle)
 }
 
-// equalFoldName reports whether two directory entry names match under SMB's
+// EqualFoldName reports whether two directory entry names match under SMB's
 // case-insensitive rules. It is strings.EqualFold for well-formed UTF-8, but
 // falls back to byte-exact comparison when either name is not valid UTF-8.
 //
@@ -97,7 +97,7 @@ func (s *Service) Lookup(ctx *AuthContext, dirHandle FileHandle, name string) (*
 // names as equal and make the second CREATE collide with the first. Requiring
 // both sides to be valid UTF-8 before folding keeps malformed names distinct
 // while leaving ordinary case-insensitive matching unchanged.
-func equalFoldName(a, b string) bool {
+func EqualFoldName(a, b string) bool {
 	if !utf8.ValidString(a) || !utf8.ValidString(b) {
 		return a == b
 	}
@@ -148,7 +148,7 @@ func (s *Service) LookupCaseInsensitive(ctx *AuthContext, dirHandle FileHandle, 
 			return nil, "", listErr
 		}
 		for _, entry := range entries {
-			if equalFoldName(entry.Name, name) {
+			if EqualFoldName(entry.Name, name) {
 				// Fast path: stores populate entry.Handle (DirEntry.Handle is
 				// MUST-populate). The initial exact-case s.Lookup above already
 				// validated the directory and execute/traverse permission, so a
@@ -367,6 +367,23 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 	onlySettingSize := noOwnershipAttrs && attrs.Size != nil &&
 		!attrs.AtimeNow && !attrs.MtimeNow
 
+	// POSIX: setxattr()/removexattr() on an existing xattr require write
+	// permission on the file, not ownership — same rule as truncate() and
+	// utimensat(UTIME_NOW). An EA-mutations-only SetAttrs is that case, so a
+	// caller with write access (the SMB EA case authorizes the open handle's
+	// FILE_WRITE_EA bit at the handler layer) may apply it without owning the
+	// file.
+	// Explicit timestamp pointers are excluded: an EA write must not grant
+	// the right to back- or forward-date the file, only to let the server
+	// stamp the mutation time (UTIME_NOW semantics above).
+	onlyEAMutations := noOwnershipAttrs && attrs.Size == nil &&
+		!attrs.AtimeNow && !attrs.MtimeNow &&
+		attrs.Atime == nil && attrs.Mtime == nil && attrs.Ctime == nil &&
+		attrs.CreationTime == nil &&
+		attrs.ModeOrMask == nil && attrs.ModeAndNotMask == nil &&
+		attrs.Hidden == nil && attrs.ACL == nil &&
+		len(attrs.EAMutations) > 0
+
 	// POSIX: When a non-owner writes to a file with SUID/SGID bits set, those
 	// bits must be cleared. The Linux NFS client implements this via
 	// file_remove_privs() which sends SETATTR(mode = current & ~06000) before
@@ -382,7 +399,7 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 
 	// Both timestamp-now and truncate-only operations allow write permission
 	// as an alternative to ownership (POSIX semantics).
-	writePermSufficient := onlySettingTimesToNow || onlySettingSize || onlyClearingSuidSgid
+	writePermSufficient := onlySettingTimesToNow || onlySettingSize || onlyClearingSuidSgid || onlyEAMutations
 
 	// SMB authorizes an explicit timestamp write by FILE_WRITE_ATTRIBUTES on the
 	// open handle rather than by ownership, so such a handle satisfies the
@@ -400,11 +417,37 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 	timestampAuthorizedByHandle := ctx.TimestampAuthorizedByHandle &&
 		onlySettingExplicitTimes && !acl.HasExplicitDeny(file.ACL)
 
-	if writePermSufficient && !isOwner && !isRoot {
+	// decision: an EA-only write is authorized by FILE_WRITE_EA on the open
+	// handle instead of by the file's POSIX mode. The right the protocol checked
+	// at the SET_INFO gate stands in for ownership here, on the same terms as
+	// the timestamp case above, and the bypass is held to two limits: the
+	// SetAttrs must change nothing but extended attributes, so it cannot carry a
+	// mode or owner change through on the same call; and it never runs past an
+	// explicit DENY ACE. Withdraw it if a handle can ever be opened with
+	// FILE_WRITE_EA without the share-level check having run.
+	//
+	// The DENY limit is deliberately blunter than it reads: HasExplicitDeny
+	// matches any deny ACE on the file, whatever principal or right it names, so
+	// a DENY of an unrelated right to an unrelated principal also withdraws the
+	// bypass and sends the write back to the POSIX check. That refuses some EA
+	// writes a precise evaluation would allow, which is the safe direction for a
+	// gate whose whole purpose is to let a write past the POSIX mode. Narrow it
+	// to a deny that actually covers this principal and FILE_WRITE_EA only with
+	// a test that pins which ACEs newly stop withdrawing it.
+	eaAuthorizedByHandle := ctx.EAAuthorizedByHandle &&
+		onlyEAMutations && !acl.HasExplicitDeny(file.ACL)
+
+	switch {
+	case isOwner || isRoot:
+		// Ownership answers for everything below.
+	case eaAuthorizedByHandle || timestampAuthorizedByHandle:
+		// A right the protocol names on the open stands in for ownership, and
+		// for the POSIX write check the alternatives below would run.
+	case writePermSufficient:
 		if err := s.checkWritePermission(ctx, handle); err != nil {
 			return nil, err
 		}
-	} else if !isOwner && !isRoot && !timestampAuthorizedByHandle {
+	default:
 		return nil, &StoreError{
 			Code:    ErrPermissionDenied,
 			Message: "operation not permitted",
@@ -645,7 +688,11 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 	// CREATE time); owner/root already passed the ownership gate above, a
 	// non-owner must hold write permission.
 	if len(attrs.EAMutations) > 0 {
-		if !isOwner && !isRoot {
+		// Same three answers as the gate above, and for the same reasons: a
+		// handle carrying FILE_WRITE_EA authorizes the mutation on its own, and
+		// everyone else needs POSIX write. Kept in step with that gate — a check
+		// here that the gate does not make refuses what the gate just allowed.
+		if !isOwner && !isRoot && !eaAuthorizedByHandle {
 			if err := s.checkWritePermission(ctx, handle); err != nil {
 				return nil, err
 			}

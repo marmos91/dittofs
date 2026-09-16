@@ -26,8 +26,9 @@ import (
 // read-modify-write region; release before any I/O to the metadata store to
 // keep the critical section bounded. Atomic-typed fields
 // (NotifyOverflowed/NotifyMaxBufferSize/NotifyCompletionFilter) and immutable
-// fields (FileID/TreeID/SessionID/CreateOptions) are safe to access without
-// the mutex.
+// fields (FileID/TreeID/SessionID) are safe to access without the mutex.
+// CreateOptions is not: the SET_INFO FileModeInformation path overlays the
+// mode bits under mu, so it must be read under mu as well.
 //
 // MetadataHandle, PayloadID and the name triple are NOT immutable: the first
 // WRITE on a file created empty caches the payload the metadata store

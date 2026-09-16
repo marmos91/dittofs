@@ -200,3 +200,58 @@ func TestHasReadAccess_AcceptedMasks(t *testing.T) {
 		})
 	}
 }
+
+// TestReadWrite_RdmaChannel_PipeAlsoRefused covers the half of the fail-closed
+// RDMA rule that the file path's own test cannot reach.
+//
+// READ and WRITE dispatch to the pipe handlers before running their validation
+// block, so a gate placed after that dispatch is applied to regular files only
+// and a named pipe is served inline with the RDMA semantics the client asked
+// for silently dropped. The transport is the same one either way, so the pipe
+// can honor a channel no better than a file can.
+//
+// Without the gate ahead of the dispatch these return STATUS_INVALID_HANDLE
+// from the pipe handler (no pipe is registered for the FileID), which is a
+// different refusal for a different reason — so the assertion discriminates.
+func TestReadWrite_RdmaChannel_PipeAlsoRefused(t *testing.T) {
+	newPipeHandler := func(t *testing.T) (*Handler, [16]byte) {
+		t.Helper()
+		h := NewHandler()
+		h.PipeManager = rpc.NewPipeManager()
+		fileID := [16]byte{0xF1, 0xF2}
+		h.StoreOpenFile(&OpenFile{FileID: fileID, IsPipe: true, PipeName: "srvsvc"})
+		return h, fileID
+	}
+
+	t.Run("READ", func(t *testing.T) {
+		h, fileID := newPipeHandler(t)
+		resp, err := h.Read(NewSMBHandlerContext(context.TODO(), "test-client", 1, 1, 1), &ReadRequest{
+			FileID:  fileID,
+			Length:  4,
+			Channel: 1, // SMB2_CHANNEL_RDMA_V1
+		})
+		if err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+		if got := resp.GetStatus(); got != types.StatusInvalidParameter {
+			t.Fatalf("pipe READ with RDMA channel: status = 0x%08x, want STATUS_INVALID_PARAMETER (0x%08x)",
+				uint32(got), uint32(types.StatusInvalidParameter))
+		}
+	})
+
+	t.Run("WRITE", func(t *testing.T) {
+		h, fileID := newPipeHandler(t)
+		resp, err := h.Write(NewSMBHandlerContext(context.TODO(), "test-client", 1, 1, 1), &WriteRequest{
+			FileID:  fileID,
+			Data:    []byte("x"),
+			Channel: 1,
+		})
+		if err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+		if got := resp.GetStatus(); got != types.StatusInvalidParameter {
+			t.Fatalf("pipe WRITE with RDMA channel: status = 0x%08x, want STATUS_INVALID_PARAMETER (0x%08x)",
+				uint32(got), uint32(types.StatusInvalidParameter))
+		}
+	})
+}

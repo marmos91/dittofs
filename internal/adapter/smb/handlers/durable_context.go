@@ -957,6 +957,14 @@ const durableCleanupTimeout = 30 * time.Second
 //   - The requester, as authCtx, must be able to read the matched open's file.
 //
 // Returns the parsed AppInstanceId (zero value if not present or zero).
+//
+// shareName and filePath identify the file the incoming CREATE claims. The
+// force-close filter matches on share + path in addition to the AppInstanceId
+// (MS-SMB2 §3.3.5.9.13 match conditions), so an AppInstanceId reused for a
+// different file — on the same or another share — never displaces an unrelated
+// open. Opens with an empty recorded path are never displaced at all: the
+// filter requires a recorded path match, so for those opens the AppInstanceId
+// match alone is never sufficient and the failover does not touch them.
 func ProcessAppInstanceId(
 	ctx context.Context,
 	durableStore lock.DurableHandleStore,
@@ -1343,7 +1351,52 @@ func ProcessAppInstanceId(
 			"count", persistedClosed)
 	}
 
+	// Wake the creates parked on each displaced open's lease. The lease record
+	// itself is already gone: closeFilesWithFilter runs releaseHandleLeaseRecord
+	// for every open it removed, which releases the record and unregisters the
+	// oplock file id. Repeating that here released it a second time and, worse,
+	// skipped that helper's "any other open on the same file shares this key"
+	// scan — so a displaced open sharing a lease key with one the filter
+	// declined tore the lease out from under the survivor that still held it.
+	// Signalling is the one step that helper does not do, and it is idempotent:
+	// a create woken while a sibling still holds the lease simply parks again.
+	for _, c := range candidates {
+		if !closed[c.fileID] || handler.LeaseManager == nil || c.leaseKey == ([16]byte{}) {
+			continue
+		}
+		handler.LeaseManager.SignalParkedCreates(lock.FileHandle(c.metaHandle), c.shareName)
+	}
+
+	if persistedClosed > 0 {
+		logger.Debug("ProcessAppInstanceId: force-closed persisted handles",
+			"appInstanceId", fmt.Sprintf("%x", appId),
+			"count", persistedClosed)
+	}
+
 	return appId
+}
+
+// leaseKeyHasPersistedSibling reports whether another DISCONNECTED durable
+// handle still holds this open's lease key on this file. releaseHandleLeaseRecord
+// answers the same question for live opens by scanning the open-file table; a
+// persisted sibling is not in that table, so it has to be asked of the store.
+//
+// A store error answers yes: keeping a record that could be released costs the
+// next CREATE an oplock timeout, and releasing one a survivor still holds costs
+// that survivor its lease silently. Erring toward the visible failure.
+func (h *Handler) leaseKeyHasPersistedSibling(ctx context.Context, durableStore lock.DurableHandleStore, openFile *OpenFile) bool {
+	siblings, err := durableStore.GetDurableHandlesByFileHandle(ctx, openFile.MetadataHandle)
+	if err != nil {
+		logger.Warn("cannot tell whether a disconnected handle still holds this lease key, keeping the record",
+			"path", openFile.Name().Path, "error", err)
+		return true
+	}
+	for _, s := range siblings {
+		if s.LeaseKey == openFile.LeaseKey && metadata.EqualFoldName(s.ShareName, openFile.ShareName) {
+			return true
+		}
+	}
+	return false
 }
 
 // buildPersistedDurableHandle creates a PersistedDurableHandle from an OpenFile

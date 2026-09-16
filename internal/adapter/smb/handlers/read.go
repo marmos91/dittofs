@@ -143,7 +143,11 @@ func recordReadProgress(open *OpenFile, offset uint64, bytesReturned uint64) {
 	if open == nil {
 		return
 	}
+	// Guarded by open.mu like every other exported mutable field — SET_INFO
+	// FilePositionInformation and WRITE may run concurrently on the handle.
+	open.mu.Lock()
 	open.PositionInfo = offset + bytesReturned
+	open.mu.Unlock()
 }
 
 // Read handles SMB2 READ command [MS-SMB2] 2.2.19, 2.2.20.
@@ -173,6 +177,17 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// ========================================================================
 	// Step 2: Handle named pipe reads (IPC$ RPC)
 	// ========================================================================
+
+	// Per MS-SMB2 3.3.5.12: Channel selects an RDMA read. This transport has no
+	// RDMA support, so a nonzero channel cannot be honored — fail with
+	// STATUS_INVALID_PARAMETER instead of decoding-then-ignoring. Ahead of the
+	// pipe dispatch because a named pipe is served by the same transport and
+	// can honor RDMA no better than a file can.
+	if req.Channel != 0 {
+		logger.Debug("READ: RDMA channel requested on non-RDMA transport",
+			"fileID", lazyFileID(req.FileID), "channel", req.Channel)
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
+	}
 
 	if openFile.IsPipe {
 		return h.handlePipeRead(ctx, req, openFile)
@@ -446,9 +461,14 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	if !openFile.IsAtimeFrozen() {
 		now := time.Now()
 		if noteSmbAccess(openFile, now) {
+			// Both sides of the rebase wanted: the frozen ChangeTime is held
+			// across the bump (#2626), and a dropped bump is a lost timestamp
+			// update rather than an expected error, so it is visible at Debug.
 			attrs := &metadata.SetAttrs{Atime: &now}
 			holdFrozenCtime(openFile, attrs)
-			_, _ = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, attrs)
+			if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, attrs); err != nil {
+				logger.Debug("READ: atime update failed", "path", path, "error", err)
+			}
 		}
 	}
 

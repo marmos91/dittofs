@@ -357,6 +357,18 @@ func (h *Handler) completeKerberosBind(ctx *SMBHandlerContext, sess *session.Ses
 		h.recordAuth("krb5", result != nil && !result.Status.IsError())
 	}()
 
+	// handleSessionBind installed this session's preauth hash and only this
+	// function frees it, so every way out of here has to — identity mismatch,
+	// mechListMIC failure and key-derivation failure as much as the channel cap.
+	// Otherwise each refused bind leaves one entry behind on a connection that
+	// lives until transport teardown. The success path frees it below.
+	defer func() {
+		if ctx.ConnCryptoState == nil || retErr == nil && (result == nil || !result.Status.IsError()) {
+			return
+		}
+		ctx.ConnCryptoState.DeleteSessionPreauthHash(ctx.SessionID)
+	}()
+
 	if h.KerberosService == nil {
 		logger.Debug("Kerberos bind attempted but no KerberosService configured")
 		return NewErrorResult(types.StatusLogonFailure), nil
@@ -459,6 +471,13 @@ func (h *Handler) completeKerberosBind(ctx *SMBHandlerContext, sess *session.Ses
 		Transport:   ctx.ConnTransport,
 	}
 	if !sess.AddChannel(channel) {
+		// A session that logged off while this handshake ran answers as a
+		// deleted session; a full channel table is the other refusal.
+		if sess.LoggedOff.Load() {
+			logger.Info("Kerberos bind rejected: session logged off during the handshake",
+				"sessionID", ctx.SessionID, "connID", ctx.ConnID)
+			return NewErrorResult(types.StatusUserSessionDeleted), nil
+		}
 		logger.Info("Kerberos bind rejected: channel cap reached",
 			"sessionID", ctx.SessionID, "cap", session.MaxChannelsPerSession)
 		return NewErrorResult(types.StatusInsufficientResources), nil

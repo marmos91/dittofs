@@ -482,3 +482,110 @@ func TestHandler_sessionDomain(t *testing.T) {
 		}
 	})
 }
+
+// TestSessionSetup_RefusesReauthOnLoggedOffSession pins what a zombie must look
+// like to a client. A LoggedOff session stays in the manager only so an
+// in-flight response can still be signed; its signing key has been retired and
+// it is not re-authable. Reached by SESSION_SETUP it was treated as an ordinary
+// re-auth: the handshake was accepted, a PendingAuth was stored, and the client
+// got a success it could not verify. It has to answer exactly as a session that
+// has already been reaped does.
+func TestSessionSetup_RefusesReauthOnLoggedOffSession(t *testing.T) {
+	h := NewHandler()
+	h.NtlmEnabled = true
+	h.Registry = newTestRuntime(t, nil)
+
+	const sessionID = uint64(0xfeedface)
+	sess := h.CreateSessionWithUser(sessionID, "127.0.0.1:1",
+		&models.User{Username: "alice", Enabled: true}, "")
+	// The state a supersession or a failed re-auth leaves behind.
+	sess.LoggedOff.Store(true)
+
+	ctx := newTestContext(sessionID)
+	res, err := h.SessionSetup(ctx, buildSessionSetupRequestBody(validNTLMNegotiateMessage()))
+	if err != nil {
+		t.Fatalf("SESSION_SETUP returned error: %v", err)
+	}
+	if res.Status != types.StatusUserSessionDeleted {
+		t.Errorf("status = 0x%08x, want STATUS_USER_SESSION_DELETED (0x%08x): a logged-off "+
+			"session was let into mechanism processing",
+			uint32(res.Status), uint32(types.StatusUserSessionDeleted))
+	}
+	if _, stored := h.GetPendingAuth(sessionID, ctx.ConnID); stored {
+		t.Error("a PendingAuth was stored for a logged-off session: the handshake started anyway")
+	}
+}
+
+// TestSessionSetup_RefusesAHandshakeInFlightOnALoggedOffSession covers the
+// window the zombie guard further down does not reach. A TYPE_3 arriving with a
+// PendingAuth already stored is routed straight to completeNTLMAuth, which never
+// revisits LoggedOff — so a LOGOFF landing between the two legs of the handshake
+// let the re-authentication finish and write a fresh identity onto a session
+// whose signing key had already been retired.
+func TestSessionSetup_RefusesAHandshakeInFlightOnALoggedOffSession(t *testing.T) {
+	h := NewHandler()
+	sess := h.CreateSession("127.0.0.1:12345", false, "alice", "DOMAIN")
+	ctx := newTestContext(sess.SessionID)
+
+	// TYPE_1 arms the handshake: pending auth is stored against this session.
+	result, err := h.SessionSetup(ctx, buildSessionSetupRequestBody(validNTLMNegotiateMessage()))
+	if err != nil {
+		t.Fatalf("TYPE_1 unexpected error: %v", err)
+	}
+	if result.Status != types.StatusMoreProcessingRequired {
+		t.Fatalf("TYPE_1 status = 0x%x, want StatusMoreProcessingRequired", uint32(result.Status))
+	}
+	if _, ok := h.GetPendingAuth(sess.SessionID, ctx.ConnID); !ok {
+		t.Fatal("precondition: TYPE_1 stored no pending auth, so this test cannot reach the window")
+	}
+
+	// The LOGOFF lands between the two legs.
+	sess.MarkLoggedOff()
+
+	result, err = h.SessionSetup(ctx, buildSessionSetupRequestBody(validNTLMNegotiateMessage()))
+	if err != nil {
+		t.Fatalf("TYPE_3 unexpected error: %v", err)
+	}
+	if result.Status != types.StatusUserSessionDeleted {
+		t.Errorf("status = 0x%x, want StatusUserSessionDeleted (0x%x): the handshake continued on a zombie",
+			uint32(result.Status), uint32(types.StatusUserSessionDeleted))
+	}
+	if _, ok := h.GetPendingAuth(sess.SessionID, ctx.ConnID); ok {
+		t.Error("the refused handshake left its pending auth armed on the zombie")
+	}
+}
+
+// TestSessionSetup_FailedReauth_ClearsBindsOnOtherConnections covers the binds
+// the failed re-auth did not itself arrive on. Each stored its handshake while
+// the session was still live; the teardown then marks the session logged off,
+// and every one of those binds now refuses at the logged-off guard — which
+// returns ahead of the completion path that is the only thing that frees such a
+// record. Nothing else reaches them, so the teardown has to.
+func TestSessionSetup_FailedReauth_ClearsBindsOnOtherConnections(t *testing.T) {
+	f := newReauthFixture(t, nil)
+
+	const sessionID = uint64(0xdeadbeef)
+	otherConns := []uint64{f.ctx.ConnID + 1, f.ctx.ConnID + 2}
+	for _, connID := range otherConns {
+		f.h.StorePendingAuth(&PendingAuth{
+			SessionID:        sessionID,
+			ConnID:           connID,
+			ClientAddr:       "127.0.0.1:2",
+			IsBinding:        true,
+			BindingSessionID: sessionID,
+		})
+	}
+
+	type3Body := buildSessionSetupRequestBody(
+		buildNTLMAuthenticateForTest("__none__invalid__none__", "__none__invalid__none__", nil),
+	)
+	if _, err := f.h.SessionSetup(f.ctx, type3Body); err != nil {
+		t.Fatalf("SESSION_SETUP TYPE_3 returned error: %v", err)
+	}
+
+	for _, connID := range otherConns {
+		if _, stored := f.h.GetPendingAuth(sessionID, connID); stored {
+			t.Errorf("connection %d kept its bind handshake after the re-auth failure tore the session down", connID)
+		}
+	}
+}

@@ -177,8 +177,50 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 
 	// Check if this is a continuation of pending authentication
 	if ctx.SessionID != 0 {
+		// A zombie is refused before the continuation below consumes its
+		// pending auth, not only on the branch further down. A LOGOFF can land
+		// between the TYPE_1 that stored the PendingAuth and the TYPE_3 that
+		// spends it, and completeNTLMAuth does not revisit this — the handshake
+		// would finish and tryReauthUpdate would write a fresh identity onto a
+		// session whose signing key is already retired. A fresh handshake is
+		// unaffected: its generated ID has no session yet, so this lookup
+		// misses and it falls through.
+		if sess, ok := h.GetSession(ctx.SessionID); ok && sess.LoggedOff.Load() {
+			logger.Debug("SESSION_SETUP: refusing a handshake in flight on a logged-off session",
+				"sessionID", ctx.SessionID, "connID", ctx.ConnID)
+			h.DeletePendingAuth(ctx.SessionID, ctx.ConnID)
+			// The handshake this abandons had already initialized a preauth
+			// hash on its first leg, which only the completion path frees.
+			if ctx.ConnCryptoState != nil {
+				ctx.ConnCryptoState.DeleteSessionPreauthHash(ctx.SessionID)
+			}
+			return NewErrorResult(types.StatusUserSessionDeleted), nil
+		}
 		if _, ok := h.GetPendingAuth(ctx.SessionID, ctx.ConnID); ok {
 			return h.completeNTLMAuth(ctx, req.SecurityBuffer)
+		}
+
+		// A nonzero SessionId matching no session at all is a client-supplied
+		// ID the server never allocated. Refuse before any mechanism runs:
+		// authenticating under an attacker-chosen key would collide with a
+		// later client legitimately minted this ID. This sits on the common
+		// path because the mechanisms below do not share one — the Kerberos
+		// route and the guest fallback never reach the NTLM handler that used
+		// to carry this rule alone.
+		//
+		// A LoggedOff session is refused here too, on the same terms. It is kept
+		// in the manager only so an in-flight response can still be signed, and
+		// its signing key has been retired; left to the mechanisms below it is
+		// treated as an ordinary re-auth, which succeeds and answers with a
+		// response the client cannot verify. To the client a zombie must look
+		// exactly like a session that has already been reaped.
+		sess, exists := h.GetSession(ctx.SessionID)
+		if !exists || sess.LoggedOff.Load() {
+			logger.Debug("SESSION_SETUP: unknown or logged-off nonzero SessionID",
+				"sessionID", ctx.SessionID, "connID", ctx.ConnID,
+				"exists", exists,
+				"loggedOff", exists && sess.LoggedOff.Load())
+			return NewErrorResult(types.StatusUserSessionDeleted), nil
 		}
 
 		// Per MS-SMB2 §3.3.5.5: for dialects below 3.0, session lookup uses
@@ -198,7 +240,9 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		// has been retired), which the client rejects as STATUS_ACCESS_DENIED
 		// (smb2.session.reauth1-6 / durable-open.alloc-size / read-only /
 		// anon-encryption1-3 / ntlmssp_bug14932).
-		if sess, ok := h.GetSession(ctx.SessionID); ok && !sess.LoggedOff.Load() {
+		// sess is the live session read above; a logged-off one never reaches
+		// here, having been refused with the unknown-session answer.
+		{
 			var connDialect types.Dialect
 			if ctx.ConnCryptoState != nil {
 				connDialect = ctx.ConnCryptoState.GetDialect()
@@ -295,7 +339,7 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		if prevSess, ok := h.GetSession(req.PreviousSessionID); ok {
 			logger.Info("SESSION_SETUP: tearing down previous session",
 				"previousSessionID", req.PreviousSessionID)
-			prevSess.LoggedOff.Store(true)
+			prevSess.MarkLoggedOff()
 			// Treat PreviousSessionID supersession as a transport disconnect for
 			// durable-handle purposes: per MS-SMB2 3.3.5.5.3 / 3.3.5.9.7, the
 			// new session inherits the right to reconnect the prior session's
@@ -561,9 +605,23 @@ func (h *Handler) handleSessionBind(ctx *SMBHandlerContext, req *SessionSetupReq
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 
+	// A logged-off session is refused here on the same terms as a missing one,
+	// the way the non-binding path refuses it. Binding reaches this handler
+	// before that check runs, so without this a zombie accepts the bind
+	// handshake and can have a channel attached to it — a session that is not
+	// re-authable acquiring a new connection to be not re-authable on.
 	sess, ok := h.GetSession(ctx.SessionID)
-	if !ok {
-		logger.Debug("SESSION_SETUP bind: no such session", "sessionID", ctx.SessionID)
+	if !ok || sess.LoggedOff.Load() {
+		logger.Debug("SESSION_SETUP bind: no such session or session logged off",
+			"sessionID", ctx.SessionID, "exists", ok)
+		// The bind ends here, so its first leg's state ends with it: both the
+		// pending handshake and the preauth hash. Only the completion path
+		// frees either, and this return runs before it, so a connection that
+		// stays up keeps one of each per refused attempt otherwise.
+		h.DeletePendingAuth(ctx.SessionID, ctx.ConnID)
+		if ctx.ConnCryptoState != nil {
+			ctx.ConnCryptoState.DeleteSessionPreauthHash(ctx.SessionID)
+		}
 		return NewErrorResult(types.StatusUserSessionDeleted), nil
 	}
 
@@ -726,6 +784,14 @@ func (h *Handler) handleNTLMNegotiateBinding(ctx *SMBHandlerContext, req *Sessio
 	if !auth.IsValid(ntlmToken) || auth.GetMessageType(ntlmToken) != auth.Negotiate {
 		logger.Debug("SESSION_SETUP bind: missing or invalid NTLM NEGOTIATE token",
 			"sessionID", ctx.SessionID)
+		// The caller seeded this session's preauth hash before dispatching here,
+		// and no PendingAuth exists yet — so the completion path that normally
+		// frees it is never reached and neither is the defer keyed on it. On a
+		// connection that stays up, one malformed bind per session ID leaves one
+		// entry each.
+		if ctx.ConnCryptoState != nil {
+			ctx.ConnCryptoState.DeleteSessionPreauthHash(ctx.SessionID)
+		}
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 
@@ -822,12 +888,15 @@ func (h *Handler) completeSessionBind(
 	authDomain string,
 	bindSessionKey []byte,
 	bindNegFlags auth.NegotiateFlag,
-) *HandlerResult {
+) (result *HandlerResult) {
+	// Re-checked here as well as at TYPE_1: a LOGOFF or a supersession can land
+	// between the two legs of the handshake, and the channel is attached on this
+	// leg. Vanished and logged-off are the same answer — the session cannot take
+	// a new channel either way.
 	sess, ok := h.GetSession(pending.BindingSessionID)
-	if !ok {
-		// Session disappeared between TYPE_1 validation and TYPE_3 arrival.
-		logger.Info("SESSION_SETUP bind: target session vanished",
-			"sessionID", pending.BindingSessionID)
+	if !ok || sess.LoggedOff.Load() {
+		logger.Info("SESSION_SETUP bind: target session vanished or logged off",
+			"sessionID", pending.BindingSessionID, "exists", ok)
 		return NewErrorResult(types.StatusUserSessionDeleted)
 	}
 
@@ -916,9 +985,23 @@ func (h *Handler) completeSessionBind(
 		Transport:   ctx.ConnTransport,
 	}
 	if !sess.AddChannel(channel) {
-		// MS-SMB2 §3.3.5.5.2: reject the bind once the per-session channel
-		// table is full. Windows/Samba cap at 32; see
+		// The bind is over however it ended, so the first leg's preauth hash
+		// goes with it, the way the success path below frees it after deriving
+		// keys. Without this a refused bind leaves one entry per attempt on a
+		// connection that stays alive until teardown.
+		if ctx.ConnCryptoState != nil {
+			ctx.ConnCryptoState.DeleteSessionPreauthHash(pending.BindingSessionID)
+		}
+		// Two refusals share the one return: a session that logged off while
+		// this handshake ran, which answers as a deleted session, and a full
+		// channel table. MS-SMB2 §3.3.5.5.2: reject the bind once the
+		// per-session channel table is full. Windows/Samba cap at 32; see
 		// smb2.multichannel.generic.num_channels.
+		if sess.LoggedOff.Load() {
+			logger.Info("SESSION_SETUP bind rejected: session logged off during the handshake",
+				"sessionID", pending.BindingSessionID, "connID", channel.ConnID)
+			return NewErrorResult(types.StatusUserSessionDeleted)
+		}
 		logger.Info("SESSION_SETUP bind rejected: channel cap reached",
 			"sessionID", pending.BindingSessionID,
 			"cap", session.MaxChannelsPerSession,
@@ -968,7 +1051,7 @@ func (h *Handler) completeSessionBind(
 		}
 	}
 
-	result := h.buildSessionSetupResponse(types.StatusSuccess, sessionFlags, acceptToken)
+	result = h.buildSessionSetupResponse(types.StatusSuccess, sessionFlags, acceptToken)
 	result.IsBinding = true
 	return result
 }
@@ -992,6 +1075,15 @@ func (h *Handler) handleNTLMNegotiate(ctx *SMBHandlerContext, usedSPNEGO bool, m
 		// Session already exists with this ID — this is a re-authentication.
 		// Per MS-SMB2 3.3.5.5.2: existing session keys are retained.
 		isReauth = true
+	} else {
+		// A nonzero SessionId matching no session is a client-supplied ID the
+		// server never allocated. Fail the request rather than authenticate
+		// under an attacker-chosen key: a later client that is legitimately
+		// minted this ID would collide with an already-authenticated session.
+		// Matches the bind-path rejection for a missing session.
+		logger.Debug("SESSION_SETUP: unknown nonzero SessionID",
+			"sessionID", sessionID)
+		return NewErrorResult(types.StatusUserSessionDeleted), nil
 	}
 
 	// Initialize per-session preauth hash for SMB 3.1.1 key derivation.
@@ -1082,6 +1174,26 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 		// credential verdict — not counted as an NTLM auth attempt.
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
+
+	// Every failing exit from here frees the handshake's preauth hash. Not only
+	// the ones inside completeSessionBind — a malformed TYPE_3, a failed NTLM
+	// validation, a MIC failure or a user lookup all return before that function
+	// is reached — and not only for binds: handleNTLMNegotiate seeds an entry
+	// for a fresh or re-auth handshake too, and a failure there never reaches
+	// the key derivation that frees it. The success path frees it itself.
+	//
+	// Keyed by the session the seeding path used: the bind target for a bind,
+	// this connection's session otherwise.
+	preauthSessionID := ctx.SessionID
+	if pending.IsBinding {
+		preauthSessionID = pending.BindingSessionID
+	}
+	defer func() {
+		if ctx.ConnCryptoState == nil || retErr == nil && (result == nil || !result.Status.IsError()) {
+			return
+		}
+		ctx.ConnCryptoState.DeleteSessionPreauthHash(preauthSessionID)
+	}()
 
 	// Remove pending auth (handshake complete)
 	h.DeletePendingAuth(ctx.SessionID, ctx.ConnID)
@@ -1728,8 +1840,13 @@ func (h *Handler) destroySessionOnReauthFailure(ctx context.Context, pending *Pe
 		"sessionID", pending.SessionID,
 		"attemptedUsername", attemptedUsername)
 	if sess, ok := h.GetSession(pending.SessionID); ok {
-		sess.LoggedOff.Store(true)
+		sess.MarkLoggedOff()
 	}
+	// Binds in flight on other connections go with the session. Each stored its
+	// handshake before this teardown marked the session off, and the logged-off
+	// guard those binds now hit returns ahead of the completion path that would
+	// have freed them — so nothing else reaches them until the connection dies.
+	h.DeleteAllPendingAuthForSession(pending.SessionID)
 	h.CloseAllFilesForSession(ctx, pending.SessionID, false)
 	h.releaseSessionLeasesAndNotifies(ctx, pending.SessionID)
 	h.DeleteAllTreesForSession(pending.SessionID)

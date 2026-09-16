@@ -85,6 +85,29 @@ type AuthContext struct {
 	// semantics on the NFS path are unchanged.
 	TimestampAuthorizedByHandle bool
 
+	// EAAuthorizedByHandle indicates that the SMB open handle driving this
+	// operation was granted FILE_WRITE_EA at CREATE time. When set, a SetAttrs
+	// carrying nothing but EA mutations is authorized without POSIX write
+	// permission on the file: MS-FSCC 2.6 makes FILE_WRITE_EA the right that
+	// governs extended attributes, and the DACL ceiling was already enforced at
+	// open, so a handle that carries the bit passed an explicit DENY-EA ACE.
+	//
+	// Deliberately NOT WriteAuthorizedByHandle, for the same reason
+	// TimestampAuthorizedByHandle is not: that flag is defined as the
+	// FILE_WRITE_DATA / FILE_APPEND_DATA bypass and the metadata funnel spends it
+	// on every write-related check in the operation. Borrowing it for EA would
+	// let a handle opened only for extended attributes suppress the POSIX write
+	// check on file data as well, and would leave the flag's own contract false.
+	//
+	// Scope is exactly the EA-only mutation — it does not relax chmod, chown, ACL
+	// replace, truncate or a timestamp write — and it never overrides an explicit
+	// DENY ACE or either read-only share ceiling.
+	//
+	// Set ONLY by SMB op handlers, derived from OpenFile.GrantedAccess. NFS is
+	// PATH-BASED — it has no handle and MUST leave this false, so setxattr on the
+	// NFS path keeps requiring POSIX write permission.
+	EAAuthorizedByHandle bool
+
 	// LockClientID is the lock-layer client identifier used for lease exclusion.
 	// This must match the LockOwner.ClientID format used when acquiring leases.
 	// For SMB: "smb:<sessionID>", for NFS: the NFS client identifier.
