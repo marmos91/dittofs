@@ -38,8 +38,8 @@ func (h *Handler) UnmonAll(ctx *NSMHandlerContext, data []byte) (*HandlerResult,
 			h.tracker.ClearNSMInfo(client.ClientID)
 
 			// Remove from persistent store if configured
-			if h.clientStore != nil {
-				if err := h.clientStore.DeleteClientRegistration(ctx.Context, client.ClientID); err != nil {
+			if store := h.GetClientStore(); store != nil {
+				if err := store.DeleteClientRegistration(ctx.Context, client.ClientID); err != nil {
 					logger.Warn("NSM UNMON_ALL persistence deletion failed",
 						"client", ctx.ClientAddr,
 						"client_id", client.ClientID,

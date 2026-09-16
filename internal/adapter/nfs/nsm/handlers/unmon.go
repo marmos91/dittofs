@@ -37,8 +37,8 @@ func (h *Handler) Unmon(ctx *NSMHandlerContext, data []byte) (*HandlerResult, er
 	h.tracker.ClearNSMInfo(clientID)
 
 	// Remove from persistent store if configured
-	if h.clientStore != nil {
-		if err := h.clientStore.DeleteClientRegistration(ctx.Context, clientID); err != nil {
+	if store := h.GetClientStore(); store != nil {
+		if err := store.DeleteClientRegistration(ctx.Context, clientID); err != nil {
 			logger.Warn("NSM UNMON persistence deletion failed",
 				"client", ctx.ClientAddr,
 				"client_id", clientID,

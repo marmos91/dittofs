@@ -449,20 +449,7 @@ func (s *NFSAdapter) initNSMHandler(rt *runtime.Runtime, metadataService *metada
 
 	// Try to get a client registration store from any share's metadata store
 	// Note: In a multi-store setup, we pick the first available store with ClientRegistrationStore
-	var clientStore lock.ClientRegistrationStore
-	shares := rt.ListShares()
-	for _, shareName := range shares {
-		store, err := rt.GetMetadataStoreForShare(shareName)
-		if err != nil {
-			continue
-		}
-		// Check if the store implements ClientRegistrationStore
-		if crs, ok := store.(lock.ClientRegistrationStore); ok {
-			clientStore = crs
-			break
-		}
-	}
-	s.nsmClientStore = clientStore
+	clientStore := resolveClientRegistrationStore(rt)
 
 	// Get server hostname for NSM callbacks
 	serverName, err := os.Hostname()
@@ -502,9 +489,48 @@ func (s *NFSAdapter) initNSMHandler(rt *runtime.Runtime, metadataService *metada
 		OnClientCrash: onClientCrash,
 	})
 
+	// A server can start with no share at all, or with none whose metadata
+	// store can persist client registrations, and a share that supplies one can
+	// be added at any time afterwards. Without this the store stays nil for the
+	// adapter's whole life and every SM_MON registration is memory-only: lost
+	// on restart, and with it the SM_NOTIFY a rebooted client needs to reclaim
+	// its locks. Re-scan on every share change until a store is found; once one
+	// is installed the scan stops, because the registrations it already holds
+	// must not be stranded by swapping to a different store.
+	if clientStore == nil {
+		unsubNSMStore := rt.OnShareChange(func([]string) {
+			if s.nsmHandler.GetClientStore() != nil {
+				return
+			}
+			if found := resolveClientRegistrationStore(rt); found != nil {
+				s.nsmHandler.SetClientStore(found)
+				logger.Info("NSM client registration store resolved from a share added after startup")
+			}
+		})
+		s.shareUnsubscribers = append(s.shareUnsubscribers, unsubNSMStore)
+	}
+
 	logger.Debug("NSM handler and notifier initialized",
 		"server_name", serverName,
 		"has_client_store", clientStore != nil)
+}
+
+// resolveClientRegistrationStore returns the first share-backed metadata store
+// that can persist NSM client registrations, or nil when no share has one.
+//
+// In a multi-store setup the first eligible store wins: the registration list
+// is server-wide, not per-share, so it only needs one home.
+func resolveClientRegistrationStore(rt *runtime.Runtime) lock.ClientRegistrationStore {
+	for _, shareName := range rt.ListShares() {
+		store, err := rt.GetMetadataStoreForShare(shareName)
+		if err != nil {
+			continue
+		}
+		if crs, ok := store.(lock.ClientRegistrationStore); ok {
+			return crs
+		}
+	}
+	return nil
 }
 
 // handleClientCrash releases all locks held by a crashed client across all shares.
@@ -625,7 +651,7 @@ func (s *NFSAdapter) performNSMStartup(ctx context.Context) {
 	}
 
 	// Load persisted registrations from store
-	if err := s.nsmNotifier.LoadRegistrationsFromStore(ctx, s.nsmClientStore); err != nil {
+	if err := s.nsmNotifier.LoadRegistrationsFromStore(ctx, s.nsmHandler.GetClientStore()); err != nil {
 		logger.Warn("NSM: failed to load persisted registrations", "error", err)
 		// Continue anyway - registrations will be re-established
 	}

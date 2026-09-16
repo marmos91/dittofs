@@ -114,11 +114,11 @@ func (h *Handler) Mon(ctx *NSMHandlerContext, data []byte) (*HandlerResult, erro
 	h.tracker.UpdateSMState(clientID, state)
 
 	// Persist to client store if configured
-	if h.clientStore != nil {
+	if store := h.GetClientStore(); store != nil {
 		reg, _ := h.tracker.GetClient(clientID)
 		if reg != nil {
 			persisted := lock.ToPersistedClientRegistration(reg, uint64(state))
-			if err := h.clientStore.PutClientRegistration(ctx.Context, persisted); err != nil {
+			if err := store.PutClientRegistration(ctx.Context, persisted); err != nil {
 				logger.Warn("NSM MON persistence failed",
 					"client", ctx.ClientAddr,
 					"error", err)

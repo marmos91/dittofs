@@ -48,6 +48,11 @@ type Handler struct {
 	// Used to track active clients and their NSM callback info.
 	tracker *lock.ConnectionTracker
 
+	// clientStoreMu guards clientStore, which the adapter may install after
+	// construction (a share whose metadata store can persist registrations can
+	// be added at any time) while SM_MON/SM_UNMON handlers read it.
+	clientStoreMu sync.RWMutex
+
 	// clientStore persists client registrations across server restarts.
 	// If nil, registrations are not persisted.
 	clientStore lock.ClientRegistrationStore
@@ -185,12 +190,34 @@ func (h *Handler) GetTracker() *lock.ConnectionTracker {
 	return h.tracker
 }
 
-// GetClientStore returns the client registration store.
+// GetClientStore returns the client registration store, or nil when no share
+// backed by a store that can persist registrations has been seen yet.
 //
 // This allows the NSM service to access persisted registrations
 // for crash recovery operations.
 func (h *Handler) GetClientStore() lock.ClientRegistrationStore {
+	h.clientStoreMu.RLock()
+	defer h.clientStoreMu.RUnlock()
 	return h.clientStore
+}
+
+// SetClientStore installs the store that persists client registrations.
+//
+// The adapter resolves the store from the shares it can see, and a server can
+// start with no share at all (or none whose metadata store can persist
+// registrations), so the store may only become available later. Until one is
+// installed every SM_MON registration lives in memory alone and is lost on
+// restart, which also costs the client its SM_NOTIFY after a reboot.
+//
+// Passing nil is a no-op: a store already in use is never withdrawn, because
+// the registrations it holds outlive the share that happened to supply it.
+func (h *Handler) SetClientStore(store lock.ClientRegistrationStore) {
+	if store == nil {
+		return
+	}
+	h.clientStoreMu.Lock()
+	defer h.clientStoreMu.Unlock()
+	h.clientStore = store
 }
 
 // GetServerName returns the configured server hostname.

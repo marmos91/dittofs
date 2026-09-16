@@ -188,9 +188,6 @@ type NFSAdapter struct {
 	// exactly once and no waiter parks until adapter shutdown after a toggle.
 	udpStop context.CancelFunc
 
-	// nsmClientStore persists client registrations for crash recovery
-	nsmClientStore lock.ClientRegistrationStore
-
 	// blockingQueue manages pending NLM blocking lock requests
 	blockingQueue *blocking.BlockingQueue
 
