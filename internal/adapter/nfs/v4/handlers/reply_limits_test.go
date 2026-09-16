@@ -3,6 +3,8 @@ package handlers
 import (
 	"testing"
 
+	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
+
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 )
 
@@ -40,10 +42,16 @@ func TestReplyLimits_Account(t *testing.T) {
 			wantFinal: types.NFS4_OK,
 		},
 		{
-			name:      "exactly at the budget still fits",
-			limits:    &replyLimits{max: 104},
+			name:      "a result leaving room for a refusal still fits",
+			limits:    &replyLimits{max: 112},
 			dataLens:  []int{100},
 			wantFinal: types.NFS4_OK,
+		},
+		{
+			name:      "a result landing exactly on the budget leaves no room to refuse",
+			limits:    &replyLimits{max: 104},
+			dataLens:  []int{100},
+			wantFinal: types.NFS4ERR_REP_TOO_BIG,
 		},
 		{
 			name:      "accumulates across operations",
@@ -151,5 +159,49 @@ func TestReplyLimits_SaturatesRatherThanWraps(t *testing.T) {
 	}
 	if l.size != ^uint32(0) {
 		t.Errorf("size = %d, want it pinned at the maximum", l.size)
+	}
+}
+
+// TestReplyLimits_RefusalStaysInsideTheBudget is the regression for a reply that
+// carried NFS4ERR_REP_TOO_BIG and was itself over ca_maxresponsesize. Admitting
+// a result that lands exactly on the budget leaves nothing for the refusal that
+// follows it, and the refusal costs eight bytes of its own — so the server sent
+// the budget plus eight, with the error saying the budget had been exceeded.
+//
+// Whatever the operation sizes, the total the limits admit must never exceed
+// max, including after a refusal.
+func TestReplyLimits_RefusalStaysInsideTheBudget(t *testing.T) {
+	const max = 200
+
+	for first := 0; first <= 160; first += 4 {
+		for second := 0; second <= 160; second += 4 {
+			l := &replyLimits{max: max}
+			if s := l.account(sizedResult(first)); s != types.NFS4_OK {
+				// The first result alone did not fit; nothing more to check.
+				if l.size > max {
+					t.Fatalf("first=%d: refused at size %d, over max %d", first, l.size, max)
+				}
+				continue
+			}
+			l.account(sizedResult(second))
+			if l.size > max {
+				t.Fatalf("first=%d second=%d: emitted %d bytes, over max %d", first, second, l.size, max)
+			}
+		}
+	}
+}
+
+// TestReplyLimits_CountsTheRpcHeader pins the reply budget to what RFC 8881
+// Section 18.36.3 actually measures — the reply "including RPC headers" — so
+// the count cannot quietly drift back to starting at the COMPOUND status word.
+func TestReplyLimits_CountsTheRpcHeader(t *testing.T) {
+	tag := []byte("tag")
+	seeded := rpc.ReplyOverhead + compoundHeaderSize(tag)
+
+	if seeded <= compoundHeaderSize(tag) {
+		t.Fatalf("seed %d does not include the RPC overhead", seeded)
+	}
+	if rpc.ReplyOverhead == 0 {
+		t.Fatal("rpc.ReplyOverhead is zero; the budget would ignore the RPC headers entirely")
 	}
 }

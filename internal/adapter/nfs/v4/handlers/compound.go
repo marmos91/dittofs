@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	v41handlers "github.com/marmos91/dittofs/internal/adapter/nfs/v4/v41/handlers"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
@@ -646,7 +647,10 @@ func (h *Handler) dispatchV41(compCtx *types.CompoundContext, tag []byte, numOps
 	var limits *replyLimits
 	if sess != nil && v41ctx != nil {
 		limits = &replyLimits{
-			size:      compoundHeaderSize(tag),
+			// ca_maxresponsesize counts the RPC headers the reply is wrapped
+			// in (RFC 8881 Section 18.36.3), so the count starts with them
+			// rather than at the COMPOUND status word.
+			size:      rpc.ReplyOverhead + compoundHeaderSize(tag),
 			max:       sess.ForeChannelAttrs.MaxResponseSize,
 			maxCached: sess.ForeChannelAttrs.MaxResponseSizeCached,
 			cacheThis: v41ctx.CacheThis,
@@ -751,28 +755,50 @@ type replyLimits struct {
 	cacheThis bool   // sa_cachethis, from this request's SEQUENCE
 }
 
+// statusOnlyResultSize is what a refused operation contributes to the reply:
+// its opcode and its status, with no output behind them.
+const statusOnlyResultSize = 8
+
+// addSat adds two sizes, pinning at the maximum instead of wrapping, so that a
+// result large enough to overflow the counter reads as over budget rather than
+// as a reply that suddenly fits.
+func addSat(a, b uint32) uint32 {
+	if sum := a + b; sum >= a {
+		return sum
+	}
+	return ^uint32(0)
+}
+
 // account adds one operation result to the running total and returns the status
 // that operation must carry instead of its own, or NFS4_OK to let its own stand.
 //
+// An operation is admitted only if a refusal after it would still fit, because
+// refusing costs statusOnlyResultSize bytes of its own. Without that reserve a
+// result landing exactly on the budget would be admitted, and the refusal of
+// the next operation would then put the reply over it — leaving the server
+// sending the very thing the budget forbids, with the error that says so.
+//
 // REP_TOO_BIG is tested first: a reply that cannot be sent at all is not made
 // sendable by the client declining to have it cached.
+//
+// The total advances by what is actually emitted, so a refusal adds the
+// status-only result rather than the output that did not fit.
 func (l *replyLimits) account(r *types.CompoundResult) uint32 {
 	if l == nil {
 		return types.NFS4_OK
 	}
-	// Saturating, so that a result large enough to wrap the counter reads as
-	// over budget rather than as a reply that suddenly fits.
-	if next := l.size + compoundResultSize(r); next >= l.size {
-		l.size = next
-	} else {
-		l.size = ^uint32(0)
-	}
+	next := addSat(l.size, compoundResultSize(r))
+	room := addSat(next, statusOnlyResultSize)
+
 	switch {
-	case l.size > l.max:
+	case room > l.max:
+		l.size = addSat(l.size, statusOnlyResultSize)
 		return types.NFS4ERR_REP_TOO_BIG
-	case l.cacheThis && l.size > l.maxCached:
+	case l.cacheThis && room > l.maxCached:
+		l.size = addSat(l.size, statusOnlyResultSize)
 		return types.NFS4ERR_REP_TOO_BIG_TO_CACHE
 	default:
+		l.size = next
 		return types.NFS4_OK
 	}
 }

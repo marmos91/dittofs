@@ -211,6 +211,22 @@ func HeaderMICPreimage(message []byte) ([]byte, error) {
 	return message[:end], nil
 }
 
+// ReplyOverhead is what the RPC layer prepends to a procedure's reply: the
+// 4-byte record-marking fragment header plus the RPC reply header carrying a
+// null verifier.
+//
+// It matters beyond buffer sizing because RFC 8881 Section 18.36.3 defines
+// ca_maxresponsesize as "the maximum size of a COMPOUND or CB_COMPOUND reply
+// that the requester will accept from the replier including RPC headers", so
+// anything measuring a reply against that budget starts here, not at zero.
+//
+// decision: this is the null-verifier figure, and an RPCSEC_GSS reply carries a
+// longer verifier than that, so as a budget input it is a floor rather than the
+// exact overhead. Under integrity or privacy a reply can still exceed
+// ca_maxresponsesize by the difference. Replace it with the session's actual
+// verifier length once a caller needs the budget to be exact under krb5i/krb5p.
+const ReplyOverhead = 4 + 28
+
 // MakeSuccessReply constructs an RPC success reply message.
 //
 // Builds a complete RPC reply indicating successful execution
@@ -287,9 +303,8 @@ func MakeSuccessReply(xid uint32, data []byte) ([]byte, error) {
 	// reserving 4 leading placeholder bytes for the record-marking fragment
 	// header. This avoids a second allocation for the fragment header and the
 	// full-payload copy that prepending it would otherwise require.
-	// Size: 4 (fragment header) + RPC reply header (~28 bytes) + procedure data
-	const replyHeaderSize = 28
-	estimatedSize := 4 + replyHeaderSize + len(data)
+	// Size: ReplyOverhead (fragment header + reply header) + procedure data
+	estimatedSize := ReplyOverhead + len(data)
 	buf := bytes.NewBuffer(make([]byte, 0, estimatedSize))
 
 	// Reserve 4 placeholder bytes for the fragment header; patched in below
