@@ -1249,6 +1249,11 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 				// byte (the exact Type-1/Type-2 bytes the peer hashed are not
 				// observable server-side), so failing the session here rejects
 				// every legitimate Samba login.
+				// This is a plain HMAC-MD5 under the exported session key, the
+				// same value both sides compute — it derives no per-direction
+				// signing or sealing key, so unlike the mechListMIC check below
+				// it has no direction to get wrong. The mismatch really is the
+				// input stream.
 				// ponytail: advisory MIC check; make it fatal once the MIC
 				// computation reproduces Samba's client-side input stream.
 				if authMsg.Mic != nil && pending.NegotiateMessage != nil && pending.ChallengeMessage != nil {
