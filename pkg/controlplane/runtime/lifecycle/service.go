@@ -333,6 +333,15 @@ func (s *Service) shutdown(deps Deps) {
 		}()
 		select {
 		case <-stopped:
+			// decision: this returns while Settings.Stop may still be inside a
+			// control-plane query, and the caller closes that store next. Stop
+			// cancels the poll's context before waiting, so a store call that
+			// honours cancellation returns and this bound is never reached; what
+			// it covers is one that does not. Losing the race costs an error
+			// from a closed store, logged by the poll and discarded, on a
+			// process that is leaving. Withdraw the bound if a poll ever
+			// performs a write whose partial application outlives the process —
+			// the same condition that governs the scheduler's join.
 		case <-time.After(s.shutdownTimeout):
 			logger.Warn("settings watcher was not joined within the shutdown timeout; " +
 				"a poll may still be running against the control-plane store")

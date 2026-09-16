@@ -99,6 +99,12 @@ func NewSettingsWatcher(s store.Store, pollInterval time.Duration) *SettingsWatc
 	// stopped starts already-closed so that Stop() called before Start()
 	// returns immediately instead of deadlocking on <-w.stopped (no goroutine
 	// would ever close it). Start() re-creates it as a fresh open channel.
+	//
+	// A watcher runs at most once. Start is a no-op once one is running or once
+	// Stop has been called, so there is no Start→Stop→Start cycle: reuse means a
+	// new watcher, not this one restarted. That is what lets Stop promise a join
+	// — a Stop that wins the race can prevent a launch behind it, which a
+	// restartable watcher cannot.
 	stopped := make(chan struct{})
 	close(stopped)
 	return &SettingsWatcher{

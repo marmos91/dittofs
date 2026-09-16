@@ -366,6 +366,13 @@ func (r *Runtime) Shutdown(ctx context.Context) error {
 		}()
 		select {
 		case <-stopped:
+		// decision: same accepted race as the lifecycle drain's copy — this
+		// returns while a poll may still be in the store, and the caller closes
+		// it next. Stop cancels the poll first, so this bound covers a store
+		// call that ignores cancellation rather than the ordinary path. The cost
+		// is an error from a closed store on a process that is shutting down;
+		// withdraw it if a poll ever writes something whose partial application
+		// outlives the process.
 		case <-time.After(startupDrainTimeout):
 			logger.Warn("shutdown: settings watcher was not joined; a poll may still be running " +
 				"against the control-plane store")
@@ -1027,6 +1034,12 @@ func (r *Runtime) drainStartupWorkers(ctx context.Context) {
 		}()
 		select {
 		case <-stopped:
+		// decision: the failed-start drain gives up here rather than waiting
+		// out a poll that is not returning. The boot is already being abandoned,
+		// and an unbounded wait would leave a process that cannot exit — which
+		// is worse than a query that finds the store closed under it. Same
+		// condition as the other two: withdraw the bound if a poll ever performs
+		// a write whose partial application outlives the process.
 		case <-stopCtx.Done():
 			logger.Warn("startup drain: settings watcher was not joined before the store closes; " +
 				"a poll may still be running against it")
