@@ -22,7 +22,7 @@ func TestAuthSweeper_RequestDoesNotBlockCaller(t *testing.T) {
 		}
 		<-release
 	})
-	t.Cleanup(func() { close(release); sw.stop(nil) })
+	t.Cleanup(func() { close(release); sw.stop(context.Background()) })
 
 	sw.request()
 	select {
@@ -63,7 +63,7 @@ func TestAuthSweeper_CoalescesBurst(t *testing.T) {
 		default:
 		}
 	})
-	t.Cleanup(func() { sw.stop(nil) })
+	t.Cleanup(func() { sw.stop(context.Background()) })
 
 	sw.request()
 	<-first
@@ -110,7 +110,7 @@ func TestAuthSweeper_StopJoinsInFlightSweep(t *testing.T) {
 
 	sw.request()
 	<-started
-	sw.stop(nil)
+	sw.stop(context.Background())
 
 	if !sawCancel.Load() {
 		t.Error("stop did not cancel the in-flight sweep's context")
@@ -120,7 +120,7 @@ func TestAuthSweeper_StopJoinsInFlightSweep(t *testing.T) {
 	}
 
 	// Idempotent, and a request after stop must not panic or hang.
-	sw.stop(nil)
+	sw.stop(context.Background())
 	sw.request()
 }
 
@@ -131,7 +131,7 @@ func TestAuthSweeper_StopWithNoSweepRunning(t *testing.T) {
 	sw := newAuthSweeper(func(context.Context) { sweeps.Add(1) })
 
 	done := make(chan struct{})
-	go func() { defer close(done); sw.stop(nil) }()
+	go func() { defer close(done); sw.stop(context.Background()) }()
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
@@ -179,7 +179,7 @@ func TestAdapter_AuthInvalidateIsOffloadedAndJoined(t *testing.T) {
 	}
 	// The worker is joined, so a second stop returns at once rather than hanging.
 	stopped := make(chan struct{})
-	go func() { defer close(stopped); sweeper.stop(nil) }()
+	go func() { defer close(stopped); sweeper.stop(context.Background()) }()
 	select {
 	case <-stopped:
 	case <-time.After(5 * time.Second):
@@ -199,7 +199,7 @@ func TestAuthSweeper_StopGivesUpOnDeadline(t *testing.T) {
 		close(started)
 		<-stuck
 	})
-	t.Cleanup(func() { close(stuck); sw.stop(nil) })
+	t.Cleanup(func() { close(stuck); sw.stop(context.Background()) })
 
 	sw.request()
 	<-started
