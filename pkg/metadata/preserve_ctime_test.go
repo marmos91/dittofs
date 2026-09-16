@@ -299,3 +299,45 @@ func TestPreserveCtime_HoldsALoweredValue(t *testing.T) {
 			got.Ctime.UTC().Format(time.RFC3339Nano), restored.UTC().Format(time.RFC3339Nano))
 	}
 }
+
+// An explicit ChangeTime write on a DIRECTORY supersedes the coalesced
+// create/remove bump, the same way an explicit mtime or atime write does. It
+// was the one directory timestamp missing from that rule, and the gap is
+// reachable: restoreParentDirFrozenTimestamps sends Ctime alone when only the
+// change time is frozen, so the bump stayed pending and the next held write
+// lifted the row back up to it — walking the frozen value forward, which is the
+// one thing freezing it is for.
+func TestPreserveCtime_AnExplicitDirectoryCtimeSupersedesAPendingBump(t *testing.T) {
+	svc, ctx, _, rootHandle := setupPreserveCtimeFile(t)
+
+	// A create leaves a pending bump on the parent.
+	if _, _, err := svc.CreateFile(ctx, rootHandle, "bump.txt", &metadata.FileAttr{
+		Type: metadata.FileTypeRegular, Mode: 0o644,
+	}); err != nil {
+		t.Fatalf("CreateFile: %v", err)
+	}
+
+	// A frozen-ChangeTime restore: Ctime alone, deliberately older.
+	frozen := time.Date(2019, 5, 6, 7, 8, 9, 0, time.UTC)
+	if _, err := svc.SetFileAttributes(ctx, rootHandle, &metadata.SetAttrs{Ctime: &frozen}); err != nil {
+		t.Fatalf("SetFileAttributes(Ctime) on the directory: %v", err)
+	}
+
+	// A later held write must not walk it forward again.
+	atime := time.Now()
+	if _, err := svc.SetFileAttributes(ctx, rootHandle, &metadata.SetAttrs{
+		Atime: &atime, PreserveCtime: true,
+	}); err != nil {
+		t.Fatalf("SetFileAttributes(Atime, PreserveCtime): %v", err)
+	}
+
+	got, err := svc.GetFile(ctx.Context, rootHandle)
+	if err != nil || got == nil {
+		t.Fatalf("GetFile: %v", err)
+	}
+	if !got.Ctime.Equal(frozen) {
+		t.Errorf("directory ChangeTime is %s, want the frozen %s — a pending create bump "+
+			"outlived the explicit write that superseded it and was carried back over the restore",
+			got.Ctime.UTC().Format(time.RFC3339Nano), frozen.UTC().Format(time.RFC3339Nano))
+	}
+}

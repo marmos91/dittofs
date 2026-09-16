@@ -285,8 +285,15 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 	// by this call — a peer's commit, or a coalesced directory bump — never this
 	// call's own stamp, which is always the later of the two and would otherwise
 	// win the comparison.
+	// Ctime counts as an explicit directory-timestamp set like the others. It
+	// was missing, and the omission had a consequence: a restore that freezes
+	// ONLY the change time (restoreParentDirFrozenTimestamps sends Ctime alone
+	// when mtime and atime are not frozen) left the coalesced create/remove bump
+	// pending, and the next held write lifted the row back up to it — walking
+	// the frozen value forward, which is the one thing freezing it is for.
 	dirTimeSet := file.Type == FileTypeDirectory &&
-		(attrs.Mtime != nil || attrs.Atime != nil || attrs.MtimeNow || attrs.AtimeNow)
+		(attrs.Mtime != nil || attrs.Atime != nil || attrs.Ctime != nil ||
+			attrs.MtimeNow || attrs.AtimeNow)
 	if dirTimeSet {
 		lock := s.dirTimes.FlushLock(handle)
 		lock.Lock()
