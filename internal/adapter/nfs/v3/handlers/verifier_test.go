@@ -153,15 +153,17 @@ func TestIdempotencyTokenValidation(t *testing.T) {
 // Write Verifier Tests
 // ============================================================================
 
-// TestWriteVerifierDistinguishesInstancesWithinOneSecond pins that two server
-// instances started in the same wall-clock second get different write
-// verifiers.
+// TestWriteVerifierResolvesFinerThanOneSecond pins the property that makes two
+// server instances started in the same wall-clock second get different write
+// verifiers: the mint is finer-grained than a second. It cannot observe two
+// instances from inside one process, so it pins the mint rather than the
+// restart.
 //
 // RFC 1813 3.3.7/3.3.21: an identical verifier is the client's positive signal
 // NOT to re-send its UNSTABLE writes. A crash-restart cycle that completes
 // inside one second and mints the same verifier therefore tells the client the
 // data it lost is safe.
-func TestWriteVerifierDistinguishesInstancesWithinOneSecond(t *testing.T) {
+func TestWriteVerifierResolvesFinerThanOneSecond(t *testing.T) {
 	first := newWriteVerifier()
 	time.Sleep(2 * time.Millisecond)
 	second := newWriteVerifier()

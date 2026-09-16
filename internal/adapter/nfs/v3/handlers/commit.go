@@ -117,6 +117,14 @@ func (h *Handler) Commit(
 
 	file, err := metaSvc.GetFileCached(ctx.Context, handle)
 	if err != nil {
+		// A context that died while the call was in flight is transient; only a
+		// handle the store genuinely cannot resolve is stale. Reporting the
+		// former as stale makes the client throw the handle away and revalidate
+		// the whole path for what was a cancelled request.
+		if ctx.Context.Err() != nil {
+			logger.DebugCtx(ctx.Context, "COMMIT cancelled during file lookup", "handle", xdr.LazyHandle(req.Handle), "client", clientIP, "error", ctx.Context.Err())
+			return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
+		}
 		logger.WarnCtx(ctx.Context, "COMMIT failed: handle not found", "handle", xdr.LazyHandle(req.Handle), "client", clientIP, "error", err)
 		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}

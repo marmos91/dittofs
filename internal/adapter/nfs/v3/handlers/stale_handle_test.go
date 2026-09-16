@@ -144,37 +144,78 @@ func (s *cancelDuringFetchStore) GetFile(ctx context.Context, h metadata.FileHan
 	return s.MemoryMetadataStore.GetFile(ctx, h)
 }
 
-// TestLookup_CancelledDuringHandleResolutionReportsIO pins that LOOKUP reports
-// a cancellation as NFS3ERR_IO and hands the RPC dispatcher a nil Go error.
+// TestCancelledHandleResolutionReportsIO pins that a cancellation that lands
+// while the store call is in flight is reported as NFS3ERR_IO, not as a stale
+// handle and not as a permission denial.
 //
-// The dispatcher throws away a handler's response whenever the handler also
-// returns an error, and answers with that procedure's fallback status instead.
-// LOOKUP's fallback is NFS3ErrAccess, so propagating the cancellation error
-// would report a timed-out lookup to the client as "permission denied". Every
-// sibling handler that does propagate has NFS3ErrIO as its fallback, which is
-// the status the cancellation carries anyway.
-func TestLookup_CancelledDuringHandleResolutionReportsIO(t *testing.T) {
-	reqCtx, cancel := context.WithCancel(context.Background())
+// The distinction matters in opposite directions for the two groups below.
+// A client told NFS3ERR_STALE discards the handle and revalidates the whole
+// path, which is the wrong recovery for a request that was merely cancelled;
+// and NFS3ERR_ACCES is not a transient condition at all. Each handler checks
+// for cancellation before it calls the store, so this branch is only reachable
+// when the context dies during the call — which is what the wrapper forces.
+//
+// LOOKUP additionally must not return a Go error alongside its response: the
+// RPC dispatcher discards a response whenever the handler also returns an
+// error and answers with that procedure's fallback status, and LOOKUP's
+// fallback is NFS3ErrAccess.
+func TestCancelledHandleResolutionReportsIO(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(fx *handlertesting.HandlerTestFixture, hctx *handlers.NFSHandlerContext) (uint32, error)
+	}{
+		{
+			name: "LOOKUP",
+			call: func(fx *handlertesting.HandlerTestFixture, hctx *handlers.NFSHandlerContext) (uint32, error) {
+				resp, err := fx.Handler.Lookup(hctx, &handlers.LookupRequest{
+					DirHandle: fx.RootHandle,
+					Filename:  "anything.txt",
+				})
+				return resp.Status, err
+			},
+		},
+		{
+			name: "COMMIT",
+			call: func(fx *handlertesting.HandlerTestFixture, hctx *handlers.NFSHandlerContext) (uint32, error) {
+				resp, err := fx.Handler.Commit(hctx, &handlers.CommitRequest{Handle: fx.RootHandle})
+				return resp.Status, err
+			},
+		},
+		{
+			name: "READDIRPLUS",
+			call: func(fx *handlertesting.HandlerTestFixture, hctx *handlers.NFSHandlerContext) (uint32, error) {
+				resp, err := fx.Handler.ReadDirPlus(hctx, &handlers.ReadDirPlusRequest{
+					DirHandle: fx.RootHandle,
+					DirCount:  4096,
+					MaxCount:  8192,
+				})
+				return resp.Status, err
+			},
+		},
+	}
 
-	var wrapped *cancelDuringFetchStore
-	fx := handlertesting.NewHandlerFixtureWithStore(t, func(inner *metadatamemory.MemoryMetadataStore) metadata.Store {
-		wrapped = &cancelDuringFetchStore{MemoryMetadataStore: inner, cancel: cancel}
-		return wrapped
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reqCtx, cancel := context.WithCancel(context.Background())
 
-	hctx := fx.Context()
-	hctx.Context = reqCtx
-	wrapped.armed.Store(true)
+			var wrapped *cancelDuringFetchStore
+			fx := handlertesting.NewHandlerFixtureWithStore(t, func(inner *metadatamemory.MemoryMetadataStore) metadata.Store {
+				wrapped = &cancelDuringFetchStore{MemoryMetadataStore: inner, cancel: cancel}
+				return wrapped
+			})
 
-	resp, err := fx.Handler.Lookup(hctx, &handlers.LookupRequest{
-		DirHandle: fx.RootHandle,
-		Filename:  "anything.txt",
-	})
+			hctx := fx.Context()
+			hctx.Context = reqCtx
+			wrapped.armed.Store(true)
 
-	require.True(t, wrapped.fired.Load(),
-		"the store call never ran, so the cancellation branch was not exercised")
-	require.NoError(t, err,
-		"LOOKUP must not return a Go error: the dispatcher would discard this response and answer NFS3ErrAccess")
-	assert.EqualValues(t, types.NFS3ErrIO, resp.Status,
-		"a cancelled LOOKUP should be reported as NFS3ErrIO")
+			status, err := tt.call(fx, hctx)
+
+			require.True(t, wrapped.fired.Load(),
+				"the store call never ran, so the cancellation branch was not exercised")
+			require.NoError(t, err,
+				"the handler must not return a Go error: the dispatcher discards the response and answers with the procedure's fallback status")
+			assert.EqualValues(t, types.NFS3ErrIO, status,
+				"a cancellation in flight is transient and must not be reported as a stale handle")
+		})
+	}
 }

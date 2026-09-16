@@ -128,9 +128,15 @@ func (h *Handler) Lookup(
 	// RPC dispatcher discard the response and answer with the procedure's own
 	// fallback status, and LOOKUP's fallback is NFS3ErrAccess -- so returning
 	// the error here would turn a cancelled lookup into "permission denied" on
-	// the wire. Every sibling that does propagate (REMOVE, RMDIR, LINK, RENAME)
-	// has NFS3ErrIO as its fallback, which is what getFileOrError reports
-	// anyway. Drop this once the dispatcher keeps a non-nil response's status.
+	// the wire.
+	//
+	// This buys LOOKUP alone. GETATTR, SETATTR, READDIR and ACCESS propagate
+	// the same error and carry the same NFS3ErrAccess fallback, so a
+	// cancellation in flight still reaches their clients as a permission
+	// denial; REMOVE, RMDIR, LINK and RENAME propagate too but fall back to
+	// NFS3ErrIO, which is what the cancellation carries anyway. The fix that
+	// covers all of them is for the dispatcher to keep a non-nil response's own
+	// status, at which point this line can go back to propagating.
 	dirFile, status, _ := h.getFileOrError(ctx, dirHandle, "LOOKUP", req.DirHandle)
 	if dirFile == nil {
 		return &LookupResponse{NFSResponseBase: NFSResponseBase{Status: status}}, nil

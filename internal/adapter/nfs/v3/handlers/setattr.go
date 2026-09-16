@@ -317,12 +317,17 @@ func (h *Handler) SetAttr(
 	// error branch below: the size phase commits on its own, so a later phase
 	// being rejected leaves the blocks past the new size orphaned all the same.
 	//
-	// decision: the reclaim inherits the request context, so a SETATTR
-	// cancelled between the two store calls commits the size and then fails to
-	// reclaim, logging below and leaving the tail behind. Detaching the context
-	// would trade that for block-store I/O that outlives the request and can
-	// hold up shutdown; revisit if cancellation ever shows up as a real source
-	// of orphaned tails rather than a theoretical one.
+	// decision: the reclaim is best-effort and its failure is only logged, so
+	// the client is told NFS3OK with the tail still live. That covers every way
+	// it can fail -- a dead request context, an unresolvable block store, a
+	// failing reap -- not just the cancellation case, and the cost is more than
+	// wasted space: the helper exists because a later re-extend over an
+	// un-reclaimed tail reads the discarded bytes back as file content instead
+	// of a hole. Detaching the context would close the cancellation case alone
+	// and trade it for block-store I/O that outlives the request while holding
+	// the store-close lock. Withdraw the exemption -- fail the SETATTR, or
+	// queue the reclaim for retry -- if a re-extend ever reads back stale tail
+	// bytes in practice rather than in principle.
 	if sizeApplied {
 		if rErr := common.ReclaimTruncatedBlocks(ctx.Context, h.Registry, fileHandle, currentFile, *req.NewAttr.Size); rErr != nil {
 			logger.WarnCtx(ctx.Context, "SETATTR: block store truncate reclaim failed",
