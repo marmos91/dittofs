@@ -222,6 +222,15 @@ func TestPreserveCtime_DoesNotDropAPendingDirectoryBump(t *testing.T) {
 func TestPreserveCtime_IsHonouredOnTruncate(t *testing.T) {
 	svc, ctx, handle, _ := setupPreserveCtimeFile(t)
 
+	// Push the modify time clearly into the past first. Asserting that it
+	// "advanced" against a value this test just created compares two clock reads
+	// taken inside one tick — true on a fine-grained clock, false on Windows,
+	// and about the clock either way rather than about the behaviour.
+	past := time.Now().Add(-time.Hour)
+	if _, err := svc.SetFileAttributes(ctx, handle, &metadata.SetAttrs{Mtime: &past}); err != nil {
+		t.Fatalf("seed the modify time: %v", err)
+	}
+
 	before, err := svc.GetFile(ctx.Context, handle)
 	if err != nil || before == nil {
 		t.Fatalf("GetFile before: %v", err)
