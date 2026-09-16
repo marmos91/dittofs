@@ -24,14 +24,14 @@ import (
 )
 
 // ShareHandlerStore is the composite interface required by ShareHandler.
+// ShareHandler needs share CRUD, permission management, store config lookups
+// (to validate metadata/block store references), and user/group lookups
+// (to resolve permission display names).
 //
 // Its share-permission mutations complete themselves: the store the router
 // supplies is the runtime's grant-completing wrapper, which reprojects the
 // share root ACL and invalidates the adapters' auth caches after a successful
 // write. Handlers therefore write grants and nothing else.
-// ShareHandler needs share CRUD, permission management, store config lookups
-// (to validate metadata/block store references), and user/group lookups
-// (to resolve permission display names).
 type ShareHandlerStore interface {
 	store.ShareStore
 	store.PermissionStore
@@ -1194,6 +1194,7 @@ func (h *ShareHandler) SetUserPermission(w http.ResponseWriter, r *http.Request)
 		InternalServerError(w, "Failed to set user permission")
 		return
 	}
+
 	WriteNoContent(w)
 }
 
@@ -1313,6 +1314,7 @@ func (h *ShareHandler) RemoveUserPermission(w http.ResponseWriter, r *http.Reque
 		InternalServerError(w, "Failed to delete user permission")
 		return
 	}
+
 	WriteNoContent(w)
 }
 
@@ -1386,6 +1388,7 @@ func (h *ShareHandler) SetGroupPermission(w http.ResponseWriter, r *http.Request
 		InternalServerError(w, "Failed to set group permission")
 		return
 	}
+
 	WriteNoContent(w)
 }
 
@@ -1414,6 +1417,7 @@ func (h *ShareHandler) RemoveGroupPermission(w http.ResponseWriter, r *http.Requ
 		InternalServerError(w, "Failed to delete group permission")
 		return
 	}
+
 	WriteNoContent(w)
 }
 
@@ -1499,6 +1503,7 @@ func (h *ShareHandler) SetSIDPermission(w http.ResponseWriter, r *http.Request) 
 		InternalServerError(w, "Failed to set SID permission")
 		return
 	}
+
 	WriteNoContent(w)
 }
 
@@ -1525,6 +1530,7 @@ func (h *ShareHandler) RemoveSIDPermission(w http.ResponseWriter, r *http.Reques
 		InternalServerError(w, "Failed to delete SID permission")
 		return
 	}
+
 	WriteNoContent(w)
 }
 
