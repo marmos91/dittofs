@@ -148,35 +148,19 @@ func UnwrapPrivacy(sessionKey types.EncryptionKey, credSeqNum uint32, requestBod
 		// Extract header_copy (last 16 bytes of decrypted data)
 		headerCopy := decrypted[len(decrypted)-wrapTokenHdrLen:]
 
-		// Verify header_copy matches the wire header. Only RRC differs: it is
-		// applied to the ciphertext after encryption, so per RFC 4121 §4.2.4 the
-		// to-be-encrypted copy carries the hex value 00 00 there. Every other
-		// field, EC included, carries its real value in the copy and is therefore
-		// integrity-protected by the encryption.
-		expectedHeader := make([]byte, wrapTokenHdrLen)
-		copy(expectedHeader, wrapTokenBytes[:wrapTokenHdrLen])
-		binary.BigEndian.PutUint16(expectedHeader[6:8], 0) // RRC = 0 in the copy
-
-		if !bytes.Equal(headerCopy[:2], expectedHeader[:2]) { // Token ID
-			return nil, 0, fmt.Errorf("header_copy token ID mismatch: got %s, expected %s",
-				hex.EncodeToString(headerCopy[:2]), hex.EncodeToString(expectedHeader[:2]))
-		}
-		if headerCopy[2] != expectedHeader[2] { // Flags
-			return nil, 0, fmt.Errorf("header_copy flags mismatch: got 0x%02x, expected 0x%02x",
-				headerCopy[2], expectedHeader[2])
-		}
-		if headerCopy[3] != expectedHeader[3] { // Filler octet (0xFF)
-			return nil, 0, fmt.Errorf("header_copy filler mismatch: got 0x%02x, expected 0x%02x",
-				headerCopy[3], expectedHeader[3])
-		}
-
-		// The wire EC is what trims the filler off the decrypted plaintext, and
-		// the wire header travels in the clear. Binding it to the encrypted copy
-		// is what stops an attacker who holds no key from shortening an
-		// authenticated message by raising EC.
-		copyEC := binary.BigEndian.Uint16(headerCopy[4:6])
-		if copyEC != ec {
-			return nil, 0, fmt.Errorf("header_copy EC mismatch: got %d, expected %d", copyEC, ec)
+		// Verify header_copy against the wire header, which travels in the
+		// clear. Only RRC is exempt: it is applied to the ciphertext after
+		// encryption, so per RFC 4121 §4.2.4 the to-be-encrypted copy carries
+		// the hex value 00 00 there. Every other field, EC included, carries its
+		// real value in the copy and is therefore integrity-protected by the
+		// encryption. Binding the cleartext EC to the encrypted copy is what
+		// stops an attacker who holds no key from shortening an authenticated
+		// message by raising EC, which is what trims the filler off the
+		// decrypted plaintext below.
+		wireHeader := wrapTokenBytes[:wrapTokenHdrLen]
+		if !bytes.Equal(headerCopy[:6], wireHeader[:6]) { // Token ID, flags, filler, EC
+			return nil, 0, fmt.Errorf("header_copy mismatch: got %s, expected %s",
+				hex.EncodeToString(headerCopy[:6]), hex.EncodeToString(wireHeader[:6]))
 		}
 
 		// Verify sequence number in header_copy matches

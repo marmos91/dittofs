@@ -247,15 +247,15 @@ func (u udpSidecar) Stop(ctx context.Context) error {
 	// handlers it spawned are still running, and they touch adapter and runtime
 	// state that teardown is about to dismantle. Wait for them, bounded by the
 	// caller's context so one wedged handler cannot hold shutdown open forever.
-	if udpDone == nil {
-		return nil
+	// A nil channel means nothing was bound, so there is nothing to wait for.
+	if udpDone != nil {
+		select {
+		case <-udpDone:
+		case <-ctx.Done():
+			return fmt.Errorf("nfs-udp: datagram handlers still running: %w", ctx.Err())
+		}
 	}
-	select {
-	case <-udpDone:
-		return nil
-	case <-ctx.Done():
-		return fmt.Errorf("nfs-udp: datagram handlers still running: %w", ctx.Err())
-	}
+	return nil
 }
 
 // nsmSidecar wraps NSM startup: it loads persisted registrations and sends

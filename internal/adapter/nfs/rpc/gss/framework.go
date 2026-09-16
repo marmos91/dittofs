@@ -107,10 +107,10 @@ func (v *Krb5Verifier) VerifyToken(gssToken []byte) (*VerifiedContext, error) {
 	}
 
 	// The ticket's end time bounds every context this AP-REQ establishes. A
-	// ticket that carries none cannot be bounded, so it is refused rather than
-	// granted an unbounded context: gokrb5's AP-REQ verification already
-	// rejects a ticket outside its validity interval, so a zero end time here
-	// means the ticket is malformed, not merely long-lived.
+	// ticket carrying none cannot be bounded, so it is refused rather than
+	// granted an unbounded context: AP-REQ verification has already rejected a
+	// ticket outside its validity interval, so a zero end time here means the
+	// ticket is malformed, not merely long-lived.
 	expiresAt := authResult.APReq.Ticket.DecryptedEncPart.EndTime
 	if expiresAt.IsZero() {
 		return nil, fmt.Errorf("ticket carries no end time")
@@ -589,6 +589,7 @@ func lastN(b []byte, n int) []byte {
 //
 // DATA handling:
 //  1. Look up the context by handle (RPCSEC_GSS_CREDPROBLEM if not found)
+//     and refuse it if it has outlived its ticket (RPCSEC_GSS_CTXPROBLEM)
 //  2. Verify the call-header MIC (RPCSEC_GSS_CREDPROBLEM on failure)
 //  3. Enforce the negotiated service level (no downgrade)
 //  4. Check for MAXSEQ exceeded (context must be destroyed per RFC 2203)
@@ -610,12 +611,10 @@ func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verif
 		}
 	}
 
-	// 1b. Refuse a context that has outlived the ticket it was built from, and
-	// drop it so the handle cannot be retried. Idle eviction does not cover
-	// this: a client sending steady traffic refreshes LastUsed forever, which
-	// would keep an authenticated context alive on a ticket the KDC stopped
-	// vouching for. CTXPROBLEM tells the client to establish a new context,
-	// which sends it back to the KDC for a fresh ticket.
+	// 1b. Refuse a context that has outlived the ticket it was built from (see
+	// GSSContext.ExpiresAt) and drop it so the handle cannot be retried.
+	// CTXPROBLEM tells the client to establish a new context, which sends it
+	// back to the KDC for a fresh ticket.
 	if gssCtx.Expired(time.Now()) {
 		logger.Debug("GSS DATA: context outlived its ticket",
 			"principal", gssCtx.Principal,

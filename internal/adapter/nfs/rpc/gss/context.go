@@ -331,24 +331,18 @@ func (cs *ContextStore) cleanup() {
 	now := time.Now()
 	cs.contexts.Range(func(key, value interface{}) bool {
 		ctx := value.(*GSSContext)
-		if ctx.Expired(now) {
-			logger.Debug("GSS context ticket expired",
-				"principal", ctx.Principal,
-				"realm", ctx.Realm,
-				"expired_at", ctx.ExpiresAt.String(),
-			)
-			cs.Delete([]byte(key.(string)))
+		ticketLapsed := ctx.Expired(now)
+		idle := now.Sub(ctx.GetLastUsed())
+		if !ticketLapsed && idle <= cs.contextTTL {
 			return true
 		}
-		lastUsed := ctx.GetLastUsed()
-		if now.Sub(lastUsed) > cs.contextTTL {
-			logger.Debug("GSS context expired",
-				"principal", ctx.Principal,
-				"realm", ctx.Realm,
-				"idle", now.Sub(lastUsed).String(),
-			)
-			cs.Delete([]byte(key.(string)))
-		}
+		logger.Debug("GSS context expired",
+			"principal", ctx.Principal,
+			"realm", ctx.Realm,
+			"idle", idle.String(),
+			"ticket_lapsed", ticketLapsed,
+		)
+		cs.Delete([]byte(key.(string)))
 		return true
 	})
 }

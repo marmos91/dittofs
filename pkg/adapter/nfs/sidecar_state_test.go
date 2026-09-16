@@ -74,13 +74,14 @@ func TestPortmapSidecarStateConcurrentStartStop(t *testing.T) {
 	}
 }
 
-// Closing the UDP socket only unblocks the read: the loop and every datagram
-// handler it spawned are still running, and they read adapter and runtime state
-// that the rest of teardown is about to dismantle. Stop must not report the
-// transport down while one is still in flight.
-func TestUDPSidecarStopWaitsForInFlightHandler(t *testing.T) {
+// udpAdapterWithHandlerInFlight brings the UDP sidecar up on a kernel-chosen
+// port, stands in handler for the real datagram dispatch, and returns once one
+// datagram is being handled. The caller controls when handler returns, so it
+// controls how long the handler stays in flight.
+func udpAdapterWithHandlerInFlight(t *testing.T, handler func()) *NFSAdapter {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 	a := &NFSAdapter{sidecars: auxsvc.NewGroup()}
 	a.sidecars.SetBaseContext(ctx)
 	udpEnabled := true
@@ -88,21 +89,16 @@ func TestUDPSidecarStopWaitsForInFlightHandler(t *testing.T) {
 	a.config.Port = 0 // let the kernel pick a free port
 
 	entered := make(chan struct{})
-	release := make(chan struct{})
-	var finished atomic.Bool
-
 	restore := udpDispatch
 	udpDispatch = func(*NFSConnection, context.Context, *net.UDPConn, *net.UDPAddr, []byte) {
 		close(entered)
-		<-release
-		finished.Store(true)
+		handler()
 	}
 	t.Cleanup(func() { udpDispatch = restore })
 
 	if err := a.startUDP(ctx); err != nil {
 		t.Fatalf("startUDP: %v", err)
 	}
-
 	a.sidecarMu.Lock()
 	addr := a.udpConn.LocalAddr().(*net.UDPAddr)
 	a.sidecarMu.Unlock()
@@ -111,11 +107,25 @@ func TestUDPSidecarStopWaitsForInFlightHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial udp: %v", err)
 	}
-	defer func() { _ = client.Close() }()
+	t.Cleanup(func() { _ = client.Close() })
 	if _, err := client.Write([]byte("datagram")); err != nil {
 		t.Fatalf("write udp: %v", err)
 	}
 	<-entered // the handler is now in flight
+	return a
+}
+
+// Closing the UDP socket only unblocks the read: the loop and every datagram
+// handler it spawned are still running, and they read adapter and runtime state
+// that the rest of teardown is about to dismantle. Stop must not report the
+// transport down while one is still in flight.
+func TestUDPSidecarStopWaitsForInFlightHandler(t *testing.T) {
+	release := make(chan struct{})
+	var finished atomic.Bool
+	a := udpAdapterWithHandlerInFlight(t, func() {
+		<-release
+		finished.Store(true)
+	})
 
 	stopped := make(chan error, 1)
 	go func() {
@@ -145,42 +155,9 @@ func TestUDPSidecarStopWaitsForInFlightHandler(t *testing.T) {
 // A handler that never returns must not hold shutdown open: the wait is bounded
 // by the context the lifecycle group supplies.
 func TestUDPSidecarStopGivesUpOnWedgedHandler(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	a := &NFSAdapter{sidecars: auxsvc.NewGroup()}
-	a.sidecars.SetBaseContext(ctx)
-	udpEnabled := true
-	a.config.UDP.Enabled = &udpEnabled
-	a.config.Port = 0
-
-	entered := make(chan struct{})
 	release := make(chan struct{})
-	restore := udpDispatch
-	udpDispatch = func(*NFSConnection, context.Context, *net.UDPConn, *net.UDPAddr, []byte) {
-		close(entered)
-		<-release
-	}
-	t.Cleanup(func() {
-		udpDispatch = restore
-		close(release)
-	})
-
-	if err := a.startUDP(ctx); err != nil {
-		t.Fatalf("startUDP: %v", err)
-	}
-	a.sidecarMu.Lock()
-	addr := a.udpConn.LocalAddr().(*net.UDPAddr)
-	a.sidecarMu.Unlock()
-
-	client, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: addr.Port})
-	if err != nil {
-		t.Fatalf("dial udp: %v", err)
-	}
-	defer func() { _ = client.Close() }()
-	if _, err := client.Write([]byte("datagram")); err != nil {
-		t.Fatalf("write udp: %v", err)
-	}
-	<-entered
+	t.Cleanup(func() { close(release) })
+	a := udpAdapterWithHandlerInFlight(t, func() { <-release })
 
 	stopCtx, stopCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer stopCancel()

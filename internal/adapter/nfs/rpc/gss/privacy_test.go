@@ -46,10 +46,10 @@ func buildInitiatorPrivData(t *testing.T, key krbTypes.EncryptionKey, seqNum uin
 	binary.BigEndian.PutUint16(header[6:8], rrc)
 	binary.BigEndian.PutUint64(header[8:16], uint64(seqNum))
 
-	// Build header_copy for encryption (with EC=0, RRC=0)
+	// Build header_copy for encryption: the wire header with RRC zeroed. EC
+	// keeps its real value so the receiver can bind the cleartext EC to it.
 	headerCopy := make([]byte, wrapTokenHdrLen)
 	copy(headerCopy, header)
-	binary.BigEndian.PutUint16(headerCopy[4:6], 0) // EC = 0 in copy
 	binary.BigEndian.PutUint16(headerCopy[6:8], 0) // RRC = 0 in copy
 
 	// Build to-be-encrypted: plaintext | filler | header_copy
@@ -570,17 +570,14 @@ func TestUnwrapPrivacyAcceptsRotatedToken(t *testing.T) {
 
 	requestBody := buildInitiatorPrivData(t, key, seqNum, originalArgs)
 
-	// Rotate the ciphertext right by rrc octets and record the count in the
-	// cleartext header, exactly as RFC 4121 section 4.2.5 describes.
+	// Rotate the ciphertext right by rrc octets — the inverse of the rotateLeft
+	// the receiver applies — and record the count in the cleartext header,
+	// exactly as RFC 4121 section 4.2.5 describes.
 	const rrc = 5
 	tokenLen := binary.BigEndian.Uint32(requestBody[0:4])
 	token := append([]byte(nil), requestBody[4:4+tokenLen]...)
 	body := token[wrapTokenHdrLen:]
-	rotated := make([]byte, len(body))
-	split := len(body) - rrc%len(body)
-	copy(rotated, body[split:])
-	copy(rotated[rrc%len(body):], body[:split])
-	copy(body, rotated)
+	copy(body, rotateLeft(body, len(body)-rrc))
 	binary.BigEndian.PutUint16(token[6:8], rrc)
 
 	var buf bytes.Buffer
