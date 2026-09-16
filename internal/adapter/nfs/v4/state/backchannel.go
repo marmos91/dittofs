@@ -512,6 +512,19 @@ func (bs *BackchannelSender) sendCallback(ctx context.Context, req CallbackReque
 
 	select {
 	case <-timeoutCtx.Done():
+		// Same uniform pick as in the probe: a deadline expiring alongside a
+		// retired reply table must not be reported as the client failing to
+		// answer, because the retry loop reads that as no callback path and
+		// revokes a delegation over a socket on this side.
+		select {
+		case _, open := <-replyCh:
+			if !open {
+				pending.Cancel(xid)
+				return fmt.Errorf("%w: connection %d was retired while the callback was in flight",
+					errCallbackNotAttempted, connID)
+			}
+		default:
+		}
 		pending.Cancel(xid)
 		return fmt.Errorf("backchannel callback timed out after %s", bs.callbackTimeout)
 	case replyBytes, open := <-replyCh:
@@ -699,6 +712,22 @@ func (bs *BackchannelSender) probeCallbackPath(ctx context.Context) error {
 		select {
 		case <-timeoutCtx.Done():
 			cancel()
+			// Both can be ready at once — the deadline expiring in the same
+			// instant the connection is retired — and a select with two ready
+			// cases picks uniformly. Taking the timeout branch there would
+			// publish "the client does not answer callbacks" about a socket
+			// that went away on this side, and nothing re-probes until the next
+			// parameter update. Ask first.
+			select {
+			case _, open := <-replyCh:
+				if !open {
+					pending.Cancel(xid)
+					lastErr = fmt.Errorf("back-bound connection %d was retired while CB_NULL was in flight", connID)
+					exclude = connID
+					continue
+				}
+			default:
+			}
 			pending.Cancel(xid)
 			return fmt.Errorf("CB_NULL timed out after %s", bs.callbackTimeout)
 		case <-bs.stopCh:
