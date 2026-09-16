@@ -87,12 +87,31 @@ claim_exclusive_stack() {
     # the pid write leaves a claim nothing reclaims automatically; the refusal
     # prints the one command that clears it. Revisit if that is ever seen in
     # practice rather than reasoned about.
+    # The reap needs a lock of its own. Two runs can read the same dead PID and
+    # both decide to reap: the first recreates the claim, is preempted before
+    # writing its pid, and the second's rm -rf then deletes it — leaving both
+    # holding what each believes is an exclusive claim, which is the collision
+    # this whole mechanism exists to prevent. mkdir on a second directory picks
+    # one reaper; the other refuses below.
+    #
+    # A reap lock left behind by a crash costs a refusal, never a double claim,
+    # so it is not itself reaped.
     if [[ -n "$owner" ]] && ! kill -0 "$owner" 2>/dev/null; then
-        rm -rf "$dir"
-        if mkdir "$dir" 2>/dev/null; then
-            echo "$$" > "${dir}/pid"
-            STACK_CLAIM_DIR="$dir"
-            return 0
+        if mkdir "${dir}.reap" 2>/dev/null; then
+            # Re-read under the reap lock: the owner may have been replaced
+            # between the check above and here, and reaping a live claim is the
+            # same collision by a slower route.
+            owner="$(cat "${dir}/pid" 2>/dev/null || true)"
+            if [[ -n "$owner" ]] && ! kill -0 "$owner" 2>/dev/null; then
+                rm -rf "$dir"
+                if mkdir "$dir" 2>/dev/null; then
+                    echo "$$" > "${dir}/pid"
+                    STACK_CLAIM_DIR="$dir"
+                    rmdir "${dir}.reap" 2>/dev/null || true
+                    return 0
+                fi
+            fi
+            rmdir "${dir}.reap" 2>/dev/null || true
         fi
         owner="$(cat "${dir}/pid" 2>/dev/null || true)"
     fi
