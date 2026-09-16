@@ -259,7 +259,6 @@ STACK_OWNED=true
 cleanup() {
     local exit_code=$?
 
-    release_exclusive_stack
 
     # Reaped even under --keep: the client holds no state worth inspecting, its
     # output is already teed to the results file, and the compose down below
@@ -276,7 +275,14 @@ cleanup() {
         log_warn "Containers left running (--keep). Clean up with: cd ${CONFORMANCE_DIR} && docker compose -p ${COMPOSE_PROJECT_NAME} down -v"
     fi
 
+    # Released last. A retry that acquires the claim while this teardown is
+    # still running would have its stack removed by the `down -v` above, or its
+    # startup overlapped by a local process still stopping — which is the
+    # interference the claim exists to prevent, arriving one step later.
+    release_exclusive_stack
+
     return $exit_code
+
 }
 trap cleanup EXIT
 

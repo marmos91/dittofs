@@ -62,25 +62,45 @@ _stack_claim_dir() {
 }
 
 claim_exclusive_stack() {
-    local dir
+    local dir owner
     dir="$(_stack_claim_dir "${COMPOSE_PROJECT_NAME}")"
 
-    if ! mkdir "$dir" 2>/dev/null; then
-        local owner
-        owner="$(cat "${dir}/pid" 2>/dev/null || true)"
-        # A claim whose owner is gone is a killed run's leftover, not a live
-        # peer. Reaping it is safe precisely because the check is atomic: if two
-        # processes reap at once, only one of them then wins the mkdir.
-        if [[ -z "$owner" ]] || ! kill -0 "$owner" 2>/dev/null; then
-            rm -rf "$dir"
-            mkdir "$dir" 2>/dev/null || true
+    if mkdir "$dir" 2>/dev/null; then
+        echo "$$" > "${dir}/pid"
+        STACK_CLAIM_DIR="$dir"
+        return 0
+    fi
+
+    owner="$(cat "${dir}/pid" 2>/dev/null || true)"
+
+    # An empty pid is a claim being taken RIGHT NOW, not an abandoned one: the
+    # winner of the mkdir above writes its pid a moment later. Reaping on that
+    # basis reintroduces exactly the race the claim exists to remove — the
+    # winner would have its directory deleted out from under it and both runs
+    # would proceed against one Compose project.
+    #
+    # decision: a claim whose owner is a live PID is refused, and one whose owner
+    # is gone is reaped and retried ONCE. Anything else — an empty pid, or a
+    # second failure after reaping — is refused and left for a human, because
+    # the alternative is guessing about a directory another process may be in
+    # the middle of creating. The cost is that a run killed between mkdir and
+    # the pid write leaves a claim nothing reclaims automatically; the refusal
+    # prints the one command that clears it. Revisit if that is ever seen in
+    # practice rather than reasoned about.
+    if [[ -n "$owner" ]] && ! kill -0 "$owner" 2>/dev/null; then
+        rm -rf "$dir"
+        if mkdir "$dir" 2>/dev/null; then
+            echo "$$" > "${dir}/pid"
+            STACK_CLAIM_DIR="$dir"
+            return 0
         fi
-        if [[ ! -d "$dir" ]] || [[ "$(cat "${dir}/pid" 2>/dev/null || true)" != "" && \
-              "$(cat "${dir}/pid" 2>/dev/null || true)" != "$$" ]]; then
-            cat >&2 <<EOF
+        owner="$(cat "${dir}/pid" 2>/dev/null || true)"
+    fi
+
+    cat >&2 <<EOF
 
 ERROR: another run already holds this stack (Compose project ${COMPOSE_PROJECT_NAME},
-       claimed by PID ${owner:-unknown}).
+       claimed by PID ${owner:-a run that has not finished claiming it}).
 
 The stack publishes fixed host ports and the suites are timing-sensitive, so
 only one may run at a time from a given checkout. Wait for that run to finish.
@@ -88,11 +108,7 @@ If you are sure no such process exists, remove the claim:
     rm -rf ${dir}
 
 EOF
-            exit 1
-        fi
-    fi
-    echo "$$" > "${dir}/pid"
-    STACK_CLAIM_DIR="$dir"
+    exit 1
 }
 
 release_exclusive_stack() {

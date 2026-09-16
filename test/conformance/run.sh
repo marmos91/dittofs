@@ -347,12 +347,13 @@ write_summary() {
     elif [[ -n "$failed_step" && "$failed_step" != "$GRADED_STEP" ]]; then
         verdict="${failed_step} failed (exit ${status}) — no tests were graded"
         icon=":construction:"
-    elif [[ "$status" -ge 125 && "$status" -le 127 ]]; then
+    elif [[ "$status" -ge 125 && "$status" -le 127 && ! -r "${results_dir}/verdict" ]]; then
         # Docker and the shell reserve 125-127 for "could not run the thing at
-        # all". The parser may already have written a verdict from a partial
-        # output file, and describing the run by that verdict would report a
-        # graded result for a run the infrastructure stopped — the same false
-        # label as calling a non-result a failure, one layer further out.
+        # all" — but the grader also exits with a COUNT, capped at 254, so those
+        # three values are ambiguous on their own. A run with exactly 125 new
+        # failures is a graded run, and it writes a verdict; a run Docker refused
+        # to start writes nothing. So the sidecar decides, and this branch is
+        # only for its absence.
         verdict="the graded step could not run (exit ${status}); no result was produced"
         icon=":construction:"
     elif [[ -r "${results_dir}/verdict" ]]; then

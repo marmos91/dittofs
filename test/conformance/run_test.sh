@@ -129,8 +129,16 @@ EOF
 
 cat >"${FAKE_TEST}/fake/infra.sh" <<'EOF'
 #!/usr/bin/env bash
-# A verdict written from a partial output file, then a Docker-level failure.
-echo "failures 2 0 0" > "${DITTOFS_RESULTS_DIR}/verdict"
+# Docker could not start the thing: no verdict written, and one of the three
+# exit codes reserved for that.
+exit 125
+EOF
+
+cat >"${FAKE_TEST}/fake/graded125.sh" <<'EOF'
+#!/usr/bin/env bash
+# The grader's exit status is a COUNT, capped at 254, so 125 is also a perfectly
+# ordinary number of new failures — and that run writes a verdict.
+echo "failures 125 0 0" > "${DITTOFS_RESULTS_DIR}/verdict"
 exit 125
 EOF
 
@@ -215,6 +223,15 @@ cat >"$FAKE_MANIFEST" <<'EOF'
       "tiers": { "pull_request": "all", "push": "all" },
       "steps": [
         { "name": "run", "cmd": "fake/infra.sh", "args": [], "root": false }
+      ]
+    },
+    "graded125": {
+      "description": "graded 125 new failures, which collides with the docker exit range",
+      "runner_dir": "fake",
+      "profiles": ["memory"],
+      "tiers": { "pull_request": "all", "push": "all" },
+      "steps": [
+        { "name": "run", "cmd": "fake/graded125.sh", "args": [], "root": false }
       ]
     },
     "refused": {
@@ -458,7 +475,13 @@ assert_not_contains "and is never called a new failure" "new failure(s)" "$OUT"
 # Docker stopped.
 OUT="$(run_fake --suite infra --profile memory)"
 assert_contains "a docker-level failure says the step could not run" "could not run" "$OUT"
-assert_not_contains "and does not report the partial verdict" "2 new failure(s)" "$OUT"
+assert_not_contains "and is not a failure count" "new failure(s)" "$OUT"
+
+# 125 is also a legitimate failure COUNT, and that run graded something — so the
+# sidecar decides, not the numeric status.
+OUT="$(run_fake --suite graded125 --profile memory)"
+assert_contains "a graded run that happens to exit 125 keeps its count" "125 new failure(s)" "$OUT"
+assert_not_contains "and is not called an infrastructure failure" "could not run" "$OUT"
 
 OUT="$(run_fake --suite ungraded --profile memory)"
 assert_contains "an empty run says there were no results" "no test results at all" "$OUT"
