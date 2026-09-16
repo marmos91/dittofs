@@ -1081,7 +1081,6 @@ func ProcessAppInstanceId(
 		metaHandle []byte
 		leaseKey   [16]byte
 		shareName  string
-		isLease    bool
 	}
 	var candidates []candidate
 	handler.files.Range(func(_, value any) bool {
@@ -1099,7 +1098,6 @@ func ProcessAppInstanceId(
 				metaHandle: metaHandle,
 				leaseKey:   f.LeaseKey,
 				shareName:  f.ShareName,
-				isLease:    f.OplockLevel == OplockLevelLease,
 			})
 		}
 		return true
