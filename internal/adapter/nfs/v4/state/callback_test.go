@@ -1262,7 +1262,7 @@ func TestEncodeCallbackCred(t *testing.T) {
 		AuthSysParms: &types.AuthSysParms{Stamp: 13, MachineName: "fake name", UID: 17, GID: 19},
 	}
 	authNone := types.CallbackSecParms4{CbSecFlavor: 0}
-	gssOnly := types.CallbackSecParms4{CbSecFlavor: 6, RpcGssData: []byte{0x01}}
+	gssOnly := types.CallbackSecParms4{CbSecFlavor: 6, GssCbHandles: &types.GssCbHandles4{Service: 1, HandleFromClient: []byte{0x01}}}
 
 	t.Run("nothing offered falls back to the server credential", func(t *testing.T) {
 		if cred := EncodeCallbackCred(nil); cred != nil {
