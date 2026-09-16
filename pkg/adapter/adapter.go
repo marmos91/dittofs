@@ -1,3 +1,8 @@
+// Package adapter provides protocol adapter interfaces for DittoFS.
+//
+// Each protocol adapter (NFS, SMB) embeds BaseAdapter for shared lifecycle,
+// listener and connection management, and implements Adapter to plug into
+// DittoServer. Authentication mechanisms themselves live in pkg/auth.
 package adapter
 
 import (

@@ -5,12 +5,20 @@ package middleware
 import (
 	"context"
 
+	nfsauth "github.com/marmos91/dittofs/internal/adapter/nfs/auth"
 	mount "github.com/marmos91/dittofs/internal/adapter/nfs/mount/handlers"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc/gss"
 	nfs "github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers"
 	"github.com/marmos91/dittofs/internal/logger"
 )
+
+// unixTranslator parses AUTH_UNIX credentials into an identity. It is
+// stateless and shared, and is constructed without an identity store because
+// this layer only extracts the wire credentials: the UID-to-user resolution
+// that turns them into an authorization decision happens later, when the
+// per-operation auth context is built (auth.BuildAuthContext).
+var unixTranslator = nfsauth.NewUnixTranslator(nil)
 
 // ExtractHandlerContext creates an NFSHandlerContext from an RPC call message.
 // This centralizes authentication extraction logic and ensures consistent
@@ -87,27 +95,34 @@ func ExtractHandlerContext(
 		return handlerCtx
 	}
 
-	// Parse Unix auth credentials
-	unixAuth, err := rpc.ParseUnixAuth(authBody)
+	// Parse Unix auth credentials.
+	//
+	// decision: a malformed credential leaves the context anonymous rather
+	// than failing the RPC. The wire already asserts the identity, so an
+	// unparseable one carries no authorization evidence at all — which is the
+	// same state as AUTH_NULL. Downstream, auth.ResolveSharePermission gates
+	// that anonymous context on the share's default_permission, so it is
+	// refused wherever the share is not open to guests. Withdraw this
+	// fail-open only if an anonymous context can reach a share that grants
+	// guests more than the share's own default.
+	result, _, err := unixTranslator.Translate(ctx, authBody)
 	if err != nil {
-		// Log the parsing failure - this is unexpected and may indicate
-		// a protocol issue or malicious client
 		logger.Warn("Failed to parse AUTH_UNIX credentials",
 			"procedure", procedure,
 			"error", err)
 		return handlerCtx
 	}
 
-	// Log successful auth parsing at debug level
+	identity := result.Identity
 	logger.Debug("Parsed Unix auth",
 		"procedure", procedure,
-		"uid", unixAuth.UID,
-		"gid", unixAuth.GID,
-		"ngids", len(unixAuth.GIDs))
+		"uid", *identity.UID,
+		"gid", *identity.GID,
+		"ngids", len(identity.GIDs))
 
-	handlerCtx.UID = &unixAuth.UID
-	handlerCtx.GID = &unixAuth.GID
-	handlerCtx.GIDs = unixAuth.GIDs
+	handlerCtx.UID = identity.UID
+	handlerCtx.GID = identity.GID
+	handlerCtx.GIDs = identity.GIDs
 
 	return handlerCtx
 }
@@ -136,15 +151,13 @@ func ExtractMountHandlerContext(
 		KerberosEnabled: kerberosEnabled,
 	}
 
-	// Parse Unix credentials if AUTH_UNIX
+	// Parse Unix credentials if AUTH_UNIX. A parse failure leaves the mount
+	// context anonymous, matching ExtractHandlerContext's decision above.
 	if handlerCtx.AuthFlavor == rpc.AuthUnix {
-		authBody := call.GetAuthBody()
-		if len(authBody) > 0 {
-			if unixAuth, err := rpc.ParseUnixAuth(authBody); err == nil {
-				handlerCtx.UID = &unixAuth.UID
-				handlerCtx.GID = &unixAuth.GID
-				handlerCtx.GIDs = unixAuth.GIDs
-			}
+		if result, _, err := unixTranslator.Translate(ctx, call.GetAuthBody()); err == nil {
+			handlerCtx.UID = result.Identity.UID
+			handlerCtx.GID = result.Identity.GID
+			handlerCtx.GIDs = result.Identity.GIDs
 		}
 	}
 
