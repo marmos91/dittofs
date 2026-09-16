@@ -48,7 +48,7 @@ func TestGracePeriod_BlocksNewOpen(t *testing.T) {
 	sm.StartGracePeriod([]uint64{100, 200})
 
 	// CheckGraceForNewState should return NFS4ERR_GRACE
-	err := sm.CheckGraceForNewState()
+	err := sm.CheckGraceForNewState(0)
 	if err == nil {
 		t.Fatal("CheckGraceForNewState should return error during grace period")
 	}
@@ -589,5 +589,72 @@ func TestGraceStatus_StateManager(t *testing.T) {
 	}
 	if status.ExpectedClients != 2 {
 		t.Errorf("ExpectedClients = %d, want 2", status.ExpectedClients)
+	}
+}
+
+// TestCheckGraceForNewState_ReclaimCompletePending covers the second axis of
+// CheckGraceForNewState: a v4.1 client that has not yet sent RECLAIM_COMPLETE is
+// held off new state even though the server itself is not in a grace period
+// (RFC 8881 Section 18.51.3).
+func TestCheckGraceForNewState_ReclaimCompletePending(t *testing.T) {
+	sm := NewStateManager(5*time.Second, 200*time.Millisecond)
+	defer sm.Shutdown()
+
+	if sm.IsInGrace() {
+		t.Fatal("no grace period was started; the server-wide axis must be off for this test to mean anything")
+	}
+
+	clientID := newReclaimClient(t, sm, "recc-pending")
+
+	err := sm.CheckGraceForNewState(clientID)
+	if !errors.Is(err, ErrGrace) {
+		t.Fatalf("before RECLAIM_COMPLETE: err = %v, want ErrGrace", err)
+	}
+
+	if err := sm.ReclaimComplete(clientID, false); err != nil {
+		t.Fatalf("ReclaimComplete: %v", err)
+	}
+
+	if err := sm.CheckGraceForNewState(clientID); err != nil {
+		t.Fatalf("after RECLAIM_COMPLETE: err = %v, want nil", err)
+	}
+}
+
+// TestCheckGraceForNewState_OneFSDoesNotSatisfyGate pins rca_one_fs = TRUE as
+// not satisfying the gate: RFC 8881 Section 18.51.3 requires the global form,
+// "a RECLAIM_COMPLETE with rca_one_fs set to FALSE", before the first
+// non-reclaim locking operation.
+func TestCheckGraceForNewState_OneFSDoesNotSatisfyGate(t *testing.T) {
+	sm := NewStateManager(5*time.Second, 200*time.Millisecond)
+	defer sm.Shutdown()
+
+	clientID := newReclaimClient(t, sm, "recc-onefs")
+
+	if err := sm.ReclaimComplete(clientID, true); err != nil {
+		t.Fatalf("ReclaimComplete(one_fs): %v", err)
+	}
+	if err := sm.CheckGraceForNewState(clientID); !errors.Is(err, ErrGrace) {
+		t.Fatalf("after one-fs RECLAIM_COMPLETE: err = %v, want ErrGrace", err)
+	}
+}
+
+// TestCheckGraceForNewState_ExemptClients checks the two client shapes the gate
+// deliberately does not apply to: an unknown client ID, which a later stage
+// reports as stale, and a v4.0 record, which has no RECLAIM_COMPLETE operation
+// to satisfy the gate with.
+func TestCheckGraceForNewState_ExemptClients(t *testing.T) {
+	sm := NewStateManager(5*time.Second, 200*time.Millisecond)
+	defer sm.Shutdown()
+
+	if err := sm.CheckGraceForNewState(0xdeadbeef); err != nil {
+		t.Fatalf("unknown client: err = %v, want nil", err)
+	}
+
+	sm.mu.Lock()
+	sm.clientsByID[42] = &ClientRecord{ClientID: 42, MinorVersion: 0, Confirmed: true}
+	sm.mu.Unlock()
+
+	if err := sm.CheckGraceForNewState(42); err != nil {
+		t.Fatalf("v4.0 client: err = %v, want nil (RECLAIM_COMPLETE does not exist before minor version 1)", err)
 	}
 }

@@ -328,7 +328,7 @@ func (sm *StateManager) LockNew(
 ) (result *LockResult, err error) {
 	// Grace period check (before acquiring sm.mu)
 	if !reclaim {
-		if err := sm.CheckGraceForNewState(); err != nil {
+		if err := sm.CheckGraceForNewState(callerClientID); err != nil {
 			return nil, err
 		}
 	}
@@ -536,7 +536,7 @@ func (sm *StateManager) LockExisting(
 
 	// Grace period check
 	if !reclaim {
-		if err := sm.CheckGraceForNewState(); err != nil {
+		if err := sm.CheckGraceForNewState(callerClientID); err != nil {
 			return nil, err
 		}
 	}

@@ -513,17 +513,50 @@ func (sm *StateManager) ReclaimComplete(clientID uint64, oneFS bool) error {
 	return nil
 }
 
-// CheckGraceForNewState returns NFS4ERR_GRACE if the server is in a grace period
-// and the operation would create new state. Returns nil if the operation is allowed.
+// CheckGraceForNewState returns NFS4ERR_GRACE if clientID may not create new
+// state yet, for either of the two reasons that withhold it, and nil if the
+// operation is allowed. The two are independent: the server may be past its own
+// grace period while this particular client is still owed a RECLAIM_COMPLETE.
 //
 // This should be called before any new state-creating operation (OPEN with
-// CLAIM_NULL, LOCK). Operations that use existing state (READ, WRITE, RENEW,
-// CLOSE) should NOT call this.
+// CLAIM_NULL or CLAIM_FH, LOCK). Operations that use existing state (READ,
+// WRITE, RENEW, CLOSE) should NOT call this, and neither should a reclaim —
+// a reclaim is what the wait is for.
 //
-// NOTE: LOCK operations will also need to check this.
+// clientID is the client the operation is attributed to: the session's client
+// ID under v4.1, and zero on the v4.0 path, which names no record and so is
+// judged on the server-wide grace period alone.
 
-func (sm *StateManager) CheckGraceForNewState() error {
+func (sm *StateManager) CheckGraceForNewState(clientID uint64) error {
 	if sm.IsInGrace() {
+		return ErrGrace
+	}
+
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	// A client that has not yet announced the end of its own reclaims is held
+	// off new state even when the server itself is no longer in grace, because
+	// the server cannot yet tell which of that client's locks are reclaims.
+	//
+	// RFC 8881 Section 18.51.3: "Whenever a client establishes a new client ID
+	// and before it does the first non-reclaim operation that obtains a lock, it
+	// MUST send a RECLAIM_COMPLETE with rca_one_fs set to FALSE, even if there
+	// are no locks to reclaim. If non-reclaim locking operations are done before
+	// the RECLAIM_COMPLETE, an NFS4ERR_GRACE error will be returned."
+	//
+	// decision: the gate is applied only to clients that established their ID
+	// through EXCHANGE_ID. RECLAIM_COMPLETE does not exist before minor version
+	// 1, so a v4.0 client has no way to satisfy the gate and applying it there
+	// would refuse its every lock permanently. On a v4.0 record the same field
+	// means "has reclaimed at least once", which is a different question.
+	// Withdraw the exemption if a v4.0 client ever gains a way to declare its
+	// reclaims finished.
+	//
+	// An unknown client ID passes here: it is not this gate's business to
+	// report, and the operation fails with NFS4ERR_STALE_CLIENTID further in.
+	rec := sm.clientRecordLocked(clientID)
+	if rec != nil && rec.MinorVersion >= 1 && !rec.ReclaimComplete {
 		return ErrGrace
 	}
 	return nil

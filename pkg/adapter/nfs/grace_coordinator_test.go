@@ -148,7 +148,7 @@ func TestGraceCoordinator_RuntimeAddShareDoesNotArmV4Grace(t *testing.T) {
 	if sm.IsInGrace() {
 		t.Fatal("runtime AddShare armed server-wide NFSv4 reboot grace (self-inflicted freeze)")
 	}
-	if err := sm.CheckGraceForNewState(); err != nil {
+	if err := sm.CheckGraceForNewState(0); err != nil {
 		t.Fatalf("OPEN(CLAIM_NULL)/LOCK rejected with NFS4ERR_GRACE after runtime AddShare: %v", err)
 	}
 
@@ -175,7 +175,7 @@ func TestGraceCoordinator_BootArmsGraceBeforeServing(t *testing.T) {
 	if !sm.IsInGrace() {
 		t.Fatal("boot-time share grace must arm v4 reboot grace for reclaim")
 	}
-	if err := sm.CheckGraceForNewState(); err == nil {
+	if err := sm.CheckGraceForNewState(0); err == nil {
 		t.Fatal("boot grace must reject new state (NFS4ERR_GRACE) so prior owners reclaim first")
 	}
 

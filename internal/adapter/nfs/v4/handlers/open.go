@@ -233,7 +233,7 @@ func (h *Handler) handleOpen(ctx *types.CompoundContext, reader io.Reader) (resu
 	switch claimType {
 	case types.CLAIM_NULL:
 		// New open: check grace period BEFORE file creation/lookup
-		if graceErr := h.StateManager.CheckGraceForNewState(); graceErr != nil {
+		if graceErr := h.StateManager.CheckGraceForNewState(clientID); graceErr != nil {
 			nfsStatus := mapStateError(graceErr)
 			logger.Debug("NFSv4 OPEN blocked by grace period",
 				"claim_type", "CLAIM_NULL",
@@ -252,7 +252,7 @@ func (h *Handler) handleOpen(ctx *types.CompoundContext, reader io.Reader) (resu
 		// re-open a file they still hold a filehandle for (e.g. reading back a
 		// file they just created and closed) instead of a fresh CLAIM_NULL
 		// lookup. It is a new open, so it is grace-blocked like CLAIM_NULL.
-		if graceErr := h.StateManager.CheckGraceForNewState(); graceErr != nil {
+		if graceErr := h.StateManager.CheckGraceForNewState(clientID); graceErr != nil {
 			nfsStatus := mapStateError(graceErr)
 			logger.Debug("NFSv4 OPEN blocked by grace period",
 				"claim_type", "CLAIM_FH",
