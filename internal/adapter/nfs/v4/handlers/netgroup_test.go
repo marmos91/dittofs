@@ -251,6 +251,30 @@ func TestV4Netgroup_XattrOpsReportAccessNotServerfault(t *testing.T) {
 		t.Fatalf("SetShareNetgroup: %v", err)
 	}
 
+	runXattrOps(t, h, rootHandle, types.NFS4ERR_ACCESS)
+}
+
+// TestV4Netgroup_XattrOpsReportWrongsecNotServerfault is the other half of the
+// same coarsening, and the half that costs a client more. An export that
+// refuses the compound's auth flavor answers NFS4ERR_WRONGSEC, which sends the
+// client to SECINFO and a flavor the share does accept; NFS4ERR_SERVERFAULT
+// sends it nowhere. No netgroup is set here, so the flavor check is what
+// refuses rather than the netgroup check that runs ahead of it.
+func TestV4Netgroup_XattrOpsReportWrongsecNotServerfault(t *testing.T) {
+	h, rootHandle, rt := newPutFHTestHandler(t, "/export")
+	if err := rt.SetExportAuthPolicyForTesting("/export", false, false); err != nil {
+		t.Fatalf("SetExportAuthPolicyForTesting: %v", err)
+	}
+
+	runXattrOps(t, h, rootHandle, types.NFS4ERR_WRONGSEC)
+}
+
+// runXattrOps drives all four RFC 8276 handlers against the share root over
+// AUTH_UNIX and asserts each answers want. The auth context is built before any
+// handler reaches its xattr backend, so a refusal needs no backend at all.
+func runXattrOps(t *testing.T, h *Handler, rootHandle []byte, want uint32) {
+	t.Helper()
+
 	newCtx := func() *types.CompoundContext {
 		return &types.CompoundContext{
 			Context:    context.Background(),
@@ -280,8 +304,8 @@ func TestV4Netgroup_XattrOpsReportAccessNotServerfault(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.op, func(t *testing.T) {
-			if status := tc.call().Status; status != types.NFS4ERR_ACCESS {
-				t.Fatalf("%s status = %d, want NFS4ERR_ACCESS (%d)", tc.op, status, types.NFS4ERR_ACCESS)
+			if status := tc.call().Status; status != want {
+				t.Fatalf("%s status = %d, want %d", tc.op, status, want)
 			}
 		})
 	}
