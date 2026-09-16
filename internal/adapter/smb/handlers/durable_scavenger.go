@@ -80,6 +80,13 @@ func (s *DurableHandleScavenger) expireHandlesFromPreviousInstance(ctx context.C
 	var expired, adjusted int
 
 	for _, h := range handles {
+		// The walk is unbounded in the handle count and each cleanup writes
+		// through the metadata store, so a shutdown that cancels this loop has
+		// to be able to cut it short — otherwise Stop's join waits out the
+		// whole pass before it can conclude anything.
+		if ctx.Err() != nil {
+			return
+		}
 		// Only process handles from a previous server instance
 		if h.ServerStartTime.Equal(s.startTime) {
 			continue
@@ -121,6 +128,9 @@ func (s *DurableHandleScavenger) expireHandles(ctx context.Context) {
 	expired := 0
 
 	for _, h := range handles {
+		if ctx.Err() != nil {
+			return
+		}
 		expiresAt := h.DisconnectedAt.Add(time.Duration(h.TimeoutMs) * time.Millisecond)
 		if !expiresAt.After(now) {
 			s.cleanupAndDelete(ctx, h)

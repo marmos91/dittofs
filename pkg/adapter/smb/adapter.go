@@ -2,8 +2,10 @@ package smb
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -789,7 +791,8 @@ func (s *Adapter) wireNetlogonReload(rt *runtime.Runtime) {
 	s.resolverMu.Lock()
 	defer s.resolverMu.Unlock()
 
-	if rt == nil || s.netlogonAuth == nil || s.netlogonProviderUnsub != nil {
+	// Same fence as wireIdentityResolver.
+	if s.stopping || rt == nil || s.netlogonAuth == nil || s.netlogonProviderUnsub != nil {
 		return
 	}
 	auth := s.netlogonAuth
@@ -868,7 +871,12 @@ func (s *Adapter) wireIdentityResolver(rt *runtime.Runtime) {
 	s.resolverMu.Lock()
 	defer s.resolverMu.Unlock()
 
-	if s.handler.KerberosProvider == nil || rt == nil {
+	// A provider-change callback can already be in flight when Stop runs: the
+	// notifier snapshots its callbacks before invoking them, so unsubscribing
+	// does not recall one that has been handed out. Wiring after Stop has
+	// drained the subscriptions would register a fresh one that nothing will
+	// ever remove, pointed at a handler that is being torn down.
+	if s.stopping || s.handler.KerberosProvider == nil || rt == nil {
 		return
 	}
 	realm := adapter.ExtractRealm(s.handler.KerberosProvider.ServicePrincipal())
@@ -910,7 +918,9 @@ func (s *Adapter) wireForeignSIDResolver(rt *runtime.Runtime) {
 	s.resolverMu.Lock()
 	defer s.resolverMu.Unlock()
 
-	if rt == nil || s.handler == nil || s.handler.PipeManager == nil {
+	// Same fence as wireIdentityResolver: an in-flight provider-change callback
+	// must not re-subscribe past a shutdown that has already drained them.
+	if s.stopping || rt == nil || s.handler == nil || s.handler.PipeManager == nil {
 		return
 	}
 
@@ -1002,12 +1012,29 @@ func (s *Adapter) findDurableHandleStore() lock.DurableHandleStore {
 	return nil
 }
 
+// ErrShutdownIncomplete is returned by Stop when a background worker was still
+// running when the shutdown deadline expired. The adapter's listener and
+// sessions are torn down either way; what the error says is that something of
+// this adapter's may still be reading the metadata store, so a caller that
+// closes stores after stopping adapters is doing so while a reader is live.
+var ErrShutdownIncomplete = errors.New("smb adapter: background worker still running at shutdown deadline")
+
 // Stop initiates graceful shutdown of the SMB server.
 //
 // Stop unsubscribes from share change notifications, closes the Kerberos
 // provider (stopping its keytab hot-reload goroutine), then delegates to
 // BaseAdapter.Stop() for the shared shutdown sequence.
 func (s *Adapter) Stop(ctx context.Context) error {
+	// BaseAdapter.Stop treats a nil ctx as "use the configured shutdown
+	// timeout". The joins below need a deadline too, so give a nil ctx the same
+	// one rather than letting it wait forever on an uncooperative worker while
+	// every other step of this shutdown is bounded.
+	if ctx == nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.Background(), s.Config.ShutdownTimeout)
+		defer cancel()
+	}
+
 	// Every subscription field below is written under resolverMu by
 	// wireIdentityResolver, wireForeignSIDResolver or wireNetlogonReload, each
 	// reachable from SetRuntime / SetKerberosProvider / an identity-provider
@@ -1027,8 +1054,11 @@ func (s *Adapter) Stop(ctx context.Context) error {
 	s.identityUnsub, s.identityProviderUnsub = nil, nil
 	s.foreignSIDProviderUnsub, s.netlogonProviderUnsub = nil, nil
 	netlogonAuth := s.netlogonAuth
+	// Read but not detached: the cancel is cleared only once the join below
+	// confirms the goroutine is gone, so a shutdown that gives up on it leaves
+	// a later Stop able to cancel and join it again. A late start is refused by
+	// the stopping flag above, not by this field being nil.
 	scavengerCancel := s.scavengerCancel
-	s.scavengerCancel = nil
 	s.resolverMu.Unlock()
 
 	for _, unsub := range resolverUnsubs {
@@ -1071,10 +1101,16 @@ func (s *Adapter) Stop(ctx context.Context) error {
 	// teardown below so no sweep is still reading session state while it runs.
 	s.resolverMu.Lock()
 	sweeper := s.authSweep
-	s.authSweep = nil
 	s.resolverMu.Unlock()
-	if sweeper != nil && !sweeper.stop(ctx) {
-		logger.Warn("SMB adapter: authorization sweep still running at shutdown deadline")
+	var unjoined []string
+	if sweeper != nil {
+		if sweeper.stop(ctx) {
+			s.resolverMu.Lock()
+			s.authSweep = nil
+			s.resolverMu.Unlock()
+		} else {
+			unjoined = append(unjoined, "authorization sweep")
+		}
 	}
 
 	// Close the Kerberos provider to stop its keytab reload goroutine.
@@ -1098,17 +1134,40 @@ func (s *Adapter) Stop(ctx context.Context) error {
 		s.scavengerWG.Wait()
 		close(joined)
 	}()
-	if ctx == nil {
-		<-joined
-	} else {
-		select {
-		case <-joined:
-		case <-ctx.Done():
-			logger.Warn("SMB adapter: durable handle scavenger still running at shutdown deadline")
-		}
+	select {
+	case <-joined:
+		s.resolverMu.Lock()
+		s.scavengerCancel = nil
+		s.resolverMu.Unlock()
+	case <-ctx.Done():
+		unjoined = append(unjoined, "durable handle scavenger")
 	}
 
-	return s.BaseAdapter.Stop(ctx)
+	err := s.BaseAdapter.Stop(ctx)
+
+	// decision: a join that misses its deadline does not hold up the rest of
+	// the teardown. Adapters are stopped one after another, so blocking here
+	// strands every adapter behind this one, and a shutdown that never returns
+	// is worse than one that gives up on a wedged goroutine.
+	//
+	// What is NOT safe once this branch is taken is closing what the worker
+	// reads — the runtime closes the metadata stores after the adapters stop,
+	// and a sweep still walking sessions or a scavenger still expiring handles
+	// would reach into them. So the branch says so instead of implying it is
+	// handled: the worker handle is left attached, which keeps a later Stop
+	// able to join it and keeps startScavenger refusing to add a second, and
+	// the failure is returned rather than logged, so a caller cannot read a nil
+	// error as "nothing of this adapter's is still running".
+	//
+	// Both workers check their context every session, every tree and every
+	// handle, so reaching this branch means a genuine wedge and not a slow
+	// store — which is why giving up on it is defensible at all.
+	if len(unjoined) > 0 {
+		logger.Warn("SMB adapter: shutdown deadline reached with workers still running",
+			"workers", strings.Join(unjoined, ", "))
+		err = errors.Join(err, fmt.Errorf("%w: %s", ErrShutdownIncomplete, strings.Join(unjoined, ", ")))
+	}
+	return err
 }
 
 // ============================================================================

@@ -94,6 +94,14 @@ func (h *Handler) RevalidateAuthorization(ctx context.Context) {
 	surviving := make(map[uint64]survivingSession)
 
 	h.SessionManager.RangeSessions(func(sessionID uint64, value any) bool {
+		// Abandoning a sweep on cancellation is safe: it reads current state
+		// rather than a delta, so the next one redoes whatever this one
+		// skipped. It is also what lets Stop bound its join without that bound
+		// firing on a merely slow sweep — reaching the deadline then means the
+		// sweep is genuinely wedged rather than still working.
+		if ctx.Err() != nil {
+			return false
+		}
 		sess, ok := value.(*session.Session)
 		if !ok || sess.LoggedOff.Load() {
 			return true
@@ -206,6 +214,9 @@ func (h *Handler) revalidateTrees(ctx context.Context, userStore models.UserStor
 	var updates []treeUpdate
 
 	h.trees.Range(func(_, value any) bool {
+		if ctx.Err() != nil {
+			return false
+		}
 		tree, ok := value.(*TreeConnection)
 		if !ok {
 			return true
@@ -222,9 +233,14 @@ func (h *Handler) revalidateTrees(ctx context.Context, userStore models.UserStor
 		}
 		share, err := h.Registry.GetShare(tree.ShareName)
 		if err != nil || share == nil {
-			// The share is gone. Its trees are left as they are: a removed share
-			// has no permission to re-resolve against, and TREE_CONNECT's own
-			// lookup refuses a fresh connect to it.
+			// The share is gone, and leaving the tree alone is what made a
+			// removal's invalidation inert: there is nothing to re-resolve
+			// against, so every later pass takes this branch too and the tree
+			// keeps the removed share's permission, its opens and its
+			// byte-range locks until the connection drops. The lookup is a
+			// registry map read, so a miss is the share being unregistered and
+			// not a transient failure. Retire it like any other withdrawal.
+			updates = append(updates, treeUpdate{treeID: tree.TreeID, sessionID: tree.SessionID, permission: models.PermissionNone, generation: survivor.snap.Generation})
 			return true
 		}
 
@@ -268,6 +284,9 @@ func (h *Handler) revalidateTrees(ctx context.Context, userStore models.UserStor
 	// Applied outside the Range: sync.Map permits mutation during one, but
 	// which entries a walk still visits afterwards is left undefined.
 	for _, u := range updates {
+		if ctx.Err() != nil {
+			return
+		}
 		// The permission below was resolved against the record the session pass
 		// read. A re-authentication since then has re-decided authorization for
 		// itself, and MS-SMB2 keeps tree connections across one, so applying

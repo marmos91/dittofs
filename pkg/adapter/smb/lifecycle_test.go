@@ -2,6 +2,7 @@ package smb
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -116,6 +117,12 @@ func TestStop_WithNoScavenger(t *testing.T) {
 // that ignores its cancellation must not turn Stop into a hang. The adapters
 // service stops each adapter serially, so one that never returns strands the
 // whole shutdown.
+//
+// It also pins what a shutdown that gives up must NOT do. Logging and carrying
+// on converts a hang into a use-after-teardown, because the runtime closes the
+// metadata stores once the adapters have stopped — so the failure has to come
+// back as an error, and the worker handle has to stay attached for a later Stop
+// to join.
 func TestStop_BoundedByContext(t *testing.T) {
 	a := New(Config{})
 
@@ -130,12 +137,116 @@ func TestStop_BoundedByContext(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- a.Stop(ctx) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrShutdownIncomplete) {
+			t.Errorf("Stop error = %v, want one wrapping ErrShutdownIncomplete: a nil or "+
+				"unrelated error reads as \"nothing of mine is still running\"", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop hung on a scavenger that ignored its cancellation")
+	}
+
+	a.resolverMu.Lock()
+	cancelFn := a.scavengerCancel
+	a.resolverMu.Unlock()
+	if cancelFn == nil {
+		t.Error("Stop detached the scavenger handle after a failed join; a later Stop cannot join it")
+	}
+}
+
+// TestStop_NilContextIsBounded: BaseAdapter.Stop treats a nil ctx as "use the
+// configured shutdown timeout", and the joins have to agree — otherwise the one
+// entry point that is documented as bounded is the one that hangs forever.
+func TestStop_NilContextIsBounded(t *testing.T) {
+	a := New(Config{Timeouts: TimeoutsConfig{Shutdown: 200 * time.Millisecond}})
+
+	stuck := make(chan struct{})
+	t.Cleanup(func() { close(stuck) })
+	started := make(chan struct{})
+	a.startScavenger(context.Background(), func(context.Context) {
+		close(started)
+		<-stuck
+	})
+	<-started
+
 	done := make(chan struct{})
-	go func() { defer close(done); _ = a.Stop(ctx) }()
+	// The nil context is the subject of this test: Stop documents it as
+	// "use the configured shutdown timeout", and that contract is what broke.
+	//nolint:staticcheck // SA1012: passing nil is the case under test
+	go func() { defer close(done); _ = a.Stop(nil) }()
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("Stop hung on a scavenger that ignored its cancellation")
+		t.Fatal("Stop(nil) hung: the joins ignored the configured shutdown timeout")
+	}
+}
+
+// TestStop_SweepJoinFailureKeepsWorker is the sweep-side twin of the assertions
+// in TestStop_BoundedByContext.
+func TestStop_SweepJoinFailureKeepsWorker(t *testing.T) {
+	a := New(Config{})
+	rt := runtime.New(nil)
+	a.SetRuntime(rt)
+
+	a.resolverMu.Lock()
+	wired := a.authSweep
+	a.resolverMu.Unlock()
+	wired.stop(context.Background())
+
+	stuck := make(chan struct{})
+	t.Cleanup(func() { close(stuck) })
+	started := make(chan struct{})
+	a.resolverMu.Lock()
+	a.authSweep = newAuthSweeper(func(context.Context) { close(started); <-stuck })
+	a.authSweep.request()
+	a.resolverMu.Unlock()
+	<-started
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	err := a.Stop(ctx)
+	if !errors.Is(err, ErrShutdownIncomplete) {
+		t.Errorf("Stop error = %v, want one wrapping ErrShutdownIncomplete", err)
+	}
+
+	a.resolverMu.Lock()
+	remaining := a.authSweep
+	a.resolverMu.Unlock()
+	if remaining == nil {
+		t.Error("Stop detached the sweep worker after a failed join")
+	}
+}
+
+// TestWiringRefusedAfterStop closes the other half of the stopping fence. The
+// identity-provider notifier snapshots its callbacks before invoking them, so
+// unsubscribing does not recall one already in flight: it can reach the wiring
+// functions after Stop has drained the subscriptions and register a fresh one
+// that nothing will ever remove.
+func TestWiringRefusedAfterStop(t *testing.T) {
+	a := New(Config{})
+	rt := runtime.New(nil)
+	a.SetRuntime(rt)
+	if err := a.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	a.wireForeignSIDResolver(rt)
+	a.wireIdentityResolver(rt)
+	a.wireNetlogonReload(rt)
+
+	a.resolverMu.Lock()
+	defer a.resolverMu.Unlock()
+	if a.foreignSIDProviderUnsub != nil {
+		t.Error("wireForeignSIDResolver subscribed after Stop")
+	}
+	if a.identityUnsub != nil || a.identityProviderUnsub != nil {
+		t.Error("wireIdentityResolver subscribed after Stop")
+	}
+	if a.netlogonProviderUnsub != nil {
+		t.Error("wireNetlogonReload subscribed after Stop")
 	}
 }
 
