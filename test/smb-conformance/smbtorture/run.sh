@@ -238,6 +238,16 @@ fi
 # cannot disturb the stack it is refusing to fight with.
 require_exclusive_stack
 
+# Claimed here, before the first path that can bring the stack up — the Kerberos
+# branch, the postgres one, and the plain dittofs start all follow. Claiming
+# inside one branch left every other run with the flag false, so the EXIT trap
+# skipped `down -v` and the next run was refused by the check above: a guard
+# turning the harness off rather than protecting it.
+#
+# Set before rather than after, so an `up` that dies partway still tears down
+# what it made.
+STACK_OWNED=true
+
 # --------------------------------------------------------------------------
 # Cleanup handler
 # --------------------------------------------------------------------------
@@ -295,9 +305,6 @@ if $KERBEROS; then
     docker compose build kdc
 
     log_step "Starting KDC..."
-    # See the note in test/smb-conformance/run.sh: only a run that created the
-    # stack may tear it down.
-    STACK_OWNED=true
     docker compose up -d kdc
     # klist parses the full keytab; only succeeds once kadmin has finished
     # writing and flushing the file, avoiding a partial-read race.

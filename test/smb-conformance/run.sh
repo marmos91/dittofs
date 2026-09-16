@@ -322,6 +322,19 @@ fi
 # cannot disturb the stack it is refusing to fight with.
 require_exclusive_stack
 
+# Claimed here, before the first path that can bring the stack up — the s3 and
+# postgres profiles start their own containers before dittofs, so claiming at
+# the dittofs start left those runs with the flag false and the EXIT trap
+# skipping `down -v`, which the next run is then refused for.
+#
+# The flag is what makes `down -v` safe at all: two runs from the same checkout
+# share one COMPOSE_PROJECT_NAME, so a run that adopted someone else's
+# containers would otherwise destroy them on exit — the interference the
+# admission check exists to prevent, arriving through the cleanup instead. Set
+# before rather than after, so an `up` that dies partway still tears down what
+# it made.
+STACK_OWNED=true
+
 # --------------------------------------------------------------------------
 # Cleanup handler
 # --------------------------------------------------------------------------
@@ -396,13 +409,6 @@ run_compose() {
             ;;
     esac
 
-    # Claimed before the stack exists, so an `up` that dies partway through
-    # still tears down what it made. The flag is what makes `down -v` safe: two
-    # runs from the same checkout share one COMPOSE_PROJECT_NAME, so a run that
-    # adopted someone else's containers would otherwise destroy them on exit —
-    # the exact interference the admission check exists to prevent, arriving
-    # through the cleanup instead.
-    STACK_OWNED=true
     PROFILE="$PROFILE" docker compose up -d dittofs
     wait_until "docker compose exec dittofs wget -q --spider http://localhost:8080/health/ready" 60 "DittoFS"
 

@@ -400,6 +400,11 @@ assert_contains "a graded failure is reported as a failure count" "3 new failure
 # The count the status carries is an aggregate, and clamped. What a human reads
 # has to separate a regression from a test that never reached the server, so the
 # grader writes both counts beside the category and the summary renders them.
+# An empty --results-dir= would make results_dir an absolute path under /, which
+# the per-run clear then deletes. Refused where it is parsed.
+OUT="$(run_fake --suite green --profile memory --results-dir= 2>&1 || true)"
+assert_contains "an empty results dir is refused" "requires a value" "$OUT"
+
 # A relative --results-dir must reach the graded step as an absolute one: the SMB
 # runners cd elsewhere before writing the sidecar, so a relative path would have
 # them write it where the summary never looks.

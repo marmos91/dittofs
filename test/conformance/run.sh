@@ -197,7 +197,15 @@ while [[ $# -gt 0 ]]; do
         --matrix) MATRIX_EVENT="${2:?--matrix requires a value}"; shift 2 ;;
         --matrix=*) MATRIX_EVENT="${1#*=}"; shift ;;
         --results-dir) RESULTS_ROOT="${2:?--results-dir requires a value}"; shift 2 ;;
-        --results-dir=*) RESULTS_ROOT="${1#*=}"; shift ;;
+        --results-dir=*)
+            RESULTS_ROOT="${1#*=}"
+            # An empty value here is not a missing flag, it is a root: the
+            # suite/label path built from it becomes /<suite>/<label>, which the
+            # per-run clear below would then delete. Refuse it where it is
+            # parsed rather than defending against it later.
+            [[ -n "$RESULTS_ROOT" ]] || die "--results-dir= requires a value"
+            shift
+            ;;
         --keep) KEEP=true; shift ;;
         --dry-run) DRY_RUN=true; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -247,7 +255,11 @@ run_one() {
         # run would parse the first run's failures as its own, and a run that
         # dies before the graded step would be described by the first run's
         # verdict. Scoped to the one suite/label directory this script owns.
-        rm -rf "${results_dir:?}"
+        # Checked, because this script runs without `set -e`: a clear that
+        # silently failed would leave the previous run's artifacts and verdict
+        # in place, and the summary would describe this run with them — the
+        # stale-sidecar problem the clear exists to remove, now invisible.
+        rm -rf "${results_dir:?}" || die "cannot clear the results directory: ${results_dir}"
         mkdir -p "$results_dir"
         clear_orphan_server
     fi
