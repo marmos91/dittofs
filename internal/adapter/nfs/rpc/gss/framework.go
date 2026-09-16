@@ -108,13 +108,21 @@ func (v *Krb5Verifier) VerifyToken(gssToken []byte) (*VerifiedContext, error) {
 
 	// The ticket's end time bounds every context this AP-REQ establishes. A
 	// ticket carrying none cannot be bounded, so it is refused rather than
-	// granted an unbounded context: AP-REQ verification has already rejected a
-	// ticket outside its validity interval, so a zero end time here means the
-	// ticket is malformed, not merely long-lived.
-	expiresAt := authResult.APReq.Ticket.DecryptedEncPart.EndTime
-	if expiresAt.IsZero() {
+	// granted an unbounded context: a ticket with no end time is malformed, not
+	// merely long-lived.
+	endTime := authResult.APReq.Ticket.DecryptedEncPart.EndTime
+	if endTime.IsZero() {
 		return nil, fmt.Errorf("ticket carries no end time")
 	}
+
+	// AP-REQ verification admits a ticket while now-endTime is within the
+	// configured clock skew, so a ticket already a little past its end time
+	// establishes a context. The bound reported here carries the same allowance,
+	// because two gates on the same quantity disagreeing is worse than either
+	// bound alone: a stricter one here would refuse the very first call on a
+	// context that had just been granted, destroy it, and leave the client
+	// re-establishing it for as long as the clocks disagree.
+	expiresAt := endTime.Add(v.kerbService.Provider().MaxClockSkew())
 
 	// Check if mutual authentication is required (AP-Options bit 2)
 	mutualRequired := len(authResult.APReq.APOptions.Bytes) > 0 &&

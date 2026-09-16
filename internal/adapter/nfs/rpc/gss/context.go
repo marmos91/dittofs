@@ -127,11 +127,15 @@ type GSSContext struct {
 	// CreatedAt is the time the context was established.
 	CreatedAt time.Time
 
-	// ExpiresAt is the end time of the Kerberos ticket the context was built
-	// from. Past it the context is refused and destroyed, regardless of how
-	// recently it was used: idle eviction alone would let a client that keeps
-	// sending traffic hold an authenticated context indefinitely on a ticket
-	// the KDC has long since let lapse.
+	// ExpiresAt is the instant past which the context is refused and destroyed,
+	// regardless of how recently it was used: idle eviction alone would let a
+	// client that keeps sending traffic hold an authenticated context
+	// indefinitely on a ticket the KDC has long since let lapse.
+	//
+	// It is the ticket's end time plus the same clock-skew allowance AP-REQ
+	// verification admits the ticket under, so a context is never born already
+	// expired. The two gates must agree: a stricter bound here would refuse the
+	// first call on a context that had just been granted.
 	//
 	// decision: the zero value means unbounded, and only a Verifier that
 	// reports no end time can produce it — the production Krb5Verifier refuses
