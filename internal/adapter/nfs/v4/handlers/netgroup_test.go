@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
+	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -163,5 +164,113 @@ func TestV4Netgroup_PutFHDeniesRestrictedShare(t *testing.T) {
 	}
 	if ctx.CurrentFH != nil {
 		t.Errorf("CurrentFH was set despite refusal: %x", ctx.CurrentFH)
+	}
+}
+
+// encodeLookupNameBytes encodes the single component4 argument handleLookup
+// reads for LOOKUP.
+func encodeLookupNameBytes(t *testing.T, name string) []byte {
+	t.Helper()
+
+	var buf bytes.Buffer
+	if err := xdr.WriteXDRString(&buf, name); err != nil {
+		t.Fatalf("encode LOOKUP arg: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// lookupJunctionFromPseudoRoot runs the LOOKUP that crosses the export junction
+// out of the pseudo-fs root into the share, the way a v4 client reaches a share
+// without ever issuing PUTFH.
+func lookupJunctionFromPseudoRoot(t *testing.T, h *Handler, clientAddr string) (*types.CompoundContext, *types.CompoundResult) {
+	t.Helper()
+
+	ctx := &types.CompoundContext{
+		Context:    context.Background(),
+		ClientAddr: clientAddr,
+		CurrentFH:  h.PseudoFS.GetRootHandle(),
+	}
+	return ctx, h.handleLookup(ctx, bytes.NewReader(encodeLookupNameBytes(t, "export")))
+}
+
+// TestV4Netgroup_JunctionLookupCrossesWhenAllowed is the positive control for
+// the test below: with no netgroup on the share, the junction LOOKUP still
+// succeeds and leaves the share's real root handle in the current filehandle.
+func TestV4Netgroup_JunctionLookupCrossesWhenAllowed(t *testing.T) {
+	h, rootHandle, _ := newPutFHTestHandler(t, "/export")
+
+	ctx, res := lookupJunctionFromPseudoRoot(t, h, "10.0.0.5:1234")
+	if res.Status != types.NFS4_OK {
+		t.Fatalf("Status = %d, want NFS4_OK", res.Status)
+	}
+	if !bytes.Equal(ctx.CurrentFH, rootHandle) {
+		t.Fatalf("CurrentFH = %x, want the share root handle %x", ctx.CurrentFH, rootHandle)
+	}
+}
+
+// TestV4Netgroup_JunctionLookupDeniesRestrictedShare covers the second way a
+// share handle enters a compound. PUTFH is gated, but a LOOKUP that crosses the
+// export junction out of the pseudo-fs installs the share's root handle without
+// building an auth context, so neither gate ran on this path: LOCK, LOCKT,
+// LOCKU and GET_DIR_DELEGATION then acted on a netgroup-restricted share from
+// an address the allowlist excludes.
+func TestV4Netgroup_JunctionLookupDeniesRestrictedShare(t *testing.T) {
+	h, rootHandle, rt := newPutFHTestHandler(t, "/export")
+	if err := rt.SetShareNetgroup("/export", "office-ips"); err != nil {
+		t.Fatalf("SetShareNetgroup: %v", err)
+	}
+
+	ctx, res := lookupJunctionFromPseudoRoot(t, h, "10.0.0.5:1234")
+	if res.Status != types.NFS4ERR_ACCESS {
+		t.Fatalf("Status = %d, want NFS4ERR_ACCESS (%d)", res.Status, types.NFS4ERR_ACCESS)
+	}
+	if bytes.Equal(ctx.CurrentFH, rootHandle) {
+		t.Fatalf("CurrentFH was advanced to the restricted share's root handle %x", ctx.CurrentFH)
+	}
+}
+
+// TestV4Netgroup_XattrOpsReportAccessNotServerfault covers the status the client
+// receives when the netgroup check refuses an xattr operation. The four RFC 8276
+// handlers answered NFS4ERR_SERVERFAULT for every auth-context failure, which
+// tells a client to give up on a server fault rather than that it was refused.
+func TestV4Netgroup_XattrOpsReportAccessNotServerfault(t *testing.T) {
+	h, rootHandle, rt := newPutFHTestHandler(t, "/export")
+	if err := rt.SetShareNetgroup("/export", "office-ips"); err != nil {
+		t.Fatalf("SetShareNetgroup: %v", err)
+	}
+
+	newCtx := func() *types.CompoundContext {
+		return &types.CompoundContext{
+			Context:    context.Background(),
+			ClientAddr: "10.0.0.5:1234",
+			AuthFlavor: 1, // AUTH_UNIX
+			CurrentFH:  rootHandle,
+		}
+	}
+
+	cases := []struct {
+		op   string
+		call func() *types.CompoundResult
+	}{
+		{"GETXATTR", func() *types.CompoundResult {
+			return h.handleGetXattr(newCtx(), encGetXattrArgs("user.foo"))
+		}},
+		{"SETXATTR", func() *types.CompoundResult {
+			return h.handleSetXattr(newCtx(), encSetXattrArgs(types.SETXATTR4_EITHER, "user.foo", []byte("v")))
+		}},
+		{"LISTXATTRS", func() *types.CompoundResult {
+			return h.handleListXattrs(newCtx(), encListXattrsArgs(0, 4096))
+		}},
+		{"REMOVEXATTR", func() *types.CompoundResult {
+			return h.handleRemoveXattr(newCtx(), encRemoveXattrArgs("user.foo"))
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.op, func(t *testing.T) {
+			if status := tc.call().Status; status != types.NFS4ERR_ACCESS {
+				t.Fatalf("%s status = %d, want NFS4ERR_ACCESS (%d)", tc.op, status, types.NFS4ERR_ACCESS)
+			}
+		})
 	}
 }

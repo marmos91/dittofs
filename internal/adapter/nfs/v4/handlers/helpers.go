@@ -97,9 +97,9 @@ func (h *Handler) buildV4AuthContext(ctx *types.CompoundContext, handle []byte) 
 	// protocol, so the check the v3 MOUNT handler performs never runs for a v4
 	// client: without it here a netgroup-restricted share is reachable from any
 	// address over PUTROOTFH/PUTFH/LOOKUP. This gates every operation that
-	// builds an auth context, including a LOOKUP that crosses from the pseudo-fs
-	// into a share; operations that act on the current filehandle without one
-	// are gated in the PUTFH handler.
+	// builds an auth context. Operations that act on the current filehandle
+	// without one are gated where that handle first enters the compound: the
+	// PUTFH handler, and the junction-crossing branch of lookupInPseudoFS.
 	if err := h.checkNetgroupAccess(ctx, shareName); err != nil {
 		return nil, "", err
 	}

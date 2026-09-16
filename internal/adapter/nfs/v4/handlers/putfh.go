@@ -85,8 +85,9 @@ func (h *Handler) handlePutFH(ctx *types.CompoundContext, reader io.Reader) *typ
 			// buildV4AuthContext: operations that act on the current filehandle
 			// without building an auth context (LOCK, LOCKT, LOCKU,
 			// GET_DIR_DELEGATION) would otherwise reach a restricted share from
-			// any address. PUTFH is the only way such an operation can name a
-			// share handle, so gating it covers them all.
+			// any address. PUTFH is one of the two ways such an operation can
+			// name a share handle; the other is a LOOKUP that crosses an export
+			// junction out of the pseudo-fs, gated in lookupInPseudoFS.
 			if ngErr := h.checkNetgroupAccess(ctx, shareName); ngErr != nil {
 				return &types.CompoundResult{
 					Status: nfs4StatusForAuthError(ngErr),
