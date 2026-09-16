@@ -436,25 +436,29 @@ func TestWrapPrivacySetsAcceptorSubkeyFlag(t *testing.T) {
 // Non-sealed Wrap token tests (backward compatibility)
 // ============================================================================
 
-func TestUnwrapPrivacyNonSealedToken(t *testing.T) {
+// An integrity-only Wrap token carries its payload in the clear, and the Sealed
+// flag that says so lives in the unencrypted header — nothing binds it to the
+// service the client declared. Accepting one on the krb5p path delivers no
+// confidentiality at all while the call is accounted for as privacy-protected,
+// so the unwrap must refuse it and the arguments must never reach NFS.
+func TestUnwrapPrivacyRejectsNonSealedToken(t *testing.T) {
 	key := testSessionKey()
 	seqNum := uint32(42)
-	originalArgs := []byte("test-procedure-arguments")
+	originalArgs := []byte("SECRET-FILENAME-AND-WRITE-DATA")
 
-	// Build non-sealed (integrity-only) wrap token
 	requestBody := buildInitiatorPrivDataNonSealed(t, key, seqNum, originalArgs)
 
-	args, bodySeqNum, err := UnwrapPrivacy(key, seqNum, requestBody)
-	if err != nil {
-		t.Fatalf("UnwrapPrivacy failed for non-sealed token: %v", err)
+	// The payload really is on the wire in the clear — that is the whole point.
+	if !bytes.Contains(requestBody, originalArgs) {
+		t.Fatal("expected the non-sealed token to carry its payload unencrypted")
 	}
 
-	if bodySeqNum != seqNum {
-		t.Fatalf("expected seq_num %d, got %d", seqNum, bodySeqNum)
+	args, _, err := UnwrapPrivacy(key, seqNum, requestBody)
+	if err == nil {
+		t.Fatalf("krb5p accepted an unencrypted token and returned %q as procedure arguments", args)
 	}
-
-	if !bytes.Equal(args, originalArgs) {
-		t.Fatalf("expected args %q, got %q", originalArgs, args)
+	if args != nil {
+		t.Fatalf("rejected token still yielded %d argument octets", len(args))
 	}
 }
 
@@ -591,5 +595,52 @@ func TestUnwrapPrivacyAcceptsRotatedToken(t *testing.T) {
 	}
 	if !bytes.Equal(args, originalArgs) {
 		t.Fatalf("rotated args mismatch: got %q, want %q", args, originalArgs)
+	}
+}
+
+// The RPC-level statement of the same rule: a client that negotiated krb5p and
+// declares svc_privacy on the call, but sends an integrity-only token, must
+// have the call refused. Before the Sealed-flag check this succeeded — the
+// server returned the cleartext payload as the procedure arguments and resolved
+// an identity for it, so NFS executed a call whose filenames and write data had
+// crossed the wire unencrypted on a share configured to require privacy.
+func TestProcessDATARefusesUnsealedTokenOnPrivacyService(t *testing.T) {
+	key := testSessionKey()
+	verifier := newMockVerifier("bob", "EXAMPLE.COM")
+	verifier.sessionKey = key
+	proc := NewGSSProcessor(verifier, newTestMapper(), 100, 10*time.Minute)
+	defer proc.Stop()
+
+	handle := establishContext(t, proc, RPCGSSSvcPrivacy)
+
+	const seqNum = uint32(1)
+	secret := []byte("SECRET-FILENAME-AND-WRITE-DATA")
+	requestBody := buildInitiatorPrivDataNonSealed(t, key, seqNum, secret)
+
+	dataCred := &RPCGSSCredV1{
+		GSSProc: RPCGSSData,
+		SeqNum:  seqNum,
+		Service: RPCGSSSvcPrivacy,
+		Handle:  handle,
+	}
+	dataCredBody, err := EncodeGSSCred(dataCred)
+	if err != nil {
+		t.Fatalf("encode DATA cred: %v", err)
+	}
+
+	// Everything else about the call is genuine: the header MIC verifies and the
+	// declared service matches the one negotiated at INIT. Only the token fails
+	// to deliver the confidentiality that service promises.
+	res := processDATA(t, proc, key, dataCredBody, requestBody)
+
+	if res.Err == nil {
+		t.Fatalf("privacy-service DATA accepted an unencrypted token; server returned %q as procedure arguments",
+			res.ProcessedData)
+	}
+	if res.ProcessedData != nil {
+		t.Fatalf("refused call still yielded %d octets of procedure data", len(res.ProcessedData))
+	}
+	if res.Identity != nil {
+		t.Fatal("refused call still resolved an identity")
 	}
 }
