@@ -527,6 +527,24 @@ type AuthSysParms struct {
 	GIDs        []uint32
 }
 
+// GssCbHandles4 represents gss_cb_handles4 per RFC 8881 Section 18.35:
+//
+//	struct gss_cb_handles4 {
+//	        rpc_gss_svc_t           gcbp_service;
+//	        gsshandle4_t            gcbp_handle_from_server;
+//	        gsshandle4_t            gcbp_handle_from_client;
+//	};
+//
+// gsshandle4_t is `opaque<>`, so the three members occupy three separate XDR
+// items: a fixed 32-bit service enum followed by two length-prefixed opaques.
+// The struct as a whole carries no length prefix, so it cannot be read or
+// written as a single opaque without misaligning everything that follows it.
+type GssCbHandles4 struct {
+	Service          uint32
+	HandleFromServer []byte
+	HandleFromClient []byte
+}
+
 // CallbackSecParms4 represents callback_sec_parms4 per RFC 8881 Section 18.35.
 // Union switched on CbSecFlavor (AUTH_NONE=0, AUTH_SYS=1, RPCSEC_GSS=6).
 type CallbackSecParms4 struct {
@@ -537,8 +555,7 @@ type CallbackSecParms4 struct {
 	AuthSysParms *AuthSysParms
 
 	// RPCSEC_GSS: gss_cb_handles4 per RFC 8881 Section 18.35.
-	// Stored as raw bytes (defer full parsing to handler phase).
-	RpcGssData []byte
+	GssCbHandles *GssCbHandles4
 }
 
 // Encode writes the callback security parameters in XDR format.
@@ -584,8 +601,18 @@ func (c *CallbackSecParms4) Encode(buf *bytes.Buffer) error {
 			}
 		}
 	case 6: // RPCSEC_GSS
-		if err := xdr.WriteXDROpaque(buf, c.RpcGssData); err != nil {
-			return fmt.Errorf("encode rpc_gss_data: %w", err)
+		h := c.GssCbHandles
+		if h == nil {
+			h = &GssCbHandles4{}
+		}
+		if err := binary.Write(buf, binary.BigEndian, h.Service); err != nil {
+			return fmt.Errorf("encode gss_cb_handles gcbp_service: %w", err)
+		}
+		if err := xdr.WriteXDROpaque(buf, h.HandleFromServer); err != nil {
+			return fmt.Errorf("encode gss_cb_handles gcbp_handle_from_server: %w", err)
+		}
+		if err := xdr.WriteXDROpaque(buf, h.HandleFromClient); err != nil {
+			return fmt.Errorf("encode gss_cb_handles gcbp_handle_from_client: %w", err)
 		}
 	default:
 		return fmt.Errorf("unknown cb_secflavor: %d", c.CbSecFlavor)
@@ -634,11 +661,17 @@ func (c *CallbackSecParms4) Decode(r io.Reader) error {
 		}
 		c.AuthSysParms = p
 	case 6: // RPCSEC_GSS
-		data, err := xdr.DecodeOpaque(r)
-		if err != nil {
-			return fmt.Errorf("decode rpc_gss_data: %w", err)
+		h := &GssCbHandles4{}
+		if h.Service, err = xdr.DecodeUint32(r); err != nil {
+			return fmt.Errorf("decode gss_cb_handles gcbp_service: %w", err)
 		}
-		c.RpcGssData = data
+		if h.HandleFromServer, err = xdr.DecodeOpaque(r); err != nil {
+			return fmt.Errorf("decode gss_cb_handles gcbp_handle_from_server: %w", err)
+		}
+		if h.HandleFromClient, err = xdr.DecodeOpaque(r); err != nil {
+			return fmt.Errorf("decode gss_cb_handles gcbp_handle_from_client: %w", err)
+		}
+		c.GssCbHandles = h
 	default:
 		return fmt.Errorf("unknown cb_secflavor: %d", c.CbSecFlavor)
 	}
@@ -657,7 +690,13 @@ func (c *CallbackSecParms4) String() string {
 		}
 		return "CallbackSecParms4{AUTH_SYS}"
 	case 6:
-		return fmt.Sprintf("CallbackSecParms4{RPCSEC_GSS, %d bytes}", len(c.RpcGssData))
+		if c.GssCbHandles != nil {
+			return fmt.Sprintf("CallbackSecParms4{RPCSEC_GSS, service=%d, server handle=%d bytes, client handle=%d bytes}",
+				c.GssCbHandles.Service,
+				len(c.GssCbHandles.HandleFromServer),
+				len(c.GssCbHandles.HandleFromClient))
+		}
+		return "CallbackSecParms4{RPCSEC_GSS}"
 	default:
 		return fmt.Sprintf("CallbackSecParms4{flavor=%d}", c.CbSecFlavor)
 	}

@@ -47,8 +47,8 @@ func TestBackchannelCtlArgs_RoundTrip_MultipleSecParms(t *testing.T) {
 		CbProgram: 0x40000001,
 		SecParms: []CallbackSecParms4{
 			{CbSecFlavor: 0}, // AUTH_NONE
-			{CbSecFlavor: 1, AuthSysParms: &AuthSysParms{Stamp: 42, MachineName: "host", UID: 1000, GID: 1000}}, // AUTH_SYS
-			{CbSecFlavor: 6, RpcGssData: []byte{0xde, 0xad}},                                                    // RPCSEC_GSS
+			{CbSecFlavor: 1, AuthSysParms: &AuthSysParms{Stamp: 42, MachineName: "host", UID: 1000, GID: 1000}},                                    // AUTH_SYS
+			{CbSecFlavor: 6, GssCbHandles: &GssCbHandles4{Service: 1, HandleFromServer: []byte{0xde, 0xad}, HandleFromClient: []byte{0xbe, 0xef}}}, // RPCSEC_GSS
 		},
 	}
 
@@ -77,9 +77,11 @@ func TestBackchannelCtlArgs_RoundTrip_MultipleSecParms(t *testing.T) {
 	if decoded.SecParms[2].CbSecFlavor != 6 {
 		t.Errorf("SecParms[2].CbSecFlavor = %d, want 6", decoded.SecParms[2].CbSecFlavor)
 	}
-	if !bytes.Equal(decoded.SecParms[2].RpcGssData, original.SecParms[2].RpcGssData) {
-		t.Errorf("SecParms[2].RpcGssData = %x, want %x",
-			decoded.SecParms[2].RpcGssData, original.SecParms[2].RpcGssData)
+	got, want := decoded.SecParms[2].GssCbHandles, original.SecParms[2].GssCbHandles
+	if got == nil || got.Service != want.Service ||
+		!bytes.Equal(got.HandleFromServer, want.HandleFromServer) ||
+		!bytes.Equal(got.HandleFromClient, want.HandleFromClient) {
+		t.Errorf("SecParms[2].GssCbHandles = %+v, want %+v", got, want)
 	}
 }
 

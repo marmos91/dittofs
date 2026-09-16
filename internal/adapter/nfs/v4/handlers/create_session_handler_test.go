@@ -227,7 +227,7 @@ func TestHandleCreateSession_RPCSECGSSOnly(t *testing.T) {
 	ctx := newTestCompoundContext()
 	// Only RPCSEC_GSS callback security -- rejected by our server
 	secParms := []types.CallbackSecParms4{
-		{CbSecFlavor: 6, RpcGssData: []byte("dummy-gss")},
+		{CbSecFlavor: 6, GssCbHandles: &types.GssCbHandles4{Service: 1, HandleFromServer: []byte("dummy-gss")}},
 	}
 	csArgs := encodeCreateSessionArgsWithSec(clientID, seqID, 0, secParms)
 	ops := []compoundOp{{opCode: types.OP_CREATE_SESSION, data: csArgs}}

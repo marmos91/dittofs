@@ -131,8 +131,8 @@ func TestCreateSessionArgs_DecodeMixedSecParms(t *testing.T) {
 		CbProgram:        123,
 		CbSecParms: []CallbackSecParms4{
 			{CbSecFlavor: 0}, // AUTH_NONE: void, smallest possible entry
-			{CbSecFlavor: 6, RpcGssData: []byte("handle-from-server")},                                                   // RPCSEC_GSS: variable-length
-			{CbSecFlavor: 1, AuthSysParms: &AuthSysParms{Stamp: 5, MachineName: "Random machine name", UID: 7, GID: 11}}, // AUTH_SYS, empty gids
+			{CbSecFlavor: 6, GssCbHandles: &GssCbHandles4{Service: 3, HandleFromServer: []byte("handle-from-server"), HandleFromClient: []byte("client handle")}}, // RPCSEC_GSS: variable-length
+			{CbSecFlavor: 1, AuthSysParms: &AuthSysParms{Stamp: 5, MachineName: "Random machine name", UID: 7, GID: 11}},                                          // AUTH_SYS, empty gids
 		},
 	}
 
@@ -152,9 +152,11 @@ func TestCreateSessionArgs_DecodeMixedSecParms(t *testing.T) {
 	if decoded.CbSecParms[0].CbSecFlavor != 0 {
 		t.Errorf("entry[0] flavor = %d, want 0 (AUTH_NONE)", decoded.CbSecParms[0].CbSecFlavor)
 	}
-	if decoded.CbSecParms[1].CbSecFlavor != 6 || string(decoded.CbSecParms[1].RpcGssData) != "handle-from-server" {
-		t.Errorf("entry[1] roundtrip failed: flavor %d, data %q",
-			decoded.CbSecParms[1].CbSecFlavor, decoded.CbSecParms[1].RpcGssData)
+	g := decoded.CbSecParms[1].GssCbHandles
+	if decoded.CbSecParms[1].CbSecFlavor != 6 || g == nil || g.Service != 3 ||
+		string(g.HandleFromServer) != "handle-from-server" || string(g.HandleFromClient) != "client handle" {
+		t.Errorf("entry[1] roundtrip failed: flavor %d, handles %+v",
+			decoded.CbSecParms[1].CbSecFlavor, g)
 	}
 	p := decoded.CbSecParms[2].AuthSysParms
 	if decoded.CbSecParms[2].CbSecFlavor != 1 || p == nil || p.MachineName != "Random machine name" || p.UID != 7 || p.GID != 11 || len(p.GIDs) != 0 {

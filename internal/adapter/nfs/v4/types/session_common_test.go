@@ -581,3 +581,115 @@ func TestReferringCall4_RoundTrip(t *testing.T) {
 		t.Errorf("SlotID = %d, want %d", decoded.SlotID, original.SlotID)
 	}
 }
+
+// ============================================================================
+// CallbackSecParms4 wire-format tests
+// ============================================================================
+
+// xdrOpaque appends a variable-length XDR opaque: 32-bit length, the bytes,
+// then zero padding out to a 4-byte boundary.
+func xdrOpaque(b []byte, v []byte) []byte {
+	b = append(b, byte(len(v)>>24), byte(len(v)>>16), byte(len(v)>>8), byte(len(v)))
+	b = append(b, v...)
+	for len(b)%4 != 0 {
+		b = append(b, 0)
+	}
+	return b
+}
+
+// xdrU32 appends a 32-bit big-endian value.
+func xdrU32(b []byte, v uint32) []byte {
+	return append(b, byte(v>>24), byte(v>>16), byte(v>>8), byte(v))
+}
+
+// TestCallbackSecParms4_DecodeWireFormat decodes a callback_sec_parms4 array
+// built byte by byte from the XDR in RFC 8881 Section 18.35, rather than from
+// this package's own Encode. An RPCSEC_GSS entry sits between an AUTH_NONE and
+// an AUTH_SYS entry, so reading gss_cb_handles4 with the wrong shape consumes
+// the wrong number of bytes and the AUTH_SYS entry behind it decodes as
+// garbage or fails outright. A symmetric encode/decode round trip cannot
+// detect that: it agrees with itself whatever shape it uses.
+func TestCallbackSecParms4_DecodeWireFormat(t *testing.T) {
+	var w []byte
+	// [0] AUTH_NONE: discriminant only, void arm.
+	w = xdrU32(w, 0)
+	// [1] RPCSEC_GSS: gcbp_service, then two gsshandle4_t opaques.
+	w = xdrU32(w, 6)
+	w = xdrU32(w, 3) // RPC_GSS_SVC_PRIVACY
+	w = xdrOpaque(w, []byte("Handle from server"))
+	w = xdrOpaque(w, []byte("Client handle"))
+	// [2] AUTH_SYS: authsys_parms fields inline (RFC 5531 Section 8.2).
+	w = xdrU32(w, 1)
+	w = xdrU32(w, 5) // stamp
+	w = xdrOpaque(w, []byte("Random machine name"))
+	w = xdrU32(w, 7)  // uid
+	w = xdrU32(w, 11) // gid
+	w = xdrU32(w, 0)  // gids<>, empty
+
+	r := bytes.NewReader(w)
+	got := make([]CallbackSecParms4, 3)
+	for i := range got {
+		if err := got[i].Decode(r); err != nil {
+			t.Fatalf("entry[%d] decode failed: %v", i, err)
+		}
+	}
+	if r.Len() != 0 {
+		t.Errorf("%d bytes left unread; the array did not consume exactly what it was given", r.Len())
+	}
+
+	if got[0].CbSecFlavor != 0 {
+		t.Errorf("entry[0] flavor = %d, want 0 (AUTH_NONE)", got[0].CbSecFlavor)
+	}
+
+	g := got[1].GssCbHandles
+	if got[1].CbSecFlavor != 6 || g == nil {
+		t.Fatalf("entry[1] = flavor %d, handles %+v; want flavor 6 with handles", got[1].CbSecFlavor, g)
+	}
+	if g.Service != 3 {
+		t.Errorf("entry[1] gcbp_service = %d, want 3", g.Service)
+	}
+	if string(g.HandleFromServer) != "Handle from server" {
+		t.Errorf("entry[1] gcbp_handle_from_server = %q, want %q", g.HandleFromServer, "Handle from server")
+	}
+	if string(g.HandleFromClient) != "Client handle" {
+		t.Errorf("entry[1] gcbp_handle_from_client = %q, want %q", g.HandleFromClient, "Client handle")
+	}
+
+	// The AUTH_SYS entry is the alignment witness: it only decodes correctly
+	// if the RPCSEC_GSS entry ahead of it consumed exactly its own bytes.
+	p := got[2].AuthSysParms
+	if got[2].CbSecFlavor != 1 || p == nil {
+		t.Fatalf("entry[2] = flavor %d, parms %+v; want flavor 1 with parms", got[2].CbSecFlavor, p)
+	}
+	if p.Stamp != 5 || p.MachineName != "Random machine name" || p.UID != 7 || p.GID != 11 || len(p.GIDs) != 0 {
+		t.Errorf("entry[2] authsys_parms = %+v, want stamp 5, machine %q, uid 7, gid 11, no gids",
+			p, "Random machine name")
+	}
+}
+
+// TestCallbackSecParms4_EncodeMatchesWireFormat pins Encode to the same byte
+// layout Decode reads, so the two cannot drift back into agreeing with each
+// other on a shape no client sends.
+func TestCallbackSecParms4_EncodeMatchesWireFormat(t *testing.T) {
+	var want []byte
+	want = xdrU32(want, 6)
+	want = xdrU32(want, 3)
+	want = xdrOpaque(want, []byte("Handle from server"))
+	want = xdrOpaque(want, []byte("Client handle"))
+
+	c := CallbackSecParms4{
+		CbSecFlavor: 6,
+		GssCbHandles: &GssCbHandles4{
+			Service:          3,
+			HandleFromServer: []byte("Handle from server"),
+			HandleFromClient: []byte("Client handle"),
+		},
+	}
+	var buf bytes.Buffer
+	if err := c.Encode(&buf); err != nil {
+		t.Fatalf("Encode failed: %v", err)
+	}
+	if !bytes.Equal(buf.Bytes(), want) {
+		t.Errorf("Encode = % x, want % x", buf.Bytes(), want)
+	}
+}
