@@ -2,11 +2,16 @@
 // Result an authentication mechanism produces, and the Translator interface
 // each mechanism implements.
 //
-// Only single-round mechanisms live here. AUTH_UNIX is one; the stateful,
-// multi-round mechanisms (NTLM, RPCSEC_GSS, SPNEGO) are not consolidated here
-// yet. The interface still carries the challenge-token return and the
-// ErrMoreProcessingRequired sentinel so they can move in later without a
-// breaking change — a two-value Translate could not express them at all.
+// It holds the shared model only. Each protocol's Translator lives in that
+// protocol's package, because translating a credential means decoding its wire
+// format and this package carries no wire format. NFS's AUTH_UNIX translator is
+// in internal/adapter/nfs/auth; the stateful mechanisms (NTLM, RPCSEC_GSS,
+// SPNEGO) are not consolidated anywhere yet.
+//
+// The interface carries the challenge-token return and the
+// ErrMoreProcessingRequired sentinel so those multi-round mechanisms can move in
+// later without a breaking change — a two-value Translate could not express
+// them at all.
 package auth
 
 import (
