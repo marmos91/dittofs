@@ -13,27 +13,11 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/store/postgres"
 )
 
-// pgStore opens the localhost Postgres the other postgres_test.go files use.
+// pgStore opens the Postgres the rest of this package uses.
 // DITTOFS_TEST_POSTGRES_DSN is a boolean gate, not a parsed DSN.
 func pgStore(tb testing.TB) metadata.Store {
 	tb.Helper()
-	cfg := &postgres.PostgresMetadataStoreConfig{
-		Host:        "localhost",
-		Port:        5432,
-		Database:    "dittofs_test",
-		User:        "postgres",
-		Password:    "postgres",
-		SSLMode:     "disable",
-		AutoMigrate: true,
-	}
-	caps := metadata.FilesystemCapabilities{
-		MaxReadSize: 1048576, PreferredReadSize: 1048576,
-		MaxWriteSize: 1048576, PreferredWriteSize: 1048576,
-		MaxFileSize: 9223372036854775807, MaxFilenameLen: 255,
-		MaxPathLen: 4096, MaxHardLinkCount: 32767,
-		SupportsHardLinks: true, SupportsSymlinks: true,
-		CaseSensitive: true, CasePreserving: true, TimestampResolution: 1,
-	}
+	cfg, caps := postgresTestConfig()
 	store, err := postgres.NewPostgresMetadataStore(context.Background(), cfg, caps)
 	if err != nil {
 		tb.Fatalf("NewPostgresMetadataStore: %v", err)

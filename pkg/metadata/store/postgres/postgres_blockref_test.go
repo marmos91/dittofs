@@ -36,30 +36,8 @@ func newTestStore(t *testing.T) metadata.Store {
 		t.Skip("DITTOFS_TEST_POSTGRES_DSN not set, skipping PostgreSQL test")
 	}
 
-	cfg := &postgres.PostgresMetadataStoreConfig{
-		Host:        "localhost",
-		Port:        5432,
-		Database:    "dittofs_test",
-		User:        "postgres",
-		Password:    "postgres",
-		SSLMode:     "disable",
-		AutoMigrate: true,
-	}
-	caps := metadata.FilesystemCapabilities{
-		MaxReadSize:         1048576,
-		PreferredReadSize:   1048576,
-		MaxWriteSize:        1048576,
-		PreferredWriteSize:  1048576,
-		MaxFileSize:         9223372036854775807,
-		MaxFilenameLen:      255,
-		MaxPathLen:          4096,
-		MaxHardLinkCount:    32767,
-		SupportsHardLinks:   true,
-		SupportsSymlinks:    true,
-		CaseSensitive:       true,
-		CasePreserving:      true,
-		TimestampResolution: 1,
-	}
+	cfg, caps := postgresTestConfig()
+
 	store, err := postgres.NewPostgresMetadataStore(context.Background(), cfg, caps)
 	if err != nil {
 		t.Fatalf("NewPostgresMetadataStore: %v", err)

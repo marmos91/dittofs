@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -25,54 +24,16 @@ func isAlreadyExists(err error) bool {
 	return errors.As(err, &se) && se.Code == metadata.ErrAlreadyExists
 }
 
-// newConflictTestStore builds a PostgresMetadataStore from
-// DITTOFS_TEST_POSTGRES_DSN. Separate from the legacy hardcoded factory so
-// it can run against the dedicated test database.
+// newConflictTestStore opens the shared Postgres test store.
+// DITTOFS_TEST_POSTGRES_DSN is a BOOLEAN GATE here, as it is everywhere else in
+// this package: any non-empty value opts in and the value itself is not parsed,
+// so a URL-form DSN opts these tests in exactly like a keyword-form one.
 func newConflictTestStore(t *testing.T) *postgres.PostgresMetadataStore {
 	t.Helper()
-	dsn := os.Getenv("DITTOFS_TEST_POSTGRES_DSN")
-	if dsn == "" {
+	if os.Getenv("DITTOFS_TEST_POSTGRES_DSN") == "" {
 		t.Skip("DITTOFS_TEST_POSTGRES_DSN not set, skipping object_id conflict mapping test")
 	}
-	cfg := &postgres.PostgresMetadataStoreConfig{SSLMode: "disable", AutoMigrate: true}
-	for _, kv := range strings.Fields(dsn) {
-		parts := strings.SplitN(kv, "=", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		switch parts[0] {
-		case "host":
-			cfg.Host = parts[1]
-		case "port":
-			p, err := strconv.Atoi(parts[1])
-			if err != nil {
-				t.Fatalf("parse port: %v", err)
-			}
-			cfg.Port = p
-		case "user":
-			cfg.User = parts[1]
-		case "password":
-			cfg.Password = parts[1]
-		case "dbname", "database":
-			cfg.Database = parts[1]
-		case "sslmode", "ssl_mode":
-			cfg.SSLMode = parts[1]
-		}
-	}
-	caps := metadata.FilesystemCapabilities{
-		MaxReadSize: 1048576, PreferredReadSize: 1048576,
-		MaxWriteSize: 1048576, PreferredWriteSize: 1048576,
-		MaxFileSize: 9223372036854775807, MaxFilenameLen: 255,
-		MaxPathLen: 4096, MaxHardLinkCount: 32767,
-		SupportsHardLinks: true, SupportsSymlinks: true,
-		CaseSensitive: true, CasePreserving: true, TimestampResolution: 1,
-	}
-	store, err := postgres.NewPostgresMetadataStore(context.Background(), cfg, caps)
-	if err != nil {
-		t.Fatalf("NewPostgresMetadataStore: %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	return store
+	return newPostgresStore(t)
 }
 
 func conflictTestRoot(t *testing.T, store *postgres.PostgresMetadataStore, shareName string) {
@@ -133,9 +94,13 @@ func TestPostgresPutFile_ObjectIDConflictMapsToErrConflict(t *testing.T) {
 	hA := conflictTestFile(t, store, shareName, "a.bin")
 	hB := conflictTestFile(t, store, shareName, "b.bin")
 
-	contested := block.ComputeObjectID([]block.ChunkRef{
-		{Hash: block.ContentHash{1, 2, 3, 4}, Offset: 0, Size: 4096},
-	})
+	// object_id uniqueness is what this test provokes, so a fixed hash would
+	// collide with the row an earlier run against the same persistent database
+	// left behind and fail on the FIRST claimant instead of the second.
+	var hash block.ContentHash
+	copy(hash[:], uuid.New().String())
+	chunk := block.ChunkRef{Hash: hash, Offset: 0, Size: 4096}
+	contested := block.ComputeObjectID([]block.ChunkRef{chunk})
 
 	// First claimant wins.
 	fA, err := store.GetFile(ctx, hA)
@@ -143,7 +108,7 @@ func TestPostgresPutFile_ObjectIDConflictMapsToErrConflict(t *testing.T) {
 		t.Fatalf("GetFile A: %v", err)
 	}
 	fA.ObjectID = contested
-	fA.Blocks = []block.ChunkRef{{Hash: block.ContentHash{1, 2, 3, 4}, Offset: 0, Size: 4096}}
+	fA.Blocks = []block.ChunkRef{chunk}
 	if err := store.UpdateAttrs(ctx, fA); err != nil {
 		t.Fatalf("UpdateAttrs A (first claimant): %v", err)
 	}
@@ -154,7 +119,7 @@ func TestPostgresPutFile_ObjectIDConflictMapsToErrConflict(t *testing.T) {
 		t.Fatalf("GetFile B: %v", err)
 	}
 	fB.ObjectID = contested
-	fB.Blocks = []block.ChunkRef{{Hash: block.ContentHash{1, 2, 3, 4}, Offset: 0, Size: 4096}}
+	fB.Blocks = []block.ChunkRef{chunk}
 	err = store.UpdateAttrs(ctx, fB)
 	if err == nil {
 		t.Fatal("UpdateAttrs B should have failed with object_id conflict")
