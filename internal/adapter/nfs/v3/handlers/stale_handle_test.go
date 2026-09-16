@@ -1,6 +1,8 @@
 package handlers_test
 
 import (
+	"context"
+	"sync/atomic"
 	"testing"
 
 	"github.com/google/uuid"
@@ -8,6 +10,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers"
 	handlertesting "github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers/testing"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -118,4 +121,60 @@ func TestHandleThatDoesNotResolveIsStale(t *testing.T) {
 				"an unresolvable file handle must be reported as NFS3ErrStale, not as a missing name")
 		})
 	}
+}
+
+// cancelDuringFetchStore cancels the request context from inside GetFile, once
+// armed, and then fails the way a real store fails under cancellation. It
+// reaches the branch of getFileOrError that a pre-call cancellation check
+// cannot: the context going away while the store call is in flight.
+type cancelDuringFetchStore struct {
+	*metadatamemory.MemoryMetadataStore
+
+	armed  atomic.Bool
+	fired  atomic.Bool
+	cancel context.CancelFunc
+}
+
+func (s *cancelDuringFetchStore) GetFile(ctx context.Context, h metadata.FileHandle) (*metadata.File, error) {
+	if s.armed.Load() {
+		s.fired.Store(true)
+		s.cancel()
+		return nil, context.Canceled
+	}
+	return s.MemoryMetadataStore.GetFile(ctx, h)
+}
+
+// TestLookup_CancelledDuringHandleResolutionReportsIO pins that LOOKUP reports
+// a cancellation as NFS3ERR_IO and hands the RPC dispatcher a nil Go error.
+//
+// The dispatcher throws away a handler's response whenever the handler also
+// returns an error, and answers with that procedure's fallback status instead.
+// LOOKUP's fallback is NFS3ErrAccess, so propagating the cancellation error
+// would report a timed-out lookup to the client as "permission denied". Every
+// sibling handler that does propagate has NFS3ErrIO as its fallback, which is
+// the status the cancellation carries anyway.
+func TestLookup_CancelledDuringHandleResolutionReportsIO(t *testing.T) {
+	reqCtx, cancel := context.WithCancel(context.Background())
+
+	var wrapped *cancelDuringFetchStore
+	fx := handlertesting.NewHandlerFixtureWithStore(t, func(inner *metadatamemory.MemoryMetadataStore) metadata.Store {
+		wrapped = &cancelDuringFetchStore{MemoryMetadataStore: inner, cancel: cancel}
+		return wrapped
+	})
+
+	hctx := fx.Context()
+	hctx.Context = reqCtx
+	wrapped.armed.Store(true)
+
+	resp, err := fx.Handler.Lookup(hctx, &handlers.LookupRequest{
+		DirHandle: fx.RootHandle,
+		Filename:  "anything.txt",
+	})
+
+	require.True(t, wrapped.fired.Load(),
+		"the store call never ran, so the cancellation branch was not exercised")
+	require.NoError(t, err,
+		"LOOKUP must not return a Go error: the dispatcher would discard this response and answer NFS3ErrAccess")
+	assert.EqualValues(t, types.NFS3ErrIO, resp.Status,
+		"a cancelled LOOKUP should be reported as NFS3ErrIO")
 }

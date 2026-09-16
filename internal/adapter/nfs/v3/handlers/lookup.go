@@ -123,9 +123,17 @@ func (h *Handler) Lookup(
 		return &LookupResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	dirFile, status, err := h.getFileOrError(ctx, dirHandle, "LOOKUP", req.DirHandle)
+	// decision: the cancellation error getFileOrError reports is deliberately
+	// not propagated, only its status. A non-nil error from a handler makes the
+	// RPC dispatcher discard the response and answer with the procedure's own
+	// fallback status, and LOOKUP's fallback is NFS3ErrAccess -- so returning
+	// the error here would turn a cancelled lookup into "permission denied" on
+	// the wire. Every sibling that does propagate (REMOVE, RMDIR, LINK, RENAME)
+	// has NFS3ErrIO as its fallback, which is what getFileOrError reports
+	// anyway. Drop this once the dispatcher keeps a non-nil response's status.
+	dirFile, status, _ := h.getFileOrError(ctx, dirHandle, "LOOKUP", req.DirHandle)
 	if dirFile == nil {
-		return &LookupResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
+		return &LookupResponse{NFSResponseBase: NFSResponseBase{Status: status}}, nil
 	}
 
 	// Verify parent is actually a directory
