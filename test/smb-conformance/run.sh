@@ -20,6 +20,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
+# Scopes COMPOSE_PROJECT_NAME to this checkout and provides
+# require_exclusive_stack.
+# shellcheck source=compose-env.sh
+source "${SCRIPT_DIR}/compose-env.sh"
+
 VALID_PROFILES=("memory" "badger" "badger-s3" "postgres-s3")
 
 # --------------------------------------------------------------------------
@@ -261,6 +266,10 @@ render_ptfconfig() {
 # --------------------------------------------------------------------------
 # Results directory
 # --------------------------------------------------------------------------
+# Set once this run has created the Compose stack; the EXIT cleanup tears down
+# only what it owns. Declared before the trap so an early exit can read it.
+STACK_OWNED=false
+
 RESULTS_DIR="${SCRIPT_DIR}/results/$(date +%Y-%m-%d_%H%M%S)"
 
 # --------------------------------------------------------------------------
@@ -285,6 +294,7 @@ if $DRY_RUN; then
     echo "  TEST_USER:    ${TEST_USER}"
     echo ""
     echo "  Results dir:  ${RESULTS_DIR}"
+    echo "  Stack:        ${COMPOSE_PROJECT_NAME}"
     echo ""
 
     # Show compose profiles that would activate
@@ -306,12 +316,38 @@ if $DRY_RUN; then
 fi
 
 # --------------------------------------------------------------------------
+# Exclusivity
+# --------------------------------------------------------------------------
+# Checked before anything is created, so a refusal leaves nothing behind and
+# cannot disturb the stack it is refusing to fight with.
+require_exclusive_stack
+
+# And hold it. The check above is advisory — two runs from the same checkout
+# can both pass it and the second joins the first's project. This is the atomic
+# half: mkdir either creates the claim or does not.
+claim_exclusive_stack
+
+# Claimed here, before the first path that can bring the stack up — the s3 and
+# postgres profiles start their own containers before dittofs, so claiming at
+# the dittofs start left those runs with the flag false and the EXIT trap
+# skipping `down -v`, which the next run is then refused for.
+#
+# The flag is what makes `down -v` safe at all: two runs from the same checkout
+# share one COMPOSE_PROJECT_NAME, so a run that adopted someone else's
+# containers would otherwise destroy them on exit — the interference the
+# admission check exists to prevent, arriving through the cleanup instead. Set
+# before rather than after, so an `up` that dies partway still tears down what
+# it made.
+STACK_OWNED=true
+
+# --------------------------------------------------------------------------
 # Cleanup handler
 # --------------------------------------------------------------------------
 cleanup() {
     local exit_code=$?
 
-    if [[ "$MODE" == "compose" ]] && ! $KEEP; then
+
+    if [[ "$MODE" == "compose" ]] && ! $KEEP && $STACK_OWNED; then
         log_step "Cleaning up containers..."
         cd "$SCRIPT_DIR"
         docker compose down -v 2>/dev/null || true
@@ -328,10 +364,17 @@ cleanup() {
     fi
 
     if $KEEP; then
-        log_warn "Containers left running (--keep). Clean up with: docker compose down -v"
+        log_warn "Containers left running (--keep). Clean up with: cd ${SCRIPT_DIR} && docker compose -p ${COMPOSE_PROJECT_NAME} down -v"
     fi
 
+    # Released last. A retry that acquires the claim while this teardown is
+    # still running would have its stack removed by the `down -v` above, or its
+    # startup overlapped by a local process still stopping — which is the
+    # interference the claim exists to prevent, arriving one step later.
+    release_exclusive_stack
+
     return $exit_code
+
 }
 trap cleanup EXIT
 

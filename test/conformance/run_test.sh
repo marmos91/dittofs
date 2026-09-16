@@ -83,6 +83,71 @@ echo "3 new failures"
 exit 3
 EOF
 
+# Graders that also write the verdict sidecar, the way parse-results.sh does:
+# "category failures truncations no_result". The exit status is the aggregate.
+cat >"${FAKE_TEST}/fake/inconclusive2.sh" <<'EOF'
+#!/usr/bin/env bash
+# cd first, the way the SMB runners do before writing their sidecar: a relative
+# DITTOFS_RESULTS_DIR resolves against THIS directory, not the caller's.
+cd / || exit 9
+echo "inconclusive 0 0 2" > "${DITTOFS_RESULTS_DIR}/verdict" || exit 9
+exit 2
+EOF
+
+cat >"${FAKE_TEST}/fake/mixed.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "failures 1 0 1" > "${DITTOFS_RESULTS_DIR}/verdict"
+exit 2
+EOF
+
+# Grades once, then dies before it could grade again. The second run is the one
+# that must not be described by the first run's verdict: same suite, same label,
+# so the same results directory, which is what makes the sidecar inheritable.
+export FAKE_STALE_MARK="${FAKE_TEST}/stale.mark"
+cat >"${FAKE_TEST}/fake/stale.sh" <<'EOF'
+#!/usr/bin/env bash
+if [ -e "${FAKE_STALE_MARK}" ]; then
+    echo "setup exploded before any test ran"
+    exit 9
+fi
+: > "${FAKE_STALE_MARK}"
+echo "inconclusive 0 0 2" > "${DITTOFS_RESULTS_DIR}/verdict"
+exit 2
+EOF
+
+cat >"${FAKE_TEST}/fake/truncated.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "failures 0 1 0" > "${DITTOFS_RESULTS_DIR}/verdict"
+exit 1
+EOF
+
+cat >"${FAKE_TEST}/fake/ungraded.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "ungraded 0 0 0" > "${DITTOFS_RESULTS_DIR}/verdict"
+exit 1
+EOF
+
+cat >"${FAKE_TEST}/fake/infra.sh" <<'EOF'
+#!/usr/bin/env bash
+# Docker could not start the thing: no verdict written, and one of the three
+# exit codes reserved for that.
+exit 125
+EOF
+
+cat >"${FAKE_TEST}/fake/graded125.sh" <<'EOF'
+#!/usr/bin/env bash
+# The grader's exit status is a COUNT, capped at 254, so 125 is also a perfectly
+# ordinary number of new failures — and that run writes a verdict.
+echo "failures 125 0 0" > "${DITTOFS_RESULTS_DIR}/verdict"
+exit 125
+EOF
+
+cat >"${FAKE_TEST}/fake/refused.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "refused 0 0 0" > "${DITTOFS_RESULTS_DIR}/verdict"
+exit 1
+EOF
+
 cat >"${FAKE_TEST}/fake/teardown.sh" <<'EOF'
 #!/usr/bin/env bash
 echo "TEARDOWN RAN"
@@ -104,6 +169,78 @@ cat >"$FAKE_MANIFEST" <<'EOF'
       "tiers": { "pull_request": ["memory"], "push": "all" },
       "steps": [
         { "name": "run", "cmd": "fake/pass.sh", "args": ["--profile", "{profile}"], "root": false }
+      ]
+    },
+    "inconclusive": {
+      "description": "grades nothing: every test failed to reach the server",
+      "runner_dir": "fake",
+      "profiles": ["memory"],
+      "tiers": { "pull_request": "all", "push": "all" },
+      "steps": [
+        { "name": "run", "cmd": "fake/inconclusive2.sh", "args": [], "root": false }
+      ]
+    },
+    "mixed": {
+      "description": "one real regression alongside one ungraded test",
+      "runner_dir": "fake",
+      "profiles": ["memory"],
+      "tiers": { "pull_request": "all", "push": "all" },
+      "steps": [
+        { "name": "run", "cmd": "fake/mixed.sh", "args": [], "root": false }
+      ]
+    },
+    "stale": {
+      "description": "grades once, then fails before it can grade again",
+      "runner_dir": "fake",
+      "profiles": ["memory"],
+      "tiers": { "pull_request": "all", "push": "all" },
+      "steps": [
+        { "name": "run", "cmd": "fake/stale.sh", "args": [], "root": false }
+      ]
+    },
+    "truncated": {
+      "description": "one test stopped without saying why, nothing failed",
+      "runner_dir": "fake",
+      "profiles": ["memory"],
+      "tiers": { "pull_request": "all", "push": "all" },
+      "steps": [
+        { "name": "run", "cmd": "fake/truncated.sh", "args": [], "root": false }
+      ]
+    },
+    "ungraded": {
+      "description": "produced no output at all, so nothing could be graded",
+      "runner_dir": "fake",
+      "profiles": ["memory"],
+      "tiers": { "pull_request": "all", "push": "all" },
+      "steps": [
+        { "name": "run", "cmd": "fake/ungraded.sh", "args": [], "root": false }
+      ]
+    },
+    "infra": {
+      "description": "wrote a verdict, then failed at the docker level",
+      "runner_dir": "fake",
+      "profiles": ["memory"],
+      "tiers": { "pull_request": "all", "push": "all" },
+      "steps": [
+        { "name": "run", "cmd": "fake/infra.sh", "args": [], "root": false }
+      ]
+    },
+    "graded125": {
+      "description": "graded 125 new failures, which collides with the docker exit range",
+      "runner_dir": "fake",
+      "profiles": ["memory"],
+      "tiers": { "pull_request": "all", "push": "all" },
+      "steps": [
+        { "name": "run", "cmd": "fake/graded125.sh", "args": [], "root": false }
+      ]
+    },
+    "refused": {
+      "description": "refuses to start because another stack is live",
+      "runner_dir": "fake",
+      "profiles": ["memory"],
+      "tiers": { "pull_request": "all", "push": "all" },
+      "steps": [
+        { "name": "run", "cmd": "fake/refused.sh", "args": [], "root": false }
       ]
     },
     "graded": {
@@ -292,6 +429,72 @@ assert_not_contains "--keep skips teardown" "TEARDOWN RAN" "$OUT"
 
 assert_contains "a graded failure is reported as a failure count" "3 new failure(s)" \
     "$(run_fake --suite graded --profile memory --variant 4.0)"
+
+# The count the status carries is an aggregate, and clamped. What a human reads
+# has to separate a regression from a test that never reached the server, so the
+# grader writes both counts beside the category and the summary renders them.
+# An empty --results-dir= would make results_dir an absolute path under /, which
+# the per-run clear then deletes. Refused where it is parsed.
+OUT="$(run_fake --suite green --profile memory --results-dir= 2>&1 || true)"
+assert_contains "an empty results dir is refused" "requires a value" "$OUT"
+
+# A relative --results-dir must reach the graded step as an absolute one: the SMB
+# runners cd elsewhere before writing the sidecar, so a relative path would have
+# them write it where the summary never looks.
+(
+    cd "$FAKE_TEST" || exit 1
+    OUT="$(run_fake --suite inconclusive --profile memory --results-dir ./relresults)"
+    assert_contains "a relative results dir still finds the verdict" \
+        "inconclusive — 2 test(s) produced no server result" "$OUT"
+)
+
+OUT="$(run_fake --suite inconclusive --profile memory)"
+assert_contains "an ungraded run is not called a failure" "inconclusive — 2 test(s) produced no server result" "$OUT"
+assert_not_contains "and is not counted as new failures" "new failure(s)" "$OUT"
+
+OUT="$(run_fake --suite mixed --profile memory)"
+assert_contains "a mixed run reports the regression count, not the total" "1 new failure(s)" "$OUT"
+assert_contains "and still names the ungraded test" "1 inconclusive" "$OUT"
+
+# A test that stopped without saying why is a coverage gap, not a regression.
+OUT="$(run_fake --suite truncated --profile memory)"
+assert_contains "a truncation is counted as a truncation" "1 truncated" "$OUT"
+assert_contains "and not as a new failure" "0 new failure(s)" "$OUT"
+
+# A run refused for a live stack graded nothing, and the exit status alone would
+# have been rendered as a regression.
+OUT="$(run_fake --suite refused --profile memory)"
+assert_contains "a refused run says no tests were graded" "no tests were graded" "$OUT"
+assert_not_contains "and is never called a new failure" "new failure(s)" "$OUT"
+
+# A suite that produced no parsable output graded nothing either, and that is
+# the most misleading thing to call a failure count: there is not even a test
+# to point at.
+# An infrastructure failure outranks whatever the parser managed to write: a
+# verdict from a partial output file would report a graded result for a run
+# Docker stopped.
+OUT="$(run_fake --suite infra --profile memory)"
+assert_contains "a docker-level failure says the step could not run" "could not run" "$OUT"
+assert_not_contains "and is not a failure count" "new failure(s)" "$OUT"
+
+# 125 is also a legitimate failure COUNT, and that run graded something — so the
+# sidecar decides, not the numeric status.
+OUT="$(run_fake --suite graded125 --profile memory)"
+assert_contains "a graded run that happens to exit 125 keeps its count" "125 new failure(s)" "$OUT"
+assert_not_contains "and is not called an infrastructure failure" "could not run" "$OUT"
+
+OUT="$(run_fake --suite ungraded --profile memory)"
+assert_contains "an empty run says there were no results" "no test results at all" "$OUT"
+assert_not_contains "and is not a new failure either" "new failure(s)" "$OUT"
+
+# A stale sidecar must not be inherited. results_dir is keyed by suite and label,
+# not by invocation, so the second run of the SAME suite finds the first run's
+# verdict sitting there — and it died before writing one of its own.
+OUT="$(run_fake --suite stale --profile memory)"
+assert_contains "the first run is described by its own verdict" "produced no server result" "$OUT"
+OUT="$(run_fake --suite stale --profile memory)"
+assert_not_contains "a later run does not inherit the earlier verdict" "produced no server result" "$OUT"
+
 
 # A step that is not the graded one exits with a shell status, not a count. It
 # must stay red — nothing here weakens that — but calling it "N new failure(s)"

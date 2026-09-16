@@ -18,6 +18,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFORMANCE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+# Set once this run has created the Compose stack; the EXIT cleanup tears down
+# only what it owns. Declared here so the trap can read it on an early exit.
+STACK_OWNED=false
+
+# Scopes COMPOSE_PROJECT_NAME to this checkout and provides
+# require_exclusive_stack.
+# shellcheck source=../compose-env.sh
+source "${CONFORMANCE_DIR}/compose-env.sh"
+
 VALID_PROFILES=("memory" "badger" "sqlite" "postgres" "memory-kerberos")
 
 # Name given to every one-off smbtorture container so it stays addressable (see
@@ -186,7 +195,9 @@ validate_profile
 # --------------------------------------------------------------------------
 # Results directory
 # --------------------------------------------------------------------------
-RESULTS_DIR="${CONFORMANCE_DIR}/results/smbtorture-$(date +%Y-%m-%d_%H%M%S)"
+# The common runner injects the directory it collects artifacts from and reads
+# the verdict sidecar out of; writing anywhere else leaves both behind.
+RESULTS_DIR="${DITTOFS_RESULTS_DIR:-${CONFORMANCE_DIR}/results/smbtorture-$(date +%Y-%m-%d_%H%M%S)}"
 
 # --------------------------------------------------------------------------
 # Dry-run
@@ -211,6 +222,7 @@ if $DRY_RUN; then
     echo "  Verbose:     ${VERBOSE}"
     echo ""
     echo "  Results dir:  ${RESULTS_DIR}"
+    echo "  Stack:        ${COMPOSE_PROJECT_NAME}"
     echo ""
     echo "  Docker image: quay.io/samba.org/samba-toolbox:v0.8"
     echo "  Target:       ${dry_target}"
@@ -220,10 +232,33 @@ if $DRY_RUN; then
 fi
 
 # --------------------------------------------------------------------------
+# Exclusivity
+# --------------------------------------------------------------------------
+# Checked before anything is created, so a refusal leaves nothing behind and
+# cannot disturb the stack it is refusing to fight with.
+require_exclusive_stack
+
+# And hold it. The check above is advisory — two runs from the same checkout
+# can both pass it and the second joins the first's project. This is the atomic
+# half: mkdir either creates the claim or does not.
+claim_exclusive_stack
+
+# Claimed here, before the first path that can bring the stack up — the Kerberos
+# branch, the postgres one, and the plain dittofs start all follow. Claiming
+# inside one branch left every other run with the flag false, so the EXIT trap
+# skipped `down -v` and the next run was refused by the check above: a guard
+# turning the harness off rather than protecting it.
+#
+# Set before rather than after, so an `up` that dies partway still tears down
+# what it made.
+STACK_OWNED=true
+
+# --------------------------------------------------------------------------
 # Cleanup handler
 # --------------------------------------------------------------------------
 cleanup() {
     local exit_code=$?
+
 
     # Reaped even under --keep: the client holds no state worth inspecting, its
     # output is already teed to the results file, and the compose down below
@@ -233,12 +268,21 @@ cleanup() {
     if ! $KEEP; then
         log_step "Cleaning up containers..."
         cd "$CONFORMANCE_DIR"
-        docker compose down -v 2>/dev/null || true
+        if $STACK_OWNED; then
+            docker compose down -v 2>/dev/null || true
+        fi
     else
-        log_warn "Containers left running (--keep). Clean up with: cd ${CONFORMANCE_DIR} && docker compose down -v"
+        log_warn "Containers left running (--keep). Clean up with: cd ${CONFORMANCE_DIR} && docker compose -p ${COMPOSE_PROJECT_NAME} down -v"
     fi
 
+    # Released last. A retry that acquires the claim while this teardown is
+    # still running would have its stack removed by the `down -v` above, or its
+    # startup overlapped by a local process still stopping — which is the
+    # interference the claim exists to prevent, arriving one step later.
+    release_exclusive_stack
+
     return $exit_code
+
 }
 trap cleanup EXIT
 
@@ -250,6 +294,7 @@ echo -e "${BOLD}=== smbtorture Test Runner ===${NC}"
 echo ""
 log_info "Profile: ${PROFILE}"
 log_info "Filter:  ${FILTER:-smb2 (full suite)}"
+log_info "Stack:   ${COMPOSE_PROJECT_NAME}"
 if [[ "$(uname -m)" == "arm64" ]]; then
     log_warn "ARM64 detected -- smbtorture image will run under Rosetta/QEMU emulation (linux/amd64)"
 fi

@@ -23,14 +23,14 @@ test-full: ## Run BVT tests across all profiles
 	done
 
 build: ## Build DittoFS Docker image only
-	docker compose build dittofs
+	bash -c '. ./compose-env.sh && docker compose build dittofs'
 
 dry-run: ## Show configuration without running tests
 	./run.sh --profile $(PROFILE) --dry-run
 
 clean: ## Remove results and generated ptfconfig
 	rm -rf results/ ptfconfig-generated/
-	docker compose down -v 2>/dev/null || true
+	bash -c '. ./compose-env.sh && docker compose down -v' 2>/dev/null || true
 
 local: ## Run in local mode (DittoFS native, WPTS in Docker)
 	./run.sh --profile $(PROFILE) --mode local

@@ -112,7 +112,7 @@ test: smb2.connect.connect1
 success: smb2.connect.connect1
 test: smb2.notify.mask
 EOF
-assert_output "unfinished test counted" "| Inconclusive | 1 |"
+assert_output "unfinished test counted" "| Killed mid-test | 1 |"
 assert_output "unfinished test named" "- smb2.notify.mask"
 assert_output "unfinished test is not a pass" "| Passed | 1 |"
 
@@ -259,8 +259,10 @@ EOF
 assert_output "unlisted NO_MEMORY assertion named" "- smb2.rename.rename1"
 
 # -- NO_MEMORY still earns the flake excuse when the block says the client was
-# setting up its connection — the case the pattern was added for. --
-run_case "NO_MEMORY during connection setup is excused" 0 <<'EOF'
+# setting up its connection — the case the pattern was added for. The excuse
+# keeps it off the failure count; it does not make the run green, because the
+# test was never graded against the server at all. --
+run_case "NO_MEMORY during connection setup is inconclusive, not a failure" 1 <<'EOF'
 test: smb2.rename.rename1
 failure: smb2.rename.rename1 [
 ../../source4/torture/smb2/rename.c:41: status was NT_STATUS_NO_MEMORY, expected NT_STATUS_OK: smb2_connect failed
@@ -268,9 +270,14 @@ failure: smb2.rename.rename1 [
 EOF
 assert_output "excused block counted" "| Reclassified as flakes | 1 |"
 assert_output "excused block named" "- smb2.rename.rename1 — connection setup"
+assert_output "excused block is not a failure" "| Failed | 0 |"
+assert_output "excused block counted as no server result" "| No server result | 1 |"
+assert_output "inconclusive verdict names the count" "RESULT: INCONCLUSIVE — 1 test(s) produced no server result"
+assert_output "inconclusive verdict names the test" "  - smb2.rename.rename1"
+assert_not_output "inconclusive run is not green" "CI green"
 
 # -- The canonical connect diagnostic is excused on its own, and says so. --
-run_case "connection diagnostic is excused" 0 <<'EOF'
+run_case "connection diagnostic is inconclusive" 1 <<'EOF'
 test: rename.rename1
 failure: rename.rename1 [
 ../../source4/torture/smb2/rename.c:41: Establishing SMB2 connection failed
@@ -278,6 +285,61 @@ failure: rename.rename1 [
 EOF
 assert_output "connect flake named with the suite prefix" "- smb2.rename.rename1 — connection setup"
 
+# -- A gating test that never reached the server must not be lost in a count:
+# the whole point is being able to see WHICH test has no verdict. --
+run_case "every inconclusive test is named, not just counted" 2 <<'EOF'
+test: smb2.connect.connect1
+success: smb2.connect.connect1
+test: smb2.app-instance.app-instance
+failure: smb2.app-instance.app-instance [
+../../source4/torture/smb2/smb2.c:95: Establishing SMB2 connection failed
+]
+test: smb2.durable-open.open1
+failure: smb2.durable-open.open1 [
+../../source4/torture/smb2/smb2.c:95: Establishing SMB2 connection failed
+]
+EOF
+assert_output "both inconclusive tests counted" "| No server result | 2 |"
+assert_output "first inconclusive test named" "  - smb2.app-instance.app-instance"
+assert_output "second inconclusive test named" "  - smb2.durable-open.open1"
+assert_output "passes alongside are still counted" "| Passed | 1 |"
+assert_not_output "a run with no verdict is never green" "CI green"
+
+# -- A real new failure and an inconclusive test both count toward the exit
+# code, and the red banner does not swallow the inconclusive one. --
+run_case "new failure plus inconclusive counts both" 2 <<'EOF'
+test: smb2.rename.rename1
+failure: smb2.rename.rename1 [ regression ]
+test: smb2.app-instance.app-instance
+failure: smb2.app-instance.app-instance [
+../../source4/torture/smb2/smb2.c:95: Establishing SMB2 connection failed
+]
+EOF
+assert_output "new failure still reported" "RESULT: 1 new failure(s) detected!"
+assert_output "inconclusive still reported alongside" "RESULT: INCONCLUSIVE — 1 test(s) produced no server result"
+
+# -- The ChannelSequence excuse is a suite defect, not a lost connection: that
+# test did reach the server, so it must not turn the run inconclusive. --
+run_case "excused CSN draw is not an inconclusive result" 0 <<'EOF'
+test: smb2.replay.channel-sequence
+Testing setinfo (replay: true) with CSN 0x7fff, expecting: NT_STATUS_FILE_NOT_AVAILABLE
+failure: smb2.replay.channel-sequence [
+failed to test CSN with replay flag
+]
+EOF
+assert_output "CSN draw leaves no server-result gap" "| No server result | 0 |"
+assert_output "CSN-only run stays green" "CI green"
+
+
+# -- A shell exit status is a single byte. A run that loses connectivity for 256
+# -- tests must not wrap to 0 and read as success under an inconclusive banner. --
+for i in $(seq 1 256); do
+    printf 'test: smb2.wrap.t%d\nfailure: smb2.wrap.t%d [\n' "$i" "$i"
+    printf '../../source4/torture/smb2/smb2.c:95: Establishing SMB2 connection failed\n]\n'
+done > "${WORK}/wrap.txt"
+run_case "256 inconclusive tests do not wrap to exit 0" 254 < "${WORK}/wrap.txt"
+assert_output "all 256 counted" "| No server result | 256 |"
+assert_not_output "a wrapped count is never green" "CI green"
 
 echo ""
 if [[ "$FAILURES" -eq 0 ]]; then

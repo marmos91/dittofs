@@ -34,6 +34,7 @@ TEST_DIR="$(cd "$(dirname "$MANIFEST")/.." && pwd)"
 # its exit code says nothing about how many tests regressed.
 GRADED_STEP="run"
 
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -196,7 +197,15 @@ while [[ $# -gt 0 ]]; do
         --matrix) MATRIX_EVENT="${2:?--matrix requires a value}"; shift 2 ;;
         --matrix=*) MATRIX_EVENT="${1#*=}"; shift ;;
         --results-dir) RESULTS_ROOT="${2:?--results-dir requires a value}"; shift 2 ;;
-        --results-dir=*) RESULTS_ROOT="${1#*=}"; shift ;;
+        --results-dir=*)
+            RESULTS_ROOT="${1#*=}"
+            # An empty value here is not a missing flag, it is a root: the
+            # suite/label path built from it becomes /<suite>/<label>, which the
+            # per-run clear below would then delete. Refuse it where it is
+            # parsed rather than defending against it later.
+            [[ -n "$RESULTS_ROOT" ]] || die "--results-dir= requires a value"
+            shift
+            ;;
         --keep) KEEP=true; shift ;;
         --dry-run) DRY_RUN=true; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -232,6 +241,25 @@ run_one() {
     [[ "$step_count" -gt 0 ]] || die "suite ${SUITE} declares no steps"
 
     if [[ "$DRY_RUN" == false ]]; then
+        mkdir -p "$results_dir"
+        # Absolute from here on. A relative --results-dir is exported verbatim
+        # as DITTOFS_RESULTS_DIR, and the SMB runners cd into their own
+        # directory before writing the verdict sidecar — so the child would
+        # write it somewhere this function never looks, and the summary would
+        # fall back to calling the aggregate status a failure count. The whole
+        # mechanism is only worth what the consumer can find.
+        results_dir="$(cd "$results_dir" && pwd)"
+        # Cleared, not just created. The directory is keyed by suite and label
+        # rather than by invocation, and the runners append to their artifacts
+        # (tee -a on smbtorture-output.txt, >> on timeouts.txt) — so a second
+        # run would parse the first run's failures as its own, and a run that
+        # dies before the graded step would be described by the first run's
+        # verdict. Scoped to the one suite/label directory this script owns.
+        # Checked, because this script runs without `set -e`: a clear that
+        # silently failed would leave the previous run's artifacts and verdict
+        # in place, and the summary would describe this run with them — the
+        # stale-sidecar problem the clear exists to remove, now invisible.
+        rm -rf "${results_dir:?}" || die "cannot clear the results directory: ${results_dir}"
         mkdir -p "$results_dir"
         clear_orphan_server
     fi
@@ -319,6 +347,49 @@ write_summary() {
     elif [[ -n "$failed_step" && "$failed_step" != "$GRADED_STEP" ]]; then
         verdict="${failed_step} failed (exit ${status}) — no tests were graded"
         icon=":construction:"
+    elif [[ "$status" -ge 125 && "$status" -le 127 && ! -r "${results_dir}/verdict" ]]; then
+        # Docker and the shell reserve 125-127 for "could not run the thing at
+        # all" — but the grader also exits with a COUNT, capped at 254, so those
+        # three values are ambiguous on their own. A run with exactly 125 new
+        # failures is a graded run, and it writes a verdict; a run Docker refused
+        # to start writes nothing. So the sidecar decides, and this branch is
+        # only for its absence.
+        verdict="the graded step could not run (exit ${status}); no result was produced"
+        icon=":construction:"
+    elif [[ -r "${results_dir}/verdict" ]]; then
+        # The graded step writes its own counts here because the exit status
+        # cannot carry them: it is one number, clamped at 254, and it says
+        # nothing about which kind of problem it counted. Rendering it as
+        # "N new failure(s)" sends the reader hunting a regression for tests
+        # that never reached the server at all — the same false label the
+        # graded step exists to remove, one layer up and in the line a human
+        # actually reads.
+        local category n_fail n_trunc n_noresult
+        read -r category n_fail n_trunc n_noresult < "${results_dir}/verdict"
+        case "$category" in
+            refused)
+                verdict="refused to run — another instance of this stack is live; no tests were graded"
+                icon=":construction:"
+                ;;
+            ungraded)
+                verdict="no test results at all — the suite produced no output to grade"
+                icon=":construction:"
+                ;;
+            inconclusive)
+                verdict="inconclusive — ${n_noresult} test(s) produced no server result"
+                icon=":warning:"
+                ;;
+            *)
+                # Each count under its own name. A truncated test stopped without
+                # saying why and an ungraded one never reached the server;
+                # neither is a regression, and calling either one sends the
+                # reader hunting a change that did not happen.
+                verdict="${n_fail} new failure(s)"
+                [[ "${n_trunc:-0}" -gt 0 ]] && verdict+=", ${n_trunc} truncated"
+                [[ "${n_noresult:-0}" -gt 0 ]] && verdict+=", ${n_noresult} inconclusive"
+                icon=":x:"
+                ;;
+        esac
     else
         verdict="${status} new failure(s)"
         icon=":x:"
