@@ -19,9 +19,9 @@ import (
 //
 // Reproduces the panic seen in CI:
 //
-//	lock.(*Manager).breakOpLocks(0x0, ...)            manager.go
-//	lock.(*Manager).BreakLeasesOnOpenConflict(0x0, ...)
-//	lease.(*LeaseManager).BreakParentDirLeasesOnDestructiveCreate(0x0, ...)
+//	lock.(*Manager).breakOpLocks(0x0,...)            manager.go
+//	lock.(*Manager).BreakLeasesOnOpenConflict(0x0,...)
+//	lease.(*LeaseManager).BreakParentDirLeasesOnDestructiveCreate(0x0,...)
 //
 // triggered when a CREATE raced a DeleteShare.
 func TestResolver_GetLockManagerForShare_MissingShareReturnsNilInterface(t *testing.T) {

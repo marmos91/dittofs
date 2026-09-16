@@ -15,11 +15,10 @@ import (
 //   - Otherwise → delegate to [adapter.BaseAdapter.Healthcheck], which
 //     handles the started / shutdown / running cases.
 //
-// Phase U-C does not introduce new error instrumentation, so a running
-// NFS adapter currently always reports healthy. A future phase can
-// upgrade Healthcheck to return [health.StatusDegraded] when recent
-// lease breaches, NLM lock timeouts, or RPC dispatch errors cross a
-// per-window threshold.
+// No error instrumentation is tracked yet, so a running NFS adapter
+// always reports healthy. Healthcheck could return
+// [health.StatusDegraded] if recent lease breaches, NLM lock timeouts,
+// or RPC dispatch errors were counted against a per-window threshold.
 func (a *NFSAdapter) Healthcheck(ctx context.Context) health.Report {
 	if !a.config.Enabled {
 		return health.Report{

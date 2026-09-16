@@ -31,7 +31,7 @@ func BuildIdentityResolver(rt *runtime.Runtime, realm string) *identity.Resolver
 
 	// sidMappingStore, when the control-plane store supports it, resolves
 	// foreign (AD/LDAP) group SIDs to their durable GIDs so a user's Windows
-	// group SIDs contribute Unix supplementary GIDs (AD-3 #1235).
+	// group SIDs contribute Unix supplementary GIDs.
 	sidMappingStore, _ := cpStore.(store.SIDMappingStore)
 
 	userLookup := func(ctx context.Context, username string) (*identity.ResolvedIdentity, error) {
@@ -59,7 +59,7 @@ func BuildIdentityResolver(rt *runtime.Runtime, realm string) *identity.Resolver
 
 		// Resolve persisted foreign group SIDs to durable GIDs and fold them
 		// into the supplementary group set. A SID with no durable mapping is
-		// skipped (the LDAP provider in AD-2 allocates the mapping at login);
+		// skipped (the LDAP provider allocates the mapping at login);
 		// never-remap guarantees a stable GID once allocated.
 		if sidMappingStore != nil && len(user.GroupSIDs) > 0 {
 			mappings, err := sidMappingStore.GetSIDMappingsByIDs(ctx, user.GroupSIDs)

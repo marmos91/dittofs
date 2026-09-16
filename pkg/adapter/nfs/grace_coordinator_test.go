@@ -125,7 +125,7 @@ func TestGraceCoordinator_EndUnderflowIgnored(t *testing.T) {
 	}
 }
 
-// TestGraceCoordinator_RuntimeAddShareDoesNotArmV4Grace is the round-2 #7 H-1
+// TestGraceCoordinator_RuntimeAddShareDoesNotArmV4Grace is the
 // regression. Once the server is serving (MarkServing latched) with a LIVE
 // confirmed v4 client, a routine runtime AddShare drives the new share's
 // lock-manager into grace and fires OnLockGraceStart. This must NOT arm the

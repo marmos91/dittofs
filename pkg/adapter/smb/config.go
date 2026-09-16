@@ -347,7 +347,7 @@ func (c *Config) applyDefaults() {
 // smb.conf `smb2 max credits = 8192` default) so the client's per-connection
 // credit accounting (capped at uint16 max = 65535 on the Samba client, see
 // libcli/smb/smbXcli_base.c:4295–4298) never overflows during rapid
-// session-setup/logoff loops. Issue #378.
+// session-setup/logoff loops.
 func (c *CreditsConfig) applyDefaults() {
 	if c.Strategy == "" {
 		// Echo the client's CreditRequest, bounded by the connection window.

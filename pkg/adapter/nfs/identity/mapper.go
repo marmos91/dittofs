@@ -6,10 +6,9 @@
 // containing Unix UID/GID credentials.
 //
 // Implementations:
-//   - ConventionMapper: Maps user@REALM to control plane user when domain matches
-//   - TableMapper: Resolves explicit mappings from a MappingStore
-//   - StaticMapper: Maps from a static config map (migrated from pkg/auth/kerberos)
-//   - CachedMapper: TTL-based caching wrapper for any IdentityMapper
+//   - StaticMapper: Maps from a static config map, used as the legacy
+//     RPCSEC_GSS principal fallback when no centralized resolver is configured.
+//     (AUTH_SYS does not use this package: it takes UID/GID from the wire.)
 package identity
 
 import (

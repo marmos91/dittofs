@@ -326,7 +326,7 @@ type NFSConfig struct {
 	// and MOUNT over UDP, in addition to TCP. NFS itself is never served over
 	// UDP. Disabled by default. BSD/macOS NFSv3 lock clients reach rpc.lockd /
 	// rpc.statd over UDP, so NFSv3 file locking from macOS requires this
-	// enabled together with the portmapper (issue #1353).
+	// enabled together with the portmapper.
 	UDP NFSUDPConfig `mapstructure:"udp"`
 
 	// TLS configures opportunistic NFS-over-TLS (RFC 9289). When the cert/key
@@ -809,7 +809,7 @@ func (s *NFSAdapter) SetRuntime(rtAny any) {
 	// lock-manager grace have been caught up above and the durable v4 reclaim
 	// roster (LoadClientRecovery) has been armed. Latch the coordinator into the
 	// serving phase so a subsequent RUNTIME AddShare does not arm server-wide
-	// NFSv4 reboot grace (round-2 #7 H-1): a runtime-added share has no
+	// NFSv4 reboot grace: a runtime-added share has no
 	// pre-existing v4 clients to reclaim, and arming grace with the LIVE client
 	// set would freeze every connected client's OPEN/LOCK for the grace window.
 	graceCoord.MarkServing()

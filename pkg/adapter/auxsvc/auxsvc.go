@@ -4,8 +4,8 @@
 // A protocol adapter (NFS, SMB) blocks in Serve, accepting connections on its
 // main port. Around it run a handful of smaller services with their own
 // lifecycle: the NFS embedded portmapper, the system-rpcbind registration, the
-// UDP lock-manager transport, the NSM startup notifier, and — added for issue
-// #1609 — the mDNS and WS-Discovery advertisers. Historically each was started
+// UDP lock-manager transport, the NSM startup notifier, and the mDNS and
+// WS-Discovery advertisers. Historically each was started
 // and stopped by bespoke code inline in the adapter. This package folds them
 // into one uniform Service interface managed by a Group, so:
 //

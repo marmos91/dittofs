@@ -47,7 +47,7 @@ func TestBaseAdapter_Stop_CtxDone_ForceClosesConnections(t *testing.T) {
 
 // TestBaseAdapter_Stop_ClosesListener verifies that Stop closes the TCP
 // listener so the adapter stops accepting new connections. This is the first
-// step of a graceful SIGTERM shutdown (issue #1313): a restarting server must
+// step of a graceful SIGTERM shutdown: a restarting server must
 // stop admitting clients before it drains in-flight work.
 func TestBaseAdapter_Stop_ClosesListener(t *testing.T) {
 	b := NewBaseAdapter(BaseConfig{ShutdownTimeout: 5 * time.Second}, "TEST")
@@ -62,10 +62,7 @@ func TestBaseAdapter_Stop_ClosesListener(t *testing.T) {
 	// readiness so any concurrent probe observes a started adapter.
 	b.listenerMu.Lock()
 	b.listener = ln
-	if !b.listenerReadyClosed {
-		b.listenerReadyClosed = true
-		close(b.listenerReady)
-	}
+	b.listenerReadyOnce.Do(func() { close(b.listenerReady) })
 	b.listenerMu.Unlock()
 	b.started.Store(true)
 
@@ -284,7 +281,7 @@ func TestBaseAdapter_AcceptBackoff_ExitsOnShutdown(t *testing.T) {
 	}()
 
 	// Let the loop accumulate several backoff-cycle failures. With the backoff
-	// (10ms, 20ms, 40ms, ...) a 150ms window holds at most ~4 attempts; a hot
+	// (10ms, 20ms, 40ms,...) a 150ms window holds at most ~4 attempts; a hot
 	// loop would hold tens of thousands. The bound is coarse so a slow runner
 	// cannot flake the assertion.
 	time.Sleep(150 * time.Millisecond)
@@ -316,11 +313,15 @@ func TestBaseAdapter_AcceptBackoff_ExitsOnShutdown(t *testing.T) {
 // TestBaseAdapter_AcceptBackoff_ResetsOnSuccess pins the failure-streak reset:
 // after a successful accept the backoff returns to the base delay, so a
 // one-off failure storm does not leave the loop throttled forever.
+//
+// The discriminator is timing. The listener alternates two failures then one
+// success, so if the streak resets each cycle is 2*acceptRetryBase of backoff;
+// if it does not, the backoff doubles every failure and the cycle grows without
+// bound. Measuring how many accepts land in a fixed window separates the two
+// without asserting on exact durations.
 func TestBaseAdapter_AcceptBackoff_ResetsOnSuccess(t *testing.T) {
 	b := NewBaseAdapter(BaseConfig{ShutdownTimeout: 5 * time.Second}, "TEST")
 
-	// Two failures, then a success, then more failures. The success must reset
-	// the streak so the next failure delays by the base 10ms, not 40ms+.
 	lst := &recoveringAcceptListener{}
 	b.listenerMu.Lock()
 	b.listener = lst
@@ -333,28 +334,18 @@ func TestBaseAdapter_AcceptBackoff_ResetsOnSuccess(t *testing.T) {
 		_ = b.acceptConnections(stubFactory{}, nil, nil)
 	}()
 
-	// Wait until the listener has served one successful accept.
-	ok := false
-	for start := time.Now(); time.Since(start) < 5*time.Second; {
-		if lst.accepts.Load() >= 3 {
-			ok = true
-			break
-		}
+	// Each cycle is 3 Accept calls (2 failures + 1 success). With the streak
+	// reset that is 2*acceptRetryBase = 20ms per cycle; without it the backoff
+	// saturates at acceptRetryMax and a cycle costs at least a second. 300ms is
+	// comfortably inside the reset case and far outside the non-reset one.
+	const window = 300 * time.Millisecond
+	deadline := time.Now().Add(window)
+	for time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
-	if !ok {
-		t.Fatalf("listener did not reach the third accept call, got %d", lst.accepts.Load())
-	}
+	accepts := lst.accepts.Load()
 
-	// After the reset the fourth failure must delay by the base again. The
-	// bound stays coarse: a reset loop holds few attempts per window, a
-	// non-reset loop is capped at the max delay anyway, so assert the
-	// restart-shaped bound rather than exact timings.
 	b.initiateShutdown()
-
-	ctx, cancel := context.WithTimeout(context.Background(), b.Config.ShutdownTimeout)
-	defer cancel()
-	_ = ctx
 
 	done := make(chan struct{})
 	go func() { wg.Wait(); close(done) }()
@@ -362,6 +353,15 @@ func TestBaseAdapter_AcceptBackoff_ResetsOnSuccess(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("accept loop did not exit after shutdown")
+	}
+
+	// Reset: ~20ms/cycle over 300ms is roughly 45 accepts, so require a healthy
+	// margin above what a non-resetting loop could reach (which caps near 3-6).
+	const minAccepts = 20
+	if accepts < minAccepts {
+		t.Fatalf("backoff did not reset on success: only %d accepts in %v "+
+			"(want >= %d); the failure streak is not returning to the base delay",
+			accepts, window, minAccepts)
 	}
 }
 

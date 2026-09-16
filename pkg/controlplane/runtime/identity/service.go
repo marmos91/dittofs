@@ -33,10 +33,13 @@ func (s *Service) ApplyIdentityMapping(shareName string, identity *metadata.Iden
 	}
 
 	effective := &metadata.Identity{
-		UID:      identity.UID,
-		GID:      identity.GID,
-		GIDs:     identity.GIDs,
-		Username: identity.Username,
+		UID:       identity.UID,
+		GID:       identity.GID,
+		GIDs:      identity.GIDs,
+		SID:       identity.SID,
+		GroupSIDs: identity.GroupSIDs,
+		Username:  identity.Username,
+		Domain:    identity.Domain,
 	}
 
 	if identity.UID == nil {
@@ -70,6 +73,12 @@ func ApplyAnonymousIdentity(identity *metadata.Identity, anonUID, anonGID uint32
 	identity.UID = &anonUID
 	identity.GID = &anonGID
 	identity.GIDs = []uint32{anonGID}
+	// Clear the Windows half too: a squash to anonymous must not leave a named
+	// principal's SID or group SIDs behind, or ACE matching against them would
+	// survive the squash.
+	identity.SID = nil
+	identity.GroupSIDs = nil
+	identity.Domain = ""
 	identity.Username = fmt.Sprintf("anonymous(%d)", anonUID)
 }
 
@@ -78,5 +87,8 @@ func ApplyRootIdentity(identity *metadata.Identity) {
 	identity.UID = &rootUID
 	identity.GID = &rootGID
 	identity.GIDs = []uint32{rootGID}
+	identity.SID = nil
+	identity.GroupSIDs = nil
+	identity.Domain = ""
 	identity.Username = "root"
 }

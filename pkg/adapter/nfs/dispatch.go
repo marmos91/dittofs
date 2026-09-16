@@ -221,7 +221,7 @@ func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMess
 	case rpc.ProgramNLM:
 		// NLM v1/v3 (32-bit offsets) and v4 (64-bit offsets) are supported. BSD/
 		// macOS NFSv3 lock clients negotiate v1/v3; Linux uses v4. The offset
-		// wire width is selected per-version in the NLM handler (issue #1353).
+		// wire width is selected per-version in the NLM handler.
 		switch call.Version {
 		case rpc.NLMVersion1, rpc.NLMVersion3, rpc.NLMVersion4:
 			replyData, err = c.handleNLMProcedure(ctx, call, procedureData, clientAddr)

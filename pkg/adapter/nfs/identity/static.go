@@ -39,11 +39,11 @@ type StaticMapperConfig struct {
 // principal string as the key (e.g., "alice@EXAMPLE.COM"). If found, the
 // configured UID/GID/GIDs are returned. Otherwise, the default UID/GID is used.
 //
-// Unlike ConventionMapper and TableMapper, StaticMapper always returns
+// Unlike a realm- or table-driven mapper, StaticMapper always returns
 // Found=true -- it falls back to defaults for unknown principals.
 //
-// This is suitable for small deployments with a known set of users.
-// For larger deployments, use ConventionMapper or TableMapper.
+// This is suitable for small deployments with a known set of users. Larger
+// deployments resolve principals through the shared identity resolver instead.
 type StaticMapper struct {
 	staticMap  map[string]StaticIdentity
 	defaultUID uint32

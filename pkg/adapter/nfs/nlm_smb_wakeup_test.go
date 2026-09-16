@@ -90,7 +90,7 @@ func (f *fakeNLMCallbackListener) handle(conn net.Conn) {
 }
 
 // TestNLMWaiter_GrantedWhenSMBHolderReleases is the cross-protocol liveness
-// regression guard for #1035 (area #5 H-1). It exercises the FULL wakeup path
+// regression guard. It exercises the FULL wakeup path
 // end-to-end through the wired NFS adapter:
 //
 //  1. A share is exported (runtime + metadata service + per-share lock manager).

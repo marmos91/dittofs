@@ -103,13 +103,13 @@ func (s *nlmService) LockFileNLM(
 	// acquiring, so another protocol's cached view of the range is revoked first.
 	// Mirrors the SMB and NFSv4 LOCK paths. We pass this lock's owner as
 	// excludeOwner for symmetry; NLM owners never hold SMB leases, so in practice
-	// nothing is excluded (#1495).
+	// nothing is excluded.
 	_ = s.lockMgr.BreakLeasesForByteRangeLock(handleKey, &owner)
 
 	// Drain the in-flight lease break before inserting the lock: the break is
 	// fire-and-forget, so a still-present (Breaking, not-yet-ACKed) write lease is
-	// otherwise observed as a spurious LockConflict (NLM4_DENIED → client EIO,
-	// #1501). See lock.WaitForByteRangeLockBreak for the deadlock-safety and
+	// otherwise observed as a spurious LockConflict (NLM4_DENIED → client EIO).
+	// See lock.WaitForByteRangeLockBreak for the deadlock-safety and
 	// timeout reasoning. A non-nil error means the originating request was
 	// cancelled, so don't insert an orphan lock.
 	if err := lock.WaitForByteRangeLockBreak(ctx, s.lockMgr, handleKey); err != nil {

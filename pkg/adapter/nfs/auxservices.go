@@ -14,7 +14,7 @@ import (
 // shared auxsvc.Service interface. Each wrapper is a thin, stateless shim over
 // the adapter methods that already implement the behavior — the protocol logic
 // is unchanged; only the lifecycle is unified so every companion is started and
-// stopped uniformly through the adapter's auxsvc.Group (and, for #1609, so the
+// stopped uniformly through the adapter's auxsvc.Group, so the
 // mDNS / WS-Discovery advertisers can join the same pattern).
 //
 // startEnabledAuxServices registers every enabled companion with the group, in
@@ -36,7 +36,7 @@ func (s *NFSAdapter) startEnabledAuxServices(ctx context.Context) {
 	// System rpcbind registration (port 111). Best-effort and time-bounded.
 	s.reconcileSysreg()
 
-	// UDP transport for NLM/NSM/MOUNT (issue #1353). Non-fatal: TCP continues.
+	// UDP transport for NLM/NSM/MOUNT. Non-fatal: TCP continues.
 	if s.isUDPEnabled() {
 		if err := s.sidecars.Start(udpSidecar{s}); err != nil {
 			logger.Warn("NFS UDP transport failed to start (NLM/NSM/MOUNT over UDP unavailable)", "error", err)
@@ -48,7 +48,7 @@ func (s *NFSAdapter) startEnabledAuxServices(ctx context.Context) {
 		_ = s.sidecars.Start(nsmSidecar{s})
 	}
 
-	// mDNS advertiser (_nfs._tcp) for macOS Finder / Linux Avahi (issue #1609).
+	// mDNS advertiser (_nfs._tcp) for macOS Finder / Linux Avahi.
 	// Live-toggled via NFS settings; the initial start happens here.
 	s.reconcileDiscovery()
 }

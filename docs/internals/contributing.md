@@ -405,38 +405,48 @@ Adapters receive a runtime reference and **interact with services, not stores di
 2. Implement `Adapter` interface:
    - `Serve(ctx)`: Start protocol server
    - `Stop(ctx)`: Graceful shutdown
-   - `SetRuntime()`: Receive runtime reference (provides access to services)
+   - `SetRuntime(rt any)`: Receive the runtime reference (provides access to services)
    - `Protocol()`: Return name
    - `Port()`: Return listen port
+   - `Healthcheck(ctx)`: Report health from cheap, already-tracked signals
 3. Use `runtime.GetBlockStoreForHandle()` for per-share block store access
 4. Register in `cmd/dfs/main.go`
 5. Update README with usage instructions
 
+Embed `*adapter.BaseAdapter` for the shared TCP lifecycle (listener bind, accept loop
+with backoff, connection tracking, graceful drain) instead of reimplementing it.
+
+`SetRuntime` takes `any` rather than `*runtime.Runtime` on purpose: the adapter
+interface must not import the runtime package, which imports the adapters. The
+implementation type-asserts:
+
 Example:
 ```go
 // pkg/adapter/smb/adapter.go
-type SMBAdapter struct {
+type Adapter struct {
+    *adapter.BaseAdapter
     config  SMBConfig
-    runtime *runtime.Runtime
+    rt      *runtime.Runtime
 }
 
-func (a *SMBAdapter) SetRuntime(rt *runtime.Runtime) {
-    a.runtime = rt
+func (a *Adapter) SetRuntime(rt any) {
+    a.BaseAdapter.SetRuntime(rt) // panics if rt is not *runtime.Runtime
+    a.rt = rt.(*runtime.Runtime)
 }
 
-func (a *SMBAdapter) handleRead(ctx context.Context, handle []byte, blockID string) ([]byte, error) {
+func (a *Adapter) handleRead(ctx context.Context, handle []byte, blockID string) ([]byte, error) {
     // Resolve per-share block store from file handle
-    blockStore, _ := a.runtime.GetBlockStoreForHandle(ctx, handle)
+    blockStore, _ := a.rt.GetBlockStoreForHandle(ctx, handle)
     buf := make([]byte, size)
     blockStore.ReadAt(ctx, blockID, buf, 0)
     return buf, nil
 }
 
-func (a *SMBAdapter) Serve(ctx context.Context) error {
+func (a *Adapter) Serve(ctx context.Context) error {
     // Start SMB server
 }
 
-func (a *SMBAdapter) Stop(ctx context.Context) error {
+func (a *Adapter) Stop(ctx context.Context) error {
     // Graceful shutdown
 }
 ```

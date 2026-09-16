@@ -9,7 +9,7 @@ import (
 )
 
 // directorySIDBridge adapts the centralized identity.Resolver to the handlers
-// package's DirectorySIDBridge, backing #1617: it lets the SMB security
+// package's DirectorySIDBridge: it lets the SMB security
 // descriptor advertise a file owner/group as the account's REAL directory (AD)
 // SID instead of the algorithmic machine-domain SID, and recover the UID/GID
 // when Windows echoes that AD SID back through SET_INFO.
@@ -17,7 +17,7 @@ import (
 // Every method is best-effort: a miss (or any infrastructure error) returns
 // ok=false, and the handlers layer falls back to the machine-domain SIDMapper.
 // Because a hit requires the resolver's LDAP/AD provider to actually hold the
-// account, a local-only or conformance deployment never hits — #1617 is a
+// account, a local-only or conformance deployment never hits it — it is a
 // transparent no-op there.
 type directorySIDBridge struct {
 	resolver *identity.Resolver

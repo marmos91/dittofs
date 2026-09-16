@@ -18,7 +18,7 @@ import (
 //
 // On a hard NFS mount a client that times out an RPC retransmits the *same*
 // request (same XID). For idempotent procedures (GETATTR, LOOKUP, READ, WRITE,
-// READDIR, ...) re-executing is harmless. For non-idempotent procedures
+// READDIR,...) re-executing is harmless. For non-idempotent procedures
 // (REMOVE, RMDIR, RENAME, non-exclusive CREATE, MKDIR, LINK, SYMLINK, MKNOD,
 // SETATTR-with-guard) re-execution produces a spurious error: the second
 // REMOVE returns NFS3ERR_NOENT, the second MKDIR/CREATE returns NFS3ERR_EXIST,
@@ -205,7 +205,7 @@ var drcCachedProcs = map[uint32]struct{}{
 }
 
 // isCacheable reports whether a procedure's reply should flow through the DRC.
-// Idempotent procedures (GETATTR, LOOKUP, READ, WRITE, READDIR, ...) return false
+// Idempotent procedures (GETATTR, LOOKUP, READ, WRITE, READDIR,...) return false
 // and never touch the cache.
 func isCacheable(procedure uint32) bool {
 	_, ok := drcCachedProcs[procedure]

@@ -46,7 +46,7 @@ import (
 // when IT started it (coupled, no independent roster); then refcount-zero is
 // the correct lockstep lift.
 //
-// Boot-vs-runtime arming gate (round-2 #7 H-1): the GLOBAL NFSv4 reboot-grace
+// Boot-vs-runtime arming gate: the GLOBAL NFSv4 reboot-grace
 // machine exists to let PRE-RESTART clients reclaim their state, so it is only
 // legitimate to arm at server boot/recovery. A share ADDED AT RUNTIME, while the
 // server is already serving live clients, has no pre-existing v4 clients to

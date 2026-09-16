@@ -108,10 +108,9 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 - SQLite (single-node) or PostgreSQL (distributed)
 
 **3. Adapter Interface** (`pkg/adapter/adapter.go`)
-- Each protocol implements the `Adapter` interface
-- `IdentityMappingAdapter` extends `Adapter` with `auth.IdentityMapper` for protocol-specific identity mapping
-- Adapters receive a Runtime reference to access services
-- `BaseAdapter` provides shared TCP lifecycle, default `MapError` and `MapIdentity` stubs
+- Each protocol implements the `Adapter` interface (`Serve`, `Stop`, `SetRuntime`, `Protocol`, `Port`, `Healthcheck`)
+- Adapters receive a Runtime reference to access services (`SetRuntime(rt any)`, type-asserted to `*runtime.Runtime` to avoid an import cycle)
+- `BaseAdapter` provides the shared TCP lifecycle: accept loop with backoff, graceful drain, forced close, and listener-readiness signalling
 - Lifecycle: `SetRuntime() -> Serve() -> Stop()`
 - Multiple adapters can share the same runtime
 - Thread-safe, supports graceful shutdown
@@ -735,9 +734,12 @@ type ProtocolAdapter interface {
     Port() int
 }
 
-// RuntimeSetter - adapters that need runtime access implement this
+// RuntimeSetter - adapters that need runtime access implement this.
+// The parameter is `any` on purpose: pkg/adapter cannot import
+// pkg/controlplane/runtime (the runtime imports the adapter contract), so
+// implementations type-assert to *runtime.Runtime and panic on a mismatch.
 type RuntimeSetter interface {
-    SetRuntime(rt *Runtime)
+    SetRuntime(rt any)
 }
 
 // Example: NFS Adapter accesses per-share block stores via runtime
@@ -989,10 +991,11 @@ dittofs/
 │
 ├── pkg/                          # Public API (stable interfaces)
 │   ├── adapter/                  # Protocol adapter interface
-│   │   ├── adapter.go            # Adapter + IdentityMappingAdapter interfaces
-│   │   ├── auth.go               # Adapter-level Authenticator interface
+│   │   ├── adapter.go            # Adapter, OplockBreaker interfaces
 │   │   ├── base.go               # BaseAdapter shared TCP lifecycle
-│   │   ├── errors.go             # ProtocolError interface
+│   │   ├── healthcheck.go        # BaseAdapter.Healthcheck
+│   │   ├── identity.go           # BuildIdentityResolver, ExtractRealm
+│   │   ├── auxsvc/               # Auxiliary-service lifecycle group
 │   │   ├── nfs/                  # NFS adapter implementation
 │   │   └── smb/                  # SMB adapter implementation
 │   │

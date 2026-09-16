@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/auth"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 )
 
@@ -133,11 +132,9 @@ type BaseAdapter struct {
 	// listener (Stop before Serve). Read it through [BaseAdapter.ListenerReady].
 	listenerReady chan struct{}
 
-	// listenerReadyClosed guards the listenerReady close: ServeWithFactory
-	// closes it on the bind path and initiateShutdown closes it when no
-	// listener was ever bound. Both check-and-close under listenerMu so the
-	// channel is closed exactly once whichever path wins.
-	listenerReadyClosed bool
+	// listenerReadyOnce closes listenerReady exactly once, whichever of
+	// ServeWithFactory's bind path or initiateShutdown gets there first.
+	listenerReadyOnce sync.Once
 
 	// started flips to true once ServeWithFactory has bound the listener
 	// successfully. Used by [BaseAdapter.Healthcheck] to distinguish a
@@ -235,10 +232,7 @@ func (b *BaseAdapter) ServeWithFactory(
 	// between them and close the channel first.
 	b.listenerMu.Lock()
 	b.listener = listener
-	if !b.listenerReadyClosed {
-		b.listenerReadyClosed = true
-		close(b.listenerReady)
-	}
+	b.listenerReadyOnce.Do(func() { close(b.listenerReady) })
 	b.listenerMu.Unlock()
 	b.started.Store(true)
 
@@ -435,14 +429,9 @@ func (b *BaseAdapter) initiateShutdown() {
 		// Unblock any caller waiting on listenerReady. When the listener was
 		// bound, ServeWithFactory already closed the channel; when it was not
 		// (Stop before Serve, or Serve never called), waiting callers would
-		// otherwise block forever. The flag is checked under listenerMu so
-		// this cannot race the bind-path close into a double close.
-		b.listenerMu.Lock()
-		if !b.listenerReadyClosed {
-			b.listenerReadyClosed = true
-			close(b.listenerReady)
-		}
-		b.listenerMu.Unlock()
+		// otherwise block forever. The Once makes this safe against the
+		// bind-path close racing into a double close.
+		b.listenerReadyOnce.Do(func() { close(b.listenerReady) })
 
 		// Set a short deadline on all connections to unblock any pending reads
 		b.interruptBlockingReads()
@@ -470,6 +459,38 @@ func (b *BaseAdapter) interruptBlockingReads() {
 	logger.Debug(b.protocolName + " shutdown: interrupted blocking reads on all connections")
 }
 
+// waitForDrain blocks until all active connections have closed, the deadline
+// expires, or ctx is cancelled. On expiry or cancellation it force-closes the
+// remaining connections so the deferred cleanup chain (WaitGroup.Done,
+// semaphore release, ConnCount decrement) still runs, then returns a non-nil
+// error. A nil return means every connection closed on its own.
+func (b *BaseAdapter) waitForDrain(ctx context.Context) error {
+	done := make(chan struct{})
+	go func() {
+		b.activeConns.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		logger.Info(b.protocolName + " graceful shutdown complete: all connections closed")
+		return nil
+	case <-ctx.Done():
+		remaining := b.ConnCount.Load()
+		// ctx may be a deadline (the shutdown timeout elapsed) or an explicit
+		// cancellation (Stop with a cancelled context). Only the former is a
+		// "deadline exceeded"; saying so on a cancel would misreport the cause.
+		reason := "shutdown deadline exceeded"
+		if errors.Is(ctx.Err(), context.Canceled) {
+			reason = "shutdown canceled"
+		}
+		logger.Warn(b.protocolName+" "+reason+" - forcing closure",
+			"active", remaining, "error", ctx.Err())
+		b.forceCloseConnections()
+		return ctx.Err()
+	}
+}
+
 // gracefulShutdown waits for active connections to complete or timeout.
 //
 // Returns:
@@ -480,29 +501,15 @@ func (b *BaseAdapter) gracefulShutdown() error {
 	logger.Info(b.protocolName+" graceful shutdown: waiting for active connections",
 		"active", activeCount, "timeout", b.Config.ShutdownTimeout)
 
-	// Create channel that closes when all connections are done
-	done := make(chan struct{})
-	go func() {
-		b.activeConns.Wait()
-		close(done)
-	}()
+	ctx, cancel := context.WithTimeout(context.Background(), b.Config.ShutdownTimeout)
+	defer cancel()
 
-	// Wait for completion or timeout
-	select {
-	case <-done:
-		logger.Info(b.protocolName + " graceful shutdown complete: all connections closed")
-		return nil
-
-	case <-time.After(b.Config.ShutdownTimeout):
+	err := b.waitForDrain(ctx)
+	if errors.Is(err, context.DeadlineExceeded) {
 		remaining := b.ConnCount.Load()
-		logger.Warn(b.protocolName+" shutdown timeout exceeded - forcing closure",
-			"active", remaining, "timeout", b.Config.ShutdownTimeout)
-
-		// Force-close all remaining connections
-		b.forceCloseConnections()
-
 		return fmt.Errorf("%s shutdown timeout: %d connections force-closed", b.protocolName, remaining)
 	}
+	return err
 }
 
 // forceCloseConnections closes all active TCP connections to accelerate shutdown.
@@ -558,30 +565,7 @@ func (b *BaseAdapter) Stop(ctx context.Context) error {
 	logger.Info(b.protocolName+" graceful shutdown: waiting for active connections (context timeout)",
 		"active", activeCount)
 
-	// Create channel that closes when all connections are done
-	done := make(chan struct{})
-	go func() {
-		b.activeConns.Wait()
-		close(done)
-	}()
-
-	// Wait for completion or context cancellation
-	select {
-	case <-done:
-		logger.Info(b.protocolName + " graceful shutdown complete: all connections closed")
-		return nil
-
-	case <-ctx.Done():
-		remaining := b.ConnCount.Load()
-		logger.Warn(b.protocolName+" shutdown context cancelled - forcing closure",
-			"active", remaining, "error", ctx.Err())
-		// Mirror the timeout branch in gracefulShutdown: when the shutdown
-		// deadline expires, force-close active connections rather than
-		// abandoning them. This triggers the deferred cleanup chain
-		// (WaitGroup.Done, semaphore release, ConnCount decrement).
-		b.forceCloseConnections()
-		return ctx.Err()
-	}
+	return b.waitForDrain(ctx)
 }
 
 // GetListenerAddr returns the address the server is listening on.
@@ -619,13 +603,6 @@ func (b *BaseAdapter) Protocol() string {
 	return b.protocolName
 }
 
-// MapError is a default stub implementation that returns nil.
-// Protocol-specific adapters should override MapError to translate domain
-// errors into protocol-specific ProtocolError values with appropriate status codes.
-func (b *BaseAdapter) MapError(_ error) ProtocolError {
-	return nil
-}
-
 // ForceCloseByAddress closes the TCP connection matching the given remote address.
 // This triggers the normal connection cleanup chain (handleConnectionClose),
 // which handles protocol-specific teardown (NFS state revocation, SMB session cleanup).
@@ -637,11 +614,4 @@ func (b *BaseAdapter) ForceCloseByAddress(addr string) bool {
 	conn := val.(net.Conn)
 	_ = conn.Close()
 	return true
-}
-
-// MapIdentity is a default stub implementation that returns an error.
-// Protocol-specific adapters should override MapIdentity to convert auth results
-// into protocol-specific identities (e.g., NFS AUTH_UNIX, SMB NTLM sessions).
-func (b *BaseAdapter) MapIdentity(_ context.Context, _ *auth.AuthResult) (*auth.Identity, error) {
-	return nil, fmt.Errorf("%s: identity mapping not implemented", b.protocolName)
 }

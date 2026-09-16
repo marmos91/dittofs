@@ -11,9 +11,9 @@ import (
 	"github.com/marmos91/dittofs/pkg/discovery/wsd"
 )
 
-// This file wires the SMB adapter's network-discovery advertisers (issue #1609)
-// into the shared auxsvc.Group: the mDNS advertiser here, and — in Phase 2 —
-// the WS-Discovery responder. Each is gated by a live setting and can be toggled
+// This file wires the SMB adapter's network-discovery advertisers
+// into the shared auxsvc.Group: the mDNS advertiser here, and the
+// WS-Discovery responder. Each is gated by a live setting and can be toggled
 // at runtime without an adapter restart.
 
 // startEnabledDiscovery seeds the auxsvc group with the Serve context and starts

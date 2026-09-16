@@ -145,6 +145,64 @@ func TestApplyAnonymousIdentity(t *testing.T) {
 	}
 }
 
+// TestApplyIdentityMapping_PreservesWindowsIdentity pins the Windows half of
+// the identity across a no-op mapping. The runtime variant previously copied
+// only UID/GID/GIDs/Username, silently dropping SID, GroupSIDs and Domain; the
+// NFS resolver never set those so it stayed latent, but the SMB path does set
+// them, and a dropped SID means Windows ACE matching sees an unnamed principal.
+func TestApplyIdentityMapping_PreservesWindowsIdentity(t *testing.T) {
+	svc := New()
+	sid := "S-1-5-21-1-2-3-1013"
+	in := &metadata.Identity{
+		UID:       u32(1000),
+		GID:       u32(1000),
+		GIDs:      []uint32{1000, 1001},
+		SID:       &sid,
+		GroupSIDs: []string{"S-1-5-21-1-2-3-513", "S-1-5-32-544"},
+		Username:  "alice",
+		Domain:    "EXAMPLE",
+	}
+
+	out, err := svc.ApplyIdentityMapping("s", in, fakeProvider{want: "s", info: anonInfo(models.SquashNone)})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if out.SID == nil || *out.SID != sid {
+		t.Errorf("SID = %v, want %q", out.SID, sid)
+	}
+	if len(out.GroupSIDs) != 2 || out.GroupSIDs[0] != in.GroupSIDs[0] {
+		t.Errorf("GroupSIDs = %v, want %v", out.GroupSIDs, in.GroupSIDs)
+	}
+	if out.Domain != "EXAMPLE" {
+		t.Errorf("Domain = %q, want EXAMPLE", out.Domain)
+	}
+}
+
+// TestApplyAnonymousIdentity_ClearsWindowsIdentity pins that squashing to
+// anonymous also drops the SID/GroupSIDs/Domain: leaving a named principal's
+// SID behind would let ACE matching survive the squash.
+func TestApplyAnonymousIdentity_ClearsWindowsIdentity(t *testing.T) {
+	sid := "S-1-5-21-1-2-3-1013"
+	id := &metadata.Identity{
+		UID:       u32(0),
+		SID:       &sid,
+		GroupSIDs: []string{"S-1-5-32-544"},
+		Domain:    "EXAMPLE",
+		Username:  "root",
+	}
+	ApplyAnonymousIdentity(id, anonUID, anonGID)
+	if id.SID != nil {
+		t.Errorf("SID = %v, want nil after squash to anonymous", *id.SID)
+	}
+	if id.GroupSIDs != nil {
+		t.Errorf("GroupSIDs = %v, want nil after squash to anonymous", id.GroupSIDs)
+	}
+	if id.Domain != "" {
+		t.Errorf("Domain = %q, want empty after squash to anonymous", id.Domain)
+	}
+}
+
 func TestApplyRootIdentity(t *testing.T) {
 	id := &metadata.Identity{UID: u32(5), GID: u32(5), GIDs: []uint32{5, 6}, Username: "x"}
 	ApplyRootIdentity(id)
@@ -156,5 +214,33 @@ func TestApplyRootIdentity(t *testing.T) {
 	}
 	if id.Username != "root" {
 		t.Errorf("Username = %q, want root", id.Username)
+	}
+}
+
+// TestApplyRootIdentity_ClearsWindowsIdentity pins the same invariant as the
+// anonymous case: a root squash must not leave a named principal's SID behind,
+// or Windows ACE matching would still see the original user after the squash.
+func TestApplyRootIdentity_ClearsWindowsIdentity(t *testing.T) {
+	sid := "S-1-5-21-1111111111-2222222222-3333333333-1001"
+	id := &metadata.Identity{
+		UID:       u32(1000),
+		GID:       u32(1000),
+		GIDs:      []uint32{1000},
+		Username:  "alice",
+		SID:       &sid,
+		GroupSIDs: []string{"S-1-5-21-1111111111-2222222222-3333333333-513"},
+		Domain:    "EXAMPLE.COM",
+	}
+
+	ApplyRootIdentity(id)
+
+	if id.SID != nil {
+		t.Errorf("SID = %q, want nil after root squash", *id.SID)
+	}
+	if len(id.GroupSIDs) != 0 {
+		t.Errorf("GroupSIDs = %v, want empty after root squash", id.GroupSIDs)
+	}
+	if id.Domain != "" {
+		t.Errorf("Domain = %q, want empty after root squash", id.Domain)
 	}
 }

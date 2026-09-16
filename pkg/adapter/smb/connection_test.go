@@ -557,7 +557,7 @@ func TestTrackSessionLifecycle(t *testing.T) {
 		// bound session to be tracked on this connection — the session
 		// lives on a different connection and tracking it here would
 		// make this connection's close delete the original session
-		// (MS-SMB2 §3.3.5.5.2, issue #361).
+		// (MS-SMB2 §3.3.5.5.2).
 		server, client := net.Pipe()
 		defer func() { _ = server.Close() }()
 		defer func() { _ = client.Close() }()

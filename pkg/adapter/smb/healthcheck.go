@@ -15,11 +15,11 @@ import (
 //   - Otherwise → delegate to [adapter.BaseAdapter.Healthcheck], which
 //     handles the started / shutdown / running cases.
 //
-// Phase U-C does not introduce new error instrumentation, so a running
-// SMB adapter currently always reports healthy. A future phase can
-// upgrade Healthcheck to return [health.StatusDegraded] when recent
-// decrypt failures, signing verification failures, or session-setup
-// rejections cross a per-window threshold — the building blocks
+// No error instrumentation is tracked yet, so a running SMB adapter
+// always reports healthy. Healthcheck could return
+// [health.StatusDegraded] if recent decrypt failures, signing
+// verification failures, or session-setup rejections were counted
+// against a per-window threshold — the building blocks
 // (e.g. the per-connection DecryptFailures atomic counter) are already
 // in place for that follow-up.
 func (a *Adapter) Healthcheck(ctx context.Context) health.Report {

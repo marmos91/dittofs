@@ -3,7 +3,6 @@ package adapter
 import (
 	"context"
 
-	"github.com/marmos91/dittofs/pkg/auth"
 	"github.com/marmos91/dittofs/pkg/health"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
@@ -16,12 +15,12 @@ import (
 //
 // Lifecycle:
 //  1. Creation: Adapter is created with protocol-specific configuration
-//  2. Repository injection: SetStores() provides shared backend access
+//  2. Runtime injection: SetRuntime() provides the shared runtime
 //  3. Startup: Serve() starts the protocol server and blocks until shutdown
 //  4. Shutdown: Stop() initiates graceful shutdown with timeout
 //
 // Thread safety:
-// Implementations must be safe for concurrent use. SetStores() is called
+// Implementations must be safe for concurrent use. SetRuntime() is called
 // once before Serve(), but Stop() may be called concurrently with Serve().
 type Adapter interface {
 	// Serve starts the protocol server and blocks until the context is cancelled
@@ -94,19 +93,10 @@ type Adapter interface {
 	// Returns 0 if the adapter has not yet started or uses dynamic port allocation.
 	Port() int
 
-	// MapError translates a domain error into a protocol-specific ProtocolError.
-	//
-	// Each adapter must implement MapError to convert domain errors (e.g.,
-	// metadata.ErrNoEntity, block.ErrContentNotFound) into the appropriate
-	// wire-format error code for the protocol (NFS status codes, NTSTATUS, etc.).
-	//
-	// Returns nil if the error cannot be mapped to a protocol-specific error.
-	MapError(err error) ProtocolError
-
 	// Healthcheck returns the adapter's current health as a structured
-	// [health.Report] and satisfies [health.Checker]. The API layer
-	// (phase U-E) wraps this in a [health.CachedChecker] and serves it
-	// from /adapter/{name}/status.
+	// [health.Report] and satisfies [health.Checker]. The API layer wraps
+	// this in a [health.CachedChecker] and serves it from
+	// /adapter/{name}/status.
 	//
 	// Implementations should derive status from cheap, already-tracked
 	// signals — never run a fresh probe per call. Mapping:
@@ -122,13 +112,13 @@ type Adapter interface {
 	//   - [health.StatusUnhealthy] when the implementation explicitly
 	//     tracks a failed lifecycle state — for example a stopped or
 	//     crashed adapter, or one whose listener died after running.
-	//     Phase U-C does not introduce that tracking, so the default
-	//     [BaseAdapter] never returns Unhealthy from "configured-on
-	//     but not started"; a future phase can add a serveAttempted /
-	//     lastServeErr field and lift that limitation.
+	//     [BaseAdapter] tracks no such state, so it never returns
+	//     Unhealthy for "configured-on but not started"; adding a
+	//     serveAttempted / lastServeErr field would lift that
+	//     limitation.
 	//   - [health.StatusDegraded] when running but reporting recent
 	//     errors above whatever per-protocol threshold the
-	//     implementation tracks. Phase U-C does not introduce that
+	//     implementation tracks. [BaseAdapter] tracks no such
 	//     instrumentation either; only adapters that already had a
 	//     degraded-detection mechanism can return this today.
 	//   - [health.StatusHealthy] when running with no recent issues.
@@ -137,8 +127,8 @@ type Adapter interface {
 
 // SMBOpenFilesProviderKey is the Runtime adapter provider key under which the
 // SMB handler registers itself as an open-file enumerator for the block-GC
-// open-handle hold (#1448). The NFSv4 state manager needs no dedicated key:
-// it is already registered under "nfs" and the runtime discovers open-file
+// open-handle hold. The NFSv4 state manager needs no dedicated key: it is
+// already registered under "nfs" and the runtime discovers open-file
 // enumerators structurally across all registered adapter providers.
 const SMBOpenFilesProviderKey = "smb_open_files"
 
@@ -160,23 +150,4 @@ type OplockBreaker interface {
 
 	// CheckAndBreakForDelete triggers lease break for Handle leases before deletion.
 	CheckAndBreakForDelete(ctx context.Context, fileHandle lock.FileHandle) error
-}
-
-// IdentityMappingAdapter extends Adapter with protocol-specific identity mapping.
-//
-// Adapters that support authentication implement this interface to convert
-// auth.AuthResult values into protocol-specific identities. This allows the
-// runtime to perform identity mapping uniformly while each adapter handles
-// the protocol-specific translation logic.
-//
-//   - NFS: Maps AUTH_UNIX UIDs, AUTH_NULL, RPCSEC_GSS Kerberos principals
-//   - SMB: Maps NTLM sessions, SPNEGO/Kerberos negotiations
-//
-// All adapters embedding BaseAdapter satisfy this interface because BaseAdapter
-// provides a default MapIdentity stub that returns an error. The runtime detects
-// non-supporting adapters by checking for a non-nil error from MapIdentity
-// rather than by type assertion.
-type IdentityMappingAdapter interface {
-	Adapter
-	auth.IdentityMapper
 }

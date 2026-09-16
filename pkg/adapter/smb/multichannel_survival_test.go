@@ -64,7 +64,7 @@ func snapshotTouched(c *Connection) []uint64 {
 // connection's channel; the session and any parked operation survive while other
 // channels remain live, and only the last channel's close marks the session for
 // teardown. This is the fix for the smb2.replay.dhv2-pending2*/3*-sane rows of
-// #749.
+// the conformance suite.
 //
 // The runtime-backed final teardown (Handler.CleanupSession) is exercised
 // elsewhere (handler-package replay tests); here we assert the pure channel
