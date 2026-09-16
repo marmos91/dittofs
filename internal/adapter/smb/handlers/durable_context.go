@@ -1276,6 +1276,14 @@ func ProcessAppInstanceId(
 					"handleID", h.ID)
 				continue
 			}
+			// Counted down here, under the same mutex the claim took. Doing it
+			// after the lock is released opens a sequence that loses a DIFFERENT
+			// row's count: a concurrent purge reconciles this file to zero, a
+			// concurrent disconnect persists a new row and counts it back to
+			// one, and the late decrement then zeroes that — after which the new
+			// row's file passes the fast-path gate and its locks survive every
+			// later scan.
+			handler.forgetDisconnectedHandle(row.MetadataHandle)
 			claimed = append(claimed, row)
 		}
 		return claimed
@@ -1304,11 +1312,6 @@ func ProcessAppInstanceId(
 				logger.Debug("ProcessAppInstanceId: failed to release locks",
 					"id", claimed.ID, "path", claimed.Path, "error", err)
 			}
-			// The row was counted when it was persisted, and only the conflict
-			// purge and the scavenger reconcile that count. Consuming it here
-			// without saying so leaves a phantom per displaced file, which sends
-			// every later operation on it through a durable-store scan.
-			handler.forgetDisconnectedHandle(claimed.MetadataHandle)
 		}
 	}
 	if persistedClosed > 0 {
