@@ -285,20 +285,31 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 	// by this call — a peer's commit, or a coalesced directory bump — never this
 	// call's own stamp, which is always the later of the two and would otherwise
 	// win the comparison.
-	// Through the same overlay a read would apply: this loaded the file from the
-	// store directly, which does not carry the coalesced directory bumps that
-	// Service.GetFile merges in, and those bumps are exactly the not-yet-flushed
-	// value the hold has to protect.
-	foundAttr := file.FileAttr
-	s.mergeDirTimes(handle, &foundAttr)
-	foundCtime := foundAttr.Ctime
-
 	dirTimeSet := file.Type == FileTypeDirectory &&
 		(attrs.Mtime != nil || attrs.Atime != nil || attrs.MtimeNow || attrs.AtimeNow)
 	if dirTimeSet {
 		lock := s.dirTimes.FlushLock(handle)
 		lock.Lock()
 		defer lock.Unlock()
+	}
+
+	// The coalesced directory bump this call must not lose, read AFTER the flush
+	// lock above: a create or remove landing while this was waiting for the lock
+	// records a bump that belongs to the state this write is about to commit,
+	// and a value captured before the wait would not carry it.
+	//
+	// Only the pending bump, not a pre-call snapshot of the whole change time.
+	// A held change time means "leave the stored value as it is", so the stored
+	// value is the authority — including when a peer deliberately lowered it,
+	// which is what an SMB frozen-timestamp restore does. Carrying a pre-call
+	// snapshot forward would write that restore back up to whatever this call
+	// happened to read first. The pending bump is the one exception, because it
+	// is newer than the row by construction and has simply not been flushed.
+	var pendingDirCtime time.Time
+	if file.Type == FileTypeDirectory {
+		if _, ctime, _, ok := s.dirTimes.GetPending(handle); ok {
+			pendingDirCtime = ctime
+		}
 	}
 
 	// Overlay any coalesced (not-yet-persisted) directory timestamps so the WCC
@@ -673,17 +684,19 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 					Path:    file.Path,
 				}
 			}
-			// The newer of the two values this call did not write: the row as
-			// it stands now (a peer's commit, which is why this re-read
-			// exists) and the change time this call found, which carries any
-			// coalesced directory bump the caller's read had overlaid but that
-			// has not been flushed. Compared against foundCtime rather than
-			// file.Ctime because the branches above may have stamped `now`
-			// there; `now` is later than both by construction and would win
-			// every comparison, turning "hold the stored value" into "stamp it".
-			file.Ctime = foundCtime
-			if cur.Ctime.After(file.Ctime) {
-				file.Ctime = cur.Ctime
+			// The row as it stands now, which is what "hold the stored value"
+			// means — a peer's commit stands, higher or lower. Assigned rather
+			// than compared against file.Ctime, because the branches above may
+			// have stamped `now` there and `now` beats everything.
+			//
+			// Lifted only by a directory bump that is recorded but not yet
+			// flushed: that value is newer than the row by construction, and
+			// the Clear that follows an explicit directory-time set would
+			// otherwise discard it for good, moving a peer's visible change
+			// time backwards.
+			file.Ctime = cur.Ctime
+			if pendingDirCtime.After(file.Ctime) {
+				file.Ctime = pendingDirCtime
 			}
 			return nil
 		}
