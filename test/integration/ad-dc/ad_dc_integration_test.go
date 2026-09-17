@@ -92,19 +92,28 @@ func uniqueContainerName(t *testing.T) string {
 }
 
 // adDockerOutput runs `docker <sub> args...` bounded by adExecTimeout and returns
-// its stdout. Used for the fixture's introspection calls (inspect, port) so none
-// can block past the deadline.
+// its stdout. Used for the fixture's introspection calls (inspect, port) whose
+// output is parsed, so Docker's stderr must not be folded into it.
 func adDockerOutput(sub string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), adExecTimeout)
 	defer cancel()
 	return exec.CommandContext(ctx, "docker", append([]string{sub}, args...)...).Output()
 }
 
+// adDockerCombined runs `docker <sub> args...` bounded by adExecTimeout and
+// returns stdout+stderr together, so a failure message keeps Docker's diagnostic
+// rather than only the exit status.
+func adDockerCombined(sub string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), adExecTimeout)
+	defer cancel()
+	return exec.CommandContext(ctx, "docker", append([]string{sub}, args...)...).CombinedOutput()
+}
+
 // adDockerExec runs `docker exec <container> args...` with a bounded context and
 // returns its combined output. Every exec the fixture issues goes through here so
-// none can block past adExecTimeout.
+// none can block past adExecTimeout, and a failure keeps Docker's stderr.
 func adDockerExec(args ...string) ([]byte, error) {
-	return adDockerOutput("exec", append([]string{adContainerName}, args...)...)
+	return adDockerCombined("exec", append([]string{adContainerName}, args...)...)
 }
 
 // TestADGroupSIDsFromPAC exercises the full AD-1 path: a real AD ticket's PAC
@@ -193,7 +202,17 @@ func setupADDC(t *testing.T) (kdcHostPort int, keytabPath, krb5ConfPath string, 
 
 	// Address a container private to this test so no other test's teardown can
 	// remove the DC out from under an in-flight docker exec.
-	adContainerName = uniqueContainerName(t)
+	container := uniqueContainerName(t)
+	adContainerName = container
+
+	// Register the teardown before the container exists, capturing this test's
+	// name, so a t.Fatalf anywhere below (port discovery, readiness, keytab copy)
+	// cannot orphan the container — sibling tests use different names and their
+	// cleanup cannot reclaim it.
+	t.Cleanup(func() {
+		t.Log("Cleaning up AD-DC container...")
+		_ = exec.Command("docker", "rm", "-f", container).Run()
+	})
 
 	// Clean up any previous container left by an interrupted run of this test.
 	_ = exec.Command("docker", "rm", "-f", adContainerName).Run()
@@ -260,7 +279,7 @@ func setupADDC(t *testing.T) (kdcHostPort int, keytabPath, krb5ConfPath string, 
 	// container, so the fixture's chmod 0400 / chown to the dittofs uid does
 	// not block us (it would block a host volume mount).
 	keytabPath = filepath.Join(tmpDir, "dittofs.keytab")
-	if out, err := adDockerOutput("cp",
+	if out, err := adDockerCombined("cp",
 		adContainerName+":/keytabs/dittofs.keytab", keytabPath); err != nil {
 		dumpADLogs(t)
 		t.Fatalf("copy keytab: %v\n%s", err, out)
@@ -289,7 +308,7 @@ func setupADDC(t *testing.T) (kdcHostPort int, keytabPath, krb5ConfPath string, 
 
 	cleanup = func() {
 		t.Log("Cleaning up AD-DC container...")
-		_ = exec.Command("docker", "rm", "-f", adContainerName).Run()
+		_ = exec.Command("docker", "rm", "-f", container).Run()
 	}
 	return kdcHostPort, keytabPath, krb5ConfPath, cleanup
 }

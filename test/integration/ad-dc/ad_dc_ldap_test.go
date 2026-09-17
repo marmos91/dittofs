@@ -160,7 +160,16 @@ func setupADDCForLDAP(t *testing.T) (ldapPort int, cleanup func()) {
 
 	// A container private to this test, so no sibling test's teardown can remove
 	// the DC mid-exec.
-	adContainerName = uniqueContainerName(t)
+	container := uniqueContainerName(t)
+	adContainerName = container
+
+	// Register the teardown before the container exists, capturing this test's
+	// name, so a t.Fatalf below (port discovery, readiness, user wait) cannot
+	// orphan the container — sibling tests use different names.
+	t.Cleanup(func() {
+		t.Log("Cleaning up AD-DC container...")
+		_ = exec.Command("docker", "rm", "-f", container).Run()
+	})
 
 	_ = exec.Command("docker", "rm", "-f", adContainerName).Run()
 
@@ -215,7 +224,7 @@ func setupADDCForLDAP(t *testing.T) (ldapPort int, cleanup func()) {
 
 	cleanup = func() {
 		t.Log("Cleaning up AD-DC container...")
-		_ = exec.Command("docker", "rm", "-f", adContainerName).Run()
+		_ = exec.Command("docker", "rm", "-f", container).Run()
 	}
 	return ldapPort, cleanup
 }
