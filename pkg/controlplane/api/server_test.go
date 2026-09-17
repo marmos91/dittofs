@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	goruntime "runtime"
 	"testing"
 	"time"
@@ -399,6 +400,90 @@ func stopReturnedChan(s *Server, ctx context.Context) <-chan error {
 	go func() { ch <- s.Stop(ctx) }()
 	return ch
 }
+
+// TestAPIServer_DrainRefusesRequestsAdmittedAfterItStarts pins the admission
+// gate: Drain sets draining before it waits, so a request arriving once the
+// drain is under way is refused (503) instead of being counted and dispatched
+// into a handler that would touch the store being closed. Without the gate, a
+// request accepted by the still-open listener on the forced-exit path could Add
+// after Wait began — a prohibited WaitGroup use — and reach the store after
+// Drain returned.
+func TestAPIServer_DrainRefusesRequestsAdmittedAfterItStarts(t *testing.T) {
+	cpStore, cfg := testSetup(t, 18103)
+	server, err := NewServer(cfg, nil, cpStore, Timeouts{Restore: 30 * time.Minute})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	// A drain that blocks until the counted request is released, so we can send
+	// another request while it is still waiting and observe the gate rather than
+	// a closed listener.
+	server.drainTimeout = 5 * time.Second
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	go func() {
+		server.trackInflight(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			close(entered)
+			<-release
+		})).ServeHTTP(newRecordingResponseWriter(), httptest.NewRequest(http.MethodGet, "/health", nil))
+	}()
+	<-entered // the blocking request is counted before the drain starts
+
+	drainCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	drainResult := make(chan bool, 1)
+	go func() { drainResult <- server.Drain(drainCtx) }()
+
+	// Wait until draining is set, then send a request through the tracker.
+	deadline := time.After(2 * time.Second)
+	for {
+		server.drainMu.RLock()
+		draining := server.draining
+		server.drainMu.RUnlock()
+		if draining {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("Drain did not set the draining gate")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	rec := newRecordingResponseWriter()
+	server.trackInflight(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler ran after draining began")
+	})).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+	if rec.status != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want %d for a request refused mid-drain", rec.status, http.StatusServiceUnavailable)
+	}
+
+	close(release)
+	if !<-drainResult {
+		t.Error("Drain returned false, want true once the counted request finished")
+	}
+}
+
+// recordingResponseWriter captures the status written through it.
+type recordingResponseWriter struct {
+	header http.Header
+	status int
+}
+
+func newRecordingResponseWriter() *recordingResponseWriter {
+	return &recordingResponseWriter{header: make(http.Header)}
+}
+
+func (w *recordingResponseWriter) Header() http.Header { return w.header }
+
+func (w *recordingResponseWriter) Write(b []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return len(b), nil
+}
+
+func (w *recordingResponseWriter) WriteHeader(status int) { w.status = status }
 
 // TestNewServer_PprofSamplingWired verifies NewServer actually applies the
 // mutex sampling fraction to the Go runtime when Pprof is enabled — the gap
