@@ -140,8 +140,9 @@ func TestDrainStartupWorkers_BoundsTheSettingsWatcherJoin(t *testing.T) {
 
 	// The drain detaches from the caller's context on purpose — a join has to
 	// outlive a cancellation — so the bound that matters is its own.
-	defer func(d time.Duration) { startupDrainTimeout = d }(startupDrainTimeout)
+	prevTimeout := startupDrainTimeout
 	startupDrainTimeout = 50 * time.Millisecond
+	defer func() { startupDrainTimeout = prevTimeout }()
 
 	returned := make(chan struct{})
 	go func() {
@@ -328,8 +329,15 @@ func TestSettingsWatcher_SecondStartDoesNotStrandTheFirst(t *testing.T) {
 // while a second one would still be open — so it is joined only if the drain
 // gave the snapshot side a budget of its own.
 func TestDrainStartupWorkers_AWedgedWatcherDoesNotSkipTheSnapshotDrain(t *testing.T) {
-	defer func(d time.Duration) { startupDrainTimeout = d }(startupDrainTimeout)
-	startupDrainTimeout = 500 * time.Millisecond
+	// Taken once and restored once. Reading the global back in the deferred
+	// restore would read whatever a concurrent test left there, and the timer
+	// goroutine below must not read it at all: a write here and a read there
+	// are a data race, and the value it needs is fixed before the goroutine
+	// starts anyway.
+	const budget = 500 * time.Millisecond
+	prev := startupDrainTimeout
+	startupDrainTimeout = budget
+	defer func() { startupDrainTimeout = prev }()
 
 	deps := &blockingSchedDeps{
 		entered:  make(chan struct{}),
@@ -355,10 +363,19 @@ func TestDrainStartupWorkers_AWedgedWatcherDoesNotSkipTheSnapshotDrain(t *testin
 	rt.settingsWatcher.stopped = make(chan struct{})
 	rt.settingsWatcher.stopCh = make(chan struct{})
 
-	// Released after the watcher's window is spent, inside where a second one
-	// would run. Sharing a single window puts this after every deadline.
+	// Released after the watcher's window is spent, but comfortably before the
+	// snapshot drain's own deadline — which is the middle of that second
+	// window, not its end. The release has to fall strictly inside
+	// (budget, budget+budget/2): at or before `budget` the watcher join may
+	// still be running, and at `budget+budget/2` it lands exactly on the
+	// scheduler join's deadline, where the join and its timeout are both ready
+	// and the select picks between them at random. That tie made this test fail
+	// roughly one run in twenty-five under -race, on a drain that had behaved
+	// correctly. A third of the way in keeps the property under test — the
+	// snapshot side got a window of its own — without racing the boundary it
+	// is being tested against.
 	go func() {
-		time.Sleep(startupDrainTimeout + startupDrainTimeout/2)
+		time.Sleep(budget + budget/3)
 		close(deps.release)
 	}()
 
