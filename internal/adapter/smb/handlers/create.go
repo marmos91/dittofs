@@ -818,6 +818,21 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 			// Compute session key hash for security validation
 			sessionKeyHash := computeSessionKeyHash(sess)
 
+			// The reconnect's consume-plus-register is one decision, and the
+			// AppInstanceId failover scans the same durable store and the same
+			// open-file table in two passes. Holding durablePurgeMu across both
+			// steps keeps a failover from observing the row consumed but the
+			// open not yet registered, or vice versa — either half of that split
+			// leaves a qualifying open that both passes miss, which §3.3.5.9.13
+			// requires be closed. The failover takes the same mutex across its
+			// own decision span.
+			//
+			// Released before the lease re-registration and the response below:
+			// those reach the lock manager and the metadata store, and the
+			// decision the mutex protects is already made by then. Releasing on
+			// the error paths too is what the deferred unlock is for.
+			h.durablePurgeMu.Lock()
+
 			metaSvc := h.Registry.GetMetadataService()
 			reconnResult, status, reconnErr := ProcessDurableReconnectContext(
 				authCtx.Context, h.DurableStore, metaSvc, req.CreateContexts,
@@ -825,10 +840,12 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 				tree.ShareName, fullFilename, connClientGUID(ctx),
 			)
 			if reconnErr != nil {
+				h.durablePurgeMu.Unlock()
 				logger.Warn("CREATE: durable reconnect error", "error", reconnErr)
 				return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInternalError}}, nil
 			}
 			if status != types.StatusSuccess {
+				h.durablePurgeMu.Unlock()
 				logger.Debug("CREATE: durable reconnect failed",
 					"status", status, "filename", filename)
 				return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: status}}, nil
@@ -1064,7 +1081,10 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 			// to this live server keeps the freeze, a restart drops it.
 			h.adoptFrozenTimestamps(reconnResult.HandleID, restored)
 
+			// Register before releasing the mutex: this is the second half of the
+			// consume-plus-register pair the failover must not straddle.
 			h.StoreOpenFile(restored)
+			h.durablePurgeMu.Unlock()
 
 			// Get current file attributes for the response
 			var respFile *metadata.File

@@ -886,6 +886,15 @@ func validateAndRestore(
 		// disconnect, dropping the reconnect out.alloc_size back to the
 		// file's bare size (smb2.durable-open.alloc-size reopen checks).
 		RequestedAllocSize: handle.RequestedAllocSize,
+		// Restore the AppInstanceId recorded at the original CREATE. Without
+		// it a reconnected durable open is indistinguishable from one that never
+		// carried an AppInstanceId, so the §3.3.5.9.13 failover — which matches
+		// live opens on that field — no longer sees it. A CREATE presenting the
+		// same AppInstanceId would then contend with this open instead of
+		// claiming the file from it, which is the whole point of the failover.
+		// The field is persisted by buildPersistedDurableHandle, so the record
+		// is the source of truth across the disconnect.
+		AppInstanceId: handle.AppInstanceId,
 		// IsDurable is NOT set on restore -- client must re-request durability
 	}
 	restored.SetName(OpenName{
@@ -1130,6 +1139,20 @@ func ProcessAppInstanceId(
 	// Handler.files) — NOT persisted into the durable store, since the new
 	// AppInstanceId open is claiming this handle.
 	//
+	// durablePurgeMu is held across the live pass AND the persisted decision
+	// below, so a DHnC/DH2C reconnect cannot consume its row and register the
+	// restored open in between the two passes. That interleaving is what makes
+	// this failover miss an open it is required to close: the row is gone by
+	// the persisted listing and the open was not yet in the table when the live
+	// pass ran, so neither pass sees it. The reconnect takes the same mutex
+	// across its own consume-plus-register, and holding it here for the whole
+	// decision span is the other half of that pair.
+	//
+	// Safe against the disconnect path, which also takes this mutex: that path
+	// reaches its persist under isDisconnect only, while the close below runs
+	// with isDisconnect=false — so this pass cannot re-enter the mutex through
+	// it. The unlock is deferred so the error returns below release it too.
+	//
 	// Candidates are collected in one pass over the open-file table and
 	// authorized afterwards: mayDisplace reads the metadata store, which the
 	// OpenFile concurrency contract forbids inside files.Range.
@@ -1144,6 +1167,13 @@ func ProcessAppInstanceId(
 	// AppInstanceId failover must be silent anyway (MS-SMB2 §3.3.5.9.13;
 	// smbtorture smb2.durable-v2-open.app-instance asserts
 	// break_info.count == 0).
+	handler.durablePurgeMu.Lock()
+	unlocked := false
+	defer func() {
+		if !unlocked {
+			handler.durablePurgeMu.Unlock()
+		}
+	}()
 	type candidate struct {
 		fileID     [16]byte
 		metaHandle []byte
@@ -1273,13 +1303,12 @@ func ProcessAppInstanceId(
 	// persist in the server behind one AppInstanceId CREATE. Once a row is
 	// claimed it belongs to this call and nothing else can reach it, so the
 	// cleanup needs no lock at all.
-	// Authorized BEFORE the mutex. mayDisplace reads the metadata store and
-	// evaluates an ACL per row, and durablePurgeMu is process-wide: holding it
-	// across one store round-trip per candidate blocks every disconnect persist
-	// and every WRITE/SET_INFO purge window in the server for the duration. The
-	// listing is repeated inside the lock and only rows that were authorized out
-	// here are claimed, so a row that appears in between is left alone rather
-	// than displaced unauthorized.
+	// Authorized BEFORE the claim. mayDisplace reads the metadata store and
+	// evaluates an ACL per row; doing that here rather than under the mutex
+	// keeps the process-wide mutex from spanning one store round-trip per
+	// candidate. The listing is repeated after authorization and only rows that
+	// were authorized out here are claimed, so a row that appears in between is
+	// left alone rather than displaced unauthorized.
 	preList, preErr := durableStore.GetDurableHandlesByAppInstanceId(ctx, appId)
 	if preErr != nil {
 		logger.Warn("ProcessAppInstanceId: store error", "error", preErr)
@@ -1300,25 +1329,18 @@ func ProcessAppInstanceId(
 		persistedAuthorized[h.ID] = mayDisplace(h.MetadataHandle)
 	}
 
-	claimedRows := func() []*lock.PersistedDurableHandle {
-		// Nothing out here was authorized, and the claim below skips every row
-		// that is not — so the second listing could only produce an empty set.
-		// Returning first keeps a CREATE with no displaceable row from taking
-		// the process-wide mutex and paying a store round trip for it.
-		if len(persistedAuthorized) == 0 {
-			return nil
-		}
-
-		handler.durablePurgeMu.Lock()
-		defer handler.durablePurgeMu.Unlock()
-
+	// The claim runs under the same durablePurgeMu the live pass above was
+	// entered with, so the whole decision — live scan, authorization, persisted
+	// listing and claim — is atomic against a reconnect's consume-plus-register.
+	// The listing is the second one for this appId: the first is the
+	// authorization pass above, and only rows it approved are claimed here.
+	var claimedRows []*lock.PersistedDurableHandle
+	if len(persistedAuthorized) > 0 {
 		existing, err := durableStore.GetDurableHandlesByAppInstanceId(ctx, appId)
 		if err != nil {
 			logger.Warn("ProcessAppInstanceId: store error", "error", err)
-			return nil
 		}
 
-		var claimed []*lock.PersistedDurableHandle
 		for _, h := range existing {
 			if sameOrUnknownClient(h.ClientGUID, connClientGUID) || !persistedAuthorized[h.ID] {
 				continue
@@ -1373,10 +1395,17 @@ func ProcessAppInstanceId(
 			if !row.DisconnectedAt.IsZero() {
 				handler.forgetDisconnectedHandle(row.MetadataHandle)
 			}
-			claimed = append(claimed, row)
+			claimedRows = append(claimedRows, row)
 		}
-		return claimed
-	}()
+	}
+
+	// The decision is complete: live opens are closed and persisted rows are
+	// claimed. Everything below only acts on rows this call already owns, so the
+	// mutex is released before it — the cleanup reaches the block store and the
+	// metadata store, and holding the process-wide mutex across those would
+	// serialize every disconnect persist behind one AppInstanceId CREATE.
+	unlocked = true
+	handler.durablePurgeMu.Unlock()
 
 	persistedClosed := len(claimedRows)
 	if persistedClosed > 0 {

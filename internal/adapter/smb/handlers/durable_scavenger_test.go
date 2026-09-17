@@ -18,6 +18,11 @@ type mockDurableStore struct {
 	mu      sync.RWMutex
 	handles map[string]*lock.PersistedDurableHandle
 
+	// onListByAppInstanceId, when set, runs after the AppInstanceId listing is
+	// taken. A test uses it to inject work at that moment — the position a
+	// concurrent reconnect occupies inside the failover's decision span.
+	onListByAppInstanceId func()
+
 	// deleteCalls counts the number of DeleteDurableHandle invocations (across
 	// all IDs). Used to assert that a single handle's cleanup side-effects do
 	// not run twice under concurrent callers.
@@ -80,12 +85,17 @@ func (s *mockDurableStore) ConsumeDurableHandle(_ context.Context, id string) (*
 
 func (s *mockDurableStore) GetDurableHandlesByAppInstanceId(_ context.Context, appInstanceId [16]byte) ([]*lock.PersistedDurableHandle, error) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	var result []*lock.PersistedDurableHandle
 	for _, h := range s.handles {
 		if h.AppInstanceId == appInstanceId {
 			result = append(result, h)
 		}
+	}
+	s.mu.RUnlock()
+	// Lets a test inject work at the moment the listing is taken — the position
+	// a concurrent reconnect would occupy inside the failover's decision span.
+	if s.onListByAppInstanceId != nil {
+		s.onListByAppInstanceId()
 	}
 	return result, nil
 }

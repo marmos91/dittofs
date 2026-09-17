@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -3083,5 +3084,154 @@ func TestCurrentClientGUID_ReportsTheConnectionTheSessionIsOn(t *testing.T) {
 	}
 	if got != ([16]byte{}) {
 		t.Errorf("CurrentClientGUID() = %x after a connection with no GUID; want the zero GUID", got)
+	}
+}
+
+// TestProcessDurableReconnectContext_V2RestoresAppInstanceId covers the real
+// gap behind #2676. A durable open that carries an AppInstanceId has it
+// persisted (buildPersistedDurableHandle writes it), but validateAndRestore
+// never put it back on the restored OpenFile — so after a DHnC/DH2C reconnect
+// the live open is indistinguishable from one that never had an
+// AppInstanceId, and the §3.3.5.9.13 failover no longer matches it. A later
+// CREATE carrying the same AppInstanceId then finds nothing to displace and
+// contends with the surviving open instead of claiming the file.
+//
+// The reconnect and the failover race each other in the two-pass scan too, and
+// that window is closed separately; this test pins the deterministic half, which
+// the race window would otherwise mask.
+func TestProcessDurableReconnectContext_V2RestoresAppInstanceId(t *testing.T) {
+	store := newMockDurableStore()
+	ctx := context.Background()
+
+	fileID := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 0, 0, 0, 0, 0, 0}
+	createGuid := [16]byte{0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB8, 0xB9, 0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF}
+	appID := [16]byte{0xC0, 0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xCB, 0xCC, 0xCD, 0xCE, 0xCF}
+	keyHash := makeSessionKeyHash("session-key-app")
+
+	_ = store.PutDurableHandle(ctx, &lock.PersistedDurableHandle{
+		ID:             "dh-app",
+		FileID:         fileID,
+		Path:           "vm-disk.vhdx",
+		ShareName:      "/share1",
+		DesiredAccess:  0x120089,
+		ShareAccess:    0x01,
+		MetadataHandle: []byte{0xBE, 0xEF},
+		PayloadID:      "payload-app",
+		OplockLevel:    OplockLevelLease,
+		CreateGuid:     createGuid,
+		AppInstanceId:  appID,
+		Username:       "bob",
+		SessionKeyHash: keyHash,
+		IsV2:           true,
+		CreatedAt:      time.Now().Add(-5 * time.Minute),
+		DisconnectedAt: time.Now().Add(-10 * time.Second),
+		TimeoutMs:      60000,
+	})
+
+	dh2cData := make([]byte, 36)
+	copy(dh2cData[0:16], fileID[:])
+	copy(dh2cData[16:32], createGuid[:])
+	binary.LittleEndian.PutUint32(dh2cData[32:36], 0)
+
+	restored, status, err := ProcessDurableReconnectContext(
+		context.Background(), store, nil,
+		[]CreateContext{{Name: DurableHandleV2ReconnectTag, Data: dh2cData}},
+		999, "bob", keyHash, "/share1", "vm-disk.vhdx", [16]byte{},
+	)
+	if err != nil {
+		t.Fatalf("ProcessDurableReconnectContext error: %v", err)
+	}
+	if status != types.StatusSuccess {
+		t.Fatalf("Expected STATUS_SUCCESS, got %s", status)
+	}
+
+	if restored.OpenFile.AppInstanceId != appID {
+		t.Errorf("restored AppInstanceId = %x, want %x: a reconnected durable open "+
+			"that loses its AppInstanceId is no longer matchable by the "+
+			"§3.3.5.9.13 failover", restored.OpenFile.AppInstanceId, appID)
+	}
+}
+
+// TestProcessAppInstanceId_ReconnectCannotLandBetweenItsTwoPasses covers #2676.
+// The failover decides in two passes — live opens, then persisted rows — and a
+// DHnC/DH2C reconnect consumes its row and registers the restored open between
+// them. Landing in that gap leaves the open invisible to both passes: the row is
+// gone by the persisted listing, and the open was not in the table when the live
+// pass ran. §3.3.5.9.13 requires that open be closed.
+//
+// The reconnect holds durablePurgeMu across consume-plus-register and the
+// failover holds it across live-scan-through-claim, so the two spans cannot
+// interleave. This runs both concurrently and asserts the invariant that
+// interleaving would break: after both have finished, no open carrying the
+// AppInstanceId is left live.
+//
+// Either serialization order satisfies it, which is the point — the mutex
+// decides which one happens, not the test:
+//   - reconnect first: the failover's live pass then sees and closes the open.
+//   - failover first: the row is already claimed, so the reconnect's consume
+//     returns nothing and no open is registered.
+//
+// An interleaving produces the third outcome the assertion rejects: the row
+// consumed, the open registered, and neither pass having seen it.
+func TestProcessAppInstanceId_ReconnectCannotLandBetweenItsTwoPasses(t *testing.T) {
+	const iterations = 100
+
+	for i := 0; i < iterations; i++ {
+		e := newAppInstanceEnv(t)
+		// ownerGUID opened the file originally and is the one reconnecting;
+		// claimantGUID is the other client whose CREATE triggers the failover.
+		// The two must differ, or the failover correctly treats the open as its
+		// own and displaces nothing.
+		ownerGUID := [16]byte{0x11, 0x22, 0x33, 0x44}
+		claimantGUID := [16]byte{0x55, 0x66, 0x77, 0x88}
+		metaHandle := e.file(t, "vm-disk.vhdx", 0o644)
+		e.persist(t, "dh-row", "/vm-disk.vhdx", metaHandle, ownerGUID)
+
+		row, err := e.store.GetDurableHandle(context.Background(), "dh-row")
+		if err != nil || row == nil {
+			t.Fatalf("iteration %d: seeded row missing: %v", i, err)
+		}
+		fileID := row.FileID
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		// The reconnect: consume the row, then register the restored open,
+		// both under durablePurgeMu — the span create.go holds.
+		go func() {
+			defer wg.Done()
+			e.h.durablePurgeMu.Lock()
+			defer e.h.durablePurgeMu.Unlock()
+			consumed, _ := e.store.ConsumeDurableHandle(context.Background(), "dh-row")
+			if consumed == nil {
+				// The failover claimed it first. Nothing to restore.
+				return
+			}
+			e.h.StoreOpenFile((&OpenFile{
+				FileID:         fileID,
+				SessionID:      99,
+				TreeID:         1,
+				ShareName:      e.share,
+				MetadataHandle: metaHandle,
+				AppInstanceId:  e.appID,
+				ClientGUID:     ownerGUID,
+			}).WithName(OpenName{Path: "/vm-disk.vhdx"}))
+		}()
+
+		// The failover.
+		go func() {
+			defer wg.Done()
+			e.claim(claimantGUID)
+		}()
+
+		wg.Wait()
+
+		// Invariant: the qualifying open is not left live. A reconnect that
+		// slipped between the two passes would leave exactly that.
+		if _, still := e.h.GetOpenFile(fileID); still {
+			t.Fatalf("iteration %d: an open registered by a reconnect survived the failover: "+
+				"the reconnect's consume-plus-register is not serialized against the "+
+				"failover's two passes", i)
+		}
 	}
 }
