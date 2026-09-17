@@ -636,7 +636,9 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 	// as the rest of SetFileAttributes so concurrent bit flips (e.g. SET_SPARSE
 	// racing SET_COMPRESSION) cannot clobber each other with a stale snapshot.
 	//
-	// These fields exist solely for FSCTL-managed DOS attribute bits (high word).
+	// These fields exist solely for DOS attribute bits (high word) — the
+	// FSCTL-managed compression and sparse flags, and the attributes an SMB
+	// FileAttributes update sets and clears.
 	// They are applied AFTER the POSIX SUID/SGID stripping above, so they must
 	// not be allowed to carry permission/setid/sticky bits — otherwise a caller
 	// could set e.g. SGID via ModeOrMask and bypass that validation. Whitelist

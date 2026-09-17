@@ -62,19 +62,13 @@ func (h *Handler) setFileInfoFromStore(
 		// bits are preserved. calculatePermissions in pkg/metadata enforces the
 		// READONLY semantics for both NFS and SMB callers by clearing write when
 		// modeDOSExplicit + modeDOSReadonly are both set.
-		// Per MS-FSA 2.1.5.15.2 ("FileBasicInformation"), which lists the
-		// settable attributes: FILE_ATTRIBUTE_COMPRESSED is NOT settable via
-		// FileBasicInformation; it is controlled only via FSCTL_SET_COMPRESSION.
-		// Likewise, FILE_ATTRIBUTE_SPARSE_FILE is set only via FSCTL_SET_SPARSE.
-		// The mask form leaves both FSCTL-managed bits alone by never naming
-		// them, and leaves the file's POSIX permission bits alone for the same
-		// reason — the attributes the client sent say nothing about them.
+		//
+		// FILE_ATTRIBUTE_HIDDEN (MS-FSCC 2.6 "File Attributes") is carried
+		// separately in setAttrs.Hidden, which DecodeBasicInfoToSetAttrs has
+		// already filled in from this same FileAttributes field so QUERY_INFO
+		// and QUERY_DIRECTORY round-trip it.
 		if fileAttrs != 0 {
 			applyDOSAttrUpdate(setAttrs, fileAttrs)
-			// Propagate FILE_ATTRIBUTE_HIDDEN (MS-FSCC 2.6 "File Attributes") into the metadata
-			// Hidden field so QUERY_INFO and QUERY_DIRECTORY round-trip correctly.
-			hiddenVal := fileAttrs&types.FileAttributeHidden != 0
-			setAttrs.Hidden = &hiddenVal
 		}
 
 		// Per MS-FSA §2.1.5.15.2 ("FileBasicInformation"): Handle timestamp freeze/unfreeze sentinels.

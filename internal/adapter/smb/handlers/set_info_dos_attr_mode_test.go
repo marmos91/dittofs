@@ -63,12 +63,20 @@ func setupDOSAttrModeTest(t *testing.T, fileType metadata.FileType, mode uint32)
 	}
 
 	metaSvc := rt.GetMetadataService()
-	file, _, err := metaSvc.CreateFile(authCtx, rootHandle, "target", &metadata.FileAttr{
-		Type: fileType,
-		Mode: mode,
-	})
+	// CreateFile hardcodes FileTypeRegular and ignores attr.Type, so a
+	// directory has to be created through CreateDirectory to be one.
+	attr := &metadata.FileAttr{Type: fileType, Mode: mode}
+	var file *metadata.File
+	if fileType == metadata.FileTypeDirectory {
+		file, _, err = metaSvc.CreateDirectory(authCtx, rootHandle, "target", attr)
+	} else {
+		file, _, err = metaSvc.CreateFile(authCtx, rootHandle, "target", attr)
+	}
 	if err != nil {
-		t.Fatalf("CreateFile: %v", err)
+		t.Fatalf("create target: %v", err)
+	}
+	if file.Type != fileType {
+		t.Fatalf("test subject is a %v, not the %v the case names", file.Type, fileType)
 	}
 	fileHandle, err := metadata.EncodeFileHandle(file)
 	if err != nil {

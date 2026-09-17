@@ -50,16 +50,23 @@ func TestSetFileAttributes_DOSAttrMasks_LeavePermissionBitsIntact(t *testing.T) 
 			t.Parallel()
 			fx := newTestFixture(t)
 
-			_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "target", &metadata.FileAttr{
-				Type: tc.fileType,
-				Mode: tc.mode,
-			})
+			// CreateFile hardcodes FileTypeRegular and ignores attr.Type, so a
+			// directory case has to go through CreateDirectory to be a
+			// directory at all.
+			attr := &metadata.FileAttr{Type: tc.fileType, Mode: tc.mode}
+			var err error
+			if tc.fileType == metadata.FileTypeDirectory {
+				_, _, err = fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "target", attr)
+			} else {
+				_, _, err = fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "target", attr)
+			}
 			require.NoError(t, err)
 			handle, err := fx.store.GetChild(context.Background(), fx.rootHandle, "target")
 			require.NoError(t, err)
 
 			pre, err := fx.service.GetFile(context.Background(), handle)
 			require.NoError(t, err)
+			require.Equal(t, tc.fileType, pre.Type, "test subject is not the type the case names")
 			wantPOSIX := pre.Mode & 0o7777
 
 			// Set ARCHIVE, clear SYSTEM and READONLY — the shape an SMB
