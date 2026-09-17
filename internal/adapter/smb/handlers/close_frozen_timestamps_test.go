@@ -120,6 +120,14 @@ func TestClose_FrozenTimestampsSurviveRename(t *testing.T) {
 // The advance is made out of band, as a second handle or an NFS client would:
 // the renaming test above cannot separate the restore from the rename's own
 // stamp, and a flush-backed file cannot separate it from the flush.
+//
+// The two timestamps then part ways, and that is the point. LastWriteTime has
+// no forward-only contract, so the frozen value is put back. ChangeTime does:
+// it is the value NFSv4 encodes its change attribute from, and writing it
+// backwards lets a client keep serving a cache it should have dropped. A peer
+// that moved it between the freeze and the CLOSE therefore keeps its advance,
+// and the restore only puts ChangeTime back while the value it read before the
+// operation is still the frozen one.
 func TestClose_FrozenTimestampsSurviveOutOfBandAdvance(t *testing.T) {
 	h, smbCtx, _, fileID := setupReparseShare(t)
 	openFile, ok := h.GetOpenFile(fileID)
@@ -186,15 +194,17 @@ func TestClose_FrozenTimestampsSurviveOutOfBandAdvance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetFile after close: %v", err)
 	}
-	for _, tc := range []struct {
-		name string
-		got  time.Time
-	}{
-		{"LastWriteTime", final.Mtime},
-		{"ChangeTime", final.Ctime},
-	} {
-		if !tc.got.Equal(past) {
-			t.Errorf("%s = %v after CLOSE; want the frozen %v", tc.name, tc.got.UTC(), past)
-		}
+
+	// LastWriteTime is restored to the frozen value: nothing about a peer's
+	// Mtime advance makes the frozen value unsafe to write back.
+	if !final.Mtime.Equal(past) {
+		t.Errorf("LastWriteTime = %v after CLOSE; want the frozen %v", final.Mtime.UTC(), past)
+	}
+
+	// ChangeTime is not: the peer's advance outranks the freeze, so it stands
+	// rather than being dragged back to a value the file no longer held.
+	if !final.Ctime.Equal(future) {
+		t.Errorf("ChangeTime = %v after CLOSE; want the peer's advance %v to stand, not the frozen %v",
+			final.Ctime.UTC(), future.UTC(), past.UTC())
 	}
 }
