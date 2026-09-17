@@ -291,9 +291,18 @@ dfsctl netgroup add-member trusted-net --type ip   --value 192.168.1.50
 dfsctl share nfs-config set /export --netgroup trusted-net
 ```
 
-The netgroup is evaluated at MOUNT and refused with `MNT3ERR_ACCES`; the
-per-operation gate on the data path re-checks the share's auth-flavor policy, so
-tightening an export also affects clients that mounted before the change.
+The netgroup is enforced on both NFS versions, on paths that do not share code:
+
+- **NFSv3** — checked at MOUNT and refused with `MNT3ERR_ACCES`.
+- **NFSv4** — there is no MOUNT, so the check runs twice instead: when a share
+  handle enters a compound (PUTFH, or a LOOKUP crossing an export junction out
+  of the pseudo-fs) and again whenever an operation builds an auth context. A
+  client outside the allowlist gets `NFS4ERR_ACCESS`.
+
+Both are evaluated per request against current runtime state, so tightening an
+export also affects clients that already mounted or already hold a handle.
+Which authentication flavors an export accepts is a separate policy — see
+`--allow-auth-sys` / `--require-kerberos` below.
 
 Which authentication flavors an export accepts is separate from the client
 allowlist: set `--allow-auth-sys` / `--require-kerberos` with the same
@@ -302,17 +311,23 @@ allowlist: set `--allow-auth-sys` / `--require-kerberos` with the same
 
 ### Identity mapping
 
-Squash mode is a per-share setting (`squash`), applied to the client's
-wire-supplied identity before any permission check. The anonymous UID/GID come
-from the share's anonymous identity.
+Squash mode is a per-share setting (`squash`). The anonymous UID/GID come from
+the share's anonymous identity.
 
-All squash — every client is treated as anonymous:
+It is applied *after* the share grant is resolved and *before* file-level POSIX
+and ACL checks. That ordering matters under `all_to_guest`: the share-level
+permission is still chosen from the client's original wire identity, and only
+the identity used for per-file checks is squashed. If a share grant depends on
+the caller being a known user, squashing does not turn that grant into a guest
+grant.
+
+All squash — every client's *file-level* identity is anonymous:
 
 ```bash
 dfsctl share nfs-config set /export --squash all_to_guest
 ```
 
-Root squash — root (UID 0) is mapped to anonymous, everyone else passes through:
+Root squash — root (UID 0) is mapped to anonymous for file checks, everyone else passes through:
 
 ```bash
 dfsctl share nfs-config set /export --squash root_to_guest
@@ -578,7 +593,8 @@ kerberos:
 #
 #   dfsctl netgroup create trusted-net
 #   dfsctl netgroup add-member trusted-net --type cidr --value 10.0.0.0/8
-#   dfsctl share create /export --read-only --squash root_to_guest
+#   dfsctl share create --name /export --metadata default --block-store default \
+    --read-only --squash root_to_guest
 #   dfsctl share nfs-config set /export --netgroup trusted-net
 
 adapters:
