@@ -79,11 +79,6 @@ type UnifiedLockConflict = lock.UnifiedLockConflict
 // Error Factory Functions
 // ============================================================================
 
-// NewNotFoundError creates a StoreError for when a file, directory, or share is not found.
-func NewNotFoundError(path string, entityType string) *StoreError {
-	return errors.NewNotFoundError(path, entityType)
-}
-
 // NewPermissionDeniedError creates a StoreError for permission denied errors.
 func NewPermissionDeniedError(path string) *StoreError {
 	return errors.NewPermissionDeniedError(path)
@@ -92,11 +87,6 @@ func NewPermissionDeniedError(path string) *StoreError {
 // NewIsDirectoryError creates a StoreError for when a file operation is attempted on a directory.
 func NewIsDirectoryError(path string) *StoreError {
 	return errors.NewIsDirectoryError(path)
-}
-
-// NewNotDirectoryError creates a StoreError for when a directory operation is attempted on a non-directory.
-func NewNotDirectoryError(path string) *StoreError {
-	return errors.NewNotDirectoryError(path)
 }
 
 // NewInvalidHandleError creates a StoreError for malformed file handles.
@@ -110,74 +100,14 @@ func NewStaleHandleError(shareName string) *StoreError {
 	return errors.NewStaleHandleError(shareName)
 }
 
-// NewNotEmptyError creates a StoreError for when a directory is not empty.
-func NewNotEmptyError(path string) *StoreError {
-	return errors.NewNotEmptyError(path)
-}
-
-// NewAlreadyExistsError creates a StoreError for when a file/directory already exists.
-func NewAlreadyExistsError(path string) *StoreError {
-	return errors.NewAlreadyExistsError(path)
-}
-
-// NewConflictError creates a StoreError for ObjectID concurrent-write conflicts.
-func NewConflictError(op, message string) *StoreError {
-	return errors.NewConflictError(op, message)
-}
-
 // NewInvalidArgumentError creates a StoreError for invalid arguments.
 func NewInvalidArgumentError(message string) *StoreError {
 	return errors.NewInvalidArgumentError(message)
 }
 
-// NewAccessDeniedError creates a StoreError for share-level access denial.
-func NewAccessDeniedError(reason string) *StoreError {
-	return errors.NewAccessDeniedError(reason)
-}
-
 // NewLockedError creates a StoreError for lock conflicts.
 func NewLockedError(path string, conflict *LockConflict) *StoreError {
 	return lock.NewLockedError(path, conflict)
-}
-
-// NewLockNotFoundError creates a StoreError for unlock operations on non-existent locks.
-func NewLockNotFoundError(path string) *StoreError {
-	return lock.NewLockNotFoundError(path)
-}
-
-// NewQuotaExceededError creates a StoreError for quota exceeded errors.
-func NewQuotaExceededError(path string) *StoreError {
-	return errors.NewQuotaExceededError(path)
-}
-
-// NewPrivilegeRequiredError creates a StoreError for operations requiring root.
-func NewPrivilegeRequiredError(operation string) *StoreError {
-	return errors.NewPrivilegeRequiredError(operation)
-}
-
-// NewNameTooLongError creates a StoreError for paths/names exceeding limits.
-func NewNameTooLongError(path string) *StoreError {
-	return errors.NewNameTooLongError(path)
-}
-
-// NewDeadlockError creates a StoreError for deadlock detection.
-func NewDeadlockError(waiter string, blockedBy []string) *StoreError {
-	return lock.NewDeadlockError(waiter, blockedBy)
-}
-
-// NewGracePeriodError creates a StoreError for grace period blocking.
-func NewGracePeriodError(remainingSeconds int) *StoreError {
-	return lock.NewGracePeriodError(remainingSeconds)
-}
-
-// NewLockLimitExceededError creates a StoreError for lock limit violations.
-func NewLockLimitExceededError(limitType string, current, max int) *StoreError {
-	return lock.NewLockLimitExceededError(limitType, current, max)
-}
-
-// NewLockConflictError creates a StoreError for lock conflicts (upgrade, etc.).
-func NewLockConflictError(path string, conflict *UnifiedLockConflict) *StoreError {
-	return lock.NewLockConflictError(path, conflict)
 }
 
 // ============================================================================
@@ -188,6 +118,20 @@ func NewLockConflictError(path string, conflict *UnifiedLockConflict) *StoreErro
 func IsNotFoundError(err error) bool {
 	return errors.IsNotFoundError(err)
 }
+
+// IsInvalidHandleError checks if an error is a StoreError with ErrInvalidHandle code.
+func IsInvalidHandleError(err error) bool {
+	return errors.IsInvalidHandleError(err)
+}
+
+// IsStaleHandleError checks if an error is a StoreError with ErrStaleHandle code.
+func IsStaleHandleError(err error) bool {
+	return errors.IsStaleHandleError(err)
+}
+
+// ============================================================================
+// Error Helper Functions
+// ============================================================================
 
 // IsLockConflictError checks if an error is a StoreError with ErrLockConflict code.
 func IsLockConflictError(err error) bool {
@@ -202,14 +146,4 @@ func IsDeadlockError(err error) bool {
 // IsConflictError checks if an error is a StoreError with ErrConflict code.
 func IsConflictError(err error) bool {
 	return errors.IsConflictError(err)
-}
-
-// IsInvalidHandleError checks if an error is a StoreError with ErrInvalidHandle code.
-func IsInvalidHandleError(err error) bool {
-	return errors.IsInvalidHandleError(err)
-}
-
-// IsStaleHandleError checks if an error is a StoreError with ErrStaleHandle code.
-func IsStaleHandleError(err error) bool {
-	return errors.IsStaleHandleError(err)
 }

@@ -57,32 +57,6 @@ func TestStoreError_Error(t *testing.T) {
 // Error Factory Function Tests
 // ============================================================================
 
-func TestNewNotFoundError(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name       string
-		path       string
-		entityType string
-	}{
-		{"file not found", "/path/to/file.txt", "file"},
-		{"directory not found", "/path/to/dir", "directory"},
-		{"share not found", "/export", "share"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			err := NewNotFoundError(tt.path, tt.entityType)
-
-			assert.Equal(t, ErrNotFound, err.Code)
-			assert.Equal(t, tt.path, err.Path)
-			assert.Contains(t, err.Error(), tt.entityType+" not found")
-			assert.Contains(t, err.Error(), tt.path)
-		})
-	}
-}
-
 func TestNewPermissionDeniedError(t *testing.T) {
 	t.Parallel()
 
@@ -105,17 +79,6 @@ func TestNewIsDirectoryError(t *testing.T) {
 	assert.Contains(t, err.Error(), "/path/to/directory")
 }
 
-func TestNewNotDirectoryError(t *testing.T) {
-	t.Parallel()
-
-	err := NewNotDirectoryError("/path/to/file.txt")
-
-	assert.Equal(t, ErrNotDirectory, err.Code)
-	assert.Equal(t, "/path/to/file.txt", err.Path)
-	assert.Contains(t, err.Error(), "not a directory")
-	assert.Contains(t, err.Error(), "/path/to/file.txt")
-}
-
 func TestNewInvalidHandleError(t *testing.T) {
 	t.Parallel()
 
@@ -126,28 +89,6 @@ func TestNewInvalidHandleError(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid file handle")
 }
 
-func TestNewNotEmptyError(t *testing.T) {
-	t.Parallel()
-
-	err := NewNotEmptyError("/path/to/directory")
-
-	assert.Equal(t, ErrNotEmpty, err.Code)
-	assert.Equal(t, "/path/to/directory", err.Path)
-	assert.Contains(t, err.Error(), "directory not empty")
-	assert.Contains(t, err.Error(), "/path/to/directory")
-}
-
-func TestNewAlreadyExistsError(t *testing.T) {
-	t.Parallel()
-
-	err := NewAlreadyExistsError("/path/to/existing")
-
-	assert.Equal(t, ErrAlreadyExists, err.Code)
-	assert.Equal(t, "/path/to/existing", err.Path)
-	assert.Contains(t, err.Error(), "already exists")
-	assert.Contains(t, err.Error(), "/path/to/existing")
-}
-
 func TestNewInvalidArgumentError(t *testing.T) {
 	t.Parallel()
 
@@ -156,16 +97,6 @@ func TestNewInvalidArgumentError(t *testing.T) {
 	assert.Equal(t, ErrInvalidArgument, err.Code)
 	assert.Empty(t, err.Path)
 	assert.Contains(t, err.Error(), "invalid mode value")
-}
-
-func TestNewAccessDeniedError(t *testing.T) {
-	t.Parallel()
-
-	err := NewAccessDeniedError("client IP not in allowed list")
-
-	assert.Equal(t, ErrAccessDenied, err.Code)
-	assert.Empty(t, err.Path)
-	assert.Contains(t, err.Error(), "client IP not in allowed list")
 }
 
 func TestNewLockedError(t *testing.T) {
@@ -199,51 +130,6 @@ func TestNewLockedError(t *testing.T) {
 	})
 }
 
-func TestNewLockNotFoundError(t *testing.T) {
-	t.Parallel()
-
-	err := NewLockNotFoundError("/path/to/file")
-
-	assert.Equal(t, ErrLockNotFound, err.Code)
-	assert.Equal(t, "/path/to/file", err.Path)
-	assert.Contains(t, err.Error(), "lock not found")
-	assert.Contains(t, err.Error(), "/path/to/file")
-}
-
-func TestNewQuotaExceededError(t *testing.T) {
-	t.Parallel()
-
-	err := NewQuotaExceededError("/user/home/largefile")
-
-	assert.Equal(t, ErrQuotaExceeded, err.Code)
-	assert.Equal(t, "/user/home/largefile", err.Path)
-	assert.Contains(t, err.Error(), "quota exceeded")
-	assert.Contains(t, err.Error(), "/user/home/largefile")
-}
-
-func TestNewPrivilegeRequiredError(t *testing.T) {
-	t.Parallel()
-
-	err := NewPrivilegeRequiredError("chown")
-
-	assert.Equal(t, ErrPrivilegeRequired, err.Code)
-	assert.Empty(t, err.Path)
-	assert.Contains(t, err.Error(), "chown")
-	assert.Contains(t, err.Error(), "root privileges")
-}
-
-func TestNewNameTooLongError(t *testing.T) {
-	t.Parallel()
-
-	longPath := "/very/long/path/that/exceeds/limits"
-	err := NewNameTooLongError(longPath)
-
-	assert.Equal(t, ErrNameTooLong, err.Code)
-	assert.Equal(t, longPath, err.Path)
-	assert.Contains(t, err.Error(), "name too long")
-	assert.Contains(t, err.Error(), longPath)
-}
-
 // ============================================================================
 // IsNotFoundError Tests
 // ============================================================================
@@ -274,9 +160,9 @@ func TestIsNotFoundError(t *testing.T) {
 		assert.False(t, IsNotFoundError(err))
 	})
 
-	t.Run("NewNotFoundError result returns true", func(t *testing.T) {
+	t.Run("StoreError carrying ErrNotFound returns true", func(t *testing.T) {
 		t.Parallel()
-		err := NewNotFoundError("/path", "file")
+		err := &StoreError{Code: ErrNotFound, Path: "/path", Message: "file"}
 		assert.True(t, IsNotFoundError(err))
 	})
 }
@@ -330,7 +216,7 @@ func TestStoreError_ImplementsError(t *testing.T) {
 	var _ error = &StoreError{}
 
 	// Verify it can be used with errors.As
-	err := NewNotFoundError("/path", "file")
+	err := &StoreError{Code: ErrNotFound, Path: "/path", Message: "file"}
 	var storeErr *StoreError
 	require.True(t, errors.As(err, &storeErr))
 	assert.Equal(t, ErrNotFound, storeErr.Code)

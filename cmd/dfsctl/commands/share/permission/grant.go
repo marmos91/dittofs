@@ -96,7 +96,7 @@ func runGrant(cmd *cobra.Command, args []string) error {
 	}
 
 	if format == output.FormatTable {
-		printer := output.NewPrinter(os.Stdout, format, !cmdutil.IsColorDisabled())
+		printer := output.NewPrinter(os.Stdout, !cmdutil.IsColorDisabled())
 		printer.Success(fmt.Sprintf("Granted '%s' permission to %s on '%s'", grantLevel, target, shareName))
 	}
 

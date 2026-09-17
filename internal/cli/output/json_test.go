@@ -25,19 +25,6 @@ func TestPrintJSON(t *testing.T) {
 	assert.Contains(t, output, `"value": 42`)
 }
 
-func TestPrintJSONCompact(t *testing.T) {
-	data := testStruct{Name: "test", Value: 42}
-
-	var buf bytes.Buffer
-	err := PrintJSONCompact(&buf, data)
-	require.NoError(t, err)
-
-	output := buf.String()
-	// Compact JSON should not have extra indentation
-	assert.Contains(t, output, `"name":"test"`)
-	assert.Contains(t, output, `"value":42`)
-}
-
 func TestPrintJSONArray(t *testing.T) {
 	data := []testStruct{
 		{Name: "a", Value: 1},

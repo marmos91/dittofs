@@ -78,7 +78,7 @@ func runRevoke(cmd *cobra.Command, args []string) error {
 	}
 
 	if format == output.FormatTable {
-		printer := output.NewPrinter(os.Stdout, format, !cmdutil.IsColorDisabled())
+		printer := output.NewPrinter(os.Stdout, !cmdutil.IsColorDisabled())
 		printer.Success(fmt.Sprintf("Revoked permission from %s on '%s'", target, shareName))
 	}
 

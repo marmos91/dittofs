@@ -44,44 +44,10 @@ func TestFormatString(t *testing.T) {
 	assert.Equal(t, "yaml", FormatYAML.String())
 }
 
-func TestPrinter(t *testing.T) {
-	var buf bytes.Buffer
-	printer := NewPrinter(&buf, FormatTable, true)
-
-	assert.Equal(t, FormatTable, printer.Format())
-	assert.True(t, printer.ColorEnabled())
-
-	printer.Println("test message")
-	assert.Contains(t, buf.String(), "test message")
-}
-
 func TestPrinterSuccess(t *testing.T) {
 	var buf bytes.Buffer
-	printer := NewPrinter(&buf, FormatTable, false)
+	printer := NewPrinter(&buf, false)
 
 	printer.Success("success message")
 	assert.Contains(t, buf.String(), "success message")
-}
-
-func TestPrinterError(t *testing.T) {
-	var buf bytes.Buffer
-	printer := NewPrinter(&buf, FormatTable, false)
-
-	printer.Error("error message")
-	assert.Contains(t, buf.String(), "error message")
-}
-
-func TestPrinterWarning(t *testing.T) {
-	var buf bytes.Buffer
-	printer := NewPrinter(&buf, FormatTable, false)
-
-	printer.Warning("warning message")
-	assert.Contains(t, buf.String(), "warning message")
-}
-
-func TestDefaultPrinter(t *testing.T) {
-	printer := DefaultPrinter()
-	assert.NotNil(t, printer)
-	assert.Equal(t, FormatTable, printer.Format())
-	assert.True(t, printer.ColorEnabled())
 }

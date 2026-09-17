@@ -55,7 +55,7 @@ func runRemoveMember(cmd *cobra.Command, args []string) error {
 	}
 
 	if format == output.FormatTable {
-		printer := output.NewPrinter(os.Stdout, format, !cmdutil.IsColorDisabled())
+		printer := output.NewPrinter(os.Stdout, !cmdutil.IsColorDisabled())
 		printer.Success(fmt.Sprintf("Member '%s' removed from netgroup '%s'", removeMemberID, netgroupName))
 	}
 

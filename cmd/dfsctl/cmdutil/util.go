@@ -224,7 +224,7 @@ func PrintSuccess(msg string) {
 	if err != nil || format != output.FormatTable {
 		return
 	}
-	printer := output.NewPrinter(os.Stdout, format, !IsColorDisabled())
+	printer := output.NewPrinter(os.Stdout, !IsColorDisabled())
 	printer.Success(msg)
 }
 
@@ -235,7 +235,7 @@ func PrintSuccessWithInfo(msg string, infoLines ...string) {
 	if err != nil || format != output.FormatTable {
 		return
 	}
-	printer := output.NewPrinter(os.Stdout, format, !IsColorDisabled())
+	printer := output.NewPrinter(os.Stdout, !IsColorDisabled())
 	printer.Success(msg)
 	for _, line := range infoLines {
 		fmt.Println(line)
