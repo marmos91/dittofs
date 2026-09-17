@@ -1770,6 +1770,16 @@ func (h *Handler) frozenPreOpCtime(authCtx *metadata.AuthContext, openFile *Open
 // the same handle cannot tear our view.
 
 func (h *Handler) restoreFrozenTimestamps(authCtx *metadata.AuthContext, openFile *OpenFile, preOpCtime time.Time) {
+	h.restoreFrozenTimestampsOn(authCtx, openFile, openFile.GetMetadataHandle(), preOpCtime)
+}
+
+// restoreFrozenTimestampsOn is restoreFrozenTimestamps against a caller-supplied
+// metadata handle, for a teardown that took one snapshot and must not act on a
+// different file by the time it gets here: SET_REPARSE_POINT republishes
+// MetadataHandle under openFile.mu, and both writes below would otherwise land
+// on the file the handle moved to while the rest of the teardown used the
+// snapshot.
+func (h *Handler) restoreFrozenTimestampsOn(authCtx *metadata.AuthContext, openFile *OpenFile, metaHandle metadata.FileHandle, preOpCtime time.Time) {
 	restoreAttrs := buildFrozenAttrs(openFile)
 	if restoreAttrs == nil {
 		return
@@ -1813,7 +1823,7 @@ func (h *Handler) restoreFrozenTimestamps(authCtx *metadata.AuthContext, openFil
 	// on who owns the file.
 	scopedAuth := withTimestampHandleAuth(authCtx, openFile.GrantedAccess)
 	if err := metaSvc.RestoreFrozenTimestamps(
-		scopedAuth.Context, openFile.MetadataHandle, preOpCtime, restoreAttrs); err != nil {
+		scopedAuth.Context, metaHandle, preOpCtime, restoreAttrs); err != nil {
 		logger.Debug("restoreFrozenTimestamps: failed", "path", openFile.Name().Path, "error", err)
 		return
 	}
@@ -1825,7 +1835,7 @@ func (h *Handler) restoreFrozenTimestamps(authCtx *metadata.AuthContext, openFil
 	// return the non-frozen value. By updating pending.LastMtime to the frozen
 	// Mtime, the merge produces the correct frozen value.
 	if mtimeFrozen && frozenMtime != nil {
-		metaSvc.UpdatePendingMtime(openFile.MetadataHandle, *frozenMtime)
+		metaSvc.UpdatePendingMtime(metaHandle, *frozenMtime)
 	}
 }
 

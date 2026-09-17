@@ -20,6 +20,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/lease"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
@@ -157,6 +158,29 @@ func TestClose_ReleasesLocksAndLeaseOnTheSnapshotHandle(t *testing.T) {
 		t.Fatalf("RequestLease: %v", err)
 	}
 
+	// A coalesced LastAccessTime bump on the handle: CLOSE persists it before the
+	// frozen restore, and that read is the first metadata call after the
+	// snapshot. Arming it puts the republish (fired by that read) ahead of the
+	// restore, which is the ordering the frozen check below needs to be able to
+	// tell the two files apart.
+	pendingAtime := time.Now().Add(time.Hour)
+
+	// A frozen timestamp on the handle, so CLOSE's final restore runs. The restore
+	// writes the frozen value back through the handle; it must land on the file
+	// the snapshot names, not the republished one. The value is in the future so
+	// it wins GetFile's max(pending, stored) merge on either file, which is what
+	// makes "which file did the restore write to" observable.
+	//
+	// FILE_WRITE_ATTRIBUTES on the open is what the restore's write authorizes
+	// against; without it the restore declines and the check below is vacuous.
+	frozen := time.Date(2035, 1, 2, 3, 4, 5, 0, time.UTC)
+	of.mu.Lock()
+	of.GrantedAccess |= uint32(types.FileWriteAttributes)
+	of.SmbPendingAtime = pendingAtime
+	of.MtimeFrozen = true
+	of.FrozenMtime = &frozen
+	of.mu.Unlock()
+
 	// POSTQUERY_ATTRIB makes the attributes step read the file, which is where
 	// the republish fires.
 	resp, err := h.Close(smbCtx, &CloseRequest{FileID: fileID, Flags: uint16(types.SMB2ClosePostQueryAttrib)})
@@ -198,6 +222,24 @@ func TestClose_ReleasesLocksAndLeaseOnTheSnapshotHandle(t *testing.T) {
 		t.Fatal("CLOSE left the open's lease record on the file it was operating on: the lease " +
 			"release named the republished handle instead of the same snapshot the lock " +
 			"release used")
+	}
+
+	// The frozen-timestamp restore must also have landed on the snapshot file.
+	restored, err := metaSvc.GetFile(ctx, fileHandle)
+	if err != nil {
+		t.Fatalf("GetFile after CLOSE: %v", err)
+	}
+	if !restored.Mtime.Equal(frozen) {
+		t.Fatalf("CLOSE restored the frozen Mtime on the wrong file: the original handle's "+
+			"Mtime is %v, want the frozen %v. The restore named the republished handle (%x) "+
+			"instead of the snapshot taken at CLOSE entry (%x)", restored.Mtime, frozen, otherFH, fileHandle)
+	}
+	moved, err := metaSvc.GetFile(ctx, otherFH)
+	if err != nil {
+		t.Fatalf("GetFile republish target: %v", err)
+	}
+	if moved.Mtime.Equal(frozen) {
+		t.Fatal("CLOSE restored a frozen timestamp on the republish target, a file this open never held")
 	}
 
 	if _, ok := h.GetOpenFile(fileID); ok {

@@ -310,7 +310,11 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 			// frozen timestamps), restore any timestamps that were frozen via SET_INFO -1.
 			// The deferred commit flush sets Mtime/Ctime to the WRITE time, but if the
 			// handle has frozen timestamps, those must be preserved.
-			h.restoreFrozenTimestamps(authCtx, openFile, preOpCtime)
+			//
+			// On the CLOSE snapshot, not a fresh read of the field: this is the last
+			// write of the teardown, and a republish landing before it would leave
+			// the frozen timestamps restored on a file this open never held.
+			h.restoreFrozenTimestampsOn(authCtx, openFile, metaHandle, preOpCtime)
 		}
 	}
 
