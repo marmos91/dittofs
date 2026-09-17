@@ -1621,13 +1621,10 @@ func TestProcessDurableReconnectContext_V2LeaseClientGUIDMismatch(t *testing.T) 
 	}
 }
 
-// TestProcessDurableReconnectContext_V2OplockClientGUIDGate covers reopen1a
-// (oplock-backed, not lease-backed): reconnect with a different ClientGuid MUST
-// fail OBJECT_NAME_NOT_FOUND. MS-SMB2 §3.3.5.9.7 scopes the whole 3.x durable
-// family to the client that established the open, so the gate does not key on
-// the lease. The handle must survive the refused attempt (non-destructive
-// reconnect), and the original ClientGuid must still succeed.
-func TestProcessDurableReconnectContext_V2OplockClientGUIDGate(t *testing.T) {
+// TestProcessDurableReconnectContext_V2OplockNoClientGUIDCheck covers
+// reopen1a (oplock-backed, not lease-backed): reconnect with a different
+// ClientGuid MUST still succeed because lease scoping does not apply.
+func TestProcessDurableReconnectContext_V2OplockNoClientGUIDCheck(t *testing.T) {
 	store := newMockDurableStore()
 	ctx := context.Background()
 
@@ -1666,21 +1663,8 @@ func TestProcessDurableReconnectContext_V2OplockClientGUIDGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if status != types.StatusObjectNameNotFound {
-		t.Errorf("oplock V2 reconnect with different ClientGuid: got status %v, want OBJECT_NAME_NOT_FOUND", status)
-	}
-	if h, _ := store.GetDurableHandle(ctx, "h-002"); h == nil {
-		t.Fatal("handle should remain after failed ClientGuid-mismatch reconnect")
-	}
-
-	// Original ClientGuid → success.
-	_, status, err = ProcessDurableReconnectContext(ctx, store, nil, contexts,
-		1, "alice", keyHash, "/share1", "oplockfile.txt", originalGUID)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
 	if status != types.StatusSuccess {
-		t.Errorf("oplock V2 reconnect with the original ClientGuid: got status %v, want SUCCESS", status)
+		t.Errorf("oplock V2 reconnect with different ClientGuid: got status %v, want SUCCESS", status)
 	}
 }
 
@@ -1923,122 +1907,6 @@ func TestProcessDurableReconnectContext_ConsumeAtomicV2(t *testing.T) {
 	}
 	if status2 != types.StatusObjectNameNotFound {
 		t.Errorf("second reconnect status = %v, want STATUS_OBJECT_NAME_NOT_FOUND", status2)
-	}
-}
-
-// TestProcessDurableReconnectContext_V1OplockClientGUIDGate is the V1 (DHnC)
-// counterpart of the V2 oplock gate: an oplock-backed handle must be
-// reconnected from the ClientGuid that established it (MS-SMB2 §3.3.5.9.7),
-// and the refused attempt must leave the handle reclaimable.
-func TestProcessDurableReconnectContext_V1OplockClientGUIDGate(t *testing.T) {
-	store := newMockDurableStore()
-	ctx := context.Background()
-
-	fileID := [16]byte{4, 5, 6, 7, 8, 9, 10, 11, 0, 0, 0, 0, 0, 0, 0, 0}
-	keyHash := makeSessionKeyHash("session-key-v1-guid")
-	originalGUID := [16]byte{0x31, 0x32, 0x33}
-	differentGUID := [16]byte{0x41, 0x42, 0x43}
-
-	_ = store.PutDurableHandle(ctx, &lock.PersistedDurableHandle{
-		ID:             "dh-v1-guid",
-		FileID:         fileID,
-		Path:           "v1oplock.dat",
-		ShareName:      "/share1",
-		DesiredAccess:  0x12019F,
-		ShareAccess:    0x07,
-		MetadataHandle: []byte{0xDE, 0xAD},
-		// LeaseKey deliberately zero → oplock-backed open
-		OplockLevel:    OplockLevelBatch,
-		ClientGUID:     originalGUID,
-		Username:       "alice",
-		SessionKeyHash: keyHash,
-		IsV2:           false,
-		CreatedAt:      time.Now().Add(-5 * time.Minute),
-		DisconnectedAt: time.Now().Add(-10 * time.Second),
-		TimeoutMs:      60000,
-	})
-
-	dhnCData := make([]byte, 16)
-	copy(dhnCData[:], fileID[:])
-	contexts := []CreateContext{{Name: DurableHandleV1ReconnectTag, Data: dhnCData}}
-
-	_, status, err := ProcessDurableReconnectContext(
-		ctx, store, nil, contexts, 999, "alice", keyHash,
-		"/share1", "v1oplock.dat", differentGUID,
-	)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if status != types.StatusObjectNameNotFound {
-		t.Errorf("oplock V1 reconnect with different ClientGuid: got status %v, want OBJECT_NAME_NOT_FOUND", status)
-	}
-	if h, _ := store.GetDurableHandle(ctx, "dh-v1-guid"); h == nil {
-		t.Fatal("handle should remain after failed ClientGuid-mismatch reconnect")
-	}
-
-	// Original ClientGuid → success.
-	res, status, err := ProcessDurableReconnectContext(
-		ctx, store, nil, contexts, 999, "alice", keyHash,
-		"/share1", "v1oplock.dat", originalGUID,
-	)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if status != types.StatusSuccess {
-		t.Fatalf("oplock V1 reconnect with the original ClientGuid: got status %v, want SUCCESS", status)
-	}
-	if res == nil || res.OpenFile == nil {
-		t.Fatal("Expected restored OpenFile")
-	}
-}
-
-// TestProcessDurableReconnectContext_V1OplockNoConnClientGUID pins the
-// unknown-requester direction of the gate: a persisted handle that records a
-// ClientGuid may not be reclaimed by a connection that presents none of its
-// own, because such a connection cannot be shown to be the client the handle
-// belongs to. Only the *recorded* side gets the forward-compat benefit of the
-// doubt — a zero there is an upgrade artifact, a zero here is an absent
-// identity.
-func TestProcessDurableReconnectContext_V1OplockNoConnClientGUID(t *testing.T) {
-	store := newMockDurableStore()
-	ctx := context.Background()
-
-	fileID := [16]byte{5, 5, 6, 6, 7, 7, 8, 8, 0, 0, 0, 0, 0, 0, 0, 0}
-	keyHash := makeSessionKeyHash("session-key-noconn")
-
-	_ = store.PutDurableHandle(ctx, &lock.PersistedDurableHandle{
-		ID:             "dh-noconn",
-		FileID:         fileID,
-		Path:           "noconn.dat",
-		ShareName:      "/share1",
-		DesiredAccess:  0x12019F,
-		ShareAccess:    0x07,
-		MetadataHandle: []byte{0xDE, 0xAD},
-		OplockLevel:    OplockLevelBatch,
-		ClientGUID:     [16]byte{0x71, 0x72, 0x73},
-		Username:       "alice",
-		SessionKeyHash: keyHash,
-		CreatedAt:      time.Now().Add(-5 * time.Minute),
-		DisconnectedAt: time.Now().Add(-10 * time.Second),
-		TimeoutMs:      60000,
-	})
-
-	dhnCData := make([]byte, 16)
-	copy(dhnCData[:], fileID[:])
-	contexts := []CreateContext{{Name: DurableHandleV1ReconnectTag, Data: dhnCData}}
-
-	_, status, err := ProcessDurableReconnectContext(
-		ctx, store, nil, contexts, 999, "alice", keyHash,
-		"/share1", "noconn.dat", [16]byte{},
-	)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if status != types.StatusObjectNameNotFound {
-		t.Errorf("reconnect with no connection ClientGuid: got status %v, want OBJECT_NAME_NOT_FOUND", status)
-	}
-	if h, _ := store.GetDurableHandle(ctx, "dh-noconn"); h == nil {
-		t.Fatal("handle should remain after failed reconnect")
 	}
 }
 

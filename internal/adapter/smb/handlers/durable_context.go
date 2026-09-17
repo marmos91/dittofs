@@ -341,12 +341,12 @@ type ReconnectResult struct {
 //
 // connClientGUID is the ClientGuid of the reconnecting connection (from
 // NEGOTIATE). It is matched against the persisted handle's ClientGUID on both
-// V1 (DHnC) and V2 (DH2C) reconnect, lease-backed or not — see reopen1a and
-// reopen1a-lease in `source4/torture/smb2/durable_open.c` (V1) and
-// `durable_v2_open.c` (V2). Per MS-SMB2 §3.3.5.9.7 the whole 3.x durable family
-// is scoped to the client that established the open, so a mismatch fails
-// OBJECT_NAME_NOT_FOUND. Persisted handles written before ClientGUID was
-// captured carry the zero value and skip the check (forward compat).
+// V1 (DHnC) and V2 (DH2C) *lease-backed* reconnect — see reopen1a-lease in
+// `source4/torture/smb2/durable_open.c` (V1) and `durable_v2_open.c` (V2).
+// Per-(ClientGuid, LeaseKey) lease scoping means a lease-backed durable open
+// must be reconnected from the ClientGuid that established it; a mismatch
+// fails OBJECT_NAME_NOT_FOUND. Persisted handles written before ClientGUID
+// was captured carry the zero value and skip the check (forward compat).
 func ProcessDurableReconnectContext(
 	ctx context.Context,
 	durableStore lock.DurableHandleStore,
@@ -397,11 +397,6 @@ func ProcessDurableReconnectContext(
 //	lease ctx present, persisted lease, ClientGuid mismatch   -> OBJECT_NAME_NOT_FOUND
 //	otherwise                              -> StatusSuccess (proceed)
 //
-// The ClientGuid gate is not part of that lease-context ladder: MS-SMB2
-// §3.3.5.9.7 scopes the whole 3.x durable family to the client that
-// established the open, so an oplock-backed reconnect is gated on it too and
-// the check runs on every path below.
-//
 // It returns (StatusSuccess, persistedHasLease) when the gate passes (or does
 // not apply because neither a lease ctx nor a persisted lease is present); the
 // caller proceeds to validateAndRestore. The persistedHasLease flag lets the V1
@@ -421,14 +416,7 @@ func checkLeaseReconnectGate(
 			logger.Debug(logPrefix + ": persisted handle has lease but request omits lease ctx")
 			return types.StatusObjectNameNotFound, persistedHasLease
 		}
-		// Oplock-backed reconnect: none of the lease-context checks apply, but
-		// the ClientGuid gate does.
-		if durableReconnectClientGUIDMismatch(handle, connClientGUID) {
-			logger.Debug(logPrefix+": ClientGuid mismatch on reconnect",
-				"persisted", fmt.Sprintf("%x", handle.ClientGUID),
-				"connecting", fmt.Sprintf("%x", connClientGUID))
-			return types.StatusObjectNameNotFound, persistedHasLease
-		}
+		// Oplock-backed reconnect: no lease gate applies.
 		return types.StatusSuccess, persistedHasLease
 	}
 
@@ -447,10 +435,10 @@ func checkLeaseReconnectGate(
 			"actual", fmt.Sprintf("%x", leaseReq.LeaseKey))
 		return types.StatusObjectNameNotFound, persistedHasLease
 	}
-	// Reject a reconnect arriving on a different ClientGuid than the one that
-	// established the open. smbtorture reopen1a/reopen1a-lease (V1 + V2).
-	if durableReconnectClientGUIDMismatch(handle, connClientGUID) {
-		logger.Debug(logPrefix+": ClientGuid mismatch on reconnect",
+	// Reject a lease reconnect arriving on a different ClientGuid than the one
+	// that established the open. smbtorture reopen1a-lease (V1 + V2).
+	if leaseReconnectClientGUIDMismatch(handle, connClientGUID) {
+		logger.Debug(logPrefix+": ClientGuid mismatch on lease-backed reconnect",
 			"persisted", fmt.Sprintf("%x", handle.ClientGUID),
 			"connecting", fmt.Sprintf("%x", connClientGUID))
 		return types.StatusObjectNameNotFound, persistedHasLease
@@ -458,24 +446,17 @@ func checkLeaseReconnectGate(
 	return types.StatusSuccess, persistedHasLease
 }
 
-// durableReconnectClientGUIDMismatch reports whether a durable reconnect must
-// be rejected because it arrives on a different ClientGuid than the one that
-// established the open. MS-SMB2 §3.3.5.9.7 scopes the whole 3.x durable family
-// this way — lease-backed and oplock-backed alike — so the check does not key
-// on the lease.
-//
-// A persisted handle written before ClientGUID was captured carries the zero
-// value and is treated as "no recorded ClientGuid" (forward compat with pre-#432
-// binaries). A connection that presents no ClientGuid of its own is the
-// opposite case and is refused: it cannot be shown to be the client the handle
-// belongs to, and letting an unidentifiable requester reclaim another client's
-// durable open is the hole this gate exists to close. Only the recorded side
-// gets the benefit of the doubt, because it is the side whose absence is an
-// upgrade artifact rather than an absent identity.
-//
+// leaseReconnectClientGUIDMismatch reports whether a lease-backed durable
+// reconnect must be rejected because it arrives on a different ClientGuid than
+// the one that established the open. Per MS-SMB2 §3.3.5.9.7/12 and Samba
+// per-(ClientGuid, LeaseKey) lease scoping, a lease-backed handle (non-zero
+// LeaseKey) MUST be reconnected from its originating ClientGuid. A persisted
+// handle written before ClientGUID was captured carries the zero value and is
+// treated as "no recorded ClientGuid" (forward compat with pre-#432 binaries).
 // Shared by the V1 (DHnC) and V2 (DH2C) reconnect paths.
-func durableReconnectClientGUIDMismatch(handle *lock.PersistedDurableHandle, connClientGUID [16]byte) bool {
-	return handle.ClientGUID != ([16]byte{}) &&
+func leaseReconnectClientGUIDMismatch(handle *lock.PersistedDurableHandle, connClientGUID [16]byte) bool {
+	return handle.LeaseKey != ([16]byte{}) &&
+		handle.ClientGUID != ([16]byte{}) &&
 		handle.ClientGUID != connClientGUID
 }
 
@@ -888,10 +869,11 @@ func validateAndRestore(
 		PositionInfo:  handle.PositionInfo,
 		// Restore the ClientGUID recorded at the original CREATE so a
 		// chained disconnect→reconnect→disconnect cycle preserves the
-		// reconnect ClientGuid gate on the next attempt. Without this, the
-		// next persist would write a zero ClientGUID, and the gate in
-		// checkLeaseReconnectGate would silently no-op (handle.ClientGUID
-		// == 0 is the "pre-#432 forward-compat" branch).
+		// per-(ClientGuid, LeaseKey) lease scoping check on the next
+		// reconnect attempt. Without this, the next persist would write a
+		// zero ClientGUID, and the §3.3.5.9.12 lease-scoping check in
+		// processV2Reconnect would silently no-op (handle.ClientGUID == 0
+		// is the "pre-#432 forward-compat" branch).
 		ClientGUID: handle.ClientGUID,
 		// Restore the requested AllocationSize so the reconnect CREATE
 		// response reports the same cluster-aligned reservation as the
@@ -926,16 +908,20 @@ func validateAndRestore(
 // client" would let a request whose own identity cannot be established
 // force-close an open that demonstrably belongs to someone else — the opposite
 // of the fail-closed rule the displacement check is here to enforce.
-//
-// `recorded` is the ClientGuid that established the open, and the spec's fourth
-// condition names Open.Session.Connection.ClientGuid — the GUID of the
-// connection the open's session is on now (MS-SMB2 3.3.5.9.13). Those are the
-// same value here: every reconnect path, lease-backed or not, refuses a
-// connection whose ClientGuid differs from the persisted one, so an open that
-// moved clients cannot exist and an open's establishing GUID is the GUID of
-// the connection it is on. A persisted handle with no recorded ClientGuid is
-// the one exception, and it reads as unknown above, which is also how the
-// comparison must treat it.
+// decision: `recorded` is the ClientGuid that established the open, and the
+// spec's fourth condition names a different value —
+// Open.Session.Connection.ClientGuid, the GUID of the connection the open's
+// session is on now (MS-SMB2 3.3.5.9.13). The two diverge only for an open that
+// reconnected from a different ClientGuid, and this server allows that on a
+// non-lease DHnC/DH2C reconnect: the ClientGuid gate on reconnect is applied to
+// lease-backed handles alone, because a lease is scoped per (ClientGuid,
+// LeaseKey) and the smbtorture reopen ladders pin that. For an open that never
+// moved clients — every open in the durable reconnect tests, and every open a
+// single-client application instance holds — the two values are the same and
+// this condition is the spec's. Withdraw it when reconnect gates on ClientGuid
+// for the whole 3.x family per 3.3.5.9.7, which is the change that makes the
+// establishing GUID and the current one the same value again; until then the
+// gap is that a displaced-and-reconnected open is judged by where it came from.
 func sameOrUnknownClient(recorded, conn [16]byte) bool {
 	var unknown [16]byte
 	return recorded == conn || recorded == unknown || conn == unknown

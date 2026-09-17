@@ -177,15 +177,17 @@ type PersistedDurableHandle struct {
 	OriginalFileID [16]byte
 
 	// ClientGUID is the 16-byte SMB2 client GUID from the NEGOTIATE that
-	// established the original durable open. Per MS-SMB2 §3.3.5.9.7 the whole
-	// 3.x durable family is scoped to that client, so both V1 (DHnC) and V2
-	// (DH2C) reconnect verify the reconnecting connection's ClientGUID
-	// matches, lease-backed or not: a different client must not be able to
-	// reclaim the open, and lease-keys are per-client-GUID besides.
-	// smbtorture smb2.durable-open.reopen1a and
-	// smb2.durable-v2-open.reopen1a assert that reconnect with a new random
-	// ClientGUID fails OBJECT_NAME_NOT_FOUND while reconnect with the
-	// original ClientGUID succeeds; the `-lease` variants assert the same.
+	// established the original durable open. Per MS-SMB2 §3.3.5.9.12 and
+	// Samba `smb2_lease_create` / lease-key scoping, V2 *lease-backed*
+	// durable reconnect MUST verify the reconnecting connection's
+	// ClientGUID matches; lease-keys are per-client-GUID, so a different
+	// client must not be able to reclaim the lease. smbtorture
+	// smb2.durable-v2-open.reopen1a-lease asserts that reconnect with a
+	// new random ClientGUID fails OBJECT_NAME_NOT_FOUND while reconnect
+	// with the original ClientGUID succeeds. Oplock-backed (non-lease) V2
+	// durable reconnect is intentionally NOT gated on ClientGUID — the
+	// `reopen1a` (oplock) test reconnects with a different ClientGUID and
+	// expects success. V1 reconnect path does not consult this field.
 	ClientGUID [16]byte
 }
 
