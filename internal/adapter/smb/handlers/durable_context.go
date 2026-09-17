@@ -1153,10 +1153,6 @@ func ProcessAppInstanceId(
 	// with isDisconnect=false — so this pass cannot re-enter the mutex through
 	// it. The unlock is deferred so the error returns below release it too.
 	//
-	// Candidates are collected in one pass over the open-file table and
-	// authorized afterwards: mayDisplace reads the metadata store, which the
-	// OpenFile concurrency contract forbids inside files.Range.
-	//
 	// The snapshot also carries each candidate's lease/oplock identity, taken
 	// BEFORE the force-close, because the creates parked on it are signalled
 	// afterwards and the open it names is gone by then. The record itself is
@@ -1167,6 +1163,63 @@ func ProcessAppInstanceId(
 	// AppInstanceId failover must be silent anyway (MS-SMB2 §3.3.5.9.13;
 	// smbtorture smb2.durable-v2-open.app-instance asserts
 	// break_info.count == 0).
+	type candidate struct {
+		fileID     [16]byte
+		metaHandle []byte
+		leaseKey   [16]byte
+		shareName  string
+	}
+	collectCandidates := func() []candidate {
+		var out []candidate
+		handler.files.Range(func(_, value any) bool {
+			f := value.(*OpenFile)
+			// Judged by the connection f's session is on now, not the one that
+			// established it — see openClientGUID. Resolving under files.Range is
+			// safe: it reads the session manager and the session's own lock, not
+			// the metadata store, which is what the contract forbids here.
+			if f.AppInstanceId == appId && !sameOrUnknownClient(openClientGUID(handler, f, f.ClientGUID), connClientGUID) {
+				// Through the accessor, not the field: SET_REPARSE_POINT repoints
+				// a live handle when a placeholder becomes a symlink, so the handle
+				// authorized below has to be the one the close acts on.
+				out = append(out, candidate{
+					fileID:     f.FileID,
+					metaHandle: f.GetMetadataHandle(),
+					leaseKey:   f.LeaseKey,
+					shareName:  f.ShareName,
+				})
+			}
+			return true
+		})
+		return out
+	}
+
+	// authorized maps each cleared open's FileID to the metadata handle the
+	// access check was made against, so the close can confirm it is still
+	// acting on that same file.
+	//
+	// The opens visible here are authorized before the mutex below, so the
+	// process-wide mutex does not span one metadata-store round trip per
+	// candidate — the same ordering the persisted pass below uses, and the
+	// reason a disconnect persist cannot be serialized behind this CREATE.
+	// The mutex still covers the decision: candidates that appear only once it
+	// is held (a reconnect that registered an open in between) are authorized
+	// under it, so an open cannot slip past both this pass and the persisted
+	// one. In the common case that delta is empty and the mutex spans no reads
+	// at all.
+	authorized := make(map[[16]byte][]byte)
+	authorize := func(c candidate) {
+		if !mayDisplace(c.metaHandle) {
+			logger.Debug("ProcessAppInstanceId: requester cannot read the matched open's file, not displacing it",
+				"appInstanceId", fmt.Sprintf("%x", appId),
+				"shareName", c.shareName)
+			return
+		}
+		authorized[c.fileID] = c.metaHandle
+	}
+	for _, c := range collectCandidates() {
+		authorize(c)
+	}
+
 	handler.durablePurgeMu.Lock()
 	unlocked := false
 	defer func() {
@@ -1174,45 +1227,12 @@ func ProcessAppInstanceId(
 			handler.durablePurgeMu.Unlock()
 		}
 	}()
-	type candidate struct {
-		fileID     [16]byte
-		metaHandle []byte
-		leaseKey   [16]byte
-		shareName  string
-	}
-	var candidates []candidate
-	handler.files.Range(func(_, value any) bool {
-		f := value.(*OpenFile)
-		// Judged by the connection f's session is on now, not the one that
-		// established it — see openClientGUID. Resolving under files.Range is
-		// safe: it reads the session manager and the session's own lock, not
-		// the metadata store, which is what the contract forbids here.
-		if f.AppInstanceId == appId && !sameOrUnknownClient(openClientGUID(handler, f, f.ClientGUID), connClientGUID) {
-			// Through the accessor, not the field: SET_REPARSE_POINT repoints
-			// a live handle when a placeholder becomes a symlink, so the handle
-			// authorized below has to be the one the close acts on.
-			candidates = append(candidates, candidate{
-				fileID:     f.FileID,
-				metaHandle: f.GetMetadataHandle(),
-				leaseKey:   f.LeaseKey,
-				shareName:  f.ShareName,
-			})
-		}
-		return true
-	})
 
-	// authorized maps each cleared open's FileID to the metadata handle the
-	// access check was made against, so the close can confirm it is still
-	// acting on that same file.
-	authorized := make(map[[16]byte][]byte, len(candidates))
+	candidates := collectCandidates()
 	for _, c := range candidates {
-		if !mayDisplace(c.metaHandle) {
-			logger.Debug("ProcessAppInstanceId: requester cannot read the matched open's file, not displacing it",
-				"appInstanceId", fmt.Sprintf("%x", appId),
-				"shareName", c.shareName)
-			continue
+		if _, done := authorized[c.fileID]; !done {
+			authorize(c)
 		}
-		authorized[c.fileID] = c.metaHandle
 	}
 
 	closed := make(map[[16]byte]bool, len(authorized))
