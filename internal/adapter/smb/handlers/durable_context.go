@@ -961,12 +961,13 @@ const durableCleanupTimeout = 30 * time.Second
 // The live-open half runs in two steps over the open-file table. The first
 // collects every open carrying the AppInstanceId whose recorded ClientGuid is
 // another client's, and authorizes each one against its own file; the second
-// closes exactly the authorized set, matching on FileID membership. Membership
-// alone is not the close condition, because a FileID outlives the open that
-// held it: a durable reconnect restores an open under its original FileID, so
-// a table entry can name an open that left and came back, and a
-// SET_REPARSE_POINT can repoint a live handle at a different file. The close
-// therefore re-tests the AppInstanceId and client-identity conditions and
+// considers only that authorized set — a FileID not in it is never closed —
+// matching on FileID membership and then revalidating each member before
+// removing it. Membership alone is not sufficient, because a FileID outlives
+// the open that held it: a durable reconnect restores an open under its
+// original FileID, so a table entry can name an open that left and came back,
+// and a SET_REPARSE_POINT can repoint a live handle at a different file. The
+// close therefore re-tests the AppInstanceId and client-identity conditions and
 // confirms the open still holds the metadata handle the authorization was
 // made against, and declines any open that fails either.
 //
