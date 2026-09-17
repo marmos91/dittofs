@@ -1992,6 +1992,56 @@ func TestProcessDurableReconnectContext_V1OplockClientGUIDGate(t *testing.T) {
 	}
 }
 
+// TestProcessDurableReconnectContext_V1OplockNoConnClientGUID pins the
+// unknown-requester direction of the gate: a persisted handle that records a
+// ClientGuid may not be reclaimed by a connection that presents none of its
+// own, because such a connection cannot be shown to be the client the handle
+// belongs to. Only the *recorded* side gets the forward-compat benefit of the
+// doubt — a zero there is an upgrade artifact, a zero here is an absent
+// identity.
+func TestProcessDurableReconnectContext_V1OplockNoConnClientGUID(t *testing.T) {
+	store := newMockDurableStore()
+	ctx := context.Background()
+
+	fileID := [16]byte{5, 5, 6, 6, 7, 7, 8, 8, 0, 0, 0, 0, 0, 0, 0, 0}
+	keyHash := makeSessionKeyHash("session-key-noconn")
+
+	_ = store.PutDurableHandle(ctx, &lock.PersistedDurableHandle{
+		ID:             "dh-noconn",
+		FileID:         fileID,
+		Path:           "noconn.dat",
+		ShareName:      "/share1",
+		DesiredAccess:  0x12019F,
+		ShareAccess:    0x07,
+		MetadataHandle: []byte{0xDE, 0xAD},
+		OplockLevel:    OplockLevelBatch,
+		ClientGUID:     [16]byte{0x71, 0x72, 0x73},
+		Username:       "alice",
+		SessionKeyHash: keyHash,
+		CreatedAt:      time.Now().Add(-5 * time.Minute),
+		DisconnectedAt: time.Now().Add(-10 * time.Second),
+		TimeoutMs:      60000,
+	})
+
+	dhnCData := make([]byte, 16)
+	copy(dhnCData[:], fileID[:])
+	contexts := []CreateContext{{Name: DurableHandleV1ReconnectTag, Data: dhnCData}}
+
+	_, status, err := ProcessDurableReconnectContext(
+		ctx, store, nil, contexts, 999, "alice", keyHash,
+		"/share1", "noconn.dat", [16]byte{},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != types.StatusObjectNameNotFound {
+		t.Errorf("reconnect with no connection ClientGuid: got status %v, want OBJECT_NAME_NOT_FOUND", status)
+	}
+	if h, _ := store.GetDurableHandle(ctx, "dh-noconn"); h == nil {
+		t.Fatal("handle should remain after failed reconnect")
+	}
+}
+
 // TestProcessDurableReconnectContext_V1OplockIgnoresPath verifies that a V1
 // DHnC reconnect on an oplock-backed durable handle (no lease) IGNORES the
 // CREATE request's filename — matching MS-SMB2 §3.3.5.9.7 and Samba's

@@ -462,10 +462,17 @@ func checkLeaseReconnectGate(
 // be rejected because it arrives on a different ClientGuid than the one that
 // established the open. MS-SMB2 §3.3.5.9.7 scopes the whole 3.x durable family
 // this way — lease-backed and oplock-backed alike — so the check does not key
-// on the lease. A persisted handle written before ClientGUID was captured
-// carries the zero value and is treated as "no recorded ClientGuid" (forward
-// compat with pre-#432 binaries); a connection that presents no ClientGuid of
-// its own is likewise not a mismatch, since the two values cannot be compared.
+// on the lease.
+//
+// A persisted handle written before ClientGUID was captured carries the zero
+// value and is treated as "no recorded ClientGuid" (forward compat with pre-#432
+// binaries). A connection that presents no ClientGuid of its own is the
+// opposite case and is refused: it cannot be shown to be the client the handle
+// belongs to, and letting an unidentifiable requester reclaim another client's
+// durable open is the hole this gate exists to close. Only the recorded side
+// gets the benefit of the doubt, because it is the side whose absence is an
+// upgrade artifact rather than an absent identity.
+//
 // Shared by the V1 (DHnC) and V2 (DH2C) reconnect paths.
 func durableReconnectClientGUIDMismatch(handle *lock.PersistedDurableHandle, connClientGUID [16]byte) bool {
 	return handle.ClientGUID != ([16]byte{}) &&
