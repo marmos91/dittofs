@@ -1087,7 +1087,7 @@ func ProcessAppInstanceId(
 	// The snapshot also carries each candidate's lease/oplock identity, taken
 	// BEFORE the force-close, because the creates parked on it are signalled
 	// afterwards and the open it names is gone by then. The record itself is
-	// released by closeFilesWithFilter, which runs releaseHandleLeaseRecord for
+	// released by closeFilesWithFilter, which runs releaseHandleLeaseRecordOn for
 	// every open it removes; only the signal is left here. Without it the *new*
 	// open, which immediately follows in the CREATE path, waits on a break of
 	// the displaced open's oplock until the oplock timeout — and the
@@ -1177,7 +1177,7 @@ func ProcessAppInstanceId(
 	}
 
 	// Wake the creates parked on each displaced open's lease. The lease record
-	// itself is already gone: closeFilesWithFilter runs releaseHandleLeaseRecord
+	// itself is already gone: closeFilesWithFilter runs releaseHandleLeaseRecordOn
 	// for every open it removed, which releases the record and unregisters the
 	// oplock file id. Repeating that here released it a second time and, worse,
 	// skipped that helper's "any other open on the same file shares this key"
@@ -1356,7 +1356,7 @@ func ProcessAppInstanceId(
 	}
 
 	// Wake the creates parked on each displaced open's lease. The lease record
-	// itself is already gone: closeFilesWithFilter runs releaseHandleLeaseRecord
+	// itself is already gone: closeFilesWithFilter runs releaseHandleLeaseRecordOn
 	// for every open it removed, which releases the record and unregisters the
 	// oplock file id. Repeating that here released it a second time and, worse,
 	// skipped that helper's "any other open on the same file shares this key"
@@ -1381,15 +1381,18 @@ func ProcessAppInstanceId(
 }
 
 // leaseKeyHasPersistedSibling reports whether another DISCONNECTED durable
-// handle still holds this open's lease key on this file. releaseHandleLeaseRecord
+// handle still holds this open's lease key on this file. releaseHandleLeaseRecordOn
 // answers the same question for live opens by scanning the open-file table; a
 // persisted sibling is not in that table, so it has to be asked of the store.
+//
+// metaHandle is the caller's snapshot, for the same reason the live sibling scan
+// takes one: the question and the release it gates must name the same file.
 //
 // A store error answers yes: keeping a record that could be released costs the
 // next CREATE an oplock timeout, and releasing one a survivor still holds costs
 // that survivor its lease silently. Erring toward the visible failure.
-func (h *Handler) leaseKeyHasPersistedSibling(ctx context.Context, durableStore lock.DurableHandleStore, openFile *OpenFile) bool {
-	siblings, err := durableStore.GetDurableHandlesByFileHandle(ctx, openFile.MetadataHandle)
+func (h *Handler) leaseKeyHasPersistedSibling(ctx context.Context, durableStore lock.DurableHandleStore, openFile *OpenFile, metaHandle metadata.FileHandle) bool {
+	siblings, err := durableStore.GetDurableHandlesByFileHandle(ctx, metaHandle)
 	if err != nil {
 		logger.Warn("cannot tell whether a disconnected handle still holds this lease key, keeping the record",
 			"path", openFile.Name().Path, "error", err)

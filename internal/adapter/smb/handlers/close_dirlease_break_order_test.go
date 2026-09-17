@@ -49,7 +49,7 @@ func (m *orderRecordingLockManager) ReleaseLeaseForHandle(ctx context.Context, h
 // intermittency.
 //
 // The fix reorders CLOSE so WaitAndDeleteOpenFile (open-file removal) runs
-// BEFORE releaseHandleLeaseRecord (lease release + waiter signal). This test
+// BEFORE releaseHandleLeaseRecordOn (lease release + waiter signal). This test
 // asserts that invariant directly: at the instant ReleaseLeaseForHandle fires,
 // GetOpenFile for the closing handle must already report "not found".
 func TestClose_DirLeaseRelease_AfterOpenFileRemoval(t *testing.T) {

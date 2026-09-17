@@ -2908,7 +2908,7 @@ func TestProcessAppInstanceId_AuthorizesThroughTheDACL(t *testing.T) {
 //
 // The guard itself is what stops a live open's close from taking the lease
 // record a disconnected durable handle on the same file will restore on
-// reconnect. releaseHandleLeaseRecord finds a live sibling by scanning the
+// reconnect. releaseHandleLeaseRecordOn finds a live sibling by scanning the
 // open-file table; a persisted one is not in that table, so it has to be asked
 // of the store — behind the exact-negative count, so an ordinary close pays a
 // map read rather than a store round trip.
@@ -2960,7 +2960,7 @@ func TestReleaseHandleLeaseRecord_KeepsAKeyADisconnectedSiblingHolds(t *testing.
 		LeaseKey:       leaseKey,
 		OplockLevel:    OplockLevelLease,
 	}).WithName(OpenName{Path: "/sib.txt"})
-	h.releaseHandleLeaseRecord(context.Background(), closing, "test")
+	h.releaseHandleLeaseRecordOn(context.Background(), closing, closing.GetMetadataHandle(), "test")
 
 	if _, _, found := h.LeaseManager.GetLeaseState(context.Background(),
 		lock.FileHandle(fileHandle), smbCtx.ShareName, leaseKey); !found {

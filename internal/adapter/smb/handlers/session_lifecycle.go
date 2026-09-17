@@ -441,7 +441,7 @@ func (h *Handler) closeFilesWithFilter(
 		// keyed by lease key) leaks the record whenever a later session reused
 		// the same numeric lease key on another file and overwrote the
 		// sessionMap entry — the root cause of the #568 rotating cross-test
-		// lease flake. See releaseHandleLeaseRecord for the full rationale.
+		// lease flake. See releaseHandleLeaseRecordOn for the full rationale.
 		leaseReleases = append(leaseReleases, leaseRelease{openFile: openFile, metaHandle: metaHandle})
 
 		toDelete = append(toDelete, openFile.FileID)
@@ -537,7 +537,7 @@ func (h *Handler) closeFilesWithFilter(
 	// that will satisfy it — cancel this session's waits, then drain, so the
 	// wait cannot be circular.
 	//
-	// releaseHandleLeaseRecord runs after every map removal so its "any other
+	// releaseHandleLeaseRecordOn runs after every map removal so its "any other
 	// open on the same file shares this key" scan sees the shrunk table —
 	// otherwise sibling opens of the same file/key (all still present in the
 	// first pass) would each defer to the other and the record would leak.

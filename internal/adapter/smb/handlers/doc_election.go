@@ -308,7 +308,7 @@ func (h *Handler) removeElectedTarget(
 	// surviving hard link, or a recycle to trash) — purging the open handle's
 	// PayloadID instead would destroy still-referenced content.
 	isDeleteTargetDir := openFile.IsDirectory
-	deleteTargetHandle := openFile.MetadataHandle
+	deleteTargetHandle := openFile.GetMetadataHandle()
 	if target.IsBaseFile {
 		if targetFile, _, lookupErr := metaSvc.LookupCaseInsensitive(authCtx, target.ParentHandle, target.FileName); lookupErr == nil && targetFile != nil {
 			isDeleteTargetDir = targetFile.Type == metadata.FileTypeDirectory

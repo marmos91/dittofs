@@ -217,10 +217,18 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// the delete, not as of CLOSE entry.
 	closePath := openFile.Name().Path
 
+	// One metadata-handle snapshot for the whole teardown. The block-store
+	// resolve, the pending-write flush, the atime write, the lock release and
+	// the lease break must all name the same file: SET_REPARSE_POINT republishes
+	// MetadataHandle under openFile.mu when a placeholder becomes a symlink, and
+	// a mid-teardown republish would otherwise split the flush, the unlock and
+	// the lease release across two different files.
+	metaHandle := openFile.GetMetadataHandle()
+
 	var flushFailStatus types.Status
 	payloadID := openFile.GetPayloadID()
 	if !openFile.IsDirectory && payloadID != "" {
-		blockStore, bsErr := common.ResolveForWrite(ctx.Context, h.Registry, openFile.MetadataHandle)
+		blockStore, bsErr := common.ResolveForWrite(ctx.Context, h.Registry, metaHandle)
 		if bsErr != nil {
 			// A ResolveForWrite failure is NOT a block-store content/durability
 			// error — it surfaces handle-decode / share-registry / config
@@ -247,7 +255,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// We must call FlushPendingWriteForFile to persist the metadata changes.
 	// Without this, file size and other metadata changes are lost.
 
-	if !openFile.IsDirectory && len(openFile.MetadataHandle) > 0 {
+	if !openFile.IsDirectory && len(metaHandle) > 0 {
 		authCtx, authErr := BuildAuthContext(ctx)
 		if authErr != nil {
 			logger.Warn("CLOSE: failed to build auth context for metadata flush", "path", closePath, "error", authErr)
@@ -260,7 +268,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 			// #1267). The client treats a successful CLOSE as a guarantee its
 			// metadata reached stable storage, so the fsync must stay inline — this
 			// is deliberately NOT relaxed by #1687.
-			flushed, metaErr := metaSvc.FlushPendingWriteForFile(authCtx, openFile.MetadataHandle, true)
+			flushed, metaErr := metaSvc.FlushPendingWriteForFile(authCtx, metaHandle, true)
 			if metaErr != nil {
 				logger.Warn("CLOSE: metadata flush failed", "path", closePath, "error", metaErr)
 				// Surface the metadata-flush failure too (#1267): if the
@@ -289,10 +297,10 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 			// rather than closing it. Losing the race costs at most
 			// smbAtimeUpdateWindow of access-time precision.
 			if pending := takeSmbPendingAtime(openFile); !pending.IsZero() && !openFile.IsAtimeFrozen() {
-				if cur, curErr := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle); curErr == nil && cur.Atime.Before(pending) {
+				if cur, curErr := metaSvc.GetFile(authCtx.Context, metaHandle); curErr == nil && cur.Atime.Before(pending) {
 					atimeAttrs := &metadata.SetAttrs{Atime: &pending}
 					holdFrozenCtime(openFile, atimeAttrs)
-					if _, atimeErr := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, atimeAttrs); atimeErr != nil {
+					if _, atimeErr := metaSvc.SetFileAttributes(authCtx, metaHandle, atimeAttrs); atimeErr != nil {
 						logger.Warn("CLOSE: LastAccessTime flush failed", "path", closePath, "error", atimeErr)
 					}
 				}
@@ -318,7 +326,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 		// MFsymlink conversion promotes client-controlled file content to a real
 		// symlink, so it is opt-in per share (default disabled).
 		if tree, treeOK := h.GetTree(ctx.TreeID); treeOK && tree.AllowMFsymlink {
-			if converted, _ := h.checkAndConvertMFsymlink(ctx, openFile); converted {
+			if converted, _ := h.checkAndConvertMFsymlink(ctx, openFile, metaHandle); converted {
 				logger.Debug("CLOSE: converted MFsymlink to symlink", "path", closePath)
 			}
 		}
@@ -343,7 +351,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	if types.CloseFlags(req.Flags)&types.SMB2ClosePostQueryAttrib != 0 {
 		// Get metadata to retrieve final attributes
 		metaSvc := h.Registry.GetMetadataService()
-		file, err := metaSvc.GetFile(ctx.Context, openFile.MetadataHandle)
+		file, err := metaSvc.GetFile(ctx.Context, metaHandle)
 		if err == nil {
 			// Apply frozen timestamp overrides before building response
 			applyFrozenTimestamps(openFile, file)
@@ -366,7 +374,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// while the file still exists in the metadata store.
 	// ========================================================================
 
-	if !openFile.IsDirectory && len(openFile.MetadataHandle) > 0 {
+	if !openFile.IsDirectory && len(metaHandle) > 0 {
 		// Cancel any pending (parked) blocking LOCKs for this handle before
 		// releasing held locks. The resume goroutine would fail with
 		// STATUS_FILE_CLOSED on its next retry, but smbtorture expects
@@ -387,7 +395,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 		}
 
 		metaSvc := h.Registry.GetMetadataService()
-		if unlockErr := metaSvc.UnlockAllForOpen(ctx.Context, openFile.MetadataHandle, openFile.OpenID()); unlockErr != nil {
+		if unlockErr := metaSvc.UnlockAllForOpen(ctx.Context, metaHandle, openFile.OpenID()); unlockErr != nil {
 			logger.Warn("CLOSE: failed to release locks", "path", closePath, "error", unlockErr)
 		}
 	}
@@ -623,7 +631,11 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// OpenFile first makes the post-wait recheck see the shrunk table. This
 	// mirrors the SignalParkedCreates ordering below, which was already moved
 	// after the open-file removal for the dir-CREATE park path (v2_request).
-	h.releaseHandleLeaseRecord(ctx.Context, openFile, "CLOSE")
+	// The same snapshot the lock release above used: the lease record was
+	// created against the file this open has been operating on, so releasing
+	// against a handle republished mid-teardown would leave the record standing
+	// on the real file and tear out one on a file this open never held.
+	h.releaseHandleLeaseRecordOn(ctx.Context, openFile, metaHandle, "CLOSE")
 
 	// Wake any parked dir-CREATE on this handle so it can re-evaluate
 	// share-mode against the now-shrunk open-file table. The signal MUST
@@ -643,8 +655,8 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// smb2.kernel-oplocks.kernel_oplocks7 relies on tree2's parked
 	// CREATE staying parked until the timeout while tree1's re-open
 	// arrives first (CREATE returns EXCL with no other holder visible).
-	if openFile.IsDirectory && h.LeaseManager != nil && len(openFile.MetadataHandle) > 0 {
-		h.LeaseManager.SignalParkedCreates(lock.FileHandle(openFile.MetadataHandle), openFile.ShareName)
+	if openFile.IsDirectory && h.LeaseManager != nil && len(metaHandle) > 0 {
+		h.LeaseManager.SignalParkedCreates(lock.FileHandle(metaHandle), openFile.ShareName)
 	}
 	h.renameScanMu.Unlock()
 
@@ -659,11 +671,21 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	return resp, nil
 }
 
-// releaseHandleLeaseRecord releases the per-handle lease/oplock record held by
+// releaseHandleLeaseRecordOn releases the per-handle lease/oplock record held by
 // openFile, and (for traditional oplocks) unregisters the synthetic lease key →
 // FileID mapping from the notifier. It is the single release point shared by the
 // explicit CLOSE handler (close.go step 9) and the session/tree/transport
 // teardown path (closeFilesWithFilter) so both clean up lease state identically.
+//
+// metaHandle is the caller's snapshot of the file this teardown authorized, so
+// the release cannot act on a different file than the one the caller decided
+// against: SET_REPARSE_POINT republishes MetadataHandle under openFile.mu, and a
+// release against the republished handle leaves the displaced open's record
+// standing while the next CREATE waits out its oplock timeout on it. One
+// snapshot spans the sibling scan and the release for the same reason — deciding
+// "no other open holds this key on this file" against one handle and then
+// releasing against another tears out a record a survivor still holds, or leaves
+// this open's behind.
 //
 // Why teardown can't rely on LeaseManager.ReleaseSessionLeases alone:
 // ReleaseSessionLeases scans the LeaseManager's sessionMap (leaseKey → sessionID)
@@ -680,23 +702,6 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 //
 // Release is scoped per-handle (ReleaseLeaseForHandle) so opens of OTHER files
 // that legitimately share the same numeric lease key keep their records.
-func (h *Handler) releaseHandleLeaseRecord(ctx context.Context, openFile *OpenFile, caller string) {
-	if h.LeaseManager == nil {
-		return
-	}
-	leaseKey := openFile.LeaseKey
-	if leaseKey == ([16]byte{}) {
-		return
-	}
-	h.releaseHandleLeaseRecordOn(ctx, openFile, openFile.GetMetadataHandle(), caller)
-}
-
-// releaseHandleLeaseRecordOn is releaseHandleLeaseRecord against a caller-supplied
-// metadata handle, for a teardown that authorized one earlier and must not act on
-// a different file by the time it gets here. One snapshot spans the sibling scan
-// and the release: deciding "no other open holds this key on this file" against
-// one handle and then releasing against another tears out a record a survivor
-// still holds, or leaves this open's behind.
 func (h *Handler) releaseHandleLeaseRecordOn(ctx context.Context, openFile *OpenFile, metaHandle []byte, caller string) {
 	if h.LeaseManager == nil {
 		return
@@ -710,8 +715,12 @@ func (h *Handler) releaseHandleLeaseRecordOn(ctx context.Context, openFile *Open
 	// Two opens on the same file share one lease record (requestLeaseImpl
 	// upgrades in place). Different files with the same key are separate
 	// records in distinct handleKey buckets and must not be disturbed.
+	//
+	// The sibling scan compares against the caller's snapshot, not a fresh read
+	// of the open's own handle: the scan decides whether to release at all, and
+	// a decision taken against one file while the release names another is the
+	// exact split this parameter exists to prevent.
 	hasOtherOpenSameFile := false
-	ownHandle := openFile.GetMetadataHandle()
 	h.files.Range(func(_, value any) bool {
 		other := value.(*OpenFile)
 		if other.FileID == openFile.FileID {
@@ -720,7 +729,7 @@ func (h *Handler) releaseHandleLeaseRecordOn(ctx context.Context, openFile *Open
 		if other.LeaseKey != leaseKey {
 			return true
 		}
-		if bytes.Equal(other.GetMetadataHandle(), ownHandle) {
+		if bytes.Equal(other.GetMetadataHandle(), metaHandle) {
 			hasOtherOpenSameFile = true
 			return false
 		}
@@ -737,8 +746,8 @@ func (h *Handler) releaseHandleLeaseRecordOn(ctx context.Context, openFile *Open
 	// and almost none of them have a disconnected sibling — putting the store
 	// lookup ahead of the gate would charge the common case for the rare one.
 	if !hasOtherOpenSameFile && h.DurableStore != nil &&
-		h.hasDisconnectedHandles(openFile.MetadataHandle) &&
-		h.leaseKeyHasPersistedSibling(ctx, h.DurableStore, openFile) {
+		h.hasDisconnectedHandles(metaHandle) &&
+		h.leaseKeyHasPersistedSibling(ctx, h.DurableStore, openFile, metaHandle) {
 		logger.Debug(caller+": lease handle closed (a disconnected durable handle shares the key on this file)",
 			"path", openFile.Name().Path)
 		return
@@ -784,12 +793,12 @@ func (h *Handler) releaseHandleLeaseRecordOn(ctx context.Context, openFile *Open
 //
 // Returns (true, nil) if conversion succeeded, (false, nil) if not an MFsymlink,
 // or (false, error) if conversion failed.
-func (h *Handler) checkAndConvertMFsymlink(ctx *SMBHandlerContext, openFile *OpenFile) (bool, error) {
+func (h *Handler) checkAndConvertMFsymlink(ctx *SMBHandlerContext, openFile *OpenFile, metaHandle metadata.FileHandle) (bool, error) {
 	// Get metadata store
 	metaSvc := h.Registry.GetMetadataService()
 
 	// Get file metadata to check size
-	file, err := metaSvc.GetFile(ctx.Context, openFile.MetadataHandle)
+	file, err := metaSvc.GetFile(ctx.Context, metaHandle)
 	if err != nil {
 		return false, err
 	}
@@ -805,7 +814,7 @@ func (h *Handler) checkAndConvertMFsymlink(ctx *SMBHandlerContext, openFile *Ope
 	}
 
 	// Read content to verify MFsymlink format
-	content, err := h.readMFsymlinkContent(ctx, openFile)
+	content, err := h.readMFsymlinkContent(ctx, openFile, metaHandle)
 	if err != nil {
 		logger.Debug("CLOSE: failed to read MFsymlink content", "path", openFile.Name().Path, "error", err)
 		return false, nil // Not fatal, just don't convert
@@ -824,7 +833,7 @@ func (h *Handler) checkAndConvertMFsymlink(ctx *SMBHandlerContext, openFile *Ope
 	}
 
 	// Convert to real symlink
-	err = h.convertToRealSymlink(ctx, openFile, target)
+	err = h.convertToRealSymlink(ctx, openFile, metaHandle, target)
 	if err != nil {
 		logger.Warn("CLOSE: failed to convert MFsymlink to symlink",
 			"path", openFile.Name().Path,
@@ -838,8 +847,8 @@ func (h *Handler) checkAndConvertMFsymlink(ctx *SMBHandlerContext, openFile *Ope
 
 // readMFsymlinkContent reads the content of a potential MFsymlink file.
 // It reads from the block store which uses local cache internally.
-func (h *Handler) readMFsymlinkContent(ctx *SMBHandlerContext, openFile *OpenFile) ([]byte, error) {
-	blockStore, err := common.ResolveForRead(ctx.Context, h.Registry, openFile.MetadataHandle)
+func (h *Handler) readMFsymlinkContent(ctx *SMBHandlerContext, openFile *OpenFile, metaHandle metadata.FileHandle) ([]byte, error) {
+	blockStore, err := common.ResolveForRead(ctx.Context, h.Registry, metaHandle)
 	if err != nil {
 		return nil, fmt.Errorf("block store not available: %w", err)
 	}
@@ -861,7 +870,7 @@ func (h *Handler) readMFsymlinkContent(ctx *SMBHandlerContext, openFile *OpenFil
 }
 
 // convertToRealSymlink removes the regular file and creates a symlink in its place.
-func (h *Handler) convertToRealSymlink(ctx *SMBHandlerContext, openFile *OpenFile, target string) error {
+func (h *Handler) convertToRealSymlink(ctx *SMBHandlerContext, openFile *OpenFile, metaHandle metadata.FileHandle, target string) error {
 	// Validate required fields
 	name := openFile.Name()
 	if len(name.ParentHandle) == 0 || name.FileName == "" {
@@ -902,7 +911,7 @@ func (h *Handler) convertToRealSymlink(ctx *SMBHandlerContext, openFile *OpenFil
 	if removed != nil {
 		removedPayloadID = removed.PayloadID
 	}
-	h.purgeBlockStorePayload(ctx.Context, openFile.MetadataHandle, removedPayloadID, name.Path, "CLOSE")
+	h.purgeBlockStorePayload(ctx.Context, metaHandle, removedPayloadID, name.Path, "CLOSE")
 
 	// Create the real symlink with default attributes
 	// Pass empty FileAttr - CreateSymlink will apply defaults
