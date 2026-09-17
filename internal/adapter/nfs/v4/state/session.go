@@ -47,6 +47,12 @@ type Session struct {
 	// CbProgram is the callback RPC program number from CREATE_SESSION.
 	CbProgram uint32
 
+	// MinorVersion is the NFSv4 minor version that created this session. RFC
+	// 8881 Section 19.2.3 requires the CB_COMPOUND minorversion to match the
+	// session's, so a callback carries this rather than a fixed 1: a v4.2
+	// client rejects a v4.1-tagged callback with NFS4ERR_BADSESSION.
+	MinorVersion uint32
+
 	// CreatedAt is when this session was created.
 	CreatedAt time.Time
 
@@ -75,7 +81,7 @@ type Session struct {
 //
 // This constructor does NOT register the session with StateManager.
 // Registration is the CREATE_SESSION handler's responsibility.
-func NewSession(clientID uint64, foreAttrs, backAttrs types.ChannelAttrs, flags, cbProgram uint32) (*Session, error) {
+func NewSession(clientID uint64, foreAttrs, backAttrs types.ChannelAttrs, flags, cbProgram, minorVersion uint32) (*Session, error) {
 	var sid types.SessionId4
 
 	// Generate a random 16-byte session ID using crypto/rand.
@@ -92,6 +98,7 @@ func NewSession(clientID uint64, foreAttrs, backAttrs types.ChannelAttrs, flags,
 		BackChannelAttrs: backAttrs,
 		Flags:            flags,
 		CbProgram:        cbProgram,
+		MinorVersion:     minorVersion,
 		CreatedAt:        time.Now(),
 	}
 
@@ -141,6 +148,7 @@ func (sm *StateManager) CreateSession(
 	foreAttrs, backAttrs types.ChannelAttrs,
 	cbProgram uint32,
 	cbSecParms []types.CallbackSecParms4,
+	minorVersion uint32,
 	principal ...string,
 ) (*CreateSessionResult, []byte, error) {
 	sm.mu.Lock()
@@ -240,7 +248,7 @@ func (sm *StateManager) CreateSession(
 	responseFlags = responseFlags & ^uint32(types.CREATE_SESSION4_FLAG_CONN_RDMA)
 
 	// Create session
-	session, err := NewSession(clientID, negotiatedFore, negotiatedBack, responseFlags, cbProgram)
+	session, err := NewSession(clientID, negotiatedFore, negotiatedBack, responseFlags, cbProgram, minorVersion)
 	if err != nil {
 		return nil, nil, &NFS4StateError{
 			Status:  types.NFS4ERR_SERVERFAULT,

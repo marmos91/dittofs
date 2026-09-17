@@ -289,6 +289,10 @@ type BackchannelSender struct {
 	sessionID types.SessionId4
 	clientID  uint64
 
+	// minorVersion is the session's NFSv4 minor version, carried so the
+	// CB_COMPOUND it sends matches it (RFC 8881 Section 19.2.3).
+	minorVersion uint32
+
 	// params is the callback program number and the pre-encoded credential
 	// every callback on this session carries, held as one value. Both are read
 	// by the Run goroutine (sendCallback) and rewritten by BACKCHANNEL_CTL via
@@ -346,11 +350,13 @@ func NewBackchannelSender(
 	cbProgram uint32,
 	secParms []types.CallbackSecParms4,
 	slotTable *SlotTable,
+	minorVersion uint32,
 	sm *StateManager,
 ) *BackchannelSender {
 	bs := &BackchannelSender{
 		sessionID:       sessionID,
 		clientID:        clientID,
+		minorVersion:    minorVersion,
 		queue:           make(chan CallbackRequest, backchannelQueueSize),
 		sm:              sm,
 		slotTable:       slotTable,
@@ -571,7 +577,7 @@ func (bs *BackchannelSender) sendCallback(ctx context.Context, req CallbackReque
 	cbSeqOp := encodeCBSequenceOp(bs.sessionID, seqID, slotID, highestSlotID)
 
 	// 3. Build CB_COMPOUND: CB_SEQUENCE + req.Payload
-	compoundArgs := encodeCBCompoundV41([][]byte{cbSeqOp, req.Payload})
+	compoundArgs := encodeCBCompoundV41(bs.minorVersion, [][]byte{cbSeqOp, req.Payload})
 
 	// 4. Build RPC CALL message
 	xid := nextCallbackXID.Add(1)
@@ -695,22 +701,28 @@ func (bs *BackchannelSender) sendCallback(ctx context.Context, req CallbackReque
 // CB_COMPOUND v4.1 Encoding
 // ============================================================================
 
-// encodeCBCompoundV41 encodes CB_COMPOUND4args for NFSv4.1.
+// encodeCBCompoundV41 encodes CB_COMPOUND4args for an NFSv4.1-or-later session.
 //
-// Wire format per RFC 8881 Section 20.2:
+// Wire format per RFC 8881 Section 19.2.1:
 //
 //	utf8str_cs  tag;           -- empty tag
-//	uint32      minorversion;  -- 1 for NFSv4.1
+//	uint32      minorversion;  -- the session's minor version
 //	uint32      callback_ident;-- 0 for v4.1 (not used, session-based)
 //	nfs_cb_argop4 argarray<>;  -- pre-encoded operations
-func encodeCBCompoundV41(ops [][]byte) []byte {
+func encodeCBCompoundV41(minorVersion uint32, ops [][]byte) []byte {
 	var buf bytes.Buffer
 
 	// tag: empty utf8str_cs (XDR opaque with length 0)
 	_ = xdr.WriteXDROpaque(&buf, nil)
 
-	// minorversion: 1
-	_ = xdr.WriteUint32(&buf, 1)
+	// minorversion: the session's. RFC 8881 Section 19.2.3 requires the
+	// callback's minorversion to equal the one that created the client ID and
+	// session, and a client rejects a mismatch with NFS4ERR_BADSESSION. A
+	// v4.1 sender is the floor because a v4.0 client has no back channel.
+	if minorVersion < 1 {
+		minorVersion = 1
+	}
+	_ = xdr.WriteUint32(&buf, minorVersion)
 
 	// callback_ident: 0 (not used for v4.1)
 	_ = xdr.WriteUint32(&buf, 0)
@@ -1209,6 +1221,7 @@ func (sm *StateManager) StartBackchannelSender(ctx context.Context, sessionID ty
 		session.CbProgram,
 		session.BackchannelSecParms,
 		session.BackChannelSlots,
+		session.MinorVersion,
 		sm,
 	)
 	session.backchannelSender = sender

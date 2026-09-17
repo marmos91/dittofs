@@ -51,6 +51,7 @@ func HandleCreateSession(d *Deps, ctx *types.CompoundContext, _ *types.V41Reques
 		args.BackChannelAttrs,
 		args.CbProgram,
 		args.CbSecParms,
+		ctx.MinorVersion,
 		ctx.Principal(),
 	)
 

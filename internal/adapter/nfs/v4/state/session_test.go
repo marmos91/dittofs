@@ -60,7 +60,7 @@ func TestNewSession_Basic(t *testing.T) {
 	flags := uint32(types.CREATE_SESSION4_FLAG_CONN_BACK_CHAN)
 	cbProgram := uint32(0x40000000)
 
-	sess, err := NewSession(42, foreAttrs, backAttrs, flags, cbProgram)
+	sess, err := NewSession(42, foreAttrs, backAttrs, flags, cbProgram, 1)
 	if err != nil {
 		t.Fatalf("NewSession() error = %v", err)
 	}
@@ -131,7 +131,7 @@ func TestNewSession_NoBackChannel(t *testing.T) {
 	backAttrs := types.ChannelAttrs{MaxRequests: 8}
 	flags := uint32(0) // No CONN_BACK_CHAN
 
-	sess, err := NewSession(1, foreAttrs, backAttrs, flags, 0)
+	sess, err := NewSession(1, foreAttrs, backAttrs, flags, 0, 1)
 	if err != nil {
 		t.Fatalf("NewSession() error = %v", err)
 	}
@@ -157,7 +157,7 @@ func TestNewSession_UniqueSessionIDs(t *testing.T) {
 	seen := make(map[types.SessionId4]bool)
 
 	for i := 0; i < 100; i++ {
-		sess, err := NewSession(uint64(i), foreAttrs, backAttrs, 0, 0)
+		sess, err := NewSession(uint64(i), foreAttrs, backAttrs, 0, 0, 1)
 		if err != nil {
 			t.Fatalf("NewSession() error = %v at iteration %d", err, i)
 		}
@@ -180,7 +180,7 @@ func TestNewSession_ForeChannelSlotTableWorks(t *testing.T) {
 	foreAttrs := types.ChannelAttrs{MaxRequests: 4}
 	backAttrs := types.ChannelAttrs{}
 
-	sess, err := NewSession(1, foreAttrs, backAttrs, 0, 0)
+	sess, err := NewSession(1, foreAttrs, backAttrs, 0, 0, 1)
 	if err != nil {
 		t.Fatalf("NewSession() error = %v", err)
 	}
@@ -230,7 +230,7 @@ func TestNewSession_SlotCountClamping(t *testing.T) {
 
 	t.Run("zero clamped to MinSlots", func(t *testing.T) {
 		foreAttrs := types.ChannelAttrs{MaxRequests: 0}
-		sess, err := NewSession(1, foreAttrs, backAttrs, 0, 0)
+		sess, err := NewSession(1, foreAttrs, backAttrs, 0, 0, 1)
 		if err != nil {
 			t.Fatalf("NewSession() error = %v", err)
 		}
@@ -241,7 +241,7 @@ func TestNewSession_SlotCountClamping(t *testing.T) {
 
 	t.Run("large value clamped to DefaultMaxSlots", func(t *testing.T) {
 		foreAttrs := types.ChannelAttrs{MaxRequests: 1000}
-		sess, err := NewSession(1, foreAttrs, backAttrs, 0, 0)
+		sess, err := NewSession(1, foreAttrs, backAttrs, 0, 0, 1)
 		if err != nil {
 			t.Fatalf("NewSession() error = %v", err)
 		}
@@ -261,7 +261,7 @@ func TestCreateSession_Success(t *testing.T) {
 
 	result, cached, err := sm.CreateSession(
 		clientID, seqID, types.CREATE_SESSION4_FLAG_CONN_BACK_CHAN,
-		defaultForeAttrs(), defaultBackAttrs(), 0x40000000, nil,
+		defaultForeAttrs(), defaultBackAttrs(), 0x40000000, nil, 1,
 	)
 	if err != nil {
 		t.Fatalf("CreateSession error: %v", err)
@@ -320,7 +320,7 @@ func TestCreateSession_ConfirmsClient(t *testing.T) {
 
 	_, _, err := sm.CreateSession(
 		clientID, seqID, 0,
-		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil, 1,
 	)
 	if err != nil {
 		t.Fatalf("CreateSession error: %v", err)
@@ -346,7 +346,7 @@ func TestCreateSession_UnknownClient(t *testing.T) {
 
 	_, _, err := sm.CreateSession(
 		99999, 2, 0,
-		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil, 1,
 	)
 	if err == nil {
 		t.Fatal("Expected error for unknown client")
@@ -363,7 +363,7 @@ func TestCreateSession_Replay(t *testing.T) {
 	// First request
 	_, _, err := sm.CreateSession(
 		clientID, seqID, 0,
-		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil, 1,
 	)
 	if err != nil {
 		t.Fatalf("CreateSession #1 error: %v", err)
@@ -375,7 +375,7 @@ func TestCreateSession_Replay(t *testing.T) {
 	// Replay with same seqid (which is now seqID after increment)
 	replayResult, cached, err := sm.CreateSession(
 		clientID, seqID, 0,
-		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil, 1,
 	)
 	if err != nil {
 		t.Fatalf("CreateSession replay error: %v", err)
@@ -415,7 +415,7 @@ func TestCreateSession_ReplayAfterImplicitCache(t *testing.T) {
 	// CreateSession itself must have populated the cache under sm.mu.
 	first, cached, err := sm.CreateSession(
 		clientID, seqID, 0,
-		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil, 1,
 	)
 	if err != nil {
 		t.Fatalf("CreateSession error: %v", err)
@@ -430,7 +430,7 @@ func TestCreateSession_ReplayAfterImplicitCache(t *testing.T) {
 	// Immediate replay with the same seqid -- no intervening cache call.
 	replayResult, replayCached, err := sm.CreateSession(
 		clientID, seqID, 0,
-		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil, 1,
 	)
 	if err != nil {
 		t.Fatalf("replay must succeed with cached response, got error: %v", err)
@@ -458,7 +458,7 @@ func TestCreateSession_MisorderedSeqID(t *testing.T) {
 	// Send with wrong seqid (too high)
 	_, _, err := sm.CreateSession(
 		clientID, seqID+5, 0,
-		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil, 1,
 	)
 	if err == nil {
 		t.Fatal("Expected error for misordered seqid")
@@ -470,7 +470,7 @@ func TestCreateSession_MisorderedSeqID(t *testing.T) {
 	// Send with seqid lower than current (slot=0, so try 0 which hits replay-without-cache)
 	_, _, err = sm.CreateSession(
 		clientID, 0, 0,
-		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil, 1,
 	)
 	if err == nil {
 		t.Fatal("Expected error for old seqid")
@@ -492,7 +492,7 @@ func TestCreateSession_PerClientLimit(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		_, _, err := sm.CreateSession(
 			clientID, seqID+uint32(i), 0,
-			defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+			defaultForeAttrs(), defaultBackAttrs(), 0, nil, 1,
 		)
 		if err != nil {
 			t.Fatalf("CreateSession #%d error: %v", i+1, err)
@@ -504,7 +504,7 @@ func TestCreateSession_PerClientLimit(t *testing.T) {
 	// 4th should fail
 	_, _, err := sm.CreateSession(
 		clientID, seqID+3, 0,
-		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil, 1,
 	)
 	if err == nil {
 		t.Fatal("Expected error for session limit exceeded")
@@ -521,7 +521,7 @@ func TestCreateSession_PersistFlagCleared(t *testing.T) {
 	result, _, err := sm.CreateSession(
 		clientID, seqID,
 		types.CREATE_SESSION4_FLAG_PERSIST|types.CREATE_SESSION4_FLAG_CONN_BACK_CHAN,
-		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil, 1,
 	)
 	if err != nil {
 		t.Fatalf("CreateSession error: %v", err)
@@ -542,7 +542,7 @@ func TestCreateSession_ConnBackChanFlag(t *testing.T) {
 	// Without CONN_BACK_CHAN
 	result, _, err := sm.CreateSession(
 		clientID, seqID, 0,
-		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil, 1,
 	)
 	if err != nil {
 		t.Fatalf("CreateSession error: %v", err)
@@ -575,7 +575,7 @@ func TestCreateSession_ChannelNegotiation(t *testing.T) {
 
 	result, _, err := sm.CreateSession(
 		clientID, seqID, 0,
-		oversizedFore, defaultBackAttrs(), 0, nil,
+		oversizedFore, defaultBackAttrs(), 0, nil, 1,
 	)
 	if err != nil {
 		t.Fatalf("CreateSession error: %v", err)
@@ -618,7 +618,7 @@ func TestCreateSession_TooSmallRequestSize(t *testing.T) {
 
 	_, _, err := sm.CreateSession(
 		clientID, seqID, 0,
-		tooSmallFore, defaultBackAttrs(), 0, nil,
+		tooSmallFore, defaultBackAttrs(), 0, nil, 1,
 	)
 	if err == nil {
 		t.Fatal("Expected TOOSMALL for a 20-byte ca_maxrequestsize")
@@ -633,7 +633,7 @@ func TestCreateSession_TooSmallRequestSize(t *testing.T) {
 	smallBack.MaxRequestSize = 10
 	_, _, err = sm.CreateSession(
 		clientID, seqID, 0,
-		defaultForeAttrs(), smallBack, 0, nil,
+		defaultForeAttrs(), smallBack, 0, nil, 1,
 	)
 	if err == nil {
 		t.Fatal("Expected TOOSMALL for a 10-byte back-channel ca_maxrequestsize")
@@ -648,7 +648,7 @@ func TestCreateSession_TooSmallRequestSize(t *testing.T) {
 	csess26.MaxRequestSize = 400
 	result, _, err := sm.CreateSession(
 		clientID, seqID, 0,
-		csess26, defaultBackAttrs(), 0, nil,
+		csess26, defaultBackAttrs(), 0, nil, 1,
 	)
 	if err != nil {
 		t.Fatalf("CreateSession with workable budgets after two rejections: %v", err)
@@ -669,7 +669,7 @@ func TestCreateSession_TooSmallResponseSize(t *testing.T) {
 
 	_, _, err := sm.CreateSession(
 		clientID, seqID, 0,
-		tooSmallFore, defaultBackAttrs(), 0, nil,
+		tooSmallFore, defaultBackAttrs(), 0, nil, 1,
 	)
 	if err == nil {
 		t.Fatal("Expected TOOSMALL for a zero ca_maxresponsesize")
@@ -685,7 +685,7 @@ func TestCreateSession_TooSmallResponseSize(t *testing.T) {
 	workable.MaxResponseSize = 400
 	if _, _, err := sm.CreateSession(
 		clientID, seqID, 0,
-		workable, defaultBackAttrs(), 0, nil,
+		workable, defaultBackAttrs(), 0, nil, 1,
 	); err != nil {
 		t.Fatalf("A 400-byte ca_maxresponsesize must be accepted, got: %v", err)
 	}
@@ -704,7 +704,7 @@ func TestCreateSession_SmallCacheSizeAccepted(t *testing.T) {
 
 	result, _, err := sm.CreateSession(
 		clientID, seqID, 0,
-		smallCache, defaultBackAttrs(), 0, nil,
+		smallCache, defaultBackAttrs(), 0, nil, 1,
 	)
 	if err != nil {
 		t.Fatalf("A 10-byte ca_maxresponsesize_cached must not reject the session: %v", err)
@@ -724,7 +724,7 @@ func TestCreateSession_UnknownFlagBits(t *testing.T) {
 
 	_, _, err := sm.CreateSession(
 		clientID, seqID, 0xf,
-		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil, 1,
 	)
 	if err == nil {
 		t.Fatal("Expected INVAL for undefined flag bits (0xf has bit 3 set)")
@@ -739,7 +739,7 @@ func TestCreateSession_UnknownFlagBits(t *testing.T) {
 		types.CREATE_SESSION4_FLAG_CONN_RDMA)
 	if _, _, err := sm.CreateSession(
 		clientID, seqID, all,
-		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil, 1,
 	); err != nil {
 		t.Fatalf("The three defined flag bits together must be accepted, got: %v", err)
 	}
@@ -758,7 +758,7 @@ func TestCreateSession_SessionLimitStatus(t *testing.T) {
 
 	if _, _, err := sm.CreateSession(
 		clientID, seqID, 0,
-		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil, 1,
 	); err != nil {
 		t.Fatalf("first CreateSession: %v", err)
 	}
@@ -766,7 +766,7 @@ func TestCreateSession_SessionLimitStatus(t *testing.T) {
 
 	_, _, err := sm.CreateSession(
 		clientID, seqID+1, 0,
-		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil, 1,
 	)
 	if err == nil {
 		t.Fatal("Expected an error for the per-client session limit")
@@ -789,7 +789,7 @@ func TestDestroySession_Success(t *testing.T) {
 
 	result, _, err := sm.CreateSession(
 		clientID, seqID, 0,
-		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil, 1,
 	)
 	if err != nil {
 		t.Fatalf("CreateSession error: %v", err)
@@ -833,7 +833,7 @@ func TestDestroySession_InFlightRequest(t *testing.T) {
 
 	result, _, err := sm.CreateSession(
 		clientID, seqID, 0,
-		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil, 1,
 	)
 	if err != nil {
 		t.Fatalf("CreateSession error: %v", err)
@@ -866,7 +866,7 @@ func TestForceDestroySession_BypassesInFlight(t *testing.T) {
 
 	result, _, err := sm.CreateSession(
 		clientID, seqID, 0,
-		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil, 1,
 	)
 	if err != nil {
 		t.Fatalf("CreateSession error: %v", err)
@@ -1048,7 +1048,7 @@ func TestSession_HasInFlightRequests(t *testing.T) {
 	fore := types.ChannelAttrs{MaxRequests: 4}
 	back := types.ChannelAttrs{MaxRequests: 2}
 
-	session, err := NewSession(1, fore, back, types.CREATE_SESSION4_FLAG_CONN_BACK_CHAN, 0)
+	session, err := NewSession(1, fore, back, types.CREATE_SESSION4_FLAG_CONN_BACK_CHAN, 0, 1)
 	if err != nil {
 		t.Fatalf("NewSession error: %v", err)
 	}
@@ -1120,7 +1120,7 @@ func TestReaper_ExpiredLease(t *testing.T) {
 	// Create a session (this confirms the client and creates its lease)
 	_, _, err := sm.CreateSession(
 		clientID, seqID, 0,
-		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil, 1,
 	)
 	if err != nil {
 		t.Fatalf("CreateSession error: %v", err)
@@ -1189,7 +1189,7 @@ func TestReaper_ActiveLeaseNotCleaned(t *testing.T) {
 	// Create a session (confirms client, starts lease)
 	_, _, err := sm.CreateSession(
 		clientID, seqID, 0,
-		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil, 1,
 	)
 	if err != nil {
 		t.Fatalf("CreateSession error: %v", err)
@@ -1226,7 +1226,7 @@ func TestReaper_ExpiredLeaseReleasesOpenState(t *testing.T) {
 	clientID, seqID := registerV41Client(t, sm)
 	if _, _, err := sm.CreateSession(
 		clientID, seqID, 0,
-		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil, 1,
 	); err != nil {
 		t.Fatalf("CreateSession error: %v", err)
 	}
@@ -1303,7 +1303,7 @@ func TestReaper_ExpiredLeaseReleasesOpenState(t *testing.T) {
 	}
 	if _, _, err := sm.CreateSession(
 		other.ClientID, other.SequenceID, 0,
-		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil, 1,
 	); err != nil {
 		t.Fatalf("CreateSession error for second client: %v", err)
 	}
@@ -1345,7 +1345,7 @@ func TestPurgeV41Client_DestroysAllSessions(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		result, _, err := sm.CreateSession(
 			clientID, seqID+uint32(i), 0,
-			defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+			defaultForeAttrs(), defaultBackAttrs(), 0, nil, 1,
 		)
 		if err != nil {
 			t.Fatalf("CreateSession #%d error: %v", i+1, err)
@@ -1398,7 +1398,7 @@ func TestListSessionsForClient_MultipleSessions(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		_, _, err := sm.CreateSession(
 			clientID, seqID+uint32(i), 0,
-			defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+			defaultForeAttrs(), defaultBackAttrs(), 0, nil, 1,
 		)
 		if err != nil {
 			t.Fatalf("CreateSession #%d error: %v", i+1, err)
@@ -1471,7 +1471,7 @@ func TestCreateSession_CustomMaxSlots(t *testing.T) {
 
 	result, _, err := sm.CreateSession(
 		clientID, seqID, 0,
-		foreAttrs, defaultBackAttrs(), 0, nil,
+		foreAttrs, defaultBackAttrs(), 0, nil, 1,
 	)
 	if err != nil {
 		t.Fatalf("CreateSession error: %v", err)
@@ -1508,7 +1508,7 @@ func TestCreateSession_MaxSlotsClamped(t *testing.T) {
 
 	result, _, err := sm.CreateSession(
 		clientID, seqID, 0,
-		foreAttrs, defaultBackAttrs(), 0, nil,
+		foreAttrs, defaultBackAttrs(), 0, nil, 1,
 	)
 	if err != nil {
 		t.Fatalf("CreateSession error: %v", err)
@@ -1531,7 +1531,7 @@ func TestCreateSession_CustomMaxSessionsPerClient(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		_, _, err := sm.CreateSession(
 			clientID, seqID+uint32(i), 0,
-			defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+			defaultForeAttrs(), defaultBackAttrs(), 0, nil, 1,
 		)
 		if err != nil {
 			t.Fatalf("CreateSession #%d error: %v", i+1, err)
@@ -1542,7 +1542,7 @@ func TestCreateSession_CustomMaxSessionsPerClient(t *testing.T) {
 	// 3rd should fail
 	_, _, err := sm.CreateSession(
 		clientID, seqID+2, 0,
-		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil, 1,
 	)
 	if err == nil {
 		t.Fatal("Expected error for session limit exceeded")

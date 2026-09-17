@@ -127,7 +127,7 @@ func TestReapExpiredSessions_StopsBackchannelSender(t *testing.T) {
 
 	csResult, _, err := sm.CreateSession(
 		clientID, seqID, types.CREATE_SESSION4_FLAG_CONN_BACK_CHAN,
-		defaultForeAttrs(), defaultBackAttrs(), 0x40000000, nil,
+		defaultForeAttrs(), defaultBackAttrs(), 0x40000000, nil, 1,
 	)
 	if err != nil {
 		t.Fatalf("CreateSession error: %v", err)
@@ -138,7 +138,7 @@ func TestReapExpiredSessions_StopsBackchannelSender(t *testing.T) {
 	if session == nil {
 		t.Fatal("GetSession returned nil")
 	}
-	sender := NewBackchannelSender(csResult.SessionID, clientID, 0x40000000, nil, session.BackChannelSlots, sm)
+	sender := NewBackchannelSender(csResult.SessionID, clientID, 0x40000000, nil, session.BackChannelSlots, 1, sm)
 	sm.mu.Lock()
 	session.backchannelSender = sender
 	sm.mu.Unlock()

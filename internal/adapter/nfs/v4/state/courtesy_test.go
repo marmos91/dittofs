@@ -30,7 +30,7 @@ func courtesyClient(t *testing.T, sm *StateManager, ownerID string) uint64 {
 		t.Fatalf("ExchangeID(%s): %v", ownerID, err)
 	}
 	if _, _, err := sm.CreateSession(res.ClientID, res.SequenceID, 0,
-		defaultForeAttrs(), defaultBackAttrs(), 0, nil); err != nil {
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil, 1); err != nil {
 		t.Fatalf("CreateSession(%s): %v", ownerID, err)
 	}
 	// A conformant v4.1 client sends RECLAIM_COMPLETE before its first

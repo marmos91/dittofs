@@ -529,7 +529,7 @@ func TestClientRecovery_V41PersistAndReclaimComplete(t *testing.T) {
 		t.Fatalf("ExchangeID: %v", err)
 	}
 	// First CREATE_SESSION confirms; it must NOT write a recovery record.
-	if _, _, err := sm.CreateSession(exch.ClientID, exch.SequenceID, 0, defaultForeAttrs(), defaultBackAttrs(), 0, nil, "uid:0"); err != nil {
+	if _, _, err := sm.CreateSession(exch.ClientID, exch.SequenceID, 0, defaultForeAttrs(), defaultBackAttrs(), 0, nil, 1, "uid:0"); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
 	if puts := spy.snapshotPuts(); len(puts) != 0 {
@@ -562,7 +562,7 @@ func TestClientRecovery_V41PersistAndReclaimComplete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExchangeID(2): %v", err)
 	}
-	cs, _, err := sm2.CreateSession(exch2.ClientID, exch2.SequenceID, 0, defaultForeAttrs(), defaultBackAttrs(), 0, nil)
+	cs, _, err := sm2.CreateSession(exch2.ClientID, exch2.SequenceID, 0, defaultForeAttrs(), defaultBackAttrs(), 0, nil, 1)
 	if err != nil {
 		t.Fatalf("CreateSession(2): %v", err)
 	}
@@ -598,7 +598,7 @@ func TestClientRecovery_V41DestroyDeletes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExchangeID: %v", err)
 	}
-	if _, _, err := sm.CreateSession(exch.ClientID, exch.SequenceID, 0, defaultForeAttrs(), defaultBackAttrs(), 0, nil); err != nil {
+	if _, _, err := sm.CreateSession(exch.ClientID, exch.SequenceID, 0, defaultForeAttrs(), defaultBackAttrs(), 0, nil, 1); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
 	// Take state so a durable row exists for DESTROY_CLIENTID to delete.
@@ -648,7 +648,7 @@ func TestClientRecovery_ReclaimPersistRetriedAfterFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExchangeID: %v", err)
 	}
-	if _, _, err := sm.CreateSession(exch.ClientID, exch.SequenceID, 0, defaultForeAttrs(), defaultBackAttrs(), 0, nil, "uid:0"); err != nil {
+	if _, _, err := sm.CreateSession(exch.ClientID, exch.SequenceID, 0, defaultForeAttrs(), defaultBackAttrs(), 0, nil, 1, "uid:0"); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
 	// Take state so a durable row exists to be marked reclaim-complete.
@@ -696,7 +696,7 @@ func TestClientRecovery_ReclaimPersistRetryAbandonedWhenIncarnationGone(t *testi
 	if err != nil {
 		t.Fatalf("ExchangeID: %v", err)
 	}
-	if _, _, err := sm.CreateSession(exch.ClientID, exch.SequenceID, 0, defaultForeAttrs(), defaultBackAttrs(), 0, nil, "uid:0"); err != nil {
+	if _, _, err := sm.CreateSession(exch.ClientID, exch.SequenceID, 0, defaultForeAttrs(), defaultBackAttrs(), 0, nil, 1, "uid:0"); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
 	if err := sm.ReclaimComplete(exch.ClientID, false); err != nil {
@@ -718,7 +718,7 @@ func TestClientRecovery_ReclaimPersistRetryAbandonedWhenIncarnationGone(t *testi
 	if err != nil {
 		t.Fatalf("ExchangeID(2): %v", err)
 	}
-	if _, _, err := sm.CreateSession(exch2.ClientID, exch2.SequenceID, 0, defaultForeAttrs(), defaultBackAttrs(), 0, nil, "uid:0"); err != nil {
+	if _, _, err := sm.CreateSession(exch2.ClientID, exch2.SequenceID, 0, defaultForeAttrs(), defaultBackAttrs(), 0, nil, 1, "uid:0"); err != nil {
 		t.Fatalf("CreateSession(2): %v", err)
 	}
 
@@ -839,7 +839,7 @@ func TestClientRecovery_ReclaimPersistRescheduleAdoptsExistingChain(t *testing.T
 	if err != nil {
 		t.Fatalf("ExchangeID: %v", err)
 	}
-	if _, _, err := sm.CreateSession(exch.ClientID, exch.SequenceID, 0, defaultForeAttrs(), defaultBackAttrs(), 0, nil, "uid:0"); err != nil {
+	if _, _, err := sm.CreateSession(exch.ClientID, exch.SequenceID, 0, defaultForeAttrs(), defaultBackAttrs(), 0, nil, 1, "uid:0"); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
 	if err := sm.ReclaimComplete(exch.ClientID, false); err != nil {

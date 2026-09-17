@@ -452,7 +452,7 @@ func newReclaimClient(t *testing.T, sm *StateManager, ownerID string) uint64 {
 		t.Fatalf("ExchangeID(%q): %v", ownerID, err)
 	}
 	if _, _, err := sm.CreateSession(
-		exch.ClientID, exch.SequenceID, 0, defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+		exch.ClientID, exch.SequenceID, 0, defaultForeAttrs(), defaultBackAttrs(), 0, nil, 1,
 	); err != nil {
 		t.Fatalf("CreateSession(%q): %v", ownerID, err)
 	}

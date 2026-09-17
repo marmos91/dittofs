@@ -54,6 +54,7 @@ func createTestBackchannelSender(t *testing.T) (*BackchannelSender, *StateManage
 		},
 		0x40000000,
 		[]types.CallbackSecParms4{{CbSecFlavor: 0}},
+		1,
 	)
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -76,6 +77,7 @@ func createTestBackchannelSender(t *testing.T) (*BackchannelSender, *StateManage
 		0x40000000,
 		nil,
 		session.BackChannelSlots,
+		1,
 		sm,
 	)
 
@@ -565,7 +567,7 @@ func TestPendingCBReplies_RegisterDeliverCancel(t *testing.T) {
 // TestEncodeCBCompoundV41 verifies the wire format of CB_COMPOUND encoding.
 func TestEncodeCBCompoundV41(t *testing.T) {
 	dummyOp := []byte{0x00, 0x00, 0x00, 0x01}
-	result := encodeCBCompoundV41([][]byte{dummyOp})
+	result := encodeCBCompoundV41(1, [][]byte{dummyOp})
 
 	reader := bytes.NewReader(result)
 
@@ -585,6 +587,21 @@ func TestEncodeCBCompoundV41(t *testing.T) {
 	}
 	if minorVersion != 1 {
 		t.Errorf("minorversion = %d, want 1", minorVersion)
+	}
+
+	// The session's minor version is carried through, not fixed at 1: RFC 8881
+	// Section 19.2.3 requires the callback to match the session, and a v4.2
+	// client rejects a v4.1-tagged CB_COMPOUND with NFS4ERR_BADSESSION.
+	for _, want := range []uint32{1, 2} {
+		v4x := encodeCBCompoundV41(want, [][]byte{dummyOp})
+		if got := binary.BigEndian.Uint32(v4x[4:8]); got != want {
+			t.Errorf("encodeCBCompoundV41(%d) minorversion = %d", want, got)
+		}
+	}
+	// A v4.0 session has no back channel; the encoding still floors at 1
+	// rather than emitting a v4.0-tagged CB_COMPOUND no client expects.
+	if got := binary.BigEndian.Uint32(encodeCBCompoundV41(0, [][]byte{dummyOp})[4:8]); got != 1 {
+		t.Errorf("encodeCBCompoundV41(0) minorversion = %d, want the floor 1", got)
 	}
 
 	// Callback ident: 0
@@ -659,6 +676,7 @@ func TestCallbackRouting_V41VsV40(t *testing.T) {
 		},
 		0x40000000,
 		[]types.CallbackSecParms4{{CbSecFlavor: 0}},
+		1,
 	)
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -820,6 +838,7 @@ func TestGetBackchannelSender_SkipsSessionWithNoLiveBackBinding(t *testing.T) {
 			},
 			0x40000000,
 			[]types.CallbackSecParms4{{CbSecFlavor: 0}},
+			1,
 		)
 		if cerr != nil {
 			t.Fatalf("CreateSession: %v", cerr)
@@ -836,7 +855,7 @@ func TestGetBackchannelSender_SkipsSessionWithNoLiveBackBinding(t *testing.T) {
 		if sess == nil {
 			t.Fatalf("session %x not found", id)
 		}
-		sess.backchannelSender = NewBackchannelSender(id, eid.ClientID, 0x40000000, nil, sess.BackChannelSlots, sm)
+		sess.backchannelSender = NewBackchannelSender(id, eid.ClientID, 0x40000000, nil, sess.BackChannelSlots, 1, sm)
 	}
 
 	// Only the live session keeps a back-bound connection. The dead one is

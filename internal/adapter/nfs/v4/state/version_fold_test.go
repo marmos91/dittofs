@@ -25,7 +25,7 @@ func registerConfirmedV41Client(t *testing.T, sm *StateManager, owner string) ui
 		t.Fatalf("ExchangeID(%s): %v", owner, err)
 	}
 	if _, _, err := sm.CreateSession(res.ClientID, res.SequenceID, 0,
-		defaultForeAttrs(), defaultBackAttrs(), 0, nil); err != nil {
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil, 1); err != nil {
 		t.Fatalf("CreateSession(%s): %v", owner, err)
 	}
 	// A conformant v4.1 client sends RECLAIM_COMPLETE before its first

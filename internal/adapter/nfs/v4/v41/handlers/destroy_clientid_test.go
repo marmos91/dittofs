@@ -26,7 +26,7 @@ func makeV41Client(t *testing.T, sm *state.StateManager, ownerSuffix string) (ui
 		eid.ClientID, eid.SequenceID, 0,
 		types.ChannelAttrs{MaxRequestSize: 1 << 20, MaxResponseSize: 1 << 20, MaxRequests: 16},
 		types.ChannelAttrs{MaxRequestSize: 1 << 16, MaxResponseSize: 1 << 16, MaxRequests: 4},
-		0, nil,
+		0, nil, 1,
 	)
 	if err != nil {
 		t.Fatalf("CreateSession(%s): %v", ownerSuffix, err)

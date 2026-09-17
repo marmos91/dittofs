@@ -23,6 +23,7 @@ func setupClientAndSession(t *testing.T, sm *StateManager) (uint64, types.Sessio
 		defaultBackAttrs(),
 		0x40000000,
 		nil,
+		1,
 	)
 	if err != nil {
 		t.Fatalf("CreateSession error: %v", err)
