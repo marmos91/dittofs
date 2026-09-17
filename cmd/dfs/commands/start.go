@@ -64,6 +64,26 @@ const storeCloseTimeout = 5 * time.Second
 // t.Cleanup-restored override.
 var exitFn = os.Exit
 
+// notifySignals registers the shutdown signals and returns the channel they are
+// delivered on, plus a stop function that unregisters them. Indirected so a test
+// can drive the serving path's shutdown branch without sending a real signal to
+// the test process — the branch is otherwise reachable only by signalling the
+// process that runs the assertions.
+var notifySignals = func() (<-chan os.Signal, func()) {
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	return sigChan, func() { signal.Stop(sigChan) }
+}
+
+// serveRuntime runs the runtime's serving loop. Indirected so a test can reach
+// the serving state and return from it on demand, which is the seam #2675 asks
+// for: rt.Serve only returns once the adapters have drained, so the shutdown
+// defer's ordering could not otherwise be exercised from a test without
+// signalling the process running the assertions.
+var serveRuntime = func(ctx context.Context, rt *runtime.Runtime) error {
+	return rt.Serve(ctx)
+}
+
 var (
 	foreground bool
 	pidFile    string
@@ -500,10 +520,13 @@ func runStartWithExit(cmd *cobra.Command, args []string) error {
 		defer func() { _ = os.Remove(pidFile) }()
 	}
 
-	// Start runtime in background (loads adapters from store automatically)
+	// Start runtime in background (loads adapters from store automatically).
+	// Indirected through serveRuntime so a test can reach the serving state and
+	// return from it on demand; rt.Serve only returns once the adapters have
+	// drained, which a test cannot trigger without a signal or a real failure.
 	serverDone := make(chan error, 1)
 	go func() {
-		serverDone <- rt.Serve(ctx)
+		serverDone <- serveRuntime(ctx, rt)
 	}()
 
 	// Start the metrics listener alongside, cancelled by the same context. A
@@ -517,14 +540,14 @@ func runStartWithExit(cmd *cobra.Command, args []string) error {
 	}
 
 	// Wait for interrupt signal or server error
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	sigChan, stopSignals := notifySignals()
+	defer stopSignals()
 
 	logger.Info("Server is running. Press Ctrl+C to stop.")
 
 	select {
 	case <-sigChan:
-		signal.Stop(sigChan)
+		stopSignals()
 		logger.Info("Shutdown signal received, initiating graceful shutdown")
 		cancel()
 
@@ -561,7 +584,7 @@ func runStartWithExit(cmd *cobra.Command, args []string) error {
 		}
 
 	case err := <-serverDone:
-		signal.Stop(sigChan)
+		stopSignals()
 		if err != nil {
 			logger.Error("Server error", "error", err)
 			return err

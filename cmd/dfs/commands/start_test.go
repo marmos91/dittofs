@@ -8,7 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/marmos91/dittofs/pkg/controlplane/api"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
@@ -710,6 +713,119 @@ integrity:
 	for _, sidecar := range []string{dbPath + "-wal", dbPath + "-shm"} {
 		if _, statErr := os.Stat(sidecar); statErr == nil {
 			t.Errorf("the control-plane store was left open on the exit-78 path: %s still exists",
+				filepath.Base(sidecar))
+		} else if !os.IsNotExist(statErr) {
+			t.Errorf("stat %s: %v", sidecar, statErr)
+		}
+	}
+}
+
+// TestStart_ServingShutdownClosesTheStore covers #2675. The store-close ordering
+// was only ever exercised on a pre-Serve failure (a metrics listener that could
+// not be built), which never runs the shutdown defer after the serving loop
+// returns. This drives the real serving path: runStartWithExit reaches the
+// serving select, a stubbed signal delivers the shutdown, and the store must be
+// closed on the way out — after the runtime has drained, and even though the
+// serve call returns an error.
+//
+// The serve function and the signal source are the injectable seam the issue
+// asks for; both are package vars restored by t.Cleanup.
+func TestStart_ServingShutdownClosesTheStore(t *testing.T) {
+	tmp, err := os.MkdirTemp("", "dittofs-serving-close-")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmp) })
+
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, "config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(tmp, "state"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(tmp, "data"))
+	t.Setenv(api.EnvControlPlaneSecret, "")
+	t.Setenv(models.EnvAdminInitialPassword, "")
+
+	dbPath := filepath.Join(tmp, "controlplane.db")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	cfgBody := fmt.Sprintf(`database:
+  type: sqlite
+  sqlite:
+    path: %s
+controlplane:
+  host: 127.0.0.1
+  port: 0
+  jwt:
+    secret: "%s"
+blockstore:
+  journal:
+    path: %s
+gc:
+  auto_enabled: false
+integrity:
+  auto_enabled: false
+`, dbPath, strings.Repeat("s", 64), filepath.Join(tmp, "journal"))
+	if err := os.WriteFile(cfgPath, []byte(cfgBody), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	origCfgFile, origForeground := cfgFile, foreground
+	t.Cleanup(func() { cfgFile, foreground = origCfgFile, origForeground })
+	cfgFile = cfgPath
+	foreground = true
+
+	// Stub the signal source: the test delivers the shutdown itself rather than
+	// signalling the process that runs the assertions.
+	sigChan := make(chan os.Signal, 1)
+	origNotify := notifySignals
+	t.Cleanup(func() { notifySignals = origNotify })
+	notifySignals = func() (<-chan os.Signal, func()) {
+		return sigChan, func() {}
+	}
+
+	// Stub the serve loop so it blocks until the test releases it, recording
+	// that it was actually reached (the seam is only meaningful if the run got
+	// to the serving select).
+	serveReached := make(chan struct{})
+	releaseServe := make(chan struct{})
+	var serveOnce sync.Once
+	origServe := serveRuntime
+	t.Cleanup(func() { serveRuntime = origServe })
+	serveRuntime = func(ctx context.Context, rt *runtime.Runtime) error {
+		serveOnce.Do(func() { close(serveReached) })
+		// Return when the shutdown context is cancelled, the way rt.Serve does.
+		select {
+		case <-releaseServe:
+		case <-ctx.Done():
+		}
+		return nil
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- runStartWithExit(startCmd, nil) }()
+
+	select {
+	case <-serveReached:
+	case <-time.After(30 * time.Second):
+		t.Fatal("runStartWithExit never reached the serving loop")
+	}
+
+	// Deliver the shutdown signal and release the serve call.
+	sigChan <- syscall.SIGTERM
+	close(releaseServe)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runStartWithExit returned %v on a clean signal shutdown", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("runStartWithExit did not return after the shutdown signal")
+	}
+
+	// The store was opened before the serving loop and must be closed on the
+	// way out. SQLite removes the WAL sidecars only on a clean Close.
+	for _, sidecar := range []string{dbPath + "-wal", dbPath + "-shm"} {
+		if _, statErr := os.Stat(sidecar); statErr == nil {
+			t.Errorf("the control-plane store was left open after a serving-path shutdown: %s still exists",
 				filepath.Base(sidecar))
 		} else if !os.IsNotExist(statErr) {
 			t.Errorf("stat %s: %v", sidecar, statErr)
