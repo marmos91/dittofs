@@ -630,11 +630,15 @@ func conflictFrom(fl *FileLock) *LockConflict {
 // fileLockConflictsWithUnified reports whether an SMB byte-range FileLock and a
 // byte-range UnifiedLock on the same file conflict. Cross-protocol byte-range
 // locks are always different owners, so the test reduces to range overlap plus
-// exclusivity. Whole-file leases and delegations are caching primitives
-// resolved through the break path, not byte-range conflicts, so they never
-// participate; SMB2 zero-byte locks never conflict.
+// exclusivity. A delegation participates as the whole-file claim it stands in
+// for: the delegated client satisfies byte-range locks locally and never sends
+// them (RFC 8881 §10.4.4), so while it holds the delegation the server cannot
+// see whether a conflicting lock exists and must treat the whole-file claim as
+// one. Whole-file leases stay excluded — SMB leases are resolved through the
+// break path and MS-SMB2 grants them only when the opener may cache; SMB2
+// zero-byte locks never conflict.
 func fileLockConflictsWithUnified(fl *FileLock, ul *UnifiedLock) bool {
-	if ul.IsLease() || ul.IsDelegation() {
+	if ul.IsLease() {
 		return false
 	}
 	if fl.IsZeroByte {
@@ -651,8 +655,13 @@ func fileLockConflictsWithUnified(fl *FileLock, ul *UnifiedLock) bool {
 // protocol blocks an SMB I/O at [offset, length). Cross-protocol I/O is always
 // a different owner: a write is blocked by any overlapping lock; a read is
 // blocked only by an overlapping exclusive lock (MS-FSA §2.1.4.10).
+//
+// A delegation participates for the same reason as above: it is the whole-file
+// claim of a client whose byte-range locks are held locally, so a write
+// delegation blocks foreign reads and writes and a read delegation blocks
+// foreign writes.
 func unifiedLockBlocksIO(ul *UnifiedLock, offset, length uint64, isWrite bool) bool {
-	if ul.IsLease() || ul.IsDelegation() {
+	if ul.IsLease() {
 		return false
 	}
 	if !ul.Overlaps(offset, length) {
@@ -1076,10 +1085,43 @@ func (lm *Manager) TestLockByParams(handleKey string, sessionID, offset, length 
 	return true, nil
 }
 
+// delegationIOWaitTimeout bounds how long CheckForIO parks on a recalled
+// delegation before denying the I/O. A client that never answers CB_RECALL must
+// not hold an SMB I/O open indefinitely; past the bound the I/O fails with the
+// lock conflict, which is the safe direction (the SMB client retries, whereas
+// letting it through would let it write under a delegation the server cannot
+// account for).
+const delegationIOWaitTimeout = 10 * time.Second
+
 // CheckForIO checks if an I/O operation would conflict with existing locks.
 //
 // Returns nil if I/O is allowed, or conflict details if blocked.
 func (lm *Manager) CheckForIO(handleKey string, openID string, sessionID uint64, offset, length uint64, isWrite bool) *LockConflict {
+	conflict, delegationBlocked := lm.checkForIOLocked(handleKey, openID, sessionID, offset, length, isWrite)
+	if conflict == nil || !delegationBlocked {
+		return conflict
+	}
+
+	// The only blocker is an NFSv4 delegation. The delegated client satisfies
+	// its byte-range locks locally and claims them to the server only when the
+	// delegation is returned (RFC 8881 §10.4.4), so the server cannot know
+	// whether a conflicting lock exists until the recall completes. Recall it,
+	// wait for the DELEGRETURN, and re-judge: the client replays the locks it
+	// granted locally on return, so the second check sees the real conflict set.
+	// Waiting without lm.mu is what lets ReturnDelegation take it.
+	lm.breakDelegations(handleKey, nil, func(deleg *Delegation) bool {
+		return isWrite || deleg.DelegType == DelegTypeWrite
+	})
+	lm.waitForDelegationRecall(handleKey)
+
+	conflict, _ = lm.checkForIOLocked(handleKey, openID, sessionID, offset, length, isWrite)
+	return conflict
+}
+
+// checkForIOLocked is CheckForIO's conflict test. The bool reports whether the
+// returned conflict comes from a delegation, which the caller must recall and
+// wait out rather than report.
+func (lm *Manager) checkForIOLocked(handleKey string, openID string, sessionID uint64, offset, length uint64, isWrite bool) (*LockConflict, bool) {
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
 
@@ -1087,7 +1129,7 @@ func (lm *Manager) CheckForIO(handleKey string, openID string, sessionID uint64,
 
 	for i := range existing {
 		if CheckIOConflict(&existing[i], openID, sessionID, offset, length, isWrite) {
-			return conflictFrom(&existing[i])
+			return conflictFrom(&existing[i]), false
 		}
 	}
 
@@ -1096,11 +1138,47 @@ func (lm *Manager) CheckForIO(handleKey string, openID string, sessionID uint64,
 	// write to the same range.
 	for _, ul := range lm.unifiedLocks[handleKey] {
 		if unifiedLockBlocksIO(ul, offset, length, isWrite) {
-			return conflictFromUnified(ul)
+			return conflictFromUnified(ul), ul.IsDelegation()
 		}
 	}
 
-	return nil
+	return nil, false
+}
+
+// waitForDelegationRecall blocks until no delegation on handleKey is being
+// recalled, or delegationIOWaitTimeout elapses. Caller must NOT hold lm.mu.
+func (lm *Manager) waitForDelegationRecall(handleKey string) {
+	deadline := time.NewTimer(delegationIOWaitTimeout)
+	defer deadline.Stop()
+
+	for {
+		lm.mu.Lock()
+		breaking := false
+		for _, ul := range lm.unifiedLocks[handleKey] {
+			if ul.IsDelegation() && ul.Delegation.Breaking {
+				breaking = true
+				break
+			}
+		}
+		if !breaking {
+			lm.unlock()
+			return
+		}
+		// Get or create the wait channel while still holding the lock, so a
+		// signal from signalBreakWait cannot be missed.
+		ch, ok := lm.breakWaitChans[handleKey]
+		if !ok {
+			ch = make(chan struct{})
+			lm.breakWaitChans[handleKey] = ch
+		}
+		lm.unlock()
+
+		select {
+		case <-deadline.C:
+			return
+		case <-ch:
+		}
+	}
 }
 
 // ListLocks returns all active locks on a file.

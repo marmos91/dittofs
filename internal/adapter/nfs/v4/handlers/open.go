@@ -276,11 +276,32 @@ func (h *Handler) handleOpen(ctx *types.CompoundContext, reader io.Reader) (resu
 		return h.handleOpenClaimDelegateCur(ctx, reader, seqid, shareAccess, shareDeny,
 			clientID, ownerData)
 
+	case types.CLAIM_DELEG_CUR_FH:
+		// CLAIM_DELEG_CUR_FH (RFC 8881 Section 18.16.3): CLAIM_DELEGATE_CUR by
+		// current filehandle -- the args are just the delegation stateid, and the
+		// file is the current filehandle rather than a looked-up name. This is
+		// how a Linux NFSv4.1 client re-opens a file whose delegation the server
+		// just recalled, which it must do before it can return that delegation.
+		// Answering it NFS4ERR_INVAL (the old default arm) left the client unable
+		// to complete the reclaim, so the DELEGRETURN never came.
+		return h.handleOpenClaimDelegateCurFH(ctx, reader, seqid, shareAccess, shareDeny,
+			clientID, ownerData)
+
 	case types.CLAIM_DELEGATE_PREV:
 		// CLAIM_DELEGATE_PREV: reclaiming delegations after server restart.
 		// Requires persistent delegation state which is currently out of scope.
 		// Must consume the component4 arg to prevent XDR desync.
 		xdr.DecodeString(reader) //nolint:errcheck
+		return openError(types.NFS4ERR_NOTSUPP)
+
+	case types.CLAIM_DELEG_PREV_FH:
+		// CLAIM_DELEG_PREV_FH (RFC 8881 Section 18.16.3): the current-filehandle
+		// form of CLAIM_DELEGATE_PREV, with a stateid4 and no name. Same answer
+		// as its named form -- no persistent delegation state -- but the stateid
+		// must be consumed so the rest of the COMPOUND does not desync.
+		if _, st := types.DecodeStateidArg(ctx, reader); st != types.NFS4_OK {
+			return openError(st)
+		}
 		return openError(types.NFS4ERR_NOTSUPP)
 
 	default:
@@ -1011,6 +1032,70 @@ func (h *Handler) handleOpenClaimDelegateCur(
 	ctx.CurrentFH = make([]byte, len(fileHandle))
 	copy(ctx.CurrentFH, fileHandle)
 
+	return h.finishDelegateCurOpen(ctx, seqid, shareAccess, shareDeny, clientID, ownerData, fileHandle, beforeCtime, beforeCtime)
+}
+
+// handleOpenClaimDelegateCurFH handles CLAIM_DELEG_CUR_FH: CLAIM_DELEGATE_CUR
+// whose file is the current filehandle, so the only argument is the delegation
+// stateid. Shares the whole tail with CLAIM_DELEGATE_CUR.
+func (h *Handler) handleOpenClaimDelegateCurFH(
+	ctx *types.CompoundContext,
+	reader io.Reader,
+	seqid, shareAccess, shareDeny uint32,
+	clientID uint64, ownerData []byte,
+) *types.CompoundResult {
+	delegStateid, argStatus := types.DecodeStateidArg(ctx, reader)
+	if argStatus != types.NFS4_OK {
+		return openError(argStatus)
+	}
+
+	deleg, delegErr := h.StateManager.ValidateDelegationStateid(delegStateid)
+	if delegErr != nil {
+		logger.Debug("NFSv4 OPEN CLAIM_DELEG_CUR_FH: invalid delegation stateid",
+			"error", delegErr, "client", ctx.ClientAddr)
+		return openError(mapStateError(delegErr))
+	}
+	if deleg.ClientID != clientID {
+		logger.Debug("NFSv4 OPEN CLAIM_DELEG_CUR_FH: delegation owned by another client",
+			"deleg_client_id", deleg.ClientID, "open_client_id", clientID, "client", ctx.ClientAddr)
+		return openError(types.NFS4ERR_BAD_STATEID)
+	}
+
+	fileHandle := metadata.FileHandle(ctx.CurrentFH)
+	if !bytes.Equal(deleg.FileHandle, fileHandle) {
+		logger.Debug("NFSv4 OPEN CLAIM_DELEG_CUR_FH: delegation file handle mismatch",
+			"client", ctx.ClientAddr)
+		return openError(types.NFS4ERR_BAD_STATEID)
+	}
+
+	authCtx, _, err := h.buildV4AuthContext(ctx, ctx.CurrentFH)
+	if err != nil {
+		return openError(nfs4StatusForAuthError(err))
+	}
+	metaSvc, err := getMetadataServiceForCtx(h)
+	if err != nil {
+		return openError(types.NFS4ERR_SERVERFAULT)
+	}
+	if status := checkOpenTarget(metaSvc, authCtx, fileHandle, nil, shareAccess); status != types.NFS4_OK {
+		return openError(status)
+	}
+
+	return h.finishDelegateCurOpen(ctx, seqid, shareAccess, shareDeny, clientID, ownerData, fileHandle, 0, 0)
+}
+
+// finishDelegateCurOpen is the tail both CLAIM_DELEGATE_CUR forms share: create
+// the tracked open state, replay or confirm, and answer without a new
+// delegation (the client already holds one).
+func (h *Handler) finishDelegateCurOpen(
+	ctx *types.CompoundContext,
+	seqid, shareAccess, shareDeny uint32,
+	clientID uint64, ownerData []byte,
+	fileHandle metadata.FileHandle,
+	beforeCtime, afterCtime uint64,
+) *types.CompoundResult {
+	ctx.CurrentFH = make([]byte, len(fileHandle))
+	copy(ctx.CurrentFH, fileHandle)
+
 	// Create tracked state via StateManager. CLAIM_DELEGATE_CUR is permitted
 	// during the grace period (RFC 7530 Section 8.4.2): the client already holds a
 	// delegation, so this is not a new open that must wait for grace to end.
@@ -1042,13 +1127,12 @@ func (h *Handler) handleOpenClaimDelegateCur(
 	}
 
 	logger.Debug("NFSv4 OPEN CLAIM_DELEGATE_CUR successful",
-		"file", filename,
 		"stateid_seqid", openResult.Stateid.Seqid,
 		"client", ctx.ClientAddr)
 
 	// No delegation grant (client already has one)
 	return h.encodeOpenResult(clientID, ownerData, &openResult.Stateid, openResult.RFlags,
-		beforeCtime, beforeCtime, nil, nil)
+		beforeCtime, afterCtime, nil, nil)
 }
 
 // decodeVerifier reads an 8-byte createverf4 and returns it as a uint64
