@@ -78,6 +78,14 @@ func BuildAuthContextWithMapping(
 	if nfsCtx.AuthFlavor == rpc.AuthUnix {
 		authMethod = "unix"
 	}
+	// decision: RPCSEC_GSS lands on "anonymous" here, unlike the v4 builder
+	// (v4/handlers/helpers.go) which names it "kerberos". The label is audit
+	// information only — Credentials.AuthMethod is documented as not an input to
+	// the permission decision (auth/auth_context.go) and its sole production read
+	// is AuthMethodFor, which returns it verbatim — so this is a cosmetic
+	// inconsistency rather than a misclassification. Left as-is to keep the v3
+	// method label stable for logs and dashboards; change it only together with
+	// the v4 builder so the two protocols stay comparable.
 
 	effectiveAuthCtx, err := auth.BuildAuthContext(nfsCtx.Context, reg, shareName, auth.Credentials{
 		UID:        nfsCtx.UID,
