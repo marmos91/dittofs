@@ -24,10 +24,9 @@ import (
 type Cache = gencache.Cache[*metadata.ShareOptions]
 
 // Clone returns a caller-owned deep copy of opts: the struct is copied and
-// every reference-bearing field (three string slices and the IdentityMapping
-// pointee, itself holding *uint32/*uint32/*string) is cloned so neither the
-// caller nor a concurrent reader can mutate the shared cache entry. A shallow
-// *opts would alias those slices/pointers into the cache.
+// every reference-bearing field (the three string slices) is cloned so neither
+// the caller nor a concurrent reader can mutate the shared cache entry. A
+// shallow *opts would alias those slices into the cache.
 func Clone(opts *metadata.ShareOptions) *metadata.ShareOptions {
 	if opts == nil {
 		return nil

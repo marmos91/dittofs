@@ -151,10 +151,9 @@ mount.nfs: mounting localhost:/export failed, reason given by server: No such fi
 
 **Solutions:**
 
-1. **Verify the export path exists in configuration:**
-   ```yaml
-   shares:
-     - name: /export  # This is the export path
+1. **Verify the share exists:**
+   ```bash
+   dfsctl share list
    ```
 
 2. **Check share names are correct:**
@@ -214,24 +213,20 @@ touch: cannot touch 'file.txt': Permission denied
 
 **Solutions:**
 
-1. **Check identity mapping configuration:**
-   ```yaml
-   shares:
-     - name: /export
-       identity_mapping:
-         map_all_to_anonymous: true  # Try this for development
-         anonymous_uid: 65534
-         anonymous_gid: 65534
+1. **Check the share's squash mode.** If clients are being squashed to guest,
+   every operation runs as the anonymous identity:
+   ```bash
+   dfsctl share nfs-config show /export
+   ```
+   For development, stop squashing root (or all clients):
+   ```bash
+   dfsctl share nfs-config set /export --squash none
    ```
 
-2. **Verify root directory permissions:**
-   ```yaml
-   shares:
-     - name: /export
-       root_attr:
-         mode: 0777  # Wide open for debugging
-         uid: 0
-         gid: 0
+2. **Verify the root directory's permissions on the backing store.** The export
+   root is a real directory; check it directly:
+   ```bash
+   ls -ld /path/to/backing/store/export
    ```
 
 3. **Check your client UID/GID:**
@@ -254,11 +249,13 @@ touch: cannot touch 'file.txt': Read-only file system
 
 **Solutions:**
 
-1. **Check share configuration:**
-   ```yaml
-   shares:
-     - name: /export
-       read_only: false  # Must be false for writes
+1. **Check whether the share is read-only:**
+   ```bash
+   dfsctl share show /export
+   ```
+   Clear it to allow writes:
+   ```bash
+   dfsctl share edit /export --read-only false
    ```
 
 2. **Verify mount options:**
