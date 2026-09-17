@@ -958,13 +958,23 @@ const durableCleanupTimeout = 30 * time.Second
 //
 // Returns the parsed AppInstanceId (zero value if not present or zero).
 //
-// shareName and filePath identify the file the incoming CREATE claims. The
-// force-close filter matches on share + path in addition to the AppInstanceId
-// (MS-SMB2 §3.3.5.9.13 match conditions), so an AppInstanceId reused for a
-// different file — on the same or another share — never displaces an unrelated
-// open. Opens with an empty recorded path are never displaced at all: the
-// filter requires a recorded path match, so for those opens the AppInstanceId
-// match alone is never sufficient and the failover does not touch them.
+// The live-open half runs in two steps over the open-file table. The first
+// collects every open carrying the AppInstanceId whose recorded ClientGuid is
+// another client's, and authorizes each one against its own file; the second
+// closes exactly the authorized set, matching on FileID membership. Membership
+// alone is not the close condition, because a FileID outlives the open that
+// held it: a durable reconnect restores an open under its original FileID, so
+// a table entry can name an open that left and came back, and a
+// SET_REPARSE_POINT can repoint a live handle at a different file. The close
+// therefore re-tests the AppInstanceId and client-identity conditions and
+// confirms the open still holds the metadata handle the authorization was
+// made against, and declines any open that fails either.
+//
+// The share and path the claiming CREATE names do not narrow the match set:
+// every open carrying the AppInstanceId that the requester can read is
+// displaced, not only the open of the file this CREATE names. Read access
+// bounds the damage rather than confining it to the claimed file, and on a
+// world-readable share it refuses almost nobody.
 func ProcessAppInstanceId(
 	ctx context.Context,
 	durableStore lock.DurableHandleStore,
