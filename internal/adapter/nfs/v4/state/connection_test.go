@@ -553,3 +553,200 @@ func TestUnbindConnection_ReleasesBackchannelStateAfterLastBinding(t *testing.T)
 		t.Error("cbRepliesByConn still holds the closed connection's pending replies")
 	}
 }
+
+// TestDropConnBinding_ReleasesStateWithForeOnlyBindingLeft covers callback state that outlives its channel. A
+// connection can carry several sessions, so tearing down the back channel of
+// one while another session keeps the connection bound left the writer and the
+// pending-reply table installed for the life of the socket. Nothing could carry
+// a callback on it, late replies were consumed into a table nothing waited on,
+// and the connection still ranked as a candidate for selection.
+//
+// The condition is direction, not presence: state is released when no binding
+// left on the connection can carry the back channel.
+//
+// A session may not be left with zero fore-channel connections, so the session
+// that loses its back binding keeps a fore one — which is exactly the shape
+// that stranded the state.
+func TestDropConnBinding_ReleasesStateWithForeOnlyBindingLeft(t *testing.T) {
+	sm := NewStateManager(90 * time.Second)
+	sm.SetMaxConnectionsPerSession(0)
+
+	// Session A holds the connection's back channel; session B is fore-only on
+	// the same connection.
+	_, sessionA := setupClientAndSession(t, sm)
+	_, sessionB := setupClientAndSession(t, sm)
+
+	const connA, connB, connShared = uint64(9101), uint64(9102), uint64(9103)
+	sm.RegisterConnWriter(connShared, func([]byte) error { return nil })
+
+	// Each session gets its own fore connection so neither is left without one.
+	if _, err := sm.BindConnToSession(connA, sessionA, types.CDFC4_FORE); err != nil {
+		t.Fatalf("bind fore conn for session A: %v", err)
+	}
+	if _, err := sm.BindConnToSession(connB, sessionB, types.CDFC4_FORE); err != nil {
+		t.Fatalf("bind fore conn for session B: %v", err)
+	}
+	// The shared connection carries session A's back channel AND session B's
+	// fore channel. Dropping session A's back binding leaves the fore-only one
+	// in place, which is the case a presence check cannot see past.
+	if _, err := sm.BindConnToSession(connShared, sessionA, types.CDFC4_BACK); err != nil {
+		t.Fatalf("bind back conn for session A: %v", err)
+	}
+	if _, err := sm.BindConnToSession(connShared, sessionB, types.CDFC4_FORE); err != nil {
+		t.Fatalf("bind fore-only conn for session B: %v", err)
+	}
+
+	sm.connMu.RLock()
+	_, hasWriter := sm.connWriters[connShared]
+	sm.connMu.RUnlock()
+	if !hasWriter {
+		t.Fatal("precondition: writer should be installed while a back-capable binding exists")
+	}
+
+	// Drop the shared connection's only binding — the back one — while session A
+	// stays bound on its own fore connection.
+	sm.connMu.Lock()
+	sm.dropConnBindingLocked(connShared, sessionA)
+	sm.connMu.Unlock()
+
+	sm.connMu.RLock()
+	_, hasWriter = sm.connWriters[connShared]
+	_, hasReplies := sm.cbRepliesByConn[connShared]
+	sm.connMu.RUnlock()
+
+	if hasWriter {
+		t.Error("connWriters still holds the writer though no binding left can carry the back channel")
+	}
+	if hasReplies {
+		t.Error("cbRepliesByConn still holds pending replies though no binding left can carry the back channel")
+	}
+
+	// Session B's fore-only binding on the shared connection must survive: only
+	// the callback state was in question.
+	if got := len(sm.GetConnectionBindings(sessionB)); got != 2 {
+		t.Errorf("session B binding count = %d, want 2 (its own fore + the shared fore)", got)
+	}
+}
+
+// TestDropConnBinding_KeepsStateWhileAnotherBackBindingRemains is the other half
+// of the same rule: a connection that still has a back-capable binding keeps its state,
+// so the direction check cannot become a blanket release.
+func TestDropConnBinding_KeepsStateWhileAnotherBackBindingRemains(t *testing.T) {
+	sm := NewStateManager(90 * time.Second)
+	sm.SetMaxConnectionsPerSession(0)
+
+	_, sessionA := setupClientAndSession(t, sm)
+	_, sessionB := setupClientAndSession(t, sm)
+
+	const connShared = uint64(9201)
+	sm.RegisterConnWriter(connShared, func([]byte) error { return nil })
+
+	// The shared connection carries a back channel for both sessions.
+	if _, err := sm.BindConnToSession(connShared, sessionA, types.CDFC4_FORE_OR_BOTH); err != nil {
+		t.Fatalf("bind session A: %v", err)
+	}
+	if _, err := sm.BindConnToSession(connShared, sessionB, types.CDFC4_FORE_OR_BOTH); err != nil {
+		t.Fatalf("bind session B: %v", err)
+	}
+
+	sm.connMu.Lock()
+	sm.dropConnBindingLocked(connShared, sessionA)
+	sm.connMu.Unlock()
+
+	sm.connMu.RLock()
+	_, hasWriter := sm.connWriters[connShared]
+	_, hasReplies := sm.cbRepliesByConn[connShared]
+	sm.connMu.RUnlock()
+
+	if !hasWriter {
+		t.Error("connWriters dropped while session B still holds a back-capable binding")
+	}
+	if !hasReplies {
+		t.Error("cbRepliesByConn dropped while session B still holds a back-capable binding")
+	}
+}
+
+// TestEnsureBackchannelWriterForConn_DoesNotResurrectReleasedState covers the
+// race a registration taken outside the binding lock leaves open. A caller that
+// collects a connection's back-capable bindings, then registers, can land its
+// registration after a concurrent rebind dropped the last back-capable binding
+// — re-installing a writer on a connection whose callback state the rebind just
+// released. The check and the registration are one decision under connMu, so a
+// connection is either back-capable and registered, or neither.
+func TestEnsureBackchannelWriterForConn_DoesNotResurrectReleasedState(t *testing.T) {
+	sm := NewStateManager(90 * time.Second)
+	sm.SetMaxConnectionsPerSession(0)
+
+	_, sessionA := setupClientAndSession(t, sm)
+	const connShared = uint64(9301)
+	const connFore = uint64(9303)
+
+	// The session keeps a fore connection of its own, so dropping the shared
+	// connection's back binding does not leave it without a fore channel.
+	if _, err := sm.BindConnToSession(connFore, sessionA, types.CDFC4_FORE); err != nil {
+		t.Fatalf("bind fore: %v", err)
+	}
+	// The shared connection is back-capable to start.
+	if _, err := sm.BindConnToSession(connShared, sessionA, types.CDFC4_BACK); err != nil {
+		t.Fatalf("bind back: %v", err)
+	}
+
+	// The rebind wins: the connection's last back-capable binding is gone.
+	sm.connMu.Lock()
+	sm.dropConnBindingLocked(connShared, sessionA)
+	sm.connMu.Unlock()
+
+	// A registration arriving now must not re-install a writer.
+	backBound := sm.EnsureBackchannelWriterForConn(connShared, func() ConnWriter {
+		return func([]byte) error { return nil }
+	})
+	if len(backBound) != 0 {
+		t.Errorf("reported %d back-capable bindings for a connection that has none", len(backBound))
+	}
+
+	sm.connMu.RLock()
+	_, hasWriter := sm.connWriters[connShared]
+	_, hasReplies := sm.cbRepliesByConn[connShared]
+	sm.connMu.RUnlock()
+
+	if hasWriter {
+		t.Error("a registration after the rebind resurrected the connection's writer")
+	}
+	if hasReplies {
+		t.Error("a registration after the rebind resurrected the connection's pending-reply table")
+	}
+}
+
+// TestEnsureBackchannelWriterForConn_RegistersWhileBackCapable is the other
+// half: a connection that is still back-capable gets its writer, so the
+// direction check cannot become a blanket refusal to register.
+func TestEnsureBackchannelWriterForConn_RegistersWhileBackCapable(t *testing.T) {
+	sm := NewStateManager(90 * time.Second)
+	sm.SetMaxConnectionsPerSession(0)
+
+	_, sessionA := setupClientAndSession(t, sm)
+	const connShared = uint64(9302)
+
+	if _, err := sm.BindConnToSession(connShared, sessionA, types.CDFC4_FORE_OR_BOTH); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+
+	backBound := sm.EnsureBackchannelWriterForConn(connShared, func() ConnWriter {
+		return func([]byte) error { return nil }
+	})
+	if len(backBound) != 1 {
+		t.Fatalf("reported %d back-capable bindings, want 1", len(backBound))
+	}
+
+	sm.connMu.RLock()
+	_, hasWriter := sm.connWriters[connShared]
+	_, hasReplies := sm.cbRepliesByConn[connShared]
+	sm.connMu.RUnlock()
+
+	if !hasWriter {
+		t.Error("no writer registered for a back-capable connection")
+	}
+	if !hasReplies {
+		t.Error("no pending-reply table created for a back-capable connection")
+	}
+}

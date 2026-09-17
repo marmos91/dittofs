@@ -11,6 +11,13 @@ import (
 // Connection Direction and Type
 // ============================================================================
 
+// carriesBackChannel reports whether a binding with this direction can carry
+// the back channel (RFC 8881 Section 2.10.3): CDFC4_BACK and CDFC4_FORE_OR_BOTH
+// negotiate to ConnDirBack and ConnDirBoth respectively.
+func carriesBackChannel(d ConnectionDirection) bool {
+	return d == ConnDirBack || d == ConnDirBoth
+}
+
 // ConnectionDirection represents the channel direction of a bound connection.
 type ConnectionDirection uint8
 
@@ -235,6 +242,14 @@ func (sm *StateManager) BindConnToSession(connectionID uint64, sessionID types.S
 	sm.connByID[connectionID] = append(sm.connByID[connectionID], binding)
 	sm.connBySession[sessionID] = append(sm.connBySession[sessionID], binding)
 
+	// A rebind that leaves no back-capable binding strands the callback state
+	// the same way dropping the last one does, and the connection's other
+	// sessions are part of the question: one of them may still carry the back
+	// channel even though this rebind does not.
+	if !sm.connHasBackChannelBindingLocked(connectionID) {
+		sm.releaseBackchannelStateLocked(connectionID)
+	}
+
 	return &BindConnResult{ServerDir: serverDir}, nil
 }
 
@@ -291,7 +306,8 @@ func (sm *StateManager) releaseBackchannelStateLocked(connectionID uint64) {
 }
 
 // dropConnBindingLocked removes one (connection, session) binding and releases
-// the connection's callback state when that was its last binding.
+// the connection's callback state when no binding that can carry the back
+// channel is left on it.
 //
 // Every path that tears a binding down goes through here — socket close,
 // DESTROY_SESSION, and the reaper's orphan sweep — because the connection is
@@ -300,13 +316,31 @@ func (sm *StateManager) releaseBackchannelStateLocked(connectionID uint64) {
 // a binding directly: its rebind re-adds one in the same breath, and releasing
 // the writer it just registered would leave the rebound connection mute.
 //
+// The condition is direction, not presence. A connection may carry several
+// sessions, so destroying the last back-bound one while a fore-only session
+// stays would otherwise leave the writer and the pending-reply table installed
+// for the life of the socket: nothing can carry a callback on it, late replies
+// are consumed into a table nothing waits on, and it still ranks as a candidate
+// for selection.
+//
 // Caller must hold sm.connMu.
 func (sm *StateManager) dropConnBindingLocked(connectionID uint64, sessionID types.SessionId4) {
 	sm.removeConnBindingLocked(connectionID, sessionID)
 	sm.removeConnFromSessionLocked(connectionID, sessionID)
-	if _, stillBound := sm.connByID[connectionID]; !stillBound {
+	if !sm.connHasBackChannelBindingLocked(connectionID) {
 		sm.releaseBackchannelStateLocked(connectionID)
 	}
+}
+
+// connHasBackChannelBindingLocked reports whether any binding the connection
+// holds can carry the back channel. Caller must hold sm.connMu.
+func (sm *StateManager) connHasBackChannelBindingLocked(connectionID uint64) bool {
+	for _, b := range sm.connByID[connectionID] {
+		if carriesBackChannel(b.Direction) {
+			return true
+		}
+	}
+	return false
 }
 
 // removeConnBindingLocked drops one (connection, session) binding from the

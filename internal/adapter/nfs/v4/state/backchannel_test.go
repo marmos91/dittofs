@@ -1914,3 +1914,102 @@ func TestBindConnToSession_RebindAwayFromBackReleasesItsWaiters(t *testing.T) {
 		t.Fatal("a session rebound away from the back channel kept a waiter with no callback route to answer it")
 	}
 }
+
+// TestSendCallback_WalksPastTwoRetiredCandidates covers the walk past retired candidates. Selection and
+// registration do not share a hold on connMu, so a connection can be retired in
+// the window between them. The walk used to stop after two candidates, which a
+// session can exceed: it may hold up to maxConnsPerSession bindings, and the
+// freshest ones are exactly the ones most likely to be unusable, because a
+// binding exists before its writer is registered and outlives it once the
+// connection is retired. With the two freshest both retired, the send was
+// reported as never attempted while a usable connection sat there — for a
+// recall that revokes a delegation over a reachable path, and for a probe that
+// withholds delegations until the next parameter update, since nothing retries
+// a probe.
+func TestSendCallback_WalksPastTwoRetiredCandidates(t *testing.T) {
+	sender, sm, sessionID := createTestBackchannelSender(t)
+	defer sm.Shutdown()
+	sender.callbackTimeout = 200 * time.Millisecond
+
+	// Two freshest candidates, both retired before their reply table can be
+	// registered on. Ranked ahead of the live one by activity below.
+	for i, connID := range []uint64{7401, 7402} {
+		pending := sm.RegisterConnWriter(connID, func([]byte) error { return nil })
+		if _, err := sm.BindConnToSession(connID, sessionID, types.CDFC4_FORE_OR_BOTH); err != nil {
+			t.Fatalf("BindConnToSession (retired %d): %v", i, err)
+		}
+		pending.FailAll()
+	}
+
+	// The third candidate, still usable. Its write is recorded rather than
+	// answered, so the send ends at its reply timeout; what matters is that it
+	// was reached at all.
+	var wroteOnLive atomic.Bool
+	const liveConnID = uint64(7403)
+	sm.RegisterConnWriter(liveConnID, func([]byte) error {
+		wroteOnLive.Store(true)
+		return nil
+	})
+	if _, err := sm.BindConnToSession(liveConnID, sessionID, types.CDFC4_FORE_OR_BOTH); err != nil {
+		t.Fatalf("BindConnToSession (live): %v", err)
+	}
+
+	// The two retired candidates rank first; the live one ranks last. Stamped
+	// rather than left to the clock so the order is the one this test means.
+	setBindingActivity(t, sm, sessionID, 7401, time.Now())
+	setBindingActivity(t, sm, sessionID, 7402, time.Now().Add(-time.Second))
+	setBindingActivity(t, sm, sessionID, liveConnID, time.Now().Add(-time.Minute))
+
+	err := sender.sendCallback(context.Background(), CallbackRequest{
+		OpCode:  types.OP_CB_RECALL,
+		Payload: EncodeCBRecallOp(&types.Stateid4{Seqid: 1}, false, []byte{0x01}),
+	})
+	if err == nil {
+		t.Fatal("sendCallback succeeded although no reply was ever delivered")
+	}
+	if errors.Is(err, errCallbackNotAttempted) {
+		t.Errorf("a session with a usable back-bound connection beyond the two freshest was "+
+			"reported as never attempted: %v", err)
+	}
+	if !wroteOnLive.Load() {
+		t.Error("the third connection was never written to: the walk stopped before exhausting " +
+			"the session's back-capable bindings")
+	}
+}
+
+// TestSelectBackBoundWaiter_WalksPastTwoRetiredCandidates is the unit-level
+// half of the same rule: with the two freshest candidates retired, the selector must
+// still reach a usable third rather than giving up. The walk is bounded by the
+// session's back-capable bindings, not by a literal attempt count.
+func TestSelectBackBoundWaiter_WalksPastTwoRetiredCandidates(t *testing.T) {
+	sender, sm, sessionID := createTestBackchannelSender(t)
+	defer sm.Shutdown()
+
+	// Two freshest candidates, both retired: registering on either fails.
+	for i, connID := range []uint64{7501, 7502} {
+		pending := sm.RegisterConnWriter(connID, func([]byte) error { return nil })
+		if _, err := sm.BindConnToSession(connID, sessionID, types.CDFC4_FORE_OR_BOTH); err != nil {
+			t.Fatalf("BindConnToSession (retired %d): %v", i, err)
+		}
+		pending.FailAll()
+	}
+
+	// The usable third, ranked last.
+	const liveConnID = uint64(7503)
+	sm.RegisterConnWriter(liveConnID, func([]byte) error { return nil })
+	if _, err := sm.BindConnToSession(liveConnID, sessionID, types.CDFC4_FORE_OR_BOTH); err != nil {
+		t.Fatalf("BindConnToSession (live): %v", err)
+	}
+
+	setBindingActivity(t, sm, sessionID, 7501, time.Now())
+	setBindingActivity(t, sm, sessionID, 7502, time.Now().Add(-time.Second))
+	setBindingActivity(t, sm, sessionID, liveConnID, time.Now().Add(-time.Minute))
+
+	connID, _, _, _, ok := sender.selectBackBoundWaiter(1, map[uint64]bool{})
+	if !ok {
+		t.Fatal("selector gave up although a usable back-capable connection was bound")
+	}
+	if connID != liveConnID {
+		t.Errorf("selector chose connection %d, want the usable %d", connID, liveConnID)
+	}
+}

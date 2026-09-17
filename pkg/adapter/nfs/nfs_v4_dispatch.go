@@ -135,28 +135,25 @@ func (c *NFSConnection) maybeRegisterBackchannel(ctx context.Context) {
 
 	sm := c.server.v4Handler.StateManager
 
-	// Collect the sessions this connection carries a back channel for.
-	var backBound []*v4state.BoundConnection
-	for _, b := range sm.GetConnectionBindingsForConn(c.connectionID) {
-		if b.Direction == v4state.ConnDirBack || b.Direction == v4state.ConnDirBoth {
-			backBound = append(backBound, b)
-		}
-	}
-	if len(backBound) == 0 {
-		return
-	}
-
-	// Register the ConnWriter once per connection. When StateManager no longer
-	// tracks the connection (unbind/rebind cleared it), re-register rather than
-	// leaving the sender writerless.
-	if sm.GetPendingCBReplies(c.connectionID) == nil {
+	// Register the ConnWriter once per connection, and do it under the same
+	// lock that decides whether the connection still has a back-capable binding.
+	// Collecting the bindings and registering are one decision: between them a
+	// concurrent COMPOUND can rebind this connection's last back-capable binding
+	// to fore-only, and a registration that lands after that point re-installs a
+	// writer on a connection that can no longer carry a callback — exactly the
+	// state the rebind just released. Doing both under sm.connMu makes the
+	// decision atomic, so a connection is either back-capable and registered or
+	// neither.
+	backBound := sm.EnsureBackchannelWriterForConn(c.connectionID, func() v4state.ConnWriter {
 		// Serialized against fore-channel replies on the same writeMu, and
 		// bounded, because a callback that never returns from the socket holds
 		// that lock against every reply behind it.
-		writer := v4state.ConnWriter(func(data []byte) error {
+		return func(data []byte) error {
 			return c.write(data, c.callbackWriteTimeout())
-		})
-		sm.RegisterConnWriter(c.connectionID, writer)
+		}
+	})
+	if len(backBound) == 0 {
+		return
 	}
 
 	for _, b := range backBound {

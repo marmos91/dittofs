@@ -582,7 +582,7 @@ func (bs *BackchannelSender) sendCallback(ctx context.Context, req CallbackReque
 	framedMsg := AddCBRecordMark(callMsg, true)
 
 	// 6/7. Find a back-bound connection and register the XID on its reply table.
-	connID, writer, pending, replyCh, ok := bs.selectBackBoundWaiter(xid, 0)
+	connID, writer, pending, replyCh, ok := bs.selectBackBoundWaiter(xid, map[uint64]bool{})
 	if !ok {
 		return fmt.Errorf("%w: no back-bound connection for session %s",
 			errCallbackNotAttempted, bs.sessionID.String())
@@ -596,25 +596,24 @@ func (bs *BackchannelSender) sendCallback(ctx context.Context, req CallbackReque
 			"conn_id", connID,
 			"error", err)
 
-		// Retry on another back-bound connection
-		connID2, writer2, pending2, ok2 := bs.sm.getBackBoundConnWriter(bs.sessionID, connID)
+		// Retry on another back-bound connection. The selector walks past any
+		// further candidates that cannot be registered, so a write failure on
+		// the freshest connection does not end the attempt while a usable one
+		// remains. The write above did reach a transport and fail there, so the
+		// original failure is what propagates if no alternate is left: reporting
+		// the retired-alternate case as "never attempted" would have the recall
+		// classify the whole send as local and leave CBPathUp standing.
+		connID2, writer2, pending2, replyCh2, ok2 := bs.selectBackBoundWaiter(xid, map[uint64]bool{connID: true})
 		if !ok2 {
 			return fmt.Errorf("write to back-bound connection %d failed and no alternate: %w", connID, err)
 		}
 		// Update pending to the new connection's PendingCBReplies so the
 		// timeout path below cancels the correct waiter.
 		pending = pending2
-		var registered2 bool
-		replyCh, registered2 = pending.Register(xid, bs.sessionID)
-		if !registered2 {
-			// Not "never attempted": the write above did reach a transport and
-			// failed there, which is evidence about this client's callback
-			// path. Reporting the retired alternate alone would have the recall
-			// classify the whole send as local and leave CBPathUp standing, so
-			// the original failure is what propagates.
-			return fmt.Errorf("write to back-bound connection %d failed and alternate %d was retired before the callback was registered: %w",
-				connID, connID2, err)
-		}
+		// Already registered: selectBackBoundWaiter registers the XID on the
+		// table it hands back, session-tagged, so the alternate's waiter is
+		// routable and addressable by session the moment it is chosen.
+		replyCh = replyCh2
 		if err2 := writer2(framedMsg); err2 != nil {
 			pending.Cancel(xid)
 			return fmt.Errorf("write to alternate connection %d also failed: %w", connID2, err2)
@@ -804,17 +803,27 @@ var errCallbackRejected = errors.New("callback rejected by the client")
 // A connection can be retired between the lookup and the register — the two do
 // not share a hold on connMu — and that says nothing about the client's callback
 // path, only that this particular socket went away. Treating it as the answer
-// would report a send as never attempted, or a probe as a path failure, while a
-// second back-bound connection for the same session sat there usable: for a
+// would report a send as never attempted, or a probe as a path failure, while
+// another back-bound connection for the same session sat there usable: for a
 // recall that means revoking a delegation over a path that was still reachable,
 // and for a probe it means withholding delegations until the next parameter
-// update, because nothing retries a probe. So a retired table costs a candidate
-// rather than the attempt. Two candidates, because a session with more than two
-// back-bound connections retiring in sequence is a connection table churning
-// faster than a callback can be issued, and looping on it would spin.
-func (bs *BackchannelSender) selectBackBoundWaiter(xid uint32, exclude uint64) (uint64, ConnWriter, *PendingCBReplies, chan []byte, bool) {
-	for attempt := 0; attempt < 2; attempt++ {
-		id, writer, pending, ok := bs.sm.getBackBoundConnWriter(bs.sessionID, exclude)
+// update, because nothing retries a probe.
+//
+// So a retired table costs a candidate, and the walk continues until the
+// session's back-bound bindings are exhausted. Stopping after two is not safe:
+// a session may hold up to maxConnsPerSession bindings, and the freshest ones
+// are exactly the ones most likely to be unusable — a binding exists before its
+// writer is registered and outlives it once the connection is retired, so both
+// ends of that window land on the most recently active candidates. The walk is
+// bounded by the binding count: every iteration excludes the connection it was
+// handed, so it terminates when the candidates run out.
+//
+// tried holds the connections already handed out, so a caller that walks more
+// than once (a probe retrying after a failed write) does not revisit them. The
+// caller owns the map.
+func (bs *BackchannelSender) selectBackBoundWaiter(xid uint32, tried map[uint64]bool) (uint64, ConnWriter, *PendingCBReplies, chan []byte, bool) {
+	for {
+		id, writer, pending, ok := bs.sm.getBackBoundConnWriterExcluding(bs.sessionID, tried)
 		if !ok {
 			return 0, nil, nil, nil, false
 		}
@@ -823,9 +832,8 @@ func (bs *BackchannelSender) selectBackBoundWaiter(xid uint32, exclude uint64) (
 		}
 		logger.Debug("BackchannelSender: back-bound connection retired before registration, trying another",
 			"session_id", bs.sessionID.String(), "conn_id", id)
-		exclude = id
+		tried[id] = true
 	}
-	return 0, nil, nil, nil, false
 }
 
 func (bs *BackchannelSender) probeCallbackPath(ctx context.Context) error {
@@ -843,16 +851,16 @@ func (bs *BackchannelSender) probeCallbackPath(ctx context.Context) error {
 	// a timeout does not, because a client that took the bytes and said nothing
 	// is exactly what this is asking about.
 	var lastErr error
-	var exclude uint64
-	for attempt := 0; attempt < 2; attempt++ {
-		connID, writer, pending, replyCh, ok := bs.selectBackBoundWaiter(xid, exclude)
+	tried := make(map[uint64]bool)
+	for {
+		connID, writer, pending, replyCh, ok := bs.selectBackBoundWaiter(xid, tried)
 		if !ok {
 			break
 		}
 		if err := writer(framedMsg); err != nil {
 			pending.Cancel(xid)
 			lastErr = fmt.Errorf("write CB_NULL to back-bound connection %d: %w", connID, err)
-			exclude = connID
+			tried[connID] = true
 			continue
 		}
 
@@ -872,7 +880,7 @@ func (bs *BackchannelSender) probeCallbackPath(ctx context.Context) error {
 				if !open {
 					pending.Cancel(xid)
 					lastErr = fmt.Errorf("back-bound connection %d was retired while CB_NULL was in flight", connID)
-					exclude = connID
+					tried[connID] = true
 					continue
 				}
 				if err := ValidateCBReply(replyBytes); err != nil {
@@ -893,7 +901,7 @@ func (bs *BackchannelSender) probeCallbackPath(ctx context.Context) error {
 				// FailAll closed the waiter: the connection was retired while
 				// this was waiting on it, which says nothing about the client.
 				lastErr = fmt.Errorf("back-bound connection %d was retired while CB_NULL was in flight", connID)
-				exclude = connID
+				tried[connID] = true
 				continue
 			}
 			if err := ValidateCBReply(replyBytes); err != nil {
@@ -1075,6 +1083,57 @@ func (sm *StateManager) SetMaxSessionsPerClient(n int) {
 // Backchannel Operations
 // ============================================================================
 
+// EnsureBackchannelWriterForConn registers a back-channel writer for a
+// connection only while that connection still has a binding that can carry the
+// back channel, and returns the back-capable bindings it found.
+//
+// The binding check and the registration are one decision, taken under
+// sm.connMu. Done separately they race a rebind: a caller that collects the
+// bindings, then registers, can land its registration after a concurrent rebind
+// dropped the last back-capable binding — re-installing a writer on a
+// connection whose callback state was just released, which is the state the
+// release exists to prevent. A connection is therefore either back-capable and
+// registered, or neither.
+//
+// writerFn is called only when a registration is needed, so a caller can avoid
+// building the writer closure on the common already-registered path.
+// Thread-safe: acquires sm.connMu.Lock.
+func (sm *StateManager) EnsureBackchannelWriterForConn(connectionID uint64, writerFn func() ConnWriter) []*BoundConnection {
+	sm.connMu.Lock()
+	defer sm.connMu.Unlock()
+
+	var backBound []*BoundConnection
+	for _, b := range sm.connByID[connectionID] {
+		if carriesBackChannel(b.Direction) {
+			backBound = append(backBound, b)
+		}
+	}
+	if len(backBound) == 0 {
+		return nil
+	}
+
+	// Re-register when the state no longer tracks a writer: an unbind or rebind
+	// clears it, and the sender must not be left writerless. An existing
+	// demultiplexer is reused by RegisterConnWriter, so a concurrent first-time
+	// registration cannot strand replies already being waited on.
+	if sm.connWriters[connectionID] == nil {
+		sm.RegisterConnWriterLocked(connectionID, writerFn())
+	}
+	return backBound
+}
+
+// RegisterConnWriterLocked is RegisterConnWriter for a caller already holding
+// sm.connMu. Caller must hold sm.connMu.
+func (sm *StateManager) RegisterConnWriterLocked(connectionID uint64, writer ConnWriter) *PendingCBReplies {
+	sm.connWriters[connectionID] = writer
+	if pending := sm.cbRepliesByConn[connectionID]; pending != nil {
+		return pending
+	}
+	pending := NewPendingCBReplies()
+	sm.cbRepliesByConn[connectionID] = pending
+	return pending
+}
+
 // RegisterConnWriter registers a ConnWriter callback for a back-bound connection.
 // Called by the NFS adapter when a connection is bound for back-channel.
 // Also creates a PendingCBReplies instance for the connection.
@@ -1085,18 +1144,11 @@ func (sm *StateManager) RegisterConnWriter(connectionID uint64, writer ConnWrite
 	sm.connMu.Lock()
 	defer sm.connMu.Unlock()
 
-	sm.connWriters[connectionID] = writer
-
 	// COMPOUNDs on one connection are dispatched concurrently, so two of them
 	// can reach first-time registration together. Handing the second one a
 	// fresh demultiplexer would strand every reply the first is already
-	// waiting on, so an existing one is reused.
-	if pending := sm.cbRepliesByConn[connectionID]; pending != nil {
-		return pending
-	}
-	pending := NewPendingCBReplies()
-	sm.cbRepliesByConn[connectionID] = pending
-	return pending
+	// waiting on, so an existing one is reused (see RegisterConnWriterLocked).
+	return sm.RegisterConnWriterLocked(connectionID, writer)
 }
 
 // UnregisterConnWriter removes the ConnWriter and PendingCBReplies for a connection.
@@ -1235,16 +1287,31 @@ func (sm *StateManager) getBackchannelSender(clientID uint64) *BackchannelSender
 // Lock ordering: acquires sm.connMu.RLock only (no sm.mu needed).
 
 func (sm *StateManager) getBackBoundConnWriter(sessionID types.SessionId4, excludeConnID uint64) (uint64, ConnWriter, *PendingCBReplies, bool) {
+	var tried map[uint64]bool
+	if excludeConnID != 0 {
+		tried = map[uint64]bool{excludeConnID: true}
+	}
+	return sm.getBackBoundConnWriterExcluding(sessionID, tried)
+}
+
+// getBackBoundConnWriterExcluding finds a back-bound connection for the session
+// that is not in tried, which the caller owns and must not mutate afterwards.
+//
+// A set rather than a single excluded ID because the walk that needs it retries:
+// a candidate can be handed back and then fail to register, and the caller must
+// not be offered it again. Lock ordering: acquires sm.connMu.RLock only.
+
+func (sm *StateManager) getBackBoundConnWriterExcluding(sessionID types.SessionId4, tried map[uint64]bool) (uint64, ConnWriter, *PendingCBReplies, bool) {
 	sm.connMu.RLock()
 	defer sm.connMu.RUnlock()
 
-	return sm.getBackBoundConnWriterLocked(sessionID, excludeConnID)
+	return sm.getBackBoundConnWriterLocked(sessionID, tried)
 }
 
 // getBackBoundConnWriterLocked is the common implementation for finding a
 // back-bound connection. Caller must hold sm.connMu.RLock.
 
-func (sm *StateManager) getBackBoundConnWriterLocked(sessionID types.SessionId4, excludeConnID uint64) (uint64, ConnWriter, *PendingCBReplies, bool) {
+func (sm *StateManager) getBackBoundConnWriterLocked(sessionID types.SessionId4, tried map[uint64]bool) (uint64, ConnWriter, *PendingCBReplies, bool) {
 	// Most recently active FIRST, but not most recently active ONLY. A binding
 	// exists before its writer and reply table are registered, and it outlives
 	// them when the connection is retired — so the freshest binding is regularly
@@ -1257,10 +1324,10 @@ func (sm *StateManager) getBackBoundConnWriterLocked(sessionID types.SessionId4,
 	// testing it.
 	candidates := make([]*BoundConnection, 0, len(sm.connBySession[sessionID]))
 	for _, b := range sm.connBySession[sessionID] {
-		if b.ConnectionID == excludeConnID {
+		if tried[b.ConnectionID] {
 			continue
 		}
-		if b.Direction != ConnDirBack && b.Direction != ConnDirBoth {
+		if !carriesBackChannel(b.Direction) {
 			continue
 		}
 		candidates = append(candidates, b)
@@ -1354,7 +1421,7 @@ func (sm *StateManager) setBackchannelFault(clientID uint64, fault bool) {
 func (sm *StateManager) hasBackBoundConnection(clientID uint64) bool {
 	for _, session := range sm.sessionsByClientID[clientID] {
 		for _, b := range sm.connBySession[session.SessionID] {
-			if b.Direction == ConnDirBack || b.Direction == ConnDirBoth {
+			if carriesBackChannel(b.Direction) {
 				return true
 			}
 		}
