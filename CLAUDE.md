@@ -150,6 +150,33 @@ composition layer over six sub-services: `adapters/`, `stores/`, `shares/`, `mou
    `RemoteBlockStoreConformance` for the block-keyed one). The local tier is
    payload-keyed and is covered by its own package tests, not by that suite.
 
+## Verifying a change
+
+Two failure modes this codebase has actually hit. Both are invisible to a passing test suite,
+so they are checks to run deliberately rather than rules a test will catch for you.
+
+**Test the layer that consumes the data, not the layer that produces it.** A regression test
+placed next to the function you changed can pass green while the bug is untouched, because the
+data may be dropped again downstream. When a fix carries a field from A to B, the test belongs
+at B — the consumer. A fix that set `Identity.SID` where the identity was *built* proved nothing:
+the RPC layer copied only UID/GID/GIDs into the handler contexts, and both auth-context builders
+then built a fresh identity from those three fields, so the SID was read by nobody. Verify a
+regression test by reverting the fix and watching it fail **on the assertion** — a build error
+from an unused import is not proof.
+
+**When a change starts populating a field that was always empty, audit the cache keys.** Keys,
+dedup keys and equality checks written against the old field set are invisible to `rg` for the
+field name, because the bug is in the key rather than the field. Carrying SID/GroupSIDs into
+`AuthContext.Identity` silently made `authCacheKey`
+(`internal/adapter/nfs/v3/handlers/doc.go`) incomplete: it keyed on share + flavor + uid + gid +
+gids, and two Kerberos principals can share that triple because a user record with no UID
+defaults to 1000 (`pkg/adapter/identity.go`). The second principal would have been served the
+first's cached identity and inherited its SID-keyed ACE grants — failing **open**, unlike the
+missing-SID bug the change set out to fix.
+
+When a gate or check is deliberately narrower than its name suggests, say so at the code site
+with a `decision:` marker (below) rather than leaving the next reader to infer the ceiling.
+
 ## Code comments
 
 - Comments describe the code's **behaviour** — what it does and why, in terms of
