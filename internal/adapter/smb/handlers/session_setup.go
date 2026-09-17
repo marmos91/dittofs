@@ -1037,6 +1037,12 @@ func (h *Handler) completeSessionBind(
 		ctx.ConnCryptoState.DeleteSessionPreauthHash(pending.BindingSessionID)
 	}
 
+	// This is now the connection the session is served over, and its ClientGuid
+	// is what a rule stated against the current connection names. Recorded after
+	// the channel is registered, so the two cannot disagree about which
+	// connection is current.
+	sess.RecordCurrentConnection(channel.ConnID, connClientGUID(ctx))
+
 	logger.Info("SESSION_SETUP bind: channel registered",
 		"sessionID", pending.BindingSessionID,
 		"connID", channel.ConnID,

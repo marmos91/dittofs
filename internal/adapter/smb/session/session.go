@@ -191,7 +191,22 @@ type Session struct {
 	// origin connection. Recorded so bind can reject cross-client requests
 	// (an attacker holding a SessionID from one client must not be able to
 	// bind to it from a different ClientGuid).
+	//
+	// It is the GUID the session *originated* on, and it stays that value: a
+	// client may bind additional channels from connections that negotiated a
+	// different ClientGuid, and a session that reconnects keeps this one. Code
+	// that needs the GUID of the connection the session is on *now* must ask
+	// CurrentClientGUID, which tracks the latest channel's.
 	ClientGUID [16]byte
+
+	// currentConnID is the connection the session is currently served over —
+	// the channel registered most recently, which is the one a client uses for
+	// new requests. Zero until the session's first channel is registered.
+	//
+	// currentConnID and currentClientGUID are guarded by mu because a bind
+	// registers a channel while other requests are in flight.
+	currentConnID     uint64
+	currentClientGUID [16]byte
 
 	// PreauthIntegrityHash is the per-session SHA-512 preauth hash captured
 	// at the end of the ORIGINAL SESSION_SETUP that established this session
@@ -430,6 +445,46 @@ func (s *Session) SetBindIdentity(dialect types.Dialect, signingAlgo uint16, cip
 	s.SigningAlgo = signingAlgo
 	s.CipherId = cipherId
 	s.ClientGUID = clientGUID
+}
+
+// RecordCurrentConnection records the connection the session is being served
+// over, and the ClientGuid it negotiated. Called when a channel is registered
+// (the original SESSION_SETUP and every subsequent bind), so the pair tracks
+// the channel a client would use for a new request.
+//
+// The two are recorded together and under one lock because they are one fact:
+// a reader that took the connection ID from one channel and the GUID from
+// another would judge a request by a connection it did not arrive on.
+//
+// A zero clientGUID is stored as-is rather than ignored. It is what a
+// connection with no crypto state carries, and RecordCurrentConnection must not
+// silently leave a previous channel's GUID standing in for it — a reader has to
+// be able to see that this connection's identity is unknown.
+func (s *Session) RecordCurrentConnection(connID uint64, clientGUID [16]byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.currentConnID = connID
+	s.currentClientGUID = clientGUID
+}
+
+// CurrentClientGUID returns the ClientGuid negotiated on the connection the
+// session is currently served over, and whether that connection is known.
+//
+// It is deliberately not ClientGUID: that field records the GUID the session
+// originated on, while a bind can attach a channel whose connection negotiated
+// a different one (and the origin connection can go away entirely). Where a
+// rule is stated against the *current* connection's ClientGuid — as
+// MS-SMB2 §3.3.5.9.13's fourth AppInstanceId match condition is — this is the
+// value it names.
+//
+// The second return is false when no connection has been recorded, which is
+// distinct from a recorded zero GUID: both mean the identity cannot be
+// established, but a caller deciding whether to trust a match should say which
+// one it saw.
+func (s *Session) CurrentClientGUID() ([16]byte, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.currentClientGUID, s.currentConnID != 0
 }
 
 // IsExpired returns true if the session has a Kerberos ticket that has expired.

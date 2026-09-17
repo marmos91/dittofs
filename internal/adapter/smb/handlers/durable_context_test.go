@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/lease"
+	"github.com/marmos91/dittofs/internal/adapter/smb/session"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
@@ -1202,6 +1203,16 @@ func (e *appInstanceEnv) persist(t *testing.T, id, path string, metaHandle metad
 	}); err != nil {
 		t.Fatalf("PutDurableHandle %s: %v", id, err)
 	}
+}
+
+// setSessionClientGUID points the session a live open is on at a connection
+// that negotiated clientGUID, modelling an open whose session moved to another
+// client's connection since it was established.
+func (e *appInstanceEnv) setSessionClientGUID(t *testing.T, sessionID uint64, clientGUID [16]byte) {
+	t.Helper()
+	sess := session.NewSession(sessionID, "127.0.0.1:1234", false, "u", "D")
+	sess.RecordCurrentConnection(sessionID, clientGUID)
+	e.h.SessionManager.StoreSession(sess)
 }
 
 func (e *appInstanceEnv) survives(t *testing.T, id string) bool {
@@ -2966,5 +2977,111 @@ func TestReleaseHandleLeaseRecord_KeepsAKeyADisconnectedSiblingHolds(t *testing.
 		lock.FileHandle(fileHandle), smbCtx.ShareName, leaseKey); !found {
 		t.Error("closing the last live open released a lease record a disconnected durable " +
 			"handle still holds on that file: it will reconnect without its lease")
+	}
+}
+
+// TestProcessAppInstanceId_JudgesByTheSessionsCurrentClientGUID pins the fourth
+// match condition MS-SMB2 §3.3.5.9.13 actually states: the client is identified
+// by the ClientGuid of the connection the open's *session* is on now
+// (Open.Session.Connection.ClientGuid), not by the GUID that established the
+// open. The two diverge for an open that reconnected from a different
+// ClientGuid — allowed here on a non-lease DHnC/DH2C reconnect — and judging
+// such an open by where it came from gets the failover wrong in both
+// directions. Each subtest pins one direction.
+func TestProcessAppInstanceId_JudgesByTheSessionsCurrentClientGUID(t *testing.T) {
+	// The GUID the open was established under, and the GUID its session is on
+	// now. A reconnect from a different client is what makes these differ.
+	established := [16]byte{0x01}
+	reconnected := [16]byte{0x02}
+	claimant := [16]byte{0x03}
+
+	t.Run("a moved open is displaced by a third client", func(t *testing.T) {
+		e := newAppInstanceEnv(t)
+		fileID := e.live(e.file(t, "live.txt", 0o644), established)
+		// The open's session is now served over a connection with the
+		// reconnected GUID, but the OpenFile still records the establishing
+		// one. Only the current GUID identifies the client that holds it.
+		e.setSessionClientGUID(t, 1, reconnected)
+
+		e.claim(claimant)
+
+		if _, ok := e.h.GetOpenFile(fileID); ok {
+			t.Error("an open whose session moved to another connection was judged by the GUID that established it, " +
+				"so a third client's failover left it standing")
+		}
+	})
+
+	t.Run("an open whose session moved to the claimant is spared", func(t *testing.T) {
+		e := newAppInstanceEnv(t)
+		fileID := e.live(e.file(t, "live.txt", 0o644), established)
+		// The session is now on the claiming client's own connection, so this
+		// open belongs to the claimant however it was established. Judging by
+		// the establishing GUID would close the client's own handle.
+		e.setSessionClientGUID(t, 1, claimant)
+
+		e.claim(claimant)
+
+		if _, ok := e.h.GetOpenFile(fileID); !ok {
+			t.Error("an open whose session is on the claiming client's own connection was displaced, " +
+				"because it was judged by the GUID that established it")
+		}
+	})
+
+	t.Run("a session with no recorded connection falls back to the recorded GUID", func(t *testing.T) {
+		e := newAppInstanceEnv(t)
+		// No RecordCurrentConnection call: the session is known but has no
+		// current connection, so the recorded GUID is the only identity.
+		fileID := e.live(e.file(t, "live.txt", 0o644), established)
+
+		e.claim(claimant)
+
+		if _, ok := e.h.GetOpenFile(fileID); ok {
+			t.Error("an open with no resolvable current connection was not judged by its recorded GUID")
+		}
+	})
+}
+
+// TestCurrentClientGUID_ReportsTheConnectionTheSessionIsOn covers the session
+// accessor the failover reads. It must report the latest channel's GUID, keep
+// the origin GUID distinct from it, and report an unknown connection rather
+// than a zero GUID standing in for one.
+func TestCurrentClientGUID_ReportsTheConnectionTheSessionIsOn(t *testing.T) {
+	sess := session.NewSession(1, "127.0.0.1:1234", false, "u", "D")
+
+	if _, known := sess.CurrentClientGUID(); known {
+		t.Error("a session with no recorded connection reported a known current connection")
+	}
+
+	origin := [16]byte{0x11}
+	bindGUID := [16]byte{0x22}
+	sess.SetBindIdentity(types.Dialect0300, 0, 0, origin)
+	sess.RecordCurrentConnection(7, origin)
+
+	got, known := sess.CurrentClientGUID()
+	if !known || got != origin {
+		t.Errorf("CurrentClientGUID() = %x, %v; want %x, true", got, known, origin)
+	}
+
+	// A second channel binds from a connection that negotiated a different
+	// GUID. The current value follows the channel; the origin value does not.
+	sess.RecordCurrentConnection(8, bindGUID)
+	got, known = sess.CurrentClientGUID()
+	if !known || got != bindGUID {
+		t.Errorf("after a bind, CurrentClientGUID() = %x, %v; want %x, true", got, known, bindGUID)
+	}
+	if sess.ClientGUID != origin {
+		t.Errorf("the origin ClientGUID moved to %x; it must stay the value the session originated on", sess.ClientGUID)
+	}
+
+	// A connection with no crypto state carries no GUID, and that must be
+	// reported as the unknown identity it is — not papered over with the
+	// previous channel's value.
+	sess.RecordCurrentConnection(9, [16]byte{})
+	got, known = sess.CurrentClientGUID()
+	if !known {
+		t.Error("a recorded connection was reported as unknown")
+	}
+	if got != ([16]byte{}) {
+		t.Errorf("CurrentClientGUID() = %x after a connection with no GUID; want the zero GUID", got)
 	}
 }

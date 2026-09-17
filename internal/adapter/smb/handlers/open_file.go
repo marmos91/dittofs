@@ -316,6 +316,13 @@ type OpenFile struct {
 	// ClientGuid fails OBJECT_NAME_NOT_FOUND, reconnect with the original
 	// ClientGuid succeeds). Non-lease V2 reconnect (reopen1a/reopen2/...)
 	// does NOT consult this — those tests reconnect with a fresh ClientGuid.
+	//
+	// It is the establishing GUID, so it is not what MS-SMB2 §3.3.5.9.13's
+	// fourth AppInstanceId match condition names for a live open: that one is
+	// the GUID of the connection the open's session is on now, which differs
+	// after a reconnect from a different ClientGuid. ProcessAppInstanceId
+	// resolves the current value through openClientGUID and uses this field
+	// only for an open whose session is gone.
 	ClientGUID [16]byte
 
 	// csMu guards the SMB3 channel-sequence tracking fields below. It is a

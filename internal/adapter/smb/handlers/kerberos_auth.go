@@ -499,6 +499,12 @@ func (h *Handler) completeKerberosBind(ctx *SMBHandlerContext, sess *session.Ses
 		ctx.ConnCryptoState.DeleteSessionPreauthHash(ctx.SessionID)
 	}
 
+	// This is now the connection the session is served over, and its ClientGuid
+	// is what a rule stated against the current connection names. Recorded after
+	// the channel is registered, so the two cannot disagree about which
+	// connection is current.
+	sess.RecordCurrentConnection(ctx.ConnID, connClientGUID(ctx))
+
 	logger.Info("Kerberos bind: channel registered",
 		"sessionID", ctx.SessionID, "connID", ctx.ConnID, "user", user.Username,
 		"totalChannels", len(sess.ListChannels()))

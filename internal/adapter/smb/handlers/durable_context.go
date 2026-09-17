@@ -900,35 +900,71 @@ func validateAndRestore(
 	return restored, types.StatusSuccess, nil
 }
 
-// sameOrUnknownClient reports whether an open recorded against `recorded`
+// sameOrUnknownClient reports whether an open whose client is `openClient`
 // cannot be shown to belong to a client other than `conn`. The identity
 // condition needs both halves to be known, and a zero ClientGuid on either side
 // means it cannot be evaluated — so either one makes this unknown, and an open
 // it describes is never displaced.
 //
-// A zero `recorded` predates the field being captured and attributes the open
+// A zero `openClient` predates the field being captured and attributes the open
 // to no client at all. A zero `conn` is the live counterpart: a connection with
 // no crypto state carries no ClientGuid, and reading that as "not the recorded
 // client" would let a request whose own identity cannot be established
 // force-close an open that demonstrably belongs to someone else — the opposite
 // of the fail-closed rule the displacement check is here to enforce.
-// decision: `recorded` is the ClientGuid that established the open, and the
-// spec's fourth condition names a different value —
-// Open.Session.Connection.ClientGuid, the GUID of the connection the open's
-// session is on now (MS-SMB2 3.3.5.9.13). The two diverge only for an open that
-// reconnected from a different ClientGuid, and this server allows that on a
-// non-lease DHnC/DH2C reconnect: the ClientGuid gate on reconnect is applied to
-// lease-backed handles alone, because a lease is scoped per (ClientGuid,
-// LeaseKey) and the smbtorture reopen ladders pin that. For an open that never
-// moved clients — every open in the durable reconnect tests, and every open a
-// single-client application instance holds — the two values are the same and
-// this condition is the spec's. Withdraw it when reconnect gates on ClientGuid
-// for the whole 3.x family per 3.3.5.9.7, which is the change that makes the
-// establishing GUID and the current one the same value again; until then the
-// gap is that a displaced-and-reconnected open is judged by where it came from.
-func sameOrUnknownClient(recorded, conn [16]byte) bool {
+func sameOrUnknownClient(openClient, conn [16]byte) bool {
 	var unknown [16]byte
-	return recorded == conn || recorded == unknown || conn == unknown
+	return openClient == conn || openClient == unknown || conn == unknown
+}
+
+// openClientGUID resolves the ClientGuid MS-SMB2 §3.3.5.9.13's fourth condition
+// names for an open: the GUID of the connection the open's *session* is on now
+// (Open.Session.Connection.ClientGuid), not the GUID that established the open.
+//
+// The two diverge for an open that reconnected from a different ClientGuid,
+// which this server allows on a non-lease DHnC/DH2C reconnect — the ClientGuid
+// gate on reconnect is applied to lease-backed handles alone, because a lease
+// is scoped per (ClientGuid, LeaseKey) and the smbtorture reopen ladders pin
+// that. Judging such an open by where it came from gets the failover wrong in
+// both directions: it spares an open the failover should lose, and it displaces
+// one on the basis of a connection the open no longer has.
+//
+// It falls back to the recorded GUID when the session's current connection is
+// not established, and the two fallback cases are different questions:
+//
+//   - no session to ask — the open's session is gone, or there is no session
+//     manager. The recorded GUID is the only client identity the open has.
+//   - a session that never recorded a connection. Every connection a session is
+//     served over is recorded when its channel is registered, so this means no
+//     channel was ever observed — a directly constructed session, or a state
+//     predating the recording. The GUID the open was created under is again the
+//     best identity available, and it is the value this condition used before
+//     the current connection could be resolved.
+//
+// A session that *did* record a connection is answered with that connection's
+// GUID as-is, zero included. A connection that negotiated no ClientGuid has an
+// identity that cannot be established, and returning the recorded GUID there
+// would make the condition evaluable in the wrong direction — a CREATE could
+// displace an open on the strength of a client match nobody established. A zero
+// return is the "unknown" the caller's sameOrUnknownClient already treats as
+// undecidable, so the open survives.
+//
+// For every open that never moved clients — every open in the durable reconnect
+// tests, and every open a single-client application instance holds — the
+// resolved value is the recorded one and this is the spec's condition.
+func openClientGUID(handler *Handler, openFile *OpenFile, recorded [16]byte) [16]byte {
+	if handler == nil || handler.SessionManager == nil {
+		return recorded
+	}
+	sess, ok := handler.SessionManager.GetSession(openFile.SessionID)
+	if !ok || sess == nil {
+		return recorded
+	}
+	current, known := sess.CurrentClientGUID()
+	if !known {
+		return recorded
+	}
+	return current
 }
 
 // durableCleanupTimeout bounds the cleanup that follows a claimed durable row.
@@ -954,17 +990,20 @@ const durableCleanupTimeout = 30 * time.Second
 // An AppInstanceId match alone never displaces anything. Two further
 // conditions gate the forced close:
 //
-//   - The open must belong to a different client: only an open whose recorded
-//     ClientGuid differs from connClientGUID — the GUID of the connection
-//     carrying this CREATE — is a candidate, so a client reusing its own
-//     AppInstanceId never closes its own handles.
+//   - The open must belong to a different client: only an open whose session's
+//     *current* connection ClientGuid differs from connClientGUID — the GUID of
+//     the connection carrying this CREATE — is a candidate, so a client reusing
+//     its own AppInstanceId never closes its own handles. The current GUID is
+//     the one §3.3.5.9.13 names; for a live open it is resolved through
+//     openClientGUID, and for a disconnected row the recorded GUID is all the
+//     identity there is.
 //   - The requester, as authCtx, must be able to read the matched open's file.
 //
 // Returns the parsed AppInstanceId (zero value if not present or zero).
 //
 // The live-open half runs in two steps over the open-file table. The first
-// collects every open carrying the AppInstanceId whose recorded ClientGuid is
-// another client's, and authorizes each one against its own file; the second
+// collects every open carrying the AppInstanceId whose current-connection
+// ClientGuid is another client's, and authorizes each one against its own file; the second
 // considers only that authorized set — a FileID not in it is never closed —
 // matching on FileID membership and then revalidating each member before
 // removing it. Membership alone is not sufficient, because a FileID outlives
@@ -1114,7 +1153,11 @@ func ProcessAppInstanceId(
 	var candidates []candidate
 	handler.files.Range(func(_, value any) bool {
 		f := value.(*OpenFile)
-		if f.AppInstanceId == appId && !sameOrUnknownClient(f.ClientGUID, connClientGUID) {
+		// Judged by the connection f's session is on now, not the one that
+		// established it — see openClientGUID. Resolving under files.Range is
+		// safe: it reads the session manager and the session's own lock, not
+		// the metadata store, which is what the contract forbids here.
+		if f.AppInstanceId == appId && !sameOrUnknownClient(openClientGUID(handler, f, f.ClientGUID), connClientGUID) {
 			// Through the accessor, not the field: SET_REPARSE_POINT repoints
 			// a live handle when a placeholder becomes a symlink, so the handle
 			// authorized below has to be the one the close acts on.
@@ -1158,7 +1201,7 @@ func ProcessAppInstanceId(
 				// under its original FileID, so the entry in this table can
 				// name an open that left and came back — one this failover was
 				// never entitled to close.
-				if f.AppInstanceId != appId || sameOrUnknownClient(f.ClientGUID, connClientGUID) {
+				if f.AppInstanceId != appId || sameOrUnknownClient(openClientGUID(handler, f, f.ClientGUID), connClientGUID) {
 					logger.Debug("ProcessAppInstanceId: matched open no longer meets the failover conditions, not displacing it",
 						"appInstanceId", fmt.Sprintf("%x", appId))
 					return false
@@ -1242,6 +1285,13 @@ func ProcessAppInstanceId(
 		logger.Warn("ProcessAppInstanceId: store error", "error", preErr)
 		return appId
 	}
+	// A persisted row has no live session: it is the record of a disconnected
+	// durable handle, so there is no current connection to resolve and the
+	// recorded ClientGuid is the only client identity it has. That is what
+	// §3.3.5.9.13's condition 4 compares against for a disconnected open —
+	// Open.Session.Connection is the session the open was on, and the durable
+	// row preserves its client. openClientGUID is for live opens, where the
+	// session can have moved to a different connection since the open.
 	persistedAuthorized := make(map[string]bool, len(preList))
 	for _, h := range preList {
 		if sameOrUnknownClient(h.ClientGUID, connClientGUID) {
