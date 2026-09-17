@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1583,6 +1585,115 @@ func TestSendRecallV41_StopCh(t *testing.T) {
 		// OK -- exited promptly.
 	case <-time.After(2 * time.Second):
 		t.Fatal("sendRecallV41 goroutine did not exit within 2s after sender.Stop()")
+	}
+}
+
+// TestAttemptRecallV41_WatchdogStartsAtDequeue pins the interval the recall
+// watchdog measures. A sender serialises its sends, so a recall enqueued behind
+// a callback that is still consuming its retry schedule waits that schedule out
+// before its own send begins. If the watchdog runs from enqueue, the recall's
+// send budget is spent on the queue wait, and the recall is reported local —
+// starting the short revocation timer — while its callback is still deliverable.
+//
+// The in-flight callback holds the sender for one full worst-case schedule, so
+// the recall's own send only begins at the point the old single bound would
+// already have expired. The client then answers the recall, and the outcome must
+// be recallSent: the delegation is not revoked out from under a client that
+// answered.
+func TestAttemptRecallV41_WatchdogStartsAtDequeue(t *testing.T) {
+	sender, sm, sessionID := createTestBackchannelSender(t)
+	defer sm.Shutdown()
+
+	// Short budgets so the two-phase wait is exercised in well under a second.
+	sender.callbackTimeout = 100 * time.Millisecond
+
+	savedDelays := backchannelRetryDelays
+	backchannelRetryDelays = [backchannelMaxRetries]time.Duration{
+		time.Millisecond, time.Millisecond, time.Millisecond,
+	}
+	savedGrace := recallResultGrace
+	recallResultGrace = 100 * time.Millisecond
+	t.Cleanup(func() {
+		backchannelRetryDelays = savedDelays
+		recallResultGrace = savedGrace
+	})
+
+	// The queue hold: how long the callback in flight keeps the serialised
+	// sender busy before the recall can be dequeued.
+	const queueHold = 700 * time.Millisecond
+	// How long the recall's own send then waits for the client's answer.
+	const recallReplyDelay = 500 * time.Millisecond
+
+	// The bound the old single wait used, anchored at enqueue: it charged the
+	// queue wait against the send budget. The recall's total here (queue hold
+	// plus send wait) deliberately exceeds it, while each phase on its own does
+	// not, so an enqueue-anchored watchdog reports the recall local and a
+	// dequeue-anchored one reports it sent.
+	oldBound := sender.worstCaseSendDuration() + recallResultGrace
+	if queueHold >= oldBound {
+		t.Fatalf("queue hold %s is not within the send budget %s", queueHold, oldBound)
+	}
+	if recallReplyDelay >= oldBound {
+		t.Fatalf("reply delay %s is not within the send budget %s", recallReplyDelay, oldBound)
+	}
+	if queueHold+recallReplyDelay <= oldBound {
+		t.Fatalf("queue hold %s + reply delay %s does not exceed the enqueue-anchored bound %s",
+			queueHold, recallReplyDelay, oldBound)
+	}
+
+	// The writer stands in for the connection: it delays each callback's own
+	// wait and then answers it, so the hold is on the sender rather than on a
+	// socket whose synchronous net.Pipe write would make the timing racy.
+	var calls atomic.Int32
+	const connID = uint64(9701)
+	var pending *PendingCBReplies
+	pending = sm.RegisterConnWriter(connID, func(data []byte) error {
+		if len(data) < 8 {
+			return fmt.Errorf("callback frame too short: %d", len(data))
+		}
+		xid := binary.BigEndian.Uint32(data[4:8])
+		switch calls.Add(1) {
+		case 1:
+			time.Sleep(queueHold)
+		default:
+			time.Sleep(recallReplyDelay)
+		}
+		pending.Deliver(xid, buildMockCBCompoundReplyBody(xid))
+		return nil
+	})
+	if _, err := sm.BindConnToSession(connID, sessionID, types.CDFC4_FORE_OR_BOTH); err != nil {
+		t.Fatalf("BindConnToSession: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go sender.Run(ctx)
+
+	// Queue the in-flight callback first, then the recall behind it.
+	if !sender.Enqueue(CallbackRequest{
+		OpCode:  types.OP_CB_RECALL,
+		Payload: EncodeCBRecallOp(&types.Stateid4{Seqid: 1}, false, []byte{0x01}),
+	}) {
+		t.Fatal("Enqueue in-flight callback failed")
+	}
+
+	deleg := &DelegationState{
+		ClientID:   sender.clientID,
+		FileHandle: []byte("fh-watchdog-interval"),
+		DelegType:  types.OPEN_DELEGATE_READ,
+		Stateid:    types.Stateid4{Seqid: 1},
+	}
+
+	start := time.Now()
+	outcome := sm.attemptRecallV41(deleg, sender, EncodeCBRecallOp(&deleg.Stateid, false, deleg.FileHandle))
+	elapsed := time.Since(start)
+	deleg.StopRecallTimer()
+
+	if outcome != recallSent {
+		t.Fatalf("outcome = %d, want recallSent: the recall was reported local while its callback was still deliverable", outcome)
+	}
+	if elapsed < queueHold {
+		t.Fatalf("returned after %s, before the in-flight callback released the sender (%s); the recall was not actually queued behind it", elapsed, queueHold)
 	}
 }
 
