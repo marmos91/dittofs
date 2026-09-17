@@ -528,3 +528,159 @@ func TestOpenClaimDelegateCur_CurrentStateidPlaceholder(t *testing.T) {
 		})
 	}
 }
+
+// ============================================================================
+// CLAIM_DELEG_CUR_FH — the v4.1 reclaim form Linux actually uses
+// ============================================================================
+
+// encodeOpenArgsDelegateCurFH encodes OPEN args for CLAIM_DELEG_CUR_FH.
+// Wire: seqid shareAccess shareDeny clientID owner openType claimType delegStateid
+// The file is the current filehandle, so there is no filename and no
+// createhow4 block.
+func encodeOpenArgsDelegateCurFH(
+	seqid, shareAccess, shareDeny uint32,
+	clientID uint64, owner []byte,
+	openType uint32,
+	delegStateid *types.Stateid4,
+) []byte {
+	var buf bytes.Buffer
+	_ = xdr.WriteUint32(&buf, seqid)
+	_ = xdr.WriteUint32(&buf, shareAccess)
+	_ = xdr.WriteUint32(&buf, shareDeny)
+	_ = xdr.WriteUint64(&buf, clientID)
+	_ = xdr.WriteXDROpaque(&buf, owner)
+	_ = xdr.WriteUint32(&buf, openType)
+	// open_claim4: claim_type
+	_ = xdr.WriteUint32(&buf, types.CLAIM_DELEG_CUR_FH)
+	// oc_delegate_stateid
+	types.EncodeStateid4(&buf, delegStateid)
+	return buf.Bytes()
+}
+
+// TestOpenClaimDelegateCurFH_V41_Succeeds covers the wire arm a Linux NFSv4.1
+// client uses to re-open a file before returning a recalled delegation. Before
+// the arm existed the default case answered NFS4ERR_INVAL, so the client could
+// never complete the reclaim and the DELEGRETURN a cross-protocol recall waits
+// for never arrived.
+func TestOpenClaimDelegateCurFH_V41_Succeeds(t *testing.T) {
+	fx := newIOTestFixture(t, "/export")
+
+	clientA := testClientID(t, fx.handler.StateManager, "deleg-cur-fh-v41")
+	fileHandle := fx.createRegularFile(t, fx.rootHandle, "deleg-fh.txt", 0o644, 0, 0)
+	deleg := fx.handler.StateManager.GrantDelegation(clientA, []byte(fileHandle), types.OPEN_DELEGATE_WRITE)
+	if deleg == nil {
+		t.Fatalf("GrantDelegation returned nil")
+	}
+
+	ctx := newRealFSContext(0, 0)
+	ctx.SkipOwnerSeqid = true // v4.1 session
+	// The current filehandle is the FILE, not its parent: CLAIM_DELEG_CUR_FH
+	// identifies the target by filehandle.
+	ctx.CurrentFH = make([]byte, len(fileHandle))
+	copy(ctx.CurrentFH, fileHandle)
+
+	args := encodeOpenArgsDelegateCurFH(
+		1,
+		types.OPEN4_SHARE_ACCESS_BOTH,
+		types.OPEN4_SHARE_DENY_NONE,
+		clientA,
+		[]byte("owner-deleg-fh"),
+		types.OPEN4_NOCREATE,
+		&deleg.Stateid,
+	)
+
+	result := fx.handler.handleOpen(ctx, bytes.NewReader(args))
+	if result.Status != types.NFS4_OK {
+		t.Fatalf("OPEN CLAIM_DELEG_CUR_FH status = %d, want NFS4_OK", result.Status)
+	}
+	if rflags := rflagsFromOpenResult(t, result.Data); rflags&types.OPEN4_RESULT_CONFIRM != 0 {
+		t.Fatalf("rflags = %#x, OPEN4_RESULT_CONFIRM must not be set for a v4.1 client", rflags)
+	}
+}
+
+// TestOpenClaimDelegateCurFH_RejectsForeignDelegation proves the stateid is
+// checked against the calling client and the current filehandle, not merely
+// decoded: either mismatch must be a bad stateid rather than a granted open.
+func TestOpenClaimDelegateCurFH_RejectsForeignDelegation(t *testing.T) {
+	fx := newIOTestFixture(t, "/export")
+
+	clientA := testClientID(t, fx.handler.StateManager, "deleg-cur-fh-owner")
+	clientB := testClientID(t, fx.handler.StateManager, "deleg-cur-fh-other")
+	fileHandle := fx.createRegularFile(t, fx.rootHandle, "deleg-fh.txt", 0o644, 0, 0)
+	deleg := fx.handler.StateManager.GrantDelegation(clientA, []byte(fileHandle), types.OPEN_DELEGATE_WRITE)
+	if deleg == nil {
+		t.Fatalf("GrantDelegation returned nil")
+	}
+
+	newCtx := func() *types.CompoundContext {
+		ctx := newRealFSContext(0, 0)
+		ctx.SkipOwnerSeqid = true
+		ctx.CurrentFH = make([]byte, len(fileHandle))
+		copy(ctx.CurrentFH, fileHandle)
+		return ctx
+	}
+
+	t.Run("another client", func(t *testing.T) {
+		args := encodeOpenArgsDelegateCurFH(
+			1, types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE,
+			clientB, []byte("owner-other"), types.OPEN4_NOCREATE, &deleg.Stateid,
+		)
+		if got := fx.handler.handleOpen(newCtx(), bytes.NewReader(args)).Status; got != types.NFS4ERR_BAD_STATEID {
+			t.Fatalf("status = %d, want NFS4ERR_BAD_STATEID (%d)", got, types.NFS4ERR_BAD_STATEID)
+		}
+	})
+
+	t.Run("another file", func(t *testing.T) {
+		other := fx.createRegularFile(t, fx.rootHandle, "other.txt", 0o644, 0, 0)
+		ctx := newRealFSContext(0, 0)
+		ctx.SkipOwnerSeqid = true
+		ctx.CurrentFH = make([]byte, len(other))
+		copy(ctx.CurrentFH, other)
+
+		args := encodeOpenArgsDelegateCurFH(
+			1, types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE,
+			clientA, []byte("owner-deleg-fh"), types.OPEN4_NOCREATE, &deleg.Stateid,
+		)
+		if got := fx.handler.handleOpen(ctx, bytes.NewReader(args)).Status; got != types.NFS4ERR_BAD_STATEID {
+			t.Fatalf("status = %d, want NFS4ERR_BAD_STATEID (%d)", got, types.NFS4ERR_BAD_STATEID)
+		}
+	})
+}
+
+// TestOpenClaimDelegatePrevFH_ConsumesNothing pins the RFC 8881 Section 18.16.3
+// arm shape: CLAIM_DELEG_PREV_FH is void, so nothing may be read for it. The
+// reply is NFS4ERR_NOTSUPP either way (no persistent delegation state), but a
+// handler that decoded a stateid would have consumed bytes belonging to the
+// rest of the COMPOUND.
+func TestOpenClaimDelegatePrevFH_ConsumesNothing(t *testing.T) {
+	fx := newIOTestFixture(t, "/export")
+
+	clientA := testClientID(t, fx.handler.StateManager, "deleg-prev-fh")
+	fileHandle := fx.createRegularFile(t, fx.rootHandle, "prev-fh.txt", 0o644, 0, 0)
+
+	ctx := newRealFSContext(0, 0)
+	ctx.SkipOwnerSeqid = true
+	ctx.CurrentFH = make([]byte, len(fileHandle))
+	copy(ctx.CurrentFH, fileHandle)
+
+	var buf bytes.Buffer
+	_ = xdr.WriteUint32(&buf, 1) // seqid
+	_ = xdr.WriteUint32(&buf, types.OPEN4_SHARE_ACCESS_BOTH)
+	_ = xdr.WriteUint32(&buf, types.OPEN4_SHARE_DENY_NONE)
+	_ = xdr.WriteUint64(&buf, clientA)
+	_ = xdr.WriteXDROpaque(&buf, []byte("owner-prev-fh"))
+	_ = xdr.WriteUint32(&buf, types.OPEN4_NOCREATE)
+	_ = xdr.WriteUint32(&buf, types.CLAIM_DELEG_PREV_FH)
+	// The void arm contributes no bytes; trailing bytes stand in for the rest
+	// of the COMPOUND and must be left unread.
+	_ = xdr.WriteUint32(&buf, 0xDEADBEEF)
+
+	reader := bytes.NewReader(buf.Bytes())
+	result := fx.handler.handleOpen(ctx, reader)
+	if result.Status != types.NFS4ERR_NOTSUPP {
+		t.Fatalf("status = %d, want NFS4ERR_NOTSUPP (%d)", result.Status, types.NFS4ERR_NOTSUPP)
+	}
+	if reader.Len() != 4 {
+		t.Fatalf("reader has %d bytes left, want 4: the void arm must consume nothing", reader.Len())
+	}
+}

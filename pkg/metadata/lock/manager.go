@@ -1091,7 +1091,10 @@ func (lm *Manager) TestLockByParams(handleKey string, sessionID, offset, length 
 // lock conflict, which is the safe direction (the SMB client retries, whereas
 // letting it through would let it write under a delegation the server cannot
 // account for).
-const delegationIOWaitTimeout = 10 * time.Second
+//
+// A var rather than a const only so a test can shorten it; production never
+// writes it.
+var delegationIOWaitTimeout = 10 * time.Second
 
 // CheckForIO checks if an I/O operation would conflict with existing locks.
 //

@@ -1613,15 +1613,30 @@ func (h *Handler) setFileInfoFromStore(
 			// keeps serving cached attributes until it answers CB_RECALL. The
 			// next NFS GETXATTR would otherwise observe the pre-write value, so
 			// wait out the break before committing the mutation — same wait the
-			// rename path above performs. Bounded, so a client that never
-			// answers costs a delay rather than the operation.
+			// rename path above performs.
+			//
+			// Step out of the response order first, for the same reason the
+			// rename path does: the holder may be this very connection, and it
+			// cannot read the break or send its ACK while this response is
+			// still queued ahead of it.
+			releaseResponseOrder(ctx)
 			waitCtx, cancelWait := context.WithTimeout(authCtx.Context, lease.AsyncCreateBreakWaitTimeout)
-			if waitErr := h.LeaseManager.WaitForOtherKeyBreaks(
+			waitErr := h.LeaseManager.WaitForOtherKeyBreaks(
 				waitCtx, lockFileHandle, openFile.ShareName, openFile.LeaseKey,
-			); waitErr != nil {
-				logger.Debug("SET_INFO: EA set break wait completed", "path", openFile.Name().Path, "error", waitErr)
-			}
+			)
 			cancelWait()
+			if waitErr != nil {
+				// The timeout path force-completes SMB leases but not delegations,
+				// so an unanswered recall leaves the holder's cache authoritative.
+				// Committing the EA here would hand the NFS client a stale value
+				// on its next GETXATTR — the very thing the recall is for — so the
+				// write fails instead. A client that never answers costs a failed
+				// EA set, which the SMB client may retry; a silently stale reader
+				// is not recoverable.
+				logger.Debug("SET_INFO: EA set break incomplete, refusing the write",
+					"path", openFile.Name().Path, "error", waitErr)
+				return setInfoStatus(types.StatusFileLockConflict), nil
+			}
 		}
 
 		// Persist the EA set/delete mutations through the metadata layer.

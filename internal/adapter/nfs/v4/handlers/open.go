@@ -296,12 +296,10 @@ func (h *Handler) handleOpen(ctx *types.CompoundContext, reader io.Reader) (resu
 
 	case types.CLAIM_DELEG_PREV_FH:
 		// CLAIM_DELEG_PREV_FH (RFC 8881 Section 18.16.3): the current-filehandle
-		// form of CLAIM_DELEGATE_PREV, with a stateid4 and no name. Same answer
-		// as its named form -- no persistent delegation state -- but the stateid
-		// must be consumed so the rest of the COMPOUND does not desync.
-		if _, st := types.DecodeStateidArg(ctx, reader); st != types.NFS4_OK {
-			return openError(st)
-		}
+		// form of CLAIM_DELEGATE_PREV. Its arm is void -- the file is the current
+		// filehandle, and unlike CLAIM_DELEG_CUR_FH it carries no stateid -- so
+		// nothing may be consumed here. Same answer as the named form: no
+		// persistent delegation state across a reboot.
 		return openError(types.NFS4ERR_NOTSUPP)
 
 	default:

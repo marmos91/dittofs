@@ -220,9 +220,11 @@ func (lm *Manager) GrantDelegation(handleKey string, delegation *Delegation) err
 				lock.Owner.OwnerID)
 		}
 	}
-	// The SMB map needs a plain byte-range stand-in: fileLockConflictsWithUnified
-	// excludes delegation rows by design. SMB locks never share a client with an
-	// NFS delegation, so no same-client exemption applies here.
+	// The SMB map needs a plain byte-range stand-in: the lock being granted is
+	// itself a delegation, and testing it as one would ask whether a delegation
+	// conflicts with itself rather than whether the byte range it claims is
+	// already held. SMB locks never share a client with an NFS delegation, so no
+	// same-client exemption applies here.
 	asByteRange := *newLock
 	asByteRange.Delegation = nil
 	smbLocks := lm.locks[handleKey]
