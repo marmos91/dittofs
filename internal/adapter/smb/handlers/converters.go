@@ -219,6 +219,18 @@ func fileAttrToSMBAttributesInternal(attr *metadata.FileAttr, hidden bool) types
 		// Legacy POSIX fallback for files whose owner-write bit was cleared
 		// out-of-band (NFS chmod, shell chmod). Skipped when modeDOSExplicit
 		// is set so SMB-managed attributes are not double-counted.
+		//
+		// decision: the fallback is one-way. A SET_INFO that sets any
+		// attribute sets modeDOSExplicit, which retires the fallback for that
+		// file — so a client that clears READONLY on a POSIX-read-only file is
+		// told the file is writable while the POSIX bits still refuse the
+		// write. Clearing READONLY deliberately does not restore owner-write:
+		// DOS attributes are stored beside the permission bits precisely so an
+		// attribute toggle cannot rewrite them, and smb2.winattr pins that the
+		// mode-derived DACL is stable across READONLY flips. The honest repair
+		// is a chmod from the client's own side, not an attribute write that
+		// silently widens the mode. Revisit only together with the storage
+		// rule above, not on its own.
 		attrs |= types.FileAttributeReadonly
 	}
 

@@ -63,6 +63,13 @@ func (h *Handler) setFileInfoFromStore(
 		// READONLY semantics for both NFS and SMB callers by clearing write when
 		// modeDOSExplicit + modeDOSReadonly are both set.
 		//
+		// Per MS-FSA 2.1.5.15.2 ("FileBasicInformation"), whose ValidSetAttributes
+		// list omits both, FILE_ATTRIBUTE_COMPRESSED and FILE_ATTRIBUTE_SPARSE_FILE
+		// are not settable here — they belong to FSCTL_SET_COMPRESSION and
+		// FSCTL_SET_SPARSE. The masks applyDOSAttrUpdate builds never name those
+		// bits, nor any POSIX permission bit, so both survive untouched without
+		// this handler reading the file back.
+		//
 		// FILE_ATTRIBUTE_HIDDEN (MS-FSCC 2.6 "File Attributes") is carried
 		// separately in setAttrs.Hidden, which DecodeBasicInfoToSetAttrs has
 		// already filled in from this same FileAttributes field so QUERY_INFO
