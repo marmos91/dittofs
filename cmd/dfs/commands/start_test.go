@@ -784,18 +784,26 @@ integrity:
 	// Stub the serve loop so it blocks until the test releases it, recording
 	// that it was actually reached (the seam is only meaningful if the run got
 	// to the serving select).
+	//
+	// It also reports when it observes the shutdown context cancelled, and then
+	// stays inside the call until released. That pause is what makes the store
+	// assertion below able to see the shutdown mid-flight: the serving path is
+	// waiting on this goroutine, so a close that ran before joining it would
+	// have already happened by the time the assertion runs.
 	serveReached := make(chan struct{})
+	sawCancel := make(chan struct{})
 	releaseServe := make(chan struct{})
-	var serveOnce sync.Once
+	var serveOnce, cancelOnce sync.Once
 	origServe := serveRuntime
 	t.Cleanup(func() { serveRuntime = origServe })
 	serveRuntime = func(ctx context.Context, rt *runtime.Runtime) error {
 		serveOnce.Do(func() { close(serveReached) })
-		// Return when the shutdown context is cancelled, the way rt.Serve does.
 		select {
-		case <-releaseServe:
 		case <-ctx.Done():
+			cancelOnce.Do(func() { close(sawCancel) })
+		case <-releaseServe:
 		}
+		<-releaseServe
 		return nil
 	}
 
@@ -808,8 +816,34 @@ integrity:
 		t.Fatal("runStartWithExit never reached the serving loop")
 	}
 
-	// Deliver the shutdown signal and release the serve call.
+	// Deliver the shutdown signal, then wait for the serving path to cancel the
+	// context. The serve call is still held, so runStart is now blocked joining
+	// it — the point at which a close that ran before that join would show up.
 	sigChan <- syscall.SIGTERM
+	select {
+	case <-sawCancel:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the shutdown signal never reached the serving loop")
+	}
+
+	// The store must still be open here. Closing it before joining the serve
+	// goroutine (or before the runtime drain) is the regression this guards:
+	// with the call held, a premature close is visible as absent sidecars.
+	// The shutdown branch runs concurrently with the signal above: cancel() is
+	// what this goroutine observes, and the branch continues past it to the
+	// join on serverDone, where the held serve call blocks it. Yield long
+	// enough for it to get there — the close under test is deferred until
+	// after that join, so a store that is already gone here was closed
+	// *before* the join, which is the regression this guards.
+	time.Sleep(200 * time.Millisecond)
+	for _, sidecar := range []string{dbPath + "-wal", dbPath + "-shm"} {
+		if _, statErr := os.Stat(sidecar); os.IsNotExist(statErr) {
+			t.Errorf("the control-plane store was closed while the server was still shutting down: %s is already gone",
+				filepath.Base(sidecar))
+		}
+	}
+
+	// Now let the serve call return and wait for the run to finish.
 	close(releaseServe)
 
 	select {
