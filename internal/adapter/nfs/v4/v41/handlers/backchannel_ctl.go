@@ -7,6 +7,7 @@ package v41handlers
 
 import (
 	"bytes"
+	"errors"
 	"io"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
@@ -28,10 +29,14 @@ func HandleBackchannelCtl(
 	var args types.BackchannelCtlArgs
 	if err := args.Decode(reader); err != nil {
 		logger.Debug("BACKCHANNEL_CTL: decode error", "error", err, "client", ctx.ClientAddr)
+		status := uint32(types.NFS4ERR_BADXDR)
+		if errors.Is(err, types.ErrCallbackAuthSysBounds) {
+			status = types.NFS4ERR_INVAL
+		}
 		return &types.CompoundResult{
-			Status: types.NFS4ERR_BADXDR,
+			Status: status,
 			OpCode: types.OP_BACKCHANNEL_CTL,
-			Data:   EncodeStatusOnly(types.NFS4ERR_BADXDR),
+			Data:   EncodeStatusOnly(status),
 		}
 	}
 

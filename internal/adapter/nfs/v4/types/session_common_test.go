@@ -2,6 +2,8 @@ package types
 
 import (
 	"bytes"
+	"encoding/binary"
+	"errors"
 	"testing"
 )
 
@@ -691,5 +693,108 @@ func TestCallbackSecParms4_EncodeMatchesWireFormat(t *testing.T) {
 	}
 	if !bytes.Equal(buf.Bytes(), want) {
 		t.Errorf("Encode = % x, want % x", buf.Bytes(), want)
+	}
+}
+
+// ============================================================================
+// RFC 5531 Section 8.2 bounds on the callback AUTH_SYS credential
+// ============================================================================
+
+// encodeAuthSysRaw builds the XDR for a callback_sec_parms4 with CbSecFlavor
+// AUTH_SYS, taking the machinename length and gids count as raw knobs so a test
+// can build a credential past either bound. The XDR encoder will not produce
+// one, which is the point: the bound is on what the server accepts off the wire.
+func encodeAuthSysRaw(t *testing.T, machineNameLen int, gidsCount uint32) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	var b [4]byte
+	put := func(v uint32) {
+		binary.BigEndian.PutUint32(b[:], v)
+		buf.Write(b[:])
+	}
+	put(1) // cb_secflavor = AUTH_SYS
+	put(42) // stamp
+	put(uint32(machineNameLen))
+	buf.Write(bytes.Repeat([]byte{'a'}, machineNameLen))
+	buf.Write(bytes.Repeat([]byte{0}, (4-machineNameLen%4)%4)) // pad to 4
+	put(1000) // uid
+	put(1000) // gid
+	put(gidsCount)
+	for i := uint32(0); i < gidsCount; i++ {
+		put(i)
+	}
+	return buf.Bytes()
+}
+
+func TestCallbackSecParms4_AuthSysMachineNameBound(t *testing.T) {
+	tests := []struct {
+		name    string
+		len     int
+		wantErr bool
+	}{
+		{"empty is valid", 0, false},
+		{"exactly 255 accepted", 255, false},
+		{"256 rejected", 256, true},
+		{"far past the bound rejected", 4096, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := encodeAuthSysRaw(t, tt.len, 0)
+			var p CallbackSecParms4
+			err := p.Decode(bytes.NewReader(raw))
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("Decode accepted a %d-byte machinename, want rejection", tt.len)
+				}
+				if !errors.Is(err, ErrCallbackAuthSysBounds) {
+					t.Fatalf("err = %v, want ErrCallbackAuthSysBounds", err)
+				}
+				if p.AuthSysParms != nil {
+					t.Error("AuthSysParms was stored despite a rejected credential")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Decode failed: %v", err)
+			}
+			if p.AuthSysParms == nil || len(p.AuthSysParms.MachineName) != tt.len {
+				t.Fatalf("machinename length = %v, want %d", p.AuthSysParms, tt.len)
+			}
+		})
+	}
+}
+
+func TestCallbackSecParms4_AuthSysGIDsBound(t *testing.T) {
+	// The gids<16> bound predates the machinename one; this pins it so a later
+	// edit to the decode cannot quietly drop it while adding another bound.
+	tests := []struct {
+		name    string
+		count   uint32
+		wantErr bool
+	}{
+		{"16 accepted", 16, false},
+		{"17 rejected", 17, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := encodeAuthSysRaw(t, 4, tt.count)
+			var p CallbackSecParms4
+			err := p.Decode(bytes.NewReader(raw))
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("Decode accepted %d gids, want rejection", tt.count)
+				}
+				if !errors.Is(err, ErrCallbackAuthSysBounds) {
+					t.Fatalf("err = %v, want ErrCallbackAuthSysBounds", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Decode failed: %v", err)
+			}
+			if got := len(p.AuthSysParms.GIDs); got != int(tt.count) {
+				t.Fatalf("len(GIDs) = %d, want %d", got, tt.count)
+			}
+		})
 	}
 }

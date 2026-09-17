@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 
@@ -545,6 +546,15 @@ type GssCbHandles4 struct {
 	HandleFromClient []byte
 }
 
+// ErrCallbackAuthSysBounds marks a callback AUTH_SYS credential whose fields
+// exceed the limits RFC 5531 Section 8.2 places on authsys_parms: a
+// machinename<string<255> or a gids array longer than 16. The request is
+// well-formed XDR, so the operation that carried it is refused with
+// NFS4ERR_INVAL rather than NFS4ERR_BADXDR -- the credential names an identity
+// the server will not store and re-emit, and truncating the name would change
+// who it claims to be.
+var ErrCallbackAuthSysBounds = errors.New("callback AUTH_SYS credential exceeds RFC 5531 limits")
+
 // CallbackSecParms4 represents callback_sec_parms4 per RFC 8881 Section 18.35.
 // Union switched on CbSecFlavor (AUTH_NONE=0, AUTH_SYS=1, RPCSEC_GSS=6).
 type CallbackSecParms4 struct {
@@ -640,6 +650,13 @@ func (c *CallbackSecParms4) Decode(r io.Reader) error {
 		if p.MachineName, err = xdr.DecodeString(r); err != nil {
 			return fmt.Errorf("decode auth_sys machinename: %w", err)
 		}
+		// RFC 5531 Section 8.2: string machinename<255>. Bounding it here keeps
+		// the credential a valid opaque_auth when the server re-encodes it into
+		// every callback it sends this client, and refuses an identity the server
+		// would otherwise carry on the client's behalf for the session's life.
+		if len(p.MachineName) > 255 {
+			return fmt.Errorf("auth_sys machinename %d bytes exceeds limit 255: %w", len(p.MachineName), ErrCallbackAuthSysBounds)
+		}
 		if p.UID, err = xdr.DecodeUint32(r); err != nil {
 			return fmt.Errorf("decode auth_sys uid: %w", err)
 		}
@@ -651,7 +668,7 @@ func (c *CallbackSecParms4) Decode(r io.Reader) error {
 			return fmt.Errorf("decode auth_sys gids count: %w", err)
 		}
 		if gidsCount > 16 {
-			return fmt.Errorf("auth_sys gids count %d exceeds limit 16", gidsCount)
+			return fmt.Errorf("auth_sys gids count %d exceeds limit 16: %w", gidsCount, ErrCallbackAuthSysBounds)
 		}
 		p.GIDs = make([]uint32, gidsCount)
 		for i := uint32(0); i < gidsCount; i++ {

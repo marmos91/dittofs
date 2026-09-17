@@ -1,6 +1,7 @@
 package v41handlers
 
 import (
+	"errors"
 	"fmt"
 	"io"
 
@@ -18,10 +19,14 @@ func HandleCreateSession(d *Deps, ctx *types.CompoundContext, _ *types.V41Reques
 	var args types.CreateSessionArgs
 	if err := args.Decode(reader); err != nil {
 		logger.Debug("CREATE_SESSION: decode error", "error", err, "client", ctx.ClientAddr)
+		status := uint32(types.NFS4ERR_BADXDR)
+		if errors.Is(err, types.ErrCallbackAuthSysBounds) {
+			status = types.NFS4ERR_INVAL
+		}
 		return &types.CompoundResult{
-			Status: types.NFS4ERR_BADXDR,
+			Status: status,
 			OpCode: types.OP_CREATE_SESSION,
-			Data:   EncodeStatusOnly(types.NFS4ERR_BADXDR),
+			Data:   EncodeStatusOnly(status),
 		}
 	}
 
