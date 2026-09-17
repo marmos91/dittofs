@@ -247,3 +247,88 @@ func TestSetInfo_FileBasicInfo_PreservesFSCTLBitsWithoutReReading(t *testing.T) 
 		t.Errorf("POSIX mode = 0o%o after SET_INFO; want 0o600 unchanged", gotPOSIX)
 	}
 }
+
+// TestSetInfo_FileBasicInfo_ReadonlyRoundTripOnNonDefaultMode pins the READONLY
+// round-trip on a file whose POSIX mode is not the synthesized default, in both
+// directions, and records the one-way edge of the POSIX-derived fallback.
+//
+// Setting and clearing READONLY moves modeDOSReadonly and nothing else. A file
+// that was read-only only by virtue of its POSIX bits reports READONLY until
+// the first SET_INFO gives it an explicit DOS attribute state; from then on the
+// reported attribute follows modeDOSReadonly alone, and the POSIX bits are the
+// client's to change through a chmod rather than an attribute write.
+func TestSetInfo_FileBasicInfo_ReadonlyRoundTripOnNonDefaultMode(t *testing.T) {
+	h, authCtx, fileHandle, open := setupDOSAttrModeTest(t, metadata.FileTypeRegular, 0o600)
+	metaSvc := h.Registry.GetMetadataService()
+
+	setInfo := func(attrs types.FileAttributes) *metadata.File {
+		t.Helper()
+		resp, err := h.setFileInfoFromStore(nil, authCtx, open, types.FileBasicInformation, basicInfoBuffer(attrs))
+		if err != nil || resp == nil || resp.GetStatus() != types.StatusSuccess {
+			t.Fatalf("setFileInfoFromStore(0x%x): err=%v status=%v", attrs, err, resp)
+		}
+		got, err := metaSvc.GetFile(authCtx.Context, fileHandle)
+		if err != nil {
+			t.Fatalf("GetFile: %v", err)
+		}
+		return got
+	}
+
+	// Set READONLY: the attribute lands, the mode does not move.
+	got := setInfo(types.FileAttributeReadonly)
+	if fileAttrToSMBAttributesInternal(&got.FileAttr, got.Hidden)&types.FileAttributeReadonly == 0 {
+		t.Errorf("READONLY did not round-trip after being set")
+	}
+	if gotPOSIX := got.Mode & 0o7777; gotPOSIX != 0o600 {
+		t.Errorf("POSIX mode = 0o%o after setting READONLY; want 0o600 unchanged", gotPOSIX)
+	}
+
+	// Clear it again with a different attribute: READONLY goes away, the mode
+	// still does not move.
+	got = setInfo(types.FileAttributeArchive)
+	if fileAttrToSMBAttributesInternal(&got.FileAttr, got.Hidden)&types.FileAttributeReadonly != 0 {
+		t.Errorf("READONLY survived a SET_INFO that did not request it")
+	}
+	if gotPOSIX := got.Mode & 0o7777; gotPOSIX != 0o600 {
+		t.Errorf("POSIX mode = 0o%o after clearing READONLY; want 0o600 unchanged", gotPOSIX)
+	}
+}
+
+// TestSetInfo_FileBasicInfo_PosixReadonlyFallbackIsOneWay pins the edge the
+// decision comment on the fallback in fileAttrToSMBAttributesInternal describes:
+// a file made read-only out-of-band reports READONLY, and a SET_INFO clearing
+// it makes the report follow the DOS bit from then on WITHOUT restoring
+// owner-write. Pinned so the tradeoff is visible rather than discovered.
+func TestSetInfo_FileBasicInfo_PosixReadonlyFallbackIsOneWay(t *testing.T) {
+	h, authCtx, fileHandle, open := setupDOSAttrModeTest(t, metadata.FileTypeRegular, 0o444)
+	metaSvc := h.Registry.GetMetadataService()
+
+	pre, err := metaSvc.GetFile(authCtx.Context, fileHandle)
+	if err != nil {
+		t.Fatalf("GetFile(pre): %v", err)
+	}
+	if fileAttrToSMBAttributesInternal(&pre.FileAttr, pre.Hidden)&types.FileAttributeReadonly == 0 {
+		t.Fatalf("setup broken: a 0o444 file with no explicit DOS state must report READONLY")
+	}
+
+	// FILE_ATTRIBUTE_NORMAL is what a client sends to clear the read-only box.
+	resp, err := h.setFileInfoFromStore(nil, authCtx, open, types.FileBasicInformation,
+		basicInfoBuffer(types.FileAttributeNormal))
+	if err != nil || resp == nil || resp.GetStatus() != types.StatusSuccess {
+		t.Fatalf("setFileInfoFromStore: err=%v status=%v", err, resp)
+	}
+
+	got, err := metaSvc.GetFile(authCtx.Context, fileHandle)
+	if err != nil {
+		t.Fatalf("GetFile(post): %v", err)
+	}
+	if fileAttrToSMBAttributesInternal(&got.FileAttr, got.Hidden)&types.FileAttributeReadonly != 0 {
+		t.Errorf("READONLY still reported after the client cleared it")
+	}
+	// The documented tradeoff: the POSIX bits are untouched, so the file is
+	// still not writable through its mode. An attribute write must not widen
+	// permissions, which is the whole point of the mask form.
+	if gotPOSIX := got.Mode & 0o7777; gotPOSIX != 0o444 {
+		t.Errorf("POSIX mode = 0o%o after clearing READONLY; want 0o444 unchanged", gotPOSIX)
+	}
+}

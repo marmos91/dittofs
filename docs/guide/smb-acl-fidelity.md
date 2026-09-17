@@ -202,6 +202,18 @@ project memory):
 6. **Owner/Group live in `FileAttr`, not in the ACL.** Changing owner/group
    does not emit ACL-change events (see [Access Control](access-control.md#known-limitations)).
 
+8. **Clearing FILE_ATTRIBUTE_READONLY does not restore POSIX owner-write.**
+   READONLY is stored in `modeDOSReadonly` rather than in the POSIX permission
+   bits, so that toggling it leaves the mode-derived DACL stable (smbtorture
+   `smb2.winattr`). A file made read-only out-of-band (an NFS or shell `chmod
+   0444`) reports READONLY through a POSIX-derived fallback in
+   `fileAttrToSMBAttributesInternal`; that fallback is retired for the file as
+   soon as any SET_INFO gives it an explicit DOS attribute state. A client that
+   then clears the read-only box is told the file is writable while the POSIX
+   bits still refuse the write. Making the file writable is a `chmod` from the
+   client's own side — an attribute write deliberately never widens the mode.
+   Pinned by `TestSetInfo_FileBasicInfo_PosixReadonlyFallbackIsOneWay`.
+
 ## References
 
 - [#1228](https://github.com/marmos91/dittofs/issues/1228) — Windows-ACL / stable-handle fidelity (this matrix).

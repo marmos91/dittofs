@@ -133,3 +133,43 @@ func TestSetFileAttributes_DOSAttrMasks_WithTruncateStillNeedsOwnership(t *testi
 	_, err = fx.service.SetFileAttributes(other, handle, &metadata.SetAttrs{Size: &zero})
 	require.NoError(t, err, "a plain truncate is still authorized by write permission")
 }
+
+// TestSetFileAttributes_DOSAttrMasks_NonOwnerRefusedWithoutTruncate is the
+// companion to the bundled-truncate case: a DOS-attribute update on its own is
+// ownership-gated, so a non-owner holding write permission is refused. This is
+// the premise the bundled case rests on — without it, that test would pass for
+// the wrong reason.
+func TestSetFileAttributes_DOSAttrMasks_NonOwnerRefusedWithoutTruncate(t *testing.T) {
+	t.Parallel()
+	fx := newTestFixture(t)
+
+	owner := fx.authContext(1000, 1000)
+	_, _, err := fx.service.CreateFile(owner, fx.rootHandle, "attronly", &metadata.FileAttr{
+		Type: metadata.FileTypeRegular,
+		Mode: 0o666,
+	})
+	require.NoError(t, err)
+	handle, err := fx.store.GetChild(context.Background(), fx.rootHandle, "attronly")
+	require.NoError(t, err)
+
+	other := fx.authContext(2000, 2000)
+	or := modeDOSExplicitBit | modeDOSReadonlyBit
+	_, err = fx.service.SetFileAttributes(other, handle, &metadata.SetAttrs{ModeOrMask: &or})
+	require.Error(t, err, "a DOS attribute change is ownership-gated")
+
+	// And a timestamp bump must not buy the caller past it either — the
+	// relaxation for UTIME_NOW is keyed on the same ownership test.
+	_, err = fx.service.SetFileAttributes(other, handle, &metadata.SetAttrs{
+		ModeOrMask: &or,
+		MtimeNow:   true,
+	})
+	require.Error(t, err, "bundling a timestamp bump must not admit a DOS attribute change")
+
+	got, err := fx.service.GetFile(context.Background(), handle)
+	require.NoError(t, err)
+	assert.Zero(t, got.Mode&modeDOSReadonlyBit, "modeDOSReadonly must not have been set by a non-owner")
+
+	// The owner is still able to make the same change.
+	_, err = fx.service.SetFileAttributes(owner, handle, &metadata.SetAttrs{ModeOrMask: &or})
+	require.NoError(t, err, "the owner must still be able to set DOS attributes")
+}
