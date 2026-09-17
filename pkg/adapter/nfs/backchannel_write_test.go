@@ -155,7 +155,7 @@ func TestBackchannelDemux_FollowsTheCurrentReplyTable(t *testing.T) {
 	}
 
 	const xid = 0x5151
-	replyCh, ok := current.Register(xid)
+	replyCh, ok := current.Register(xid, v4types.SessionId4{})
 	if !ok {
 		t.Fatal("the current table refused the waiter")
 	}
