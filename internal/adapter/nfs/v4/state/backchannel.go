@@ -96,9 +96,23 @@ type CallbackRequest struct {
 // sent the corresponding CALL. When a backchannel CALL is sent, the XID is
 // registered here. When the read loop receives a REPLY (msg_type=1), it
 // delivers the bytes to the waiter via the XID-keyed channel.
+// cbWaiter is one registered callback reply: the channel the reply lands on,
+// and the session whose sender is waiting for it.
+//
+// The session is recorded because the table is held per connection while a
+// waiter belongs to a session, and several sessions can share one connection.
+// Cancelling the waiters of a session that is going away is then addressable at
+// all; a connection-wide release can only honestly answer for the connection
+// itself, which is why FailAll is not enough. Deliver still routes on the XID
+// alone — the session is read only by CancelSession.
+type cbWaiter struct {
+	ch      chan []byte
+	session types.SessionId4
+}
+
 type PendingCBReplies struct {
 	mu      sync.Mutex
-	waiters map[uint32]chan []byte
+	waiters map[uint32]cbWaiter
 	// closed marks the connection behind this table as gone. It is what makes
 	// a late Register safe: a sender reads the table under the connection lock
 	// and registers after releasing it, so a teardown can land in between and
@@ -117,8 +131,8 @@ func (p *PendingCBReplies) FailAll() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.closed = true
-	for xid, ch := range p.waiters {
-		close(ch)
+	for xid, w := range p.waiters {
+		close(w.ch)
 		delete(p.waiters, xid)
 	}
 }
@@ -126,7 +140,7 @@ func (p *PendingCBReplies) FailAll() {
 // NewPendingCBReplies creates a new PendingCBReplies instance.
 func NewPendingCBReplies() *PendingCBReplies {
 	return &PendingCBReplies{
-		waiters: make(map[uint32]chan []byte),
+		waiters: make(map[uint32]cbWaiter),
 	}
 }
 
@@ -136,7 +150,7 @@ func NewPendingCBReplies() *PendingCBReplies {
 // After FailAll the channel comes back already closed rather than joining a
 // table no reply can reach, so a caller that registers just too late fails at
 // once instead of waiting out its timeout.
-func (p *PendingCBReplies) Register(xid uint32) (chan []byte, bool) {
+func (p *PendingCBReplies) Register(xid uint32, session types.SessionId4) (chan []byte, bool) {
 	ch := make(chan []byte, 1)
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -150,7 +164,7 @@ func (p *PendingCBReplies) Register(xid uint32) (chan []byte, bool) {
 		close(ch)
 		return ch, false
 	}
-	p.waiters[xid] = ch
+	p.waiters[xid] = cbWaiter{ch: ch, session: session}
 	return ch, true
 }
 
@@ -165,12 +179,12 @@ func (p *PendingCBReplies) Register(xid uint32) (chan []byte, bool) {
 func (p *PendingCBReplies) Deliver(xid uint32, reply []byte) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	ch, ok := p.waiters[xid]
+	w, ok := p.waiters[xid]
 	if !ok {
 		return false
 	}
 	delete(p.waiters, xid)
-	ch <- reply
+	w.ch <- reply
 	return true
 }
 
@@ -188,6 +202,29 @@ func (p *PendingCBReplies) Cancel(xid uint32) (retired bool) {
 	retired = p.closed
 	p.mu.Unlock()
 	return retired
+}
+
+// CancelSession releases every waiter belonging to session, without delivering
+// a reply. Called when the session loses the connection this table belongs to —
+// teardown, or a rebind away from the back channel — so a sender waiting on it
+// fails now rather than after its own timeout.
+//
+// A connection-wide release cannot reach these: several sessions can share one
+// connection, so FailAll only runs when the connection itself dies, and a
+// session that is destroyed or loses its back binding on a live connection
+// leaves its waiters armed with nothing able to answer them. The channel is
+// closed rather than left empty, so the waiter reads the same "no reply is
+// coming" signal FailAll gives and does not score the silence against the
+// client.
+func (p *PendingCBReplies) CancelSession(session types.SessionId4) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for xid, w := range p.waiters {
+		if w.session == session {
+			close(w.ch)
+			delete(p.waiters, xid)
+		}
+	}
 }
 
 // ============================================================================
@@ -509,7 +546,7 @@ func (bs *BackchannelSender) sendCallback(ctx context.Context, req CallbackReque
 		// timeout path below cancels the correct waiter.
 		pending = pending2
 		var registered2 bool
-		replyCh, registered2 = pending.Register(xid)
+		replyCh, registered2 = pending.Register(xid, bs.sessionID)
 		if !registered2 {
 			// Not "never attempted": the write above did reach a transport and
 			// failed there, which is evidence about this client's callback
@@ -722,7 +759,7 @@ func (bs *BackchannelSender) selectBackBoundWaiter(xid uint32, exclude uint64) (
 		if !ok {
 			return 0, nil, nil, nil, false
 		}
-		if replyCh, registered := pending.Register(xid); registered {
+		if replyCh, registered := pending.Register(xid, bs.sessionID); registered {
 			return id, writer, pending, replyCh, true
 		}
 		logger.Debug("BackchannelSender: back-bound connection retired before registration, trying another",

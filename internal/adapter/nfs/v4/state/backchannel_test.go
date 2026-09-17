@@ -516,7 +516,7 @@ func TestPendingCBReplies_RegisterDeliverCancel(t *testing.T) {
 	p := NewPendingCBReplies()
 
 	// Register and deliver
-	ch, registered := p.Register(42)
+	ch, registered := p.Register(42, types.SessionId4{})
 	if !registered {
 		t.Fatal("Register refused on an open table")
 	}
@@ -541,7 +541,7 @@ func TestPendingCBReplies_RegisterDeliverCancel(t *testing.T) {
 	}
 
 	// Register and cancel
-	ch2, registered2 := p.Register(100)
+	ch2, registered2 := p.Register(100, types.SessionId4{})
 	if !registered2 {
 		t.Fatal("Register refused on an open table")
 	}
@@ -992,7 +992,7 @@ func TestUnbindConnection_ReleasesCallbackWaiters(t *testing.T) {
 
 	const connID = uint64(7200)
 	pending := sm.RegisterConnWriter(connID, func([]byte) error { return nil })
-	replyCh, _ := pending.Register(0xabcd)
+	replyCh, _ := pending.Register(0xabcd, types.SessionId4{})
 
 	sm.UnbindConnection(connID)
 
@@ -1106,7 +1106,7 @@ func TestReapExpiredSessions_ReleasesBackchannelStateOfAnOrphanedConnection(t *t
 	orphanSession[0] = 0xC1
 
 	pending := sm.RegisterConnWriter(connID, func([]byte) error { return nil })
-	replyCh, _ := pending.Register(0x5150)
+	replyCh, _ := pending.Register(0x5150, types.SessionId4{})
 
 	// A binding to a session that no longer exists — what the reaper collects.
 	sm.connMu.Lock()
@@ -1150,7 +1150,7 @@ func TestDestroySession_ReleasesBackchannelStateOfItsLastConnection(t *testing.T
 
 	const connID = uint64(7422)
 	pending := sm.RegisterConnWriter(connID, func([]byte) error { return nil })
-	replyCh, _ := pending.Register(0x9001)
+	replyCh, _ := pending.Register(0x9001, types.SessionId4{})
 
 	sm.connMu.Lock()
 	binding := &BoundConnection{ConnectionID: connID, SessionID: sessionID}
@@ -1263,7 +1263,7 @@ func TestPendingCBReplies_RegisterReportsARetiredTable(t *testing.T) {
 	p := NewPendingCBReplies()
 	p.FailAll()
 
-	ch, registered := p.Register(0x1234)
+	ch, registered := p.Register(0x1234, types.SessionId4{})
 	if registered {
 		t.Error("Register reported success on a table that had already been failed")
 	}
@@ -1392,7 +1392,7 @@ func TestEvictV41Client_ReleasesBackchannelStateOfItsLastConnection(t *testing.T
 
 	const connID = uint64(7533)
 	pending := sm.RegisterConnWriter(connID, func([]byte) error { return nil })
-	replyCh, _ := pending.Register(0x9002)
+	replyCh, _ := pending.Register(0x9002, types.SessionId4{})
 
 	sm.connMu.Lock()
 	binding := &BoundConnection{ConnectionID: connID, SessionID: sessionID}
@@ -1770,5 +1770,147 @@ func TestSendCallback_AStoppedSenderDoesNotWaitOutTheTimeout(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("sendCallback ignored its sender stopping and is waiting out the callback timeout")
+	}
+}
+
+// TestCancelSession_ReleasesOnlyTheOwnersWaiters pins the demultiplexing the
+// session-tagged waiter exists for. The reply table is held per connection and
+// several sessions can share one, so a connection-wide release cannot answer
+// for a session that goes away while the connection stays live — its sender
+// would block until its own timeout with nothing able to route to it. The
+// cancellation must be addressable by session, and must leave the other
+// sessions on that connection untouched: cancelling their waiters would report
+// a callback as unanswered for a client that is still reachable.
+func TestCancelSession_ReleasesOnlyTheOwnersWaiters(t *testing.T) {
+	p := NewPendingCBReplies()
+
+	var owner, other types.SessionId4
+	owner[0], other[0] = 0xAA, 0xBB
+
+	ownedCh, _ := p.Register(0x1001, owner)
+	otherCh, _ := p.Register(0x1002, other)
+
+	p.CancelSession(owner)
+
+	select {
+	case _, open := <-ownedCh:
+		if open {
+			t.Error("the cancelled session's waiter received a reply rather than being released")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the cancelled session's waiter was left armed on a table that cannot route to it")
+	}
+
+	// The other session's waiter must still be live and routable.
+	select {
+	case <-otherCh:
+		t.Fatal("another session's waiter was released by this session's cancellation")
+	default:
+	}
+	if !p.Deliver(0x1002, []byte("reply")) {
+		t.Fatal("the other session's waiter is no longer routable after a foreign session was cancelled")
+	}
+	select {
+	case data := <-otherCh:
+		if !bytes.Equal(data, []byte("reply")) {
+			t.Errorf("received %q, want %q", data, "reply")
+		}
+	default:
+		t.Fatal("the delivered reply never reached the other session's waiter")
+	}
+}
+
+// TestDestroySession_ReleasesItsWaitersOnASharedLiveConnection covers the case
+// the per-connection release cannot reach. Session A and session B are both
+// bound to connection C; destroying A leaves C with B's binding, so the
+// connection-wide FailAll never runs. A's in-flight recall waiter used to stay
+// registered in C's shared table and block for the full callback timeout, then
+// retry against a session that no longer exists.
+func TestDestroySession_ReleasesItsWaitersOnASharedLiveConnection(t *testing.T) {
+	_, sm, sessionA := createTestBackchannelSender(t)
+
+	// A second session on the same connection. Its own bindings are what keep
+	// the connection alive past A's teardown.
+	sessionB := types.SessionId4{0xB2}
+	sm.mu.Lock()
+	sm.sessionsByID[sessionB] = &Session{SessionID: sessionB}
+	sm.mu.Unlock()
+
+	const connID = uint64(7601)
+	pending := sm.RegisterConnWriter(connID, func([]byte) error { return nil })
+	replyA, _ := pending.Register(0x2001, sessionA)
+	replyB, _ := pending.Register(0x2002, sessionB)
+
+	sm.connMu.Lock()
+	for _, sid := range []types.SessionId4{sessionA, sessionB} {
+		binding := &BoundConnection{ConnectionID: connID, SessionID: sid, Direction: ConnDirBoth}
+		sm.connByID[connID] = append(sm.connByID[connID], binding)
+		sm.connBySession[sid] = append(sm.connBySession[sid], binding)
+	}
+	sm.connMu.Unlock()
+
+	if err := sm.DestroySession(sessionA); err != nil {
+		t.Fatalf("DestroySession: %v", err)
+	}
+
+	select {
+	case _, open := <-replyA:
+		if open {
+			t.Error("the destroyed session's waiter received a reply rather than being released")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the destroyed session's waiter stayed armed on a connection another session keeps alive")
+	}
+
+	// The surviving session's waiter and the connection's state must be intact:
+	// this connection is still carrying traffic for session B.
+	select {
+	case <-replyB:
+		t.Fatal("the surviving session's waiter was released by the other session's teardown")
+	default:
+	}
+	if !pending.Deliver(0x2002, []byte("reply")) {
+		t.Fatal("the surviving session's waiter is no longer routable")
+	}
+	sm.connMu.Lock()
+	_, writerHeld := sm.connWriters[connID]
+	_, repliesHeld := sm.cbRepliesByConn[connID]
+	sm.connMu.Unlock()
+	if !writerHeld || !repliesHeld {
+		t.Error("the connection's callback state was released while another session was still bound to it")
+	}
+}
+
+// TestBindConnToSession_RebindAwayFromBackReleasesItsWaiters covers the second
+// unreachable case. A session rebound from a back-capable direction to
+// ConnDirFore has no callback route over that connection any more, but the
+// binding is replaced directly rather than through dropConnBindingLocked (which
+// would release the writer it is about to re-register), so nothing used to
+// cancel the waiters it had left there.
+func TestBindConnToSession_RebindAwayFromBackReleasesItsWaiters(t *testing.T) {
+	_, sm, sessionID := createTestBackchannelSender(t)
+
+	const connID = uint64(7602)
+	pending := sm.RegisterConnWriter(connID, func([]byte) error { return nil })
+	replyCh, _ := pending.Register(0x3001, sessionID)
+
+	// Bind as back-capable first, then rebind the same pair to fore-only.
+	sm.connMu.Lock()
+	binding := &BoundConnection{ConnectionID: connID, SessionID: sessionID, Direction: ConnDirBoth}
+	sm.connByID[connID] = append(sm.connByID[connID], binding)
+	sm.connBySession[sessionID] = append(sm.connBySession[sessionID], binding)
+	sm.connMu.Unlock()
+
+	if _, err := sm.BindConnToSession(connID, sessionID, types.CDFC4_FORE); err != nil {
+		t.Fatalf("BindConnToSession: %v", err)
+	}
+
+	select {
+	case _, open := <-replyCh:
+		if open {
+			t.Error("the rebind's waiter received a reply rather than being released")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a session rebound away from the back channel kept a waiter with no callback route to answer it")
 	}
 }

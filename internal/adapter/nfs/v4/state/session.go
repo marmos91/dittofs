@@ -409,6 +409,12 @@ func (sm *StateManager) destroySessionLocked(sessionID types.SessionId4, force b
 // and a connection that also carries another session never releases them: the
 // other session's teardown sees a binding still standing and declines.
 //
+// The waiters are cancelled by session before the bindings go, not only via the
+// connection-wide FailAll that a last binding triggers. A connection carrying
+// another session's binding outlives this teardown, so FailAll never runs for
+// it, and a recall waiting on this session's reply would then block until its
+// own timeout — against a session that no longer exists.
+//
 // Caller holds sm.mu. Lock ordering: sm.mu before connMu.
 func (sm *StateManager) dropSessionBindingsLocked(sessionID types.SessionId4) {
 	sm.connMu.Lock()
@@ -420,6 +426,9 @@ func (sm *StateManager) dropSessionBindingsLocked(sessionID types.SessionId4) {
 		connIDs = append(connIDs, b.ConnectionID)
 	}
 	for _, connID := range connIDs {
+		if pending := sm.cbRepliesByConn[connID]; pending != nil {
+			pending.CancelSession(sessionID)
+		}
 		sm.dropConnBindingLocked(connID, sessionID)
 	}
 	delete(sm.connBySession, sessionID)

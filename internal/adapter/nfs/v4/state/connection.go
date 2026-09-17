@@ -204,6 +204,20 @@ func (sm *StateManager) BindConnToSession(connectionID uint64, sessionID types.S
 
 	now := time.Now()
 
+	// A rebind away from the back channel leaves this session no callback
+	// route over this connection, so the waiters it registered on the shared
+	// table would otherwise stay armed with nothing able to answer them. This
+	// path removes the old binding directly rather than through
+	// dropConnBindingLocked — which would release the writer it is about to
+	// re-register and leave the rebound connection mute — so the cancellation
+	// has to be done here. Both back-capable directions keep their route and
+	// their waiters.
+	if direction != ConnDirBack && direction != ConnDirBoth {
+		if pending := sm.cbRepliesByConn[connectionID]; pending != nil {
+			pending.CancelSession(sessionID)
+		}
+	}
+
 	// Remove the old binding for this (connection, session) pair (rebind case)
 	sm.removeConnFromSessionLocked(connectionID, sessionID)
 	sm.removeConnBindingLocked(connectionID, sessionID)
