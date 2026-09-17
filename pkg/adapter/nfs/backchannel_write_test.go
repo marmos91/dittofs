@@ -221,6 +221,7 @@ func createBackchannelSession(t *testing.T, sm *v4state.StateManager) v4types.Se
 		},
 		0x40000000,
 		[]v4types.CallbackSecParms4{{CbSecFlavor: 0}},
+		1,
 	)
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
