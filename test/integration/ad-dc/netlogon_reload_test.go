@@ -194,10 +194,8 @@ func TestNetlogonHotReload(t *testing.T) {
 // constraint here, so a direct setpassword is sufficient.
 func rotateMachinePassword(t *testing.T, newPassword string) {
 	t.Helper()
-	out, err := exec.Command("docker", "exec", adContainerName,
-		"samba-tool", "user", "setpassword", machineAccountName,
-		"--newpassword="+newPassword,
-	).CombinedOutput()
+	out, err := adDockerExec("samba-tool", "user", "setpassword", machineAccountName,
+		"--newpassword="+newPassword)
 	if err != nil {
 		t.Fatalf("samba-tool setpassword %s failed: %v\n%s", machineAccountName, err, out)
 	}

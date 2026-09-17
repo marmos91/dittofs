@@ -20,6 +20,7 @@
 package ad_dc_test
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -41,8 +42,13 @@ import (
 )
 
 const (
-	adContainerName = "dittofs-ad-dc-test"
-	adImageName     = "dittofs-ad-dc-test"
+	adImageName = "dittofs-ad-dc-test"
+
+	// adExecTimeout bounds every `docker exec` the fixture runs against the DC.
+	// A bare exec.Command has no deadline, so a call issued while the container is
+	// going away blocks until the Docker API call itself gives up — turning a
+	// fixture teardown into a hung test run instead of a diagnosable failure.
+	adExecTimeout = 2 * time.Minute
 
 	adRealm  = "DITTOFS.AD"
 	adDomain = "DITTOFS"
@@ -56,6 +62,50 @@ const (
 	adSMBSPNShort = "cifs/dittofs.dittofs.ad"
 	adSMBSPNFull  = "cifs/dittofs.dittofs.ad@DITTOFS.AD"
 )
+
+// adContainerName is the container the current test's fixture is running in. It
+// is set by setupADDC/setupADDCForLDAP to a name derived from the test, so two
+// tests never address the same container and one test's teardown cannot reach
+// another's DC.
+//
+// decision: this is package-level mutable state, which is safe only because the
+// tests in this package run sequentially (none calls t.Parallel). It is set once
+// per test before any helper reads it. It would need to become a field threaded
+// through the helpers if these tests ever run in parallel.
+var adContainerName = "dittofs-ad-dc-test"
+
+// uniqueContainerName derives a Docker container name unique to t, so a fixture
+// is never shared between tests. Docker names allow only [a-zA-Z0-9][a-zA-Z0-9_.-]*,
+// so the test name is lowercased and every other byte is replaced with '-'.
+func uniqueContainerName(t *testing.T) string {
+	safe := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '_', r == '.', r == '-':
+			return r
+		case r >= 'A' && r <= 'Z':
+			return r + ('a' - 'A')
+		default:
+			return '-'
+		}
+	}, t.Name())
+	return adImageName + "-" + safe
+}
+
+// adDockerOutput runs `docker <sub> args...` bounded by adExecTimeout and returns
+// its stdout. Used for the fixture's introspection calls (inspect, port) so none
+// can block past the deadline.
+func adDockerOutput(sub string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), adExecTimeout)
+	defer cancel()
+	return exec.CommandContext(ctx, "docker", append([]string{sub}, args...)...).Output()
+}
+
+// adDockerExec runs `docker exec <container> args...` with a bounded context and
+// returns its combined output. Every exec the fixture issues goes through here so
+// none can block past adExecTimeout.
+func adDockerExec(args ...string) ([]byte, error) {
+	return adDockerOutput("exec", append([]string{adContainerName}, args...)...)
+}
 
 // TestADGroupSIDsFromPAC exercises the full AD-1 path: a real AD ticket's PAC
 // group SIDs flow into the KerberosService AuthResult.
@@ -141,7 +191,11 @@ func setupADDC(t *testing.T) (kdcHostPort int, keytabPath, krb5ConfPath string, 
 
 	tmpDir := t.TempDir()
 
-	// Clean up any previous container.
+	// Address a container private to this test so no other test's teardown can
+	// remove the DC out from under an in-flight docker exec.
+	adContainerName = uniqueContainerName(t)
+
+	// Clean up any previous container left by an interrupted run of this test.
 	_ = exec.Command("docker", "rm", "-f", adContainerName).Run()
 
 	dockerfileDir := findADDockerfileDir(t)
@@ -179,7 +233,7 @@ func setupADDC(t *testing.T) (kdcHostPort int, keytabPath, krb5ConfPath string, 
 	}
 
 	// Discover the randomly assigned host port for the KDC.
-	portOut, err := exec.Command("docker", "port", adContainerName, "88/tcp").Output()
+	portOut, err := adDockerOutput("port", adContainerName, "88/tcp")
 	if err != nil {
 		dumpADLogs(t)
 		t.Fatalf("docker port: %v", err)
@@ -206,8 +260,8 @@ func setupADDC(t *testing.T) (kdcHostPort int, keytabPath, krb5ConfPath string, 
 	// container, so the fixture's chmod 0400 / chown to the dittofs uid does
 	// not block us (it would block a host volume mount).
 	keytabPath = filepath.Join(tmpDir, "dittofs.keytab")
-	if out, err := exec.Command("docker", "cp",
-		adContainerName+":/keytabs/dittofs.keytab", keytabPath).CombinedOutput(); err != nil {
+	if out, err := adDockerOutput("cp",
+		adContainerName+":/keytabs/dittofs.keytab", keytabPath); err != nil {
 		dumpADLogs(t)
 		t.Fatalf("copy keytab: %v\n%s", err, out)
 	}
@@ -264,8 +318,7 @@ func waitForKeytab(t *testing.T, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		out, err := exec.Command("docker", "exec", adContainerName,
-			"sh", "-c", "test -s /keytabs/dittofs.keytab && echo ok").CombinedOutput()
+		out, err := adDockerExec("sh", "-c", "test -s /keytabs/dittofs.keytab && echo ok")
 		if err == nil && strings.TrimSpace(string(out)) == "ok" {
 			return
 		}
@@ -293,8 +346,7 @@ func waitForADPort(t *testing.T, port int, timeout time.Duration) {
 // lookupGroupSID queries the running DC for a group's object SID via samba-tool.
 func lookupGroupSID(t *testing.T, group string) string {
 	t.Helper()
-	out, err := exec.Command("docker", "exec", adContainerName,
-		"samba-tool", "group", "show", group, "--attributes=objectSid").CombinedOutput()
+	out, err := adDockerExec("samba-tool", "group", "show", group, "--attributes=objectSid")
 	if err != nil {
 		t.Fatalf("samba-tool group show %s: %v\n%s", group, err, out)
 	}
@@ -322,7 +374,10 @@ func containsSID(sids []string, want string) bool {
 
 func dumpADLogs(t *testing.T) {
 	t.Helper()
-	out, _ := exec.Command("docker", "logs", "--tail", "100", adContainerName).CombinedOutput()
+	ctx, cancel := context.WithTimeout(context.Background(), adExecTimeout)
+	defer cancel()
+	out, _ := exec.CommandContext(ctx, "docker",
+		"logs", "--tail", "100", adContainerName).CombinedOutput()
 	t.Logf("---- AD-DC container logs (tail) ----\n%s\n-------------------------------------", out)
 }
 

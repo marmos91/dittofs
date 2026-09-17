@@ -39,10 +39,10 @@ func getContainerIP(t *testing.T) string {
 	// Emit one IP per line so multiple attached networks don't concatenate into
 	// a single invalid address; the AD-DC fixture uses only the default bridge,
 	// so the first non-empty line is the bridge IP we want.
-	out, err := exec.Command("docker", "inspect",
+	out, err := adDockerOutput("inspect",
 		"--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}}\n{{end}}",
 		adContainerName,
-	).Output()
+	)
 	if err != nil {
 		t.Fatalf("docker inspect network IP: %v", err)
 	}

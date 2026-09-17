@@ -61,7 +61,8 @@ func waitForDCStable(t *testing.T, timeout time.Duration) {
 	deadline := time.Now().Add(timeout)
 	streak := 0
 	for time.Now().Before(deadline) {
-		ok := exec.Command("docker", "exec", adContainerName, "samba-tool", "processes").Run() == nil
+		_, err := adDockerExec("samba-tool", "processes")
+		ok := err == nil
 		if ok {
 			streak++
 			if streak >= needStreak {
@@ -175,8 +176,7 @@ func TestOnlineJoinAndMemberLogon(t *testing.T) {
 	// re-execs samba into the foreground shortly after provisioning, so a
 	// concurrent `docker exec` can be SIGTERM'd — that is informational only and
 	// must not fail the test, which proves the join via the live logon below).
-	if out, lerr := exec.Command("docker", "exec", adContainerName,
-		"samba-tool", "computer", "list").CombinedOutput(); lerr != nil {
+	if out, lerr := adDockerExec("samba-tool", "computer", "list"); lerr != nil {
 		t.Logf("samba-tool computer list (non-fatal): %v\n%s", lerr, out)
 	} else {
 		t.Logf("AD computer list after join:\n%s", out)

@@ -158,6 +158,10 @@ func TestLDAPPlaintextRefused(t *testing.T) {
 func setupADDCForLDAP(t *testing.T) (ldapPort int, cleanup func()) {
 	t.Helper()
 
+	// A container private to this test, so no sibling test's teardown can remove
+	// the DC mid-exec.
+	adContainerName = uniqueContainerName(t)
+
 	_ = exec.Command("docker", "rm", "-f", adContainerName).Run()
 
 	dockerfileDir := findADDockerfileDir(t)
@@ -188,7 +192,7 @@ func setupADDCForLDAP(t *testing.T) (ldapPort int, cleanup func()) {
 		t.Fatalf("docker run failed: %v\n%s", err, runOut)
 	}
 
-	portOut, err := exec.Command("docker", "port", adContainerName, "389/tcp").Output()
+	portOut, err := adDockerOutput("port", adContainerName, "389/tcp")
 	if err != nil {
 		dumpADLogs(t)
 		t.Fatalf("docker port: %v", err)
@@ -221,8 +225,7 @@ func waitForADUser(t *testing.T, user string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if err := exec.Command("docker", "exec", adContainerName,
-			"samba-tool", "user", "show", user).Run(); err == nil {
+		if _, err := adDockerExec("samba-tool", "user", "show", user); err == nil {
 			return
 		}
 		time.Sleep(2 * time.Second)
