@@ -333,12 +333,33 @@ func (h *UserHandler) Update(w http.ResponseWriter, r *http.Request) {
 // caller asked for a permission and a 200 alone cannot distinguish "applied"
 // from "dropped". The returned warnings are empty when nothing was skipped.
 //
+// Two spellings of one share in the same request are one grant, not two: they
+// resolve to the same share and therefore the same (user, share) row, so
+// applying both would leave the winner to Go's random map iteration order — the
+// same request could produce different effective permissions on different runs.
+// Entries are therefore applied in sorted key order, so the last spelling in
+// that order wins deterministically, and the collision is reported.
+//
 // Each write also reprojects the share's root ACL, because the store carries
 // that completion (see userStore) — without it a grant made here would leave
 // the grantee unable to traverse a share root owned by uid 0.
 func (h *UserHandler) applySharePerms(r *http.Request, userID string, perms map[string]models.SharePermission) []string {
 	var warnings []string
-	for shareName, perm := range perms {
+
+	// Sorted so a request naming one share twice resolves the same way every
+	// time; the map's own order is random.
+	names := make([]string, 0, len(perms))
+	for name := range perms {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+
+	// appliedByShare records which key last wrote each resolved share, so a
+	// second spelling of it can be reported rather than silently overwriting.
+	appliedByShare := make(map[string]string, len(names))
+
+	for _, shareName := range names {
+		perm := perms[shareName]
 		if !perm.IsValid() {
 			warnings = append(warnings, fmt.Sprintf("share_permissions[%q]: invalid permission %q", shareName, perm))
 			continue
@@ -346,9 +367,21 @@ func (h *UserHandler) applySharePerms(r *http.Request, userID string, perms map[
 		sh, err := h.store.GetShare(r.Context(), metadata.NormalizeShareName(shareName))
 		if err != nil {
 			// Share not found (or other lookup error): skip rather than roll
-			// back the user write, and report so the caller can see it.
-			warnings = append(warnings, fmt.Sprintf("share_permissions[%q]: share not found", shareName))
+			// back the user write, and report so the caller can see it. A
+			// lookup failure that is not a miss is named as such: reporting a
+			// store outage as "share not found" sends the operator to correct
+			// a key that was never wrong.
+			if errors.Is(err, models.ErrShareNotFound) {
+				warnings = append(warnings, fmt.Sprintf("share_permissions[%q]: share not found", shareName))
+			} else {
+				warnings = append(warnings, fmt.Sprintf("share_permissions[%q]: share lookup failed: %v", shareName, err))
+			}
 			continue
+		}
+		if prev, dup := appliedByShare[sh.Name]; dup {
+			warnings = append(warnings, fmt.Sprintf(
+				"share_permissions[%q]: also names share %q as %q; the later entry in sorted order applies",
+				shareName, sh.Name, prev))
 		}
 		if err := h.store.SetUserSharePermission(r.Context(), &models.UserSharePermission{
 			UserID:     userID,
@@ -357,7 +390,9 @@ func (h *UserHandler) applySharePerms(r *http.Request, userID string, perms map[
 			Permission: string(perm),
 		}); err != nil {
 			warnings = append(warnings, fmt.Sprintf("share_permissions[%q]: %v", shareName, err))
+			continue
 		}
+		appliedByShare[sh.Name] = shareName
 	}
 	// Deterministic order: the map iteration above is random.
 	slices.Sort(warnings)

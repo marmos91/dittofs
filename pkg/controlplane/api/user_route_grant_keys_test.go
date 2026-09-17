@@ -127,3 +127,42 @@ func TestUserRouteReportsSkippedSharePermissions(t *testing.T) {
 		t.Errorf("clean request reported warnings: %v", body.Warnings)
 	}
 }
+
+// TestUserRouteSharePermissionAliasedKeysAreDeterministic pins what a request
+// that names one share twice does. "export" and "/export" are different JSON
+// keys but the same share, so both resolve to one (user, share) row and both
+// entries cannot be the winner. Applying them in Go's map iteration order would
+// make the effective permission differ between runs of the same request.
+//
+// Entries are applied in sorted key order, so the winner is the same on every
+// run, and the collision is reported rather than passing silently.
+func TestUserRouteSharePermissionAliasedKeysAreDeterministic(t *testing.T) {
+	router, token, cpStore, _ := newRootACLTestRouter(t, "/export")
+	seedUser(t, cpStore, "target")
+
+	// Run repeatedly: a map-order-dependent implementation would vary. Fifty
+	// draws catches it reliably — the two-key order splits roughly 15/85 rather
+	// than 50/50, so the wrong winner appears within a handful of runs.
+	for i := 0; i < 50; i++ {
+		rec := doAuthedRequest(t, router, token, http.MethodPut, "/api/v1/users/target",
+			`{"share_permissions":{"export":"read-write","/export":"read"}}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("iteration %d: status = %d, want %d (body=%q)", i, rec.Code, http.StatusOK, rec.Body.String())
+		}
+
+		perm, err := cpStore.GetUserSharePermission(context.Background(), "target", "/export")
+		if err != nil {
+			t.Fatalf("iteration %d: read back grant: %v", i, err)
+		}
+		if perm == nil {
+			t.Fatalf("iteration %d: no grant persisted for the aliased share", i)
+		}
+		// "/export" sorts before "export" (0x2F < 0x65), so "export" is applied
+		// last and wins. The point is that this is stable, not which one wins.
+		if perm.Permission != string(models.PermissionReadWrite) {
+			t.Fatalf("iteration %d: permission = %q, want %q: an aliased key pair "+
+				"resolved by map iteration order instead of a stable rule",
+				i, perm.Permission, models.PermissionReadWrite)
+		}
+	}
+}

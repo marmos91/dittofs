@@ -123,22 +123,21 @@ func (g *shareGrantStore) DeleteSIDSharePermissionsByDisplayName(ctx context.Con
 // reprojection belongs here rather than in the user handler so every caller of
 // the identity mutation gets it, exactly as the grant writes do.
 //
-// Only a persisted change reprojects, and only when the id actually moved — a
-// profile edit that leaves UID alone changes no projected key.
+// Every persisted update reprojects, rather than only one that moved the id.
+// Comparing against a pre-read id cannot be made atomic with the update — the
+// read and the write are separate store calls — so two concurrent edits could
+// each see the original id, let the later write restore it, and both skip the
+// reprojection, leaving the projection describing an id the user no longer has.
+// That is the same orphaning this method exists to prevent. The reprojection is
+// a full rebuild from current state and the invalidation is a broadcast, so
+// repeating it for an edit that did not move the id is redundant, not wrong.
 func (g *shareGrantStore) UpdateUser(ctx context.Context, user *models.User) error {
-	prev, err := g.GetUserByID(ctx, user.ID)
-	if err != nil {
-		return err
-	}
 	if err := g.Store.UpdateUser(ctx, user); err != nil {
 		return err
 	}
-	if sameUnixID(prev.UID, user.UID) {
-		return nil
-	}
 	perms, err := g.GetUserSharePermissions(ctx, user.Username)
 	if err != nil {
-		logger.Warn("Failed to list share grants after a uid change", "user", user.Username, "error", err)
+		logger.Warn("Failed to list share grants after a user update", "user", user.Username, "error", err)
 		return nil
 	}
 	for _, p := range perms {
@@ -148,35 +147,19 @@ func (g *shareGrantStore) UpdateUser(ctx context.Context, user *models.User) err
 }
 
 // UpdateGroup is UpdateUser for a group's GID: a group grant projects under the
-// group's Unix id just as a user grant does.
+// group's Unix id just as a user grant does, and it reprojects unconditionally
+// for the same reason.
 func (g *shareGrantStore) UpdateGroup(ctx context.Context, group *models.Group) error {
-	prev, err := g.GetGroupByID(ctx, group.ID)
-	if err != nil {
-		return err
-	}
 	if err := g.Store.UpdateGroup(ctx, group); err != nil {
 		return err
 	}
-	if sameUnixID(prev.GID, group.GID) {
-		return nil
-	}
 	perms, err := g.GetGroupSharePermissions(ctx, group.Name)
 	if err != nil {
-		logger.Warn("Failed to list share grants after a gid change", "group", group.Name, "error", err)
+		logger.Warn("Failed to list share grants after a group update", "group", group.Name, "error", err)
 		return nil
 	}
 	for _, p := range perms {
 		g.grantsChanged(ctx, p.ShareName)
 	}
 	return nil
-}
-
-// sameUnixID reports whether two optional Unix ids are the same id. Both nil is
-// the same id; one nil is a move to or from the id-less state, which changes
-// the projected key (the projection falls back to a default id).
-func sameUnixID(a, b *uint32) bool {
-	if a == nil || b == nil {
-		return a == nil && b == nil
-	}
-	return *a == *b
 }
