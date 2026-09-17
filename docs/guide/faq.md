@@ -508,7 +508,7 @@ Common causes:
 1. **Identity mapping**: Try enabling `map_all_to_anonymous: true` for development
 2. **Root directory permissions**: Set `mode: 0777` temporarily to isolate the issue
 3. **Client UID mismatch**: Check your UID with `id` command
-4. **Export restrictions**: Check `allowed_clients` in configuration
+4. **Export restrictions**: Check the share's netgroup allowlist with `dfsctl share nfs-config show <share>`
 
 See [TROUBLESHOOTING.md](troubleshooting.md) for solutions.
 

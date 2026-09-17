@@ -120,21 +120,26 @@ mount.nfs: access denied by server while mounting
    sudo mount -t nfs -o tcp,port=12049,mountport=12049,resvport localhost:/export /mnt/test
    ```
 
-3. **Check export configuration:**
-   ```yaml
-   shares:
-     - name: /export
-       allowed_clients:
-         - 192.168.1.0/24  # Make sure your IP is in this range
-       denied_clients: []
+3. **Check the export's client allowlist.** If the share has a netgroup attached,
+   only matching client addresses may mount it:
+   ```bash
+   dfsctl share nfs-config show /export
+   ```
+   Confirm your IP is in the netgroup, or clear the association to allow all
+   clients:
+   ```bash
+   dfsctl netgroup show <netgroup-name>
+   dfsctl share nfs-config set /export --netgroup ""
    ```
 
-4. **Verify authentication settings:**
-   ```yaml
-   shares:
-     - name: /export
-       require_auth: false  # Set to false for development
-       allowed_auth_methods: [anonymous, unix]
+4. **Verify the export's auth-flavor policy.** A share that requires Kerberos
+   refuses an AUTH_SYS mount:
+   ```bash
+   dfsctl share nfs-config show /export
+   ```
+   For development over AUTH_SYS:
+   ```bash
+   dfsctl share nfs-config set /export --allow-auth-sys true --require-kerberos false
    ```
 
 ### No such file or directory
@@ -591,12 +596,10 @@ sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049 localhost:/export 
 
 **Cause:** Server requires authentication but client isn't providing it.
 
-**Solution:** Either disable authentication or configure it properly:
-```yaml
-shares:
-  - name: /export
-    require_auth: false
-    allowed_auth_methods: [anonymous, unix]
+**Solution:** Allow the AUTH_SYS flavor on the export, or set the client up for
+Kerberos:
+```bash
+dfsctl share nfs-config set /export --allow-auth-sys true --require-kerberos false
 ```
 
 ### "metadata store not found"
