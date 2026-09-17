@@ -35,12 +35,9 @@ func TestShareCache_CopySafety(t *testing.T) {
 	ctx := context.Background()
 	store := newShareCacheStore(t)
 
-	sid := "S-1-5-7"
-	uid := uint32(65534)
 	createShareRoot(t, store, "s1")
 	require.NoError(t, store.UpdateShareOptions(ctx, "s1", &metadata.ShareOptions{
-		AllowedClients:  []string{"192.168.1.0/24"},
-		IdentityMapping: &metadata.IdentityMapping{AnonymousUID: &uid, AnonymousSID: &sid},
+		AllowedClients: []string{"192.168.1.0/24"},
 	}))
 
 	first, err := store.GetShareOptions(ctx, "s1") // populate
@@ -50,15 +47,11 @@ func TestShareCache_CopySafety(t *testing.T) {
 	first.ReadOnly = true
 	first.AllowedClients = append(first.AllowedClients, "0.0.0.0/0")
 	first.AllowedClients[0] = "mutated"
-	*first.IdentityMapping.AnonymousUID = 0
-	*first.IdentityMapping.AnonymousSID = "mutated"
 
 	second, err := store.GetShareOptions(ctx, "s1")
 	require.NoError(t, err)
 	require.False(t, second.ReadOnly)
 	require.Equal(t, []string{"192.168.1.0/24"}, second.AllowedClients)
-	require.Equal(t, uint32(65534), *second.IdentityMapping.AnonymousUID)
-	require.Equal(t, "S-1-5-7", *second.IdentityMapping.AnonymousSID)
 }
 
 func BenchmarkGetShareOptions_Cached(b *testing.B) {

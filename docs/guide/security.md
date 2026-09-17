@@ -279,79 +279,63 @@ mapped to a UID/GID before the permission check.
 
 ### Export-level access control
 
-```yaml
-shares:
-  - name: /export
-    allowed_clients:
-      - 192.168.1.0/24
-    denied_clients:
-      - 192.168.1.50
-    require_auth: true
-    allowed_auth_methods: [unix, krb5]
+Client access is restricted per share by attaching a **netgroup** — a named list of
+IP addresses, CIDR ranges and hostnames. A share with a netgroup accepts only
+clients whose address matches a member; a share with no netgroup accepts any
+client.
+
+```bash
+dfsctl netgroup create trusted-net
+dfsctl netgroup add-member trusted-net --type cidr --value 192.168.1.0/24
+dfsctl netgroup add-member trusted-net --type ip   --value 192.168.1.50
+dfsctl share nfs-config set /export --netgroup trusted-net
 ```
 
-### IP-based restrictions
+The netgroup is evaluated at MOUNT and refused with `MNT3ERR_ACCES`; the
+per-operation gate on the data path re-checks the share's auth-flavor policy, so
+tightening an export also affects clients that mounted before the change.
 
-Allow specific networks:
-
-```yaml
-shares:
-  - name: /export
-    allowed_clients:
-      - 192.168.1.0/24
-      - 10.0.0.0/8
-```
-
-Deny specific hosts:
-
-```yaml
-shares:
-  - name: /export
-    denied_clients:
-      - 192.168.1.100
-```
+Which authentication flavors an export accepts is separate from the client
+allowlist: set `--allow-auth-sys` / `--require-kerberos` with the same
+`dfsctl share nfs-config set` command, and see
+[configuration](configuration.md) for the Kerberos floor.
 
 ### Identity mapping
 
-All squash (map all users to anonymous):
+Squash mode is a per-share setting (`squash`), applied to the client's
+wire-supplied identity before any permission check. The anonymous UID/GID come
+from the share's anonymous identity.
 
-```yaml
-shares:
-  - name: /export
-    identity_mapping:
-      map_all_to_anonymous: true
-      anonymous_uid: 65534   # nobody
-      anonymous_gid: 65534   # nogroup
+All squash — every client is treated as anonymous:
+
+```bash
+dfsctl share nfs-config set /export --squash all_to_guest
 ```
 
-Root squash (map root to anonymous):
+Root squash — root (UID 0) is mapped to anonymous, everyone else passes through:
 
-```yaml
-shares:
-  - name: /export
-    identity_mapping:
-      map_privileged_to_anonymous: true
-      anonymous_uid: 65534
-      anonymous_gid: 65534
+```bash
+dfsctl share nfs-config set /export --squash root_to_guest
 ```
 
-No squashing (trust client UIDs — trusted networks or Kerberos only):
+No squashing — client UIDs pass through unchanged; use only on trusted networks
+or with Kerberos:
 
-```yaml
-shares:
-  - name: /export
-    identity_mapping:
-      map_all_to_anonymous: false
-      map_privileged_to_anonymous: false
+```bash
+dfsctl share nfs-config set /export --squash none
 ```
+
+The full set of modes is `none`, `root_to_admin`, `root_to_guest`,
+`all_to_admin` and `all_to_guest`.
 
 ### Read-only shares
 
-```yaml
-shares:
-  - name: /export
-    read_only: true   # all write operations fail
+```bash
+dfsctl share edit /export --read-only true
 ```
+
+A read-only share fails write and create operations with `EROFS`
+(`ErrReadOnly`), distinct from the `EACCES` a permission denial returns.
 
 ---
 
@@ -564,8 +548,8 @@ smbclient -k //server.example.com/export
 - [ ] Enable SMB3 encryption with `encryption_mode: required` for sensitive data
 - [ ] Enable SMB message signing with `required: true`
 - [ ] Deploy behind VPN or use NFS-over-TLS for NFS data confidentiality
-- [ ] Restrict export access by IP address (`allowed_clients`)
-- [ ] Use root squash on all exports (`map_privileged_to_anonymous: true`)
+- [ ] Restrict export access by IP address (attach a netgroup to each share)
+- [ ] Use root squash on all exports (`squash: root_to_guest`)
 - [ ] Configure NFSv4 ACLs for fine-grained access control
 - [ ] Use read-only exports where writes are not needed
 - [ ] Bind control plane to loopback or behind a reverse proxy with TLS
@@ -589,23 +573,13 @@ kerberos:
   max_clock_skew: 5m
   context_ttl: 8h
 
-metadata:
-  global:
-    dump_restricted: true
-    dump_allowed_clients:
-      - 127.0.0.1
-
-shares:
-  - name: /export
-    allowed_clients:
-      - 10.0.0.0/8
-    require_auth: true
-    allowed_auth_methods: [krb5]
-    identity_mapping:
-      map_privileged_to_anonymous: true
-      anonymous_uid: 65534
-      anonymous_gid: 65534
-    read_only: true
+# Shares, their netgroup allowlist and their squash mode live in the control
+# plane, not this file. Create them once:
+#
+#   dfsctl netgroup create trusted-net
+#   dfsctl netgroup add-member trusted-net --type cidr --value 10.0.0.0/8
+#   dfsctl share create /export --read-only --squash root_to_guest
+#   dfsctl share nfs-config set /export --netgroup trusted-net
 
 adapters:
   nfs:

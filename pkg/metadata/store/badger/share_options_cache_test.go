@@ -19,13 +19,11 @@ func newShareOptionsStore(t *testing.T) (*BadgerMetadataStore, string) {
 	t.Cleanup(func() { _ = store.Close() })
 
 	const shareName = "/opts"
-	anonUID := uint32(65534)
 	createShareRoot(t, store, shareName)
 	require.NoError(t, store.UpdateShareOptions(ctx, shareName, &metadata.ShareOptions{
 		AllowedClients:     []string{"10.0.0.0/8"},
 		DeniedClients:      []string{"10.1.2.3"},
 		AllowedAuthMethods: []string{"sys"},
-		IdentityMapping:    &metadata.IdentityMapping{AnonymousUID: &anonUID},
 	}))
 	return store, shareName
 }
@@ -63,7 +61,6 @@ func TestGetShareOptions_CallerCannotMutateCachedEntry(t *testing.T) {
 			got.AllowedClients[0] = "0.0.0.0/0"
 			got.DeniedClients = append(got.DeniedClients, "192.168.0.1")
 			got.AllowedAuthMethods[0] = "none"
-			*got.IdentityMapping.AnonymousUID = 0
 
 			after, err := store.GetShareOptions(ctx, shareName)
 			require.NoError(t, err)
@@ -73,8 +70,6 @@ func TestGetShareOptions_CallerCannotMutateCachedEntry(t *testing.T) {
 				"AllowedClients decides access and must not alias the cache")
 			require.Equal(t, []string{"10.1.2.3"}, after.DeniedClients)
 			require.Equal(t, []string{"sys"}, after.AllowedAuthMethods)
-			require.Equal(t, uint32(65534), *after.IdentityMapping.AnonymousUID,
-				"the anonymous UID squash target must not alias the cache")
 		})
 	}
 }

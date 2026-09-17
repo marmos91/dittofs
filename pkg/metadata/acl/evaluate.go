@@ -100,7 +100,7 @@ type EvaluateContext struct {
 	// SeTakeOwnershipPrivilege (MS-DTYP §2.5.3.2). Only privilege holders
 	// receive WRITE_OWNER implicitly when they own the file. On Windows
 	// this privilege is granted to BUILTIN\Administrators by default.
-	// Callers should set this from IsAdministratorSID(SID) or equivalent
+	// Callers should set this from HasTakeOwnershipPrivilege or equivalent
 	// admin-group membership detection. POSIX-only sessions default to
 	// false; UID==0 callers are usually short-circuited above acl.Evaluate.
 	RequesterHasTakeOwnership bool

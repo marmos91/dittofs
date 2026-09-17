@@ -170,10 +170,6 @@ type ShareOptions struct {
 	// Empty list means all methods are allowed
 	// Examples: ["unix", "kerberos", "ntlm"]
 	AllowedAuthMethods []string
-
-	// IdentityMapping defines how client identities are mapped
-	// Used for squashing (mapping users to anonymous) and other transformations
-	IdentityMapping *IdentityMapping
 }
 
 // ============================================================================

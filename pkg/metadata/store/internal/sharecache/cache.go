@@ -36,27 +36,5 @@ func Clone(opts *metadata.ShareOptions) *metadata.ShareOptions {
 	cp.AllowedClients = slices.Clone(opts.AllowedClients)
 	cp.DeniedClients = slices.Clone(opts.DeniedClients)
 	cp.AllowedAuthMethods = slices.Clone(opts.AllowedAuthMethods)
-	cp.IdentityMapping = cloneIdentityMapping(opts.IdentityMapping)
-	return &cp
-}
-
-// cloneIdentityMapping deep-copies the mapping and its pointer fields.
-func cloneIdentityMapping(m *metadata.IdentityMapping) *metadata.IdentityMapping {
-	if m == nil {
-		return nil
-	}
-	cp := *m
-	if m.AnonymousUID != nil {
-		v := *m.AnonymousUID
-		cp.AnonymousUID = &v
-	}
-	if m.AnonymousGID != nil {
-		v := *m.AnonymousGID
-		cp.AnonymousGID = &v
-	}
-	if m.AnonymousSID != nil {
-		v := *m.AnonymousSID
-		cp.AnonymousSID = &v
-	}
 	return &cp
 }

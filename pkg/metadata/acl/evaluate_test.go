@@ -912,9 +912,8 @@ func TestEvaluate_OwnerImplicitGrants_WriteOwnerRequiresAdmin(t *testing.T) {
 }
 
 // TestHasTakeOwnershipPrivilege locks in the admin-SID detection used by
-// callers to populate EvaluateContext.RequesterHasTakeOwnership. Mirrors
-// pkg/metadata.IsAdministratorSID coverage but lives here so the acl
-// package can stay self-contained.
+// callers to populate EvaluateContext.RequesterHasTakeOwnership. It lives
+// here with acl.IsAdminSID so the acl package stays self-contained.
 func TestHasTakeOwnershipPrivilege(t *testing.T) {
 	cases := []struct {
 		name      string
