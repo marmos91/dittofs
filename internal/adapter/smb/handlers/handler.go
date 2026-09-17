@@ -326,6 +326,13 @@ type Handler struct {
 	// operations can observe the shared Handler maps.
 	cleanup cleanupBarrier
 
+	// admitTransitionHook, when set, runs immediately before an admitted
+	// session transition takes the session's admission lock. It exists so a
+	// test can drive a retirement into the instant between a transition's
+	// decision and its act — an interleaving no timing-based test can pin.
+	// Nil in production.
+	admitTransitionHook func()
+
 	// resumeKeys maps opaque 24-byte resume keys to FileIDs for FSCTL_SRV_COPYCHUNK.
 	// Keys are issued via FSCTL_SRV_REQUEST_RESUME_KEY and revoked on file close.
 	resumeKeys *resumeKeyStore

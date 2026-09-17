@@ -1073,6 +1073,34 @@ func (h *Handler) StoreOpenFile(file *OpenFile) {
 	h.files.Store(string(file.FileID[:]), file)
 }
 
+// admitSessionTransition runs transition as one admitted step on sess, holding
+// the lock Session.MarkLoggedOff also takes. It returns false, without running
+// transition, when the session is already retired.
+//
+// Every SESSION_SETUP path that decides a session may authenticate and then
+// arms that handshake goes through here, so the decision and the arming are one
+// critical section rather than a load of LoggedOff followed by a separate act a
+// LOGOFF can slip between. A LOGOFF therefore either lands first — the
+// transition is refused, and the client sees the deleted-session answer — or
+// waits until the handshake's pending state is stored, which is the order the
+// session would have seen had the LOGOFF arrived a moment later.
+//
+// transition must not perform a network round trip: the lock also guards
+// per-message signing and channel registration, so a slow transition stalls
+// every message on the session. It covers the state change only.
+func (h *Handler) admitSessionTransition(sess *session.Session, transition func()) bool {
+	if h.admitTransitionHook != nil {
+		h.admitTransitionHook()
+	}
+	if sess == nil {
+		// No session object exists yet — a handshake for a freshly generated
+		// ID — so there is nothing a LOGOFF could have retired.
+		transition()
+		return true
+	}
+	return sess.RunAdmitted(transition)
+}
+
 // StorePendingAuth stores a pending authentication. pending.SessionID and
 // pending.ConnID together form the lookup key.
 func (h *Handler) StorePendingAuth(pending *PendingAuth) {

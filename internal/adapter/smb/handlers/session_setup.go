@@ -768,7 +768,7 @@ func (h *Handler) handleSessionBind(ctx *SMBHandlerContext, req *SessionSetupReq
 		ctx.ConnCryptoState.InitSessionPreauthHash(ctx.SessionID, ctx.RawRequest)
 	}
 
-	return h.handleNTLMNegotiateBinding(ctx, req)
+	return h.handleNTLMNegotiateBinding(ctx, sess, req)
 }
 
 // handleNTLMNegotiateBinding initiates an NTLM handshake for a session bind
@@ -777,7 +777,11 @@ func (h *Handler) handleSessionBind(ctx *SMBHandlerContext, req *SessionSetupReq
 // identity and keys are retained. On success it returns an NTLM TYPE_2
 // CHALLENGE with STATUS_MORE_PROCESSING_REQUIRED; the client's TYPE_3 will
 // be routed to completeNTLMAuth via the normal pending-auth branch.
-func (h *Handler) handleNTLMNegotiateBinding(ctx *SMBHandlerContext, req *SessionSetupRequest) (*HandlerResult, error) {
+//
+// sess is the bound session the caller already resolved and checked as live;
+// arming the handshake is admitted against it so a LOGOFF cannot slip between
+// that check and the store.
+func (h *Handler) handleNTLMNegotiateBinding(ctx *SMBHandlerContext, sess *session.Session, req *SessionSetupRequest) (*HandlerResult, error) {
 	// Extract NTLM token (unwrap SPNEGO if needed). The TYPE_1 must be
 	// present for a binding request; empty security buffer is invalid.
 	ntlmToken, usedSPNEGO, mechListBytes, _ := extractNTLMToken(req.SecurityBuffer)
@@ -814,7 +818,24 @@ func (h *Handler) handleNTLMNegotiateBinding(ctx *SMBHandlerContext, req *Sessio
 		NegotiateMessage: ntlmToken,
 		ChallengeMessage: challengeMsg,
 	}
-	h.StorePendingAuth(pending)
+
+	// Arming the bind's handshake is admitted, on the same terms as the
+	// non-binding negotiate: the caller's own LoggedOff check and this store are
+	// separate steps, and a LOGOFF between them would start a handshake whose
+	// channel the completion path then has to refuse. Admitting the store makes
+	// the LOGOFF land either before it — refused, with the preauth hash the
+	// caller seeded freed — or after it, and the LOGOFF's own teardown clears
+	// the record.
+	if !h.admitSessionTransition(sess, func() {
+		h.StorePendingAuth(pending)
+	}) {
+		logger.Debug("SESSION_SETUP bind: refusing to start a handshake on a logged-off session",
+			"sessionID", ctx.SessionID, "connID", ctx.ConnID)
+		if ctx.ConnCryptoState != nil {
+			ctx.ConnCryptoState.DeleteSessionPreauthHash(ctx.SessionID)
+		}
+		return NewErrorResult(types.StatusUserSessionDeleted), nil
+	}
 
 	logger.Debug("SESSION_SETUP bind: stored binding PendingAuth",
 		"sessionID", ctx.SessionID,
@@ -1069,12 +1090,14 @@ func (h *Handler) handleNTLMNegotiate(ctx *SMBHandlerContext, usedSPNEGO bool, m
 	// Reuse existing session ID for re-authentication, otherwise generate new
 	sessionID := ctx.SessionID
 	isReauth := false
+	var targetSess *session.Session
 	if sessionID == 0 {
 		sessionID = h.GenerateSessionID()
-	} else if _, ok := h.GetSession(sessionID); ok {
+	} else if existing, ok := h.GetSession(sessionID); ok {
 		// Session already exists with this ID — this is a re-authentication.
 		// Per MS-SMB2 3.3.5.5.2: existing session keys are retained.
 		isReauth = true
+		targetSess = existing
 	} else {
 		// A nonzero SessionId matching no session is a client-supplied ID the
 		// server never allocated. Fail the request rather than authenticate
@@ -1084,15 +1107,6 @@ func (h *Handler) handleNTLMNegotiate(ctx *SMBHandlerContext, usedSPNEGO bool, m
 		logger.Debug("SESSION_SETUP: unknown nonzero SessionID",
 			"sessionID", sessionID)
 		return NewErrorResult(types.StatusUserSessionDeleted), nil
-	}
-
-	// Initialize per-session preauth hash for SMB 3.1.1 key derivation.
-	// Per [MS-SMB2] 3.3.5.5: each session gets its own preauth hash chain
-	// initialized from the connection hash. We pass our own request bytes
-	// directly (rather than reading from a per-connection stash, which used
-	// to race when multiple SESSION_SETUPs were dispatched concurrently).
-	if ctx.ConnCryptoState != nil {
-		ctx.ConnCryptoState.InitSessionPreauthHash(sessionID, ctx.RawRequest)
 	}
 
 	// Build NTLM Type 2 (CHALLENGE) response
@@ -1116,7 +1130,33 @@ func (h *Handler) handleNTLMNegotiate(ctx *SMBHandlerContext, usedSPNEGO bool, m
 		NegotiateMessage: negotiateMessage,
 		ChallengeMessage: challengeMsg,
 	}
-	h.StorePendingAuth(pending)
+
+	// Arming the handshake and the decision that this session may authenticate
+	// are one admitted step: a LOGOFF that lands between the caller's own
+	// LoggedOff check and this store would otherwise let a new handshake start
+	// on a session whose signing key is already retired. Admitting the store
+	// makes the LOGOFF land either before it (the handshake is refused and its
+	// pending state never written) or after it (the LOGOFF's own teardown
+	// clears the record). The preauth-hash init goes in with it: it is the other
+	// half of the handshake's state, and the LOGOFF refusal frees it explicitly.
+	if !h.admitSessionTransition(targetSess, func() {
+		// Initialize per-session preauth hash for SMB 3.1.1 key derivation.
+		// Per [MS-SMB2] 3.3.5.5: each session gets its own preauth hash chain
+		// initialized from the connection hash. We pass our own request bytes
+		// directly (rather than reading from a per-connection stash, which used
+		// to race when multiple SESSION_SETUPs were dispatched concurrently).
+		if ctx.ConnCryptoState != nil {
+			ctx.ConnCryptoState.InitSessionPreauthHash(sessionID, ctx.RawRequest)
+		}
+		h.StorePendingAuth(pending)
+	}) {
+		logger.Debug("SESSION_SETUP: refusing to start a handshake on a logged-off session",
+			"sessionID", sessionID, "connID", ctx.ConnID)
+		if ctx.ConnCryptoState != nil {
+			ctx.ConnCryptoState.DeleteSessionPreauthHash(sessionID)
+		}
+		return NewErrorResult(types.StatusUserSessionDeleted), nil
+	}
 
 	logger.Debug("Stored pending auth with challenge",
 		"sessionID", sessionID,
@@ -2293,6 +2333,13 @@ func (h *Handler) tryReauthUpdate(pending *PendingAuth, username, domain string,
 	if !ok {
 		return nil
 	}
+	// The identity write is admitted: the caller's earlier LoggedOff check and
+	// this write are not one step, and a LOGOFF landing between them would let
+	// a retired session take a fresh identity. Admitting the write makes the
+	// LOGOFF land either before it — the session is refused, answering as a
+	// deleted session — or after the identity is published, which is the order
+	// a LOGOFF arriving a moment later would have produced.
+	//
 	// UpdateIdentity holds the session lock, so a concurrent request goroutine
 	// building an AuthContext never observes a half-updated identity. It also
 	// drops the memoized derived identity and clears any Kerberos PAC carried
@@ -2302,7 +2349,13 @@ func (h *Handler) tryReauthUpdate(pending *PendingAuth, username, domain string,
 	// SIDs. NTLM carries no PAC, so the empty SIDs go in the same write as the
 	// record they belong to rather than in a second one a request could resolve
 	// its identity inside.
-	existingSess.UpdateIdentity(username, domain, user, isGuest, username == "" && !isGuest, nil, "")
+	if !h.admitSessionTransition(existingSess, func() {
+		existingSess.UpdateIdentity(username, domain, user, isGuest, username == "" && !isGuest, nil, "")
+	}) {
+		logger.Debug("SESSION_SETUP: refusing to re-authenticate a logged-off session",
+			"sessionID", existingSess.SessionID, "username", username)
+		return NewErrorResult(types.StatusUserSessionDeleted)
+	}
 
 	logger.Info("Session re-authenticated (identity updated, keys retained)",
 		"sessionID", existingSess.SessionID,

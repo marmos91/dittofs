@@ -218,14 +218,27 @@ func (h *Handler) reauthKerberosSession(
 	// Refresh identity and lifetime. Updating ExpiresAt to the fresh ticket
 	// end-time clears the expired state so prepareDispatch lets subsequent
 	// requests through again (expire1/2 recovery).
+	//
+	// The whole refresh is one admitted step: the caller's LoggedOff check and
+	// this write are separate, and a LOGOFF landing between them would let a
+	// retired session take a fresh Kerberos identity. Admitting it makes the
+	// LOGOFF land either before the write — the session is refused as deleted —
+	// or after it, which is the order a LOGOFF a moment later would have given.
+	//
 	// UpdateIdentity holds the session lock: a concurrent request goroutine
 	// building an AuthContext must not observe a half-updated identity.
 	// The PAC group/user SIDs go in the same write: group membership may have
 	// changed between the original logon and this re-authentication, and a
 	// request resolving its identity between two writes would pair the new
 	// ticket's user record with the old ticket's groups.
-	sess.UpdateIdentity(user.Username, h.sessionDomain(authResult.Realm), user, false, false, authResult.GroupSIDs, authResult.UserSID)
-	sess.SetExpiry(ticketEndTime)
+	if !h.admitSessionTransition(sess, func() {
+		sess.UpdateIdentity(user.Username, h.sessionDomain(authResult.Realm), user, false, false, authResult.GroupSIDs, authResult.UserSID)
+		sess.SetExpiry(ticketEndTime)
+	}) {
+		logger.Info("Kerberos re-authentication refused: session logged off",
+			"sessionID", sess.SessionID, "username", user.Username)
+		return NewErrorResult(types.StatusUserSessionDeleted), nil
+	}
 	ctx.PACGroupSIDs = authResult.GroupSIDs
 	ctx.IsGuest = false
 

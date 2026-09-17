@@ -137,6 +137,33 @@ func (s *Session) MarkLoggedOff() {
 	s.LoggedOff.Store(true)
 }
 
+// RunAdmitted runs fn as one admitted state transition on this session: it
+// holds the channel lock for the whole call and refuses, without running fn,
+// when the session is already retired.
+//
+// It is the admission half of the discipline AddChannel applies to channel
+// registration. MarkLoggedOff takes the same lock, and so does
+// RemoveChannelRetiringLast, so the load of the retired flag and fn cannot
+// straddle a retirement: the retirement either lands first and this refuses, or
+// waits until fn has stored its state — indistinguishable from one arriving
+// just after the transition. A caller that reads the flag and then acts in a
+// separate step has a window between the two; this has none.
+//
+// fn must not block and must not call back into the session's channel methods:
+// the lock is not reentrant. The lock also guards per-message signing and
+// channel registration, and a blocked writer — a LOGOFF or a transport teardown
+// — makes every later reader wait behind it, so fn must cover the state
+// transition itself and never a network round trip.
+func (s *Session) RunAdmitted(fn func()) bool {
+	s.channelsMu.RLock()
+	defer s.channelsMu.RUnlock()
+	if s.LoggedOff.Load() {
+		return false
+	}
+	fn()
+	return true
+}
+
 // GetChannel returns the channel for the given ConnID, or nil if none is
 // registered. Safe for concurrent use.
 func (s *Session) GetChannel(connID uint64) *Channel {
