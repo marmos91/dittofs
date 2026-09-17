@@ -126,7 +126,7 @@ func (g *shareGrantStore) DeleteSIDSharePermissionsByDisplayName(ctx context.Con
 // Only a persisted change reprojects, and only when the id actually moved — a
 // profile edit that leaves UID alone changes no projected key.
 func (g *shareGrantStore) UpdateUser(ctx context.Context, user *models.User) error {
-	prev, err := g.Store.GetUserByID(ctx, user.ID)
+	prev, err := g.GetUserByID(ctx, user.ID)
 	if err != nil {
 		return err
 	}
@@ -136,7 +136,7 @@ func (g *shareGrantStore) UpdateUser(ctx context.Context, user *models.User) err
 	if sameUnixID(prev.UID, user.UID) {
 		return nil
 	}
-	perms, err := g.Store.GetUserSharePermissions(ctx, user.Username)
+	perms, err := g.GetUserSharePermissions(ctx, user.Username)
 	if err != nil {
 		logger.Warn("Failed to list share grants after a uid change", "user", user.Username, "error", err)
 		return nil
@@ -150,7 +150,7 @@ func (g *shareGrantStore) UpdateUser(ctx context.Context, user *models.User) err
 // UpdateGroup is UpdateUser for a group's GID: a group grant projects under the
 // group's Unix id just as a user grant does.
 func (g *shareGrantStore) UpdateGroup(ctx context.Context, group *models.Group) error {
-	prev, err := g.Store.GetGroupByID(ctx, group.ID)
+	prev, err := g.GetGroupByID(ctx, group.ID)
 	if err != nil {
 		return err
 	}
@@ -160,7 +160,7 @@ func (g *shareGrantStore) UpdateGroup(ctx context.Context, group *models.Group) 
 	if sameUnixID(prev.GID, group.GID) {
 		return nil
 	}
-	perms, err := g.Store.GetGroupSharePermissions(ctx, group.Name)
+	perms, err := g.GetGroupSharePermissions(ctx, group.Name)
 	if err != nil {
 		logger.Warn("Failed to list share grants after a gid change", "group", group.Name, "error", err)
 		return nil
