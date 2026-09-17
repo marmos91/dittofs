@@ -1011,17 +1011,18 @@ func createSMBAdapter(cfg *models.AdapterConfig, kerberosConfig *config.Kerberos
 	return smbAdapter, nil
 }
 
-// handleFormatMismatch prints the operator directive and exits 78 when err
-// reports on-disk state this build cannot read. Returns true when it did, so
-// the caller stops.
+// handleFormatMismatch prints the operator directive and reports exit 78 when
+// err describes on-disk state this build cannot read. Returns a non-nil status
+// when it did, so the caller stops; the caller performs the exit.
 //
 // Both store-opening paths must route through here. Metadata stores open in
 // InitializeFromStore and block stores in LoadSharesFromStore; a mismatch on
 // either one is the same condition to an operator and deserves the same exit
 // code and the same directive, not a bare cobra error.
 //
-// Production code MUST go through this helper — direct termination from
-// runStart would bypass the exitFn indirection the test depends on.
+// The status travels back to runStart rather than being exited here: runStart
+// is where the control-plane store's close defer is registered, and exiting
+// from inside this helper would skip it.
 func handleFormatMismatch(err error, stderr *os.File) *exitStatus {
 	if err == nil {
 		return nil
