@@ -35,6 +35,16 @@ type PendingAuth struct {
 	// is keyed by (SessionID, ConnID) so concurrent binds on the same session
 	// from different connections (MS-SMB2 §3.3.5.5.2) do not collide.
 	ConnID uint64
+	// ConnCryptoState is the crypto state of the connection carrying this
+	// authentication, captured at creation. Session teardown walks the pending
+	// records for a session to invalidate every bind in flight on it, and the
+	// preauth hash each bind seeded lives on ITS OWN connection's crypto state
+	// — a different connection from the one running the teardown. Holding the
+	// state here is what lets that walk reach it: the handler has no registry
+	// of per-connection crypto states, and without this the hash for a cancelled
+	// bind survives on the other connection until that connection's next
+	// SESSION_SETUP or its disconnect.
+	ConnCryptoState CryptoState
 	// MechListBytes: DER-encoded SEQUENCE OF OID from the NegTokenInit's
 	// mechTypes field, needed to compute the SPNEGO mechListMIC in the
 	// final accept-completed response (MS-NLMP 3.4.5.2 + 2.2.2.9.1).
@@ -1133,10 +1143,22 @@ func (h *Handler) DeletePendingAuth(sessionID, connID uint64) {
 // connection cleanup) to invalidate any in-flight binds for the session.
 
 func (h *Handler) DeleteAllPendingAuthForSession(sessionID uint64) {
-	h.pendingAuth.Range(func(k, _ any) bool {
-		if key, ok := k.(pendingAuthKey); ok && key.SessionID == sessionID {
-			h.pendingAuth.Delete(key)
+	h.pendingAuth.Range(func(k, v any) bool {
+		key, ok := k.(pendingAuthKey)
+		if !ok || key.SessionID != sessionID {
+			return true
 		}
+		// The bind's per-connection preauth hash goes with the pending record.
+		// Each cancelled bind seeded an entry on the crypto state of the
+		// connection that carried it, and this teardown runs on a different
+		// connection — so the entry is not otherwise reachable and would sit on
+		// that connection until its next SESSION_SETUP or its disconnect. A
+		// client that never sends the refused next leg leaves it for the life of
+		// the connection, one entry per cancelled bind.
+		if pending, ok := v.(*PendingAuth); ok && pending.ConnCryptoState != nil {
+			pending.ConnCryptoState.DeleteSessionPreauthHash(sessionID)
+		}
+		h.pendingAuth.Delete(key)
 		return true
 	})
 }

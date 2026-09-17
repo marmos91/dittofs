@@ -805,6 +805,7 @@ func (h *Handler) handleNTLMNegotiateBinding(ctx *SMBHandlerContext, sess *sessi
 	pending := &PendingAuth{
 		SessionID:        ctx.SessionID, // bound session's ID
 		ConnID:           ctx.ConnID,
+		ConnCryptoState:  ctx.ConnCryptoState,
 		ClientAddr:       ctx.ClientAddr,
 		CreatedAt:        time.Now(),
 		ServerChallenge:  serverChallenge,
@@ -1127,6 +1128,7 @@ func (h *Handler) handleNTLMNegotiate(ctx *SMBHandlerContext, usedSPNEGO bool, m
 	pending := &PendingAuth{
 		SessionID:        sessionID,
 		ConnID:           ctx.ConnID,
+		ConnCryptoState:  ctx.ConnCryptoState,
 		ClientAddr:       ctx.ClientAddr,
 		CreatedAt:        time.Now(),
 		ServerChallenge:  serverChallenge,

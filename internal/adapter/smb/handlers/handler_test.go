@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
+	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 )
 
 // =============================================================================
@@ -1107,5 +1108,112 @@ func TestNewOpenIsShareRestrictive(t *testing.T) {
 					tc.desiredAccess, tc.shareAccess, got, tc.want)
 			}
 		})
+	}
+}
+
+// trackingCryptoState records the per-session preauth hash entries this
+// connection holds, so a test can assert that session teardown retired a bind
+// that was seeded on a DIFFERENT connection's crypto state.
+type trackingCryptoState struct {
+	mu      sync.Mutex
+	session map[uint64]bool
+}
+
+func newTrackingCryptoState() *trackingCryptoState {
+	return &trackingCryptoState{session: make(map[uint64]bool)}
+}
+
+func (m *trackingCryptoState) has(sessionID uint64) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.session[sessionID]
+}
+
+// Implement the CryptoState interface; only the session-preauth members matter
+// here, the negotiation members are inert.
+func (m *trackingCryptoState) SetDialect(types.Dialect)                  {}
+func (m *trackingCryptoState) GetDialect() types.Dialect                 { return types.Dialect0311 }
+func (m *trackingCryptoState) SetCipherId(uint16)                        {}
+func (m *trackingCryptoState) SetPreauthIntegrityHashId(uint16)          {}
+func (m *trackingCryptoState) SetServerGUID([16]byte)                    {}
+func (m *trackingCryptoState) GetServerGUID() [16]byte                   { return [16]byte{} }
+func (m *trackingCryptoState) SetServerCapabilities(types.Capabilities)  {}
+func (m *trackingCryptoState) GetServerCapabilities() types.Capabilities { return 0 }
+func (m *trackingCryptoState) SetServerSecurityMode(types.SecurityMode)  {}
+func (m *trackingCryptoState) GetServerSecurityMode() types.SecurityMode { return 0 }
+func (m *trackingCryptoState) SetClientGUID([16]byte)                    {}
+func (m *trackingCryptoState) GetClientGUID() [16]byte                   { return [16]byte{} }
+func (m *trackingCryptoState) SetClientCapabilities(types.Capabilities)  {}
+func (m *trackingCryptoState) GetClientCapabilities() types.Capabilities { return 0 }
+func (m *trackingCryptoState) SetClientSecurityMode(types.SecurityMode)  {}
+func (m *trackingCryptoState) GetClientSecurityMode() types.SecurityMode { return 0 }
+func (m *trackingCryptoState) SetClientDialects([]types.Dialect)         {}
+func (m *trackingCryptoState) GetClientDialects() []types.Dialect        { return nil }
+func (m *trackingCryptoState) SetSigningAlgorithmId(uint16, bool)        {}
+func (m *trackingCryptoState) GetSigningAlgorithmId() (uint16, bool)     { return 0, false }
+func (m *trackingCryptoState) GetCipherId() uint16                       { return 0 }
+func (m *trackingCryptoState) GetPreauthHash() [64]byte                  { return [64]byte{} }
+func (m *trackingCryptoState) GetSessionPreauthHash(uint64) [64]byte     { return [64]byte{} }
+func (m *trackingCryptoState) UpdateSessionPreauthHash(uint64, []byte)   {}
+func (m *trackingCryptoState) SetHasAuthenticatedSession()               {}
+func (m *trackingCryptoState) HasAuthenticatedSession() bool             { return false }
+
+func (m *trackingCryptoState) InitSessionPreauthHash(sessionID uint64, _ []byte) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.session[sessionID] = true
+}
+
+func (m *trackingCryptoState) DeleteSessionPreauthHash(sessionID uint64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.session, sessionID)
+}
+
+// TestDeleteAllPendingAuthForSession_RetiresTheBindPreauthHash covers #2670.
+// A bind in flight on ANOTHER connection seeds its preauth hash on that
+// connection's crypto state. Session teardown (reauth failure, LOGOFF) runs on
+// the connection carrying the teardown and used to clear only the handler-side
+// pending records, so the other connection's hash survived — one 64-byte entry
+// per cancelled bind — until that connection's next SESSION_SETUP or its
+// disconnect, which a client that never sends the refused next leg never does.
+func TestDeleteAllPendingAuthForSession_RetiresTheBindPreauthHash(t *testing.T) {
+	h := NewHandler()
+
+	// Connection 2's crypto state holds the in-flight bind's hash for session
+	// 100. Connection 1 is where the teardown happens.
+	otherConnCrypto := newTrackingCryptoState()
+	const sessionID = uint64(100)
+	otherConnCrypto.InitSessionPreauthHash(sessionID, []byte("type1"))
+
+	h.StorePendingAuth(&PendingAuth{
+		SessionID:       sessionID,
+		ConnID:          2,
+		ConnCryptoState: otherConnCrypto,
+	})
+	// An unrelated session on the same connection must be untouched.
+	const otherSession = uint64(200)
+	otherConnCrypto.InitSessionPreauthHash(otherSession, []byte("type1"))
+	h.StorePendingAuth(&PendingAuth{
+		SessionID:       otherSession,
+		ConnID:          2,
+		ConnCryptoState: otherConnCrypto,
+	})
+
+	if !otherConnCrypto.has(sessionID) {
+		t.Fatal("precondition: the bind's hash should be seeded on the other connection")
+	}
+
+	h.DeleteAllPendingAuthForSession(sessionID)
+
+	if otherConnCrypto.has(sessionID) {
+		t.Error("the cancelled bind's preauth hash survived on the other connection: " +
+			"session teardown did not retire it")
+	}
+	if !otherConnCrypto.has(otherSession) {
+		t.Error("teardown for session 100 retired session 200's hash on the same connection")
+	}
+	if _, ok := h.GetPendingAuth(sessionID, 2); ok {
+		t.Error("the pending-auth record survived teardown")
 	}
 }
