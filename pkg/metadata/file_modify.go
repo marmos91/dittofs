@@ -451,12 +451,14 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 
 	// POSIX: truncate() requires write access, not ownership.
 	//
-	// The mode-bit masks are excluded deliberately: they carry DOS attribute
-	// flags, and a SetAttrs that flips one is not a truncate however small the
-	// size change beside it. Without this a caller holding only write
-	// permission could reach an attribute change — which on its own is
-	// ownership-gated — by bundling it with a size, and the SMB CREATE
-	// overwrite path sends exactly that pair.
+	// decision: the relaxation is narrower than "a size is present" — a
+	// SetAttrs carrying a mode-bit mask is not a truncate, however small the
+	// size change beside it. The masks flip DOS attribute bits, and an
+	// attribute change on its own is ownership-gated; without this clause a
+	// caller holding only write permission would reach one by bundling it with
+	// a size, and the SMB CREATE overwrite path sends exactly that pair.
+	// Widen it only if DOS attributes stop being ownership-gated in their own
+	// right, not because a caller finds the pairing convenient.
 	onlySettingSize := noOwnershipAttrs && attrs.Size != nil &&
 		attrs.ModeOrMask == nil && attrs.ModeAndNotMask == nil &&
 		!attrs.AtimeNow && !attrs.MtimeNow
