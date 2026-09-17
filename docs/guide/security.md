@@ -307,13 +307,10 @@ including one already holding a file handle. On v3 it takes effect for new
 mounts only — an already-mounted v3 client keeps working until it remounts.
 Remount is what re-reads the allowlist on v3.
 
-Which authentication flavors an export accepts is a separate policy, and it
-*is* re-checked per operation on both versions — see `--allow-auth-sys` /
-`--require-kerberos` below.
-
-Which authentication flavors an export accepts is separate from the client
-allowlist: set `--allow-auth-sys` / `--require-kerberos` with the same
-`dfsctl share nfs-config set` command, and see
+Which authentication flavors an export accepts is a separate policy from the
+client allowlist. Unlike the address gate, the flavor gate *is* re-checked per
+operation on both versions: set it with `--allow-auth-sys` /
+`--require-kerberos` on the same `dfsctl share nfs-config set` command, and see
 [configuration](configuration.md) for the Kerberos floor.
 
 ### Identity mapping
