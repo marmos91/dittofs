@@ -2,8 +2,42 @@ package netlogon
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io"
+	"syscall"
 	"testing"
 )
+
+// TestWrapTransportFailure pins which connect-phase failures are retryable. A
+// transport failure (the shape a concurrent reload produces by tearing the sealed
+// SMB session down mid-handshake) must be classified transient so NetworkLogon
+// rebuilds; a DC-side rejection such as a wrong machine password must NOT be, so
+// the logon fails fast instead of retrying toward machine-account lockout.
+func TestWrapTransportFailure(t *testing.T) {
+	transient := []error{
+		io.EOF,
+		io.ErrUnexpectedEOF,
+		syscall.ECONNRESET,
+		syscall.EPIPE,
+		fmt.Errorf("alter context: read buffer: %w", io.ErrUnexpectedEOF),
+	}
+	for _, err := range transient {
+		if got := wrapTransportFailure(err); !errors.Is(got, errChannelNotConnected) {
+			t.Errorf("wrapTransportFailure(%v) = %v, want it wrapped with the transient sentinel", err, got)
+		}
+	}
+
+	nonTransient := []error{
+		errors.New("netlogon: schannel: defective credential"),
+		fmt.Errorf("logon failure: %w", errors.New("STATUS_LOGON_FAILURE")),
+	}
+	for _, err := range nonTransient {
+		if got := wrapTransportFailure(err); errors.Is(got, errChannelNotConnected) {
+			t.Errorf("wrapTransportFailure(%v) = %v, want it left unwrapped so the logon fails fast", err, got)
+		}
+	}
+}
 
 func TestNetworkLogonRequiresCredential(t *testing.T) {
 	a := NewAuthenticator(NewOfflineProvider(MachineCredential{})) // incomplete -> Credential() errors

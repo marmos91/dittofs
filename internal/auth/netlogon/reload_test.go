@@ -61,6 +61,11 @@ type fakeState struct {
 	// dropping the SMB session mid-RPC), to exercise that it is retried, not
 	// failed fast.
 	transportFailsRemaining int32
+	// connectFailsRemaining, when > 0, makes that many connect calls fail with a
+	// wrapped transport error (the kind a concurrent reload induces on the sealed
+	// handshake), to exercise that NetworkLogon rebuilds and retries rather than
+	// surfacing the failure to an in-flight logon.
+	connectFailsRemaining int32
 	// samLogonCalls counts every samLogon invocation (including failures), so a
 	// test can assert NetworkLogon made exactly one call on a fast-fail.
 	samLogonCalls int32
@@ -90,6 +95,12 @@ var errTransportDrop = fmt.Errorf("netlogon: SAMLogon: %w: %w", errChannelNotCon
 func (c *fakeChannel) connect(ctx context.Context, mc MachineCredential) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// Simulate a connect-phase transport failure (the sealed handshake losing the
+	// SMB session to a concurrent reload) for the first connectFailsRemaining
+	// attempts, before the connected bookkeeping.
+	if atomic.AddInt32(&c.state.connectFailsRemaining, -1) >= 0 {
+		return errTransportDrop
+	}
 	if c.connected {
 		return nil
 	}
@@ -372,6 +383,38 @@ func TestNetworkLogon_CanceledContextStopsTeardownRetry(t *testing.T) {
 	if got := atomic.LoadInt32(&st.samLogonCalls); got > 4 {
 		t.Fatalf("expected the canceled context to stop the teardown retry promptly "+
 			"(<=4 samLogon calls), got %d — the loop spun the teardown budget", got)
+	}
+}
+
+// TestNetworkLogon_RetriesConnectFailure proves a connect-phase transport failure
+// (the sealed handshake losing its SMB session to a concurrent reload, surfaced as
+// an EOF rather than a DC-returned NTSTATUS) is retried to success instead of
+// being surfaced to an in-flight logon. Without this the hot-reload contract is
+// not transparent: a logon that happened to be rebuilding its channel when the
+// reload fired would fail with "unexpected EOF".
+func TestNetworkLogon_RetriesConnectFailure(t *testing.T) {
+	st := &fakeState{connectFailsRemaining: 2} // first 2 connects fail, then succeed
+	withFakeChannels(t, st)
+
+	a := NewAuthenticator(NewMutableProvider(validCred("DITTOFS$")))
+	if _, err := a.NetworkLogon(context.Background(), NetworkLogonRequest{Username: "alice", Domain: "DITTOFS"}); err != nil {
+		t.Fatalf("expected a connect failure to be retried to success, got: %v", err)
+	}
+	if got := completedLogons(st); got != 1 {
+		t.Fatalf("expected exactly 1 successful logon, got %d", got)
+	}
+}
+
+// TestNetworkLogon_GivesUpAfterPersistentConnectFailure proves the connect-failure
+// retry is bounded: a channel that never connects returns the error rather than
+// looping forever.
+func TestNetworkLogon_GivesUpAfterPersistentConnectFailure(t *testing.T) {
+	st := &fakeState{connectFailsRemaining: 1 << 30} // connect never succeeds
+	withFakeChannels(t, st)
+
+	a := NewAuthenticator(NewMutableProvider(validCred("DITTOFS$")))
+	if _, err := a.NetworkLogon(context.Background(), NetworkLogonRequest{Username: "alice", Domain: "DITTOFS"}); err == nil {
+		t.Fatal("expected a persistent connect failure to surface as an error after bounded retries")
 	}
 }
 

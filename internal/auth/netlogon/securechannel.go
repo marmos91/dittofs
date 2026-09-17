@@ -2,9 +2,13 @@ package netlogon
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"net"
 	"strings"
 	"sync"
+	"syscall"
 
 	krb5_config "github.com/oiweiwei/gokrb5.fork/v9/config"
 
@@ -178,7 +182,11 @@ func (sc *SecureChannel) connect(ctx context.Context, mc MachineCredential) erro
 		dcerpc.WithCredentials(machineCred),
 	)
 	if err != nil {
-		return fmt.Errorf("netlogon: dial %s: %w", server, err)
+		// A dial failure is a channel condition, not a logon verdict: the SMB
+		// session a concurrent reload tears down surfaces here as a transport EOF
+		// rather than a DC-returned NTSTATUS. Wrap with the sentinel so NetworkLogon
+		// rebuilds against the reloaded credential instead of failing the logon.
+		return fmt.Errorf("netlogon: dial %s: %w", server, wrapTransportFailure(err))
 	}
 
 	// Pass the machine credential to NewSecureChannelClient too, not just Dial:
@@ -192,7 +200,12 @@ func (sc *SecureChannel) connect(ctx context.Context, mc MachineCredential) erro
 	)
 	if err != nil {
 		_ = cc.Close(gctx)
-		return fmt.Errorf("netlogon: secure channel client: %w", err)
+		// The sealed-schannel handshake rides the same SMB session a concurrent
+		// reload tears down, so it surfaces an EOF ("alter context: read buffer:
+		// unexpected EOF") rather than a DC-returned NTSTATUS. Wrap with the
+		// sentinel so NetworkLogon rebuilds and retries, making the reload
+		// transparent to logons already in flight.
+		return fmt.Errorf("netlogon: secure channel client: %w", wrapTransportFailure(err))
 	}
 
 	sc.cc = cc
@@ -241,6 +254,24 @@ func deriveLogonServer(spn, domainName string) string {
 		return "\\\\" + domainName
 	}
 	return "\\\\" + strings.ToUpper(host)
+}
+
+// wrapTransportFailure marks a connect-phase error as a retryable transport
+// failure ONLY when it actually is one (an EOF, a reset connection, a timeout) —
+// the shapes a concurrent reload produces by tearing the sealed SMB session out
+// from under a handshake. A DC-side rejection such as a wrong machine password is
+// left unwrapped so NetworkLogon fails fast instead of retrying it toward machine
+// account lockout.
+func wrapTransportFailure(err error) error {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) {
+		return fmt.Errorf("%w: %w", errChannelNotConnected, err)
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return fmt.Errorf("%w: %w", errChannelNotConnected, err)
+	}
+	return err
 }
 
 // setPassword changes the machine account's password on the DC via

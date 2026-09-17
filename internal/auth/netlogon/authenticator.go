@@ -154,14 +154,12 @@ func (a *Authenticator) NetworkLogon(ctx context.Context, req NetworkLogonReques
 		return nil, err
 	}
 
+	var res *LogonResult
 	sc, err := a.ensureChannel(ctx, mc)
-	if err != nil {
-		return nil, err
-	}
-
-	res, err := sc.samLogon(ctx, *mc, req)
 	if err == nil {
-		return res, nil
+		if res, err = sc.samLogon(ctx, *mc, req); err == nil {
+			return res, nil
+		}
 	}
 
 	// The logon failed. Only retry when the failure is a TRANSIENT secure-channel
@@ -248,7 +246,16 @@ func (a *Authenticator) NetworkLogon(ctx context.Context, req NetworkLogonReques
 			return nil, err
 		}
 		if sc, err = a.ensureChannel(ctx, mc); err != nil {
-			return nil, err
+			// A transport-level connect failure (the sealed handshake losing its SMB
+			// session to a concurrent reload, surfaced as an EOF rather than a
+			// DC-returned NTSTATUS) clears on a rebuild, so keep retrying under the
+			// same budget instead of surfacing it — that is what makes a hot-reload
+			// transparent to logons already in flight. A non-transient connect
+			// failure (a configuration error) still fails fast.
+			if !isTransientChannelError(err) {
+				return nil, err
+			}
+			continue
 		}
 		res, err = sc.samLogon(ctx, *mc, req)
 		if err == nil {
