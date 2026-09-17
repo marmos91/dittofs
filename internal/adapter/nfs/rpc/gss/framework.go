@@ -862,11 +862,15 @@ func (p *GSSProcessor) resolveIdentity(ctx context.Context, principal, realm str
 				Username: resolved.Username,
 				Domain:   resolved.Domain,
 			}
-			// Carry the Windows identity across too. An ACE keyed on a SID or
-			// group SID must match for a Kerberos principal whose persisted
-			// user record names one, and the SMB path already does this via
-			// PACGroupSIDs. Dropping them fails closed: the requester is
-			// denied rights the same user holds over SMB.
+			// Carry the Windows identity across. These fields are not consumed
+			// here: the RPC layer extracts only UID/GID/GIDs into the handler
+			// context, and the auth-context builders read SID/GroupSIDs back
+			// out of the Go context (auth.BuildAuthContext,
+			// v4/handlers.buildV4AuthContext) before ACL evaluation matches
+			// ACEs against them. Populating them here is what makes that
+			// possible; without it a Kerberos principal's SID-keyed ACEs never
+			// match on the NFS side even though the same user's SMB requests
+			// match them via PACGroupSIDs. Dropping them fails closed.
 			if resolved.SID != "" {
 				sid := resolved.SID
 				identity.SID = &sid

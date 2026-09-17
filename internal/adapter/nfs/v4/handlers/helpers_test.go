@@ -7,10 +7,12 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/auth"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc/gss"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 func TestBuildV4AuthContext_ValidHandle(t *testing.T) {
@@ -326,4 +328,52 @@ func TestEncodeChangeInfo4(t *testing.T) {
 			t.Errorf("encoded size = %d, want 20", buf.Len())
 		}
 	})
+}
+
+// TestBuildV4AuthContext_CarriesGSSSID verifies that a GSS-resolved identity's
+// Windows half reaches AuthContext.Identity. The compound context carries only
+// UID/GID/GIDs, so without reading the SID/GroupSIDs back out of the Go context
+// a Kerberos principal's SID-keyed ACEs never match on the NFS side even though
+// the same user's SMB requests do match them.
+func TestBuildV4AuthContext_CarriesGSSSID(t *testing.T) {
+	const (
+		userSID  = "S-1-5-21-3623811015-3361044348-30300820-1013"
+		groupSID = "S-1-5-21-3623811015-3361044348-30300820-513"
+	)
+
+	pfs := pseudofs.New()
+	h := NewHandler(nil, pfs) // nil registry -> identity returned unmapped
+
+	uid := uint32(1001)
+	gid := uint32(1002)
+	gssSID := userSID
+	ctx := &types.CompoundContext{
+		Context: gss.ContextWithIdentity(context.Background(), &metadata.Identity{
+			UID:       &uid,
+			GID:       &gid,
+			GIDs:      []uint32{1002},
+			SID:       &gssSID,
+			GroupSIDs: []string{groupSID},
+		}),
+		ClientAddr: "127.0.0.1:9999",
+		AuthFlavor: 6, // RPCSEC_GSS
+		UID:        &uid,
+		GID:        &gid,
+		GIDs:       []uint32{1002},
+	}
+
+	handle := []byte("/export:00000000-0000-0000-0000-000000000001")
+	authCtx, _, err := h.buildV4AuthContext(ctx, handle)
+	if err != nil {
+		t.Fatalf("buildV4AuthContext error: %v", err)
+	}
+	if authCtx.Identity == nil {
+		t.Fatal("Identity is nil")
+	}
+	if authCtx.Identity.SID == nil || *authCtx.Identity.SID != userSID {
+		t.Errorf("Identity.SID = %v, want %q", authCtx.Identity.SID, userSID)
+	}
+	if len(authCtx.Identity.GroupSIDs) != 1 || authCtx.Identity.GroupSIDs[0] != groupSID {
+		t.Errorf("Identity.GroupSIDs = %v, want [%s]", authCtx.Identity.GroupSIDs, groupSID)
+	}
 }

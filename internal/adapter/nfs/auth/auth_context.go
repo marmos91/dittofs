@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc/gss"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -77,6 +78,15 @@ func BuildAuthContext(
 		UID:  creds.UID,
 		GID:  creds.GID,
 		GIDs: creds.GIDs,
+	}
+	// Carry the Windows half of a GSS-resolved identity across. The credentials
+	// above are only the numeric triple the RPC layer extracted, so a Kerberos
+	// principal's SID and group SIDs would otherwise be lost before ACL
+	// evaluation matches ACEs against them. Read from the context rather than
+	// from the handler context because those carry only UID/GID/GIDs.
+	if gssIdentity := gss.IdentityFromContext(ctx); gssIdentity != nil {
+		identity.SID = gssIdentity.SID
+		identity.GroupSIDs = gssIdentity.GroupSIDs
 	}
 	if identity.UID != nil {
 		identity.Username = fmt.Sprintf("uid:%d", *identity.UID)

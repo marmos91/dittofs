@@ -9,6 +9,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/auth"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc/gss"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
@@ -77,6 +78,14 @@ func (h *Handler) buildV4AuthContext(ctx *types.CompoundContext, handle []byte) 
 		UID:  ctx.UID,
 		GID:  ctx.GID,
 		GIDs: ctx.GIDs,
+	}
+	// Carry the Windows half of a GSS-resolved identity across. The numeric
+	// triple above is all the compound context holds, so a Kerberos principal's
+	// SID and group SIDs would otherwise be lost before ACL evaluation matches
+	// ACEs against them.
+	if gssIdentity := gss.IdentityFromContext(ctx.Context); gssIdentity != nil {
+		originalIdentity.SID = gssIdentity.SID
+		originalIdentity.GroupSIDs = gssIdentity.GroupSIDs
 	}
 
 	// Set username from UID if available (for logging/auditing)
