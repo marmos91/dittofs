@@ -202,6 +202,12 @@ func (s *DurableHandleScavenger) cleanupAndDelete(ctx context.Context, h *lock.P
 		logger.Warn("DurableHandleScavenger: failed to delete expired handle",
 			"id", h.ID, "error", err)
 	} else {
+		// The row is gone, so the process-local timestamp freeze recorded for
+		// it has no reconnect left to reach. handler is nil in tests that
+		// exercise the store alone.
+		if s.handler != nil {
+			s.handler.forgetFrozenTimestamps(h.ID)
+		}
 		// The row is gone, so drop it from the count that gates the conflict
 		// scans. Expiry is the terminal state for a handle whose client never
 		// came back; nothing else would clear the count.

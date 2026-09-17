@@ -356,6 +356,11 @@ func (h *Handler) closeFilesWithFilter(
 				// purge windows; see durablePurgeMu comment.
 				h.durablePurgeMu.Lock()
 				persisted := buildPersistedDurableHandle(openFile, username, sessionKeyHash, h.StartTime, leaseState, leaseEpoch)
+				// Carry any SET_INFO -1 timestamp freeze the handle holds into the
+				// reconnect. Recorded under the persisted ID, which the reconnect
+				// consumes by; see durable_frozen_timestamps.go for why this is
+				// process-local rather than a field on the persisted row.
+				h.rememberFrozenTimestamps(persisted.ID, openFile)
 				// Count the handle before the row becomes visible, so a
 				// concurrent WRITE/SET_INFO cannot take its fast path over a
 				// file that already has a disconnected handle. A failed Put is

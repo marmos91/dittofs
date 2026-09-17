@@ -444,6 +444,9 @@ func (h *Handler) purgeOneDisconnectedHandle(
 			"id", d.ID, "path", d.Path, "error", err)
 		return false
 	}
+	// The row is gone without a reconnect claiming it, so drop the
+	// process-local timestamp freeze recorded under it too.
+	h.forgetFrozenTimestamps(d.ID)
 	logger.Debug("purgeOneDisconnectedHandle: purged disconnected handle",
 		"id", d.ID,
 		"path", d.Path,

@@ -1056,6 +1056,14 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 			// re-grants durability. Do NOT process DHnQ/DH2Q create contexts
 			// during reconnect -- the handle is already durable.
 
+			// Put back any SET_INFO -1 timestamp freeze the handle held at
+			// disconnect, before the handle becomes reachable. Without this the
+			// reconnect comes back with CtimeFrozen false and no FrozenCtime, so
+			// the freeze evaporates and the next WRITE or CLOSE stamps over a
+			// ChangeTime the client asked to hold. In-process only: a reconnect
+			// to this live server keeps the freeze, a restart drops it.
+			h.adoptFrozenTimestamps(reconnResult.HandleID, restored)
+
 			h.StoreOpenFile(restored)
 
 			// Get current file attributes for the response

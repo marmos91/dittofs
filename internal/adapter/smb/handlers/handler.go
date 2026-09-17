@@ -315,6 +315,13 @@ type Handler struct {
 	// nil when durable handles are not configured (pre-SMB3 or testing).
 	DurableStore lock.DurableHandleStore
 
+	// durableFreezes carries SET_INFO -1 timestamp freezes across a durable
+	// disconnect, keyed by persisted handle ID. Deliberately process-local and
+	// not part of the persisted row: a freeze is per-open-handle state and must
+	// survive a reconnect to the same server but not a restart. See
+	// durable_frozen_timestamps.go.
+	durableFreezes sync.Map // string(handleID) -> durableFrozenTimestamps
+
 	// DurableTimeoutMs is the server's configured maximum durable handle timeout.
 	// Defaults to 60000 (60 seconds). Configurable via SMBAdapterSettings.
 	DurableTimeoutMs uint32
