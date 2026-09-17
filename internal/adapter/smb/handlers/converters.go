@@ -546,6 +546,36 @@ func SMBModeFromAttrs(attrs types.FileAttributes, isDirectory bool) uint32 {
 	return mode
 }
 
+// settableDOSModeBits are the high-word DOS attribute bits a client may flip
+// through a FileAttributes field (SET_INFO FileBasicInformation, or the
+// attributes applied by a CREATE overwrite). modeDOSCompressed and
+// modeDOSSparse are deliberately absent: they are owned by
+// FSCTL_SET_COMPRESSION and FSCTL_SET_SPARSE, and MS-FSA 2.1.5.15.2 omits both
+// from the ValidSetAttributes of FileBasicInformation.
+const settableDOSModeBits = modeDOSExplicit | modeDOSArchive | modeDOSSystem | modeDOSReadonly
+
+// applyDOSAttrUpdate records a DOS attribute change on attrs as the pair of
+// mode-bit masks the metadata store applies inside its own read-modify-write,
+// rather than as an absolute Mode.
+//
+// A FileAttributes field says nothing about POSIX permissions, so an update
+// carrying one must move DOS attribute bits and nothing else. SetAttrs treats a
+// non-nil Mode as an absolute mode request, which on an existing file replaces
+// the permission triple with whatever base SMBModeFromAttrs synthesizes for a
+// new one; the masks are whitelisted down to DOS attribute bits by the store,
+// so they cannot reach the permission, setid or sticky bits at all. They also
+// leave the FSCTL-managed bits standing without the handler reading them back,
+// because neither mask ever names them.
+func applyDOSAttrUpdate(attrs *metadata.SetAttrs, fileAttrs types.FileAttributes) {
+	// SMBModeFromAttrs is the one place FileAttributes are translated to DOS
+	// mode bits; its isDirectory argument only selects the POSIX base mode,
+	// which is masked off here.
+	orMask := SMBModeFromAttrs(fileAttrs, false) & settableDOSModeBits
+	andNotMask := settableDOSModeBits &^ orMask
+	attrs.ModeOrMask = &orMask
+	attrs.ModeAndNotMask = &andNotMask
+}
+
 // ============================================================================
 // UTF-16LE <-> string conversion for SMB filenames (surrogate-safe)
 // ============================================================================

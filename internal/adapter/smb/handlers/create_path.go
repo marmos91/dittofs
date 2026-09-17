@@ -377,12 +377,11 @@ func (h *Handler) overwriteFile(
 
 	// Per MS-FSA 2.1.5.1.2 ("Open of an Existing File"): OVERWRITE/SUPERSEDE forces FILE_ATTRIBUTE_ARCHIVE
 	// on the post-overwrite metadata regardless of what the client sent — the
-	// data is "needs backup" again. Apply the requested attributes plus ARCHIVE,
-	// and preserve modeDOSCompressed (controlled only via FSCTL_SET_COMPRESSION).
-	attrs := req.FileAttributes | types.FileAttributeArchive
-	mode := SMBModeFromAttrs(attrs, existingFile.Type == metadata.FileTypeDirectory)
-	mode |= existingFile.Mode & modeDOSCompressed
-	setAttrs.Mode = &mode
+	// data is "needs backup" again. The file itself survives the overwrite, so
+	// the attribute update moves DOS attribute bits only: its POSIX
+	// permissions and its FSCTL-managed compression and sparse bits stay as
+	// they were.
+	applyDOSAttrUpdate(setAttrs, req.FileAttributes|types.FileAttributeArchive)
 	hiddenVal := req.FileAttributes&types.FileAttributeHidden != 0
 	setAttrs.Hidden = &hiddenVal
 

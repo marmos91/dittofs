@@ -66,19 +66,11 @@ func (h *Handler) setFileInfoFromStore(
 		// settable attributes: FILE_ATTRIBUTE_COMPRESSED is NOT settable via
 		// FileBasicInformation; it is controlled only via FSCTL_SET_COMPRESSION.
 		// Likewise, FILE_ATTRIBUTE_SPARSE_FILE is set only via FSCTL_SET_SPARSE.
-		// Preserve both FSCTL-managed bits so SET_INFO does not accidentally
-		// clear compression or sparse state.
+		// The mask form leaves both FSCTL-managed bits alone by never naming
+		// them, and leaves the file's POSIX permission bits alone for the same
+		// reason — the attributes the client sent say nothing about them.
 		if fileAttrs != 0 {
-			mode := SMBModeFromAttrs(fileAttrs, openFile.IsDirectory)
-			// Preserve FSCTL-managed bits from existing metadata:
-			// modeDOSCompressed (FSCTL_SET_COMPRESSION) and modeDOSSparse
-			// (FSCTL_SET_SPARSE) are both controlled exclusively by IOCTLs —
-			// they must not be cleared by a FileBasicInformation SET_INFO that
-			// only intends to update DOS attributes (HIDDEN, READONLY, etc.).
-			if curFile, curErr := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle); curErr == nil {
-				mode |= curFile.Mode & (modeDOSCompressed | modeDOSSparse)
-			}
-			setAttrs.Mode = &mode
+			applyDOSAttrUpdate(setAttrs, fileAttrs)
 			// Propagate FILE_ATTRIBUTE_HIDDEN (MS-FSCC 2.6 "File Attributes") into the metadata
 			// Hidden field so QUERY_INFO and QUERY_DIRECTORY round-trip correctly.
 			hiddenVal := fileAttrs&types.FileAttributeHidden != 0
@@ -241,11 +233,10 @@ func (h *Handler) setFileInfoFromStore(
 		//     so a "timestamp-only" SET_INFO that leaves FileAttributes=0
 		//     does not touch the base's DOS bits or Hidden flag.
 		//   - Forwards the Hidden flag when FileAttributes was set.
-		//   - Overlays only the four explicit DOS bits
-		//     (modeDOSExplicit | modeDOSArchive | modeDOSSystem |
-		//     modeDOSReadonly) from the stream's computed mode onto the
-		//     base's existing mode. All other bits in the base's mode
-		//     are preserved:
+		//   - Forwards the stream's DOS attribute masks, which set and clear
+		//     only the four explicit DOS bits (modeDOSExplicit |
+		//     modeDOSArchive | modeDOSSystem | modeDOSReadonly). Every other
+		//     bit in the base's mode is left where it is:
 		//       * POSIX permission bits (0o7777) — an out-of-band NFS
 		//         chmod must survive a stream SET_INFO.
 		//       * modeDOSCompressed (0x40000) — FSCTL-managed (FSCTL_SET_COMPRESSION).
@@ -266,21 +257,17 @@ func (h *Handler) setFileInfoFromStore(
 					Atime:        setAttrs.Atime,
 					CreationTime: setAttrs.CreationTime,
 					Hidden:       setAttrs.Hidden,
-				}
-				if setAttrs.Mode != nil {
-					// Strip the stream-derived POSIX bits and keep only the
-					// DOS attribute bits (Explicit/Archive/System/Readonly).
-					// modeDOSCompressed lives in the base file's mode and is
-					// FSCTL-managed, so leave it untouched.
-					const dosBits = modeDOSExplicit | modeDOSArchive | modeDOSSystem | modeDOSReadonly
-					newMode := (baseFile.Mode &^ dosBits) | (*setAttrs.Mode & dosBits)
-					if newMode != baseFile.Mode {
-						basePropagate.Mode = &newMode
-					}
+					// The same DOS attribute masks the stream's SET_INFO
+					// carried. They move the four explicit DOS bits and nothing
+					// else, so the base file keeps its own POSIX permissions as
+					// well as its FSCTL-managed compression and sparse bits.
+					ModeOrMask:     setAttrs.ModeOrMask,
+					ModeAndNotMask: setAttrs.ModeAndNotMask,
 				}
 				if basePropagate.Mtime != nil || basePropagate.Ctime != nil ||
 					basePropagate.Atime != nil || basePropagate.CreationTime != nil ||
-					basePropagate.Mode != nil || basePropagate.Hidden != nil {
+					basePropagate.ModeOrMask != nil || basePropagate.ModeAndNotMask != nil ||
+					basePropagate.Hidden != nil {
 					if baseHandle, encErr := metadata.EncodeFileHandle(baseFile); encErr == nil {
 						// A stream shares its base file's security descriptor, so
 						// the grant carried on this handle is a grant on the base.
