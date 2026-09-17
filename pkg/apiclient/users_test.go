@@ -266,3 +266,27 @@ func TestGetCurrentUser(t *testing.T) {
 	assert.Equal(t, "current-user-123", user.ID)
 	assert.Equal(t, "currentuser", user.Username)
 }
+
+// TestCreateUser_DecodesWarnings pins the client half of the skipped-permission
+// report: the server sets `warnings` on create and update, and a client that
+// does not decode it prints success while discarding the reason a requested
+// share_permissions entry did not apply.
+func TestCreateUser_DecodesWarnings(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":       "u1",
+			"username": "newuser",
+			"role":     "user",
+			"warnings": []string{`share_permissions["/export"]: share not found`},
+		})
+	}))
+	defer server.Close()
+
+	client := New(server.URL).WithToken("test-token")
+	user, err := client.CreateUser(&CreateUserRequest{Username: "newuser", Password: "password123"})
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{`share_permissions["/export"]: share not found`}, user.Warnings,
+		"the server's skipped-permission report must survive the client decode")
+}

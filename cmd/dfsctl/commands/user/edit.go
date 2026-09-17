@@ -126,6 +126,12 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to update user: %w", err)
 	}
 
+	// Surface any server-side warnings (e.g. a share_permissions entry that was
+	// skipped) so an update is not silently a partial no-op.
+	for _, warning := range user.Warnings {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", warning)
+	}
+
 	return cmdutil.PrintResourceWithSuccess(os.Stdout, user, fmt.Sprintf("User '%s' updated successfully", user.Username))
 }
 
@@ -243,6 +249,12 @@ func runEditInteractive(client *apiclient.Client, username string) error {
 	user, err := client.UpdateUser(username, req)
 	if err != nil {
 		return fmt.Errorf("failed to update user: %w", err)
+	}
+
+	// Surface any server-side warnings (e.g. a share_permissions entry that was
+	// skipped) so an update is not silently a partial no-op.
+	for _, warning := range user.Warnings {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", warning)
 	}
 
 	return cmdutil.PrintResourceWithSuccess(os.Stdout, user, fmt.Sprintf("User '%s' updated successfully", user.Username))

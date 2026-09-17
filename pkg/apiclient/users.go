@@ -20,6 +20,13 @@ type User struct {
 	SharePermissions   map[string]string `json:"share_permissions,omitempty"`
 	CreatedAt          time.Time         `json:"created_at"`
 	LastLogin          *time.Time        `json:"last_login,omitempty"`
+
+	// Warnings carries non-fatal operator-facing messages about the request
+	// that just completed — a share_permissions entry that was skipped rather
+	// than applied. Omitted when empty, so a response without one says the
+	// requested permissions all landed. Only create and update set it; a
+	// response from any other endpoint leaves it nil.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // CreateUserRequest is the request to create a user.

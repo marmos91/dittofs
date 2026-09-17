@@ -182,5 +182,11 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create user: %w", err)
 	}
 
+	// Surface any server-side warnings (e.g. a share_permissions entry that was
+	// skipped) so a create is not silently a partial no-op.
+	for _, warning := range user.Warnings {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", warning)
+	}
+
 	return cmdutil.PrintResourceWithSuccess(os.Stdout, user, fmt.Sprintf("User '%s' created successfully", user.Username))
 }
