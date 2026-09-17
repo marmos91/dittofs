@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc/gss"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -49,6 +51,15 @@ type authCacheEntry struct {
 // full credential set (UID, primary GID, and supplementary GIDs). Including
 // the supplementary GIDs and flavor avoids returning a cached context that
 // was built for a different credential set that happens to share UID/GID.
+//
+// The Windows half (SID and group SIDs) is part of the key too. Those fields
+// reach the built identity from the GSS context, not from the handler context,
+// and they are what ACL evaluation matches a SID-form ACE against. Two
+// principals can share a uid/gid/gids triple and still carry different SIDs —
+// a user record with no UID defaults to 1000, so the triple alone is not
+// unique — and serving one principal the other's SID would grant rights the
+// requester does not hold. Unlike a missing SID this fails open, so the key
+// must not be narrowed back to the numeric triple.
 func authCacheKey(ctx *NFSHandlerContext) string {
 	uidVal := uint32(0xFFFFFFFF) // sentinel for nil
 	gidVal := uint32(0xFFFFFFFF)
@@ -67,6 +78,22 @@ func authCacheKey(ctx *NFSHandlerContext) string {
 	for _, g := range ctx.GIDs {
 		appendUint(&b, uint64(g))
 	}
+
+	// Only a GSS request can carry these, and only then is reading the context
+	// worth the cost on this per-RPC path.
+	if ctx.AuthFlavor == rpc.AuthRPCSECGSS {
+		if gssIdentity := gss.IdentityFromContext(ctx.Context); gssIdentity != nil {
+			if gssIdentity.SID != nil {
+				b.WriteString(":sid=")
+				b.WriteString(*gssIdentity.SID)
+			}
+			for _, gsid := range gssIdentity.GroupSIDs {
+				b.WriteString(":gsid=")
+				b.WriteString(gsid)
+			}
+		}
+	}
+
 	return b.String()
 }
 
