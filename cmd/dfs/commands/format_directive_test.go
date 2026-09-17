@@ -73,6 +73,10 @@ func TestFormatMismatchDirective(t *testing.T) {
 // The legacy arm is reachable only because handleFormatMismatch matches the
 // sentinel. It previously did not, which left the arm dead and the share
 // warn-and-skipped instead of stopping the boot.
+//
+// The guard now returns the exit status rather than calling exitFn itself, so
+// the caller's defers (notably the control-plane store close) run before the
+// process exits. The returned code is what is asserted here.
 func TestHandleFormatMismatch_MatchesEverySentinel(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -86,17 +90,12 @@ func TestHandleFormatMismatch_MatchesEverySentinel(t *testing.T) {
 		{"nil", nil, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			prev := exitFn
-			exited := false
-			exitFn = func(int) { exited = true }
-			t.Cleanup(func() { exitFn = prev })
-
 			got := handleFormatMismatch(tc.err, nil)
-			if got != tc.want {
-				t.Fatalf("handleFormatMismatch = %v, want %v", got, tc.want)
+			if (got != nil) != tc.want {
+				t.Fatalf("handleFormatMismatch = %v, want stop=%v", got, tc.want)
 			}
-			if exited != tc.want {
-				t.Errorf("exit called = %v, want %v", exited, tc.want)
+			if got != nil && got.code != EX_CONFIG {
+				t.Errorf("exit code = %d, want %d", got.code, EX_CONFIG)
 			}
 		})
 	}

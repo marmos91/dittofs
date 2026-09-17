@@ -28,10 +28,11 @@ import (
 // (1) print the multi-line operator directive to stderr,
 // (2) exit with code 78 (EX_CONFIG).
 //
-// The test stubs the production `exitFn` indirection through a
-// t.Cleanup-restored override so the captured exit code is observable
-// in-process without spawning a subprocess (cleanup restores the
-// original os.Exit binding before the next test runs).
+// The guards return the exit status rather than calling exitFn in place, so the
+// test asserts on the returned code and never stubs the exit path. runStart is
+// what performs the exit, and it does so only after runStartWithExit has
+// returned — which is what lets the control-plane store close first (see
+// TestStart_BootGuardExitClosesTheStore).
 //
 // The test uses the package-internal helper `handleLoadSharesError`
 // directly because the full `runStart` cobra path requires DB setup,
@@ -43,20 +44,6 @@ import (
 // what runtime.LoadSharesFromStore produces when AddShare bubbles
 // `ErrFutureFormat` from a store constructor.
 func TestStart_FutureFormatExitCode(t *testing.T) {
-	// Stub exitFn to capture the exit code without terminating the process.
-	origExit := exitFn
-	t.Cleanup(func() { exitFn = origExit })
-	exitCh := make(chan int, 1)
-	exitFn = func(code int) {
-		// Buffered channel size 1; non-blocking send avoids deadlock
-		// on the unlikely case of multiple calls (defensive — the
-		// production path calls exitFn at most once).
-		select {
-		case exitCh <- code:
-		default:
-		}
-	}
-
 	// Capture stderr via a pipe so we can assert on the directive text.
 	origStderr := os.Stderr
 	r, w, err := os.Pipe()
@@ -77,13 +64,13 @@ func TestStart_FutureFormatExitCode(t *testing.T) {
 	loadErr := fmt.Errorf("share %q: %w", "share-A", innerErr)
 
 	stop := handleLoadSharesError(loadErr, w)
-	if !stop {
-		t.Fatalf("handleLoadSharesError returned stop=false on future-format error")
+	if stop == nil {
+		t.Fatalf("handleLoadSharesError returned no exit status on a future-format error")
 	}
 	journalErr := fmt.Errorf("share %q: %w", "share-J",
 		fmt.Errorf("share %s: %w", filepath.Join(t.TempDir(), "share-J"), journal.ErrFutureFormat))
-	if !handleLoadSharesError(journalErr, w) {
-		t.Fatalf("handleLoadSharesError returned stop=false on journal sentinel")
+	if handleLoadSharesError(journalErr, w) == nil {
+		t.Fatalf("handleLoadSharesError returned no exit status on a journal sentinel")
 	}
 
 	// Close the writer so the reader sees EOF, then drain.
@@ -96,13 +83,9 @@ func TestStart_FutureFormatExitCode(t *testing.T) {
 	}
 	_ = r.Close()
 
-	// Assert: exit code 78 was captured.
-	var gotCode int
-	select {
-	case gotCode = <-exitCh:
-	default:
-		t.Fatalf("exitFn was never invoked on future-format error")
-	}
+	// Assert: the guard reported exit code 78. runStart is what performs the
+	// exit, after its own defers have run, so the code is a returned value.
+	gotCode := stop.code
 	if gotCode != EX_CONFIG {
 		t.Errorf("captured exit code = %d, want %d", gotCode, EX_CONFIG)
 	}
@@ -128,24 +111,8 @@ func TestStart_FutureFormatExitCode(t *testing.T) {
 // failures must NOT trigger exit 78, preserving the historical
 // best-effort behavior.
 func TestHandleLoadSharesError_NonLegacyContinues(t *testing.T) {
-	origExit := exitFn
-	t.Cleanup(func() { exitFn = origExit })
-	exitCh := make(chan int, 1)
-	exitFn = func(code int) {
-		select {
-		case exitCh <- code:
-		default:
-		}
-	}
-
-	stop := handleLoadSharesError(errors.New("some other failure"), os.Stderr)
-	if stop {
-		t.Fatalf("handleLoadSharesError returned stop=true on non-legacy error")
-	}
-	select {
-	case got := <-exitCh:
-		t.Fatalf("exitFn called with %d on non-legacy error", got)
-	default:
+	if stop := handleLoadSharesError(errors.New("some other failure"), os.Stderr); stop != nil {
+		t.Fatalf("handleLoadSharesError returned an exit status on a non-legacy error: %v", stop)
 	}
 }
 
@@ -190,15 +157,10 @@ func TestAdminBootstrap_PasswordNotLoggedToStructuredLogger(t *testing.T) {
 }
 
 // TestHandleLoadSharesError_NilNoop confirms the helper is a no-op on a
-// nil error (no exit, no stop).
+// nil error (no exit status, no stop).
 func TestHandleLoadSharesError_NilNoop(t *testing.T) {
-	origExit := exitFn
-	t.Cleanup(func() { exitFn = origExit })
-	exitFn = func(code int) {
-		t.Errorf("exitFn must not be called on nil error; got code=%d", code)
-	}
-	if handleLoadSharesError(nil, os.Stderr) {
-		t.Errorf("handleLoadSharesError returned stop=true on nil error")
+	if stop := handleLoadSharesError(nil, os.Stderr); stop != nil {
+		t.Errorf("handleLoadSharesError returned an exit status on a nil error: %v", stop)
 	}
 }
 
@@ -327,16 +289,6 @@ controlplane:
 // Without this branch handleLoadSharesError would downgrade it to a warning
 // and the daemon would come up serving a share no client can authenticate to.
 func TestStart_RequireKerberosWithoutKerberosExitCode(t *testing.T) {
-	origExit := exitFn
-	t.Cleanup(func() { exitFn = origExit })
-	exitCh := make(chan int, 1)
-	exitFn = func(code int) {
-		select {
-		case exitCh <- code:
-		default:
-		}
-	}
-
 	// handleLoadSharesError writes to the *os.File it is handed, so the pipe
 	// alone captures the directive; os.Stderr stays untouched.
 	r, w, err := os.Pipe()
@@ -345,8 +297,12 @@ func TestStart_RequireKerberosWithoutKerberosExitCode(t *testing.T) {
 	}
 
 	loadErr := fmt.Errorf("share %q: %w; enable Kerberos", "/krb-gone", runtime.ErrExportAcceptsNoAuthFlavor)
-	if !handleLoadSharesError(loadErr, w) {
-		t.Fatal("handleLoadSharesError returned stop=false on an unsatisfiable Kerberos policy")
+	stop := handleLoadSharesError(loadErr, w)
+	if stop == nil {
+		t.Fatal("handleLoadSharesError returned no exit status on an unsatisfiable Kerberos policy")
+	}
+	if stop.code != EX_CONFIG {
+		t.Fatalf("exit code = %d; want %d", stop.code, EX_CONFIG)
 	}
 
 	if err := w.Close(); err != nil {
@@ -358,14 +314,6 @@ func TestStart_RequireKerberosWithoutKerberosExitCode(t *testing.T) {
 	}
 	_ = r.Close()
 
-	select {
-	case code := <-exitCh:
-		if code != EX_CONFIG {
-			t.Fatalf("exit code = %d; want %d", code, EX_CONFIG)
-		}
-	default:
-		t.Fatal("exitFn was never invoked")
-	}
 	if !strings.Contains(stderrBuf.String(), "/krb-gone") {
 		t.Fatalf("stderr %q does not name the share", stderrBuf.String())
 	}
@@ -678,6 +626,93 @@ metrics:
 		if _, statErr := os.Stat(sidecar); !os.IsNotExist(statErr) {
 			t.Errorf("control-plane store still open: %s survived the aborted start (stat err: %v)",
 				sidecar, statErr)
+		}
+	}
+}
+
+// TestStart_BootGuardExitClosesTheStore covers #2671. The boot guards used to
+// call exitFn (os.Exit in production) from where they were invoked, which runs
+// no defers — so the control-plane store's close defer in runStart was skipped
+// entirely and SQLite was left with its WAL and shared-memory sidecar files on
+// disk, no checkpoint, and an unclosed handle.
+//
+// The guards now return an exit status that runStart acts on, so every defer
+// registered before the guard runs first. This drives the real exit-78 path
+// with a store open and asserts the store was closed: SQLite removes the -wal
+// and -shm sidecars only on a clean Close, so their absence is the observable.
+func TestStart_BootGuardExitClosesTheStore(t *testing.T) {
+	tmp, err := os.MkdirTemp("", "dittofs-exit78-close-")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmp) })
+
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, "config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(tmp, "state"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(tmp, "data"))
+	t.Setenv(api.EnvControlPlaneSecret, "")
+	t.Setenv(models.EnvAdminInitialPassword, "")
+
+	dbPath := filepath.Join(tmp, "controlplane.db")
+	journalRoot := filepath.Join(tmp, "journal")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	// Kerberos stays DISABLED, so the require_kerberos share seeded below is an
+	// unsatisfiable export policy: loadSharesWithKerberosCapability returns
+	// ErrExportAcceptsNoAuthFlavor and handleLoadSharesError reports exit 78.
+	cfgBody := fmt.Sprintf(`database:
+  type: sqlite
+  sqlite:
+    path: %s
+controlplane:
+  host: 127.0.0.1
+  port: 0
+  jwt:
+    secret: "%s"
+blockstore:
+  journal:
+    path: %s
+gc:
+  auto_enabled: false
+integrity:
+  auto_enabled: false
+`, dbPath, strings.Repeat("s", 64), journalRoot)
+	if err := os.WriteFile(cfgPath, []byte(cfgBody), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	seedRequireKerberosShare(t, dbPath)
+
+	origCfgFile, origForeground := cfgFile, foreground
+	t.Cleanup(func() { cfgFile, foreground = origCfgFile, origForeground })
+	cfgFile = cfgPath
+	foreground = true
+
+	// runStartWithExit is the function that owns the store close defer; runStart
+	// is the thin wrapper that exits after it returns.
+	err = runStartWithExit(startCmd, nil)
+	if err == nil {
+		t.Fatal("start returned nil; the require_kerberos share should have refused on a " +
+			"server without Kerberos")
+	}
+	var st *exitStatus
+	if !errors.As(err, &st) {
+		t.Fatalf("start returned %v; want an exit status from the share-load refusal", err)
+	}
+	if st.code != EX_CONFIG {
+		t.Fatalf("exit code = %d, want %d", st.code, EX_CONFIG)
+	}
+
+	// The store was opened before the guard ran, so it must have been closed on
+	// the way out. A clean Close removes the WAL sidecars; a process that exited
+	// from inside the guard leaves them behind.
+	for _, sidecar := range []string{dbPath + "-wal", dbPath + "-shm"} {
+		if _, statErr := os.Stat(sidecar); statErr == nil {
+			t.Errorf("the control-plane store was left open on the exit-78 path: %s still exists",
+				filepath.Base(sidecar))
+		} else if !os.IsNotExist(statErr) {
+			t.Errorf("stat %s: %v", sidecar, statErr)
 		}
 	}
 }

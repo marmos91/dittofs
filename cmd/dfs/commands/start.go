@@ -55,12 +55,13 @@ const EX_CONFIG = 78
 // not outlast the forced-exit deadline it would otherwise defeat.
 const storeCloseTimeout = 5 * time.Second
 
-// exitFn is the production exit path for the format-mismatch boot guard.
-// Indirected through a package-level var so the in-process boot-guard
-// test (start_test.go::TestStart_FutureFormatExitCode) can stub it to
-// capture the exit code deterministically without spawning a subprocess.
-// Production code MUST NOT reassign exitFn — only the test does, and
-// only via a t.Cleanup-restored override.
+// exitFn is the production exit path for the boot guards. It is called only by
+// runStart, after runStartWithExit has returned, so the defers registered inside
+// it (notably the control-plane store close) run before the process exits.
+// Indirected through a package-level var so a test can stub it to capture the
+// exit code deterministically without spawning a subprocess. Production code
+// MUST NOT reassign exitFn — only a test does, and only via a
+// t.Cleanup-restored override.
 var exitFn = os.Exit
 
 var (
@@ -102,6 +103,30 @@ func init() {
 }
 
 func runStart(cmd *cobra.Command, args []string) error {
+	// The boot guards report their exit code as a value rather than terminating
+	// from where they are called, so the decision travels out of
+	// runStartWithExit and every defer it registered runs first — including the
+	// control-plane store close. Calling os.Exit from the guard skipped those
+	// defers outright, leaving the store open with no WAL cleanup on the way out.
+	err := runStartWithExit(cmd, args)
+	var st *exitStatus
+	if errors.As(err, &st) {
+		exitFn(st.code)
+		// Unreachable in production (exitFn == os.Exit terminates).
+		// Defensive: in-process tests stub exitFn to NOT terminate.
+		return nil
+	}
+	return err
+}
+
+// exitStatus carries the process exit code a boot guard decided on. It travels
+// as an error so the guard can return it without terminating the process, and
+// runStart performs the exit only after the caller's defers have run.
+type exitStatus struct{ code int }
+
+func (e *exitStatus) Error() string { return fmt.Sprintf("exit status %d", e.code) }
+
+func runStartWithExit(cmd *cobra.Command, args []string) error {
 	// Handle daemon mode (background)
 	if !foreground {
 		return startDaemon()
@@ -266,8 +291,8 @@ func runStart(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		// A metadata store whose format this build cannot read gets the same
 		// exit code and directive as a block store in that state.
-		if stop := handleFormatMismatch(err, os.Stderr); stop {
-			return nil
+		if stop := handleFormatMismatch(err, os.Stderr); stop != nil {
+			return stop
 		}
 		return fmt.Errorf("failed to initialize runtime: %w", err)
 	}
@@ -351,8 +376,8 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// Legacy-layout detection is a hard boot stop. Other share-loading failures
 	// stay best-effort (logged + ignored, the historical behavior).
 	effectiveKerberos, loadErr := loadSharesWithKerberosCapability(ctx, cpStore, rt, cfg)
-	if stop := handleLoadSharesError(loadErr, os.Stderr); stop {
-		return nil
+	if stop := handleLoadSharesError(loadErr, os.Stderr); stop != nil {
+		return stop
 	}
 
 	// A skipped share only shrinks the share count, which reads as normal to
@@ -974,32 +999,29 @@ func createSMBAdapter(cfg *models.AdapterConfig, kerberosConfig *config.Kerberos
 //
 // Production code MUST go through this helper — direct termination from
 // runStart would bypass the exitFn indirection the test depends on.
-func handleFormatMismatch(err error, stderr *os.File) bool {
+func handleFormatMismatch(err error, stderr *os.File) *exitStatus {
 	if err == nil {
-		return false
+		return nil
 	}
 	if !errors.Is(err, block.ErrFutureFormat) && !errors.Is(err, journal.ErrFutureFormat) &&
 		!errors.Is(err, shares.ErrLegacyLocalFormat) {
-		return false
+		return nil
 	}
 	_, _ = fmt.Fprintln(stderr, formatMismatchDirective(err))
-	exitFn(EX_CONFIG)
-	// Unreachable in production (exitFn == os.Exit terminates).
-	// Defensive: in-process tests stub exitFn to NOT terminate.
-	return true
+	return &exitStatus{code: EX_CONFIG}
 }
 
 // handleLoadSharesError centralizes the share-loading error policy so
 // the in-process boot-guard test can exercise the exit-78 path without
-// rebuilding the full daemon setup. Returns true when the caller should
-// stop runStart (format-mismatch branch hit; exitFn called); false
-// otherwise (no error, or a warn-and-continue).
-func handleLoadSharesError(err error, stderr *os.File) bool {
+// rebuilding the full daemon setup. Returns a non-nil exit status when the
+// caller should stop runStartWithExit (format-mismatch or unsatisfiable-policy
+// branch hit); nil otherwise (no error, or a warn-and-continue).
+func handleLoadSharesError(err error, stderr *os.File) *exitStatus {
 	if err == nil {
-		return false
+		return nil
 	}
-	if handleFormatMismatch(err, stderr) {
-		return true
+	if st := handleFormatMismatch(err, stderr); st != nil {
+		return st
 	}
 	// A persisted export policy no auth flavor can satisfy is an operator
 	// configuration error, not a share that can be skipped: the share would
@@ -1007,11 +1029,10 @@ func handleLoadSharesError(err error, stderr *os.File) bool {
 	// setting at fault, so print it as-is and exit 78.
 	if errors.Is(err, runtime.ErrExportAcceptsNoAuthFlavor) {
 		_, _ = fmt.Fprintln(stderr, err)
-		exitFn(EX_CONFIG)
-		return true
+		return &exitStatus{code: EX_CONFIG}
 	}
 	logger.Warn("Failed to load some shares", "error", err)
-	return false
+	return nil
 }
 
 // emitAdminPassword surfaces a freshly-generated first-run admin password. It
