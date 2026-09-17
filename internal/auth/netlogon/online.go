@@ -222,6 +222,13 @@ type RotationManager struct {
 	stop chan struct{}
 	done chan struct{}
 
+	// rotateCtx is cancelled by Stop so an in-flight rotation stops waiting on
+	// the DC instead of holding the join for the length of its own timeout. The
+	// loop owns the per-tick deadline on top of it; this is the cancellation
+	// that makes Stop bounded rather than merely patient.
+	rotateCtx    context.Context
+	rotateCancel context.CancelFunc
+
 	startOnce sync.Once
 	stopOnce  sync.Once
 	started   atomic.Bool
@@ -238,12 +245,15 @@ func NewRotationManager(prov MachineCredentialProvider, auth *Authenticator, int
 	if !ok || interval <= 0 || auth == nil {
 		return nil
 	}
+	rotateCtx, rotateCancel := context.WithCancel(context.Background())
 	return &RotationManager{
-		provider: op,
-		auth:     auth,
-		interval: interval,
-		stop:     make(chan struct{}),
-		done:     make(chan struct{}),
+		provider:     op,
+		auth:         auth,
+		interval:     interval,
+		stop:         make(chan struct{}),
+		done:         make(chan struct{}),
+		rotateCtx:    rotateCtx,
+		rotateCancel: rotateCancel,
 	}
 }
 
@@ -285,7 +295,17 @@ func (m *RotationManager) run() {
 		case <-m.stop:
 			return
 		case <-ticker.C:
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			// Bounded per tick by the rotation's own deadline, and by the
+			// manager's cancellation on top of it: a rotate that is waiting on
+			// an unresponsive DC ends when Stop is called rather than holding
+			// the shutdown join for the full two minutes. A manager built by
+			// hand (tests) may carry no context; fall back to the background
+			// one so the tick still runs.
+			parent := m.rotateCtx
+			if parent == nil {
+				parent = context.Background()
+			}
+			ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 			if err := m.provider.rotate(ctx, m.auth); err != nil {
 				slog.Default().Error("netlogon: machine-password rotation failed (will retry next interval)",
 					"account", m.provider.cfg.AccountName, "error", err)
@@ -299,11 +319,22 @@ func (m *RotationManager) run() {
 // nil receiver, idempotent, and non-blocking when Start was never called (no
 // goroutine to wait for) — so `m := NewRotationManager(...); defer m.Stop()`
 // with an early return before Start does not deadlock.
+//
+// Stop cancels the context an in-flight rotation runs under before joining, so
+// the join is bounded by real cancellation rather than by that rotation's own
+// two-minute deadline. Without it, a rotate waiting on an unresponsive DC kept
+// the caller in this join for up to the full deadline, ahead of whatever
+// shutdown work is sequenced after it.
 func (m *RotationManager) Stop() {
 	if m == nil {
 		return
 	}
-	m.stopOnce.Do(func() { close(m.stop) })
+	m.stopOnce.Do(func() {
+		if m.rotateCancel != nil {
+			m.rotateCancel()
+		}
+		close(m.stop)
+	})
 	if !m.started.Load() {
 		return
 	}

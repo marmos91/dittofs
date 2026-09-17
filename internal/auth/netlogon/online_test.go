@@ -208,3 +208,44 @@ func TestRotationManager_StartThenStop(t *testing.T) {
 
 // ensure fakeLDAP search returns an empty (non-nil) result for the no-OU path.
 var _ = ldapv3.NewSearchRequest
+
+// TestRotationManager_StopDoesNotWaitOutTheRotationDeadline is the timing half of
+// #2674: Stop must return on cancellation, not after rotate's own two-minute
+// deadline. The assertion is generous — the point is that it is bounded by
+// cancellation at all, not that it is instantaneous.
+func TestRotationManager_StopDoesNotWaitOutTheRotationDeadline(t *testing.T) {
+	inFlight := make(chan struct{}, 1)
+
+	blocking := func(ctx context.Context, _ *JoinConfig) (ldapConn, error) {
+		select {
+		case inFlight <- struct{}{}:
+		default:
+		}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	p := &onlineProvider{cfg: onlineCfg(), secret: &memSecretStore{}, dial: blocking}
+	auth := NewAuthenticator(p)
+
+	m := NewRotationManager(p, auth, 10*time.Millisecond)
+	m.Start()
+
+	// Wait until a rotate is blocked inside the dial.
+	select {
+	case <-inFlight:
+	case <-time.After(5 * time.Second):
+		m.Stop()
+		t.Fatal("rotation never reached the blocking dial")
+	}
+
+	done := make(chan struct{})
+	go func() { m.Stop(); close(done) }()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop() blocked while a rotation was waiting on an unresponsive DC: " +
+			"the join is not bounded by cancellation")
+	}
+}
