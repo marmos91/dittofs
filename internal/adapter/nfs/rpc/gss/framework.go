@@ -855,13 +855,24 @@ func (p *GSSProcessor) resolveIdentity(ctx context.Context, principal, realm str
 			return nil, fmt.Errorf("identity resolver unavailable for %s@%s: %w", principal, realm, err)
 		}
 		if resolved.Found {
-			return &metadata.Identity{
+			identity := &metadata.Identity{
 				UID:      &resolved.UID,
 				GID:      &resolved.GID,
 				GIDs:     resolved.GIDs,
 				Username: resolved.Username,
 				Domain:   resolved.Domain,
-			}, nil
+			}
+			// Carry the Windows identity across too. An ACE keyed on a SID or
+			// group SID must match for a Kerberos principal whose persisted
+			// user record names one, and the SMB path already does this via
+			// PACGroupSIDs. Dropping them fails closed: the requester is
+			// denied rights the same user holds over SMB.
+			if resolved.SID != "" {
+				sid := resolved.SID
+				identity.SID = &sid
+			}
+			identity.GroupSIDs = resolved.GroupSIDs
+			return identity, nil
 		}
 		return nobodyIdentity(), nil
 	}
