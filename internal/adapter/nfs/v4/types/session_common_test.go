@@ -712,13 +712,13 @@ func encodeAuthSysRaw(t *testing.T, machineNameLen int, gidsCount uint32) []byte
 		binary.BigEndian.PutUint32(b[:], v)
 		buf.Write(b[:])
 	}
-	put(1) // cb_secflavor = AUTH_SYS
+	put(1)  // cb_secflavor = AUTH_SYS
 	put(42) // stamp
 	put(uint32(machineNameLen))
 	buf.Write(bytes.Repeat([]byte{'a'}, machineNameLen))
 	buf.Write(bytes.Repeat([]byte{0}, (4-machineNameLen%4)%4)) // pad to 4
-	put(1000) // uid
-	put(1000) // gid
+	put(1000)                                                  // uid
+	put(1000)                                                  // gid
 	put(gidsCount)
 	for i := uint32(0); i < gidsCount; i++ {
 		put(i)
