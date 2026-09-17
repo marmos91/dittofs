@@ -1697,6 +1697,75 @@ func TestAttemptRecallV41_WatchdogStartsAtDequeue(t *testing.T) {
 	}
 }
 
+// TestAttemptRecallV41_AbandonedRequestIsNotDelivered pins the other half of the
+// queue-wait bound. A caller that gives up on the queue because the sender is
+// not draining it must not have that callback delivered afterwards: by then it
+// has reported the recall local and started the short revocation timer, so a
+// stale CB_RECALL arriving later reaches a client whose delegation the server
+// has already finished with.
+//
+// The request is enqueued with the sender not running, abandoned, and only then
+// does the sender start. It must drop the request rather than send it.
+func TestAttemptRecallV41_AbandonedRequestIsNotDelivered(t *testing.T) {
+	sender, sm, sessionID := createTestBackchannelSender(t)
+	defer sm.Shutdown()
+
+	sender.callbackTimeout = 50 * time.Millisecond
+
+	savedDelays := backchannelRetryDelays
+	backchannelRetryDelays = [backchannelMaxRetries]time.Duration{
+		time.Millisecond, time.Millisecond, time.Millisecond,
+	}
+	savedGrace := recallResultGrace
+	recallResultGrace = 100 * time.Millisecond
+	t.Cleanup(func() {
+		backchannelRetryDelays = savedDelays
+		recallResultGrace = savedGrace
+	})
+
+	// A writer that records every callback it is asked to send. The abandoned
+	// recall must never reach it.
+	var sent atomic.Int32
+	const connID = uint64(9702)
+	pending := sm.RegisterConnWriter(connID, func([]byte) error {
+		sent.Add(1)
+		return nil
+	})
+	if _, err := sm.BindConnToSession(connID, sessionID, types.CDFC4_FORE_OR_BOTH); err != nil {
+		t.Fatalf("BindConnToSession: %v", err)
+	}
+	_ = pending
+
+	deleg := &DelegationState{
+		ClientID:   sender.clientID,
+		FileHandle: []byte("fh-abandoned"),
+		DelegType:  types.OPEN_DELEGATE_READ,
+		Stateid:    types.Stateid4{Seqid: 1},
+	}
+
+	// The sender is not running, so the request cannot be dequeued and the
+	// queue-wait bound expires. The outcome is the local one.
+	outcome := sm.attemptRecallV41(deleg, sender, EncodeCBRecallOp(&deleg.Stateid, false, deleg.FileHandle))
+	deleg.StopRecallTimer()
+	if outcome != recallSenderLocal {
+		t.Fatalf("outcome = %d, want recallSenderLocal: the request never left the queue", outcome)
+	}
+
+	// Now the sender runs. The abandoned request is still in the queue, and it
+	// must be dropped at dequeue rather than delivered.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go sender.Run(ctx)
+
+	select {
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	if got := sent.Load(); got != 0 {
+		t.Fatalf("writer was asked to send %d callbacks; an abandoned queued request must be dropped", got)
+	}
+}
+
 // TestGrantDelegation_DeniedWhileForeignByteRangeLockHeld covers the
 // cross-protocol path an NFSv4 client takes when a kernel NFSv3 client already
 // holds an NLM lock on the file. A delegated client answers its own byte-range

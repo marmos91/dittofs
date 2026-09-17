@@ -87,20 +87,55 @@ type CallbackRequest struct {
 	// ResultCh receives the result of the callback send. Buffered (capacity 1).
 	ResultCh chan error
 
-	// Started is closed by the sender when it dequeues this request and begins
-	// processing it, or left nil by callers that do not care. Sends are
-	// serialised, so a request can sit in the queue behind another callback for
-	// that callback's whole retry schedule; a caller whose own deadline is a
-	// budget for the send uses this to tell "still queued" from "being sent",
-	// rather than spending its send budget on the queue wait.
-	Started chan struct{}
+	// Dequeue is the handshake around the moment the sender picks this request
+	// up, or nil for callers that do not need it. Sends are serialised, so a
+	// request can sit in the queue behind other callbacks for their whole retry
+	// schedules; a caller that bounds its own queue wait needs a single atomic
+	// point where "the sender took it" and "the caller gave up" are decided,
+	// rather than two checks that can disagree.
+	Dequeue *callbackDequeue
 }
 
-// signalStarted closes the dequeue signal, if the caller asked for one.
-func (req CallbackRequest) signalStarted() {
-	if req.Started != nil {
-		close(req.Started)
+// callbackDequeue is the one decision point between a sender picking a queued
+// request up and the caller abandoning it.
+type callbackDequeue struct {
+	mu        sync.Mutex
+	taken     bool
+	abandoned bool
+	// started is closed once, when the request is taken, so a caller can wait
+	// for the dequeue without polling.
+	started chan struct{}
+}
+
+func newCallbackDequeue() *callbackDequeue {
+	return &callbackDequeue{started: make(chan struct{})}
+}
+
+// take marks the request as picked up. It reports false when the caller gave up
+// on the queue wait first, in which case the sender must drop the request
+// rather than deliver a callback the caller has moved past.
+func (d *callbackDequeue) take() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.abandoned {
+		return false
 	}
+	d.taken = true
+	close(d.started)
+	return true
+}
+
+// abandon gives up on the queue wait. It reports false when the sender already
+// took the request, in which case the caller must wait for the send's result
+// rather than treat the recall as never attempted.
+func (d *callbackDequeue) abandon() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.taken {
+		return false
+	}
+	d.abandoned = true
+	return true
 }
 
 // ============================================================================
@@ -332,9 +367,15 @@ func (bs *BackchannelSender) Run(ctx context.Context) {
 				"session_id", bs.sessionID.String())
 			return
 		case req := <-bs.queue:
-			// Signal the dequeue before any work, so a caller waiting on it
-			// starts its own send budget at the moment the queue wait ends.
-			req.signalStarted()
+			// Claim the request before any work. A caller that gave up on the
+			// queue wait may have moved on from the state this callback
+			// describes, so a lost claim drops it rather than recalling a
+			// delegation the server has already finished with.
+			if req.Dequeue != nil && !req.Dequeue.take() {
+				logger.Debug("BackchannelSender dropping abandoned queued request",
+					"session_id", bs.sessionID.String())
+				continue
+			}
 			bs.sendCallbackWithRetry(ctx, req)
 		}
 	}
