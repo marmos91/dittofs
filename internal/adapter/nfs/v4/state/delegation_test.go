@@ -1757,9 +1757,7 @@ func TestAttemptRecallV41_AbandonedRequestIsNotDelivered(t *testing.T) {
 	defer cancel()
 	go sender.Run(ctx)
 
-	select {
-	case <-time.After(500 * time.Millisecond):
-	}
+	time.Sleep(500 * time.Millisecond)
 
 	if got := sent.Load(); got != 0 {
 		t.Fatalf("writer was asked to send %d callbacks; an abandoned queued request must be dropped", got)
