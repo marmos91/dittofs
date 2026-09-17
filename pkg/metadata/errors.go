@@ -133,16 +133,6 @@ func IsStaleHandleError(err error) bool {
 // Error Helper Functions
 // ============================================================================
 
-// IsLockConflictError checks if an error is a StoreError with ErrLockConflict code.
-func IsLockConflictError(err error) bool {
-	return errors.IsLockConflictError(err)
-}
-
-// IsDeadlockError checks if an error is a StoreError with ErrDeadlock code.
-func IsDeadlockError(err error) bool {
-	return errors.IsDeadlockError(err)
-}
-
 // IsConflictError checks if an error is a StoreError with ErrConflict code.
 func IsConflictError(err error) bool {
 	return errors.IsConflictError(err)
