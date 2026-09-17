@@ -293,16 +293,23 @@ dfsctl share nfs-config set /export --netgroup trusted-net
 
 The netgroup is enforced on both NFS versions, on paths that do not share code:
 
-- **NFSv3** — checked at MOUNT and refused with `MNT3ERR_ACCES`.
-- **NFSv4** — there is no MOUNT, so the check runs twice instead: when a share
-  handle enters a compound (PUTFH, or a LOOKUP crossing an export junction out
-  of the pseudo-fs) and again whenever an operation builds an auth context. A
-  client outside the allowlist gets `NFS4ERR_ACCESS`.
+- **NFSv3** — checked at MOUNT and refused with `MNT3ERR_ACCES`. The check runs
+  **only** at mount time; the per-operation path re-checks the auth-flavor
+  policy but not the client allowlist.
+- **NFSv4** — there is no MOUNT, so the check runs per request instead: when a
+  share handle enters a compound (PUTFH, or a LOOKUP crossing an export
+  junction out of the pseudo-fs) and again whenever an operation builds an auth
+  context. A client outside the allowlist gets `NFS4ERR_ACCESS`.
 
-Both are evaluated per request against current runtime state, so tightening an
-export also affects clients that already mounted or already hold a handle.
-Which authentication flavors an export accepts is a separate policy — see
-`--allow-auth-sys` / `--require-kerberos` below.
+**Consequence for tightening an export.** Because v4 re-checks per request,
+adding or narrowing a netgroup takes effect on a v4 client's next operation,
+including one already holding a file handle. On v3 it takes effect for new
+mounts only — an already-mounted v3 client keeps working until it remounts.
+Remount is what re-reads the allowlist on v3.
+
+Which authentication flavors an export accepts is a separate policy, and it
+*is* re-checked per operation on both versions — see `--allow-auth-sys` /
+`--require-kerberos` below.
 
 Which authentication flavors an export accepts is separate from the client
 allowlist: set `--allow-auth-sys` / `--require-kerberos` with the same
