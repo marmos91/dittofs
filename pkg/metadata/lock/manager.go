@@ -882,20 +882,22 @@ func (lm *Manager) Lock(handleKey string, lock FileLock) error {
 	// lock), so the judgment is a separate critical section from the recall that
 	// precedes it -- and a delegation granted by a concurrent OPEN in between
 	// would deny this lock without ever being recalled, which is the defect this
-	// path exists to avoid. Re-judging after each recall closes that window; the
-	// deadline bounds the loop so a client that never answers CB_RECALL ends in
-	// a denial rather than a spin.
+	// path exists to avoid. Re-judging after each recall closes that window; a
+	// recall that timed out ends the loop in a denial rather than a spin.
 	//
 	// decision: this wait deliberately ignores the caller's lock-wait policy. A
 	// fail-immediately lock reaches here through the SMB handler's first
 	// synchronous attempt, and an unanswered CB_RECALL can hold it for one
-	// deadline rather than returning at once. Denying without the recall is the
+	// budget rather than returning at once. Denying without the recall is the
 	// defect this path exists to fix -- the lock is usually grantable, and the
 	// only client that waits is one that asked the server to reclaim caching
-	// rights and never answered. The wait is bounded, and FileLock carries no
-	// fail-immediately bit nor the interface a context, so honouring the policy
-	// means threading one through LockManager and every caller. Overturn this by
-	// adding that parameter and passing the SMB request deadline.
+	// rights and never answered. The budget runs from when the recall was
+	// dispatched, so a caller that retries the same recall (the SMB handler
+	// retries blocking locks on an interval) shares it rather than starting a
+	// fresh one. FileLock carries no fail-immediately bit nor the interface a
+	// context, so honouring the policy means threading one through LockManager
+	// and every caller. Overturn this by adding that parameter and passing the
+	// SMB request deadline.
 	for {
 		err, delegationBlocked := lm.lockLocked(handleKey, &lock)
 		if err == nil || !delegationBlocked {
