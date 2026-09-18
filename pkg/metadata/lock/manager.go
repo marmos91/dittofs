@@ -858,6 +858,17 @@ func (lm *Manager) Lock(handleKey string, lock FileLock) error {
 	// path exists to avoid. Re-judging after each recall closes that window; the
 	// deadline bounds the loop so a client that never answers CB_RECALL ends in
 	// a denial rather than a spin.
+	//
+	// decision: this wait deliberately ignores the caller's lock-wait policy. A
+	// fail-immediately lock reaches here through the SMB handler's first
+	// synchronous attempt, and an unanswered CB_RECALL can hold it for one
+	// deadline rather than returning at once. Denying without the recall is the
+	// defect this path exists to fix -- the lock is usually grantable, and the
+	// only client that waits is one that asked the server to reclaim caching
+	// rights and never answered. The wait is bounded, and FileLock carries no
+	// fail-immediately bit nor the interface a context, so honouring the policy
+	// means threading one through LockManager and every caller. Overturn this by
+	// adding that parameter and passing the SMB request deadline.
 	deadline := time.Now().Add(delegationIOWaitTimeout)
 	for {
 		lm.recallDelegationsForByteRange(handleKey, &lock, deadline)
