@@ -33,8 +33,11 @@ func principalOf(ctx *AuthContext) string {
 // recycleNode moves the child named name under parentHandle into the share's
 // #recycle bin, recreating the original parent subtree beneath the bin and
 // stamping recycle metadata (DeletedAt/OriginalPath/DeletedBy) on the victim.
-// It returns a copy of the victim's pre-move *File with PayloadID cleared, so
-// adapters skip block deletion (deferred reaping).
+// It returns the victim's *File with PayloadID cleared, so adapters skip block
+// deletion (deferred reaping). The returned attributes are the ones the move
+// committed, not the pre-move snapshot: the stamp and the move both write the
+// inode, and a caller that re-creates the entry from this result must not
+// resurrect an identity a concurrent chown committed before the move.
 //
 // origRel is the share-relative path the victim occupies before the move, with
 // no leading slash (e.g. "documents/report.pdf"). On ANY failure it returns an
@@ -126,7 +129,9 @@ func (s *Service) recycleNode(ctx *AuthContext, shareName string, parentHandle F
 	//    snapshot only if that re-read fails; PayloadID is cleared either way so
 	//    the adapter skips block deletion.
 	attrs := victim.FileAttr
-	if committed, rErr := s.GetFile(ctx.Context, victimHandle); rErr == nil {
+	// GetFile tolerates a backend returning (nil, nil), so the re-read is only
+	// usable when it actually produced a file.
+	if committed, rErr := s.GetFile(ctx.Context, victimHandle); rErr == nil && committed != nil {
 		attrs = committed.FileAttr
 	}
 	out := &File{

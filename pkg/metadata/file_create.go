@@ -366,7 +366,14 @@ func (s *Service) createEntry(
 		// there is no path by which a client supplies it. Revisit if a caller
 		// can set it from wire input: it would then let a client pin an
 		// arbitrary mode past the type default.
-		newAttr.Mode = attr.Mode & modeMask
+		//
+		// The mask is modeMask plus the DOS bits ApplyModeDefault deliberately
+		// drops. Those bits are excluded from a *new* create so they cannot
+		// suppress the automatic ARCHIVE bit; a re-create is restoring an
+		// existing entry's stored mode, so it must keep them (attr.Mode still
+		// holds the pre-default value — ApplyCreateDefaults only rewrote the
+		// copy).
+		newAttr.Mode = attr.Mode & (modeMask | dosAttributeModeBits)
 
 		// decision: ApplyOwnerDefaults is also skipped for an exact re-create.
 		// It treats a zero UID/GID as "unset" and substitutes the caller's,

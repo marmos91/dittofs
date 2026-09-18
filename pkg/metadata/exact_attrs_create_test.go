@@ -115,6 +115,27 @@ func TestCreateEntry_ExactAttrs(t *testing.T) {
 		assert.NotZero(t, got.Mode&0o4000, "an exact re-create must not strip a carried SUID bit")
 	})
 
+	t.Run("preserves carried DOS attribute bits", func(t *testing.T) {
+		t.Parallel()
+		fx := newTestFixture(t)
+
+		// modeDOSExplicit and modeDOSArchive are excluded from ApplyModeDefault
+		// so a *new* create cannot suppress the automatic ARCHIVE bit. A
+		// re-create is restoring stored bits, so it must keep them.
+		const (
+			explicit = uint32(0x10000)
+			archive  = uint32(0x20000)
+			dosBits  = explicit | archive
+		)
+		_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "dosbits", &metadata.FileAttr{
+			Type: metadata.FileTypeRegular, Mode: 0o600 | dosBits, ExactAttrs: true,
+		})
+		require.NoError(t, err)
+
+		got := fx.getAttr(t, "dosbits")
+		assert.Equal(t, dosBits, got.Mode&dosBits, "an exact re-create must keep the carried DOS bits")
+	})
+
 	t.Run("still defaults a normal create", func(t *testing.T) {
 		t.Parallel()
 		fx := newTestFixture(t)
