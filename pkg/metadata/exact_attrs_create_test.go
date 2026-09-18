@@ -41,17 +41,35 @@ func TestCreateEntry_ExactAttrs(t *testing.T) {
 		assert.Zero(t, got.Mode&0o7777, "an exact re-create must store the explicit mode 0")
 	})
 
-	t.Run("preserves a zero mode on symlink creation", func(t *testing.T) {
+	t.Run("preserves a named symlink mode", func(t *testing.T) {
 		t.Parallel()
 		fx := newTestFixture(t)
 
+		// ExactAttrs suppresses the automatic default, so the caller's mode is
+		// what lands. A symlink's POSIX mode is not meaningful, but it must still
+		// be the value the caller named rather than an invented one.
 		_, _, err := fx.service.CreateSymlink(fx.rootContext(), fx.rootHandle, "link", "../A", &metadata.FileAttr{
-			Type: metadata.FileTypeSymlink, Mode: 0o777, ExactAttrs: true,
+			Type: metadata.FileTypeSymlink, Mode: 0o755, ExactAttrs: true,
 		})
 		require.NoError(t, err)
 
 		got := fx.getAttr(t, "link")
-		assert.EqualValues(t, 0o777, got.Mode&0o7777, "the named symlink mode must survive")
+		assert.EqualValues(t, 0o755, got.Mode&0o7777, "the named symlink mode must survive")
+	})
+
+	t.Run("preserves a zero mode on symlink creation", func(t *testing.T) {
+		t.Parallel()
+		fx := newTestFixture(t)
+
+		// A zero mode on a re-created symlink must stay zero, the same as on a
+		// regular file — the automatic symlink default would otherwise apply.
+		_, _, err := fx.service.CreateSymlink(fx.rootContext(), fx.rootHandle, "link0", "../A", &metadata.FileAttr{
+			Type: metadata.FileTypeSymlink, Mode: 0, ExactAttrs: true,
+		})
+		require.NoError(t, err)
+
+		got := fx.getAttr(t, "link0")
+		assert.Zero(t, got.Mode&0o7777, "an exact re-create must store the explicit symlink mode 0")
 	})
 
 	t.Run("does not inherit the SGID parent's group", func(t *testing.T) {

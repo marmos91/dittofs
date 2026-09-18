@@ -178,11 +178,15 @@ func TestSetReparsePoint_PreservesOwnerUnderSGIDParent(t *testing.T) {
 	}
 }
 
-// TestSetReparsePoint_RollbackPreservesZeroMode pins the rollback branch against
-// an explicit mode 0. ApplyModeDefault reads 0 as "unspecified" and substitutes
-// 0o644, so a rollback that re-created the placeholder through the ordinary
-// create path would widen it — the exact widening the rollback exists to avoid.
-func TestSetReparsePoint_RollbackPreservesZeroMode(t *testing.T) {
+// TestSetReparsePoint_RollbackAttrRestoresZeroMode is a helper-contract test,
+// not an end-to-end one. It re-creates exactly what the rollback branch does
+// and asserts the result keeps an explicit mode 0. The branch itself is
+// unreachable through the handlers without fault injection: the same auth
+// context authorizes the RemoveFile and the CreateSymlink, and ACE4_ADD_FILE is
+// the same bit as ACE4_WRITE_DATA, so no parent DACL can deny one and allow the
+// other. Kept because the rule it pins — a re-create must not let
+// ApplyModeDefault read 0 as "unspecified" — is the one the rollback depends on.
+func TestSetReparsePoint_RollbackAttrRestoresZeroMode(t *testing.T) {
 	h, smbCtx, rootHandle, _ := setupReparseShare(t)
 	metaSvc := h.Registry.GetMetadataService()
 
@@ -220,6 +224,34 @@ func TestSetReparsePoint_RollbackPreservesZeroMode(t *testing.T) {
 	}
 	if got.UID != pre.UID || got.GID != pre.GID {
 		t.Errorf("rollback owner = %d:%d; want %d:%d unchanged", got.UID, got.GID, pre.UID, pre.GID)
+	}
+}
+
+// TestExactAttrs_NotPersisted pins that the create-path marker does not leak
+// into stored state. The memory backend keeps the whole FileAttr, so a marker
+// left set would come back through GetFile and let a later caller take the
+// exact-create path by accident.
+func TestExactAttrs_NotPersisted(t *testing.T) {
+	h, smbCtx, rootHandle, _ := setupReparseShare(t)
+	metaSvc := h.Registry.GetMetadataService()
+
+	_, _, err := metaSvc.CreateFile(rootCtxFor(smbCtx), rootHandle, "exact", &metadata.FileAttr{
+		Type: metadata.FileTypeRegular, Mode: 0o600, ExactAttrs: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateFile: %v", err)
+	}
+
+	fh, err := metaSvc.GetChild(smbCtx.Context, rootHandle, "exact")
+	if err != nil {
+		t.Fatalf("GetChild: %v", err)
+	}
+	got, err := metaSvc.GetFile(smbCtx.Context, fh)
+	if err != nil {
+		t.Fatalf("GetFile: %v", err)
+	}
+	if got.ExactAttrs {
+		t.Errorf("ExactAttrs = true in stored state; it is a create-path instruction, not file state")
 	}
 }
 

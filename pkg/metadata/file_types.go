@@ -120,7 +120,7 @@ type FileAttr struct {
 	// row yet, so a store that would otherwise probe for one can insert
 	// straight away. Transient, request-scoped and never persisted. Only a
 	// caller holding the create's exclusivity guarantee may set it: a store is
-	// entitled to skip its existence check, and an inode that does then
+	// entitled to skip its existence check, and an inode that does exist then
 	// surfaces as a duplicate-key error rather than an update.
 	NewInode bool `json:"-"`
 

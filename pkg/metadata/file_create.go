@@ -413,6 +413,12 @@ func (s *Service) createEntry(
 		newAttr.PayloadID = PayloadID(buildPayloadID(parent.ShareName, id))
 	}
 
+	// The exact-attrs marker is a create-path instruction, not file state: it is
+	// cleared before the File is stored so a backend that persists the whole
+	// FileAttr (the memory store) does not hand it back through GetFile and let a
+	// later caller take the exact-create path by accident.
+	newAttr.ExactAttrs = false
+
 	// Set device numbers for block/char devices
 	if fileType == FileTypeBlockDevice || fileType == FileTypeCharDevice {
 		newAttr.Rdev = MakeRdev(deviceMajor, deviceMinor)
