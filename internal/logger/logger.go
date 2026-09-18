@@ -296,6 +296,12 @@ func Error(msg string, args ...any) {
 // not inspect it. Request-scoped fields (client, share, uid, gid, ...) are
 // passed explicitly as key/value args by every caller, so these are exactly
 // equivalent to their plain counterparts.
+//
+// decision: the context is accepted and deliberately ignored. Nothing populates
+// request-scoped fields into a context — the only producer lived in the NFS
+// connection path and went with the observability stack — so there is nothing
+// to read. Overturn if a producer is reintroduced: the helpers would then need
+// to merge those fields again, or the call sites would have to pass them.
 
 // DebugCtx logs at debug level. The context is not inspected.
 func DebugCtx(_ context.Context, msg string, args ...any) { Debug(msg, args...) }

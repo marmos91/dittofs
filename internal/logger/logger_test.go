@@ -505,13 +505,13 @@ func TestContextLogging(t *testing.T) {
 		assert.Contains(t, buf.String(), "test message")
 	})
 
-	t.Run("ContextWithoutLogContextHandled", func(t *testing.T) {
+	t.Run("ContextWithoutRequestFieldsHandled", func(t *testing.T) {
 		buf, cleanup := captureOutput()
 		defer cleanup()
 
 		SetLevel("INFO")
 
-		// Should work with context that has no LogContext
+		// Should work with a context carrying no request-scoped fields
 		require.NotPanics(t, func() {
 			InfoCtx(context.Background(), "test message")
 		})
@@ -537,10 +537,18 @@ func TestContextLogging(t *testing.T) {
 			return m
 		}
 
-		plain := fields(func() { Info("msg", "share", "/export", "count", 3) })
-		withCtx := fields(func() { InfoCtx(context.Background(), "msg", "share", "/export", "count", 3) })
-
-		assert.Equal(t, plain, withCtx)
+		// Every helper, so a future divergence in any wrapper is caught.
+		pairs := map[string][2]func(){
+			"Debug": {func() { Debug("msg", "share", "/export", "count", 3) }, func() { DebugCtx(context.Background(), "msg", "share", "/export", "count", 3) }},
+			"Info":  {func() { Info("msg", "share", "/export", "count", 3) }, func() { InfoCtx(context.Background(), "msg", "share", "/export", "count", 3) }},
+			"Warn":  {func() { Warn("msg", "share", "/export", "count", 3) }, func() { WarnCtx(context.Background(), "msg", "share", "/export", "count", 3) }},
+			"Error": {func() { Error("msg", "share", "/export", "count", 3) }, func() { ErrorCtx(context.Background(), "msg", "share", "/export", "count", 3) }},
+		}
+		for name, p := range pairs {
+			t.Run(name, func(t *testing.T) {
+				assert.Equal(t, fields(p[0]), fields(p[1]))
+			})
+		}
 	})
 }
 
