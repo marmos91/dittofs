@@ -357,11 +357,23 @@ func (s *Service) createEntry(
 	newAttr.LinkTarget = linkTarget
 	ApplyCreateDefaults(&newAttr, ctx, linkTarget)
 	if attr.ExactAttrs {
-		// ApplyCreateDefaults read Mode==0 as "unspecified" and substituted the
-		// file-type default. A re-created entry's mode is authoritative,
-		// including an explicit 0 (a placeholder can carry one), so put the
-		// caller's value back.
+		// decision: an exact re-create keeps the caller's mode, so
+		// ApplyCreateDefaults' zero-mode widening is undone here. The widening
+		// exists to give a *new* entry a sane default; the entry being created
+		// already existed, and its mode was validated when it was first set.
+		// ExactAttrs is only ever set from attributes read off an existing
+		// inode that the caller just removed, never from a create request, so
+		// there is no path by which a client supplies it. Revisit if a caller
+		// can set it from wire input: it would then let a client pin an
+		// arbitrary mode past the type default.
 		newAttr.Mode = attr.Mode & modeMask
+
+		// decision: ApplyOwnerDefaults is also skipped for an exact re-create.
+		// It treats a zero UID/GID as "unset" and substitutes the caller's,
+		// which would re-home a root-owned placeholder onto whoever ran the
+		// conversion. Skipping it is what lets a re-created entry keep an
+		// explicit 0 owner. Safe for the same reason as above: the values come
+		// from an existing inode, not from a client request.
 	} else {
 		ApplyOwnerDefaults(&newAttr, ctx)
 	}
@@ -372,9 +384,12 @@ func (s *Service) createEntry(
 	// 2. New directories also get SGID bit set (to propagate the behavior)
 	// 3. New regular files do NOT get SGID bit set
 	//
-	// Skipped for an exact re-create: inheritance describes how a *new* entry is
-	// named, and applying it would hand a re-created placeholder the parent's
-	// group instead of the one it already had.
+	// decision: an exact re-create does not inherit the parent's GID. The rule
+	// describes how a *new* entry is named, and applying it would hand a
+	// re-created placeholder the parent's group instead of the one it already
+	// had — the change the re-create exists to prevent. Limited to
+	// ExactAttrs, which only ever carries attributes of an already-validated
+	// existing inode. Revisit if a general create request can set it.
 	parentHasSGID := !attr.ExactAttrs && parent.Mode&0o2000 != 0
 	if parentHasSGID {
 		// Inherit GID from parent directory
@@ -392,9 +407,12 @@ func (s *Service) createEntry(
 
 	// POSIX: Validate SUID/SGID bits for non-root users
 	// Even during file creation, non-root users cannot arbitrarily set these bits.
-	// An exact re-create is exempt: its mode was already validated when it was
-	// first set, and stripping a bit here would silently alter the very identity
-	// the re-create exists to preserve.
+	//
+	// decision: an exact re-create is exempt from the setid strip. Its mode was
+	// already validated when it was first set, and stripping a bit here would
+	// silently alter the very identity the re-create exists to preserve. Safe
+	// because ExactAttrs only ever carries attributes read from an existing
+	// inode, never a client-supplied mode; revisit if that changes.
 	identity := ctx.Identity
 	isRoot := identity != nil && identity.UID != nil && *identity.UID == 0
 	if !isRoot && !attr.ExactAttrs {

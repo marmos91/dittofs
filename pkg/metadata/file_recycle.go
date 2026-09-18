@@ -116,13 +116,24 @@ func (s *Service) recycleNode(ctx *AuthContext, shareName string, parentHandle F
 		}
 	}
 
-	// 7. Return a copy of the pre-move file with PayloadID cleared so the
-	//    adapter skips block deletion.
+	// 7. Return the attributes that the move actually committed, not the
+	//    pre-move snapshot. The stamp above and the move both write the inode, so
+	//    a concurrent chown/chmod that commits between the snapshot and the move
+	//    would otherwise be dropped — and a caller that re-creates the entry from
+	//    this result (the symlink conversions) would resurrect the stale identity
+	//    over a removal that linearized after it. The handle encodes the inode and
+	//    the move is metadata-only, so it still resolves here. Fall back to the
+	//    snapshot only if that re-read fails; PayloadID is cleared either way so
+	//    the adapter skips block deletion.
+	attrs := victim.FileAttr
+	if committed, rErr := s.GetFile(ctx.Context, victimHandle); rErr == nil {
+		attrs = committed.FileAttr
+	}
 	out := &File{
 		ID:        victim.ID,
 		ShareName: victim.ShareName,
 		Path:      victim.Path,
-		FileAttr:  victim.FileAttr,
+		FileAttr:  attrs,
 	}
 	out.PayloadID = ""
 	return out, nil

@@ -287,3 +287,28 @@ func TestRemoveFile_RecyclesWhenTrashEnabled(t *testing.T) {
 		require.NoError(t, err)
 	})
 }
+
+// TestRemoveFile_RecycleReturnsCommittedAttrs pins that the recycle branch
+// returns the attributes the move actually committed rather than the snapshot
+// taken before the stamp-and-move. The stamp sets DeletedAt at the original
+// handle before the move, so a returned File carrying DeletedAt proves the
+// post-move re-read happened; without it a concurrent chown/chmod committing
+// between the snapshot and the move would be dropped, and a caller re-creating
+// the entry from this result (the symlink conversions) would resurrect the
+// stale identity.
+func TestRemoveFile_RecycleReturnsCommittedAttrs(t *testing.T) {
+	t.Parallel()
+
+	fx := newRecycleFixture(t)
+	fx.service.SetTrashPolicy(stubTrashPolicy{cfg: metadata.TrashConfig{Enabled: true}})
+
+	_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "victim.txt", &metadata.FileAttr{Mode: 0644})
+	require.NoError(t, err)
+
+	removed, _, err := fx.service.RemoveFile(fx.rootContext(), fx.rootHandle, "victim.txt")
+	require.NoError(t, err)
+	require.NotNil(t, removed)
+
+	assert.NotNil(t, removed.DeletedAt,
+		"the recycle result must come from the committed move, not the pre-stamp snapshot")
+}

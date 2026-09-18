@@ -761,6 +761,13 @@ func modeBitMaskAttrs(bit uint32, set bool) metadata.SetAttrs {
 //
 // A nil src leaves dst untouched apart from ExactAttrs, which covers the
 // defensive branch where RemoveFile reported success without a file.
+//
+// decision: ExactAttrs exempts the create from the owner/mode defaults and the
+// setid strip. It is only ever set here, from attributes read off an inode the
+// caller just removed, so it cannot be reached from client input — the values
+// are an existing entry's, already validated when it was first created, and
+// defaulting them would re-home or widen the re-create. Revisit if any caller
+// can set ExactAttrs from a create request rather than from a removed inode.
 func carriedAttr(src *metadata.File, dst *metadata.FileAttr) *metadata.FileAttr {
 	dst.ExactAttrs = true
 	if src == nil {

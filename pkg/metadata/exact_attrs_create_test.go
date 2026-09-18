@@ -129,3 +129,26 @@ func TestCreateEntry_ExactAttrs(t *testing.T) {
 		assert.EqualValues(t, 0o644, got.Mode&0o7777, "a normal create must still get the file default")
 	})
 }
+
+// TestCreateEntry_ExactAttrs_RootOwner pins the case the owner-defaults
+// exemption exists for: a root-owned (UID/GID 0) placeholder re-created by a
+// non-root caller. ApplyOwnerDefaults reads 0 as "unset" and substitutes the
+// caller's identity, so without the exemption the re-create would hand a
+// root-owned file to whoever ran it. ExactAttrs skips that, and this is the
+// regression that proves it.
+func TestCreateEntry_ExactAttrs_RootOwner(t *testing.T) {
+	t.Parallel()
+	fx := newTestFixture(t)
+
+	// A non-root caller performs the re-create.
+	caller := fx.authContext(1000, 1000)
+
+	_, _, err := fx.service.CreateFile(caller, fx.rootHandle, "rooted", &metadata.FileAttr{
+		Type: metadata.FileTypeRegular, Mode: 0o600, UID: 0, GID: 0, ExactAttrs: true,
+	})
+	require.NoError(t, err)
+
+	got := fx.getAttr(t, "rooted")
+	assert.Zero(t, got.UID, "a root-owned re-create must keep UID 0, not take the caller's")
+	assert.Zero(t, got.GID, "a root-owned re-create must keep GID 0, not take the caller's")
+}
