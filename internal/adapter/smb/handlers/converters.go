@@ -744,3 +744,26 @@ func modeBitMaskAttrs(bit uint32, set bool) metadata.SetAttrs {
 	}
 	return attrs
 }
+
+// carriedAttr fills in the owner on dst from a file that a remove-then-recreate
+// is replacing, so the replacement stays the same object to its owner. Both
+// symlink-conversion paths (SET_REPARSE_POINT and the MFsymlink CLOSE path)
+// remove a placeholder and re-create the name, and the auth context driving the
+// pair is the caller's — passing an empty FileAttr would take UID/GID from the
+// caller and silently re-home the result.
+//
+// UID/GID 0 is the root owner and is indistinguishable from "unset" to
+// ApplyOwnerDefaults, so a root-owned placeholder converted by a non-root caller
+// still lands on the caller. Preserving that case needs pointer semantics on
+// FileAttr that only the NFS XDR layer carries; it is not fixable here.
+//
+// A nil src leaves dst untouched, which covers the defensive branch where
+// RemoveFile reported success without a file.
+func carriedAttr(src *metadata.File, dst *metadata.FileAttr) *metadata.FileAttr {
+	if src == nil {
+		return dst
+	}
+	dst.UID = src.UID
+	dst.GID = src.GID
+	return dst
+}

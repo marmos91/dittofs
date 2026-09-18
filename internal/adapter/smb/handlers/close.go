@@ -917,9 +917,12 @@ func (h *Handler) convertToRealSymlink(ctx *SMBHandlerContext, openFile *OpenFil
 	}
 	h.purgeBlockStorePayload(ctx.Context, metaHandle, removedPayloadID, name.Path, "CLOSE")
 
-	// Create the real symlink with default attributes
-	// Pass empty FileAttr - CreateSymlink will apply defaults
-	symlinkAttr := &metadata.FileAttr{}
+	// Create the real symlink, carrying the MFsymlink file's owner across.
+	// authCtx is the caller's, so an empty FileAttr would re-home the symlink to
+	// whoever opened it — the conversion replaces the same object, it does not
+	// create a new one. Mode is left at the symlink default; a symlink's POSIX
+	// mode is not meaningful.
+	symlinkAttr := carriedAttr(removed, &metadata.FileAttr{})
 	_, _, err = metaSvc.CreateSymlink(authCtx, parentHandle, fileName, target, symlinkAttr)
 	if err != nil {
 		return fmt.Errorf("failed to create symlink: %w", err)
