@@ -194,13 +194,9 @@ func TestSetInfo_ADS_PreservesBaseCompressedBitWithExistingDosBits(t *testing.T)
 
 	// Seed the base file with extra DOS bits on top of the default
 	// modeDOSCompressed already set by setupADSAttrPropagationTest.
-	preBase, err := metaSvc.GetFile(authCtx.Context, baseHandle)
-	if err != nil {
-		t.Fatalf("GetFile(base) pre: %v", err)
-	}
 	const extraDOS = modeDOSExplicit | modeDOSSystem
-	seedMode := preBase.Mode | extraDOS
-	if _, err := metaSvc.SetFileAttributes(authCtx, baseHandle, &metadata.SetAttrs{Mode: &seedMode}); err != nil {
+	extraMask := extraDOS
+	if _, err := metaSvc.SetFileAttributes(authCtx, baseHandle, &metadata.SetAttrs{ModeOrMask: &extraMask}); err != nil {
 		t.Fatalf("SetFileAttributes(base seed): %v", err)
 	}
 
@@ -282,8 +278,8 @@ func TestSetInfo_ADS_PreservesBaseSparseBit(t *testing.T) {
 	if preBase.Mode&modeDOSSparse != 0 {
 		t.Fatal("precondition: the base must not already carry modeDOSSparse")
 	}
-	seed := preBase.Mode | modeDOSSparse
-	if _, err := metaSvc.SetFileAttributes(authCtx, baseHandle, &metadata.SetAttrs{Mode: &seed}); err != nil {
+	seed := modeDOSSparse
+	if _, err := metaSvc.SetFileAttributes(authCtx, baseHandle, &metadata.SetAttrs{ModeOrMask: &seed}); err != nil {
 		t.Fatalf("SetFileAttributes(base seed): %v", err)
 	}
 

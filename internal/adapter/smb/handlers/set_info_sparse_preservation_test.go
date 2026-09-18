@@ -78,9 +78,12 @@ func setupSparsePreservationTest(t *testing.T, seedFSCTLBits uint32) (
 
 	// Seed the FSCTL-managed bits onto the file's mode, simulating a prior
 	// FSCTL_SET_SPARSE / FSCTL_SET_COMPRESSION (see ioctl_sparse.go:107 and
-	// ioctl_fsctl.go:111).
-	seedMode := file.Mode | seedFSCTLBits
-	if _, err := metaSvc.SetFileAttributes(authCtx, fileHandle, &metadata.SetAttrs{Mode: &seedMode}); err != nil {
+	// ioctl_fsctl.go:111). These are set through the mode-bit mask, which is how
+	// the FSCTL paths flip them: an absolute Mode addresses only the POSIX
+	// permission bits and deliberately leaves the DOS high word alone, so seeding
+	// through it would be a no-op.
+	seedMask := seedFSCTLBits
+	if _, err := metaSvc.SetFileAttributes(authCtx, fileHandle, &metadata.SetAttrs{ModeOrMask: &seedMask}); err != nil {
 		t.Fatalf("SetFileAttributes(seed): %v", err)
 	}
 
