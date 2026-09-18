@@ -194,3 +194,50 @@ func (d *delegationReturningByID) OnDelegationRecall(_ string, lock *UnifiedLock
 		d.onRecall(lock)
 	}
 }
+
+// TestLock_DelegationAheadOfTerminalConflictDoesNotWait pins that a delegation
+// sitting in front of a definite byte-range conflict does not cost the caller a
+// recall-and-wait. The scan must find the terminal conflict and deny at once: a
+// read delegation (which only an exclusive request conflicts with) coexists with
+// a shared NLM lock, so an exclusive SMB request meets both, and only the NLM
+// lock decides the outcome.
+func TestLock_DelegationAheadOfTerminalConflictDoesNotWait(t *testing.T) {
+	const handle = xHandle
+
+	defer func(d time.Duration) { delegationIOWaitTimeout = d }(delegationIOWaitTimeout)
+	delegationIOWaitTimeout = 2 * time.Second
+
+	lm := NewManager()
+	recalls := &recordingBreakCallbacks{}
+	lm.RegisterBreakCallbacks(recalls)
+
+	// A read delegation: an exclusive request conflicts with it.
+	if err := lm.GrantDelegation(handle, NewDelegation(DelegTypeRead, "nfs4:c1", "share-a", false)); err != nil {
+		t.Fatalf("GrantDelegation: %v", err)
+	}
+	// A shared NLM byte-range lock on the same range: terminal for an exclusive
+	// request, and one a read delegation can coexist with.
+	shared := &UnifiedLock{
+		Owner:  LockOwner{OwnerID: "nlm:holder"},
+		Offset: 0,
+		Length: 0,
+		Type:   LockTypeShared,
+	}
+	if err := lm.AddUnifiedLock(handle, shared); err != nil {
+		t.Fatalf("AddUnifiedLock: %v", err)
+	}
+
+	start := time.Now()
+	err := lm.Lock(handle, smbExclusive("smb:open-1", 0, 0))
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("the shared NLM lock must deny an exclusive SMB lock")
+	}
+	if elapsed > 200*time.Millisecond {
+		t.Fatalf("a terminal conflict must fail fast, not wait out the delegation, took %v", elapsed)
+	}
+	if got := len(recalls.getDelegationRecalls()); got != 0 {
+		t.Fatalf("a terminal conflict must not recall the delegation, got %d recalls", got)
+	}
+}

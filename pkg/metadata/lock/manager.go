@@ -675,6 +675,33 @@ func unifiedLockBlocksIO(ul *UnifiedLock, offset, length uint64, isWrite bool) b
 
 // conflictFromUnified renders a byte-range UnifiedLock as the LockConflict the
 // SMB byte-range path reports.
+// unifiedBlocker scans cross-protocol locks for the first blocker of a
+// byte-range request. A non-delegation blocker is terminal -- it denies the
+// request outright -- so it wins over a delegation the caller would otherwise
+// recall and wait on: the scan must not stop at a delegation that merely
+// precedes a definite conflict, or an exclusive request behind a read
+// delegation pays a recall-and-wait only to be denied by the lock after it.
+// delegationBlocked is true only when every blocker is a delegation, which is
+// the caller's signal to recall and re-judge rather than report.
+func unifiedBlocker(locks []*UnifiedLock, conflicts func(*UnifiedLock) bool) (*LockConflict, bool) {
+	var delegated *LockConflict
+	for _, ul := range locks {
+		if !conflicts(ul) {
+			continue
+		}
+		if !ul.IsDelegation() {
+			return conflictFromUnified(ul), false
+		}
+		if delegated == nil {
+			delegated = conflictFromUnified(ul)
+		}
+	}
+	if delegated != nil {
+		return delegated, true
+	}
+	return nil, false
+}
+
 func conflictFromUnified(ul *UnifiedLock) *LockConflict {
 	return &LockConflict{
 		Offset:    ul.Offset,
@@ -871,12 +898,11 @@ func (lm *Manager) Lock(handleKey string, lock FileLock) error {
 	// adding that parameter and passing the SMB request deadline.
 	deadline := time.Now().Add(delegationIOWaitTimeout)
 	for {
-		lm.recallDelegationsForByteRange(handleKey, &lock, deadline)
-
 		err, delegationBlocked := lm.lockLocked(handleKey, &lock)
-		if !delegationBlocked || !time.Now().Before(deadline) {
+		if err == nil || !delegationBlocked || !time.Now().Before(deadline) {
 			return err
 		}
+		lm.recallDelegationsForByteRange(handleKey, &lock, deadline)
 	}
 }
 
@@ -899,10 +925,10 @@ func (lm *Manager) lockLocked(handleKey string, lock *FileLock) (error, bool) {
 
 	// Cross-protocol: an overlapping NLM/NFSv4 byte-range lock must also block
 	// this SMB lock (area-5 H-3 / xproto H1).
-	for _, ul := range lm.unifiedLocks[handleKey] {
-		if fileLockConflictsWithUnified(lock, ul) {
-			return NewLockedError("", conflictFromUnified(ul)), ul.IsDelegation()
-		}
+	if c, delegationBlocked := unifiedBlocker(lm.unifiedLocks[handleKey], func(ul *UnifiedLock) bool {
+		return fileLockConflictsWithUnified(lock, ul)
+	}); c != nil {
+		return NewLockedError("", c), delegationBlocked
 	}
 
 	// NFS/NLM (OpenID empty): POSIX semantics — re-locking the same range
@@ -1086,12 +1112,11 @@ func (lm *Manager) TestLock(handleKey string, lock FileLock) (*LockConflict, err
 	// acquire would recall instead.
 	deadline := time.Now().Add(delegationIOWaitTimeout)
 	for {
-		lm.recallDelegationsForByteRange(handleKey, &lock, deadline)
-
 		conflict, delegationBlocked := lm.testLockLocked(handleKey, &lock)
-		if !delegationBlocked || !time.Now().Before(deadline) {
+		if conflict == nil || !delegationBlocked || !time.Now().Before(deadline) {
 			return conflict, nil
 		}
+		lm.recallDelegationsForByteRange(handleKey, &lock, deadline)
 	}
 }
 
@@ -1111,10 +1136,10 @@ func (lm *Manager) testLockLocked(handleKey string, lock *FileLock) (*LockConfli
 	}
 
 	// Mirror Lock()'s cross-protocol check so the preview agrees with acquire.
-	for _, ul := range lm.unifiedLocks[handleKey] {
-		if fileLockConflictsWithUnified(lock, ul) {
-			return conflictFromUnified(ul), ul.IsDelegation()
-		}
+	if c, delegationBlocked := unifiedBlocker(lm.unifiedLocks[handleKey], func(ul *UnifiedLock) bool {
+		return fileLockConflictsWithUnified(lock, ul)
+	}); c != nil {
+		return c, delegationBlocked
 	}
 
 	return nil, false
@@ -1201,24 +1226,27 @@ var delegationIOWaitTimeout = 10 * time.Second
 //
 // Returns nil if I/O is allowed, or conflict details if blocked.
 func (lm *Manager) CheckForIO(handleKey string, openID string, sessionID uint64, offset, length uint64, isWrite bool) *LockConflict {
-	conflict, delegationBlocked := lm.checkForIOLocked(handleKey, openID, sessionID, offset, length, isWrite)
-	if conflict == nil || !delegationBlocked {
-		return conflict
-	}
-
-	// The only blocker is an NFSv4 delegation. Recall it, wait for the
+	// The only blocker may be an NFSv4 delegation. Recall it, wait for the
 	// DELEGRETURN, and re-judge: the client replays the locks it granted locally
-	// on return, so the second check sees the real conflict set. Render the I/O
-	// as the byte-range lock it conflicts like, so the same predicate decides
-	// which delegations block (a write blocks any, a read only a write one).
-	lm.recallDelegationsForByteRange(handleKey, &FileLock{
-		Offset:    offset,
-		Length:    length,
-		Exclusive: isWrite,
-	}, time.Now().Add(delegationIOWaitTimeout))
-
-	conflict, _ = lm.checkForIOLocked(handleKey, openID, sessionID, offset, length, isWrite)
-	return conflict
+	// on return, so the next check sees the real conflict set. Re-judging is a
+	// loop because a delegation can be granted again between the recall and the
+	// check -- by the recall callback or a concurrent OPEN -- and the shared
+	// deadline bounds it, so a client that never answers CB_RECALL ends in a
+	// conflict rather than a spin. Render the I/O as the byte-range lock it
+	// conflicts like, so the same predicate decides which delegations block (a
+	// write blocks any, a read only a write one).
+	deadline := time.Now().Add(delegationIOWaitTimeout)
+	for {
+		conflict, delegationBlocked := lm.checkForIOLocked(handleKey, openID, sessionID, offset, length, isWrite)
+		if conflict == nil || !delegationBlocked || !time.Now().Before(deadline) {
+			return conflict
+		}
+		lm.recallDelegationsForByteRange(handleKey, &FileLock{
+			Offset:    offset,
+			Length:    length,
+			Exclusive: isWrite,
+		}, deadline)
+	}
 }
 
 // checkForIOLocked is CheckForIO's conflict test. The bool reports whether the
@@ -1239,10 +1267,10 @@ func (lm *Manager) checkForIOLocked(handleKey string, openID string, sessionID u
 	// Cross-protocol: a byte-range lock held via NLM/NFSv4 must also gate SMB
 	// I/O (xproto H2). Without this an NFS exclusive lock never blocks an SMB
 	// write to the same range.
-	for _, ul := range lm.unifiedLocks[handleKey] {
-		if unifiedLockBlocksIO(ul, offset, length, isWrite) {
-			return conflictFromUnified(ul), ul.IsDelegation()
-		}
+	if c, delegationBlocked := unifiedBlocker(lm.unifiedLocks[handleKey], func(ul *UnifiedLock) bool {
+		return unifiedLockBlocksIO(ul, offset, length, isWrite)
+	}); c != nil {
+		return c, delegationBlocked
 	}
 
 	return nil, false
