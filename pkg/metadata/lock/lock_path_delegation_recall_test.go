@@ -64,6 +64,34 @@ func TestLock_DelegationIsRecalledNotDenied(t *testing.T) {
 			t.Fatalf("a read delegation does not conflict with a shared lock, got %v", err)
 		}
 	})
+
+	// A zero-byte SMB lock never conflicts (SMB2 semantics), so it must be
+	// granted without recalling anything. Deriving the recall predicate from the
+	// lock's exclusivity alone instead of from the conflict predicate would make
+	// this recall a write delegation and park on it for the whole timeout.
+	t.Run("a zero-byte lock neither recalls nor waits", func(t *testing.T) {
+		defer func(d time.Duration) { delegationIOWaitTimeout = d }(delegationIOWaitTimeout)
+		delegationIOWaitTimeout = 300 * time.Millisecond
+
+		lm := NewManager()
+		recalls := &recordingBreakCallbacks{}
+		lm.RegisterBreakCallbacks(recalls)
+		if err := lm.GrantDelegation(handle, NewDelegation(DelegTypeWrite, "nfs4:c1", "share-a", false)); err != nil {
+			t.Fatalf("GrantDelegation: %v", err)
+		}
+
+		zb := FileLock{OpenID: "smb:open-1", SessionID: 7, Offset: 0, Length: 0, Exclusive: true, IsZeroByte: true}
+		start := time.Now()
+		if err := lm.Lock(handle, zb); err != nil {
+			t.Fatalf("a zero-byte lock must be granted, got %v", err)
+		}
+		if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+			t.Fatalf("a zero-byte lock must not wait on a recall, took %v", elapsed)
+		}
+		if got := len(recalls.getDelegationRecalls()); got != 0 {
+			t.Fatalf("a zero-byte lock must not recall a delegation, got %d recalls", got)
+		}
+	})
 }
 
 // TestTestLock_AgreesWithLockOnDelegation pins that the preview reports the

@@ -853,7 +853,7 @@ func (lm *Manager) Lock(handleKey string, lock FileLock) error {
 	// A blocking NFSv4 delegation is recalled and waited out before the lock is
 	// judged; a delegation is not itself a conflict, so without this the lock
 	// would be denied outright. Must run before lm.mu is taken.
-	lm.recallDelegationsForByteRange(handleKey, lock.Exclusive)
+	lm.recallDelegationsForByteRange(handleKey, &lock)
 
 	lm.mu.Lock()
 	defer lm.unlock()
@@ -1053,7 +1053,7 @@ func (lm *Manager) doUnlockAllForSession(handleKey string, sessionID uint64) int
 func (lm *Manager) TestLock(handleKey string, lock FileLock) (*LockConflict, error) {
 	// Mirror Lock()'s recall-and-wait, so the preview agrees with acquire rather
 	// than reporting a bare delegation as a conflict the acquire would not hit.
-	lm.recallDelegationsForByteRange(handleKey, lock.Exclusive)
+	lm.recallDelegationsForByteRange(handleKey, &lock)
 
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
@@ -1095,21 +1095,29 @@ func (lm *Manager) TestLockByParams(handleKey string, sessionID, offset, length 
 }
 
 // recallDelegationsForByteRange dispatches a recall for every delegation that
-// would block an exclusive (write) or shared (read) byte-range lock and waits
-// for the DELEGRETURN, so the caller re-judges the conflict against the real
-// set afterwards. Caller must NOT hold lm.mu: breakDelegations takes the write
-// lock. A no-op when no delegation on the file would block this lock.
+// would block this SMB byte-range lock and waits for the DELEGRETURN, so the
+// caller re-judges the conflict against the real set afterwards. Caller must
+// NOT hold lm.mu: breakDelegations takes the write lock. A no-op when no
+// delegation on the file would block this lock.
 //
 // This is the one place a byte-range lock path handles a delegation: the
 // delegated client satisfies its own locks locally and claims them to the
 // server only on return (RFC 8881 §10.4.4), so the conflict set is not known
 // until the DELEGRETURN lands.
-func (lm *Manager) recallDelegationsForByteRange(handleKey string, exclusive bool) {
-	// A read delegation stands in for shared caching only, so it does not block
-	// a shared lock -- the same rule fileLockConflictsWithUnified applies. One
-	// predicate, so the pre-filter and the recall cannot disagree.
+//
+// The predicate IS fileLockConflictsWithUnified, evaluated against the
+// delegation rendered as the whole-file lock it stands in for. Deriving it any
+// other way reintroduces the divergence that caused this bug: a zero-byte lock
+// and a shared lock against a read delegation both conflict with nothing, so
+// neither may trigger a recall, and only the conflict predicate knows that.
+func (lm *Manager) recallDelegationsForByteRange(handleKey string, lock *FileLock) {
 	shouldBreak := func(deleg *Delegation) bool {
-		return exclusive || deleg.DelegType == DelegTypeWrite
+		asByteRange := UnifiedLock{
+			Offset: 0,
+			Length: 0, // Whole file, matching GrantDelegation.
+			Type:   delegationToLockType(deleg.DelegType),
+		}
+		return fileLockConflictsWithUnified(lock, &asByteRange)
 	}
 
 	// Cheap pre-filter under the read lock: a file with no blocking delegation
@@ -1156,10 +1164,14 @@ func (lm *Manager) CheckForIO(handleKey string, openID string, sessionID uint64,
 
 	// The only blocker is an NFSv4 delegation. Recall it, wait for the
 	// DELEGRETURN, and re-judge: the client replays the locks it granted locally
-	// on return, so the second check sees the real conflict set. The blocking
-	// delegation is exactly the one this predicate selects, so the helper's
-	// pre-filter cannot come back empty here.
-	lm.recallDelegationsForByteRange(handleKey, isWrite)
+	// on return, so the second check sees the real conflict set. Render the I/O
+	// as the byte-range lock it conflicts like, so the same predicate decides
+	// which delegations block (a write blocks any, a read only a write one).
+	lm.recallDelegationsForByteRange(handleKey, &FileLock{
+		Offset:    offset,
+		Length:    length,
+		Exclusive: isWrite,
+	})
 
 	conflict, _ = lm.checkForIOLocked(handleKey, openID, sessionID, offset, length, isWrite)
 	return conflict
