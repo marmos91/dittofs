@@ -254,7 +254,9 @@ func (h *Handler) convertOpenFileToNativeSymlink(ctx *SMBHandlerContext, openFil
 		// the create path from defaulting the mode or inheriting the parent's
 		// group over what the placeholder actually had.
 		rollbackAttr := carriedAttr(removed, &metadata.FileAttr{Type: metadata.FileTypeRegular})
-		rollbackAttr.Mode = removed.Mode
+		if removed != nil {
+			rollbackAttr.Mode = removed.Mode
+		}
 		if _, _, reErr := metaSvc.CreateFile(authCtx, parentHandle, fileName, rollbackAttr); reErr != nil {
 			logger.Warn("SET_REPARSE_POINT: symlink create failed and placeholder rollback failed",
 				"path", name.Path, "createErr", err, "rollbackErr", reErr)

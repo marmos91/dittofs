@@ -7,16 +7,20 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// rehomeAttr applies attrs to the "link" entry as root, for tests that need to
-// set up state the SMB handler itself cannot reach.
-func rehomeAttr(t *testing.T, h *Handler, smbCtx *SMBHandlerContext, handle metadata.FileHandle, attrs *metadata.SetAttrs) {
-	t.Helper()
+// rootCtxFor builds the root metadata context the fixture's setup helpers use.
+func rootCtxFor(smbCtx *SMBHandlerContext) *metadata.AuthContext {
 	rootUID, rootGID := uint32(0), uint32(0)
-	rootCtx := &metadata.AuthContext{
+	return &metadata.AuthContext{
 		Context:  smbCtx.Context,
 		Identity: &metadata.Identity{UID: &rootUID, GID: &rootGID},
 	}
-	if _, err := h.Registry.GetMetadataService().SetFileAttributes(rootCtx, handle, attrs); err != nil {
+}
+
+// rehomeAttr applies attrs to handle as root, for tests that need to set up
+// state the SMB handler itself cannot reach.
+func rehomeAttr(t *testing.T, h *Handler, smbCtx *SMBHandlerContext, handle metadata.FileHandle, attrs *metadata.SetAttrs) {
+	t.Helper()
+	if _, err := h.Registry.GetMetadataService().SetFileAttributes(rootCtxFor(smbCtx), handle, attrs); err != nil {
 		t.Fatalf("SetFileAttributes: %v", err)
 	}
 }
@@ -27,21 +31,11 @@ func rehomeAttr(t *testing.T, h *Handler, smbCtx *SMBHandlerContext, handle meta
 // must not change who owns it.
 func rehomePlaceholder(t *testing.T, h *Handler, smbCtx *SMBHandlerContext, rootHandle metadata.FileHandle, uid, gid, mode uint32) {
 	t.Helper()
-	metaSvc := h.Registry.GetMetadataService()
-	childHandle, err := metaSvc.GetChild(smbCtx.Context, rootHandle, "link")
+	childHandle, err := h.Registry.GetMetadataService().GetChild(smbCtx.Context, rootHandle, "link")
 	if err != nil {
 		t.Fatalf("GetChild(link): %v", err)
 	}
-	rootUID, rootGID := uint32(0), uint32(0)
-	rootCtx := &metadata.AuthContext{
-		Context:  smbCtx.Context,
-		Identity: &metadata.Identity{UID: &rootUID, GID: &rootGID},
-	}
-	if _, err := metaSvc.SetFileAttributes(rootCtx, childHandle, &metadata.SetAttrs{
-		UID: &uid, GID: &gid, Mode: &mode,
-	}); err != nil {
-		t.Fatalf("SetFileAttributes(rehome): %v", err)
-	}
+	rehomeAttr(t, h, smbCtx, childHandle, &metadata.SetAttrs{UID: &uid, GID: &gid, Mode: &mode})
 }
 
 // entryAttrAfter resolves the "link" entry under rootHandle and returns its
@@ -92,6 +86,9 @@ func TestCarriedAttr(t *testing.T) {
 		got := carriedAttr(nil, &metadata.FileAttr{UID: 7, GID: 8})
 		if got.UID != 7 || got.GID != 8 {
 			t.Errorf("owner = %d:%d, want 7:8 untouched", got.UID, got.GID)
+		}
+		if got.ExactAttrs {
+			t.Error("ExactAttrs set with no source; the create would take root's 0:0 as exact")
 		}
 	})
 }
@@ -252,14 +249,5 @@ func TestExactAttrs_NotPersisted(t *testing.T) {
 	}
 	if got.ExactAttrs {
 		t.Errorf("ExactAttrs = true in stored state; it is a create-path instruction, not file state")
-	}
-}
-
-// rootCtxFor builds the root metadata context the fixture's setup helpers use.
-func rootCtxFor(smbCtx *SMBHandlerContext) *metadata.AuthContext {
-	rootUID, rootGID := uint32(0), uint32(0)
-	return &metadata.AuthContext{
-		Context:  smbCtx.Context,
-		Identity: &metadata.Identity{UID: &rootUID, GID: &rootGID},
 	}
 }

@@ -131,6 +131,14 @@ type FileAttr struct {
 	// zero-mode default, the caller's UID/GID, SGID-parent inheritance) all
 	// describe a *new* entry and would silently re-home or widen a
 	// re-created one. Transient, request-scoped and never persisted.
+	//
+	// decision: setting this exempts the create from those defaults, from the
+	// SGID-parent inheritance and from the non-root setid strip. The exemption
+	// is safe because the flag is only ever set from attributes read off an
+	// inode the caller just removed (carriedAttr), never from a create request
+	// — the values are an existing entry's, already validated when it was
+	// first created. Overturn if a caller can set it from wire input: it would
+	// then let a client pin an arbitrary mode or owner past the type default.
 	ExactAttrs bool `json:"-"`
 
 	// ObjectID is the BLAKE3 Merkle root over ChunkRef.Hash values sorted

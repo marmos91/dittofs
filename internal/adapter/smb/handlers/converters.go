@@ -759,8 +759,11 @@ func modeBitMaskAttrs(bit uint32, set bool) metadata.SetAttrs {
 // widen a re-created one. src's own mode is deliberately not carried — the
 // caller decides that, since a symlink's POSIX mode is not meaningful.
 //
-// A nil src leaves dst untouched apart from ExactAttrs, which covers the
-// defensive branch where RemoveFile reported success without a file.
+// A nil src means RemoveFile reported success without a file, which its
+// success paths do not do; the guard is defensive. In that case ExactAttrs is
+// left unset so the create path applies its ordinary defaults — a caller-owned
+// entry — rather than marking the attributes exact and producing a root-owned
+// one from the zero UID/GID.
 //
 // decision: ExactAttrs exempts the create from the owner/mode defaults and the
 // setid strip. It is only ever set here, from attributes read off an inode the
@@ -769,10 +772,10 @@ func modeBitMaskAttrs(bit uint32, set bool) metadata.SetAttrs {
 // defaulting them would re-home or widen the re-create. Revisit if any caller
 // can set ExactAttrs from a create request rather than from a removed inode.
 func carriedAttr(src *metadata.File, dst *metadata.FileAttr) *metadata.FileAttr {
-	dst.ExactAttrs = true
 	if src == nil {
 		return dst
 	}
+	dst.ExactAttrs = true
 	dst.UID = src.UID
 	dst.GID = src.GID
 	return dst
