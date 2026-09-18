@@ -292,73 +292,38 @@ func Error(msg string, args ...any) {
 // Context-aware Logging API
 // ============================================================================
 
-// DebugCtx logs at debug level with context (auto-injects trace_id, span_id, etc.)
-func DebugCtx(ctx context.Context, msg string, args ...any) {
+// The *Ctx variants accept a context so call sites read uniformly, but they do
+// not inspect it. Request-scoped fields (client, share, uid, gid, ...) are
+// passed explicitly as key/value args by every caller, so these are exactly
+// equivalent to their plain counterparts.
+
+// DebugCtx logs at debug level. The context is not inspected.
+func DebugCtx(_ context.Context, msg string, args ...any) {
 	if LevelDebug < Level(currentLevel.Load()) {
 		return
 	}
-	args = appendContextFields(ctx, args)
 	getLogger().Debug(msg, args...)
 }
 
-// InfoCtx logs at info level with context
-func InfoCtx(ctx context.Context, msg string, args ...any) {
+// InfoCtx logs at info level. The context is not inspected.
+func InfoCtx(_ context.Context, msg string, args ...any) {
 	if LevelInfo < Level(currentLevel.Load()) {
 		return
 	}
-	args = appendContextFields(ctx, args)
 	getLogger().Info(msg, args...)
 }
 
-// WarnCtx logs at warn level with context
-func WarnCtx(ctx context.Context, msg string, args ...any) {
+// WarnCtx logs at warn level. The context is not inspected.
+func WarnCtx(_ context.Context, msg string, args ...any) {
 	if LevelWarn < Level(currentLevel.Load()) {
 		return
 	}
-	args = appendContextFields(ctx, args)
 	getLogger().Warn(msg, args...)
 }
 
-// ErrorCtx logs at error level with context
-func ErrorCtx(ctx context.Context, msg string, args ...any) {
-	args = appendContextFields(ctx, args)
+// ErrorCtx logs at error level. The context is not inspected.
+func ErrorCtx(_ context.Context, msg string, args ...any) {
 	getLogger().Error(msg, args...)
-}
-
-// appendContextFields adds LogContext fields to args
-func appendContextFields(ctx context.Context, args []any) []any {
-	lc := FromContext(ctx)
-	if lc == nil {
-		return args
-	}
-
-	// Prepend context fields so they appear first in output
-	ctxArgs := make([]any, 0, 14+len(args))
-
-	if lc.TraceID != "" {
-		ctxArgs = append(ctxArgs, KeyTraceID, lc.TraceID)
-	}
-	if lc.SpanID != "" {
-		ctxArgs = append(ctxArgs, KeySpanID, lc.SpanID)
-	}
-	if lc.Procedure != "" {
-		ctxArgs = append(ctxArgs, KeyProcedure, lc.Procedure)
-	}
-	if lc.Share != "" {
-		ctxArgs = append(ctxArgs, KeyShare, lc.Share)
-	}
-	if lc.ClientIP != "" {
-		ctxArgs = append(ctxArgs, KeyClientIP, lc.ClientIP)
-	}
-	if lc.UID != 0 {
-		ctxArgs = append(ctxArgs, KeyUID, lc.UID)
-	}
-	if lc.GID != 0 {
-		ctxArgs = append(ctxArgs, KeyGID, lc.GID)
-	}
-
-	ctxArgs = append(ctxArgs, args...)
-	return ctxArgs
 }
 
 // ============================================================================

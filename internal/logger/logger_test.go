@@ -491,40 +491,6 @@ func TestFormatSwitching(t *testing.T) {
 // ============================================================================
 
 func TestContextLogging(t *testing.T) {
-	t.Run("LogContextInjectsFields", func(t *testing.T) {
-		buf, cleanup := captureOutput()
-		defer cleanup()
-
-		SetLevel("INFO")
-		SetFormat("json")
-
-		lc := &LogContext{
-			TraceID:   "abc123",
-			SpanID:    "xyz789",
-			Procedure: "READ",
-			Share:     "/export",
-			ClientIP:  "192.168.1.100",
-			UID:       1000,
-			GID:       1000,
-		}
-		ctx := WithContext(context.Background(), lc)
-
-		InfoCtx(ctx, "operation completed", "extra_field", "value")
-
-		var entry map[string]any
-		err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &entry)
-		require.NoError(t, err)
-
-		assert.Equal(t, "abc123", entry["trace_id"])
-		assert.Equal(t, "xyz789", entry["span_id"])
-		assert.Equal(t, "READ", entry["procedure"])
-		assert.Equal(t, "/export", entry["share"])
-		assert.Equal(t, "192.168.1.100", entry["client_ip"])
-		assert.Equal(t, float64(1000), entry["uid"])
-		assert.Equal(t, float64(1000), entry["gid"])
-		assert.Equal(t, "value", entry["extra_field"])
-	})
-
 	t.Run("NilContextHandled", func(t *testing.T) {
 		buf, cleanup := captureOutput()
 		defer cleanup()
@@ -552,59 +518,29 @@ func TestContextLogging(t *testing.T) {
 
 		assert.Contains(t, buf.String(), "test message")
 	})
-}
 
-// ============================================================================
-// LogContext Tests
-// ============================================================================
+	// The *Ctx helpers deliberately do not read the context, so a *Ctx call
+	// must emit exactly what the plain call emits. This is the property that
+	// makes them safe to keep at the 300+ existing call sites.
+	t.Run("CtxEqualsPlain", func(t *testing.T) {
+		SetLevel("DEBUG")
+		SetFormat("json")
 
-func TestLogContext(t *testing.T) {
-	t.Run("NewLogContext", func(t *testing.T) {
-		lc := NewLogContext("192.168.1.100")
-		assert.Equal(t, "192.168.1.100", lc.ClientIP)
-		assert.False(t, lc.StartTime.IsZero())
-	})
-
-	t.Run("Clone", func(t *testing.T) {
-		lc := &LogContext{
-			TraceID:   "trace123",
-			Procedure: "READ",
-			ClientIP:  "192.168.1.100",
-			UID:       1000,
+		// Parse and drop the timestamp: it necessarily differs between calls.
+		fields := func(fn func()) map[string]any {
+			buf, cleanup := captureOutput()
+			fn()
+			cleanup()
+			var m map[string]any
+			require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &m))
+			delete(m, "time")
+			return m
 		}
 
-		clone := lc.Clone()
-		assert.Equal(t, lc.TraceID, clone.TraceID)
-		assert.Equal(t, lc.Procedure, clone.Procedure)
-		assert.Equal(t, lc.ClientIP, clone.ClientIP)
-		assert.Equal(t, lc.UID, clone.UID)
+		plain := fields(func() { Info("msg", "share", "/export", "count", 3) })
+		withCtx := fields(func() { InfoCtx(context.Background(), "msg", "share", "/export", "count", 3) })
 
-		// Verify it's a different object
-		clone.Procedure = "WRITE"
-		assert.Equal(t, "READ", lc.Procedure)
-	})
-
-	t.Run("CloneNil", func(t *testing.T) {
-		var lc *LogContext
-		clone := lc.Clone()
-		assert.Nil(t, clone)
-	})
-
-	t.Run("WithProcedure", func(t *testing.T) {
-		lc := NewLogContext("192.168.1.100")
-		lc2 := lc.WithProcedure("READ")
-
-		assert.Equal(t, "READ", lc2.Procedure)
-		assert.Equal(t, "", lc.Procedure) // Original unchanged
-	})
-
-	t.Run("WithAuth", func(t *testing.T) {
-		lc := NewLogContext("192.168.1.100")
-		lc2 := lc.WithAuth(1000, 1000, 1)
-
-		assert.Equal(t, uint32(1000), lc2.UID)
-		assert.Equal(t, uint32(1000), lc2.GID)
-		assert.Equal(t, uint32(1), lc2.AuthFlavor)
+		assert.Equal(t, plain, withCtx)
 	})
 }
 
@@ -704,13 +640,6 @@ func TestEdgeCases(t *testing.T) {
 		output := buf.String()
 		assert.Contains(t, output, "value with spaces")
 		assert.Contains(t, output, "value=with=equals")
-	})
-
-	t.Run("DurationCalculation", func(t *testing.T) {
-		lc := NewLogContext("192.168.1.100")
-		// Duration should be positive (non-zero)
-		duration := lc.DurationMs()
-		assert.GreaterOrEqual(t, duration, 0.0)
 	})
 }
 
@@ -906,25 +835,5 @@ func BenchmarkLogJSON(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		Info("test message", "key", "value", "count", i)
-	}
-}
-
-func BenchmarkLogCtx(b *testing.B) {
-	buf := new(bytes.Buffer)
-	InitWithWriter(buf, "DEBUG", "json", false)
-
-	lc := &LogContext{
-		TraceID:   "abc123",
-		SpanID:    "xyz789",
-		Procedure: "READ",
-		ClientIP:  "192.168.1.100",
-		UID:       1000,
-		GID:       1000,
-	}
-	ctx := WithContext(context.Background(), lc)
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		InfoCtx(ctx, "test message", "count", i)
 	}
 }
