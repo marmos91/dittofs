@@ -896,13 +896,16 @@ func (lm *Manager) Lock(handleKey string, lock FileLock) error {
 	// fail-immediately bit nor the interface a context, so honouring the policy
 	// means threading one through LockManager and every caller. Overturn this by
 	// adding that parameter and passing the SMB request deadline.
-	deadline := time.Now().Add(delegationIOWaitTimeout)
 	for {
 		err, delegationBlocked := lm.lockLocked(handleKey, &lock)
-		if err == nil || !delegationBlocked || !time.Now().Before(deadline) {
+		if err == nil || !delegationBlocked {
 			return err
 		}
-		lm.recallDelegationsForByteRange(handleKey, &lock, deadline)
+		// A timed-out recall is still outstanding: deny rather than retry, so a
+		// client that never answers CB_RECALL ends in a conflict, not a spin.
+		if !lm.recallDelegationsForByteRange(handleKey, &lock) {
+			return err
+		}
 	}
 }
 
@@ -1110,13 +1113,14 @@ func (lm *Manager) TestLock(handleKey string, lock FileLock) (*LockConflict, err
 	// Mirror Lock()'s recall-and-wait and its re-judge, so the preview agrees
 	// with acquire rather than reporting a bare delegation as a conflict the
 	// acquire would recall instead.
-	deadline := time.Now().Add(delegationIOWaitTimeout)
 	for {
 		conflict, delegationBlocked := lm.testLockLocked(handleKey, &lock)
-		if conflict == nil || !delegationBlocked || !time.Now().Before(deadline) {
+		if conflict == nil || !delegationBlocked {
 			return conflict, nil
 		}
-		lm.recallDelegationsForByteRange(handleKey, &lock, deadline)
+		if !lm.recallDelegationsForByteRange(handleKey, &lock) {
+			return conflict, nil
+		}
 	}
 }
 
@@ -1179,7 +1183,7 @@ func (lm *Manager) TestLockByParams(handleKey string, sessionID, offset, length 
 // other way reintroduces the divergence that caused this bug: a zero-byte lock
 // and a shared lock against a read delegation both conflict with nothing, so
 // neither may trigger a recall, and only the conflict predicate knows that.
-func (lm *Manager) recallDelegationsForByteRange(handleKey string, lock *FileLock, deadline time.Time) {
+func (lm *Manager) recallDelegationsForByteRange(handleKey string, lock *FileLock) bool {
 	shouldBreak := func(deleg *Delegation) bool {
 		asByteRange := UnifiedLock{
 			Offset: 0,
@@ -1204,11 +1208,11 @@ func (lm *Manager) recallDelegationsForByteRange(handleKey string, lock *FileLoc
 	lm.mu.RUnlock()
 
 	if !any {
-		return
+		return true
 	}
 
 	lm.breakDelegations(handleKey, nil, shouldBreak)
-	lm.waitForDelegationRecall(handleKey, shouldBreak, deadline)
+	return lm.waitForDelegationRecall(handleKey, shouldBreak)
 }
 
 // delegationIOWaitTimeout bounds how long a lock-path caller (CheckForIO,
@@ -1235,17 +1239,18 @@ func (lm *Manager) CheckForIO(handleKey string, openID string, sessionID uint64,
 	// conflict rather than a spin. Render the I/O as the byte-range lock it
 	// conflicts like, so the same predicate decides which delegations block (a
 	// write blocks any, a read only a write one).
-	deadline := time.Now().Add(delegationIOWaitTimeout)
 	for {
 		conflict, delegationBlocked := lm.checkForIOLocked(handleKey, openID, sessionID, offset, length, isWrite)
-		if conflict == nil || !delegationBlocked || !time.Now().Before(deadline) {
+		if conflict == nil || !delegationBlocked {
 			return conflict
 		}
-		lm.recallDelegationsForByteRange(handleKey, &FileLock{
+		if !lm.recallDelegationsForByteRange(handleKey, &FileLock{
 			Offset:    offset,
 			Length:    length,
 			Exclusive: isWrite,
-		}, deadline)
+		}) {
+			return conflict
+		}
 	}
 }
 
@@ -1277,29 +1282,37 @@ func (lm *Manager) checkForIOLocked(handleKey string, openID string, sessionID u
 }
 
 // waitForDelegationRecall blocks until no delegation on handleKey that this
-// request selected is being recalled, or deadline passes. selected is the same
-// predicate the recall was dispatched with, so a delegation already breaking for
-// another reason -- a read delegation, say, while this request waits on a write
-// one -- does not hold this caller for a recall it did not ask for and cannot
-// use. The caller owns the deadline so a caller that recalls repeatedly (the
-// re-judge loops) is bounded once in total rather than once per recall. Caller
-// must NOT hold lm.mu.
-func (lm *Manager) waitForDelegationRecall(handleKey string, selected func(*Delegation) bool, deadline time.Time) {
-	timer := time.NewTimer(time.Until(deadline))
-	defer timer.Stop()
-
+// request selected is still being recalled. selected is the same predicate the
+// recall was dispatched with, so a delegation already breaking for another
+// reason -- a read delegation, say, while this request waits on a write one --
+// does not hold this caller for a recall it did not ask for and cannot use. It
+// reports whether the recall completed; false means it timed out and is still
+// outstanding. Caller must NOT hold lm.mu.
+//
+// The budget runs from when each recall was dispatched (BreakStarted), not from
+// this call. A caller that retries the same outstanding recall -- the SMB lock
+// handler retries a blocking request every BlockingLockRetryInterval, and the
+// fail-immediately attempt comes through here too -- therefore shares one
+// budget instead of starting a fresh delegationIOWaitTimeout each time, so a
+// single SMB request cannot accumulate waits that outlast its own deadline.
+// decision: this still cannot observe the caller's cancellation, because the
+// LockManager surface takes no context; the anchored budget is what bounds it.
+func (lm *Manager) waitForDelegationRecall(handleKey string, selected func(*Delegation) bool) bool {
 	for {
 		lm.mu.Lock()
-		breaking := false
+		var deadline time.Time
 		for _, ul := range lm.unifiedLocks[handleKey] {
-			if ul.IsDelegation() && ul.Delegation.Breaking && selected(ul.Delegation) {
-				breaking = true
-				break
+			if !ul.IsDelegation() || ul.Delegation == nil || !ul.Delegation.Breaking || !selected(ul.Delegation) {
+				continue
+			}
+			if until := ul.Delegation.BreakStarted.Add(delegationIOWaitTimeout); deadline.IsZero() || until.Before(deadline) {
+				deadline = until
 			}
 		}
-		if !breaking {
+		if deadline.IsZero() {
+			// Nothing selected is still breaking: the recall completed.
 			lm.unlock()
-			return
+			return true
 		}
 		// Get or create the wait channel while still holding the lock, so a
 		// signal from signalBreakWait cannot be missed.
@@ -1310,10 +1323,17 @@ func (lm *Manager) waitForDelegationRecall(handleKey string, selected func(*Dele
 		}
 		lm.unlock()
 
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return false
+		}
+		timer := time.NewTimer(remaining)
 		select {
 		case <-timer.C:
-			return
+			timer.Stop()
+			return false
 		case <-ch:
+			timer.Stop()
 		}
 	}
 }

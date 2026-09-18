@@ -316,7 +316,10 @@ func TestLock_WaitIsScopedToTheSelectedDelegations(t *testing.T) {
 	lm.mu.Lock()
 	for _, ul := range lm.unifiedLocks[handle] {
 		if ul.IsDelegation() && ul.Delegation.DelegationID == unrelated.DelegationID {
+			// BreakStarted is what anchors the wait budget, so a recall "in
+			// flight" must set it, as breakDelegations does.
 			ul.Delegation.Breaking = true
+			ul.Delegation.BreakStarted = time.Now()
 		}
 	}
 	lm.mu.Unlock()
@@ -335,4 +338,36 @@ func TestLock_WaitIsScopedToTheSelectedDelegations(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > delegationIOWaitTimeout/2 {
 		t.Fatalf("waited %v on an unrelated delegation's recall instead of returning when the selected one did", elapsed)
 	}
+}
+
+// TestLock_RetriesShareOneRecallBudget pins that repeated acquisition attempts
+// against the same unanswered recall do not each start a fresh timeout. The SMB
+// handler retries a blocking lock every BlockingLockRetryInterval and the
+// fail-immediately attempt comes through the same call, so a per-call budget
+// would let one SMB request accumulate waits far past its own deadline.
+func TestLock_RetriesShareOneRecallBudget(t *testing.T) {
+	const handle = xHandle
+
+	defer func(d time.Duration) { delegationIOWaitTimeout = d }(delegationIOWaitTimeout)
+	delegationIOWaitTimeout = 400 * time.Millisecond
+
+	lm := NewManagerWithTTL(-1)
+	lm.RegisterBreakCallbacks(&recordingBreakCallbacks{})
+	if err := lm.GrantDelegation(handle, NewDelegation(DelegTypeWrite, "nfs4:c1", "share-a", false)); err != nil {
+		t.Fatalf("GrantDelegation: %v", err)
+	}
+
+	// The client never answers, so every attempt times out. Ten attempts must
+	// cost about one budget in total, not ten.
+	start := time.Now()
+	for i := 0; i < 10; i++ {
+		if err := lm.Lock(handle, smbExclusive("smb:open-1", 0, 0)); err == nil {
+			t.Fatal("an unanswered recall must deny the lock")
+		}
+	}
+	elapsed := time.Since(start)
+	if elapsed > 3*delegationIOWaitTimeout {
+		t.Fatalf("ten attempts waited %v, so each started a fresh %v budget", elapsed, delegationIOWaitTimeout)
+	}
+	t.Logf("ten attempts bounded to %v (one budget %v)", elapsed, delegationIOWaitTimeout)
 }
