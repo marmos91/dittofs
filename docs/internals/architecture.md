@@ -301,7 +301,8 @@ restore can resolve the file's chunks, but nothing is uploaded.
 
 The carve pass fans out across files: a single sequential pass (one file, one
 block, one `PutBlock` at a time) leaves the uplink almost idle. Concurrency is
-bounded by an **adaptive upload window** (`pkg/block/engine/syncer.go`):
+bounded by an **adaptive upload window** (`pkg/block/syncer/upload_controller.go`,
+wired from `pkg/block/engine/syncer.go`):
 a pinned `--parallel-uploads` fixes the window, while the default (adaptive)
 mode ramps it between a floor and ceiling to track the goodput knee. Files in
 one shard still serialize on the journal's carve lock, so the window overlaps
