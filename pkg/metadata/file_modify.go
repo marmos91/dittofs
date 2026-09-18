@@ -621,7 +621,7 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 			}
 		}
 
-		file.Mode = newMode
+		file.Mode = newMode | (file.Mode & dosAttributeModeBits)
 
 		// RFC 7530 Section 6.4.1: chmod adjusts OWNER@/GROUP@/EVERYONE@ ACEs
 		// to match the new mode bits when an ACL is present. The adjustment is
@@ -960,7 +960,14 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 			}
 
 			if attrs.Mode != nil {
-				row.Mode = file.Mode
+				// The mask path below owns only the DOS bits and the absolute-Mode
+				// path owns only the permission bits, so neither can overwrite
+				// what the other manages. Carry the row's DOS bits across rather
+				// than copying the pre-transaction snapshot's: an absolute mode
+				// replaces the permission triple, but a peer's concurrent
+				// FSCTL_SET_COMPRESSION or attribute flip is still committed state
+				// this call never addressed.
+				row.Mode = (row.Mode & dosAttributeModeBits) | (file.Mode & 0o7777)
 			}
 			if attrs.ModeOrMask != nil {
 				row.Mode |= *attrs.ModeOrMask & dosAttributeModeBits

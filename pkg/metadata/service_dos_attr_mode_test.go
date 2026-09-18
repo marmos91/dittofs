@@ -173,3 +173,76 @@ func TestSetFileAttributes_DOSAttrMasks_NonOwnerRefusedWithoutTruncate(t *testin
 	_, err = fx.service.SetFileAttributes(owner, handle, &metadata.SetAttrs{ModeOrMask: &or})
 	require.NoError(t, err, "the owner must still be able to set DOS attributes")
 }
+
+// TestSetFileAttributes_AbsoluteMode_PreservesDOSAttrBits pins the mirror of
+// the mask contract above: the absolute-Mode path (an NFS chmod) owns the POSIX
+// permission bits and must carry the high word across untouched. The two halves
+// of the Mode field are written by different protocols through different
+// fields, so neither may overwrite what the other manages.
+//
+// The chmod writes exactly the mode an NFS client observes: GETATTR masks the
+// high word off, so a client reading the mode and writing the same value back
+// — chmod --reference, cp -p, rsync -p — believes it is a no-op. Clearing the
+// high word there would destroy SMB attribute state the client never addressed,
+// including the FSCTL-managed COMPRESSED and SPARSE bits and the READONLY bit
+// the permission model enforces writes against.
+func TestSetFileAttributes_AbsoluteMode_PreservesDOSAttrBits(t *testing.T) {
+	t.Parallel()
+
+	// Every DOS attribute bit a chmod must not disturb, FSCTL-managed included.
+	allDOSBits := uint32(0x10000 | 0x20000 | 0x40000 | 0x80000 | 0x100000 | 0x200000)
+
+	cases := []struct {
+		name     string
+		fileType metadata.FileType
+		mode     uint32
+	}{
+		{"private file", metadata.FileTypeRegular, 0o600},
+		{"world-writable file", metadata.FileTypeRegular, 0o777},
+		{"setuid file", metadata.FileTypeRegular, 0o4700},
+		{"directory", metadata.FileTypeDirectory, 0o755},
+		{"sticky private directory", metadata.FileTypeDirectory, 0o1700},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fx := newTestFixture(t)
+
+			attr := &metadata.FileAttr{Type: tc.fileType, Mode: tc.mode}
+			var err error
+			if tc.fileType == metadata.FileTypeDirectory {
+				_, _, err = fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "target", attr)
+			} else {
+				_, _, err = fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "target", attr)
+			}
+			require.NoError(t, err)
+
+			handle, err := fx.store.GetChild(context.Background(), fx.rootHandle, "target")
+			require.NoError(t, err)
+
+			// Set the DOS bits the way the SMB path does — through the masks.
+			zero := uint32(0)
+			_, err = fx.service.SetFileAttributes(fx.rootContext(), handle, &metadata.SetAttrs{
+				ModeOrMask:     &allDOSBits,
+				ModeAndNotMask: &zero,
+			})
+			require.NoError(t, err)
+
+			before, err := fx.store.GetFile(context.Background(), handle)
+			require.NoError(t, err)
+			require.Equal(t, allDOSBits, before.Mode&allDOSBits, "precondition: DOS bits stored")
+
+			// An absolute-mode write carrying no DOS bits at all.
+			newMode := tc.mode ^ 0o111 // flip the execute bits
+			_, err = fx.service.SetFileAttributes(fx.rootContext(), handle, &metadata.SetAttrs{Mode: &newMode})
+			require.NoError(t, err)
+
+			after, err := fx.store.GetFile(context.Background(), handle)
+			require.NoError(t, err)
+			assert.Equal(t, newMode&0o7777, after.Mode&0o7777, "the chmod must apply")
+			assert.Equal(t, allDOSBits, after.Mode&allDOSBits,
+				"an absolute-mode write must not clear the DOS attribute bits")
+		})
+	}
+}
