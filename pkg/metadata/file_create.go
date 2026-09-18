@@ -356,14 +356,26 @@ func (s *Service) createEntry(
 	newAttr.Type = fileType
 	newAttr.LinkTarget = linkTarget
 	ApplyCreateDefaults(&newAttr, ctx, linkTarget)
-	ApplyOwnerDefaults(&newAttr, ctx)
+	if attr.ExactAttrs {
+		// ApplyCreateDefaults read Mode==0 as "unspecified" and substituted the
+		// file-type default. A re-created entry's mode is authoritative,
+		// including an explicit 0 (a placeholder can carry one), so put the
+		// caller's value back.
+		newAttr.Mode = attr.Mode & modeMask
+	} else {
+		ApplyOwnerDefaults(&newAttr, ctx)
+	}
 
 	// POSIX SGID inheritance:
 	// When parent directory has SGID bit set:
 	// 1. New entries inherit parent's GID (not the creating user's primary GID)
 	// 2. New directories also get SGID bit set (to propagate the behavior)
 	// 3. New regular files do NOT get SGID bit set
-	parentHasSGID := parent.Mode&0o2000 != 0
+	//
+	// Skipped for an exact re-create: inheritance describes how a *new* entry is
+	// named, and applying it would hand a re-created placeholder the parent's
+	// group instead of the one it already had.
+	parentHasSGID := !attr.ExactAttrs && parent.Mode&0o2000 != 0
 	if parentHasSGID {
 		// Inherit GID from parent directory
 		newAttr.GID = parent.GID
@@ -379,10 +391,13 @@ func (s *Service) createEntry(
 	}
 
 	// POSIX: Validate SUID/SGID bits for non-root users
-	// Even during file creation, non-root users cannot arbitrarily set these bits
+	// Even during file creation, non-root users cannot arbitrarily set these bits.
+	// An exact re-create is exempt: its mode was already validated when it was
+	// first set, and stripping a bit here would silently alter the very identity
+	// the re-create exists to preserve.
 	identity := ctx.Identity
 	isRoot := identity != nil && identity.UID != nil && *identity.UID == 0
-	if !isRoot {
+	if !isRoot && !attr.ExactAttrs {
 		// SUID (04000): Only root can set on new files
 		newAttr.Mode &= ^uint32(0o4000)
 

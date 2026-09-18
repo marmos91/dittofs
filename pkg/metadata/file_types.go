@@ -120,9 +120,18 @@ type FileAttr struct {
 	// row yet, so a store that would otherwise probe for one can insert
 	// straight away. Transient, request-scoped and never persisted. Only a
 	// caller holding the create's exclusivity guarantee may set it: a store is
-	// entitled to skip its existence check, and an inode that does exist then
+	// entitled to skip its existence check, and an inode that does then
 	// surfaces as a duplicate-key error rather than an update.
 	NewInode bool `json:"-"`
+
+	// ExactAttrs marks a create whose attributes are the authoritative ones for
+	// an entry that already existed, rather than a request for a new one. A
+	// remove-then-recreate conversion passes it so the replacement keeps the
+	// identity of the object it replaces: the create path's defaults (a
+	// zero-mode default, the caller's UID/GID, SGID-parent inheritance) all
+	// describe a *new* entry and would silently re-home or widen a
+	// re-created one. Transient, request-scoped and never persisted.
+	ExactAttrs bool `json:"-"`
 
 	// ObjectID is the BLAKE3 Merkle root over ChunkRef.Hash values sorted
 	// by Offset, populated lazily at the post-Flush coordinator hook

@@ -752,14 +752,17 @@ func modeBitMaskAttrs(bit uint32, set bool) metadata.SetAttrs {
 // pair is the caller's — passing an empty FileAttr would take UID/GID from the
 // caller and silently re-home the result.
 //
-// UID/GID 0 is the root owner and is indistinguishable from "unset" to
-// ApplyOwnerDefaults, so a root-owned placeholder converted by a non-root caller
-// still lands on the caller. Preserving that case needs pointer semantics on
-// FileAttr that only the NFS XDR layer carries; it is not fixable here.
+// It also sets ExactAttrs, which tells the create path that these attributes
+// describe an entry that already existed rather than a new one: the defaults it
+// would otherwise apply (a zero-mode default, the caller's UID/GID, SGID-parent
+// inheritance, the setid strip) all describe a *new* entry and would re-home or
+// widen a re-created one. src's own mode is deliberately not carried — the
+// caller decides that, since a symlink's POSIX mode is not meaningful.
 //
-// A nil src leaves dst untouched, which covers the defensive branch where
-// RemoveFile reported success without a file.
+// A nil src leaves dst untouched apart from ExactAttrs, which covers the
+// defensive branch where RemoveFile reported success without a file.
 func carriedAttr(src *metadata.File, dst *metadata.FileAttr) *metadata.FileAttr {
+	dst.ExactAttrs = true
 	if src == nil {
 		return dst
 	}

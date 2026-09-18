@@ -186,6 +186,15 @@ func (s *Service) RemoveFile(ctx *AuthContext, parentHandle FileHandle, name str
 			}
 		}
 
+		// The caller's File must describe the inode that was actually unlinked,
+		// not the one read before this transaction opened. `file` predates the
+		// txn, so a concurrent chown or chmod committed in the gap would hand a
+		// caller a stale owner — and a caller that re-creates the entry from it
+		// (the symlink conversions) would resurrect the pre-chown identity over a
+		// remove that linearized after it. The branches below overwrite Nlink,
+		// PayloadID and Ctime; every other column comes from here.
+		returnFile.FileAttr = txFile.FileAttr
+
 		linkCount, lcErr := tx.GetLinkCount(ctx.Context, fileHandle)
 		if lcErr != nil {
 			// Never guess the count. Assuming "last link" would report the

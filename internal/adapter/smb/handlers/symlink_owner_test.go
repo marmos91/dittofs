@@ -7,6 +7,20 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
+// rehomeAttr applies attrs to the "link" entry as root, for tests that need to
+// set up state the SMB handler itself cannot reach.
+func rehomeAttr(t *testing.T, h *Handler, smbCtx *SMBHandlerContext, handle metadata.FileHandle, attrs *metadata.SetAttrs) {
+	t.Helper()
+	rootUID, rootGID := uint32(0), uint32(0)
+	rootCtx := &metadata.AuthContext{
+		Context:  smbCtx.Context,
+		Identity: &metadata.Identity{UID: &rootUID, GID: &rootGID},
+	}
+	if _, err := h.Registry.GetMetadataService().SetFileAttributes(rootCtx, handle, attrs); err != nil {
+		t.Fatalf("SetFileAttributes: %v", err)
+	}
+}
+
 // rehomePlaceholder rewrites the "link" entry under rootHandle to the given
 // owner/mode, so a test can model a placeholder that some other principal
 // created. Both symlink-conversion paths remove-and-recreate that entry, and
@@ -128,5 +142,92 @@ func TestClose_MFsymlink_PreservesPlaceholderOwner(t *testing.T) {
 	if after.UID != ownerUID || after.GID != ownerGID {
 		t.Errorf("owner = %d:%d after MFsymlink promotion; want %d:%d (placeholder's owner) unchanged",
 			after.UID, after.GID, ownerUID, ownerGID)
+	}
+}
+
+// TestSetReparsePoint_PreservesOwnerUnderSGIDParent covers the SGID case: the
+// create path inherits a new entry's group from an SGID parent, which would
+// override the placeholder's own group on the re-create. The conversion must
+// keep the group the placeholder actually had.
+func TestSetReparsePoint_PreservesOwnerUnderSGIDParent(t *testing.T) {
+	const ownerUID, ownerGID uint32 = 4242, 5555
+
+	h, smbCtx, rootHandle, fileID := setupReparseShare(t)
+
+	// Make the parent SGID-owned by a group the placeholder does not belong to,
+	// so inheritance and preservation give different answers.
+	sgidParent := uint32(0o2777)
+	parentGID := uint32(7777)
+	rehomeAttr(t, h, smbCtx, rootHandle, &metadata.SetAttrs{Mode: &sgidParent, GID: &parentGID})
+
+	rehomePlaceholder(t, h, smbCtx, rootHandle, ownerUID, ownerGID, 0o600)
+
+	body := buildSetReparseBody(fileID, buildSymlinkReparseBuffer("../A"))
+	resp, err := h.handleSetReparsePoint(smbCtx, body)
+	if err != nil {
+		t.Fatalf("handleSetReparsePoint: %v", err)
+	}
+	if resp.Status != types.StatusSuccess {
+		t.Fatalf("status = 0x%08x, want STATUS_SUCCESS", uint32(resp.Status))
+	}
+
+	after := entryAttrAfter(t, h, smbCtx, rootHandle)
+	if after.UID != ownerUID || after.GID != ownerGID {
+		t.Errorf("owner = %d:%d under an SGID parent; want %d:%d (placeholder's own, not the parent's %d)",
+			after.UID, after.GID, ownerUID, ownerGID, parentGID)
+	}
+}
+
+// TestSetReparsePoint_RollbackPreservesZeroMode pins the rollback branch against
+// an explicit mode 0. ApplyModeDefault reads 0 as "unspecified" and substitutes
+// 0o644, so a rollback that re-created the placeholder through the ordinary
+// create path would widen it — the exact widening the rollback exists to avoid.
+func TestSetReparsePoint_RollbackPreservesZeroMode(t *testing.T) {
+	h, smbCtx, rootHandle, _ := setupReparseShare(t)
+	metaSvc := h.Registry.GetMetadataService()
+
+	childHandle, err := metaSvc.GetChild(smbCtx.Context, rootHandle, "link")
+	if err != nil {
+		t.Fatalf("GetChild(link): %v", err)
+	}
+	zero := uint32(0)
+	rehomeAttr(t, h, smbCtx, childHandle, &metadata.SetAttrs{Mode: &zero})
+	pre, err := metaSvc.GetFile(smbCtx.Context, childHandle)
+	if err != nil {
+		t.Fatalf("GetFile: %v", err)
+	}
+	if pre.Mode&0o7777 != 0 {
+		t.Fatalf("precondition: placeholder mode = 0o%o, want 0", pre.Mode&0o7777)
+	}
+
+	// Re-create exactly what the rollback branch does.
+	rollback := carriedAttr(pre, &metadata.FileAttr{Type: metadata.FileTypeRegular})
+	rollback.Mode = pre.Mode
+	if _, _, err := metaSvc.CreateFile(rootCtxFor(smbCtx), rootHandle, "rolledback", rollback); err != nil {
+		t.Fatalf("CreateFile(rollback): %v", err)
+	}
+
+	rb, err := metaSvc.GetChild(smbCtx.Context, rootHandle, "rolledback")
+	if err != nil {
+		t.Fatalf("GetChild(rolledback): %v", err)
+	}
+	got, err := metaSvc.GetFile(smbCtx.Context, rb)
+	if err != nil {
+		t.Fatalf("GetFile(rolledback): %v", err)
+	}
+	if got.Mode&0o7777 != 0 {
+		t.Errorf("rollback mode = 0o%o; want the placeholder's explicit 0 preserved", got.Mode&0o7777)
+	}
+	if got.UID != pre.UID || got.GID != pre.GID {
+		t.Errorf("rollback owner = %d:%d; want %d:%d unchanged", got.UID, got.GID, pre.UID, pre.GID)
+	}
+}
+
+// rootCtxFor builds the root metadata context the fixture's setup helpers use.
+func rootCtxFor(smbCtx *SMBHandlerContext) *metadata.AuthContext {
+	rootUID, rootGID := uint32(0), uint32(0)
+	return &metadata.AuthContext{
+		Context:  smbCtx.Context,
+		Identity: &metadata.Identity{UID: &rootUID, GID: &rootGID},
 	}
 }
