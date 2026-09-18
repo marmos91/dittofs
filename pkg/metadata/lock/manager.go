@@ -850,6 +850,16 @@ func (lm *Manager) notifyByteRangeReleased(handleKey string) {
 // serialized them, so two concurrent ops on the same persistID cannot reach the
 // store out of order (the reorder/resurrection bug class).
 func (lm *Manager) Lock(handleKey string, lock FileLock) error {
+	// An NFSv4 delegation is recalled and waited out before the lock is judged,
+	// exactly as on the I/O path: the delegated client satisfies its byte-range
+	// locks locally and claims them to the server only on return (RFC 8881
+	// §10.4.4), so the conflict set is not known until the DELEGRETURN lands.
+	// The recall runs before lm.mu is taken because breakDelegations takes the
+	// write lock itself. Delegations are not byte-range locks and never conflict
+	// on their own -- see fileLockConflictsWithUnified -- so what this removes is
+	// a hard denial, not a conflict.
+	lm.recallDelegationsForByteRange(handleKey, &lock)
+
 	lm.mu.Lock()
 	defer lm.unlock()
 
@@ -1046,6 +1056,10 @@ func (lm *Manager) doUnlockAllForSession(handleKey string, sessionID uint64) int
 //
 // Returns (*LockConflict, nil) if conflict exists, or (nil, nil) if lock would succeed.
 func (lm *Manager) TestLock(handleKey string, lock FileLock) (*LockConflict, error) {
+	// Mirror Lock()'s recall-and-wait, so the preview agrees with acquire rather
+	// than reporting a bare delegation as a conflict the acquire would not hit.
+	lm.recallDelegationsForByteRange(handleKey, &lock)
+
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
 
@@ -1083,6 +1097,44 @@ func (lm *Manager) TestLockByParams(handleKey string, sessionID, offset, length 
 		return false, conflict
 	}
 	return true, nil
+}
+
+// recallDelegationsForByteRange dispatches a recall for every delegation that
+// would block the byte-range lock and waits for the DELEGRETURN, so the caller
+// re-judges the conflict against the real set afterwards. Caller must NOT hold
+// lm.mu: breakDelegations takes the write lock. A no-op when no delegation is
+// present or none of them blocks this lock.
+func (lm *Manager) recallDelegationsForByteRange(handleKey string, lock *FileLock) {
+	// Cheap pre-filter under the read lock: a file with no delegation never
+	// pays for the wait. An already-breaking delegation still counts -- the wait
+	// below is what lets this caller ride out a recall another caller started,
+	// rather than denying on the strength of a recall already in flight.
+	lm.mu.RLock()
+	var any bool
+	for _, ul := range lm.unifiedLocks[handleKey] {
+		if !ul.IsDelegation() {
+			continue
+		}
+		// A read delegation stands in for shared caching only: it does not
+		// conflict with a shared lock, so it must not be recalled for one.
+		// That mirrors fileLockConflictsWithUnified, where a shared-vs-shared
+		// pair never conflicts.
+		if !lock.Exclusive && ul.IsShared() {
+			continue
+		}
+		any = true
+		break
+	}
+	lm.mu.RUnlock()
+
+	if !any {
+		return
+	}
+
+	lm.breakDelegations(handleKey, nil, func(deleg *Delegation) bool {
+		return lock.Exclusive || deleg.DelegType == DelegTypeWrite
+	})
+	lm.waitForDelegationRecall(handleKey)
 }
 
 // delegationIOWaitTimeout bounds how long CheckForIO parks on a recalled
