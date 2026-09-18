@@ -241,3 +241,98 @@ func TestLock_DelegationAheadOfTerminalConflictDoesNotWait(t *testing.T) {
 		t.Fatalf("a terminal conflict must not recall the delegation, got %d recalls", got)
 	}
 }
+
+// TestCheckForIO_DelegationArrivingDuringRecallIsRecalled pins that the I/O
+// path re-judges too, not only the acquire path. Its loop is a separate one, and
+// without this the existing CheckForIO tests would stay green while a delegation
+// granted during the recall was returned as a conflict instead of being recalled:
+// SMB I/O against the file would be denied again.
+//
+// The interleaving is forced through the break callback, as in the Lock case.
+func TestCheckForIO_DelegationArrivingDuringRecallIsRecalled(t *testing.T) {
+	const handle = xHandle
+
+	lm := NewManagerWithTTL(-1)
+	recalls := &recordingBreakCallbacks{}
+	lm.RegisterBreakCallbacks(recalls)
+
+	arrived := NewDelegation(DelegTypeWrite, "nfs4:c2", "share-a", false)
+	first := NewDelegation(DelegTypeWrite, "nfs4:c1", "share-a", false)
+	if err := lm.GrantDelegation(handle, first); err != nil {
+		t.Fatalf("GrantDelegation: %v", err)
+	}
+	var grants sync.Once
+	lm.RegisterBreakCallbacks(&delegationReturningByID{
+		onRecall: func(lock *UnifiedLock) {
+			_ = lm.ReturnDelegation(handle, lock.Delegation.DelegationID)
+			grants.Do(func() {
+				if err := lm.GrantDelegation(handle, arrived); err != nil {
+					t.Errorf("GrantDelegation(arrived): %v", err)
+				}
+			})
+		},
+	})
+
+	// A write delegation blocks a foreign read, so the I/O may proceed only once
+	// both delegations are recalled.
+	if conflict := lm.CheckForIO(handle, "smb:open-1", 7, 0, 4096, false); conflict != nil {
+		t.Fatalf("a delegation arriving during the recall must be recalled, not reported, got %v", conflict)
+	}
+	if got := len(recalls.getDelegationRecalls()); got != 2 {
+		t.Fatalf("expected both delegations to be recalled, got %d recalls", got)
+	}
+}
+
+// TestLock_WaitIsScopedToTheSelectedDelegations pins that the recall wait covers
+// only the delegations this request selected. Multiple read delegations may
+// coexist on a file, so an unrelated delegation can already be breaking while
+// this request waits on a different one; if the wait is not scoped, a client that
+// never answers that unrelated recall holds this request until the deadline even
+// though its own delegation was returned promptly.
+func TestLock_WaitIsScopedToTheSelectedDelegations(t *testing.T) {
+	const handle = xHandle
+
+	defer func(d time.Duration) { delegationIOWaitTimeout = d }(delegationIOWaitTimeout)
+	delegationIOWaitTimeout = 3 * time.Second
+
+	lm := NewManagerWithTTL(-1)
+	lm.RegisterBreakCallbacks(&recordingBreakCallbacks{})
+
+	// A write delegation: an exclusive claim, so a shared lock conflicts with it
+	// and selects it for recall.
+	selected := NewDelegation(DelegTypeWrite, "nfs4:c1", "share-a", false)
+	if err := lm.GrantDelegation(handle, selected); err != nil {
+		t.Fatalf("GrantDelegation(selected): %v", err)
+	}
+	// A read delegation: a shared claim, so a shared lock does not conflict with
+	// it and it is not selected. GrantDelegation does not weigh delegations
+	// against each other, so the two coexist.
+	unrelated := NewDelegation(DelegTypeRead, "nfs4:c2", "share-a", false)
+	if err := lm.GrantDelegation(handle, unrelated); err != nil {
+		t.Fatalf("GrantDelegation(unrelated): %v", err)
+	}
+	// The unrelated delegation is already being recalled for another reason and
+	// its client never answers.
+	lm.mu.Lock()
+	for _, ul := range lm.unifiedLocks[handle] {
+		if ul.IsDelegation() && ul.Delegation.DelegationID == unrelated.DelegationID {
+			ul.Delegation.Breaking = true
+		}
+	}
+	lm.mu.Unlock()
+
+	lm.RegisterBreakCallbacks(&delegationReturningByID{
+		onRecall: func(lock *UnifiedLock) {
+			_ = lm.ReturnDelegation(handle, lock.Delegation.DelegationID)
+		},
+	})
+
+	shared := FileLock{OpenID: "smb:open-1", SessionID: 7, Offset: 0, Length: 0, Exclusive: false}
+	start := time.Now()
+	if err := lm.Lock(handle, shared); err != nil {
+		t.Fatalf("a shared lock must be granted once the selected delegation is returned, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > delegationIOWaitTimeout/2 {
+		t.Fatalf("waited %v on an unrelated delegation's recall instead of returning when the selected one did", elapsed)
+	}
+}

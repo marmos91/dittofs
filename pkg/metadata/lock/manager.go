@@ -1208,7 +1208,7 @@ func (lm *Manager) recallDelegationsForByteRange(handleKey string, lock *FileLoc
 	}
 
 	lm.breakDelegations(handleKey, nil, shouldBreak)
-	lm.waitForDelegationRecall(handleKey, deadline)
+	lm.waitForDelegationRecall(handleKey, shouldBreak, deadline)
 }
 
 // delegationIOWaitTimeout bounds how long a lock-path caller (CheckForIO,
@@ -1276,11 +1276,15 @@ func (lm *Manager) checkForIOLocked(handleKey string, openID string, sessionID u
 	return nil, false
 }
 
-// waitForDelegationRecall blocks until no delegation on handleKey is being
-// recalled, or deadline passes. The caller owns the deadline so a caller that
-// recalls repeatedly (Lock's re-judge loop) is bounded once in total rather
-// than once per recall. Caller must NOT hold lm.mu.
-func (lm *Manager) waitForDelegationRecall(handleKey string, deadline time.Time) {
+// waitForDelegationRecall blocks until no delegation on handleKey that this
+// request selected is being recalled, or deadline passes. selected is the same
+// predicate the recall was dispatched with, so a delegation already breaking for
+// another reason -- a read delegation, say, while this request waits on a write
+// one -- does not hold this caller for a recall it did not ask for and cannot
+// use. The caller owns the deadline so a caller that recalls repeatedly (the
+// re-judge loops) is bounded once in total rather than once per recall. Caller
+// must NOT hold lm.mu.
+func (lm *Manager) waitForDelegationRecall(handleKey string, selected func(*Delegation) bool, deadline time.Time) {
 	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
 
@@ -1288,7 +1292,7 @@ func (lm *Manager) waitForDelegationRecall(handleKey string, deadline time.Time)
 		lm.mu.Lock()
 		breaking := false
 		for _, ul := range lm.unifiedLocks[handleKey] {
-			if ul.IsDelegation() && ul.Delegation.Breaking {
+			if ul.IsDelegation() && ul.Delegation.Breaking && selected(ul.Delegation) {
 				breaking = true
 				break
 			}
