@@ -109,10 +109,12 @@ func TestLock_DelegationIsRecalledNotDenied(t *testing.T) {
 func TestLock_DelegationArrivingDuringAcquireIsRecalledNotDenied(t *testing.T) {
 	const handle = xHandle
 
-	// A zero recently-broken TTL disables the anti-storm cache, which would
+	// A negative recently-broken TTL disables the anti-storm cache, which would
 	// otherwise refuse the second grant for seconds after the first recall and
-	// mask the re-judge behavior under test. That cache has its own tests.
-	lm := NewManagerWithTTL(0)
+	// mask the re-judge behavior under test. Zero is not enough: the mark and the
+	// re-grant can land in the same clock tick, where the age is 0, not past the
+	// TTL. That cache has its own tests.
+	lm := NewManagerWithTTL(-1)
 	recalls := &recordingBreakCallbacks{}
 	lm.RegisterBreakCallbacks(recalls)
 
