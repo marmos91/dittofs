@@ -265,3 +265,48 @@ func TestSetInfo_ADS_TimestampOnlyDoesNotPropagateAttrs(t *testing.T) {
 		t.Errorf("base.Hidden flipped to true after zero-attributes SET_INFO on stream; expected false")
 	}
 }
+
+// TestSetInfo_ADS_PreservesBaseSparseBit: the SPARSE half of the FSCTL-managed
+// pair on the ADS propagation path. The propagation forwards the stream's masks
+// to the base, so a base carrying SPARSE must keep it — an absolute mode there
+// would drop it, the way it did before the masks. Compressed has its own case
+// above; this pins the bit that had no coverage at all.
+func TestSetInfo_ADS_PreservesBaseSparseBit(t *testing.T) {
+	h, authCtx, baseHandle, _, streamOpen := setupADSAttrPropagationTest(t, 0o640)
+	metaSvc := h.Registry.GetMetadataService()
+
+	preBase, err := metaSvc.GetFile(authCtx.Context, baseHandle)
+	if err != nil {
+		t.Fatalf("GetFile(base) pre: %v", err)
+	}
+	if preBase.Mode&modeDOSSparse != 0 {
+		t.Fatal("precondition: the base must not already carry modeDOSSparse")
+	}
+	seed := preBase.Mode | modeDOSSparse
+	if _, err := metaSvc.SetFileAttributes(authCtx, baseHandle, &metadata.SetAttrs{Mode: &seed}); err != nil {
+		t.Fatalf("SetFileAttributes(base seed): %v", err)
+	}
+
+	// SET_INFO via stream: FileAttributes = HIDDEN.
+	buf := make([]byte, 40)
+	binary.LittleEndian.PutUint32(buf[32:36], uint32(types.FileAttributeHidden))
+
+	resp, err := h.setFileInfoFromStore(nil, authCtx, streamOpen, types.FileBasicInformation, buf)
+	if err != nil || resp == nil || resp.GetStatus() != types.StatusSuccess {
+		t.Fatalf("setFileInfoFromStore on stream: err=%v status=%v", err, resp)
+	}
+
+	base, err := metaSvc.GetFile(authCtx.Context, baseHandle)
+	if err != nil {
+		t.Fatalf("GetFile(base): %v", err)
+	}
+	if base.Mode&modeDOSSparse == 0 {
+		t.Errorf("base.Mode lost modeDOSSparse after stream SET_INFO; FSCTL-managed bit must survive")
+	}
+	if base.Mode&modeDOSCompressed == 0 {
+		t.Errorf("base.Mode lost modeDOSCompressed after stream SET_INFO; FSCTL-managed bit must survive")
+	}
+	if gotPOSIX := base.Mode & 0o7777; gotPOSIX != 0o640 {
+		t.Errorf("base POSIX mode = 0o%o after stream SET_INFO; expected 0o640", gotPOSIX)
+	}
+}

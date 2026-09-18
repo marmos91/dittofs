@@ -217,6 +217,46 @@ func TestCreateOverwrite_PreservesPOSIXMode(t *testing.T) {
 	}
 }
 
+// TestCreateOverwrite_PreservesFSCTLBits covers the FSCTL-managed bits on the
+// overwrite path. overwriteFile relies on the masks to carry COMPRESSED and
+// SPARSE across, because neither mask ever names them — an absolute mode would
+// drop both. COMPRESSED was previously preserved by hand and SPARSE was not,
+// so both directions need pinning.
+func TestCreateOverwrite_PreservesFSCTLBits(t *testing.T) {
+	h, authCtx, fileHandle, _ := setupDOSAttrModeTest(t, metadata.FileTypeRegular, 0o600)
+	metaSvc := h.Registry.GetMetadataService()
+
+	seed := modeDOSCompressed | modeDOSSparse
+	if _, err := metaSvc.SetFileAttributes(authCtx, fileHandle, &metadata.SetAttrs{ModeOrMask: &seed}); err != nil {
+		t.Fatalf("SetFileAttributes(seed): %v", err)
+	}
+
+	pre, err := metaSvc.GetFile(authCtx.Context, fileHandle)
+	if err != nil {
+		t.Fatalf("GetFile(pre): %v", err)
+	}
+
+	updated, _, err := h.overwriteFile(authCtx, pre, &CreateRequest{
+		FileAttributes: types.FileAttributeHidden,
+	})
+	if err != nil {
+		t.Fatalf("overwriteFile: %v", err)
+	}
+
+	for _, bit := range []struct {
+		name string
+		mask uint32
+	}{
+		{"modeDOSCompressed", modeDOSCompressed},
+		{"modeDOSSparse", modeDOSSparse},
+	} {
+		if updated.Mode&bit.mask == 0 {
+			t.Errorf("%s cleared by CREATE overwrite; want preserved (FSCTL-managed, never named by the masks)",
+				bit.name)
+		}
+	}
+}
+
 // TestSetInfo_FileBasicInfo_PreservesFSCTLBitsWithoutReReading is the flip side
 // of the mask form: the FSCTL-managed bits are preserved because a
 // FileAttributes update never names them, not because the handler reads them
