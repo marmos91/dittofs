@@ -850,11 +850,30 @@ func (lm *Manager) notifyByteRangeReleased(handleKey string) {
 // serialized them, so two concurrent ops on the same persistID cannot reach the
 // store out of order (the reorder/resurrection bug class).
 func (lm *Manager) Lock(handleKey string, lock FileLock) error {
-	// A blocking NFSv4 delegation is recalled and waited out before the lock is
-	// judged; a delegation is not itself a conflict, so without this the lock
-	// would be denied outright. Must run before lm.mu is taken.
-	lm.recallDelegationsForByteRange(handleKey, &lock)
+	// A blocking delegation is recalled and waited out, then the lock is judged
+	// again. The recall cannot run under lm.mu (breakDelegations takes the write
+	// lock), so the judgment is a separate critical section from the recall that
+	// precedes it -- and a delegation granted by a concurrent OPEN in between
+	// would deny this lock without ever being recalled, which is the defect this
+	// path exists to avoid. Re-judging after each recall closes that window; the
+	// deadline bounds the loop so a client that never answers CB_RECALL ends in
+	// a denial rather than a spin.
+	deadline := time.Now().Add(delegationIOWaitTimeout)
+	for {
+		lm.recallDelegationsForByteRange(handleKey, &lock, deadline)
 
+		err, delegationBlocked := lm.lockLocked(handleKey, &lock)
+		if !delegationBlocked || !time.Now().Before(deadline) {
+			return err
+		}
+	}
+}
+
+// lockLocked performs one Lock acquisition attempt under lm.mu, so the conflict
+// judgment and the insertion are one critical section. The bool reports that
+// the only blocker was a delegation, which the caller must recall and re-judge
+// rather than report.
+func (lm *Manager) lockLocked(handleKey string, lock *FileLock) (error, bool) {
 	lm.mu.Lock()
 	defer lm.unlock()
 
@@ -862,16 +881,16 @@ func (lm *Manager) Lock(handleKey string, lock FileLock) error {
 
 	// Check for conflicts with existing locks
 	for i := range existing {
-		if IsLockConflicting(&existing[i], &lock) {
-			return NewLockedError("", conflictFrom(&existing[i]))
+		if IsLockConflicting(&existing[i], lock) {
+			return NewLockedError("", conflictFrom(&existing[i])), false
 		}
 	}
 
 	// Cross-protocol: an overlapping NLM/NFSv4 byte-range lock must also block
 	// this SMB lock (area-5 H-3 / xproto H1).
 	for _, ul := range lm.unifiedLocks[handleKey] {
-		if fileLockConflictsWithUnified(&lock, ul) {
-			return NewLockedError("", conflictFromUnified(ul))
+		if fileLockConflictsWithUnified(lock, ul) {
+			return NewLockedError("", conflictFromUnified(ul)), ul.IsDelegation()
 		}
 	}
 
@@ -883,7 +902,7 @@ func (lm *Manager) Lock(handleKey string, lock FileLock) error {
 	// brl_lock_windows (source3/locking/brlock.c).
 	if lock.OpenID == "" {
 		for i := range existing {
-			if lockOwnerID(&existing[i]) == lockOwnerID(&lock) &&
+			if lockOwnerID(&existing[i]) == lockOwnerID(lock) &&
 				existing[i].Offset == lock.Offset &&
 				existing[i].Length == lock.Length {
 				// Update existing lock in place (NFS/POSIX re-lock)
@@ -892,7 +911,7 @@ func (lm *Manager) Lock(handleKey string, lock FileLock) error {
 				existing[i].ID = lock.ID
 				lm.assignPersistIDLocked(&existing[i])
 				lm.persistFileLockLocked(handleKey, &existing[i])
-				return nil
+				return nil, false
 			}
 		}
 	}
@@ -904,10 +923,10 @@ func (lm *Manager) Lock(handleKey string, lock FileLock) error {
 
 	// Add new lock. A distinct persistID per stacked entry keeps the persisted
 	// record 1:1 with this slice entry (SMB shared-lock stacking).
-	lm.assignPersistIDLocked(&lock)
-	lm.locks[handleKey] = append(existing, lock)
-	lm.persistFileLockLocked(handleKey, &lock)
-	return nil
+	lm.assignPersistIDLocked(lock)
+	lm.locks[handleKey] = append(existing, *lock)
+	lm.persistFileLockLocked(handleKey, lock)
+	return nil, false
 }
 
 // Unlock releases a specific byte-range lock.
@@ -1051,29 +1070,43 @@ func (lm *Manager) doUnlockAllForSession(handleKey string, sessionID uint64) int
 //
 // Returns (*LockConflict, nil) if conflict exists, or (nil, nil) if lock would succeed.
 func (lm *Manager) TestLock(handleKey string, lock FileLock) (*LockConflict, error) {
-	// Mirror Lock()'s recall-and-wait, so the preview agrees with acquire rather
-	// than reporting a bare delegation as a conflict the acquire would not hit.
-	lm.recallDelegationsForByteRange(handleKey, &lock)
+	// Mirror Lock()'s recall-and-wait and its re-judge, so the preview agrees
+	// with acquire rather than reporting a bare delegation as a conflict the
+	// acquire would recall instead.
+	deadline := time.Now().Add(delegationIOWaitTimeout)
+	for {
+		lm.recallDelegationsForByteRange(handleKey, &lock, deadline)
 
+		conflict, delegationBlocked := lm.testLockLocked(handleKey, &lock)
+		if !delegationBlocked || !time.Now().Before(deadline) {
+			return conflict, nil
+		}
+	}
+}
+
+// testLockLocked is TestLock's conflict scan, mirroring Lock's cross-protocol
+// checks. The bool reports a delegation blocker, which the caller recalls and
+// re-judges rather than reporting.
+func (lm *Manager) testLockLocked(handleKey string, lock *FileLock) (*LockConflict, bool) {
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
 
 	existing := lm.locks[handleKey]
 
 	for i := range existing {
-		if IsLockConflicting(&existing[i], &lock) {
-			return conflictFrom(&existing[i]), nil
+		if IsLockConflicting(&existing[i], lock) {
+			return conflictFrom(&existing[i]), false
 		}
 	}
 
 	// Mirror Lock()'s cross-protocol check so the preview agrees with acquire.
 	for _, ul := range lm.unifiedLocks[handleKey] {
-		if fileLockConflictsWithUnified(&lock, ul) {
-			return conflictFromUnified(ul), nil
+		if fileLockConflictsWithUnified(lock, ul) {
+			return conflictFromUnified(ul), ul.IsDelegation()
 		}
 	}
 
-	return nil, nil
+	return nil, false
 }
 
 // TestLockByParams checks if a lock would succeed without acquiring it (legacy params).
@@ -1110,7 +1143,7 @@ func (lm *Manager) TestLockByParams(handleKey string, sessionID, offset, length 
 // other way reintroduces the divergence that caused this bug: a zero-byte lock
 // and a shared lock against a read delegation both conflict with nothing, so
 // neither may trigger a recall, and only the conflict predicate knows that.
-func (lm *Manager) recallDelegationsForByteRange(handleKey string, lock *FileLock) {
+func (lm *Manager) recallDelegationsForByteRange(handleKey string, lock *FileLock, deadline time.Time) {
 	shouldBreak := func(deleg *Delegation) bool {
 		asByteRange := UnifiedLock{
 			Offset: 0,
@@ -1139,7 +1172,7 @@ func (lm *Manager) recallDelegationsForByteRange(handleKey string, lock *FileLoc
 	}
 
 	lm.breakDelegations(handleKey, nil, shouldBreak)
-	lm.waitForDelegationRecall(handleKey)
+	lm.waitForDelegationRecall(handleKey, deadline)
 }
 
 // delegationIOWaitTimeout bounds how long a lock-path caller (CheckForIO,
@@ -1171,7 +1204,7 @@ func (lm *Manager) CheckForIO(handleKey string, openID string, sessionID uint64,
 		Offset:    offset,
 		Length:    length,
 		Exclusive: isWrite,
-	})
+	}, time.Now().Add(delegationIOWaitTimeout))
 
 	conflict, _ = lm.checkForIOLocked(handleKey, openID, sessionID, offset, length, isWrite)
 	return conflict
@@ -1205,10 +1238,12 @@ func (lm *Manager) checkForIOLocked(handleKey string, openID string, sessionID u
 }
 
 // waitForDelegationRecall blocks until no delegation on handleKey is being
-// recalled, or delegationIOWaitTimeout elapses. Caller must NOT hold lm.mu.
-func (lm *Manager) waitForDelegationRecall(handleKey string) {
-	deadline := time.NewTimer(delegationIOWaitTimeout)
-	defer deadline.Stop()
+// recalled, or deadline passes. The caller owns the deadline so a caller that
+// recalls repeatedly (Lock's re-judge loop) is bounded once in total rather
+// than once per recall. Caller must NOT hold lm.mu.
+func (lm *Manager) waitForDelegationRecall(handleKey string, deadline time.Time) {
+	timer := time.NewTimer(time.Until(deadline))
+	defer timer.Stop()
 
 	for {
 		lm.mu.Lock()
@@ -1233,7 +1268,7 @@ func (lm *Manager) waitForDelegationRecall(handleKey string) {
 		lm.unlock()
 
 		select {
-		case <-deadline.C:
+		case <-timer.C:
 			return
 		case <-ch:
 		}

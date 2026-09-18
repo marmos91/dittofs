@@ -1,6 +1,7 @@
 package lock
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
@@ -94,6 +95,58 @@ func TestLock_DelegationIsRecalledNotDenied(t *testing.T) {
 	})
 }
 
+// TestLock_DelegationArrivingDuringAcquireIsRecalledNotDenied covers the window
+// between the recall decision and the conflict judgment: a delegation granted
+// by a concurrent OPEN after the recall pre-filter ran but before the lock was
+// inserted must be recalled, not turned into a bare denial.
+//
+// The interleaving is forced through the break callback rather than raced: the
+// first recall returns the recalled delegation and immediately grants a second
+// one, standing in for an OPEN that won the window. A single-pass acquire would
+// stop at the second delegation and deny; the re-judge loop recalls that one
+// too and grants. Each wait returns on the break signal, so the test does not
+// depend on the timeout.
+func TestLock_DelegationArrivingDuringAcquireIsRecalledNotDenied(t *testing.T) {
+	const handle = xHandle
+
+	// A zero recently-broken TTL disables the anti-storm cache, which would
+	// otherwise refuse the second grant for seconds after the first recall and
+	// mask the re-judge behavior under test. That cache has its own tests.
+	lm := NewManagerWithTTL(0)
+	recalls := &recordingBreakCallbacks{}
+	lm.RegisterBreakCallbacks(recalls)
+
+	// A second delegation, granted by the first recall, that the acquire must
+	// also recall before it can be granted.
+	arrived := NewDelegation(DelegTypeWrite, "nfs4:c2", "share-a", false)
+	first := NewDelegation(DelegTypeWrite, "nfs4:c1", "share-a", false)
+	if err := lm.GrantDelegation(handle, first); err != nil {
+		t.Fatalf("GrantDelegation: %v", err)
+	}
+	// Returns the delegation actually being recalled (the callback hands us the
+	// lock), and on the first recall only, grants the one that "arrived
+	// concurrently". Returning a fixed ID would leave the second delegation
+	// unreturned and hang on the timeout instead of exercising the re-judge.
+	var grants sync.Once
+	lm.RegisterBreakCallbacks(&delegationReturningByID{
+		onRecall: func(lock *UnifiedLock) {
+			_ = lm.ReturnDelegation(handle, lock.Delegation.DelegationID)
+			grants.Do(func() {
+				if err := lm.GrantDelegation(handle, arrived); err != nil {
+					t.Errorf("GrantDelegation(arrived): %v", err)
+				}
+			})
+		},
+	})
+
+	if err := lm.Lock(handle, smbExclusive("smb:open-1", 0, 0)); err != nil {
+		t.Fatalf("a delegation arriving during acquire must be recalled, not deny the lock, got %v", err)
+	}
+	if got := len(recalls.getDelegationRecalls()); got != 2 {
+		t.Fatalf("expected both delegations to be recalled, got %d recalls", got)
+	}
+}
+
 // TestTestLock_AgreesWithLockOnDelegation pins that the preview reports the
 // same verdict the acquire would produce: a delegation is not a conflict, it is
 // a recall. A TestLock that reports conflict while Lock grants would make an
@@ -122,5 +175,20 @@ func TestTestLock_AgreesWithLockOnDelegation(t *testing.T) {
 
 	if err := lm.Lock(handle, smbExclusive("smb:open-1", 0, 0)); err != nil {
 		t.Fatalf("Lock after the same recall must agree with TestLock, got %v", err)
+	}
+}
+
+// delegationReturningByID returns the delegation named by the lock it is handed,
+// so a test can drive a multi-recall sequence without guessing IDs.
+type delegationReturningByID struct {
+	onRecall func(*UnifiedLock)
+}
+
+func (d *delegationReturningByID) OnOpLockBreak(string, *UnifiedLock, uint32)        {}
+func (d *delegationReturningByID) OnByteRangeRevoke(string, *UnifiedLock, string)    {}
+func (d *delegationReturningByID) OnAccessConflict(string, *UnifiedLock, AccessMode) {}
+func (d *delegationReturningByID) OnDelegationRecall(_ string, lock *UnifiedLock) {
+	if d.onRecall != nil {
+		d.onRecall(lock)
 	}
 }
