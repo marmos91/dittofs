@@ -5,24 +5,24 @@ import (
 	"fmt"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/adapter/auxsvc"
+	"github.com/marmos91/dittofs/pkg/adapter/sidecar"
 	"github.com/marmos91/dittofs/pkg/discovery/hostinfo"
 	"github.com/marmos91/dittofs/pkg/discovery/mdns"
 )
 
-// This file adapts the NFS auxiliary/companion services (portmapper, system
+// This file adapts the NFS sidecar services (portmapper, system
 // rpcbind registration, the UDP lock-manager transport, and NSM startup) to the
-// shared auxsvc.Service interface. Each wrapper is a thin, stateless shim over
+// shared sidecar.Service interface. Each wrapper is a thin, stateless shim over
 // the adapter methods that already implement the behavior — the protocol logic
 // is unchanged; only the lifecycle is unified so every companion is started and
-// stopped uniformly through the adapter's auxsvc.Group, so the
+// stopped uniformly through the adapter's sidecar.Group, so the
 // mDNS / WS-Discovery advertisers can join the same pattern).
 //
-// startEnabledAuxServices registers every enabled companion with the group, in
+// startEnabledSidecars registers every enabled companion with the group, in
 // the order the adapter historically started them. The group tears them down in
 // reverse order in Stop, which preserves the one ordering that matters:
 // unregistering from the system rpcbind before the embedded portmapper closes.
-func (s *NFSAdapter) startEnabledAuxServices(ctx context.Context) {
+func (s *NFSAdapter) startEnabledSidecars(ctx context.Context) {
 	s.sidecars.SetBaseContext(ctx)
 
 	// Embedded portmapper (RFC 1057). Non-fatal: privileged ports may need root.
@@ -85,7 +85,7 @@ func (s *NFSAdapter) mdnsEnabled() bool {
 // advertiser starts and is not rebuilt when shares change, so renaming/removing
 // that export leaves a stale path hint until the adapter or advertiser restarts;
 // re-advertising on share changes is a follow-up.
-func (s *NFSAdapter) newMDNSSidecar(ctx context.Context) auxsvc.Service {
+func (s *NFSAdapter) newMDNSSidecar(ctx context.Context) sidecar.Service {
 	rec := mdns.ServiceRecord{
 		Instance: s.discoveryName(ctx),
 		Service:  "_nfs._tcp",
@@ -187,7 +187,7 @@ func (s *NFSAdapter) reconcileSysreg() {
 			s.sysregState.Store(sysregRunning)
 			want := s.registerWithSystemEnabled()
 			err := s.sidecars.Reconcile(sysregSidecarName, want,
-				func(context.Context) auxsvc.Service { return sysregSidecar{s} })
+				func(context.Context) sidecar.Service { return sysregSidecar{s} })
 			if err != nil {
 				logger.Debug("System rpcbind registration sidecar failed to start", "error", err)
 			}
@@ -280,13 +280,13 @@ func (n nsmSidecar) Start(ctx context.Context) error {
 }
 func (n nsmSidecar) Stop(context.Context) error { return nil }
 
-// Compile-time assertions that every wrapper satisfies auxsvc.Service. The mDNS
+// Compile-time assertions that every wrapper satisfies sidecar.Service. The mDNS
 // sidecar is asserted here too so a signature drift in pkg/discovery/mdns (which
 // satisfies the interface structurally, without importing it) breaks at build.
 var (
-	_ auxsvc.Service = portmapSidecar{}
-	_ auxsvc.Service = sysregSidecar{}
-	_ auxsvc.Service = udpSidecar{}
-	_ auxsvc.Service = nsmSidecar{}
-	_ auxsvc.Service = (*mdns.Sidecar)(nil)
+	_ sidecar.Service = portmapSidecar{}
+	_ sidecar.Service = sysregSidecar{}
+	_ sidecar.Service = udpSidecar{}
+	_ sidecar.Service = nsmSidecar{}
+	_ sidecar.Service = (*mdns.Sidecar)(nil)
 )

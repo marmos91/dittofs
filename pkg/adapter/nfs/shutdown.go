@@ -42,14 +42,14 @@ func (s *NFSAdapter) Stop(ctx context.Context) error {
 		s.identityProviderUnsub = nil
 	}
 
-	// Stop the auxiliary/companion services (portmapper, system rpcbind
+	// Stop the sidecar services (portmapper, system rpcbind
 	// registration, UDP transport, NSM) before tearing down the main listener.
 	// The group stops them in reverse start order, which preserves the ordering
 	// that matters: unregister from the system rpcbind before the embedded
 	// portmapper closes, so a client never resolves a stale NLM port to a port
 	// we no longer serve.
 	if err := s.sidecars.StopAll(ctx); err != nil {
-		logger.Debug("NFS auxiliary service shutdown reported an error", "error", err)
+		logger.Debug("NFS sidecar shutdown reported an error", "error", err)
 	}
 
 	// Stop GSS processor if running (releases background cleanup goroutine)

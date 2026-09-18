@@ -38,7 +38,7 @@ const (
 	multicastWriteTimeout = 250 * time.Millisecond
 )
 
-// SidecarName is the auxsvc.Group key used for the WS-Discovery responder.
+// SidecarName is the sidecar.Group key used for the WS-Discovery responder.
 const SidecarName = "wsd"
 
 var discoveryUDPAddrV4 = &net.UDPAddr{IP: net.ParseIP(discoveryGroupV4), Port: discoveryPort}
@@ -46,7 +46,7 @@ var discoveryUDPAddrV4 = &net.UDPAddr{IP: net.ParseIP(discoveryGroupV4), Port: d
 // Responder is a WS-Discovery host: a UDP multicast responder (Hello/Bye/
 // Probe/Resolve) plus the HTTP metadata endpoint Windows fetches to render the
 // host as a Computer. One Responder advertises one host; the SMB adapter owns a
-// single instance via its auxsvc sidecar.
+// single instance via its sidecar sidecar.
 type Responder struct {
 	name       string // computer / friendly name
 	workgroup  string // NetBIOS domain or workgroup label
@@ -82,7 +82,7 @@ func NewResponder(name, workgroup string, isDomain bool, instanceID uint64) *Res
 	return &Responder{name: name, workgroup: workgroup, isDomain: isDomain, instanceID: instanceID}
 }
 
-// Name implements the adapter auxsvc.Service interface.
+// Name implements the adapter sidecar.Service interface.
 func (r *Responder) Name() string { return SidecarName }
 
 // Start binds the UDP multicast socket and the HTTP metadata server, then emits
@@ -91,7 +91,7 @@ func (r *Responder) Name() string { return SidecarName }
 //
 // ctx bounds the responder's lifetime: if it is cancelled (the owning adapter's
 // Serve context ends) without an explicit Stop, the responder tears itself down,
-// matching the ctx-driven NFS auxiliary services.
+// matching the ctx-driven NFS sidecar services.
 func (r *Responder) Start(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -192,7 +192,7 @@ func (r *Responder) Start(ctx context.Context) error {
 	// Announce presence out every interface. multicastAll bounds each per-
 	// interface send with a write deadline, so a blocked interface (notably macOS
 	// awdl0) can no longer wedge Start — and thus can't delay the SMB listener
-	// that auxsvc.Group.Start binds after us. Kept synchronous under r.mu so this
+	// that sidecar.Group.Start binds after us. Kept synchronous under r.mu so this
 	// Hello is guaranteed to precede any Bye (Stop must take r.mu first). Uses the
 	// local pconn/ifaces (not r.send, which would re-acquire r.mu we still hold).
 	multicastAll(r.pconn, conn, r.ifaces, &r.sendMu, Hello(r.endpoint, r.msgNum.Add(1)))

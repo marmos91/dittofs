@@ -19,7 +19,7 @@ import (
 	"github.com/marmos91/dittofs/internal/auth/netlogon"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/adapter"
-	"github.com/marmos91/dittofs/pkg/adapter/auxsvc"
+	"github.com/marmos91/dittofs/pkg/adapter/sidecar"
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
@@ -144,10 +144,10 @@ type Adapter struct {
 	// SetRuntime and Stop can reach from different goroutines.
 	authSweep *authSweeper
 
-	// sidecars manages the adapter's auxiliary/companion services — the mDNS and
+	// sidecars manages the adapter's sidecar services — the mDNS and
 	// WS-Discovery advertisers — under one uniform lifecycle.
 	// Seeded with the Serve context and torn down in Stop. See discovery.go.
-	sidecars *auxsvc.Group
+	sidecars *sidecar.Group
 
 	// wsdInstanceID sources the WS-Discovery AppSequence InstanceId. Seeded once
 	// per adapter (process start time) and incremented per responder build, so
@@ -243,7 +243,7 @@ func New(config Config) *Adapter {
 		config:         config,
 		handler:        handler,
 		sessionManager: sessionManager,
-		sidecars:       auxsvc.NewGroup(),
+		sidecars:       sidecar.NewGroup(),
 	}
 	// Seed the WS-Discovery InstanceId base with the process start time so it is
 	// stable for this adapter and increases across process restarts.
@@ -557,7 +557,7 @@ func (s *Adapter) applySMBSettings(rt *runtime.Runtime) {
 	}
 
 	// Network discovery: start/stop the mDNS and WS-Discovery advertisers live to
-	// match settings. No-op until Serve has started the auxsvc group.
+	// match settings. No-op until Serve has started the sidecar group.
 	s.reconcileDiscovery()
 }
 
@@ -624,7 +624,7 @@ func (s *Adapter) Serve(ctx context.Context) error {
 	}
 
 	// Start the discovery advertisers (mDNS, WS-Discovery) through the shared
-	// auxsvc group so they share the adapter's lifecycle and can be toggled live
+	// sidecar group so they share the adapter's lifecycle and can be toggled live
 	// from settings. See discovery.go.
 	s.startEnabledDiscovery(ctx)
 

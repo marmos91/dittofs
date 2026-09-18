@@ -25,7 +25,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 
 	"github.com/marmos91/dittofs/pkg/adapter"
-	"github.com/marmos91/dittofs/pkg/adapter/auxsvc"
+	"github.com/marmos91/dittofs/pkg/adapter/sidecar"
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
 	"github.com/marmos91/dittofs/pkg/config"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
@@ -131,11 +131,11 @@ type NFSAdapter struct {
 	// config changes cannot race on identityUnsub/identityProviderUnsub.
 	resolverMu sync.Mutex
 
-	// sidecars manages the adapter's auxiliary/companion services (portmapper,
+	// sidecars manages the adapter's sidecar services (portmapper,
 	// system-rpcbind registration, UDP transport, NSM startup) under one uniform
 	// lifecycle. Seeded with the Serve context and torn down in Stop. See
-	// auxservices.go.
-	sidecars *auxsvc.Group
+	// sidecars.go.
+	sidecars *sidecar.Group
 
 	// sidecarMu guards the sidecar shutdown state published by Start and read
 	// by Stop and the NLM async-result send path (portmapServer, udpConn): the
@@ -556,7 +556,7 @@ func New(nfsConfig NFSConfig) *NFSAdapter {
 		nfsHandler:   &v3.Handler{},
 		mountHandler: &mount.Handler{},
 		drc:          newDuplicateRequestCache(),
-		sidecars:     auxsvc.NewGroup(),
+		sidecars:     sidecar.NewGroup(),
 	}
 }
 
@@ -883,12 +883,12 @@ func (s *NFSAdapter) Serve(ctx context.Context) error {
 			"mtls", s.config.TLS.ClientCA != "")
 	}
 
-	// Start the auxiliary/companion services (embedded portmapper, system
+	// Start the sidecar services (embedded portmapper, system
 	// rpcbind registration, UDP lock-manager transport, and NSM startup) through
-	// the shared auxsvc.Group so they share one lifecycle and are torn down
+	// the shared sidecar.Group so they share one lifecycle and are torn down
 	// uniformly in Stop. Each is individually gated and non-fatal — NFS serves
-	// over TCP regardless. See auxservices.go.
-	s.startEnabledAuxServices(ctx)
+	// over TCP regardless. See sidecars.go.
+	s.startEnabledSidecars(ctx)
 
 	// Start NFSv4.1 session reaper for expired/unconfirmed client cleanup
 	if s.v4Handler != nil && s.v4Handler.StateManager != nil {

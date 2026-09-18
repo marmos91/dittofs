@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/adapter/auxsvc"
+	"github.com/marmos91/dittofs/pkg/adapter/sidecar"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/discovery/hostinfo"
 	"github.com/marmos91/dittofs/pkg/discovery/mdns"
@@ -12,11 +12,11 @@ import (
 )
 
 // This file wires the SMB adapter's network-discovery advertisers
-// into the shared auxsvc.Group: the mDNS advertiser here, and the
+// into the shared sidecar.Group: the mDNS advertiser here, and the
 // WS-Discovery responder. Each is gated by a live setting and can be toggled
 // at runtime without an adapter restart.
 
-// startEnabledDiscovery seeds the auxsvc group with the Serve context and starts
+// startEnabledDiscovery seeds the sidecar group with the Serve context and starts
 // whichever discovery advertisers are enabled. Called once from Serve.
 func (s *Adapter) startEnabledDiscovery(ctx context.Context) {
 	s.sidecars.SetBaseContext(ctx)
@@ -72,7 +72,7 @@ func (s *Adapter) discoveryName(ctx context.Context) string {
 // newMDNSSidecar builds the SMB mDNS advertiser: an _smb._tcp instance on the
 // adapter's real port, plus a _device-info._tcp record whose model= TXT makes
 // Finder show a server icon rather than a generic one.
-func (s *Adapter) newMDNSSidecar(ctx context.Context) auxsvc.Service {
+func (s *Adapter) newMDNSSidecar(ctx context.Context) sidecar.Service {
 	name := s.discoveryName(ctx)
 	port := uint16(s.Port())
 	return mdns.NewSidecar([]mdns.ServiceRecord{
@@ -85,7 +85,7 @@ func (s *Adapter) newMDNSSidecar(ctx context.Context) auxsvc.Service {
 // name under its NetBIOS domain (or WORKGROUP when standalone). A fresh
 // AppSequence InstanceId (process start time) makes Windows treat a restart as a
 // new instance.
-func (s *Adapter) newWSDSidecar(ctx context.Context) auxsvc.Service {
+func (s *Adapter) newWSDSidecar(ctx context.Context) sidecar.Service {
 	workgroup := ""
 	if s.handler != nil {
 		workgroup = s.handler.NetBIOSDomain
@@ -102,10 +102,10 @@ func (s *Adapter) newWSDSidecar(ctx context.Context) auxsvc.Service {
 	return wsd.NewResponder(name, workgroup, isDomain, s.wsdInstanceID.Add(1))
 }
 
-// Compile-time assertions that the discovery advertisers satisfy auxsvc.Service.
+// Compile-time assertions that the discovery advertisers satisfy sidecar.Service.
 // They satisfy it structurally (pkg/discovery does not import the adapter
 // layer), so asserting here breaks a signature drift at build time.
 var (
-	_ auxsvc.Service = (*mdns.Sidecar)(nil)
-	_ auxsvc.Service = (*wsd.Responder)(nil)
+	_ sidecar.Service = (*mdns.Sidecar)(nil)
+	_ sidecar.Service = (*wsd.Responder)(nil)
 )

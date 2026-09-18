@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/adapter/auxsvc"
+	"github.com/marmos91/dittofs/pkg/adapter/sidecar"
 )
 
 // The lifecycle group reserves the sidecar name under the lock and runs Start
@@ -18,7 +18,7 @@ import (
 func TestUDPSidecarStateConcurrentStartStop(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	a := &NFSAdapter{sidecars: auxsvc.NewGroup()}
+	a := &NFSAdapter{sidecars: sidecar.NewGroup()}
 	a.sidecars.SetBaseContext(ctx)
 	udpEnabled := true
 	a.config.UDP.Enabled = &udpEnabled
@@ -51,7 +51,7 @@ func TestUDPSidecarStateConcurrentStartStop(t *testing.T) {
 func TestPortmapSidecarStateConcurrentStartStop(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	a := &NFSAdapter{sidecars: auxsvc.NewGroup()}
+	a := &NFSAdapter{sidecars: sidecar.NewGroup()}
 	a.sidecars.SetBaseContext(ctx)
 	enabled := true
 	a.config.Portmapper.Enabled = &enabled
@@ -82,7 +82,7 @@ func udpAdapterWithHandlerInFlight(t *testing.T, handler func()) *NFSAdapter {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	a := &NFSAdapter{sidecars: auxsvc.NewGroup()}
+	a := &NFSAdapter{sidecars: sidecar.NewGroup()}
 	a.sidecars.SetBaseContext(ctx)
 	udpEnabled := true
 	a.config.UDP.Enabled = &udpEnabled

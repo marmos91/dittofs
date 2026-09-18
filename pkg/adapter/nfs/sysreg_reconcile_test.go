@@ -7,13 +7,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/adapter/auxsvc"
+	"github.com/marmos91/dittofs/pkg/adapter/sidecar"
 )
 
 // newSysregAdapter returns an adapter whose sysreg sidecar talks to addr, with
 // the sidecar group seeded so Reconcile is live.
 func newSysregAdapter(addr string) (*NFSAdapter, func(bool)) {
-	a := &NFSAdapter{sidecars: auxsvc.NewGroup(), sysregAddr: addr}
+	a := &NFSAdapter{sidecars: sidecar.NewGroup(), sysregAddr: addr}
 	a.sidecars.SetBaseContext(context.Background())
 
 	// Mutate the way applyNFSSettings does: a fresh pointer, assigned under

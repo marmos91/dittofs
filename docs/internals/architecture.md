@@ -993,7 +993,7 @@ dittofs/
 │   │   ├── base.go               # BaseAdapter shared TCP lifecycle
 │   │   ├── healthcheck.go        # BaseAdapter.Healthcheck
 │   │   ├── identity.go           # BuildIdentityResolver, ExtractRealm
-│   │   ├── auxsvc/               # Auxiliary-service lifecycle group
+│   │   ├── sidecar/              # Sidecar-service lifecycle group
 │   │   ├── nfs/                  # NFS adapter: dispatch.go routes RPC procedures
 │   │   └── smb/                  # SMB adapter implementation
 │   │
@@ -1111,7 +1111,7 @@ dittofs/
 │   │   ├── middleware/           # Per-request auth extraction
 │   │   ├── types/                # NFS constants and types
 │   │   ├── mount/handlers/       # Mount protocol procedures
-│   │   ├── nlm/, nsm/, portmap/  # Lock/status/portmapper aux services
+│   │   ├── nlm/, nsm/, portmap/  # Lock/status/portmapper sidecar services
 │   │   ├── v3/handlers/          # NFSv3 procedures (READ, WRITE, etc.)
 │   │   └── v4/handlers/          # NFSv4.0 and v4.1 procedures
 │   ├── adapter/smb/              # SMB protocol internals

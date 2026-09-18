@@ -1,5 +1,5 @@
-// Package auxsvc defines a small abstraction for the auxiliary/companion
-// protocol services that run alongside a main protocol adapter.
+// Package sidecar defines a small abstraction for the companion protocol
+// services that run alongside a main protocol adapter.
 //
 // A protocol adapter (NFS, SMB) blocks in Serve, accepting connections on its
 // main port. Around it run a handful of smaller services with their own
@@ -16,7 +16,7 @@
 // A Service differs from the adapter itself in that Start is non-blocking: it
 // binds and launches background goroutines, then returns, leaving the service
 // running until Stop (or the base context) tears it down.
-package auxsvc
+package sidecar
 
 import (
 	"context"
@@ -30,14 +30,14 @@ import (
 
 // ErrAlreadyRunning is returned by Start when a service with the same Name is
 // already tracked. Reconcile treats it as benign (a lost start race).
-var ErrAlreadyRunning = errors.New("auxsvc: service already running")
+var ErrAlreadyRunning = errors.New("sidecar: service already running")
 
 // stopTimeout bounds a single-service Stop initiated by StopOne, where the
 // caller (e.g. a settings-watcher callback) has no natural context to bound the
 // teardown. StopAll uses the context passed by the adapter's Stop instead.
 const stopTimeout = 5 * time.Second
 
-// Service is an auxiliary protocol server that runs alongside a main adapter —
+// Service is a sidecar protocol server that runs alongside a main adapter —
 // e.g. the NFS embedded portmapper, the UDP lock-manager transport, or the
 // mDNS / WS-Discovery advertisers.
 //
@@ -64,7 +64,7 @@ type Service interface {
 	Stop(ctx context.Context) error
 }
 
-// Group tracks the auxiliary services running alongside one adapter. The
+// Group tracks the sidecar services running alongside one adapter. The
 // adapter holds a Group, seeds it with its Serve context via SetBaseContext,
 // starts each enabled service through Start, and tears the whole set down in
 // its Stop via StopAll.
@@ -109,7 +109,7 @@ func (g *Group) Start(s Service) error {
 	g.mu.Lock()
 	if g.baseCtx == nil {
 		g.mu.Unlock()
-		return fmt.Errorf("auxsvc: Start(%q) before SetBaseContext", s.Name())
+		return fmt.Errorf("sidecar: Start(%q) before SetBaseContext", s.Name())
 	}
 	name := s.Name()
 	if _, ok := g.running[name]; ok {
@@ -137,7 +137,7 @@ func (g *Group) Start(s Service) error {
 			g.removeFromOrderLocked(name)
 		}
 		g.mu.Unlock()
-		return fmt.Errorf("auxsvc: start %q: %w", name, err)
+		return fmt.Errorf("sidecar: start %q: %w", name, err)
 	}
 	// StopAll may have raced the shutdown while s.Start was in flight: it
 	// clears the base context and would never tear down a service tracked
@@ -155,10 +155,10 @@ func (g *Group) Start(s Service) error {
 		ctx, cancel := context.WithTimeout(context.Background(), stopTimeout)
 		defer cancel()
 		_ = s.Stop(ctx)
-		return fmt.Errorf("auxsvc: start %q: group stopped during start", name)
+		return fmt.Errorf("sidecar: start %q: group stopped during start", name)
 	}
 
-	logger.Debug("auxsvc started", "name", name)
+	logger.Debug("sidecar started", "name", name)
 	return nil
 }
 
@@ -235,7 +235,7 @@ func (g *Group) StopOne(name string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), stopTimeout)
 	defer cancel()
 	err := s.Stop(ctx)
-	logger.Debug("auxsvc stopped", "name", name, "error", err)
+	logger.Debug("sidecar stopped", "name", name, "error", err)
 	return err
 }
 
@@ -278,7 +278,7 @@ func (g *Group) StopAll(ctx context.Context) error {
 		if err := s.Stop(ctx); err != nil && firstErr == nil {
 			firstErr = err
 		}
-		logger.Debug("auxsvc stopped", "name", names[i])
+		logger.Debug("sidecar stopped", "name", names[i])
 	}
 	return firstErr
 }

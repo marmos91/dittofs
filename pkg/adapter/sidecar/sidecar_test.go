@@ -1,4 +1,4 @@
-package auxsvc
+package sidecar
 
 import (
 	"context"

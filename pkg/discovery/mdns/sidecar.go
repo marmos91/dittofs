@@ -5,18 +5,18 @@ import (
 	"sync"
 )
 
-// SidecarName is the auxsvc.Group key used for the mDNS advertiser on every
+// SidecarName is the sidecar.Group key used for the mDNS advertiser on every
 // adapter.
 const SidecarName = "mdns"
 
 // Sidecar advertises a fixed set of services through the shared Responder for
-// the lifetime of one adapter. It satisfies the adapter auxsvc.Service interface
+// the lifetime of one adapter. It satisfies the adapter sidecar.Service interface
 // structurally (Name/Start/Stop) so the discovery package needs no dependency on
 // the adapter layer.
 //
 // Start/Stop ignore the context: the shared Responder's socket lifetime is
 // reference-counted across all registrations, not tied to any single adapter's
-// context. The adapter's auxsvc.Group calls Stop (Unregister) on shutdown or a
+// context. The adapter's sidecar.Group calls Stop (Unregister) on shutdown or a
 // live disable.
 type Sidecar struct {
 	services []ServiceRecord
@@ -31,12 +31,12 @@ func NewSidecar(services []ServiceRecord) *Sidecar {
 	return &Sidecar{services: services}
 }
 
-// Name implements auxsvc.Service.
+// Name implements sidecar.Service.
 func (s *Sidecar) Name() string { return SidecarName }
 
 // Start registers the services with the shared Responder (idempotent). If ctx is
 // cancelled without an explicit Stop, the registration is withdrawn — matching
-// the ctx-driven lifetime of the other auxiliary services.
+// the ctx-driven lifetime of the other sidecar services.
 func (s *Sidecar) Start(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
