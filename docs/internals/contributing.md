@@ -424,32 +424,35 @@ Example:
 ```go
 // pkg/adapter/smb/adapter.go
 type Adapter struct {
-    *adapter.BaseAdapter
-    config  SMBConfig
-    rt      *runtime.Runtime
+    *adapter.BaseAdapter // holds Registry *runtime.Runtime, set by SetRuntime
+
+    config  Config
+    handler *handlers.Handler
 }
 
-func (a *Adapter) SetRuntime(rt any) {
-    a.BaseAdapter.SetRuntime(rt) // panics if rt is not *runtime.Runtime
-    a.rt = rt.(*runtime.Runtime)
+// SetRuntime takes any, not *runtime.Runtime: the Adapter interface lives in
+// pkg/adapter, which must not import the runtime package (the runtime imports
+// the adapters). BaseAdapter.SetRuntime type-asserts and panics otherwise.
+func (a *Adapter) SetRuntime(rtAny any) {
+    a.BaseAdapter.SetRuntime(rtAny) // sets a.Registry
+    rt := rtAny.(*runtime.Runtime)
+
+    // Protocol-specific wiring: hand the runtime to the components that need it.
+    a.handler.Registry = rt
 }
 
 func (a *Adapter) handleRead(ctx context.Context, handle []byte, blockID string) ([]byte, error) {
-    // Resolve per-share block store from file handle
-    blockStore, _ := a.rt.GetBlockStoreForHandle(ctx, handle)
+    // Resolve the per-share block store from the file handle.
+    blockStore, _ := a.Registry.GetBlockStoreForHandle(ctx, handle)
     buf := make([]byte, size)
     blockStore.ReadAt(ctx, blockID, buf, 0)
     return buf, nil
 }
-
-func (a *Adapter) Serve(ctx context.Context) error {
-    // Start SMB server
-}
-
-func (a *Adapter) Stop(ctx context.Context) error {
-    // Graceful shutdown
-}
 ```
+
+Adapters therefore reach the runtime through `a.Registry` (or a component they wired in
+`SetRuntime`), not through a `rt *runtime.Runtime` field of their own — storing it directly would
+reintroduce the import cycle the `any` parameter exists to avoid.
 
 ## Areas Needing Attention
 

@@ -301,7 +301,7 @@ restore can resolve the file's chunks, but nothing is uploaded.
 
 The carve pass fans out across files: a single sequential pass (one file, one
 block, one `PutBlock` at a time) leaves the uplink almost idle. Concurrency is
-bounded by an **adaptive upload window** (`pkg/block/engine/upload_controller.go`):
+bounded by an **adaptive upload window** (`pkg/block/engine/syncer.go`):
 a pinned `--parallel-uploads` fixes the window, while the default (adaptive)
 mode ramps it between a floor and ceiling to track the goodput knee. Files in
 one shard still serialize on the journal's carve lock, so the window overlaps
@@ -549,8 +549,8 @@ See [SNAPSHOTS.md](../guide/snapshots.md#10-gc-hold-semantics) for the
 operator-facing description of the hold semantics, including the
 delete-vs-GC race window.
 
-See `docs/CONFIGURATION.md` for every `gc.*` and `syncer.*` knob, and
-`docs/CLI.md` for the `dfsctl store block gc` reference.
+See `docs/guide/configuration.md` for every `gc.*` and `syncer.*` knob, and
+`docs/guide/cli.md` for the `dfsctl store block gc` reference.
 
 ## Share Snapshots
 
@@ -819,7 +819,7 @@ added later inherits them:
   the guard, a request naming another session's `FileId` would execute as that
   handle's user.
 - **SMB parked requests** — `pendingRegistry.unregisterByAsyncIDOn`
-  (`internal/adapter/smb/handlers/pending_registry.go`) scopes an `AsyncId`
+  (`internal/adapter/smb/pending/pending_registry.go`) scopes an `AsyncId`
   lookup to the connection that parked it, as the `MessageID` lookups already
   did, so a CANCEL cannot retire another connection's request.
 - **NFSv4 stateids** — `ValidateStateid` takes the caller's client ID and
@@ -970,7 +970,7 @@ No custom code required - configure via CLI:
 ### Implementing Custom Store Backends
 
 See [docs/IMPLEMENTING_STORES.md](implementing-stores.md) for detailed implementation guides for:
-- **Block Store**: Implement `pkg/block/remote.RemoteStore` interface
+- **Block Store**: Implement `pkg/block/remote.RemoteStore` (`pkg/block/remote/remote.go`) interface
 - **Metadata Store**: Implement `pkg/metadata/Store` interface
 
 ## Directory Structure
@@ -993,7 +993,7 @@ dittofs/
 │   │   ├── healthcheck.go        # BaseAdapter.Healthcheck
 │   │   ├── identity.go           # BuildIdentityResolver, ExtractRealm
 │   │   ├── auxsvc/               # Auxiliary-service lifecycle group
-│   │   ├── nfs/                  # NFS adapter implementation
+│   │   ├── nfs/                  # NFS adapter: dispatch.go routes RPC procedures
 │   │   └── smb/                  # SMB adapter implementation
 │   │
 │   ├── auth/                     # Shared authentication primitives
@@ -1016,7 +1016,9 @@ dittofs/
 │   │   ├── cookies.go            # CookieManager (NFS/SMB pagination)
 │   │   ├── types.go              # FileAttr, DirEntry, etc.
 │   │   ├── errors.go             # Metadata-specific errors
-│   │   ├── locking.go            # LockManager for byte-range locks
+│   │   ├── lock_exports.go       # LockManager surface for byte-range locks
+│   │   ├── acl/                  # Windows ACL model and ACE evaluation
+│   │   ├── lock/                 # Lock manager, break/grace machinery
 │   │   ├── storetest/            # Conformance test suite for store implementations
 │   │   └── store/                # Store implementations
 │   │       ├── memory/           # In-memory (ephemeral)
@@ -1027,16 +1029,21 @@ dittofs/
 │   │       ├── basestore/        # Helpers shared by every backend
 │   │       └── internal/         # Row codec, caches, retry
 │   │
-│   ├── blockstore/               # Per-share block storage
-│   │   ├── doc.go                # Package documentation
-│   │   ├── store.go              # FileChunkStore interface
-│   │   ├── types.go              # FileChunk, BlockState types
-│   │   ├── errors.go             # BlockStore error types
+│   ├── block/                    # Per-share block storage
+│   │   ├── blockstore.go         # BlockStore interface
+│   │   ├── types.go              # Block, BlockState types
+│   │   ├── errors.go             # Block store error types
 │   │   ├── chunker/              # FastCDC content-defined chunker
 │   │   │                         # min=1 MiB / avg=4 MiB / max=16 MiB, lvl 2;
 │   │   │                         # BLAKE3 hashing; consumed by the carve pass
+│   │   ├── carver/               # Carve pass: chunk a file into blocks
+│   │   ├── blockcodec/           # On-disk block payload encoding
+│   │   ├── compression/          # Optional per-block compression
+│   │   ├── encryption/           # Optional per-block encryption
 │   │   ├── engine/               # BlockStore orchestrator + read cache + syncer + GC
 │   │   ├── journal/              # The per-share journal (append-only segments)
+│   │   ├── syncer/               # Local -> remote sync
+│   │   ├── blockstoretest/       # Conformance suites for block store impls
 │   │   ├── local/                # LocalStore interface (journal.Store implements it)
 │   │   │   └── memory/           # In-memory local store (testing)
 │   │   └── remote/               # Block store interface
@@ -1067,10 +1074,20 @@ dittofs/
 │   │   ├── helpers.go            # Generic API client helpers
 │   │   └── ...                   # Resource-specific methods
 │   │
+│   ├── identity/                 # Identity resolution (providers, resolver, cache)
+│   ├── discovery/                # Service discovery (mDNS/DNS-SD)
+│   ├── health/                   # Health/readiness aggregation
+│   ├── metrics/                  # Prometheus metrics
+│   ├── netutil/                  # Network helpers
+│   ├── schedule/                 # Scheduled task runner
+│   ├── snapshot/                 # Snapshot/backup support
+│   │
 │   └── config/                   # Configuration parsing
 │       ├── config.go             # Main config struct
-│       ├── stores.go             # Store creation
-│       └── runtime.go            # Runtime initialization
+│       ├── blockstore.go         # Block store config
+│       ├── metadata.go           # Metadata store config
+│       ├── defaults.go           # Defaults + env binding
+│       └── ...                   # Per-section config (logging, gc, snapshot, ...)
 │
 ├── internal/                     # Private implementation details
 │   ├── adapter/common/           # Shared NFS/SMB adapter helpers: block-store
@@ -1085,33 +1102,43 @@ dittofs/
 │   │   ├── write_payload.go      # WriteToBlockStore + CommitBlockStore seams
 │   │   ├── normalize.go          # Block-store error → *merrs.StoreError normalization
 │   │   └── errclassify.go        # Raw block-store error → metadata code classifier
-│   ├── adapter/nfs/              # NFS protocol implementation
-│   │   ├── dispatch.go           # RPC procedure routing
+│   ├── adapter/nfs/              # NFS protocol internals
 │   │   ├── rpc/                  # RPC layer (call/reply handling)
 │   │   │   └── gss/              # RPCSEC_GSS framework
-│   │   ├── core/                 # Generic XDR codec
+│   │   ├── xdr/core/             # Generic XDR codec
+│   │   ├── auth/                 # Auth context, AUTH_UNIX, share permission
+│   │   ├── middleware/           # Per-request auth extraction
 │   │   ├── types/                # NFS constants and types
 │   │   ├── mount/handlers/       # Mount protocol procedures
+│   │   ├── nlm/, nsm/, portmap/  # Lock/status/portmapper aux services
 │   │   ├── v3/handlers/          # NFSv3 procedures (READ, WRITE, etc.)
 │   │   └── v4/handlers/          # NFSv4.0 and v4.1 procedures
-│   ├── adapter/smb/              # SMB protocol implementation
+│   ├── adapter/smb/              # SMB protocol internals
 │   │   ├── auth/                 # NTLM/SPNEGO authentication
+│   │   ├── handlers/             # SMB2 command handlers
+│   │   ├── session/, lease/      # Session + oplock/lease state
+│   │   ├── signing/, encryption/, kdf/   # Crypto primitives
 │   │   ├── framing.go            # NetBIOS framing
-│   │   ├── dispatch.go           # Command dispatch
-│   │   └── v2/handlers/          # SMB2 command handlers
+│   │   └── dispatch.go           # Command dispatch
 │   ├── controlplane/api/         # API implementation
 │   │   ├── handlers/             # HTTP handlers with centralized error mapping
 │   │   └── middleware/           # Auth middleware
-│   └── logger/                   # Logging utilities
+│   ├── auth/                     # Kerberos/Netlogon service internals
+│   ├── cli/                      # CLI output formatting
+│   ├── logger/                   # Logging utilities
+│   └── ...                       # tlsconfig/, pathutil/, bytesize/, sysinfo/
 │
 ├── docs/                         # Documentation
-│   ├── ARCHITECTURE.md           # This file
-│   ├── CONFIGURATION.md          # Configuration guide
+│   ├── internals/                # This file, protocol and store internals
+│   ├── guide/                    # User guides (configuration, NFS, SMB, CLI)
 │   └── ...
 │
 └── test/                         # Test suites
     ├── integration/              # Integration tests (S3, BadgerDB)
-    └── e2e/                      # End-to-end tests (real NFS mounts)
+    ├── e2e/                      # End-to-end tests (real NFS mounts)
+    ├── conformance/              # SMB/NFS conformance harnesses
+    ├── posix/, edge/, crash/     # Behavioural and fault-injection suites
+    └── spec-citations/           # Verifies spec-section citations in code
 ```
 
 ## Horizontal Scaling with PostgreSQL
@@ -1351,7 +1378,7 @@ threading, so changes to the read/write path stay confined to the helpers.
   reconciliation audit (`∑ FileChunk.RefCount == ∑ len(FileAttr.Blocks)`),
   emits aggregate counts as structured slog INFO, and persists the
   last-run summary at `<localStore>/audit-state/last-inv02.json`. See
-  `docs/CLI.md` for the full reference and `docs/FAQ.md` for operator
+  `docs/guide/cli.md` for the full reference and `docs/guide/faq.md` for operator
   guidance.
 - The cache has no operator-facing config knobs: its RAM budget is
   auto-deduced from available system memory at startup (see
@@ -1368,8 +1395,8 @@ Merkle root computed over the file's `BlockRef.Hash` values sorted by
 
     ObjectID = BLAKE3("dittofs:objectid:v1\x00" || h0 || h1 || ... || hN-1)
 
-Implemented in `blockstore.ComputeObjectID`
-(`pkg/block/objectid.go`). Stable across rename and engine restart
+Implemented in `block.ComputeObjectID` (`pkg/block/objectid.go`).
+Stable across rename and engine restart
 by construction (BLAKE3 + FastCDC are both deterministic; the prefix
 protects the output space from per-chunk hash collisions and reserves
 room for future input-shape changes via `v2`/`v3`).
@@ -1508,7 +1535,7 @@ The dedup path emits slog-only signals:
 ### Performance gate
 
 A CI perf lane gates random-write regression against a baseline
-(`pkg/block/engine/perf_bench_test.go`). ObjectID compute is one
+(`pkg/block/engine/write_bench_test.go`). ObjectID compute is one
 BLAKE3 pass over `32×N` bytes per quiesce (sub-millisecond at N=16K
 BlockRefs); the short-circuit lookup is one indexed query per quiesce.
 Both fire off the random-write hot path.
