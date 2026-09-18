@@ -298,33 +298,16 @@ func Error(msg string, args ...any) {
 // equivalent to their plain counterparts.
 
 // DebugCtx logs at debug level. The context is not inspected.
-func DebugCtx(_ context.Context, msg string, args ...any) {
-	if LevelDebug < Level(currentLevel.Load()) {
-		return
-	}
-	getLogger().Debug(msg, args...)
-}
+func DebugCtx(_ context.Context, msg string, args ...any) { Debug(msg, args...) }
 
 // InfoCtx logs at info level. The context is not inspected.
-func InfoCtx(_ context.Context, msg string, args ...any) {
-	if LevelInfo < Level(currentLevel.Load()) {
-		return
-	}
-	getLogger().Info(msg, args...)
-}
+func InfoCtx(_ context.Context, msg string, args ...any) { Info(msg, args...) }
 
 // WarnCtx logs at warn level. The context is not inspected.
-func WarnCtx(_ context.Context, msg string, args ...any) {
-	if LevelWarn < Level(currentLevel.Load()) {
-		return
-	}
-	getLogger().Warn(msg, args...)
-}
+func WarnCtx(_ context.Context, msg string, args ...any) { Warn(msg, args...) }
 
 // ErrorCtx logs at error level. The context is not inspected.
-func ErrorCtx(_ context.Context, msg string, args ...any) {
-	getLogger().Error(msg, args...)
-}
+func ErrorCtx(_ context.Context, msg string, args ...any) { Error(msg, args...) }
 
 // ============================================================================
 // Logger with pre-bound fields
