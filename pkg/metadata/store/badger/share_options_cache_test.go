@@ -20,7 +20,8 @@ func newShareOptionsStore(t *testing.T) (*BadgerMetadataStore, string) {
 
 	const shareName = "/opts"
 	createShareRoot(t, store, shareName)
-	require.NoError(t, store.UpdateShareOptions(ctx, shareName, &metadata.ShareOptions{Async: true}))
+	require.NoError(t, store.UpdateShareOptions(ctx, shareName,
+		&metadata.ShareOptions{ReadOnly: true, Async: true}))
 	return store, shareName
 }
 
@@ -52,9 +53,11 @@ func TestGetShareOptions_CallerCannotMutateCachedEntry(t *testing.T) {
 			got, err := store.GetShareOptions(ctx, shareName)
 			require.NoError(t, err)
 
-			// A caller does what callers do with a value they believe they own,
-			// moving both fields away from the stored record.
-			got.ReadOnly = true
+			// A caller does what callers do with a value they believe they own.
+			// Both fields are true in the stored record, so both move away from
+			// it — a field left at its zero value could not tell a dropped copy
+			// from a correct one.
+			got.ReadOnly = false
 			got.Async = false
 
 			after, err := store.GetShareOptions(ctx, shareName)
@@ -68,7 +71,7 @@ func TestGetShareOptions_CallerCannotMutateCachedEntry(t *testing.T) {
 			// marker on Clone says it must deepen when a reference-bearing
 			// field arrives, and that edit is exactly where a field gets
 			// dropped.
-			require.Equal(t, metadata.ShareOptions{Async: true}, *after,
+			require.Equal(t, metadata.ShareOptions{ReadOnly: true, Async: true}, *after,
 				"the cached share entry was reached by a caller's write, or Clone did not copy it whole")
 		})
 	}
