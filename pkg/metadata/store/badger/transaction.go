@@ -124,22 +124,42 @@ func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx me
 		var dirtyShares []string
 		var dirtyDirents []string
 		var pendingCapabilities *metadata.FilesystemCapabilities
+		// Held across the whole commit, not just the counter write: a realign
+		// drops and rewrites the counter keyspace, and a delta that committed
+		// after the drop but before the rewrite would be erased along with the
+		// rows it was meant to account for.
+		s.quotaRealign.RLock()
 		err := s.db.Update(func(txn *badgerdb.Txn) error {
 			tx := &badgerTransaction{store: s, txn: txn}
 			if fnErr := fn(tx); fnErr != nil {
 				return fnErr
 			}
 			quotaDelta = tx.quota.Map()
+			// Durable counters move inside the transaction that moved the rows,
+			// so the two commit together or not at all. That is what lets an
+			// open read the counters rather than re-derive them from the file
+			// keyspace: there is no window where they can drift apart.
+			if pqErr := s.persistQuotaDelta(txn, quotaDelta); pqErr != nil {
+				return pqErr
+			}
 			dirtyFiles = tx.dirtyFiles
 			dirtyShares = tx.dirtyShares
 			dirtyDirents = tx.dirtyDirents
 			pendingCapabilities = tx.pendingCapabilities
 			return nil
 		})
+		if err == nil {
+			// Apply the accumulated usage deltas exactly once, after commit, and
+			// still under the read lock the commit was taken under. A realign
+			// rebuilds the durable counters from a snapshot of this cache, so a
+			// delta that had committed durably but not yet been folded in here
+			// would be dropped by the rewrite and survive only in memory — until
+			// the next open read those rows back and lost it.
+			s.applyQuotaDelta(quotaDelta)
+		}
+		s.quotaRealign.RUnlock()
 
 		if err == nil {
-			// Apply the accumulated usage deltas exactly once, after commit.
-			s.applyQuotaDelta(quotaDelta)
 			// Apply the staged filesystem-capabilities update once, after commit,
 			// so a persist that never committed can't leave the in-memory copy
 			// (read by GetFilesystemMeta) ahead of durable storage.

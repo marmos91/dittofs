@@ -145,6 +145,18 @@ type BadgerMetadataStore struct {
 	quotaMu sync.Mutex
 	quota   *basestore.QuotaCache
 
+	// quotaStripe round-robins which stripe of the durable counters a
+	// transaction folds its delta into. Advanced per attempt, so a commit that
+	// conflicted on a stripe retries on a different one.
+	quotaStripe atomic.Uint64
+
+	// quotaRealign is held for reading by every transaction that persists a
+	// usage delta, and for writing only while a backfill or an operator-invoked
+	// realign replaces the durable counters wholesale. It stops a delta from
+	// committing into keys that the replacement is about to drop, which would
+	// otherwise lose that transaction's usage with no scan left to recover it.
+	quotaRealign sync.RWMutex
+
 	// storeID is the engine-persistent identifier for this store instance,
 	// backed by the cfg:store_id key in BadgerDB. Created on first open of
 	// a fresh directory with a fresh ULID; read thereafter. Immutable for
@@ -628,23 +640,26 @@ func (s *BadgerMetadataStore) GetUsedBytesForShare(ctx context.Context, shareNam
 	return s.quota.Share(shareName).Bytes, nil
 }
 
-// initUsedBytesCounter scans all file entries once at startup to seed the usage
-// cache (per share, and per owner identity within a share). It is reconstructed
-// from the durable file rows, so a store opened from an existing dump (with no
-// separately persisted counters) is always seeded correctly — back-compatible
-// by construction.
-// A non-nil indexBatch also stages a pl: index entry per file, so a store that
-// still needs indexing by payload pays one scan at open rather than two — the
-// decode is the expensive part and this is the only place already doing it.
+// scanUsage derives the usage buckets (per share, and per owner identity within
+// a share) by decoding every file row. It reads the rows themselves rather than
+// any counter, so it is the authority the durable counters are checked against
+// and rebuilt from.
 //
-// ponytail: one serial decode pass over every file row, so a ten-million-file
-// store spends seconds here before the first share opens
-// (BenchmarkInitUsedBytesCounter reports the per-file cost). Persisting the
-// buckets would remove the pass entirely but has to answer for their
-// consistency after a crash, and badger's Stream would parallelize the decode
-// at the cost of merging partial sums; do either only once this pass, and not
-// the per-share work around it, is what a start is waiting on.
-func (s *BadgerMetadataStore) initUsedBytesCounter(indexBatch *badger.WriteBatch) error {
+// A non-nil indexBatch also stages a pl: index entry per file, so a store that
+// still needs indexing by payload pays one scan rather than two — the decode is
+// the expensive part and this is the only place already doing it.
+//
+// This is no longer on the open path. A store that has been backfilled reads its
+// counters instead (readQuotaCounters), which costs one key per bucket per
+// stripe rather than one decode per file; this runs on the first open after
+// upgrade, and afterwards only when an operator asks for a realign.
+//
+// ponytail: one serial decode pass, so a realign on a ten-million-file store
+// takes seconds (BenchmarkInitUsedBytesCounter reports the per-file cost).
+// Badger's Stream would parallelize the decode at the cost of merging partial
+// sums; do that only once a realign is something operators run often enough to
+// wait on.
+func (s *BadgerMetadataStore) scanUsage(indexBatch *badger.WriteBatch) (map[basestore.QuotaKey]*metadata.UsageStat, error) {
 	byIdentity := make(map[basestore.QuotaKey]*metadata.UsageStat)
 
 	addUsage := func(k basestore.QuotaKey, bytes int64) {
@@ -710,6 +725,16 @@ func (s *BadgerMetadataStore) initUsedBytesCounter(indexBatch *badger.WriteBatch
 		}
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	return byIdentity, nil
+}
+
+// initUsedBytesCounter derives the usage buckets from the file rows and seeds
+// the cache with them, discarding whatever it held.
+func (s *BadgerMetadataStore) initUsedBytesCounter(indexBatch *badger.WriteBatch) error {
+	byIdentity, err := s.scanUsage(indexBatch)
 	if err != nil {
 		return err
 	}
@@ -903,5 +928,30 @@ func (s *BadgerMetadataStore) RecomputeUsage(ctx context.Context) error {
 	s.quotaMu.Lock()
 	s.quota.BeginRebuild()
 	s.quotaMu.Unlock()
-	return s.initUsedBytesCounter(nil)
+
+	byIdentity, err := s.scanUsage(nil)
+	if err != nil {
+		return err
+	}
+
+	// Taken for the rewrite only, not for the scan above: the scan is the long
+	// part, and BeginRebuild already accounts for whatever commits during it.
+	// Writers block for as long as it takes to replace one key per bucket.
+	s.quotaRealign.Lock()
+	defer s.quotaRealign.Unlock()
+
+	s.quotaMu.Lock()
+	s.quota.Seed(byIdentity, nil)
+	persist := s.quota.Buckets()
+	s.quotaMu.Unlock()
+
+	// Persist what the cache ended up holding rather than the raw scan: Seed
+	// has just folded in every delta that committed while the scan ran, and
+	// those are in the file rows the scan no longer reflects.
+	if err := s.writeQuotaCounters(persist); err != nil {
+		return err
+	}
+	// A realign on a store that never got the backfill marker leaves it with
+	// counters that do account for every row, so record it.
+	return recordQuotaCountersBackfilled(s.db)
 }

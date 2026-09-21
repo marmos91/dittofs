@@ -107,6 +107,21 @@ func (c *QuotaCache) Seed(byIdentity map[QuotaKey]*metadata.UsageStat, byShare m
 	}
 }
 
+// Buckets returns a copy of the per-identity usage buckets.
+//
+// Used to persist the cache after a rebuild, so that what reaches durable
+// storage is what the cache actually holds — including any delta that committed
+// while the rebuild was scanning and was folded back in by Seed. Rebuilding the
+// durable rows from the raw scan instead would drop exactly those.
+func (c *QuotaCache) Buckets() map[QuotaKey]*metadata.UsageStat {
+	out := make(map[QuotaKey]*metadata.UsageStat, len(c.byIdentity))
+	for k, u := range c.byIdentity {
+		stat := *u
+		out[k] = &stat
+	}
+	return out
+}
+
 // Get returns the usage for one identity within one share. A missing key
 // returns a zero UsageStat.
 func (c *QuotaCache) Get(share string, scope metadata.QuotaScope, id uint32) metadata.UsageStat {
