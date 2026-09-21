@@ -159,7 +159,12 @@ func TestNewServer_HTTPByDefault(t *testing.T) {
 // startServer boots the server and returns the address it actually bound, read
 // from the server's own resolved config rather than reconstructed from
 // "localhost", which can resolve to a host some other process is listening on.
-// stop() cancels the server context and asserts Start reported a clean shutdown.
+//
+// stop() cancels the server context and asserts Start reported a clean
+// shutdown. That assertion is real only for callers that let Start drive the
+// shutdown: a caller that already ran Stop itself gets nil from the once-guard
+// no matter how the first Stop behaved, so those tests must keep asserting on
+// their own Stop call.
 func startServer(t *testing.T, server *Server) (addr string, stop func()) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
