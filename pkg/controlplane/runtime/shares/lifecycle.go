@@ -646,6 +646,17 @@ func (s *Service) RemoveShare(name string) error {
 //
 // Close is idempotent, so a share removed afterwards closes harmlessly again.
 // The registry is left intact: this is resource teardown, not removal.
+//
+// decision: the shares close CONCURRENTLY and the step carries no deadline of
+// its own. Each close is internally bounded — the syncer drains its uploads,
+// stops its transfer queue and joins its loops, each under its own timeout —
+// so the step is bounded by the slowest share rather than by their sum, and
+// adding shares does not lengthen shutdown. Closing them in sequence would,
+// and a share whose remote has gone away spends its full drain budget before
+// the next one starts. Each *engine.Store is independent (a share owns its
+// own), so there is nothing to serialise them for. Withdraw this if the
+// per-share close ever stops being bounded, or if closes ever contend on
+// something shared, where the bound would become the sum again in disguise.
 func (s *Service) CloseBlockStores() {
 	s.mu.RLock()
 	stores := make(map[string]*engine.Store, len(s.registry))
@@ -656,11 +667,17 @@ func (s *Service) CloseBlockStores() {
 	}
 	s.mu.RUnlock()
 
+	var wg sync.WaitGroup
 	for name, bs := range stores {
-		if err := bs.Close(); err != nil {
-			logger.Warn("Shutdown: failed to close block store for share", "share", name, "error", err)
-		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := bs.Close(); err != nil {
+				logger.Warn("Shutdown: failed to close block store for share", "share", name, "error", err)
+			}
+		}()
 	}
+	wg.Wait()
 }
 
 // SeedColdFromManifest seeds a cold journal interval for every FileChunk in the

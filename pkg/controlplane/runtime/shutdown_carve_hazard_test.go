@@ -3,9 +3,9 @@ package runtime
 import (
 	"context"
 	"crypto/rand"
-	"io"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -19,8 +19,7 @@ import (
 )
 
 // closeWatchingStore records the outcome of every transaction that reaches the
-// metadata store after it has been closed, and can park one transaction so a
-// commit is provably in flight while shutdown runs.
+// metadata store after it has been closed.
 type closeWatchingStore struct {
 	metadata.Store
 
@@ -29,18 +28,11 @@ type closeWatchingStore struct {
 	afterErrs []error
 }
 
-func newCloseWatchingStore(s metadata.Store) *closeWatchingStore {
-	return &closeWatchingStore{Store: s}
-}
-
 func (c *closeWatchingStore) Close() error {
 	c.mu.Lock()
 	c.closed = true
 	c.mu.Unlock()
-	if cl, ok := c.Store.(io.Closer); ok {
-		return cl.Close()
-	}
-	return nil
+	return c.Store.Close()
 }
 
 func (c *closeWatchingStore) WithTransaction(ctx context.Context, fn func(metadata.Transaction) error) error {
@@ -74,9 +66,10 @@ type carveHazardFixture struct {
 	share string
 }
 
-// newCarveHazardFixture builds the fixture over the given metadata store and
-// leaves a payload in the journal for the carve dispatcher to pick up.
-func newCarveHazardFixture(t *testing.T, store metadata.Store) *carveHazardFixture {
+// newCarveHazardFixture builds a runtime with one remote-backed share over a
+// real SQLite metadata store, the backend whose close makes a late commit fail
+// rather than quietly succeed.
+func newCarveHazardFixture(t *testing.T) *carveHazardFixture {
 	t.Helper()
 	ctx := context.Background()
 
@@ -94,7 +87,14 @@ func newCarveHazardFixture(t *testing.T, store metadata.Store) *carveHazardFixtu
 		t.Fatalf("CreateBlockStore: %v", err)
 	}
 
-	meta := newCloseWatchingStore(store)
+	sq, err := sqlitemeta.NewSQLiteMetadataStore(ctx, &sqlitemeta.SQLiteMetadataStoreConfig{
+		Path:        filepath.Join(t.TempDir(), "meta.db"),
+		AutoMigrate: true,
+	}, metadata.FilesystemCapabilities{})
+	if err != nil {
+		t.Fatalf("NewSQLiteMetadataStore: %v", err)
+	}
+	meta := &closeWatchingStore{Store: sq}
 
 	rt := New(cps)
 	rt.SetLocalStoreDefaults(&shares.LocalStoreDefaults{JournalRoot: t.TempDir()})
@@ -177,25 +177,22 @@ func (f *carveHazardFixture) serveUntilShutdown(t *testing.T) {
 // unmirrored — see TestCarveCommitsReachAClosedMetadataStore_WithoutTheFence
 // for the same run with the step removed.
 func TestServerShutdownQuiescesCarveBeforeClosingMetadataStores(t *testing.T) {
-	sq, err := sqlitemeta.NewSQLiteMetadataStore(context.Background(), &sqlitemeta.SQLiteMetadataStoreConfig{
-		Path:        filepath.Join(t.TempDir(), "meta.db"),
-		AutoMigrate: true,
-	}, metadata.FilesystemCapabilities{})
-	if err != nil {
-		t.Fatalf("NewSQLiteMetadataStore: %v", err)
-	}
-
-	f := newCarveHazardFixture(t, sq)
+	f := newCarveHazardFixture(t)
 	f.write(t)
 
-	before := runtime.NumGoroutine()
+	// A dispatcher that is not running before shutdown makes every assertion
+	// below vacuous.
+	if !carveDispatcherRunning() {
+		t.Fatal("no carve dispatcher is running before shutdown: there is nothing for the fence to stop")
+	}
+
 	f.serveUntilShutdown(t)
 
 	// Long enough for several dispatcher intervals: one still running would
 	// commit more than once in this window.
 	time.Sleep(5 * time.Second)
 
-	// Without this the assertion below passes on a run whose metadata store was
+	// Without this the count below passes on a run whose metadata store was
 	// never closed at all.
 	if !f.meta.wasClosed() {
 		t.Fatal("shutdown never closed the metadata store: the sequence under test did not run")
@@ -208,13 +205,25 @@ func TestServerShutdownQuiescesCarveBeforeClosingMetadataStores(t *testing.T) {
 		t.Errorf("%d transactions reached the metadata store after shutdown closed it", len(errs))
 	}
 
-	// A dispatcher that was stopped but not joined leaves its goroutines behind
-	// and can still be inside a commit when the store closes.
-	if after := runtime.NumGoroutine(); after > before {
-		buf := make([]byte, 1<<16)
-		t.Errorf("goroutines after shutdown = %d, before = %d; the data-plane loops were not joined\n%s",
-			after, before, buf[:runtime.Stack(buf, true)])
+	// Stopping the dispatcher is not the same as joining it: one that was told
+	// to stop but never waited for can still be inside a commit when the store
+	// closes.
+	if carveDispatcherRunning() {
+		t.Errorf("a carve dispatcher is still running after shutdown:\n%s", goroutineDump())
 	}
+}
+
+// carveDispatcherRunning reports whether any share's carve dispatcher goroutine
+// is live. Naming the goroutine rather than counting them keeps the answer
+// about the data-plane loop and not about whatever else the process happens to
+// be running.
+func carveDispatcherRunning() bool {
+	return strings.Contains(goroutineDump(), "engine.(*RemoteSync).carveDispatcher")
+}
+
+func goroutineDump() string {
+	buf := make([]byte, 1<<20)
+	return string(buf[:runtime.Stack(buf, true)])
 }
 
 // TestCarveCommitsReachAClosedMetadataStore_WithoutTheFence is the
@@ -223,15 +232,7 @@ func TestServerShutdownQuiescesCarveBeforeClosingMetadataStores(t *testing.T) {
 // carve dispatcher to keep committing into the closed store. Without this the
 // guard could pass on a fixture whose dispatcher never ran at all.
 func TestCarveCommitsReachAClosedMetadataStore_WithoutTheFence(t *testing.T) {
-	sq, err := sqlitemeta.NewSQLiteMetadataStore(context.Background(), &sqlitemeta.SQLiteMetadataStoreConfig{
-		Path:        filepath.Join(t.TempDir(), "meta.db"),
-		AutoMigrate: true,
-	}, metadata.FilesystemCapabilities{})
-	if err != nil {
-		t.Fatalf("NewSQLiteMetadataStore: %v", err)
-	}
-
-	f := newCarveHazardFixture(t, sq)
+	f := newCarveHazardFixture(t)
 	f.write(t)
 	t.Cleanup(func() { f.rt.sharesSvc.CloseBlockStores() })
 

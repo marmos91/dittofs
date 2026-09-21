@@ -82,28 +82,21 @@ type fakeDrainer struct{ drained bool }
 
 func (f *fakeDrainer) ShutdownSnapshots(ctx context.Context) { f.drained = true }
 
-// fakeBlockStoreCloser records whether the block stores were closed and, via
-// the shared closer, that they were closed BEFORE the metadata stores.
-//
-// This fake pins the ORDER of the two steps and nothing else. It cannot show
-// that closing a real block store actually quiesces anything — the dep it
-// stands in for was a rollup fence that no store in the repository implemented,
-// and a fake satisfying the interface production could not satisfy is exactly
-// what kept that inert for months. What the step does is pinned against the
-// real chain, over a real share and a real metadata store, by
+// fakeBlockStoreCloser pins the ORDER of the two steps and nothing else: it
+// cannot show that closing a real block store quiesces anything. That is pinned
+// against the real chain by
 // TestServerShutdownQuiescesCarveBeforeClosingMetadataStores in the runtime
-// package, which cannot live here: it drives the Runtime, and the Runtime
-// imports this one.
+// package, which cannot live here because the Runtime imports this package.
 type fakeBlockStoreCloser struct {
-	closedStores  bool
-	metaClosedAt  bool
-	closerToCheck *fakeStoreCloser
+	closedStores      bool
+	metaAlreadyClosed bool
+	closerToCheck     *fakeStoreCloser
 }
 
 func (f *fakeBlockStoreCloser) CloseBlockStores() {
 	f.closedStores = true
 	if f.closerToCheck != nil {
-		f.metaClosedAt = f.closerToCheck.closed
+		f.metaAlreadyClosed = f.closerToCheck.closed
 	}
 }
 
@@ -216,7 +209,7 @@ func TestServeGracefulShutdownOnCancel(t *testing.T) {
 	}
 	// The block stores MUST be closed before the metadata stores, or a share's
 	// carve dispatcher commits into a closed DB ("sql: database is closed").
-	if blockStores.metaClosedAt {
+	if blockStores.metaAlreadyClosed {
 		t.Error("CloseBlockStores ran AFTER CloseMetadataStores — carve can commit into a closed DB")
 	}
 }

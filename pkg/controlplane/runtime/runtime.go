@@ -317,13 +317,9 @@ func (r *Runtime) SetShutdownTimeout(d time.Duration) {
 //     use-after-close.
 //  2. StopAllAdapters — adapters no longer accept new RPCs. Existing
 //     in-flight RPCs fail naturally (no waiters left to receive them).
-//  3. CloseBlockStores — quiesce every share's data plane. A share's carve
-//     dispatcher ticks on its own interval and commits FileChunk manifest rows
-//     through the metadata store; closing the block store stops it, drains its
-//     uploads and joins its goroutines while the store can still receive those
-//     commits. Closing the DB underneath a live dispatcher instead fails every
-//     commit with "sql: database is closed" and leaves the chunks it was
-//     carving local and unmirrored. It also releases the share's journal.
+//  3. CloseBlockStores — quiesce every share's data plane while the metadata
+//     stores can still receive its commits, and release the journals with it.
+//     See shares.Service.CloseBlockStores for what depends on the order.
 //  4. CloseMetadataStores — now safe; nothing holds open references.
 //
 // Idempotent: a second call is a no-op (runtimeCancel is already
@@ -396,7 +392,7 @@ func (r *Runtime) Shutdown(ctx context.Context) error {
 		logger.Warn("Runtime.Shutdown: StopAllAdapters error", "error", err)
 	}
 	// Quiesce the per-share data plane BEFORE closing the metadata stores it
-	// writes through, and release the journals with it.
+	// writes through.
 	r.sharesSvc.CloseBlockStores()
 	r.CloseMetadataStores()
 	return nil
@@ -978,7 +974,7 @@ func (r *Runtime) Serve(ctx context.Context) error {
 		StoreCloser:      r.storesSvc,
 		MachineSIDStore:  r.store,
 		SnapshotDrainer:  r,
-		BlockStoreCloser: r,
+		BlockStoreCloser: r.sharesSvc,
 	})
 	// lifecycle.Serve returns its startup errors before it reaches its shutdown
 	// hook, so the drain that joins the workers started above never runs — and
@@ -1056,14 +1052,6 @@ func (r *Runtime) drainStartupWorkers(ctx context.Context) {
 	defer cancelSnap()
 	r.shutdownSnapshots(snapCtx)
 }
-
-// CloseBlockStores closes every share's block store, stopping and draining the
-// carve dispatchers that commit through the metadata stores. Exposed for the
-// lifecycle.Service shutdown sequence so the normal server path (signal -> ctx
-// cancel -> lifecycle.shutdown) quiesces the data plane BEFORE
-// CloseMetadataStores — otherwise each dispatcher's next tick commits into a
-// closed store and fails with "sql: database is closed".
-func (r *Runtime) CloseBlockStores() { r.sharesSvc.CloseBlockStores() }
 
 // ShutdownSnapshots exposes shutdownSnapshots for the lifecycle.Service
 // shutdown sequence so the normal server path (signal -> ctx cancel ->

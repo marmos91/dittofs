@@ -63,9 +63,9 @@ type SnapshotDrainer interface {
 //
 // Called AFTER StopAllAdapters, so no new client writes create fresh carve
 // work, and BEFORE the stores close. Pass nil to skip (tests with no data
-// plane). It takes no context: each store's close is bounded by the engine's
-// own drain timeout, so the bound is per share rather than an overall deadline
-// across them.
+// plane). It takes no context: the closes run concurrently and each is bounded
+// by the engine's own drain timeout, so the step is bounded by the slowest
+// share and does not lengthen as shares are added.
 type BlockStoreCloser interface {
 	CloseBlockStores()
 }
@@ -381,11 +381,8 @@ func (s *Service) shutdown(deps Deps) {
 		}
 	}
 
-	// Quiesce the per-share data plane BEFORE closing the metadata stores: each
-	// share's carve dispatcher commits FileChunk manifest rows through its
-	// metadata store, so it has to be stopped and drained while the store can
-	// still receive those commits. Runs after StopAllAdapters, so no new client
-	// writes create fresh carve work.
+	// Quiesce the data plane BEFORE the stores it writes through close. See
+	// BlockStoreCloser.
 	if deps.BlockStoreCloser != nil {
 		deps.BlockStoreCloser.CloseBlockStores()
 	}
