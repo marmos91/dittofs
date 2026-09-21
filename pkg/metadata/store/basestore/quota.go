@@ -290,3 +290,47 @@ func (d *QuotaDelta) Map() map[QuotaKey]metadata.UsageStat {
 func Charged(fileType metadata.FileType, nlink uint32) bool {
 	return fileType == metadata.FileTypeRegular && nlink > 0
 }
+
+// FileUsage is the chargeable view of one version of an inode: whether it
+// counts toward the usage buckets at all and, when it does, the bytes and the
+// owner it counts against.
+type FileUsage struct {
+	Charged  bool
+	Size     uint64
+	UID, GID uint32
+}
+
+// ApplyPutDelta records the usage change a whole-inode write produces, given
+// the inode as it was stored and as it is being written.
+//
+// Chargeability is decided from both versions because a write can cross the
+// boundary in either direction. An inode rewritten as a symlink, a device or a
+// fifo holds no logical bytes, and its row survives the write still linked, so
+// nothing downstream ever releases what it was carrying: no unlink fires and no
+// delete fires. Deciding from the version being written alone keeps the owner
+// billed for a file that holds nothing, for as long as the row lives.
+//
+// The link count is not a term here: a whole-inode write never touches it, so
+// it is the same on both sides and the caller has already folded it into each
+// Charged.
+func ApplyPutDelta(d *QuotaDelta, share string, old, now FileUsage) {
+	switch {
+	case !old.Charged && !now.Charged:
+		// Neither version holds bytes — a symlink's target grew, a device's
+		// mode changed. Nothing moves.
+	case !old.Charged:
+		// A fresh regular file, or one that just became regular: it
+		// contributed nothing before, so the write adds the whole size.
+		d.Add(share, now.UID, now.GID, int64(now.Size), 1)
+	case !now.Charged:
+		// It stopped holding bytes: refund everything to the owner that was
+		// being billed.
+		d.Add(share, old.UID, old.GID, -int64(old.Size), -1)
+	case old.UID == now.UID && old.GID == now.GID:
+		d.Add(share, now.UID, now.GID, int64(now.Size)-int64(old.Size), 0)
+	default:
+		// Chown: the bytes and the inode move from the old owner to the new.
+		d.Add(share, old.UID, old.GID, -int64(old.Size), -1)
+		d.Add(share, now.UID, now.GID, int64(now.Size), 1)
+	}
+}

@@ -392,9 +392,8 @@ func (tx *badgerTransaction) putFile(ctx context.Context, file *metadata.File, w
 	// Read existing record once to capture the size delta (for usedBytes
 	// tracking), previous owner (for per-identity usage), and the previous
 	// ObjectID (for secondary-index cleanup).
-	var oldSize uint64
-	var oldUID, oldGID uint32
-	var hadOldRegular bool
+	var old basestore.FileUsage
+	var oldWasRegular bool
 	var oldObjectID metadata.ContentHash
 	var oldPayloadID metadata.PayloadID
 	if item, err := tx.txn.Get(keyFile(file.ID)); err == nil {
@@ -402,10 +401,10 @@ func (tx *badgerTransaction) putFile(ctx context.Context, file *metadata.File, w
 			existing, decErr := decodeFile(val)
 			if decErr == nil {
 				if existing.Type == metadata.FileTypeRegular {
-					oldSize = existing.Size
-					oldUID = existing.UID
-					oldGID = existing.GID
-					hadOldRegular = true
+					old.Size = existing.Size
+					old.UID = existing.UID
+					old.GID = existing.GID
+					oldWasRegular = true
 				}
 				oldObjectID = existing.ObjectID
 				oldPayloadID = existing.PayloadID
@@ -418,19 +417,16 @@ func (tx *badgerTransaction) putFile(ctx context.Context, file *metadata.File, w
 	// once after a successful commit so a conflict-retry never double-counts.
 	//
 	// This write never touches the l: key, so the pre-write count is also the
-	// post-write one.
-	if basestore.Charged(file.Type, fileLinkCountTxn(tx.txn, file)) {
-		switch {
-		case !hadOldRegular:
-			tx.quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size), 1)
-		case oldUID == file.UID && oldGID == file.GID:
-			tx.quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size)-int64(oldSize), 0)
-		default:
-			// Chown: move bytes + inode from old owner to new owner.
-			tx.quota.Add(file.ShareName, oldUID, oldGID, -int64(oldSize), -1)
-			tx.quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size), 1)
-		}
-	}
+	// post-write one and one read of it decides chargeability for both versions
+	// of the record.
+	nlink := fileLinkCountTxn(tx.txn, file)
+	old.Charged = oldWasRegular && basestore.Charged(metadata.FileTypeRegular, nlink)
+	basestore.ApplyPutDelta(&tx.quota, file.ShareName, old, basestore.FileUsage{
+		Charged: basestore.Charged(file.Type, nlink),
+		Size:    file.Size,
+		UID:     file.UID,
+		GID:     file.GID,
+	})
 
 	data, err := encodeFile(file)
 	if err != nil {

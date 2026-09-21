@@ -261,37 +261,26 @@ func (tx *memoryTransaction) UpdateAttrs(ctx context.Context, file *metadata.Fil
 	attrCopy.EAs = cloneEAs(file.EAs)
 
 	// Track size delta for regular files (store-wide counter) and per-identity
-	// usage. Handles three cases: new regular file (count +1, bytes +size),
-	// in-place size change (same owner, bytes delta), and chown (move
-	// bytes+count from old owner identity to new).
+	// usage, from the chargeable view of the record before and after the write.
 	//
 	// This write never touches linkCounts, so the pre-write count is also the
-	// post-write one.
-	if tx.store.chargedLocked(key, file.Type) {
-		var oldSize uint64
-		var hadOldRegular bool
-		var oldUID, oldGID uint32
-		if existing, exists := tx.store.files[key]; exists && existing.Attr.Type == metadata.FileTypeRegular {
-			oldSize = existing.Attr.Size
-			oldUID = existing.Attr.UID
-			oldGID = existing.Attr.GID
-			hadOldRegular = true
-		}
-		switch {
-		case !hadOldRegular:
-			// New regular file (create or type change to regular): charge full
-			// size + 1 inode to the new owner.
-			tx.quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size), 1)
-		case oldUID == file.UID && oldGID == file.GID:
-			// Same owner: only the byte delta moves.
-			tx.quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size)-int64(oldSize), 0)
-		default:
-			// Chown: remove old size + inode from the previous owner, add new
-			// size + inode to the new owner.
-			tx.quota.Add(file.ShareName, oldUID, oldGID, -int64(oldSize), -1)
-			tx.quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size), 1)
+	// post-write one and one read of it decides chargeability for both
+	// versions.
+	var old basestore.FileUsage
+	if existing, exists := tx.store.files[key]; exists && existing.Attr.Type == metadata.FileTypeRegular {
+		old = basestore.FileUsage{
+			Charged: tx.store.chargedLocked(key, metadata.FileTypeRegular),
+			Size:    existing.Attr.Size,
+			UID:     existing.Attr.UID,
+			GID:     existing.Attr.GID,
 		}
 	}
+	basestore.ApplyPutDelta(&tx.quota, file.ShareName, old, basestore.FileUsage{
+		Charged: tx.store.chargedLocked(key, file.Type),
+		Size:    file.Size,
+		UID:     file.UID,
+		GID:     file.GID,
+	})
 
 	// Maintain ObjectID secondary index BEFORE overwriting
 	// tx.store.files[key]. The caller (WithTransaction) holds the write

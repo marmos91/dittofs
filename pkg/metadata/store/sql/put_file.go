@@ -100,32 +100,32 @@ type OldInode struct {
 //
 // Only an update charges a delta; an insert is charged by the caller once the
 // row exists. nlink is not among the columns a write touches, so the
-// pre-update count is also the post-update one and it is safe to decide
-// chargeability from the old row.
+// pre-update count is also the post-update one and one read of it decides
+// chargeability for both versions of the row.
+//
+// The old row's type is read from a valid column rather than assumed, because
+// the zero FileType is FileTypeRegular: a NULL would otherwise read back as a
+// charged regular file.
 func ApplyPutQuota(quota *basestore.QuotaDelta, file *metadata.File, old OldInode) {
-	if !basestore.Charged(file.Type, uint32(old.Nlink.Int64)) {
-		return
-	}
+	nlink := uint32(old.Nlink.Int64)
 
 	var oldSize uint64
 	if old.Size.Valid {
 		oldSize = uint64(old.Size.Int64)
 	}
 
-	// The previous row need not have been a regular file: after a type change
-	// it contributed nothing before, so the write adds the whole size.
-	oldWasRegular := old.Type.Valid && metadata.FileType(old.Type.Int64) == metadata.FileTypeRegular
-	oldUID := uint32(old.UID.Int64)
-	oldGID := uint32(old.GID.Int64)
-
-	switch {
-	case !oldWasRegular:
-		quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size), 1)
-	case oldUID == file.UID && oldGID == file.GID:
-		quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size)-int64(oldSize), 0)
-	default:
-		// Chown: the bytes and the inode move from the old owner to the new.
-		quota.Add(file.ShareName, oldUID, oldGID, -int64(oldSize), -1)
-		quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size), 1)
-	}
+	basestore.ApplyPutDelta(quota, file.ShareName,
+		basestore.FileUsage{
+			Charged: old.Type.Valid && basestore.Charged(metadata.FileType(old.Type.Int64), nlink),
+			Size:    oldSize,
+			UID:     uint32(old.UID.Int64),
+			GID:     uint32(old.GID.Int64),
+		},
+		basestore.FileUsage{
+			Charged: basestore.Charged(file.Type, nlink),
+			Size:    file.Size,
+			UID:     file.UID,
+			GID:     file.GID,
+		},
+	)
 }
