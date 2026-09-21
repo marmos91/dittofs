@@ -144,12 +144,12 @@ func (s *MemoryStore) Hydrate(_ context.Context, id journal.FileID, offset int64
 // Memory never evicts, so Cold is always false.
 //
 // Hole is derived from the written-range record rather than the buffer's
-// length. The buffer zero-fills the gap when a write lands past its end, so a
-// never-written range inside it is byte-identical to one written with zeros,
-// and its length alone cannot tell them apart. The engine hydrates on this
-// flag, so reporting such a range as data serves the hole's zeros instead of
-// fetching the bytes the manifest places — which is the same answer DataExtents
-// gives about those bytes, from the same record.
+// length, which is what the interface's rule requires: a byte this store was
+// never given must not be claimed as one it holds. The buffer zero-fills the
+// gap when a write lands past its end, so a never-written range inside it is
+// byte-identical to one written with zeros and its length alone cannot tell
+// them apart. The record can, and it is the same record DataExtents answers
+// from, so the two views agree about any given byte.
 func (s *MemoryStore) ReadAt(_ context.Context, id journal.FileID, offset int64, dst []byte) (int, journal.ReadState, error) {
 	payloadID := string(id)
 	if offset < 0 {

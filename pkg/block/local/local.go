@@ -49,6 +49,30 @@ type LocalStore interface {
 	// evicted ranges are both zero-filled and reported through ReadState, so the
 	// caller can hydrate a cold range from the remote store and reconcile a hole
 	// against the CAS manifest before trusting the zeros.
+	//
+	// What the flags must mean, stated as a rule rather than as a description
+	// of any one tier:
+	//
+	//   - Hole false claims every byte of the window is one this tier was given
+	//     — written or hydrated — so the bytes in dst are those bytes. It ends
+	//     the caller's inquiry: nothing downstream re-checks it.
+	//   - Hole true claims only that the tier does not hold all of the window.
+	//     It is not a claim that the share lacks those bytes; it asks the caller
+	//     to resolve them against the manifest and the remote first.
+	//   - A range the tier cannot classify reports Hole true. Never false.
+	//
+	// The asymmetry is the whole point, and it is why zero-filling is safe at
+	// all: a wrong Hole true costs a manifest check or a fetch that finds
+	// nothing, while a wrong Hole false hands the zero fill to the client as
+	// data. Uncertainty resolves toward the answer that forces another
+	// question, never toward the one that ends the inquiry.
+	//
+	// The engine's own DataExtents map obeys the same rule through the opposite
+	// token: it may over-report data but must never under-report it, because
+	// there the terminal answer is "hole" (a sparse-copy client skips a range
+	// the map calls empty) while "data" merely forces a READ. Same principle,
+	// inverted polarity — do not harmonize the two by making them agree on a
+	// token.
 	ReadAt(ctx context.Context, id journal.FileID, offset int64, dst []byte) (n int, st journal.ReadState, err error)
 
 	// Hydrate writes bytes fetched from the remote store during a cold read.
