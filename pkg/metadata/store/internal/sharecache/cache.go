@@ -3,8 +3,6 @@
 package sharecache
 
 import (
-	"slices"
-
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/gencache"
 )
@@ -23,17 +21,19 @@ import (
 // generation guard that makes that safe lives in gencache.
 type Cache = gencache.Cache[*metadata.ShareOptions]
 
-// Clone returns a caller-owned deep copy of opts: the struct is copied and
-// every reference-bearing field (the three string slices) is cloned so neither
-// the caller nor a concurrent reader can mutate the shared cache entry. A
-// shallow *opts would alias those slices into the cache.
+// Clone returns a caller-owned copy of opts, so neither the caller nor a
+// concurrent reader can mutate the shared cache entry.
+//
+// decision: every ShareOptions field is a scalar today, so a struct copy is a
+// full copy and this reads as if it does nothing. It is kept as the single
+// place the cache hands out ownership. Add a reference-bearing field to
+// ShareOptions and this must deepen with it: a shallow copy would alias that
+// field into the cache, and the permission answer served to every later caller
+// of the share would follow whatever one caller wrote.
 func Clone(opts *metadata.ShareOptions) *metadata.ShareOptions {
 	if opts == nil {
 		return nil
 	}
 	cp := *opts
-	cp.AllowedClients = slices.Clone(opts.AllowedClients)
-	cp.DeniedClients = slices.Clone(opts.DeniedClients)
-	cp.AllowedAuthMethods = slices.Clone(opts.AllowedAuthMethods)
 	return &cp
 }

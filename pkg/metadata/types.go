@@ -151,25 +151,6 @@ type ShareOptions struct {
 	// When true, write operations may return success before data is fully persisted
 	// When false, write operations are synchronous (data committed before success)
 	Async bool
-
-	// AllowedClients is a list of IP addresses or CIDR ranges allowed to access the share
-	// Empty list means all clients are allowed (unless in DeniedClients)
-	// Examples: ["192.168.1.0/24", "10.0.0.100"]
-	AllowedClients []string
-
-	// DeniedClients is a list of IP addresses or CIDR ranges explicitly denied access
-	// Denial takes precedence over AllowedClients
-	// Examples: ["192.168.1.50", "10.0.0.0/8"]
-	DeniedClients []string
-
-	// RequireAuth requires clients to authenticate
-	// When true, anonymous access is not allowed
-	RequireAuth bool
-
-	// AllowedAuthMethods is a list of allowed authentication methods
-	// Empty list means all methods are allowed
-	// Examples: ["unix", "kerberos", "ntlm"]
-	AllowedAuthMethods []string
 }
 
 // ============================================================================

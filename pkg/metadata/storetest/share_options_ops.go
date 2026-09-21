@@ -32,15 +32,6 @@ func runShareOptionsOps(t *testing.T, factory StoreFactory) {
 		got, err = store.GetShareOptions(ctx, "/opts-update")
 		require.NoError(t, err)
 		require.True(t, got.ReadOnly, "read served a stale ReadOnly=false after the update")
-
-		// A reference-bearing field must refresh too, not just the scalar.
-		require.NoError(t, store.UpdateShareOptions(ctx, "/opts-update", &metadata.ShareOptions{
-			ReadOnly:       true,
-			AllowedClients: []string{"10.0.0.0/8"},
-		}))
-		got, err = store.GetShareOptions(ctx, "/opts-update")
-		require.NoError(t, err)
-		require.Equal(t, []string{"10.0.0.0/8"}, got.AllowedClients)
 	})
 
 	t.Run("TxUpdateIsVisibleToNextRead", func(t *testing.T) {

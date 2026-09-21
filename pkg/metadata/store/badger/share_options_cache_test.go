@@ -9,8 +9,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// newShareOptionsStore opens a store holding one share whose options carry every
-// reference-bearing field the share cache has to defend.
+// newShareOptionsStore opens a store holding one share the share cache has to
+// defend.
 func newShareOptionsStore(t *testing.T) (*BadgerMetadataStore, string) {
 	t.Helper()
 	ctx := context.Background()
@@ -20,11 +20,7 @@ func newShareOptionsStore(t *testing.T) (*BadgerMetadataStore, string) {
 
 	const shareName = "/opts"
 	createShareRoot(t, store, shareName)
-	require.NoError(t, store.UpdateShareOptions(ctx, shareName, &metadata.ShareOptions{
-		AllowedClients:     []string{"10.0.0.0/8"},
-		DeniedClients:      []string{"10.1.2.3"},
-		AllowedAuthMethods: []string{"sys"},
-	}))
+	require.NoError(t, store.UpdateShareOptions(ctx, shareName, &metadata.ShareOptions{Async: true}))
 	return store, shareName
 }
 
@@ -32,7 +28,7 @@ func newShareOptionsStore(t *testing.T) (*BadgerMetadataStore, string) {
 // on the permission hot path. GetShareOptions serves the share cache, and the
 // options it returns decide access; if a caller's write reached the shared entry
 // it would silently change the permission answer given to every later caller of
-// that share. Every reference-bearing field has to be copied, not aliased.
+// that share, so what comes back has to be a copy rather than the entry itself.
 // Both paths out of GetShareOptions have to defend the entry: the populate path
 // hands back the very value it just cached, and the cache-hit path hands back
 // the stored one.
@@ -58,18 +54,13 @@ func TestGetShareOptions_CallerCannotMutateCachedEntry(t *testing.T) {
 
 			// A caller does what callers do with a value they believe they own.
 			got.ReadOnly = true
-			got.AllowedClients[0] = "0.0.0.0/0"
-			got.DeniedClients = append(got.DeniedClients, "192.168.0.1")
-			got.AllowedAuthMethods[0] = "none"
+			got.Async = false
 
 			after, err := store.GetShareOptions(ctx, shareName)
 			require.NoError(t, err)
 
 			require.False(t, after.ReadOnly, "a caller's write reached the cached share entry")
-			require.Equal(t, []string{"10.0.0.0/8"}, after.AllowedClients,
-				"AllowedClients decides access and must not alias the cache")
-			require.Equal(t, []string{"10.1.2.3"}, after.DeniedClients)
-			require.Equal(t, []string{"sys"}, after.AllowedAuthMethods)
+			require.True(t, after.Async, "a caller's write reached the cached share entry")
 		})
 	}
 }
