@@ -107,7 +107,7 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@main
 
-      # Kept: this job runs the e2e suite inside .#ci, which carries nfs-utils,
+      # This job runs the e2e suite inside .#ci, which carries nfs-utils,
       # acl, attr and the dfs-mount helpers — and, unavoidably, pynfs and
       # pjdfstest, which are built from source rather than substituted. That is
       # exactly the work the shared cache now absorbs.
