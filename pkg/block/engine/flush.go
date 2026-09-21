@@ -342,6 +342,11 @@ type engineBlockSink struct {
 	rbs         remote.RemoteBlockStore
 	committer   blockCommitter
 	commitLocks *carveCommitLocks
+	// onPutInFlight brackets the PutBlock call itself: +1 before, -1 after it
+	// returns either way. It is what lets the controller sample upload
+	// concurrency without the metadata commit folded in. Nil in fixtures that
+	// don't care.
+	onPutInFlight func(delta int64)
 	// onBlockUploaded reports each block's bytes the moment PutBlock returns,
 	// before the metadata commit. That is the signal the upload window is
 	// actually steering: the commit is serialized per file and no amount of
@@ -431,7 +436,13 @@ func (s engineBlockSink) CommitBlock(ctx context.Context, chunks []CarveChunk) e
 	// upload chain (acquired before this goroutine spawned), and that window is
 	// shared by every carve pass, so concurrent blocks never exceed it
 	// syncer-wide rather than merely per pass.
+	if s.onPutInFlight != nil {
+		s.onPutInFlight(1)
+	}
 	err = s.rbs.PutBlock(ctx, blockID, bytes.NewReader(blockBytes))
+	if s.onPutInFlight != nil {
+		s.onPutInFlight(-1)
+	}
 	if err != nil {
 		return fmt.Errorf("flush: put block %s: %w", blockID, err)
 	}

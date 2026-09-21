@@ -388,13 +388,28 @@ func newUploadChain(sink BlockSink, slots *syncer.DynamicSemaphore) *uploadChain
 // predecessor delays the flip but never holds a successor's memory.
 //
 // decision: the slot spans the whole of CommitBlock — PutBlock *and* the
-// metadata commit after it — not just the upload. So while the goodput bytes
-// are sampled at PutBlock completion, window OCCUPANCY still carries commit
-// backpressure: a slow per-file commit holds slots and can make the window look
-// full when the uplink is idle. Releasing at PutBlock instead would bound
-// submissions rather than live arenas, which bounds nothing, so this is not
-// fixable by moving the release. Overturn it only by giving arenas a lifetime
-// independent of the slot — then the upload window could bound uploads alone.
+// metadata commit after it — not just the upload, because what it bounds is the
+// chunk arena's lifetime and the arena outlives the upload. Releasing at
+// PutBlock would bound submissions rather than live arenas, which bounds
+// nothing, so the span is not movable.
+//
+// The consequence is that window OCCUPANCY carries commit backpressure: a slow
+// per-file commit holds slots while the uplink sits idle. The controller no
+// longer reads that as saturation — it samples PutBlock concurrency directly
+// (RemoteSync.takePutPeak) rather than this semaphore's peak — but two things
+// remain true and are worth stating rather than implying:
+//
+//   - A slow commit still REFUSES new uploads a healthy link could carry. Only
+//     the misreading was fixed, not the throttling.
+//   - The sample is a high-water mark over the control interval and brackets
+//     the PutBlock call, so time a client spends queued on its own connection
+//     pool counts as in flight, and one brief burst of real uploads can fill
+//     the window. Both are upload time, so this is honest, but it does mean a
+//     single burst can read as saturation for that interval.
+//
+// Overturn the whole arrangement by giving arenas a lifetime independent of the
+// slot; then the window would bound uploads alone and admit them while commits
+// drain.
 func (u *uploadChain) submit(ctx context.Context, chunks []CarveChunk, extents []journal.Extent) {
 	held := false
 	if u.slots != nil {

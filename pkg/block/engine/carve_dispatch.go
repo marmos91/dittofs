@@ -108,7 +108,18 @@ func (m *RemoteSync) carvePass(ctx context.Context) {
 	// Bounds goroutine spawn and live read buffers. Sized from the window but
 	// holding none of its slots; read once per pass, so a mid-pass resize lands
 	// on the next one. See carveFanOut.
-	fanOut := syncer.NewDynamicSemaphore(max(carveFanOut, m.uploadLimiter.Limit()))
+	//
+	// The nil check is not defensive noise: NewRemoteSync always sets the
+	// limiter, but RemoteSync is also built as a bare struct literal in tests,
+	// and this is a plain read rather than an acquire, so a missing window must
+	// degrade to the floor rather than panic. It cannot silently un-bound
+	// anything — the fan-out is its own semaphore, and the upload bound lives
+	// on the limiter that flushFn passes to the chain.
+	window := carveFanOut
+	if m.uploadLimiter != nil {
+		window = max(carveFanOut, m.uploadLimiter.Limit())
+	}
+	fanOut := syncer.NewDynamicSemaphore(window)
 	var wg sync.WaitGroup
 	for _, id := range files {
 		stop := false

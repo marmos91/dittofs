@@ -130,3 +130,37 @@ func TestCarvePass_NoFilesIsNoop(t *testing.T) {
 	m.carvePass(context.Background()) // returns immediately, acquires nothing
 	require.Equal(t, int32(0), fl.inFlight.Load())
 }
+
+// TestCarvePass_NilUploadLimiterDoesNotPanic pins that a RemoteSync built
+// without an upload limiter still carves. NewRemoteSync always sets one, but
+// the type is also built as a bare struct literal here and in several other
+// tests in this package, so nil is a representable state that reaches
+// carvePass.
+//
+// It is a plain read (sizing the fan-out) rather than an acquire, which is
+// exactly why it needs the guard: the acquire it replaced was itself nil
+// checked, so sizing from the limiter moved the access earlier and lost the
+// check with it. Without the guard this panics rather than falling back to the
+// fan-out floor.
+func TestCarvePass_NilUploadLimiterDoesNotPanic(t *testing.T) {
+	fl := &carveFanoutLocal{
+		files:   []string{"a", "b", "c"},
+		started: make(chan string, 3),
+		release: make(chan struct{}),
+		carved:  map[string]int{},
+	}
+	close(fl.release) // let every Flush return immediately
+	m := &RemoteSync{
+		local: fl,
+		// uploadLimiter deliberately left nil.
+		stopCh: make(chan struct{}),
+		config: DefaultConfig(),
+	}
+	require.Nil(t, m.uploadLimiter, "fixture must exercise the nil window")
+
+	m.carvePass(context.Background())
+
+	for _, id := range fl.files {
+		require.Equal(t, 1, fl.carved[id], "file %q carved exactly once", id)
+	}
+}

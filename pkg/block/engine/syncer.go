@@ -137,6 +137,15 @@ type RemoteSync struct {
 	uploadedBytesWindow atomic.Int64
 	uploadErrWindow     atomic.Int64
 
+	// putInFlight / putPeak track concurrent PutBlock calls directly, which is
+	// what the controller samples. The upload window cannot stand in for it:
+	// a slot is held across PutBlock AND the metadata commit that follows, so
+	// a slow per-file commit fills the window after the uploads have finished
+	// and the window's own peak then reports uplink saturation that is really
+	// commit backpressure. These count only the time inside PutBlock.
+	putInFlight atomic.Int64
+	putPeak     atomic.Int64
+
 	// --- block carve path (object packing) ---
 
 	// remoteBlockStore is the block-keyed remote (PutBlock) the carver uploads
@@ -476,6 +485,30 @@ func (m *RemoteSync) SyncCounts() (completed, failed int) {
 // where suppressing the bytes would become the honest reading.
 func (m *RemoteSync) noteBlockUploaded(bytes int64) {
 	m.uploadedBytesWindow.Add(bytes)
+}
+
+// notePutInFlight brackets one PutBlock: +1 before the call, -1 after it
+// returns (success or failure). Delta rather than a start/end pair keeps it to
+// one sink hook, and the peak only ever moves on the way up.
+func (m *RemoteSync) notePutInFlight(delta int64) {
+	cur := m.putInFlight.Add(delta)
+	if delta <= 0 {
+		return
+	}
+	for {
+		p := m.putPeak.Load()
+		if cur <= p || m.putPeak.CompareAndSwap(p, cur) {
+			return
+		}
+	}
+}
+
+// takePutPeak returns the high-water mark of concurrent PutBlock calls since
+// the last call and resets it to the count still in flight — the same contract
+// as DynamicSemaphore.TakePeak, so a control interval never inherits a peak
+// that belongs to an earlier one.
+func (m *RemoteSync) takePutPeak() int {
+	return int(m.putPeak.Swap(m.putInFlight.Load()))
 }
 
 // noteBlockCommitted records one block reaching the remote durably. Every carve
@@ -823,7 +856,13 @@ func (m *RemoteSync) adaptiveUploadTick(intervalSec float64) {
 	// app-limited: uploads that filled the window mean goodput reflects the
 	// window; otherwise the upstream carve pipeline was the constraint (see
 	// syncer.GoodputController.Observe).
-	peak := m.uploadLimiter.TakePeak()
+	//
+	// Sampled from PutBlock concurrency rather than from the semaphore, whose
+	// slots also span the metadata commit. Reading the semaphore here let a
+	// slow commit hold slots after the uploads were done and report a full
+	// window, so the controller settled on a metadata bottleneck believing it
+	// had found the uplink knee.
+	peak := m.takePutPeak()
 	windowLimited := peak >= m.uploadLimiter.Limit()
 
 	if bytes == 0 && peak == 0 && !sawErr {
@@ -876,7 +915,7 @@ func (m *RemoteSync) flushFn() (journal.FlushFunc, func(context.Context, journal
 		// semaphore here would nest inside the dispatcher's own window and make
 		// the PUTs in flight their product, which is both a bound nobody
 		// declared and a peak the controller cannot see.
-		sink := engineBlockSink{sealer: m.chunkSealer, rbs: m.remoteBlockStore, committer: m.blockCommitter, commitLocks: &carveCommitLocks{}, onBlockUploaded: m.noteBlockUploaded, onBlockCommitted: m.noteBlockCommitted}
+		sink := engineBlockSink{sealer: m.chunkSealer, rbs: m.remoteBlockStore, committer: m.blockCommitter, commitLocks: &carveCommitLocks{}, onPutInFlight: m.notePutInFlight, onBlockUploaded: m.noteBlockUploaded, onBlockCommitted: m.noteBlockCommitted}
 		// The dedup Skip hook consults the per-share synced-hash store: without
 		// it every flush treats every chunk as novel and uploads whole new
 		// blocks instead of landing manifest-only rows for content the remote

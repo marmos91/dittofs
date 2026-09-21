@@ -136,7 +136,7 @@ func TestUploadWindow_ControllerSamplesPutConcurrency(t *testing.T) {
 
 	m.carvePass(ctx)
 
-	peak := m.uploadLimiter.TakePeak()
+	peak := m.takePutPeak()
 	windowLimited := peak >= m.uploadLimiter.Limit() // the exact expression in adaptiveUploadTick
 	t.Logf("limit=%d TakePeak=%d windowLimited=%v | PutBlock calls=%d peak concurrent PutBlock=%d",
 		m.uploadLimiter.Limit(), peak, windowLimited, probe.calls.Load(), probe.peak.Load())
@@ -147,11 +147,9 @@ func TestUploadWindow_ControllerSamplesPutConcurrency(t *testing.T) {
 	if probe.peak.Load() < 2 {
 		t.Fatalf("only %d concurrent PUTs; nothing was overlapping", probe.peak.Load())
 	}
-	// The sample must account for every PUT in flight. A slot spans PutBlock
-	// plus the commit that follows, so it may exceed the probe's count — but it
-	// can never fall short of it.
+	// The sample must account for every PUT in flight.
 	if int64(peak) < probe.peak.Load() {
-		t.Errorf("TakePeak sampled %d while %d PutBlock calls were concurrent: the sample is not the PUT window",
+		t.Errorf("sampled peak %d while %d PutBlock calls were concurrent: the sample is not PUT concurrency",
 			peak, probe.peak.Load())
 	}
 	if !windowLimited {
@@ -240,5 +238,60 @@ func TestUploadWindow_FanOutDoesNotThrottleBelowTheWindow(t *testing.T) {
 	if got := probe.peak.Load(); got <= int64(carveFanOut) {
 		t.Errorf("peak concurrent PutBlock = %d, capped at or below carveFanOut (%d) while the window allowed %d: the fan-out is the narrow bound",
 			got, carveFanOut, window)
+	}
+}
+
+// TestAdaptiveUploadTick_HeldSlotsWithoutUploadsDoNotRampTheWindow pins where
+// the controller's saturation signal comes from, with no timing involved.
+//
+// An upload slot is held across PutBlock *and* the per-file-serialized metadata
+// commit, so a slow commit keeps slots occupied long after the uploads have
+// drained. Sampling the semaphore's own peak reported that as a full window —
+// "window-limited", meaning the uplink is saturated, so ramp up — when the
+// uplink was idle and the metadata store was the bottleneck. Resizing an upload
+// window cannot relieve a commit bottleneck, so the controller must not see one
+// as saturation.
+//
+// The fixture holds every slot while issuing no uploads at all, which is the
+// steady state a slow commit produces, and asserts the window is held rather
+// than ramped. Reading the semaphore instead grows it.
+func TestAdaptiveUploadTick_HeldSlotsWithoutUploadsDoNotRampTheWindow(t *testing.T) {
+	ctx := context.Background()
+	m, _ := newUploadWindowFixture(t, 32<<10, 1)
+	if m.uploadController == nil {
+		t.Fatal("fixture must be in adaptive mode for the controller to run")
+	}
+
+	// The window must match the controller's own starting point, or the tick
+	// snaps the limiter back to that instead and the move says nothing about
+	// the saturation signal.
+	window := AdaptiveUploadFloor
+	startWindow := m.uploadLimiter.Limit()
+	if startWindow != window {
+		t.Fatalf("fixture starts at window %d, want the adaptive floor %d", startWindow, window)
+	}
+
+	// Occupy every slot without a single PutBlock — commits holding slots while
+	// the uplink is idle.
+	for range window {
+		if err := m.uploadLimiter.Acquire(ctx); err != nil {
+			t.Fatalf("Acquire: %v", err)
+		}
+	}
+	if got := m.uploadLimiter.InFlight(); got != window {
+		t.Fatalf("held %d slots, want %d", got, window)
+	}
+	// Bytes delivered earlier in the interval, so the tick is not skipped as idle.
+	m.uploadedBytesWindow.Store(8 << 20)
+
+	m.adaptiveUploadTick(0.5)
+
+	got := m.uploadLimiter.Limit()
+	t.Logf("slots held=%d (no PutBlock in flight) | window %d -> %d",
+		window, startWindow, got)
+
+	if got > startWindow {
+		t.Errorf("window ramped %d -> %d on slots that carried no uploads: the controller read commit backpressure as uplink saturation",
+			startWindow, got)
 	}
 }
