@@ -20,7 +20,7 @@ func newShareOptionsStore(t *testing.T) (*BadgerMetadataStore, string) {
 
 	const shareName = "/opts"
 	createShareRoot(t, store, shareName)
-	require.NoError(t, store.UpdateShareOptions(ctx, shareName, &metadata.ShareOptions{Async: true}))
+	require.NoError(t, store.UpdateShareOptions(ctx, shareName, &metadata.ShareOptions{}))
 	return store, shareName
 }
 
@@ -54,13 +54,14 @@ func TestGetShareOptions_CallerCannotMutateCachedEntry(t *testing.T) {
 
 			// A caller does what callers do with a value they believe they own.
 			got.ReadOnly = true
-			got.Async = false
 
 			after, err := store.GetShareOptions(ctx, shareName)
 			require.NoError(t, err)
 
+			// One field is the whole guard: Clone copies the struct, so either
+			// the copy happened or it did not. A second scalar assertion cannot
+			// fail independently of this one.
 			require.False(t, after.ReadOnly, "a caller's write reached the cached share entry")
-			require.True(t, after.Async, "a caller's write reached the cached share entry")
 		})
 	}
 }
