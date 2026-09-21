@@ -351,6 +351,13 @@ func ApplyPutDelta(d *QuotaDelta, share string, old, now FileUsage) {
 //
 // A bucket present on one side only is drift: that is the shape a counter left
 // charged for a file the rows no longer describe takes.
+//
+// decision: the comparison is against the live cache, not the durable counters
+// the backends also keep. The cache is what answers every quota check and every
+// statfs, and it is seeded from those durable rows at open, so a divergence
+// confined to the durable side reads as agreement here until a restart brings
+// it into the cache. Narrow it to the durable rows as well once a bug is found
+// that moves one without the other.
 func (c *QuotaCache) Drift(derived map[QuotaKey]*metadata.UsageStat) []metadata.QuotaDrift {
 	var out []metadata.QuotaDrift
 
@@ -359,7 +366,7 @@ func (c *QuotaCache) Drift(derived map[QuotaKey]*metadata.UsageStat) []metadata.
 			return
 		}
 		out = append(out, metadata.QuotaDrift{
-			Share: k.Share, Scope: k.Scope, ID: k.ID, Counter: counter, Derived: want,
+			Share: k.Share, Scope: k.Scope.String(), ID: k.ID, Counter: counter, Derived: want,
 		})
 	}
 

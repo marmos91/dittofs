@@ -351,7 +351,7 @@ func TestRecomputeUsageDryRunReportsDriftWithoutRepairing(t *testing.T) {
 
 	var found *metadata.QuotaDrift
 	for i := range drift {
-		if drift[i].Share == "/q" && drift[i].Scope == metadata.QuotaScopeUser && drift[i].ID == 1000 {
+		if drift[i].Share == "/q" && drift[i].Scope == metadata.QuotaScopeUser.String() && drift[i].ID == 1000 {
 			found = &drift[i]
 		}
 	}
