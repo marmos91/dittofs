@@ -224,6 +224,20 @@ func (s *BadgerMetadataStore) seedUsage(byIdentity map[basestore.QuotaKey]*metad
 // The caller holds quotaRealign, so no transaction can be folding a delta into
 // the keys being dropped.
 func (s *BadgerMetadataStore) writeQuotaCounters(byIdentity map[basestore.QuotaKey]*metadata.UsageStat) error {
+	// The drop and the write are two operations, and badger offers no way to
+	// make them one: DropPrefix is not a transaction and a WriteBatch cannot
+	// undo it. So clear the marker first. An interrupted rewrite then leaves the
+	// store saying its counters account for nothing, and the next open derives
+	// them from the file rows rather than trusting the remains of a rewrite that
+	// did not finish — which, with nothing else consulting those rows, would
+	// otherwise read as every identity having dropped to zero usage.
+	//
+	// This is the one path that re-derives without an operator asking, and it is
+	// the right one: the store has recorded that its counters are not to be
+	// believed.
+	if err := clearQuotaCountersBackfilled(s.db); err != nil {
+		return err
+	}
 	if err := s.db.DropPrefix([]byte(prefixQuotaUsage)); err != nil {
 		return fmt.Errorf("drop stale quota counters: %w", err)
 	}
@@ -260,6 +274,18 @@ func quotaCountersBackfilled(db *badgerdb.DB) (bool, error) {
 		}
 	})
 	return done, err
+}
+
+// clearQuotaCountersBackfilled withdraws the claim that the counters account for
+// every file row, so the next open re-derives them. Written before anything that
+// leaves the counter keyspace partially rewritten.
+func clearQuotaCountersBackfilled(db *badgerdb.DB) error {
+	if err := db.Update(func(txn *badgerdb.Txn) error {
+		return txn.Delete(keyQuotaCountersBackfilled)
+	}); err != nil {
+		return fmt.Errorf("clear quota counter backfill marker: %w", err)
+	}
+	return nil
 }
 
 // recordQuotaCountersBackfilled marks the backfill complete. Written only after

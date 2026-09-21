@@ -203,3 +203,41 @@ func TestQuotaCountersBackfillLegacyStore(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, want, got)
 }
+
+// TestInterruptedRealignSelfHeals covers the window where the durable counters
+// have been dropped but their replacement has not landed.
+//
+// The rewrite is two operations — DropPrefix, then a WriteBatch — and badger
+// cannot make them one. If the store still claimed its counters accounted for
+// every row, the next open would take them at face value and report every
+// identity as having dropped to zero, with nothing left consulting the file rows
+// to notice. So the marker is withdrawn before the drop, and the interrupted
+// state is one the next open repairs.
+func TestInterruptedRealignSelfHeals(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	store := openQuotaStore(t, dir)
+	createShareRoot(t, store, "/q")
+	for i := 0; i < 3; i++ {
+		putQuotaTestFile(t, store, "/q", fmt.Sprintf("/f%d", i), 1000, 100, 8192)
+	}
+	want, err := store.GetUsedBytesForShare(ctx, "/q")
+	require.NoError(t, err)
+	require.Equal(t, int64(3*8192), want)
+
+	// Reproduce the state a rewrite killed between its two steps leaves behind,
+	// through the same helper the real path uses.
+	require.NoError(t, clearQuotaCountersBackfilled(store.db))
+	require.NoError(t, store.db.DropPrefix([]byte(prefixQuotaUsage)))
+	require.NoError(t, store.Close())
+
+	healed := openQuotaStore(t, dir)
+	defer func() { _ = healed.Close() }()
+
+	require.Equal(t, uint64(1), healed.UsageScanCount(),
+		"an open finding no trustworthy counters must re-derive them from the file rows")
+	got, err := healed.GetUsedBytesForShare(ctx, "/q")
+	require.NoError(t, err)
+	require.Equal(t, want, got, "usage must come back, not reset to zero")
+}
