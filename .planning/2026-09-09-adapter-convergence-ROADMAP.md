@@ -55,6 +55,13 @@ fsync plus the NFS WRITE/COMMIT round-trip failing to overlap. The first deliver
 measurement plan naming the rig and the profile to take, per the ledger's rule that the rig lies
 about IOPS and only pprof and engine benchmarks are trusted.
 
+**Both `auxsvc` cross-cutting items have landed and are struck from the "Continuously" list.**
+The lock fix shipped as #2540 (`0d5d4cfa9`) — `Group.Start` no longer holds `g.mu` across
+`s.Start()`, and `pkg/adapter/sidecar/sidecar.go:102` now carries the reason as a comment. The
+rename shipped as #2751 (`47ea0fa47`); the package is `pkg/adapter/sidecar` and zero `auxsvc`
+occurrences survive outside `.planning/`. Verified on develop rather than taken from the PR
+titles.
+
 **Not a wave, done 2026-09-21:** the four inert `ShareOptions` fields (`AllowedClients`,
 `DeniedClients`, `RequireAuth`, `AllowedAuthMethods`) are retired — no reader, no writer, no
 surface that could set them, and stored as a JSON blob so old records decode fine without them.
@@ -353,7 +360,6 @@ Issue 2423 (adaptive controller samples the wrong window) belongs here with #239
 
 ### Continuously (cross-cutting, slot into any lull)
 
-- `auxsvc` lock fix (`Group.Start` holds `g.mu` across `s.Start()`); rename → `sidecar`
 - Conformance CI gate: non-empty Reason+Issue per known-failure row (`kf_load`); knfsd/Samba
   comparison per SMB suite; #2322 suite unification
 - Instrumentation: per-op RED inside the NFSv4 COMPOUND loop; pprof on `pkg/metrics/server.go`
