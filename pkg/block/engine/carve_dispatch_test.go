@@ -52,9 +52,15 @@ func (f *carveFanoutLocal) Flush(_ context.Context, id journal.FileID, _ journal
 }
 
 // TestCarvePass_FanOutIsCappedIndependentlyOfUploadWindow proves carvePass
-// carves every file exactly once, runs them concurrently, and caps the fan-out
-// at carveFanOut — with the upload window pinned as small as it goes, so the
-// cap demonstrably is not that window.
+// carves every file exactly once, runs them concurrently, and does not let a
+// narrow upload window narrow the fan-out with it: the window is pinned as
+// small as it goes and carveFanOut workers still start.
+//
+// carveFanOut is the FLOOR, not a fixed cap — carvePass sizes the fan-out as
+// max(carveFanOut, window), so a wide window widens it. This test exercises the
+// floor end only; TestUploadWindow_FanOutDoesNotThrottleBelowTheWindow covers
+// the other, where a fan-out frozen at carveFanOut collides with the shard
+// count and throttles uploads.
 //
 // The two were the same semaphore once, and that is what made upload
 // concurrency the product of two windows: a pass held an upload slot for its
