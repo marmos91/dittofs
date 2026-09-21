@@ -20,10 +20,50 @@ var (
 	_ block.DurabilityReporter = (*MemoryStore)(nil)
 )
 
-// memFile is one file's byte buffer plus its not-yet-carved byte count.
+// memFile is one file's byte buffer, its not-yet-carved byte count, and the
+// ranges of it that were actually written.
+//
+// The buffer alone cannot answer which bytes are real: it zero-fills the gap
+// when a write lands past its end, so a never-written range is byte-identical
+// to one written with zeros. written records the difference, sorted and
+// non-overlapping, which is what lets DataExtents describe an interior hole
+// instead of claiming one unbroken span from zero.
 type memFile struct {
 	buf      []byte
 	unsynced int64
+	written  [][2]int64
+}
+
+// addWritten records [start, end) as written, coalescing it with any range it
+// overlaps or abuts so the slice stays sorted and non-overlapping.
+func (f *memFile) addWritten(start, end int64) {
+	if end <= start {
+		return
+	}
+	out := make([][2]int64, 0, len(f.written)+1)
+	i := 0
+	for ; i < len(f.written) && f.written[i][1] < start; i++ {
+		out = append(out, f.written[i])
+	}
+	for ; i < len(f.written) && f.written[i][0] <= end; i++ {
+		start = min(start, f.written[i][0])
+		end = max(end, f.written[i][1])
+	}
+	out = append(out, [2]int64{start, end})
+	f.written = append(out, f.written[i:]...)
+}
+
+// clipWritten drops the recorded ranges past newSize and trims a straddling
+// one, keeping the record consistent with the shortened buffer.
+func (f *memFile) clipWritten(newSize int64) {
+	out := f.written[:0]
+	for _, e := range f.written {
+		if e[0] >= newSize {
+			continue
+		}
+		out = append(out, [2]int64{e[0], min(e[1], newSize)})
+	}
+	f.written = out
 }
 
 // MemoryStore is a pure in-memory implementation of local.LocalStore.
@@ -58,6 +98,7 @@ func (s *MemoryStore) writeLocked(payloadID string, offset int64, data []byte) i
 		f.buf = append(f.buf, make([]byte, end-int64(len(f.buf)))...)
 	}
 	copy(f.buf[offset:end], data)
+	f.addWritten(offset, end)
 	return int64(len(data))
 }
 
@@ -80,10 +121,11 @@ func (s *MemoryStore) WriteAt(_ context.Context, id journal.FileID, offset int64
 
 // Hydrate writes remote-fetched bytes; born clean, so no unsynced charge.
 //
-// ponytail: notAfter is accepted and ignored — the flat per-file buffer records
-// no per-range version to compare it against, and this store never evicts, so
-// the cold read that carries a meaningful mark does not arise here. Give the
-// buffer an interval index if a memory-local share ever needs the gate.
+// ponytail: notAfter is accepted and ignored — the per-file record tracks which
+// ranges were written but stamps no version on them, so there is nothing to
+// compare it against, and this store never evicts, so the cold read that
+// carries a meaningful mark does not arise here. Version the recorded ranges if
+// a memory-local share ever needs the gate.
 func (s *MemoryStore) Hydrate(_ context.Context, id journal.FileID, offset int64, data []byte, _ uint64) error {
 	payloadID := string(id)
 	if offset < 0 {
@@ -99,9 +141,19 @@ func (s *MemoryStore) Hydrate(_ context.Context, id journal.FileID, offset int64
 }
 
 // ReadAt copies bytes into dst; never-written ranges are zero-filled holes.
-// Memory never evicts, so Cold is always false. The flat buffer cannot record
-// which bytes were written, so Hole is reported only for the part of the window
-// past the buffer's end — interior holes are indistinguishable from zeros here.
+// Memory never evicts, so Cold is always false. Hole is reported only for the
+// part of the window past the buffer's end.
+//
+// decision: this does not consult the written-range record, so a read covering
+// an interior hole reports Hole false and hands back that hole's zeros as data.
+// The record exists and DataExtents reads it, so the narrowing is in this
+// method rather than in what the store knows. It holds only because the two
+// answers are spent differently: DataExtents feeds a residency cross-check that
+// subtracts it and calls the remainder missing, where over-reporting decides a
+// share is safe over bytes it lacks, while Hole here steers a hydrate this
+// store has nothing to hydrate from. Withdraw it if a caller ever routes
+// repair, reconciliation or an integrity verdict through this flag — then the
+// zeros become an answer someone trusts, and the record is right there.
 func (s *MemoryStore) ReadAt(_ context.Context, id journal.FileID, offset int64, dst []byte) (int, journal.ReadState, error) {
 	payloadID := string(id)
 	if offset < 0 {
@@ -144,24 +196,33 @@ func (s *MemoryStore) FileSize(_ context.Context, id journal.FileID) (int64, boo
 	return int64(len(f.buf)), true
 }
 
-// DataExtents returns the single written region clamped to fileSize. Conservative
-// over-reporting is RFC-safe.
+// DataExtents returns the ranges actually written, clamped to fileSize.
+//
+// It reports coverage rather than the buffer's span because its two consumers
+// want opposite kinds of caution. SEEK/READ_PLUS tolerates naming data where
+// there is a hole. The offline-readiness cross-check does not: it subtracts
+// this from what the manifest places and treats the remainder as the share's
+// shortfall, so an extent claiming an unwritten range makes a share holding
+// zeros read as provably offline-safe. Describing only what was written is the
+// answer that is safe for both.
 func (s *MemoryStore) DataExtents(_ context.Context, id journal.FileID, fileSize int64) ([][2]uint64, error) {
 	payloadID := string(id)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	f := s.files[payloadID]
-	if f == nil || len(f.buf) == 0 || fileSize <= 0 {
+	if f == nil || fileSize <= 0 {
 		return nil, nil
 	}
-	end := int64(len(f.buf))
-	if end > fileSize {
-		end = fileSize
+	var out [][2]uint64
+	for _, e := range f.written {
+		if e[0] >= fileSize {
+			break
+		}
+		if end := min(e[1], fileSize); end > e[0] {
+			out = append(out, [2]uint64{uint64(e[0]), uint64(end)})
+		}
 	}
-	if end <= 0 {
-		return nil, nil
-	}
-	return [][2]uint64{{0, uint64(end)}}, nil
+	return out, nil
 }
 
 // Truncate shrinks a file to newSize; growing is a no-op.
@@ -177,6 +238,7 @@ func (s *MemoryStore) Truncate(_ context.Context, id journal.FileID, newSize int
 		return nil
 	}
 	f.buf = f.buf[:newSize]
+	f.clipWritten(newSize)
 	return nil
 }
 

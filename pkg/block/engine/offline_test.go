@@ -549,7 +549,28 @@ func TestManifestShortfall_MemoryTier(t *testing.T) {
 		}
 	})
 
-	t.Run("partial tier reports only the gap", func(t *testing.T) {
+	// The gap is INTERIOR: the later chunk arrived, the earlier one never did.
+	// A tier that describes its coverage as one span from zero cannot express
+	// this and reports full coverage, so the cross-check sees no shortfall and
+	// calls a share safe over 4 KiB that reads as zeros. The trailing-gap case
+	// below passes either way, which is why it cannot stand in for this one.
+	t.Run("interior gap is reported, not swallowed", func(t *testing.T) {
+		local := memory.New()
+		if err := local.WriteAt(ctx, "p", 4096, make([]byte, 4096)); err != nil {
+			t.Fatalf("WriteAt: %v", err)
+		}
+		bytes, ranges, err := manifestShortfall(ctx, local, manifest)
+		if err != nil {
+			t.Fatalf("manifestShortfall: %v", err)
+		}
+		if bytes != 4096 || ranges != 1 {
+			t.Errorf("shortfall = (%d bytes, %d ranges), want (4096, 1); the first 4 KiB was "+
+				"never written and reads as zeros, so a zero shortfall here is a share "+
+				"reported offline-safe over bytes it does not hold", bytes, ranges)
+		}
+	})
+
+	t.Run("trailing gap reports only the gap", func(t *testing.T) {
 		local := memory.New()
 		if err := local.WriteAt(ctx, "p", 0, make([]byte, 4096)); err != nil {
 			t.Fatalf("WriteAt: %v", err)
