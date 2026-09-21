@@ -9,8 +9,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// newShareOptionsStore opens a store holding one share the share cache has to
-// defend.
+// newShareOptionsStore opens a store holding one share whose options the share
+// cache has to defend — the cached entry is the options record, not the share.
 func newShareOptionsStore(t *testing.T) (*BadgerMetadataStore, string) {
 	t.Helper()
 	ctx := context.Background()
