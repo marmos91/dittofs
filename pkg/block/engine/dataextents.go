@@ -84,7 +84,12 @@ func (bs *Store) DataExtents(ctx context.Context, payloadID string, fileSize uin
 	if bs.fileChunkStore != nil {
 		rows, lerr := bs.fileChunkStore.ListFileChunks(ctx, payloadID)
 		if lerr != nil {
-			return nil, lerr
+			// The manifest could not be enumerated in full — a row whose value
+			// will not decode is one way to get here — so the ranges those rows
+			// would have claimed are unknown. Same class as the unplaceable row
+			// below, and it takes the same widening rather than an error, which
+			// the callers would turn into the narrower CAS-only map.
+			return [][2]uint64{{0, fileSize}}, nil
 		}
 		for _, fb := range rows {
 			if fb == nil {

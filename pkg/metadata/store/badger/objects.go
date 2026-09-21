@@ -410,8 +410,9 @@ func (s *BadgerMetadataStore) GetByHash(ctx context.Context, hash metadata.Conte
 func (s *BadgerMetadataStore) ListFileChunks(_ context.Context, payloadID string) ([]*metadata.FileChunk, error) {
 	var result []*metadata.FileChunk
 	err := s.db.View(func(txn *badger.Txn) error {
-		result = listFileChunksTxn(txn, payloadID)
-		return nil
+		var lerr error
+		result, lerr = listFileChunksTxn(txn, payloadID)
+		return lerr
 	})
 	if err != nil {
 		return nil, err
@@ -438,6 +439,25 @@ func loadFileChunkAtIndexOffset(txn *badger.Txn, payloadID string, off uint64) (
 	}); verr != nil {
 		return nil, verr
 	}
+	return loadFileChunkByID(txn, blockID)
+}
+
+// loadFileChunkByID fetches the fb:{blockID} primary row. A row that is not
+// there (ErrKeyNotFound) yields (nil, nil): the secondary index outlives the
+// block it names, so a missing primary row reads as absent. Every other
+// Get/Value/unmarshal failure propagates.
+//
+// decision: absence is the only failure this tolerates, and only because a
+// deleted block legitimately leaves its index entry behind. An undecodable
+// value is NOT absence — it is a row whose range is unknown, the class
+// engine.DataExtents legislates for (read the invariant there; it is the
+// authority and this is not a second copy of it). Dropping such a row hands the
+// caller a manifest one row short with no error, which under-reports the hole
+// map, and a hole is read back as zeros without consulting the block store.
+// Widen this only if rows are ever deliberately written in an encoding this
+// reader is not expected to understand; a merely older encoding does not
+// qualify, because the decoder still reads those.
+func loadFileChunkByID(txn *badger.Txn, blockID string) (*metadata.FileChunk, error) {
 	fbItem, gerr := txn.Get([]byte(fileChunkPrefix + blockID))
 	if errors.Is(gerr, badger.ErrKeyNotFound) {
 		return nil, nil
@@ -729,7 +749,12 @@ func (s *BadgerMetadataStore) EnumerateFileChunks(ctx context.Context, fn func(b
 // transaction-level methods (over the active write txn, for read-after-write)
 // share one implementation. Binding to the caller's txn is what lets a
 // tx.Put be observed by a later tx.ListFileChunks in the same WithTransaction.
-func listFileChunksTxn(txn *badger.Txn, payloadID string) []*metadata.FileChunk {
+//
+// listFileChunksTxn returns the whole manifest or an error: it never returns a
+// short list. A row the index names but that no longer exists is the one
+// tolerated gap (see loadFileChunkByID) — anything else, including a value that
+// will not decode, fails the call the way GetFileChunk already fails it.
+func listFileChunksTxn(txn *badger.Txn, payloadID string) ([]*metadata.FileChunk, error) {
 	var result []*metadata.FileChunk
 	prefix := []byte(fileChunkFilePrefix + payloadID + ":")
 	opts := badger.DefaultIteratorOptions
@@ -744,19 +769,16 @@ func listFileChunksTxn(txn *badger.Txn, payloadID string) []*metadata.FileChunk 
 			blockID = string(val)
 			return nil
 		}); err != nil {
-			continue
+			return nil, err
 		}
-		fbItem, err := txn.Get([]byte(fileChunkPrefix + blockID))
+		block, err := loadFileChunkByID(txn, blockID)
 		if err != nil {
+			return nil, err
+		}
+		if block == nil {
 			continue // Index stale, block deleted
 		}
-		var block metadata.FileChunk
-		if err := fbItem.Value(func(val []byte) error {
-			return json.Unmarshal(val, &block)
-		}); err != nil {
-			continue
-		}
-		result = append(result, &block)
+		result = append(result, block)
 	}
 	// Keys are lexicographically sorted (fb-file:{payloadID}:0, :1, :10, :2...)
 	// which gives wrong numeric order for multi-digit indices. Sort by parsed index.
@@ -764,9 +786,9 @@ func listFileChunksTxn(txn *badger.Txn, payloadID string) []*metadata.FileChunk 
 		return parseBlockIdx(result[i].ID) < parseBlockIdx(result[j].ID)
 	})
 	if result == nil {
-		return []*metadata.FileChunk{}
+		return []*metadata.FileChunk{}, nil
 	}
-	return result
+	return result, nil
 }
 
 // enumerateFileChunksTxn streams the GC mark live set: the UNION of the CAS
@@ -1212,7 +1234,7 @@ func (tx *badgerTransaction) ListFileChunks(ctx context.Context, payloadID strin
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return listFileChunksTxn(tx.txn, payloadID), nil
+	return listFileChunksTxn(tx.txn, payloadID)
 }
 
 func (tx *badgerTransaction) EnumerateFileChunks(ctx context.Context, fn func(blockpkg.ContentHash) error) error {
