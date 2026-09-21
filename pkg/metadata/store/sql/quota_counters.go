@@ -39,11 +39,16 @@ var quotaStripeRR atomic.Uint64
 // them instead of re-aggregating the inodes table.
 //
 // The increment is written as SQL (bytes = quota_usage.bytes + EXCLUDED.bytes)
-// rather than read into Go and written back. Postgres runs these transactions at
-// READ COMMITTED, where a read-then-write pair loses the update when two writers
-// touch a bucket concurrently: both read the same value and the second overwrites
-// the first. The SQL-side increment re-evaluates against the row version it
-// actually locked, so it is safe at that isolation level.
+// rather than read into Go and written back, so the arithmetic lands on the row
+// version the statement itself locks rather than on one read earlier in the
+// transaction.
+//
+// Postgres runs every transaction here at REPEATABLE READ, so a read-then-write
+// pair would not silently lose an update the way it does at READ COMMITTED — it
+// raises 40001 and the whole file transaction restarts. Correct, but paid for on
+// the write path, and that is the second reason the buckets are striped: two
+// writers charging one identity usually land on different rows and never meet.
+// sqlite admits a single writer at a time, so neither arises there.
 //
 // Values are stored raw and signed. A bucket is not clamped here, because the
 // clamp is a property of the total a reader sees, not of any one increment.

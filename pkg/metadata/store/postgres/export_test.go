@@ -7,3 +7,11 @@ import "time"
 // mirroring a copy that can drift. Test-only: a _test.go file is compiled into
 // the test binary and excluded from every non-test build, so nothing ships.
 const PoolConnectionAcquireTimeout time.Duration = poolConnectionAcquireTimeout
+
+// SetAfterCommitFold installs a function to run between a transaction's commit
+// and the fold of its quota delta into the cache, and returns a function that
+// removes it again. Test-only, like the constant above.
+func SetAfterCommitFold(f func()) func() {
+	afterCommitFold = f
+	return func() { afterCommitFold = nil }
+}

@@ -144,7 +144,26 @@ func (s *PostgresMetadataStore) WithTransactionRelaxed(ctx context.Context, fn f
 	return s.withTransaction(ctx, fn, true)
 }
 
+// The shared side of quotaRealign is taken before the transaction opens, not
+// around the commit. A writer blocked here holds no pooled connection, so a
+// realign holding the exclusive side can still reach the database; taking it
+// after the body had already run statements would let a writer wait for the
+// lock while holding the connection the realign needs, and the two would wait
+// on each other. It covers the commit and the post-commit fold together, which
+// is what stops a realign re-deriving between them.
 func (s *PostgresMetadataStore) withTransaction(ctx context.Context, fn func(tx metadata.Transaction) error, relaxed bool) error {
+	s.quotaRealign.RLock()
+	defer s.quotaRealign.RUnlock()
+	return s.runTransaction(ctx, fn, relaxed)
+}
+
+// afterCommitFold is a test seam: see its use in runTransaction.
+var afterCommitFold func()
+
+// runTransaction is withTransaction without the realign guard. Only a caller
+// that already holds quotaRealign may use it, because an RWMutex does not
+// re-enter.
+func (s *PostgresMetadataStore) runTransaction(ctx context.Context, fn func(tx metadata.Transaction) error, relaxed bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -207,8 +226,9 @@ func (s *PostgresMetadataStore) withTransaction(ctx context.Context, fn func(tx 
 		// a crash. It shares the body's rollback and retry, being one more
 		// statement on the same transaction.
 		err = fn(ptx)
+		delta := ptx.quota.Map()
 		if err == nil {
-			err = ptx.PersistQuotaDelta(ctx, ptx.quota.Map())
+			err = ptx.PersistQuotaDelta(ctx, delta)
 		}
 		if err != nil {
 			// Apply timeout to rollback to prevent indefinite blocking
@@ -247,8 +267,14 @@ func (s *PostgresMetadataStore) withTransaction(ctx context.Context, fn func(tx 
 		if ptx.sharesDirty {
 			s.shareCache.InvalidateAll()
 		}
+		// afterCommitFold, when set, runs in the gap between the commit and the
+		// fold. Nil outside tests; it exists so the ordering that keeps a
+		// realign out of that gap can be exercised rather than argued.
+		if afterCommitFold != nil {
+			afterCommitFold()
+		}
 		// Apply the accumulated usage deltas exactly once, after commit.
-		s.applyQuotaDelta(ptx.quota.Map())
+		s.applyQuotaDelta(delta)
 		if ptx.manifestRowsScanned != 0 {
 			s.manifestRowsScanned.Add(ptx.manifestRowsScanned)
 		}

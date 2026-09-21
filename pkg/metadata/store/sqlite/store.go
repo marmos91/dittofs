@@ -80,10 +80,18 @@ type SQLiteMetadataStore struct {
 	manifestRowsScanned atomic.Int64
 
 	// quota tracks per-identity usage (bytes + file count) for regular files,
-	// keyed by owner uid / gid. Seeded from a GROUP BY query on startup and
-	// updated from each committed transaction's deltas. Guarded by quotaMu.
+	// keyed by owner uid / gid. Seeded at open from the durable quota_usage
+	// counters and updated from each committed transaction's deltas. Guarded
+	// by quotaMu.
 	quotaMu sync.Mutex
 	quota   *basestore.QuotaCache
+
+	// quotaRealign orders a realign against the commit path. A committing
+	// transaction holds the shared side across both its commit and its
+	// in-memory fold, so a realign cannot re-derive from rows that already
+	// include a transaction and then have that transaction's delta folded on
+	// top, counting it twice in the cache that answers every quota check.
+	quotaRealign sync.RWMutex
 
 	// shareCache caches decoded ShareOptions so the permission funnel every
 	// read/write/create/setattr traverses does not re-run the options SELECT
@@ -365,17 +373,28 @@ func initializeFilesystemCapabilities(ctx context.Context, db *sql.DB, caps meta
 // realign an operator invokes: counters maintained incrementally have no
 // self-correction, so it is the only way back from a drift bug.
 //
-// No BeginRebuild here, unlike the KV backend. The rebuild runs as one
-// transaction against the same table the writers increment, so a commit racing
-// it is either included in the aggregate or applied on top of the rebuilt row —
-// and the read that follows sees it either way. Capturing deltas as well would
-// fold those commits in a second time.
+// The exclusive side of quotaRealign is held across the rebuild AND the
+// reseed, which are separate transactions. The durable rows are correct
+// without it — a commit racing the rebuild is either included in the aggregate
+// or added on top of the rebuilt row. The cache is not: a transaction that
+// committed before the aggregate ran can still be waiting to fold its delta,
+// and that fold would land on a reseed which already counted it, leaving the
+// cache over-counted for good. It is the cache that answers every quota check,
+// so the error direction is writes wrongly refused as over-quota.
 //
-// That is about correctness, not contention: the rebuild's own DELETE locks
-// every bucket for the length of both aggregate scans, so writers queue behind
-// it. See RebuildQuotaCounters for what that costs and what would remove it.
+// No BeginRebuild here, unlike the KV backend: holding the exclusive side
+// throughout means there is no in-flight commit left to capture and replay.
+//
+// The rebuild's own DELETE already locks every bucket for the length of both
+// aggregate scans, so writers queue behind this regardless of the Go-side
+// lock. See RebuildQuotaCounters for what that costs and what would remove it.
 func (s *SQLiteMetadataStore) RecomputeUsage(ctx context.Context) error {
-	if err := s.WithTransaction(ctx, func(tx metadata.Transaction) error {
+	s.quotaRealign.Lock()
+	defer s.quotaRealign.Unlock()
+
+	// runTransaction rather than WithTransaction: the guarded entry point would
+	// take the shared side of the lock this call already holds exclusively.
+	if err := s.runTransaction(ctx, func(tx metadata.Transaction) error {
 		return tx.(*sqliteTransaction).RebuildQuotaCounters(ctx)
 	}); err != nil {
 		return err

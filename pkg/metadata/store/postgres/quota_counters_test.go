@@ -16,12 +16,13 @@ import (
 // TestQuotaCountersSurviveConcurrentWriters is the reason PersistQuotaDelta
 // increments in SQL instead of reading a bucket into Go and writing it back.
 //
-// Postgres runs these transactions at READ COMMITTED. A read-then-write pair
-// loses the update whenever two writers touch one bucket concurrently: both read
-// the same value and the second overwrites the first, so the counter ends up
-// short. The in-memory cache would hide it — it is mutex-guarded and folds every
-// delta exactly once — so the assertion has to be made against a store reopened
-// from the durable rows.
+// Reading a bucket into Go and writing it back would put the counter on the
+// transaction's own retry path: at REPEATABLE READ a concurrent update to that
+// row raises 40001 and restarts the whole file transaction. The SQL-side
+// increment keeps the arithmetic on the row version the statement locks. The
+// in-memory cache would hide a shortfall either way — it is mutex-guarded and
+// folds every delta exactly once — so the assertion has to be made against a
+// store reopened from the durable rows.
 //
 // Files in a share commonly share one owner uid, which makes that bucket the
 // whole share's write path and this the ordinary case rather than a corner.
