@@ -308,8 +308,12 @@ func (s *SQLiteMetadataStore) RestoreSnapshot(ctx context.Context, r io.Reader) 
 	}
 	committed = true
 
-	// Re-seed the in-memory used-bytes / quota counters from the restored rows.
-	if err := s.initUsedBytesCounter(ctx); err != nil {
+	// Re-derive the usage counters from the restored rows rather than reading
+	// the restored counters back. A dump taken before the counters existed
+	// carries none, so restoring it into a migrated schema would otherwise leave
+	// every bucket at zero — the counters would agree with nothing, and no later
+	// open would notice because opens no longer consult the inode rows.
+	if err := s.RecomputeUsage(ctx); err != nil {
 		return fmt.Errorf("restore: reinitialize used-bytes counter: %w", err)
 	}
 	// The cached store_id was read at open; the restored stream may carry a

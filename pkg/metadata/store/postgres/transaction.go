@@ -215,6 +215,24 @@ func (s *PostgresMetadataStore) withTransaction(ctx context.Context, fn func(tx 
 			return err
 		}
 
+		// Durable counters move inside the transaction that moved the rows, so
+		// the two commit together or not at all. That is what lets an open read
+		// them rather than re-aggregate the inodes table: there is no window in
+		// which they can drift apart, and so nothing to repair after a crash.
+		if err := ptx.Core.PersistQuotaDelta(ctx, ptx.quota.Map()); err != nil {
+			rollbackCtx, rollbackCancel := context.WithTimeout(ctx, poolConnectionAcquireTimeout)
+			_ = tx.Rollback(rollbackCtx)
+			rollbackCancel()
+			if isRetryableError(err) {
+				lastErr = err
+				if txretry.Backoff(ctx, deadline, attempt) {
+					continue
+				}
+				break
+			}
+			return err
+		}
+
 		// Apply timeout to commit to prevent indefinite blocking if PostgreSQL is slow
 		// (e.g., during checkpoint or WAL flush)
 		commitCtx, commitCancel := context.WithTimeout(ctx, poolConnectionAcquireTimeout)

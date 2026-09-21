@@ -211,52 +211,23 @@ func (s *PostgresMetadataStore) GetUsedBytesForShare(ctx context.Context, shareN
 	return s.quota.Share(shareName).Bytes, nil
 }
 
-// initUsedBytesCounter initializes the store-wide atomic counter from a SQL SUM
-// query and seeds the per-identity usage cache from GROUP BY aggregates. Both
-// are reconstructed from the inodes table (the source
-// of truth), so a store opened against an existing database is always seeded
-// correctly. The inodes(uid) / inodes(gid) indexes (migration 000033) keep the
-// GROUP BY scans cheap.
+// initUsedBytesCounter seeds the per-identity usage cache from the durable
+// counters.
+//
+// Those counters are maintained inside the same transactions that move the
+// inode rows, and the migration that introduced them seeded them from the rows
+// that predate them, so reading them is equivalent to aggregating the inodes
+// table — at one row per distinct owner rather than one per file. That is the
+// difference between an open that scales with the namespace and one that does
+// not. RecomputeUsage re-derives them if they are ever suspected of drift.
 func (s *PostgresMetadataStore) initUsedBytesCounter(ctx context.Context) error {
-	byIdentity := make(map[basestore.QuotaKey]*metadata.UsageStat)
-	if err := s.seedUsageByColumn(ctx, "uid", metadata.QuotaScopeUser, byIdentity); err != nil {
-		return err
-	}
-	if err := s.seedUsageByColumn(ctx, "gid", metadata.QuotaScopeGroup, byIdentity); err != nil {
+	byIdentity, err := s.PoolPath.Core.ReadQuotaCounters(ctx)
+	if err != nil {
 		return err
 	}
 	s.quotaMu.Lock()
 	s.quota.Seed(byIdentity, nil)
 	s.quotaMu.Unlock()
-	return nil
-}
-
-// seedUsageByColumn aggregates usage (bytes + count) for regular files grouped
-// by share and by the given owner column ("uid" or "gid"), accumulating into
-// out under the matching scope. The column name is a fixed internal constant,
-// never user input.
-func (s *PostgresMetadataStore) seedUsageByColumn(ctx context.Context, col string, scope metadata.QuotaScope, out map[basestore.QuotaKey]*metadata.UsageStat) error {
-	query := fmt.Sprintf(
-		`SELECT share_name, %s, COALESCE(SUM(size), 0), COUNT(*) FROM inodes WHERE file_type = $1 AND nlink > 0 GROUP BY share_name, %s`,
-		col, col,
-	)
-	rows, err := s.pool.Query(ctx, query, int(metadata.FileTypeRegular))
-	if err != nil {
-		return fmt.Errorf("failed to seed %s usage: %w", col, err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var share string
-		var id int64
-		var bytes, files int64
-		if err := rows.Scan(&share, &id, &bytes, &files); err != nil {
-			return fmt.Errorf("failed to scan %s usage: %w", col, err)
-		}
-		out[basestore.QuotaKey{Share: share, Scope: scope, ID: uint32(id)}] = &metadata.UsageStat{Bytes: bytes, Files: files}
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("failed iterating %s usage: %w", col, err)
-	}
 	return nil
 }
 
@@ -407,16 +378,25 @@ func initializeFilesystemCapabilities(ctx context.Context, pool *pgxpool.Pool, c
 	return err
 }
 
-// RecomputeUsage rebuilds the usage counters from the inodes table, discarding
-// whatever the in-memory buckets hold. Same aggregate the store runs at open,
-// re-run on demand.
+// RecomputeUsage re-derives the durable counters from the inode rows and
+// reseeds the cache from them, discarding whatever either held. This is the
+// realign an operator invokes: counters maintained incrementally have no
+// self-correction, so it is the only way back from a drift bug.
+//
+// No BeginRebuild here, unlike the KV backend. The rebuild runs as one
+// transaction against the same table the writers increment, so a commit racing
+// it is either included in the aggregate or applied on top of the rebuilt row —
+// and the read that follows sees it either way. Capturing deltas as well would
+// fold those commits in a second time.
 func (s *PostgresMetadataStore) RecomputeUsage(ctx context.Context) error {
-	// The aggregate runs with no lock held, so arm the cache to record what
-	// commits during it — otherwise a transaction landing between the query and
-	// the seed is scanned out and then overwritten.
-	s.quotaMu.Lock()
-	s.quota.BeginRebuild()
-	s.quotaMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := s.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		return tx.(*postgresTransaction).Core.RebuildQuotaCounters(ctx)
+	}); err != nil {
+		return err
+	}
 	return s.initUsedBytesCounter(ctx)
 }
 
