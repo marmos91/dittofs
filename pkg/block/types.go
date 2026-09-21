@@ -1,9 +1,7 @@
 package block
 
 import (
-	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
@@ -103,28 +101,15 @@ func (h ContentHash) MarshalJSON() ([]byte, error) {
 	return out, nil
 }
 
-// UnmarshalJSON accepts the canonical "blake3:{hex}" form, the bare
-// "{hex}" form, and two legacy encodings written before this type had a
-// custom MarshalJSON: a JSON number array and a base64 string. Those
-// fallbacks keep FileChunk rows persisted by earlier Badger builds
-// readable.
+// UnmarshalJSON accepts the canonical "blake3:{hex}" form written by
+// MarshalJSON and the bare "{hex}" form. Any other shape is refused rather
+// than resolved to a zero hash: a caller that persisted one would write a
+// manifest row addressing no content, which reads back as a hole.
 func (h *ContentHash) UnmarshalJSON(data []byte) error {
-	// v0.14.x and earlier had no custom MarshalJSON — encoding/json
-	// serialized [32]byte as a JSON number array: [0,0,...,0]. Accept
-	// that form so develop can read legacy badger metadata.
-	if len(data) > 0 && data[0] == '[' {
-		var arr [HashSize]byte
-		if err := json.Unmarshal(data, &arr); err == nil {
-			*h = ContentHash(arr)
-			return nil
-		}
-		return fmt.Errorf("ContentHash.UnmarshalJSON: invalid JSON array: %q", data)
-	}
 	if len(data) < 2 || data[0] != '"' || data[len(data)-1] != '"' {
 		return fmt.Errorf("ContentHash.UnmarshalJSON: not a JSON string: %q", data)
 	}
 	s := string(data[1 : len(data)-1])
-	// Canonical / hex form.
 	hexStr := strings.TrimPrefix(s, "blake3:")
 	if len(hexStr) == HashSize*2 {
 		parsed, err := ParseContentHash(hexStr)
@@ -132,13 +117,6 @@ func (h *ContentHash) UnmarshalJSON(data []byte) error {
 			*h = parsed
 			return nil
 		}
-	}
-	// Legacy: encoding/json's default base64 form for [32]byte (no custom
-	// MarshalJSON existed before). Decode and copy.
-	b, b64Err := base64.StdEncoding.DecodeString(s)
-	if b64Err == nil && len(b) == HashSize {
-		copy(h[:], b)
-		return nil
 	}
 	return fmt.Errorf("ContentHash.UnmarshalJSON: %w (input %q)", ErrInvalidHash, s)
 }
