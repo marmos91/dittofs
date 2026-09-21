@@ -89,6 +89,12 @@ type Service struct {
 	serveOnce       sync.Once
 	served          bool
 
+	// startupDone is closed by serve() once startup has completed and it is
+	// blocked waiting for the shutdown signal. It is NOT closed when startup
+	// fails, because at that point Serve has already returned the error — a
+	// waiter watches both, and the error is the more informative of the two.
+	startupDone chan struct{}
+
 	// sidMapper is the machine SID mapper, initialized on first Serve().
 	// It is exposed via SIDMapper() for adapters to use.
 	sidMapper *sid.SIDMapper
@@ -107,6 +113,7 @@ func New(shutdownTimeout time.Duration) *Service {
 	}
 	return &Service{
 		shutdownTimeout: shutdownTimeout,
+		startupDone:     make(chan struct{}),
 	}
 }
 
@@ -118,9 +125,19 @@ func (s *Service) SetShutdownTimeout(d time.Duration) {
 }
 
 // SIDMapper returns the machine SID mapper initialized during Serve().
-// Returns nil if Serve() has not been called yet.
+// Returns nil if Serve() has not been called yet. Safe to read from an
+// adapter, which Serve starts after publishing the mapper; reading it from a
+// goroutine that runs CONCURRENTLY with Serve is a race, and waiting for
+// startup is what StartupDone is for.
 func (s *Service) SIDMapper() *sid.SIDMapper {
 	return s.sidMapper
+}
+
+// StartupDone returns a channel closed once Serve has finished starting every
+// component and is waiting for the shutdown signal. It does not close when
+// startup fails, so a caller waits on it and on Serve's own return together.
+func (s *Service) StartupDone() <-chan struct{} {
+	return s.startupDone
 }
 
 // SetPinnedMachineSID records an operator-supplied machine SID to seed during
@@ -310,6 +327,12 @@ func (s *Service) serve(ctx context.Context, deps Deps) error {
 			}
 		}()
 	}
+
+	// Startup is complete: every step that can still fail has run, and the
+	// only thing left is to wait. A cancellation arriving from here on is a
+	// shutdown signal rather than a startup abort, which is the distinction a
+	// waiter needs before it cancels.
+	close(s.startupDone)
 
 	var shutdownErr error
 	select {

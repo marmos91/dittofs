@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -137,11 +138,13 @@ func (f *carveHazardFixture) write(t *testing.T) {
 // the shutdown sequence under test is the one production takes — no step of it
 // is supplied by the test.
 //
-// The context must be live until startup completes: a context already cancelled
-// when Serve is called aborts in the machine-SID read and returns a startup
-// error without ever reaching the shutdown sequence. The SID mapper is
-// published by that same step, so waiting for it is waiting for startup to be
-// past the point where a cancellation becomes a shutdown.
+// The context must stay live until startup completes. Serve returns a startup
+// error rather than running the shutdown sequence if the cancellation lands
+// while a startup step is still using that context, and the assertions below
+// then report a shutdown that never ran instead of the startup that failed —
+// so the barrier is StartupDone, which closes only once every step that can
+// fail is past. Serve's own return is watched alongside it: a failed startup
+// leaves StartupDone open, and the error names the cause.
 func (f *carveHazardFixture) serveUntilShutdown(t *testing.T) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -150,17 +153,20 @@ func (f *carveHazardFixture) serveUntilShutdown(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- f.rt.Serve(ctx) }()
 
-	deadline := time.Now().Add(30 * time.Second)
-	for f.rt.SIDMapper() == nil {
-		if time.Now().After(deadline) {
-			t.Fatal("Serve did not finish startup")
-		}
-		time.Sleep(10 * time.Millisecond)
+	select {
+	case <-f.rt.StartupDone():
+	case err := <-done:
+		t.Fatalf("Serve returned before finishing startup: %v", err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("Serve did not finish startup")
 	}
 	cancel()
 
 	select {
-	case <-done:
+	case err := <-done:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("Serve: %v", err)
+		}
 	case <-time.After(60 * time.Second):
 		t.Fatal("Serve did not return after cancellation")
 	}
