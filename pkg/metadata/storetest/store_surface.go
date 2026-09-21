@@ -35,6 +35,7 @@ func runStoreSurfaceTests(t *testing.T, factory StoreFactory) {
 	t.Run("DeleteSharePurgesUsedBytesAndObjectIndex", func(t *testing.T) { testDeleteSharePurgesCounters(t, factory) })
 	t.Run("ListChildrenCursorAfterDeletedEntry", func(t *testing.T) { testListChildrenCursorAfterDelete(t, factory) })
 	t.Run("UnlinkReleasesUsedBytes", func(t *testing.T) { testUnlinkReleasesUsedBytes(t, factory) })
+	t.Run("TypeChangeRefundsUsedBytes", func(t *testing.T) { testTypeChangeRefundsUsedBytes(t, factory) })
 }
 
 func testDeleteSharePurgesCounters(t *testing.T, factory StoreFactory) {
@@ -1008,4 +1009,86 @@ func testIdempotencyTokenRoundTrip(t *testing.T, factory StoreFactory) {
 	if plain.IdempotencyToken != 0 {
 		t.Errorf("IdempotencyToken on an untouched file = %#x, want 0", plain.IdempotencyToken)
 	}
+}
+
+// testTypeChangeRefundsUsedBytes pins the other half of the chargeability rule
+// that testUnlinkReleasesUsedBytes covers: an inode that stops being a regular
+// file must release the bytes it was carrying.
+//
+// Only regular files hold logical bytes, so rewriting one as a symlink (or a
+// device, or a fifo) leaves a row that is charged for a file that holds
+// nothing. Nothing downstream ever releases it: the inode is still linked, so
+// no unlink fires, and the row survives, so no delete fires either. Deciding
+// chargeability from the version being written alone gets the regular-to-other
+// direction wrong in exactly that way.
+//
+// The assertion is on the counters an operator and the quota gate read —
+// GetUsedBytesForShare and GetQuotaUsage — and on the from-rows recompute
+// agreeing with them, because the counters are what a drifted delta poisons.
+func testTypeChangeRefundsUsedBytes(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	ctx := t.Context()
+
+	const shareName = "/typechange-usage"
+	const uid, gid = uint32(1301), uint32(1302)
+	rootHandle := createTestShare(t, store, shareName)
+
+	assertShareUsed := func(what string, want int64) {
+		t.Helper()
+		got, err := store.GetUsedBytesForShare(ctx, shareName)
+		if err != nil {
+			t.Fatalf("GetUsedBytesForShare(%q) failed after %s: %v", shareName, what, err)
+		}
+		if got != want {
+			t.Fatalf("GetUsedBytesForShare(%q) = %d, want %d after %s", shareName, got, want, what)
+		}
+	}
+
+	// retype rewrites the inode in place with a new type and size, the way
+	// UpdateAttrs lets any caller do.
+	retype := func(handle metadata.FileHandle, fileType metadata.FileType, size uint64, linkTarget string) {
+		t.Helper()
+		file, err := store.GetFile(ctx, handle)
+		if err != nil {
+			t.Fatalf("GetFile() failed: %v", err)
+		}
+		file.Type = fileType
+		file.Size = size
+		file.LinkTarget = linkTarget
+		if err := store.UpdateAttrs(ctx, file); err != nil {
+			t.Fatalf("UpdateAttrs(type=%v) failed: %v", fileType, err)
+		}
+	}
+
+	handle := createTestFileOwned(t, store, shareName, rootHandle, "shifty.bin", uid, gid, 8192)
+	assertShareUsed("creating shifty.bin", 8192)
+	wantUsage(t, store, shareName, metadata.QuotaScopeUser, uid, 8192, 1)
+
+	// Regular -> symlink on the same inode: the bytes and the inode are no
+	// longer held by anything, so both buckets must empty.
+	retype(handle, metadata.FileTypeSymlink, 0, "elsewhere")
+	assertShareUsed("rewriting shifty.bin as a symlink", 0)
+	wantUsage(t, store, shareName, metadata.QuotaScopeUser, uid, 0, 0)
+	wantUsage(t, store, shareName, metadata.QuotaScopeGroup, gid, 0, 0)
+
+	// The delta-maintained counter must agree with what the rows say: a
+	// recompute is the operator's repair, and it deriving a different number is
+	// the drift itself.
+	if err := store.RecomputeUsage(ctx); err != nil {
+		t.Fatalf("RecomputeUsage() failed: %v", err)
+	}
+	assertShareUsed("recomputing usage after the type change", 0)
+	wantUsage(t, store, shareName, metadata.QuotaScopeUser, uid, 0, 0)
+
+	// Symlink -> regular puts the whole size back, because the row contributed
+	// nothing while it was a symlink.
+	retype(handle, metadata.FileTypeRegular, 4096, "")
+	assertShareUsed("rewriting the symlink back as a regular file", 4096)
+	wantUsage(t, store, shareName, metadata.QuotaScopeUser, uid, 4096, 1)
+
+	if err := store.RecomputeUsage(ctx); err != nil {
+		t.Fatalf("RecomputeUsage() after the second type change failed: %v", err)
+	}
+	assertShareUsed("recomputing usage after the second type change", 4096)
+	wantUsage(t, store, shareName, metadata.QuotaScopeUser, uid, 4096, 1)
 }
