@@ -63,7 +63,17 @@ func newFlushClosure(l local.LocalStore, params chunker.Params, blockSize int64,
 // returns the durable extents of the committed prefix — empty while uploads
 // are still in flight (deferred credit, journal's C3), the resolved prefix on
 // later calls, and prefix-together-with-error on a commit failure (C5).
-func (c *flushClosure) fn(ctx context.Context, r journal.Run) ([]journal.Extent, error) {
+//
+// On any error it joins the flights it launched before returning, so no run
+// hands an error back to the journal with uploads still running. The normal
+// path deliberately does not join: that is what lets one run's uploads overlap
+// the next run's carving.
+func (c *flushClosure) fn(ctx context.Context, r journal.Run) (out []journal.Extent, err error) {
+	defer func() {
+		if err != nil {
+			c.disp.drain()
+		}
+	}()
 	if c.cv == nil {
 		c.cv = carver.New(carver.Options{
 			Params:    c.params,
@@ -343,14 +353,12 @@ type uploadChain struct {
 	// the same as no window at all.
 	slots *syncer.DynamicSemaphore
 	prev  chan struct{} // resolution of the last-submitted flight
-	// wg is never Waited on, deliberately. collect() is the real join: it blocks
-	// on every flight it has not yet reported, and fn calls it at the end of each
-	// run, so a file that finishes normally leaves nothing in flight. The only
-	// escape is a run that returns early with an error before reaching collect —
-	// those flights keep running, though each still releases its upload slot when
-	// its commit returns, so they occupy the window honestly rather than leaking
-	// it. Waiting here would not close that gap: the site that would have to wait
-	// is the journal's own flush error path, which this closure does not own.
+	// wg counts launched flights and is Waited only by drain(), on the error
+	// path. It is deliberately NOT waited on the normal path: collect() is the
+	// join there, and it reports the committed prefix without ending the
+	// overlap, so the next run's uploads start while this run's are still in
+	// flight. Waiting per run would serialise exactly the pipeline the chain
+	// exists to build.
 	wg sync.WaitGroup
 
 	mu        sync.Mutex
@@ -459,6 +467,26 @@ func (u *uploadChain) submit(ctx context.Context, chunks []CarveChunk, extents [
 		close(mine)
 	}()
 }
+
+// drain waits for every launched flight to resolve, discarding what they
+// report. It is the error path's join: a run that returns early — a read
+// failure, a Box failure, or collect() stopping at the first failed flight —
+// otherwise leaves its siblings uploading with nobody waiting on them, and
+// shutdown can then close the stores those commits write through.
+//
+// decision: this DRAINS rather than cancels. Cancelling would abandon commits
+// that are already durable at the remote and leave the manifest not knowing
+// it, which is the more expensive of the two failures; the wait is bounded
+// because every flight holds an upload slot for the whole of CommitBlock, so
+// at most one window's worth can be outstanding, and a shutdown has already
+// cancelled the context those commits run on, which is what makes them return
+// promptly rather than run to completion. Revisit if a commit is ever made to
+// ignore its context, because then this bound becomes the remote's timeout
+// rather than the window's.
+//
+// Safe to call after the last submit and only from fn's own goroutine: submit
+// is caller-driven, so no Add can race this Wait.
+func (u *uploadChain) drain() { u.wg.Wait() }
 
 // collect waits for the flight chain in submission order and returns the
 // resolved committed prefix. The first failed flight's error is returned
