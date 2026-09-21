@@ -19,8 +19,9 @@ type ShareUsageRecompute struct {
 	ShareName string `json:"share_name"`
 	// BeforeBytes is the share's used bytes as reported before the rebuild.
 	BeforeBytes int64 `json:"before_bytes"`
-	// AfterBytes is what its live files actually add up to. On a dry run the
-	// counters were not touched, so it equals BeforeBytes.
+	// AfterBytes is what its live files actually add up to. A dry run touches
+	// no counter, so it differs from BeforeBytes only by what other writers did
+	// while the scan ran.
 	AfterBytes int64 `json:"after_bytes"`
 	// DurationMS is how long the rebuild took.
 	DurationMS int64 `json:"duration_ms"`

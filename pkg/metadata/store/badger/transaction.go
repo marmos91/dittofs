@@ -417,8 +417,13 @@ func (tx *badgerTransaction) putFile(ctx context.Context, file *metadata.File, w
 	// once after a successful commit so a conflict-retry never double-counts.
 	//
 	// This write never touches the l: key, so the pre-write count is also the
-	// post-write one and one read of it decides chargeability for both versions
+	// post-write one and the same count decides chargeability for both versions
 	// of the record.
+	//
+	// The count is resolved from the record being written, so a missing l: key
+	// falls back to a default chosen by the NEW type. Every default is at least
+	// one, so the old version's chargeability never turns on which type was
+	// asked — it would if a default of zero were ever introduced.
 	nlink := fileLinkCountTxn(tx.txn, file)
 	old.Charged = oldWasRegular && basestore.Charged(metadata.FileTypeRegular, nlink)
 	basestore.ApplyPutDelta(&tx.quota, file.ShareName, old, basestore.FileUsage{

@@ -606,7 +606,8 @@ func childPageStart(sortedNames []string, cursor string) int {
 // A dry run derives the same aggregate, reports the buckets the cache
 // disagrees with it on, and replaces nothing. It arms no capture: nothing is
 // being overwritten, so a commit landing mid-walk only shows up as a small
-// transient delta in the report.
+// transient delta in the report. The walk still holds the read side of the
+// store lock throughout, so a writer waits for it either way.
 func (store *MemoryMetadataStore) RecomputeUsage(ctx context.Context, dryRun bool) ([]metadata.QuotaDrift, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

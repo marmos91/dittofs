@@ -405,12 +405,15 @@ func initializeFilesystemCapabilities(ctx context.Context, pool *pgxpool.Pool, c
 // aggregate scans, so writers queue behind this regardless of the Go-side
 // lock. See RebuildQuotaCounters for what that costs and what would remove it.
 //
-// A dry run takes neither lock and writes nothing: it runs the same aggregate
-// on the pool, compares it against the cache, and reports the buckets that
-// disagree. Against a store taking writes it reports small transient deltas,
-// because the aggregate and the cache are read at different instants — the
-// alternative is the lock the repair holds, which is the cost the dry run
-// exists to avoid.
+// A dry run takes neither of those locks and writes nothing: it runs the same
+// aggregate on the pool, compares it against the cache, and reports the buckets
+// that disagree. Writers are not blocked: the aggregates are plain SELECTs on a
+// real pool, which is what the rebuild's DELETE is not.
+//
+// The two aggregates and the cache are read at three different instants, so a
+// store taking writes reports small transient deltas, and the user-scope and
+// group-scope rows for one file can disagree with each other. Eliminating that
+// means the lock the dry run exists to avoid.
 func (s *PostgresMetadataStore) RecomputeUsage(ctx context.Context, dryRun bool) ([]metadata.QuotaDrift, error) {
 	if dryRun {
 		derived, err := s.ScanQuotaUsage(ctx)

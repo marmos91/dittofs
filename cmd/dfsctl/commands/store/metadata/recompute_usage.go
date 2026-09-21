@@ -39,8 +39,13 @@ evidence of what was wrong.
 
 A dry run against a store that is taking writes reports small transient deltas:
 the file rows and the counters are read at different instants, so a write in
-between shows up as a difference. A drift bug does not look like that — it
+between shows up as a difference, and a file written during the scan can show up
+under one scope and not the other. A drift bug does not look like that — it
 persists across runs and does not track live traffic.
+
+A "share" row compares the share's own total rather than one owner's bucket.
+That total is what a share quota is checked against and what df reports, and it
+can drift on its own, so it is reported on its own.
 
 Examples:
   dfsctl store metadata recompute-usage myshare --dry-run
@@ -152,8 +157,9 @@ func printRecomputeUsageDrift(r *apiclient.ShareUsageRecompute) error {
 
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "A store taking writes reports small transient deltas here: the file rows and")
-	fmt.Fprintln(out, "the counters are read at different instants. Drift from a bug persists across")
-	fmt.Fprintln(out, "runs and does not track live traffic.")
+	fmt.Fprintln(out, "the counters are read at different instants, so a file written during the scan")
+	fmt.Fprintln(out, "can even show up under one scope and not the other. Drift from a bug persists")
+	fmt.Fprintln(out, "across runs and does not track live traffic.")
 	return nil
 }
 

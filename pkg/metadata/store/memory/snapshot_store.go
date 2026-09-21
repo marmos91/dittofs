@@ -412,11 +412,18 @@ func (s *MemoryMetadataStore) RestoreSnapshot(ctx context.Context, r io.Reader) 
 	// Recompute the per-share / per-owner usage buckets from the restored
 	// regular files. A cache left at its pre-restore contents reports usage for
 	// files that no longer exist.
+	//
+	// Chargeability is decided the same way the walk behind RecomputeUsage
+	// decides it, link count included: the restored records carry their link
+	// counts, so an inode that was unlinked but still open comes back holding a
+	// row and none of the share's bytes. Charging it here would put the cache
+	// permanently above what any scan of the same records derives.
 	var usage basestore.QuotaDelta
-	for _, fd := range s.files {
-		if fd.Attr != nil && fd.Attr.Type == metadata.FileTypeRegular {
-			usage.Add(fd.ShareName, fd.Attr.UID, fd.Attr.GID, int64(fd.Attr.Size), 1)
+	for key, fd := range s.files {
+		if fd.Attr == nil || !s.chargedLocked(key, fd.Attr.Type) {
+			continue
 		}
+		usage.Add(fd.ShareName, fd.Attr.UID, fd.Attr.GID, int64(fd.Attr.Size), 1)
 	}
 
 	s.quotaMu.Lock()

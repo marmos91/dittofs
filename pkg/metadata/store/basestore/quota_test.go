@@ -145,3 +145,69 @@ func TestRebuildKeepsConcurrentCommit(t *testing.T) {
 		t.Fatalf("share usage after a second rebuild = %+v, want {1000 1} — the capture replayed twice", got)
 	}
 }
+
+// TestDriftReportsShareTotal pins that the comparison covers the share's own
+// total and not only the per-owner buckets.
+//
+// Apply clamps each identity bucket on its own but moves the share total by the
+// raw per-share sum, so a delta that drives one owner negative leaves the two
+// permanently apart. The share total is what GetUsedBytesForShare, statfs and
+// the share-wide quota gate read, so a report that skipped it would tell an
+// operator the counters agree while the number they are looking at is wrong —
+// and wrong downward, which lets writes past the share quota.
+func TestDriftReportsShareTotal(t *testing.T) {
+	c := NewQuotaCache()
+
+	// A chown away from an owner whose bucket is already empty: the -500 clamps
+	// to zero on that bucket but lands raw on the share total.
+	var d QuotaDelta
+	d.Add("/s", 1000, 1000, -500, -1)
+	d.Add("/s", 2000, 2000, 500, 1)
+	c.Apply(d.Map())
+
+	if got := c.Get("/s", metadata.QuotaScopeUser, 2000); got.Bytes != 500 {
+		t.Fatalf("user 2000 usage = %+v, want 500 bytes", got)
+	}
+	if got := c.Share("/s").Bytes; got != 0 {
+		t.Fatalf("share total = %d, want 0 — the setup must reproduce the divergence", got)
+	}
+
+	// The rows say the share holds one 500-byte file owned by uid/gid 2000.
+	derived := map[QuotaKey]*metadata.UsageStat{
+		{Share: "/s", Scope: metadata.QuotaScopeUser, ID: 2000}:  {Bytes: 500, Files: 1},
+		{Share: "/s", Scope: metadata.QuotaScopeGroup, ID: 2000}: {Bytes: 500, Files: 1},
+	}
+
+	drift := c.Drift(derived)
+	if len(drift) != 1 {
+		t.Fatalf("drift = %+v, want exactly the share row — the per-owner buckets agree", drift)
+	}
+	got := drift[0]
+	if got.Scope != QuotaDriftScopeShare || got.Share != "/s" {
+		t.Fatalf("drift row = %+v, want the share total of /s", got)
+	}
+	if got.Counter.Bytes != 0 || got.Derived.Bytes != 500 {
+		t.Fatalf("drift row = %+v, want counter 0 against derived 500 — both numbers must travel", got)
+	}
+}
+
+// TestDriftIsEmptyWhenCountersAgree pins the other direction: a cache built
+// from the same rows the scan reports must produce no rows at all, share total
+// included. Without it the share row added above would fire on every healthy
+// store.
+func TestDriftIsEmptyWhenCountersAgree(t *testing.T) {
+	c := NewQuotaCache()
+	var d QuotaDelta
+	d.Add("/s", 7, 3, 1000, 1)
+	d.Add("/s", 8, 3, 2000, 1)
+	c.Apply(d.Map())
+
+	derived := map[QuotaKey]*metadata.UsageStat{
+		{Share: "/s", Scope: metadata.QuotaScopeUser, ID: 7}:  {Bytes: 1000, Files: 1},
+		{Share: "/s", Scope: metadata.QuotaScopeUser, ID: 8}:  {Bytes: 2000, Files: 1},
+		{Share: "/s", Scope: metadata.QuotaScopeGroup, ID: 3}: {Bytes: 3000, Files: 2},
+	}
+	if drift := c.Drift(derived); len(drift) != 0 {
+		t.Fatalf("drift = %+v, want none", drift)
+	}
+}

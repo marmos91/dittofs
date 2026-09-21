@@ -52,11 +52,12 @@ type UsageStat struct {
 type QuotaDrift struct {
 	// Share is the share the bucket belongs to.
 	Share string `json:"share"`
-	// Scope names whether the bucket is keyed by owning uid ("user") or owning
-	// gid ("group"), rather than carrying the numeric QuotaScope. The numeric
-	// values are a storage detail of the backends, and a byte a corrupt key
-	// decoded to has to render as a row in this report rather than fail the
-	// whole response — the report is what a corrupt store is diagnosed with.
+	// Scope names whether the bucket is keyed by owning uid ("user"), owning gid
+	// ("group"), or is the share's own total ("share"), rather than carrying the
+	// numeric QuotaScope. The numeric values are a storage detail of the
+	// backends, and a byte a corrupt key decoded to has to render as a row in
+	// this report rather than fail the whole response — the report is what a
+	// corrupt store is diagnosed with. A share row leaves ID at zero.
 	Scope string `json:"scope"`
 	// ID is the owning uid or gid.
 	ID uint32 `json:"identity_id"`

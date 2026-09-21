@@ -389,12 +389,22 @@ func initializeFilesystemCapabilities(ctx context.Context, db *sql.DB, caps meta
 // aggregate scans, so writers queue behind this regardless of the Go-side
 // lock. See RebuildQuotaCounters for what that costs and what would remove it.
 //
-// A dry run takes neither lock and writes nothing: it runs the same aggregate
-// on the pool, compares it against the cache, and reports the buckets that
-// disagree. Against a store taking writes it reports small transient deltas,
-// because the aggregate and the cache are read at different instants — the
-// alternative is the lock the repair holds, which is the cost the dry run
-// exists to avoid.
+// A dry run takes neither of those locks and writes nothing: it runs the same
+// aggregate on the pool, compares it against the cache, and reports the buckets
+// that disagree.
+//
+// decision: it is still not concurrent. The pool admits one connection, so each
+// aggregate holds it for the length of a full table scan and readers as well as
+// writers queue behind it — a stricter wait than the shared side of
+// quotaRealign, which readers pass. What the dry run avoids is the rebuild's
+// DELETE, which holds every bucket's row lock across both scans and leaves the
+// counters replaced. Give it its own connection once a dry run is something run
+// against a live store rather than a question asked before a repair.
+//
+// The two aggregates and the cache are read at three different instants, so a
+// store taking writes reports small transient deltas, and the user-scope and
+// group-scope rows for one file can disagree with each other. Eliminating that
+// means the lock the dry run exists to avoid.
 func (s *SQLiteMetadataStore) RecomputeUsage(ctx context.Context, dryRun bool) ([]metadata.QuotaDrift, error) {
 	if dryRun {
 		derived, err := s.ScanQuotaUsage(ctx)

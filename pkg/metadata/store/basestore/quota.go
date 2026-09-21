@@ -339,18 +339,29 @@ func ApplyPutDelta(d *QuotaDelta, share string, old, now FileUsage) {
 	}
 }
 
+// QuotaDriftScopeShare names a drift row that compares a share's total rather
+// than one owner's bucket. It is not a QuotaScope: no counter is keyed by it,
+// and the share total is derived from the user-scope buckets.
+const QuotaDriftScopeShare = "share"
+
 // Drift compares an aggregate derived from the store's file rows against the
 // buckets this cache holds, and reports every bucket the two disagree on. The
 // result is ordered by share, then scope, then identity, so two runs of the
 // same comparison read the same way.
 //
-// The derived side arrives raw from a scan, so it is folded onto the same rule
-// the cache applies to itself — clamped at zero, emptied buckets dropped —
-// before anything is compared. Without that a bucket the cache had dropped
-// would be reported against a derived zero.
+// The derived side arrives raw from a scan, so it is clamped at zero the way
+// the cache clamps itself before anything is compared. Without that a bucket
+// the cache had dropped would be reported against a negative derived value.
 //
 // A bucket present on one side only is drift: that is the shape a counter left
 // charged for a file the rows no longer describe takes.
+//
+// The per-share totals are compared as their own rows, not derived from the
+// identity rows. Apply moves a share total by the raw per-share sum while
+// clamping each identity bucket on its own, so a delta that drives one bucket
+// negative leaves the two permanently apart — and the share total is what
+// GetUsedBytesForShare, statfs and the share-wide quota gate read. Reading only
+// the identity buckets would call that agreement.
 //
 // decision: the comparison is against the live cache, not the durable counters
 // the backends also keep. The cache is what answers every quota check and every
@@ -370,9 +381,24 @@ func (c *QuotaCache) Drift(derived map[QuotaKey]*metadata.UsageStat) []metadata.
 		})
 	}
 
+	// A share's total is the sum of its user-scope buckets: every regular file
+	// has exactly one owner uid, so those partition the share's bytes and
+	// inodes. Shares the cache knows but the scan did not produce are seeded at
+	// zero so they are compared rather than skipped.
+	derivedShare := make(map[string]metadata.UsageStat)
+	for share := range c.byShare {
+		derivedShare[share] = metadata.UsageStat{}
+	}
+
 	for k, u := range derived {
 		want := metadata.UsageStat{Bytes: max(u.Bytes, 0), Files: max(u.Files, 0)}
 		report(k, c.Get(k.Share, k.Scope, k.ID), want)
+		if k.Scope == metadata.QuotaScopeUser {
+			cur := derivedShare[k.Share]
+			cur.Bytes += want.Bytes
+			cur.Files += want.Files
+			derivedShare[k.Share] = cur
+		}
 	}
 	// A bucket the cache holds that the scan never produced is drift against a
 	// derived zero.
@@ -381,8 +407,15 @@ func (c *QuotaCache) Drift(derived map[QuotaKey]*metadata.UsageStat) []metadata.
 			report(k, *u, metadata.UsageStat{})
 		}
 	}
+	for share, want := range derivedShare {
+		if got := c.Share(share); got != want {
+			out = append(out, metadata.QuotaDrift{
+				Share: share, Scope: QuotaDriftScopeShare, Counter: got, Derived: want,
+			})
+		}
+	}
 
-	sort.Slice(out, func(i, j int) bool {
+	sort.SliceStable(out, func(i, j int) bool {
 		a, b := out[i], out[j]
 		if a.Share != b.Share {
 			return a.Share < b.Share

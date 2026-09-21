@@ -68,9 +68,13 @@ dfsctl store metadata recompute-usage /export --dry-run
 
 A dry run derives the same figures, changes nothing, and names every usage bucket whose
 counter disagrees with the rows, with both numbers, so you can see how far apart they are
-and in which direction. Against a store that is taking writes it reports small transient
-deltas: the rows and the counters are read at different instants. Drift from a bug does
-not look like that — it persists across runs and does not track live traffic.
+and in which direction. A `share` row compares the share's own total rather than one
+owner's bucket — that total is what a share quota is checked against and what `df`
+reports, and it can drift on its own.
+
+Against a store that is taking writes a dry run reports small transient deltas: the rows
+and the counters are read at different instants. Drift from a bug does not look like that
+— it persists across runs and does not track live traffic.
 
 Then rebuild the counters from the file rows:
 
