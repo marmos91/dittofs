@@ -141,19 +141,15 @@ func (s *MemoryStore) Hydrate(_ context.Context, id journal.FileID, offset int64
 }
 
 // ReadAt copies bytes into dst; never-written ranges are zero-filled holes.
-// Memory never evicts, so Cold is always false. Hole is reported only for the
-// part of the window past the buffer's end.
+// Memory never evicts, so Cold is always false.
 //
-// decision: this does not consult the written-range record, so a read covering
-// an interior hole reports Hole false and hands back that hole's zeros as data.
-// The record exists and DataExtents reads it, so the narrowing is in this
-// method rather than in what the store knows. It holds only because the two
-// answers are spent differently: DataExtents feeds a residency cross-check that
-// subtracts it and calls the remainder missing, where over-reporting decides a
-// share is safe over bytes it lacks, while Hole here steers a hydrate this
-// store has nothing to hydrate from. Withdraw it if a caller ever routes
-// repair, reconciliation or an integrity verdict through this flag — then the
-// zeros become an answer someone trusts, and the record is right there.
+// Hole is derived from the written-range record rather than the buffer's
+// length. The buffer zero-fills the gap when a write lands past its end, so a
+// never-written range inside it is byte-identical to one written with zeros,
+// and its length alone cannot tell them apart. The engine hydrates on this
+// flag, so reporting such a range as data serves the hole's zeros instead of
+// fetching the bytes the manifest places — which is the same answer DataExtents
+// gives about those bytes, from the same record.
 func (s *MemoryStore) ReadAt(_ context.Context, id journal.FileID, offset int64, dst []byte) (int, journal.ReadState, error) {
 	payloadID := string(id)
 	if offset < 0 {
@@ -178,7 +174,20 @@ func (s *MemoryStore) ReadAt(_ context.Context, id journal.FileID, offset int64,
 	if n < len(dst) {
 		clear(dst[n:])
 	}
-	return len(dst), journal.ReadState{Hole: n < len(dst)}, nil
+	// Any byte of the window the record does not cover is a hole, whether it
+	// sits past the buffer's end or between two writes inside it.
+	end := offset + int64(len(dst))
+	var covered int64
+	for _, e := range f.written {
+		if e[1] <= offset {
+			continue
+		}
+		if e[0] >= end {
+			break
+		}
+		covered += min(e[1], end) - max(e[0], offset)
+	}
+	return len(dst), journal.ReadState{Hole: covered < int64(len(dst))}, nil
 }
 
 // Commit is a no-op: memory has no durable substrate.
