@@ -10,6 +10,10 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
+// OpenName is the name triple an open handle is currently published under:
+// the full path, the leaf name, and the parent directory's handle. It is held
+// in an atomic.Pointer on OpenFile and replaced wholesale on rename, so a
+// reader always sees a self-consistent triple rather than a half-applied one.
 type OpenName struct {
 	Path         string
 	FileName     string
@@ -557,7 +561,15 @@ func (f *OpenFile) CaptureNotifyCompletionFilter(filter uint32) (captured uint32
 // ChannelSequence returns the ChannelSequence the Open currently tracks. It
 // exists for diagnostics: a channel-sequence test that fails needs the stored
 // value in its message to be debuggable at all.
-func (f *OpenFile) ChannelSequence() uint16 { return f.channelSeq }
+//
+// It takes csMu for the same reason VerifyChannelSequence does — the field is
+// written there, and an exported reader that skipped the lock would race any
+// request being verified on another channel of the same session.
+func (f *OpenFile) ChannelSequence() uint16 {
+	f.csMu.Lock()
+	defer f.csMu.Unlock()
+	return f.channelSeq
+}
 
 // VerifyChannelSequence applies the MS-SMB2 §3.3.5.2.10 channel-sequence check
 // to a request targeting this Open and advances the tracked sequence.
