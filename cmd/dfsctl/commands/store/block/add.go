@@ -108,6 +108,26 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	enc := encryptionFlags{
+		AEAD:       addEncryptionAEAD,
+		KeyKind:    addEncryptionKeyKind,
+		KeyFile:    addEncryptionKeyFile,
+		KMIPHost:   addEncryptionKMIPHost,
+		KMIPCA:     addEncryptionKMIPCA,
+		KMIPCert:   addEncryptionKMIPCert,
+		KMIPKey:    addEncryptionKMIPKey,
+		KMIPKeyUID: addEncryptionKMIPKeyUID,
+	}
+	// Reject a malformed --compression or --encryption-* flag up front. Both
+	// are validated again while the config is assembled; doing it before the
+	// prompts means a typo surfaces immediately rather than after six answers.
+	if _, err := buildCompressionBlock(addCompression); err != nil {
+		return err
+	}
+	if _, err := buildEncryptionBlock(enc); err != nil {
+		return err
+	}
+
 	s3 := s3Fields{
 		bucket:    addBucket,
 		region:    addRegion,
@@ -122,16 +142,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	config, err := buildRemoteConfig(addType, addConfig, s3, addCompression, addParallelUploads, encryptionFlags{
-		AEAD:       addEncryptionAEAD,
-		KeyKind:    addEncryptionKeyKind,
-		KeyFile:    addEncryptionKeyFile,
-		KMIPHost:   addEncryptionKMIPHost,
-		KMIPCA:     addEncryptionKMIPCA,
-		KMIPCert:   addEncryptionKMIPCert,
-		KMIPKey:    addEncryptionKMIPKey,
-		KMIPKeyUID: addEncryptionKMIPKeyUID,
-	})
+	config, err := buildRemoteConfig(addType, addConfig, s3, addCompression, addParallelUploads, enc)
 	if err != nil {
 		return cmdutil.HandleAbort(err)
 	}
