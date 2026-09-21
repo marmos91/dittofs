@@ -33,12 +33,28 @@ const (
 	maxRestoreAllocSize = 256 << 20
 )
 
-// Compile-time assertion: BadgerMetadataStore implements Snapshotable.
-var _ metadata.Snapshotable = (*BadgerMetadataStore)(nil)
+// Compile-time assertions: BadgerMetadataStore implements Snapshotable and can
+// also produce a labelled degraded snapshot.
+var (
+	_ metadata.Snapshotable          = (*BadgerMetadataStore)(nil)
+	_ metadata.DegradableSnapshotter = (*BadgerMetadataStore)(nil)
+)
+
+// maxDegradedKeysRecorded bounds the sample of skipped keys carried on a
+// degraded snapshot. The count is always exact; only the name list is capped.
+//
+// ponytail: a flat cap rather than a size budget, because the keys are
+// fixed-shape (f: + a uuid) and a store with more than this many undecodable
+// inodes has a problem no sample size helps with; widen it only if an operator
+// ever needs the full list to act.
+const maxDegradedKeysRecorded = 32
 
 // WriteSnapshot serializes all metadata into w using a custom length-prefixed KV
 // stream inside a single db.View() MVCC snapshot. It returns the set of
 // content-addressed block hashes referenced by file entries (f: prefix).
+//
+// It aborts on any entry it cannot read. WriteSnapshotDegraded is the variant
+// that completes and labels the result instead.
 //
 // Wire format per KV pair:
 //   - key_len   uint32 LE
@@ -48,11 +64,40 @@ var _ metadata.Snapshotable = (*BadgerMetadataStore)(nil)
 //
 // Stream terminated by sentinel key_len = 0 (4 zero bytes).
 func (s *BadgerMetadataStore) WriteSnapshot(ctx context.Context, w io.Writer) (*block.HashSet, error) {
+	hs, degraded, err := s.writeSnapshot(ctx, w, false)
+	if err != nil {
+		return nil, err
+	}
+	// Unreachable while allowDegraded is false; a nil-check here would read as
+	// if the refusal were optional.
+	_ = degraded
+	return hs, nil
+}
+
+// WriteSnapshotDegraded implements metadata.DegradableSnapshotter: it completes
+// the snapshot over entries it cannot decode and reports them, so the caller
+// can label the result rather than ship a silently short one.
+func (s *BadgerMetadataStore) WriteSnapshotDegraded(
+	ctx context.Context,
+	w io.Writer,
+) (*block.HashSet, *metadata.SnapshotDegradation, error) {
+	return s.writeSnapshot(ctx, w, true)
+}
+
+// writeSnapshot is the shared body. allowDegraded decides what an undecodable
+// f: entry does: abort (false) or be recorded and skipped (true). Nothing else
+// differs, so the two entrypoints cannot drift on the rest of the format.
+func (s *BadgerMetadataStore) writeSnapshot(
+	ctx context.Context,
+	w io.Writer,
+	allowDegraded bool,
+) (*block.HashSet, *metadata.SnapshotDegradation, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, fmt.Errorf("%w: %v", metadata.ErrSnapshotAborted, err)
+		return nil, nil, fmt.Errorf("%w: %v", metadata.ErrSnapshotAborted, err)
 	}
 
 	hs := block.NewHashSet(0)
+	var degraded metadata.SnapshotDegradation
 
 	// Declare envW outside the callback so Finish() can be called after
 	// the View returns.
@@ -123,26 +168,34 @@ func (s *BadgerMetadataStore) WriteSnapshot(ctx context.Context, w io.Writer) (*
 				// The raw record was already dumped above, so a row skipped here
 				// still lands in the restored store while its hashes never reach
 				// the HashSet the durability verify checks. The restore would
-				// then reference chunks the snapshot never claimed. Abort, the
-				// same way loadManifest just below aborts for the same reason:
-				// an f: entry that cannot be read makes the snapshot's hash
-				// claim incomplete, and an incomplete claim is indistinguishable
-				// from a wrong one.
+				// then reference chunks the snapshot never claimed.
 				//
-				// decision: this is fail-closed with no escape hatch, and the
-				// ceiling is real. One undecodable f: row makes the share
-				// un-snapshottable outright: a scheduled policy retries and
-				// fails every interval, and restore is unreachable too, because
-				// it takes a safety snapshot first and leaves the share disabled
-				// when that fails. That is the price of never shipping a
-				// snapshot whose hash claim is short. Revisit if a repair path
-				// for a bad f: row exists — then this could abort with a
-				// diagnostic naming the key instead, and the operator would have
-				// somewhere to go.
+				// decision: the rule enforced here is not "never snapshot a
+				// damaged store", it is "never let a snapshot misrepresent its
+				// own completeness". So the default aborts — same as
+				// loadManifest just below, for the same reason: a hash claim
+				// that is short cannot be told apart from one that is wrong —
+				// while WriteSnapshotDegraded records the skipped keys and lets
+				// the caller label the result. Enforcing the first rule instead
+				// trapped the operator: one bad row made the share
+				// un-snapshottable AND un-restorable, because restore takes a
+				// safety snapshot first and leaves the share disabled when that
+				// fails. Overturn this only if a degraded snapshot can be
+				// mistaken for a complete one somewhere downstream — that, not
+				// the abort, is what the design rests on.
 				file, err := decodeFile(val)
 				if err != nil {
-					return fmt.Errorf("%w: decode f: entry %s: %v",
-						metadata.ErrSnapshotAborted, string(key), err)
+					if !allowDegraded {
+						return fmt.Errorf("%w: decode f: entry %s: %v",
+							metadata.ErrSnapshotAborted, string(key), err)
+					}
+					degraded.Entries++
+					if len(degraded.Keys) < maxDegradedKeysRecorded {
+						degraded.Keys = append(degraded.Keys, string(key))
+					} else {
+						degraded.KeysTruncated = true
+					}
+					continue
 				}
 				// The manifest lives in fm:<uuid> (legacy blobs embed it). It
 				// feeds the durability HashSet, so a missed load would ship an
@@ -177,15 +230,18 @@ func (s *BadgerMetadataStore) WriteSnapshot(ctx context.Context, w io.Writer) (*
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Write trailing CRC.
 	if err := envW.Finish(); err != nil {
-		return nil, fmt.Errorf("%w: finish envelope: %v", metadata.ErrSnapshotAborted, err)
+		return nil, nil, fmt.Errorf("%w: finish envelope: %v", metadata.ErrSnapshotAborted, err)
 	}
 
-	return hs, nil
+	if degraded.Entries == 0 {
+		return hs, nil, nil
+	}
+	return hs, &degraded, nil
 }
 
 // RestoreSnapshot reads a backup stream from r and rebuilds metadata state in the

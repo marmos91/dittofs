@@ -53,6 +53,55 @@ type Snapshotable interface {
 	RestoreSnapshot(ctx context.Context, r io.Reader) error
 }
 
+// SnapshotDegradation describes what a snapshot could not capture. A snapshot
+// carrying one is a DEGRADED snapshot: its stream and its HashSet are both
+// short by these entries, and it must never be presented as equivalent to a
+// complete one.
+//
+// Keys identify the rows well enough to go and look at them. The list is
+// bounded, so Entries — not len(Keys) — is the authoritative count.
+type SnapshotDegradation struct {
+	// Entries is how many rows were skipped. Always the full count.
+	Entries int
+	// Keys names the skipped rows, truncated to a bounded sample.
+	Keys []string
+	// KeysTruncated reports that Keys holds fewer than Entries names.
+	KeysTruncated bool
+}
+
+// DegradableSnapshotter is an optional capability a Snapshotable backend may
+// also implement: it can finish a snapshot over data it cannot fully read,
+// provided it reports exactly what it left out.
+//
+// The split exists because the two callers want opposite things from the same
+// corruption. An ordinary backup must refuse — a snapshot whose hash claim is
+// silently short is worse than no snapshot. But restore takes a safety
+// snapshot first, and refusing there blocks recovery from the very corruption
+// that triggered the refusal, leaving the share disabled with no undo point. A
+// degraded undo point beats none, as long as it is labelled.
+//
+// Discover it the same way Snapshotable itself is discovered:
+//
+//	if d, ok := store.(metadata.DegradableSnapshotter); ok {
+//	    hashes, degraded, err := d.WriteSnapshotDegraded(ctx, w)
+//	    ...
+//	}
+//
+// A backend that cannot produce a partial read at all need not implement it;
+// callers fall back to WriteSnapshot and get the refusal.
+type DegradableSnapshotter interface {
+	// WriteSnapshotDegraded behaves exactly like WriteSnapshot, except that an
+	// entry it cannot decode is skipped and recorded rather than aborting the
+	// snapshot. It returns a non-nil *SnapshotDegradation if and only if
+	// something was skipped; a nil one means the snapshot is complete and is
+	// byte-for-byte what WriteSnapshot would have produced.
+	//
+	// Every other failure still aborts, so this widens exactly one class.
+	// The caller MUST record a non-nil degradation with the snapshot; ignoring
+	// it reproduces the defect this exists to avoid.
+	WriteSnapshotDegraded(ctx context.Context, w io.Writer) (*block.HashSet, *SnapshotDegradation, error)
+}
+
 // Snapshot/restore error sentinels. Callers detect these via errors.Is
 // through any wrapping depth.
 var (

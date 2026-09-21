@@ -624,6 +624,11 @@ type SnapshotStore interface {
 	// journalVersion records the local-journal LSN watermark the snapshot pins
 	// (0 for remote-only shares); a local-only restore rewinds to it.
 	MarkSnapshotReady(ctx context.Context, shareName, id string, durable bool, manifestCount int64, journalVersion uint64) error
+
+	// SetSnapshotDegraded records how many metadata rows the snapshot could
+	// not capture; 0 clears the mark (a retry reuses the row). Written while
+	// the row is still 'creating'.
+	SetSnapshotDegraded(ctx context.Context, shareName, id string, entries int64) error
 }
 
 // SnapshotPolicyStore provides per-share snapshot policy CRUD for the

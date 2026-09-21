@@ -36,8 +36,17 @@ type Snapshot struct {
 	// Scheduled marks snapshots created by the background snapshot scheduler.
 	// Only scheduled snapshots are eligible for automatic retention pruning;
 	// manually-created snapshots are never auto-pruned.
-	Scheduled bool   `gorm:"not null;default:false" json:"scheduled"`
-	Error     string `gorm:"size:1024" json:"error,omitempty"`
+	Scheduled bool `gorm:"not null;default:false" json:"scheduled"`
+	// Degraded marks a snapshot that completed without capturing every
+	// metadata row. It is a ready snapshot and it restores, but its manifest
+	// is short by DegradedEntries rows, so it must never be treated as
+	// equivalent to a complete one. The authoritative detail — which rows —
+	// lives in the snapshot's own degraded.json, which travels with it.
+	Degraded bool `gorm:"not null;default:false" json:"degraded"`
+	// DegradedEntries is how many rows the snapshot could not capture. 0 on
+	// every complete snapshot.
+	DegradedEntries int64  `gorm:"not null;default:0" json:"degraded_entries"`
+	Error           string `gorm:"size:1024" json:"error,omitempty"`
 	// FailureKind records which sentinel produced Error. It lets a caller
 	// that arrives after the orchestration goroutine has exited rebuild a
 	// typed error from the row instead of matching the message text. Empty
@@ -125,4 +134,10 @@ func (s *Snapshot) ManifestPath(shareDataDir string) string {
 
 func (s *Snapshot) MetadataDumpPath(shareDataDir string) string {
 	return filepath.Join(s.SnapshotDir(shareDataDir), "metadata.dump")
+}
+
+// DegradedMarkerPath is where a degraded snapshot records what it could not
+// capture. The file is absent on a complete snapshot.
+func (s *Snapshot) DegradedMarkerPath(shareDataDir string) string {
+	return filepath.Join(s.SnapshotDir(shareDataDir), "degraded.json")
 }

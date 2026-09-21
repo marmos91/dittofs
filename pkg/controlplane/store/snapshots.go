@@ -190,6 +190,33 @@ func (s *GORMStore) UpdateSnapshotDurable(ctx context.Context, shareName, id str
 	return nil
 }
 
+// SetSnapshotDegraded records how many metadata rows the backup could not
+// capture. entries > 0 marks the snapshot degraded; 0 clears the mark, which is
+// what a retry of a previously-degraded snapshot needs — the row and directory
+// are reused, and a stale flag would label a clean snapshot as short.
+//
+// It is written while the row is still 'creating', before any step that could
+// fail, so a snapshot can never reach 'ready' carrying an unrecorded gap.
+//
+// Returns models.ErrSnapshotNotFound if no row matches (shareName, id).
+func (s *GORMStore) SetSnapshotDegraded(ctx context.Context, shareName, id string, entries int64) error {
+	db := s.db.WithContext(ctx)
+	res := db.Model(&models.Snapshot{}).
+		Where("share_name = ? AND id = ?", shareName, id).
+		Updates(map[string]any{
+			"degraded":         entries > 0,
+			"degraded_entries": entries,
+			"updated_at":       time.Now(),
+		})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return models.ErrSnapshotNotFound
+	}
+	return nil
+}
+
 // MarkSnapshotReady atomically transitions the snapshot row (shareName, id)
 // from state='creating' to state='ready', sets remote_durable=durable, and
 // persists manifest_count in a single conditional UPDATE. Used by the

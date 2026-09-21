@@ -69,6 +69,18 @@ type CreateSnapshotOpts struct {
 	// retention pruning. Ignored on the RetryOf path (the existing row's
 	// flag is preserved).
 	Scheduled bool
+
+	// AllowDegraded lets the backup complete over metadata rows it cannot
+	// read, instead of failing. The result is labelled degraded — on the row
+	// and in the snapshot's own directory — so it is never mistaken for a
+	// complete one.
+	//
+	// Off by default and deliberately not exposed as an ordinary operator
+	// knob: nobody should get a short snapshot by asking for a snapshot. Its
+	// one caller is the safety snapshot restore takes before it resets the
+	// store, where refusing blocks recovery from the very corruption that
+	// caused the refusal and leaves the share disabled with no undo point.
+	AllowDegraded bool
 }
 
 // CreateSnapshot orchestrates an asynchronous share snapshot. The call
@@ -572,7 +584,19 @@ func (r *Runtime) runSnapshotOrchestration(
 		"share", shareName,
 		"dump_path", dumpPath,
 	)
+	var degradation *metadata.SnapshotDegradation
 	hashSet, err := snapshot.WriteMetadataDumpAtomic(dumpPath, func(w io.Writer) (*block.HashSet, error) {
+		// A degradable backend is only asked to degrade when this snapshot
+		// opted in; otherwise both paths refuse identically. A backend that
+		// cannot degrade falls through to the refusal, which is the safe
+		// default for a capability that may simply not exist.
+		if opts.AllowDegraded {
+			if d, ok := snapshotable.(metadata.DegradableSnapshotter); ok {
+				hs, deg, derr := d.WriteSnapshotDegraded(ctx, w)
+				degradation = deg
+				return hs, derr
+			}
+		}
 		return snapshotable.WriteSnapshot(ctx, w)
 	})
 	if err != nil {
@@ -586,6 +610,60 @@ func (r *Runtime) runSnapshotOrchestration(
 		)
 		return
 	}
+	// Record the gap before anything else can fail. The dump and the manifest
+	// look ordinary — what is wrong with them is what is missing — so the
+	// marker and the row flag are the only things that keep a degraded
+	// snapshot from reading as a complete one. Writing them here, while the
+	// row is still 'creating', is what makes "ready implies labelled" hold:
+	// a snapshot cannot become ready carrying an unrecorded gap.
+	if degradation != nil && degradation.Entries > 0 {
+		marker := &snapshot.Degraded{
+			Reason:        "metadata entries could not be decoded and were not captured",
+			Entries:       degradation.Entries,
+			Keys:          degradation.Keys,
+			KeysTruncated: degradation.KeysTruncated,
+		}
+		if merr := snapshot.WriteDegradedMarker(snap.DegradedMarkerPath(localStoreDir), marker); merr != nil {
+			terminalErr = fmt.Errorf("snapshot create %s: write degraded marker: %w: %v",
+				snapID, models.ErrSnapshotBackupFailed, merr)
+			r.failSnap(shareName, snapID, terminalErr)
+			logger.Error("snapshot create: degraded marker write failed; refusing to ship an unlabelled degraded snapshot",
+				"snapshot_id", snapID, "share", shareName, "error", merr)
+			return
+		}
+		if uerr := r.store.SetSnapshotDegraded(ctx, shareName, snapID, int64(degradation.Entries)); uerr != nil {
+			terminalErr = fmt.Errorf("snapshot create %s: mark degraded: %w: %v",
+				snapID, models.ErrSnapshotBackupFailed, uerr)
+			r.failSnap(shareName, snapID, terminalErr)
+			logger.Error("snapshot create: degraded flag write failed; refusing to ship an unlabelled degraded snapshot",
+				"snapshot_id", snapID, "share", shareName, "error", uerr)
+			return
+		}
+		logger.Warn("snapshot create: DEGRADED — metadata entries could not be captured",
+			"snapshot_id", snapID,
+			"share", shareName,
+			"skipped_entries", degradation.Entries,
+			"skipped_keys", degradation.Keys,
+			"keys_truncated", degradation.KeysTruncated,
+		)
+	} else if opts.RetryOf != "" {
+		// A retry reuses the failed snapshot's row and directory, so a mark
+		// left by the earlier attempt would survive a clean one and label it
+		// short. "No marker" has to mean "complete", so clear both.
+		if rerr := os.Remove(snap.DegradedMarkerPath(localStoreDir)); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+			terminalErr = fmt.Errorf("snapshot create %s: clear stale degraded marker: %w: %v",
+				snapID, models.ErrSnapshotBackupFailed, rerr)
+			r.failSnap(shareName, snapID, terminalErr)
+			return
+		}
+		if uerr := r.store.SetSnapshotDegraded(ctx, shareName, snapID, 0); uerr != nil {
+			terminalErr = fmt.Errorf("snapshot create %s: clear degraded flag: %w: %v",
+				snapID, models.ErrSnapshotBackupFailed, uerr)
+			r.failSnap(shareName, snapID, terminalErr)
+			return
+		}
+	}
+
 	manifestCount := 0
 	if hashSet != nil {
 		manifestCount = hashSet.Len()
@@ -594,6 +672,7 @@ func (r *Runtime) runSnapshotOrchestration(
 		"snapshot_id", snapID,
 		"share", shareName,
 		"manifest_count", manifestCount,
+		"degraded", degradation != nil,
 	)
 
 	// --- Step 2: Manifest write ---
@@ -1469,7 +1548,17 @@ func (r *Runtime) restoreSnapshot(
 	// already names this very safety snap) stays in place until the rollback
 	// fully completes; recovery clears it then.
 	if !internal.isRollback {
-		safetySnapshotID, err = r.CreateSnapshot(ctx, shareName, CreateSnapshotOpts{NoVerify: !remoteVerify})
+		// AllowDegraded: the safety snap's whole job is "let me undo this if the
+		// restore goes wrong". A store holding a row it cannot decode is
+		// precisely the state an operator restores away FROM, so refusing here
+		// would block recovery from the condition that triggered the refusal
+		// and leave the share disabled with no undo point at all. A labelled
+		// degraded undo point beats none. It is labelled on the row and in its
+		// own directory, so nothing downstream can mistake it for complete.
+		safetySnapshotID, err = r.CreateSnapshot(ctx, shareName, CreateSnapshotOpts{
+			NoVerify:      !remoteVerify,
+			AllowDegraded: true,
+		})
 		if err != nil {
 			return "", fmt.Errorf("restore snapshot %q: create safety snap: %w: %v",
 				snapID, models.ErrRestoreSafetySnapFailed, err)
@@ -1499,6 +1588,24 @@ func (r *Runtime) restoreSnapshot(
 	}
 
 	// --- open dump ---
+	// A degraded snapshot restores, but it is short by the rows it never
+	// captured, so say so rather than let it pass as an ordinary restore. A
+	// marker that will not parse is an error for the same reason the marker
+	// exists: "I cannot read what this snapshot says about itself" must not
+	// quietly become "this snapshot is fine".
+	if deg, derr := snapshot.ReadDegradedMarker(snap.DegradedMarkerPath(localStoreDir)); derr != nil {
+		return safetySnapshotID, fmt.Errorf("restore snapshot %q: read degraded marker: %w: %v",
+			snapID, models.ErrRestoreAborted, derr)
+	} else if deg != nil {
+		logger.Warn("snapshot restore: source snapshot is DEGRADED — it does not carry every metadata row",
+			"snapshot_id", snapID,
+			"share", shareName,
+			"skipped_entries", deg.Entries,
+			"skipped_keys", deg.Keys,
+			"reason", deg.Reason,
+		)
+	}
+
 	dumpPath := snap.MetadataDumpPath(localStoreDir)
 	dumpFile, err := os.Open(dumpPath)
 	if err != nil {
