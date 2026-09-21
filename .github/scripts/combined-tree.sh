@@ -51,28 +51,41 @@ die() { echo "combined-tree: $*" >&2; exit 1; }
 cmd_select() {
   [ -n "$REPO" ] || die "REPO or GITHUB_REPOSITORY must be set"
 
-  local prs dev_sha
+  local prs dev_sha n
   # One GraphQL round trip for every open PR: number, head, draft flag, changed
   # files and the check rollup that dates the last matrix.
   prs=$(gh pr list --repo "$REPO" --base "$BASE" --state open --limit 100 \
-          --json number,headRefOid,isDraft,files,statusCheckRollup)
+          --json number,headRefOid,isDraft,files,changedFiles,statusCheckRollup)
 
   # A PR with no completed check has no matrix to be stale against, and its own
   # matrix is about to cover it; drop it rather than guess a cutoff.
   prs=$(jq -c "$JQ_PKGS"'
     map(select(.isDraft | not))
     | map({ number, head: .headRefOid, pkgs: pkgs([.files[].path]),
+            short: ((.files | length) < .changedFiles),
             cutoff: ([.statusCheckRollup[]? | select(.status == "COMPLETED")
                       | .startedAt] | sort | first) })
-    | map(select((.pkgs | length) > 0 and .cutoff != null))' <<<"$prs")
+    | map(select(.cutoff != null))' <<<"$prs")
 
+  # That listing returns only the first hundred files of each PR, and a PR
+  # sweeping enough to exceed it is exactly the one whose package set must not
+  # come back short. Re-read those in full; the count says which.
+  local full
+  while read -r n; do
+    full=$(gh api "repos/$REPO/pulls/$n/files" --paginate --jq '[.[].filename]' \
+             | jq -sc 'add')
+    prs=$(jq -c --argjson n "$n" --argjson f "$full" "$JQ_PKGS"'
+      map(if .number == $n then .pkgs = pkgs($f) else . end)' <<<"$prs")
+  done < <(jq -r '.[] | select(.short) | .number' <<<"$prs")
+
+  prs=$(jq -c 'map(select((.pkgs | length) > 0))' <<<"$prs")
   [ "$(jq 'length' <<<"$prs")" -gt 0 ] || return 0
 
   dev_sha=$(gh api "repos/$REPO/commits/$BASE" --jq '.sha')
 
   # base + PR. The base moved if it carried a commit the PR's matrix never
   # checked out; the cutoff is when that matrix started, not when it finished.
-  local n head cutoff then_sha moved
+  local head cutoff then_sha moved
   while IFS=$'\t' read -r n head cutoff; do
     then_sha=$(gh api "repos/$REPO/commits?sha=$BASE&until=$cutoff&per_page=1" \
                  --jq '.[0].sha // empty')
