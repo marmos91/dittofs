@@ -80,14 +80,18 @@ cmd_select() {
     [ "$then_sha" != "$dev_sha" ] || continue
 
     # Packages the base branch moved in that window, intersected with the PR's.
+    #
+    # ponytail: one unpaginated compare, whose file list the API caps at 300.
+    # A window that wide would have to hold a day of merges; page it if the
+    # summary ever reports a combination the cap could have hidden.
     moved=$(gh api "repos/$REPO/compare/$then_sha...$dev_sha" \
               --jq "$JQ_PKGS"'pkgs([.files[]?.filename])')
-    jq -c --argjson moved "$moved" --arg n "$n" --arg head "$head" \
+    jq -c --argjson moved "$moved" --argjson n "$n" --arg head "$head" \
        --arg base "$dev_sha" "$JQ_ISECT"'
        isect(.pkgs; $moved) as $i
        | if ($i | length) == 0 then empty
-         else { base: $base, prs: [{n: ($n | tonumber), head: $head}], pkgs: $i }
-         end' <<<"$(jq -c ".[] | select(.number == ($n | tonumber))" <<<"$prs")"
+         else { base: $base, prs: [{n: $n, head: $head}], pkgs: $i }
+         end' <<<"$(jq -c --argjson n "$n" '.[] | select(.number == $n)' <<<"$prs")"
   done < <(jq -r '.[] | [.number, .head, .cutoff] | @tsv' <<<"$prs")
 
   # base + PR + PR. Neither matrix has seen the other, so a package
@@ -212,8 +216,10 @@ cmd_selftest() {
     git merge --quiet --no-ff --no-edit "$a" >/dev/null
     git merge --quiet --no-ff --no-edit "$b" >/dev/null \
       || { echo "selftest: fixture was supposed to merge cleanly"; exit 1; }
-    go build ./p/ >/dev/null 2>&1 \
-      && { echo "selftest: fixture was supposed to break the build"; exit 1; }
+    if go build ./p/ >/dev/null 2>&1; then
+      echo "selftest: fixture was supposed to break the build" >&2
+      exit 1
+    fi
     git checkout --quiet --detach "$base"
 
     local combo

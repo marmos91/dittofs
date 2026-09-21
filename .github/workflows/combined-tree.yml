@@ -80,10 +80,12 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -o pipefail
-          .github/scripts/combined-tree.sh select | tee combos.jsonl
-          if [ -s combos.jsonl ]; then
+          # Outside the work tree: the run step resets and cleans the checkout
+          # between combinations, which would take this file with it.
+          .github/scripts/combined-tree.sh select | tee "$RUNNER_TEMP/combos.jsonl"
+          if [ -s "$RUNNER_TEMP/combos.jsonl" ]; then
             echo "any=true" >>"$GITHUB_OUTPUT"
-            echo "Selected $(wc -l <combos.jsonl) combination(s)."
+            echo "Selected $(wc -l <"$RUNNER_TEMP/combos.jsonl") combination(s)."
           else
             echo "No combination is eligible; nothing to build."
           fi
@@ -93,7 +95,7 @@ jobs:
         run: |
           git fetch --unshallow --quiet origin
           git fetch --quiet origin develop
-          jq -r '.prs[].n' combos.jsonl | sort -u | while read -r n; do
+          jq -r '.prs[].n' "$RUNNER_TEMP/combos.jsonl" | sort -u | while read -r n; do
             git fetch --quiet origin "refs/pull/$n/head"
           done
 
@@ -109,4 +111,4 @@ jobs:
 
       - name: Build each combination
         if: steps.select.outputs.any == 'true'
-        run: .github/scripts/combined-tree.sh run <combos.jsonl
+        run: .github/scripts/combined-tree.sh run <"$RUNNER_TEMP/combos.jsonl"
