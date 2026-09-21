@@ -327,3 +327,31 @@ func TestS3TargetDescription(t *testing.T) {
 		t.Errorf("target=%q, want the configured endpoint", got)
 	}
 }
+
+// The gating looks flags up by name, so a typo would compile, pass every other
+// test here, and silently stop asking about a field — the exact shape of the
+// bug this gating exists to prevent. Pin both branches' names against the flag
+// set the command actually registers.
+func TestPromptMissingS3Fields_QueriesOnlyRealFlags(t *testing.T) {
+	check := func(name string) {
+		t.Helper()
+		if addCmd.Flags().Lookup(name) == nil {
+			t.Errorf("promptMissingS3Fields asks about %q, which `store block add` does not define", name)
+		}
+	}
+
+	rec := &recordingAsker{answer: "x"}
+	if err := promptMissingS3Fields(&s3Fields{}, func(name string) bool {
+		check(name)
+		return false
+	}, rec.asker()); err != nil {
+		t.Fatalf("interactive branch: %v", err)
+	}
+
+	if err := promptMissingS3Fields(&s3Fields{}, func(name string) bool {
+		check(name)
+		return true
+	}, nil); err != nil {
+		t.Fatalf("non-interactive branch: %v", err)
+	}
+}
