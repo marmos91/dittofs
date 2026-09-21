@@ -292,8 +292,8 @@ configure_server() {
     dfsctl store metadata add --name demo-meta --type badger --db-path "${METADATA_DIR}"
 
     info "Creating S3 block store (Cubbit DS3)..."
-    # Every s3 setting is named, including the empty prefix, so the command has
-    # nothing left to ask about and the script runs through on a terminal.
+    # Every s3 setting is named, the empty prefix included, so the command has
+    # nothing left to ask about and the script runs unattended on a terminal.
     dfsctl store block add --name demo-blocks --type s3 \
         --bucket "${S3_BUCKET}" \
         --region "${S3_REGION}" \

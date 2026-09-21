@@ -83,7 +83,7 @@ func init() {
 	addCmd.Flags().StringVar(&addConfig, "config", "", "Store configuration as JSON")
 	// S3 flags
 	addCmd.Flags().StringVar(&addBucket, "bucket", "", "S3 bucket name (required for s3)")
-	addCmd.Flags().StringVar(&addRegion, "region", "us-east-1", "AWS region (for s3)")
+	addCmd.Flags().StringVar(&addRegion, "region", defaultS3Region, "AWS region (for s3)")
 	addCmd.Flags().StringVar(&addEndpoint, "endpoint", "", "Custom S3 endpoint (for S3-compatible stores)")
 	addCmd.Flags().StringVar(&addPrefix, "prefix", "", "Key prefix within the bucket (for s3)")
 	addCmd.Flags().StringVar(&addAccessKey, "access-key", "", "AWS access key ID (for s3)")
@@ -136,11 +136,11 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		return cmdutil.HandleAbort(err)
 	}
 
-	if m, ok := config.(map[string]any); ok && addType == "s3" {
+	if s3Config, ok := config.(map[string]any); addType == "s3" && ok {
 		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Target: %s, bucket %q, region %q\n",
-			s3TargetDescription(m),
-			cmdutil.GetConfigString(m, "bucket", ""),
-			cmdutil.GetConfigString(m, "region", ""))
+			s3TargetDescription(s3Config),
+			cmdutil.GetConfigString(s3Config, "bucket", ""),
+			cmdutil.GetConfigString(s3Config, "region", ""))
 	}
 
 	req := &apiclient.CreateStoreRequest{
@@ -169,7 +169,7 @@ type encryptionFlags struct {
 }
 
 // defaultS3Region is the region an s3 store falls back to when the operator
-// names none, matching the --region flag default.
+// names none: the --region default, and the answer its prompt offers.
 const defaultS3Region = "us-east-1"
 
 // s3Fields holds the settings of an s3 store, as supplied on the command line
@@ -209,15 +209,14 @@ func terminalAsker() *s3Asker {
 }
 
 // promptMissingS3Fields fills in every s3 setting the operator did not pass on
-// the command line, asking one question per field. The fields are independent:
-// naming one flag never suppresses the question for another, so a run that
-// passes only the bucket is still asked which endpoint to talk to — an
-// unanswered endpoint means AWS, which is not a default anyone should reach by
-// omission.
+// the command line, one question per field. The fields are independent: naming
+// one flag never suppresses another's question, so a run that passes only the
+// bucket is still asked which endpoint to talk to — an unanswered endpoint
+// means AWS, which is not a target anyone should reach by omission.
 //
 // supplied reports whether a flag was named, not whether it is non-empty, so
-// an explicitly empty optional value is left alone. ask is nil when the
-// session is not interactive; the required fields then become an error.
+// an explicitly empty value is left alone. A nil ask means nobody is there to
+// answer, and the required fields become an error instead.
 func promptMissingS3Fields(f *s3Fields, supplied func(name string) bool, ask *s3Asker) error {
 	if ask == nil {
 		var missing []string
@@ -299,13 +298,12 @@ func buildRemoteConfig(storeType, jsonConfig string, s3 s3Fields, compression st
 		return nil, nil
 
 	case "s3":
-		region := s3.region
-		if region == "" {
-			region = defaultS3Region
+		if s3.region == "" {
+			s3.region = defaultS3Region
 		}
 		config := map[string]any{
 			"bucket":            s3.bucket,
-			"region":            region,
+			"region":            s3.region,
 			"access_key_id":     s3.accessKey,
 			"secret_access_key": s3.secretKey,
 		}
