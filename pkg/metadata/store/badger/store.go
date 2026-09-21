@@ -137,11 +137,12 @@ type BadgerMetadataStore struct {
 	recoveryStore *badgerRecoveryStore
 
 	// quota tracks per-identity usage (bytes + file count) for regular files,
-	// keyed by owner uid / gid. In-memory cache mirroring usedBytes, seeded from
-	// a full file scan on startup (so it is always reconstructed from the durable
-	// file rows — back-compatible with existing dumps). Updated from a
-	// transaction's pending per-identity deltas exactly once on successful
-	// commit. Guarded by quotaMu.
+	// keyed by owner uid / gid. In-memory cache mirroring usedBytes, seeded at
+	// open from the durable qu: counters and updated from a transaction's
+	// pending per-identity deltas exactly once on successful commit. A store
+	// that predates those counters, or a dump taken before they existed, is
+	// seeded from a file scan once and records a marker so no later open
+	// repeats it. Guarded by quotaMu.
 	quotaMu sync.Mutex
 	quota   *basestore.QuotaCache
 
@@ -156,6 +157,10 @@ type BadgerMetadataStore struct {
 	// committing into keys that the replacement is about to drop, which would
 	// otherwise lose that transaction's usage with no scan left to recover it.
 	quotaRealign sync.RWMutex
+
+	// usageScans counts decodes of the file keyspace to derive usage. Read by
+	// tests to assert that an open of a backfilled store performs none.
+	usageScans atomic.Uint64
 
 	// storeID is the engine-persistent identifier for this store instance,
 	// backed by the cfg:store_id key in BadgerDB. Created on first open of
@@ -660,6 +665,7 @@ func (s *BadgerMetadataStore) GetUsedBytesForShare(ctx context.Context, shareNam
 // sums; do that only once a realign is something operators run often enough to
 // wait on.
 func (s *BadgerMetadataStore) scanUsage(indexBatch *badger.WriteBatch) (map[basestore.QuotaKey]*metadata.UsageStat, error) {
+	s.usageScans.Add(1)
 	byIdentity := make(map[basestore.QuotaKey]*metadata.UsageStat)
 
 	addUsage := func(k basestore.QuotaKey, bytes int64) {

@@ -203,6 +203,12 @@ func (s *BadgerMetadataStore) readQuotaCounters() (map[basestore.QuotaKey]*metad
 	return byIdentity, nil
 }
 
+// UsageScanCount reports how many times this store has decoded the file
+// keyspace to derive usage. An open of an already-backfilled store must leave
+// it at zero: that, not the wall time, is what says the counters are being read
+// rather than rebuilt.
+func (s *BadgerMetadataStore) UsageScanCount() uint64 { return s.usageScans.Load() }
+
 // seedUsage replaces the usage cache's buckets with the given totals.
 func (s *BadgerMetadataStore) seedUsage(byIdentity map[basestore.QuotaKey]*metadata.UsageStat) {
 	s.quotaMu.Lock()
