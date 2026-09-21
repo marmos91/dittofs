@@ -542,12 +542,34 @@ DittoFS uses GitHub Actions with a tiered CI strategy: fast checks on PRs, compr
 | `smb-client-compat.yml` | push, weekly | Windows/macOS/Linux SMB client testing | ~10 min |
 | `nfs-pynfs.yml` | PR, push, nightly | NFSv4 protocol conformance (pynfs) | ~20 min |
 | `operator-tests.yml` | push, weekly | Operational scenario tests | ~10 min |
+| `combined-tree.yml` | scheduled | Builds the tree two green PRs would produce | seconds when idle |
 
 ### Conformance suites
 
 Every suite's profiles, variants and per-event tiering live in
 [`test/conformance/suites.json`](../../test/conformance/suites.json); the rendered table is in
 [testing.md](testing.md#conformance-test-suites).
+
+### Combined-tree checks
+
+Every workflow above tests one tree per pull request: that head merged into
+`develop` as `develop` stood when the matrix ran. The tree that reaches
+`develop` after two such pull requests land in sequence is tested by none of
+them, and `mergeable` does not cover the gap -- it reports whether the texts
+conflict, so two disjoint file lists inside one Go package merge cleanly and
+can still fail to compile.
+
+`combined-tree.yml` runs on a schedule and builds those trees. It selects open
+pull requests against `develop` whose Go packages intersect -- pairing each
+with `develop` when `develop` has moved into a shared package since that pull
+request's matrix started, and with every other open pull request that shares a
+package -- then merges them into a detached tree and builds, vets and tests
+only the shared packages. Nothing is pushed and no pull request is touched; the
+result is a job summary. A pair that does not merge cleanly is reported and
+skipped rather than failing the run.
+
+The filter is package intersection, never file overlap: file overlap is exactly
+the filter that waves through the class of breakage that reaches `develop`.
 
 ### What Runs on PR (Fast, Must-Pass Before Merge)
 

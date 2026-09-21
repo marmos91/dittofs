@@ -1,0 +1,112 @@
+# Combined Tree — build the tree two green PRs actually produce.
+#
+# Every other workflow tests one tree per PR: that head merged into develop as
+# develop stood when the matrix ran. The tree that reaches develop after two
+# such PRs land in sequence is tested by nothing. `mergeable` does not cover it:
+# it answers whether the texts conflict, which is a different question with a
+# reassuring answer — two disjoint file lists inside one Go package auto-merge
+# cleanly and do not compile.
+#
+# Scheduled rather than per-push, because the eligible set changes on the
+# timescale of merges, not commits, and a per-push trigger would spend slots
+# re-deciding that it is empty. Most runs select nothing and stop after a
+# shallow checkout and five API calls; the Go toolchain and the full clone are
+# paid for only when there is a combination to build.
+name: Combined Tree
+
+on:
+  schedule:
+    # Across the working day in UTC, deliberately clear of the 04:00 nightly
+    # block where conformance, E2E, pynfs and the AD-DC suite all start.
+    - cron: '20 7-19/3 * * *'
+  workflow_dispatch:
+  pull_request:
+    branches: [develop]
+    paths:
+      - '.github/workflows/combined-tree.yml'
+      - '.github/scripts/combined-tree.sh'
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  # A scheduled run that is already merging and building is the run with the
+  # answer; a newer one would only start over.
+  cancel-in-progress: false
+
+jobs:
+  # A gate that has never refused anything is unverified, and this one refuses
+  # rarely by design. The self-test builds a fixture that merges cleanly and
+  # does not compile, and fails if the run mode accepts it.
+  selftest:
+    name: Self-test
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.x'
+          cache: false
+
+      - name: Run self-test
+        run: .github/scripts/combined-tree.sh selftest
+
+  combined-tree:
+    name: Combined Tree
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    # Bounded by MAX_COMBOS combinations, each building and testing only the
+    # packages the two sides share.
+    timeout-minutes: 45
+    steps:
+      # Shallow on purpose: selection reads the GitHub API and touches no
+      # history, and most runs end at the next step.
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Select combinations
+        id: select
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -o pipefail
+          .github/scripts/combined-tree.sh select | tee combos.jsonl
+          if [ -s combos.jsonl ]; then
+            echo "any=true" >>"$GITHUB_OUTPUT"
+            echo "Selected $(wc -l <combos.jsonl) combination(s)."
+          else
+            echo "No combination is eligible; nothing to build."
+          fi
+
+      - name: Fetch the trees to merge
+        if: steps.select.outputs.any == 'true'
+        run: |
+          git fetch --unshallow --quiet origin
+          git fetch --quiet origin develop
+          jq -r '.prs[].n' combos.jsonl | sort -u | while read -r n; do
+            git fetch --quiet origin "refs/pull/$n/head"
+          done
+
+      # No module cache: this job runs a handful of times a day and the shared
+      # GHA cache budget is already contended. A cold build is cheaper than a
+      # new entry competing for eviction.
+      - name: Set up Go
+        if: steps.select.outputs.any == 'true'
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.x'
+          cache: false
+
+      - name: Build each combination
+        if: steps.select.outputs.any == 'true'
+        run: .github/scripts/combined-tree.sh run <combos.jsonl
