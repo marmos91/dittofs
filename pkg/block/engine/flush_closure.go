@@ -12,9 +12,11 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/syncer"
 )
 
-// defaultBlockUploadWindow bounds how many of one file's packed blocks are
-// uploaded (PutBlock) at once inside one flush pass, via the sink's upload
-// semaphore. Packing itself stays sequential.
+// defaultBlockUploadWindow is the fallback window for a local store exposing no
+// UploadConcurrency of its own. It bounds how many of one pass's packed blocks
+// are in flight at once; packing itself stays sequential. The remote path does
+// not reach it — that shares the syncer's own upload limiter, so the window
+// bounding PutBlock is the one the config declares.
 const defaultBlockUploadWindow = 8
 
 // flushClosure is the fn + AfterFile pair one Flush pass calls back into: the

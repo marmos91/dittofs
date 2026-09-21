@@ -342,11 +342,18 @@ type engineBlockSink struct {
 	rbs         remote.RemoteBlockStore
 	committer   blockCommitter
 	commitLocks *carveCommitLocks
-	// onBlockCommitted reports each block as it lands, carrying the block's
-	// uploaded byte count. Reporting here rather than after a flush pass
-	// returns is what makes the count advance *during* a long flush: the drain
-	// path force-flushes in one call that can run for many minutes, and its
-	// supervisor reads these counters as a liveness signal. Nil in fixtures
+	// onBlockUploaded reports each block's bytes the moment PutBlock returns,
+	// before the metadata commit. That is the signal the upload window is
+	// actually steering: the commit is serialized per file and no amount of
+	// upload concurrency relieves it, so folding its latency into the goodput
+	// sample would have the controller shrink the window in answer to a
+	// bottleneck somewhere else entirely. Nil in fixtures that don't care.
+	onBlockUploaded func(bytes int64)
+	// onBlockCommitted reports each block as it lands durably, after the
+	// commit. Reporting here rather than after a flush pass returns is what
+	// makes the count advance *during* a long flush: the drain path
+	// force-flushes in one call that can run for many minutes, and its
+	// supervisor reads this counter as a liveness signal. Nil in fixtures
 	// that don't care.
 	onBlockCommitted func(bytes int64)
 }
@@ -426,6 +433,9 @@ func (s engineBlockSink) CommitBlock(ctx context.Context, chunks []CarveChunk) e
 	err = s.rbs.PutBlock(ctx, blockID, bytes.NewReader(blockBytes))
 	if err != nil {
 		return fmt.Errorf("flush: put block %s: %w", blockID, err)
+	}
+	if s.onBlockUploaded != nil {
+		s.onBlockUploaded(int64(len(blockBytes)))
 	}
 
 	rec := block.BlockRecord{

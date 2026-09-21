@@ -64,9 +64,11 @@ type Config struct {
 	// lookups that widen each run; only the commits overlap, so a single large
 	// file's carve is not one PutBlock at a time.
 	// The buffers themselves are the caller's: peak RAM per file is this window
-	// times whatever the caller's sink holds per block in flight. Whatever
-	// bounds how many files flush at once multiplies that term again, so the
-	// real ceiling is the product — keep this modest.
+	// times whatever the caller's sink holds per block in flight. A caller that
+	// gives each flush pass its own window multiplies that term by however many
+	// files it flushes at once, making the real ceiling the product — the
+	// engine's remote path instead hands every pass one shared window, so there
+	// the ceiling is that window alone.
 	// Zero falls back to the default via withDefaults.
 	CarveUploadConcurrency int
 	// DirtyExpiry bounds how long an appended record may sit unfsynced. A

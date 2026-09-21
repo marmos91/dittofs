@@ -116,11 +116,12 @@ type RemoteSync struct {
 	completedSyncs atomic.Int64
 	failedSyncs    atomic.Int64
 
-	// uploadLimiter bounds concurrent whole-file carve passes: carveDispatcher
-	// acquires it before starting a file and releases it when that file's pass
-	// returns. It does not bound the block PUTs inside a pass — those have their
-	// own per-file semaphore sized by CarveUploadConcurrency — so the PUTs
-	// actually in flight are the product of the two windows, not this limit.
+	// uploadLimiter bounds concurrent block PUTs across the whole syncer: every
+	// flush pass shares it, holding one slot per block from submit until that
+	// block's CommitBlock returns. It is the only bound on upload concurrency,
+	// so Limit() is the number the config declares and the peak the controller
+	// samples. How many files carve at once is a separate fixed cap
+	// (carveFanOut) that holds no upload slot of its own.
 	// When ParallelUploads is pinned (> 0) its limit is fixed at that value.
 	// When unset (adaptive mode) the uploadController resizes it every control
 	// interval to track the goodput knee.
@@ -459,14 +460,23 @@ func (m *RemoteSync) SyncCounts() (completed, failed int) {
 	return int(m.completedSyncs.Load()), int(m.failedSyncs.Load())
 }
 
-// noteBlockCommitted records one block reaching the remote. Every carve routes
-// its commits through the same sink, so counting here covers both the
+// noteBlockUploaded feeds the goodput sample with one block's bytes as soon as
+// its PutBlock returns. It is deliberately not the same moment as
+// noteBlockCommitted: the controller resizes the upload window, so its sample
+// has to be the uplink alone and not the per-file-serialized metadata commit
+// that follows.
+func (m *RemoteSync) noteBlockUploaded(bytes int64) {
+	m.uploadedBytesWindow.Add(bytes)
+}
+
+// noteBlockCommitted records one block reaching the remote durably. Every carve
+// routes its commits through the same sink, so counting here covers both the
 // background dispatcher and the drain's force-carve — the latter runs as a
 // single call that can span minutes, and counting only on its return would
-// leave the progress signal flat for that whole time.
-func (m *RemoteSync) noteBlockCommitted(bytes int64) {
+// leave the progress signal flat for that whole time. The block's byte count
+// goes to noteBlockUploaded instead, one step earlier.
+func (m *RemoteSync) noteBlockCommitted(int64) {
 	m.completedSyncs.Add(1)
-	m.uploadedBytesWindow.Add(bytes)
 }
 
 // DrainAllUploads performs an immediate synchronous upload of every local
@@ -850,21 +860,29 @@ func (m *RemoteSync) flushFn() (journal.FlushFunc, func(context.Context, journal
 		blockSize = paramsBlockSize(params)
 	}
 	if m.remoteBlockStore != nil {
-		// One window governs concurrent PutBlock calls: blocks hold a slot from
-		// submit until CommitBlock returns, so at most `window` uploads (and
-		// their arenas) are in flight per pass.
-		sink := engineBlockSink{sealer: m.chunkSealer, rbs: m.remoteBlockStore, committer: m.blockCommitter, commitLocks: &carveCommitLocks{}, onBlockCommitted: m.noteBlockCommitted}
+		// The syncer's own uploadLimiter is the window, shared by every
+		// concurrent pass rather than rebuilt per pass: blocks hold a slot from
+		// submit until CommitBlock returns, so at most Limit() uploads (and
+		// their arenas) are in flight across the whole syncer. A per-pass
+		// semaphore here would nest inside the dispatcher's own window and make
+		// the PUTs in flight their product, which is both a bound nobody
+		// declared and a peak the controller cannot see.
+		sink := engineBlockSink{sealer: m.chunkSealer, rbs: m.remoteBlockStore, committer: m.blockCommitter, commitLocks: &carveCommitLocks{}, onBlockUploaded: m.noteBlockUploaded, onBlockCommitted: m.noteBlockCommitted}
 		// The dedup Skip hook consults the per-share synced-hash store: without
 		// it every flush treats every chunk as novel and uploads whole new
 		// blocks instead of landing manifest-only rows for content the remote
 		// already holds.
-		return newFlushClosure(m.local, params, blockSize, engineDeduper{synced: m.syncedHashStore}, sink, syncer.NewDynamicSemaphore(window))
+		return newFlushClosure(m.local, params, blockSize, engineDeduper{synced: m.syncedHashStore}, sink, m.uploadLimiter)
 	}
 	// Local-only (no remote block store): the flush cannot upload, but it must
 	// still populate the FileChunk manifest (and project File.Blocks) so a
 	// local-only DrainRollups is not a hard error and clone/snapshot/restore
 	// resolve the file's chunks. blockCommitter is nil only for the clone
 	// fixture, whose source has no dirty data so CommitBlock never fires.
+	//
+	// This branch keeps a window of its own: uploadLimiter is an *upload*
+	// window sized by a controller chasing uplink goodput, and there is no
+	// uplink here to chase.
 	sink := localBlockSink{committer: m.blockCommitter, commitLocks: &carveCommitLocks{}}
 	return newFlushClosure(m.local, params, blockSize, localDeduper{}, sink, syncer.NewDynamicSemaphore(window))
 }
