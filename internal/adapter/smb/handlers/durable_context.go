@@ -456,8 +456,41 @@ func checkLeaseReconnectGate(
 // per-(ClientGuid, LeaseKey) lease scoping, a lease-backed handle (non-zero
 // LeaseKey) MUST be reconnected from its originating ClientGuid. A persisted
 // handle written before ClientGUID was captured carries the zero value and is
-// treated as "no recorded ClientGuid" (forward compat with pre-#432 binaries).
+// treated as "no recorded ClientGuid", so such a row stays reconnectable.
 // Shared by the V1 (DHnC) and V2 (DH2C) reconnect paths.
+//
+// decision: the ClientGuid gate on reconnect is scoped to lease-backed
+// handles, so a non-lease DHnC/DH2C reconnect is accepted from any ClientGuid
+// and is not checked against the one that established the open. The rule holds
+// because MS-SMB2 §3.3.5.9.7 — the fresh reconnect path — scopes it that way
+// itself. Its condition 4: "If any Open.Lease is not NULL and Open.ClientGuid
+// is not equal to the ClientGuid of the connection that received this request,
+// the server MUST fail the request with STATUS_OBJECT_NAME_NOT_FOUND." The
+// "Open.Lease is not NULL" predicate is the whole of the scoping; a non-lease
+// durable handle has no ClientGuid condition in that section at all. Samba
+// reads it the same way: its non-lease durable_v2_open reopen1a ladder
+// reconnects under a freshly randomized client_guid and asserts success, while
+// only the -lease variant asserts OBJECT_NAME_NOT_FOUND, and only the -lease
+// variants appear in its selftest known-fail list. Both reopen1a rows pass
+// here today, so gating the non-lease path turns a passing conformance row red.
+//
+// What this gate does is bind a reconnect to the originating machine, and that
+// is what is lease-scoped. It is not what authenticates the reconnect, and it
+// is not a gap in authentication: §3.3.5.9.7 condition 8 separately and
+// unconditionally requires the reconnecting session's user to be the open's
+// DurableOwner, which ValidateReconnect implements by matching share and
+// username on every reconnect, lease or not. A non-lease reconnect is
+// therefore authenticated per user; what it is not is bound to the ClientGuid
+// that established it. The residual exposure is a second connection
+// authenticated as the SAME user on the same share, holding the persisted
+// FileID the reconnect blob carries, taking the handle over.
+//
+// Withdraw the scoping if the reconnect path stops matching the username — the
+// per-user check is what makes machine-independence tolerable — if a durable
+// FileID becomes reachable without that check, or if the non-lease reopen1a
+// rows stop depending on a random client_guid being accepted. Note that closing
+// it also changes what §3.3.5.9.13 condition 4 observes: the establishing and
+// current ClientGuid can then no longer diverge.
 func leaseReconnectClientGUIDMismatch(handle *lock.PersistedDurableHandle, connClientGUID [16]byte) bool {
 	return handle.LeaseKey != ([16]byte{}) &&
 		handle.ClientGUID != ([16]byte{}) &&
@@ -931,10 +964,10 @@ func sameOrUnknownClient(openClient, conn [16]byte) bool {
 // (Open.Session.Connection.ClientGuid), not the GUID that established the open.
 //
 // The two diverge for an open that reconnected from a different ClientGuid,
-// which this server allows on a non-lease DHnC/DH2C reconnect — the ClientGuid
-// gate on reconnect is applied to lease-backed handles alone, because a lease
-// is scoped per (ClientGuid, LeaseKey) and the smbtorture reopen ladders pin
-// that. Judging such an open by where it came from gets the failover wrong in
+// which this server allows on a non-lease DHnC/DH2C reconnect. That scoping is
+// deliberate and is stated once, with its ceiling, on
+// leaseReconnectClientGUIDMismatch; it is not restated here so the two cannot
+// drift. Judging such an open by where it came from gets the failover wrong in
 // both directions: it spares an open the failover should lose, and it displaces
 // one on the basis of a connection the open no longer has.
 //
