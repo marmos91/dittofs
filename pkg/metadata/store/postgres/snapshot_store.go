@@ -53,7 +53,11 @@ const (
 	// that into a legible refusal.
 	// v11 adds the filesystem_meta table section (migration 000046), raising
 	// the backup table count by one.
-	postgresSchemaVersion = uint32(11)
+	// v12 adds the quota_usage table section (migration 000048), likewise. An
+	// old binary reading a v12 stream would otherwise count sixteen sections,
+	// fail to recognise quota_usage and report the stream as corrupt instead of
+	// as a version it cannot read.
+	postgresSchemaVersion = uint32(12)
 )
 
 // backupTables lists every metadata table in FK-safe dependency order

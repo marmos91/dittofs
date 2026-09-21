@@ -61,6 +61,7 @@ var backupTables = []string{
 	// order. Omitting it dropped every block's sync state and live-chunk
 	// count across snapshot/restore and left them behind on Reset.
 	"block_records",
+	"quota_usage",
 }
 
 // isKnownTable guards Restore against an unexpected table name in the stream.

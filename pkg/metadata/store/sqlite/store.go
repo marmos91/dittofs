@@ -370,6 +370,10 @@ func initializeFilesystemCapabilities(ctx context.Context, db *sql.DB, caps meta
 // it is either included in the aggregate or applied on top of the rebuilt row —
 // and the read that follows sees it either way. Capturing deltas as well would
 // fold those commits in a second time.
+//
+// That is about correctness, not contention: the rebuild's own DELETE locks
+// every bucket for the length of both aggregate scans, so writers queue behind
+// it. See RebuildQuotaCounters for what that costs and what would remove it.
 func (s *SQLiteMetadataStore) RecomputeUsage(ctx context.Context) error {
 	if err := s.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		return tx.(*sqliteTransaction).Core.RebuildQuotaCounters(ctx)
