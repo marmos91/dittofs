@@ -1,4 +1,4 @@
-# Adapter convergence — roadmap as of 2026-09-09 (Wave 2 CLOSED)
+# Adapter convergence — roadmap (status refreshed 2026-09-21)
 
 Source of truth: `.planning/2026-09-08-adapter-convergence-MASTER-PLAN.md` (waves, corrections
 ledger) and `.planning/2026-09-08-adapter-convergence-TODO.md` (execution tracking). This file is
@@ -8,6 +8,59 @@ Verified against GitHub on 2026-09-09 ~23:40: Wave 2 fully landed — PRs #2494/
 all squash-merged, issues #2471/#2487/#2482/#2464/#2490 auto-closed, `origin/develop` at `7e5cd2e40`,
 worktrees and branches deleted, `graphify update .` re-run from the merged checkout (31,103 nodes).
 Note: develop carries 2 local docs commits (23de25e56 + eda765c47) not yet pushed to origin/develop.
+
+---
+
+## Status 2026-09-21
+
+Everything below this section is the 2026-09-09 snapshot and is kept as written. This block is the
+current one, verified against `origin/develop` @ `8c8c7546a` and the live PR list.
+
+**The `pkg/adapter` + `pkg/auth` refactor is closed.**
+`.planning/2026-09-16-pkg-adapter-auth-refactor-PLAN.md` carries its own disposition (closed
+2026-09-18, nine PRs). Spot-checked on develop rather than taken on trust: the `pkg/adapter` root is
+four files plus tests, `pkg/auth/auth.go` holds `Result` + `Translator`, `pkg/adapter/nfs/identity`
+is down to `mapper.go` + `static.go`, and no doc still describes the `shares: allowed_clients:` YAML
+that never existed. Nothing open tracks it. It never blocked a wave here and does not now.
+
+**Wave 5 is the only live wave.** The 2026-09-14 correction in the master plan is the operative
+analysis — the three boundaries this roadmap's table names are refuted there, measured. State of
+what replaced them:
+
+| Boundary | State |
+| --- | --- |
+| `smb/pending/` | ✅ extracted, in the PR that carried the correction |
+| `smb/changenotify/` | 🔄 **PR #2760**, rebased over 110 commits, conformance CI running |
+| the shared-types package | 🔶 **started by side effect** — #2760 moves `SMBResponseBase` into `internal/adapter/smb/types` and leaves an alias in `handlers` |
+| `handlers/info/`, `handlers/create/`, `smb/state/` | ❌ still blocked, and stay blocked until the shared types are out |
+
+**The shared-types package is required, not optional, and the measurement says so:** moving
+`handlers/info/` for real under a build overlay produced 199 compile errors and 33 symbols needing
+export across 437 call sites, because every candidate extraction needs `handlers` back. Remaining
+types to move after #2760: `SMBHandlerContext`, `OpenFile`, `TreeConnection`, `CreateContext`
+(today in `context.go`, `open_file.go`, `session_lifecycle.go`, `create.go`).
+
+**Ordering constraint, not a preference.** #2760 splits 97 change-notify tests across three
+destinations and touches the handlers test files. A handlers test migration started before it lands
+conflicts with it heavily. Sequence: #2760 merges → cut from the new develop → shared types →
+then the boundaries, each with its own test migration. All 128 in-package test files are white-box
+and there are zero `handlers_test` external files, so nothing moves for free.
+
+**Wave 7 has not started and needs an entry condition, not a first PR.** The master plan gives it
+one paragraph, and the perf-attempts ledger has already refuted enough adapter-adjacent axes
+(metadata-backend swaps, three group-commit mechanisms, prefetch-depth, postgres commit batching)
+that starting with code would re-walk them. What it names as un-walked is the **NFS/metadata
+per-read path** and the **per-op write path** — `WriteFile` size/mtime commit plus block-journal
+fsync plus the NFS WRITE/COMMIT round-trip failing to overlap. The first deliverable is a
+measurement plan naming the rig and the profile to take, per the ledger's rule that the rig lies
+about IOPS and only pprof and engine benchmarks are trusted.
+
+**Not a wave, done 2026-09-21:** the four inert `ShareOptions` fields (`AllowedClients`,
+`DeniedClients`, `RequireAuth`, `AllowedAuthMethods`) are retired — no reader, no writer, no
+surface that could set them, and stored as a JSON blob so old records decode fine without them.
+This was the follow-up the auth plan deliberately did not bundle. `sharecache.Clone` keeps a
+`decision:` marker: every field is a scalar now, so a struct copy is a full copy, and the next
+reference-bearing field has to deepen it again.
 
 ---
 
