@@ -57,9 +57,9 @@ type Service struct {
 	deps     Deps
 	interval time.Duration
 	stopCh   chan struct{}
-	// stopOnce closes stopCh exactly once. Stop is reachable from both the
-	// lifecycle drain and Runtime.Shutdown, and a check-then-close lets two
-	// callers both find the channel open and both close it, which panics.
+	// stopOnce closes stopCh exactly once. Stop is reachable from the lifecycle
+	// drain and from a test tearing a runtime down, and a check-then-close lets
+	// two callers both find the channel open and both close it, which panics.
 	stopOnce sync.Once
 	// started guards the goroutine against a second Start and tells Stop
 	// whether there is anything to wait for.

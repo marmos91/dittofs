@@ -1,13 +1,5 @@
 package shares
 
-// legacy_verify.go seeds a local tier's cold intervals from the metadata
-// manifest.
-//
-// A journal that opened empty over data that lives on the remote holds no
-// interval for those ranges, which makes them indistinguishable from POSIX
-// holes: a read zero-fills, does not fetch, and reports no error. Seeding
-// arms the cold fetch so the bytes come back from the remote instead.
-
 import (
 	"context"
 	"fmt"
@@ -20,10 +12,10 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// migrationProgressInterval is how often a seed loop whose cost scales with the
+// coldSeedProgressInterval is how often a seed loop whose cost scales with the
 // data reports what it has done so far: long enough that a small store logs
 // nothing extra, short enough that a large one never looks wedged.
-const migrationProgressInterval = 5 * time.Second
+const coldSeedProgressInterval = 5 * time.Second
 
 // coldSeedBatchExtents is how many extents SeedColdFromManifest buffers before
 // making them durable. Each flush is one fsync, so a bigger batch is strictly

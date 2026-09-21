@@ -16,3 +16,10 @@ var ErrShareAlreadyDisabled = errors.New("share is already disabled")
 // ErrShareNotFound re-exports models.ErrShareNotFound to preserve
 // errors.Is matching across package boundaries.
 var ErrShareNotFound = models.ErrShareNotFound
+
+// ErrShuttingDown is returned by the share operations that would install a
+// running block store after CloseBlockStores has closed them all. The REST
+// handlers already log an AddShare failure and leave the persisted row for the
+// next boot to load, so refusing during shutdown is behaviour they are written
+// for.
+var ErrShuttingDown = errors.New("shares service is shutting down")

@@ -161,7 +161,7 @@ type Runtime struct {
 	oplockBreaker atomic.Value
 
 	// snapInFlight tracks per-share in-flight snapshot orchestration
-	// goroutines so RemoveShare and Runtime.Shutdown can
+	// goroutines so RemoveShare and the shutdown drain can
 	// cancel + wait before tearing down state. Keyed by share name.
 	// See pkg/controlplane/runtime/snapshot.go.
 	snapInFlight   map[string]*snapInFlight
@@ -200,7 +200,7 @@ type Runtime struct {
 	// remote's sweep does, while leaving DISTINCT remotes fully parallel.
 	remoteGCLocks keyedMutex[sync.Mutex]
 
-	// runtimeCtx is a long-lived ctx cancelled by Runtime.Shutdown.
+	// runtimeCtx is a long-lived ctx cancelled by shutdownSnapshots.
 	// Snapshot orchestration goroutines derive their
 	// child ctx from this so they outlive any caller request ctx
 	// but die promptly on Runtime shutdown.
@@ -871,13 +871,13 @@ func (r *Runtime) Serve(ctx context.Context) error {
 	r.clientRegistry.StartSweeper(ctx)
 
 	// Launch the recycle-bin reaper alongside the client sweeper. Like the
-	// sweeper it exits on ctx cancellation (the lifecycle shutdown path) or on
-	// an explicit Trash().Stop() from Runtime.Shutdown.
+	// sweeper it exits on ctx cancellation, and on the Stop the lifecycle
+	// shutdown issues — which is what reaches it when that ctx is still live.
 	r.Trash().Start(ctx)
 
 	// Launch the snapshot scheduler unless disabled. Stopped and joined by
-	// shutdownSnapshots, which both the lifecycle drain and Runtime.Shutdown
-	// call; it also exits on ctx cancellation if neither ever runs.
+	// shutdownSnapshots, which the lifecycle drain calls; it also exits on ctx
+	// cancellation if that never runs.
 	// Policy-free fleets pay one ListPolicies query per tick.
 	if !r.snapSchedDisabled {
 		r.SnapshotScheduler().Start(ctx)
@@ -996,10 +996,9 @@ func (r *Runtime) drainStartupWorkers(ctx context.Context) {
 // ShutdownSnapshots exposes shutdownSnapshots for the lifecycle.Service
 // shutdown sequence so the normal server path (signal -> ctx cancel ->
 // lifecycle.shutdown) drains in-flight snapshot goroutines BEFORE
-// StopAllAdapters / CloseMetadataStores. Direct callers should prefer
-// Runtime.Shutdown which orchestrates the full sequence; this method
-// exists to satisfy lifecycle.SnapshotDrainer without exporting
-// internal lifecycle details.
+// StopAllAdapters / CloseMetadataStores. It exists to satisfy
+// lifecycle.SnapshotDrainer without exporting internal lifecycle details, and
+// a test that has finished with a runtime is its only other caller.
 func (r *Runtime) ShutdownSnapshots(ctx context.Context) {
 	r.shutdownSnapshots(ctx)
 }

@@ -978,9 +978,9 @@ func (r *Runtime) cancelAndWaitInFlightSnaps(shareName string) {
 }
 
 // shutdownSnapshots cancels all in-flight snapshot goroutines across all
-// shares and waits (bounded by ctx) for them to drain. Called as the FIRST
-// step of Runtime.Shutdown so snapshot orchestration cannot use-after-close
-// the metadata stores or control-plane DB.
+// shares and waits (bounded by ctx) for them to drain. Called before the
+// adapters stop and the stores close, so snapshot orchestration cannot
+// use-after-close the metadata stores or control-plane DB.
 //
 // Step 1 cancels runtimeCtx, which propagates to every child ctx derived in
 // registerSnapInFlight — every orchestration goroutine then notices the

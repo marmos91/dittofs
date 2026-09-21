@@ -2,7 +2,6 @@ package shares
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -355,12 +354,6 @@ type Service struct {
 	// registry's stores are closed and nothing re-opens them.
 	closed bool
 }
-
-// ErrShuttingDown is returned by the share operations that would install a
-// running block store after shutdown has closed them all. The REST handlers
-// already log an AddShare failure and leave the persisted row for the next
-// boot to load, so refusing here costs a restart's worth of nothing.
-var ErrShuttingDown = errors.New("shares service is shutting down")
 
 func New() *Service {
 	return &Service{

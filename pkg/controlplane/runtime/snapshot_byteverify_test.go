@@ -192,8 +192,9 @@ func (f *byteVerifyFixture) simulateRestart(reopen func(*testing.T) metadata.Sto
 		priorRemote = f.bs.RemoteStore()
 	}
 
-	// Release the outgoing block store's log-blob fd. Runtime.Shutdown closes
-	// metadata stores but NOT block stores, so without this the pre-restart
+	// Release the outgoing block store's log-blob fd. The teardown above closes
+	// this share's store, but a restart re-registers the share over the SAME
+	// fsDir, so without this the pre-restart
 	// FSStore keeps blobs/*.blob open on the SHARED fsDir. On Windows an open
 	// handle blocks the t.TempDir() RemoveAll of fsDir at teardown (Unix
 	// tolerates unlink-while-open). engine.Store.Close is idempotent, so the
@@ -235,8 +236,9 @@ func (f *byteVerifyFixture) simulateRestart(reopen func(*testing.T) metadata.Sto
 	copyRemoteBlocks(f.t, priorRemote, f.bs.RemoteStore())
 
 	// The freshly-opened block store holds a new log-blob fd on the SAME fsDir.
-	// f.rt.Shutdown (via the deferred fixture close) does not close block stores,
-	// so register a cleanup to release it. Registered here — after the fixture's
+	// Register a cleanup to release it rather than leaving it to the fixture's
+	// own close, whose ordering against the temp dir is not fixed from here.
+	// Registered here — after the fixture's
 	// t.TempDir() cleanup for fsDir — so t.Cleanup's LIFO order closes the fd
 	// BEFORE fsDir's RemoveAll runs (required on Windows). Close is idempotent.
 	f.t.Cleanup(func() {

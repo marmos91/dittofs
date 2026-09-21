@@ -358,8 +358,8 @@ func TestStop_NeverStartedReturnsImmediately(t *testing.T) {
 }
 
 // TestStop_ConcurrentCallersDoNotDoubleClose pins the idempotence the doc
-// comment claims. Stop is reachable from both the lifecycle drain and
-// Runtime.Shutdown, and the check-then-close it used to do let two callers both
+// comment claims. Stop is reachable from more than one teardown path, and the
+// check-then-close it used to do let two callers both
 // observe stopCh open and both close it — `panic: close of closed channel`,
 // taking down the process during shutdown, which is exactly when nobody is
 // watching for it.

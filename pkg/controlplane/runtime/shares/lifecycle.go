@@ -829,7 +829,7 @@ func SeedColdFromManifest(ctx context.Context, bs *engine.Store, metaStore metad
 			}
 		}
 		payloads++
-		if time.Since(lastLog) >= migrationProgressInterval {
+		if time.Since(lastLog) >= coldSeedProgressInterval {
 			lastLog = time.Now()
 			logger.Info("seeding cold intervals from the metadata manifest",
 				"payloads", payloads, "chunks", chunks,

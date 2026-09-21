@@ -284,20 +284,17 @@ type Deps struct {
 	// identity mapping. Nil yields an ephemeral SID (testing).
 	MachineSIDStore MachineSIDStore
 
-	// SnapshotDrainer is invoked as the FIRST shutdown step so in-flight
-	// snapshot orchestration goroutines are cancelled and drained BEFORE
-	// StopAllAdapters + CloseMetadataStores — otherwise those goroutines would
-	// race a closing metadata store / control-plane DB.
+	// SnapshotDrainer cancels and drains in-flight snapshot orchestration
+	// goroutines BEFORE StopAllAdapters + CloseMetadataStores — otherwise those
+	// goroutines would race a closing metadata store / control-plane DB.
 	SnapshotDrainer SnapshotDrainer
 
 	// BlockStoreCloser quiesces the per-share data plane before the metadata
 	// stores close.
 	BlockStoreCloser BlockStoreCloser
 
-	// BackgroundWorkerStopper signals the recycle-bin reaper and any in-flight
-	// async block GC to stop. Invoked as the very first shutdown step so both
-	// have the whole teardown to notice before the stores they write through
-	// close.
+	// BackgroundWorkerStopper is invoked as the FIRST shutdown step, so the
+	// workers it signals have the whole teardown in which to notice.
 	BackgroundWorkerStopper BackgroundWorkerStopper
 }
 
@@ -372,8 +369,7 @@ func (s *Service) serve(ctx context.Context, deps Deps) error {
 }
 
 func (s *Service) shutdown(deps Deps) {
-	// First, so the workers that write through the metadata stores have every
-	// step below in which to notice. Signal-only — see BackgroundWorkerStopper.
+	// See BackgroundWorkerStopper for why this is first and why it does not wait.
 	if deps.BackgroundWorkerStopper != nil {
 		deps.BackgroundWorkerStopper.StopBackgroundWorkers()
 	}

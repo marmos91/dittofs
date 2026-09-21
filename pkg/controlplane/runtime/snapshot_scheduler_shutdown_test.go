@@ -46,9 +46,9 @@ func (b *blockingSchedDeps) TouchPolicyRun(context.Context, string, time.Time) e
 
 // TestShutdownSnapshots_JoinsTheScheduler pins the wiring the control-plane
 // store's lifetime rests on. The scheduler reads and writes snapshot policies
-// through that store, and shutdownSnapshots is the one seam both the lifecycle
-// drain and Runtime.Shutdown route through, so a tick still inside the store
-// must not survive it: whoever called shutdownSnapshots closes the store next.
+// through that store, and shutdownSnapshots is the seam the lifecycle drain
+// routes through, so a tick still inside the store must not survive it:
+// whoever called shutdownSnapshots closes the store next.
 //
 // Before the scheduler was joined here nothing on the serving path stopped it
 // at all — it exited on context cancellation alone, unwaited.

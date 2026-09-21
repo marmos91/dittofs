@@ -604,19 +604,8 @@ func (s *Service) RebindShareBlockStore(
 		closedNow := s.closed
 		if closedNow || !stillRegistered || cur != share {
 			s.mu.Unlock()
-			if closeErr := recovered.BlockStore.Close(); closeErr != nil {
-				logger.Warn("rebind: failed to close recovered block store after the share became unpublishable",
-					"share", name, "error", closeErr)
-			}
-			if recovered.remoteConfigID != "" {
-				s.releaseRemoteStore(recovered.remoteConfigID)
-			}
+			s.discardUnpublished(name, recovered)
 			if closedNow {
-				// The old ref is left held on purpose. Whether a concurrent
-				// RemoveShare already released it is not knowable from here, and
-				// releasing it twice would underflow the shared ref-count and
-				// could close a remote other shares are still using. An unreleased
-				// ref on a process that is leaving costs nothing.
 				return fmt.Errorf("share %q could not be rebound and its previous binding could not be restored (%w); new binding also failed: %v",
 					name, ErrShuttingDown, buildErr)
 			}
@@ -649,20 +638,9 @@ func (s *Service) RebindShareBlockStore(
 	closedNow := s.closed
 	if closedNow || !stillRegistered || cur != share {
 		s.mu.Unlock()
-		// Tear down the store we just built and drop its own remote ref; leave
-		// the old ref to RemoveShare when a removal is what stopped us.
-		if closeErr := rebuilt.BlockStore.Close(); closeErr != nil {
-			logger.Warn("rebind: failed to close new block store after the share became unpublishable",
-				"share", name, "error", closeErr)
-		}
-		if rebuilt.remoteConfigID != "" {
-			s.releaseRemoteStore(rebuilt.remoteConfigID)
-		}
+		s.discardUnpublished(name, rebuilt)
 		if closedNow {
-			// The old ref is left held on purpose — see the recovery swap above:
-			// a release here could be the second one and underflow the shared
-			// ref-count, and holding it on a process that is leaving costs
-			// nothing. The share keeps its now-closed store, so its ops answer
+			// The share keeps its now-closed old store, so its ops answer
 			// ErrClosed for the rest of the shutdown.
 			return fmt.Errorf("share %q was rebound but the result could not be published: %w", name, ErrShuttingDown)
 		}
@@ -686,6 +664,27 @@ func (s *Service) RebindShareBlockStore(
 		"block_store_id", newConfig.BlockStoreID,
 		"mode", modeLabel(newConfig.BlockStoreID != ""))
 	return nil
+}
+
+// discardUnpublished tears down a block store a rebind built but could not
+// install, and drops the remote reference that store acquired.
+//
+// The OUTGOING store's remote reference is deliberately not touched here. From
+// this point it is not knowable whether a concurrent RemoveShare has already
+// released it, and releasing it twice underflows the shared ref-count and can
+// close a remote other shares are still using. The cost of the other direction
+// is a reference that outlives its share — on a process that is leaving, or on
+// one share whose removal already accounted for it.
+func (s *Service) discardUnpublished(name string, built *Share) {
+	if built.BlockStore != nil {
+		if closeErr := built.BlockStore.Close(); closeErr != nil {
+			logger.Warn("rebind: failed to close the block store that could not be published",
+				"share", name, "error", closeErr)
+		}
+	}
+	if built.remoteConfigID != "" {
+		s.releaseRemoteStore(built.remoteConfigID)
+	}
 }
 
 // acquireRemoteStore returns a shared remote store, creating it if needed.

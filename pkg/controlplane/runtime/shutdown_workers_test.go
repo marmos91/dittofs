@@ -3,7 +3,6 @@ package runtime
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -27,11 +26,9 @@ func (a *blockingAPIServer) Stop(context.Context) error { return nil }
 
 func (a *blockingAPIServer) Port() int { return 0 }
 
-// trashReapers counts the live recycle-bin reaper goroutines. Named rather than
-// counted in bulk so the answer is about the reaper and not about whatever else
-// the process is running.
+// trashReapers counts the live recycle-bin reaper goroutines.
 func trashReapers() int {
-	return strings.Count(goroutineDump(), "trash.(*Service).Start.func")
+	return countGoroutines("trash.(*Service).Start.func")
 }
 
 // TestServerShutdownStopsBackgroundWorkers is the regression guard for the two
@@ -90,7 +87,7 @@ func TestServerShutdownStopsBackgroundWorkers(t *testing.T) {
 	// A reaper that is not running before shutdown makes the assertion below
 	// vacuous. Serve launches it, so this waits for the goroutine to be
 	// scheduled rather than assuming it already is.
-	if !waitFor(30*time.Second, func() bool { return trashReapers() > base }) {
+	if !waitUntil(30*time.Second, func() bool { return trashReapers() > base }) {
 		t.Fatal("Serve started no recycle-bin reaper: there is nothing for the shutdown to stop")
 	}
 
@@ -118,16 +115,17 @@ func TestServerShutdownStopsBackgroundWorkers(t *testing.T) {
 		t.Error("the in-flight block GC run was never cancelled; it keeps writing through the metadata stores the shutdown closed")
 	}
 
-	if !waitFor(15*time.Second, func() bool { return trashReapers() <= base }) {
+	if !waitUntil(15*time.Second, func() bool { return trashReapers() <= base }) {
 		t.Errorf("the recycle-bin reaper is still running after shutdown (%d, %d before the runtime):\n%s",
 			trashReapers(), base, goroutineDump())
 	}
 }
 
-// waitFor polls cond until it holds or the budget expires. Polling rather than
-// sleeping a fixed span keeps the test off the scheduler's timing: a machine
-// under load takes longer to get there, it does not get there differently.
-func waitFor(budget time.Duration, cond func() bool) bool {
+// waitUntil polls cond until it holds or the budget expires. Polling rather
+// than sleeping a fixed span keeps the test off the scheduler's timing: a
+// machine under load takes longer to get there, it does not get there
+// differently.
+func waitUntil(budget time.Duration, cond func() bool) bool {
 	deadline := time.Now().Add(budget)
 	for {
 		if cond() {
