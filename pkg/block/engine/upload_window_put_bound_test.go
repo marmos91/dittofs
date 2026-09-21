@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	gosync "sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -293,5 +294,106 @@ func TestAdaptiveUploadTick_HeldSlotsWithoutUploadsDoNotRampTheWindow(t *testing
 	if got > startWindow {
 		t.Errorf("window ramped %d -> %d on slots that carried no uploads: the controller read commit backpressure as uplink saturation",
 			startWindow, got)
+	}
+}
+
+// TestPutSample_AccountingAndResetBaseline pins the contract takePutPeak owes
+// the controller: the peak covers the interval just ended, and the reset
+// baseline is the count still in flight, so a long-running upload keeps
+// counting into the next interval instead of vanishing from it.
+func TestPutSample_AccountingAndResetBaseline(t *testing.T) {
+	m := &RemoteSync{}
+
+	if got := m.takePutPeak(); got != 0 {
+		t.Fatalf("idle peak = %d, want 0", got)
+	}
+
+	for range 5 {
+		m.notePutInFlight(1)
+	}
+	if got := m.takePutPeak(); got != 5 {
+		t.Errorf("peak with 5 in flight = %d, want 5", got)
+	}
+	// All five are still uploading, so the next interval starts at five rather
+	// than at zero — the baseline is the live count, not a clean slate.
+	if got := m.takePutPeak(); got != 5 {
+		t.Errorf("baseline peak = %d, want the 5 still in flight", got)
+	}
+
+	for range 5 {
+		m.notePutInFlight(-1)
+	}
+	// The interval that just ended still had five in flight at its start.
+	if got := m.takePutPeak(); got != 5 {
+		t.Errorf("peak over the draining interval = %d, want 5", got)
+	}
+	if got := m.takePutPeak(); got != 0 {
+		t.Errorf("peak after the drain = %d, want 0", got)
+	}
+
+	// An unbalanced release must not wrap the counter into a huge in-flight
+	// count, which would pin windowLimited true forever.
+	m.notePutInFlight(-1)
+	if got := m.takePutPeak(); got != 0 {
+		t.Errorf("peak after an unbalanced release = %d, want 0", got)
+	}
+	// The baseline matters more than that first read: a counter allowed to go
+	// negative reports a negative in-flight count from here on, and a peak that
+	// can never reach the limit pins windowLimited false for good.
+	if got := m.takePutPeak(); got != 0 {
+		t.Errorf("baseline after an unbalanced release = %d, want 0 (the count went negative)", got)
+	}
+}
+
+// TestPutSample_ConcurrentBracketsDrainToZero hammers the bracket from many
+// goroutines and pins that the paired counters stay consistent: every +1 is
+// matched by its -1, so the sample drains to exactly zero. A lost or
+// double-counted update inside the compare-and-swap leaves a non-zero residue
+// that would bias windowLimited for the rest of the process's life.
+func TestPutSample_ConcurrentBracketsDrainToZero(t *testing.T) {
+	m := &RemoteSync{}
+
+	const workers = 16
+	const perWorker = 2000
+
+	// A sampler racing the brackets, because the reset is the half that reads
+	// and writes both fields in one step.
+	stop := make(chan struct{})
+	var sampler gosync.WaitGroup
+	sampler.Add(1)
+	go func() {
+		defer sampler.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				if got := m.takePutPeak(); got > workers {
+					t.Errorf("sampled peak %d exceeds the %d goroutines that can be in flight", got, workers)
+					return
+				}
+			}
+		}
+	}()
+
+	var work gosync.WaitGroup
+	for range workers {
+		work.Add(1)
+		go func() {
+			defer work.Done()
+			for range perWorker {
+				m.notePutInFlight(1)
+				m.notePutInFlight(-1)
+			}
+		}()
+	}
+	work.Wait()
+	close(stop)
+	sampler.Wait()
+
+	// Drain the interval, then confirm nothing is left in flight.
+	_ = m.takePutPeak()
+	if got := m.takePutPeak(); got != 0 {
+		t.Errorf("after %d balanced brackets the sample reads %d in flight, want 0", workers*perWorker, got)
 	}
 }

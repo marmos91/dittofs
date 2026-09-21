@@ -137,14 +137,23 @@ type RemoteSync struct {
 	uploadedBytesWindow atomic.Int64
 	uploadErrWindow     atomic.Int64
 
-	// putInFlight / putPeak track concurrent PutBlock calls directly, which is
-	// what the controller samples. The upload window cannot stand in for it:
-	// a slot is held across PutBlock AND the metadata commit that follows, so
-	// a slow per-file commit fills the window after the uploads have finished
-	// and the window's own peak then reports uplink saturation that is really
-	// commit backpressure. These count only the time inside PutBlock.
-	putInFlight atomic.Int64
-	putPeak     atomic.Int64
+	// putSample tracks concurrent PutBlock calls directly, which is what the
+	// controller samples. The upload window cannot stand in for it: a slot is
+	// held across PutBlock AND the metadata commit that follows, so a slow
+	// per-file commit fills the window after the uploads have finished and the
+	// window's own peak then reports uplink saturation that is really commit
+	// backpressure. This counts only the time inside PutBlock.
+	//
+	// The live count and the high-water mark share ONE word — peak in the high
+	// 32 bits, in-flight in the low 32 — so that sampling them is a single
+	// atomic step. Held as two atomics they could not be read together: a PUT
+	// that had incremented the in-flight count but not yet raised the peak
+	// would be folded into the baseline the sampler installed and then find
+	// nothing left to raise, so the interval it overlapped reported a peak one
+	// short. That loss only ever runs downward, and an under-reported peak is
+	// what reads as app-limited — the misclassification this whole path exists
+	// to remove.
+	putSample atomic.Uint64
 
 	// --- block carve path (object packing) ---
 
@@ -487,17 +496,47 @@ func (m *RemoteSync) noteBlockUploaded(bytes int64) {
 	m.uploadedBytesWindow.Add(bytes)
 }
 
+// putInFlightBits is the width of the live-count half of putSample; the peak
+// occupies the other half. Upload concurrency is bounded by the window
+// (MaxParallelUploads at the very most), so neither half can approach 2^32.
+const putInFlightBits = 32
+
+func packPutSample(peak, inFlight uint32) uint64 {
+	return uint64(peak)<<putInFlightBits | uint64(inFlight)
+}
+
+func unpackPutSample(v uint64) (peak, inFlight uint32) {
+	return uint32(v >> putInFlightBits), uint32(v)
+}
+
 // notePutInFlight brackets one PutBlock: +1 before the call, -1 after it
 // returns (success or failure). Delta rather than a start/end pair keeps it to
-// one sink hook, and the peak only ever moves on the way up.
+// one sink hook.
+//
+// The count and the peak move together in one compare-and-swap, so a sampler
+// never sees a PUT counted in one and missing from the other. This is a CAS
+// loop rather than a mutex on purpose: it brackets every upload, and the
+// previous version already ran a CAS loop here to raise the peak, so nothing
+// on the hot path got slower.
 func (m *RemoteSync) notePutInFlight(delta int64) {
-	cur := m.putInFlight.Add(delta)
-	if delta <= 0 {
+	if delta == 0 {
 		return
 	}
 	for {
-		p := m.putPeak.Load()
-		if cur <= p || m.putPeak.CompareAndSwap(p, cur) {
+		old := m.putSample.Load()
+		peak, inFlight := unpackPutSample(old)
+		if delta > 0 {
+			inFlight++
+			if inFlight > peak {
+				peak = inFlight
+			}
+		} else {
+			if inFlight == 0 {
+				return // unbalanced release; refuse to wrap the counter
+			}
+			inFlight--
+		}
+		if m.putSample.CompareAndSwap(old, packPutSample(peak, inFlight)) {
 			return
 		}
 	}
@@ -506,9 +545,16 @@ func (m *RemoteSync) notePutInFlight(delta int64) {
 // takePutPeak returns the high-water mark of concurrent PutBlock calls since
 // the last call and resets it to the count still in flight — the same contract
 // as DynamicSemaphore.TakePeak, so a control interval never inherits a peak
-// that belongs to an earlier one.
+// that belongs to an earlier one. Read and reset are one compare-and-swap, so
+// no upload can slip between them.
 func (m *RemoteSync) takePutPeak() int {
-	return int(m.putPeak.Swap(m.putInFlight.Load()))
+	for {
+		old := m.putSample.Load()
+		peak, inFlight := unpackPutSample(old)
+		if m.putSample.CompareAndSwap(old, packPutSample(inFlight, inFlight)) {
+			return int(peak)
+		}
+	}
 }
 
 // noteBlockCommitted records one block reaching the remote durably. Every carve
