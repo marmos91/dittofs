@@ -2,6 +2,7 @@ package metadata
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
@@ -269,6 +270,27 @@ func (s *Service) createEntry(
 	linkTarget string,
 	deviceMajor, deviceMinor uint32,
 ) (*File, *DirWcc, error) {
+	// The object's type comes from fileType, which each exported entry point
+	// pins itself (CreateFile, CreateDirectory, CreateSymlink) or takes as its
+	// own argument (CreateSpecialFile). attr.Type is never read for it, so a
+	// caller that sets attr.Type to something else gets an object of a
+	// different type than it asked for, with no error. Reject the mismatch
+	// rather than overwrite it silently.
+	//
+	// ponytail: FileTypeRegular is FileType's zero value, so an unset Type and
+	// an explicit FileTypeRegular cannot be told apart here — both are allowed
+	// through, which leaves a FileTypeRegular passed to CreateDirectory
+	// uncaught. Distinguishing them needs a non-zero "unspecified" sentinel
+	// threaded through every FileAttr literal in the tree; add it only if that
+	// direction of the mismatch ever actually occurs.
+	if attr != nil && attr.Type != 0 && attr.Type != fileType {
+		return nil, nil, &StoreError{
+			Code:    ErrInvalidArgument,
+			Message: fmt.Sprintf("requested attribute type %d does not match the type %d being created", attr.Type, fileType),
+			Path:    name,
+		}
+	}
+
 	store, err := s.storeForHandle(parentHandle)
 	if err != nil {
 		return nil, nil, err
