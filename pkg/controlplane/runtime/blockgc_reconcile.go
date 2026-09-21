@@ -33,30 +33,44 @@ const (
 // references, then lets the grace- and snapshot-hold-aware sweep delete the
 // chunks.
 func (r *Runtime) RunBlockGCReconcile(ctx context.Context, dryRun bool) (*engine.GCStats, error) {
-	return r.runBlockGCReconcile(ctx, dryRun, nil)
+	stats, _, err := r.runBlockGCReconcile(ctx, dryRun, nil)
+	return stats, err
 }
 
 // runBlockGCReconcile is RunBlockGCReconcile with an optional progress sink
 // wired into the sweep for async callers (StartBlockGC). progress is nil for
 // the synchronous public entrypoint and the startup reconcile-once.
-func (r *Runtime) runBlockGCReconcile(ctx context.Context, dryRun bool, progress func(engine.GCStats)) (*engine.GCStats, error) {
+//
+// It also reports the shares whose reap did NOT complete. A per-share failure
+// is logged and skipped rather than aborting the run — one broken share must
+// not stop the others — but the run is then not a reconcile of that share, and
+// the caller that persists the once-per-store marker has to know which ones to
+// leave unmarked, or the migration is recorded as done having never happened.
+func (r *Runtime) runBlockGCReconcile(
+	ctx context.Context,
+	dryRun bool,
+	progress func(engine.GCStats),
+) (*engine.GCStats, map[string]struct{}, error) {
 	graceCutoff := time.Now().Add(-r.reconcileGracePeriod())
 
 	total := &engine.GCStats{DryRun: dryRun}
+	failed := make(map[string]struct{})
 	for _, shareName := range r.ListShares() {
 		if err := ctx.Err(); err != nil {
-			return total, err
+			return total, failed, err
 		}
 		mds, err := r.GetMetadataStoreForShare(shareName)
 		if err != nil {
 			logger.Warn("RunBlockGCReconcile: get metadata store", "share", shareName, "err", err)
 			total.ErrorCount++
+			failed[shareName] = struct{}{}
 			continue
 		}
 		reaped, err := r.reapStrandedRows(ctx, shareName, mds, graceCutoff, dryRun)
 		if err != nil {
 			logger.Error("RunBlockGCReconcile: reap stranded rows", "share", shareName, "err", err)
 			total.ErrorCount++
+			failed[shareName] = struct{}{}
 			continue
 		}
 		total.StrandedRowsReaped += int64(reaped)
@@ -77,7 +91,7 @@ func (r *Runtime) runBlockGCReconcile(ctx context.Context, dryRun bool, progress
 		r.metrics.RecordGCStrandedRows(total.StrandedRowsReaped)
 	}
 	if err != nil {
-		return total, err
+		return total, failed, err
 	}
 	accumulateGCStats(total, sweep)
 	logger.Info("RunBlockGCReconcile: complete",
@@ -87,7 +101,7 @@ func (r *Runtime) runBlockGCReconcile(ctx context.Context, dryRun bool, progress
 		"bytesFreed", total.BytesFreed,
 		"errors", total.ErrorCount,
 	)
-	return total, nil
+	return total, failed, nil
 }
 
 // reconcileGracePeriod returns the configured GC grace period (default 1h). The
@@ -105,8 +119,21 @@ func (r *Runtime) reconcileGracePeriod() time.Duration {
 // referenced by any live inode. Rows newer than graceCutoff are skipped (a file
 // may have been created mid-scan). When dryRun is set, rows are counted but not
 // reaped.
+//
+// This runs with dryRun=false from the startup reconcile, in a goroutine
+// detached from shutdown, so every guard below is the only thing between a
+// misread of the namespace and deleted rows. It reaps the set difference, which
+// means it deletes precisely what the live set omits — so the live set must be
+// COMPLETE, not merely usable.
 func (r *Runtime) reapStrandedRows(ctx context.Context, shareName string, mds metadata.Store, graceCutoff time.Time, dryRun bool) (int, error) {
-	// True live set, from the namespace.
+	// True live set, from the namespace. Fail closed on ErrLiveSetIncomplete:
+	// the scan is deliberately best-effort and skips a namespace row it cannot
+	// decode, which is right for a reclaim and wrong here. Every payload owned
+	// by a skipped inode is missing from `live`, looks stranded, and would be
+	// reaped — the scan's own tolerance turned into data loss. A partial set
+	// cannot authorize a deletion, so the whole share is left alone; the caller
+	// records it as unreconciled, so the migration marker is not persisted for
+	// it and the next start tries again.
 	live := make(map[string]struct{})
 	if err := mds.EnumerateLivePayloadIDs(ctx, func(p string) error {
 		live[p] = struct{}{}
@@ -209,13 +236,24 @@ func (r *Runtime) RunBlockGCReconcileOnce(ctx context.Context) {
 	}
 
 	logger.Info("reconcile-once: running one-time stranded-row migration", "shares", pending)
-	if _, err := r.RunBlockGCReconcile(ctx, false); err != nil {
+	_, failed, err := r.runBlockGCReconcile(ctx, false, nil)
+	if err != nil {
 		logger.Error("reconcile-once: reconcile failed; marker not set, will retry next start", "err", err)
 		return
 	}
 
-	// Persist the marker on every pending store so we don't re-run.
+	// Persist the marker only on the stores that actually got reconciled. A
+	// share whose reap refused — an incomplete live set, an unreachable store —
+	// was skipped, not reconciled, and marking it would retire the migration for
+	// good: reconcileAlreadyDone no-ops every subsequent start, so its stranded
+	// rows are never reclaimed, silently, with no way back short of bumping
+	// reconcileVersion.
 	for _, shareName := range pending {
+		if _, bad := failed[shareName]; bad {
+			logger.Warn("reconcile-once: share not reconciled; marker withheld, will retry next start",
+				"share", shareName)
+			continue
+		}
 		mds, err := r.GetMetadataStoreForShare(shareName)
 		if err != nil {
 			continue

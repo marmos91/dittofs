@@ -1,6 +1,8 @@
 package metadata
 
 import (
+	"errors"
+
 	"github.com/marmos91/dittofs/pkg/block"
 )
 
@@ -67,3 +69,10 @@ var ErrFileChunkNotFound = block.ErrFileChunkNotFound
 // for backward compatibility — see block.ErrUnknownHash for the
 // canonical declaration and full contract..
 var ErrUnknownHash = block.ErrUnknownHash
+
+// ErrLiveSetIncomplete reports that EnumerateLivePayloadIDs streamed every
+// payload it could determine but could not read the whole namespace, so the set
+// it produced is a subset of the true live set. Absence from such a set says
+// nothing about whether a payload is live, which is why the stranded-row
+// reconcile refuses to reap on it.
+var ErrLiveSetIncomplete = errors.New("metadata: live payload set is incomplete")

@@ -120,15 +120,34 @@ func (s *BadgerMetadataStore) WriteSnapshot(ctx context.Context, w io.Writer) (*
 			// decodeFile handles both the binary codec (new writes) and the
 			// legacy JSON records (dual-read, #1735).
 			if bytes.HasPrefix(key, filePrefix) {
+				// The raw record was already dumped above, so a row skipped here
+				// still lands in the restored store while its hashes never reach
+				// the HashSet the durability verify checks. The restore would
+				// then reference chunks the snapshot never claimed. Abort, the
+				// same way loadManifest just below aborts for the same reason:
+				// an f: entry that cannot be read makes the snapshot's hash
+				// claim incomplete, and an incomplete claim is indistinguishable
+				// from a wrong one.
+				//
+				// decision: this is fail-closed with no escape hatch, and the
+				// ceiling is real. One undecodable f: row makes the share
+				// un-snapshottable outright: a scheduled policy retries and
+				// fails every interval, and restore is unreachable too, because
+				// it takes a safety snapshot first and leaves the share disabled
+				// when that fails. That is the price of never shipping a
+				// snapshot whose hash claim is short. Revisit if a repair path
+				// for a bad f: row exists — then this could abort with a
+				// diagnostic naming the key instead, and the operator would have
+				// somewhere to go.
 				file, err := decodeFile(val)
 				if err != nil {
-					logger.Warn("backup: malformed f: entry, skipping hash extraction",
-						"key", string(key), "error", err)
-					continue
+					return fmt.Errorf("%w: decode f: entry %s: %v",
+						metadata.ErrSnapshotAborted, string(key), err)
 				}
 				// The manifest lives in fm:<uuid> (legacy blobs embed it). It
 				// feeds the durability HashSet, so a missed load would ship an
-				// incomplete snapshot — abort rather than silently under-count.
+				// incomplete snapshot — abort rather than silently under-count,
+				// exactly as the decode above does.
 				if err := loadManifest(txn, file); err != nil {
 					return fmt.Errorf("%w: load manifest for %s: %v",
 						metadata.ErrSnapshotAborted, string(key), err)

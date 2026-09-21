@@ -230,7 +230,8 @@ func (r *Runtime) StartBlockGC(shareName string, dryRun, reconcile bool, gracePe
 	}
 	return r.gcReg.start(shareName, dryRun, reconcile, func(ctx context.Context, progress func(engine.GCStats)) (*engine.GCStats, error) {
 		if reconcile {
-			return r.runBlockGCReconcile(ctx, dryRun, progress)
+			stats, _, rerr := r.runBlockGCReconcile(ctx, dryRun, progress)
+			return stats, rerr
 		}
 		return r.runBlockGCForShare(ctx, shareName, dryRun, progress, gracePeriod)
 	}), nil

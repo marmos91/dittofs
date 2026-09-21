@@ -612,12 +612,35 @@ func (s *BadgerMetadataStore) GetFileChunkAtOrAfterOffset(_ context.Context, pay
 
 // EnumerateLivePayloadIDs streams every distinct PayloadID referenced by a live
 // inode. It scans the f: inode keyspace, decodes each file record, and collects
-// distinct non-empty PayloadIDs. Corrupt inode records are skipped so a single
-// bad row cannot block the reconcile. Hardlinks share one f: key, so DISTINCT
-// yields one payloadID per content. nlink=0 (unlinked) inodes are excluded
-// (#1433): their payload is dead, so the reconcile treats it as stranded.
+// distinct non-empty PayloadIDs. Hardlinks share one f: key, so DISTINCT yields
+// one payloadID per content. nlink=0 (unlinked) inodes are excluded (#1433):
+// their payload is dead, so the reconcile treats it as stranded.
+//
+// The scan is best-effort by design: an undecodable inode row is skipped so a
+// single bad row cannot block reclaiming everything else. It is then counted,
+// and a non-zero count makes this return ErrLiveSetIncomplete AFTER streaming
+// every payload it did determine. The set is still delivered; what the error
+// says is that it is a SUBSET of the live set, so absence from it is not
+// evidence a payload is dead.
+//
+// decision: fail-open on the scan, fail-closed at the caller. Skipping is right
+// for a reclaim — the alternative is one corrupt inode pinning a whole store's
+// garbage forever — and wrong for a diff, because reapStrandedRows deletes
+// exactly what the set omits. Splitting it this way keeps both: the skip stays,
+// and the error is what stops it from authorizing a deletion. Reconsider only
+// if a caller appears that must reap from a partial set; it would have to state
+// why deleting a live payload is acceptable there.
+//
+// This is the opposite posture from the GC MARK pass (enumerateFileChunksTxn
+// below), which aborts on the first undecodable row. Both are fail-closed where
+// it counts and they differ only in where "it counts" falls: the mark pass
+// builds the set that PROTECTS chunks, so a row it drops gets swept — it must
+// not produce a partial set at all. This scan builds a set that AUTHORIZES
+// deletion, so a partial set is safe to hand to a reader and unsafe to hand to
+// the reaper, which is the distinction the error draws.
 func (s *BadgerMetadataStore) EnumerateLivePayloadIDs(ctx context.Context, fn func(payloadID string) error) error {
 	seen := make(map[string]struct{})
+	skipped := 0
 	err := s.db.View(func(txn *badger.Txn) error {
 		prefix := []byte(prefixFile)
 		opts := badger.DefaultIteratorOptions
@@ -633,8 +656,9 @@ func (s *BadgerMetadataStore) EnumerateLivePayloadIDs(ctx context.Context, fn fu
 			verr := it.Item().Value(func(val []byte) error {
 				file, derr := decodeFile(val)
 				if derr != nil {
-					// Skip corrupt inode rows rather than fail-closed: a single
-					// bad row must not block reclaiming everything else.
+					// Skipped, not ignored: the count below turns the gap into
+					// ErrLiveSetIncomplete once the scan finishes.
+					skipped++
 					return nil
 				}
 				if fileLinkCountTxn(txn, file) == 0 {
@@ -661,6 +685,9 @@ func (s *BadgerMetadataStore) EnumerateLivePayloadIDs(ctx context.Context, fn fu
 		if err := fn(payloadID); err != nil {
 			return err
 		}
+	}
+	if skipped > 0 {
+		return fmt.Errorf("%w: %d undecodable inode rows skipped", metadata.ErrLiveSetIncomplete, skipped)
 	}
 	return nil
 }
@@ -769,7 +796,21 @@ func listFileChunksTxn(txn *badger.Txn, payloadID string) []*metadata.FileChunk 
 	return result
 }
 
-// enumerateFileChunksTxn streams the GC mark live set: the UNION of the CAS
+// enumerateFileChunksTxn streams the GC mark live set. The set it builds is what
+// PROTECTS chunks from the sweep, so a row missing from it is a reaped live
+// chunk: an undecodable f: row or manifest aborts the walk rather than being
+// skipped, and a link count that cannot be read resolves to alive (see
+// defaultLinkCount) rather than to the nlink=0 that would drop the file.
+//
+// Do not read that as the posture of every scan over the same keyspace.
+// EnumerateLivePayloadIDs above skips an undecodable inode row on purpose, and
+// is fail-closed a layer up instead: it counts the skips and returns
+// ErrLiveSetIncomplete so its one destructive consumer refuses, while a
+// read-only consumer still gets the partial set. The two differ because the
+// meaning of a missing row is opposite — here it costs a live chunk, there it
+// costs a reclaim that can be retried.
+//
+// The set itself is the UNION of the CAS
 // index (fb: entries) and the per-file manifest (f: File.Blocks). Unioning both
 // makes the live set a strict SUPERSET of both structures — the snapshot Backup
 // HashSet is built from f: File.Blocks alone, so a hash present only there
@@ -890,22 +931,47 @@ func enumeratePrefixFileChunks(ctx context.Context, txn *badger.Txn, fn func(blo
 func fileLinkCountTxn(txn *badger.Txn, file *metadata.File) uint32 {
 	item, err := txn.Get(keyLinkCount(file.ID))
 	if err != nil {
-		// No l: key yet: mirror GetFile's default-by-type so a freshly created
-		// file (link count not persisted yet) is never treated as dead. The
-		// embedded File.Nlink may be zero/stale and must NOT be trusted here.
-		if file.Type == metadata.FileTypeDirectory {
-			return 2
-		}
-		return 1
+		return defaultLinkCount(file)
 	}
-	nlink := file.Nlink
+	var (
+		nlink uint32
+		read  bool
+	)
 	_ = item.Value(func(val []byte) error {
 		if c, derr := decodeUint32(val); derr == nil {
-			nlink = c
+			nlink, read = c, true
 		}
 		return nil
 	})
+	if !read {
+		// An l: key that will not decode says nothing about the link count, so
+		// it is treated exactly like one that is not there yet. The embedded
+		// File.Nlink is NOT the fallback: encodeFile never writes it, so it
+		// decodes as 0 — and 0 is the one value that means "dead" to every
+		// caller below.
+		return defaultLinkCount(file)
+	}
 	return nlink
+}
+
+// defaultLinkCount is the link count assumed when the l: key cannot be read —
+// absent, or present and undecodable. It mirrors GetFile's default-by-type.
+//
+// decision: an unreadable link count resolves to ALIVE, never to dead, in all
+// three consumers of this value. Dead is the terminal answer everywhere it is
+// used: EnumerateLivePayloadIDs drops the payload from the live set and the
+// stranded-row reaper deletes its rows; the GC mark pass drops its chunks and
+// the sweep reclaims them; snapshot Backup omits its hashes from the durability
+// claim. Alive only costs a reclaim that a later pass can still make, once the
+// row is repaired. The cost of this rule is that a payload behind a corrupt l:
+// key is never reclaimed; overturn it only if something appears that must
+// distinguish dead from unreadable, and it would have to read the link count
+// from somewhere this function cannot.
+func defaultLinkCount(file *metadata.File) uint32 {
+	if file.Type == metadata.FileTypeDirectory {
+		return 2
+	}
+	return 1
 }
 
 // splitBlockID splits a block ID into (payloadID, blockIdx) on the LAST

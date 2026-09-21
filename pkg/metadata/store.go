@@ -521,6 +521,14 @@ type Store interface {
 	//
 	// Implementations MUST drain the result set before invoking fn
 	// (collect-then-call) and honor ctx.Done() throughout.
+	//
+	// A backend that cannot read every namespace row still streams the ones it
+	// could read — one unreadable row must not block reclaiming everything else
+	// — but it MUST then return an error wrapping ErrLiveSetIncomplete. fn has
+	// already been called for every payload the scan could determine, so the
+	// error does not mean "no result": it means the result is a SUBSET of the
+	// live set. Callers that only consume the set may ignore it; callers that
+	// treat absence from the set as authority to delete must refuse.
 	EnumerateLivePayloadIDs(ctx context.Context, fn func(payloadID string) error) error
 
 	// ========================================================================
