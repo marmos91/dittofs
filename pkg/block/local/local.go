@@ -67,12 +67,19 @@ type LocalStore interface {
 	// data. Uncertainty resolves toward the answer that forces another
 	// question, never toward the one that ends the inquiry.
 	//
-	// The engine's own DataExtents map obeys the same rule through the opposite
-	// token: it may over-report data but must never under-report it, because
-	// there the terminal answer is "hole" (a sparse-copy client skips a range
-	// the map calls empty) while "data" merely forces a READ. Same principle,
-	// inverted polarity — do not harmonize the two by making them agree on a
-	// token.
+	// The counterpart surface is engine.Store.DataExtents, in
+	// pkg/block/engine/dataextents.go, which obeys this same rule through the
+	// opposite token: it may over-report data but must never under-report it.
+	// The polarity differs because the terminal answer differs — there "hole"
+	// is what ends the inquiry, since a sparse-copy client skips a range the
+	// map calls empty, while "data" merely forces a READ that can still refuse.
+	//
+	// So the two surfaces disagree on which token is the safe one BY DESIGN.
+	// Anyone reading both in one sitting will be tempted to tidy them into
+	// agreement; that edit is the bug, in whichever direction it is made. The
+	// rule they share is the sentence above about uncertainty, not the token
+	// each one reaches for. engine.Store.DataExtents carries the reverse
+	// pointer back here.
 	ReadAt(ctx context.Context, id journal.FileID, offset int64, dst []byte) (n int, st journal.ReadState, err error)
 
 	// Hydrate writes bytes fetched from the remote store during a cold read.

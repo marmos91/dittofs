@@ -25,6 +25,19 @@ import (
 // ignore an error from here and fall back to the CAS block list, which cannot
 // see an unplaceable row either, so a row whose range is unknown widens the map
 // to the whole file rather than failing.
+//
+// The counterpart surface is local.LocalStore.ReadAt's ReadState.Hole, in
+// pkg/block/local/local.go, which obeys the same underlying rule through the
+// opposite token: there a range the tier cannot classify reports Hole true,
+// never false. The polarity differs because the terminal answer differs — here
+// "hole" ends the inquiry (a sparse-copy client skips the range), while there
+// "not a hole" ends it (the engine serves the zero fill without hydrating).
+//
+// The shared rule is that uncertainty resolves toward the answer forcing
+// another question, never toward the one that ends the inquiry. The token that
+// satisfies it is opposite on each surface BY DESIGN, so do not reconcile the
+// two by making them agree on a token — that edit is the bug in whichever
+// direction it is made.
 func (bs *Store) DataExtents(ctx context.Context, payloadID string, fileSize uint64) ([][2]uint64, error) {
 	if err := bs.enter(); err != nil {
 		return nil, err
