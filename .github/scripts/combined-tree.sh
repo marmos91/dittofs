@@ -194,7 +194,9 @@ cmd_run() {
     # files all sit behind a build tag resolves to no package at all, and a
     # package both sides deleted resolves to nothing either; either one would
     # be reported as a broken tree rather than an absent one, and a gate whose
-    # red is routinely false is a gate nobody reads.
+    # red is routinely false is a gate nobody reads. It cannot hide a real
+    # break: `-e` still lists a package that fails to type-check or imports
+    # something that does not exist, because it has files.
     # shellcheck disable=SC2086 # patterns is a deliberate list of package paths
     patterns=$(go list -e \
       -f '{{if or .GoFiles .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' \
