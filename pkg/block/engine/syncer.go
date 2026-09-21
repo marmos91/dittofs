@@ -840,14 +840,9 @@ func (m *RemoteSync) flushFn() (journal.FlushFunc, func(context.Context, journal
 	if params.Validate() != nil {
 		params = chunker.DefaultParams()
 	}
-	var window int
-	var blockSize int64
-	if jp, ok := m.local.(interface {
-		UploadConcurrency() int
-		BlockSize() int64
-	}); ok {
-		window, blockSize = jp.UploadConcurrency(), jp.BlockSize()
-	}
+	// A tier with no flush shape of its own answers 0 for both and the
+	// defaults below stand in.
+	window, blockSize := m.local.UploadConcurrency(), m.local.BlockSize()
 	if window <= 0 {
 		window = defaultBlockUploadWindow
 	}

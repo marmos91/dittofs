@@ -385,10 +385,6 @@ func (s *Service) GetWarm(jobID string) (*WarmJob, bool) {
 	return s.warmJobs.get(jobID)
 }
 
-// verifyReadsSetter is implemented by a local tier that can turn per-record
-// warm-read verification on and off while the share is serving.
-type verifyReadsSetter interface{ SetVerifyReads(bool) }
-
 // ApplyDurability puts a share's durability choice into effect on the running
 // share.
 //
@@ -412,9 +408,7 @@ func (s *Service) ApplyDurability(name string, requireDurableCommit, relaxedMeta
 	// A share acknowledging durably verifies warm reads per-record so on-disk
 	// corruption is caught rather than served; the relaxed tier keeps the raw
 	// fast read. Mirrors what the build path applies.
-	if vr, ok := bs.Local().(verifyReadsSetter); ok {
-		vr.SetVerifyReads(!relaxedMetadataCommit)
-	}
+	bs.Local().SetVerifyReads(!relaxedMetadataCommit)
 
 	if wb, ok := metadataSvc.(MetadataWritebackSetter); ok {
 		wb.SetShareWriteback(name, relaxedMetadataCommit)

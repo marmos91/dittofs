@@ -52,11 +52,11 @@ type OfflineReadiness struct {
 // remote. An indeterminate readiness is never safe.
 func (o OfflineReadiness) Safe() bool { return o.Known && o.RemoteOnlyBytes == 0 }
 
-// coldRangeReporter is the local-tier capability this needs: which of its
-// ranges are remote-only, which ranges it describes for one file, and whether
-// it has been told what the manifest holds yet. The journal-backed tier
-// satisfies it; the in-memory tier does not, and asserting for it here keeps
-// that from becoming another method every fake has to implement.
+// coldRangeReporter is the slice of local.LocalStore the gating rules read:
+// which of a tier's ranges are remote-only, which ranges it describes for one
+// file, and whether its account of the first can be trusted yet. Every local
+// tier answers all three, so this narrows what the rules below may reach for
+// rather than selecting which tiers they apply to.
 type coldRangeReporter interface {
 	ColdExtents(ctx context.Context) (bytes int64, extents int64, err error)
 	ColdSeeded() bool
@@ -114,18 +114,7 @@ func (bs *Store) memoizedShortfall(ctx context.Context, index coldRangeReporter)
 // answering zero, because a zero here reads as "provably offline safe" and
 // would say that about exactly the shares whose data is most likely to be
 // remote-only.
-func offlineReadinessOf(ctx context.Context, localTier any, hasRemote bool, shortfall shortfallFunc) OfflineReadiness {
-	reporter, ok := localTier.(coldRangeReporter)
-	if !ok {
-		// A tier that cannot report residency and has no remote also has
-		// nothing to evict to, so everything it holds is local. With a remote
-		// it could hold evicted ranges it cannot tell us about.
-		if !hasRemote {
-			return OfflineReadiness{Known: true}
-		}
-		return OfflineReadiness{Reason: "local tier does not track remote-only ranges"}
-	}
-
+func offlineReadinessOf(ctx context.Context, reporter coldRangeReporter, hasRemote bool, shortfall shortfallFunc) OfflineReadiness {
 	// An unseeded tier holds no interval for ranges that live only on the
 	// remote, so its index would report them as absent rather than cold and the
 	// count would come back zero on the worst case this exists to catch.

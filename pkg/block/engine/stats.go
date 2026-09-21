@@ -260,9 +260,5 @@ func (bs *Store) MaxLocalBytes() int64 {
 	if bs.closed {
 		return 0
 	}
-	type capper interface{ MaxLocalBytes() int64 }
-	if c, ok := bs.local.(capper); ok {
-		return c.MaxLocalBytes()
-	}
-	return 0
+	return bs.local.MaxLocalBytes()
 }

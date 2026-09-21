@@ -342,3 +342,89 @@ func (s *MemoryStore) WriteVersion() uint64 { return 0 }
 // Invalidate is a no-op: the memory store has no durable tier to demote and no
 // remote copy to fall back to, so there is nothing a read could fetch instead.
 func (s *MemoryStore) Invalidate(_ context.Context, _ journal.FileID, _, _ int64) error { return nil }
+
+// MaxLocalBytes reports the store's disk cap. It has none: the buffers grow in
+// the heap until the process runs out of it, which 0 (uncapped) states.
+func (s *MemoryStore) MaxLocalBytes() int64 { return 0 }
+
+// ColdExtents reports no remote-only ranges. Nothing here ever demotes bytes to
+// the remote tier — Evict frees nothing — so every byte the store has been
+// handed is still in its buffer and none has to be fetched back to serve.
+func (s *MemoryStore) ColdExtents(context.Context) (int64, int64, error) { return 0, 0, nil }
+
+// ColdSeeded reports that the store needs no seeding.
+//
+// decision: seeding exists so a tier that was restarted against an existing
+// manifest knows which ranges live only on the remote, and this store has no
+// such ranges: it never evicts, so a range it describes is a range it holds and
+// a range it does not describe was never written to it. What it has forgotten
+// across a restart — everything — is caught by the caller's manifest
+// cross-check rather than by this flag, which only guards the cold tally.
+// Withdraw this the moment the store grows eviction or any other way to hold a
+// range it cannot serve.
+func (s *MemoryStore) ColdSeeded() bool { return true }
+
+// UploadConcurrency and BlockSize report no preference: the store does not size
+// its own flushes (Flush hands whole dirty runs to the caller's fn without
+// framing or uploading them), so the caller's defaults apply.
+func (s *MemoryStore) UploadConcurrency() int { return 0 }
+func (s *MemoryStore) BlockSize() int64       { return 0 }
+
+// JournalVersion reports no watermark. The store keeps no log: a write lands in
+// the buffer in place and leaves no record behind it, so there is no point in
+// time to number. Same reason WriteVersion reports 0.
+func (s *MemoryStore) JournalVersion() uint64 { return 0 }
+
+// SetPinVersion does nothing.
+//
+// decision: a pin keeps reclamation from dropping the bytes a live snapshot
+// still needs, and nothing here reclaims — Evict frees nothing and there is no
+// GC — so the bytes a pin would protect are already safe for as long as the
+// process lives. Withdraw this if the store ever frees a buffer it was not
+// asked to delete.
+func (s *MemoryStore) SetPinVersion(uint64) {}
+
+// RestoreToVersion does nothing and reports success.
+//
+// decision: the store holds exactly one view of each file — the current one —
+// because writes overwrite in place and no prior version is kept, so the view
+// v names either is that one or was never recorded. Rewinding to the only view
+// there is is what doing nothing achieves. This is why the restore
+// orchestration reaches for it only on a share whose local tier is the sole
+// durable copy of the bytes, which this store is never configured to be.
+// Withdraw this if the store ever versions its buffers.
+func (s *MemoryStore) RestoreToVersion(context.Context, uint64) error { return nil }
+
+// DurableExtent declines to answer.
+//
+// decision: this store's durability is a configured claim (SetDurable), not a
+// property of a substrate it writes to, so it cannot map any byte to a stable
+// copy — including when the claim is true. ok=false is the interface's
+// "unknown", which callers must not read as "nothing is durable"; answering
+// (0, true) instead would publish a zero durable size for a store a test has
+// deliberately declared durable. Withdraw this if the store ever gains a
+// backing file whose fsync it can observe.
+func (s *MemoryStore) DurableExtent(context.Context, journal.FileID) (int64, bool) {
+	return 0, false
+}
+
+// SetVerifyReads does nothing.
+//
+// decision: verification re-checks a resident byte against the checksum the
+// tier recorded beside it, and this store records none — ReadAt copies the
+// buffer back verbatim, so a read cannot disagree with anything. There is no
+// fast path to opt into and no corruption for the slow one to catch. Withdraw
+// this if reads ever pass through an encoding that could fail.
+func (s *MemoryStore) SetVerifyReads(bool) {}
+
+// SeedCold and SeedColdBatch record nothing and report success.
+//
+// decision: a cold marker says "the remote holds these bytes and this tier does
+// not", and this store has no way to describe a range it does not hold — an
+// entry here IS its bytes, so there is no marker to attach and a read of an
+// unseeded range already falls through as the hole it is. Recording the seed
+// would be indistinguishable from discarding it. Withdraw this if the store
+// ever grows an interval index that can describe a range without its bytes,
+// at which point it must hold the markers or reads of those ranges zero-fill.
+func (s *MemoryStore) SeedCold(context.Context, journal.FileID, [][2]int64) error { return nil }
+func (s *MemoryStore) SeedColdBatch(context.Context, []journal.ColdSeed) error    { return nil }

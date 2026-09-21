@@ -135,10 +135,11 @@ func TestSyncerClose_JoinsInFlightDownloadWorker(t *testing.T) {
 // join is the only thing Close can block on.
 func TestSyncerClose_JoinsCarveDispatcher(t *testing.T) {
 	fl := &carveFanoutLocal{
-		files:   []string{"pinned"},
-		started: make(chan string, 1),
-		release: make(chan struct{}),
-		carved:  map[string]int{},
+		LocalStore: memorylocal.New(),
+		files:      []string{"pinned"},
+		started:    make(chan string, 1),
+		release:    make(chan struct{}),
+		carved:     map[string]int{},
 	}
 
 	cfg := DefaultConfig()

@@ -11,13 +11,16 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/block/local"
+	"github.com/marmos91/dittofs/pkg/block/local/memory"
 	"github.com/marmos91/dittofs/pkg/block/syncer"
 )
 
-// carveFanoutLocal is a minimal LocalStore that records per-file Flush calls and
+// carveFanoutLocal is a LocalStore that records per-file Flush calls and
 // synchronizes on channels so a test can observe how many flush passes run at
-// once. Only ListFiles + Flush are exercised by carvePass; the rest of the
-// interface is embedded (nil) and never called.
+// once. It overrides ListFiles + Flush; everything else is delegated to a real
+// in-memory store rather than to a nil embed, so a carve path that reaches for
+// another part of the interface gets that store's honest answer instead of a
+// nil dereference.
 type carveFanoutLocal struct {
 	local.LocalStore
 	files    []string
@@ -52,10 +55,11 @@ func (f *carveFanoutLocal) Flush(_ context.Context, id journal.FileID, _ journal
 // window — the fix that gives the uploader more than one block in flight.
 func TestCarvePass_FansOutBoundedByUploadWindow(t *testing.T) {
 	fl := &carveFanoutLocal{
-		files:   []string{"a", "b", "c", "d", "e"},
-		started: make(chan string, 5),
-		release: make(chan struct{}),
-		carved:  map[string]int{},
+		LocalStore: memory.New(),
+		files:      []string{"a", "b", "c", "d", "e"},
+		started:    make(chan string, 5),
+		release:    make(chan struct{}),
+		carved:     map[string]int{},
 	}
 	const window = 3
 	m := &RemoteSync{

@@ -572,25 +572,18 @@ type ColdSeed struct {
 // torn-down store. Seeding in batches rather than one call for a whole manifest
 // is what keeps that wait short.
 //
-// No-op when the local store has no remote-hydration support (e.g. the in-memory
-// test store), which the caller only hits on non-remote paths anyway.
+// A tier that cannot hold a range it does not have records nothing, which the
+// caller only hits on non-remote paths anyway.
 func (bs *Store) SeedColdBatch(ctx context.Context, seeds []ColdSeed) error {
 	if err := bs.enter(); err != nil {
 		return err
 	}
 	defer bs.closeMu.RUnlock()
-	type coldSeeder interface {
-		SeedColdBatch(ctx context.Context, seeds []journal.ColdSeed) error
-	}
-	cs, ok := bs.local.(coldSeeder)
-	if !ok {
-		return nil
-	}
 	js := make([]journal.ColdSeed, 0, len(seeds))
 	for _, sd := range seeds {
 		js = append(js, journal.ColdSeed{ID: journal.FileID(sd.PayloadID), Extents: sd.Extents})
 	}
-	return cs.SeedColdBatch(ctx, js)
+	return bs.local.SeedColdBatch(ctx, js)
 }
 
 // SeedColdRefs gives the local tier an account of the ranges a payload's chunk
@@ -622,16 +615,8 @@ func (bs *Store) SeedColdRefs(ctx context.Context, payloadID string, refs []bloc
 	// nowhere to hydrate from and fails its reads closed, where the same range
 	// left as a hole reads as the zeros it is. Local-only copies materialize real
 	// bytes into the destination's own journal, which describes them already, so
-	// there is no work here rather than work being refused — the same shape as
-	// the no-remote-hydration case below.
+	// there is no work here rather than work being refused.
 	if !bs.HasRemoteStore() {
-		return nil
-	}
-	type coldSeeder interface {
-		SeedCold(ctx context.Context, id journal.FileID, extents [][2]int64) error
-	}
-	cs, ok := bs.local.(coldSeeder)
-	if !ok {
 		return nil
 	}
 	extents := make([][2]int64, 0, len(refs))
@@ -650,7 +635,7 @@ func (bs *Store) SeedColdRefs(ctx context.Context, payloadID string, refs []bloc
 	if len(extents) == 0 {
 		return nil
 	}
-	return cs.SeedCold(ctx, journal.FileID(payloadID), extents)
+	return bs.local.SeedCold(ctx, journal.FileID(payloadID), extents)
 }
 
 // DiscardLocalContent drops the local tier's whole account of a payload, so a
@@ -698,44 +683,24 @@ func (bs *Store) DiscardLocalContent(ctx context.Context, payloadID string) erro
 // RestoreToVersion rewinds the local journal to a snapshot's version watermark
 // and re-materializes that point-in-time view durably at the log head. It is the
 // local-only snapshot-restore primitive the runtime calls instead of
-// ResetLocalState when the share has no remote store (the journal is the only
-// durable copy of the bytes). No-op when the local store is not journal-backed
-// (e.g. the in-memory test store), which the caller only reaches off this path.
+// ResetLocalState when the share has no remote store (the local tier is the
+// only durable copy of the bytes).
 func (bs *Store) RestoreToVersion(ctx context.Context, v uint64) error {
 	if err := bs.enter(); err != nil {
 		return err
 	}
 	defer bs.closeMu.RUnlock()
-	type restorer interface {
-		RestoreToVersion(ctx context.Context, v uint64) error
-	}
-	r, ok := bs.local.(restorer)
-	if !ok {
-		return nil
-	}
-	return r.RestoreToVersion(ctx, v)
+	return bs.local.RestoreToVersion(ctx, v)
 }
 
-// SetPinVersion sets the local journal's snapshot pin watermark so GC/eviction
+// SetPinVersion sets the local tier's snapshot pin watermark so GC/eviction
 // keep the bytes of every at-or-below-watermark record (the durable copy for a
-// live local-only snapshot). No-op when the local store is not journal-backed.
-func (bs *Store) SetPinVersion(v uint64) {
-	type pinner interface{ SetPinVersion(v uint64) }
-	if p, ok := bs.local.(pinner); ok {
-		p.SetPinVersion(v)
-	}
-}
+// live local-only snapshot).
+func (bs *Store) SetPinVersion(v uint64) { bs.local.SetPinVersion(v) }
 
-// JournalVersion returns the local journal's current LSN watermark, captured by
-// snapshot create (after DrainRollups) to record the snapshot's version. Returns
-// 0 when the local store is not journal-backed.
-func (bs *Store) JournalVersion() uint64 {
-	type versioner interface{ JournalVersion() uint64 }
-	if j, ok := bs.local.(versioner); ok {
-		return j.JournalVersion()
-	}
-	return 0
-}
+// JournalVersion returns the local tier's current LSN watermark, captured by
+// snapshot create (after DrainRollups) to record the snapshot's version.
+func (bs *Store) JournalVersion() uint64 { return bs.local.JournalVersion() }
 
 // ResetLocalState drops every file's locally cached ranges so post-restore reads
 // resolve purely through the restored manifest. The snapshot-restore

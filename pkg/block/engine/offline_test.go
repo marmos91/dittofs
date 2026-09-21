@@ -9,6 +9,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/journal"
+	"github.com/marmos91/dittofs/pkg/block/local/memory"
 )
 
 // fakeColdReporter stands in for the local tier's residency surface so the
@@ -66,15 +67,19 @@ func TestOfflineReadiness_Safe(t *testing.T) {
 func TestOfflineReadinessOf_Gating(t *testing.T) {
 	tests := []struct {
 		name      string
-		localTier any
+		localTier coldRangeReporter
 		hasRemote bool
 		shortfall shortfallFunc
 		wantKnown bool
 		wantBytes int64
 	}{
 		{"no remote, tier confirms nothing evicted", &fakeColdReporter{}, false, noShortfall, true, 0},
-		{"tier that cannot report residency", struct{}{}, true, noShortfall, false, 0},
-		{"no remote and no residency tracking", struct{}{}, false, noShortfall, true, 0},
+		// The in-memory tier answers the same three questions the journal
+		// does rather than being recognised as a tier that cannot: it never
+		// evicts, so it is seeded by construction and holds no remote-only
+		// range, and that is why it reads as safe. It is the real store, not a
+		// fake, so a change to those answers fails here.
+		{"in-memory tier holds everything it was given", memory.New(), true, noShortfall, true, 0},
 		{"unseeded tier cannot see remote-only ranges", &fakeColdReporter{seeded: false, bytes: 0}, true, noShortfall, false, 0},
 		{"seeded and fully local", &fakeColdReporter{seeded: true}, true, noShortfall, true, 0},
 		{"seeded with evicted ranges", &fakeColdReporter{seeded: true, bytes: 4096, extents: 2}, true, noShortfall, true, 4096},

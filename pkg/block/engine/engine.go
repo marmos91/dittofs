@@ -394,26 +394,20 @@ func (bs *Store) SetMetrics(rec local.MetricsRecorder) {
 	}
 }
 
-// Local returns the engine's underlying local store (the journal-backed tier),
-// or nil if the store has no local tier. Used by share startup to reconcile
-// metadata file sizes against the journal's durable high-water mark (#1687).
+// Local returns the engine's underlying local store (the journal-backed tier).
+// Never nil: New refuses a config without one. Used by share startup to
+// reconcile metadata file sizes against the tier's durable high-water mark.
 func (bs *Store) Local() local.LocalStore { return bs.local }
 
 // DurableExtent reports how far a payload's bytes are on stable storage: bytes
 // below the returned offset survive an unclean shutdown, bytes above it were
 // only buffered and are gone after one. ok is false when the local tier cannot
-// answer (no local store, or one with no durability model), which callers must
-// read as "unknown", never as "nothing is durable". Callers publish file sizes
-// against it so a persisted size never describes bytes a crash would take away,
-// which would leave the range reading as a hole full of zeros.
+// answer (one with no durability model), which callers must read as "unknown",
+// never as "nothing is durable". Callers publish file sizes against it so a
+// persisted size never describes bytes a crash would take away, which would
+// leave the range reading as a hole full of zeros.
 func (bs *Store) DurableExtent(ctx context.Context, payloadID metadata.PayloadID) (int64, bool) {
-	reporter, ok := bs.local.(interface {
-		DurableExtent(ctx context.Context, id journal.FileID) (int64, bool)
-	})
-	if !ok {
-		return 0, false
-	}
-	return reporter.DurableExtent(ctx, journal.FileID(string(payloadID)))
+	return bs.local.DurableExtent(ctx, journal.FileID(string(payloadID)))
 }
 
 // LocalDurable reports whether the engine's local store survives a process
