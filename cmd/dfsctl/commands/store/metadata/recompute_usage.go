@@ -130,15 +130,15 @@ func printRecomputeUsageTable(res *apiclient.UsageRecomputeResult) error {
 func printRecomputeUsageDrift(r *apiclient.ShareUsageRecompute) error {
 	out := os.Stdout
 	if len(r.Drift) == 0 {
-		fmt.Fprintf(out, "No drift: every usage counter agrees with the file rows (scanned in %dms).\n", r.DurationMS)
-		fmt.Fprintln(out, "Nothing to repair. The counters were not modified.")
+		_, _ = fmt.Fprintf(out, "No drift: every usage counter agrees with the file rows (scanned in %dms).\n", r.DurationMS)
+		_, _ = fmt.Fprintln(out, "Nothing to repair. The counters were not modified.")
 		return nil
 	}
 
-	fmt.Fprintf(out, "%d usage counter(s) disagree with the file rows (scanned in %dms).\n",
+	_, _ = fmt.Fprintf(out, "%d usage counter(s) disagree with the file rows (scanned in %dms).\n",
 		len(r.Drift), r.DurationMS)
-	fmt.Fprintln(out, "The counters were NOT modified. Re-run without --dry-run to repair them.")
-	fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out, "The counters were NOT modified. Re-run without --dry-run to repair them.")
+	_, _ = fmt.Fprintln(out)
 
 	table := output.NewTableData("SHARE", "SCOPE", "ID", "COUNTER (bytes/files)", "ROWS (bytes/files)", "DIFF")
 	for _, d := range r.Drift {
@@ -155,11 +155,11 @@ func printRecomputeUsageDrift(r *apiclient.ShareUsageRecompute) error {
 		return err
 	}
 
-	fmt.Fprintln(out)
-	fmt.Fprintln(out, "A store taking writes reports small transient deltas here: the file rows and")
-	fmt.Fprintln(out, "the counters are read at different instants, so a file written during the scan")
-	fmt.Fprintln(out, "can even show up under one scope and not the other. Drift from a bug persists")
-	fmt.Fprintln(out, "across runs and does not track live traffic.")
+	_, _ = fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out, "A store taking writes reports small transient deltas here: the file rows and")
+	_, _ = fmt.Fprintln(out, "the counters are read at different instants, so a file written during the scan")
+	_, _ = fmt.Fprintln(out, "can even show up under one scope and not the other. Drift from a bug persists")
+	_, _ = fmt.Fprintln(out, "across runs and does not track live traffic.")
 	return nil
 }
 
