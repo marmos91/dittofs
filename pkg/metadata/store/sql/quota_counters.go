@@ -54,9 +54,9 @@ func (c *Core) PersistQuotaDelta(ctx context.Context, delta map[basestore.QuotaK
 // open-time path: it reads one row per bucket, so it is bounded by how many
 // distinct owners the store has rather than by how many files they own.
 //
-// Totals are clamped at zero and emptied buckets dropped, matching what the
-// cache itself maintains — see PersistQuotaDelta for why the stored rows are
-// left unclamped.
+// Rows are returned as stored, raw and signed: clamping a bucket at zero is the
+// cache's job (QuotaCache.Seed), not this reader's — see PersistQuotaDelta for
+// why the stored rows are left unclamped.
 func (c *Core) ReadQuotaCounters(ctx context.Context) (map[basestore.QuotaKey]*metadata.UsageStat, error) {
 	rows, err := c.X.Query(ctx, "SELECT "+quotaUsageColumns+" FROM quota_usage")
 	if err != nil {
@@ -75,15 +75,6 @@ func (c *Core) ReadQuotaCounters(ctx context.Context) (map[basestore.QuotaKey]*m
 		if err := rows.Scan(&share, &scope, &id, &stat.Bytes, &stat.Files); err != nil {
 			return nil, c.D.MapError(err, "read quota counters", "")
 		}
-		if stat.Bytes < 0 {
-			stat.Bytes = 0
-		}
-		if stat.Files < 0 {
-			stat.Files = 0
-		}
-		if stat.Bytes == 0 && stat.Files == 0 {
-			continue
-		}
 		key := basestore.QuotaKey{
 			Share: share,
 			Scope: metadata.QuotaScope(scope),
@@ -100,35 +91,34 @@ func (c *Core) ReadQuotaCounters(ctx context.Context) (map[basestore.QuotaKey]*m
 // RebuildQuotaCounters re-derives every counter from the inode rows, replacing
 // what is stored. This is the realign an operator invokes: counters maintained
 // incrementally have no self-correction, so it is the only way back from a drift
-// bug, and it is deliberately never run on its own.
+// bug. It must run inside a caller's transaction.
 //
 // Unlike the KV backends this needs no lock. The delete and the re-aggregate run
-// inside the caller's transaction, so a concurrent writer either commits before
-// it (and is aggregated) or after it (and increments the rebuilt row).
+// inside that transaction, so a concurrent writer either commits before it (and
+// is aggregated) or after it (and increments the rebuilt row).
 func (c *Core) RebuildQuotaCounters(ctx context.Context) error {
 	if _, err := c.X.Exec(ctx, "DELETE FROM quota_usage"); err != nil {
 		return c.D.MapError(err, "rebuild quota counters", "")
 	}
-	// file_type 0 is metadata.FileTypeRegular; nlink > 0 excludes an inode that
-	// is unlinked but still held open, which keeps its row and none of the bytes.
-	for _, seed := range []struct {
-		column string
-		scope  metadata.QuotaScope
-	}{
-		{"uid", metadata.QuotaScopeUser},
-		{"gid", metadata.QuotaScopeGroup},
-	} {
+	// nlink > 0 excludes an inode that is unlinked but still held open, which
+	// keeps its row and none of the bytes. Both the scope and the owner column
+	// are internal constants, never user input.
+	seed := func(column string, scope metadata.QuotaScope) error {
 		stmt := fmt.Sprintf(
 			`INSERT INTO quota_usage (%s)
 			 SELECT share_name, %d, %s, COALESCE(SUM(size), 0), COUNT(*)
 			 FROM inodes WHERE file_type = %d AND nlink > 0
 			 GROUP BY share_name, %s`,
-			quotaUsageColumns, int(seed.scope), seed.column,
-			int(metadata.FileTypeRegular), seed.column,
+			quotaUsageColumns, int(scope), column,
+			int(metadata.FileTypeRegular), column,
 		)
 		if _, err := c.X.Exec(ctx, stmt); err != nil {
 			return c.D.MapError(err, "rebuild quota counters", "")
 		}
+		return nil
 	}
-	return nil
+	if err := seed("uid", metadata.QuotaScopeUser); err != nil {
+		return err
+	}
+	return seed("gid", metadata.QuotaScopeGroup)
 }

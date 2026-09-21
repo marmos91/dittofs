@@ -43,7 +43,9 @@ dfsctl quota remove /export --scope user --id 1000
 - **Most-specific wins.** A user is limited by its own quota if set, else its group's,
   else the default-user fallback.
 - **Usage is by owner, within one share.** Bytes and inode counts are keyed by share and
-  by file owner UID/GID, and rebuilt from file rows on startup. A `chown` moves a file's
+  by file owner UID/GID, and stored durably alongside the files they account for — updated
+  in the same transaction that writes the file, and read back at startup rather than
+  recomputed, so start-up cost does not grow with the number of files. A `chown` moves a file's
   usage between identities. Shares that name the same metadata store are served by one
   store instance, but their usage is still counted separately: one share's bytes never
   count against another share's quota, and `df` on a share reports only that share.

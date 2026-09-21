@@ -389,9 +389,6 @@ func initializeFilesystemCapabilities(ctx context.Context, pool *pgxpool.Pool, c
 // and the read that follows sees it either way. Capturing deltas as well would
 // fold those commits in a second time.
 func (s *PostgresMetadataStore) RecomputeUsage(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
 	if err := s.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		return tx.(*postgresTransaction).Core.RebuildQuotaCounters(ctx)
 	}); err != nil {

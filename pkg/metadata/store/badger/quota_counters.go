@@ -97,7 +97,7 @@ func encodeUsageStat(u metadata.UsageStat) []byte {
 // +1 is the normal steady state, not corruption. Clamping here would round each
 // of those partials up to zero and leave the bucket permanently over-counted —
 // the failure direction that denies a user writes they are entitled to. The
-// clamp belongs on the summed total, and lives in foldQuotaCounters.
+// clamp belongs on the summed total, and lives in QuotaCache.Seed.
 func decodeUsageStat(b []byte) (metadata.UsageStat, error) {
 	if len(b) != quotaStatWidth {
 		return metadata.UsageStat{}, fmt.Errorf("quota counter value is %d bytes, want %d", len(b), quotaStatWidth)
@@ -134,12 +134,9 @@ func (s *BadgerMetadataStore) persistQuotaDelta(txn *badgerdb.Txn, delta map[bas
 		switch {
 		case err == nil:
 			if verr := item.Value(func(val []byte) error {
-				decoded, derr := decodeUsageStat(val)
-				if derr != nil {
-					return derr
-				}
-				cur = decoded
-				return nil
+				var derr error
+				cur, derr = decodeUsageStat(val)
+				return derr
 			}); verr != nil {
 				return verr
 			}
@@ -162,6 +159,10 @@ func (s *BadgerMetadataStore) persistQuotaDelta(txn *badgerdb.Txn, delta map[bas
 // the open-time path that replaces the file-row scan: it reads one key per
 // bucket per stripe, so it is bounded by how many distinct owners the store has
 // rather than by how many files they own.
+//
+// The sums are returned raw. Clamping a bucket at zero is the cache's job, and
+// it must not happen before every stripe of that bucket has been added in —
+// see decodeUsageStat.
 func (s *BadgerMetadataStore) readQuotaCounters() (map[basestore.QuotaKey]*metadata.UsageStat, error) {
 	byIdentity := make(map[basestore.QuotaKey]*metadata.UsageStat)
 	err := s.db.View(func(txn *badgerdb.Txn) error {
@@ -199,7 +200,6 @@ func (s *BadgerMetadataStore) readQuotaCounters() (map[basestore.QuotaKey]*metad
 	if err != nil {
 		return nil, err
 	}
-	foldQuotaCounters(byIdentity)
 	return byIdentity, nil
 }
 
@@ -214,24 +214,6 @@ func (s *BadgerMetadataStore) seedUsage(byIdentity map[basestore.QuotaKey]*metad
 	s.quotaMu.Lock()
 	s.quota.Seed(byIdentity, nil)
 	s.quotaMu.Unlock()
-}
-
-// foldQuotaCounters applies the cache's own invariant to summed bucket totals:
-// clamp at zero, and drop what nets to nothing. It runs only once every stripe
-// of a bucket has been added in — see decodeUsageStat for why a partial must
-// reach here unclamped.
-func foldQuotaCounters(byIdentity map[basestore.QuotaKey]*metadata.UsageStat) {
-	for k, u := range byIdentity {
-		if u.Bytes < 0 {
-			u.Bytes = 0
-		}
-		if u.Files < 0 {
-			u.Files = 0
-		}
-		if u.Bytes == 0 && u.Files == 0 {
-			delete(byIdentity, k)
-		}
-	}
 }
 
 // writeQuotaCounters replaces every durable counter with the given buckets,

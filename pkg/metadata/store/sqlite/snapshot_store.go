@@ -314,7 +314,7 @@ func (s *SQLiteMetadataStore) RestoreSnapshot(ctx context.Context, r io.Reader) 
 	// every bucket at zero — the counters would agree with nothing, and no later
 	// open would notice because opens no longer consult the inode rows.
 	if err := s.RecomputeUsage(ctx); err != nil {
-		return fmt.Errorf("restore: reinitialize used-bytes counter: %w", err)
+		return fmt.Errorf("restore: recompute usage counters: %w", err)
 	}
 	// The cached store_id was read at open; the restored stream may carry a
 	// different one, so re-read it from server_config (the row Restore just

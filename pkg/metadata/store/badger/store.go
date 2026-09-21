@@ -634,8 +634,8 @@ func ensureStoreID(db *badger.DB) (string, error) {
 }
 
 // GetUsedBytesForShare returns the logical bytes held by one share's regular
-// files. O(1) read of the per-share bucket seeded by initUsedBytesCounter and
-// maintained by the transaction delta pipeline.
+// files. O(1) read of the per-share bucket seeded at open and maintained by the
+// transaction delta pipeline.
 func (s *BadgerMetadataStore) GetUsedBytesForShare(ctx context.Context, shareName string) (int64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -654,13 +654,13 @@ func (s *BadgerMetadataStore) GetUsedBytesForShare(ctx context.Context, shareNam
 // still needs indexing by payload pays one scan rather than two — the decode is
 // the expensive part and this is the only place already doing it.
 //
-// This is no longer on the open path. A store that has been backfilled reads its
-// counters instead (readQuotaCounters), which costs one key per bucket per
-// stripe rather than one decode per file; this runs on the first open after
-// upgrade, and afterwards only when an operator asks for a realign.
+// It is off the open path: a backfilled store reads its counters instead
+// (readQuotaCounters), which costs one key per bucket per stripe rather than
+// one decode per file. This runs on the first open after upgrade, and
+// afterwards only when an operator asks for a realign.
 //
 // ponytail: one serial decode pass, so a realign on a ten-million-file store
-// takes seconds (BenchmarkInitUsedBytesCounter reports the per-file cost).
+// takes seconds (BenchmarkScanUsage reports the per-file cost).
 // Badger's Stream would parallelize the decode at the cost of merging partial
 // sums; do that only once a realign is something operators run often enough to
 // wait on.
@@ -735,20 +735,6 @@ func (s *BadgerMetadataStore) scanUsage(indexBatch *badger.WriteBatch) (map[base
 		return nil, err
 	}
 	return byIdentity, nil
-}
-
-// initUsedBytesCounter derives the usage buckets from the file rows and seeds
-// the cache with them, discarding whatever it held.
-func (s *BadgerMetadataStore) initUsedBytesCounter(indexBatch *badger.WriteBatch) error {
-	byIdentity, err := s.scanUsage(indexBatch)
-	if err != nil {
-		return err
-	}
-
-	s.quotaMu.Lock()
-	s.quota.Seed(byIdentity, nil)
-	s.quotaMu.Unlock()
-	return nil
 }
 
 // GetQuotaUsage returns per-identity usage within one share. O(1) cache read
@@ -920,10 +906,11 @@ func (s *BadgerMetadataStore) GetStoreID() string { return s.storeID }
 // Compile-time assertion: the Badger engine exposes GetStoreID.
 var _ interface{ GetStoreID() string } = (*BadgerMetadataStore)(nil)
 
-// RecomputeUsage rebuilds the usage counters from the durable file rows,
-// discarding whatever the in-memory buckets hold. Same scan the store runs at
-// open, re-run on demand; the payload index is already built by then, so
-// nothing is staged this time.
+// RecomputeUsage rebuilds both the durable counters and the in-memory buckets
+// from the file rows, discarding whatever either held. This is the realign an
+// operator invokes: counters maintained incrementally have no self-correction,
+// so it is the only way back from a drift bug. The payload index is already
+// built by then, so nothing is staged this time.
 func (s *BadgerMetadataStore) RecomputeUsage(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err

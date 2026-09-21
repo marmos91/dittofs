@@ -95,9 +95,9 @@ func (s *BadgerMetadataStore) initUsedBytesAndPayloadIndex() error {
 	}
 
 	if haveCounters && !needIndex {
-		byIdentity, rerr := s.readQuotaCounters()
-		if rerr != nil {
-			return fmt.Errorf("read quota counters: %w", rerr)
+		byIdentity, err := s.readQuotaCounters()
+		if err != nil {
+			return fmt.Errorf("read quota counters: %w", err)
 		}
 		s.seedUsage(byIdentity)
 		return nil

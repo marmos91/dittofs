@@ -94,23 +94,17 @@ func (s *SQLiteMetadataStore) WithTransaction(ctx context.Context, fn func(tx me
 
 		ptx := &sqliteTransaction{store: s, tx: execer{e: rawTx, op: "tx"}}
 		ptx.Core = &storesql.Core{X: ptx.tx, D: sqliteDialect, Caps: s.currentCapabilities, Quota: &ptx.quota, Log: s.logger}
-		if err := fn(ptx); err != nil {
-			_ = rawTx.Rollback()
-			if isBusyError(err) {
-				lastErr = err
-				if txretry.Backoff(ctx, deadline, attempt) {
-					continue
-				}
-				break
-			}
-			return err
+		// The durable counters move inside the transaction that moved the rows,
+		// so the two commit together or not at all. That is what lets an open
+		// read them rather than re-aggregate the inodes table: there is no
+		// window in which they can drift apart, and so nothing to repair after
+		// a crash. It shares the body's rollback and retry, being one more
+		// statement on the same transaction.
+		err = fn(ptx)
+		if err == nil {
+			err = ptx.Core.PersistQuotaDelta(ctx, ptx.quota.Map())
 		}
-
-		// Durable counters move inside the transaction that moved the rows, so
-		// the two commit together or not at all. That is what lets an open read
-		// them rather than re-aggregate the inodes table: there is no window in
-		// which they can drift apart, and so nothing to repair after a crash.
-		if err := ptx.Core.PersistQuotaDelta(ctx, ptx.quota.Map()); err != nil {
+		if err != nil {
 			_ = rawTx.Rollback()
 			if isBusyError(err) {
 				lastErr = err

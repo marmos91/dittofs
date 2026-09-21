@@ -75,9 +75,26 @@ func (c *QuotaCache) BeginRebuild() {
 // at startup. byShare may be nil, in which case it is derived from the
 // user-scope entries of byIdentity — every regular file has exactly one owner
 // uid, so those buckets already partition the share's bytes and inodes.
+//
+// Buckets arrive raw and signed: a backend that maintains its counters
+// incrementally stores partials whose sum is the only meaningful number, so
+// they are folded onto the invariant the cache holds everywhere else — clamped
+// at zero, emptied buckets dropped — before anything is derived from them. That
+// is why no caller clamps on its way in.
 func (c *QuotaCache) Seed(byIdentity map[QuotaKey]*metadata.UsageStat, byShare map[string]*metadata.UsageStat) {
 	if byIdentity == nil {
 		byIdentity = make(map[QuotaKey]*metadata.UsageStat)
+	}
+	for k, u := range byIdentity {
+		if u.Bytes < 0 {
+			u.Bytes = 0
+		}
+		if u.Files < 0 {
+			u.Files = 0
+		}
+		if u.Bytes == 0 && u.Files == 0 {
+			delete(byIdentity, k)
+		}
 	}
 	if byShare == nil {
 		byShare = make(map[string]*metadata.UsageStat)

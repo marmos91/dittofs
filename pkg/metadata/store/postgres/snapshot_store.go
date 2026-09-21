@@ -364,7 +364,7 @@ func (s *PostgresMetadataStore) RestoreSnapshot(ctx context.Context, r io.Reader
 	// schema would otherwise leave every bucket at zero, and no later open would
 	// notice because opens no longer consult the inode rows.
 	if err := s.RecomputeUsage(ctx); err != nil {
-		return fmt.Errorf("restore: reinitialize used-bytes counter: %w", err)
+		return fmt.Errorf("restore: recompute usage counters: %w", err)
 	}
 
 	return nil

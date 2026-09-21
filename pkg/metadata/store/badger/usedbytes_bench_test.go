@@ -10,10 +10,10 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// BenchmarkInitUsedBytesCounter measures the open-time file scan that seeds the
-// usage cache. It decodes every file row, so it is the second of the two
-// file-count-proportional steps a share start pays before it becomes visible.
-func BenchmarkInitUsedBytesCounter(b *testing.B) {
+// BenchmarkScanUsage measures the file scan that derives the usage buckets. It
+// decodes every file row, which is what a store pays on the first open after
+// upgrade and on every operator-invoked realign.
+func BenchmarkScanUsage(b *testing.B) {
 	const files = 50000
 	ctx := context.Background()
 	store := newSizeTestStore(b)
@@ -40,7 +40,7 @@ func BenchmarkInitUsedBytesCounter(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if err := store.initUsedBytesCounter(nil); err != nil {
+		if _, err := store.scanUsage(nil); err != nil {
 			b.Fatal(err)
 		}
 	}
