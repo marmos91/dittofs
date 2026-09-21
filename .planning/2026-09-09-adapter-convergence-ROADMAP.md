@@ -30,21 +30,70 @@ what replaced them:
 | Boundary | State |
 | --- | --- |
 | `smb/pending/` | ✅ extracted, in the PR that carried the correction |
-| `smb/changenotify/` | 🔄 **PR #2760**, rebased over 110 commits, conformance CI running |
-| the shared-types package | 🔶 **started by side effect** — #2760 moves `SMBResponseBase` into `internal/adapter/smb/types` and leaves an alias in `handlers` |
-| `handlers/info/`, `handlers/create/`, `smb/state/` | ❌ still blocked, and stay blocked until the shared types are out |
+| `smb/changenotify/` | ✅ extracted (#2760) |
+| the shared-types package | ✅ `internal/adapter/smb/types` holds `SMBResponseBase`, `OpenFile`, `OpenName`, `CreateContext`, `TreeConnection`; `handlers` keeps five one-line aliases. `SMBHandlerContext` deliberately stayed (#2774) |
+| `handlers/info/`, `handlers/create/`, `smb/state/` | ❌ still blocked — **but not by the types.** Re-measured 2026-09-21, below |
 
-**The shared-types package is required, not optional, and the measurement says so:** moving
-`handlers/info/` for real under a build overlay produced 199 compile errors and 33 symbols needing
-export across 437 call sites, because every candidate extraction needs `handlers` back. Remaining
-types to move after #2760: `SMBHandlerContext`, `OpenFile`, `TreeConnection`, `CreateContext`
-(today in `context.go`, `open_file.go`, `session_lifecycle.go`, `create.go`).
+**Re-measured 2026-09-21 on develop `4dcbd89bc`, and the entry condition above was wrong.** The
+row previously said the three boundaries "stay blocked until the shared types are out". The types
+are out, and all three are still blocked. The measurement was redone as a build overlay per
+boundary — move the file set into a subpackage, `go build -gcflags=-e` (all errors, not the first
+ten), and count undefined symbols in each direction. Baseline is `14038b0b8`, the commit before any
+type moved, run through the identical script, so the two columns are comparable.
 
-**Ordering constraint, not a preference.** #2760 splits 97 change-notify tests across three
-destinations and touches the handlers test files. A handlers test migration started before it lands
-conflicts with it heavily. Sequence: #2760 merges → cut from the new develop → shared types →
-then the boundaries, each with its own test migration. All 128 in-package test files are white-box
-and there are zero `handlers_test` external files, so nothing moves for free.
+| Boundary | files / LOC | compile errors | symbols it needs **back** from `handlers` (pre-types → today) | symbols `handlers` needs **from it** |
+| --- | --- | --- | --- | --- |
+| `handlers/info/` | 5 / 4,448 | 233 | 67 → 54, of which 3 are free alias-redirects → **51 real** | 8 distinct / 22 refs |
+| `handlers/create/` | 5 / 4,133 | 284 | 69 → 60, of which 4 are free → **56 real** | 5 distinct / 27 refs |
+| `smb/state/` | 8 / 3,100 | 151 | 27 → 23, of which 4 are free → **19 real** | 16 distinct / 23 refs |
+
+The old figure this replaces — "199 compile errors and 33 symbols needing export across 437 call
+sites" for `handlers/info/` — is superseded, not merely restated: the same overlay gives 196 errors
+inside the new package today against 222 at the baseline.
+
+**What the types move actually bought, stated precisely.** It removed **zero** symbols from any
+blocker set. Every symbol that left between the baseline and today is a change-notify one
+(`FileNotifyChange*`, `FileAction*`, `GetParentPath`, `NameChangeFilterFor`, `NotifyEvent`,
+`PendingNotify`) — that is #2760's `changenotify` extraction, not the types. What the types move
+did is convert 3–4 hard blockers per boundary into alias-redirects a subpackage resolves by
+importing `types`, and those carry a real share of the references: 27% of `info`'s, 29% of
+`create`'s, 38% of `state`'s. Worth having, and not an entry condition — the remaining blockers are
+unexported free functions and constants, which no type move reaches.
+
+**No single further move unblocks more than one boundary.** The three blocker sets intersect in
+exactly four symbols: `Handler` (66 refs across the three), `OpenFile` and `OpenName` (already free
+aliases), and `hasDeleteAccess` (4 refs). `info` and `create` share a further 16, but `state`
+shares none of those. So there is no shared-prerequisite PR to write first; each boundary is its
+own job, and the one thing every boundary needs is `Handler` itself.
+
+**`smb/state/` is the cheapest cut by a factor of three** and is the one to attempt first. Its 19
+real blockers decompose into: `Handler` at 29 refs; seven constants that belong in
+`types/constants.go` on exactly the precedent already set (`OplockLevel{None,Batch,Lease}`,
+`{DACL,Group,Owner}SecurityInformation`, `LeaseContextTagRequest`); `CreateContext` helpers
+`FindCreateContext` (12 refs) and `DecodeLeaseCreateContext`, which belong beside `CreateContext`
+in `types`; six small pure predicates (`hasRead/Write/DeleteAccess`, `isStatOnlyOpen`,
+`isOplockStatOpen`, `resolveAccessFlags`); and `BuildSecurityDescriptorWithGrants` at one ref.
+Strip those and the boundary reduces to `Handler` alone.
+
+**`Handler` is the whole remaining problem, and it is tractable for `state`.** The struct is 60
+fields with 228 methods; the `state` file set defines 25 of those methods and touches 19 fields,
+7 of them exclusively (`cachedShares`, `sharesCache{Mu,Valid}`, `disconnected{Mu,ByFile,Total}`,
+`durableFreezes`). The other 12 are shared, but their *types* are already outside `handlers` —
+`session.Manager`, `lease.LeaseManager`, `changenotify.NotifyRegistry`, `lock.DurableHandleStore`,
+`rpc.ShareInfo1`, and stdlib `sync.Map`/`atomic`. Only three field types still live in `handlers`
+and would have to travel with the cut or precede it: the `smbRuntime` interface, `createDRC`, and
+`pendingAuthKey`/`PendingAuth`. That is what makes `state` cuttable and the other two not yet.
+
+**This is not a move-only PR, and should not be reviewed as one.** The Wave 5 apparatus assumed
+`git diff -M --color-moved` showing zero body edits; 25 methods losing a `*Handler` receiver is a
+body edit on every one of them. Either the apparatus or the expectation has to give, and the honest
+option is to split it: one move-only PR for the constants and `CreateContext` helpers into `types`
+(reviewable the old way), then the receiver rewrite as an ordinary reviewed change.
+
+**Test migration, unchanged.** The `state` file set has 6 same-named test files at 4,948 LOC, all
+in-package white-box. `smb/handlers` is 141 in-package test files and zero `handlers_test` external
+files, so nothing moves for free — #2775 tracks this, and prescribes one migration per boundary
+paired with that boundary's move PR rather than batched.
 
 **Wave 7 has not started and needs an entry condition, not a first PR.** The master plan gives it
 one paragraph, and the perf-attempts ledger has already refuted enough adapter-adjacent axes
