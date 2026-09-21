@@ -91,6 +91,27 @@ func (c *NFSConnection) handleNFSProcedure(ctx context.Context, call *rpc.RPCCal
 				"error", shareErr)
 			return v3StatusOnlyReply(call.Procedure, nfs_types.NFS3ErrStale), nil
 		}
+		// A disabled share admits nobody, and on this path nothing else says
+		// so. The adapters that decide access when a client establishes
+		// something -- SMB at TREE_CONNECT, NFS at MOUNT -- re-read the flag by
+		// dropping what they established. NFSv3 establishes nothing per
+		// operation: the handle is the credential and it outlives restarts, so
+		// an already-mounted client reaches the share through this function
+		// alone. Invalidating the auth cache on disable does not cover it
+		// either, because the rebuilt context consults the user record and the
+		// share's permissions, neither of which carries the enabled flag.
+		//
+		// STALE rather than ACCES, matching what a handle into a share that no
+		// longer resolves answers just above, and what NFSv4 answers for the
+		// same condition: the share is gone as far as this client is concerned,
+		// and a client that is told ACCES may keep the handle and retry.
+		if !shareRef.Enabled {
+			logger.Warn("NFSv3 operation refused: share is disabled",
+				"procedure", procedure.Name,
+				"share", share,
+				"client", clientAddr)
+			return v3StatusOnlyReply(call.Procedure, nfs_types.NFS3ErrStale), nil
+		}
 		if accessErr := nfsauth.CheckExportAccess(ctx, shareRef, handlerCtx.AuthFlavor, nil, nil); accessErr != nil {
 			logger.Warn("NFSv3 operation denied by export auth policy",
 				"procedure", procedure.Name,
