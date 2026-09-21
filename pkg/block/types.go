@@ -116,13 +116,16 @@ func (h ContentHash) MarshalJSON() ([]byte, error) {
 // AND the listing path distinguishes a decode failure from an absent row.
 func (h *ContentHash) UnmarshalJSON(data []byte) error {
 	if len(data) > 0 && data[0] == '[' {
-		// Count the elements before decoding them. Unmarshalling straight into
-		// [HashSize]byte zero-fills an array that is too short and drops the
-		// tail of one that is too long, both without erroring, so a truncated
-		// or padded row would decode to a confidently wrong hash — and an empty
-		// array would yield the all-zero hash, which reads as a pending chunk.
-		// The extra parse is affordable on a cold read-compat path.
-		var elems []json.RawMessage
+		// Decode the elements into pointers, because a decode error does not
+		// mean the input was well formed. Unmarshalling into [HashSize]byte has
+		// three silent paths: a short array is zero-filled, a long array's tail
+		// is dropped, and a null element is a no-op that leaves its byte zero —
+		// none of them an error, all of them yielding a confidently wrong hash.
+		// A pointer element makes absence representable, and the same pass
+		// carries the element count and rejects a wrong type or an
+		// out-of-byte-range value, so this is the whole validation rather than
+		// one guard stacked on another.
+		var elems []*uint8
 		if err := json.Unmarshal(data, &elems); err != nil {
 			return fmt.Errorf("ContentHash.UnmarshalJSON: invalid JSON array: %q", data)
 		}
@@ -130,11 +133,15 @@ func (h *ContentHash) UnmarshalJSON(data []byte) error {
 			return fmt.Errorf("ContentHash.UnmarshalJSON: %w: JSON array has %d elements, want %d",
 				ErrInvalidHash, len(elems), HashSize)
 		}
-		var arr [HashSize]byte
-		if err := json.Unmarshal(data, &arr); err != nil {
-			return fmt.Errorf("ContentHash.UnmarshalJSON: invalid JSON array: %q", data)
+		var parsed ContentHash
+		for i, e := range elems {
+			if e == nil {
+				return fmt.Errorf("ContentHash.UnmarshalJSON: %w: JSON array element %d is null",
+					ErrInvalidHash, i)
+			}
+			parsed[i] = *e
 		}
-		*h = ContentHash(arr)
+		*h = parsed
 		return nil
 	}
 	if len(data) < 2 || data[0] != '"' || data[len(data)-1] != '"' {

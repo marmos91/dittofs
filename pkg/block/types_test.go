@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -372,31 +373,55 @@ func TestContentHash_UnmarshalJSON_RejectsBase64(t *testing.T) {
 	}
 }
 
-// TestContentHash_UnmarshalJSON_RejectsMalformedArray pins the length check on
-// the legacy number-array path. Unmarshalling straight into [HashSize]byte
-// zero-fills a short array and drops a long array's tail without erroring, so
-// without an element count a truncated or padded row decodes to a confidently
-// wrong hash instead of being refused. The empty array is the worst of these:
-// it yields the all-zero hash, which reads as a pending chunk.
-func TestContentHash_UnmarshalJSON_RejectsMalformedArray(t *testing.T) {
-	repeat := func(n int, v string) string {
-		out := "["
-		for i := 0; i < n; i++ {
-			if i > 0 {
-				out += ","
-			}
-			out += v
+// TestContentHash_UnmarshalJSON_MalformedArray enumerates the ways a legacy
+// number array can be malformed and pins a refusal for each, plus a well-formed
+// control that must still decode to the exact hash.
+//
+// The cases exist because a nil error from encoding/json does not mean the
+// input was well formed. Decoding into [HashSize]byte zero-fills a short array,
+// drops a long array's tail, and treats a null element as a no-op that leaves
+// its byte zero — each silently yielding a wrong hash. The single-null case is
+// the sharpest: it is not an obviously-empty hash but a plausible one with a
+// single wrong byte, which resolves to a different chunk or to none.
+func TestContentHash_UnmarshalJSON_MalformedArray(t *testing.T) {
+	elems := func(n int, v string) []string {
+		out := make([]string, n)
+		for i := range out {
+			out[i] = v
 		}
-		return out + "]"
+		return out
 	}
+	arr := func(e []string) string { return "[" + strings.Join(e, ",") + "]" }
+	// A full-length array whose last element is replaced.
+	withLast := func(v string) string {
+		e := elems(HashSize-1, "7")
+		return arr(append(e, v))
+	}
+	oneNull := func() string {
+		e := elems(HashSize, "7")
+		e[5] = "null"
+		return arr(e)
+	}
+
 	malformed := map[string]string{
-		"empty array":         "[]",
-		"short array":         "[1,2,3]",
-		"one element short":   repeat(HashSize-1, "7"),
-		"one element long":    repeat(HashSize+1, "7"),
-		"long array":          repeat(40, "7"),
-		"element above uint8": repeat(HashSize-1, "7")[:len(repeat(HashSize-1, "7"))-1] + ",256]",
-		"negative element":    repeat(HashSize-1, "7")[:len(repeat(HashSize-1, "7"))-1] + ",-1]",
+		// null elements — no error, no length change, silent zero byte.
+		"all elements null": arr(elems(HashSize, "null")),
+		"one element null":  oneNull(),
+		// wrong length — zero-filled or truncated, no error.
+		"empty array":       "[]",
+		"short array":       "[1,2,3]",
+		"one element short": arr(elems(HashSize-1, "7")),
+		"one element long":  arr(elems(HashSize+1, "7")),
+		"long array":        arr(elems(40, "7")),
+		// out of range for a byte.
+		"element above uint8": withLast("256"),
+		"negative element":    withLast("-1"),
+		// non-integer and wrong element types.
+		"non-integer element":  withLast("7.5"),
+		"string element":       withLast(`"7"`),
+		"bool element":         withLast("true"),
+		"nested array element": withLast("[1,2]"),
+		"object element":       withLast(`{"a":1}`),
 	}
 	for name, raw := range malformed {
 		t.Run(name, func(t *testing.T) {
@@ -409,6 +434,24 @@ func TestContentHash_UnmarshalJSON_RejectsMalformedArray(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("control: well-formed array decodes", func(t *testing.T) {
+		want, err := ParseContentHash(blake3EmptyHex)
+		if err != nil {
+			t.Fatalf("ParseContentHash: %v", err)
+		}
+		nums := make([]string, HashSize)
+		for i, b := range want {
+			nums[i] = strconv.Itoa(int(b))
+		}
+		var got ContentHash
+		if err := got.UnmarshalJSON([]byte(arr(nums))); err != nil {
+			t.Fatalf("control: well-formed array rejected: %v", err)
+		}
+		if got != want {
+			t.Fatalf("control decode mismatch:\n got: %x\nwant: %x", got[:], want[:])
+		}
+	})
 }
 
 // TestContentHash_JSONBackwardCompat_V014Array asserts UnmarshalJSON still
