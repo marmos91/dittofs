@@ -647,16 +647,24 @@ func (s *Service) RemoveShare(name string) error {
 // Close is idempotent, so a share removed afterwards closes harmlessly again.
 // The registry is left intact: this is resource teardown, not removal.
 //
-// decision: the shares close CONCURRENTLY and the step carries no deadline of
-// its own. Each close is internally bounded — the syncer drains its uploads,
-// stops its transfer queue and joins its loops, each under its own timeout —
-// so the step is bounded by the slowest share rather than by their sum, and
-// adding shares does not lengthen shutdown. Closing them in sequence would,
-// and a share whose remote has gone away spends its full drain budget before
-// the next one starts. Each *engine.Store is independent (a share owns its
-// own), so there is nothing to serialise them for. Withdraw this if the
-// per-share close ever stops being bounded, or if closes ever contend on
-// something shared, where the bound would become the sum again in disguise.
+// decision: the shares close CONCURRENTLY, and the step carries no deadline of
+// its own. Concurrency is what keeps the cost of a slow share from being paid
+// once per share: a share whose remote has gone away spends its whole drain
+// budget, and in sequence every share behind it waits that out. The stores are
+// independent, so there is nothing to serialise them for.
+//
+// The step is NOT fully bounded, and dropping the deadline does not make it so
+// — it only stops the deadline from being divided. Each close waits on
+// closeMu, which has no bound: it blocks until every in-flight data op on that
+// store returns, and stopping the adapters does not join the handlers that may
+// still be inside one. Past that the syncer's own waits are bounded but sum to
+// minutes per share, and they are constants nothing configures. So a wedged
+// remote can hold this step past the deadline the process gives its own
+// shutdown, which ends with the metadata stores never closed at all.
+//
+// Bound the closeMu wait before claiming this step is bounded. Until then the
+// honest statement is that it is bounded by the slowest share rather than by
+// their sum, which is a weaker claim than it looks.
 func (s *Service) CloseBlockStores() {
 	s.mu.RLock()
 	stores := make(map[string]*engine.Store, len(s.registry))

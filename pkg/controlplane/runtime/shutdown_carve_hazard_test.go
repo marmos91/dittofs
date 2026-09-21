@@ -227,9 +227,16 @@ func carveDispatchers() int {
 	return strings.Count(goroutineDump(), "engine.(*RemoteSync).carveDispatcher")
 }
 
+// goroutineDump returns every goroutine's stack. The buffer grows until the
+// dump fits: runtime.Stack truncates rather than reporting how much it needed,
+// and a truncated dump silently drops the frames the assertions look for.
 func goroutineDump() string {
-	buf := make([]byte, 1<<20)
-	return string(buf[:runtime.Stack(buf, true)])
+	for size := 1 << 20; ; size *= 2 {
+		buf := make([]byte, size)
+		if n := runtime.Stack(buf, true); n < size {
+			return string(buf[:n])
+		}
+	}
 }
 
 // TestCarveCommitsReachAClosedMetadataStore_WithoutTheFence is the
@@ -251,6 +258,14 @@ func TestCarveCommitsReachAClosedMetadataStore_WithoutTheFence(t *testing.T) {
 	for len(errs) == 0 && time.Now().Before(deadline) {
 		time.Sleep(50 * time.Millisecond)
 		errs = f.meta.afterClose()
+	}
+	// A late transaction that SUCCEEDED would satisfy a bare count while
+	// showing none of the harm: the point is that the commit fails and the
+	// chunk it was carving stays local and unmirrored.
+	for i, e := range errs {
+		if e == nil || !strings.Contains(e.Error(), "database is closed") {
+			t.Errorf("late transaction [%d] = %v, want a closed-database failure", i, e)
+		}
 	}
 	for i, e := range errs {
 		t.Logf("  [%d] %v", i, e)

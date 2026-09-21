@@ -63,9 +63,10 @@ type SnapshotDrainer interface {
 //
 // Called AFTER StopAllAdapters, so no new client writes create fresh carve
 // work, and BEFORE the stores close. Pass nil to skip (tests with no data
-// plane). It takes no context: the closes run concurrently and each is bounded
-// by the engine's own drain timeout, so the step is bounded by the slowest
-// share and does not lengthen as shares are added.
+// plane). It takes no context: the closes run concurrently, so the step costs
+// the slowest share rather than the sum of them. That is not the same as being
+// bounded — see the decision marker on shares.Service.CloseBlockStores for what
+// is still unbounded inside a single close.
 type BlockStoreCloser interface {
 	CloseBlockStores()
 }
