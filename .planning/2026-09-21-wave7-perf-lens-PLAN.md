@@ -1,109 +1,135 @@
 # Wave 7 — the perf lens: plan
 
-**Status:** plan, not started · **Created:** 2026-09-21 · **Parent:**
-`.planning/2026-09-08-adapter-convergence-MASTER-PLAN.md` §Wave 7
+**Status:** plan, not started · **Revised:** 2026-09-21 after ponytail + adversarial + general
+review · **Parent:** `.planning/2026-09-08-adapter-convergence-MASTER-PLAN.md` §Wave 7
 
-The master plan gives Wave 7 one paragraph: perf scored ~zero on all three audits, and the
-perf-attempts ledger names the adapter layer as the remaining un-walked axis. That is a direction,
-not a plan. This file is the entry condition.
+Wave 7 does not start with code. Implementation issues open only against a component that a
+profile put cost on, at or above the bar in §Exit.
 
-## The rule this wave exists under
+Refuted axes and their revival conditions live in the perf-attempts ledger, which is **session
+memory, not in this repo** — anyone picking this up cold must be handed it, or they will re-walk
+something closed. Its overarching rule governs everything below: the rig lies about IOPS, so it is
+a load generator here, never a meter.
 
-Wave 7 does **not** start with code. Every perf attempt in this repo that started with a fix
-instead of a profile is in the refuted column below, and several were refuted twice because the
-second attempt did not know about the first. The first deliverable is a measured assignment of
-per-operation cost; implementation issues open only against a named component that measurement
-put cost on.
+## Verified premises (2026-09-21, on `develop@8c8c7546a`)
 
-Three standing rules from the ledger, all learned expensively:
+- `/debug/pprof/{profile,trace}` exist and serve CPU, block, mutex and execution traces
+  (`pkg/controlplane/api/router.go:84-94`), gated on `controlplane.pprof` **and** admin JWT.
+  Defaults: off; when on, `PprofMutexRate=100`, `PprofBlockRateNs=1_000_000`.
+- The harness starts `dfs` from a fixed command line in `internal/dfsbench/backend/dittofs.go`
+  (~:340) that does **not** set pprof. Enabling it is a harness change.
+- `transactorSpy` (`pkg/metadata/writeback_tier_test.go`) already counts durable commits per
+  operation, locally, with no VM.
+- `metadata` is the create+4k-write workload and **must run first**
+  (`internal/dfsbench/fio/workload.go:41-56`); `--evict-cache` defaults **true** and inserts a cold
+  barrier before each read cell.
 
-1. **The rig lies about IOPS.** Trust server-side pprof and engine/unit benchmarks. A rig number
-   moves for reasons that have nothing to do with the treatment.
-2. **Profile the treatment, not the mechanism.** A coordinator that provably coalesces can leave
-   the wall untouched, because the wall was somewhere else (#1573, three times).
-3. **Measure on the Linux VM.** macOS distorts two things that matter here: Docker Desktop
-   inflates DB round-trips ~2.7x, and BLAKE3 takes the generic path on arm64 while the bench VM's
-   amd64 takes AVX2. Both have already produced wrong conclusions in this repo, in opposite
-   directions.
+## Scope: one axis
 
-## Do not re-walk these
+**Axis B — the per-op write path.** #1752 put the create ceiling above the metadata engine. The
+live question is whether the `WriteFile` size/mtime commit, the block-journal fsync and the NFS
+WRITE/COMMIT round-trip serialize.
 
-Closed by measurement. Re-opening any of them needs new evidence, not a new idea.
+Two corrections to how that was framed in the first draft, both from review:
 
-| Axis | Verdict |
-| --- | --- |
-| Swap the metadata backend to fix create | **Refuted** (#1752). badger/postgres/sqlite all ~500-700 ops/s, same shape. Decisive control: postgres `synchronous_commit=off` changed nothing (452 vs 496) — never fsync-bound. |
-| Group-commit the metadata fsync | **Refuted 4x** — #1684 `flushPendingWrite`, #1573 `syncIfRelaxed`, #1742 cross-shard journal, #1747 single-fd badger. The wall is badger's serialized single-writer commit, and sync-vs-write contention, not sync-vs-sync. |
-| Postgres commit batching (`commit_delay`/`commit_siblings`) | **Refuted** (#1828 S8). Postgres already coalesces unaided at 0.76 syncs/commit; every setting measured a net regression. Also retires #1747's revival condition. |
-| Cold read via prefetch depth / engine concurrency | **Refuted twice** (#1625 flat, #1628 167→122). The wall is S3 fetch latency; prefetch never stays ahead. |
-| badger vlog / memtable / compactor config | **Eliminated** (2026-07-14). Metadata values sit below `ValueThreshold`, so they live in the LSM and `vlog.sync()` is a near-noop; no config changes how `DB.Sync` holds `db.lock.RLock` across the per-commit WAL fsync. |
+- #1752 ruled out the **metadata-commit** fsync for postgres on the create workload
+  (`synchronous_commit=off`, 452 vs 496). It says nothing about DittoFS's block-journal fsync,
+  which is one of the three suspects. "Never fsync-bound" is not licensed.
+- Aggregate CPU was low (~1/8 cores on 8 vCPU), which is *consistent with* a serialized path and
+  does not rule CPU out.
+- Non-overlap is a **hypothesis** from a parenthetical in #1752, not a recorded finding. One leg is
+  already settled: #1747 measured that badger's `db.Update` commits are serialized and never
+  overlap. So the open legs are journal-fsync vs NFS round-trip.
 
-## The two axes that are actually un-walked
+**Axis A — warm per-read NFS/metadata — is closed, not un-walked.** The first draft of this plan
+called its attribution an unmeasured residual. That was wrong: six rounds of VM server-side pprof
+split it (`GetFileForRead` 47%, `GetShareOptions→decode` 17.4%, goroutine stack growth ~25%), three
+fixes shipped (#1654, #1657, worker pool), and Round 5/6 reached a negative verdict — both the
+metadata caches and the worker pool moved server CPU 25%+ each and **did not move IOPS**. The wall
+is per-RPC round-trip latency, and competitors win warm random read by serving 4 KiB from the
+kernel page cache with no userspace round-trip. That is structural. Any further work here is
+client/protocol-level and is **not** this wave.
 
-### Axis A — NFS/metadata per-read
+Note the shipped-and-inert trap this closes: `GetShareOptions` decode was 17.4% of server CPU
+pre-fix, the `sharecache` fixed it across all backends, and it moved no IOPS. `ShareOptions` is now
+two bools, so what is left to decode there is near-zero. It is not a place to look.
 
-Post-#1648/#1651 the block engine is ~20x faster and warm random read sits at 7437 (large) /
-24862 (medium) IOPS, roughly 56-58% of JuiceFS. The remaining gap was attributed to "per-read NFS
-RPC + metadata lookup, not the block store".
+**Out of scope, named so nobody assumes otherwise:** seq-write and upload throughput (#1717,
+within-file concurrent PutBlocks) — the largest open ledger item, and not this axis. **#2423**
+(upload concurrency windows) is scheduled as Wave 7 work by
+`.planning/2026-09-11-wave8-plan.md` §Step 3; it stays there and is not authorized by this plan.
 
-**That attribution is a residual, not a measurement.** It is what was left after the block store
-got fast, which is exactly the proxy-reported-as-the-thing shape this repo keeps hitting. Nobody
-has profiled it and split the residual between RPC framing, the metadata lookup, and whatever else
-is in there.
+**Protocol coverage:** NFSv3 only, deliberately. v4 compounds change per-op RPC accounting so a v3
+split does not transfer, and SMB's per-op suspects (the double allocation in `framing.go`'s
+`readNetBIOSPayload`) are unpriced. Both are real and both are a second pass — this one does not
+claim to have measured them.
 
-### Axis B — the per-op write path
+## Phase 0
 
-#1752 put the create ceiling *above* the metadata engine and ruled out both fsync and CPU as the
-binding constraint (dfs used ~1/8 cores). The ledger names three suspects that have never been
-profiled **as a pipeline**: the `WriteFile` size/mtime metadata commit, the block-journal fsync,
-and the NFS WRITE/COMMIT round-trip — specifically that they do not overlap.
+Step 0 gates the rest: if the #1752 controls no longer hold on the current tree, steps 1-3 profile
+the wrong thing at full VM cost.
 
-Non-overlap is the interesting claim, and it is a claim about *scheduling*, which a CPU profile
-alone will not show. It needs a timeline, not a flat profile.
+0. **Locally, no VM:** take the commit inventory for create+write+close with `transactorSpy`, and
+   attempt the overlap question with `go tool trace` over an integration test of that sequence.
+   Ordering is not a magnitude, so the macOS caveat below does not forbid this. If this settles it,
+   stop — the rest of Phase 0 is unnecessary.
+1. **Harness PR, its own PR:** add `DITTOFS_CONTROLPLANE_PPROF=true` to the `dfs start` line in
+   `internal/dfsbench/backend/dittofs.go`. This is instrumentation, not a data-path change, and the
+   prohibition below is scoped accordingly.
+2. One VM, one system, one workload:
+   ```
+   dfsbench setup                       # POP2-8C-32G + /bench-data SBS volume
+   dfsbench run --remote --config bench.yaml \
+     --systems dittofs-s3-nfs3 --workloads metadata --sizes medium --runtime 60
+   dfsbench teardown                    # NOT optional — VM + volume bill until this runs
+   ```
+   No competitors and no matrix: nothing here compares systems. Medians of 3 reps — read IOPS
+   variance on this rig runs to ±70%, and a single rep will be quoted as fact.
+3. Scrape from the VM while the cell runs, using the admin bearer token from `dfsctl login`:
+   CPU (`/debug/pprof/profile?seconds=30`), **block and mutex** (the off-CPU wait profiles that
+   attribute serialization), and `/debug/pprof/trace?seconds=10` for the timeline. Precedent with a
+   worked example: `.planning/perf/metadata-cache-decision.md` §Part 2.
 
-#2398 (the global `sm.mu`) belongs to this axis in the master plan's framing. It landed on the
-correctness side in Wave 2 (#2459, #2466); its perf effect was never measured and is a free
-before/after if the rig is being stood up anyway.
+**Before trusting any engine or unit benchmark, mutation-probe it** — show it fails when the
+production path is broken. `BenchmarkSequentialWrite8MB` profiled dead code for months because
+`newWriteBenchEngine` never wired `LocalChunkIndex`, and nothing caught it.
 
-## Phase 0 — the only phase currently authorized
+**Measure on Linux amd64.** The reason is BLAKE3: it takes the generic path on arm64 and AVX2 on
+the bench VM. (The Docker-Desktop 2.7x distortion is socket-specific and does not apply to badger.)
 
-**Deliverable: a per-operation cost assignment for both axes, with the residual assigned rather
-than inferred.** No code changes, no knobs, no PRs against the data path.
+## Exit
 
-Steps:
+A component is named only at **≥15% of profiled per-op server CPU**, or a demonstrated serialized
+wait in the block/mutex profile or execution trace. Below that the axis closes as *cost is
+distributed, no single lever* — an outcome, not a failure.
 
-1. Stand up the rig per `internal/dfsbench/CLAUDE.md`: `dfsbench setup` on the POP2-8C-32G VM with
-   the separate `/bench-data` SBS volume, `--config bench.yaml` (required for any S3 backend —
-   without it only `local-disk` runs and `run` still exits 0).
-2. Capture a **server-side pprof of `dfs`** during the warm random-read cell and during the
-   create+4k-write cell, separately. The rig's IOPS number is context, not the result.
-3. For Axis A, split the per-read cost into RPC decode/encode, metadata lookup, permission funnel,
-   and block-engine time. The share-options cache landed because `GetShareOptions` → decode was
-   17.4% of server CPU on exactly this workload, so the funnel is known to be non-trivial and is
-   the first place to look.
-4. For Axis B, produce a **timeline** of one create+write+close, not a flat profile: when each
-   durable commit starts and ends relative to the NFS round trip. The question is whether they
-   serialize, and a flat profile cannot answer it.
-5. Re-confirm the #1752 controls still hold on the current tree before building on them — that
-   measurement is from 2026-07-17 and the write path has moved since.
+Signed off by someone who did not run the profile. An agent and its own reviewer agreeing is one
+opinion.
 
-**Exit condition:** each axis has a named component carrying a stated share of per-op cost, or is
-explicitly closed as "cost is distributed, no single lever". Either outcome is a result and gets
-written into the ledger.
+## Where results go
 
-**Anti-goal:** a Phase 0 that ends in "looks like the metadata store" without a number. That is
-where #1752 started, and it cost three refuted attempts to get out of.
+`.planning/perf/wave7-writepath.md`, following `.planning/perf/metadata-cache-decision.md`'s shape
+(Status section with checkboxes). Raw `.prof` and trace files alongside it — `bench-results/` is
+wiped between runs. The verdict, win or null, also goes to the perf-attempts ledger: two axes in
+this repo were re-attempted only because a null was never written down.
 
-## Phase 1 — conditional, not scheduled
+If Phase 0 re-runs cells, say explicitly whether `docs/BENCHMARKS.md` is updated or left alone —
+it is user surface.
 
-Opens only per component Phase 0 assigns cost to, one issue each, each naming its own measurement
-and its own stop rule. Nothing about Phase 1 is planned here on purpose: planning fixes before
-knowing where the cost is, is the failure mode this wave is built to avoid.
+## Hazards
 
-## Stop rules
+- No data-path changes in Phase 0. Harness and instrumentation changes land as their own PR.
+- Never run two `dfsbench` runs concurrently — shared ports, they corrupt each other.
+- `run` exits 0 even when most systems fail setup; check the results directory covers what you asked for.
+- Sign every commit; rebase, never merge.
+- Source test files are wave/lane/PR-number agnostic (`.planning/CONVENTIONS-WAVE-TEST-NAMES.md`) —
+  no `wave7_perf_test.go`.
+- Phase 1 will touch `pkg/block/engine`, `pkg/block/journal` and `pkg/metadata/store`, where a knob
+  defaulted off or a cache with a staleness ceiling needs a `decision:` or `ponytail:` marker at the
+  code site. Issue numbers stay out of comments — perf fixes are the most tempting place to break
+  that rule.
 
-- No default shipped on an unmeasured win, per the standing stop-on-no-win rule.
-- A knob that trades latency for throughput on a synchronous metadata path is the wrong currency
-  regardless of the throughput arithmetic (this is why `commit_delay` shipped nothing).
-- Every verdict — win, loss, or null — lands in the perf-attempts ledger before the branch closes.
-  Two axes in this repo were re-attempted only because a prior null result was never written down.
+## Phase 1
+
+One issue per named component, each with its own measurement and its own stop rule. Nothing more is
+planned here on purpose.
