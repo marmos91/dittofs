@@ -391,6 +391,20 @@ func (s *BadgerMetadataStore) RestoreSnapshot(ctx context.Context, r io.Reader) 
 	// holds the pre-restore buckets. Reseed it from the restored rows so
 	// GetUsedBytesForShare / GetQuotaUsage / GetFilesystemStatistics report
 	// correctly without a restart.
+	// Both backfill markers are withdrawn first. They describe the keyspace this
+	// store held BEFORE the restore, and a dump predating either one carries
+	// neither the counters nor the pl: index to replace them — the load only
+	// sets the keys the dump contains, it deletes nothing. Left standing on a
+	// freshly created destination, whose own first open recorded both, they
+	// would certify empty counters as accounting for the restored rows: every
+	// identity reads as zero usage, and no later open re-derives it because that
+	// is precisely what the markers promise.
+	if err := clearQuotaCountersBackfilled(s.db); err != nil {
+		return fmt.Errorf("restore: %w", err)
+	}
+	if err := clearPayloadIndexBackfilled(s.db); err != nil {
+		return fmt.Errorf("restore: %w", err)
+	}
 	if err := s.initUsedBytesAndPayloadIndex(); err != nil {
 		return fmt.Errorf("restore: reseed the usage cache: %w", err)
 	}

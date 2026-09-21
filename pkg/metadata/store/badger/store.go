@@ -665,6 +665,18 @@ func (s *BadgerMetadataStore) GetUsedBytesForShare(ctx context.Context, shareNam
 // sums; do that only once a realign is something operators run often enough to
 // wait on.
 func (s *BadgerMetadataStore) scanUsage(indexBatch *badger.WriteBatch) (map[basestore.QuotaKey]*metadata.UsageStat, error) {
+	txn := s.db.NewTransaction(false)
+	defer txn.Discard()
+	return s.scanUsageTxn(txn, indexBatch)
+}
+
+// scanUsageTxn derives the usage buckets from the file rows visible to txn.
+//
+// The snapshot is the caller's so that a rebuild can pin it at the same moment
+// it arms the cache to capture concurrent commits. Taken a moment later, the
+// snapshot could already include a commit whose in-memory fold had not happened
+// yet — the capture would then record it as well, and Seed would add it twice.
+func (s *BadgerMetadataStore) scanUsageTxn(txn *badger.Txn, indexBatch *badger.WriteBatch) (map[basestore.QuotaKey]*metadata.UsageStat, error) {
 	s.usageScans.Add(1)
 	byIdentity := make(map[basestore.QuotaKey]*metadata.UsageStat)
 
@@ -678,7 +690,7 @@ func (s *BadgerMetadataStore) scanUsage(indexBatch *badger.WriteBatch) (map[base
 		u.Files++
 	}
 
-	err := s.db.View(func(txn *badger.Txn) error {
+	err := func(txn *badger.Txn) error {
 		// An unlinked-but-open inode keeps its row so fstat(2) on a live
 		// descriptor still works, but it no longer holds any of the share's
 		// bytes. Collect those first — the l: values are four bytes each, so
@@ -730,7 +742,7 @@ func (s *BadgerMetadataStore) scanUsage(indexBatch *badger.WriteBatch) (map[base
 			}
 		}
 		return nil
-	})
+	}(txn)
 	if err != nil {
 		return nil, err
 	}
@@ -915,21 +927,27 @@ func (s *BadgerMetadataStore) RecomputeUsage(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	// The scan runs with no lock held, so arm the cache to record what commits
-	// during it — otherwise a transaction landing between the scan and the seed
-	// is scanned out and then overwritten.
+	// Arming the capture and pinning the snapshot happen together, under the
+	// lock every writer holds across its commit and its in-memory fold. Apart,
+	// they race: a writer that had committed but not yet folded would land in
+	// the snapshot AND in the capture, and Seed would count it twice. Holding
+	// the lock means no writer is between those two points here.
+	s.quotaRealign.Lock()
 	s.quotaMu.Lock()
 	s.quota.BeginRebuild()
 	s.quotaMu.Unlock()
+	txn := s.db.NewTransaction(false)
+	defer txn.Discard()
+	s.quotaRealign.Unlock()
 
-	byIdentity, err := s.scanUsage(nil)
+	// The scan itself runs unlocked — it is the long part, and anything that
+	// commits during it is captured and folded back by Seed below.
+	byIdentity, err := s.scanUsageTxn(txn, nil)
 	if err != nil {
 		return err
 	}
 
-	// Taken for the rewrite only, not for the scan above: the scan is the long
-	// part, and BeginRebuild already accounts for whatever commits during it.
-	// Writers block for as long as it takes to replace one key per bucket.
+	// Retaken for the rewrite only.
 	s.quotaRealign.Lock()
 	defer s.quotaRealign.Unlock()
 

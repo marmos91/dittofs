@@ -222,14 +222,21 @@ func (s *BadgerMetadataStore) seedUsage(byIdentity map[basestore.QuotaKey]*metad
 // totals from the file rows.
 //
 // The caller holds quotaRealign, so no transaction can be folding a delta into
-// the keys being dropped.
+// the keys being replaced.
+//
+// Stale stripes are deleted key by key in the same batch as the new values
+// rather than with DropPrefix. DropPrefix is not a key operation: it blocks
+// every writer on the database, flushes the memtables and compacts, and while
+// it runs any other commit fails with badger's ErrBlockedWrites. Most of this
+// package commits outside quotaRealign — lock state, durable handles, client
+// recovery, block records — and none of it retries that error, so a realign
+// would have surfaced it to clients holding NLM or SMB handles. The counter
+// keyspace is one key per bucket per stripe, so enumerating it is cheap.
 func (s *BadgerMetadataStore) writeQuotaCounters(byIdentity map[basestore.QuotaKey]*metadata.UsageStat) error {
-	// The drop and the write are two operations, and badger offers no way to
-	// make them one: DropPrefix is not a transaction and a WriteBatch cannot
-	// undo it. So clear the marker first. An interrupted rewrite then leaves the
-	// store saying its counters account for nothing, and the next open derives
-	// them from the file rows rather than trusting the remains of a rewrite that
-	// did not finish — which, with nothing else consulting those rows, would
+	// A batch is not a transaction: it commits in chunks, so an interrupted
+	// rewrite leaves the keyspace half replaced. Withdraw the marker first, and
+	// the next open derives the counters from the file rows rather than trusting
+	// the remains — which, with nothing else consulting those rows, would
 	// otherwise read as every identity having dropped to zero usage.
 	//
 	// This is the one path that re-derives without an operator asking, and it is
@@ -238,11 +245,19 @@ func (s *BadgerMetadataStore) writeQuotaCounters(byIdentity map[basestore.QuotaK
 	if err := clearQuotaCountersBackfilled(s.db); err != nil {
 		return err
 	}
-	if err := s.db.DropPrefix([]byte(prefixQuotaUsage)); err != nil {
-		return fmt.Errorf("drop stale quota counters: %w", err)
+
+	stale, err := s.quotaCounterKeys()
+	if err != nil {
+		return err
 	}
+
 	batch := s.db.NewWriteBatch()
 	defer batch.Cancel()
+	for _, key := range stale {
+		if err := batch.Delete(key); err != nil {
+			return fmt.Errorf("delete stale quota counter: %w", err)
+		}
+	}
 	for k, u := range byIdentity {
 		if u.Bytes == 0 && u.Files == 0 {
 			continue
@@ -255,6 +270,27 @@ func (s *BadgerMetadataStore) writeQuotaCounters(byIdentity map[basestore.QuotaK
 		return fmt.Errorf("flush quota counters: %w", err)
 	}
 	return nil
+}
+
+// quotaCounterKeys collects every durable counter key, so a rewrite can delete
+// exactly what is there instead of dropping the prefix wholesale.
+func (s *BadgerMetadataStore) quotaCounterKeys() ([][]byte, error) {
+	var keys [][]byte
+	err := s.db.View(func(txn *badgerdb.Txn) error {
+		opts := badgerdb.DefaultIteratorOptions
+		opts.Prefix = []byte(prefixQuotaUsage)
+		opts.PrefetchValues = false
+		it := txn.NewIterator(opts)
+		defer it.Close()
+		for it.Rewind(); it.Valid(); it.Next() {
+			keys = append(keys, it.Item().KeyCopy(nil))
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list quota counters: %w", err)
+	}
+	return keys, nil
 }
 
 // quotaCountersBackfilled reports whether the durable counters already account

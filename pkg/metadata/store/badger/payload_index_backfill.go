@@ -61,6 +61,17 @@ func indexFileByPayload(batch *badgerdb.WriteBatch, file *metadata.File) error {
 	return batch.Set(keyPayloadID(file.PayloadID), id)
 }
 
+// clearPayloadIndexBackfilled withdraws the claim that every file row carrying
+// a PayloadID has a pl: index entry, so the next open rebuilds it.
+func clearPayloadIndexBackfilled(db *badgerdb.DB) error {
+	if err := db.Update(func(txn *badgerdb.Txn) error {
+		return txn.Delete(keyPayloadIndexBackfilled)
+	}); err != nil {
+		return fmt.Errorf("clear payload index backfill marker: %w", err)
+	}
+	return nil
+}
+
 // recordPayloadIndexBackfilled marks the backfill complete. Called only after
 // the staged entries are durable, so an interrupted run repeats the work rather
 // than recording what it did not finish.
@@ -80,10 +91,14 @@ func recordPayloadIndexBackfilled(db *badgerdb.DB) error {
 // they record are what keep a later open off this path.
 //
 // Shared by store open and snapshot restore because both land on a keyspace
-// whose rows may predate either marker — a restore from an old dump would
-// otherwise leave every payload lookup scanning until the next restart. A dump
-// taken after the upgrade carries its counters and its marker along with the
-// rows they account for, so restoring it is not a reason to re-derive them.
+// whose rows may predate either marker.
+//
+// The markers are read from the store, so they answer for whatever keyspace is
+// there now. That makes them trustworthy at open and NOT at restore, where the
+// keyspace has just been replaced under them: the restore withdraws both before
+// calling this, because a marker recorded by the destination's own first open
+// would otherwise certify the dump's rows on the strength of a scan that never
+// saw them.
 func (s *BadgerMetadataStore) initUsedBytesAndPayloadIndex() error {
 	needIndex, err := payloadIndexBackfillNeeded(s.db)
 	if err != nil {
@@ -109,6 +124,18 @@ func (s *BadgerMetadataStore) initUsedBytesAndPayloadIndex() error {
 		defer batch.Cancel()
 	}
 
+	// Held across the scan as well as the write, not just the write. What this
+	// path persists is the scan's own result, so a delta committing after the
+	// scan's snapshot would be deleted from the durable counters by the rewrite
+	// AND overwritten in the cache by the seed — lost on both sides, with no
+	// later open re-deriving it. Unlike a realign there is no capture to fold it
+	// back, because the buckets being seeded are the scan's, not the cache's.
+	//
+	// At open this is uncontended. Snapshot restore reaches it on a store that
+	// is already open, which is the case that needs the cover.
+	s.quotaRealign.Lock()
+	defer s.quotaRealign.Unlock()
+
 	byIdentity, err := s.scanUsage(batch)
 	if err != nil {
 		return err
@@ -125,11 +152,6 @@ func (s *BadgerMetadataStore) initUsedBytesAndPayloadIndex() error {
 	}
 
 	if !haveCounters {
-		// Snapshot restore reaches here on a store that is already open, so the
-		// lock is not ceremony: it keeps a transaction from folding a delta into
-		// keys this is about to drop. At open it is uncontended.
-		s.quotaRealign.Lock()
-		defer s.quotaRealign.Unlock()
 		if err := s.writeQuotaCounters(byIdentity); err != nil {
 			return err
 		}

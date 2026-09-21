@@ -1,6 +1,7 @@
 package badger
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"path/filepath"
@@ -240,4 +241,63 @@ func TestInterruptedRealignSelfHeals(t *testing.T) {
 	got, err := healed.GetUsedBytesForShare(ctx, "/q")
 	require.NoError(t, err)
 	require.Equal(t, want, got, "usage must come back, not reset to zero")
+}
+
+// TestRestoreIntoFreshStoreRederivesCounters covers a dump whose rows predate
+// the durable counters, restored into a store that has already been opened once.
+//
+// A fresh store records both backfill markers on its own first open — its empty
+// keyspace is trivially accounted for. The restore then replaces the keyspace
+// but only writes the keys the dump contains, so a legacy dump leaves those
+// markers standing over rows they were never derived from. Reading the counters
+// at that point reports every identity at zero, and because the markers promise
+// otherwise, no later open would ever re-derive it.
+func TestRestoreIntoFreshStoreRederivesCounters(t *testing.T) {
+	ctx := context.Background()
+
+	src := openQuotaStore(t, t.TempDir())
+	createShareRoot(t, src, "/q")
+	for i := 0; i < 4; i++ {
+		putQuotaTestFile(t, src, "/q", fmt.Sprintf("/f%d", i), 1000, 100, 1024)
+	}
+	want, err := src.GetUsedBytesForShare(ctx, "/q")
+	require.NoError(t, err)
+	require.Equal(t, int64(4*1024), want)
+
+	// Make the dump look like one taken before the counters existed.
+	require.NoError(t, src.db.DropPrefix([]byte(prefixQuotaUsage)))
+	require.NoError(t, clearQuotaCountersBackfilled(src.db))
+	require.NoError(t, clearPayloadIndexBackfilled(src.db))
+
+	var dump bytes.Buffer
+	_, err = src.WriteSnapshot(ctx, &dump)
+	require.NoError(t, err)
+	require.NoError(t, src.Close())
+
+	// A destination opened normally first, which is what the restore contract
+	// allows and what leaves its own markers behind.
+	dstDir := t.TempDir()
+	dst := openQuotaStore(t, dstDir)
+	haveCounters, err := quotaCountersBackfilled(dst.db)
+	require.NoError(t, err)
+	require.True(t, haveCounters, "a fresh store records the marker, which is what makes this case reachable")
+
+	require.NoError(t, dst.RestoreSnapshot(ctx, bytes.NewReader(dump.Bytes())))
+
+	got, err := dst.GetUsedBytesForShare(ctx, "/q")
+	require.NoError(t, err)
+	require.Equal(t, want, got, "restored usage must come from the restored rows, not the destination's own counters")
+
+	usage, err := dst.GetQuotaUsage("/q", metadata.QuotaScopeUser, 1000)
+	require.NoError(t, err)
+	require.Equal(t, int64(4), usage.Files)
+	require.NoError(t, dst.Close())
+
+	// And the re-derived counters are durable, so the next open reads them.
+	reopened := openQuotaStore(t, dstDir)
+	defer func() { _ = reopened.Close() }()
+	require.Zero(t, reopened.UsageScanCount())
+	got, err = reopened.GetUsedBytesForShare(ctx, "/q")
+	require.NoError(t, err)
+	require.Equal(t, want, got)
 }
