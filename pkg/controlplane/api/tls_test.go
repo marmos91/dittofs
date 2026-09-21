@@ -156,11 +156,10 @@ func TestNewServer_HTTPByDefault(t *testing.T) {
 	}
 }
 
-// startServer boots the server and returns the address it actually bound,
-// taken from the server's own resolved config rather than reconstructed from
-// "localhost" — a literal address cannot be answered by a different process
-// than the one the listener bound. stop() cancels the server context and
-// asserts Start reported a clean shutdown.
+// startServer boots the server and returns the address it actually bound, read
+// from the server's own resolved config rather than reconstructed from
+// "localhost", which can resolve to a host some other process is listening on.
+// stop() cancels the server context and asserts Start reported a clean shutdown.
 func startServer(t *testing.T, server *Server) (addr string, stop func()) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())

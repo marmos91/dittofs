@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	goruntime "runtime"
-	"strings"
 	"testing"
 	"time"
 
@@ -46,15 +45,11 @@ func waitForServerReady(t *testing.T, addr string, errChan <-chan error, timeout
 	}
 }
 
-// getHealth GETs /health from addr and returns the response and its body,
-// after confirming the reply came from the server under test.
-//
-// A dial that lands on an unrelated process listening on the same address
-// otherwise surfaces as an assertion about response content, which points the
-// reader at the health handler instead of at the collision. Only this server
-// answers /health with a "dittofs" service field, so a reply that lacks it is
-// reported as a foreign responder, quoting what actually answered.
-func getHealth(t *testing.T, addr string) (*http.Response, []byte) {
+// getHealth GETs /health from addr and fails unless the reply came from the
+// server under test. Only this server answers /health with a "dittofs" service
+// field, so a reply lacking it means an unrelated process holds the address —
+// reported as that, quoting what answered, rather than as a health-handler bug.
+func getHealth(t *testing.T, addr string) *http.Response {
 	t.Helper()
 
 	resp, err := http.Get("http://" + addr + "/health")
@@ -69,8 +64,7 @@ func getHealth(t *testing.T, addr string) (*http.Response, []byte) {
 	}
 
 	var envelope struct {
-		Status string `json:"status"`
-		Data   struct {
+		Data struct {
 			Service string `json:"service"`
 		} `json:"data"`
 	}
@@ -80,17 +74,16 @@ func getHealth(t *testing.T, addr string) (*http.Response, []byte) {
 			addr, resp.StatusCode, resp.Header.Get("Server"), resp.Header.Get("Content-Type"), body)
 	}
 
-	return resp, body
+	return resp
 }
 
 // testSetup creates control plane store and APIConfig for testing.
 //
-// Callers that start the server pass freePort(t) so the OS picks the port: a
-// hard-coded number can already be held by unrelated local tooling, and the
-// server binds 127.0.0.1 while a dial of "localhost" may resolve ::1 first, so
-// the collision is not refused at bind time and instead surfaces downstream as
-// an assertion about the reply. Callers that only construct a server and never
-// listen pass 0 — the port is never bound, so no number is needed.
+// Callers that start the server pass freePort(t): a hard-coded number can
+// already be held by unrelated local tooling, and since the server binds
+// 127.0.0.1 while a dial of "localhost" may resolve ::1 first, that collision
+// is not refused at bind time but surfaces downstream as an assertion about the
+// reply. Callers that only construct a server pass 0 — nothing is ever bound.
 //
 // None of these tests may call t.Parallel(): NewServer writes the process-wide
 // mutex and block profile rates on every call, in both directions, so a
@@ -134,11 +127,10 @@ func TestAPIServer_Lifecycle(t *testing.T) {
 		t.Fatalf("Failed to create server: %v", err)
 	}
 
-	// startServer also asserts Start returns nil on graceful shutdown.
 	addr, stop := startServer(t, server)
 	defer stop()
 
-	resp, _ := getHealth(t, addr)
+	resp := getHealth(t, addr)
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("Expected status %d, got %d", http.StatusOK, resp.StatusCode)
@@ -195,8 +187,8 @@ func TestAPIServer_HealthEndpoint_NoRuntime(t *testing.T) {
 	addr, stop := startServer(t, server)
 	defer stop()
 
-	// Liveness (should always be OK), and answered by this server.
-	resp, _ := getHealth(t, addr)
+	// Test liveness endpoint (should always be OK)
+	resp := getHealth(t, addr)
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("Expected status %d, got %d", http.StatusOK, resp.StatusCode)
 	}
@@ -224,8 +216,7 @@ func TestAPIServer_RootRedirectsToHealth(t *testing.T) {
 	addr, stop := startServer(t, server)
 	defer stop()
 
-	// Confirm this server owns the address before reading anything into the
-	// redirect below.
+	// Confirm this server owns the address before trusting the redirect below.
 	getHealth(t, addr)
 
 	// Create a client that doesn't follow redirects
@@ -543,12 +534,10 @@ func TestNewServer_PprofOffResetsSampling(t *testing.T) {
 // TestGetHealth_NamesAForeignResponder pins the diagnosis getHealth exists for:
 // when a process other than the server under test answers /health, the failure
 // must identify that responder rather than read as a defect in the health
-// handler. A status-and-content-type check cannot do that — the stand-in here
-// passes both — so only the service field distinguishes "my server answered"
-// from "something answered".
+// handler. Status and Content-Type cannot tell the two apart — the stand-in
+// below passes both, and returns well-formed JSON, so a parse failure cannot
+// either — leaving only the service field.
 func TestGetHealth_NamesAForeignResponder(t *testing.T) {
-	// Well-formed JSON, so the service field — not a parse failure — is what
-	// has to tell the two servers apart.
 	foreign := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Server", "Caddy")
@@ -561,7 +550,7 @@ func TestGetHealth_NamesAForeignResponder(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		getHealth(fake, strings.TrimPrefix(foreign.URL, "http://"))
+		getHealth(fake, foreign.Listener.Addr().String())
 	}()
 	<-done
 
