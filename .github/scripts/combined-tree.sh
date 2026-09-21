@@ -15,6 +15,13 @@
 #   run      build/vet/test each combination from stdin, on a detached tree
 #   selftest prove the run mode actually refuses a clean-merging broken tree
 #
+# decision: same-repository PRs only. This mode is selecting code that the run
+# mode will merge and execute as `go test`, in a job holding a repository token,
+# so a fork PR here would be running an unreviewed contributor's code against
+# that token. Branches in this repository are already push-authorised, which is
+# the property being relied on -- withdraw the exclusion only alongside a run
+# mode that holds no credential worth taking.
+#
 # Selection picks open non-draft PRs against the base branch and pairs them:
 #
 #   base + PR        when the base has moved since that PR's matrix started,
@@ -60,10 +67,10 @@ cmd_select() {
   # One GraphQL round trip for every open PR: number, head, draft flag, changed
   # files and the check rollup that dates the last matrix.
   prs=$(gh pr list --repo "$REPO" --base "$BASE" --state open --limit 100 \
-          --json number,headRefOid,isDraft,files,changedFiles,statusCheckRollup)
+          --json number,headRefOid,isDraft,isCrossRepository,files,changedFiles,statusCheckRollup)
 
   prs=$(jq -c "$JQ_PKGS"'
-    map(select(.isDraft | not))
+    map(select((.isDraft | not) and (.isCrossRepository | not)))
     | map({ number, head: .headRefOid, pkgs: pkgs([.files[].path]),
             short: ((.files | length) < .changedFiles),
             cutoff: ([.statusCheckRollup[]? | select(.status == "COMPLETED")
