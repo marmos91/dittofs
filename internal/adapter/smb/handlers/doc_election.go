@@ -92,7 +92,7 @@ func (h *Handler) electDeleteOnClose(openFile *OpenFile) (docDecision, docTarget
 	h.docElectionMu.Lock()
 	defer h.docElectionMu.Unlock()
 
-	openFile.docLeaving = true
+	openFile.SetDOCLeaving(true)
 
 	// Promote the per-handle InitialDeleteOnClose from CREATE
 	// FILE_DELETE_ON_CLOSE to the shared committed flag, mirroring Samba
@@ -137,7 +137,7 @@ func (h *Handler) electDeleteOnClose(openFile *OpenFile) (docDecision, docTarget
 	if len(ownHandle) > 0 {
 		h.files.Range(func(_, value any) bool {
 			other := value.(*OpenFile)
-			if other.FileID == openFile.FileID || other.docLeaving {
+			if other.FileID == openFile.FileID || other.IsDOCLeaving() {
 				return true
 			}
 			// Guard the read: SET_REPARSE_POINT repoints a live handle's
@@ -242,7 +242,7 @@ func (h *Handler) electDeleteOnClose(openFile *OpenFile) (docDecision, docTarget
 func (h *Handler) rangeLiveStreamsOfBase(selfFileID [16]byte, parentHandle metadata.FileHandle, basePrefix string, fn func(*OpenFile) bool) {
 	h.files.Range(func(_, value any) bool {
 		other := value.(*OpenFile)
-		if other.FileID == selfFileID || other.IsPipe || other.docLeaving {
+		if other.FileID == selfFileID || other.IsPipe || other.IsDOCLeaving() {
 			return true
 		}
 		otherName := other.Name()

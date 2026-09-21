@@ -375,48 +375,22 @@ type EncryptionConfig struct {
 // and session key derivation. Created during Type 1 (NEGOTIATE) and
 // consumed during Type 3 (AUTHENTICATE) of the NTLM handshake.
 
-type OpenName struct {
-	Path         string
-	FileName     string
-	ParentHandle metadata.FileHandle
-}
+// OpenName is an alias for types.OpenName.
+type OpenName = types.OpenName
 
 // Name returns the current name triple, zero if the handle was never named.
 // Returned by value so callers cannot mutate the published name; safe to call
 // while holding the handle lock.
 
-func (f *OpenFile) Name() OpenName {
-	if n := f.name.Load(); n != nil {
-		return *n
-	}
-	return OpenName{}
-}
-
 // SetName publishes a new name triple. Callers renaming a live handle must
 // hold `mu` across the read-modify-write so two renames cannot interleave.
-
-func (f *OpenFile) SetName(n OpenName) {
-	f.name.Store(&n)
-}
 
 // WithName publishes n and returns f, so a handle can be built and named in a
 // single expression.
 
-func (f *OpenFile) WithName(n OpenName) *OpenFile {
-	f.SetName(n)
-	return f
-}
-
 // OpenID returns a unique identifier for this open file handle.
 // This is used for per-open byte-range lock ownership per MS-SMB2.
 // The identifier is derived from the SMB FileID, which is unique per open.
-
-func (f *OpenFile) OpenID() string {
-	if f.cachedOpenID == "" {
-		f.cachedOpenID = fmt.Sprintf("%x", f.FileID)
-	}
-	return f.cachedOpenID
-}
 
 // openHasLocks reports whether any byte-range lock is currently recorded
 // against the given open under the lock manager. Source of truth for the
@@ -471,54 +445,22 @@ func openHasLocks(metaSvc *metadata.Service, openFile *OpenFile) bool {
 // cursor advancement, SET_INFO BasicInfo freeze/thaw bookkeeping). For simple
 // boolean reads prefer IsAtimeFrozen / SnapshotFreeze.
 
-func (f *OpenFile) Lock() { f.mu.Lock() }
-
-func (f *OpenFile) Unlock() { f.mu.Unlock() }
-
-func (f *OpenFile) RLock() { f.mu.RLock() }
-
-func (f *OpenFile) RUnlock() { f.mu.RUnlock() }
-
 // IsAtimeFrozen returns the AtimeFrozen flag under the read lock. Used by
 // READ / WRITE / QUERY_DIRECTORY / COPYCHUNK to decide whether to bump
 // LastAccessTime after a successful operation.
-
-func (f *OpenFile) IsAtimeFrozen() bool {
-	f.mu.RLock()
-	defer f.mu.RUnlock()
-	return f.AtimeFrozen
-}
 
 // GetRequestedAllocSize returns the per-handle allocation reservation under
 // the read lock. SET_INFO FileAllocationInformation publishes it on a live
 // handle, so QUERY_INFO readers on other channels must not touch the field
 // directly.
 
-func (f *OpenFile) GetRequestedAllocSize() uint64 {
-	f.mu.RLock()
-	defer f.mu.RUnlock()
-	return f.RequestedAllocSize
-}
-
 // GetCreateOptions returns the open's create options under the read lock.
 // SET_INFO FileModeInformation overlays the mode bits on a live handle, so
 // QUERY_INFO readers must not touch the field directly.
 
-func (f *OpenFile) GetCreateOptions() types.CreateOptions {
-	f.mu.RLock()
-	defer f.mu.RUnlock()
-	return f.CreateOptions
-}
-
 // GetPayloadID returns the cached payload identifier under the read lock.
 // WRITE, SET_REPARSE_POINT and COPYCHUNK publish it on a live handle, so
 // readers on other channels must not touch the field directly.
-
-func (f *OpenFile) GetPayloadID() metadata.PayloadID {
-	f.mu.RLock()
-	defer f.mu.RUnlock()
-	return f.PayloadID
-}
 
 // GetMetadataHandle returns the metadata store handle under the read lock.
 // This doc is the single statement of when MetadataHandle may be read
@@ -544,53 +486,21 @@ func (f *OpenFile) GetPayloadID() metadata.PayloadID {
 // accessor and a setter, the way name already is, which is the only change
 // that makes the rule enforced rather than advisory.
 
-func (f *OpenFile) GetMetadataHandle() metadata.FileHandle {
-	f.mu.RLock()
-	defer f.mu.RUnlock()
-	return f.MetadataHandle
-}
-
 // SetPayloadID publishes a new cached payload identifier under the write lock.
-
-func (f *OpenFile) SetPayloadID(id metadata.PayloadID) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.PayloadID = id
-}
 
 // IsDeletePending returns the committed delete-on-close flag under the read
 // lock. SET_INFO and the CLOSE delete-on-close election write it under the
 // write lock, from goroutines other than the handle's own, so every read
 // outside those critical sections goes through here.
 
-func (f *OpenFile) IsDeletePending() bool {
-	f.mu.RLock()
-	defer f.mu.RUnlock()
-	return f.DeletePending
-}
-
 // IsMtimeFrozen returns the MtimeFrozen flag under the read lock.
 
-func (f *OpenFile) IsMtimeFrozen() bool {
-	f.mu.RLock()
-	defer f.mu.RUnlock()
-	return f.MtimeFrozen
-}
-
 // IsCtimeFrozen returns the CtimeFrozen flag under the read lock.
-
-func (f *OpenFile) IsCtimeFrozen() bool {
-	f.mu.RLock()
-	defer f.mu.RUnlock()
-	return f.CtimeFrozen
-}
 
 // notifyMaxBufferSizeSetBit marks the NotifyMaxBufferSize uint64 as having
 // been initialized by the first CHANGE_NOTIFY on the handle. The low 32 bits
 // of the same uint64 hold the captured OutputBufferLength (which may legally
 // be zero — see the field comment for the encoding rationale).
-
-const notifyMaxBufferSizeSetBit uint64 = 1 << 32
 
 // CaptureNotifyMaxBufferSize atomically records the OutputBufferLength of the
 // first CHANGE_NOTIFY on this handle. Returns the captured value (low 32 bits)
@@ -598,25 +508,9 @@ const notifyMaxBufferSizeSetBit uint64 = 1 << 32
 // value and false if a prior CHANGE_NOTIFY already set it. Safe for
 // concurrent callers; only the first wins.
 
-func (f *OpenFile) CaptureNotifyMaxBufferSize(outputBufferLength uint32) (captured uint32, didCapture bool) {
-	packed := notifyMaxBufferSizeSetBit | uint64(outputBufferLength)
-	if f.NotifyMaxBufferSize.CompareAndSwap(0, packed) {
-		return outputBufferLength, true
-	}
-	return uint32(f.NotifyMaxBufferSize.Load()), false
-}
-
 // NotifyMaxBufferSizeValue returns the captured first-CHANGE_NOTIFY
 // OutputBufferLength and whether it has been set yet. Returns (0, false)
 // before the first CHANGE_NOTIFY on this handle.
-
-func (f *OpenFile) NotifyMaxBufferSizeValue() (value uint32, set bool) {
-	raw := f.NotifyMaxBufferSize.Load()
-	if raw&notifyMaxBufferSizeSetBit == 0 {
-		return 0, false
-	}
-	return uint32(raw), true
-}
 
 // CaptureNotifyCompletionFilter atomically records the CompletionFilter of
 // the first CHANGE_NOTIFY on this handle. Subsequent calls return the stored
@@ -625,17 +519,6 @@ func (f *OpenFile) NotifyMaxBufferSizeValue() (value uint32, set bool) {
 // An empty filter is never captured. It carries no mask to make sticky, and
 // storing it would arm the handle with a filter that matches nothing for as
 // long as the handle lives — including for the later requests that do name one.
-
-func (f *OpenFile) CaptureNotifyCompletionFilter(filter uint32) (captured uint32, didCapture bool) {
-	if filter == 0 {
-		return uint32(f.NotifyCompletionFilter.Load()), false
-	}
-	packed := notifyMaxBufferSizeSetBit | uint64(filter)
-	if f.NotifyCompletionFilter.CompareAndSwap(0, packed) {
-		return filter, true
-	}
-	return uint32(f.NotifyCompletionFilter.Load()), false
-}
 
 // NewHandler creates a new SMB2 handler with a default session manager.
 // It initializes the pipe manager, notify registry, and generates a random

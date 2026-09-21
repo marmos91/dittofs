@@ -41,7 +41,7 @@ func TestVerifyChannelSequence_SambaTable(t *testing.T) {
 		got := f.VerifyChannelSequence(s.csn, true /*modify*/)
 		if got != s.allow {
 			t.Fatalf("step %d csn=0x%04x: got allow=%v, want %v (stored=0x%04x)",
-				i, s.csn, got, s.allow, f.channelSeq)
+				i, s.csn, got, s.allow, f.ChannelSequence())
 		}
 	}
 }
@@ -110,8 +110,8 @@ func TestVerifyChannelSequence_SeedNonZero(t *testing.T) {
 	if !f.VerifyChannelSequence(0x1234, true) {
 		t.Fatal("first modify at nonzero csn should seed and be allowed")
 	}
-	if f.channelSeq != 0x1234 {
-		t.Fatalf("expected seeded channelSeq=0x1234, got 0x%04x", f.channelSeq)
+	if f.ChannelSequence() != 0x1234 {
+		t.Fatalf("expected seeded channelSeq=0x1234, got 0x%04x", f.ChannelSequence())
 	}
 	// A stale write below the seed is rejected.
 	if f.VerifyChannelSequence(0x1233, true) {
