@@ -3,11 +3,13 @@ package runtime
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
+	metamem "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
 // blockingAPIServer fails on demand. Start holds until the test releases it and
@@ -58,12 +60,22 @@ func TestServerShutdownStopsBackgroundWorkers(t *testing.T) {
 	api := &blockingAPIServer{release: make(chan struct{})}
 	rt.SetAPIServer(api)
 
-	// A GC run parked on its own context: it reports cancellation rather than
-	// finishing, so the assertion is about the run being reached and not about
-	// the registry's bookkeeping around it.
+	// A real metadata store, so the GC run can report what the ORDER was rather
+	// than only that it was reached. "Stopped by the time Serve returns" is a
+	// weaker claim than "stopped before the stores it writes through closed",
+	// and the failed-start drain satisfies the weaker one on every path.
+	meta := &closeWatchingStore{Store: metamem.NewMemoryMetadataStoreWithDefaults()}
+	if err := rt.RegisterMetadataStore("meta", meta); err != nil {
+		t.Fatalf("RegisterMetadataStore: %v", err)
+	}
+
+	// A GC run parked on its own context. When cancellation arrives it records
+	// whether the store it writes through was already closed.
 	gcCancelled := make(chan struct{})
+	var metaClosedAtGCCancel atomic.Bool
 	rt.gcReg.start("/gc", false, false, func(ctx context.Context, _ func(engine.GCStats)) (*engine.GCStats, error) {
 		<-ctx.Done()
+		metaClosedAtGCCancel.Store(meta.wasClosed())
 		close(gcCancelled)
 		return nil, ctx.Err()
 	})
@@ -111,8 +123,17 @@ func TestServerShutdownStopsBackgroundWorkers(t *testing.T) {
 
 	select {
 	case <-gcCancelled:
+		if metaClosedAtGCCancel.Load() {
+			t.Error("the in-flight block GC run was cancelled only AFTER the metadata stores closed; every write it made in between met a closed store")
+		}
 	case <-time.After(15 * time.Second):
 		t.Error("the in-flight block GC run was never cancelled; it keeps writing through the metadata stores the shutdown closed")
+	}
+
+	// Without this the ordering assertion above passes on a run whose store was
+	// never closed at all.
+	if !meta.wasClosed() {
+		t.Error("shutdown never closed the metadata store: the sequence under test did not run")
 	}
 
 	if !waitUntil(15*time.Second, func() bool { return trashReapers() <= base }) {

@@ -82,6 +82,33 @@ type fakeDrainer struct{ drained bool }
 
 func (f *fakeDrainer) ShutdownSnapshots(ctx context.Context) { f.drained = true }
 
+// fakeBackgroundWorkerStopper pins the ORDER of this step against the store
+// close and nothing else. What the real stopper reaches — the recycle-bin
+// reaper and an in-flight block GC — is pinned against the real chain by the
+// runtime package's shutdown tests, which cannot live here because the Runtime
+// imports this package.
+//
+// It is a driver, not a stand-in: *Runtime is assigned straight into
+// Deps.BackgroundWorkerStopper, so the compiler pins the production wiring and
+// this fake only has to say when the step ran.
+type fakeBackgroundWorkerStopper struct {
+	stopped             bool
+	metaAlreadyClosed   bool
+	blocksAlreadyClosed bool
+	closerToCheck       *fakeStoreCloser
+	blocksToCheck       *fakeBlockStoreCloser
+}
+
+func (f *fakeBackgroundWorkerStopper) StopBackgroundWorkers() {
+	f.stopped = true
+	if f.closerToCheck != nil {
+		f.metaAlreadyClosed = f.closerToCheck.closed
+	}
+	if f.blocksToCheck != nil {
+		f.blocksAlreadyClosed = f.blocksToCheck.closedStores
+	}
+}
+
 // fakeBlockStoreCloser pins the ORDER of the two steps and nothing else: it
 // cannot show that closing a real block store quiesces anything. That is pinned
 // against the real chain by
@@ -171,17 +198,19 @@ func TestServeGracefulShutdownOnCancel(t *testing.T) {
 	closer := &fakeStoreCloser{}
 	drainer := &fakeDrainer{}
 	blockStores := &fakeBlockStoreCloser{closerToCheck: closer}
+	workers := &fakeBackgroundWorkerStopper{closerToCheck: closer, blocksToCheck: blockStores}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
 	err := s.Serve(ctx, Deps{
-		Settings:         settings,
-		AdapterLoader:    adapters,
-		MetadataFlusher:  flusher,
-		StoreCloser:      closer,
-		SnapshotDrainer:  drainer,
-		BlockStoreCloser: blockStores,
+		Settings:                settings,
+		AdapterLoader:           adapters,
+		MetadataFlusher:         flusher,
+		StoreCloser:             closer,
+		SnapshotDrainer:         drainer,
+		BlockStoreCloser:        blockStores,
+		BackgroundWorkerStopper: workers,
 	})
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v, want context.Canceled", err)
@@ -211,6 +240,16 @@ func TestServeGracefulShutdownOnCancel(t *testing.T) {
 	// carve dispatcher commits into a closed DB ("sql: database is closed").
 	if blockStores.metaAlreadyClosed {
 		t.Error("CloseBlockStores ran AFTER CloseMetadataStores — carve can commit into a closed DB")
+	}
+	if !workers.stopped {
+		t.Error("background workers not stopped")
+	}
+	// The reaper and an in-flight block GC write through both tiers, so the
+	// signal has to reach them while both are still open. Being stopped by the
+	// time Serve returns is not the same claim and is not what this asserts.
+	if workers.metaAlreadyClosed || workers.blocksAlreadyClosed {
+		t.Errorf("StopBackgroundWorkers ran after teardown had begun (metadata closed=%v, block stores closed=%v) — the reaper and an in-flight GC can write into a closing store",
+			workers.metaAlreadyClosed, workers.blocksAlreadyClosed)
 	}
 }
 

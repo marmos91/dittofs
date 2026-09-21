@@ -349,6 +349,16 @@ type Service struct {
 	// the publish refuses. AddShare and RebindShareBlockStore also check it on
 	// entry, so neither builds a store it would then have to tear down.
 	//
+	// decision: what this orders is PUBLICATION, not the dispatcher. Both paths
+	// start the store they are composing well before they reach their publish
+	// check, so a store that loses the race was running for the length of that
+	// window and is then closed by the refusal — and that close drains it
+	// against metadata stores the shutdown may already have closed. The window
+	// is short, unreachable without an operator editing shares during a
+	// shutdown, and costs a logged failed carve on a process that is leaving.
+	// Withdraw the exemption by moving the composition itself under a gate,
+	// which means holding a lock across a block-store open.
+	//
 	// It is never cleared. CloseBlockStores runs when the process is leaving,
 	// and a Service that has quiesced its data plane has no way back: the
 	// registry's stores are closed and nothing re-opens them.

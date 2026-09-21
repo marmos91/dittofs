@@ -308,15 +308,18 @@ func (r *Runtime) SetShutdownTimeout(d time.Duration) {
 // StopBackgroundWorkers signals the runtime's background workers that write
 // through the metadata stores to stop: the recycle-bin reaper and any async
 // block GC run in flight. The lifecycle drain calls it as its first shutdown
-// step, so neither is still starting new work while the stores it writes
-// through are being closed.
+// step, and the failed-start drain calls it for the boots that never reach the
+// lifecycle drain at all.
 //
-// decision: this signals and does not wait. Neither worker offers a join — the
-// reaper's Stop closes the channel its loop selects on, cancelActive cancels
-// the GC run's context — so a pass already inside a store call keeps running
-// and can meet a closed store, which costs a logged error on a process that is
-// leaving. Grow it into a join if either worker ever performs a write whose
-// partial application outlives the process.
+// decision: this signals and does not wait, and the signal is coarser than it
+// looks. Neither worker offers a join — the reaper's Stop closes the channel
+// its loop selects on, cancelActive cancels the GC run's context — and a reap
+// pass already under way keeps issuing fresh calls for the rest of its share
+// list, because it checks neither between shares. So a worker can still be
+// writing when the stores close, which costs a logged error on a process that
+// is leaving. Grow it into a join, and give reapAll a per-share check, if
+// either worker ever performs a write whose partial application outlives the
+// process.
 func (r *Runtime) StopBackgroundWorkers() {
 	// Read under the lock rather than through Trash(): a Runtime that never
 	// served has no reaper to stop, and constructing one here just to stop it
