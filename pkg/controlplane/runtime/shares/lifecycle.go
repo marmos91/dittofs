@@ -156,15 +156,25 @@ func (s *Service) AddShare(
 	// held the name exclusively since Phase 0, so registry[name] cannot already
 	// exist here; we assert it defensively and hand off the reservation.
 	s.mu.Lock()
-	if _, exists := s.registry[config.Name]; exists {
-		// Should be unreachable while the reservation is held, but stay
-		// fail-safe: tear down rather than overwrite an existing share.
+	_, exists := s.registry[config.Name]
+	// Shutdown may have closed every block store while the phases above were
+	// running. Publishing now would hand protocol handlers a share whose carve
+	// dispatcher the fence has already run past, so this share is dropped
+	// instead — its persisted row is still there for the next boot to load.
+	closed := s.closed
+	if closed || exists {
+		// The exists branch should be unreachable while the reservation is
+		// held, but stay fail-safe: tear down rather than overwrite an existing
+		// share.
 		s.mu.Unlock()
 		cleanupShare()
 		// Deregister the metadata store we just published so we do not leak a
 		// registration for a share we are refusing to finalize.
 		if remover, ok := metadataSvc.(MetadataServiceDeregistrar); ok {
 			remover.RemoveStoreForShare(config.Name)
+		}
+		if closed {
+			return fmt.Errorf("cannot add share %q: %w", config.Name, ErrShuttingDown)
 		}
 		return fmt.Errorf("share %q already exists", config.Name)
 	}
@@ -344,6 +354,13 @@ func reconcileMetadataSizeFromJournal(ctx context.Context, metadataStore metadat
 func (s *Service) reserveShareName(name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Refuse before any side-effecting init, so a share arriving during shutdown
+	// never opens a journal or starts a dispatcher it would have to tear down.
+	// The publish in Phase 4 checks again: the fence can fall between here and
+	// there.
+	if s.closed {
+		return fmt.Errorf("cannot add share %q: %w", name, ErrShuttingDown)
+	}
 	if _, exists := s.registry[name]; exists {
 		return fmt.Errorf("share %q already exists", name)
 	}
@@ -673,14 +690,19 @@ func (s *Service) RemoveShare(name string) error {
 // Withdraw it by bounding the closeMu wait, which would make the close itself
 // interruptible and the expiry branch dead.
 func (s *Service) CloseBlockStores(ctx context.Context) {
-	s.mu.RLock()
+	// The write lock, and the flag set inside it, are what make this snapshot a
+	// fence rather than a photograph: a share published after it would run a
+	// carve dispatcher past the close. Every path that publishes one takes mu
+	// and refuses once this is set, so ordering here orders them.
+	s.mu.Lock()
+	s.closed = true
 	stores := make(map[string]*engine.Store, len(s.registry))
 	for name, share := range s.registry {
 		if share.BlockStore != nil {
 			stores[name] = share.BlockStore
 		}
 	}
-	s.mu.RUnlock()
+	s.mu.Unlock()
 
 	// Filled before anything is spawned, so every write to the map happens on
 	// this goroutine and mu is left guarding the deletes alone. Inserting

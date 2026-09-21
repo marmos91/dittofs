@@ -2,6 +2,7 @@ package shares
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -336,7 +337,30 @@ type Service struct {
 	// falls through to the locked registry, which reproduces the exact
 	// not-found/no-store errors, so the cache holds only non-nil stores.
 	blockStoreCache sync.Map // shareName -> *engine.Store
+
+	// closed is set by CloseBlockStores, under mu, before it snapshots the
+	// registry. It is the fence's memory: a share whose block store is composed
+	// after that snapshot is taken would start a carve dispatcher the fence has
+	// already run past, and that dispatcher commits FileChunk manifest rows
+	// through a metadata store the shutdown is about to close — or has closed.
+	//
+	// Both paths that can install a live store check it under mu at the moment
+	// they publish, which is what orders them against the snapshot: either the
+	// publish wins and the snapshot sees the store, or closed is already set and
+	// the publish refuses. AddShare and RebindShareBlockStore also check it on
+	// entry, so neither builds a store it would then have to tear down.
+	//
+	// It is never cleared. CloseBlockStores runs when the process is leaving,
+	// and a Service that has quiesced its data plane has no way back: the
+	// registry's stores are closed and nothing re-opens them.
+	closed bool
 }
+
+// ErrShuttingDown is returned by the share operations that would install a
+// running block store after shutdown has closed them all. The REST handlers
+// already log an AddShare failure and leave the persisted row for the next
+// boot to load, so refusing here costs a restart's worth of nothing.
+var ErrShuttingDown = errors.New("shares service is shutting down")
 
 func New() *Service {
 	return &Service{
