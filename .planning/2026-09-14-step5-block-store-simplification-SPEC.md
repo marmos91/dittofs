@@ -142,16 +142,43 @@ not yet offloaded, and a partial move during startup cannot be undone. Refusing 
 | 6 | Delete `dfsctl store block local` (5 files + docs) | **done** |
 | 7 | Promote chunk/dirty-expire knobs; plumb the journal root | **done** |
 | 8 | `OpenShareJournal` | **done** |
-| 9 | `CommitAck` column + migration (D21) | open |
-| 10 | Switch `createBlockStoreForShare`; drop `LocalBlockStoreID` | open |
-| 11 | Fold the ceiling into `journal_size`; gate eviction on offloaded blocks (D22) | open |
-| 12 | Drop `Kind`; unique-index migration + collision refusal (D23) | open |
-| 13 | REST route collapse + apiclient | open |
-| 14 | dfsctl collapse (4 verbs up, 8 untouched) | open |
-| 15 | Remove the ~10 dead `HasRemote` branches (D20) | open |
-| 16 | `dfs status` two-fetch merge — **silent failure, do first** | open |
-| 17 | Scripts, e2e helpers, workflow | open |
-| 18 | Docs: 9 guides, README, gendocs regen, D21 durability promise | open |
+| 9 | `CommitAck` column + migration (D21) | **done** |
+| 10 | Switch `createBlockStoreForShare`; drop `LocalBlockStoreID` | **done** |
+| 11 | Fold the ceiling into `journal_size`; gate eviction on offloaded blocks (D22) | **done** |
+| 12 | Drop `Kind`; unique-index migration + collision refusal (D23) | **done** |
+| 13 | REST route collapse + apiclient | **done** |
+| 14 | dfsctl collapse (4 verbs up, 8 untouched) | **done** |
+| 15 | Remove the ~10 dead `HasRemote` branches (D20) | **abandoned — see below** |
+| 16 | `dfs status` two-fetch merge — **silent failure, do first** | **done** |
+| 17 | Scripts, e2e helpers, workflow | **done** |
+| 18 | Docs: 9 guides, README, gendocs regen, D21 durability promise | **done** |
+
+Status 2026-09-21: items 1-14 and 16-18 landed on `develop`, by way of #2579 with #2607,
+#2609 and #2613 following it, not through the branch this spec was written against. The four
+`step5/*` branches and the two `chore/*` branches that carried this work were closed unmerged
+once every commit unique to each was confirmed present on `develop`.
+
+### Item 15 is abandoned, not deferred
+
+The premise is wrong: these branches are not dead. A share is refused unless it names a block
+store, which is what made them look unreachable, but `engine.BlockStoreConfig.Remote` is
+nillable at the package boundary and fourteen construction sites build a store that way —
+among them the eviction, warm-read-integrity, cold-read and durability fixtures.
+
+They are also not a fast path. Each one decides what a read returns when there is nowhere to
+hydrate from: a hole reconciles only against a remote and otherwise reads as the zeros it is;
+a warm read failing its checksum heals from the remote and otherwise fails closed rather than
+returning zero-filled or corrupt bytes; a cold range is recorded only where something can
+hydrate it. Collapsing them to the true arm turns each into a silent wrong answer, which is
+the same failure shape as the cold-interval and pre-journal-layout defects.
+
+§8 below understated this as the evict guard alone losing its reachable condition. The
+warm-read heal and cold-range seeding guards lose theirs too.
+
+Reviving item 15 means first making `Remote` non-nillable — a constructor that refuses it —
+and retargeting all fourteen fixtures. Only then does the compiler, rather than a grep, show
+the branches are unreachable. The ceiling is recorded as a `decision:` marker on
+`engine.Store.HasRemoteStore` so the next reader does not repeat the deletion.
 
 ## 7. Merge gate
 

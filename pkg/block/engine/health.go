@@ -79,6 +79,20 @@ func (bs *Store) Healthcheck(ctx context.Context) health.Report {
 }
 
 // HasRemoteStore returns true if this Store has a remote store configured.
+//
+// decision: this predicate reads as dead code — a share is refused unless it
+// names a block store, so a running server's stores all have a remote. It is
+// not dead, and its branches must not be collapsed to the true arm. Remote is
+// nillable at this package's boundary (see BlockStoreConfig.Remote), and the
+// branches decide integrity behaviour rather than a fast path: a hole
+// reconciles only with a remote to hydrate from and otherwise reads as the
+// zeros it is (readAt), a warm read whose bytes fail their checksum heals from
+// the remote and otherwise fails closed instead of returning zero-filled or
+// corrupt bytes (healCorruptWarmRead), and a cold range is recorded only where
+// something can hydrate it (SeedColdRefs). Forcing the true arm turns each of
+// those into a silent wrong answer. Withdraw this only once Remote cannot be
+// nil here — a constructor that refuses it — at which point the compiler, not
+// a grep, shows the branches are unreachable.
 func (bs *Store) HasRemoteStore() bool {
 	return bs.remote != nil
 }
