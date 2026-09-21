@@ -14,7 +14,11 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # Cancel only a superseded pull-request run. A push is a distinct commit
+  # someone wants tested, and cancelling it leaves the branch with no result to
+  # compare a red run against. This protects a push run that is already
+  # executing, not one still queued: a newer run replaces the pending one.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   analyze:

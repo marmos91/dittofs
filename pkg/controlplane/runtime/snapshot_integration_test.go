@@ -524,7 +524,7 @@ func newOrchestrationFixture(t *testing.T) *orchestrationFixture {
 // its own teardown).
 func (f *orchestrationFixture) close() {
 	f.t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), snapTestTimeout)
 	defer cancel()
 	if err := f.rt.Shutdown(ctx); err != nil {
 		f.t.Logf("Shutdown: %v", err)

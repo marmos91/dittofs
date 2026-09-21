@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
@@ -135,7 +134,7 @@ func (f *restoreFixture) simulateRestart() *Runtime {
 	// the very same metadata and block store instances on the other side of the
 	// restart so their post-crash contents survive — a full Shutdown would
 	// close the block store and hand the new runtime one that refuses every op.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), snapTestTimeout)
 	f.rt.shutdownSnapshots(ctx)
 	f.rt.sharesSvc.StopRollups(ctx)
 	cancel()

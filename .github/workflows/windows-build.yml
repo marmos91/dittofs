@@ -18,12 +18,19 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # Cancel only a superseded pull-request run. A push is a distinct commit
+  # someone wants tested, and cancelling it leaves the branch with no result to
+  # compare a red run against. This protects a push run that is already
+  # executing, not one still queued: a newer run replaces the pending one.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build-windows:
     name: Windows Build & Test
     runs-on: windows-latest
+    # Backstop only. The test step bounds itself per package below; recent runs
+    # take 22-31 minutes, so this only catches something the step cannot.
+    timeout-minutes: 45
 
     steps:
       - name: Checkout code
@@ -55,8 +62,22 @@ jobs:
       # compiler itself failing to fork. Either way it surfaces as FAIL lines
       # naming packages that are not at fault. Capping parallelism trades wall
       # clock for headroom and keeps every package, test and the race detector.
+
+      # Tee the output so the summary step can name what failed. The -v suite
+      # prints tens of thousands of lines and a failing test contributes two of
+      # them, nowhere near the end: packages run concurrently and each one's
+      # output is flushed when that package finishes, not when the failure
+      # happened, so the tail of the log shows passing packages whatever went
+      # wrong. Reading it top to bottom is the only way to find the failure,
+      # which is how a single failing test gets mistaken for a hang.
       - name: Run unit tests
-        run: go test -short -race -p 2 -v ./...
+        run: |
+          $ErrorActionPreference = 'Continue'
+          go test -short -race -p 2 -v -timeout=25m ./... 2>&1 | Tee-Object -FilePath test-output.txt
+          # 'Continue' above means a pipeline that dies before go runs leaves
+          # $LASTEXITCODE unset, and `exit $null` exits 0. Fail instead.
+          if ($null -eq $LASTEXITCODE) { exit 1 }
+          exit $LASTEXITCODE
 
       - name: Build Summary
         if: always()
@@ -66,3 +87,23 @@ jobs:
           echo "- Go version: $(go version)" >> $env:GITHUB_STEP_SUMMARY
           echo "- Platform: ${{ runner.os }}" >> $env:GITHUB_STEP_SUMMARY
           echo "- Status: ${{ job.status }}" >> $env:GITHUB_STEP_SUMMARY
+          # An empty match is itself the answer: the step failed for a reason
+          # that is not a test failure, so say that rather than print nothing.
+          if ('${{ job.status }}' -ne 'success' -and (Test-Path test-output.txt)) {
+            # Also the lines that name the cause when there is no --- FAIL at
+            # all: a build error, and the 'running tests:' block a timeout
+            # panic prints, which is the only place a wedged test is named.
+            # Capped because the summary is dropped whole, not truncated, past
+            # its size limit.
+            $failures = Select-String -Path test-output.txt -Pattern '^(\s*--- FAIL|FAIL\s|panic:|\s+running tests:|\s+Test\S* \(|\S+\.go:\d+:\d+:)' |
+              ForEach-Object { $_.Line.TrimEnd() } | Select-Object -First 200
+            echo "" >> $env:GITHUB_STEP_SUMMARY
+            echo "### Failing tests" >> $env:GITHUB_STEP_SUMMARY
+            echo '```' >> $env:GITHUB_STEP_SUMMARY
+            if ($failures) {
+              $failures >> $env:GITHUB_STEP_SUMMARY
+            } else {
+              echo "no FAIL or panic line: the step failed for another reason (build, runner, memory)" >> $env:GITHUB_STEP_SUMMARY
+            }
+            echo '```' >> $env:GITHUB_STEP_SUMMARY
+          }

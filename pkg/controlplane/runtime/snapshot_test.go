@@ -13,6 +13,15 @@ import (
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
 )
 
+// snapTestTimeout bounds a wedged snapshot operation so a stuck test fails
+// instead of running to the suite's own limit. It is not a latency assertion:
+// every call made under it completes in well under a second, and nothing here
+// asserts that the deadline fires. A bound close to the normal duration makes
+// a machine that stalls — under a loaded scheduler, a long collection pause,
+// memory pressure — indistinguishable from a genuine wedge, and reports it as
+// a failure of whichever operation happened to be in flight.
+const snapTestTimeout = 30 * time.Second
+
 // TestWaitForSnapshot_FallbackWhenAlreadyComplete asserts the
 // "no in-flight registry entry / chan already closed" path: WaitForSnapshot
 // falls back directly to GetSnapshot and returns the row + nil orchestration
@@ -23,7 +32,7 @@ import (
 // snapshot's orchestration has already completed and the registry entry was
 // reaped.
 func TestWaitForSnapshot_FallbackWhenAlreadyComplete(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), snapTestTimeout)
 	defer cancel()
 
 	cp, err := cpstore.New(&cpstore.Config{
@@ -74,7 +83,7 @@ func TestWaitForSnapshot_FallbackWhenAlreadyComplete(t *testing.T) {
 // from the GetSnapshot fallback when there's no row at all and no registry
 // entry. errors.Is must match the sentinel through the wrap.
 func TestWaitForSnapshot_NotFound(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), snapTestTimeout)
 	defer cancel()
 
 	cp, err := cpstore.New(&cpstore.Config{
@@ -181,7 +190,7 @@ func newTestRuntime(t *testing.T) *Runtime {
 // --name was silently dropped).
 func TestRuntimeSnapshot_NamePersists(t *testing.T) {
 	rt := newTestRuntime(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), snapTestTimeout)
 	defer cancel()
 
 	const shareName = "alpha"
@@ -209,7 +218,7 @@ func TestRuntimeSnapshot_NamePersists(t *testing.T) {
 // "(no error message)", and that a failed->creating retry clears it.
 func TestRuntimeFailSnap_RecordsError(t *testing.T) {
 	rt := newTestRuntime(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), snapTestTimeout)
 	defer cancel()
 
 	const shareName = "alpha"
@@ -255,7 +264,7 @@ func TestRuntimeFailSnap_RecordsError(t *testing.T) {
 // opaque 500.
 func TestRuntimeCreateSnapshot_MemoryLocalStore(t *testing.T) {
 	rt := newTestRuntime(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), snapTestTimeout)
 	defer cancel()
 
 	const shareName = "alpha"
@@ -309,7 +318,7 @@ func TestRuntimeDeriveWaitCtx_IgnoresCallerCancel(t *testing.T) {
 // from the store through the Runtime wrapper.
 func TestRuntimeGetSnapshot_NotFound(t *testing.T) {
 	rt := newTestRuntime(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), snapTestTimeout)
 	defer cancel()
 
 	_, err := rt.GetSnapshot(ctx, "missing-share", "missing-id")
@@ -322,7 +331,7 @@ func TestRuntimeGetSnapshot_NotFound(t *testing.T) {
 // empty slice (so JSON encodes [] not null) when the share has no rows.
 func TestRuntimeListSnapshots_Empty(t *testing.T) {
 	rt := newTestRuntime(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), snapTestTimeout)
 	defer cancel()
 
 	got, err := rt.ListSnapshots(ctx, "alpha")
@@ -341,7 +350,7 @@ func TestRuntimeListSnapshots_Empty(t *testing.T) {
 // store row and the on-disk dir under the per-share delete lock.
 func TestRuntimeDeleteSnapshot_HappyPath(t *testing.T) {
 	rt := newTestRuntime(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), snapTestTimeout)
 	defer cancel()
 
 	const shareName = "alpha"
@@ -414,7 +423,7 @@ func TestRuntimeDeleteSnapshot_HappyPath(t *testing.T) {
 // the same snapID, so a delete cannot race a running create/retry.
 func TestRuntimeDeleteSnapshot_RefusesInFlight(t *testing.T) {
 	rt := newTestRuntime(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), snapTestTimeout)
 	defer cancel()
 
 	const shareName = "alpha"
@@ -458,7 +467,7 @@ func TestRuntimeDeleteSnapshot_RefusesInFlight(t *testing.T) {
 // done), the delete succeeds.
 func TestRuntimeDeleteSnapshot_RefusesMarkerProtected(t *testing.T) {
 	rt := newTestRuntime(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), snapTestTimeout)
 	defer cancel()
 
 	const shareName = "alpha"
@@ -520,7 +529,7 @@ func TestRuntimeDeleteSnapshot_RefusesMarkerProtected(t *testing.T) {
 // store propagates verbatim and the on-disk wipe step is NOT attempted.
 func TestRuntimeDeleteSnapshot_NotFound(t *testing.T) {
 	rt := newTestRuntime(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), snapTestTimeout)
 	defer cancel()
 
 	err := rt.DeleteSnapshot(ctx, "alpha", "no-such-snap")
@@ -534,7 +543,7 @@ func TestRuntimeDeleteSnapshot_NotFound(t *testing.T) {
 // store or filesystem touch.
 func TestRuntimeDeleteSnapshot_RejectsPathTraversal(t *testing.T) {
 	rt := newTestRuntime(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), snapTestTimeout)
 	defer cancel()
 
 	// Includes separator-less traversal values (".", "..") that a bare

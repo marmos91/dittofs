@@ -33,7 +33,11 @@ permissions:
 
 concurrency:
   group: ad-dc-${{ github.ref }}
-  cancel-in-progress: true
+  # No pull_request trigger, so there is nothing to supersede: every run is a
+  # push, a schedule or a manual dispatch, and each is a distinct commit
+  # someone wants tested. This protects a run that is already executing, not
+  # one still queued: a newer run replaces the pending one.
+  cancel-in-progress: false
 
 jobs:
   ad-dc:
