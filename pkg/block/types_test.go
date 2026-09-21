@@ -357,27 +357,47 @@ func TestContentHash_UnmarshalJSON_AcceptedForms(t *testing.T) {
 	}
 }
 
-// TestContentHash_UnmarshalJSON_RejectsDroppedForms pins the refusal of the two
-// encodings UnmarshalJSON used to accept: the JSON number array that
-// encoding/json emits for a bare [32]byte, and a base64 string. Neither is
-// written by any build that stamps a store this one will open, and decoding
-// either to a hash silently would resurrect a form nothing round-trips.
-func TestContentHash_UnmarshalJSON_RejectsDroppedForms(t *testing.T) {
-	dropped := map[string]string{
-		"v0.14 zero number array":     "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]",
-		"v0.14 non-zero number array": "[175,19,73,185,245,249,161,166,160,64,77,234,54,220,201,73,155,203,37,201,173,193,18,183,204,154,147,202,228,31,50,98]",
-		"base64 string":               `"rxNJufX5oaagQE3qNtzJSZvLJcmtwRK3zJqTyuQfMmI="`,
+// TestContentHash_UnmarshalJSON_RejectsBase64 pins the refusal of the base64
+// string form. Unlike the number array it is not read-compat for anything:
+// encoding/json base64s byte slices, never byte arrays, and ContentHash has
+// been [32]byte since it was introduced, so no build ever wrote this shape.
+func TestContentHash_UnmarshalJSON_RejectsBase64(t *testing.T) {
+	const legacyB64 = `"rxNJufX5oaagQE3qNtzJSZvLJcmtwRK3zJqTyuQfMmI="`
+	var got ContentHash
+	if err := got.UnmarshalJSON([]byte(legacyB64)); err == nil {
+		t.Fatalf("UnmarshalJSON(%s) = nil error, want refusal (got %x)", legacyB64, got[:])
 	}
-	for name, raw := range dropped {
-		t.Run(name, func(t *testing.T) {
-			var got ContentHash
-			if err := got.UnmarshalJSON([]byte(raw)); err == nil {
-				t.Fatalf("UnmarshalJSON(%s) = nil error, want refusal (got %x)", raw, got[:])
-			}
-			if !got.IsZero() {
-				t.Fatalf("refused input mutated the receiver: %x", got[:])
-			}
-		})
+	if !got.IsZero() {
+		t.Fatalf("refused input mutated the receiver: %x", got[:])
+	}
+}
+
+// TestContentHash_JSONBackwardCompat_V014Array asserts UnmarshalJSON still
+// accepts the JSON number-array form that encoding/json produced for
+// ContentHash before this type had a custom MarshalJSON. Badger stores written
+// then still hold it, and refusing it drops the row from the listing scan with
+// a nil error rather than failing loudly — see the UnmarshalJSON decision note.
+func TestContentHash_JSONBackwardCompat_V014Array(t *testing.T) {
+	zeroArr := "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]"
+	var got ContentHash
+	if err := got.UnmarshalJSON([]byte(zeroArr)); err != nil {
+		t.Fatalf("UnmarshalJSON v0.14 zero array: %v", err)
+	}
+	if !got.IsZero() {
+		t.Fatalf("expected zero hash, got %x", got[:])
+	}
+
+	nonZeroArr := "[175,19,73,185,245,249,161,166,160,64,77,234,54,220,201,73,155,203,37,201,173,193,18,183,204,154,147,202,228,31,50,98]"
+	var got2 ContentHash
+	if err := got2.UnmarshalJSON([]byte(nonZeroArr)); err != nil {
+		t.Fatalf("UnmarshalJSON v0.14 non-zero array: %v", err)
+	}
+	want, err := ParseContentHash(blake3EmptyHex)
+	if err != nil {
+		t.Fatalf("ParseContentHash: %v", err)
+	}
+	if !bytes.Equal(got2[:], want[:]) {
+		t.Fatalf("v0.14 non-zero array decode mismatch:\n got: %x\nwant: %x", got2[:], want[:])
 	}
 }
 

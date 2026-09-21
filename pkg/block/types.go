@@ -2,6 +2,7 @@ package block
 
 import (
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
@@ -102,10 +103,26 @@ func (h ContentHash) MarshalJSON() ([]byte, error) {
 }
 
 // UnmarshalJSON accepts the canonical "blake3:{hex}" form written by
-// MarshalJSON and the bare "{hex}" form. Any other shape is refused rather
-// than resolved to a zero hash: a caller that persisted one would write a
-// manifest row addressing no content, which reads back as a hole.
+// MarshalJSON, the bare "{hex}" form, and the JSON number array that
+// encoding/json emits for a bare [32]byte.
+//
+// decision: the number-array branch is read-compat for badger stores written
+// before this type had a MarshalJSON, and it stays even though nothing writes
+// that form any more. Refusing it does not fail loudly: the row-listing scan
+// skips any fb: row whose value does not unmarshal, so a refused hash drops the
+// row with a nil error rather than surfacing one, and a caller reading extents
+// off that list then reports the range as a hole instead of erroring — stored
+// bytes read back as zeros. Withdraw it only once no store can hold the form
+// AND the listing path distinguishes a decode failure from an absent row.
 func (h *ContentHash) UnmarshalJSON(data []byte) error {
+	if len(data) > 0 && data[0] == '[' {
+		var arr [HashSize]byte
+		if err := json.Unmarshal(data, &arr); err == nil {
+			*h = ContentHash(arr)
+			return nil
+		}
+		return fmt.Errorf("ContentHash.UnmarshalJSON: invalid JSON array: %q", data)
+	}
 	if len(data) < 2 || data[0] != '"' || data[len(data)-1] != '"' {
 		return fmt.Errorf("ContentHash.UnmarshalJSON: not a JSON string: %q", data)
 	}
