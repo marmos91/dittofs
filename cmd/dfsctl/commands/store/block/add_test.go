@@ -44,7 +44,7 @@ func TestBuildCompressionBlock(t *testing.T) {
 }
 
 func TestBuildRemoteConfig_S3_CompressionMergesIn(t *testing.T) {
-	cfg, err := buildRemoteConfig("s3", "", "bucket", "us-east-1", "", "", "AK", "SK", "zstd", 0, encryptionFlags{})
+	cfg, err := buildRemoteConfig("s3", "", s3Fields{bucket: "bucket", region: "us-east-1", accessKey: "AK", secretKey: "SK"}, "zstd", 0, encryptionFlags{})
 	if err != nil {
 		t.Fatalf("buildRemoteConfig: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestBuildRemoteConfig_S3_CompressionMergesIn(t *testing.T) {
 }
 
 func TestBuildRemoteConfig_S3_NoCompressionByDefault(t *testing.T) {
-	cfg, err := buildRemoteConfig("s3", "", "bucket", "us-east-1", "", "", "AK", "SK", "", 0, encryptionFlags{})
+	cfg, err := buildRemoteConfig("s3", "", s3Fields{bucket: "bucket", region: "us-east-1", accessKey: "AK", secretKey: "SK"}, "", 0, encryptionFlags{})
 	if err != nil {
 		t.Fatalf("buildRemoteConfig: %v", err)
 	}
@@ -73,14 +73,14 @@ func TestBuildRemoteConfig_S3_NoCompressionByDefault(t *testing.T) {
 }
 
 func TestBuildRemoteConfig_S3_RejectsInvalidAlgo(t *testing.T) {
-	_, err := buildRemoteConfig("s3", "", "bucket", "us-east-1", "", "", "AK", "SK", "gzip", 0, encryptionFlags{})
+	_, err := buildRemoteConfig("s3", "", s3Fields{bucket: "bucket", region: "us-east-1", accessKey: "AK", secretKey: "SK"}, "gzip", 0, encryptionFlags{})
 	if err == nil || !strings.Contains(err.Error(), "invalid --compression") {
 		t.Fatalf("err=%v, want invalid --compression error", err)
 	}
 }
 
 func TestBuildRemoteConfig_S3_ParallelUploadsMergesIn(t *testing.T) {
-	cfg, err := buildRemoteConfig("s3", "", "bucket", "us-east-1", "", "", "AK", "SK", "", 8, encryptionFlags{})
+	cfg, err := buildRemoteConfig("s3", "", s3Fields{bucket: "bucket", region: "us-east-1", accessKey: "AK", secretKey: "SK"}, "", 8, encryptionFlags{})
 	if err != nil {
 		t.Fatalf("buildRemoteConfig: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestBuildRemoteConfig_S3_ParallelUploadsMergesIn(t *testing.T) {
 }
 
 func TestBuildRemoteConfig_S3_NoParallelUploadsByDefault(t *testing.T) {
-	cfg, err := buildRemoteConfig("s3", "", "bucket", "us-east-1", "", "", "AK", "SK", "", 0, encryptionFlags{})
+	cfg, err := buildRemoteConfig("s3", "", s3Fields{bucket: "bucket", region: "us-east-1", accessKey: "AK", secretKey: "SK"}, "", 0, encryptionFlags{})
 	if err != nil {
 		t.Fatalf("buildRemoteConfig: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestBuildEncryptionBlock_Rejects(t *testing.T) {
 }
 
 func TestBuildRemoteConfig_S3_EncryptionMergesIn(t *testing.T) {
-	cfg, err := buildRemoteConfig("s3", "", "bucket", "us-east-1", "", "", "AK", "SK", "", 0, encryptionFlags{
+	cfg, err := buildRemoteConfig("s3", "", s3Fields{bucket: "bucket", region: "us-east-1", accessKey: "AK", secretKey: "SK"}, "", 0, encryptionFlags{
 		AEAD:    "aes-256-gcm",
 		KeyKind: "local",
 		KeyFile: "/etc/dittofs/share.key",
@@ -199,12 +199,131 @@ func TestBuildRemoteConfig_S3_EncryptionMergesIn(t *testing.T) {
 func TestBuildRemoteConfig_JSONConfigShortCircuitsFlag(t *testing.T) {
 	// --config takes the parsed JSON verbatim; --compression flag is
 	// ignored when --config is set (matches existing flag interaction).
-	cfg, err := buildRemoteConfig("s3", `{"bucket":"x"}`, "", "", "", "", "", "", "lz4", 0, encryptionFlags{})
+	cfg, err := buildRemoteConfig("s3", `{"bucket":"x"}`, s3Fields{}, "lz4", 0, encryptionFlags{})
 	if err != nil {
 		t.Fatalf("buildRemoteConfig: %v", err)
 	}
 	m, _ := cfg.(map[string]any)
 	if _, present := m["compression"]; present {
 		t.Fatalf("compression must not be injected when --config provided: %#v", m)
+	}
+}
+
+// recordingAsker answers every prompt with a canned value and records the
+// labels it was asked, so the per-field gating can be inspected without a
+// terminal.
+type recordingAsker struct {
+	asked  []string
+	answer string
+}
+
+func (r *recordingAsker) asker() *s3Asker {
+	record := func(label string) (string, error) {
+		r.asked = append(r.asked, label)
+		return r.answer, nil
+	}
+	return &s3Asker{
+		required:    record,
+		optional:    record,
+		secret:      record,
+		withDefault: func(label, _ string) (string, error) { return record(label) },
+	}
+}
+
+func (r *recordingAsker) wasAsked(substr string) bool {
+	for _, label := range r.asked {
+		if strings.Contains(label, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+// suppliedSet turns a list of flag names into the predicate runAdd builds from
+// cmd.Flags().Changed.
+func suppliedSet(names ...string) func(string) bool {
+	set := make(map[string]bool, len(names))
+	for _, n := range names {
+		set[n] = true
+	}
+	return func(name string) bool { return set[name] }
+}
+
+// Naming the bucket on the command line must not answer any other question:
+// the endpoint decides whether the store talks to a gateway or to AWS, and it
+// has to be asked on its own.
+func TestPromptMissingS3Fields_BucketDoesNotSuppressEndpoint(t *testing.T) {
+	rec := &recordingAsker{answer: "https://s3.example.invalid"}
+	fields := s3Fields{bucket: "my-bucket", region: "us-east-1"}
+
+	if err := promptMissingS3Fields(&fields, suppliedSet("bucket"), rec.asker()); err != nil {
+		t.Fatalf("promptMissingS3Fields: %v", err)
+	}
+
+	if !rec.wasAsked("endpoint") {
+		t.Errorf("endpoint was never asked for; questions asked: %q", rec.asked)
+	}
+	if fields.endpoint != "https://s3.example.invalid" {
+		t.Errorf("endpoint=%q, want the answered value", fields.endpoint)
+	}
+	for _, want := range []string{"region", "Key prefix", "Access key", "Secret access key"} {
+		if !rec.wasAsked(want) {
+			t.Errorf("%q was never asked for; questions asked: %q", want, rec.asked)
+		}
+	}
+	if rec.wasAsked("bucket") {
+		t.Errorf("bucket was supplied on the command line and must not be asked: %q", rec.asked)
+	}
+	if fields.bucket != "my-bucket" {
+		t.Errorf("bucket=%q, want the supplied value untouched", fields.bucket)
+	}
+}
+
+// A flag the operator named is never re-asked, even when its value is empty.
+func TestPromptMissingS3Fields_AsksNothingWhenEveryFlagIsNamed(t *testing.T) {
+	rec := &recordingAsker{answer: "unexpected"}
+	fields := s3Fields{bucket: "b", region: "eu-west-1", accessKey: "AK", secretKey: "SK"}
+
+	err := promptMissingS3Fields(&fields,
+		suppliedSet("bucket", "region", "prefix", "endpoint", "access-key", "secret-key"), rec.asker())
+	if err != nil {
+		t.Fatalf("promptMissingS3Fields: %v", err)
+	}
+	if len(rec.asked) != 0 {
+		t.Errorf("asked %q, want nothing", rec.asked)
+	}
+	if fields.endpoint != "" {
+		t.Errorf("endpoint=%q, want the explicitly empty value preserved", fields.endpoint)
+	}
+}
+
+// Without a terminal there is nobody to answer, so a missing required value is
+// an error naming the flag rather than a prompt that blocks or reads EOF.
+func TestPromptMissingS3Fields_NonInteractiveReportsMissingFlags(t *testing.T) {
+	fields := s3Fields{region: "us-east-1"}
+	err := promptMissingS3Fields(&fields, suppliedSet(), nil)
+	if err == nil {
+		t.Fatal("expected an error when nothing was supplied and stdin is not a terminal")
+	}
+	for _, want := range []string{"--bucket", "--access-key", "--secret-key"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name %s", err, want)
+		}
+	}
+
+	fields = s3Fields{bucket: "b", accessKey: "AK", secretKey: "SK", region: "us-east-1"}
+	if err := promptMissingS3Fields(&fields,
+		suppliedSet("bucket", "access-key", "secret-key"), nil); err != nil {
+		t.Fatalf("fully-flagged non-interactive run: %v", err)
+	}
+}
+
+func TestS3TargetDescription(t *testing.T) {
+	if got := s3TargetDescription(map[string]any{"bucket": "b"}); !strings.Contains(got, "AWS") {
+		t.Errorf("an absent endpoint must read as AWS, got %q", got)
+	}
+	got := s3TargetDescription(map[string]any{"endpoint": "https://s3.fr-par.scw.cloud"})
+	if got != "https://s3.fr-par.scw.cloud" {
+		t.Errorf("target=%q, want the configured endpoint", got)
 	}
 }

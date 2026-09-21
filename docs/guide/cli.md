@@ -5467,6 +5467,10 @@ s3:
   --prefix: Key prefix within the bucket
   --access-key: AWS access key ID
   --secret-key: AWS secret access key
+
+Every s3 option left off the command line is asked for individually when
+stdin is a terminal. An empty endpoint means AWS S3; the resolved target is
+echoed before the store is created.
 ```
 
 ```

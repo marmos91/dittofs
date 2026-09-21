@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/marmos91/dittofs/internal/cli/prompt"
 	"github.com/marmos91/dittofs/pkg/apiclient"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 var (
@@ -52,6 +54,10 @@ Type-specific options:
     --prefix: Key prefix within the bucket
     --access-key: AWS access key ID
     --secret-key: AWS secret access key
+
+  Every s3 option left off the command line is asked for individually when
+  stdin is a terminal. An empty endpoint means AWS S3; the resolved target is
+  echoed before the store is created.
 
 Examples:
   # Add an S3 store with flags
@@ -102,7 +108,21 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	config, err := buildRemoteConfig(addType, addConfig, addBucket, addRegion, addEndpoint, addPrefix, addAccessKey, addSecretKey, addCompression, addParallelUploads, encryptionFlags{
+	s3 := s3Fields{
+		bucket:    addBucket,
+		region:    addRegion,
+		endpoint:  addEndpoint,
+		prefix:    addPrefix,
+		accessKey: addAccessKey,
+		secretKey: addSecretKey,
+	}
+	if addType == "s3" && addConfig == "" {
+		if err := promptMissingS3Fields(&s3, cmd.Flags().Changed, terminalAsker()); err != nil {
+			return cmdutil.HandleAbort(err)
+		}
+	}
+
+	config, err := buildRemoteConfig(addType, addConfig, s3, addCompression, addParallelUploads, encryptionFlags{
 		AEAD:       addEncryptionAEAD,
 		KeyKind:    addEncryptionKeyKind,
 		KeyFile:    addEncryptionKeyFile,
@@ -114,6 +134,13 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	})
 	if err != nil {
 		return cmdutil.HandleAbort(err)
+	}
+
+	if m, ok := config.(map[string]any); ok && addType == "s3" {
+		fmt.Fprintf(cmd.OutOrStdout(), "Target: %s, bucket %q, region %q\n",
+			s3TargetDescription(m),
+			cmdutil.GetConfigString(m, "bucket", ""),
+			cmdutil.GetConfigString(m, "region", ""))
 	}
 
 	req := &apiclient.CreateStoreRequest{
@@ -141,7 +168,115 @@ type encryptionFlags struct {
 	KMIPKeyUID string
 }
 
-func buildRemoteConfig(storeType, jsonConfig, bucket, region, endpoint, prefix, accessKey, secretKey, compression string, parallelUploads int, enc encryptionFlags) (any, error) {
+// defaultS3Region is the region an s3 store falls back to when the operator
+// names none, matching the --region flag default.
+const defaultS3Region = "us-east-1"
+
+// s3Fields holds the settings of an s3 store, as supplied on the command line
+// and then completed from the interactive prompts.
+type s3Fields struct {
+	bucket    string
+	region    string
+	endpoint  string
+	prefix    string
+	accessKey string
+	secretKey string
+}
+
+// s3Asker asks the operator for one field at a time. It is a struct of
+// functions rather than direct calls into the prompt package so the gating can
+// be exercised without a terminal.
+type s3Asker struct {
+	required    func(label string) (string, error)
+	optional    func(label string) (string, error)
+	withDefault func(label, defaultValue string) (string, error)
+	secret      func(label string) (string, error)
+}
+
+// terminalAsker returns the terminal-backed prompts, or nil when stdin is not
+// a terminal. A session that cannot answer a question must fail on a missing
+// value rather than block on a prompt nobody will ever see.
+func terminalAsker() *s3Asker {
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return nil
+	}
+	return &s3Asker{
+		required:    prompt.InputRequired,
+		optional:    prompt.InputOptional,
+		withDefault: prompt.Input,
+		secret:      func(label string) (string, error) { return prompt.PasswordWithValidation(label, 1) },
+	}
+}
+
+// promptMissingS3Fields fills in every s3 setting the operator did not pass on
+// the command line, asking one question per field. The fields are independent:
+// naming one flag never suppresses the question for another, so a run that
+// passes only the bucket is still asked which endpoint to talk to — an
+// unanswered endpoint means AWS, which is not a default anyone should reach by
+// omission.
+//
+// supplied reports whether a flag was named, not whether it is non-empty, so
+// an explicitly empty optional value is left alone. ask is nil when the
+// session is not interactive; the required fields then become an error.
+func promptMissingS3Fields(f *s3Fields, supplied func(name string) bool, ask *s3Asker) error {
+	if ask == nil {
+		var missing []string
+		for _, name := range []string{"bucket", "access-key", "secret-key"} {
+			if !supplied(name) {
+				missing = append(missing, "--"+name)
+			}
+		}
+		if len(missing) > 0 {
+			return fmt.Errorf("%s required for an s3 store when stdin is not a terminal", strings.Join(missing, ", "))
+		}
+		return nil
+	}
+
+	var err error
+	if !supplied("bucket") {
+		if f.bucket, err = ask.required("S3 bucket name"); err != nil {
+			return err
+		}
+	}
+	if !supplied("region") {
+		if f.region, err = ask.withDefault("AWS region", defaultS3Region); err != nil {
+			return err
+		}
+	}
+	if !supplied("prefix") {
+		if f.prefix, err = ask.optional("Key prefix"); err != nil {
+			return err
+		}
+	}
+	if !supplied("endpoint") {
+		if f.endpoint, err = ask.optional("Custom endpoint (empty for AWS)"); err != nil {
+			return err
+		}
+	}
+	if !supplied("access-key") {
+		if f.accessKey, err = ask.required("Access key ID"); err != nil {
+			return err
+		}
+	}
+	if !supplied("secret-key") {
+		if f.secretKey, err = ask.secret("Secret access key"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// s3TargetDescription names the endpoint a store will actually talk to. An
+// absent endpoint is AWS, which once the store is written is indistinguishable
+// from a deliberately chosen gateway.
+func s3TargetDescription(config map[string]any) string {
+	if endpoint := cmdutil.GetConfigString(config, "endpoint", ""); endpoint != "" {
+		return endpoint
+	}
+	return "AWS S3 (s3.amazonaws.com)"
+}
+
+func buildRemoteConfig(storeType, jsonConfig string, s3 s3Fields, compression string, parallelUploads int, enc encryptionFlags) (any, error) {
 	if jsonConfig != "" {
 		var config any
 		if err := json.Unmarshal([]byte(jsonConfig), &config); err != nil {
@@ -164,62 +299,21 @@ func buildRemoteConfig(storeType, jsonConfig, bucket, region, endpoint, prefix, 
 		return nil, nil
 
 	case "s3":
-		s3Bucket := bucket
-		s3Region := region
-		s3Endpoint := endpoint
-		s3Prefix := prefix
-		s3AccessKey := accessKey
-		s3SecretKey := secretKey
-
-		if s3Bucket == "" {
-			var err error
-			s3Bucket, err = prompt.InputRequired("S3 bucket name")
-			if err != nil {
-				return nil, err
-			}
-
-			s3Region, err = prompt.Input("AWS region", "us-east-1")
-			if err != nil {
-				return nil, err
-			}
-
-			s3Prefix, err = prompt.InputOptional("Key prefix")
-			if err != nil {
-				return nil, err
-			}
-
-			s3Endpoint, err = prompt.InputOptional("Custom endpoint (for S3-compatible stores)")
-			if err != nil {
-				return nil, err
-			}
+		region := s3.region
+		if region == "" {
+			region = defaultS3Region
 		}
-
-		if s3AccessKey == "" {
-			var err error
-			s3AccessKey, err = prompt.InputRequired("Access key ID")
-			if err != nil {
-				return nil, err
-			}
-		}
-		if s3SecretKey == "" {
-			var err error
-			s3SecretKey, err = prompt.PasswordWithValidation("Secret access key", 1)
-			if err != nil {
-				return nil, err
-			}
-		}
-
 		config := map[string]any{
-			"bucket":            s3Bucket,
-			"region":            s3Region,
-			"access_key_id":     s3AccessKey,
-			"secret_access_key": s3SecretKey,
+			"bucket":            s3.bucket,
+			"region":            region,
+			"access_key_id":     s3.accessKey,
+			"secret_access_key": s3.secretKey,
 		}
-		if s3Endpoint != "" {
-			config["endpoint"] = s3Endpoint
+		if s3.endpoint != "" {
+			config["endpoint"] = s3.endpoint
 		}
-		if s3Prefix != "" {
-			config["prefix"] = s3Prefix
+		if s3.prefix != "" {
+			config["prefix"] = s3.prefix
 		}
 		if compressionBlock != nil {
 			config["compression"] = compressionBlock
