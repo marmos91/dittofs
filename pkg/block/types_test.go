@@ -372,6 +372,45 @@ func TestContentHash_UnmarshalJSON_RejectsBase64(t *testing.T) {
 	}
 }
 
+// TestContentHash_UnmarshalJSON_RejectsMalformedArray pins the length check on
+// the legacy number-array path. Unmarshalling straight into [HashSize]byte
+// zero-fills a short array and drops a long array's tail without erroring, so
+// without an element count a truncated or padded row decodes to a confidently
+// wrong hash instead of being refused. The empty array is the worst of these:
+// it yields the all-zero hash, which reads as a pending chunk.
+func TestContentHash_UnmarshalJSON_RejectsMalformedArray(t *testing.T) {
+	repeat := func(n int, v string) string {
+		out := "["
+		for i := 0; i < n; i++ {
+			if i > 0 {
+				out += ","
+			}
+			out += v
+		}
+		return out + "]"
+	}
+	malformed := map[string]string{
+		"empty array":         "[]",
+		"short array":         "[1,2,3]",
+		"one element short":   repeat(HashSize-1, "7"),
+		"one element long":    repeat(HashSize+1, "7"),
+		"long array":          repeat(40, "7"),
+		"element above uint8": repeat(HashSize-1, "7")[:len(repeat(HashSize-1, "7"))-1] + ",256]",
+		"negative element":    repeat(HashSize-1, "7")[:len(repeat(HashSize-1, "7"))-1] + ",-1]",
+	}
+	for name, raw := range malformed {
+		t.Run(name, func(t *testing.T) {
+			var got ContentHash
+			if err := got.UnmarshalJSON([]byte(raw)); err == nil {
+				t.Fatalf("UnmarshalJSON(%s) = nil error, want refusal (got hash %x)", raw, got[:])
+			}
+			if !got.IsZero() {
+				t.Fatalf("refused input mutated the receiver: %x", got[:])
+			}
+		})
+	}
+}
+
 // TestContentHash_JSONBackwardCompat_V014Array asserts UnmarshalJSON still
 // accepts the JSON number-array form that encoding/json produced for
 // ContentHash before this type had a custom MarshalJSON. Badger stores written
