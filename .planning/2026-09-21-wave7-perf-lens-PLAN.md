@@ -79,12 +79,16 @@ the wrong thing at full VM cost.
 2. One VM, one system, one workload:
    ```
    dfsbench setup                       # POP2-8C-32G + /bench-data SBS volume
-   dfsbench run --remote --config bench.yaml \
+   dfsbench run --remote --config bench.yaml --skip-baseline \
      --systems dittofs-s3-nfs3 --workloads metadata --sizes medium --runtime 60
    dfsbench teardown                    # NOT optional — VM + volume bill until this runs
    ```
-   No competitors and no matrix: nothing here compares systems. Medians of 3 reps — read IOPS
-   variance on this rig runs to ±70%, and a single rep will be quoted as fact.
+   No competitors and no matrix: nothing here compares systems. `--skip-baseline` is required, not
+   tidiness — it defaults to `false` (`internal/dfsbench/run/cmd.go:72`) and `managed.go:54` then
+   runs `measureLocalDiskCeiling` first: a layout pass plus sequential and random reads against
+   local disk, which at `--runtime 60` is most of the run doing something this step is not asking
+   for. Medians of 3 reps — read IOPS variance on this rig runs to ±70%, and a single rep will be
+   quoted as fact.
 3. Scrape from the VM while the cell runs, using the admin bearer token from `dfsctl login`:
    CPU (`/debug/pprof/profile?seconds=30`), **block and mutex** (the off-CPU wait profiles that
    attribute serialization), and `/debug/pprof/trace?seconds=10` for the timeline. Precedent with a
