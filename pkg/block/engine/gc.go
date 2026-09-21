@@ -268,10 +268,20 @@ type SyncedHashIndex interface {
 	// remote locator, and first-mirror timestamp. The locator is read from the
 	// same marker row, so callers that need it resolve every hash in a single
 	// scan instead of a GetLocator round trip per hash — the O(N)-serial cost on
-	// the sqlite MaxOpenConns(1) pool behind the slow cold-start. A
-	// standalone (pre-flip) marker yields the zero ChunkLocator. A zero syncedAt
-	// means the backend has no recorded time (legacy marker) — the sweep treats
-	// it as fail-closed.
+	// the sqlite MaxOpenConns(1) pool behind the slow cold-start. A zero
+	// syncedAt means the backend has no recorded time (legacy marker) — the
+	// sweep treats it as fail-closed.
+	//
+	// decision: the zero ChunkLocator is kept as a refusal, not carried as a
+	// migration path. No writer produces one — every locator on the carve and
+	// compaction paths comes from blockcodec.Builder.Add, which always stamps a
+	// BlockID — but it is still the value a marker decodes to in two cases that
+	// are not legacy: a snapshot restore of a pre-flip dump, and a marker whose
+	// locator suffix does not parse, which the badger codec folds to the zero
+	// value deliberately. The sweep therefore treats a zero locator as
+	// unresolved drift and keeps the marker rather than sweeping it; deleting
+	// the branch would let such a marker be cleared while its bytes are still a
+	// live object, turning a loud retryable error into a silent leak.
 	//
 	// fn is invoked SEQUENTIALLY (never concurrently), so the sweep mutates its
 	// unsynchronized per-run counters from inside fn without a lock. A non-nil
