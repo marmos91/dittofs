@@ -114,14 +114,20 @@ jobs:
       - name: Setup Nix cache
         uses: ./.github/actions/nix-cache
         with:
-          # This workflow has no pull_request trigger, so every run of it holds
-          # credentials.
-          push: "true"
-          # The full .#ci shell, which is what this job enters anyway.
-          paths: .#devShells.x86_64-linux.ci
-          access-key-id: ${{ secrets.NIX_CACHE_ACCESS_KEY_ID }}
-          secret-access-key: ${{ secrets.NIX_CACHE_SECRET_ACCESS_KEY }}
-          signing-key: ${{ secrets.NIX_CACHE_SIGNING_KEY }}
+          # Writes only on a push to develop or main. This workflow has no
+          # pull_request trigger, but a dispatch can select an arbitrary branch
+          # and so can run a copy of this action that was never merged.
+          push: ${{ github.event_name == 'push' }}
+          # The two derivations .#ci builds from source, not the shell itself:
+          # `nix copy` of a devShell uploads its whole closure, which is the
+          # nixpkgs stdenv cache.nixos.org already serves, and the bucket has
+          # no expiry policy to bound that growth.
+          paths: .#pynfs .#pjdfstest
+          # Empty unless the event is a trusted push: a step that merely does
+          # not use an input can still be read by the checked-out action.
+          access-key-id: ${{ github.event_name == 'push' && secrets.NIX_CACHE_ACCESS_KEY_ID || '' }}
+          secret-access-key: ${{ github.event_name == 'push' && secrets.NIX_CACHE_SECRET_ACCESS_KEY || '' }}
+          signing-key: ${{ github.event_name == 'push' && secrets.NIX_CACHE_SIGNING_KEY || '' }}
 
       - name: Install system dependencies
         env:

@@ -349,15 +349,17 @@ jobs:
         uses: ./.github/actions/nix-cache
         with:
           # pjdfstest is built from source rather than substituted, which is
-          # the work this cache exists to absorb. Only push from a run that
-          # holds credentials.
+          # the work this cache exists to absorb. Writes only on a push to
+          # develop or main.
           push: ${{ github.event_name == 'push' }}
           # Already realized below, and nothing else: naming a sibling suite
           # would make this job compile it from source.
           paths: .#pjdfstest
-          access-key-id: ${{ secrets.NIX_CACHE_ACCESS_KEY_ID }}
-          secret-access-key: ${{ secrets.NIX_CACHE_SECRET_ACCESS_KEY }}
-          signing-key: ${{ secrets.NIX_CACHE_SIGNING_KEY }}
+          # Empty unless the event is a trusted push: a step that merely does
+          # not use an input can still be read by the checked-out action.
+          access-key-id: ${{ github.event_name == 'push' && secrets.NIX_CACHE_ACCESS_KEY_ID || '' }}
+          secret-access-key: ${{ github.event_name == 'push' && secrets.NIX_CACHE_SECRET_ACCESS_KEY || '' }}
+          signing-key: ${{ github.event_name == 'push' && secrets.NIX_CACHE_SIGNING_KEY || '' }}
 
       - name: Install NFS client utilities
         run: |
