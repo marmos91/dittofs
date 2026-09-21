@@ -137,7 +137,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	}
 
 	if m, ok := config.(map[string]any); ok && addType == "s3" {
-		fmt.Fprintf(cmd.OutOrStdout(), "Target: %s, bucket %q, region %q\n",
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Target: %s, bucket %q, region %q\n",
 			s3TargetDescription(m),
 			cmdutil.GetConfigString(m, "bucket", ""),
 			cmdutil.GetConfigString(m, "region", ""))
