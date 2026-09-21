@@ -1,4 +1,4 @@
-package testing
+package testruntime
 
 import (
 	"context"
@@ -10,16 +10,21 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
-// TestNewShareRuntime_AddsAShare exercises the one contract every caller of
+// TestNewWithShareStore_AddsAShare exercises the one contract every caller of
 // these fixtures depends on: that the returned runtime accepts an AddShare
 // carrying the returned block-store id.
 //
-// It covers both halves that can silently rot. AddShare fails without a
-// journal root, so a dropped SetLocalStoreDefaults fails here; and it needs a
-// block store that exists, so a block-store id that was never created fails
-// here too. Neither is observable from the fixture's return values alone.
-func TestNewShareRuntime_AddsAShare(t *testing.T) {
-	rt, bsID := NewShareRuntime(t)
+// It covers the two halves that are invisible from the return values. AddShare
+// fails without a journal root, so a dropped SetLocalStoreDefaults fails here;
+// and it needs a block store that exists, so an id that was never created
+// fails here too.
+//
+// It does not cover the share-removal cleanup, and cannot: dropping that block
+// leaves this test green. Only a platform that refuses to unlink a file still
+// open fails when a share's journal outlives the temp dir, so that ordering is
+// checked by the Windows CI run, not here.
+func TestNewWithShareStore_AddsAShare(t *testing.T) {
+	rt, bsID := NewWithShareStore(t)
 
 	if err := rt.RegisterMetadataStore("test-meta", memory.NewMemoryMetadataStoreWithDefaults()); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
