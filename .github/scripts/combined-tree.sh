@@ -264,8 +264,10 @@ cmd_selftest() {
     git merge --quiet --no-ff --no-edit "$a" >/dev/null
     git merge --quiet --no-ff --no-edit "$b" >/dev/null \
       || { echo "selftest: fixture was supposed to merge cleanly"; exit 1; }
-    if go build ./p/ >/dev/null 2>&1; then
-      echo "selftest: fixture was supposed to break the build" >&2
+    # Asserted with the same command the run mode uses, so a fixture that
+    # drifts into breaking only `go build` cannot quietly stop proving anything.
+    if go vet ./p/ >/dev/null 2>&1; then
+      echo "selftest: fixture was supposed to fail the checks run mode makes" >&2
       exit 1
     fi
 
