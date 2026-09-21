@@ -741,13 +741,10 @@ func (s *Service) CloseBlockStores(ctx context.Context) {
 // rare control-plane / startup path — and the seeds themselves are batched, so
 // the local tier's durable write costs one per batch rather than one per file.
 //
-// The report it returns is what the seed observed on the way through: how much
-// it covered, how much of it the manifest does not yet call remote, and a few
-// extents to read back. Seeding alone proves nothing about content, so a caller
-// that archived the only local copy aside is expected to verify before it
-// reports success.
-func SeedColdFromManifest(ctx context.Context, bs *engine.Store, metaStore metadata.Store) (coldSeedReport, error) {
-	var report coldSeedReport
+// Seeding says only where the bytes are, never what they are: the cold fetch it
+// arms verifies its own BLAKE3 when a read faults the range in.
+func SeedColdFromManifest(ctx context.Context, bs *engine.Store, metaStore metadata.Store) error {
+	var payloads, chunks int
 	// EnumeratePayloads is a callback iteration with no cheap denominator, so
 	// the heartbeat reports a running count rather than a fraction.
 	started := time.Now()
@@ -795,32 +792,10 @@ func SeedColdFromManifest(ctx context.Context, bs *engine.Store, metaStore metad
 				// zeros.
 				logger.Error("cold seed: unplaceable manifest row, range will not be seeded",
 					"payload", payloadID, "row", row.ID, "size", row.DataSize)
-				report.unplaceable++
 				continue
 			}
 			extents = append(extents, [2]int64{int64(off), int64(row.DataSize)})
-			report.chunks++
-			// Whether a chunk reached the remote is answered by the synced-hash
-			// store, not by FileChunk.State: the carve path records synced markers
-			// and leaves the row state at Pending for the life of the payload, so
-			// reading State here would call every chunk unsynced. A lookup failure
-			// counts as unsynced — the archive stays when we cannot tell.
-			synced, serr := metaStore.IsSynced(ctx, row.Hash)
-			if serr != nil || !synced {
-				report.unsynced++
-			}
-			// Sample the first hashed extent of the first few payloads. A
-			// zero-length chunk or one with no hash yet cannot be checked
-			// against anything, so it is not worth a sample slot.
-			if len(report.samples) < coldVerifySamples && row.DataSize > 0 &&
-				row.Hash != (block.ContentHash{}) && report.sampledPayload(payloadID) {
-				report.samples = append(report.samples, coldSample{
-					payloadID: payloadID,
-					offset:    int64(off),
-					length:    int64(row.DataSize),
-					hash:      row.Hash,
-				})
-			}
+			chunks++
 		}
 		if len(extents) > 0 {
 			batch = append(batch, engine.ColdSeed{PayloadID: payloadID, Extents: extents})
@@ -831,17 +806,17 @@ func SeedColdFromManifest(ctx context.Context, bs *engine.Store, metaStore metad
 				return err
 			}
 		}
-		report.payloads++
+		payloads++
 		if time.Since(lastLog) >= migrationProgressInterval {
 			lastLog = time.Now()
 			logger.Info("seeding cold intervals from the metadata manifest",
-				"payloads", report.payloads, "chunks", report.chunks,
+				"payloads", payloads, "chunks", chunks,
 				"elapsed", time.Since(started).Round(time.Second))
 		}
 		return nil
 	})
 	if err != nil {
-		return report, err
+		return err
 	}
-	return report, flush()
+	return flush()
 }

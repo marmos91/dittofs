@@ -1766,9 +1766,7 @@ func (r *Runtime) restoreSnapshot(
 	// Remote-backed shares only — a local-only share has no remote to hydrate from
 	// (that restore path is tracked in #1718).
 	if remoteVerify {
-		// The report is only of interest to the pre-journal migration, which has an
-		// archive to verify against and delete; a restore has neither.
-		if _, serr := shares.SeedColdFromManifest(ctx, bs, metaStore); serr != nil {
+		if serr := shares.SeedColdFromManifest(ctx, bs, metaStore); serr != nil {
 			return safetySnapshotID, fmt.Errorf("restore snapshot %q: seed cold intervals (safety-snap=%s): %w: %v",
 				snapID, safetySnapshotID, models.ErrRestoreAborted, serr)
 		}
