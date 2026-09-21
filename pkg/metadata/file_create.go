@@ -283,7 +283,7 @@ func (s *Service) createEntry(
 	// uncaught. Distinguishing them needs a non-zero "unspecified" sentinel
 	// threaded through every FileAttr literal in the tree; add it only if that
 	// direction of the mismatch ever actually occurs.
-	if attr != nil && attr.Type != 0 && attr.Type != fileType {
+	if attr.Type != 0 && attr.Type != fileType {
 		return nil, nil, &StoreError{
 			Code:    ErrInvalidArgument,
 			Message: fmt.Sprintf("requested attribute type %d does not match the type %d being created", attr.Type, fileType),

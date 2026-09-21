@@ -87,8 +87,8 @@ func TestCreateEntry_TypeMismatch(t *testing.T) {
 		})
 	}
 
-	// The matching case still works — the guard must not reject the 134 call
-	// sites that pass the type the entry point already creates.
+	// The matching case still works — the guard must not reject a caller that
+	// passes the type the entry point already creates.
 	t.Run("matching type is accepted", func(t *testing.T) {
 		t.Parallel()
 		fx := newTestFixture(t)
