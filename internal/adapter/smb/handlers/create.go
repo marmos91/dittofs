@@ -96,19 +96,10 @@ type CreateRequest struct {
 	CreateContexts []CreateContext
 }
 
-// CreateContext represents an SMB2 Create Context [MS-SMB2] 2.2.13.2.
-//
-// Create contexts provide extensibility for the CREATE command,
-// allowing clients to request additional functionality.
-
-type CreateContext struct {
-	// Name identifies the type of create context.
-	// Standard names: "MxAc", "QFid", "RqLs", etc.
-	Name string
-
-	// Data contains the context-specific data.
-	Data []byte
-}
+// CreateContext is an alias for types.CreateContext, which both the request
+// decoder and the response encoder carry. The alias keeps the unqualified
+// spelling working at every existing site.
+type CreateContext = types.CreateContext
 
 // CreateResponse represents an SMB2 CREATE response to a client [MS-SMB2] 2.2.14.
 // The response contains the file handle (FileID), file attributes, timestamps,
