@@ -144,10 +144,11 @@ func TestCarvePass_NoFilesIsNoop(t *testing.T) {
 // fan-out floor.
 func TestCarvePass_NilUploadLimiterDoesNotPanic(t *testing.T) {
 	fl := &carveFanoutLocal{
-		files:   []string{"a", "b", "c"},
-		started: make(chan string, 3),
-		release: make(chan struct{}),
-		carved:  map[string]int{},
+		LocalStore: memory.New(),
+		files:      []string{"a", "b", "c"},
+		started:    make(chan string, 3),
+		release:    make(chan struct{}),
+		carved:     map[string]int{},
 	}
 	close(fl.release) // let every Flush return immediately
 	m := &RemoteSync{
