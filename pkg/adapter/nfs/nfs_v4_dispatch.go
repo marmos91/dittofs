@@ -156,6 +156,7 @@ func (c *NFSConnection) maybeRegisterBackchannel(ctx context.Context) {
 		return
 	}
 
+	reprobed := false
 	for _, b := range backBound {
 		// Idempotent: reports false when the session already has a sender.
 		if !sm.StartBackchannelSender(ctx, b.SessionID) && freshRoute {
@@ -164,7 +165,16 @@ func (c *NFSConnection) maybeRegisterBackchannel(ctx context.Context) {
 			// first moment a callback can travel over the new one, so it is
 			// where the verdict gets re-derived; nothing else would, until an
 			// unrelated BACKCHANNEL_CTL.
-			sm.ReprobeCallbackPath(b.SessionID)
+			//
+			// One probe covers the registration, not one per session: every
+			// session in this slice is bound to the same connection, so they
+			// would each send a CB_NULL down the same socket and each publish
+			// the same client-wide verdict, with the slowest one overwriting
+			// whatever the others concluded.
+			if !reprobed {
+				reprobed = true
+				sm.ReprobeCallbackPath(b.SessionID)
+			}
 		}
 
 		logger.Debug("Backchannel registered for connection",

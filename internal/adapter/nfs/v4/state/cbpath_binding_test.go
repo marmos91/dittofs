@@ -45,8 +45,12 @@ func newBackchannelClient(t *testing.T, sm *StateManager, name string, n int) (u
 		if session == nil {
 			t.Fatalf("session %x not found after CreateSession", res.SessionID)
 		}
+		// Under sm.mu, as StartBackchannelSender writes it: ReprobeCallbackPath
+		// reads the field under the read lock.
+		sm.mu.Lock()
 		session.backchannelSender = NewBackchannelSender(
 			res.SessionID, eid.ClientID, 0x40000000, nil, session.BackChannelSlots, 1, sm)
+		sm.mu.Unlock()
 		sessionIDs = append(sessionIDs, res.SessionID)
 	}
 	return eid.ClientID, sessionIDs
@@ -174,25 +178,78 @@ func TestDestroySession_ClearsTheVerdictWhenItHeldTheLastBackBinding(t *testing.
 	}
 }
 
-// TestReprobeCallbackPath_IsInertWithoutASender pins the one case the caller
-// cannot distinguish for itself: a session whose sender has not been created
-// yet probes when StartBackchannelSender creates it, so probing here as well
-// would run two CB_NULLs for one registration.
-func TestReprobeCallbackPath_IsInertWithoutASender(t *testing.T) {
+// TestBindConnToSession_ClearsTheVerdictOnARebindAwayFromTheBackChannel covers
+// the third way a callback route is retired. A client may rebind a connection
+// fore-only, and that drops the back-capable binding without closing the socket
+// and without destroying anything, so neither of the other two hooks runs.
+func TestBindConnToSession_ClearsTheVerdictOnARebindAwayFromTheBackChannel(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 	defer sm.Shutdown()
 
-	clientID, sessions := newBackchannelClient(t, sm, "no-sender-client", 1)
-	session := sm.GetSession(sessions[0])
-	session.backchannelSender = nil
+	clientID, sessions := newBackchannelClient(t, sm, "rebind-fore-client", 1)
+	sessionID := sessions[0]
+
+	// A fore-only connection of its own, so the rebind below leaves the session
+	// with a fore channel and is not refused for taking the last one away.
+	const foreConnID, backConnID = uint64(3301), uint64(3302)
+	if _, err := sm.BindConnToSession(foreConnID, sessionID, types.CDFC4_FORE); err != nil {
+		t.Fatalf("BindConnToSession(fore): %v", err)
+	}
+	sm.RegisterConnWriter(backConnID, func([]byte) error { return nil })
+	if _, err := sm.BindConnToSession(backConnID, sessionID, types.CDFC4_FORE_OR_BOTH); err != nil {
+		t.Fatalf("BindConnToSession(back): %v", err)
+	}
 	sm.setCBPathUp(clientID, true)
 
-	sm.ReprobeCallbackPath(sessions[0])
-	sm.ReprobeCallbackPath(types.SessionId4{0xFF})
+	if _, err := sm.BindConnToSession(backConnID, sessionID, types.CDFC4_FORE); err != nil {
+		t.Fatalf("BindConnToSession(rebind to fore): %v", err)
+	}
 
-	// A probe would have found no back-bound connection and cleared this.
-	time.Sleep(50 * time.Millisecond)
-	if !cbPathUp(sm, clientID) {
-		t.Error("a session with no sender was probed anyway, publishing a verdict for a path nothing wrote to")
+	if cbPathUp(sm, clientID) {
+		t.Error("the verdict survived a rebind that took away the client's last back-bound connection")
+	}
+	if _, granted := sm.ShouldGrantDelegation(clientID, []byte("rebind-fore-file"), types.OPEN4_SHARE_ACCESS_READ); granted {
+		t.Error("a delegation was granted after the client rebound its last back-bound connection fore-only")
+	}
+}
+
+// TestProbeCallbackPath_DoesNotRestoreTheVerdictAfterTheRouteIsGone covers the
+// window the parameter generation cannot see.
+//
+// A probe is released by the client's reply and then queues for sm.mu to write
+// its verdict. A connection teardown arriving in that window takes the lock
+// first and clears the verdict — and the probe, whose parameters are untouched
+// because neither a bind nor an unbind moves the generation, would reinstate an
+// "up" for a route that is gone. The reply is what releases the probe, so this
+// ordering is the ordinary one rather than a narrow race.
+func TestProbeCallbackPath_DoesNotRestoreTheVerdictAfterTheRouteIsGone(t *testing.T) {
+	sender, sm, sessionID := createTestBackchannelSender(t)
+	defer sm.Shutdown()
+
+	const connID = uint64(3401)
+	clientConn, pending := bindBackchannel(t, sm, sessionID, connID)
+
+	// The reply is delivered and the connection retired before the probe can
+	// take sm.mu, which is what the scheduler does anyway: the read loop that
+	// routes the reply is not the goroutine that writes the verdict.
+	unbound := make(chan struct{})
+	go func() {
+		defer close(unbound)
+		xid, _, err := readCBCall(clientConn)
+		if err != nil {
+			return
+		}
+		pending.Deliver(xid, buildMockCBNullReplyBody(xid))
+		sm.UnbindConnection(connID)
+	}()
+
+	sm.probeV41CallbackPath(context.Background(), sender)
+	<-unbound
+
+	if cbPathUp(sm, sender.clientID) {
+		t.Error("a probe restored the verdict for a route that was retired while its reply was in flight")
+	}
+	if _, granted := sm.ShouldGrantDelegation(sender.clientID, []byte("stale-probe-file"), types.OPEN4_SHARE_ACCESS_READ); granted {
+		t.Error("a delegation was granted on a verdict a retired connection left behind")
 	}
 }

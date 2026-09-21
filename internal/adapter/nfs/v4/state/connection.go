@@ -150,7 +150,7 @@ func negotiateDirection(clientDir uint32) (ConnectionDirection, uint32) {
 // exclusive, and a client that runs several sessions over one connection
 // would otherwise lose the back channel of every session but the newest.
 //
-// Thread-safe: acquires sm.mu.RLock then sm.connMu.Lock.
+// Thread-safe: acquires sm.mu.RLock then sm.connMu.Lock, then sm.mu.Lock.
 func (sm *StateManager) BindConnToSession(connectionID uint64, sessionID types.SessionId4, clientDir uint32) (*BindConnResult, error) {
 	// Validate session exists under sm.mu.RLock
 	sm.mu.RLock()
@@ -164,6 +164,30 @@ func (sm *StateManager) BindConnToSession(connectionID uint64, sessionID types.S
 	// Negotiate direction
 	direction, serverDir := negotiateDirection(clientDir)
 
+	result, err := sm.bindConnToSessionLocked(connectionID, sessionID, direction, serverDir)
+	if err != nil {
+		return nil, err
+	}
+
+	// A rebind to a fore-only direction retires a callback route as surely as a
+	// closing socket does, and it may have been the client's last. The client
+	// record lives under sm.mu, which is taken before connMu and never after it,
+	// so the verdict is re-derived here rather than inside the bind. It is a
+	// no-op whenever a back-bound connection remains, which is every bind that
+	// adds a route.
+	sm.clearCBPathWithoutBackBinding([]types.SessionId4{sessionID})
+
+	return result, nil
+}
+
+// bindConnToSessionLocked installs the binding. Caller must hold neither
+// sm.connMu nor sm.mu; it takes sm.connMu for the whole of the update.
+func (sm *StateManager) bindConnToSessionLocked(
+	connectionID uint64,
+	sessionID types.SessionId4,
+	direction ConnectionDirection,
+	serverDir uint32,
+) (*BindConnResult, error) {
 	sm.connMu.Lock()
 	defer sm.connMu.Unlock()
 

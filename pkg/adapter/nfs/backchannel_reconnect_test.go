@@ -107,17 +107,12 @@ func TestBackchannelReconnect_ReDerivesTheCallbackVerdict(t *testing.T) {
 		if _, err := sm.BindConnToSession(connID, sessionID, v4types.CDFC4_FORE_OR_BOTH); err != nil {
 			t.Fatalf("BindConnToSession(%d): %v", connID, err)
 		}
-		answered := make(chan error, 1)
-		go func() { answered <- answerCBNull(clientConn, sm, connID) }()
+		// The answerer is left to run: a connection that is never probed sends
+		// nothing, and that is the defect under test, so it must surface as the
+		// delegation assertion below rather than as a failure to read here.
+		_ = clientConn.SetReadDeadline(time.Now().Add(10 * time.Second))
+		go func() { _ = answerCBNull(clientConn, sm, connID) }()
 		c.maybeRegisterBackchannel(context.Background())
-		select {
-		case err := <-answered:
-			if err != nil {
-				t.Fatalf("answer CB_NULL on connection %d: %v", connID, err)
-			}
-		case <-time.After(5 * time.Second):
-			t.Fatalf("no CB_NULL reached connection %d", connID)
-		}
 	}
 
 	bindAndRegister(4300)

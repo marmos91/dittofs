@@ -1078,7 +1078,15 @@ func TestNextUntriedSender_WalksEverySessionOfTheClient(t *testing.T) {
 // two, and the verdict of a probe against parameters the session no longer has
 // is written onto the client record anyway.
 func TestSetCBPathUpIfCurrent_RefusesARetiredGeneration(t *testing.T) {
-	bs, sm, _ := createTestBackchannelSender(t)
+	bs, sm, sessionID := createTestBackchannelSender(t)
+
+	// A route to carry what an "up" verdict promises. Publishing one without a
+	// back-bound connection is refused by the other half of the guard, and a
+	// probe cannot reach that state anyway — it fails before it has a verdict.
+	sm.RegisterConnWriter(6100, func([]byte) error { return nil })
+	if _, err := sm.BindConnToSession(6100, sessionID, types.CDFC4_FORE_OR_BOTH); err != nil {
+		t.Fatalf("BindConnToSession: %v", err)
+	}
 
 	generation := bs.currentParams().generation
 	if !sm.setCBPathUpIfCurrent(bs, generation, true) {

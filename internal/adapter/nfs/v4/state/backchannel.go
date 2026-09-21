@@ -1032,20 +1032,37 @@ func (sm *StateManager) setCBPathUp(clientID uint64, up bool) {
 }
 
 // setCBPathUpIfCurrent publishes a probe verdict, but only if the callback
-// parameters the probe ran against are still the ones the sender holds. It
-// reports whether the verdict was published.
+// parameters the probe ran against are still the ones the sender holds, and
+// only if a route still exists to carry what the verdict promises. It reports
+// whether the verdict was published.
 //
 // The generation is re-read under sm.mu together with the write rather than
 // before it: a caller that checks the generation and then calls setCBPathUp
 // leaves a window in which the parameters are replaced between the two, and the
 // retired verdict lands on the record anyway.
 //
-// Thread-safe: acquires sm.mu.Lock.
+// The binding check covers the other way a verdict goes stale in flight, which
+// the generation cannot see because a bind or an unbind does not move it. The
+// client's reply lands on the read loop, which wakes the probe and leaves it
+// queued for sm.mu; a connection teardown arriving in that window takes the lock
+// first and clears the verdict, and the probe would then reinstate an "up" for a
+// route that no longer exists. That ordering is the common one, not a narrow
+// race, because the reply is what releases the probe in the first place.
+//
+// Thread-safe: acquires sm.mu.Lock, then sm.connMu.RLock.
 func (sm *StateManager) setCBPathUpIfCurrent(bs *BackchannelSender, generation uint64, up bool) bool {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	if bs.currentParams().generation != generation {
 		return false
+	}
+	if up {
+		sm.connMu.RLock()
+		hasBack := sm.hasBackBoundConnection(bs.clientID)
+		sm.connMu.RUnlock()
+		if !hasBack {
+			return false
+		}
 	}
 	if record := sm.clientRecordLocked(bs.clientID); record != nil {
 		record.CBPathUp = up
@@ -1132,6 +1149,16 @@ func (sm *StateManager) ReprobeCallbackPath(sessionID types.SessionId4) {
 	if sender == nil {
 		return
 	}
+	// decision: the probe reaches only this session's connections while the
+	// verdict it publishes is client-wide, so a session that reconnects onto a
+	// socket its client cannot answer on takes the whole client's delegations
+	// down with it, including a sibling session that is answering fine. That is
+	// the fail-closed direction — delegations are withheld, never granted
+	// without a route — and it converges, because the next bind, recall or
+	// BACKCHANNEL_CTL re-derives the verdict. Narrow it to the session if
+	// CBPathUp ever becomes per-session, or if a client running one bad session
+	// alongside good ones turns out to be a shape worth serving.
+	//
 	// Not the caller's context: the probe deliberately outlives the COMPOUND
 	// that registered the connection, and cancelling it when that finishes
 	// would leave the verdict describing bindings that are gone.
