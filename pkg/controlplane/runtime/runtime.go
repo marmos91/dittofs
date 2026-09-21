@@ -311,14 +311,21 @@ func (r *Runtime) SetShutdownTimeout(d time.Duration) {
 // step, and the failed-start drain calls it for the boots that never reach the
 // lifecycle drain at all.
 //
-// decision: this signals and does not wait, and the signal is coarser than it
-// looks. Neither worker offers a join — the reaper's Stop closes the channel
-// its loop selects on, cancelActive cancels the GC run's context — and a reap
-// pass already under way keeps issuing fresh calls for the rest of its share
-// list, because it checks neither between shares. So a worker can still be
-// writing when the stores close, which costs a logged error on a process that
-// is leaving. Grow it into a join, and give reapAll a per-share check, if
-// either worker ever performs a write whose partial application outlives the
+// The two halves are not equally strong, and the difference is deliberate.
+//
+// The GC run is JOINED: stopActive cancels it and waits, bounded, so when this
+// returns the run has left the stores. That matters because the run holds a
+// DETACHED context — nothing else in the shutdown reaches it, so a bare signal
+// would have meant "told to stop" and nothing more.
+//
+// decision: the reaper is only SIGNALLED. Its Stop closes the channel its loop
+// selects on and returns, and a reap pass already under way keeps issuing calls
+// for the rest of its share list because it checks neither the channel nor the
+// context between shares — so it can still be writing when the stores close.
+// The cost is a failed delete on a process that is leaving, against a bin entry
+// the next start reaps again, which is why this is not worth a second join and
+// the GC's writes were. Withdraw the exemption, and give reapAll a per-share
+// check, if a reap ever performs a write whose partial application outlives the
 // process.
 func (r *Runtime) StopBackgroundWorkers() {
 	// Read under the lock rather than through Trash(): a Runtime that never
@@ -335,7 +342,7 @@ func (r *Runtime) StopBackgroundWorkers() {
 	}
 
 	if r.gcReg != nil {
-		r.gcReg.cancelActive()
+		r.gcReg.stopActive(startupDrainTimeout)
 	}
 }
 

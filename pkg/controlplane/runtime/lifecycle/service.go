@@ -77,12 +77,10 @@ type BlockStoreCloser interface {
 // reaper and any async block GC run in flight. Both write through the metadata
 // stores, so they are signalled first, before any teardown step runs.
 //
-// It signals; it does not join. A reap pass or a GC mark/sweep already inside
-// the store keeps running until it notices, and may still be there when the
-// stores close. Bounding it would mean a join, and neither worker offers one:
-// the reaper's Stop closes a channel its loop selects on, and cancelActive
-// cancels the run's context. Grow this into a join if either ever performs a
-// write whose partial application outlives the process.
+// It joins the block GC run and only signals the reaper — see
+// Runtime.StopBackgroundWorkers for why the two differ and what the signalled
+// half still permits. The join is bounded, so this step can cost the shutdown
+// time it does not get back.
 type BackgroundWorkerStopper interface {
 	StopBackgroundWorkers()
 }

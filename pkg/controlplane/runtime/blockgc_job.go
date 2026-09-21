@@ -69,10 +69,15 @@ func (j *GCJob) clone() *GCJob {
 // one active job: a start request while a run is in flight returns the running
 // job rather than launching a second.
 type gcRegistry struct {
-	mu        sync.Mutex
-	jobs      map[string]*GCJob
-	activeID  string                        // "" when no run is in flight
-	cancels   map[string]context.CancelFunc // jobID -> detached-context cancel
+	mu       sync.Mutex
+	jobs     map[string]*GCJob
+	activeID string                        // "" when no run is in flight
+	cancels  map[string]context.CancelFunc // jobID -> detached-context cancel
+	// done is closed by a run's goroutine after the run has returned AND its
+	// bookkeeping is recorded. It is what makes stopActive a join rather than a
+	// signal: cancelling a detached context says the run was told to stop, not
+	// that it left the stores it writes through.
+	done      map[string]chan struct{}
 	counter   int64
 	completed []string // FIFO of terminal jobIDs, bounded by maxRetainedGCJobs
 }
@@ -81,6 +86,7 @@ func newGCRegistry() *gcRegistry {
 	return &gcRegistry{
 		jobs:    make(map[string]*GCJob),
 		cancels: make(map[string]context.CancelFunc),
+		done:    make(map[string]chan struct{}),
 	}
 }
 
@@ -125,11 +131,17 @@ func (r *gcRegistry) start(share string, dryRun, reconcile bool, run func(ctx co
 
 	ctx, cancel := context.WithCancel(context.Background())
 	r.cancels[jobID] = cancel
+	done := make(chan struct{})
+	r.done[jobID] = done
 
 	snapshot := job.clone()
 	r.mu.Unlock()
 
 	go func() {
+		// Registered first so it runs last: a waiter that sees this closed
+		// knows the run returned and its terminal state is recorded, not just
+		// that it noticed the cancellation.
+		defer close(done)
 		progress := func(s engine.GCStats) {
 			r.mu.Lock()
 			if j, ok := r.jobs[jobID]; ok {
@@ -155,6 +167,7 @@ func (r *gcRegistry) start(share string, dryRun, reconcile bool, run func(ctx co
 			c()
 			delete(r.cancels, jobID)
 		}
+		delete(r.done, jobID)
 		j, ok := r.jobs[jobID]
 		if !ok {
 			return
@@ -194,16 +207,45 @@ func (r *gcRegistry) get(jobID string) (*GCJob, bool) {
 	return job.clone(), true
 }
 
-// cancelActive cancels any in-flight GC run. Called on server shutdown so a
-// long mark/sweep does not outlive the process's stores.
-func (r *gcRegistry) cancelActive() {
+// stopActive cancels any in-flight GC run and waits for it to return, bounded
+// by budget. Called on server shutdown so a long mark/sweep does not outlive
+// the stores it writes through.
+//
+// The wait is the point. A GC run holds a detached context, so cancelling it
+// only marks it; the run keeps going until it next checks, and a mark/sweep
+// that is mid-write when the metadata stores close fails that write. Waiting
+// here is what turns "told to stop" into "stopped".
+//
+// decision: on expiry this returns and lets the shutdown proceed with the run
+// still going, which is the state it exists to prevent. A run that is not
+// honouring its cancellation is not going to start honouring it, and holding
+// shutdown open for it costs every OTHER store its clean close when the process
+// hits its own exit deadline — the same trade CloseBlockStores makes, for the
+// same reason. It says so in the log rather than failing silently. Withdraw the
+// bound if a GC write is ever made unsafe to abandon mid-way.
+//
+// The registry lock is released before the wait: the run's own goroutine takes
+// it to record its terminal state, so holding it here would deadlock against
+// the thing being waited for.
+func (r *gcRegistry) stopActive(budget time.Duration) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.activeID == "" {
+	var done chan struct{}
+	if id := r.activeID; id != "" {
+		if c, ok := r.cancels[id]; ok {
+			c()
+		}
+		done = r.done[id]
+	}
+	r.mu.Unlock()
+
+	if done == nil {
 		return
 	}
-	if c, ok := r.cancels[r.activeID]; ok {
-		c()
+	select {
+	case <-done:
+	case <-time.After(budget):
+		logger.Warn("block GC run did not return after its cancellation; " +
+			"closing the stores under it, so its in-flight writes will fail")
 	}
 }
 
