@@ -559,17 +559,18 @@ them, and `mergeable` does not cover the gap -- it reports whether the texts
 conflict, so two disjoint file lists inside one Go package merge cleanly and
 can still fail to compile.
 
-`combined-tree.yml` runs on a schedule and builds those trees. It selects open
-pull requests against `develop` whose Go packages intersect -- pairing each
-with `develop` when `develop` has moved into a shared package since that pull
-request's matrix started, and with every other open pull request that shares a
-package -- then merges them into a detached tree and builds, vets and tests
-only the shared packages. Nothing is pushed and no pull request is touched; the
-result is a job summary. A pair that does not merge cleanly is reported and
-skipped rather than failing the run.
+`combined-tree.yml` runs on a schedule and builds those trees. It pairs open
+pull requests against `develop` whose Go packages intersect, merges them into a
+detached tree, and vets and tests only the shared packages. Nothing is pushed
+and no pull request is touched; the result is a job summary. A pair that does
+not merge cleanly is reported and skipped rather than failing the run.
 
 The filter is package intersection, never file overlap: file overlap is exactly
 the filter that waves through the class of breakage that reaches `develop`.
+The exact selection rules, and the ceilings they carry, are documented at the
+top of [`.github/scripts/combined-tree.sh`](../../.github/scripts/combined-tree.sh)
+-- the one place they can drift out of agreement with the code that applies
+them is a second prose copy here.
 
 ### What Runs on PR (Fast, Must-Pass Before Merge)
 

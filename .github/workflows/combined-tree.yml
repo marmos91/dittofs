@@ -1,17 +1,14 @@
 # Combined Tree — build the tree two green PRs actually produce.
 #
-# Every other workflow tests one tree per PR: that head merged into develop as
-# develop stood when the matrix ran. The tree that reaches develop after two
-# such PRs land in sequence is tested by nothing. `mergeable` does not cover it:
-# it answers whether the texts conflict, which is a different question with a
-# reassuring answer — two disjoint file lists inside one Go package auto-merge
-# cleanly and do not compile.
+# What it selects and why the filter is package intersection is documented once,
+# at the top of .github/scripts/combined-tree.sh. This file decides only when it
+# runs and what it is allowed to spend.
 #
-# Scheduled rather than per-push, because the eligible set changes on the
-# timescale of merges, not commits, and a per-push trigger would spend slots
-# re-deciding that it is empty. Most runs select nothing and stop after a
-# shallow checkout and five API calls; the Go toolchain and the full clone are
-# paid for only when there is a combination to build.
+# Scheduled rather than per-push: the eligible set changes on the timescale of
+# merges, not commits, so a per-push trigger would spend slots re-deciding that
+# it is empty. Most runs select nothing and stop after a shallow checkout and a
+# couple of API calls per open PR; the Go toolchain, the full clone and the PR
+# head fetches are paid for only when there is a combination to build.
 name: Combined Tree
 
 on:
@@ -29,9 +26,15 @@ on:
 permissions:
   contents: read
   pull-requests: read
+  # The selection reads each PR's check rollup to date its last matrix, and
+  # GitHub resolves that field against Checks, not Pull requests. Without this
+  # the listing errors outright rather than returning the PRs without it.
+  checks: read
 
 concurrency:
-  group: ${{ github.workflow }}
+  # Scheduled runs queue behind each other; a pull request's self-test does not
+  # queue behind a 45-minute build it has nothing to do with.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || 'scheduled' }}
   # A scheduled run that is already merging and building is the run with the
   # answer; a newer one would only start over.
   cancel-in-progress: false
@@ -93,8 +96,17 @@ jobs:
       - name: Fetch the trees to merge
         if: steps.select.outputs.any == 'true'
         run: |
-          git fetch --unshallow --quiet origin
-          git fetch --quiet origin develop
+          # Deepening the shallow checkout is what lets the merges find a
+          # common ancestor, and the same fetch refreshes the base branch,
+          # which may have moved between the checkout and the selection.
+          # Guarded, because --unshallow on a complete clone is an error, and a
+          # fetch that quietly did nothing would surface later as every
+          # combination "conflicting" rather than as the fetch failing.
+          if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+            git fetch --unshallow --quiet origin
+          else
+            git fetch --quiet origin
+          fi
           jq -r '.prs[].n' "$RUNNER_TEMP/combos.jsonl" | sort -u | while read -r n; do
             git fetch --quiet origin "refs/pull/$n/head"
           done
