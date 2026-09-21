@@ -145,9 +145,9 @@ func recordReadProgress(open *OpenFile, offset uint64, bytesReturned uint64) {
 	}
 	// Guarded by open.mu like every other exported mutable field — SET_INFO
 	// FilePositionInformation and WRITE may run concurrently on the handle.
-	open.mu.Lock()
+	open.Lock()
 	open.PositionInfo = offset + bytesReturned
-	open.mu.Unlock()
+	open.Unlock()
 }
 
 // Read handles SMB2 READ command [MS-SMB2] 2.2.19, 2.2.20.

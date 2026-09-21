@@ -45,8 +45,8 @@ func noteSmbAccess(openFile *OpenFile, t time.Time) bool {
 	if openFile == nil {
 		return false
 	}
-	openFile.mu.Lock()
-	defer openFile.mu.Unlock()
+	openFile.Lock()
+	defer openFile.Unlock()
 	if !openFile.SmbAtimeWrittenAt.IsZero() && t.Sub(openFile.SmbAtimeWrittenAt) < smbAtimeUpdateWindow {
 		// Latest access wins: concurrent READ pipelines on one handle can reach
 		// the lock out of sample order, and an older sample must not lower the
@@ -75,8 +75,8 @@ func noteSmbParentAccess(openFile *OpenFile, t time.Time) bool {
 	if openFile == nil {
 		return false
 	}
-	openFile.mu.Lock()
-	defer openFile.mu.Unlock()
+	openFile.Lock()
+	defer openFile.Unlock()
 	if !openFile.SmbParentAtimeWrittenAt.IsZero() && t.Sub(openFile.SmbParentAtimeWrittenAt) < smbAtimeUpdateWindow {
 		return false
 	}
@@ -93,8 +93,8 @@ func takeSmbPendingAtime(openFile *OpenFile) time.Time {
 	if openFile == nil {
 		return time.Time{}
 	}
-	openFile.mu.Lock()
-	defer openFile.mu.Unlock()
+	openFile.Lock()
+	defer openFile.Unlock()
 	pending := openFile.SmbPendingAtime
 	openFile.SmbPendingAtime = time.Time{}
 	return pending
@@ -110,8 +110,8 @@ func applySmbPendingAtime(openFile *OpenFile, file *metadata.File) {
 	if openFile == nil || file == nil {
 		return
 	}
-	openFile.mu.RLock()
-	defer openFile.mu.RUnlock()
+	openFile.RLock()
+	defer openFile.RUnlock()
 	if file.Atime.Before(openFile.SmbPendingAtime) {
 		file.Atime = openFile.SmbPendingAtime
 	}
@@ -147,8 +147,8 @@ func armSmbDelayedWrite(openFile *OpenFile, preMtime time.Time, writeTime time.T
 	if openFile == nil {
 		return
 	}
-	openFile.mu.Lock()
-	defer openFile.mu.Unlock()
+	openFile.Lock()
+	defer openFile.Unlock()
 	armSmbDelayedWriteLocked(openFile, preMtime, writeTime)
 }
 
@@ -175,8 +175,8 @@ func flushSmbDelayedWrite(openFile *OpenFile) {
 	if openFile == nil {
 		return
 	}
-	openFile.mu.Lock()
-	defer openFile.mu.Unlock()
+	openFile.Lock()
+	defer openFile.Unlock()
 	flushSmbDelayedWriteLocked(openFile)
 }
 
@@ -200,8 +200,8 @@ func setSmbStickyWriteTime(openFile *OpenFile, t time.Time) {
 	if openFile == nil {
 		return
 	}
-	openFile.mu.Lock()
-	defer openFile.mu.Unlock()
+	openFile.Lock()
+	defer openFile.Unlock()
 	setSmbStickyWriteTimeLocked(openFile, t)
 }
 
@@ -216,8 +216,8 @@ func applySmbDelayedWriteOverride(openFile *OpenFile, file *metadata.File) {
 	if openFile == nil || file == nil {
 		return
 	}
-	openFile.mu.RLock()
-	defer openFile.mu.RUnlock()
+	openFile.RLock()
+	defer openFile.RUnlock()
 	if openFile.SmbStickyWriteTime != nil {
 		file.Mtime = *openFile.SmbStickyWriteTime
 		return

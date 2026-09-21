@@ -107,7 +107,7 @@ func (h *Handler) electDeleteOnClose(openFile *OpenFile) (docDecision, docTarget
 	// The read of DeletePending happens inside the election, not before it, so
 	// a closer that was propagated to by an earlier closer observes the flag
 	// and takes its turn as the last handle.
-	openFile.mu.Lock()
+	openFile.Lock()
 	if openFile.InitialDeleteOnClose && !openFile.DeletePending {
 		openFile.DeletePending = true
 	}
@@ -117,7 +117,7 @@ func (h *Handler) electDeleteOnClose(openFile *OpenFile) (docDecision, docTarget
 	baseFileName := openFile.BaseFileDeleteFileName
 	docSetterKey := openFile.DeleteOnCloseParentKey
 	hasDocSetterKey := openFile.HasDeleteOnCloseParentKey
-	openFile.mu.Unlock()
+	openFile.Unlock()
 
 	if !deletePending && !baseFileDeletePending {
 		return docDecisionNone, docTarget{}
@@ -152,11 +152,11 @@ func (h *Handler) electDeleteOnClose(openFile *OpenFile) (docDecision, docTarget
 			// re-Store follows: re-Storing would resurrect a handle whose own
 			// CLOSE removed it, leaving a delete-pending entry nothing ever
 			// reaps and every later CREATE on the path answered DELETE_PENDING.
-			other.mu.Lock()
+			other.Lock()
 			other.DeletePending = true
 			other.DeleteOnCloseParentKey = docSetterKey
 			other.HasDeleteOnCloseParentKey = hasDocSetterKey
-			other.mu.Unlock()
+			other.Unlock()
 			return true
 		})
 	}
@@ -181,13 +181,13 @@ func (h *Handler) electDeleteOnClose(openFile *OpenFile) (docDecision, docTarget
 			// Guard the write: concurrent readers on the stream handle
 			// (QUERY_INFO / open path via isFileOrBaseDeletePending) may be
 			// reading these fields on `other`.
-			other.mu.Lock()
+			other.Lock()
 			other.BaseFileDeletePending = true
 			other.BaseFileDeleteParentHandle = docName.ParentHandle
 			other.BaseFileDeleteFileName = docName.FileName
 			other.DeleteOnCloseParentKey = docSetterKey
 			other.HasDeleteOnCloseParentKey = hasDocSetterKey
-			other.mu.Unlock()
+			other.Unlock()
 			return true
 		})
 		if streamHandleExists {

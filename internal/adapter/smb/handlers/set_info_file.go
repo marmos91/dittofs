@@ -133,7 +133,7 @@ func (h *Handler) setFileInfoFromStore(
 		// by QUERY_INFO / READ / WRITE / COPYCHUNK on parallel goroutines. We
 		// release before any callbacks that themselves take openFile.mu
 		// (breakParentDirLeasesForContentChange via restoreParentDirFrozenTimestamps).
-		openFile.mu.Lock()
+		openFile.Lock()
 		needPreFile := hasFreezeOrUnfreeze || (ctimeFT == 0 && anyBasicMutation && !openFile.CtimeFrozen)
 		var preFile *metadata.File
 		if needPreFile {
@@ -215,7 +215,7 @@ func (h *Handler) setFileInfoFromStore(
 		basicAuthCtx := withTimestampHandleAuth(authCtx, openFile.GrantedAccess)
 
 		if _, err := metaSvc.SetFileAttributes(basicAuthCtx, openFile.MetadataHandle, setAttrs); err != nil {
-			openFile.mu.Unlock() // release before returning.
+			openFile.Unlock() // release before returning.
 			logger.Debug("SET_INFO: failed to set basic info", "path", openFile.Name().Path, "error", err)
 			return setInfoStatus(types.StatusForErr(err)), nil
 		}
@@ -378,7 +378,7 @@ func (h *Handler) setFileInfoFromStore(
 		if setAttrs.Mtime != nil && mtimeFT != 0 && !isFiletimeSentinel(mtimeFT) {
 			setSmbStickyWriteTimeLocked(openFile, *setAttrs.Mtime)
 		}
-		openFile.mu.Unlock()
+		openFile.Unlock()
 		h.StoreOpenFile(openFile)
 
 		// Break parent directory leases on child metadata change (#470:
@@ -540,9 +540,9 @@ func (h *Handler) setFileInfoFromStore(
 			// Clear delete-on-close after rename. Written under the handle
 			// lock: the delete-pending gates and the CLOSE delete-on-close
 			// election read this field under it.
-			openFile.mu.Lock()
+			openFile.Lock()
 			openFile.DeletePending = false
-			openFile.mu.Unlock()
+			openFile.Unlock()
 
 			// Notify watchers
 			if h.NotifyRegistry != nil {
@@ -563,7 +563,7 @@ func (h *Handler) setFileInfoFromStore(
 
 			// Update open file state. The handle lock serializes this
 			// read-modify-write against a concurrent rename on the same handle.
-			openFile.mu.Lock()
+			openFile.Lock()
 			newName := openFile.Name()
 			parentPath := changenotify.GetParentPath(newName.Path)
 			newName.FileName = toName
@@ -573,7 +573,7 @@ func (h *Handler) setFileInfoFromStore(
 				newName.Path = parentPath + "/" + toName
 			}
 			openFile.SetName(newName)
-			openFile.mu.Unlock()
+			openFile.Unlock()
 			h.StoreOpenFile(openFile)
 
 			// Break parent directory leases on rename (content change)
@@ -1025,10 +1025,10 @@ func (h *Handler) setFileInfoFromStore(
 		// delete-on-close, clear that disposition. MS-FSA states no such rule;
 		// 2.1.5.15.12 instead fails a rename whose Open.Link.IsDeleted is TRUE.
 		// This prevents the renamed file from being deleted when the handle closes.
-		openFile.mu.Lock()
+		openFile.Lock()
 		clearedDOC := openFile.DeletePending
 		openFile.DeletePending = false
-		openFile.mu.Unlock()
+		openFile.Unlock()
 		if clearedDOC {
 			logger.Debug("SET_INFO: cleared delete-on-close after rename",
 				"oldPath", oldPath,
@@ -1075,9 +1075,9 @@ func (h *Handler) setFileInfoFromStore(
 		}
 		// The handle lock serializes this against a concurrent rename on the
 		// same handle; readers get the triple from the single atomic swap.
-		openFile.mu.Lock()
+		openFile.Lock()
 		openFile.SetName(OpenName{Path: actualNewPath, FileName: toName, ParentHandle: toDir})
-		openFile.mu.Unlock()
+		openFile.Unlock()
 		h.StoreOpenFile(openFile)
 
 		// Per MS-FSA 2.1.5.15.12 ("FileRenameInformation") (smbtorture smb2.dirlease.rename):
@@ -1140,9 +1140,9 @@ func (h *Handler) setFileInfoFromStore(
 
 		// Capture pre-state to suppress redundant break dispatches when the
 		// disposition is reaffirmed (deletePending stays true).
-		openFile.mu.RLock()
+		openFile.RLock()
 		wasDeletePending := openFile.DeletePending
-		openFile.mu.RUnlock()
+		openFile.RUnlock()
 
 		// Validate we have parent info for deletion
 		if delName := openFile.Name(); deletePending && len(delName.ParentHandle) == 0 {
@@ -1226,13 +1226,13 @@ func (h *Handler) setFileInfoFromStore(
 		// parent key for unlink parent-key suppression. Written under the
 		// handle lock: the delete-pending gates and the CLOSE delete-on-close
 		// election read these fields under it.
-		openFile.mu.Lock()
+		openFile.Lock()
 		openFile.DeletePending = deletePending
 		if deletePending {
 			openFile.DeleteOnCloseParentKey = openFile.ParentLeaseKey
 			openFile.HasDeleteOnCloseParentKey = openFile.HasParentLeaseKey
 		}
-		openFile.mu.Unlock()
+		openFile.Unlock()
 		h.StoreOpenFile(openFile)
 
 		// Per [MS-FSA] 2.1.5.15.3 step 3.2.3.2 (and 2.1.5.15.4 step 4.3.3.2, which
@@ -1407,9 +1407,9 @@ func (h *Handler) setFileInfoFromStore(
 		// durable-handle reconnect (smb2.durable-open.file-position).
 		// Guarded by openFile.mu like every other exported mutable field —
 		// READ and WRITE advance PositionInfo concurrently on pipelined handles.
-		openFile.mu.Lock()
+		openFile.Lock()
 		openFile.PositionInfo = smbenc.NewReader(buffer[:8]).ReadUint64()
-		openFile.mu.Unlock()
+		openFile.Unlock()
 		return setInfoStatus(types.StatusSuccess), nil
 
 	case types.FileAllocationInformation:
@@ -1462,9 +1462,9 @@ func (h *Handler) setFileInfoFromStore(
 			// Guarded by openFile.mu like every other exported mutable field (see
 			// the OpenFile concurrency contract) — SET_INFO legitimately pipelines
 			// against QUERY_INFO on the same handle.
-			openFile.mu.Lock()
+			openFile.Lock()
 			openFile.RequestedAllocSize = allocReservationFor(openFile.IsDirectory, requested)
-			openFile.mu.Unlock()
+			openFile.Unlock()
 
 			// Per MS-FSA 2.1.5.15.1 ("FileAllocationInformation"): when the requested AllocationSize is
 			// smaller than the file's current EndOfFile, the EndOfFile is
@@ -1543,9 +1543,9 @@ func (h *Handler) setFileInfoFromStore(
 		// CreateOptions is documented immutable-safe-without-mutex, but this SET
 		// path mutates it — take openFile.mu so the write is observed atomically
 		// against a pipelined QUERY_INFO FileModeInformation on the same handle.
-		openFile.mu.Lock()
+		openFile.Lock()
 		openFile.CreateOptions = (openFile.CreateOptions &^ modeMask) | (mode & modeMask)
-		openFile.mu.Unlock()
+		openFile.Unlock()
 		h.StoreOpenFile(openFile)
 		return setInfoStatus(types.StatusSuccess), nil
 
@@ -1673,8 +1673,8 @@ func (h *Handler) setFileInfoFromStore(
 // against a concurrent freeze/thaw on the same handle.
 
 func applyFrozenTimestamps(openFile *OpenFile, file *metadata.File) {
-	openFile.mu.RLock()
-	defer openFile.mu.RUnlock()
+	openFile.RLock()
+	defer openFile.RUnlock()
 	if openFile.BtimeFrozen && openFile.FrozenBtime != nil {
 		file.CreationTime = *openFile.FrozenBtime
 	}
@@ -1817,7 +1817,7 @@ func (h *Handler) restoreFrozenTimestampsOn(authCtx *metadata.AuthContext, openF
 	// Snapshot the fields used by the logger and the pending-mtime fast path
 	// under the read lock so the values used here are consistent with what
 	// buildFrozenAttrs above produced.
-	openFile.mu.RLock()
+	openFile.RLock()
 	mtimeFrozen := openFile.MtimeFrozen
 	ctimeFrozen := openFile.CtimeFrozen
 	atimeFrozen := openFile.AtimeFrozen
@@ -1834,7 +1834,7 @@ func (h *Handler) restoreFrozenTimestampsOn(authCtx *metadata.AuthContext, openF
 		v := *openFile.FrozenAtime
 		frozenAtime = &v
 	}
-	openFile.mu.RUnlock()
+	openFile.RUnlock()
 
 	logger.Debug("restoreFrozenTimestamps: restoring",
 		"path", openFile.Name().Path,
@@ -1936,8 +1936,8 @@ func (h *Handler) restoreParentDirFrozenTimestamps(authCtx *metadata.AuthContext
 // unlock cannot tear against a concurrent thaw clearing them.
 
 func buildFrozenAttrs(openFile *OpenFile) *metadata.SetAttrs {
-	openFile.mu.RLock()
-	defer openFile.mu.RUnlock()
+	openFile.RLock()
+	defer openFile.RUnlock()
 	attrs := &metadata.SetAttrs{}
 	hasAny := false
 
@@ -2015,8 +2015,8 @@ func holdFrozenCtime(openFile *OpenFile, attrs *metadata.SetAttrs) {
 	if attrs.Ctime != nil {
 		return
 	}
-	openFile.mu.RLock()
-	defer openFile.mu.RUnlock()
+	openFile.RLock()
+	defer openFile.RUnlock()
 	holdFrozenCtimeLocked(openFile, attrs)
 }
 

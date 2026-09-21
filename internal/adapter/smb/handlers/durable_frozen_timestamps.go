@@ -53,7 +53,7 @@ type durableFrozenTimestamps struct {
 // Stores nothing when no timestamp is frozen, so a handle that never used the
 // sentinel — the common case — leaves no entry behind.
 func (h *Handler) rememberFrozenTimestamps(handleID string, openFile *OpenFile) {
-	openFile.mu.RLock()
+	openFile.RLock()
 	snap := durableFrozenTimestamps{
 		btimeFrozen: openFile.BtimeFrozen,
 		mtimeFrozen: openFile.MtimeFrozen,
@@ -76,7 +76,7 @@ func (h *Handler) rememberFrozenTimestamps(handleID string, openFile *OpenFile) 
 		v := *openFile.FrozenAtime
 		snap.frozenAtime = &v
 	}
-	openFile.mu.RUnlock()
+	openFile.RUnlock()
 
 	if !snap.btimeFrozen && !snap.mtimeFrozen && !snap.ctimeFrozen && !snap.atimeFrozen {
 		return
@@ -102,8 +102,8 @@ func (h *Handler) adoptFrozenTimestamps(handleID string, openFile *OpenFile) {
 	}
 	snap := loaded.(durableFrozenTimestamps)
 
-	openFile.mu.Lock()
-	defer openFile.mu.Unlock()
+	openFile.Lock()
+	defer openFile.Unlock()
 	openFile.BtimeFrozen = snap.btimeFrozen
 	openFile.MtimeFrozen = snap.mtimeFrozen
 	openFile.CtimeFrozen = snap.ctimeFrozen

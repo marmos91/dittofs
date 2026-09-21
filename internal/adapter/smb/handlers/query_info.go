@@ -644,7 +644,7 @@ func (h *Handler) resolveBaseFileAttrForADS(authCtx *metadata.AuthContext, openF
 	// Read the freeze flags and Frozen* pointers under openFile.mu (read);
 	// SET_INFO BasicInfo on a parallel goroutine mutates them under the
 	// write lock.
-	openFile.mu.RLock()
+	openFile.RLock()
 	if openFile.BtimeFrozen && openFile.FrozenBtime != nil {
 		attr.CreationTime = *openFile.FrozenBtime
 	}
@@ -657,7 +657,7 @@ func (h *Handler) resolveBaseFileAttrForADS(authCtx *metadata.AuthContext, openF
 	if openFile.AtimeFrozen && openFile.FrozenAtime != nil {
 		attr.Atime = *openFile.FrozenAtime
 	}
-	openFile.mu.RUnlock()
+	openFile.RUnlock()
 	return &attr
 }
 
@@ -752,9 +752,9 @@ func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *me
 		// FILE_POSITION_INFORMATION [MS-FSCC] 2.4.40 (FilePositionInformation) (8 bytes)
 		// Round-trip the per-handle CurrentByteOffset (see set_info.go).
 		// Read under openFile.mu — READ/WRITE/SET_INFO mutate it concurrently.
-		openFile.mu.RLock()
+		openFile.RLock()
 		positionInfo := openFile.PositionInfo
-		openFile.mu.RUnlock()
+		openFile.RUnlock()
 		w := smbenc.NewWriter(8)
 		w.WriteUint64(positionInfo)
 		return w.Bytes(), nil
@@ -946,9 +946,9 @@ func (h *Handler) buildFileAllInformationFromStore(authCtx *metadata.AuthContext
 	w.WriteUint64(fileIndex)                       // InternalInformation (8 bytes) at offset 64
 	w.WriteUint32(fullEaInformationSize(attr.EAs)) // EaInformation (4 bytes) at offset 72: total EA buffer size
 	w.WriteUint32(openFile.GrantedAccess)          // AccessInformation (4 bytes) at offset 76 — see FileAccessInformation
-	openFile.mu.RLock()
+	openFile.RLock()
 	positionInfo := openFile.PositionInfo
-	openFile.mu.RUnlock()
+	openFile.RUnlock()
 	w.WriteUint64(positionInfo)                       // PositionInformation (8 bytes) at offset 80
 	w.WriteUint32(fileModeInformationValue(openFile)) // ModeInformation (4 bytes) at offset 88
 	w.WriteUint32(0)                                  // AlignmentInformation (4 bytes) at offset 92

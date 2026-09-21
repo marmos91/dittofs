@@ -274,10 +274,10 @@ func (h *Handler) convertOpenFileToNativeSymlink(ctx *SMBHandlerContext, openFil
 	if err != nil {
 		return fmt.Errorf("failed to encode new symlink handle: %w", err)
 	}
-	openFile.mu.Lock()
+	openFile.Lock()
 	openFile.MetadataHandle = newHandle
 	openFile.PayloadID = ""
-	openFile.mu.Unlock()
+	openFile.Unlock()
 
 	// Notify directory watchers of the placeholder→symlink replacement so client
 	// directory views (Finder/Explorer) refresh without a full re-enumeration.

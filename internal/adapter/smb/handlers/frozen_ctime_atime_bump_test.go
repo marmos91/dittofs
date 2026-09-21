@@ -356,9 +356,9 @@ func TestFrozenChangeTime_SurvivesCloseAtimeFlush(t *testing.T) {
 		// the loop with nothing held, for a reason that has nothing to do with
 		// coalescing. Backdate inside the window: still suppressed, now ordered.
 		if i == 0 {
-			openFile.mu.Lock()
+			openFile.Lock()
 			openFile.SmbAtimeWrittenAt = openFile.SmbAtimeWrittenAt.Add(-time.Second)
-			openFile.mu.Unlock()
+			openFile.Unlock()
 		}
 	}
 	if openFile.SmbPendingAtime.IsZero() {

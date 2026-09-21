@@ -203,7 +203,7 @@ func TestFreezeFields_ConcurrentReadWrite_NoRace(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < iterations; i++ {
-			openFile.mu.Lock()
+			openFile.Lock()
 			now := time.Now()
 			openFile.AtimeFrozen = i%2 == 0
 			openFile.MtimeFrozen = i%2 == 0
@@ -213,7 +213,7 @@ func TestFreezeFields_ConcurrentReadWrite_NoRace(t *testing.T) {
 			openFile.FrozenMtime = &now
 			openFile.FrozenCtime = &now
 			openFile.FrozenBtime = &now
-			openFile.mu.Unlock()
+			openFile.Unlock()
 		}
 	}()
 	// Reader 1: IsAtimeFrozen probe (post-READ/WRITE/QUERY_DIRECTORY path).
@@ -258,11 +258,11 @@ func TestDOCPropagation_ConcurrentClose_NoRace(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < iters; i++ {
-			of2.mu.Lock()
+			of2.Lock()
 			of2.DeletePending = true
 			of2.DeleteOnCloseParentKey = [16]byte{byte(i)}
 			of2.HasDeleteOnCloseParentKey = true
-			of2.mu.Unlock()
+			of2.Unlock()
 		}
 	}()
 
@@ -270,10 +270,10 @@ func TestDOCPropagation_ConcurrentClose_NoRace(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < iters; i++ {
-			of2.mu.RLock()
+			of2.RLock()
 			_ = of2.DeletePending
 			_ = of2.DeleteOnCloseParentKey
-			of2.mu.RUnlock()
+			of2.RUnlock()
 		}
 	}()
 
@@ -297,23 +297,23 @@ func TestBaseFileDeletePending_ConcurrentClose_NoRace(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < iters; i++ {
-			stream.mu.Lock()
+			stream.Lock()
 			stream.BaseFileDeletePending = i%2 == 0
 			stream.BaseFileDeleteParentHandle = ph
 			stream.BaseFileDeleteFileName = fmt.Sprintf("f%d", i)
 			stream.DeleteOnCloseParentKey = [16]byte{byte(i)}
 			stream.HasDeleteOnCloseParentKey = i%2 == 0
-			stream.mu.Unlock()
+			stream.Unlock()
 		}
 	}()
 
 	go func() {
 		defer wg.Done()
 		for i := 0; i < iters; i++ {
-			stream.mu.RLock()
+			stream.RLock()
 			_ = stream.BaseFileDeletePending
 			_ = stream.BaseFileDeleteFileName
-			stream.mu.RUnlock()
+			stream.RUnlock()
 		}
 	}()
 

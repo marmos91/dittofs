@@ -13,8 +13,8 @@ import (
 // handle does not reach back into the entry another reconnect could still read.
 
 func freezeAllTimestamps(openFile *OpenFile, at time.Time) {
-	openFile.mu.Lock()
-	defer openFile.mu.Unlock()
+	openFile.Lock()
+	defer openFile.Unlock()
 	openFile.BtimeFrozen = true
 	openFile.MtimeFrozen = true
 	openFile.CtimeFrozen = true
@@ -51,9 +51,9 @@ func TestFrozenTimestampsSurviveADurableReconnect(t *testing.T) {
 			restored.BtimeFrozen, restored.MtimeFrozen, restored.AtimeFrozen)
 	}
 
-	restored.mu.RLock()
+	restored.RLock()
 	got := restored.FrozenCtime
-	restored.mu.RUnlock()
+	restored.RUnlock()
 	if got == nil {
 		t.Fatal("FrozenCtime is nil after reconnect, so the restore has no value to write")
 	}
@@ -87,9 +87,9 @@ func TestAdoptedFrozenTimestampsAreNotAliased(t *testing.T) {
 	restored := &OpenFile{}
 	h.adoptFrozenTimestamps("handle-alias", restored)
 
-	restored.mu.Lock()
+	restored.Lock()
 	*restored.FrozenCtime = frozenAt.Add(1000 * time.Hour)
-	restored.mu.Unlock()
+	restored.Unlock()
 
 	entry, ok := h.durableFreezes.Load("handle-alias")
 	if ok {

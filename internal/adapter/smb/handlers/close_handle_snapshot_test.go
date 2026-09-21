@@ -109,10 +109,10 @@ func TestClose_ReleasesLocksAndLeaseOnTheSnapshotHandle(t *testing.T) {
 			return
 		}
 		republishedOnce = true
-		openFile.mu.Lock()
+		openFile.Lock()
 		openFile.MetadataHandle = republished
 		openFile.PayloadID = ""
-		openFile.mu.Unlock()
+		openFile.Unlock()
 	}
 
 	// A byte-range lock held by this open on the ORIGINAL handle, acquired
@@ -174,12 +174,12 @@ func TestClose_ReleasesLocksAndLeaseOnTheSnapshotHandle(t *testing.T) {
 	// FILE_WRITE_ATTRIBUTES on the open is what the restore's write authorizes
 	// against; without it the restore declines and the check below is vacuous.
 	frozen := time.Date(2035, 1, 2, 3, 4, 5, 0, time.UTC)
-	of.mu.Lock()
+	of.Lock()
 	of.GrantedAccess |= uint32(types.FileWriteAttributes)
 	of.SmbPendingAtime = pendingAtime
 	of.MtimeFrozen = true
 	of.FrozenMtime = &frozen
-	of.mu.Unlock()
+	of.Unlock()
 
 	// POSTQUERY_ATTRIB makes the attributes step read the file, which is where
 	// the republish fires.

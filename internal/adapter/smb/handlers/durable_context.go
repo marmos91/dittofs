@@ -1533,8 +1533,8 @@ func buildPersistedDurableHandle(
 	// triple comes from a single load, so the persisted row — which is
 	// replayed on reconnect — cannot mix one rename's name with another's
 	// parent. Field reads and copies only, no store I/O.
-	openFile.mu.RLock()
-	defer openFile.mu.RUnlock()
+	openFile.RLock()
+	defer openFile.RUnlock()
 	name := openFile.Name()
 
 	// Clone MetadataHandle to avoid aliasing the live OpenFile's slice

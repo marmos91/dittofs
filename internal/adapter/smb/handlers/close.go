@@ -498,10 +498,10 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// closer's delete-on-close election. Snapshot both under the read lock so
 	// we observe consistent values against a parallel WRITE or CLOSE on the
 	// same handle.
-	openFile.mu.RLock()
+	openFile.RLock()
 	smbWriteTriggered := openFile.SmbWriteTriggered
 	deletePending := openFile.DeletePending
-	openFile.mu.RUnlock()
+	openFile.RUnlock()
 	if !deletePending && !openFile.IsDirectory && smbWriteTriggered {
 		authCtx, authErr := BuildAuthContext(ctx)
 		if authErr != nil {

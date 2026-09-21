@@ -439,9 +439,9 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// below re-checks the flags under the write lock so a race between probe
 	// and arm collapses to a single first-write capture.
 	var preWriteMtime time.Time
-	openFile.mu.RLock()
+	openFile.RLock()
 	probeArm := !openFile.SmbWriteTriggered && openFile.SmbStickyWriteTime == nil
-	openFile.mu.RUnlock()
+	openFile.RUnlock()
 	if probeArm {
 		if preFile, getErr := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle); getErr == nil {
 			preWriteMtime = preFile.Mtime

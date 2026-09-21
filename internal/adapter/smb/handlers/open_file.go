@@ -590,9 +590,9 @@ func (h *Handler) isFileDeletePending(fileHandle metadata.FileHandle) bool {
 		}
 		// DeletePending is concurrently written by CLOSE DOC propagation under
 		// existing.mu — read it under the read lock.
-		existing.mu.RLock()
+		existing.RLock()
 		dp := existing.DeletePending
-		existing.mu.RUnlock()
+		existing.RUnlock()
 		if dp {
 			pending = true
 			return false
@@ -644,9 +644,9 @@ func (h *Handler) isFileOrBaseDeletePending(
 		}
 		// BaseFileDeletePending is concurrently written by CLOSE deferred-delete
 		// propagation under existing.mu — read it under the read lock.
-		existing.mu.RLock()
+		existing.RLock()
 		bdp := existing.BaseFileDeletePending
-		existing.mu.RUnlock()
+		existing.RUnlock()
 		if !bdp {
 			return true
 		}

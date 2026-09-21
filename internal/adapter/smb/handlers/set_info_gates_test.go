@@ -345,9 +345,9 @@ func TestWrite_AdvancesPositionInfo(t *testing.T) {
 		t.Fatalf("Write status = 0x%08x, want STATUS_SUCCESS", uint32(got))
 	}
 	// Per MS-FSA 2.1.5.4: CurrentByteOffset advances to Offset + BytesWritten.
-	open.mu.RLock()
+	open.RLock()
 	got := open.PositionInfo
-	open.mu.RUnlock()
+	open.RUnlock()
 	if got != 104 {
 		t.Fatalf("PositionInfo after WRITE = %d, want 104", got)
 	}
@@ -521,9 +521,9 @@ func TestWrite_ZeroLength_AdvancesPositionInfo(t *testing.T) {
 		t.Fatalf("zero-length Write Count = %d, want 0", resp.Count)
 	}
 
-	open.mu.RLock()
+	open.RLock()
 	got := open.PositionInfo
-	open.mu.RUnlock()
+	open.RUnlock()
 	if got != 4096 {
 		t.Fatalf("PositionInfo after zero-length WRITE = %d, want 4096: a successful WRITE must advance CurrentByteOffset to ByteOffset + BytesWritten", got)
 	}
