@@ -191,9 +191,9 @@ func TestServerShutdownQuiescesCarveBeforeClosingMetadataStores(t *testing.T) {
 	before := runtime.NumGoroutine()
 	f.serveUntilShutdown(t)
 
-	// The dispatcher's interval is short; anything still running would commit
-	// several times over in this window.
-	time.Sleep(8 * time.Second)
+	// Long enough for several dispatcher intervals: one still running would
+	// commit more than once in this window.
+	time.Sleep(5 * time.Second)
 
 	// Without this the assertion below passes on a run whose metadata store was
 	// never closed at all.
@@ -236,9 +236,15 @@ func TestCarveCommitsReachAClosedMetadataStore_WithoutTheFence(t *testing.T) {
 	t.Cleanup(func() { f.rt.sharesSvc.CloseBlockStores() })
 
 	f.rt.CloseMetadataStores()
-	time.Sleep(8 * time.Second)
 
-	errs := f.meta.afterClose()
+	// Returns as soon as the dispatcher commits, so this costs one interval
+	// rather than the whole window.
+	deadline := time.Now().Add(30 * time.Second)
+	var errs []error
+	for len(errs) == 0 && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+		errs = f.meta.afterClose()
+	}
 	for i, e := range errs {
 		t.Logf("  [%d] %v", i, e)
 	}
