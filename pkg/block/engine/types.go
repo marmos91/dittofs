@@ -25,7 +25,9 @@ const DefaultParallelDownloads = 32
 // is unset (0), the syncer auto-tunes the upload window to saturate the uplink:
 // it starts at AdaptiveUploadFloor and ramps toward AdaptiveUploadCeiling,
 // settling at the goodput knee. A pinned ParallelUploads > 0 overrides this with
-// a fixed window, clamped to MaxParallelUploads. The window bounds concurrent
+// a fixed window. MaxParallelUploads is not applied here — it is the bound the
+// control plane validates a pinned value against before it ever reaches this
+// package. The window bounds concurrent
 // block PUTs directly — one slot per in-flight PutBlock, shared by every carve
 // pass — so the ceiling here is the real ceiling. Block PUTs are
 // network-latency bound, so a serial carver leaves the link idle — one

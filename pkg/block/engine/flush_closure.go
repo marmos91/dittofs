@@ -343,7 +343,15 @@ type uploadChain struct {
 	// the same as no window at all.
 	slots *syncer.DynamicSemaphore
 	prev  chan struct{} // resolution of the last-submitted flight
-	wg    sync.WaitGroup
+	// wg is never Waited on, deliberately. collect() is the real join: it blocks
+	// on every flight it has not yet reported, and fn calls it at the end of each
+	// run, so a file that finishes normally leaves nothing in flight. The only
+	// escape is a run that returns early with an error before reaching collect —
+	// those flights keep running, though each still releases its upload slot when
+	// its commit returns, so they occupy the window honestly rather than leaking
+	// it. Waiting here would not close that gap: the site that would have to wait
+	// is the journal's own flush error path, which this closure does not own.
+	wg sync.WaitGroup
 
 	mu        sync.Mutex
 	flights   []*flight
@@ -378,6 +386,15 @@ func newUploadChain(sink BlockSink, slots *syncer.DynamicSemaphore) *uploadChain
 // it would bound nothing: submit returns as soon as the goroutine is spawned.
 // The release deliberately precedes the <-prev ordering wait, so a slow
 // predecessor delays the flip but never holds a successor's memory.
+//
+// decision: the slot spans the whole of CommitBlock — PutBlock *and* the
+// metadata commit after it — not just the upload. So while the goodput bytes
+// are sampled at PutBlock completion, window OCCUPANCY still carries commit
+// backpressure: a slow per-file commit holds slots and can make the window look
+// full when the uplink is idle. Releasing at PutBlock instead would bound
+// submissions rather than live arenas, which bounds nothing, so this is not
+// fixable by moving the release. Overturn it only by giving arenas a lifetime
+// independent of the slot — then the upload window could bound uploads alone.
 func (u *uploadChain) submit(ctx context.Context, chunks []CarveChunk, extents []journal.Extent) {
 	held := false
 	if u.slots != nil {

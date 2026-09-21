@@ -465,6 +465,15 @@ func (m *RemoteSync) SyncCounts() (completed, failed int) {
 // noteBlockCommitted: the controller resizes the upload window, so its sample
 // has to be the uplink alone and not the per-file-serialized metadata commit
 // that follows.
+//
+// decision: a block whose PutBlock succeeds and whose metadata commit then
+// fails still counts its bytes here, with no compensating error flag on the
+// Flush/SyncNow/Drain paths (only carvePass feeds uploadErrWindow). That is
+// intended rather than overlooked: those bytes did cross the uplink, and a
+// commit failure is not a signal to back the upload window off — backing off
+// would answer a metadata fault by throttling a healthy link. The caller still
+// gets the error. Revisit if commit failures ever correlate with uplink faults,
+// where suppressing the bytes would become the honest reading.
 func (m *RemoteSync) noteBlockUploaded(bytes int64) {
 	m.uploadedBytesWindow.Add(bytes)
 }
@@ -872,7 +881,16 @@ func (m *RemoteSync) flushFn() (journal.FlushFunc, func(context.Context, journal
 		// it every flush treats every chunk as novel and uploads whole new
 		// blocks instead of landing manifest-only rows for content the remote
 		// already holds.
-		return newFlushClosure(m.local, params, blockSize, engineDeduper{synced: m.syncedHashStore}, sink, m.uploadLimiter)
+		// The window must exist on this path. A nil semaphore is silently
+		// accepted by the upload chain and bounds nothing, which is the same
+		// failure shape as a window negotiated by type assertion that nothing
+		// satisfies: no error, no bound, and no test notices. Every syncer
+		// built by NewRemoteSync has one; this covers a hand-built struct.
+		slots := m.uploadLimiter
+		if slots == nil {
+			slots = syncer.NewDynamicSemaphore(window)
+		}
+		return newFlushClosure(m.local, params, blockSize, engineDeduper{synced: m.syncedHashStore}, sink, slots)
 	}
 	// Local-only (no remote block store): the flush cannot upload, but it must
 	// still populate the FileChunk manifest (and project File.Blocks) so a

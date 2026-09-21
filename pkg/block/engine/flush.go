@@ -428,8 +428,9 @@ func (s engineBlockSink) CommitBlock(ctx context.Context, chunks []CarveChunk) e
 
 	// PutBlock first: a crash before the commit leaves an orphan block (GC
 	// reclaims it), never an unbacked record. The upload slot is held by the
-	// upload chain (acquired before this goroutine spawned), so concurrent
-	// blocks never exceed the pass's window.
+	// upload chain (acquired before this goroutine spawned), and that window is
+	// shared by every carve pass, so concurrent blocks never exceed it
+	// syncer-wide rather than merely per pass.
 	err = s.rbs.PutBlock(ctx, blockID, bytes.NewReader(blockBytes))
 	if err != nil {
 		return fmt.Errorf("flush: put block %s: %w", blockID, err)

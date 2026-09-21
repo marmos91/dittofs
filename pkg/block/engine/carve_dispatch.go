@@ -49,17 +49,26 @@ func (m *RemoteSync) carveDispatcher(ctx context.Context) {
 	}
 }
 
-// carveFanOut bounds how many files this loop carves at once. It throttles
-// goroutine spawn and the per-pass read buffers, nothing else: the blocks those
-// passes produce queue on the syncer's shared upload window, which is the only
-// bound on PutBlock concurrency. Files in one shard serialize on the journal's
-// internal carve lock regardless, so the fan-out only overlaps distinct shards.
+// carveFanOut is the FLOOR on how many files one pass carves at once, not the
+// cap: carvePass sizes its fan-out to max(carveFanOut, current upload window).
+// The fan-out must never be the narrower of the two, because carve serializes
+// per shard (journal flushMu is shard-scoped) and workers scatter over shards
+// balls-in-bins — a fan-out equal to the shard count leaves roughly a third of
+// the shards idle. Pinning it at a constant therefore capped PUT concurrency
+// near 13 of an allowed 64, relocating "the window does not bound what it
+// claims to" from one large file onto many small ones.
 //
-// ponytail: a fixed cap, not a second controller. It is deliberately the
-// adaptive floor, so file fan-out never exceeds what an adaptive pass already
-// allowed at its least greedy. Make it adaptive only if profiling shows passes
-// starved of carve concurrency while the upload window sits unfilled — the
-// bottleneck this path has actually measured is the uplink, not the carver.
+// ponytail: a floor plus the live window read once per pass, not a second
+// controller. Sizing from the window is not the same as acquiring it — taking
+// a slot per file is what made upload concurrency the product of two windows,
+// and would deadlock a pass against its own uploads.
+//
+// The ceiling this buys is read-buffer memory, and it is bounded by shards
+// rather than by the fan-out: a worker allocates chunker.MaxChunkSize (16 MiB)
+// inside the flush, after the shard lock, so parked workers hold nothing. Peak
+// is min(fanOut, ShardCount) x 16 MiB — 256 MiB at the default 16 shards, and
+// flat as the window ramps. Revisit if ShardCount ever grows far past the
+// window, where that product stops being bounded by the shard count.
 const carveFanOut = AdaptiveUploadFloor
 
 // carvePass packs every file with local data into remote blocks, carving files
@@ -67,12 +76,13 @@ const carveFanOut = AdaptiveUploadFloor
 // pass (one file, one block, one PutBlock at a time) leaves the uplink almost
 // idle — the block-upload latency, not the link or CPU, caps throughput.
 //
-// Concurrency here is carveFanOut files, a fixed cap held separately from the
-// upload window. The window itself is consumed one slot per in-flight PutBlock
-// inside the passes, so it bounds exactly what it is named for and what the
-// controller samples through TakePeak is the count of PUTs. Acquiring the
-// window here instead would both nest the two bounds into a product and
-// deadlock: a pass cannot upload while the loop holds the slot it needs.
+// Concurrency here is max(carveFanOut, upload window) files, sized from the
+// window but holding none of its slots. The window itself is consumed one slot
+// per in-flight PutBlock inside the passes, so it bounds exactly what it is
+// named for, and what the controller samples through TakePeak is the count of
+// PUTs. Acquiring the window here instead would both nest the two bounds into a
+// product and deadlock: a pass cannot upload while the loop holds the slot it
+// needs.
 func (m *RemoteSync) carvePass(ctx context.Context) {
 	ids := m.local.ListFiles(ctx)
 	files := make([]string, 0, len(ids))
@@ -95,9 +105,10 @@ func (m *RemoteSync) carvePass(ctx context.Context) {
 		case <-ctx.Done():
 		}
 	}()
-	// Bounds goroutine spawn and live read buffers. Separate from the upload
-	// window on purpose; see carveFanOut.
-	fanOut := syncer.NewDynamicSemaphore(carveFanOut)
+	// Bounds goroutine spawn and live read buffers. Sized from the window but
+	// holding none of its slots; read once per pass, so a mid-pass resize lands
+	// on the next one. See carveFanOut.
+	fanOut := syncer.NewDynamicSemaphore(max(carveFanOut, m.uploadLimiter.Limit()))
 	var wg sync.WaitGroup
 	for _, id := range files {
 		stop := false

@@ -300,13 +300,26 @@ FileChunk manifest rows (hash + `DataSize`, no block key) so clone, snapshot, an
 restore can resolve the file's chunks, but nothing is uploaded.
 
 The carve pass fans out across files: a single sequential pass (one file, one
-block, one `PutBlock` at a time) leaves the uplink almost idle. Concurrency is
-bounded by an **adaptive upload window** (`pkg/block/syncer/upload_controller.go`,
-wired from `pkg/block/engine/syncer.go`):
-a pinned `--parallel-uploads` fixes the window, while the default (adaptive)
-mode ramps it between a floor and ceiling to track the goodput knee. Files in
-one shard still serialize on the journal's carve lock, so the window overlaps
-distinct shards' upload latency.
+block, one `PutBlock` at a time) leaves the uplink almost idle. Two separate
+bounds apply, and conflating them is what made upload concurrency the product
+of two windows rather than the number the config declares:
+
+- The **adaptive upload window** (`pkg/block/syncer/upload_controller.go`, wired
+  from `pkg/block/engine/syncer.go`) bounds **concurrent block `PutBlock` calls**.
+  Every carve pass shares one window, holding a slot per block from submit until
+  that block's commit returns. A pinned `--parallel-uploads` fixes it; the
+  default (adaptive) mode ramps it between a floor and ceiling to track the
+  goodput knee, sampling the peak of this same window so it reads PUT
+  concurrency rather than a proxy for it.
+- The **carve fan-out** (`carveFanOut` in `pkg/block/engine/carve_dispatch.go`)
+  bounds how many files one pass carves at once. It is sized as
+  `max(carveFanOut, current window)` and holds none of the window's slots —
+  acquiring them per file is what nested the two bounds, and would deadlock a
+  pass against its own uploads.
+
+Files in one shard still serialize on the journal's per-shard carve lock, so
+with many small files that shard count, not the window, is usually the real
+ceiling on concurrent uploads.
 
 Explicit `Flush` / `SyncNow` force-carve a file's (or all files') dirty ranges
 and serialize against the background dispatcher on the same per-shard lock, so

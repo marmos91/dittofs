@@ -46,8 +46,13 @@ func (s *DynamicSemaphore) Acquire(ctx context.Context) error {
 
 	s.mu.Lock()
 	// Fast path: a slot is free now — take it without parking or spawning a
-	// cancellation watcher. This is the common case in the dispatch loop (one
-	// Acquire per carve pass), so it must not allocate a goroutine per call.
+	// cancellation watcher. Callers acquire once per block uploaded, not once
+	// per carve pass, so this runs hot and must not allocate a goroutine per
+	// call. Note the corollary: precisely when the window is the binding
+	// constraint every Acquire takes the SLOW path below and spawns a watcher
+	// goroutine for the duration of the wait. That is the cost of a saturated
+	// window; replace the watcher with a shared cancellation fan-out if it
+	// ever shows up in a profile.
 	if s.inflight < s.limit {
 		s.inflight++
 		if s.inflight > s.peak {

@@ -66,9 +66,10 @@ type Config struct {
 	// The buffers themselves are the caller's: peak RAM per file is this window
 	// times whatever the caller's sink holds per block in flight. A caller that
 	// gives each flush pass its own window multiplies that term by however many
-	// files it flushes at once, making the real ceiling the product — the
-	// engine's remote path instead hands every pass one shared window, so there
-	// the ceiling is that window alone.
+	// files it flushes at once, making the real ceiling the product. The
+	// engine's remote path does not reach this field at all — it hands every
+	// pass one shared window, so there the ceiling is that window alone. This
+	// value governs only a local store with no remote behind it.
 	// Zero falls back to the default via withDefaults.
 	CarveUploadConcurrency int
 	// DirtyExpiry bounds how long an appended record may sit unfsynced. A

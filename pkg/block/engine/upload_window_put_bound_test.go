@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"math/rand"
 	"sync/atomic"
@@ -20,6 +21,11 @@ type putProbe struct {
 	inFlight atomic.Int64
 	peak     atomic.Int64
 	calls    atomic.Int64
+	// delay is how long each PutBlock is held open. It has to outlast the
+	// spread in when workers arrive, or the peak measures arrival jitter
+	// instead of the bound under test: workers that come and go one at a time
+	// read as low concurrency however wide the bound actually is.
+	delay time.Duration
 }
 
 func (p *putProbe) PutBlock(ctx context.Context, id string, r io.Reader) error {
@@ -33,7 +39,11 @@ func (p *putProbe) PutBlock(ctx context.Context, id string, r io.Reader) error {
 	}
 	defer p.inFlight.Add(-1)
 	// Real PUT latency; without overlap an absent bound looks like a working one.
-	time.Sleep(30 * time.Millisecond)
+	d := p.delay
+	if d == 0 {
+		d = 30 * time.Millisecond
+	}
+	time.Sleep(d)
 	return p.Store.PutBlock(ctx, id, r)
 }
 
@@ -147,5 +157,88 @@ func TestUploadWindow_ControllerSamplesPutConcurrency(t *testing.T) {
 	if !windowLimited {
 		t.Errorf("controller read the drain as app-limited (TakePeak=%d < limit=%d) while %d PUTs were in flight",
 			peak, m.uploadLimiter.Limit(), probe.peak.Load())
+	}
+}
+
+// newManyFileFixture wires a manual-sync syncer over a journal of shardCount
+// shards holding fileCount single-block files. Carve serializes per shard
+// (journal flushMu is shard-scoped), so the files must spread across shards for
+// any of them to upload at once.
+func newManyFileFixture(t *testing.T, blockSize int64, shardCount, fileCount int) (*RemoteSync, *putProbe) {
+	t.Helper()
+	ctx := context.Background()
+
+	// Wide fan-out means a wide spread in worker start times; hold each PUT
+	// open well past that spread so the peak reflects the bound, not the jitter.
+	probe := &putProbe{Store: remotememory.New(), delay: 250 * time.Millisecond}
+	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	local, err := journal.Open(t.TempDir(), journal.Config{
+		CarveBlockSize: blockSize,
+		ShardCount:     shardCount,
+	})
+	if err != nil {
+		t.Fatalf("journal.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = local.Close() })
+
+	cfg := DefaultConfig()
+	cfg.ManualSync = true
+	cfg.ChunkParams = chunker.Params{Min: 4 << 10, Avg: 8 << 10, Max: 16 << 10}
+	m := NewRemoteSync(local, probe, ms, cfg)
+	m.SetSyncedHashStore(ms)
+	m.SetRemoteBlockStore(probe)
+
+	rng := rand.New(rand.NewSource(11))
+	for i := range fileCount {
+		buf := make([]byte, blockSize)
+		if _, err := rng.Read(buf); err != nil {
+			t.Fatalf("rand: %v", err)
+		}
+		if err := local.WriteAt(ctx, journal.FileID(fmt.Sprintf("share/p%03d", i)), 0, buf); err != nil {
+			t.Fatalf("WriteAt: %v", err)
+		}
+	}
+	return m, probe
+}
+
+// TestUploadWindow_FanOutDoesNotThrottleBelowTheWindow pins that the carve
+// fan-out never becomes the narrow bound when there is a wide window and plenty
+// of files to fill it.
+//
+// A fan-out fixed at carveFanOut collides with the journal's shard count:
+// carve serializes per shard, so N workers scattered balls-in-bins over N
+// shards leave roughly a third of them idle, and PUT concurrency lands well
+// under the window. That relocates exactly the defect this file exists to pin —
+// a window that does not bound what it claims to — from one large file onto
+// many small ones.
+//
+// The fixture gives every file its own shard to compete for (64 shards, 64
+// single-block files) so the only thing that can hold concurrency down to
+// carveFanOut is the fan-out itself.
+func TestUploadWindow_FanOutDoesNotThrottleBelowTheWindow(t *testing.T) {
+	ctx := context.Background()
+	const files = 64
+	const shards = 64
+	const window = 64 // wide: the window is explicitly not the constraint here
+	m, probe := newManyFileFixture(t, 32<<10, shards, files)
+
+	m.uploadLimiter.SetLimit(window)
+	_ = m.uploadLimiter.TakePeak()
+
+	m.carvePass(ctx)
+
+	peak := m.uploadLimiter.TakePeak()
+	t.Logf("files=%d shards=%d limit=%d | TakePeak=%d windowLimited=%v | PutBlock calls=%d peak concurrent PutBlock=%d",
+		files, shards, m.uploadLimiter.Limit(), peak, peak >= m.uploadLimiter.Limit(),
+		probe.calls.Load(), probe.peak.Load())
+
+	if got := probe.calls.Load(); got != files {
+		t.Fatalf("PutBlock called %d times, want one per file (%d)", got, files)
+	}
+	// The fan-out cap must not be the ceiling: with this many files on this many
+	// shards and a window of 64, concurrency has to climb past the fixed cap.
+	if got := probe.peak.Load(); got <= int64(carveFanOut) {
+		t.Errorf("peak concurrent PutBlock = %d, capped at or below carveFanOut (%d) while the window allowed %d: the fan-out is the narrow bound",
+			got, carveFanOut, window)
 	}
 }
