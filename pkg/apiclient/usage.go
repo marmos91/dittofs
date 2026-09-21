@@ -50,8 +50,8 @@ type QuotaDrift struct {
 // UsageStat is the accounting pair every usage bucket holds: total logical
 // bytes and inode count.
 type UsageStat struct {
-	Bytes int64 `json:"Bytes"`
-	Files int64 `json:"Files"`
+	Bytes int64 `json:"bytes"`
+	Files int64 `json:"files"`
 }
 
 // RecomputeShareUsage rebuilds the metadata store's used-bytes counters from

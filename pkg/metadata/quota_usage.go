@@ -36,11 +36,13 @@ func (s QuotaScope) String() string {
 // Only regular files contribute (directories, symlinks, devices do not),
 // matching the per-share usage semantics. Files is the inode count used for the
 // inode-quota dimension.
+// The JSON names are lower case because this type reaches the REST surface
+// inside a drift report, where every neighbouring field is lower case.
 type UsageStat struct {
 	// Bytes is the sum of logical sizes of regular files owned by the identity.
-	Bytes int64
+	Bytes int64 `json:"bytes"`
 	// Files is the number of regular files owned by the identity (inode count).
-	Files int64
+	Files int64 `json:"files"`
 }
 
 // QuotaDrift reports one usage bucket whose maintained counter disagrees with
