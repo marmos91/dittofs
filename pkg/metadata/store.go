@@ -596,7 +596,18 @@ type Store interface {
 	// It is store-wide rather than per-share: one store instance backs every
 	// share naming the same metadata store config, and rebuilding one share's
 	// buckets costs the same scan as rebuilding all of them.
-	RecomputeUsage(ctx context.Context) error
+	//
+	// dryRun derives the same aggregate but persists nothing, and returns every
+	// bucket the maintained counters disagree with it on. It is how an operator
+	// answers "are these numbers wrong" without taking the repair's write path:
+	// the rebuild replaces the counters, so running it to find out destroys the
+	// evidence of what was wrong. A dry run against a store taking writes
+	// reports small transient deltas, because the scan and the counters are read
+	// at different instants.
+	//
+	// A non-dry run returns no drift: reporting it would cost a second full
+	// aggregate, and the counters it would compare against no longer exist.
+	RecomputeUsage(ctx context.Context, dryRun bool) ([]QuotaDrift, error)
 
 	// ========================================================================
 	// Store Lifecycle (not transactional)

@@ -923,10 +923,28 @@ var _ interface{ GetStoreID() string } = (*BadgerMetadataStore)(nil)
 // operator invokes: counters maintained incrementally have no self-correction,
 // so it is the only way back from a drift bug. The payload index is already
 // built by then, so nothing is staged this time.
-func (s *BadgerMetadataStore) RecomputeUsage(ctx context.Context) error {
+func (s *BadgerMetadataStore) RecomputeUsage(ctx context.Context, dryRun bool) ([]metadata.QuotaDrift, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return nil, err
 	}
+
+	// A dry run reads the same rows and writes nothing, so it needs neither the
+	// capture nor the realign lock: no bucket is being replaced, and holding
+	// that lock across the scan would queue every writer behind a question.
+	// What it costs is exactness — a write landing mid-scan shows up as a small
+	// delta — and that is the trade the dry run is documented to make.
+	if dryRun {
+		txn := s.db.NewTransaction(false)
+		defer txn.Discard()
+		derived, err := s.scanUsageTxn(txn, nil)
+		if err != nil {
+			return nil, err
+		}
+		s.quotaMu.Lock()
+		defer s.quotaMu.Unlock()
+		return s.quota.Drift(derived), nil
+	}
+
 	// Arming the capture and pinning the snapshot happen together, under the
 	// lock every writer holds across its commit and its in-memory fold. Apart,
 	// they race: a writer that had committed but not yet folded would land in
@@ -944,7 +962,7 @@ func (s *BadgerMetadataStore) RecomputeUsage(ctx context.Context) error {
 	// commits during it is captured and folded back by Seed below.
 	byIdentity, err := s.scanUsageTxn(txn, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Retaken for the rewrite only.
@@ -960,9 +978,9 @@ func (s *BadgerMetadataStore) RecomputeUsage(ctx context.Context) error {
 	// has just folded in every delta that committed while the scan ran, and
 	// those are in the file rows the scan no longer reflects.
 	if err := s.writeQuotaCounters(persist); err != nil {
-		return err
+		return nil, err
 	}
 	// A realign on a store that never got the backfill marker leaves it with
 	// counters that do account for every row, so record it.
-	return recordQuotaCountersBackfilled(s.db)
+	return nil, recordQuotaCountersBackfilled(s.db)
 }

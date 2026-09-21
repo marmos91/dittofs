@@ -124,7 +124,7 @@ func TestRecomputeUsageCannotSplitACommitFromItsFold(t *testing.T) {
 	}()
 
 	<-committed
-	if err := store.RecomputeUsage(ctx); err != nil {
+	if _, err := store.RecomputeUsage(ctx, false); err != nil {
 		t.Fatalf("RecomputeUsage: %v", err)
 	}
 	close(realigned)

@@ -59,8 +59,20 @@ at `/api/v1/shares/{name}/quotas`.
 
 Usage counters are maintained transactionally as files are written and removed, so they
 are normally already correct. If a share reports more bytes than its files hold — most
-visibly, it refuses writes while `dfsctl share list` shows it far from full — rebuild them
-from the file rows:
+visibly, it refuses writes while `dfsctl share list` shows it far from full — first check
+whether the counters really disagree with the file rows:
+
+```bash
+dfsctl store metadata recompute-usage /export --dry-run
+```
+
+A dry run derives the same figures, changes nothing, and names every usage bucket whose
+counter disagrees with the rows, with both numbers, so you can see how far apart they are
+and in which direction. Against a store that is taking writes it reports small transient
+deltas: the rows and the counters are read at different instants. Drift from a bug does
+not look like that — it persists across runs and does not track live traffic.
+
+Then rebuild the counters from the file rows:
 
 ```bash
 dfsctl store metadata recompute-usage /export

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 
@@ -19,8 +20,9 @@ import (
 type UsageRecomputeRuntime interface {
 	// RecomputeShareUsage rebuilds the metadata store's used-bytes counters
 	// from its file rows and reports what the named share held before and
-	// after.
-	RecomputeShareUsage(ctx context.Context, shareName string) (*runtime.UsageRecomputeResult, error)
+	// after. With dryRun it changes nothing and reports the buckets the
+	// counters and the file rows disagree on instead.
+	RecomputeShareUsage(ctx context.Context, shareName string, dryRun bool) (*runtime.UsageRecomputeResult, error)
 }
 
 // UsageRecomputeHandler exposes the on-demand used-bytes repair endpoint.
@@ -49,8 +51,14 @@ type UsageRecomputeResponse struct {
 // every share that store serves, not only the named one.
 //
 // Status codes:
+// The dry_run query parameter derives the same figures, writes nothing, and
+// reports every usage bucket the counters and the file rows disagree on. It is
+// how the question "are these numbers wrong" gets answered without taking the
+// repair's write path, which replaces the evidence.
+//
+// Status codes:
 //   - 200 OK with UsageRecomputeResponse on success
-//   - 400 Bad Request when {name} is empty
+//   - 400 Bad Request when {name} is empty or dry_run is not a boolean
 //   - 404 Not Found when {name} is not a registered share
 //   - 500 Internal Server Error on unexpected runtime errors
 func (h *UsageRecomputeHandler) Recompute(w http.ResponseWriter, r *http.Request) {
@@ -65,7 +73,17 @@ func (h *UsageRecomputeHandler) Recompute(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	res, err := h.runtime.RecomputeShareUsage(r.Context(), name)
+	dryRun := false
+	if raw := r.URL.Query().Get("dry_run"); raw != "" {
+		parsed, parseErr := strconv.ParseBool(raw)
+		if parseErr != nil {
+			BadRequest(w, "dry_run must be a boolean")
+			return
+		}
+		dryRun = parsed
+	}
+
+	res, err := h.runtime.RecomputeShareUsage(r.Context(), name, dryRun)
 	if err != nil {
 		if errors.Is(err, shares.ErrShareNotFound) {
 			NotFound(w, "share not found: "+name)

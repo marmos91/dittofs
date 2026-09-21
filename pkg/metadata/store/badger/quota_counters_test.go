@@ -154,7 +154,8 @@ func TestRecomputeUsageRepairsDivergedCounters(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEqual(t, want, got, "the corruption must actually be visible, or the repair below proves nothing")
 
-	require.NoError(t, diverged.RecomputeUsage(ctx))
+	_, recomputeErr := diverged.RecomputeUsage(ctx, false)
+	require.NoError(t, recomputeErr)
 	repaired, err := diverged.GetUsedBytesForShare(ctx, "/q")
 	require.NoError(t, err)
 	require.Equal(t, want, repaired)
@@ -300,4 +301,67 @@ func TestRestoreIntoFreshStoreRederivesCounters(t *testing.T) {
 	got, err = reopened.GetUsedBytesForShare(ctx, "/q")
 	require.NoError(t, err)
 	require.Equal(t, want, got)
+}
+
+// TestRecomputeUsageDryRunReportsDriftWithoutRepairing covers the question an
+// operator has before running the realign: are these numbers actually wrong.
+// The realign replaces the counters, so running it to find out destroys the
+// evidence — which is why the answer has to be available without it.
+//
+// Both numbers have to travel. A report that says only "drift: yes" leaves the
+// operator with the destructive path as their only next step, which is the
+// thing the dry run exists to let them avoid.
+func TestRecomputeUsageDryRunReportsDriftWithoutRepairing(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	store := openQuotaStore(t, dir)
+	createShareRoot(t, store, "/q")
+	for i := 0; i < 4; i++ {
+		putQuotaTestFile(t, store, "/q", fmt.Sprintf("/f%d", i), 1000, 100, 2048)
+	}
+	truth, err := store.GetUsedBytesForShare(ctx, "/q")
+	require.NoError(t, err)
+	require.Equal(t, int64(4*2048), truth)
+
+	// A healthy store reports nothing, so a later non-empty report means the
+	// corruption and not the comparison.
+	clean, err := store.RecomputeUsage(ctx, true)
+	require.NoError(t, err)
+	require.Empty(t, clean, "a store whose counters match its rows must report no drift")
+
+	// Corrupt a stripe behind the store's back, the way a drift bug would.
+	require.NoError(t, store.db.Update(func(txn *badgerdb.Txn) error {
+		return txn.Set(
+			keyQuotaUsage("/q", metadata.QuotaScopeUser, 1000, 3),
+			encodeUsageStat(metadata.UsageStat{Bytes: 999999, Files: 42}),
+		)
+	}))
+	require.NoError(t, store.Close())
+
+	diverged := openQuotaStore(t, dir)
+	defer func() { _ = diverged.Close() }()
+	broken, err := diverged.GetUsedBytesForShare(ctx, "/q")
+	require.NoError(t, err)
+	require.NotEqual(t, truth, broken, "the corruption must be visible, or the report below proves nothing")
+
+	drift, err := diverged.RecomputeUsage(ctx, true)
+	require.NoError(t, err)
+	require.NotEmpty(t, drift, "a counter that disagrees with the rows must be reported")
+
+	var found *metadata.QuotaDrift
+	for i := range drift {
+		if drift[i].Share == "/q" && drift[i].Scope == metadata.QuotaScopeUser && drift[i].ID == 1000 {
+			found = &drift[i]
+		}
+	}
+	require.NotNil(t, found, "the report must name the bucket that drifted: %+v", drift)
+	require.Equal(t, broken, found.Counter.Bytes, "the report must carry what the counter says")
+	require.Equal(t, truth, found.Derived.Bytes, "the report must carry what the rows say")
+
+	// And it must have changed nothing: a dry run that repairs is the path the
+	// operator was trying not to take.
+	after, err := diverged.GetUsedBytesForShare(ctx, "/q")
+	require.NoError(t, err)
+	require.Equal(t, broken, after, "a dry run must leave the counters exactly as it found them")
 }

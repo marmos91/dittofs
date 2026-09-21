@@ -18,7 +18,11 @@
 // existing mutex.
 package basestore
 
-import "github.com/marmos91/dittofs/pkg/metadata"
+import (
+	"sort"
+
+	"github.com/marmos91/dittofs/pkg/metadata"
+)
 
 // QuotaKey identifies a per-identity usage bucket: an owner id within a scope
 // (user or group), within one share. The share dimension is load-bearing: a
@@ -333,4 +337,60 @@ func ApplyPutDelta(d *QuotaDelta, share string, old, now FileUsage) {
 		d.Add(share, old.UID, old.GID, -int64(old.Size), -1)
 		d.Add(share, now.UID, now.GID, int64(now.Size), 1)
 	}
+}
+
+// Drift compares an aggregate derived from the store's file rows against the
+// buckets this cache holds, and reports every bucket the two disagree on. The
+// result is ordered by share, then scope, then identity, so two runs of the
+// same comparison read the same way.
+//
+// The derived side arrives raw from a scan, so it is folded onto the same rule
+// the cache applies to itself — clamped at zero, emptied buckets dropped —
+// before anything is compared. Without that a bucket the cache had dropped
+// would be reported against a derived zero.
+//
+// A bucket present on one side only is drift: that is the shape a counter left
+// charged for a file the rows no longer describe takes.
+func (c *QuotaCache) Drift(derived map[QuotaKey]*metadata.UsageStat) []metadata.QuotaDrift {
+	out := []metadata.QuotaDrift{}
+	seen := make(map[QuotaKey]struct{}, len(derived))
+
+	report := func(k QuotaKey, counter, want metadata.UsageStat) {
+		if counter == want {
+			return
+		}
+		out = append(out, metadata.QuotaDrift{
+			Share: k.Share, Scope: k.Scope, ID: k.ID, Counter: counter, Derived: want,
+		})
+	}
+
+	for k, u := range derived {
+		seen[k] = struct{}{}
+		want := *u
+		if want.Bytes < 0 {
+			want.Bytes = 0
+		}
+		if want.Files < 0 {
+			want.Files = 0
+		}
+		report(k, c.Get(k.Share, k.Scope, k.ID), want)
+	}
+	for k, u := range c.byIdentity {
+		if _, ok := seen[k]; ok {
+			continue
+		}
+		report(k, *u, metadata.UsageStat{})
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.Share != b.Share {
+			return a.Share < b.Share
+		}
+		if a.Scope != b.Scope {
+			return a.Scope < b.Scope
+		}
+		return a.ID < b.ID
+	})
+	return out
 }

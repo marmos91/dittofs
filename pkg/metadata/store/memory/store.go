@@ -602,17 +602,24 @@ func childPageStart(sortedNames []string, cursor string) int {
 // discarding whatever the buckets hold. The memory store has no durable rows
 // behind its counters — the records ARE the source of truth — so this is a
 // walk of them under the store lock.
-func (store *MemoryMetadataStore) RecomputeUsage(ctx context.Context) error {
+//
+// A dry run derives the same aggregate, reports the buckets the cache
+// disagrees with it on, and replaces nothing. It arms no capture: nothing is
+// being overwritten, so a commit landing mid-walk only shows up as a small
+// transient delta in the report.
+func (store *MemoryMetadataStore) RecomputeUsage(ctx context.Context, dryRun bool) ([]metadata.QuotaDrift, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return nil, err
 	}
 
 	// The walk drops store.mu before the seed takes quotaMu, so arm the cache to
 	// record what commits in between — otherwise that transaction's delta is
 	// applied and then overwritten. The two locks are never held at once.
-	store.quotaMu.Lock()
-	store.quota.BeginRebuild()
-	store.quotaMu.Unlock()
+	if !dryRun {
+		store.quotaMu.Lock()
+		store.quota.BeginRebuild()
+		store.quotaMu.Unlock()
+	}
 
 	byIdentity := make(map[basestore.QuotaKey]*metadata.UsageStat)
 	addUsage := func(k basestore.QuotaKey, bytes int64) {
@@ -638,8 +645,11 @@ func (store *MemoryMetadataStore) RecomputeUsage(ctx context.Context) error {
 
 	store.quotaMu.Lock()
 	defer store.quotaMu.Unlock()
+	if dryRun {
+		return store.quota.Drift(byIdentity), nil
+	}
 	store.quota.Seed(byIdentity, nil)
-	return nil
+	return nil, nil
 }
 
 // chargedLocked reports whether the inode stored under key currently holds

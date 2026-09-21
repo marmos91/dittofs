@@ -6492,15 +6492,33 @@ one named here. Nothing runs it automatically; a per-file walk on every server
 start is a cost every share would pay forever to fix a number that is almost
 always already right.
 
+--dry-run answers "are these numbers actually wrong" without repairing
+anything. It derives the same figures from the file rows, writes nothing, and
+names every usage bucket whose counter disagrees with them, with both numbers.
+The repair replaces the counters, so running it to find out destroys the
+evidence of what was wrong.
+
+A dry run against a store that is taking writes reports small transient deltas:
+the file rows and the counters are read at different instants, so a write in
+between shows up as a difference. A drift bug does not look like that — it
+persists across runs and does not track live traffic.
+
 ```
-dfsctl store metadata recompute-usage <share>
+dfsctl store metadata recompute-usage <share> [flags]
 ```
 
 **Examples:**
 
 ```bash
+dfsctl store metadata recompute-usage myshare --dry-run
 dfsctl store metadata recompute-usage myshare
 dfsctl store metadata recompute-usage myshare -o json
+```
+
+Flags:
+
+```
+      --dry-run   Report which usage counters disagree with the file rows, and repair nothing
 ```
 
 Global flags:

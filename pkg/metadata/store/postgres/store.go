@@ -404,7 +404,24 @@ func initializeFilesystemCapabilities(ctx context.Context, pool *pgxpool.Pool, c
 // The rebuild's own DELETE already locks every bucket for the length of both
 // aggregate scans, so writers queue behind this regardless of the Go-side
 // lock. See RebuildQuotaCounters for what that costs and what would remove it.
-func (s *PostgresMetadataStore) RecomputeUsage(ctx context.Context) error {
+//
+// A dry run takes neither lock and writes nothing: it runs the same aggregate
+// on the pool, compares it against the cache, and reports the buckets that
+// disagree. Against a store taking writes it reports small transient deltas,
+// because the aggregate and the cache are read at different instants — the
+// alternative is the lock the repair holds, which is the cost the dry run
+// exists to avoid.
+func (s *PostgresMetadataStore) RecomputeUsage(ctx context.Context, dryRun bool) ([]metadata.QuotaDrift, error) {
+	if dryRun {
+		derived, err := s.ScanQuotaUsage(ctx)
+		if err != nil {
+			return nil, err
+		}
+		s.quotaMu.Lock()
+		defer s.quotaMu.Unlock()
+		return s.quota.Drift(derived), nil
+	}
+
 	s.quotaRealign.Lock()
 	defer s.quotaRealign.Unlock()
 
@@ -413,9 +430,9 @@ func (s *PostgresMetadataStore) RecomputeUsage(ctx context.Context) error {
 	if err := s.runTransaction(ctx, func(tx metadata.Transaction) error {
 		return tx.(*postgresTransaction).RebuildQuotaCounters(ctx)
 	}, false); err != nil {
-		return err
+		return nil, err
 	}
-	return s.initUsedBytesCounter(ctx)
+	return nil, s.initUsedBytesCounter(ctx)
 }
 
 // metadata.Store does not embed lock.LockStore: the store's lock surface is

@@ -166,20 +166,14 @@ func (c *Core) RebuildQuotaCounters(ctx context.Context) error {
 	if _, err := c.X.Exec(ctx, "DELETE FROM quota_usage"); err != nil {
 		return c.D.MapError(err, "rebuild quota counters", "")
 	}
-	// file_type is metadata.FileTypeRegular; nlink > 0 excludes an inode that is
-	// unlinked but still held open, which keeps its row and none of the bytes.
-	// The column names are fixed internal constants, never user input.
 	seed := func(column string, scope metadata.QuotaScope) error {
 		stmt := fmt.Sprintf(
 			`INSERT INTO quota_usage (%s)
-			 SELECT share_name, %d, %s, 0, COALESCE(SUM(size), 0), COUNT(*)
-			 FROM inodes WHERE file_type = %d AND nlink > 0
-			 GROUP BY share_name, %s
+			 SELECT share_name, %d, %s, 0, %s
 			 ON CONFLICT (share_name, scope, identity_id, stripe) DO UPDATE
 			 SET bytes = quota_usage.bytes + EXCLUDED.bytes,
 			     files = quota_usage.files + EXCLUDED.files`,
-			quotaUsageColumns, int(scope), column,
-			int(metadata.FileTypeRegular), column,
+			quotaUsageColumns, int(scope), column, quotaAggregate(column),
 		)
 		if _, err := c.X.Exec(ctx, stmt); err != nil {
 			return c.D.MapError(err, "rebuild quota counters", "")
@@ -190,4 +184,63 @@ func (c *Core) RebuildQuotaCounters(ctx context.Context) error {
 		return err
 	}
 	return seed("gid", metadata.QuotaScopeGroup)
+}
+
+// quotaAggregate is the from-rows truth the counters are supposed to equal: one
+// row per (share, owner) holding that owner's bytes and inode count. Written
+// once so the rebuild that installs it and the dry run that checks against it
+// cannot come to different answers about what the rows say.
+//
+// file_type is metadata.FileTypeRegular; nlink > 0 excludes an inode that is
+// unlinked but still held open, which keeps its row and none of the bytes. The
+// column name is a fixed internal constant, never user input.
+func quotaAggregate(column string) string {
+	return fmt.Sprintf(
+		`COALESCE(SUM(size), 0), COUNT(*)
+		 FROM inodes WHERE file_type = %d AND nlink > 0
+		 GROUP BY share_name, %s`,
+		int(metadata.FileTypeRegular), column,
+	)
+}
+
+// ScanQuotaUsage re-derives every usage bucket from the inode rows and returns
+// it, writing nothing. It is the dry-run half of RebuildQuotaCounters: same
+// aggregate, no DELETE and no INSERT, so it takes none of the locks that make
+// the rebuild something an operator schedules.
+//
+// It is a full scan of the inodes table, so it costs what the rebuild costs.
+func (c *Core) ScanQuotaUsage(ctx context.Context) (map[basestore.QuotaKey]*metadata.UsageStat, error) {
+	byIdentity := make(map[basestore.QuotaKey]*metadata.UsageStat)
+
+	scan := func(column string, scope metadata.QuotaScope) error {
+		rows, err := c.X.Query(ctx, fmt.Sprintf("SELECT share_name, %s, %s", column, quotaAggregate(column)))
+		if err != nil {
+			return c.D.MapError(err, "scan quota usage", "")
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var (
+				share string
+				id    int64
+				stat  metadata.UsageStat
+			)
+			if err := rows.Scan(&share, &id, &stat.Bytes, &stat.Files); err != nil {
+				return c.D.MapError(err, "scan quota usage", "")
+			}
+			byIdentity[basestore.QuotaKey{Share: share, Scope: scope, ID: uint32(id)}] = &stat
+		}
+		if err := rows.Err(); err != nil {
+			return c.D.MapError(err, "scan quota usage", "")
+		}
+		return nil
+	}
+
+	if err := scan("uid", metadata.QuotaScopeUser); err != nil {
+		return nil, err
+	}
+	if err := scan("gid", metadata.QuotaScopeGroup); err != nil {
+		return nil, err
+	}
+	return byIdentity, nil
 }

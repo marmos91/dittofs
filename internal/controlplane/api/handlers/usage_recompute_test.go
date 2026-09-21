@@ -18,13 +18,15 @@ import (
 // fakeUsageRecomputeRuntime is a recording stand-in for
 // handlers.UsageRecomputeRuntime.
 type fakeUsageRecomputeRuntime struct {
-	res   *runtime.UsageRecomputeResult
-	err   error
-	calls []string
+	res     *runtime.UsageRecomputeResult
+	err     error
+	calls   []string
+	dryRuns []bool
 }
 
-func (f *fakeUsageRecomputeRuntime) RecomputeShareUsage(_ context.Context, shareName string) (*runtime.UsageRecomputeResult, error) {
+func (f *fakeUsageRecomputeRuntime) RecomputeShareUsage(_ context.Context, shareName string, dryRun bool) (*runtime.UsageRecomputeResult, error) {
 	f.calls = append(f.calls, shareName)
+	f.dryRuns = append(f.dryRuns, dryRun)
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -32,7 +34,11 @@ func (f *fakeUsageRecomputeRuntime) RecomputeShareUsage(_ context.Context, share
 }
 
 func newRecomputeRequest(share string) *http.Request {
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/shares/"+share+"/usage/recompute", nil)
+	return newRecomputeRequestRaw(share, "/api/v1/shares/"+share+"/usage/recompute")
+}
+
+func newRecomputeRequestRaw(share, target string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, target, nil)
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("name", share)
 	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
@@ -93,5 +99,50 @@ func TestUsageRecomputeHandler_ErrorNotEchoed(t *testing.T) {
 	}
 	if body := w.Body.String(); strings.Contains(body, "hunter2") {
 		t.Fatalf("response body leaked the underlying error: %s", body)
+	}
+}
+
+// TestUsageRecomputeHandler_DryRun pins that the query parameter reaches the
+// runtime. Defaulting it to false on a parse slip would silently run the
+// repair an operator asked only to preview.
+func TestUsageRecomputeHandler_DryRun(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want bool
+	}{
+		{"?dry_run=true", true},
+		{"?dry_run=1", true},
+		{"?dry_run=false", false},
+		{"", false},
+	} {
+		fake := &fakeUsageRecomputeRuntime{res: &runtime.UsageRecomputeResult{ShareName: "/myshare"}}
+		h := NewUsageRecomputeHandler(fake)
+
+		w := httptest.NewRecorder()
+		h.Recompute(w, newRecomputeRequestRaw("myshare", "/api/v1/shares/myshare/usage/recompute"+tc.raw))
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("%q: status = %d, want %d", tc.raw, w.Code, http.StatusOK)
+		}
+		if len(fake.dryRuns) != 1 || fake.dryRuns[0] != tc.want {
+			t.Fatalf("%q: runtime saw dryRun = %v, want [%v]", tc.raw, fake.dryRuns, tc.want)
+		}
+	}
+}
+
+// TestUsageRecomputeHandler_DryRunNotABool pins that an unparseable value is
+// refused rather than falling back to the repair.
+func TestUsageRecomputeHandler_DryRunNotABool(t *testing.T) {
+	fake := &fakeUsageRecomputeRuntime{res: &runtime.UsageRecomputeResult{ShareName: "/myshare"}}
+	h := NewUsageRecomputeHandler(fake)
+
+	w := httptest.NewRecorder()
+	h.Recompute(w, newRecomputeRequestRaw("myshare", "/api/v1/shares/myshare/usage/recompute?dry_run=maybe"))
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("runtime was called %v, want no call at all", fake.calls)
 	}
 }

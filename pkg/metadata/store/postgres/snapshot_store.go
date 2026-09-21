@@ -367,7 +367,7 @@ func (s *PostgresMetadataStore) RestoreSnapshot(ctx context.Context, r io.Reader
 	// before the counters existed carries none, so restoring it into a migrated
 	// schema would otherwise leave every bucket at zero, and no later open would
 	// notice because opens no longer consult the inode rows.
-	if err := s.RecomputeUsage(ctx); err != nil {
+	if _, err := s.RecomputeUsage(ctx, false); err != nil {
 		return fmt.Errorf("restore: recompute usage counters: %w", err)
 	}
 
