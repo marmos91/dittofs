@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -647,25 +649,30 @@ func (s *Service) RemoveShare(name string) error {
 // Close is idempotent, so a share removed afterwards closes harmlessly again.
 // The registry is left intact: this is resource teardown, not removal.
 //
-// decision: the shares close CONCURRENTLY, and the step carries no deadline of
-// its own. Concurrency is what keeps the cost of a slow share from being paid
-// once per share: a share whose remote has gone away spends its whole drain
-// budget, and in sequence every share behind it waits that out. The stores are
-// independent, so there is nothing to serialise them for.
+// The shares close concurrently, and ctx bounds the WAIT — not any single
+// close. Concurrency is what keeps a slow share's cost from being paid once per
+// share, and it is also what lets one budget cover them all: the deadline is
+// wall clock every share shares rather than a slice each. A ctx with no
+// deadline waits indefinitely.
 //
-// The step is NOT fully bounded, and dropping the deadline does not make it so
-// — it only stops the deadline from being divided. Each close waits on
-// closeMu, which has no bound: it blocks until every in-flight data op on that
-// store returns, and stopping the adapters does not join the handlers that may
-// still be inside one. Past that the syncer's own waits are bounded but sum to
-// minutes per share, and they are constants nothing configures. So a wedged
-// remote can hold this step past the deadline the process gives its own
-// shutdown, which ends with the metadata stores never closed at all.
+// decision: nothing here can bound a close itself. bs.Close takes no context
+// and opens by waiting on closeMu until every in-flight data op on that store
+// returns, and stopping the adapters does not join the handlers that may still
+// be inside one. So when the budget expires this RETURNS, naming the shares
+// still closing, and leaves them running.
 //
-// Bound the closeMu wait before claiming this step is bounded. Until then the
-// honest statement is that it is bounded by the slowest share rather than by
-// their sum, which is a weaker claim than it looks.
-func (s *Service) CloseBlockStores() {
+// That is a trade, not a safety margin. The degraded path reintroduces the very
+// harm this ordering exists to prevent: the wedged share's in-flight carve
+// commits meet a metadata store that is closing and fail, and the chunks it was
+// carving stay local and unmirrored. It is chosen because waiting instead is
+// worse in kind rather than in degree — the process reaches its own self-exit
+// deadline and is killed with EVERY share's metadata store unclosed, so one
+// share's lost carve becomes all of them. An operator who sets a shutdown
+// timeout is asking for exactly this trade.
+//
+// Withdraw it by bounding the closeMu wait, which would make the close itself
+// interruptible and the expiry branch dead.
+func (s *Service) CloseBlockStores(ctx context.Context) {
 	s.mu.RLock()
 	stores := make(map[string]*engine.Store, len(s.registry))
 	for name, share := range s.registry {
@@ -675,17 +682,43 @@ func (s *Service) CloseBlockStores() {
 	}
 	s.mu.RUnlock()
 
-	var wg sync.WaitGroup
+	var (
+		mu        sync.Mutex
+		stillOpen = make(map[string]struct{}, len(stores))
+		wg        sync.WaitGroup
+	)
 	for name, bs := range stores {
+		stillOpen[name] = struct{}{}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			if err := bs.Close(); err != nil {
 				logger.Warn("Shutdown: failed to close block store for share", "share", name, "error", err)
 			}
+			mu.Lock()
+			delete(stillOpen, name)
+			mu.Unlock()
 		}()
 	}
-	wg.Wait()
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+		mu.Lock()
+		stuck := slices.Collect(maps.Keys(stillOpen))
+		mu.Unlock()
+		slices.Sort(stuck)
+		logger.Warn("Shutdown: block stores did not finish closing within the budget; "+
+			"closing the metadata stores anyway, so any carve still in flight on these shares fails "+
+			"and its chunks stay local and unmirrored",
+			"shares", stuck)
+	}
 }
 
 // SeedColdFromManifest seeds a cold journal interval for every FileChunk in the

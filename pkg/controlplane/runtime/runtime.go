@@ -319,7 +319,8 @@ func (r *Runtime) SetShutdownTimeout(d time.Duration) {
 //     in-flight RPCs fail naturally (no waiters left to receive them).
 //  3. CloseBlockStores — quiesce every share's data plane while the metadata
 //     stores can still receive its commits, and release the journals with it.
-//     See shares.Service.CloseBlockStores for what depends on the order.
+//     Bounded by ctx, which here bounds this step as well as the snapshot
+//     drain. See shares.Service.CloseBlockStores for what expiry costs.
 //  4. CloseMetadataStores — now safe; nothing holds open references.
 //
 // Idempotent: a second call is a no-op (runtimeCancel is already
@@ -392,8 +393,8 @@ func (r *Runtime) Shutdown(ctx context.Context) error {
 		logger.Warn("Runtime.Shutdown: StopAllAdapters error", "error", err)
 	}
 	// Quiesce the per-share data plane BEFORE closing the metadata stores it
-	// writes through.
-	r.sharesSvc.CloseBlockStores()
+	// writes through, bounded by the caller's ctx.
+	r.sharesSvc.CloseBlockStores(ctx)
 	r.CloseMetadataStores()
 	return nil
 }

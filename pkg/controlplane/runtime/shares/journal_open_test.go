@@ -1,6 +1,7 @@
 package shares
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -50,7 +51,7 @@ func TestShareJournalDir_EmptyRootYieldsEmpty(t *testing.T) {
 func journalDefaults(t *testing.T, svc *Service) *LocalStoreDefaults {
 	t.Helper()
 	root := t.TempDir()
-	t.Cleanup(svc.CloseBlockStores)
+	t.Cleanup(func() { svc.CloseBlockStores(context.Background()) })
 	return &LocalStoreDefaults{JournalRoot: root}
 }
 

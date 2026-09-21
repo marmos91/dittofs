@@ -63,12 +63,13 @@ type SnapshotDrainer interface {
 //
 // Called AFTER StopAllAdapters, so no new client writes create fresh carve
 // work, and BEFORE the stores close. Pass nil to skip (tests with no data
-// plane). It takes no context: the closes run concurrently, so the step costs
-// the slowest share rather than the sum of them. That is not the same as being
-// bounded — see the decision marker on shares.Service.CloseBlockStores for what
-// is still unbounded inside a single close.
+// plane). The closes run concurrently, so ctx is a single wall-clock budget
+// they all share rather than one divided between them. It bounds the WAIT, not
+// a close: on expiry the step returns and lets the metadata stores close while
+// the stragglers are still running. See the decision marker on
+// shares.Service.CloseBlockStores for what that costs and why it beats waiting.
 type BlockStoreCloser interface {
-	CloseBlockStores()
+	CloseBlockStores(ctx context.Context)
 }
 
 // MachineSIDStore provides access to the SettingsStore for machine SID
@@ -383,9 +384,13 @@ func (s *Service) shutdown(deps Deps) {
 	}
 
 	// Quiesce the data plane BEFORE the stores it writes through close. See
-	// BlockStoreCloser.
+	// BlockStoreCloser. Bounded so one wedged share cannot cost every share its
+	// metadata-store close: the process self-exits on its own deadline, and
+	// reaching that means nothing below runs at all.
 	if deps.BlockStoreCloser != nil {
-		deps.BlockStoreCloser.CloseBlockStores()
+		closeCtx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout)
+		deps.BlockStoreCloser.CloseBlockStores(closeCtx)
+		cancel()
 	}
 
 	if deps.StoreCloser != nil {

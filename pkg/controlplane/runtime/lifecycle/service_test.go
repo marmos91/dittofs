@@ -93,7 +93,7 @@ type fakeBlockStoreCloser struct {
 	closerToCheck     *fakeStoreCloser
 }
 
-func (f *fakeBlockStoreCloser) CloseBlockStores() {
+func (f *fakeBlockStoreCloser) CloseBlockStores(context.Context) {
 	f.closedStores = true
 	if f.closerToCheck != nil {
 		f.metaAlreadyClosed = f.closerToCheck.closed

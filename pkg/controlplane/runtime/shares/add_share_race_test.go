@@ -85,7 +85,7 @@ func TestAddShare_ConcurrentSameName_NoMetadataMismatch(t *testing.T) {
 
 		// The iteration's shares are done with; release their journals now
 		// rather than holding 200 of them open until the test ends.
-		svc.CloseBlockStores()
+		svc.CloseBlockStores(context.Background())
 
 		_ = storeA.Close()
 		_ = storeB.Close()

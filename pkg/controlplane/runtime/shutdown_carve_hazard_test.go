@@ -247,7 +247,7 @@ func goroutineDump() string {
 func TestCarveCommitsReachAClosedMetadataStore_WithoutTheFence(t *testing.T) {
 	f := newCarveHazardFixture(t)
 	f.write(t)
-	t.Cleanup(func() { f.rt.sharesSvc.CloseBlockStores() })
+	t.Cleanup(func() { f.rt.sharesSvc.CloseBlockStores(context.Background()) })
 
 	f.rt.CloseMetadataStores()
 

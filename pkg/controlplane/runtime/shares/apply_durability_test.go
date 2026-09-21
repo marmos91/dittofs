@@ -29,7 +29,7 @@ func newDurabilityTestShare(t *testing.T) (*Service, string) {
 	); err != nil {
 		t.Fatalf("AddShare: %v", err)
 	}
-	t.Cleanup(svc.CloseBlockStores)
+	t.Cleanup(func() { svc.CloseBlockStores(context.Background()) })
 	return svc, name
 }
 
