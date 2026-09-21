@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"testing"
-	"time"
 
 	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
@@ -17,6 +16,10 @@ import (
 // registered, so shutting the runtime down has to release them: a platform
 // that refuses to unlink an open file cannot remove the journal root while one
 // is still held, and the directory outlives the process that opened it.
+//
+// The shutdown under test is the server's own — Serve, then cancel — because
+// that is the only one production runs. Assembling the steps here instead would
+// assert about a sequence no process takes.
 func TestShutdownReleasesShareJournals(t *testing.T) {
 	ctx := context.Background()
 
@@ -47,6 +50,7 @@ func TestShutdownReleasesShareJournals(t *testing.T) {
 
 	rt := New(cps)
 	rt.SetLocalStoreDefaults(&shares.LocalStoreDefaults{JournalRoot: journalRoot})
+	rt.SetSnapshotSchedulerConfig(0, true)
 	if err := rt.RegisterMetadataStore("test-meta", metamem.NewMemoryMetadataStoreWithDefaults()); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
@@ -75,11 +79,7 @@ func TestShutdownReleasesShareJournals(t *testing.T) {
 		t.Fatal("the share's journal is closed while the share is still registered")
 	}
 
-	shutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	if err := rt.Shutdown(shutCtx); err != nil {
-		t.Fatalf("Shutdown: %v", err)
-	}
+	serveUntilShutdown(t, rt)
 
 	if !jrn.Closed() {
 		t.Error("the share's journal is still open after shutdown")

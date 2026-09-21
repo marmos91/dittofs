@@ -123,7 +123,7 @@ func newDegradedFixture(t *testing.T) *degradedFixture {
 	t.Cleanup(func() {
 		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		_ = rt.Shutdown(shutCtx)
+		teardownRuntime(shutCtx, rt)
 	})
 
 	return &degradedFixture{

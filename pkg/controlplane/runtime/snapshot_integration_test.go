@@ -526,9 +526,7 @@ func (f *orchestrationFixture) close() {
 	f.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), snapTestTimeout)
 	defer cancel()
-	if err := f.rt.Shutdown(ctx); err != nil {
-		f.t.Logf("Shutdown: %v", err)
-	}
+	teardownRuntime(ctx, f.rt)
 }
 
 // ctx returns a per-sub-test bounded ctx. 30s is comfortably above the

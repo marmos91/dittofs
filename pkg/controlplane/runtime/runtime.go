@@ -305,98 +305,35 @@ func (r *Runtime) SetShutdownTimeout(d time.Duration) {
 	r.lifecycleSvc.SetShutdownTimeout(d)
 }
 
-// Shutdown drains in-flight snapshot goroutines, stops all protocol
-// adapters, and closes metadata stores in that order.
+// StopBackgroundWorkers signals the runtime's background workers that write
+// through the metadata stores to stop: the recycle-bin reaper and any async
+// block GC run in flight. The lifecycle drain calls it as its first shutdown
+// step, so neither is still starting new work while the stores it writes
+// through are being closed.
 //
-// ORDER IS LOAD-BEARING:
-//
-//  1. shutdownSnapshots — cancel in-flight snapshot goroutines and wait.
-//     These goroutines call into Snapshotable.WriteSnapshot (on metadata stores)
-//     and r.store (control-plane DB). If metadata stores or the control
-//     plane were torn down first, snap goroutines would panic on
-//     use-after-close.
-//  2. StopAllAdapters — adapters no longer accept new RPCs. Existing
-//     in-flight RPCs fail naturally (no waiters left to receive them).
-//  3. CloseBlockStores — quiesce every share's data plane while the metadata
-//     stores can still receive its commits, and release the journals with it.
-//     Bounded by ctx, which here bounds this step as well as the snapshot
-//     drain. See shares.Service.CloseBlockStores for what expiry costs.
-//  4. CloseMetadataStores — now safe; nothing holds open references.
-//
-// Idempotent: a second call is a no-op (runtimeCancel is already
-// triggered, adapters and storesSvc handle re-close internally).
-//
-// ctx bounds only the snapshot-drain step. If ctx fires before all
-// goroutines exit, shutdownSnapshots returns and the rest of the
-// sequence proceeds — runtimeCancel has already fired, so the orphan
-// goroutines will exit on their own. Callers wanting a hard deadline
-// should pass context.WithTimeout(...); callers passing
-// context.Background block until full snapshot drain.
-//
-// Composes the existing piecewise lifecycle helpers (StopAllAdapters,
-// CloseMetadataStores) which remain public for tests that need to
-// drive the steps individually.
-func (r *Runtime) Shutdown(ctx context.Context) error {
-	// Stop the recycle-bin reaper if it was ever started. Guarded so a Runtime
-	// that never served does not construct the service just to stop it; Stop is
-	// idempotent so a double-stop (this + ctx cancellation) is harmless.
+// decision: this signals and does not wait. Neither worker offers a join — the
+// reaper's Stop closes the channel its loop selects on, cancelActive cancels
+// the GC run's context — so a pass already inside a store call keeps running
+// and can meet a closed store, which costs a logged error on a process that is
+// leaving. Grow it into a join if either worker ever performs a write whose
+// partial application outlives the process.
+func (r *Runtime) StopBackgroundWorkers() {
+	// Read under the lock rather than through Trash(): a Runtime that never
+	// served has no reaper to stop, and constructing one here just to stop it
+	// would be the only thing that ever built it.
 	r.mu.RLock()
 	ts := r.trashSvc
 	r.mu.RUnlock()
 	if ts != nil {
+		// Idempotent, and the reaper also exits on the runtime context. This is
+		// what reaches it when that context is still live — the shutdown the API
+		// server's own failure triggers, which never cancels it.
 		ts.Stop()
 	}
-	// The settings watcher too, not only the scheduler: this is an exported
-	// shutdown, so a caller that never went through lifecycle.Serve reaches it
-	// here and closes the stores next. Stop is idempotent, so the lifecycle
-	// drain having already run costs nothing.
-	//
-	// Bounded like the lifecycle drain's copy, and for the same reason: Stop
-	// cancels the poll before waiting, so the join should complete — but a store
-	// call that ignores cancellation would otherwise hold this shutdown open
-	// forever, and a caller that cannot finish teardown cannot close the store
-	// either.
-	if r.settingsWatcher != nil {
-		stopped := make(chan struct{})
-		go func() {
-			defer close(stopped)
-			r.settingsWatcher.Stop()
-		}()
-		select {
-		case <-stopped:
-		// decision: same accepted race as the lifecycle drain's copy — this
-		// returns while a poll may still be in the store, and the caller closes
-		// it next. Stop cancels the poll first, so this bound covers a store
-		// call that ignores cancellation rather than the ordinary path. The cost
-		// is an error from a closed store on a process that is shutting down;
-		// withdraw it if a poll ever writes something whose partial application
-		// outlives the process.
-		case <-time.After(startupDrainTimeout):
-			logger.Warn("shutdown: settings watcher was not joined; a poll may still be running " +
-				"against the control-plane store")
-		}
-	}
 
-	// The snapshot scheduler is stopped by shutdownSnapshots below, which is
-	// the seam the lifecycle drain also routes through.
-
-	// Cancel any in-flight async GC so a long mark/sweep does not outlive the
-	// stores it operates on.
 	if r.gcReg != nil {
 		r.gcReg.cancelActive()
 	}
-
-	r.shutdownSnapshots(ctx)
-	if err := r.StopAllAdapters(); err != nil {
-		// Continue: snapshot drain already succeeded; the metadata-store
-		// close still must run so file handles are released.
-		logger.Warn("Runtime.Shutdown: StopAllAdapters error", "error", err)
-	}
-	// Quiesce the per-share data plane BEFORE closing the metadata stores it
-	// writes through, bounded by the caller's ctx.
-	r.sharesSvc.CloseBlockStores(ctx)
-	r.CloseMetadataStores()
-	return nil
 }
 
 func (r *Runtime) CreateAdapter(ctx context.Context, cfg *models.AdapterConfig) error {
@@ -976,6 +913,8 @@ func (r *Runtime) Serve(ctx context.Context) error {
 		MachineSIDStore:  r.store,
 		SnapshotDrainer:  r,
 		BlockStoreCloser: r.sharesSvc,
+
+		BackgroundWorkerStopper: r,
 	})
 	// lifecycle.Serve returns its startup errors before it reaches its shutdown
 	// hook, so the drain that joins the workers started above never runs — and

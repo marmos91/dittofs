@@ -134,6 +134,23 @@ func (f *carveHazardFixture) write(t *testing.T) {
 	}
 }
 
+// teardownRuntime releases a fixture's runtime in one line: drain the snapshot
+// orchestration, stop the adapters, quiesce the per-share data plane, close the
+// metadata stores. It is for tests that are finished with a runtime, not tests
+// that are about shutting one down.
+//
+// It is deliberately NOT the sequence the server runs. That one belongs to
+// lifecycle.Service and is reached through Serve — see serveUntilShutdown. A
+// composition assembled here could stay correct while the server's own order
+// was wrong, so anything asserting about shutdown drives Serve instead.
+func teardownRuntime(ctx context.Context, rt *Runtime) {
+	rt.StopBackgroundWorkers()
+	rt.ShutdownSnapshots(ctx)
+	_ = rt.StopAllAdapters()
+	rt.sharesSvc.CloseBlockStores(ctx)
+	rt.CloseMetadataStores()
+}
+
 // serveUntilShutdown runs the server's own lifecycle and then cancels it, so
 // the shutdown sequence under test is the one production takes — no step of it
 // is supplied by the test.
@@ -145,16 +162,16 @@ func (f *carveHazardFixture) write(t *testing.T) {
 // so the barrier is StartupDone, which closes only once every step that can
 // fail is past. Serve's own return is watched alongside it: a failed startup
 // leaves StartupDone open, and the error names the cause.
-func (f *carveHazardFixture) serveUntilShutdown(t *testing.T) {
+func serveUntilShutdown(t *testing.T, rt *Runtime) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	done := make(chan error, 1)
-	go func() { done <- f.rt.Serve(ctx) }()
+	go func() { done <- rt.Serve(ctx) }()
 
 	select {
-	case <-f.rt.StartupDone():
+	case <-rt.StartupDone():
 	case err := <-done:
 		t.Fatalf("Serve returned before finishing startup: %v", err)
 	case <-time.After(30 * time.Second):
@@ -197,7 +214,7 @@ func TestServerShutdownQuiescesCarveBeforeClosingMetadataStores(t *testing.T) {
 		t.Fatal("the share started no carve dispatcher: there is nothing for the fence to stop")
 	}
 
-	f.serveUntilShutdown(t)
+	serveUntilShutdown(t, f.rt)
 
 	// Long enough for several dispatcher intervals: one still running would
 	// commit more than once in this window.

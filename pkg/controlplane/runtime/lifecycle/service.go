@@ -72,6 +72,21 @@ type BlockStoreCloser interface {
 	CloseBlockStores(ctx context.Context)
 }
 
+// BackgroundWorkerStopper stops the runtime's background workers that are not
+// owned by the adapter, snapshot or block-store machinery — the recycle-bin
+// reaper and any async block GC run in flight. Both write through the metadata
+// stores, so they are signalled first, before any teardown step runs.
+//
+// It signals; it does not join. A reap pass or a GC mark/sweep already inside
+// the store keeps running until it notices, and may still be there when the
+// stores close. Bounding it would mean a join, and neither worker offers one:
+// the reaper's Stop closes a channel its loop selects on, and cancelActive
+// cancels the run's context. Grow this into a join if either ever performs a
+// write whose partial application outlives the process.
+type BackgroundWorkerStopper interface {
+	StopBackgroundWorkers()
+}
+
 // MachineSIDStore provides access to the SettingsStore for machine SID
 // persistence. The lifecycle service uses this to load or generate the
 // machine SID on first boot, ensuring consistent identity mapping across
@@ -278,6 +293,12 @@ type Deps struct {
 	// BlockStoreCloser quiesces the per-share data plane before the metadata
 	// stores close.
 	BlockStoreCloser BlockStoreCloser
+
+	// BackgroundWorkerStopper signals the recycle-bin reaper and any in-flight
+	// async block GC to stop. Invoked as the very first shutdown step so both
+	// have the whole teardown to notice before the stores they write through
+	// close.
+	BackgroundWorkerStopper BackgroundWorkerStopper
 }
 
 // Serve starts all components and blocks until shutdown. It fails fast when
@@ -351,6 +372,12 @@ func (s *Service) serve(ctx context.Context, deps Deps) error {
 }
 
 func (s *Service) shutdown(deps Deps) {
+	// First, so the workers that write through the metadata stores have every
+	// step below in which to notice. Signal-only — see BackgroundWorkerStopper.
+	if deps.BackgroundWorkerStopper != nil {
+		deps.BackgroundWorkerStopper.StopBackgroundWorkers()
+	}
+
 	if deps.Settings != nil {
 		// Bounded, because Stop waits for a poll already in flight and takes no
 		// context of its own. On the API-error path the root context is still

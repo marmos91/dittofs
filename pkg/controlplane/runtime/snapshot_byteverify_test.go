@@ -181,7 +181,7 @@ func newByteVerifyFixtureOpts(t *testing.T, meta metadata.Store, metaType string
 func (f *byteVerifyFixture) simulateRestart(reopen func(*testing.T) metadata.Store) {
 	f.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	_ = f.rt.Shutdown(ctx)
+	teardownRuntime(ctx, f.rt)
 	cancel()
 
 	// A real remote outlives a restart; the in-memory one does not, so carry its
@@ -277,9 +277,7 @@ func (f *byteVerifyFixture) close() {
 	_ = f.rt.RemoveShare(f.shareName)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := f.rt.Shutdown(ctx); err != nil {
-		f.t.Logf("Shutdown: %v", err)
-	}
+	teardownRuntime(ctx, f.rt)
 }
 
 // createEmptyFile creates a regular file inode under the share root. It sets a

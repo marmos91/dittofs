@@ -672,9 +672,7 @@ func (f *restoreFixture) close() {
 	f.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), snapTestTimeout)
 	defer cancel()
-	if err := f.rt.Shutdown(ctx); err != nil {
-		f.t.Logf("Shutdown: %v", err)
-	}
+	teardownRuntime(ctx, f.rt)
 }
 
 func (f *restoreFixture) ctx() context.Context {
