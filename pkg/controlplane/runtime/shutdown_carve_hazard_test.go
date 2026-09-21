@@ -177,13 +177,18 @@ func (f *carveHazardFixture) serveUntilShutdown(t *testing.T) {
 // unmirrored — see TestCarveCommitsReachAClosedMetadataStore_WithoutTheFence
 // for the same run with the step removed.
 func TestServerShutdownQuiescesCarveBeforeClosingMetadataStores(t *testing.T) {
+	// Counted against a baseline taken before the fixture exists, so a
+	// dispatcher some other test left behind neither satisfies the premise
+	// below nor fails the assertion at the end.
+	base := carveDispatchers()
+
 	f := newCarveHazardFixture(t)
 	f.write(t)
 
 	// A dispatcher that is not running before shutdown makes every assertion
 	// below vacuous.
-	if !carveDispatcherRunning() {
-		t.Fatal("no carve dispatcher is running before shutdown: there is nothing for the fence to stop")
+	if carveDispatchers() <= base {
+		t.Fatal("the share started no carve dispatcher: there is nothing for the fence to stop")
 	}
 
 	f.serveUntilShutdown(t)
@@ -208,17 +213,18 @@ func TestServerShutdownQuiescesCarveBeforeClosingMetadataStores(t *testing.T) {
 	// Stopping the dispatcher is not the same as joining it: one that was told
 	// to stop but never waited for can still be inside a commit when the store
 	// closes.
-	if carveDispatcherRunning() {
-		t.Errorf("a carve dispatcher is still running after shutdown:\n%s", goroutineDump())
+	if n := carveDispatchers(); n > base {
+		t.Errorf("%d carve dispatcher goroutines are still running after shutdown, %d before the fixture:\n%s",
+			n, base, goroutineDump())
 	}
 }
 
-// carveDispatcherRunning reports whether any share's carve dispatcher goroutine
-// is live. Naming the goroutine rather than counting them keeps the answer
-// about the data-plane loop and not about whatever else the process happens to
-// be running.
-func carveDispatcherRunning() bool {
-	return strings.Contains(goroutineDump(), "engine.(*RemoteSync).carveDispatcher")
+// carveDispatchers counts the live carve dispatcher goroutines. Naming the
+// goroutine rather than counting all of them keeps the answer about the
+// data-plane loop and not about whatever else the process happens to be
+// running.
+func carveDispatchers() int {
+	return strings.Count(goroutineDump(), "engine.(*RemoteSync).carveDispatcher")
 }
 
 func goroutineDump() string {
