@@ -7,16 +7,22 @@ import (
 // FileChunkStore defines content-addressed block CRUD for the engine.
 //
 // methods: GetByHash, Put, Delete, IncrementRefCount,
-// DecrementRefCount, DecrementRefCountAndReap, AddRef. Block identity is hash-keyed
-// at the contract level; backends still use `id VARCHAR PRIMARY KEY +
-// hash non-unique index` internally to preserve the
-// multi-row-per-hash tolerance for legacy data.
+// DecrementRefCount, DecrementRefCountAndReap, AddRef. Rows are keyed by ID,
+// not by hash: backends use `id VARCHAR PRIMARY KEY + hash non-unique index`,
+// and hash is a lossy secondary index over an ID-keyed table.
 //
-// Contract: Put returns nil for any hash-already-present-on-another-
-// row case. The upload path produces only one row per hash going
-// forward; legacy data may still hold dual rows. The conformance test
-// storetest.testPut_TwoIDsSameHash pins this contract for legacy
-// tolerance.
+// decision: two rows may share one ContentHash, and this is the live steady
+// state rather than a tolerance for old data. A row's ID is
+// "{payloadID}/{fileOffset}" (see ParseBlockID), so two files whose content
+// hash-matches produce two rows by construction, and a carve whose chunks are
+// all deduped still commits their manifest rows — the bytes are already
+// remote-durable, but without the rows the range has no manifest coverage.
+// Reclaim depends on it: DecrementRefCountAndReap removes strictly this file's
+// own row by exact ID, and a sibling row is what keeps a shared hash in the GC
+// live set. Withdraw this only if row IDs ever become hash-derived; restoring a
+// UNIQUE constraint on hash would reject the second writer of any cross-file
+// dedup. The conformance test storetest.testPut_TwoIDsSameHash pins it for
+// every backend.
 //
 // Enumeration of all FileChunks across the store has moved up to
 // MetadataStore.EnumerateFileChunks.
@@ -27,20 +33,20 @@ import (
 // internal interface, NOT via this public surface.
 type FileChunkStore interface {
 	// GetByHash returns any FileChunk with the given content hash, or
-	// (nil, nil) when absent. The "any" wording matters: legacy data
-	// may have multiple rows per hash; callers (the engine dedup
-	// short-circuit) treat the result as best-effort and proceed with
-	// any one row's chunk.
+	// (nil, nil) when absent. The "any" wording matters: multiple rows
+	// routinely share one hash, so which row comes back is indeterminate.
+	// Callers treat the result as best-effort and proceed with any one
+	// row's chunk.
 	GetByHash(ctx context.Context, hash ContentHash) (*FileChunk, error)
 
 	// Put creates or replaces a FileChunk by ID.
 	//
 	// Upsert semantics are by ID: an INSERT for a new ID, or an UPDATE
 	// when the ID already exists. The Hash column is NOT a uniqueness
-	// constraint at the contract level — engines like the dedup
-	// short-circuit (engine.uploadOne) WILL produce two distinct
-	// FileChunk IDs sharing the same ContentHash when two file regions
-	// hash-match. Backends MUST tolerate this without erroring.
+	// constraint at the contract level — the carve commit path
+	// (engineBlockSink.CommitBlock, via manifestRows) WILL produce two
+	// distinct FileChunk IDs sharing the same ContentHash when two file
+	// regions hash-match. Backends MUST tolerate this without erroring.
 	//
 	// backend implementations
 	//
@@ -60,7 +66,7 @@ type FileChunkStore interface {
 	// re-PUTs the chunk, never data loss.
 	//
 	// The conformance test storetest.testPut_TwoIDsSameHash
-	// pins this contract across all three backends.
+	// pins this contract across every backend.
 	Put(ctx context.Context, block *FileChunk) error
 
 	// Delete removes a FileChunk by ID. Returns ErrFileChunkNotFound
@@ -106,9 +112,9 @@ type FileChunkStore interface {
 	// is TOCTOU-free against concurrent DecrementRefCount cascade
 	// (the dedup hit path otherwise races engine.Delete).
 	//
-	// Multi-row-per-hash tolerance
+	// Multi-row-per-hash
 	// AddRef MAY operate on any one matching row when more than one
-	// row shares the hash (legacy data + dedup short-circuit). The
+	// row shares the hash, which is the normal case. The
 	// caller's ChunkRef contract is satisfied either way — RefCount
 	// is a per-row property, and any non-zero RefCount keeps the row
 	// alive past GC.

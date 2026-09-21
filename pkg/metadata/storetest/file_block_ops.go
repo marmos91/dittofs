@@ -118,13 +118,14 @@ func runFileChunkOpsTests(t *testing.T, factory StoreFactory) {
 		testPutGet_LastSyncAttemptAt_Zero(t, factory)
 	})
 
-	// the dedup short-circuit (engine.uploadOne) writes a
+	// the carve commit path (engineBlockSink.CommitBlock) writes a
 	// second FileChunk with a fresh ID but the same ContentHash whenever two
-	// file regions hash-match. Hash is NOT a uniqueness key at the contract
-	// level (see FileChunkStore.Put godoc). Backends that enforce
-	// hash uniqueness reject the second writer, leak the donor's RefCount,
-	// and leave the FileChunk in Syncing forever. This regression test pins
-	// the contract across all three backends.
+	// file regions hash-match — row IDs are "{payloadID}/{fileOffset}", so
+	// this is structural, not a tolerance for old data. Hash is NOT a
+	// uniqueness key at the contract level (see FileChunkStore.Put godoc).
+	// Backends that enforce hash uniqueness reject the second writer, leak
+	// the donor's RefCount, and leave the FileChunk in Syncing forever. This
+	// regression test pins the contract across every backend.
 	t.Run("Put_TwoIDsSameHash", func(t *testing.T) {
 		testPut_TwoIDsSameHash(t, factory)
 	})
@@ -1200,11 +1201,11 @@ func testPutGet_LastSyncAttemptAt_Zero(t *testing.T, factory StoreFactory) {
 
 // testPut_TwoIDsSameHash asserts that two distinct FileChunk IDs
 // sharing the same ContentHash both round-trip through PutFileChunk without
-// error. the dedup short-circuit (engine.uploadOne) emits
-// such pairs whenever two file regions hash-match (e.g. all-zero blocks
-// across distinct VM image files). A backend that rejects the second
-// writer breaks the dedup path, leaves the FileChunk stuck in Syncing,
-// and leaks the donor block's RefCount.
+// error. The carve commit path (engineBlockSink.CommitBlock) emits such pairs
+// whenever two file regions hash-match (e.g. all-zero blocks across distinct
+// VM image files). A backend that rejects the second writer breaks the dedup
+// path, leaves the FileChunk stuck in Syncing, and leaks the donor block's
+// RefCount.
 //
 // The contract permits FindFileChunkByHash to return either of the
 // colliding rows (memory + badger overwrite the hash→id map; postgres
