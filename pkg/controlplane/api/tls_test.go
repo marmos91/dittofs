@@ -156,7 +156,11 @@ func TestNewServer_HTTPByDefault(t *testing.T) {
 	}
 }
 
-// startServer boots the server on an ephemeral port and returns its address.
+// startServer boots the server and returns the address it actually bound,
+// taken from the server's own resolved config rather than reconstructed from
+// "localhost" — a literal address cannot be answered by a different process
+// than the one the listener bound. stop() cancels the server context and
+// asserts Start reported a clean shutdown.
 func startServer(t *testing.T, server *Server) (addr string, stop func()) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -170,7 +174,10 @@ func startServer(t *testing.T, server *Server) (addr string, stop func()) {
 	return addr, func() {
 		cancel()
 		select {
-		case <-errChan:
+		case err := <-errChan:
+			if err != nil {
+				t.Errorf("Start returned %v on graceful shutdown, want nil", err)
+			}
 		case <-time.After(5 * time.Second):
 			t.Error("server did not shut down in time")
 		}

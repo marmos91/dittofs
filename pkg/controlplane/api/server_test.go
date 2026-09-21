@@ -2,11 +2,13 @@ package api
 
 import (
 	"context"
-	"fmt"
+	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	goruntime "runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,7 +46,55 @@ func waitForServerReady(t *testing.T, addr string, errChan <-chan error, timeout
 	}
 }
 
+// getHealth GETs /health from addr and returns the response and its body,
+// after confirming the reply came from the server under test.
+//
+// A dial that lands on an unrelated process listening on the same address
+// otherwise surfaces as an assertion about response content, which points the
+// reader at the health handler instead of at the collision. Only this server
+// answers /health with a "dittofs" service field, so a reply that lacks it is
+// reported as a foreign responder, quoting what actually answered.
+func getHealth(t *testing.T, addr string) (*http.Response, []byte) {
+	t.Helper()
+
+	resp, err := http.Get("http://" + addr + "/health")
+	if err != nil {
+		t.Fatalf("GET /health on %s: %v", addr, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if err != nil {
+		t.Fatalf("read /health body from %s: %v", addr, err)
+	}
+
+	var envelope struct {
+		Status string `json:"status"`
+		Data   struct {
+			Service string `json:"service"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil || envelope.Data.Service != "dittofs" {
+		t.Fatalf("/health on %s was answered by another process, not this server: "+
+			"status=%d Server=%q Content-Type=%q body=%q",
+			addr, resp.StatusCode, resp.Header.Get("Server"), resp.Header.Get("Content-Type"), body)
+	}
+
+	return resp, body
+}
+
 // testSetup creates control plane store and APIConfig for testing.
+//
+// Callers that start the server pass freePort(t) so the OS picks the port: a
+// hard-coded number can already be held by unrelated local tooling, and the
+// server binds 127.0.0.1 while a dial of "localhost" may resolve ::1 first, so
+// the collision is not refused at bind time and instead surfaces downstream as
+// an assertion about the reply. Callers that only construct a server and never
+// listen pass 0 — the port is never bound, so no number is needed.
+//
+// None of these tests may call t.Parallel(): NewServer writes the process-wide
+// mutex and block profile rates on every call, in both directions, so a
+// concurrent NewServer would race the assertions in the pprof tests below.
 func testSetup(t *testing.T, port int) (store.Store, APIConfig) {
 	t.Helper()
 
@@ -77,66 +127,39 @@ func testSetup(t *testing.T, port int) (store.Store, APIConfig) {
 }
 
 func TestAPIServer_Lifecycle(t *testing.T) {
-	cpStore, cfg := testSetup(t, 18080)
+	cpStore, cfg := testSetup(t, freePort(t))
 
 	server, err := NewServer(cfg, nil, cpStore, Timeouts{Restore: 30 * time.Minute})
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	// startServer also asserts Start returns nil on graceful shutdown.
+	addr, stop := startServer(t, server)
+	defer stop()
 
-	// Start server in background
-	errChan := make(chan error, 1)
-	go func() {
-		errChan <- server.Start(ctx)
-	}()
-
-	// Wait until the server's listener accepts connections — racing against
-	// errChan so a bind failure surfaces as a real error, not a vague timeout.
-	waitForServerReady(t, fmt.Sprintf("localhost:%d", cfg.Port), errChan, 5*time.Second)
-
-	// Make request to health endpoint
-	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/health", cfg.Port))
-	if err != nil {
-		t.Fatalf("Failed to make request: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
+	resp, _ := getHealth(t, addr)
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("Expected status %d, got %d", http.StatusOK, resp.StatusCode)
 	}
 
-	// Verify response content type
-	contentType := resp.Header.Get("Content-Type")
-	if contentType != "application/json" {
+	if contentType := resp.Header.Get("Content-Type"); contentType != "application/json" {
 		t.Errorf("Expected Content-Type 'application/json', got '%s'", contentType)
-	}
-
-	// Shutdown
-	cancel()
-
-	// Wait for server to stop
-	select {
-	case err := <-errChan:
-		if err != nil {
-			t.Errorf("Expected nil on graceful shutdown, got: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Server did not shutdown in time")
 	}
 }
 
 func TestAPIServer_Port(t *testing.T) {
-	cpStore, cfg := testSetup(t, 9999)
+	port := freePort(t)
+	cpStore, cfg := testSetup(t, port)
 
 	server, err := NewServer(cfg, nil, cpStore, Timeouts{Restore: 30 * time.Minute})
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
 
-	if server.Port() != 9999 {
-		t.Errorf("Expected port 9999, got %d", server.Port())
+	if server.Port() != port {
+		t.Errorf("Expected port %d, got %d", port, server.Port())
 	}
 }
 
@@ -162,37 +185,24 @@ func TestAPIServer_DefaultConfig(t *testing.T) {
 }
 
 func TestAPIServer_HealthEndpoint_NoRuntime(t *testing.T) {
-	cpStore, cfg := testSetup(t, 18081)
+	cpStore, cfg := testSetup(t, freePort(t))
 
 	server, err := NewServer(cfg, nil, cpStore, Timeouts{Restore: 30 * time.Minute})
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	addr, stop := startServer(t, server)
+	defer stop()
 
-	// Start server in background
-	errChan := make(chan error, 1)
-	go func() {
-		errChan <- server.Start(ctx)
-	}()
-
-	waitForServerReady(t, fmt.Sprintf("localhost:%d", cfg.Port), errChan, 5*time.Second)
-
-	// Test liveness endpoint (should always be OK)
-	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/health", cfg.Port))
-	if err != nil {
-		t.Fatalf("Failed to make request: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
+	// Liveness (should always be OK), and answered by this server.
+	resp, _ := getHealth(t, addr)
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("Expected status %d, got %d", http.StatusOK, resp.StatusCode)
 	}
 
 	// Test readiness endpoint (should be 503 with no runtime)
-	resp2, err := http.Get(fmt.Sprintf("http://localhost:%d/health/ready", cfg.Port))
+	resp2, err := http.Get("http://" + addr + "/health/ready")
 	if err != nil {
 		t.Fatalf("Failed to make request: %v", err)
 	}
@@ -204,23 +214,19 @@ func TestAPIServer_HealthEndpoint_NoRuntime(t *testing.T) {
 }
 
 func TestAPIServer_RootRedirectsToHealth(t *testing.T) {
-	cpStore, cfg := testSetup(t, 18082)
+	cpStore, cfg := testSetup(t, freePort(t))
 
 	server, err := NewServer(cfg, nil, cpStore, Timeouts{Restore: 30 * time.Minute})
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	addr, stop := startServer(t, server)
+	defer stop()
 
-	// Start server in background
-	errChan := make(chan error, 1)
-	go func() {
-		errChan <- server.Start(ctx)
-	}()
-
-	waitForServerReady(t, fmt.Sprintf("localhost:%d", cfg.Port), errChan, 5*time.Second)
+	// Confirm this server owns the address before reading anything into the
+	// redirect below.
+	getHealth(t, addr)
 
 	// Create a client that doesn't follow redirects
 	client := &http.Client{
@@ -229,7 +235,7 @@ func TestAPIServer_RootRedirectsToHealth(t *testing.T) {
 		},
 	}
 
-	resp, err := client.Get(fmt.Sprintf("http://localhost:%d/", cfg.Port))
+	resp, err := client.Get("http://" + addr + "/")
 	if err != nil {
 		t.Fatalf("Failed to make request: %v", err)
 	}
@@ -309,7 +315,7 @@ func TestAPIConfig_PprofRateDefaults(t *testing.T) {
 // process. The store close is ordered after whichever branch Stop took.
 func TestAPIServer_StopDrainsInflightHandlers(t *testing.T) {
 	t.Run("handler finishes inside the drain bound", func(t *testing.T) {
-		cpStore, cfg := testSetup(t, 18101)
+		cpStore, cfg := testSetup(t, freePort(t))
 		server, err := NewServer(cfg, nil, cpStore, Timeouts{Restore: 30 * time.Minute})
 		if err != nil {
 			t.Fatalf("NewServer: %v", err)
@@ -326,13 +332,10 @@ func TestAPIServer_StopDrainsInflightHandlers(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 		}))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		startErr := make(chan error, 1)
-		go func() { startErr <- server.Start(ctx) }()
-		waitForServerReady(t, fmt.Sprintf("localhost:%d", cfg.Port), startErr, 5*time.Second)
+		addr, stop := startServer(t, server)
+		defer stop()
 
-		go func() { _, _ = http.Get(fmt.Sprintf("http://localhost:%d/health", cfg.Port)) }()
+		go func() { _, _ = http.Get("http://" + addr + "/health") }()
 		<-entered
 
 		// Shutdown's own deadline expires immediately, so the drain is what has
@@ -357,7 +360,7 @@ func TestAPIServer_StopDrainsInflightHandlers(t *testing.T) {
 	})
 
 	t.Run("handler outlasts the drain bound", func(t *testing.T) {
-		cpStore, cfg := testSetup(t, 18102)
+		cpStore, cfg := testSetup(t, freePort(t))
 		server, err := NewServer(cfg, nil, cpStore, Timeouts{Restore: 30 * time.Minute})
 		if err != nil {
 			t.Fatalf("NewServer: %v", err)
@@ -372,13 +375,10 @@ func TestAPIServer_StopDrainsInflightHandlers(t *testing.T) {
 			<-release
 		}))
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		startErr := make(chan error, 1)
-		go func() { startErr <- server.Start(ctx) }()
-		waitForServerReady(t, fmt.Sprintf("localhost:%d", cfg.Port), startErr, 5*time.Second)
+		addr, stop := startServer(t, server)
+		defer stop()
 
-		go func() { _, _ = http.Get(fmt.Sprintf("http://localhost:%d/health", cfg.Port)) }()
+		go func() { _, _ = http.Get("http://" + addr + "/health") }()
 		<-entered
 
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
@@ -409,7 +409,7 @@ func stopReturnedChan(s *Server, ctx context.Context) <-chan error {
 // after Wait began — a prohibited WaitGroup use — and reach the store after
 // Drain returned.
 func TestAPIServer_DrainRefusesRequestsAdmittedAfterItStarts(t *testing.T) {
-	cpStore, cfg := testSetup(t, 18103)
+	cpStore, cfg := testSetup(t, 0)
 	server, err := NewServer(cfg, nil, cpStore, Timeouts{Restore: 30 * time.Minute})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
@@ -501,7 +501,7 @@ func TestNewServer_PprofSamplingWired(t *testing.T) {
 		goruntime.SetBlockProfileRate(0)
 	})
 
-	cpStore, cfg := testSetup(t, 18099)
+	cpStore, cfg := testSetup(t, 0)
 	cfg.Pprof = true
 	cfg.PprofMutexRate = 137 // distinctive, non-default value
 
@@ -528,7 +528,7 @@ func TestNewServer_PprofOffResetsSampling(t *testing.T) {
 
 	goruntime.SetMutexProfileFraction(50) // simulate sampling left on by a prior caller
 
-	cpStore, cfg := testSetup(t, 18100)
+	cpStore, cfg := testSetup(t, 0)
 	cfg.Pprof = false
 
 	if _, err := NewServer(cfg, nil, cpStore, Timeouts{Restore: 30 * time.Minute}); err != nil {
@@ -537,5 +537,35 @@ func TestNewServer_PprofOffResetsSampling(t *testing.T) {
 
 	if got := goruntime.SetMutexProfileFraction(-1); got != 0 {
 		t.Errorf("mutex profile fraction = %d, want 0 (reset when pprof off)", got)
+	}
+}
+
+// TestGetHealth_NamesAForeignResponder pins the diagnosis getHealth exists for:
+// when a process other than the server under test answers /health, the failure
+// must identify that responder rather than read as a defect in the health
+// handler. A status-and-content-type check cannot do that — the stand-in here
+// passes both — so only the service field distinguishes "my server answered"
+// from "something answered".
+func TestGetHealth_NamesAForeignResponder(t *testing.T) {
+	// Well-formed JSON, so the service field — not a parse failure — is what
+	// has to tell the two servers apart.
+	foreign := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Server", "Caddy")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"healthy","data":{"service":"something-else"}}`))
+	}))
+	defer foreign.Close()
+
+	fake := &testing.T{}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		getHealth(fake, strings.TrimPrefix(foreign.URL, "http://"))
+	}()
+	<-done
+
+	if !fake.Failed() {
+		t.Error("getHealth accepted a reply from a process that is not the server under test")
 	}
 }
