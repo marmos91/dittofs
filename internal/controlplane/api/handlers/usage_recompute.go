@@ -50,7 +50,6 @@ type UsageRecomputeResponse struct {
 // row in the store, so it is slow in proportion to the store's size and repairs
 // every share that store serves, not only the named one.
 //
-// Status codes:
 // The dry_run query parameter derives the same figures, writes nothing, and
 // reports every usage bucket the counters and the file rows disagree on. It is
 // how the question "are these numbers wrong" gets answered without taking the

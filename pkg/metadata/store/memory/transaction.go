@@ -264,7 +264,7 @@ func (tx *memoryTransaction) UpdateAttrs(ctx context.Context, file *metadata.Fil
 	// usage, from the chargeable view of the record before and after the write.
 	//
 	// This write never touches linkCounts, so the pre-write count is also the
-	// post-write one and one read of it decides chargeability for both
+	// post-write one and the same count decides chargeability for both
 	// versions.
 	var old basestore.FileUsage
 	if existing, exists := tx.store.files[key]; exists && existing.Attr.Type == metadata.FileTypeRegular {

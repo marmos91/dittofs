@@ -3,7 +3,6 @@ package metadata
 import (
 	"fmt"
 	"os"
-	"strconv"
 
 	"github.com/spf13/cobra"
 
@@ -141,7 +140,7 @@ func printRecomputeUsageDrift(r *apiclient.ShareUsageRecompute) error {
 		table.AddRow(
 			d.Share,
 			d.Scope,
-			strconv.FormatUint(uint64(d.ID), 10),
+			fmt.Sprintf("%d", d.ID),
 			fmt.Sprintf("%s / %d", bytesize.ByteSize(d.Counter.Bytes), d.Counter.Files),
 			fmt.Sprintf("%s / %d", bytesize.ByteSize(d.Derived.Bytes), d.Derived.Files),
 			fmt.Sprintf("%s / %+d", signedBytes(d.Derived.Bytes-d.Counter.Bytes), d.Derived.Files-d.Counter.Files),

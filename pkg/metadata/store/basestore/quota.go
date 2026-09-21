@@ -352,8 +352,7 @@ func ApplyPutDelta(d *QuotaDelta, share string, old, now FileUsage) {
 // A bucket present on one side only is drift: that is the shape a counter left
 // charged for a file the rows no longer describe takes.
 func (c *QuotaCache) Drift(derived map[QuotaKey]*metadata.UsageStat) []metadata.QuotaDrift {
-	out := []metadata.QuotaDrift{}
-	seen := make(map[QuotaKey]struct{}, len(derived))
+	var out []metadata.QuotaDrift
 
 	report := func(k QuotaKey, counter, want metadata.UsageStat) {
 		if counter == want {
@@ -365,21 +364,15 @@ func (c *QuotaCache) Drift(derived map[QuotaKey]*metadata.UsageStat) []metadata.
 	}
 
 	for k, u := range derived {
-		seen[k] = struct{}{}
-		want := *u
-		if want.Bytes < 0 {
-			want.Bytes = 0
-		}
-		if want.Files < 0 {
-			want.Files = 0
-		}
+		want := metadata.UsageStat{Bytes: max(u.Bytes, 0), Files: max(u.Files, 0)}
 		report(k, c.Get(k.Share, k.Scope, k.ID), want)
 	}
+	// A bucket the cache holds that the scan never produced is drift against a
+	// derived zero.
 	for k, u := range c.byIdentity {
-		if _, ok := seen[k]; ok {
-			continue
+		if _, ok := derived[k]; !ok {
+			report(k, *u, metadata.UsageStat{})
 		}
-		report(k, *u, metadata.UsageStat{})
 	}
 
 	sort.Slice(out, func(i, j int) bool {
