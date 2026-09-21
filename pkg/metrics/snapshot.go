@@ -47,7 +47,11 @@ type ShareSnapshot struct {
 	AppendLogLimitBytes int64
 
 	// Durability / sync backlog.
-	UnsyncedBytes       int64
+	UnsyncedBytes int64
+	// PendingUploads is a live count of blocks in flight to the remote, not a
+	// queue depth: the carve path enumerates files per tick rather than holding
+	// a queue, so pending work is measured in UnsyncedBytes and this can read 0
+	// between two in-flight blocks while bytes are still draining.
 	PendingUploads      int64
 	CompletedSyncs      int64
 	FailedSyncs         int64

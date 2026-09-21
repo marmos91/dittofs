@@ -80,7 +80,7 @@ func newRuntimeCollector(p Provider) *runtimeCollector {
 		appendLogLimit: d(fqdn("localstore", "append_log_limit_bytes"), "Local block-store append-log pressure budget in bytes (max_log_bytes); writes block with ErrPressureTimeout above this.", share),
 
 		syncPendingBytes:   d(fqdn("sync", "pending_bytes"), "On-disk bytes present locally but not yet mirrored to the remote (data at risk).", share),
-		syncPendingUploads: d(fqdn("sync", "pending_uploads"), "Uploads currently queued to the remote.", share),
+		syncPendingUploads: d(fqdn("sync", "pending_uploads"), "Blocks currently in flight to the remote (not a backlog: work not yet picked up is counted in bytes by sync_pending_bytes).", share),
 		syncUploadsTotal:   d(fqdn("sync", "uploads_total"), "Completed uploads to the remote since process start.", share),
 		syncFailuresTotal:  d(fqdn("sync", "upload_failures_total"), "Failed uploads to the remote since process start.", share),
 		remoteUp:           d(fqdn("remote", "up"), "Whether the remote backend is currently healthy (1) or not (0).", share),
