@@ -2,6 +2,7 @@ package shares
 
 import (
 	"context"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -28,43 +29,78 @@ func (g *gatedLocal) Close() error {
 	return err
 }
 
-// newGatedShare registers one share whose block store cannot finish closing
-// until the returned channel is closed.
-func newGatedShare(t *testing.T) (*Service, *gatedLocal, chan struct{}) {
+// newGatedShares registers n shares, each with a block store that cannot
+// finish closing until its own release channel is closed. More than one share
+// is the case the concurrent close exists for, so it is the case worth
+// building: with a single share the fan-out never runs a second iteration.
+func newGatedShares(t *testing.T, n int) (*Service, []*gatedLocal) {
 	t.Helper()
 
 	mds := metamem.NewMemoryMetadataStoreWithDefaults()
 	t.Cleanup(func() { _ = mds.Close() })
 
-	release := make(chan struct{})
-	gl := &gatedLocal{LocalStore: localmemory.New(), release: release}
-	bs, err := engine.New(engine.BlockStoreConfig{
-		Local:          gl,
-		RemoteSync:     engine.NewRemoteSync(gl, nil, mds, engine.DefaultConfig()),
-		FileChunkStore: mds,
-	})
-	if err != nil {
-		t.Fatalf("engine.New: %v", err)
-	}
-
 	svc := New()
-	svc.InjectShareForTesting(&Share{Name: "/gated", Enabled: true, BlockStore: bs})
-	return svc, gl, release
+	gates := make([]*gatedLocal, 0, n)
+	for i := range n {
+		gl := &gatedLocal{LocalStore: localmemory.New(), release: make(chan struct{})}
+		bs, err := engine.New(engine.BlockStoreConfig{
+			Local:          gl,
+			RemoteSync:     engine.NewRemoteSync(gl, nil, mds, engine.DefaultConfig()),
+			FileChunkStore: mds,
+		})
+		if err != nil {
+			t.Fatalf("engine.New: %v", err)
+		}
+		svc.InjectShareForTesting(&Share{Name: fmt.Sprintf("/share-%d", i), Enabled: true, BlockStore: bs})
+		gates = append(gates, gl)
+	}
+	return svc, gates
 }
 
-// TestCloseBlockStores_ReturnsWhileAShareIsStillClosing pins the trade the
-// bound exists to make. A share that will not finish closing would otherwise
-// hold shutdown until the process hits its own self-exit deadline and is
-// killed, leaving EVERY share's metadata store unclosed rather than just the
-// wedged one's. The budget buys the others a clean close at the cost of that
-// one's.
-func TestCloseBlockStores_ReturnsWhileAShareIsStillClosing(t *testing.T) {
-	svc, gl, release := newGatedShare(t)
-	// Let the close finish once the assertions are done, so the store is not
-	// left wedged for the rest of the package's run.
-	t.Cleanup(func() { close(release) })
+// TestCloseBlockStores_ClosesEveryShareAndWaitsForThem exercises the fan-out
+// with several shares at once and pins that the budget does not cut short a
+// close that would have completed — otherwise every shutdown pays the expiry's
+// cost rather than only a wedged one.
+//
+// Asserting the close FINISHED is the point: a store reports itself closed the
+// moment teardown starts, so a return that merely happened after that proves
+// nothing.
+func TestCloseBlockStores_ClosesEveryShareAndWaitsForThem(t *testing.T) {
+	svc, gates := newGatedShares(t, 3)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	// Staggered, so the goroutines finish at different times and the
+	// bookkeeping is touched while the fan-out is still running.
+	for i, gl := range gates {
+		time.AfterFunc(time.Duration(i+1)*100*time.Millisecond, func() { close(gl.release) })
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	svc.CloseBlockStores(ctx)
+
+	for i, gl := range gates {
+		if !gl.finished.Load() {
+			t.Errorf("share %d had not finished closing when CloseBlockStores returned", i)
+		}
+	}
+}
+
+// TestCloseBlockStores_ReturnsWhileSharesAreStillClosing pins the trade the
+// bound exists to make. Shares that will not finish closing would otherwise
+// hold shutdown until the process hits its own self-exit deadline and is
+// killed, leaving EVERY share's metadata store unclosed rather than just
+// theirs. The budget buys the rest a clean close at the cost of those.
+func TestCloseBlockStores_ReturnsWhileSharesAreStillClosing(t *testing.T) {
+	svc, gates := newGatedShares(t, 3)
+	// One closes at once and two stay wedged, so the step has both something
+	// to finish and something to give up on.
+	close(gates[0].release)
+	t.Cleanup(func() {
+		close(gates[1].release)
+		close(gates[2].release)
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
 	done := make(chan struct{})
@@ -76,27 +112,13 @@ func TestCloseBlockStores_ReturnsWhileAShareIsStillClosing(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(30 * time.Second):
-		t.Fatal("CloseBlockStores did not return while a share was still closing; shutdown would never reach the metadata stores")
+		t.Fatal("CloseBlockStores did not return while shares were still closing; shutdown would never reach the metadata stores")
 	}
-	if gl.finished.Load() {
-		t.Fatal("the share finished closing, so this run never exercised the expiry branch")
+
+	if !gates[0].finished.Load() {
+		t.Error("the released share did not finish closing, so the fan-out did not run it")
 	}
-}
-
-// TestCloseBlockStores_WaitsForACloseThatFinishes is the other half: the bound
-// must not cut short a close that would have completed, or every shutdown pays
-// the expiry's cost instead of only a wedged one. Asserting the close FINISHED
-// is the point — the store reports itself closed the moment teardown starts, so
-// a return that merely happened after that proves nothing.
-func TestCloseBlockStores_WaitsForACloseThatFinishes(t *testing.T) {
-	svc, gl, release := newGatedShare(t)
-	time.AfterFunc(300*time.Millisecond, func() { close(release) })
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	svc.CloseBlockStores(ctx)
-
-	if !gl.finished.Load() {
-		t.Fatal("CloseBlockStores returned before the share's close finished")
+	if gates[1].finished.Load() || gates[2].finished.Load() {
+		t.Fatal("every share finished closing, so this run never exercised the expiry branch")
 	}
 }

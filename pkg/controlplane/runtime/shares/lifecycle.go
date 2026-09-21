@@ -682,13 +682,23 @@ func (s *Service) CloseBlockStores(ctx context.Context) {
 	}
 	s.mu.RUnlock()
 
+	// Filled before anything is spawned, so every write to the map happens on
+	// this goroutine and mu is left guarding the deletes alone. Inserting
+	// inside the spawn loop instead would race a delete from a store that
+	// closed while the loop was still going — a map write concurrent with
+	// another goroutine's delete is a fatal error, not a recoverable panic,
+	// and it would land on the one path where aborting costs what this
+	// ordering exists to protect.
+	stillOpen := make(map[string]struct{}, len(stores))
+	for name := range stores {
+		stillOpen[name] = struct{}{}
+	}
+
 	var (
-		mu        sync.Mutex
-		stillOpen = make(map[string]struct{}, len(stores))
-		wg        sync.WaitGroup
+		mu sync.Mutex
+		wg sync.WaitGroup
 	)
 	for name, bs := range stores {
-		stillOpen[name] = struct{}{}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
