@@ -401,6 +401,11 @@ func (sm *StateManager) destroySessionLocked(sessionID types.SessionId4, force b
 
 	sm.dropSessionBindingsLocked(sessionID)
 
+	// The bindings this session held may have been the client's last back-bound
+	// ones while the connections carrying them stay open for another session, so
+	// no socket close follows to re-derive the verdict.
+	sm.clearCBPathWithoutBackBindingLocked(session.ClientID)
+
 	logger.Info("Session destroyed",
 		"session_id", session.SessionID.String(),
 		"client_id", fmt.Sprintf("0x%x", session.ClientID),

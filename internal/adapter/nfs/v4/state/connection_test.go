@@ -698,11 +698,14 @@ func TestEnsureBackchannelWriterForConn_DoesNotResurrectReleasedState(t *testing
 	sm.connMu.Unlock()
 
 	// A registration arriving now must not re-install a writer.
-	backBound := sm.EnsureBackchannelWriterForConn(connShared, func() ConnWriter {
+	backBound, freshRoute := sm.EnsureBackchannelWriterForConn(connShared, func() ConnWriter {
 		return func([]byte) error { return nil }
 	})
 	if len(backBound) != 0 {
 		t.Errorf("reported %d back-capable bindings for a connection that has none", len(backBound))
+	}
+	if freshRoute {
+		t.Error("reported a new callback route on a connection that cannot carry one")
 	}
 
 	sm.connMu.RLock()
@@ -732,11 +735,14 @@ func TestEnsureBackchannelWriterForConn_RegistersWhileBackCapable(t *testing.T) 
 		t.Fatalf("bind: %v", err)
 	}
 
-	backBound := sm.EnsureBackchannelWriterForConn(connShared, func() ConnWriter {
+	backBound, freshRoute := sm.EnsureBackchannelWriterForConn(connShared, func() ConnWriter {
 		return func([]byte) error { return nil }
 	})
 	if len(backBound) != 1 {
 		t.Fatalf("reported %d back-capable bindings, want 1", len(backBound))
+	}
+	if !freshRoute {
+		t.Error("the registration that made this connection able to carry a callback was not reported as one")
 	}
 
 	sm.connMu.RLock()
@@ -749,5 +755,14 @@ func TestEnsureBackchannelWriterForConn_RegistersWhileBackCapable(t *testing.T) 
 	}
 	if !hasReplies {
 		t.Error("no pending-reply table created for a back-capable connection")
+	}
+
+	// Every COMPOUND after the first reaches here and finds the writer already
+	// installed. Reporting a new route on each of them would re-probe the
+	// callback path on every request.
+	if _, again := sm.EnsureBackchannelWriterForConn(connShared, func() ConnWriter {
+		return func([]byte) error { return nil }
+	}); again {
+		t.Error("an already-registered connection was reported as a new callback route")
 	}
 }

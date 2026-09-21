@@ -144,7 +144,7 @@ func (c *NFSConnection) maybeRegisterBackchannel(ctx context.Context) {
 	// state the rebind just released. Doing both under sm.connMu makes the
 	// decision atomic, so a connection is either back-capable and registered or
 	// neither.
-	backBound := sm.EnsureBackchannelWriterForConn(c.connectionID, func() v4state.ConnWriter {
+	backBound, freshRoute := sm.EnsureBackchannelWriterForConn(c.connectionID, func() v4state.ConnWriter {
 		// Serialized against fore-channel replies on the same writeMu, and
 		// bounded, because a callback that never returns from the socket holds
 		// that lock against every reply behind it.
@@ -157,8 +157,15 @@ func (c *NFSConnection) maybeRegisterBackchannel(ctx context.Context) {
 	}
 
 	for _, b := range backBound {
-		// Idempotent: returns immediately when the session already has a sender.
-		sm.StartBackchannelSender(ctx, b.SessionID)
+		// Idempotent: reports false when the session already has a sender.
+		if !sm.StartBackchannelSender(ctx, b.SessionID) && freshRoute {
+			// The sender predates this connection and probed the path against
+			// connections that may all be gone since. This registration is the
+			// first moment a callback can travel over the new one, so it is
+			// where the verdict gets re-derived; nothing else would, until an
+			// unrelated BACKCHANNEL_CTL.
+			sm.ReprobeCallbackPath(b.SessionID)
+		}
 
 		logger.Debug("Backchannel registered for connection",
 			"conn_id", c.connectionID,

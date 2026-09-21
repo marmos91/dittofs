@@ -1053,6 +1053,91 @@ func (sm *StateManager) setCBPathUpIfCurrent(bs *BackchannelSender, generation u
 	return true
 }
 
+// clearCBPathWithoutBackBinding clears the callback verdict of every client
+// owning one of these sessions that has no back-bound connection left on any of
+// its sessions.
+//
+// The verdict is client-wide, but what invalidates it — a binding going away —
+// is per connection, and the two are held under different locks. Resolving a
+// session to its client needs sm.mu, which is taken before connMu and never
+// after it, so the caller collects the sessions while it holds connMu and hands
+// them here once it has let go.
+//
+// Thread-safe: acquires sm.mu.Lock, then sm.connMu.RLock.
+func (sm *StateManager) clearCBPathWithoutBackBinding(sessionIDs []types.SessionId4) {
+	if len(sessionIDs) == 0 {
+		return
+	}
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	seen := make(map[uint64]bool, len(sessionIDs))
+	for _, sessionID := range sessionIDs {
+		session, ok := sm.sessionsByID[sessionID]
+		if !ok || seen[session.ClientID] {
+			continue
+		}
+		seen[session.ClientID] = true
+		sm.clearCBPathWithoutBackBindingLocked(session.ClientID)
+	}
+}
+
+// clearCBPathWithoutBackBindingLocked clears the client's callback verdict when
+// no session of that client has a back-bound connection left.
+//
+// The verdict describes the bindings that were in place when the CB_NULL that
+// produced it ran. Once the last of them is gone it describes nothing, and left
+// standing it has OPEN keep granting delegations whose CB_RECALL has no route
+// to travel on — a grant that can only end in a failed recall and a revocation.
+//
+// Caller must hold sm.mu and must not hold sm.connMu.
+func (sm *StateManager) clearCBPathWithoutBackBindingLocked(clientID uint64) {
+	sm.connMu.RLock()
+	hasBack := sm.hasBackBoundConnection(clientID)
+	sm.connMu.RUnlock()
+	if hasBack {
+		return
+	}
+
+	record := sm.clientRecordLocked(clientID)
+	if record == nil || !record.CBPathUp {
+		return
+	}
+	record.CBPathUp = false
+	logger.Debug("Callback path verdict cleared: client has no back-bound connection left",
+		"client_id", fmt.Sprintf("0x%x", clientID))
+}
+
+// ReprobeCallbackPath re-runs the CB_NULL probe for a session whose sender has
+// outlived the bindings it was started for.
+//
+// A sender is created once per session and survives every connection that ever
+// carried it, so a session that loses its last back-bound connection and is
+// later bound to a new one has nothing left that re-derives the verdict:
+// StartBackchannelSender probes only when it creates a sender, and
+// BACKCHANNEL_CTL is the only other thing that probes. The verdict would
+// otherwise stay as the departed connection left it — withholding delegations
+// from a client that has reconnected, or offering them on a route nothing has
+// tried.
+//
+// Thread-safe: acquires sm.mu.RLock.
+func (sm *StateManager) ReprobeCallbackPath(sessionID types.SessionId4) {
+	sm.mu.RLock()
+	var sender *BackchannelSender
+	if session, ok := sm.sessionsByID[sessionID]; ok {
+		sender = session.backchannelSender
+	}
+	sm.mu.RUnlock()
+
+	if sender == nil {
+		return
+	}
+	// Not the caller's context: the probe deliberately outlives the COMPOUND
+	// that registered the connection, and cancelling it when that finishes
+	// would leave the verdict describing bindings that are gone.
+	go sm.probeV41CallbackPath(context.Background(), sender)
+}
+
 // SetMaxConnectionsPerSession sets the maximum number of connections per session.
 // A value of 0 means unlimited (no limit enforced).
 func (sm *StateManager) SetMaxConnectionsPerSession(max int) {
@@ -1108,9 +1193,13 @@ func (sm *StateManager) SetMaxSessionsPerClient(n int) {
 // registered, or neither.
 //
 // writerFn is called only when a registration is needed, so a caller can avoid
-// building the writer closure on the common already-registered path.
+// building the writer closure on the common already-registered path. The second
+// return value reports whether a registration happened, which is the moment
+// this connection became able to carry a callback: every COMPOUND after that
+// finds the writer already installed and reports false.
+//
 // Thread-safe: acquires sm.connMu.Lock.
-func (sm *StateManager) EnsureBackchannelWriterForConn(connectionID uint64, writerFn func() ConnWriter) []*BoundConnection {
+func (sm *StateManager) EnsureBackchannelWriterForConn(connectionID uint64, writerFn func() ConnWriter) ([]*BoundConnection, bool) {
 	sm.connMu.Lock()
 	defer sm.connMu.Unlock()
 
@@ -1121,7 +1210,7 @@ func (sm *StateManager) EnsureBackchannelWriterForConn(connectionID uint64, writ
 		}
 	}
 	if len(backBound) == 0 {
-		return nil
+		return nil, false
 	}
 
 	// Re-register when the state no longer tracks a writer: an unbind or rebind
@@ -1130,8 +1219,9 @@ func (sm *StateManager) EnsureBackchannelWriterForConn(connectionID uint64, writ
 	// registration cannot strand replies already being waited on.
 	if sm.connWriters[connectionID] == nil {
 		sm.RegisterConnWriterLocked(connectionID, writerFn())
+		return backBound, true
 	}
-	return backBound
+	return backBound, false
 }
 
 // RegisterConnWriterLocked is RegisterConnWriter for a caller already holding
@@ -1189,9 +1279,14 @@ func (sm *StateManager) GetPendingCBReplies(connectionID uint64) *PendingCBRepli
 // if the session has back-channel slots and no sender exists yet.
 // Called lazily on first back-channel bind or first callback enqueue.
 //
+// It reports whether it started one. A caller that has just registered a new
+// callback route needs to tell the two cases apart: a sender created here
+// probes the path itself, while one that was already running was probed against
+// connections that may all be gone (see ReprobeCallbackPath).
+//
 // Thread-safe: acquires sm.mu.Lock.
 
-func (sm *StateManager) StartBackchannelSender(ctx context.Context, sessionID types.SessionId4) {
+func (sm *StateManager) StartBackchannelSender(ctx context.Context, sessionID types.SessionId4) bool {
 	// Every COMPOUND on a back-bound connection reaches here, and all but the
 	// first find the sender already running, so settle that under a read lock
 	// rather than serializing the whole fore channel behind sm.mu. The write
@@ -1201,7 +1296,7 @@ func (sm *StateManager) StartBackchannelSender(ctx context.Context, sessionID ty
 	started := sm.sessionsByID[sessionID] != nil && sm.sessionsByID[sessionID].backchannelSender != nil
 	sm.mu.RUnlock()
 	if started {
-		return
+		return false
 	}
 
 	sm.mu.Lock()
@@ -1209,10 +1304,10 @@ func (sm *StateManager) StartBackchannelSender(ctx context.Context, sessionID ty
 
 	session, exists := sm.sessionsByID[sessionID]
 	if !exists || session.BackChannelSlots == nil {
-		return
+		return false
 	}
 	if session.backchannelSender != nil {
-		return // Already started
+		return false // Already started
 	}
 
 	sender := NewBackchannelSender(
@@ -1238,6 +1333,7 @@ func (sm *StateManager) StartBackchannelSender(ctx context.Context, sessionID ty
 	logger.Info("BackchannelSender started for session",
 		"session_id", sessionID.String(),
 		"client_id", fmt.Sprintf("0x%x", session.ClientID))
+	return true
 }
 
 // stopBackchannelSender stops the BackchannelSender for a session.
