@@ -126,3 +126,26 @@ runs:
           --endpoint-url "$ENDPOINT" \
           --acl public-read \
           --size-only
+
+        # nix-cache-info is the one object here that is not content-addressed,
+        # and it is always the same 21 bytes. --size-only therefore cannot tell
+        # a good copy from a bad one, so a copy written without the checksum
+        # setting above stays broken forever -- and since this is the first
+        # object Nix fetches, a bad copy makes every path in the bucket
+        # unusable. Always overwrite it rather than comparing sizes.
+        aws s3 cp "$STAGE/nix-cache-info" "s3://$NIX_CACHE_BUCKET/nix-cache-info" \
+          --endpoint-url "$ENDPOINT" \
+          --acl public-read
+
+        # Verify the entry point is one Nix can actually read, so a cache that
+        # substitutes nothing fails here instead of staying green and inert.
+        ENCODING=$(aws s3api head-object \
+          --bucket "$NIX_CACHE_BUCKET" --key nix-cache-info \
+          --endpoint-url "$ENDPOINT" \
+          --query ContentEncoding --output text)
+        if [ -n "$ENCODING" ] && [ "$ENCODING" != "None" ]; then
+          echo "nix-cache-info is served with Content-Encoding: $ENCODING." >&2
+          echo "Nix rejects that with 'Unrecognized or bad HTTP Content or" >&2
+          echo "Transfer-Encoding' and silently substitutes nothing." >&2
+          exit 1
+        fi
