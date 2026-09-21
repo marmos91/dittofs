@@ -47,6 +47,15 @@ const (
 
 	// baseBackoff is the initial backoff duration for auth retries.
 	baseBackoff = 2 * time.Second
+
+	// secretKeyPassword is the Secret key holding a cleartext password. It is
+	// the key the operator writes for the accounts it provisions, and the
+	// default it reads when a user-provided PasswordSecretRef names no key.
+	secretKeyPassword = "password"
+
+	// defaultAdminUsername is the admin username assumed when neither the
+	// credentials Secret nor spec.identity.admin.username supplies one.
+	defaultAdminUsername = "admin"
 )
 
 // reconcileAdminCredentials ensures an admin credentials Secret exists for bootstrapping.
@@ -80,7 +89,7 @@ func (r *DittoServerReconciler) reconcileAdminCredentials(ctx context.Context, d
 		return fmt.Errorf("failed to read admin bootstrap credentials secret: %w", err)
 	}
 	var legacyData map[string][]byte
-	if secret.Data == nil || len(secret.Data["password"]) == 0 {
+	if secret.Data == nil || len(secret.Data[secretKeyPassword]) == 0 {
 		var err error
 		if legacyData, err = r.legacyAdminSecretData(ctx, dittoServer); err != nil {
 			return err
@@ -93,7 +102,7 @@ func (r *DittoServerReconciler) reconcileAdminCredentials(ctx context.Context, d
 		}
 
 		// Only generate/adopt a password if Secret data is nil or empty
-		if secret.Data == nil || len(secret.Data["password"]) == 0 {
+		if secret.Data == nil || len(secret.Data[secretKeyPassword]) == 0 {
 			if legacyData != nil {
 				secret.Data = legacyData
 				return nil
@@ -103,8 +112,8 @@ func (r *DittoServerReconciler) reconcileAdminCredentials(ctx context.Context, d
 				return fmt.Errorf("failed to generate admin password: %w", err)
 			}
 			secret.Data = map[string][]byte{
-				"username": []byte("admin"),
-				"password": []byte(password),
+				"username":        []byte(defaultAdminUsername),
+				secretKeyPassword: []byte(password),
 			}
 		}
 
@@ -142,18 +151,18 @@ func (r *DittoServerReconciler) legacyAdminSecretData(ctx context.Context, ds *d
 		}
 		return nil, fmt.Errorf("failed to read legacy admin credentials secret for migration: %w", err)
 	}
-	if len(legacy.Data["password"]) == 0 {
+	if len(legacy.Data[secretKeyPassword]) == 0 {
 		return nil, nil
 	}
 	username := legacy.Data["username"]
 	if len(username) == 0 {
-		username = []byte("admin")
+		username = []byte(defaultAdminUsername)
 	}
 	logger.Info("Adopting password from legacy admin credentials secret for rename migration",
 		"legacySecret", ds.GetLegacyAdminCredentialsSecretName())
 	return map[string][]byte{
-		"username": username,
-		"password": legacy.Data["password"],
+		"username":        username,
+		secretKeyPassword: legacy.Data[secretKeyPassword],
 	}, nil
 }
 
@@ -281,7 +290,7 @@ func (r *DittoServerReconciler) provisionOperatorAccount(ctx context.Context, ds
 	// user-provided PasswordSecretRef it is the caller's chosen key. Reading a
 	// fixed "password" key for the user case was a bug — it ignored ref.Key and
 	// read an empty value, so admin login failed and the server never reached Ready.
-	passwordKey := "password"
+	passwordKey := secretKeyPassword
 
 	// If user provided admin password via spec, use that Secret + key.
 	var specAdminUsername string
@@ -319,7 +328,7 @@ func (r *DittoServerReconciler) provisionOperatorAccount(ctx context.Context, ds
 		adminUsername = specAdminUsername
 	}
 	if adminUsername == "" {
-		adminUsername = "admin"
+		adminUsername = defaultAdminUsername
 	}
 
 	// Login as admin
@@ -396,11 +405,11 @@ func (r *DittoServerReconciler) provisionOperatorAccount(ctx context.Context, ds
 		},
 		Type: corev1.SecretTypeOpaque,
 		Data: map[string][]byte{
-			"username":      []byte(dittoiov1alpha1.OperatorServiceAccountUsername),
-			"password":      []byte(operatorPassword),
-			"access-token":  []byte(operatorTokens.AccessToken),
-			"refresh-token": []byte(operatorTokens.RefreshToken),
-			"server-url":    []byte(apiURL),
+			"username":        []byte(dittoiov1alpha1.OperatorServiceAccountUsername),
+			secretKeyPassword: []byte(operatorPassword),
+			"access-token":    []byte(operatorTokens.AccessToken),
+			"refresh-token":   []byte(operatorTokens.RefreshToken),
+			"server-url":      []byte(apiURL),
 		},
 	}
 
@@ -444,7 +453,7 @@ func (r *DittoServerReconciler) refreshOperatorToken(ctx context.Context, ds *di
 	logger := logf.FromContext(ctx)
 
 	refreshToken := string(secret.Data["refresh-token"])
-	storedPassword := string(secret.Data["password"])
+	storedPassword := string(secret.Data[secretKeyPassword])
 
 	apiClient, err := r.newAPIClient(ctx, ds, apiURL)
 	if err != nil {
@@ -497,7 +506,7 @@ func (r *DittoServerReconciler) cleanupOperatorServiceAccount(ctx context.Contex
 	// Read admin credentials
 	adminSecret := &corev1.Secret{}
 	adminSecretName := ds.GetAdminBootstrapCredentialsSecretName()
-	passwordKey := "password"
+	passwordKey := secretKeyPassword
 	var specAdminUsername string
 
 	if ds.Spec.Identity != nil && ds.Spec.Identity.Admin != nil &&
@@ -528,7 +537,7 @@ func (r *DittoServerReconciler) cleanupOperatorServiceAccount(ctx context.Contex
 		adminUsername = specAdminUsername
 	}
 	if adminUsername == "" {
-		adminUsername = "admin"
+		adminUsername = defaultAdminUsername
 	}
 
 	apiURL := ds.GetAPIServiceURL()
