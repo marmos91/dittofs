@@ -65,8 +65,9 @@ jobs:
     name: Combined Tree
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    # Bounded by MAX_COMBOS combinations, each building and testing only the
-    # packages the two sides share.
+    # This, not MAX_COMBOS, is the binding bound: twelve combinations of
+    # package tests would run far past it. Hitting it kills the run before the
+    # summary prints, so a timed-out run reports nothing at all.
     timeout-minutes: 45
     steps:
       # Shallow on purpose: selection reads the GitHub API and touches no
