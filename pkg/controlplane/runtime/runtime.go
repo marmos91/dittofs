@@ -317,12 +317,13 @@ func (r *Runtime) SetShutdownTimeout(d time.Duration) {
 //     use-after-close.
 //  2. StopAllAdapters — adapters no longer accept new RPCs. Existing
 //     in-flight RPCs fail naturally (no waiters left to receive them).
-//  3. StopRollups — fence every share's rollup worker pool (#1543). The
-//     rollup ticker persists FileChunk manifests + rollup offsets through the
-//     metadata store; if the store's DB closes while a rollup is in flight it
-//     fails with "sql: database is closed" and can drop a local chunk that was
-//     never mirrored. Draining here (metadata still open) closes that race.
-//     Block stores stay open — their full teardown is RemoveShare's job.
+//  3. CloseBlockStores — quiesce every share's data plane. A share's carve
+//     dispatcher ticks on its own interval and commits FileChunk manifest rows
+//     through the metadata store; closing the block store stops it, drains its
+//     uploads and joins its goroutines while the store can still receive those
+//     commits. Closing the DB underneath a live dispatcher instead fails every
+//     commit with "sql: database is closed" and leaves the chunks it was
+//     carving local and unmirrored. It also releases the share's journal.
 //  4. CloseMetadataStores — now safe; nothing holds open references.
 //
 // Idempotent: a second call is a no-op (runtimeCancel is already
@@ -394,13 +395,8 @@ func (r *Runtime) Shutdown(ctx context.Context) error {
 		// close still must run so file handles are released.
 		logger.Warn("Runtime.Shutdown: StopAllAdapters error", "error", err)
 	}
-	// Fence the per-share rollup workers BEFORE closing the metadata stores
-	// (#1543): the rollup ticker writes FileChunk manifests + rollup offsets
-	// through the metadata store, so an in-flight rollup must be drained while
-	// the DB is still open or it races the close. Bounded by the caller's ctx
-	// (an overall deadline across shares) so shutdown stays predictable.
-	r.sharesSvc.StopRollups(ctx)
-	// Release the journals before the metadata stores they write through.
+	// Quiesce the per-share data plane BEFORE closing the metadata stores it
+	// writes through, and release the journals with it.
 	r.sharesSvc.CloseBlockStores()
 	r.CloseMetadataStores()
 	return nil
@@ -976,13 +972,13 @@ func (r *Runtime) Serve(ctx context.Context) error {
 	}
 
 	err := r.lifecycleSvc.Serve(ctx, lifecycle.Deps{
-		Settings:        r.settingsWatcher,
-		AdapterLoader:   r.adaptersSvc,
-		MetadataFlusher: r.metadataService,
-		StoreCloser:     r.storesSvc,
-		MachineSIDStore: r.store,
-		SnapshotDrainer: r,
-		RollupStopper:   r,
+		Settings:         r.settingsWatcher,
+		AdapterLoader:    r.adaptersSvc,
+		MetadataFlusher:  r.metadataService,
+		StoreCloser:      r.storesSvc,
+		MachineSIDStore:  r.store,
+		SnapshotDrainer:  r,
+		BlockStoreCloser: r,
 	})
 	// lifecycle.Serve returns its startup errors before it reaches its shutdown
 	// hook, so the drain that joins the workers started above never runs — and
@@ -1061,12 +1057,13 @@ func (r *Runtime) drainStartupWorkers(ctx context.Context) {
 	r.shutdownSnapshots(snapCtx)
 }
 
-// StopRollups stops + drains every share's block-store rollup worker pool.
-// Exposed for the lifecycle.Service shutdown sequence (#1543) so the normal
-// server path (signal -> ctx cancel -> lifecycle.shutdown) fences the rollup
-// ticker BEFORE CloseMetadataStores — otherwise an in-flight rollup races the
-// metadata-store close and fails with "sql: database is closed".
-func (r *Runtime) StopRollups(ctx context.Context) { r.sharesSvc.StopRollups(ctx) }
+// CloseBlockStores closes every share's block store, stopping and draining the
+// carve dispatchers that commit through the metadata stores. Exposed for the
+// lifecycle.Service shutdown sequence so the normal server path (signal -> ctx
+// cancel -> lifecycle.shutdown) quiesces the data plane BEFORE
+// CloseMetadataStores — otherwise each dispatcher's next tick commits into a
+// closed store and fails with "sql: database is closed".
+func (r *Runtime) CloseBlockStores() { r.sharesSvc.CloseBlockStores() }
 
 // ShutdownSnapshots exposes shutdownSnapshots for the lifecycle.Service
 // shutdown sequence so the normal server path (signal -> ctx cancel ->

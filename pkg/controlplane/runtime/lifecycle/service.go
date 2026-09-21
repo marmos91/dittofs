@@ -49,19 +49,25 @@ type SnapshotDrainer interface {
 	ShutdownSnapshots(ctx context.Context)
 }
 
-// RollupStopper stops + drains every share's block-store rollup worker pool.
+// BlockStoreCloser closes every share's block store, stopping and draining the
+// data-plane work that writes through the metadata stores.
+//
 // Threaded through Serve so the normal server shutdown path (signal -> ctx
-// cancel -> lifecycle.shutdown) fences the rollup ticker BEFORE
-// CloseMetadataStores (#1543): the ticker persists FileChunk manifests and
-// rollup offsets through the metadata store, so closing the DB with a rollup in
-// flight races it and fails with "sql: database is closed", which can drop a
-// local chunk that was never mirrored. Called AFTER StopAllAdapters (no new
-// writes create fresh rollup work) and BEFORE the stores close. Pass nil to
-// skip (tests without a block-store rollup pool). The ctx bounds the total
-// drain time so shutdown has a predictable upper bound regardless of share
-// count; each share's rollup fence still runs even once the deadline passes.
-type RollupStopper interface {
-	StopRollups(ctx context.Context)
+// cancel -> lifecycle.shutdown) quiesces the data plane BEFORE
+// CloseMetadataStores. A share's carve dispatcher ticks on its own interval and
+// commits FileChunk manifest rows through that share's metadata store; closing
+// the block store is what stops it, drains its uploads and joins its
+// goroutines. Closing the DB underneath a live dispatcher instead fails every
+// commit with "sql: database is closed" and leaves the chunks it was carving
+// local and unmirrored.
+//
+// Called AFTER StopAllAdapters, so no new client writes create fresh carve
+// work, and BEFORE the stores close. Pass nil to skip (tests with no data
+// plane). It takes no context: each store's close is bounded by the engine's
+// own drain timeout, so the bound is per share rather than an overall deadline
+// across them.
+type BlockStoreCloser interface {
+	CloseBlockStores()
 }
 
 // MachineSIDStore provides access to the SettingsStore for machine SID
@@ -250,9 +256,9 @@ type Deps struct {
 	// race a closing metadata store / control-plane DB.
 	SnapshotDrainer SnapshotDrainer
 
-	// RollupStopper fences the per-share rollup workers before the metadata
+	// BlockStoreCloser quiesces the per-share data plane before the metadata
 	// stores close.
-	RollupStopper RollupStopper
+	BlockStoreCloser BlockStoreCloser
 }
 
 // Serve starts all components and blocks until shutdown. It fails fast when
@@ -375,15 +381,13 @@ func (s *Service) shutdown(deps Deps) {
 		}
 	}
 
-	// Fence the per-share rollup workers BEFORE closing the metadata stores
-	// (#1543): the rollup ticker persists FileChunk manifests + rollup offsets
-	// through the metadata store, so an in-flight rollup must be drained while
-	// the DB is still open or it races the close ("sql: database is closed").
-	// Runs after StopAllAdapters (no new writes create fresh rollup work).
-	if deps.RollupStopper != nil {
-		rollupCtx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout)
-		deps.RollupStopper.StopRollups(rollupCtx)
-		cancel()
+	// Quiesce the per-share data plane BEFORE closing the metadata stores: each
+	// share's carve dispatcher commits FileChunk manifest rows through its
+	// metadata store, so it has to be stopped and drained while the store can
+	// still receive those commits. Runs after StopAllAdapters, so no new client
+	// writes create fresh carve work.
+	if deps.BlockStoreCloser != nil {
+		deps.BlockStoreCloser.CloseBlockStores()
 	}
 
 	if deps.StoreCloser != nil {

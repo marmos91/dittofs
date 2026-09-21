@@ -136,7 +136,6 @@ func (f *restoreFixture) simulateRestart() *Runtime {
 	// close the block store and hand the new runtime one that refuses every op.
 	ctx, cancel := context.WithTimeout(context.Background(), snapTestTimeout)
 	f.rt.shutdownSnapshots(ctx)
-	f.rt.sharesSvc.StopRollups(ctx)
 	cancel()
 
 	rt := New(f.store)

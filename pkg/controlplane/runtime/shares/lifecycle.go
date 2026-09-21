@@ -625,35 +625,24 @@ func (s *Service) RemoveShare(name string) error {
 	return errors.Join(errs...)
 }
 
-// StopRollups stops and drains the rollup worker pool of every registered
-// share's block store. The runtime calls this during shutdown BEFORE it closes
-// the metadata stores (#1543): the rollup ticker persists FileChunk manifests
-// and rollup offsets through the metadata store, so it must be fenced first or
-// an in-flight rollup races the DB close ("sql: database is closed") and can
-// drop a local chunk that was never mirrored.
+// CloseBlockStores closes every registered share's block store. It is the
+// shutdown fence between the data plane and the metadata stores, and it MUST
+// run before they close.
 //
-// The ctx bounds the TOTAL drain time (an overall deadline): each store is
-// given the time remaining until ctx's deadline as its grace, so shutdown stays
-// bounded regardless of share count. Once the budget is spent the worker-pool
-// fence still runs (that is the load-bearing part — it stops the ticker); only
-// the best-effort drain is skipped, and those intervals resume on restart.
+// A share's block store owns a carve dispatcher that ticks on its own interval
+// and commits FileChunk manifest rows through that share's metadata store.
+// Nothing else stops it: it runs on a background context, so cancelling the
+// runtime's does not reach it. Closing here stops the loops, drains the
+// uploads in flight and joins the goroutines while the metadata store can
+// still receive their commits — otherwise every tick after the close fails
+// with "sql: database is closed" and the chunks it was carving stay local and
+// unmirrored.
 //
-// Best-effort — a per-share drain error is logged, not propagated, so one share
-// cannot block the rest of shutdown. Drains run outside the registry lock (a
-// drain can block up to its grace window). The block stores stay OPEN; their
-// full teardown still happens in RemoveShare.
-// CloseBlockStores closes every registered share's block store.
-//
-// Shutdown fenced the rollup workers and closed the metadata stores but left
-// the journals open, so each share held its append log and index open for the
-// rest of the process's life. Nothing on a Unix filesystem reports that — an
-// open file can still be unlinked — but the handles are real, and a platform
-// that refuses to remove a file while it is open surfaces the leak as a
-// directory that cannot be cleaned up.
-//
-// Runs before the metadata stores close, for the reason StopRollups already
-// runs there: closing drains in-flight work that writes manifests through the
-// metadata store, which has to still be open to receive them.
+// Closing also releases the journals. Each share holds its append log and
+// index open for as long as it is registered; nothing on a Unix filesystem
+// reports that — an open file can still be unlinked — but the handles are
+// real, and a platform that refuses to remove a file while it is open
+// surfaces the leak as a directory that cannot be cleaned up.
 //
 // Close is idempotent, so a share removed afterwards closes harmlessly again.
 // The registry is left intact: this is resource teardown, not removal.
@@ -670,38 +659,6 @@ func (s *Service) CloseBlockStores() {
 	for name, bs := range stores {
 		if err := bs.Close(); err != nil {
 			logger.Warn("Shutdown: failed to close block store for share", "share", name, "error", err)
-		}
-	}
-}
-
-func (s *Service) StopRollups(ctx context.Context) {
-	type namedStore struct {
-		name string
-		bs   *engine.Store
-	}
-	s.mu.RLock()
-	stores := make([]namedStore, 0, len(s.registry))
-	for name, share := range s.registry {
-		if share.BlockStore != nil {
-			stores = append(stores, namedStore{name: name, bs: share.BlockStore})
-		}
-	}
-	s.mu.RUnlock()
-
-	for _, ns := range stores {
-		// grace = time left until the shared deadline (overall bound). No
-		// deadline → 0, which defers to the store's default. Budget already
-		// spent → a 1ms floor so we still fence the pool without reviving the
-		// 30s default that GracefulStopRollup applies to grace <= 0.
-		grace := time.Duration(0)
-		if dl, ok := ctx.Deadline(); ok {
-			if grace = time.Until(dl); grace <= 0 {
-				grace = time.Millisecond
-			}
-		}
-		if err := ns.bs.StopRollup(grace); err != nil {
-			logger.Warn("Failed to stop rollup for share; remaining rollups resume on restart",
-				"share", ns.name, "error", err)
 		}
 	}
 }
