@@ -346,7 +346,18 @@ jobs:
         uses: DeterminateSystems/nix-installer-action@main
 
       - name: Setup Nix cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
+        uses: ./.github/actions/nix-cache
+        with:
+          # pjdfstest is built from source rather than substituted, which is
+          # the work this cache exists to absorb. Only push from a run that
+          # holds credentials.
+          push: ${{ github.event_name == 'push' }}
+          # Already realized below, and nothing else: naming a sibling suite
+          # would make this job compile it from source.
+          paths: .#pjdfstest
+          access-key-id: ${{ secrets.NIX_CACHE_ACCESS_KEY_ID }}
+          secret-access-key: ${{ secrets.NIX_CACHE_SECRET_ACCESS_KEY }}
+          signing-key: ${{ secrets.NIX_CACHE_SIGNING_KEY }}
 
       - name: Install NFS client utilities
         run: |

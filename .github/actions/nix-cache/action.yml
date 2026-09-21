@@ -1,0 +1,120 @@
+name: Nix binary cache (Cubbit DS3)
+description: >
+  Point Nix at the shared binary cache on Cubbit DS3, and push to it from
+  trusted runs. Replaces DeterminateSystems/magic-nix-cache-action, which
+  wrote every store path under a fresh per-run key and accumulated ~2,974
+  redundant copies of 249 distinct paths in the 10 GB Actions cache budget.
+
+inputs:
+  push:
+    description: >
+      Whether to push realized store paths back to the cache. Set on push and
+      tag events; leave false on pull_request, which has no credentials.
+    required: false
+    default: "false"
+  paths:
+    description: >
+      Flake installables to push. Must be the ones the job already realized:
+      `nix copy` builds anything missing, so naming a sibling suite here makes
+      this job compile the very thing the cache exists to spare it.
+    required: false
+    default: ""
+  url:
+    description: Public read URL of the cache.
+    required: false
+    default: https://s3.cubbit.eu/dittofs-nix-cache
+  public-key:
+    description: >
+      Public half of the cache signing key. Public by design — it is the
+      authority for what the bucket is allowed to serve, not a secret.
+    required: false
+    default: dittofs-nix-cache-1:exJ0N2AQfobuiU2WsLi2KnIVurRIDV03bu1uACwIt0U=
+  bucket:
+    description: Bucket the cache is stored in.
+    required: false
+    default: dittofs-nix-cache
+  access-key-id:
+    description: Bucket-scoped write credential. Only read when push is true.
+    required: false
+    default: ""
+  secret-access-key:
+    description: Bucket-scoped write credential. Only read when push is true.
+    required: false
+    default: ""
+  signing-key:
+    description: >
+      Private half of the cache signing key. Only read when push is true.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    # Reads need no credential, so this step runs for every job including fork
+    # PRs. That is the whole point of hosting the cache on object storage:
+    # a public-read bucket gives an untrusted PR the same warm cache a
+    # maintainer's push gets.
+    - name: Configure the public substituter
+      shell: bash
+      env:
+        NIX_CACHE_URL: ${{ inputs.url }}
+        NIX_CACHE_PUBLIC_KEY: ${{ inputs.public-key }}
+      run: |
+        set -euo pipefail
+        {
+          echo "extra-substituters = $NIX_CACHE_URL"
+          echo "extra-trusted-public-keys = $NIX_CACHE_PUBLIC_KEY"
+        } | sudo tee -a /etc/nix/nix.conf
+        echo "Nix will substitute from $NIX_CACHE_URL"
+
+    - name: Push realized paths to the cache
+      if: inputs.push == 'true'
+      shell: bash
+      env:
+        AWS_ACCESS_KEY_ID: ${{ inputs.access-key-id }}
+        AWS_SECRET_ACCESS_KEY: ${{ inputs.secret-access-key }}
+        NIX_SIGNING_KEY: ${{ inputs.signing-key }}
+        NIX_CACHE_BUCKET: ${{ inputs.bucket }}
+        NIX_CACHE_PATHS: ${{ inputs.paths }}
+      run: |
+        set -euo pipefail
+
+        # Nix signs every narinfo with this key, so a store path that was not
+        # written by this repository cannot be substituted from the bucket
+        # without the reader rejecting it.
+        KEY=/tmp/nix-cache-key
+        install -m 600 /dev/null "$KEY"
+        printf '%s' "$NIX_SIGNING_KEY" > "$KEY"
+
+        # The upload deliberately does not go through `nix copy --to s3://`.
+        # That store signs correctly but writes objects with no ACL, and Cubbit
+        # rejects a bucket policy (NotImplemented), so there is no way to make
+        # those objects public after the fact — the substituter then 403s on
+        # every narinfo. Staging to a local file:// cache and syncing with
+        # --acl public-read is what makes the read side work.
+        #
+        # aws-cli must run with checksums off. Left at its default it uploads
+        # with `Content-Encoding: aws-chunked` and Cubbit echoes that header
+        # back on GET; Nix's curl then fails the download with "Unrecognized or
+        # bad HTTP Content or Transfer-Encoding" and the cache is unreadable.
+        export AWS_REQUEST_CHECKSUM_CALCULATION=when_required
+        ENDPOINT=https://s3.cubbit.eu
+
+        STAGE=$(mktemp -d)
+        trap 'rm -rf "$STAGE"' EXIT
+
+        if [ -z "$NIX_CACHE_PATHS" ]; then
+          echo "No paths to push" >&2
+          exit 0
+        fi
+
+        # shellcheck disable=SC2086
+        nix copy --to "file://$STAGE?secret-key=$KEY" $NIX_CACHE_PATHS
+
+        # --size-only: NARs are content-addressed, so a same-named object is
+        # the same bytes; comparing mtimes would re-upload the whole cache on
+        # every run because the staging directory is always fresh.
+        aws s3 sync "$STAGE" "s3://$NIX_CACHE_BUCKET" \
+          --endpoint-url "$ENDPOINT" \
+          --acl public-read \
+          --size-only

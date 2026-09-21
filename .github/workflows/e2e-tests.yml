@@ -109,9 +109,19 @@ jobs:
 
       # Kept: this job runs the e2e suite inside .#ci, which carries nfs-utils,
       # acl, attr and the dfs-mount helpers — and, unavoidably, pynfs and
-      # pjdfstest, which are built from source rather than substituted.
+      # pjdfstest, which are built from source rather than substituted. That is
+      # exactly the work the shared cache now absorbs.
       - name: Setup Nix cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
+        uses: ./.github/actions/nix-cache
+        with:
+          # This workflow has no pull_request trigger, so every run of it holds
+          # credentials.
+          push: "true"
+          # The full .#ci shell, which is what this job enters anyway.
+          paths: .#devShells.x86_64-linux.ci
+          access-key-id: ${{ secrets.NIX_CACHE_ACCESS_KEY_ID }}
+          secret-access-key: ${{ secrets.NIX_CACHE_SECRET_ACCESS_KEY }}
+          signing-key: ${{ secrets.NIX_CACHE_SIGNING_KEY }}
 
       - name: Install system dependencies
         env:
