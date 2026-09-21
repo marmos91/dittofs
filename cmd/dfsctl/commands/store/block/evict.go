@@ -28,7 +28,11 @@ Use --local-only to evict only local disk data (preserves read buffer).
 Use --share to evict a specific share only.
 
 Safety: blocks that have not yet reached the share's block store are
-never dropped, since that would cause data loss.
+never dropped, since that would cause data loss. Eviction reclaims whole
+segments, so a segment holding even one un-uploaded record stays resident
+along with every synced block sharing it — run 'dfsctl system drain-uploads'
+until 'dfsctl store block stats' reports 0 pending remote bytes if you need
+everything to go cold.
 
 Uses: reclaim local disk on demand, or force cold (remote-served) reads for
 read-path benchmarking — the local tier is otherwise sticky, so a benchmark
