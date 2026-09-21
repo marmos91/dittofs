@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/journal"
 )
@@ -39,6 +40,16 @@ import (
 // two by making them agree on a token — that edit is the bug in whichever
 // direction it is made.
 func (bs *Store) DataExtents(ctx context.Context, payloadID string, fileSize uint64) ([][2]uint64, error) {
+	// decision: a closed store returns the error rather than widening to the
+	// whole file, unlike the two unknown-range cases below. Those widen because
+	// the store is live and measuring and met one range it cannot place, so the
+	// whole-file answer is an over-report of a real measurement. A closed store
+	// measured nothing: its tiers are torn down, so "the whole file holds data"
+	// would be invented rather than over-reported. It is also the only case
+	// where the caller's fallback is not the narrower view — with the engine
+	// gone, the metadata block list is the best remaining source, and widening
+	// would replace it with a fabrication. Withdraw this if a caller ever acts
+	// on the extents without a READ that re-checks liveness.
 	if err := bs.enter(); err != nil {
 		return nil, err
 	}
@@ -50,7 +61,23 @@ func (bs *Store) DataExtents(ctx context.Context, payloadID string, fileSize uin
 	// (a) Bytes the local journal tier knows (dirty or evicted/cold).
 	ext, err := bs.local.DataExtents(ctx, journal.FileID(payloadID), int64(fileSize))
 	if err != nil {
-		return nil, err
+		// The tier holds exactly the bytes this map cannot get from anywhere
+		// else — written but not yet rolled up — so a failure here leaves their
+		// ranges unknown, not empty. Returning the error reads as an under-
+		// report: both callers drop it and answer from the CAS block list
+		// alone, which is the narrower view this function exists to widen, so
+		// the range would come back a hole over data that is really there.
+		// Report the whole file as data instead, for the same reason the
+		// unplaceable row below does — the READ the client is then forced to
+		// issue surfaces the fault rather than inventing zeros.
+		//
+		// The error is logged rather than swallowed: the answer must not
+		// narrow, but an I/O fault that only ever widened a hole map would
+		// otherwise leave no trace.
+		logger.Error("local tier could not report data extents; widening the hole map to the "+
+			"whole file so a sparse-copy client cannot skip bytes it holds",
+			"payload", payloadID, "error", err)
+		return [][2]uint64{{0, fileSize}}, nil
 	}
 
 	// (b) Persisted CAS chunks (post-rollup bytes). Optional store in tests.
