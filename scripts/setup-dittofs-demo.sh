@@ -32,6 +32,7 @@ ADMIN_PASSWORD="$(openssl rand -base64 16)"
 #   export S3_ACCESS_KEY=... S3_SECRET_KEY=...
 S3_ENDPOINT="${S3_ENDPOINT:-https://s3.cubbit.eu}"
 S3_BUCKET="${S3_BUCKET:-dittofs-demo}"
+S3_REGION="${S3_REGION:-us-east-1}"
 S3_ACCESS_KEY="${S3_ACCESS_KEY:?Set S3_ACCESS_KEY in the environment}"
 S3_SECRET_KEY="${S3_SECRET_KEY:?Set S3_SECRET_KEY in the environment}"
 
@@ -291,8 +292,12 @@ configure_server() {
     dfsctl store metadata add --name demo-meta --type badger --db-path "${METADATA_DIR}"
 
     info "Creating S3 block store (Cubbit DS3)..."
+    # Every s3 setting is named, including the empty prefix, so the command has
+    # nothing left to ask about and the script runs through on a terminal.
     dfsctl store block add --name demo-blocks --type s3 \
         --bucket "${S3_BUCKET}" \
+        --region "${S3_REGION}" \
+        --prefix "" \
         --endpoint "${S3_ENDPOINT}" \
         --access-key "${S3_ACCESS_KEY}" \
         --secret-key "${S3_SECRET_KEY}"
