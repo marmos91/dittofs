@@ -66,8 +66,8 @@ func newFlushClosure(l local.LocalStore, params chunker.Params, blockSize int64,
 //
 // On any error it joins the flights it launched before returning, so no run
 // hands an error back to the journal with uploads still running. The normal
-// path deliberately does not join: that is what lets one run's uploads overlap
-// the next run's carving.
+// path needs no join of its own: collect() has already waited on every flight
+// this pass submitted.
 func (c *flushClosure) fn(ctx context.Context, r journal.Run) (out []journal.Extent, err error) {
 	defer func() {
 		if err != nil {
@@ -354,11 +354,12 @@ type uploadChain struct {
 	slots *syncer.DynamicSemaphore
 	prev  chan struct{} // resolution of the last-submitted flight
 	// wg counts launched flights and is Waited only by drain(), on the error
-	// path. It is deliberately NOT waited on the normal path: collect() is the
-	// join there, and it reports the committed prefix without ending the
-	// overlap, so the next run's uploads start while this run's are still in
-	// flight. Waiting per run would serialise exactly the pipeline the chain
-	// exists to build.
+	// path. The normal path needs no Wait: collect() is the join there, and it
+	// blocks on every flight it has not yet reported, so a run that returns
+	// successfully leaves nothing inside CommitBlock. The overlap the chain
+	// exists to build is between blocks WITHIN a run, and it ends at the run
+	// boundary. The only escape is a run that returns early with an error
+	// before reaching collect(), which is exactly what drain() closes.
 	wg sync.WaitGroup
 
 	mu        sync.Mutex
