@@ -127,9 +127,9 @@ func evictShortfall(resp *apiclient.BlockStoreEvictResult) string {
 	}
 	switch {
 	case resp.EvictionHeld:
-		return "Nothing was reclaimed: eviction is held off for this store " +
-			"(the remote is unreachable, or the store is pinned by retention policy). " +
-			"Local data stays resident until it clears."
+		return "Nothing was reclaimed: eviction is held off for at least one share " +
+			"(its remote is unreachable, or it is pinned by retention policy). " +
+			"Local data stays resident until that clears."
 	case resp.UnsyncedBytesPinned > 0:
 		return fmt.Sprintf("Nothing was reclaimed: %s of local data has not reached the remote yet, "+
 			"and eviction keeps any whole segment holding un-uploaded bytes. "+
