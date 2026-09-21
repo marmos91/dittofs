@@ -137,3 +137,42 @@ func waitUntil(budget time.Duration, cond func() bool) bool {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// TestFailedStartupStopsBackgroundWorkers is the other end of the same
+// invariant. The reaper is the FIRST thing Serve starts, before the lifecycle
+// service exists to shut anything down, so a startup that fails leaves it
+// running with nothing having cancelled the context it was started under —
+// while the caller closes the control-plane store the moment Serve returns.
+func TestFailedStartupStopsBackgroundWorkers(t *testing.T) {
+	cps, err := cpstore.New(&cpstore.Config{
+		Type:   cpstore.DatabaseTypeSQLite,
+		SQLite: cpstore.SQLiteConfig{Path: ":memory:"},
+	})
+	if err != nil {
+		t.Fatalf("cpstore.New: %v", err)
+	}
+	t.Cleanup(func() { _ = cps.Close() })
+
+	rt := New(cps)
+	rt.SetSnapshotSchedulerConfig(0, true)
+	// Refused by the machine-SID step, which runs before startup can complete —
+	// so Serve returns its error without ever reaching the shutdown hook.
+	rt.SetPinnedMachineSID("not-a-sid")
+
+	base := trashReapers()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := rt.Serve(ctx); err == nil {
+		t.Fatal("Serve returned nil: startup did not fail, so nothing here is about the failed-start path")
+	}
+
+	if ctx.Err() != nil {
+		t.Fatalf("the runtime context was cancelled (%v); the assertion below no longer says anything", ctx.Err())
+	}
+	if !waitUntil(15*time.Second, func() bool { return trashReapers() <= base }) {
+		t.Errorf("the recycle-bin reaper is still running after a failed startup (%d, %d before the runtime):\n%s",
+			trashReapers(), base, goroutineDump())
+	}
+}

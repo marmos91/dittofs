@@ -939,16 +939,22 @@ func (r *Runtime) Serve(ctx context.Context) error {
 	return err
 }
 
-// drainStartupWorkers joins the background workers Serve starts before it hands
-// off to the lifecycle service, for the error returns that never reach the
-// lifecycle shutdown hook. Every worker it joins reads or writes the
+// drainStartupWorkers stops and joins the background workers Serve starts before
+// it hands off to the lifecycle service, for the error returns that never reach
+// the lifecycle shutdown hook. Every worker it reaches reads or writes the
 // control-plane store, and the caller closes that store as soon as Serve
 // returns.
 //
-// Both joins are idempotent and return at once when the work is already
+// Every step is idempotent and returns at once when the work is already
 // stopped, so this is safe to run after a shutdown that already drained.
 func (r *Runtime) drainStartupWorkers(ctx context.Context) {
 	parent := context.WithoutCancel(ctx)
+
+	// The reaper is the first worker Serve starts, before the lifecycle service
+	// it hands off to — so a startup that fails never reaches the drain that
+	// stops it, and ctx is still live because nothing cancelled it. Same call
+	// the lifecycle drain makes, and idempotent, so running both costs nothing.
+	r.StopBackgroundWorkers()
 
 	// The settings watcher is started before the adapter load that is the
 	// likeliest startup failure, and it polls the same store on a timer. Stop
