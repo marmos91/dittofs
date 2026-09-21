@@ -127,7 +127,11 @@ func (h *ContentHash) UnmarshalJSON(data []byte) error {
 		// one guard stacked on another.
 		var elems []*uint8
 		if err := json.Unmarshal(data, &elems); err != nil {
-			return fmt.Errorf("ContentHash.UnmarshalJSON: invalid JSON array: %q", data)
+			// Wrap rather than replace: the decoder's own message names the
+			// offending value and the type it would not fit, which is the
+			// detail that tells a corrupt legacy row apart from a merely
+			// unexpected one.
+			return fmt.Errorf("ContentHash.UnmarshalJSON: invalid JSON array %q: %w", data, err)
 		}
 		if len(elems) != HashSize {
 			return fmt.Errorf("ContentHash.UnmarshalJSON: %w: JSON array has %d elements, want %d",
