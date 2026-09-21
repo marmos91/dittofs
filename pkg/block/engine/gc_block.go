@@ -108,6 +108,19 @@ func (r *BlockGCReclaimer) ReclaimDeadChunk(ctx context.Context, hash block.Cont
 		// marker fail-closed), OR a crash-recovery re-visit whose marker this
 		// reclaimer already cleared alongside its committed decrement. Nothing
 		// left to reclaim here.
+		//
+		// decision: the empty-BlockID half is a refusal, not a migration path,
+		// and it stays even though nothing writes a zero locator any more —
+		// every locator on the carve and compaction paths comes from
+		// blockcodec.Builder.Add, which always stamps a BlockID. It is still
+		// what a marker decodes to in two cases that are not legacy: a snapshot
+		// restore of a pre-flip dump, and a locator suffix that does not parse,
+		// which the badger codec folds to the zero value deliberately. Dropping
+		// this half would send an empty block ID to the record lookup, miss,
+		// and report the chunk as handled, so the sweep would clear the marker
+		// while its bytes are still a live object — a loud retryable drift
+		// error becomes a silent leak. Withdraw it only once no marker can
+		// decode to the zero locator.
 		return false, 0, nil
 	}
 	blockID := loc.BlockID
