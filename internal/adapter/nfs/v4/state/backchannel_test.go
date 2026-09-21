@@ -1311,11 +1311,12 @@ func TestPendingCBReplies_RegisterReportsARetiredTable(t *testing.T) {
 func TestWorstCaseSendDuration_ExceedsEveryAttemptAndBackoff(t *testing.T) {
 	bs := &BackchannelSender{callbackTimeout: defaultBackchannelTimeout}
 
-	// Two bounded writes (the chosen connection and its alternate) and the
-	// reply wait, each on the same budget, for every attempt.
+	// Two budgets for the walk over back-bound connections — its deadline, plus
+	// the write that crosses the deadline and runs to its own timeout — one for
+	// the reply wait, and one of slack, for every attempt.
 	var want time.Duration
 	for i := 0; i < backchannelMaxRetries; i++ {
-		want += 3 * defaultBackchannelTimeout
+		want += 4 * defaultBackchannelTimeout
 		if i < backchannelMaxRetries-1 {
 			want += backchannelRetryDelays[i]
 		}

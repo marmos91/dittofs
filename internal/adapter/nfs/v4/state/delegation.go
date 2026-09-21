@@ -690,20 +690,36 @@ func (sm *StateManager) sendRecallV41(deleg *DelegationState, sender *Backchanne
 		// decision: the generation is sampled before the attempt, not returned
 		// from it, so a BACKCHANNEL_CTL that replaces the parameters while the
 		// request is queued makes this stamp older than the one the send ran
-		// under. setCBPathUpIfCurrent then discards the verdict instead of
-		// applying it, and CBPathUp stays true on a path that did fail. That is
-		// the safe direction of the two: the guard exists to stop an old
-		// failure marking a NEW path down, and a dropped failure only costs a
-		// retry on the next recall, which re-derives the verdict under the
-		// current generation. Withdraw it if a dropped failure ever has to be
-		// observed the first time rather than converged on.
+		// under. When every failure this walk sees is stale that way,
+		// setCBPathUpIfCurrent discards the verdict instead of applying it, and
+		// CBPathUp stays true on a path that did fail. That case is the safe
+		// direction of the two: the guard exists to stop an old failure marking
+		// a NEW path down, and a dropped failure only costs a retry on the next
+		// recall, which re-derives the verdict under the current generation.
+		// Withdraw it if a dropped failure ever has to be observed the first
+		// time rather than converged on.
+		//
+		// It covers only that case. A stale failure displacing a still-current
+		// one loses a valid verdict rather than deferring it, which is why the
+		// retention below keeps the current failure instead of the last one.
 		gen := s.currentParams().generation
 		switch sm.attemptRecallV41(deleg, s, recallOp) {
 		case recallSent:
 			return
 		case recallNoPath:
 			pathFailed = true
-			failedOn, failedGen = s, gen
+			// Retain the newest failure whose generation is still current as it
+			// is recorded, not simply the last failure of any generation. A
+			// failure whose parameters have already been superseded is
+			// discarded by the currency guard below, so letting it displace a
+			// current-generation failure from an earlier session throws the
+			// walk's only usable verdict away and leaves CBPathUp true on a
+			// client no session could reach. The retained one can still go
+			// stale before the guard runs, which is the case the marker above
+			// covers.
+			if failedOn == nil || s.currentParams().generation == gen {
+				failedOn, failedGen = s, gen
+			}
 		case recallSenderLocal:
 		}
 	}

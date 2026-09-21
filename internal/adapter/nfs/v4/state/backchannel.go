@@ -552,11 +552,25 @@ func (bs *BackchannelSender) sendCallbackWithRetry(ctx context.Context, req Call
 // is guaranteed to have reported: every attempt timing out, plus every backoff
 // between them.
 func (bs *BackchannelSender) worstCaseSendDuration() time.Duration {
-	// An attempt spends up to two writes before it waits for the reply: the
-	// connection it picked, and the alternate it falls back to when that write
-	// fails. Each is bounded by the same budget as the reply wait
-	// (CallbackWriteTimeout), so all three are charged at callbackTimeout.
-	total := time.Duration(backchannelMaxRetries) * 3 * bs.callbackTimeout
+	// Four budgets per attempt, each of callbackTimeout.
+	//
+	// Two of them are the walk over back-bound connections in sendCallback. Its
+	// deadline decides whether another write may START, not when the walk ends,
+	// so the write that crosses the deadline still runs to its own
+	// CallbackWriteTimeout — and cutting one short mid-write would buy nothing,
+	// because the bytes are already going out. One budget is the deadline, the
+	// second is that last write.
+	//
+	// The third is the reply wait. The fourth is slack, so that an attempt
+	// finishing right on its budget does not race the watchdog that is meant to
+	// outlast it.
+	//
+	// It is a constant deliberately. Charging per back-bound connection instead
+	// would scale the bound with a number the walk re-reads as it goes, so a
+	// connection bound mid-walk would lengthen the walk without lengthening the
+	// bound — and a session holding the per-session maximum would price a queue
+	// wait in hours.
+	total := time.Duration(backchannelMaxRetries) * 4 * bs.callbackTimeout
 	for i := 0; i < backchannelMaxRetries-1; i++ {
 		total += backchannelRetryDelays[i]
 	}
@@ -587,43 +601,87 @@ func (bs *BackchannelSender) sendCallback(ctx context.Context, req CallbackReque
 	// 5. Add record marking
 	framedMsg := AddCBRecordMark(callMsg, true)
 
-	// 6/7. Find a back-bound connection and register the XID on its reply table.
-	connID, writer, pending, replyCh, ok := bs.selectBackBoundWaiter(xid, map[uint64]bool{})
-	if !ok {
-		return fmt.Errorf("%w: no back-bound connection for session %s",
-			errCallbackNotAttempted, bs.sessionID.String())
-	}
-
-	// 8. Write framed message (no lock held -- ConnWriter acquires writeMu internally)
-	if err := writer(framedMsg); err != nil {
-		pending.Cancel(xid)
-		logger.Debug("BackchannelSender write failed, trying alternate connection",
-			"session_id", bs.sessionID.String(),
-			"conn_id", connID,
-			"error", err)
-
-		// Retry on another back-bound connection. The selector walks past any
-		// further candidates that cannot be registered, so a write failure on
-		// the freshest connection does not end the attempt while a usable one
-		// remains. The write above did reach a transport and fail there, so the
-		// original failure is what propagates if no alternate is left: reporting
-		// the retired-alternate case as "never attempted" would have the recall
-		// classify the whole send as local and leave CBPathUp standing.
-		connID2, writer2, pending2, replyCh2, ok2 := bs.selectBackBoundWaiter(xid, map[uint64]bool{connID: true})
-		if !ok2 {
-			return fmt.Errorf("write to back-bound connection %d failed and no alternate: %w", connID, err)
+	// 6/7/8. Write to back-bound connections in turn until one takes the bytes,
+	// registering the XID on each one's reply table first. Stopping at a fixed
+	// number of candidates leaves a usable connection untried on a session that
+	// holds more than that — and the freshest ones are exactly the ones most
+	// likely to fail, because a binding exists before its writer is registered
+	// and outlives it once the connection is retired. An untried usable route
+	// costs a recall its delegation: the send is classified as no callback path,
+	// which clears CBPathUp and starts the revocation timer.
+	//
+	// The selector excludes every connection already handed out, so the walk
+	// terminates when the candidates run out — but not soon enough on its own.
+	// Every write can spend a full CallbackWriteTimeout before it fails, and the
+	// candidate set is re-read as the walk goes, so a connection bound while it
+	// runs lengthens it. The watchdog that decides whether a recall is still
+	// deliverable is charged a fixed budget for this phase, and a recall that
+	// outruns it is called wedged and revoked five seconds later with its
+	// callback still on the wire. So the walk carries that same budget as a
+	// deadline: failures that come back quickly cost it almost nothing, and only
+	// the case that would have overrun is cut short.
+	//
+	// The deadline decides whether another write may START. A write already
+	// under way runs to its own CallbackWriteTimeout, because its bytes are
+	// going out either way and abandoning it buys nothing — so the phase is
+	// bounded by this budget plus one write, which is what
+	// worstCaseSendDuration charges it.
+	//
+	// decision: a write that consumed its budget and failed may still have put
+	// bytes on the wire, and the next candidate is sent the identical message —
+	// same XID, same CB_SEQUENCE slot and seqid. Two things have to hold for
+	// that to be safe, and only one of them is the client's. On its side a
+	// duplicate is the retry it looks like, which is what the slot's reply cache
+	// is for (RFC 8881 Section 2.10.6.2). On ours it is not clean: the failed
+	// connection's waiter is cancelled before the walk moves on, so a reply that
+	// did come back over it is dropped and the new waiter times out — a callback
+	// the client answered is reported as failed, and the delegation is revoked
+	// over it. The alternative is abandoning a live route on the first write
+	// error, which loses the delegation outright. Withdraw the trade if a waiter
+	// can ever be left routable across the whole walk rather than one candidate
+	// at a time, or if a callback is given a payload that is not idempotent
+	// under replay.
+	writeDeadline := time.Now().Add(bs.callbackTimeout)
+	tried := make(map[uint64]bool)
+	var connID uint64
+	var pending *PendingCBReplies
+	var replyCh chan []byte
+	var writeErr error
+	for {
+		id, writer, p, ch, ok := bs.selectBackBoundWaiter(xid, tried)
+		if !ok {
+			if writeErr != nil {
+				// Every candidate's write reached a transport and failed there,
+				// which is evidence about the client's callback path. The first
+				// of those failures is what propagates: reporting this as
+				// "never attempted" would have the recall classify the whole
+				// send as local and leave CBPathUp standing on a route that
+				// provably does not carry callbacks.
+				return writeErr
+			}
+			return fmt.Errorf("%w: no back-bound connection for session %s",
+				errCallbackNotAttempted, bs.sessionID.String())
 		}
-		// Update pending to the new connection's PendingCBReplies so the
-		// timeout path below cancels the correct waiter.
-		pending = pending2
+		if err := writer(framedMsg); err != nil {
+			p.Cancel(xid)
+			logger.Debug("BackchannelSender write failed, trying another connection",
+				"session_id", bs.sessionID.String(),
+				"conn_id", id,
+				"error", err)
+			if writeErr == nil {
+				writeErr = fmt.Errorf("write to back-bound connection %d failed: %w", id, err)
+			}
+			tried[id] = true
+			if !time.Now().Before(writeDeadline) {
+				return writeErr
+			}
+			continue
+		}
 		// Already registered: selectBackBoundWaiter registers the XID on the
-		// table it hands back, session-tagged, so the alternate's waiter is
-		// routable and addressable by session the moment it is chosen.
-		replyCh = replyCh2
-		if err2 := writer2(framedMsg); err2 != nil {
-			pending.Cancel(xid)
-			return fmt.Errorf("write to alternate connection %d also failed: %w", connID2, err2)
-		}
+		// table it hands back, session-tagged, so this waiter is routable and
+		// addressable by session the moment it is chosen.
+		connID, pending, replyCh = id, p, ch
+		break
 	}
 
 	// 9. Wait for reply with timeout

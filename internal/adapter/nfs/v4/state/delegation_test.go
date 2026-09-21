@@ -1620,9 +1620,9 @@ func TestAttemptRecallV41_WatchdogStartsAtDequeue(t *testing.T) {
 
 	// The queue hold: how long the callback in flight keeps the serialised
 	// sender busy before the recall can be dequeued.
-	const queueHold = 700 * time.Millisecond
+	const queueHold = 900 * time.Millisecond
 	// How long the recall's own send then waits for the client's answer.
-	const recallReplyDelay = 500 * time.Millisecond
+	const recallReplyDelay = 700 * time.Millisecond
 
 	// The bound the old single wait used, anchored at enqueue: it charged the
 	// queue wait against the send budget. The recall's total here (queue hold
