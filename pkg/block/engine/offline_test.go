@@ -506,3 +506,60 @@ func TestIntersectExtents(t *testing.T) {
 		})
 	}
 }
+
+// TestManifestShortfall_MemoryTier drives the cross-check against a real
+// in-memory tier rather than a stub, because that tier's ColdSeeded answer
+// ("nothing to seed") rests on this check being the thing that catches what it
+// has forgotten. The tier reports no cold ranges by construction, so if the
+// manifest cross-check did not run, or ran and found nothing, a restarted
+// memory-backed share would report provably offline-safe while holding none of
+// its bytes. Asserting it here keeps that argument from being self-certifying.
+func TestManifestShortfall_MemoryTier(t *testing.T) {
+	ctx := context.Background()
+	// One payload the manifest places 8 KiB of.
+	manifest := stubManifest{"p": {
+		chunkRow("p", 0, 4096, true),
+		chunkRow("p", 4096, 4096, true),
+	}}
+
+	t.Run("tier that lost everything reports the whole placement", func(t *testing.T) {
+		bytes, ranges, err := manifestShortfall(ctx, memory.New(), manifest)
+		if err != nil {
+			t.Fatalf("manifestShortfall: %v", err)
+		}
+		if bytes != 8192 || ranges != 1 {
+			t.Errorf("shortfall = (%d bytes, %d ranges), want (8192, 1); an empty tier that "+
+				"reports no shortfall lets a restarted share pass as offline-safe holding nothing",
+				bytes, ranges)
+		}
+	})
+
+	t.Run("tier holding every placed byte reports none", func(t *testing.T) {
+		local := memory.New()
+		if err := local.WriteAt(ctx, "p", 0, make([]byte, 8192)); err != nil {
+			t.Fatalf("WriteAt: %v", err)
+		}
+		bytes, ranges, err := manifestShortfall(ctx, local, manifest)
+		if err != nil {
+			t.Fatalf("manifestShortfall: %v", err)
+		}
+		if bytes != 0 || ranges != 0 {
+			t.Errorf("shortfall = (%d bytes, %d ranges), want (0, 0); a check that fires on a "+
+				"healthy share makes every answer indeterminate", bytes, ranges)
+		}
+	})
+
+	t.Run("partial tier reports only the gap", func(t *testing.T) {
+		local := memory.New()
+		if err := local.WriteAt(ctx, "p", 0, make([]byte, 4096)); err != nil {
+			t.Fatalf("WriteAt: %v", err)
+		}
+		bytes, ranges, err := manifestShortfall(ctx, local, manifest)
+		if err != nil {
+			t.Fatalf("manifestShortfall: %v", err)
+		}
+		if bytes != 4096 || ranges != 1 {
+			t.Errorf("shortfall = (%d bytes, %d ranges), want (4096, 1)", bytes, ranges)
+		}
+	})
+}

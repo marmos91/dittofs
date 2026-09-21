@@ -92,8 +92,10 @@ func TestFetchBlock_StagesEveryChunkInBlock(t *testing.T) {
 
 // alwaysColdLocal reports every read as cold, standing in for a window whose
 // bytes the hydrate could not bring back — an evicted range whose manifest row
-// no longer resolves, or an eviction racing the hydrate. Only ReadAt is
-// exercised, so the embedded interface stays nil.
+// no longer resolves, or an eviction racing the hydrate. It overrides ReadAt
+// and delegates the rest to a real in-memory store rather than to a nil embed,
+// so a read path that reaches for another part of the interface gets that
+// store's honest answer instead of a nil dereference.
 type alwaysColdLocal struct {
 	local.LocalStore
 }
@@ -121,7 +123,7 @@ func TestReadAtInternal_StillColdAfterHydrateFailsClosed(t *testing.T) {
 	// No remote: EnsureAvailable returns without hydrating anything, so
 	// the window is still cold on the re-read.
 	bs := &Store{
-		local:  alwaysColdLocal{},
+		local:  alwaysColdLocal{LocalStore: memorylocal.New()},
 		syncer: &RemoteSync{stopCh: make(chan struct{}), config: DefaultConfig()},
 	}
 

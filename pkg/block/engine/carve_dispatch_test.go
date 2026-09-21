@@ -101,7 +101,7 @@ func TestCarvePass_FansOutBoundedByUploadWindow(t *testing.T) {
 
 // TestCarvePass_NoFilesIsNoop guards the empty working-set path.
 func TestCarvePass_NoFilesIsNoop(t *testing.T) {
-	fl := &carveFanoutLocal{started: make(chan string, 1), release: make(chan struct{}), carved: map[string]int{}}
+	fl := &carveFanoutLocal{LocalStore: memory.New(), started: make(chan string, 1), release: make(chan struct{}), carved: map[string]int{}}
 	m := &RemoteSync{local: fl, uploadLimiter: syncer.NewDynamicSemaphore(4), stopCh: make(chan struct{}), config: DefaultConfig()}
 	m.carvePass(context.Background()) // returns immediately, acquires nothing
 	require.Equal(t, int32(0), fl.inFlight.Load())
