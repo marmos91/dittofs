@@ -47,7 +47,10 @@ func TestShareJournalDir_EmptyRootYieldsEmpty(t *testing.T) {
 // after the temp dir so cleanup's reverse order closes them before the dir is
 // removed — a platform that refuses to unlink an open file cannot remove the
 // root otherwise. CloseBlockStores is idempotent, so repeated use in one test
-// is harmless.
+// is harmless — but it is also terminal for the service, which afterwards
+// refuses to add or rebind a share. Give each subtest its own Service rather
+// than sharing one across t.Run boundaries, or the first cleanup to fire
+// retires it for the rest.
 func journalDefaults(t *testing.T, svc *Service) *LocalStoreDefaults {
 	t.Helper()
 	root := t.TempDir()
