@@ -225,7 +225,7 @@ func (s *SQLiteMetadataStore) GetUsedBytesForShare(ctx context.Context, shareNam
 // difference between an open that scales with the namespace and one that does
 // not. RecomputeUsage re-derives them if they are ever suspected of drift.
 func (s *SQLiteMetadataStore) initUsedBytesCounter(ctx context.Context) error {
-	byIdentity, err := s.PoolPath.Core.ReadQuotaCounters(ctx)
+	byIdentity, err := s.ReadQuotaCounters(ctx)
 	if err != nil {
 		return err
 	}
@@ -376,7 +376,7 @@ func initializeFilesystemCapabilities(ctx context.Context, db *sql.DB, caps meta
 // it. See RebuildQuotaCounters for what that costs and what would remove it.
 func (s *SQLiteMetadataStore) RecomputeUsage(ctx context.Context) error {
 	if err := s.WithTransaction(ctx, func(tx metadata.Transaction) error {
-		return tx.(*sqliteTransaction).Core.RebuildQuotaCounters(ctx)
+		return tx.(*sqliteTransaction).RebuildQuotaCounters(ctx)
 	}); err != nil {
 		return err
 	}

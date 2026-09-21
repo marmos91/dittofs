@@ -208,7 +208,7 @@ func (s *PostgresMetadataStore) withTransaction(ctx context.Context, fn func(tx 
 		// statement on the same transaction.
 		err = fn(ptx)
 		if err == nil {
-			err = ptx.Core.PersistQuotaDelta(ctx, ptx.quota.Map())
+			err = ptx.PersistQuotaDelta(ctx, ptx.quota.Map())
 		}
 		if err != nil {
 			// Apply timeout to rollback to prevent indefinite blocking

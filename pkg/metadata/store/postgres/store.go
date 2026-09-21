@@ -221,7 +221,7 @@ func (s *PostgresMetadataStore) GetUsedBytesForShare(ctx context.Context, shareN
 // difference between an open that scales with the namespace and one that does
 // not. RecomputeUsage re-derives them if they are ever suspected of drift.
 func (s *PostgresMetadataStore) initUsedBytesCounter(ctx context.Context) error {
-	byIdentity, err := s.PoolPath.Core.ReadQuotaCounters(ctx)
+	byIdentity, err := s.ReadQuotaCounters(ctx)
 	if err != nil {
 		return err
 	}
@@ -394,7 +394,7 @@ func initializeFilesystemCapabilities(ctx context.Context, pool *pgxpool.Pool, c
 // it. See RebuildQuotaCounters for what that costs and what would remove it.
 func (s *PostgresMetadataStore) RecomputeUsage(ctx context.Context) error {
 	if err := s.WithTransaction(ctx, func(tx metadata.Transaction) error {
-		return tx.(*postgresTransaction).Core.RebuildQuotaCounters(ctx)
+		return tx.(*postgresTransaction).RebuildQuotaCounters(ctx)
 	}); err != nil {
 		return err
 	}

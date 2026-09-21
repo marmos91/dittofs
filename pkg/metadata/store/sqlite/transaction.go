@@ -102,7 +102,7 @@ func (s *SQLiteMetadataStore) WithTransaction(ctx context.Context, fn func(tx me
 		// statement on the same transaction.
 		err = fn(ptx)
 		if err == nil {
-			err = ptx.Core.PersistQuotaDelta(ctx, ptx.quota.Map())
+			err = ptx.PersistQuotaDelta(ctx, ptx.quota.Map())
 		}
 		if err != nil {
 			_ = rawTx.Rollback()
