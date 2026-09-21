@@ -15,7 +15,7 @@ import (
 // does — pinning the local store before Start when the share's retention policy
 // is pin — fills it with a file that is rolled up and uploaded, then force-evicts
 // and reports how many local bytes were reclaimed.
-func drainAfterFill(t *testing.T, pinned bool) int64 {
+func drainAfterFill(t *testing.T, pinned bool) journal.EvictResult {
 	t.Helper()
 	ctx := context.Background()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
@@ -70,11 +70,11 @@ func drainAfterFill(t *testing.T, pinned bool) int64 {
 	if err := bs.DrainAllUploads(ctx); err != nil {
 		t.Fatalf("DrainAllUploads: %v", err)
 	}
-	freed, err := bs.DrainLocalSynced(ctx)
+	res, err := bs.DrainLocalSynced(ctx)
 	if err != nil {
 		t.Fatalf("DrainLocalSynced: %v", err)
 	}
-	return freed
+	return res
 }
 
 // TestRetentionPinSurvivesStart covers the pin being lifted by the eviction
@@ -86,13 +86,21 @@ func drainAfterFill(t *testing.T, pinned bool) int64 {
 // "freed 0" proves only that the probe cannot evict anything at all.
 func TestRetentionPinSurvivesStart(t *testing.T) {
 	t.Run("unpinned evicts", func(t *testing.T) {
-		if freed := drainAfterFill(t, false); freed == 0 {
+		res := drainAfterFill(t, false)
+		if res.BytesFreed == 0 {
 			t.Fatal("unpinned share freed 0 bytes; the probe cannot observe eviction")
+		}
+		if res.Held {
+			t.Fatal("unpinned share reported the eviction gate held")
 		}
 	})
 	t.Run("pinned keeps its bytes", func(t *testing.T) {
-		if freed := drainAfterFill(t, true); freed != 0 {
-			t.Fatalf("pinned share freed %d local bytes; the retention pin was lifted", freed)
+		res := drainAfterFill(t, true)
+		if !res.Held {
+			t.Error("pinned share did not report the eviction gate held; an operator sees \"freed 0\" with no reason")
+		}
+		if res.BytesFreed != 0 {
+			t.Fatalf("pinned share freed %d local bytes; the retention pin was lifted", res.BytesFreed)
 		}
 	})
 }

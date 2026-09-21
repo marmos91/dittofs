@@ -141,7 +141,7 @@ func runManifestSoak(t *testing.T, ms metadata.Store, iterations int, seedN int6
 		ovOff, overlapped := overlappedOffset(t, ms, pid)
 
 		// Force the file cold so the read resolves covering rows from the manifest
-		// rather than serving warm local bytes. EvictLocal is a no-op.
+		// rather than serving warm local bytes.
 		if _, err := bs.DrainLocalSynced(ctx); err != nil {
 			t.Fatalf("%s DrainLocalSynced: %v", label, err)
 		}

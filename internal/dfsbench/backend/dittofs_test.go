@@ -156,7 +156,7 @@ func TestDittofsEvictDumpsDiagnosticsOnFailure(t *testing.T) {
 	writeStubDfsctl(t, `#!/bin/sh
 case "$*" in
   *"block stats"*) echo '{"totals":{"local_disk_used":5717934080,"unsynced_bytes":0,"pending_uploads":0,"eviction_suspended":true,"failed_syncs":7}}' ;;
-  *"block evict"*) echo '{"local_files_evicted":0,"bytes_freed":0}' ;;
+  *"block evict"*) echo '{"segments_evicted":0,"bytes_freed":0}' ;;
 esac
 exit 0
 `)

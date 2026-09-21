@@ -200,8 +200,8 @@ func TestStore_OpAfterCloseReturnsErrStoreClosed(t *testing.T) {
 			t.Errorf("DiscardLocalContent after Close = %v, want ErrStoreClosed; a copy's discard that slips past Close clips the index behind a torn-down store", err)
 		}
 	})
-	t.Run("EvictLocal", func(t *testing.T) {
-		if err := bs.EvictLocal(ctx, "p"); !errors.Is(err, ErrStoreClosed) {
+	t.Run("DrainLocalSynced", func(t *testing.T) {
+		if _, err := bs.DrainLocalSynced(ctx); !errors.Is(err, ErrStoreClosed) {
 			t.Fatalf("want ErrStoreClosed, got %v", err)
 		}
 	})

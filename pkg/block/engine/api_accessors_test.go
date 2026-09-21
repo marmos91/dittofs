@@ -104,9 +104,6 @@ func TestStore_ClosedGuards(t *testing.T) {
 	if _, err := bs.Exists(ctx, "x"); err == nil {
 		t.Error("Exists after Close: want error")
 	}
-	if err := bs.EvictLocal(ctx, "x"); err == nil {
-		t.Error("EvictLocal after Close: want error")
-	}
 	if err := bs.HealthCheck(ctx); err == nil {
 		t.Error("HealthCheck after Close: want error")
 	}

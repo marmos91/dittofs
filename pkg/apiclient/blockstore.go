@@ -33,10 +33,16 @@ type BlockStoreEvictOptions struct {
 }
 
 // BlockStoreEvictResult holds the result of a block store eviction operation.
+// UnsyncedBytesPinned and EvictionHeld say why a pass freed nothing: eviction
+// reclaims whole segments and keeps any segment holding a record that is not
+// yet on the remote, so a small un-uploaded residue can hold a large resident
+// journal in place.
 type BlockStoreEvictResult struct {
 	ReadBufferEntriesCleared int   `json:"read_buffer_entries_cleared"`
-	LocalFilesEvicted        int   `json:"local_files_evicted"`
+	SegmentsEvicted          int   `json:"segments_evicted"`
 	BytesFreed               int64 `json:"bytes_freed"`
+	UnsyncedBytesPinned      int64 `json:"unsynced_bytes_pinned"`
+	EvictionHeld             bool  `json:"eviction_held"`
 }
 
 // BlockStoreStatsAll returns aggregated block store statistics across all shares.

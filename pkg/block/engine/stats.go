@@ -42,11 +42,19 @@ type BlockStoreStats struct {
 	ReadBufferUsed    int64 `json:"read_buffer_used"`
 	ReadBufferMax     int64 `json:"read_buffer_max"`
 
-	HasRemote      bool `json:"has_remote"`
-	PendingSyncs   int  `json:"pending_syncs"`
-	PendingUploads int  `json:"pending_uploads"`
-	CompletedSyncs int  `json:"completed_syncs"`
-	FailedSyncs    int  `json:"failed_syncs"`
+	HasRemote bool `json:"has_remote"`
+
+	// PendingUploads is the number of packed blocks currently in flight to the
+	// remote (one per upload-window slot held). It is a live gauge, unlike the
+	// lifetime CompletedSyncs/FailedSyncs beside it, and it is NOT a backlog:
+	// the carve dispatcher enumerates files per tick rather than holding a
+	// queue, so work not yet picked up is counted in bytes by UnsyncedBytes and
+	// not here. A drain therefore shows UnsyncedBytes falling with
+	// PendingUploads oscillating between 0 and the window, and reading 0 while
+	// bytes still move means only that no block was mid-flight at that instant.
+	PendingUploads int `json:"pending_uploads"`
+	CompletedSyncs int `json:"completed_syncs"`
+	FailedSyncs    int `json:"failed_syncs"`
 
 	// UnsyncedBytes is the running on-disk size of CAS chunks present locally
 	// but not yet mirrored to the remote (the #1136 backpressure signal). It is
@@ -128,15 +136,13 @@ func (bs *Store) getStats(withBlockCounts bool) BlockStoreStats {
 
 	cacheStats := bs.loadCache().Stats()
 
-	// Completed/failed carve counters come from the carve dispatcher. There is
-	// no per-chunk "pending" count anymore (the journal tracks dirty BYTES, not
-	// a chunk set) — the real backpressure signal is UnsyncedBytes below, so the
-	// pending-count fields report 0. In local-only mode (no remote) nothing ever
-	// carves, so report zeros.
-	var completed, failed int
-	pendingUploads := 0
+	// Completed/failed carve counters and the in-flight upload count all come
+	// from the syncer. In local-only mode (no remote) nothing ever carves, so
+	// report zeros rather than reading counters no path advances.
+	var completed, failed, pendingUploads int
 	if bs.remote != nil {
 		completed, failed = bs.syncer.SyncCounts()
+		pendingUploads = bs.syncer.InFlightUploads()
 	}
 
 	remoteHealthy := bs.syncer.IsRemoteHealthy()
@@ -157,7 +163,6 @@ func (bs *Store) getStats(withBlockCounts bool) BlockStoreStats {
 		ReadBufferUsed:      cacheStats.CurBytes,
 		ReadBufferMax:       cacheStats.MaxBytes,
 		HasRemote:           bs.remote != nil,
-		PendingSyncs:        pendingUploads,
 		PendingUploads:      pendingUploads,
 		CompletedSyncs:      completed,
 		FailedSyncs:         failed,

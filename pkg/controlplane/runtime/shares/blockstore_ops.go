@@ -188,10 +188,24 @@ type EvictOptions struct {
 }
 
 // EvictResult holds the result of a block store eviction operation.
+//
+// Freeing nothing is an ordinary outcome, not an error, so the fields that say
+// WHY are part of the result rather than something the operator has to go and
+// correlate against `store block stats`. Eviction reclaims whole segments and
+// skips any segment holding a record that is not yet on the remote, so a few
+// un-uploaded bytes keep their whole segment — and every other byte in it —
+// resident. UnsyncedBytesPinned is that residue; EvictionHeld is the separate
+// case where the gate was shut (remote unhealthy, or the store pinned by
+// retention policy) and no segment was even considered.
 type EvictResult struct {
-	ReadBufferEntriesCleared int   `json:"read_buffer_entries_cleared"`
-	LocalFilesEvicted        int   `json:"local_files_evicted"`
-	BytesFreed               int64 `json:"bytes_freed"`
+	ReadBufferEntriesCleared int `json:"read_buffer_entries_cleared"`
+	// SegmentsEvicted is what eviction actually reclaimed. It replaces a count
+	// of files, which was the length of the share's file list and so reported
+	// the same number whether or not anything was evicted.
+	SegmentsEvicted     int   `json:"segments_evicted"`
+	BytesFreed          int64 `json:"bytes_freed"`
+	UnsyncedBytesPinned int64 `json:"unsynced_bytes_pinned"`
+	EvictionHeld        bool  `json:"eviction_held"`
 }
 
 // MetricsBlockStats returns per-share block-store stats for observability. It
@@ -266,7 +280,6 @@ func addBlockStoreStats(dst *engine.BlockStoreStats, src engine.BlockStoreStats)
 	dst.ReadBufferEntries += src.ReadBufferEntries
 	dst.ReadBufferUsed += src.ReadBufferUsed
 	dst.ReadBufferMax += src.ReadBufferMax
-	dst.PendingSyncs += src.PendingSyncs
 	dst.PendingUploads += src.PendingUploads
 	dst.CompletedSyncs += src.CompletedSyncs
 	dst.FailedSyncs += src.FailedSyncs
@@ -317,28 +330,26 @@ func (s *Service) EvictBlockStore(ctx context.Context, shareName string, opts Ev
 		if !opts.ReadBufferOnly {
 			beforeDisk := bs.LocalStats().DiskBytes
 
-			files := bs.ListFiles()
-			for _, payloadID := range files {
-				_ = bs.EvictLocal(ctx, payloadID)
-				result.LocalFilesEvicted++
-			}
-
-			// EvictLocal only clears per-file append-log/memory state, and
-			// ListFiles goes empty after rollup — so post-rollup the resident
-			// bytes live in sealed log blobs it never touches. Drain them now
-			// (synced-only; safe because the no-remote refusal above guarantees
-			// a remote copy exists) so reads fall back to the remote.
+			// The local tier is segment-oriented and self-evicting; there is no
+			// per-file drop primitive to run first. Draining every synced
+			// segment is the whole of a local evict (synced-only, and safe
+			// because the no-remote refusal above guarantees a remote copy).
 			drained, err := bs.DrainLocalSynced(ctx)
 			if err != nil {
 				return nil, fmt.Errorf("drain local synced blocks for share %q: %w", share.Name, err)
 			}
 
-			// Report the larger of the observed DiskUsed delta (captures the
-			// EvictLocal loop plus the drain) and the drain's own freed count.
-			// The raw delta can go negative if a concurrent write grows DiskUsed
-			// mid-eviction; max with the non-negative drained count keeps
-			// BytesFreed honest and never negative.
-			result.BytesFreed += max(beforeDisk-bs.LocalStats().DiskBytes, drained)
+			// Report the larger of the observed DiskUsed delta and the drain's
+			// own freed count. The raw delta can go negative if a concurrent
+			// write grows DiskUsed mid-eviction; max with the non-negative
+			// drained count keeps BytesFreed honest and never negative.
+			result.SegmentsEvicted += drained.SegmentsEvicted
+			result.BytesFreed += max(beforeDisk-bs.LocalStats().DiskBytes, drained.BytesFreed)
+			result.EvictionHeld = result.EvictionHeld || drained.Held
+
+			// Read after the drain, so it is the residue that survived this
+			// pass: those bytes are what still pins segments locally.
+			result.UnsyncedBytesPinned += bs.LocalStats().UnsyncedBytes
 		}
 	}
 

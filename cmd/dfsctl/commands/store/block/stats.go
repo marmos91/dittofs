@@ -86,8 +86,7 @@ func printBlockStoreStatsTable(resp *apiclient.BlockStoreStatsResponse) error {
 		{"Has Remote", fmt.Sprintf("%v", t.HasRemote)},
 		{"Local Durable", fmt.Sprintf("%v", t.LocalDurable)},
 		{"Remote Durable", fmt.Sprintf("%v", t.RemoteDurable)},
-		{"Pending Syncs", fmt.Sprintf("%d", t.PendingSyncs)},
-		{"Pending Uploads", fmt.Sprintf("%d", t.PendingUploads)},
+		{"Uploads In Flight", fmt.Sprintf("%d", t.PendingUploads)},
 		{"Pending Remote (bytes)", formatBytes(t.UnsyncedBytes)},
 		{"Completed Syncs", fmt.Sprintf("%d", t.CompletedSyncs)},
 		{"Failed Syncs", fmt.Sprintf("%d", t.FailedSyncs)},
@@ -102,7 +101,7 @@ func printBlockStoreStatsTable(resp *apiclient.BlockStoreStatsResponse) error {
 		fmt.Println("Per-Share Breakdown:")
 		table := output.NewTableData(
 			"SHARE", "BLOCKS", "DIRTY", "LOCAL", "REMOTE",
-			"DISK USED", "READ BUF ENTRIES", "PENDING",
+			"DISK USED", "READ BUF ENTRIES", "IN FLIGHT",
 		)
 		for _, s := range resp.PerShare {
 			table.AddRow(
@@ -113,7 +112,7 @@ func printBlockStoreStatsTable(resp *apiclient.BlockStoreStatsResponse) error {
 				fmt.Sprintf("%d", s.Stats.BlocksRemote),
 				formatBytes(s.Stats.LocalDiskUsed),
 				fmt.Sprintf("%d", s.Stats.ReadBufferEntries),
-				fmt.Sprintf("%d", s.Stats.PendingSyncs),
+				fmt.Sprintf("%d", s.Stats.PendingUploads),
 			)
 		}
 		return output.PrintTable(os.Stdout, table)

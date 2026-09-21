@@ -42,7 +42,6 @@ func TestBlockStoreStats_WireShapeRoundTrip(t *testing.T) {
 		ReadBufferUsed:      11,
 		ReadBufferMax:       12,
 		HasRemote:           true,
-		PendingSyncs:        13,
 		PendingUploads:      14,
 		CompletedSyncs:      15,
 		FailedSyncs:         16,

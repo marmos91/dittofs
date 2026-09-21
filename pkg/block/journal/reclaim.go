@@ -32,10 +32,15 @@ var ErrLocalStoreFull = errors.New("journal: local store full, all segments pinn
 // paces the wait and is not worth a config field.
 const evictBackoff = 10 * time.Millisecond
 
-// EvictResult reports what an eviction pass reclaimed.
+// EvictResult reports what an eviction pass reclaimed. Held distinguishes the
+// two ways a pass reclaims nothing: the gate was closed (Held), or the gate was
+// open and no segment qualified. Both are ordinary, non-error outcomes, so a
+// caller reporting "freed 0" to an operator has no other way to tell a
+// suspended store from one whose every segment is pinned by unsynced records.
 type EvictResult struct {
 	SegmentsEvicted int
 	BytesFreed      int64
+	Held            bool
 }
 
 // Evict frees whole sealed segments under storage pressure, coldest first
@@ -69,7 +74,7 @@ func (s *Store) evict(ctx context.Context, targetBytes int64, allowActiveSeal bo
 		return EvictResult{}, errClosed
 	}
 	if s.evictionHeld() {
-		return EvictResult{}, nil
+		return EvictResult{Held: true}, nil
 	}
 	var res EvictResult
 	sealedActives := false

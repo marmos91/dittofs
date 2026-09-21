@@ -77,7 +77,6 @@ func newTestBlockStoreHandler() *testBlockStoreHandler {
 				LocalDiskUsed:     1024 * 1024,
 				ReadBufferEntries: 10,
 				HasRemote:         true,
-				PendingSyncs:      2,
 				PendingUploads:    1,
 			},
 			PerShare: []shares.ShareBlockStoreStats{
@@ -93,7 +92,7 @@ func newTestBlockStoreHandler() *testBlockStoreHandler {
 		},
 		evict: &shares.EvictResult{
 			ReadBufferEntriesCleared: 10,
-			LocalFilesEvicted:        3,
+			SegmentsEvicted:          3,
 			BytesFreed:               1024 * 1024,
 		},
 	}
@@ -189,8 +188,8 @@ func TestBlockStoreHandler_Evict_Global(t *testing.T) {
 	if resp.ReadBufferEntriesCleared != 10 {
 		t.Errorf("ReadBufferEntriesCleared = %d, want 10", resp.ReadBufferEntriesCleared)
 	}
-	if resp.LocalFilesEvicted != 3 {
-		t.Errorf("LocalFilesEvicted = %d, want 3", resp.LocalFilesEvicted)
+	if resp.SegmentsEvicted != 3 {
+		t.Errorf("SegmentsEvicted = %d, want 3", resp.SegmentsEvicted)
 	}
 }
 

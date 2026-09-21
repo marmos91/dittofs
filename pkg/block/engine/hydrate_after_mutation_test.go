@@ -10,6 +10,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/block/journal"
+	"github.com/marmos91/dittofs/pkg/block/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
@@ -35,11 +36,17 @@ func (g *gatedRemote) ReadChunk(ctx context.Context, blockID string, offset, len
 	return g.Store.ReadChunk(ctx, blockID, offset, length, hash)
 }
 
-func newEngineWithGatedRemote(t *testing.T, ms metadata.Store, rem *gatedRemote) *engine.Store {
+// newEngineWithGatedRemote builds an engine over any remote that also serves
+// blocks, so a test can gate whichever remote call it cares about.
+func newEngineWithGatedRemote(t *testing.T, ms metadata.Store, rem remote.RemoteStore) *engine.Store {
 	t.Helper()
 	syncedHashStore, ok := ms.(metadata.SyncedHashStore)
 	if !ok {
 		t.Fatalf("metadata store %T does not implement metadata.SyncedHashStore", ms)
+	}
+	rblk, ok := rem.(remote.RemoteBlockStore)
+	if !ok {
+		t.Fatalf("remote %T does not implement remote.RemoteBlockStore", rem)
 	}
 	localStore, err := journal.Open(t.TempDir(), journal.Config{MaxLocalBytes: 100 * 1024 * 1024,
 		MaxLogBytes: 128 * 1024 * 1024,
@@ -49,10 +56,15 @@ func newEngineWithGatedRemote(t *testing.T, ms metadata.Store, rem *gatedRemote)
 	}
 	syncer := engine.NewRemoteSync(localStore, rem, ms, engine.DefaultConfig())
 	syncer.SetSyncedHashStore(syncedHashStore)
-	syncer.SetRemoteBlockStore(rem)
+	syncer.SetRemoteBlockStore(rblk)
 	bs, err := engine.New(engine.BlockStoreConfig{
-		Local:           localStore,
-		RemoteSync:      syncer,
+		Local:      localStore,
+		RemoteSync: syncer,
+		// Production (shares.buildBlockStore) hands the engine the remote
+		// handle as well as the syncer, and the stats builder gates every
+		// sync-related counter on it. A fixture that leaves it nil reports a
+		// store with no remote at all.
+		Remote:          rem,
 		FileChunkStore:  ms,
 		Coordinator:     &testCoordinator{store: ms},
 		SyncedHashStore: syncedHashStore,

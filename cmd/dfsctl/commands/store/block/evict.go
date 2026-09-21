@@ -95,15 +95,43 @@ func runBlockStoreEvict(cmd *cobra.Command, _ []string) error {
 		return output.PrintYAML(os.Stdout, resp)
 	default:
 		if cmdutil.IsVerbose() {
-			fmt.Printf("Evicted %d files (%s freed), read buffer entries cleared: %d\n",
-				resp.LocalFilesEvicted,
+			fmt.Printf("Evicted %d segments (%s freed), read buffer entries cleared: %d\n",
+				resp.SegmentsEvicted,
 				formatBytes(resp.BytesFreed),
 				resp.ReadBufferEntriesCleared,
 			)
 		} else {
 			cmdutil.PrintSuccess("Block store data evicted successfully")
 		}
+		if reason := evictShortfall(resp); reason != "" {
+			fmt.Println(reason)
+		}
 	}
 
 	return nil
+}
+
+// evictShortfall explains a local evict that reclaimed nothing, or returns ""
+// when there is nothing to explain. Freeing no bytes is a normal outcome with
+// more than one cause, and the plain "evicted successfully" line reads as if
+// there had been nothing left to free — which is the one thing it does not
+// mean. Callers that force a cold read act on that line, so the reason belongs
+// next to it rather than in a separate stats command.
+func evictShortfall(resp *apiclient.BlockStoreEvictResult) string {
+	if resp.BytesFreed > 0 {
+		return ""
+	}
+	switch {
+	case resp.EvictionHeld:
+		return "Nothing was reclaimed: eviction is held off for this store " +
+			"(the remote is unreachable, or the store is pinned by retention policy). " +
+			"Local data stays resident until it clears."
+	case resp.UnsyncedBytesPinned > 0:
+		return fmt.Sprintf("Nothing was reclaimed: %s of local data has not reached the remote yet, "+
+			"and eviction keeps any whole segment holding un-uploaded bytes. "+
+			"Run `dfsctl system drain-uploads` until `store block stats` reports 0 pending remote bytes, then evict again.",
+			formatBytes(resp.UnsyncedBytesPinned))
+	default:
+		return ""
+	}
 }

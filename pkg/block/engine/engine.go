@@ -447,33 +447,23 @@ func (bs *Store) ListFiles() []string {
 	return out
 }
 
-// EvictLocal drops a file's local cached bytes. In the journal model the local
-// tier is segment-oriented and self-evicts under storage pressure; there is no
-// per-file "drop-but-keep-rehydratable" primitive (Delete tombstones the file
-// so it would not re-hydrate). Callers that need to force a file cold should
-// use DrainLocalSynced. ponytail: per-file forced evict is a no-op — the
-// journal owns eviction.
-func (bs *Store) EvictLocal(ctx context.Context, payloadID string) error {
+// DrainLocalSynced evicts every locally-resident, remote-durable segment. It is
+// the on-demand path the shares evict admin uses to force reads back onto the
+// remote (cold-read benchmarking). Unsynced (remote-missing) data is never
+// dropped — journal.Evict skips any segment holding a dirty record, and a
+// single un-uploaded record therefore keeps its whole segment resident.
+//
+// The whole journal.EvictResult is returned rather than just the byte count
+// because a zero-byte pass is an ordinary outcome with several causes, and the
+// caller reports the outcome to an operator: SegmentsEvicted separates "nothing
+// qualified" from "segments went but were nearly empty", and Held separates a
+// closed eviction gate from an open one that found no candidate.
+func (bs *Store) DrainLocalSynced(ctx context.Context) (journal.EvictResult, error) {
 	if err := bs.enter(); err != nil {
-		return err
+		return journal.EvictResult{}, err
 	}
 	defer bs.closeMu.RUnlock()
-	_ = payloadID
-	return nil
-}
-
-// DrainLocalSynced evicts every locally-resident, remote-durable segment,
-// returning the bytes freed. It is the on-demand path the shares evict admin
-// uses to force reads back onto the remote (cold-read benchmarking). Unsynced
-// (remote-missing) data is never dropped — journal.Evict skips any segment
-// holding a dirty record.
-func (bs *Store) DrainLocalSynced(ctx context.Context) (int64, error) {
-	if err := bs.enter(); err != nil {
-		return 0, err
-	}
-	defer bs.closeMu.RUnlock()
-	res, err := bs.local.Evict(ctx, 1<<62)
-	return res.BytesFreed, err
+	return bs.local.Evict(ctx, 1<<62)
 }
 
 // WarmAll proactively fetches every remote block of every payload in this

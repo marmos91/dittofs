@@ -478,6 +478,33 @@ func (m *RemoteSync) SyncCounts() (completed, failed int) {
 	return int(m.completedSyncs.Load()), int(m.failedSyncs.Load())
 }
 
+// InFlightUploads reports how many packed blocks are currently in flight to the
+// remote: one per upload-window slot held, taken at submit and released once
+// that block's CommitBlock returns. It is the live counterpart to the lifetime
+// CompletedSyncs/FailedSyncs, and the only queue-depth number the carve path
+// has — the dispatcher enumerates files per tick rather than keeping a queue,
+// so there is nothing "waiting" to count behind these.
+//
+// decision: the slot spans the block's metadata commit as well as its PutBlock,
+// so this counts uploads in progress rather than bytes strictly on the wire,
+// and a slow commit holds a slot after the upload finished. That is the honest
+// reading for an operator asking "is the remote still being written to", and it
+// is the same occupancy that refuses new uploads. The controller deliberately
+// does NOT sample this for window sizing — it counts PutBlock concurrency
+// directly (takePutPeak), because for THAT question the commit tail is a
+// misread. Revisit here only if arenas ever get a lifetime independent of the
+// slot, which would let the two numbers diverge in a way an operator cares
+// about.
+//
+// Nil-safe: NewRemoteSync always builds the limiter, but RemoteSync is also
+// assembled as a bare struct literal in tests, and a stats read must not panic.
+func (m *RemoteSync) InFlightUploads() int {
+	if m.uploadLimiter == nil {
+		return 0
+	}
+	return m.uploadLimiter.InFlight()
+}
+
 // noteBlockUploaded feeds the goodput sample with one block's bytes as soon as
 // its PutBlock returns. It is deliberately not the same moment as
 // noteBlockCommitted: the controller resizes the upload window, so its sample
