@@ -593,8 +593,10 @@ dropped 11,359 → 7,577. The edge is one-directional: `gc` imports nothing from
     `foreign_imports_test.go`. So `engine → local → journal` can simply be `engine → journal`;
     the interface adds a hop rather than inverting a dependency.
   - **35 methods is a mirror, not a narrowing.** "Accept interfaces" means narrow ones.
-  - **The real cost, stated honestly: 33 test files use the memory double** and would construct a
-    real journal on `t.TempDir()` instead — slower and disk-bound. That cost is why this keeps
+  - **The real cost, stated honestly: 34 Go test files import the memory double** (`git grep -l
+    'pkg/block/local/memory"' -- '*_test.go'`; one of them is the package's own
+    `memory/durability_test.go`, which is deleted with it, so 33 are rewrites) and they would
+    construct a real journal on `t.TempDir()` instead — slower and disk-bound. That cost is why this keeps
     being deferred, and it is the only argument for keeping the package. It is weakened by the
     double being unfaithful: its `Flush` ignores `opts` entirely, so tests pass against behaviour
     the real store does not have.
