@@ -50,27 +50,6 @@ func (r *gcMSReconciler) GetMetadataStoreForShare(name string) (metadata.Store, 
 
 func (r *gcMSReconciler) SharesForGC() []string { return append([]string(nil), r.order...) }
 
-// putPendingBlock seeds a FileChunk in BlockStatePending — the exact shape the
-// engine rollup creates and never transitions to Remote. RefCount 0 (the rollup
-// never bumps it; cross-file keep-alive comes from sibling rows in the GC live
-// set, not RefCount). The Remote-gated GetByHash returns nil for these, which is
-// why the reap path resolves rows by EXACT ID, never by hash. Used by the
-// #832-regression tests that exercise the real reap path.
-func putPendingBlock(t *testing.T, st metadata.Store, id string, h block.ContentHash) {
-	t.Helper()
-	if err := st.Put(t.Context(), &block.FileChunk{
-		ID:         id,
-		Hash:       h,
-		State:      block.BlockStatePending,
-		DataSize:   64,
-		RefCount:   0,
-		LastAccess: time.Now(),
-		CreatedAt:  time.Now(),
-	}); err != nil {
-		t.Fatalf("PutFileChunk(%s): %v", id, err)
-	}
-}
-
 // putBlock seeds a FileChunk with a non-zero hash on the given metadata store.
 func putBlock(t *testing.T, st metadata.Store, id string, h block.ContentHash) {
 	t.Helper()
