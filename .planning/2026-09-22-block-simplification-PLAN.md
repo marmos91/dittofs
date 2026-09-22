@@ -199,7 +199,7 @@ index two structures that must agree about residency at all times — the exact 
    `evictable()` gates on, so a segment whose only content is a tombstone passes `syncedRecords ==
    records`, gets retired, and the delete is lost — **the file resurrects with its pre-overwrite
    content**. `reclaimEmptied` reaches it straight from `Delete` (`store.go:904`). Same class as
-   #2231. **File an issue.**
+   #2231. **Filed as #2829.**
 2. **`evictable()` (`reclaim.go:212-215`) has no `records > 0` guard** where its sibling
    `sealableActive` (`:118`) does. One line.
 3. **`compactColdLog` runs only at Open** (`recovery.go:400-410`) — its own `ponytail:` says so.
@@ -317,7 +317,8 @@ pkg/block/                       the vocabulary. A LEAF — imports nothing inte
 │   ├── format.go (131) · statfs_{unix,windows}.go (36)
 │       ~~cold.go~~ ~~coldstats.go~~  a cold interval is just state=Remote in the checkpoint
 │       ~~admin.go~~                  5 forwards + 2 assertions proving nothing
-│       ~~restore.go~~                → runtime/snapshot.go (snapshot policy, 1 caller)
+│       (no restore.go — only restore_test.go; RestoreToVersion is in store.go, and 4C
+│        splits it IN PLACE. #1454 would rewrite the same function.)
 │       ~~*_bench_test.go~~ ×4        786 LOC that never execute
 │
 ├── engine/                      composition root + the public API ~15 packages depend on
@@ -369,23 +370,34 @@ pkg/block/                       the vocabulary. A LEAF — imports nothing inte
 
 Wave 1 needs no prerequisites — four concurrent PRs, today.
 
-### Precondition — land or abandon the three in-flight branches FIRST
+### Precondition — CLEARED 2026-09-22
 
-There are **zero open PRs**, but three local worktrees hold unpushed commits in exactly the files
-this plan rewrites:
+The three worktrees that held unpushed commits in the files this plan rewrites all landed:
+`block-legacy` = #2777, `block-api` = #2779, `block-upload` = #2780, all merged 2026-09-21;
+worktrees and branches removed 2026-09-22. There are **zero open PRs**.
 
-| Branch | Touches | Collides with |
+The rule that produced this check still stands for any branch opened against these files while the
+plan runs: **land it or abandon it before Wave 2.** A rename or a file move turns an unmerged branch
+into a modify/delete conflict, which git cannot help with — precisely how `fix/2423-one-put-window`
+died (8 commits, never pushed, then unrebaseable; the first commit alone conflicted across 13 paths,
+7 of them modify/delete against files develop had deleted).
+
+### Open issues this plan touches
+
+All 24 open issues read against this plan on 2026-09-22. Six bear on it. The rest are SMB (#2775,
+#2631, #2625, #2602, #2591, #2511), NFS (#2437, #2407, #2402, #2401, #2258), or unrelated to the
+block layer (#2263, #1603, #1418, #1417, #1290, #1199, #117).
+
+| Issue | Bears on | Disposition |
 |---|---|---|
-| `block-legacy` | `filechunk.go`, `types.go`, `engine/gc.go`, `gc_block.go` | 1D, 2A, 3E |
-| `block-upload` | `engine/syncer.go`, `flush_closure.go`, `carve_dispatch.go`, `types.go` | 3B |
-| `block-api` | `engine/dataextents.go`, `engine.go`, `flush.go` | 2A, 3B |
+| **#2829** — tombstone uncounted in `seg.records` | 4A | **Fixed by this plan.** It *is* 4A item 1, filed from it. |
+| **#2817** — group commit amortises only when writers share a shard | 4B, 4E | **Sequence it, do not fold it in.** Its subject is `shard.groupCommit` (`store.go:753`), which 4B splits out of `store.go`, and 4E changes how many records reach it. Land the measurement it asks for **before** 4B, or re-derive it after — not concurrently. Note this plan deliberately dropped a shard-count retune; #2817's ask is the measurement that would justify one, which is a different thing. |
+| **#2822** — cold-barrier worst-case pinning bound unmeasured | 1A, 4F | **Take the baseline before 4F.** Its mechanism is exactly `evictable()`'s "keep any segment holding a record not yet on the remote" — 1A adds the `records > 0` guard to that predicate and 4F rewrites reclaim around a reverse index. Measure residue-vs-segments-actually-pinned against today's code or the baseline is gone. |
+| **#2353** — bulk pre-warm of a subtree | 1B | **A decision, not a blocker.** 1B deletes `EnqueueDownload`/`TransferDownload` because nothing feeds them; a queued bulk pre-warm is the one plausible future consumer. Delete them anyway — re-adding a queue arm is cheap, carrying a dead one is not. **Say so in the 1B PR** so it is a decision and not an accident. |
+| **#1489** — remote manifest files for namespace DR | 3E | **Placement note only, nothing to build.** When it is built, the writer belongs in the new `pkg/block/manifest` beside `ComputeObjectID`; the check/repair *tooling* stays in `gc/`. That split is the reason to get 3E's boundary right. |
+| **#1454** — mount snapshots on a separate read-only share | 4C | **Collision warning.** It changes restore semantics in `RestoreToVersion` (`store.go:1198`) and `runtime/snapshot.go` — the same function 4C splits in place. Whichever lands second pays the rebase; neither should start blind. |
 
-This is precisely how `fix/2423-one-put-window` died: 8 commits, never pushed, then unrebaseable —
-the first commit alone conflicted across 13 paths, 7 of them modify/delete against files develop had
-deleted. Re-deriving the fix was cheaper than rescuing the branch.
-
-**Land them or abandon them before Wave 2 starts.** A rename or a file move turns an unmerged branch
-into a modify/delete conflict, which git cannot help with.
+Nothing above changes a wave's scope except #2829, which was already in it.
 
 ### Wave 0 — prerequisites
 - **0.1** Cut `RemoteSync.bs *Store` (`engine.go:202`, `syncer.go:72,466-469`) → `MetricsSink`.
@@ -400,14 +412,16 @@ into a modify/delete conflict, which git cannot help with.
   benchmark files (858 LOC total) — **NOT `wave7_group_commit_bench_test.go`, which landed at HEAD
   (`65bbda7c9`, #2818) and is live perf work**; 2 redundant `var _` assertions (`admin.go:29,42`);
   `evict`'s `allowActiveSeal` + its speculative doc (`reclaim.go:66-68`), keeping `sealSyncedActives`
-  (second live caller at `:483`). Plus the one-line `records > 0` guard on `evictable()`.
+  (second live caller at `:483`). Plus the one-line `records > 0` guard on `evictable()` — **take #2822's
+  residue-vs-segments-pinned baseline before this lands**, since it measures that predicate.
 - **1B engine** — `range.go` + `range_test.go` + `TestPerfGate_Phase12_BinarySearchOverhead` (a
   **`Test`**, not a Benchmark, burning 1M iterations gating a function nothing calls);
   `ErrPersistFileChunksNotWired`; `SetRemoteStore`; the dead `syncedHashStore` field.
   **`SyncQueue`: delete only the download ARMS**, not the file — `EnqueueDownload` (`:128`),
   `TransferDownload`, `pendingDownload` and the `downloads` channel cases. The **prefetch half is
   live in production** (`readahead.go:144` → `processDownload` → `fetchBlock`); deleting
-  `sync_queue.go` deletes readahead. Note these are exported from a `pkg/` package.
+  `sync_queue.go` deletes readahead. **#2353 asks for bulk subtree pre-warm** — the one plausible
+  future consumer of the download arms. Delete them anyway and record the decision in the PR. Note these are exported from a `pkg/` package.
   Deleting `range.go` also deletes a CI perf gate — say so in the PR.
 - **1C stores** — `remote/s3/verifier.go` + test. **It is the abandoned half of a deliberate
   decision, not an accident:** `s3/store.go:458-464`'s `ReadChunk` takes the expected hash as `_` and
@@ -475,9 +489,11 @@ into a modify/delete conflict, which git cannot help with.
 ### Wave 4 — the journal (after 1A and 3C). No segment format change.
 
 - **4A — the three live bugs, as standalone PRs, first.** Tombstones uncounted in `seg.records`
-  (resurrection — file the issue); the `records > 0` guard on `evictable()`; `compactColdLog`'s
-  recovery-only gate. These stand on their own and should not wait for the restructuring.
-- **4B** Split `journal/store.go` 1557 → six files; extract `coldLog` (`coldMu`/`coldFD`/
+  (resurrection — **#2829**); the `records > 0` guard on `evictable()`; `compactColdLog`'s
+  recovery-only gate. The latter two have no issue yet — file them or fix them, do not leave them
+  living only in this document. These stand on their own and should not wait for the restructuring.
+- **4B** Split `journal/store.go` 1557 → six files — **`shard.groupCommit` moves here; see #2817
+  before or after, never during**; extract `coldLog` (`coldMu`/`coldFD`/
   `coldBroken`) and `reclaimer` (`gcMu`) on their field-isolated seams; delete the 4 test seams from
   the production structs. **Extraction, not slicing.**
 - **4C** `RestoreToVersion` — **split in place, do not move.** It walks `s.shards` under `sh.mu`
@@ -493,7 +509,7 @@ into a modify/delete conflict, which git cannot help with.
 - **4E — the staging buffer.** One pending contiguous run per file; flush on non-contiguous write,
   COMMIT/FLUSH, any read of that file, Truncate, Delete, `DirtyExpiry`, eviction pressure.
   Ship the flush-on-everything version first and only then consider relaxing a trigger.
-- **4F — unify reclaim.** One entry point, two strategies (drop a fully-synced sealed segment;
+- **4F — unify reclaim.** #2822's baseline must exist before this starts. One entry point, two strategies (drop a fully-synced sealed segment;
   repack a high-dead-ratio one), behind the **segment→intervals reverse index** that
   `reclaim.go:305-307` already asks for — which also collapses the six duplicate index walks
   (`:262, :474, :639, :769, :889, :955`) into one lock-held helper.
