@@ -299,7 +299,70 @@ func (s *Store) evictSegment(sh *shard, seg *segmentMeta) (freed int64, err erro
 		}
 	}
 	sh.mu.Unlock()
+
+	// The markers move before the bytes go. retireSegment unlinks the file, and
+	// a tombstone inside it is a delete's only durable trace.
+	if err = s.carryMarkersForward(sh, seg); err != nil {
+		return 0, err
+	}
 	return s.retireSegment(sh, seg)
+}
+
+// carryMarkersForward re-appends seg's tombstones and truncate markers to the
+// shard's active segment and makes them durable, so the caller can unlink seg
+// without losing the deletes it carries.
+//
+// Each marker keeps its ORIGINAL Version rather than minting a new one: the
+// Version is what orders a marker against the records it buries, and a fresh
+// one would place the delete after data written since, burying more than the
+// delete did. This is the same rule repackSegment follows carrying markers to
+// a repack target, and the reason neither path re-fences: the fence was taken
+// when the delete was first appended.
+//
+// Markers stay uncounted in seg.records here too, matching the append path and
+// the recovery replay, so a restart reconstructs the same counters.
+//
+// The append lands in the active segment rather than a fresh one on purpose. A
+// marker-only segment can never be evicted (evictable requires a record) and
+// never repacked (its deadBytes stay 0), so it would live for the process's
+// lifetime holding an open fd — trading a data-loss bug for an fd leak bounded
+// by RLIMIT_NOFILE.
+func (s *Store) carryMarkersForward(sh *shard, seg *segmentMeta) error {
+	markers, err := victimMarkers(seg, s.cfg.SegmentSize)
+	if err != nil {
+		return err
+	}
+	if len(markers) == 0 {
+		return nil
+	}
+
+	sh.mu.Lock()
+	for _, mk := range markers {
+		if sh.active.tail.Load()+recordLen(len(mk.id), 0) > s.cfg.SegmentSize {
+			if err := s.sealSegment(sh); err != nil {
+				sh.mu.Unlock()
+				return err
+			}
+		}
+		target := sh.active
+		var werr error
+		if mk.flags&flagTruncate != 0 {
+			_, werr = writeTruncateRecord(target, mk.id, mk.version, mk.newSize)
+		} else {
+			_, werr = writeTombstoneRecord(target, mk.id, mk.version)
+		}
+		if werr != nil {
+			sh.mu.Unlock()
+			return werr
+		}
+		target.noteMinVersion(mk.version)
+	}
+	sh.mu.Unlock()
+
+	// groupCommit takes sh.mu itself, so it runs outside the loop's critical
+	// section. It takes commitMu and sh.mu but never flushMu, which evictSegment
+	// holds across this call.
+	return sh.groupCommit()
 }
 
 // ensureSpace is the write-path capacity gate. With MaxLocalBytes set, it evicts

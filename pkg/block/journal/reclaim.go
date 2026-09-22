@@ -74,22 +74,24 @@ func (s *Store) retireSegment(sh *shard, seg *segmentMeta) (int64, error) {
 // the next recovery replays them and the file comes back. Requiring a record
 // excludes that segment, the same reason sealableActive requires one.
 //
-// decision: this covers the marker-ONLY segment and nothing more. A segment
-// holding one synced data record PLUS a marker reports 1 == 1, passes here,
-// and loses the marker exactly the same way — that hazard is open, predates
-// this predicate, and is not closed by it. The obvious widening (refuse any
-// segment holding a marker) is wrong: evictable is also the post-delete
-// reclaim gate via reclaimEmptied, so it would pin a full segment's payload
-// behind one 0-payload marker and make ErrLocalStoreFull reachable under
-// delete-heavy pressure. The fix is to carry markers forward on evict the way
-// repackSegment already does, which is more than a predicate can do.
+// The mixed case — one synced data record PLUS a marker, which reports 1 == 1
+// and passes here — is no longer a hazard, and is not handled by this
+// predicate. Both retire paths call carryMarkersForward first, so a marker
+// outlives the segment that carried it without pinning that segment's payload.
+// Widening this predicate to refuse any marker-bearing segment would have done
+// that pinning: it gates reclaimEmptied as well, so a full synced segment would
+// sit behind one 0-payload marker and make ErrLocalStoreFull reachable under
+// delete-heavy pressure.
 //
-// decision: excluding a marker-only segment makes it permanent, because
+// decision: excluding a marker-only segment still makes it permanent, because
 // pickVictim skips it too — deadBytes stays 0, so a repack would copy it into
 // an identical segment forever. The cost is that segment's tail plus its open
-// fd, so the real ceiling is RLIMIT_NOFILE, not disk. Withdraw it for a rule
-// that can prove a marker's records are all reclaimed — a store-wide minimum
-// live Version would do it — never for disk pressure alone.
+// fd, so the ceiling is RLIMIT_NOFILE, not disk. Now that both retire paths
+// carry markers forward, dropping the records clause would be safe for the
+// markers themselves; it is kept because nothing yet proves the records a
+// marker buries are all reclaimed, and retiring it early would unbury them.
+// Withdraw it for a rule that can prove that — a store-wide minimum live
+// Version would do it — never for disk pressure alone.
 func evictable(seg *segmentMeta) bool {
 	return seg.sealed.Load() && !seg.busy.Load() && seg.records.Load() > 0 &&
 		seg.syncedRecords.Load() == seg.records.Load()
@@ -166,6 +168,15 @@ func (s *Store) reclaimEmptied(sh *shard) error {
 	for _, seg := range victims {
 		if !seg.busy.CompareAndSwap(false, true) {
 			continue // claimed by a concurrent eviction/GC — it will retire it
+		}
+		// Same rule as eviction: a segment emptied of live payload can still
+		// hold the tombstone that emptied it, and retireSegment unlinks the
+		// file. Carry the markers to the active segment first. repackSegment
+		// needs no call here because it carries its victim's markers into the
+		// replacement target it is already writing.
+		if err := s.carryMarkersForward(sh, seg); err != nil {
+			seg.busy.Store(false)
+			return err
 		}
 		if _, err := s.retireSegment(sh, seg); err != nil {
 			seg.busy.Store(false)
