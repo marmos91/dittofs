@@ -1,4 +1,4 @@
-// Package engine — audit
+// Package gc — audit
 //
 // AuditRefcounts walks a share's metadata store and verifies the CAS
 // manifest-consistency invariant:

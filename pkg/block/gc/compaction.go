@@ -1,4 +1,4 @@
-// Package engine — GC compaction of partially-dead blocks.
+// Package gc — GC compaction of partially-dead blocks.
 //
 // Delete-only block GC (gc_block.go) frees a block object only once its LAST
 // live chunk dies. A block that keeps a few live chunks but has accumulated

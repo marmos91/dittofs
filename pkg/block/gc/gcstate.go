@@ -1,4 +1,4 @@
-// Package engine — GCState
+// Package gc — GCState
 //
 // The GC mark phase persists the live ContentHash set on disk under
 // <localStore>/gc-state/<runID>/ using a Badger temp store. This

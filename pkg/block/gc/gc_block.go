@@ -1,4 +1,4 @@
-// Package engine — block-aware GC reclaim for packed-block objects.
+// Package gc — block-aware GC reclaim for packed-block objects.
 //
 // A chunk lives inside a packed blocks/<blockID> object. Its bytes are shared
 // with the other chunks in the same block, so the block object can be

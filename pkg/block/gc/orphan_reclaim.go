@@ -1,4 +1,4 @@
-// Package engine — orphan-storage reclaim, the *deleting* stages after the
+// Package gc — orphan-storage reclaim, the *deleting* stages after the
 // read-only reporter (reconcile.go). Both operate on a record's
 // live-locator status, never its (possibly stale) LiveChunkCount:
 //
