@@ -49,20 +49,15 @@ func NewRemote(inner remote.RemoteStore, p CompressionPolicy) (*Decorator, error
 // --- write path ---------------------------------------------------------
 
 // SealChunk applies this decorator's compression layer to plaintext, then
-// delegates to the inner store's ChunkSealer so a decorated chain produces the
-// fully-transformed wire bytes for a packed block. Implements
-// remote.ChunkSealer (#1414). Symmetric with ReadChunk: ReadChunk decompresses
+// delegates inward so a decorated chain produces the fully-transformed wire
+// bytes for a packed block. Symmetric with ReadChunk: ReadChunk decompresses
 // after the inner layer decrypts, inverting this exactly.
 func (d *Decorator) SealChunk(ctx context.Context, hash block.ContentHash, plaintext []byte) ([]byte, error) {
 	wire, err := d.sealLayer(plaintext)
 	if err != nil {
 		return nil, err
 	}
-	sealer, ok := d.inner.(remote.ChunkSealer)
-	if !ok {
-		return nil, remote.ErrChunkReadUnsupported
-	}
-	return sealer.SealChunk(ctx, hash, wire)
+	return d.inner.SealChunk(ctx, hash, wire)
 }
 
 // sealLayer is the single source of this decorator's compression transform,
@@ -140,13 +135,9 @@ func (d *Decorator) decode(raw []byte) ([]byte, error) {
 // blob (or raw passthrough) verbatim, so decoding the chunk's [offset, length)
 // slice is identical to decoding its standalone object. No verification here —
 // the engine verifies the BLAKE3 after the full stack. hash is unused at this
-// layer. Implements remote.ChunkReader (#1414).
+// layer.
 func (d *Decorator) ReadChunk(ctx context.Context, blockID string, offset, length int64, hash block.ContentHash) ([]byte, error) {
-	pcr, ok := d.inner.(remote.ChunkReader)
-	if !ok {
-		return nil, remote.ErrChunkReadUnsupported
-	}
-	raw, err := pcr.ReadChunk(ctx, blockID, offset, length, hash)
+	raw, err := d.inner.ReadChunk(ctx, blockID, offset, length, hash)
 	if err != nil {
 		return nil, err
 	}

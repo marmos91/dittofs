@@ -50,19 +50,14 @@ func NewRemote(inner remote.RemoteStore, policy EncryptionPolicy, provider keypr
 
 // SealChunk encrypts one chunk's plaintext into a frame and delegates inward so
 // a decorated chain produces the fully-transformed wire bytes for a packed
-// block. Implements remote.ChunkSealer (#1414). hash is bound as AEAD AAD,
-// matching the standalone Put scheme. Symmetric with ReadChunk, which decrypts
+// block. hash is bound as AEAD AAD. Symmetric with ReadChunk, which decrypts
 // the ranged frame with the same AAD.
 func (d *EncryptedRemote) SealChunk(ctx context.Context, hash block.ContentHash, plaintext []byte) ([]byte, error) {
 	wire, err := d.sealLayer(ctx, hash, plaintext)
 	if err != nil {
 		return nil, err
 	}
-	sealer, ok := d.inner.(remote.ChunkSealer)
-	if !ok {
-		return nil, remote.ErrChunkReadUnsupported
-	}
-	return sealer.SealChunk(ctx, hash, wire)
+	return d.inner.SealChunk(ctx, hash, wire)
 }
 
 // sealLayer is the single source of this decorator's encryption transform,
@@ -103,13 +98,9 @@ func (d *EncryptedRemote) sealLayer(ctx context.Context, hash block.ContentHash,
 // full self-framed encryption blob (header||nonce||ciphertext||tag) verbatim, so
 // decrypting the chunk's [offset, length) slice is identical to decrypting its
 // standalone object. No verification here — the engine verifies the BLAKE3 after
-// the full stack. Implements remote.ChunkReader (#1414).
+// the full stack.
 func (d *EncryptedRemote) ReadChunk(ctx context.Context, blockID string, offset, length int64, hash block.ContentHash) ([]byte, error) {
-	pcr, ok := d.inner.(remote.ChunkReader)
-	if !ok {
-		return nil, remote.ErrChunkReadUnsupported
-	}
-	raw, err := pcr.ReadChunk(ctx, blockID, offset, length, hash)
+	raw, err := d.inner.ReadChunk(ctx, blockID, offset, length, hash)
 	if err != nil {
 		return nil, err
 	}

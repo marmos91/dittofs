@@ -12,11 +12,11 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/engine"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/block/middleware/compression"
 	"github.com/marmos91/dittofs/pkg/block/middleware/encryption"
 	"github.com/marmos91/dittofs/pkg/block/middleware/encryption/keyprovider"
-	"github.com/marmos91/dittofs/pkg/block/engine"
-	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	remotes3 "github.com/marmos91/dittofs/pkg/block/remote/s3"
@@ -687,6 +687,14 @@ func (s *Service) acquireRemoteStore(ctx context.Context, ref string, provider B
 	//
 	// Apply order in code is therefore encryption first (innermost),
 	// then compression (outermost).
+	//
+	// decision: these two statements are the only thing that enforces that
+	// order — the decorators accept each other in either arrangement, and a
+	// swap produces a working store that compresses ciphertext at a ratio of
+	// ~1.0 forever, silently. It stays a call-sequence convention because
+	// this is the sole construction site and the stack is fixed at two
+	// layers; give the order its own type the moment a second site builds
+	// the stack, or a third transform joins it.
 	encWrapped, err := maybeWrapEncryption(ctx, newStore, remoteCfg)
 	if err != nil {
 		_ = newStore.Close()
