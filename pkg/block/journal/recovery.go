@@ -3,6 +3,7 @@ package journal
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -64,12 +65,9 @@ func (s *Store) recover() error {
 		}
 	}()
 
+	s.sweepIdxSidecars()
 	if err := r.scanSegments(); err != nil {
 		return err
-	}
-	if r.missingIdx > 0 {
-		r.s.log.Warn("journal: segments missing .idx sidecar, rebuilding from segment scan (recovery slower)",
-			"segments", r.missingIdx)
 	}
 	if err := r.applyColdLog(); err != nil {
 		return err
@@ -127,7 +125,6 @@ type recoveryState struct {
 
 	maxSegID   uint64
 	maxVersion uint64
-	missingIdx int
 	coldLoaded int // cold-log entries read back, for the compaction ratio
 
 	tombstones  map[FileID]uint64    // deleted file -> highest tombstone version
@@ -253,7 +250,6 @@ func (r *recoveryState) loadSegment(id uint64) error {
 	sh := s.shardIndex(FileID(recs[0].fileID))
 
 	if !sealed {
-		m.idxFD, _ = os.OpenFile(s.idxPath(id), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
 		if r.actives[sh] == nil {
 			r.actives[sh] = m
 		} else {
@@ -264,21 +260,10 @@ func (r *recoveryState) loadSegment(id uint64) error {
 				r.actives[sh], m = m, r.actives[sh]
 			}
 			m.sealed.Store(true)
-			if m.idxFD != nil {
-				_ = m.idxFD.Close()
-				m.idxFD = nil
-			}
 			r.sealedByShard[sh][m.id] = m
 		}
 	} else {
 		r.sealedByShard[sh][id] = m
-	}
-
-	if s.idxMissing(id) {
-		if rerr := s.rebuildIdx(id, recs); rerr != nil {
-			return rerr
-		}
-		r.missingIdx++
 	}
 
 	r.replayRecords(m, sh, id, recs)
@@ -464,7 +449,6 @@ func (r *recoveryState) assignActiveSegments() ([]*shard, error) {
 			if poolPos < len(r.emptyPool) {
 				active = r.emptyPool[poolPos]
 				poolPos++
-				active.idxFD, _ = os.OpenFile(r.s.idxPath(active.id), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
 			} else {
 				seg, cerr := r.s.createSegment()
 				if cerr != nil {
@@ -552,40 +536,21 @@ func keepIntervals(idxMap map[FileID]*fileIndex, fid FileID, fi *fileIndex, keep
 	fi.ivs = kept
 }
 
-// idxMissing reports whether a segment's .idx sidecar is absent.
-func (s *Store) idxMissing(id uint64) bool {
-	_, err := os.Stat(s.idxPath(id))
-	return os.IsNotExist(err)
-}
-
-// rebuildIdx rewrites a segment's .idx sidecar from its scanned records. The
-// sidecar is only ever rebuilt from the .seg, so a lost or partial one is
-// regenerated in full and fsynced.
-func (s *Store) rebuildIdx(id uint64, recs []record) error {
-	path := s.idxPath(id)
-	fd, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+// sweepIdxSidecars unlinks every .idx sidecar left in the store directory by a
+// build that still wrote them. Nothing reads one — the index is rebuilt from the
+// .seg records alone — and diskBytes counts segment bytes only, so a leftover
+// sidecar is invisible to the MaxLocalBytes gate and no reclaim path would ever
+// free it. Best-effort: a file that will not unlink is retried on the next Open.
+func (s *Store) sweepIdxSidecars() {
+	entries, err := os.ReadDir(s.dir)
 	if err != nil {
-		return fmt.Errorf("journal: rebuild idx %q: %w", path, err)
+		return
 	}
-	for _, rec := range recs {
-		payloadOff := rec.segOff + recordHeaderSize + int64(len(rec.fileID))
-		if _, werr := fd.Write(idxEntry{
-			FileIDHash: fnv1a(string(rec.fileID)),
-			FileOffset: rec.header.FileOffset,
-			PayloadLen: rec.header.PayloadLen,
-			Version:    rec.header.Version,
-			SegOffset:  uint64(payloadOff),
-			Flags:      rec.header.Flags,
-		}.encode()); werr != nil {
-			_ = fd.Close()
-			return fmt.Errorf("journal: write rebuilt idx %q: %w", path, werr)
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), idxSuffix) {
+			_ = os.Remove(filepath.Join(s.dir, e.Name()))
 		}
 	}
-	if serr := fd.Sync(); serr != nil {
-		_ = fd.Close()
-		return fmt.Errorf("journal: fsync rebuilt idx %q: %w", path, serr)
-	}
-	return fd.Close()
 }
 
 // sweepOrphans age-gates the deletion of unattachable segment files. Recovery
@@ -605,7 +570,6 @@ func (s *Store) sweepOrphans(ids []uint64) {
 			continue
 		}
 		_ = os.Remove(path)
-		_ = os.Remove(s.idxPath(id))
 	}
 }
 

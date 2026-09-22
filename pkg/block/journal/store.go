@@ -1170,11 +1170,6 @@ func (s *Store) segPath(id uint64) string {
 	return filepath.Join(s.dir, fmt.Sprintf(segIDFmt+segSuffix, id))
 }
 
-// idxPath returns the on-disk path of a segment's .idx sidecar.
-func (s *Store) idxPath(id uint64) string {
-	return filepath.Join(s.dir, fmt.Sprintf(segIDFmt+idxSuffix, id))
-}
-
 // nextVersion returns the next global LSN.
 func (s *Store) nextVersion() uint64 { return s.version.Add(1) }
 

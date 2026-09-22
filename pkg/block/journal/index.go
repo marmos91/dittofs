@@ -2,7 +2,6 @@ package journal
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"slices"
 	"sort"
@@ -470,39 +469,6 @@ func appendExtent(out [][2]uint64, start, end, fileSize int64) [][2]uint64 {
 		return out
 	}
 	return append(out, [2]uint64{uint64(start), uint64(end)})
-}
-
-// idxEntry is one 40-byte record in a segment's .idx sidecar. The sidecar is
-// lazy and best-effort: losing it only forces a re-scan of the sibling .seg.
-//
-//	off  size  field
-//	0    8     FileIDHash  FNV-1a of FileID (same hash as shardFor)
-//	8    8     FileOffset
-//	16   4     PayloadLen
-//	20   8     Version
-//	28   8     SegOffset   payload byte offset in the .seg
-//	36   1     Flags
-//	37   3     pad
-type idxEntry struct {
-	FileIDHash uint64
-	FileOffset uint64
-	PayloadLen uint32
-	Version    uint64
-	SegOffset  uint64
-	Flags      uint8
-}
-
-const idxEntrySize = 40
-
-func (e idxEntry) encode() []byte {
-	buf := make([]byte, idxEntrySize)
-	binary.LittleEndian.PutUint64(buf[0:8], e.FileIDHash)
-	binary.LittleEndian.PutUint64(buf[8:16], e.FileOffset)
-	binary.LittleEndian.PutUint32(buf[16:20], e.PayloadLen)
-	binary.LittleEndian.PutUint64(buf[20:28], e.Version)
-	binary.LittleEndian.PutUint64(buf[28:36], e.SegOffset)
-	buf[36] = e.Flags
-	return buf
 }
 
 // hydratable returns the sub-ranges of [off, off+n) that a hydrate may fill:

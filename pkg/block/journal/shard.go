@@ -12,8 +12,7 @@ const (
 	fnvPrime64  = 1099511628211
 )
 
-// fnv1a hashes s with FNV-1a. Used both to pick a shard and to fill the .idx
-// FileIDHash column.
+// fnv1a hashes s with FNV-1a. It picks a FileID's shard.
 func fnv1a(s string) uint64 {
 	h := uint64(fnvOffset64)
 	for i := 0; i < len(s); i++ {

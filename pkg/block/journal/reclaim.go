@@ -419,7 +419,7 @@ func (s *Store) ensureSpace(ctx context.Context, needed int64) error {
 // This drops the segment from the sealed set under sh.mu, drains in-flight
 // unlocked preads via the exclusive readGuard — taken WITHOUT sh.mu so it can't
 // deadlock a reader that holds sh.mu while acquiring the shared guard — closes
-// the fd, unlinks the .seg/.idx files, and decrements diskBytes by the reclaimed
+// the fd, unlinks the .seg file, and decrements diskBytes by the reclaimed
 // on-disk bytes. It returns those bytes.
 //
 // On unlink failure the segment is already out of the index and its fd closed —
@@ -439,7 +439,6 @@ func (s *Store) retireSegment(sh *shard, seg *segmentMeta) (int64, error) {
 	if err := os.Remove(s.segPath(seg.id)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return 0, fmt.Errorf("journal: retire remove segment %d: %w", seg.id, err)
 	}
-	_ = os.Remove(s.idxPath(seg.id)) // best-effort: the .idx is rebuildable
 	s.diskBytes.Add(-freed)
 	return freed, nil
 }
@@ -807,7 +806,6 @@ func (s *Store) repackSegment(sh *shard, victim *segmentMeta, live map[uint64]in
 	cleanup := func() {
 		_ = target.close()
 		_ = os.Remove(s.segPath(target.id))
-		_ = os.Remove(s.idxPath(target.id))
 	}
 	newOff := make([]int64, len(moves))
 	var relocated, syncedCount int64

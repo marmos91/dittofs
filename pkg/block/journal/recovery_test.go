@@ -3,8 +3,10 @@ package journal
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -220,11 +222,12 @@ func TestVersionLSNMonotonicAfterReopen(t *testing.T) {
 	}
 }
 
-// TestMissingIdxRebuilt deletes a sealed segment's .idx sidecar, then asserts
-// recovery rebuilds it, warns, and serves the data intact.
-func TestMissingIdxRebuilt(t *testing.T) {
+// TestIdxSidecarsSwept drops a sidecar beside a live segment and an orphan one
+// beside no segment at all, then asserts reopening the store unlinks both and
+// still serves the data. Nothing counts sidecar bytes, so one left behind is
+// invisible to the MaxLocalBytes gate and never reclaimed.
+func TestIdxSidecarsSwept(t *testing.T) {
 	dir := t.TempDir()
-	// Small segment + single shard forces a seal after ~1 MiB of writes.
 	s, err := Open(dir, Config{ShardCount: 1, SegmentSize: minSegmentSize})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -232,42 +235,34 @@ func TestMissingIdxRebuilt(t *testing.T) {
 	ctx := context.Background()
 
 	chunk := bytes.Repeat([]byte("payload-"), 8192) // 64 KiB
-	var written int
-	for off := 0; off < int(minSegmentSize)+128<<10; off += len(chunk) {
-		if err := s.WriteAt(ctx, "big", int64(off), chunk); err != nil {
-			t.Fatalf("WriteAt: %v", err)
-		}
-		written = off + len(chunk)
+	if err := s.WriteAt(ctx, "big", 0, chunk); err != nil {
+		t.Fatalf("WriteAt: %v", err)
 	}
 	if err := s.Commit(ctx, "big"); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-	// Segment 0 should now be sealed with an .idx sidecar.
-	if len(s.shards[0].sealed) == 0 {
-		t.Fatalf("expected at least one sealed segment")
-	}
-	if err := os.Remove(s.idxPath(0)); err != nil {
-		t.Fatalf("remove sealed .idx: %v", err)
+
+	live := filepath.Join(dir, fmt.Sprintf(segIDFmt+idxSuffix, 0))
+	orphan := filepath.Join(dir, fmt.Sprintf(segIDFmt+idxSuffix, 4242))
+	for _, path := range []string{live, orphan} {
+		if err := os.WriteFile(path, []byte("stale sidecar"), 0o644); err != nil {
+			t.Fatalf("seed sidecar %q: %v", path, err)
+		}
 	}
 
-	logger, warned := captureWarnings(t)
-
-	r := reopen(t, s, Config{Logger: logger})
-	if !strings.Contains(warned(), "missing .idx sidecar") {
-		t.Fatalf("expected a Warn for the missing .idx")
+	r := reopen(t, s, Config{})
+	for _, path := range []string{live, orphan} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("sidecar %q survived reopen: %v", path, err)
+		}
 	}
-	if _, err := os.Stat(r.idxPath(0)); err != nil {
-		t.Fatalf("sealed .idx not rebuilt: %v", err)
-	}
-	// Data still intact across the sealed + active segments.
 	got := make([]byte, len(chunk))
 	if _, _, err := r.ReadAt(ctx, "big", 0, got); err != nil {
-		t.Fatalf("ReadAt after rebuild: %v", err)
+		t.Fatalf("ReadAt after sweep: %v", err)
 	}
 	if !bytes.Equal(got, chunk) {
-		t.Fatalf("data corrupted after .idx rebuild")
+		t.Fatalf("data corrupted by the sidecar sweep")
 	}
-	_ = written
 }
 
 // TestOrphanSweepAgeGated asserts an unattachable, aged segment file is

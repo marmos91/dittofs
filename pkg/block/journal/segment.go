@@ -31,6 +31,9 @@ const (
 
 	segIDFmt  = "%016d"
 	segSuffix = ".seg"
+	// idxSuffix names the sidecar an earlier build wrote beside every segment.
+	// Nothing writes or reads one now; the suffix survives so Open can sweep
+	// the leftovers.
 	idxSuffix = ".idx"
 )
 
@@ -72,7 +75,6 @@ type segmentMeta struct {
 	// remote.
 	corrupt atomic.Bool
 	fd      *os.File
-	idxFD   *os.File // persistent append handle for the .idx sidecar (nil if unavailable)
 	// readGuard coordinates unlocked preads against a GC/eviction that unlinks the
 	// segment: readers hold it shared across a pread, the reclaimer holds it
 	// exclusive around close+unlink so no read touches a closed fd.
@@ -98,15 +100,9 @@ func (m *segmentMeta) noteMinVersion(v uint64) {
 	}
 }
 
-// close closes the segment's data and index file descriptors.
+// close closes the segment's data file descriptor.
 func (m *segmentMeta) close() error {
 	var firstErr error
-	if m.idxFD != nil {
-		if err := m.idxFD.Close(); err != nil {
-			firstErr = err
-		}
-		m.idxFD = nil
-	}
 	if m.fd != nil {
 		if err := m.fd.Close(); err != nil && firstErr == nil {
 			firstErr = err
@@ -172,10 +168,7 @@ func (s *Store) createSegment() (*segmentMeta, error) {
 		_ = fd.Close()
 		return nil, fmt.Errorf("journal: fsync dir %q: %w", s.dir, err)
 	}
-	// The .idx sidecar is best-effort: if it can't be opened, records still
-	// append and the index is rebuildable from the .seg on recovery.
-	idxFD, _ := os.OpenFile(s.idxPath(id), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
-	m := &segmentMeta{id: id, createdAt: createdAt, fd: fd, idxFD: idxFD}
+	m := &segmentMeta{id: id, createdAt: createdAt, fd: fd}
 	m.tail.Store(segHeaderSize)
 	s.diskBytes.Add(segHeaderSize)
 	return m, nil
@@ -217,7 +210,7 @@ func fsyncDir(dir string) error {
 }
 
 // sealInPlace makes an appended-into segment immutable: fsync its record bytes,
-// set the on-disk sealed bit, fsync again, then close its .idx append handle.
+// set the on-disk sealed bit, then fsync again.
 // Durability boundary: data is fsynced BEFORE the sealed bit so recovery never
 // trusts a header whose records did not reach disk. The caller moves it into the
 // sealed set. Used both by rotation and by GC when it seals a repack target.
@@ -231,10 +224,6 @@ func (m *segmentMeta) sealInPlace() error {
 	}
 	if err := m.fd.Sync(); err != nil {
 		return fmt.Errorf("journal: fsync after seal: %w", err)
-	}
-	if m.idxFD != nil {
-		_ = m.idxFD.Close()
-		m.idxFD = nil
 	}
 	m.sealed.Store(true)
 	return nil
@@ -380,20 +369,6 @@ func (s *Store) appendRecord(ctx context.Context, id FileID, offset int64, data 
 		seg.syncedRecords.Add(1)
 	}
 
-	// Best-effort .idx sidecar via the segment's persistent append handle; a
-	// failure is a rebuildable performance event, never a lost write. The write
-	// runs under sh.mu, so appends to idxFD stay ordered.
-	if seg.idxFD != nil {
-		_, _ = seg.idxFD.Write(idxEntry{
-			FileIDHash: fnv1a(string(id)),
-			FileOffset: uint64(offset),
-			PayloadLen: uint32(len(data)),
-			Version:    version,
-			SegOffset:  uint64(payloadOff),
-			Flags:      flags,
-		}.encode())
-	}
-
 	fi := sh.indexFor(id)
 	dirtyRemoved, dirtyAdded, dead := fi.insert(interval{
 		fileOff: offset,
@@ -437,8 +412,6 @@ func (s *Store) appendRecord(ctx context.Context, id FileID, offset int64, data 
 // shard's active segment, returning the tombstone's Version. The fsync makes the
 // delete at least as durable as any data record it shadows (which was durable
 // only if fsynced), so recovery can never replay data whose tombstone was lost.
-// The record is indexed too (an idxEntry with flagTombstone), so rebuildIdx and
-// recovery suppress the file's older records without rescanning the .seg.
 func (s *Store) appendTombstone(ctx context.Context, id FileID) (uint64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -474,20 +447,11 @@ func (s *Store) appendTombstone(ctx context.Context, id FileID) (uint64, error) 
 	// rewrite that raced past the delete and deliberately keeps it. Stamping later
 	// cannot help either: by then that record is already committed.
 	sh.fenceDelete(id, version)
-	recStart, err := writeTombstoneRecord(seg, id, version)
-	if err != nil {
+	if _, err := writeTombstoneRecord(seg, id, version); err != nil {
 		sh.mu.Unlock()
 		return 0, err
 	}
 	seg.noteMinVersion(version)
-	if seg.idxFD != nil {
-		_, _ = seg.idxFD.Write(idxEntry{
-			FileIDHash: fnv1a(string(id)),
-			Version:    version,
-			SegOffset:  uint64(recStart + recordHeaderSize + int64(len(fileID))),
-			Flags:      flagTombstone,
-		}.encode())
-	}
 	sh.mu.Unlock()
 	// Durability goes through the shard's commit leader rather than a private
 	// fd.Sync: the record is already written, so a barrier that starts now covers
@@ -527,21 +491,11 @@ func (s *Store) appendTruncateMarker(ctx context.Context, id FileID, newSize int
 	}
 	seg := sh.active
 	version := s.nextVersion()
-	recStart, err := writeTruncateRecord(seg, id, version, newSize)
-	if err != nil {
+	if _, err := writeTruncateRecord(seg, id, version, newSize); err != nil {
 		sh.mu.Unlock()
 		return 0, err
 	}
 	seg.noteMinVersion(version)
-	if seg.idxFD != nil {
-		_, _ = seg.idxFD.Write(idxEntry{
-			FileIDHash: fnv1a(string(id)),
-			FileOffset: uint64(newSize),
-			Version:    version,
-			SegOffset:  uint64(recStart + recordHeaderSize + int64(len(fileID))),
-			Flags:      flagTruncate,
-		}.encode())
-	}
 	sh.mu.Unlock()
 	// Same commit-leader path as the tombstone: the marker's bytes are written,
 	// so any barrier that starts after this point makes them durable.
