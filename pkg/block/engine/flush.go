@@ -186,8 +186,11 @@ var (
 // the manifest at all.
 //
 // Rows + the File.Blocks projection are written in one txn via the committer.
-// The clone fixture has no committer, but its source has no dirty data so
-// CommitBlock never fires — a nil committer there is inert.
+// The committer may be nil — SetSyncedHashStore clears it for any store that
+// is not a blockCommitter, and the clone fixture never wires one — and that
+// nil is not inert. The row-end and reap queries below read it as "no manifest
+// to consult" and stand down, but CommitBlock fails the pass rather than
+// report rows it never wrote.
 type localBlockSink struct {
 	committer   blockCommitter
 	commitLocks *carveCommitLocks
