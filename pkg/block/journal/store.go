@@ -80,7 +80,8 @@ type Config struct {
 	// disables the loop entirely. That loop drives the same non-Force pass an
 	// explicit caller does, so a caller that asserts on what its own pass
 	// reclaimed must disable it — otherwise the loop can take the qualifying
-	// segments first and leave that pass nothing to find.
+	// segments first and leave that pass nothing to find. What disabling costs
+	// is stated at startBackground.
 	GCInterval time.Duration
 	// DirtyExpiry bounds how long an appended record may sit unfsynced. A
 	// background loop commits every shard still holding uncovered records once
@@ -421,6 +422,14 @@ func (s *Store) Close() error {
 func (s *Store) startBackground() {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.bgCancel = cancel
+	// decision: a negative GCInterval skips the repack loop outright, and that
+	// is not free — gcLoop is what keeps local bytes tracking live bytes
+	// proactively. Without it the only reclaimer left is the write-path
+	// eviction gate, so dead records accumulate until MaxLocalBytes
+	// backpressure forces the work, at write latency instead of in the
+	// background. The exemption holds because nothing that opens a store for
+	// real work sets the field: every caller leaves it zero, which normalizes
+	// to defaultGCInterval. Withdraw it the moment one sets a negative value.
 	if s.cfg.GCInterval > 0 {
 		s.bgWG.Add(1)
 		go func() { defer s.bgWG.Done(); s.gcLoop(ctx) }()
