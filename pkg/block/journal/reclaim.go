@@ -546,7 +546,7 @@ func (s *Store) reclaimEmptied(sh *shard) error {
 //
 // Repack is strictly LOCAL: it relocates cache bytes between segments and never
 // touches the remote store. Remote-block refcount reclamation stays with the
-// engine's block-GC sweep (pkg/block/engine/gc_block.go), whose per-remote
+// block-GC sweep (pkg/block/gc/gc_block.go), whose per-remote
 // serialization is what makes a decrement safe — the union BlockReclaimer
 // decrement is unsafe under a concurrent GC (its sweeper lock is per-GCStateRoot,
 // not per-remote), so journal GC must never drive it. A tombstone here only drops

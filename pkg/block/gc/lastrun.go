@@ -22,7 +22,9 @@ const (
 // is missing. An empty dir is a no-op: the caller chose not to persist.
 //
 // The write is atomic by .tmp + rename, so a crash mid-write leaves the
-// previous summary intact rather than a half-written one. It is deliberately
+// previous summary intact rather than a half-written one.
+//
+// decision: the write is deliberately
 // NOT durable — neither the temp file nor the directory is fsynced, so a
 // machine that loses power right after the rename can come back with the older
 // summary or none at all. That is the right trade for what this is: an

@@ -236,7 +236,7 @@ func (r *chunkWindowResolver) coveringRow(ctx context.Context, off uint64) (*blo
 // its parsed absolute start offset, or (nil, 0, nil) for a hole. When the store
 // implements chunkAtOffsetResolver (badger) it uses the indexed single-chunk
 // lookup that avoids enumerating the whole per-payload manifest; otherwise it
-// falls back to ListFileChunks + findRowCoveringOffset (memory/sqlite/postgres —
+// falls back to ListFileChunks + block.FindRowCoveringOffset (memory/sqlite/postgres —
 // not the profiled hot path). Callers walking a whole window should hold a
 // chunkWindowResolver instead so the fallback scan is paid once.
 func resolveCovering(ctx context.Context, store block.EngineFileChunkStore, payloadID string, off uint64) (*block.FileChunk, uint64, error) {
@@ -272,7 +272,7 @@ type chunkAtOrAfterOffsetResolver interface {
 // and returning a later one would silently reclassify the bytes it holds as hole
 // for the caller to zero-fill. The coverage and succession lookups are
 // independent — a backend may index coverage without indexing succession — so
-// the guard cannot be borrowed from findRowCoveringOffset having already run,
+// the guard cannot be borrowed from block.FindRowCoveringOffset having already run,
 // even when both fall back to the same snapshot.
 func resolveNextChunkStart(ctx context.Context, store block.EngineFileChunkStore, payloadID string, off uint64) (uint64, bool, error) {
 	if store == nil {

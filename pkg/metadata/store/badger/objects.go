@@ -537,7 +537,7 @@ func errUnplaceableRow(payloadID, suffix string, off uint64) error {
 // reason: it is the index that is stale, not the manifest that is empty there.
 //
 // An unplaceable row only matters when nothing else covers off: one bad row must
-// not make a whole payload unreadable. This mirrors findRowCoveringOffset, the
+// not make a whole payload unreadable. This mirrors block.FindRowCoveringOffset, the
 // walk used by the backends with no such index.
 //
 // ponytail: O(n) keys-only scan per candidate, and only an overlap yields more

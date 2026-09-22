@@ -100,7 +100,7 @@ func (r *Runtime) runBlockGCSweep(ctx context.Context, dryRun bool, progress fun
 			opts := &blockgc.Options{
 				DryRun: dryRun,
 				// Thread the remote-store config UUID and the per-remote
-				// share scope into gc.Options so the engine's own
+				// share scope into gc.Options so the GC run's own
 				// start/complete log lines carry the correlation keys SREs
 				// need for cross-checking against S3 access logs.
 				RemoteEndpointID: entry.ConfigID,
@@ -162,8 +162,8 @@ type perRemoteReconciler struct {
 // SharesForGC implements gc.MultiShareReconciler.
 func (p *perRemoteReconciler) SharesForGC() []string { return p.shares }
 
-// GetMetadataStoreForShare delegates to the wrapped Runtime so the engine
-// receives the per-share metadata store.
+// GetMetadataStoreForShare delegates to the wrapped Runtime so the GC mark
+// phase receives the per-share metadata store.
 func (p *perRemoteReconciler) GetMetadataStoreForShare(shareName string) (metadata.Store, error) {
 	return p.rt.GetMetadataStoreForShare(shareName)
 }

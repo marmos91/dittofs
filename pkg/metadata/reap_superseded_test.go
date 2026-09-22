@@ -36,7 +36,7 @@ func seedRows(t *testing.T, tx *manifestTx, payloadID string, spans [][2]uint64)
 
 // resolveAt returns the start offset of the row a read at off resolves to — the
 // greatest start among the rows covering off — or -1 when nothing covers it. That
-// is the rule the read path applies (findRowCoveringOffset), and a reap has to be
+// is the rule the read path applies (block.FindRowCoveringOffset), and a reap has to be
 // judged by what it makes a read serve rather than by the row list alone: a list
 // that tiles [0, size) can still hand back an older row's bytes wherever a
 // surviving row starts later than the fresh row over the same offsets.
