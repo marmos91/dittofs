@@ -214,8 +214,7 @@ func TestSealChunk_ConcurrentNonceUniqueness(t *testing.T) {
 }
 
 func TestNewTransform_RejectsNilInputs(t *testing.T) {
-	stage, err := NewTransform(EncryptionPolicy{AEAD: AEADAES256GCM}, nil)
-	if err == nil {
+	if _, err := NewTransform(EncryptionPolicy{AEAD: AEADAES256GCM}, nil); err == nil {
 		t.Fatal("want error for nil provider")
 	}
 	if _, err := NewTransform(EncryptionPolicy{AEAD: 0xFF}, newProvider(t)); err == nil {
@@ -223,7 +222,7 @@ func TestNewTransform_RejectsNilInputs(t *testing.T) {
 	}
 	// A nil inner store is the pipeline's to reject, not the stage's: a stage
 	// never learns what it was composed over.
-	stage, err = NewTransform(EncryptionPolicy{AEAD: AEADAES256GCM}, newProvider(t))
+	stage, err := NewTransform(EncryptionPolicy{AEAD: AEADAES256GCM}, newProvider(t))
 	if err != nil {
 		t.Fatalf("NewTransform: %v", err)
 	}
