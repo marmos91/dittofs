@@ -325,8 +325,7 @@ big it is.
 
 The list is:
 
-- **Sorted by `Offset`** so the engine can binary-search it
-  (`findBlocksForRange` in `pkg/block/engine/range.go`).
+- **Sorted by `Offset`** so the engine can resolve a read range against it.
 - **Populated on every sync finalization** — the engine returns the
   new `[]BlockRef` from `WriteAt`/`Truncate`/`Delete`/`CopyPayload`
   and the caller persists it in the same metadata transaction.

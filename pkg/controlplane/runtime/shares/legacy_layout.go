@@ -30,7 +30,7 @@ var ErrLegacyLocalFormat = errors.New("legacy pre-journal local block store layo
 
 // hasLegacyLocalLayout reports whether shareDir was written by a pre-journal
 // release: a populated blobs/ or logs/ subdirectory with no journal segment yet
-// holding data. Post-switchover the journal writes only journal/*.seg (+ .idx),
+// holding data. Post-switchover the journal writes only journal/*.seg,
 // so a non-empty blobs/ or logs/ can only be pre-journal data. Once the journal
 // owns the directory (any .seg past the bare header) those subdirectories are
 // orphans a migration left behind, and their presence alone no longer counts.

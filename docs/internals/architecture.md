@@ -1304,8 +1304,7 @@ authoritative content list for every file.
 defined in `pkg/block/types.go`. `FileAttr.Blocks []BlockRef` (in
 `pkg/metadata/file_types.go`) is the authoritative, offset-sorted list of
 every chunk that composes a file. It is populated on every sync
-finalization; the engine binary-searches it via `findBlocksForRange`
-(`pkg/block/engine/range.go`).
+finalization; the engine resolves a read range against it.
 
 Storage encodings differ per backend:
 
@@ -1327,9 +1326,8 @@ Delete(ctx, payloadID, blocks []BlockRef) error
 CopyPayload(ctx, srcPayloadID, srcBlocks []BlockRef, dstPayloadID) ([]BlockRef, error)
 ```
 
-Range-coverage semantics: `findBlocksForRange(blocks, offset, size)`
-returns `[start, end)` of the BlockRef slice that overlaps the requested
-range using binary search on the offset-sorted slice; sparse holes
+Range-coverage semantics: the engine resolves the requested range against
+the offset-sorted slice; sparse holes
 inside `FileAttr.Size` are zero-filled — `no BlockRef for this range` is
 documented behavior, not a bug. Past `FileAttr.Size` returns short-read or
 EOF.

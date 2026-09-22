@@ -6,7 +6,7 @@
 // is what both sides speak — per-object metadata and the durability capability.
 //
 // The on-disk format-version stamp and the boot guard that refuses state
-// from a newer release (ErrFutureFormat) live in doc.go and errors.go.
+// from a newer release (ErrFutureFormat) live in README.md and errors.go.
 
 package block
 
