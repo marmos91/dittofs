@@ -143,11 +143,11 @@ func (n *nonClosingRemote) Close() error { return nil }
 func (n *nonClosingRemote) Durable() bool { return block.IsDurable(n.RemoteStore) }
 
 // decision: ReadChunk keeps its type assertion although RemoteStore embeds
-// ChunkReader, so like the block-keyed forwards just deleted it can never
-// fail. It stays because the fallback is a real error the caller handles
-// (ErrChunkReadUnsupported), not a silent capability drop, and deleting the
-// method would change which type serves the call. Drop it when ChunkReader
-// stops being optional anywhere.
+// ChunkReader, so a non-nil wrapped store always satisfies it. The one case the
+// fallback still covers is a nonClosingRemote built with a nil RemoteStore:
+// the assertion then fails and the caller gets ErrChunkReadUnsupported instead
+// of a nil-pointer panic deep in the read path. That is the whole of its value
+// — drop the assertion once construction cannot produce a nil wrapped store.
 //
 // ReadChunk delegates the remote.ChunkReader capability to the wrapped
 // store. The syncer's read path type-asserts ChunkReader on ITS remote — this

@@ -22,10 +22,12 @@ import (
 	"github.com/marmos91/dittofs/pkg/health"
 )
 
-// ErrChunkReadUnsupported is returned by a decorator's ReadChunk when the
-// wrapped store does not implement ChunkReader, so a block read cannot be
-// composed through the transform stack. It guards the capability boundary for
-// callers that hold a store only as RemoteBlockStore.
+// ErrChunkReadUnsupported reports that a value reached the block-read path
+// without a ChunkReader behind it, so the chunk cannot be served from its
+// packed block. Every RemoteStore implements ChunkReader, so this is reachable
+// only through a wrapper holding a RemoteStore that is nil or was built from a
+// narrower type; the one such wrapper is nonClosingRemote in
+// pkg/controlplane/runtime/shares.
 var ErrChunkReadUnsupported = errors.New("remote: wrapped store does not support block reads")
 
 // RemoteStore is the production remote block storage interface. Implemented by
@@ -107,10 +109,9 @@ type RemoteBlockStore interface {
 }
 
 // ChunkReader reads a chunk that lives inside a block object. It is a mandatory
-// member of RemoteStore; the s3 + memory backends and the encryption/compression
-// decorators implement it. Callers that hold only the narrower RemoteBlockStore
-// type-assert to it when a block.ChunkLocator resolves to a block (BlockID != "")
-// and return ErrChunkReadUnsupported when the assertion fails.
+// member of RemoteStore, so anything satisfying RemoteStore serves it directly.
+// A caller holding only the narrower RemoteBlockStore reaches it by type
+// assertion, once a block.ChunkLocator resolves to a block (BlockID != "").
 //
 // ReadChunk reads the chunk whose stored wire bytes occupy
 // [offset, offset+length) within block object blocks/<blockID> (see
