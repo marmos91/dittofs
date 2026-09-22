@@ -28,11 +28,8 @@ package gc
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"time"
 
 	// justification: AuditRefcounts is the cross-file metadata-walk
@@ -43,12 +40,6 @@ import (
 	// into pkg/block would create a circular import.
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
-)
-
-const (
-	auditStateSubdir   = "audit-state"
-	auditLastRunFile   = "last-inv02.json"
-	auditLastRunTmpExt = ".tmp"
 )
 
 // AuditRefcountsResult is the operator-facing outcome of an audit.
@@ -246,44 +237,4 @@ func walkAuditShareFiles(
 		}
 		cursor = next
 	}
-}
-
-// persistAuditLastRun atomically writes the result to
-// <localStoreRoot>/audit-state/last-inv02.json. Empty localStoreRoot
-// is a no-op (matches the engine.PersistLastRunSummary contract).
-// Atomic via .tmp + rename so a crash mid-write leaves the previous
-// last-inv02.json intact.
-func persistAuditLastRun(localStoreRoot string, r *AuditRefcountsResult) error {
-	if localStoreRoot == "" {
-		return nil
-	}
-	dir := filepath.Join(localStoreRoot, auditStateSubdir)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("mkdir %s: %w", dir, err)
-	}
-	body, err := json.MarshalIndent(r, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal: %w", err)
-	}
-	final := filepath.Join(dir, auditLastRunFile)
-	tmp := final + auditLastRunTmpExt
-	if err := os.WriteFile(tmp, body, 0o644); err != nil {
-		return fmt.Errorf("write tmp: %w", err)
-	}
-	if err := os.Rename(tmp, final); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("rename: %w", err)
-	}
-	return nil
-}
-
-// AuditLastRunPath returns the on-disk location of the last-run.json
-// summary for the share's audit state. Returned even when no run has
-// been recorded — callers stat the file separately. Empty localStoreRoot
-// returns an empty string.
-func AuditLastRunPath(localStoreRoot string) string {
-	if localStoreRoot == "" {
-		return ""
-	}
-	return filepath.Join(localStoreRoot, auditStateSubdir, auditLastRunFile)
 }

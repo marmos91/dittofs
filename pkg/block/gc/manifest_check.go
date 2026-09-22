@@ -368,58 +368,6 @@ func checkFileManifest(
 	return nil
 }
 
-// repairPayload plans, optionally applies, and records one payload's repairs.
-// It reports whether anything was proposed, so a payload whose only story is a
-// repair still shows up in the per-payload detail.
-func repairPayload(
-	ctx context.Context,
-	store metadata.Store,
-	path, payloadID string,
-	f *metadata.File,
-	rowIDs map[string]struct{},
-	unplaceable []*block.FileChunk,
-	covered [][2]uint64,
-	opts ManifestCheckOptions,
-	res *ManifestCheckResult,
-) (bool, error) {
-	if len(res.Repairs) >= maxManifestCheckFindings {
-		res.RepairsTruncated = true
-		return false, nil
-	}
-	actions, err := planPayloadRepairs(ctx, store, path, payloadID, f, rowIDs, unplaceable, covered, opts.CheckSynced)
-	if err != nil {
-		return false, err
-	}
-	if len(actions) == 0 {
-		return false, nil
-	}
-	res.RepairsPlanned += uint64(len(actions))
-
-	// Trim to what the report can still carry, so the actions a run writes and
-	// the actions it lists are always the same set — an applied repair the
-	// operator cannot see is worse than one deferred to the next run. The
-	// planned counter above stays exact past the trim.
-	if room := maxManifestCheckFindings - len(res.Repairs); len(actions) > room {
-		actions = actions[:room]
-		res.RepairsTruncated = true
-	}
-
-	if opts.ApplyRepairs {
-		if err := applyPayloadRepairs(ctx, store, f, actions); err != nil {
-			return false, fmt.Errorf("repair payload %q: %w", payloadID, err)
-		}
-		for i := range actions {
-			if actions[i].Applied {
-				res.RepairsApplied++
-			} else {
-				res.RepairsSkipped++
-			}
-		}
-	}
-	res.Repairs = append(res.Repairs, actions...)
-	return true, nil
-}
-
 // appendCapped appends to a per-payload detail list until it reaches
 // maxManifestCheckRangesPerPayload, flagging truncation once it stops. It
 // bounds only what is shown: the totals and the damaged verdict are taken

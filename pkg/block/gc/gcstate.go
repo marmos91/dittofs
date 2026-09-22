@@ -19,7 +19,6 @@
 package gc
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -33,7 +32,6 @@ import (
 
 const (
 	gcStateIncompleteFlag = "incomplete.flag"
-	gcStateLastRunFile    = "last-run.json"
 
 	// gcStateCompletedTTL is how long a completed (unflagged) run directory
 	// must have sat untouched before the backstop sweep reclaims it. Destroy
@@ -294,30 +292,4 @@ type GCRunSummary struct {
 	FirstErrors      []string  `json:"first_errors,omitempty"`
 	DryRun           bool      `json:"dry_run"`
 	DryRunCandidates []string  `json:"dry_run_candidates,omitempty"`
-}
-
-// PersistLastRunSummary writes the summary atomically to
-// rootDir/last-run.json (.tmp + rename). Returns nil if rootDir is empty
-// (caller chose not to persist) or if the directory does not exist.
-func PersistLastRunSummary(rootDir string, summary GCRunSummary) error {
-	if rootDir == "" {
-		return nil
-	}
-	if err := os.MkdirAll(rootDir, 0o755); err != nil {
-		return fmt.Errorf("gcstate: mkdir %s: %w", rootDir, err)
-	}
-	body, err := json.MarshalIndent(summary, "", "  ")
-	if err != nil {
-		return fmt.Errorf("gcstate: marshal summary: %w", err)
-	}
-	tmp := filepath.Join(rootDir, gcStateLastRunFile+".tmp")
-	final := filepath.Join(rootDir, gcStateLastRunFile)
-	if err := os.WriteFile(tmp, body, 0o644); err != nil {
-		return fmt.Errorf("gcstate: write tmp summary: %w", err)
-	}
-	if err := os.Rename(tmp, final); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("gcstate: rename summary: %w", err)
-	}
-	return nil
 }
