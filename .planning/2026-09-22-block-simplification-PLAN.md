@@ -500,7 +500,7 @@ dropped 11,359 → 7,577. The edge is one-directional: `gc` imports nothing from
   - **The carve loop cannot move into `carver`.** It is `flushClosure.fn`'s
     read/Box loop, `flush_closure.go:103-161` (the plan's `:102-147` stops mid-`if`,
     and `:282-293` cuts a `journal.Extent` literal in half — the intended
-    `contiguousRanges` is `:290-306`). The loop reads through `journal.Run` and
+    `contiguousRanges` is `:290-303`). The loop reads through `journal.Run` and
     `local.LocalStore`, and emits through `CarveChunk` (`flush.go:39`), `BlockSink`
     (`:55`), `Deduper` (`:34`), `ManifestRowEnder` (`:81`), `ClobberGuard` (`:104`)
     and `uploadChain` (`flush_closure.go:347`) — all six declared in `engine`,
@@ -510,7 +510,7 @@ dropped 11,359 → 7,577. The edge is one-directional: `gc` imports nothing from
     the far side of an existing edge, so the move is an import cycle. Pinned by
     `carver/foreign_imports_test.go`.
   - **`chunker` must not nest under `carver`.** `carver` is not its only consumer:
-    `engine/types.go:89` (`Config.ChunkParams`, public config), `engine/syncer.go:968`,
+    `engine/types.go:89` (`Config.ChunkParams`, public config), `engine/sync_drain.go:152`,
     `engine/flush_closure.go:112`, `controlplane/runtime/shares/journal_open.go:80`
     and `internal/dfsbench/backend/dittofs.go:606`, plus ten test files — sixteen
     files across three top-level trees. Nesting would make the control plane import
@@ -527,8 +527,26 @@ dropped 11,359 → 7,577. The edge is one-directional: `gc` imports nothing from
   - **Neither file in scope is a god object**: `carver.go` 257, `flush_closure.go` 524,
     both under the tree's own 800 ceiling. The tree's `carver.go (390)` + `batch.go (180)`
     would inflate 257 lines into 570.
-- **3B** `engine/syncer.go` 1249 → six files; extract `readaheadTracker`, `inflightFetches`.
-- **3C** `journal/reclaim.go` 1037 → four files. Collapses #6.
+- **3B — the split SHIPPED; the field extraction DECLINED, not done.** `engine/syncer.go`
+  → six files (`syncer.go` now 314, plus `sync_drain.go`, `sync_fileops.go`,
+  `sync_health.go`, `sync_lifecycle.go`, `upload_window.go`); `fetchResult` moved to
+  `fetch.go` beside its builders and the metrics accessor into `metrics.go`. Every
+  declaration moved byte-identical.
+  - **`readaheadTracker` and `inflightFetches` were NOT extracted.** They are names
+    this plan PROPOSES for types that do not exist yet (see the field-isolated
+    extraction seams table above), so a zero-hit grep for either name is what the
+    plan's own wording predicts, not evidence the work is unnecessary. The fields
+    are all still on `RemoteSync`: `inFlight`/`inFlightMu` (`syncer.go:56-57`, read
+    in `fetch.go`) and `readahead`/`readaheadN`/`readaheadPruning` (`:67-69`, read
+    in `readahead.go`). That seam is untouched and still open.
+- **3C — the split SHIPPED; #6 was NOT collapsed.** `journal/reclaim.go` → four files
+  (`evict.go` 393, `reclaim.go` 177, `gc.go` 184, `repack.go` 348), every declaration
+  moved byte-identical. The six duplicate shard-index walks moved with it and are
+  still six — `reclaim.go:136`, `evict.go:238`, `gc.go:115`, `repack.go:68`, `:195`,
+  `:261` — and no `walkLive` helper was written. A file split cannot collapse them:
+  row 6's own constraint (4 of the 6 run inside a wider critical section, so the
+  helper must not lock) is what the segment→intervals reverse index is for, and that
+  index is 4F's work.
 - **3D** `engine.Store` — **delete the 14 forwards, re-measure, then decide** whether to split.
 - **3E** Renames + the `pkg/block/manifest` extraction. **MUST BE LAST**, after 2A/2B have moved
   files — 3E touches `syncer.go`, `fetch.go`, `flush.go`, `engine.go`, `readwrite.go`, i.e. every
