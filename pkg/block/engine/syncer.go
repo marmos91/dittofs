@@ -40,7 +40,7 @@ type RemoteSync struct {
 	// via SyncedHashStore.IsSynced); the carver records synced markers +
 	// block locators atomically via DefaultCommitBlock. May be nil in unit
 	// tests / local-only fixtures; production callers wire a real store via
-	// SetSyncedHashStore.
+	// SetSyncedHashStore. Guarded by m.mu.
 	syncedHashStore metadata.SyncedHashStore
 
 	// metrics points at the owning Store's data-plane metrics cell, not at a
@@ -281,6 +281,20 @@ func (m *RemoteSync) recomputeCarveActive() {
 		m.blockCommitter != nil &&
 		m.hasRemote.Load()
 	m.carveActive.Store(active)
+}
+
+// wiring snapshots the four carve deps the setters above publish, under one
+// acquisition of the lock they publish them with. Reading them a field at a
+// time would let a caller build a flush closure from a torn mix of two
+// wirings: SetRemoteBlockStore derives the sealer from the store and publishes
+// both together, so a sealer from the old remote paired with the new remote's
+// store is reachable the moment the two reads are separate. One acquisition
+// also keeps the caller off the four-lock path the field-by-field alternative
+// would need.
+func (m *RemoteSync) wiring() (remote.RemoteBlockStore, remote.ChunkSealer, blockCommitter, metadata.SyncedHashStore) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.remoteBlockStore, m.chunkSealer, m.blockCommitter, m.syncedHashStore
 }
 
 // SetHealthCallback sets the callback invoked when the remote store health state changes.

@@ -38,6 +38,10 @@ func (m *RemoteSync) carveDispatcher(ctx context.Context) {
 			if !m.canProcess(ctx) {
 				return
 			}
+			// decision: read per tick, not held across the pass. A stale true
+			// costs one pass that flushFn then builds against whatever is
+			// wired when it runs; a stale false costs one tick. Neither is
+			// worth holding m.mu for the duration of a carve.
 			if !m.carveActive.Load() || !m.IsRemoteHealthy() {
 				continue
 			}

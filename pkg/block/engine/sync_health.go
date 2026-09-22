@@ -223,6 +223,18 @@ func (m *RemoteSync) CanEvict() bool {
 // Returns true when there is no HealthMonitor (local-only mode) — which is why
 // it is not sufficient on its own to decide whether eviction is safe. Use
 // CanEvict for that.
+//
+// decision: healthMonitor is read without m.mu here, in RemoteOutageDuration
+// and in Close, although newHealthMonitorLocked writes it under that lock.
+// Unlike the carve wiring it has no setter: startLocked is its only writer,
+// writes it once and never clears or replaces it, and every reader either is a
+// goroutine startLocked spawned after that write (the carve dispatcher) or
+// reaches the syncer through a share that does not serve until Start has
+// returned. Locking would put an m.mu acquisition on the fetch and readahead
+// read paths, which are lock-free on purpose. Withdraw the exemption the
+// moment anything re-wires or clears healthMonitor after Start, or calls Start
+// twice on one syncer: the field then needs m.mu or an atomic cell, and the
+// read path pays for it.
 func (m *RemoteSync) IsRemoteHealthy() bool {
 	if m.healthMonitor == nil {
 		return true
