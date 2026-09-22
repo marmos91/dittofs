@@ -22,15 +22,6 @@ import (
 // to finish processing during graceful shutdown.
 const defaultShutdownTimeout = 30 * time.Second
 
-// fetchResult is a broadcast-capable result for in-flight download deduplication.
-// When the download completes, err is set and done is closed. Multiple waiters can
-// safely read the result because closing a channel notifies ALL receivers.
-type fetchResult struct {
-	done chan struct{} // Closed when download completes
-	err  error         // Result of the download (set before closing done)
-	mu   gosync.Mutex  // Protects err during write
-}
-
 // ponytail: one struct and one m.mu span fetch-dedup, readahead, health and
 // carve wiring, because every one of those fields is read on the lock-ordering
 // path whose failure mode is silent zeros. Splitting the carve wiring into its
