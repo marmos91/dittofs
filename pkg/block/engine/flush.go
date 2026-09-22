@@ -388,7 +388,7 @@ func (s engineBlockSink) CommitBlock(ctx context.Context, chunks []CarveChunk) e
 
 	blockID, err := block.NewBlockID()
 	if err != nil {
-		return err
+		return fmt.Errorf("carve: %w", err)
 	}
 
 	var buf bytes.Buffer
