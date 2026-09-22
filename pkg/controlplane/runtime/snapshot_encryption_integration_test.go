@@ -166,11 +166,15 @@ func newEncryptedRemote(t *testing.T, inner *remotememory.Store) *middleware.Pip
 		t.Fatalf("NewProvider: %v", err)
 	}
 
-	enc, err := encryption.NewRemote(inner, encryption.EncryptionPolicy{
+	stage, err := encryption.NewTransform(encryption.EncryptionPolicy{
 		AEAD: encryption.AEADAES256GCM,
 	}, provider)
 	if err != nil {
-		t.Fatalf("encryption.NewRemote: %v", err)
+		t.Fatalf("encryption.NewTransform: %v", err)
+	}
+	enc, err := middleware.New(inner, stage)
+	if err != nil {
+		t.Fatalf("middleware.New: %v", err)
 	}
 	return enc
 }

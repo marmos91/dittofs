@@ -18,10 +18,7 @@ import (
 func TestEncryptedRemote_ReadChunk(t *testing.T) {
 	ctx := context.Background()
 	inner := remotememory.New()
-	d, err := NewRemote(inner, EncryptionPolicy{AEAD: AEADAES256GCM}, newProvider(t))
-	if err != nil {
-		t.Fatalf("NewRemote: %v", err)
-	}
+	d := newPipeline(t, inner, EncryptionPolicy{AEAD: AEADAES256GCM}, newProvider(t))
 
 	// SealChunk emits the chunk's real wire blob (header||nonce||ciphertext||tag)
 	// — the same bytes a block concatenates verbatim.

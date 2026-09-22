@@ -12,10 +12,7 @@ import (
 // keeps it durable; wrapping a non-durable one stays non-durable.
 func TestEncryptedRemote_Durable_DelegatesToInner(t *testing.T) {
 	inner := remotememory.New() // memory remote: NOT durable by default
-	d, err := NewRemote(inner, EncryptionPolicy{AEAD: AEADAES256GCM}, newProvider(t))
-	if err != nil {
-		t.Fatalf("NewRemote: %v", err)
-	}
+	d := newPipeline(t, inner, EncryptionPolicy{AEAD: AEADAES256GCM}, newProvider(t))
 
 	var _ block.DurabilityReporter = d
 

@@ -15,7 +15,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/middleware"
 	"github.com/marmos91/dittofs/pkg/block/middleware/encryption/keyprovider"
-	"github.com/marmos91/dittofs/pkg/block/remote"
 )
 
 // Transform is the encryption stage of a middleware pipeline. It AEAD-seals a
@@ -40,18 +39,6 @@ func NewTransform(policy EncryptionPolicy, provider keyprovider.KeyProvider) (*T
 		return nil, err
 	}
 	return &Transform{aead: policy.AEAD, provider: provider}, nil
-}
-
-// NewRemote wraps inner in a pipeline whose only stage is encryption.
-func NewRemote(inner remote.RemoteStore, policy EncryptionPolicy, provider keyprovider.KeyProvider) (*middleware.Pipeline, error) {
-	if inner == nil {
-		return nil, fmt.Errorf("encryption: inner RemoteStore is nil")
-	}
-	t, err := NewTransform(policy, provider)
-	if err != nil {
-		return nil, err
-	}
-	return middleware.New(inner, t)
 }
 
 // Close releases the key provider. The pipeline calls it because Transform

@@ -9,6 +9,7 @@ import (
 	"lukechampine.com/blake3"
 
 	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/middleware"
 	"github.com/marmos91/dittofs/pkg/block/middleware/compression"
 	"github.com/marmos91/dittofs/pkg/block/middleware/encryption"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
@@ -50,9 +51,13 @@ func TestReadPath_BlockLocator_Plaintext(t *testing.T) {
 func TestReadPath_BlockLocator_ThroughCompress(t *testing.T) {
 	ctx := context.Background()
 	base := remotememory.New()
-	dec, err := compression.NewRemote(base, compression.CompressionPolicy{Algo: compression.AlgoZstd})
+	comp, err := compression.NewTransform(compression.CompressionPolicy{Algo: compression.AlgoZstd})
 	if err != nil {
-		t.Fatalf("compression.NewRemote: %v", err)
+		t.Fatalf("compression.NewTransform: %v", err)
+	}
+	dec, err := middleware.New(base, comp)
+	if err != nil {
+		t.Fatalf("middleware.New: %v", err)
 	}
 	f := newCarveFixture(t, dec, defaultTestCarveBlockSize)
 
@@ -85,13 +90,20 @@ func TestReadPath_BlockLocator_ThroughCompress(t *testing.T) {
 func TestReadPath_BlockLocator_ThroughCompressEncrypt(t *testing.T) {
 	ctx := context.Background()
 	base := remotememory.New()
-	enc, err := encryption.NewRemote(base, encryption.EncryptionPolicy{AEAD: encryption.AEADAES256GCM}, newEncryptionProvider(t))
+	comp, err := compression.NewTransform(compression.CompressionPolicy{Algo: compression.AlgoZstd})
 	if err != nil {
-		t.Fatalf("encryption.NewRemote: %v", err)
+		t.Fatalf("compression.NewTransform: %v", err)
 	}
-	dec, err := compression.NewRemote(enc, compression.CompressionPolicy{Algo: compression.AlgoZstd})
+	enc, err := encryption.NewTransform(encryption.EncryptionPolicy{AEAD: encryption.AEADAES256GCM}, newEncryptionProvider(t))
 	if err != nil {
-		t.Fatalf("compression.NewRemote: %v", err)
+		t.Fatalf("encryption.NewTransform: %v", err)
+	}
+	// One pipeline with both stages, in seal order — the topology production
+	// builds. Nesting a pipeline inside a pipeline would hide a stage-order
+	// bug, because each pipeline would have a single stage to reverse.
+	dec, err := middleware.New(base, comp, enc)
+	if err != nil {
+		t.Fatalf("middleware.New: %v", err)
 	}
 	f := newCarveFixture(t, dec, defaultTestCarveBlockSize)
 

@@ -10,7 +10,6 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/middleware"
-	"github.com/marmos91/dittofs/pkg/block/remote"
 )
 
 // Transform is the compression stage of a middleware pipeline. It compresses a
@@ -36,18 +35,6 @@ func NewTransform(p CompressionPolicy) (*Transform, error) {
 		return nil, err
 	}
 	return &Transform{algo: p.Algo, codec: c}, nil
-}
-
-// NewRemote wraps inner in a pipeline whose only stage is compression.
-func NewRemote(inner remote.RemoteStore, p CompressionPolicy) (*middleware.Pipeline, error) {
-	if inner == nil {
-		return nil, fmt.Errorf("compression: inner RemoteStore is nil")
-	}
-	t, err := NewTransform(p)
-	if err != nil {
-		return nil, err
-	}
-	return middleware.New(inner, t)
 }
 
 // --- write path ---------------------------------------------------------

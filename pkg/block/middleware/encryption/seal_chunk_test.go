@@ -20,10 +20,7 @@ import (
 func TestSealChunk_SealedAndReadChunkInverse(t *testing.T) {
 	ctx := context.Background()
 	inner := remotememory.New()
-	d, err := NewRemote(inner, EncryptionPolicy{AEAD: AEADAES256GCM}, newProvider(t))
-	if err != nil {
-		t.Fatalf("NewRemote: %v", err)
-	}
+	d := newPipeline(t, inner, EncryptionPolicy{AEAD: AEADAES256GCM}, newProvider(t))
 
 	var sealer remote.ChunkSealer = d
 

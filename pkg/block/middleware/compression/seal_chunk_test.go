@@ -19,10 +19,7 @@ import (
 func TestSealChunk_RoundTripThroughBlock(t *testing.T) {
 	ctx := context.Background()
 	base := remotememory.New()
-	d, err := NewRemote(base, CompressionPolicy{Algo: AlgoZstd})
-	if err != nil {
-		t.Fatalf("NewRemote: %v", err)
-	}
+	d := newPipeline(t, base, CompressionPolicy{Algo: AlgoZstd})
 
 	var sealer remote.ChunkSealer = d
 

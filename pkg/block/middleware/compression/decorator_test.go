@@ -11,16 +11,31 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/blockstoretest"
+	"github.com/marmos91/dittofs/pkg/block/middleware"
+	"github.com/marmos91/dittofs/pkg/block/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 )
+
+// newPipeline wraps inner in a pipeline whose only stage is compression. The
+// one-stage stack is a test fixture: production builds every stage in
+// shares.remoteStages and passes them to middleware.New in one call.
+func newPipeline(t *testing.T, inner remote.RemoteStore, p CompressionPolicy) *middleware.Pipeline {
+	t.Helper()
+	stage, err := NewTransform(p)
+	if err != nil {
+		t.Fatalf("NewTransform: %v", err)
+	}
+	pipeline, err := middleware.New(inner, stage)
+	if err != nil {
+		t.Fatalf("middleware.New: %v", err)
+	}
+	return pipeline
+}
 
 func factoryFor(algo Algo) blockstoretest.RemoteBlockStoreFactory {
 	return func(t *testing.T) (blockstoretest.RemoteBlockStore, func()) {
 		t.Helper()
-		d, err := NewRemote(remotememory.New(), CompressionPolicy{Algo: algo})
-		if err != nil {
-			t.Fatalf("NewRemote: %v", err)
-		}
+		d := newPipeline(t, remotememory.New(), CompressionPolicy{Algo: algo})
 		return d, func() { _ = d.Close() }
 	}
 }
@@ -51,10 +66,7 @@ func hashOf(payload []byte) block.ContentHash {
 // returned length is exactly what this decorator's layer put on the wire.
 func sealAndRead(t *testing.T, algo Algo, blockID string, payload []byte) []byte {
 	t.Helper()
-	d, err := NewRemote(remotememory.New(), CompressionPolicy{Algo: algo})
-	if err != nil {
-		t.Fatalf("NewRemote %v: %v", algo, err)
-	}
+	d := newPipeline(t, remotememory.New(), CompressionPolicy{Algo: algo})
 	ctx := context.Background()
 	h := hashOf(payload)
 	wire, err := d.SealChunk(ctx, h, payload)
@@ -142,10 +154,7 @@ func TestSealChunk_AllocBounded(t *testing.T) {
 	if raceEnabled {
 		t.Skip("skipping alloc bound under -race (instrumentation doubles allocs)")
 	}
-	d, err := NewRemote(remotememory.New(), CompressionPolicy{Algo: AlgoZstd})
-	if err != nil {
-		t.Fatal(err)
-	}
+	d := newPipeline(t, remotememory.New(), CompressionPolicy{Algo: AlgoZstd})
 	const size = 4 << 20
 	payload := bytes.Repeat([]byte("alloc-bound-text. "), size/18+1)[:size]
 	h := hashOf(payload)

@@ -12,10 +12,7 @@ import (
 // keeps it durable; wrapping a non-durable one stays non-durable.
 func TestDecorator_Durable_DelegatesToInner(t *testing.T) {
 	inner := remotememory.New() // memory remote: NOT durable by default
-	d, err := NewRemote(inner, CompressionPolicy{Algo: AlgoZstd})
-	if err != nil {
-		t.Fatalf("NewRemote: %v", err)
-	}
+	d := newPipeline(t, inner, CompressionPolicy{Algo: AlgoZstd})
 
 	var _ block.DurabilityReporter = d
 

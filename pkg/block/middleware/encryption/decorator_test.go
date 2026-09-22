@@ -16,6 +16,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/blockstoretest"
 	"github.com/marmos91/dittofs/pkg/block/middleware"
 	"github.com/marmos91/dittofs/pkg/block/middleware/encryption/keyprovider"
+	"github.com/marmos91/dittofs/pkg/block/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 )
 
@@ -43,13 +44,26 @@ func newProvider(t *testing.T) keyprovider.KeyProvider {
 	return p
 }
 
+// newPipeline wraps inner in a pipeline whose only stage is encryption. The
+// one-stage stack is a test fixture: production builds every stage in
+// shares.remoteStages and passes them to middleware.New in one call.
+func newPipeline(t *testing.T, inner remote.RemoteStore, policy EncryptionPolicy, provider keyprovider.KeyProvider) *middleware.Pipeline {
+	t.Helper()
+	stage, err := NewTransform(policy, provider)
+	if err != nil {
+		t.Fatalf("NewTransform: %v", err)
+	}
+	pipeline, err := middleware.New(inner, stage)
+	if err != nil {
+		t.Fatalf("middleware.New: %v", err)
+	}
+	return pipeline
+}
+
 func factoryFor(aead AEAD) blockstoretest.RemoteBlockStoreFactory {
 	return func(t *testing.T) (blockstoretest.RemoteBlockStore, func()) {
 		t.Helper()
-		d, err := NewRemote(remotememory.New(), EncryptionPolicy{AEAD: aead}, newProvider(t))
-		if err != nil {
-			t.Fatalf("NewRemote: %v", err)
-		}
+		d := newPipeline(t, remotememory.New(), EncryptionPolicy{AEAD: aead}, newProvider(t))
 		// Conformance factory contract: cleanup must close the store.
 		// d.Close() releases inner + provider; the provider's t.Cleanup in
 		// newProvider is a safe no-op second close (aesGCMKEK.Close is
@@ -96,10 +110,7 @@ func sealInto(t *testing.T, d *middleware.Pipeline, blockID string, payload []by
 }
 
 func TestSealChunk_EmitsCiphertextNotPlaintext(t *testing.T) {
-	d, err := NewRemote(remotememory.New(), EncryptionPolicy{AEAD: AEADAES256GCM}, newProvider(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	d := newPipeline(t, remotememory.New(), EncryptionPolicy{AEAD: AEADAES256GCM}, newProvider(t))
 	payload := bytes.Repeat([]byte("recognisable-plaintext-marker. "), 256)
 	wire, err := d.SealChunk(context.Background(), hashOf(payload), payload)
 	if err != nil {
@@ -117,10 +128,7 @@ func TestSealChunk_EmitsCiphertextNotPlaintext(t *testing.T) {
 
 func TestReadChunk_TamperFailsAuth(t *testing.T) {
 	inner := remotememory.New()
-	d, err := NewRemote(inner, EncryptionPolicy{AEAD: AEADAES256GCM}, newProvider(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	d := newPipeline(t, inner, EncryptionPolicy{AEAD: AEADAES256GCM}, newProvider(t))
 	payload := []byte("auth-me-please")
 	const blockID = "tampered"
 	wire := sealInto(t, d, blockID, payload)
@@ -132,7 +140,7 @@ func TestReadChunk_TamperFailsAuth(t *testing.T) {
 	if err := inner.PutBlock(context.Background(), blockID, bytes.NewReader(tampered)); err != nil {
 		t.Fatal(err)
 	}
-	_, err = d.ReadChunk(context.Background(), blockID, 0, int64(len(tampered)), hashOf(payload))
+	_, err := d.ReadChunk(context.Background(), blockID, 0, int64(len(tampered)), hashOf(payload))
 	if !errors.Is(err, ErrDecryptAuth) {
 		t.Fatalf("want ErrDecryptAuth, got %v", err)
 	}
@@ -142,10 +150,7 @@ func TestReadChunk_TamperFailsAuth(t *testing.T) {
 
 func TestReadChunk_UnframedBlockRejected(t *testing.T) {
 	inner := remotememory.New()
-	d, err := NewRemote(inner, EncryptionPolicy{AEAD: AEADAES256GCM}, newProvider(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	d := newPipeline(t, inner, EncryptionPolicy{AEAD: AEADAES256GCM}, newProvider(t))
 	// Stash an unsealed chunk directly in the inner store (simulating a
 	// pre-encryption block or external tampering). The read must refuse it.
 	plain := []byte("not encrypted by us")
@@ -153,7 +158,7 @@ func TestReadChunk_UnframedBlockRejected(t *testing.T) {
 	if err := inner.PutBlock(context.Background(), blockID, bytes.NewReader(plain)); err != nil {
 		t.Fatal(err)
 	}
-	_, err = d.ReadChunk(context.Background(), blockID, 0, int64(len(plain)), hashOf(plain))
+	_, err := d.ReadChunk(context.Background(), blockID, 0, int64(len(plain)), hashOf(plain))
 	if !errors.Is(err, ErrCiphertextWithoutFrame) {
 		t.Fatalf("want ErrCiphertextWithoutFrame, got %v", err)
 	}
@@ -166,10 +171,7 @@ func TestReadChunk_UnframedBlockRejected(t *testing.T) {
 // authentication for the colliding pair.
 func TestSealChunk_ConcurrentNonceUniqueness(t *testing.T) {
 	const writers = 256
-	d, err := NewRemote(remotememory.New(), EncryptionPolicy{AEAD: AEADAES256GCM}, newProvider(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	d := newPipeline(t, remotememory.New(), EncryptionPolicy{AEAD: AEADAES256GCM}, newProvider(t))
 
 	var wg sync.WaitGroup
 	wg.Add(writers)
@@ -211,17 +213,21 @@ func TestSealChunk_ConcurrentNonceUniqueness(t *testing.T) {
 	}
 }
 
-func TestNewRemote_RejectsNilInputs(t *testing.T) {
-	_, err := NewRemote(nil, EncryptionPolicy{AEAD: AEADAES256GCM}, newProvider(t))
-	if err == nil {
-		t.Fatal("want error for nil inner")
-	}
-	_, err = NewRemote(remotememory.New(), EncryptionPolicy{AEAD: AEADAES256GCM}, nil)
+func TestNewTransform_RejectsNilInputs(t *testing.T) {
+	stage, err := NewTransform(EncryptionPolicy{AEAD: AEADAES256GCM}, nil)
 	if err == nil {
 		t.Fatal("want error for nil provider")
 	}
-	_, err = NewRemote(remotememory.New(), EncryptionPolicy{AEAD: 0xFF}, newProvider(t))
-	if err == nil {
+	if _, err := NewTransform(EncryptionPolicy{AEAD: 0xFF}, newProvider(t)); err == nil {
 		t.Fatal("want error for unknown AEAD")
+	}
+	// A nil inner store is the pipeline's to reject, not the stage's: a stage
+	// never learns what it was composed over.
+	stage, err = NewTransform(EncryptionPolicy{AEAD: AEADAES256GCM}, newProvider(t))
+	if err != nil {
+		t.Fatalf("NewTransform: %v", err)
+	}
+	if _, err := middleware.New(nil, stage); err == nil {
+		t.Fatal("want error for nil inner")
 	}
 }
