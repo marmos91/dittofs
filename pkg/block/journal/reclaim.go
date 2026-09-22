@@ -50,6 +50,12 @@ func (s *Store) retireSegment(sh *shard, seg *segmentMeta) (int64, error) {
 // evictable reports whether a segment can be unlinked outright: sealed, idle,
 // and every record it holds already durable on the remote.
 //
+// It has two callers on two different paths, and lives here rather than beside
+// either of them for that reason: claimColdestEvictable scans for a disk-pressure
+// eviction victim, and reclaimEmptied below gates the post-delete retire of a
+// segment a tombstone just emptied. A change here moves both — narrowing it to
+// protect eviction also pins bytes the delete path would otherwise reclaim.
+//
 // records counts only payload-bearing records — markers (tombstone, truncate)
 // never raise it, on the append path, the recovery replay, or the repack
 // carry-forward. A segment holding nothing but markers therefore reports
