@@ -142,11 +142,14 @@ func (n *nonClosingRemote) Close() error { return nil }
 // spurious ErrNotDurableYet on every commit.
 func (n *nonClosingRemote) Durable() bool { return block.IsDurable(n.RemoteStore) }
 
-// --- remote.RemoteBlockStore proxy (#1414 object packing) ---
+// decision: ReadChunk keeps its type assertion although RemoteStore embeds
+// ChunkReader, so like the block-keyed forwards just deleted it can never
+// fail. It stays because the fallback is a real error the caller handles
+// (ErrChunkReadUnsupported), not a silent capability drop, and deleting the
+// method would change which type serves the call. Drop it when ChunkReader
+// stops being optional anywhere.
 //
-// The no-op-Close wrapper embeds only remote.RemoteStore, so without these
-// forwards it would silently HIDE the block-keyed surface (PutBlock/GetBlock/
-// / ReadChunk delegates the remote.ChunkReader capability (#1414) to the wrapped
+// ReadChunk delegates the remote.ChunkReader capability to the wrapped
 // store. The syncer's read path type-asserts ChunkReader on ITS remote — this
 // wrapper — to serve a chunk whose only copy lives inside a packed block.
 // Without this forward every cold read of a packed chunk (local copy lost:

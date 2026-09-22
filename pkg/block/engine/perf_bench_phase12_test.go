@@ -155,7 +155,7 @@ func newPerfTestEngine(tb testing.TB, readBufferBytes int64, prefetchWorkers int
 
 // BenchmarkRandRead_Phase12 exercises the new []ChunkRef-threaded
 // ReadAt path: caller passes []ChunkRef; engine binary-searches via
-// findBlocksForRange and fires Cache.OnRead with the ChunkRef hashes
+// the covering chunks and fires Cache.OnRead with the ChunkRef hashes
 // after a successful read. The synchronous rand-read goes through the
 // in-memory local store, so the hot-path cost here is binary search +
 // Cache.OnRead bookkeeping + buffer copy.
@@ -244,7 +244,7 @@ func BenchmarkPerfGate_Phase12RandReadRegression(b *testing.B) {
 		opsPerSec, microbenchFloorIOPS, tolerance*100, floor)
 	if opsPerSec < floor {
 		b.Fatalf("rand-read perf gate FAILED: %.0f IOPS, floor %.0f (microbench baseline %.0f, tolerance %.0f%%). "+
-			"Likely culprits: findBlocksForRange linearisation, Cache.OnRead lock contention, "+
+			"Likely culprits: range-resolution linearisation, Cache.OnRead lock contention, "+
 			"loadByHash regression. Profile with: go test -bench BenchmarkPerfGate_Phase12 "+
 			"-cpuprofile=cpu.prof ./pkg/block/engine/...",
 			opsPerSec, floor, microbenchFloorIOPS, tolerance*100)

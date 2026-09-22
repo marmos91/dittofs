@@ -204,25 +204,33 @@ func (s *Store) claimColdestEvictable() (*segmentMeta, *shard) {
 	}
 }
 
-// evictable reports whether seg can be dropped whole: sealed, unclaimed, holding
-// at least one record, and with every record synced to the remote store. Caller
-// holds seg's shard lock.
+// evictable reports whether a segment can be unlinked outright: sealed, idle,
+// and every record it holds already durable on the remote.
 //
-// The record count is what the synced-gate is measured against, and markers
-// (tombstone, truncate) do not raise it — only a payload-bearing record does. A
-// segment holding only markers therefore reports 0 == 0 and would read as fully
-// synced, letting eviction unlink the one durable trace of a delete while the
-// records it buries are still on disk elsewhere; recovery would then replay
-// them. Requiring a record excludes that segment, which is the same reason
-// sealableActive requires one.
+// records counts only payload-bearing records — markers (tombstone, truncate)
+// never raise it, on the append path, the recovery replay, or the repack
+// carry-forward. A segment holding nothing but markers therefore reports
+// 0 == 0, reads as fully synced, and would be unlinked with the delete's only
+// durable trace inside it while the records it buries sit in another segment;
+// the next recovery replays them and the file comes back. Requiring a record
+// excludes that segment, the same reason sealableActive requires one.
 //
-// decision: excluding it makes a marker-only segment permanent — pickVictim
-// already skips one (deadBytes stays 0, so a repack would copy it to an
-// identical segment forever), so no path reclaims it now. That holds because a
-// marker must outlive every record it buries and nothing tracks when the last
-// of those is gone; the cost is the segment's tail, a marker being 0-payload.
-// Withdraw it for a rule that can prove a marker's records are all reclaimed —
-// a store-wide minimum live Version would do it — not for disk pressure alone.
+// decision: this covers the marker-ONLY segment and nothing more. A segment
+// holding one synced data record PLUS a marker reports 1 == 1, passes here,
+// and loses the marker exactly the same way — that hazard is open, predates
+// this predicate, and is not closed by it. The obvious widening (refuse any
+// segment holding a marker) is wrong: evictable is also the post-delete
+// reclaim gate via reclaimEmptied, so it would pin a full segment's payload
+// behind one 0-payload marker and make ErrLocalStoreFull reachable under
+// delete-heavy pressure. The fix is to carry markers forward on evict the way
+// repackSegment already does, which is more than a predicate can do.
+//
+// decision: excluding a marker-only segment makes it permanent, because
+// pickVictim skips it too — deadBytes stays 0, so a repack would copy it into
+// an identical segment forever. The cost is that segment's tail plus its open
+// fd, so the real ceiling is RLIMIT_NOFILE, not disk. Withdraw it for a rule
+// that can prove a marker's records are all reclaimed — a store-wide minimum
+// live Version would do it — never for disk pressure alone.
 func evictable(seg *segmentMeta) bool {
 	return seg.sealed.Load() && !seg.busy.Load() && seg.records.Load() > 0 &&
 		seg.syncedRecords.Load() == seg.records.Load()

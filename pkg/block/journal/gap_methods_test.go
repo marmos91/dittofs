@@ -103,7 +103,7 @@ func TestEvictionPinOutranksEnable(t *testing.T) {
 	fillUntilSealed(t, s, "f", true, 1) // Hydrate => synced => evictable
 
 	s.SetEvictionPinned(true)
-	s.SetEvictionEnabled(true) // what Start and SetRemoteStore do on a healthy remote
+	s.SetEvictionEnabled(true) // what Start does on a healthy remote
 	res, err := s.Evict(ctx, 1)
 	if err != nil {
 		t.Fatalf("Evict (pinned): %v", err)
