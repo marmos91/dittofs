@@ -26,11 +26,6 @@ func (s *Store) Durable() bool { return s.durable.Load() }
 // is true; an operator may flip it for a store on volatile media.
 func (s *Store) SetDurable(v bool) { s.durable.Store(v) }
 
-var _ interface {
-	Durable() bool
-	SetDurable(bool)
-} = (*Store)(nil)
-
 // Closed reports whether the store has been closed and is no longer accepting
 // reads or writes. It is the only failure mode an opened journal has that a
 // caller can observe without doing IO, so it is the whole of journal's
@@ -38,9 +33,3 @@ var _ interface {
 // shape, which is why this returns a bool and not a status type. Cheap: one
 // atomic flag read, no IO.
 func (s *Store) Closed() bool { return s.closed.Load() }
-
-var _ interface {
-	Start(context.Context)
-	MaxLocalBytes() int64
-	Closed() bool
-} = (*Store)(nil)
