@@ -40,10 +40,11 @@ journal's five are disagreements *at rest*, this is a time-of-check/time-of-use 
 individually correct, read at different instants. **Making the states explicit is necessary and
 not sufficient; the model has to pin transitions under concurrency too.**
 
-One caveat worth stating plainly rather than burying: the extraction moves roughly 500 of
-engine's 11,304 LOC, and #2238 lives in `gc_sweep_index.go`, which does not move. GC, reclaim,
-manifest check/repair and cold-read resolution all stay. The split is still worth doing, but it
-does not by itself reach the newest instance of the class that justifies it — which is why that
+One caveat worth stating plainly rather than burying: this RFC's own extraction moves roughly
+500 of engine's 11,304 LOC, and leaves GC, reclaim, manifest check/repair and cold-read
+resolution in place. That caveat has since been overtaken — the GC cluster, including the sweep
+index, now lives in `pkg/block/gc`, and engine is down to 7,577 LOC. The split is still worth
+doing, but it does not by itself reach the newest instance of the class that justifies it — which is why that
 work is sequenced *before* the API boundary hardens.
 
 Three of the five live in `RestoreToVersion` — a 180-line, gocyclo-37 method with **zero test
