@@ -43,11 +43,17 @@ type Transform interface {
 // an inner store. Everything above it — engine, cache, GC, metadata — sees only
 // plaintext, so a pipelined store is indistinguishable from a bare one.
 //
-// Only the two per-chunk operations are intercepted. The block-keyed operations
-// (PutBlock, GetBlock, GetBlockRange, DeleteBlock, WalkBlocks) forward
-// untransformed via the embedded Passthrough: a packed block object carries
-// per-chunk bodies that SealChunk has already transformed, so transforming the
-// assembled block again would double-seal it.
+// Only the two per-chunk operations are intercepted.
+//
+// decision: the block-keyed operations (PutBlock, GetBlock, GetBlockRange,
+// DeleteBlock, WalkBlocks) forward untransformed via the embedded Passthrough,
+// so a body written through them lands on the inner store exactly as given —
+// plaintext, even on an encryption-enabled share. The rule holds because a
+// packed block object carries per-chunk bodies that SealChunk has already
+// transformed, and sealing the assembled block again would double-seal it;
+// every caller today moves already-sealed bodies (the flush path packing chunks
+// into a block, and compaction rewriting one). Withdraw the exemption the
+// moment a caller hands PutBlock a body that did not come out of SealChunk.
 type Pipeline struct {
 	remote.Passthrough
 	// inner is the wrapped store, held separately because Passthrough keeps
@@ -60,10 +66,19 @@ type Pipeline struct {
 // runs them in reverse — so New(inner, compress, encrypt) writes
 // compress-then-encrypt and reads decrypt-then-decompress.
 //
-// Order is the caller's to get right and nothing here can check it. It matters:
-// AEAD output has near-maximum entropy, so encrypting before compressing yields
-// a ratio of ~1.0 forever and burns CPU for nothing. It fails silently — the
-// store still works. See TestPipeline_CompressBeforeEncrypt.
+// The pipeline takes ownership of its stages: Close closes every stage that
+// implements io.Closer, so a stage must not be handed to two pipelines — the
+// second Close would release a key provider another pipeline is still using.
+//
+// decision: stage order is not checked, and it is not checkable here — a
+// Transform is an opaque byte transform, so nothing distinguishes compression
+// from encryption at this layer. Either arrangement builds a working store that
+// round-trips: the only symptom of a swap is a compression ratio stuck at ~1.0
+// forever, because AEAD output has near-maximum entropy and does not compress.
+// The rule holds only while the set of stages stays small enough for the
+// construction sites to be audited by hand; give the order its own type once a
+// stage arrives whose misordering corrupts data rather than wasting CPU, or
+// once the construction sites outgrow shares.remoteStages.
 func New(inner remote.RemoteStore, stages ...Transform) (*Pipeline, error) {
 	if inner == nil {
 		return nil, fmt.Errorf("middleware: inner RemoteStore is nil")
