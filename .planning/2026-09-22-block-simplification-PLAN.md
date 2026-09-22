@@ -496,7 +496,37 @@ dropped 11,359 → 7,577. The edge is one-directional: `gc` imports nothing from
 - `pkg/block/middleware/` holds no Go files — a README and two subpackages.
 
 ### Wave 3 — god-object splits (after 1 and 2)
-- **3A** `carver` absorbs the carve loop; `chunker` nests under it; add `BenchmarkCarver_Box`.
+- **3A — WITHDRAWN. All three clauses verified false; nothing moved.**
+  - **The carve loop cannot move into `carver`.** It is `flushClosure.fn`'s
+    read/Box loop, `flush_closure.go:103-161` (the plan's `:102-147` stops mid-`if`,
+    and `:282-293` cuts a `journal.Extent` literal in half — the intended
+    `contiguousRanges` is `:290-306`). The loop reads through `journal.Run` and
+    `local.LocalStore`, and emits through `CarveChunk` (`flush.go:39`), `BlockSink`
+    (`:55`), `Deduper` (`:34`), `ManifestRowEnder` (`:81`), `ClobberGuard` (`:104`)
+    and `uploadChain` (`flush_closure.go:347`) — all six declared in `engine`,
+    which already imports `carver` (`flush.go:14`, `flush_closure.go:8`). This is
+    Wave 2's shape with the opposite answer: there the symbols were inside the
+    moving set and the move dissolved the edge; here they are outside it and on
+    the far side of an existing edge, so the move is an import cycle. Pinned by
+    `carver/foreign_imports_test.go`.
+  - **`chunker` must not nest under `carver`.** `carver` is not its only consumer:
+    `engine/types.go:89` (`Config.ChunkParams`, public config), `engine/syncer.go:968`,
+    `engine/flush_closure.go:112`, `controlplane/runtime/shares/journal_open.go:80`
+    and `internal/dfsbench/backend/dittofs.go:606`, plus ten test files — sixteen
+    files across three top-level trees. Nesting would make the control plane import
+    a carve-path-private package to size share params. `chunker` is shared
+    vocabulary, the same exception the tree grants `pkg/block` root.
+  - **`BenchmarkCarver_Box` already exists in shape, one layer out.**
+    `BenchmarkSequentialWrite8MB` (novel-heavy) and `BenchmarkDedupHeavy`
+    (dedup-heavy) in `engine/write_bench_test.go` drive `Store.Flush` through
+    `carver.Box` with `b.ReportAllocs()`, and `make bench-all` reaches them.
+    Nothing reaches `./pkg/block/carver` or `./pkg/block/chunker` — no workflow
+    passes `-bench` at all — so a carver-scoped copy would be the unrun kind Wave 1
+    deleted, and a *worse* measurement: it excludes the 16 MiB `buf` allocated per
+    run at `flush_closure.go:112`, which the engine benches include.
+  - **Neither file in scope is a god object**: `carver.go` 257, `flush_closure.go` 524,
+    both under the tree's own 800 ceiling. The tree's `carver.go (390)` + `batch.go (180)`
+    would inflate 257 lines into 570.
 - **3B** `engine/syncer.go` 1249 → six files; extract `readaheadTracker`, `inflightFetches`.
 - **3C** `journal/reclaim.go` 1037 → four files. Collapses #6.
 - **3D** `engine.Store` — **delete the 14 forwards, re-measure, then decide** whether to split.
