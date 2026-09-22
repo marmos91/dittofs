@@ -160,7 +160,7 @@ func (s *recordingSyncedHashStore) MarkSynced(_ context.Context, hash block.Cont
 	return nil
 }
 
-// EnumerateSynced satisfies engine.SyncedHashIndex, yielding each marker with
+// EnumerateSynced satisfies gc.SyncedHashIndex, yielding each marker with
 // its locator (standalone here — this fake records no block locators) and
 // recorded first-mirror time (the LIST-free sweep's grace anchor).
 func (s *recordingSyncedHashStore) EnumerateSynced(ctx context.Context, fn func(block.ContentHash, block.ChunkLocator, time.Time) error) error {

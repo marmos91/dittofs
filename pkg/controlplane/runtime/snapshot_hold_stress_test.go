@@ -54,7 +54,7 @@ func writeManifestForStress(path string, hashes []block.ContentHash) error {
 // GC-mark-vs-snapshot-delete interaction (#813). It drives, concurrently:
 //
 //   - mark goroutines: each builds a FRESH provider via snapshotHoldForRemote
-//     (mirroring gc.go, which constructs a new provider per GC run) and
+//     (mirroring blockgc.go, which constructs a new provider per GC run) and
 //     calls HeldHashes, collecting the union of held hashes.
 //   - churn goroutines: create transient ready snapshots (with manifests)
 //     then DeleteSnapshot them — the real write path, which Lock-s the
@@ -138,7 +138,7 @@ func TestSnapshotHoldProvider_StressGCvsDeleteUnderChurn(t *testing.T) {
 	}
 
 	// Mark goroutines: each builds a FRESH provider per scan (mirroring
-	// gc.go's per-GC-run construction) and asserts every pinned hash
+	// blockgc.go's per-GC-run construction) and asserts every pinned hash
 	// is present in the union across all shares.
 	for m := 0; m < markers; m++ {
 		markWg.Add(1)

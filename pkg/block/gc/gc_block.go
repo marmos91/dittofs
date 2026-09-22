@@ -58,7 +58,7 @@ type blockRecordGC interface {
 // reclaim block-resident chunks. It binds the per-share metadata store's
 // locator/record surfaces and the block-keyed remote store. The runtime
 // constructs one per remote-store sweep scope and sets it on
-// engine.Options.BlockReclaimer.
+// gc.Options.BlockReclaimer.
 type BlockGCReclaimer struct {
 	Locators     blockSyncedMarkerGC
 	Records      blockRecordGC
