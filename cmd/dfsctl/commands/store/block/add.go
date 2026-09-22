@@ -3,10 +3,12 @@ package block
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
 	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
+	"github.com/marmos91/dittofs/internal/cli/output"
 	"github.com/marmos91/dittofs/internal/cli/prompt"
 	"github.com/marmos91/dittofs/pkg/apiclient"
 	"github.com/spf13/cobra"
@@ -148,10 +150,11 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	}
 
 	if s3Config, ok := config.(map[string]any); addType == "s3" && ok {
-		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Target: %s, bucket %q, region %q\n",
-			s3TargetDescription(s3Config),
-			cmdutil.GetConfigString(s3Config, "bucket", ""),
-			cmdutil.GetConfigString(s3Config, "region", ""))
+		format, err := cmdutil.GetOutputFormatParsed()
+		if err != nil {
+			return err
+		}
+		echoS3Target(cmd.OutOrStdout(), format, s3Config)
 	}
 
 	req := &apiclient.CreateStoreRequest{
@@ -274,6 +277,20 @@ func promptMissingS3Fields(f *s3Fields, supplied func(name string) bool, ask *s3
 		}
 	}
 	return nil
+}
+
+// echoS3Target writes the resolved target for the operator to read before the
+// store is created. It writes nothing for json and yaml: the line lands on the
+// same stream, ahead of the document the caller then prints, and is valid
+// syntax in neither — a parser reading that stream sees the "T" and stops.
+func echoS3Target(w io.Writer, format output.Format, config map[string]any) {
+	if format != output.FormatTable {
+		return
+	}
+	_, _ = fmt.Fprintf(w, "Target: %s, bucket %q, region %q\n",
+		s3TargetDescription(config),
+		cmdutil.GetConfigString(config, "bucket", ""),
+		cmdutil.GetConfigString(config, "region", ""))
 }
 
 // s3TargetDescription names the endpoint a store will actually talk to. An

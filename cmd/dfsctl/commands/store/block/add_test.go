@@ -1,8 +1,12 @@
 package block
 
 import (
+	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/marmos91/dittofs/internal/cli/output"
 )
 
 func TestBuildCompressionBlock(t *testing.T) {
@@ -353,5 +357,42 @@ func TestPromptMissingS3Fields_QueriesOnlyRealFlags(t *testing.T) {
 		return true
 	}, nil); err != nil {
 		t.Fatalf("non-interactive branch: %v", err)
+	}
+}
+
+// The echo shares stdout with the created store, which the caller prints as a
+// JSON or YAML document. Assert on the stream a machine reader actually
+// consumes: prose ahead of the document makes the whole stream unparseable, so
+// the parse is the assertion and TestS3TargetDescription above cannot catch it.
+func TestEchoS3Target_LeavesMachineOutputParseable(t *testing.T) {
+	config := map[string]any{
+		"bucket":   "test-bucket",
+		"region":   "us-east-1",
+		"endpoint": "http://localhost:4566",
+	}
+	store := map[string]any{"id": "febf65ff", "name": "block_s3", "type": "s3"}
+
+	for _, format := range []output.Format{output.FormatJSON, output.FormatYAML} {
+		t.Run(string(format), func(t *testing.T) {
+			var buf bytes.Buffer
+			echoS3Target(&buf, format, config)
+			if err := json.NewEncoder(&buf).Encode(store); err != nil {
+				t.Fatalf("encode store: %v", err)
+			}
+			var got map[string]any
+			if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+				t.Fatalf("stdout is not parseable under --output %s: %v\nraw: %s",
+					format, err, buf.String())
+			}
+			if got["name"] != "block_s3" {
+				t.Errorf("name=%v, want block_s3", got["name"])
+			}
+		})
+	}
+
+	var buf bytes.Buffer
+	echoS3Target(&buf, output.FormatTable, config)
+	if !strings.Contains(buf.String(), "http://localhost:4566") {
+		t.Errorf("table output must still name the target, got %q", buf.String())
 	}
 }
