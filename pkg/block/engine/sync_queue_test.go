@@ -7,19 +7,18 @@ import (
 	"time"
 )
 
-func TestSyncQueue_EnqueueDownloadCounts(t *testing.T) {
+func TestSyncQueue_EnqueuePrefetchCounts(t *testing.T) {
 	cfg := DefaultSyncQueueConfig()
 	cfg.QueueSize = 10
 	q := NewSyncQueue(nil, cfg)
 
 	for i := 0; i < 5; i++ {
 		req := TransferRequest{
-			Type:       TransferDownload,
 			PayloadID:  "test-content",
 			BlockIndex: uint64(i),
 		}
-		if !q.EnqueueDownload(req) {
-			t.Errorf("EnqueueDownload(%d) returned false", i)
+		if !q.EnqueuePrefetch(req) {
+			t.Errorf("EnqueuePrefetch(%d) returned false", i)
 		}
 	}
 
@@ -35,18 +34,18 @@ func TestSyncQueue_QueueFull(t *testing.T) {
 	q := NewSyncQueue(nil, cfg)
 	// Don't start workers - queue will fill up
 
-	req1 := TransferRequest{Type: TransferDownload, PayloadID: "c1", BlockIndex: 0}
-	req2 := TransferRequest{Type: TransferDownload, PayloadID: "c2", BlockIndex: 0}
-	req3 := TransferRequest{Type: TransferDownload, PayloadID: "c3", BlockIndex: 0}
+	req1 := TransferRequest{PayloadID: "c1", BlockIndex: 0}
+	req2 := TransferRequest{PayloadID: "c2", BlockIndex: 0}
+	req3 := TransferRequest{PayloadID: "c3", BlockIndex: 0}
 
-	if !q.EnqueueDownload(req1) {
-		t.Error("EnqueueDownload(1) should succeed")
+	if !q.EnqueuePrefetch(req1) {
+		t.Error("EnqueuePrefetch(1) should succeed")
 	}
-	if !q.EnqueueDownload(req2) {
-		t.Error("EnqueueDownload(2) should succeed")
+	if !q.EnqueuePrefetch(req2) {
+		t.Error("EnqueuePrefetch(2) should succeed")
 	}
-	if q.EnqueueDownload(req3) {
-		t.Error("EnqueueDownload(3) should fail (queue full)")
+	if q.EnqueuePrefetch(req3) {
+		t.Error("EnqueuePrefetch(3) should fail (queue full)")
 	}
 
 	if q.Pending() != 2 {
@@ -143,77 +142,11 @@ func TestNewSyncQueue_InvalidConfig(t *testing.T) {
 	q := NewSyncQueue(nil, cfg)
 
 	// Queue should have been created with defaults
-	// (all channels have the same capacity)
-	if cap(q.downloads) != 1000 {
-		t.Errorf("downloads queue capacity = %d, want 1000", cap(q.downloads))
-	}
 	if cap(q.prefetch) != 1000 {
 		t.Errorf("prefetch queue capacity = %d, want 1000", cap(q.prefetch))
 	}
 	if q.downloadWorkers != DefaultParallelDownloads {
 		t.Errorf("downloadWorkers = %d, want %d", q.downloadWorkers, DefaultParallelDownloads)
-	}
-}
-
-func TestSyncQueue_Stats(t *testing.T) {
-	cfg := DefaultSyncQueueConfig()
-	q := NewSyncQueue(nil, cfg)
-
-	pending, completed, failed := q.Stats()
-	if pending != 0 || completed != 0 || failed != 0 {
-		t.Errorf("Stats() = (%d, %d, %d), want (0, 0, 0)", pending, completed, failed)
-	}
-
-	q.EnqueueDownload(TransferRequest{Type: TransferDownload, PayloadID: "c1", BlockIndex: 0})
-	q.EnqueueDownload(TransferRequest{Type: TransferDownload, PayloadID: "c2", BlockIndex: 1})
-
-	pending, _, _ = q.Stats()
-	if pending != 2 {
-		t.Errorf("Stats() pending = %d, want 2", pending)
-	}
-}
-
-func TestSyncQueue_LastError(t *testing.T) {
-	cfg := DefaultSyncQueueConfig()
-	q := NewSyncQueue(nil, cfg)
-
-	at, err := q.LastError()
-	if err != nil {
-		t.Errorf("LastError() error = %v, want nil", err)
-	}
-	if !at.IsZero() {
-		t.Errorf("LastError() time should be zero initially")
-	}
-}
-
-func TestSyncQueue_EnqueueByType(t *testing.T) {
-	cfg := SyncQueueConfig{
-		QueueSize: 10,
-	}
-	q := NewSyncQueue(nil, cfg)
-
-	// Test download enqueue
-	if !q.EnqueueDownload(TransferRequest{Type: TransferDownload, PayloadID: "payload", BlockIndex: 0}) {
-		t.Error("EnqueueDownload should succeed")
-	}
-
-	// Test prefetch enqueue
-	if !q.EnqueuePrefetch(TransferRequest{Type: TransferPrefetch, PayloadID: "payload", BlockIndex: 1}) {
-		t.Error("EnqueuePrefetch should succeed")
-	}
-
-	// Check pending counts by type
-	download, prefetch := q.PendingByType()
-	if download != 1 {
-		t.Errorf("download pending = %d, want 1", download)
-	}
-	if prefetch != 1 {
-		t.Errorf("prefetch pending = %d, want 1", prefetch)
-	}
-
-	// Total should be 2
-	if q.Pending() != 2 {
-		t.Errorf("total Pending() = %d, want 2", q.Pending())
 	}
 }
 
@@ -225,17 +158,16 @@ func TestSyncQueue_PrefetchDropWhenFull(t *testing.T) {
 	// Don't start workers - queue will fill up
 
 	// First prefetch should succeed
-	if !q.EnqueuePrefetch(TransferRequest{Type: TransferPrefetch, PayloadID: "payload", BlockIndex: 0}) {
+	if !q.EnqueuePrefetch(TransferRequest{PayloadID: "payload", BlockIndex: 0}) {
 		t.Error("First prefetch should succeed")
 	}
 
 	// Second prefetch should be dropped silently (queue full)
 	// This should NOT return false but drop silently - check pending count
-	q.EnqueuePrefetch(TransferRequest{Type: TransferPrefetch, PayloadID: "payload", BlockIndex: 1})
+	q.EnqueuePrefetch(TransferRequest{PayloadID: "payload", BlockIndex: 1})
 
 	// Only 1 should be pending (second was dropped)
-	_, prefetch := q.PendingByType()
-	if prefetch != 1 {
-		t.Errorf("prefetch pending = %d, want 1 (second should be dropped)", prefetch)
+	if pending := q.Pending(); pending != 1 {
+		t.Errorf("prefetch pending = %d, want 1 (second should be dropped)", pending)
 	}
 }

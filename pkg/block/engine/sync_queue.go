@@ -8,18 +8,24 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
-// SyncQueue handles asynchronous downloads and prefetch with a dedicated
-// worker pool. Uploads do not go through the queue: the carve dispatcher owns
-// the local→remote path.
+// SyncQueue runs speculative readahead on a dedicated worker pool. It is the
+// only asynchronous fetch path: uploads belong to the carve dispatcher, and a
+// demand read fetches inline through fetchGroup/inlineFetchOrWait rather than
+// queueing.
+//
+// decision: the queue carries prefetch only. A foreground arm would need a
+// caller that wants blocks staged without waiting for them, and the one such
+// caller on the horizon — bulk pre-warm of a subtree — does not exist yet.
+// Re-adding a channel, an enqueue method and a worker case is a smaller cost
+// than carrying arms no production path reaches; add one back when a pre-warm
+// caller lands.
 type SyncQueue struct {
 	manager *RemoteSync
 
-	// Priority channels
-	downloads chan TransferRequest // Processed by download workers
-	prefetch  chan TransferRequest // Processed by download workers when idle
+	prefetch chan TransferRequest // Processed by the prefetch workers
 
 	// Worker management
-	downloadWorkers int // Number of download+prefetch workers
+	downloadWorkers int // Number of prefetch workers
 	wg              gosync.WaitGroup
 	stopCh          chan struct{}
 	stoppedCh       chan struct{}
@@ -28,19 +34,14 @@ type SyncQueue struct {
 
 	// workerCtx is the parent context for per-request contexts created in
 	// processRequest. It is cancelled when stopCh is closed so that in-flight
-	// downloads/uploads abort promptly during Stop() instead of blocking on a
+	// prefetches abort promptly during Stop() instead of blocking on a
 	// slow or hung remote (e.g. S3).
 	workerCtx    context.Context
 	workerCancel context.CancelFunc
 
 	// Metrics
 	mu              gosync.Mutex
-	pendingDownload int
 	pendingPrefetch int
-	completed       int
-	failed          int
-	lastError       error
-	lastErrorAt     time.Time
 }
 
 // NewSyncQueue creates a new transfer queue with a dedicated worker pool.
@@ -54,7 +55,6 @@ func NewSyncQueue(m *RemoteSync, cfg SyncQueueConfig) *SyncQueue {
 
 	return &SyncQueue{
 		manager:         m,
-		downloads:       make(chan TransferRequest, cfg.QueueSize),
 		prefetch:        make(chan TransferRequest, cfg.QueueSize),
 		downloadWorkers: cfg.DownloadWorkers,
 		stopCh:          make(chan struct{}),
@@ -123,27 +123,9 @@ func (q *SyncQueue) Stop(timeout time.Duration) {
 	}
 }
 
-// EnqueueDownload adds a download request (highest priority).
-// Returns false if the queue is full (non-blocking).
-func (q *SyncQueue) EnqueueDownload(req TransferRequest) bool {
-	req.Type = TransferDownload
-	select {
-	case q.downloads <- req:
-		q.mu.Lock()
-		q.pendingDownload++
-		q.mu.Unlock()
-		return true
-	default:
-		logger.Warn("Fetch queue full, dropping request",
-			"payloadID", req.PayloadID)
-		return false
-	}
-}
-
-// EnqueuePrefetch adds a prefetch request (lowest priority).
+// EnqueuePrefetch adds a prefetch request.
 // Returns false if the queue is full (non-blocking, best effort).
 func (q *SyncQueue) EnqueuePrefetch(req TransferRequest) bool {
-	req.Type = TransferPrefetch
 	select {
 	case q.prefetch <- req:
 		q.mu.Lock()
@@ -155,36 +137,14 @@ func (q *SyncQueue) EnqueuePrefetch(req TransferRequest) bool {
 	}
 }
 
-// Pending returns the total number of pending transfer requests.
+// Pending returns the number of pending prefetch requests.
 func (q *SyncQueue) Pending() int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	return q.pendingDownload + q.pendingPrefetch
+	return q.pendingPrefetch
 }
 
-// PendingByType returns pending counts by transfer type.
-func (q *SyncQueue) PendingByType() (download, prefetch int) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	return q.pendingDownload, q.pendingPrefetch
-}
-
-// Stats returns transfer statistics.
-func (q *SyncQueue) Stats() (pending, completed, failed int) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	pending = q.pendingDownload + q.pendingPrefetch
-	return pending, q.completed, q.failed
-}
-
-// LastError returns when the last error occurred and the error itself.
-func (q *SyncQueue) LastError() (time.Time, error) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	return q.lastErrorAt, q.lastError
-}
-
-// downloadWorker processes download and prefetch requests, exiting on stopCh close.
+// downloadWorker processes prefetch requests, exiting on stopCh close.
 func (q *SyncQueue) downloadWorker(_ context.Context, id int) {
 	defer q.wg.Done()
 
@@ -192,31 +152,20 @@ func (q *SyncQueue) downloadWorker(_ context.Context, id int) {
 
 	for {
 		select {
-		case req := <-q.downloads:
-			q.processRequest(req)
-			continue
-		default:
-		}
-
-		select {
-		case req := <-q.downloads:
-			q.processRequest(req)
 		case req := <-q.prefetch:
 			q.processRequest(req)
 		case <-q.stopCh:
-			q.drainDownloads()
+			q.drainPrefetch()
 			logger.Debug("Fetch worker stopped", "workerID", id)
 			return
 		}
 	}
 }
 
-// drainDownloads processes remaining downloads and prefetch during shutdown.
-func (q *SyncQueue) drainDownloads() {
+// drainPrefetch processes the remaining prefetch requests during shutdown.
+func (q *SyncQueue) drainPrefetch() {
 	for {
 		select {
-		case req := <-q.downloads:
-			q.processRequest(req)
 		case req := <-q.prefetch:
 			q.processRequest(req)
 		default:
@@ -237,22 +186,9 @@ func (q *SyncQueue) processRequest(req TransferRequest) {
 	ctx, cancel := context.WithTimeout(parent, 5*time.Minute)
 	defer cancel()
 
-	var err error
-
-	switch req.Type {
-	case TransferDownload:
-		err = q.processDownload(ctx, req)
-		q.decrementPending(&q.pendingDownload)
-
-	case TransferPrefetch:
-		_ = q.processDownload(ctx, req) // Best effort - ignore errors
-		q.decrementPending(&q.pendingPrefetch)
-		q.signalDone(req.Done, nil) // Don't signal errors for prefetch
-		return
-	}
-
-	q.recordResult(req, err)
-	q.signalDone(req.Done, err)
+	_ = q.processDownload(ctx, req) // Best effort - ignore errors
+	q.decrementPending(&q.pendingPrefetch)
+	q.signalDone(req.Done, nil) // Don't signal errors for prefetch
 }
 
 // decrementPending decrements a pending counter under lock.
@@ -260,27 +196,6 @@ func (q *SyncQueue) decrementPending(counter *int) {
 	q.mu.Lock()
 	(*counter)--
 	q.mu.Unlock()
-}
-
-// recordResult updates metrics after a transfer completes.
-func (q *SyncQueue) recordResult(req TransferRequest, err error) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	if err != nil {
-		q.failed++
-		q.lastError = err
-		q.lastErrorAt = time.Now()
-		logger.Error("Transfer failed",
-			"type", req.Type.String(),
-			"payloadID", req.PayloadID,
-			"error", err)
-	} else {
-		q.completed++
-		logger.Debug("Transfer completed",
-			"type", req.Type.String(),
-			"payloadID", req.PayloadID)
-	}
 }
 
 // signalDone sends result on Done channel if present.
@@ -291,7 +206,7 @@ func (q *SyncQueue) signalDone(done chan error, err error) {
 	}
 }
 
-// processDownload handles a download or prefetch request via the worker pool.
+// processDownload stages one block for a prefetch request via the worker pool.
 func (q *SyncQueue) processDownload(ctx context.Context, req TransferRequest) error {
 	if q.manager == nil {
 		return nil

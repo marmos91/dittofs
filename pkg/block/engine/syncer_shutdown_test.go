@@ -79,8 +79,8 @@ func TestSyncerClose_JoinsInFlightDownloadWorker(t *testing.T) {
 
 	syncer.Queue().Start(context.Background())
 
-	if !syncer.Queue().EnqueueDownload(TransferRequest{PayloadID: "payload", BlockIndex: 0}) {
-		t.Fatal("EnqueueDownload returned false (queue full)")
+	if !syncer.Queue().EnqueuePrefetch(TransferRequest{PayloadID: "payload", BlockIndex: 0}) {
+		t.Fatal("EnqueuePrefetch returned false (queue full)")
 	}
 
 	// Wait until a worker is pinned inside GetFileChunkAtOffset.

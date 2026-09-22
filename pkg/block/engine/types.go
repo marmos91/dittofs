@@ -55,34 +55,11 @@ const DefaultDemandFetchTimeout = 60 * time.Second
 // 64 blocks = 512MB lookahead at 8MB block size.
 const DefaultPrefetchBlocks = 64
 
-// TransferType indicates the type of transfer operation.
-type TransferType int
-
-const (
-	// TransferDownload is the highest priority - user is waiting for data.
-	TransferDownload TransferType = iota
-	// TransferPrefetch is lowest priority - speculative optimization.
-	TransferPrefetch
-)
-
-// String returns a string representation of the transfer type.
-func (t TransferType) String() string {
-	switch t {
-	case TransferDownload:
-		return "download"
-	case TransferPrefetch:
-		return "prefetch"
-	default:
-		return "unknown"
-	}
-}
-
-// TransferRequest holds data for a pending transfer operation (download or prefetch).
+// TransferRequest holds data for a pending prefetch operation.
 type TransferRequest struct {
-	Type       TransferType // Transfer type and priority
-	PayloadID  string       // Payload ID
-	BlockIndex uint64       // Flat block index (fileOffset / BlockSize)
-	Done       chan error   // Completion channel; nil for async (fire-and-forget)
+	PayloadID  string     // Payload ID
+	BlockIndex uint64     // Flat block index (fileOffset / BlockSize)
+	Done       chan error // Completion channel; nil for async (fire-and-forget)
 }
 
 // Config holds configuration for the RemoteSync.
