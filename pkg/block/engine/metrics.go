@@ -18,15 +18,19 @@ type DataplaneMetrics interface {
 	// SetUploadQueueDepth publishes the pending-carve backlog.
 	SetUploadQueueDepth(n int)
 	// SetUploadWindow publishes the target upload concurrency — the pinned
-	// parallel_uploads value or the adaptive controller's current window (#1407).
+	// parallel_uploads value, or the adaptive controller's current window when
+	// the window is not pinned.
 	SetUploadWindow(n int)
 	// SetUploadGoodput publishes the delivered bytes/sec the adaptive controller
-	// measured over the last control interval (#1407).
+	// measured over the last control interval — the signal it steers the window
+	// by, paired with SetUploadWindow so a window change can be read against the
+	// throughput that caused it.
 	SetUploadGoodput(bytesPerSec float64)
 
 	// --- Corruption detection / self-heal (read path) ---
 	// All five counters are BOUNDED zero-label counters: no per-share, per-
-	// hash, or per-block dimensions (the #1188 unbounded-cardinality lesson).
+	// hash, or per-block dimensions — any of those would make the label set grow
+	// with the data, not with the config, and the series count unbounded.
 
 	// RecordLocalCorruption records n local-chunk integrity failures detected
 	// on read (blake3 of the local bytes != the chunk's content hash). One

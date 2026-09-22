@@ -23,8 +23,8 @@ import (
 // candidate row is included only if
 // syncedHashStore.IsSynced(fb.Hash) returns true. If the SyncedHashStore
 // is not wired (test fixtures), no chunks count as remote-mirrored and
-// the function returns 0 — matching the pre-Phase-18 semantics where
-// State==Remote was never set in that configuration either.
+// the function returns 0 — the same answer the State==Remote check gave,
+// since nothing ever set that state without a SyncedHashStore either.
 func (m *RemoteSync) GetFileSize(ctx context.Context, payloadID string) (uint64, error) {
 	if err := m.checkReady(ctx); err != nil {
 		return 0, err
@@ -137,7 +137,7 @@ func (m *RemoteSync) Exists(ctx context.Context, payloadID string) (bool, error)
 // Truncate is a no-op on the remote side; the CAS objects a truncate orphans
 // are reclaimed by the GC sweep.
 //
-// Post-Phase-17 the engine is CAS-keyed: there is no per-file remote key
+// The engine is CAS-keyed, so there is no per-file remote key
 // prefix to enumerate. Truncate's metadata-side RefCount decrement runs
 // inside engine.Truncate (which prunes FileAttr.Blocks and decrements per
 // dropped hash), which is what makes a hash sweepable. This method is kept as
@@ -164,7 +164,7 @@ func (m *RemoteSync) Truncate(ctx context.Context, payloadID string, newSize uin
 
 // Delete is a no-op on the remote side; engine.Delete drives the deletion.
 //
-// Post-Phase-17 the engine is CAS-keyed: file deletion routes through the
+// The engine is CAS-keyed, so file deletion routes through the
 // refcount path — engine.Delete decrements RefCount per ChunkRef hash, and the
 // GC sweep reclaims the CAS objects that leaves orphaned. Nothing is removed or
 // recorded here. The legacy per-file prefix sweep is gone, and this method is
