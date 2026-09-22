@@ -36,9 +36,13 @@ func TestOpenSetsDefaultLocalCapWhenUnset(t *testing.T) {
 func TestGCReclaimsDeadOverwrites(t *testing.T) {
 	// SegmentSize at the 1 MiB floor so overwrites seal many segments; single
 	// shard is deterministic; a generous explicit cap keeps eviction/backpressure
-	// out of the way so this isolates the dead-ratio repack path.
+	// out of the way so this isolates the dead-ratio repack path. A disabled
+	// GCInterval makes the pass below the only one that runs: the background
+	// loop drives the identical non-Force path, and one tick landing late in the
+	// write loop drains every qualifying segment, leaving this pass nothing to
+	// reclaim and the delta assertion measuring the loop instead of the repack.
 	const segSize = 1 << 20
-	cfg := Config{SegmentSize: segSize, ShardCount: 1, MaxLocalBytes: 1 << 30}
+	cfg := Config{SegmentSize: segSize, ShardCount: 1, MaxLocalBytes: 1 << 30, GCInterval: -1}
 	s, err := Open(t.TempDir(), cfg)
 	if err != nil {
 		t.Fatal(err)

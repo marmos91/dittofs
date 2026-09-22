@@ -42,6 +42,13 @@ func TestInputGuards(t *testing.T) {
 
 func testStore(t *testing.T, cfg Config) *Store {
 	t.Helper()
+	if cfg.GCInterval == 0 {
+		// Keep the background repack loop out of every test that did not ask for
+		// it: it drives the same non-Force pass tests call directly, so a tick
+		// inside a long test steals the segments an explicit pass was going to
+		// reclaim. A test that wants the loop sets a positive interval itself.
+		cfg.GCInterval = -1
+	}
 	s, err := Open(t.TempDir(), cfg)
 	if err != nil {
 		t.Fatalf("Open: %v", err)

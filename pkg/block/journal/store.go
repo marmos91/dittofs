@@ -72,6 +72,16 @@ type Config struct {
 	// value governs only a local store with no remote behind it.
 	// Zero falls back to the default via withDefaults.
 	CarveUploadConcurrency int
+	// GCInterval is how often the background loop repacks segments whose dead
+	// fraction has reached GCDeadRatioForce. A pass is a near-noop when nothing
+	// qualifies, so a short interval keeps on-disk growth tracking live bytes
+	// under overwrite-heavy load without costing an idle store anything
+	// meaningful. Zero falls back to the default via withDefaults; negative
+	// disables the loop entirely. That loop drives the same non-Force pass an
+	// explicit caller does, so a caller that asserts on what its own pass
+	// reclaimed must disable it — otherwise the loop can take the qualifying
+	// segments first and leave that pass nothing to find.
+	GCInterval time.Duration
 	// DirtyExpiry bounds how long an appended record may sit unfsynced. A
 	// background loop commits every shard still holding uncovered records once
 	// per interval, so a client that never asks for durability (no NFS COMMIT,
@@ -104,6 +114,9 @@ const (
 	defaultShardCount                   = 16
 	defaultEvictMaxWait                 = 30 * time.Second
 	defaultCarveUploadConcurrency       = 8
+	// defaultGCInterval is the background repack cadence an unset GCInterval
+	// gets. See Config.GCInterval.
+	defaultGCInterval = 30 * time.Second
 	// defaultDirtyExpiry mirrors Linux writeback's dirty_expire_centisecs
 	// default: an unfsynced write is pushed to the device once it is about
 	// this old.
@@ -139,6 +152,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.CarveUploadConcurrency <= 0 {
 		c.CarveUploadConcurrency = defaultCarveUploadConcurrency
+	}
+	if c.GCInterval == 0 {
+		c.GCInterval = defaultGCInterval
 	}
 	if c.DirtyExpiry == 0 {
 		c.DirtyExpiry = defaultDirtyExpiry
@@ -399,20 +415,16 @@ func (s *Store) Close() error {
 	return firstErr
 }
 
-// defaultGCInterval is how often the background loop repacks high-dead-ratio
-// segments. A pass is a near-noop when nothing is at or above GCDeadRatioForce,
-// so a short interval keeps on-disk growth tracking live bytes under
-// overwrite-heavy load without costing an idle store anything meaningful.
-const defaultGCInterval = 30 * time.Second
-
 // startBackground launches the store's periodic loops. Close cancels them and
-// waits for each to return before closing segment files. A negative DirtyExpiry
-// leaves the dirty-age loop unstarted.
+// waits for each to return before closing segment files. A negative GCInterval
+// or DirtyExpiry leaves the matching loop unstarted.
 func (s *Store) startBackground() {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.bgCancel = cancel
-	s.bgWG.Add(1)
-	go func() { defer s.bgWG.Done(); s.gcLoop(ctx) }()
+	if s.cfg.GCInterval > 0 {
+		s.bgWG.Add(1)
+		go func() { defer s.bgWG.Done(); s.gcLoop(ctx) }()
+	}
 	if s.cfg.DirtyExpiry > 0 {
 		s.bgWG.Add(1)
 		go func() { defer s.bgWG.Done(); s.syncLoop(ctx) }()
@@ -423,9 +435,9 @@ func (s *Store) startBackground() {
 // behind; without proactive repacking they are only reclaimed on the write-path
 // eviction gate, so a store whose writes outpace carve grows until the cap
 // forces backpressure. The loop keeps local bytes bounded relative to live
-// bytes regardless of whether a cap is set.
+// bytes regardless of whether a cap is set. See Config.GCInterval.
 func (s *Store) gcLoop(ctx context.Context) {
-	t := time.NewTicker(defaultGCInterval)
+	t := time.NewTicker(s.cfg.GCInterval)
 	defer t.Stop()
 	for {
 		select {
