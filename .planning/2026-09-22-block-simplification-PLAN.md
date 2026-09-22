@@ -217,8 +217,11 @@ index two structures that must agree about residency at all times — the exact 
 | 7 | **Merge `carver.Chunk` into `engine.CarveChunk`** | Same struct, one renamed field, one extra key, an incidental `int64`/`int` split on `Size`. |
 | 8 | **Strip 24 always-true type assertions** (13 non-test) — **PARTLY DONE (Waves 1-2).** The four decorator sites are gone (Wave 2); `remote/passthrough.go` and the shares forwards went in Wave 1. `runtime/blockgc.go` and the engine sites remain. One in `blockstore_config.go` is deliberately KEPT with a `decision:` marker — its fallback is a real error a caller handles, and deleting the method would change which type serves the call | All rooted in `remote.RemoteStore` embedding `RemoteBlockStore`/`ChunkReader`/`ChunkSealer` (`remote/remote.go:43-46`) — e.g. `encryption/decorator.go:61,108`, `compression/decorator.go:61,145`, `remote/passthrough.go:44`, `runtime/blockgc.go:482,553`. **None are MetaViews.** |
 
-**Deliberately not collapsed:** `local.LocalStore`'s 35 methods (2 full implementors, a `ponytail:`
-marker owns the decision); `FileChunkStore` vs `EngineFileChunkStore` (strict superset, both have a
+**Deliberately not collapsed:** ~~`local.LocalStore`'s 35 methods (2 full implementors, a
+`ponytail:` marker owns the decision)~~ — **WRONG on both counts, see 4A′.** There is one
+implementor; the second is a test-only double with zero non-test importers. The package is to be
+deleted and the interface folded into `journal`, which Wave 1C already said and this line
+contradicted; `FileChunkStore` vs `EngineFileChunkStore` (strict superset, both have a
 real consumer in `pkg/metadata/store.go`); journal-GC vs engine-compaction ratio gates (2 lines of
 overlap, five axes of genuine difference); `ChunkRef` vs `Row` (transient projection vs persisted
 row — collapsing them would put `RefCount` and `LastAccess` in every file's attribute blob).
@@ -566,10 +569,57 @@ dropped 11,359 → 7,577. The edge is one-directional: `gc` imports nothing from
 
 ### Wave 4 — the journal (after 1A and 3C). No segment format change.
 
-- **4A — the three live bugs, as standalone PRs, first.** Tombstones uncounted in `seg.records`
-  (resurrection — **#2829**); the `records > 0` guard on `evictable()`; `compactColdLog`'s
-  recovery-only gate. The latter two have no issue yet — file them or fix them, do not leave them
-  living only in this document. These stand on their own and should not wait for the restructuring.
+- **4A — the live bugs, as standalone PRs, first.**
+  - ~~Tombstones uncounted in `seg.records` (resurrection — #2829)~~ and ~~the `records > 0`
+    guard on `evictable()`~~ — **DONE**, PR #2854 / issue #2841. Both retire paths
+    (`evictSegment` and `reclaimEmptied`) now call `carryMarkersForward` before
+    `retireSegment` unlinks, keeping each marker's original Version. The counting itself was
+    left alone: markers stay uncounted, matching the append path and the recovery replay, so a
+    restart reconstructs the same counters. Note the fix needed BOTH callers of `evictable` —
+    the issue named only eviction, and `reclaimEmptied` runs at the end of every `Delete`.
+  - `compactColdLog`'s recovery-only gate — **still open, still has no issue.** File it or fix
+    it; do not leave it living only in this document.
+
+- **4A′ — fold `LocalStore` into `journal`, and delete `pkg/block/local` + `pkg/block/local/memory`.**
+  This was Wave 1C scope and dropped out of an earlier draft. It is a **prerequisite for 4E**,
+  and it resolves a contradiction this document carried: the Q3 table calls `local.LocalStore`
+  "deliberately not collapsed" with "2 full implementors", while Wave 1C says delete the package.
+  The delete is right, and the count is wrong.
+  - **One implementor.** `var _ LocalStore = (*journal.Store)(nil)` is the only assertion in the
+    tree. The second "implementor" is `pkg/block/local/memory`, which has **zero non-test
+    importers** — counting a test double as an implementor is the reasoning that keeps a useless
+    interface alive.
+  - **It breaks no cycle.** `journal` imports nothing internal — a true leaf, pinned by its own
+    `foreign_imports_test.go`. So `engine → local → journal` can simply be `engine → journal`;
+    the interface adds a hop rather than inverting a dependency.
+  - **35 methods is a mirror, not a narrowing.** "Accept interfaces" means narrow ones.
+  - **The real cost, stated honestly: 33 test files use the memory double** and would construct a
+    real journal on `t.TempDir()` instead — slower and disk-bound. That cost is why this keeps
+    being deferred, and it is the only argument for keeping the package. It is weakened by the
+    double being unfaithful: its `Flush` ignores `opts` entirely, so tests pass against behaviour
+    the real store does not have.
+
+- **4E — metrics, after 4A′ and 4B. Issue #2857.** Four registered Prometheus instruments
+  (`backpressureTotal`, `backpressureWaitSeconds`, `evictionsTotal`, `evictedBytesTotal`) have
+  read zero for the life of every process, and exported-and-always-zero is worse than absent.
+  - **`MetricsAware` is unimplementable where it is declared**, not merely unimplemented.
+    `MetricsRecorder` sits in `pkg/block/local`, and `pkg/block/local/local.go:16` imports
+    `pkg/block/journal`, so the only local tier production runs cannot name the type without an
+    import cycle. The seam's own doc names `*fs.FSStore` as its implementor; there is no `fs`
+    package. The engine's probe has therefore never once been true.
+  - **Moving the recorder to `pkg/block` does not work either** — tried and reverted. It breaks
+    the journal's pinned leaf rule: *journal may import only the standard library and
+    golang.org/x/sys*. The recorder must be declared **inside `journal`**, with the engine
+    probing `interface{ SetMetrics(journal.MetricsRecorder) }`.
+  - Sequenced here because 4A′ decides whether `local` still exists and 4B reshapes the call
+    sites. A working prototype exists (A/B verified: removing the recorder calls produced
+    `recorded 0 evictions, want 1`, the production symptom); it was reverted for sequencing, not
+    because it failed.
+  - When it lands: pointer cell, not a value — the runtime installs the handle after the store is
+    already serving. Record one eviction per reclaimed segment **on the disk-pressure path only**
+    (a repack also unlinks a segment but replaces rather than reclaims, and counting it makes the
+    eviction rate read high on a store under no pressure). Record backpressure **only when the
+    write path actually sleeps**, not when the capacity gate finds room.
 - **4B** Split `journal/store.go` 1557 → six files — **`shard.groupCommit` moves here; see #2817
   before or after, never during**; extract `coldLog` (`coldMu`/`coldFD`/
   `coldBroken`) and `reclaimer` (`gcMu`) on their field-isolated seams; delete the 4 test seams from
@@ -590,7 +640,13 @@ dropped 11,359 → 7,577. The edge is one-directional: `gc` imports nothing from
 - **4F — unify reclaim.** #2822's baseline must exist before this starts. One entry point, two strategies (drop a fully-synced sealed segment;
   repack a high-dead-ratio one), behind the **segment→intervals reverse index** that
   `reclaim.go:305-307` already asks for — which also collapses the six duplicate index walks
-  (`:262, :474, :639, :769, :889, :955`) into one lock-held helper.
+  (six `range sh.index` walks) into one lock-held helper — **DECLINED by 3C, on evidence.**
+  Four sites bind a value copy and provably cannot write; one binds `&fi.ivs[k]` and writes
+  through it, so a `fn(id, *interval)` helper hands write access to the four that currently
+  cannot have it. `dropVictim` short-circuits mid-walk and unlocks from inside the loop, which no
+  callback shape serves. Five of six run with `sh.mu` already held and one takes it itself, so a
+  locking helper deadlocks five and a non-locking one still cannot serve the sixth. Net saving
+  after a 9-line helper: ~15 lines. Do not re-propose without addressing the pointer-binding site.
 - ~~Per-shard checkpoint~~, ~~interval coalescing~~, ~~fence-map collapse~~, ~~format bump~~,
   ~~shard-count retune~~ — **all dropped**, see the design section.
 
