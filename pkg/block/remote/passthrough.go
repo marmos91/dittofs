@@ -2,7 +2,6 @@ package remote
 
 import (
 	"context"
-	"fmt"
 	"io"
 
 	"github.com/marmos91/dittofs/pkg/block"
@@ -19,12 +18,12 @@ import (
 // SealChunk, so the assembled block must NOT be transformed again at the
 // block level. Forwarding them here is what lets a decorated store
 // satisfy RemoteBlockStore (the carve path asserts it) while the
-// transform stays confined to SealChunk / ReadChunk.
+// transform stays confined to SealChunk / ReadChunk. RemoteStore embeds
+// RemoteBlockStore, so inner always carries them.
 //
 // Close, HealthCheck, Healthcheck and Durable forward because a
 // transform changes the shape of the bytes, not where they land or
-// whether the backend is reachable. Has and Delete forward because both
-// key off the content hash, which a transform leaves unchanged.
+// whether the backend is reachable.
 type Passthrough struct {
 	// inner is the wrapped store. It stays unexported so that embedding
 	// Passthrough cannot promote a handle to the untransformed store into a
@@ -38,83 +37,30 @@ type Passthrough struct {
 // NewPassthrough builds a Passthrough forwarding to inner.
 func NewPassthrough(inner RemoteStore) Passthrough { return Passthrough{inner: inner} }
 
-// blockInner returns the inner store as a RemoteBlockStore, or an error
-// when the wrapped store does not support block-keyed objects.
-func (p Passthrough) blockInner() (RemoteBlockStore, error) {
-	rbs, ok := p.inner.(RemoteBlockStore)
-	if !ok {
-		return nil, ErrChunkReadUnsupported
-	}
-	return rbs, nil
-}
-
-// SliceRange returns [offset, offset+length) of full, clamped to its end.
-// Used by decorators whose transform has no random access into the stored
-// wire bytes: they materialise the whole plaintext, then slice it here so
-// the bounds contract cannot drift between them. Callers reject a
-// non-positive length before fetching, so reaching that branch here means
-// the caller skipped its own guard.
-func SliceRange(full []byte, offset, length int64) ([]byte, error) {
-	if length <= 0 {
-		return nil, fmt.Errorf("%w: length %d", block.ErrInvalidSize, length)
-	}
-	if offset < 0 || offset > int64(len(full)) {
-		return nil, fmt.Errorf("%w: offset %d out of bounds (size %d)", block.ErrInvalidOffset, offset, len(full))
-	}
-	// Clamp the count rather than the end offset: offset+length overflows for a
-	// large length and wraps negative, which would size the copy negatively.
-	// offset is already bounded by len(full), so the remaining count cannot go
-	// negative and offset+n cannot exceed len(full).
-	n := min(length, int64(len(full))-offset)
-	out := make([]byte, n)
-	copy(out, full[offset:offset+n])
-	return out, nil
-}
-
 // PutBlock stores the assembled block verbatim (already-sealed bodies).
 func (p Passthrough) PutBlock(ctx context.Context, blockID string, r io.Reader) error {
-	rbs, err := p.blockInner()
-	if err != nil {
-		return err
-	}
-	return rbs.PutBlock(ctx, blockID, r)
+	return p.inner.PutBlock(ctx, blockID, r)
 }
 
 // GetBlock returns the raw block object verbatim.
 func (p Passthrough) GetBlock(ctx context.Context, blockID string) ([]byte, error) {
-	rbs, err := p.blockInner()
-	if err != nil {
-		return nil, err
-	}
-	return rbs.GetBlock(ctx, blockID)
+	return p.inner.GetBlock(ctx, blockID)
 }
 
 // GetBlockRange returns raw block bytes verbatim; the per-chunk inverse
 // transform is ReadChunk.
 func (p Passthrough) GetBlockRange(ctx context.Context, blockID string, offset, length int64) ([]byte, error) {
-	rbs, err := p.blockInner()
-	if err != nil {
-		return nil, err
-	}
-	return rbs.GetBlockRange(ctx, blockID, offset, length)
+	return p.inner.GetBlockRange(ctx, blockID, offset, length)
 }
 
 // DeleteBlock removes the block object.
 func (p Passthrough) DeleteBlock(ctx context.Context, blockID string) error {
-	rbs, err := p.blockInner()
-	if err != nil {
-		return err
-	}
-	return rbs.DeleteBlock(ctx, blockID)
+	return p.inner.DeleteBlock(ctx, blockID)
 }
 
 // WalkBlocks enumerates block objects.
 func (p Passthrough) WalkBlocks(ctx context.Context, fn func(blockID string, meta block.Meta) error) error {
-	rbs, err := p.blockInner()
-	if err != nil {
-		return err
-	}
-	return rbs.WalkBlocks(ctx, fn)
+	return p.inner.WalkBlocks(ctx, fn)
 }
 
 // Close releases inner resources. A decorator holding resources of its
