@@ -50,3 +50,32 @@ type DataplaneMetrics interface {
 	// bytes is the verified chunk-plaintext length returned.
 	RecordBlockRangeRead(bytes int)
 }
+
+// dataplaneMetrics returns the engine's data-plane metrics sink, or nil when
+// the syncer is detached from a Store or no recorder was injected. Call sites
+// must guard the result: it is a plain interface, not a nil-safe *Metrics.
+func (m *RemoteSync) dataplaneMetrics() DataplaneMetrics {
+	if m.metrics == nil {
+		return nil
+	}
+	if p := m.metrics.Load(); p != nil {
+		return *p
+	}
+	return nil
+}
+
+// SyncCounts returns lifetime (completed, failed) sync counts: blocks that
+// reached remote and failed carve upload attempts.
+func (m *RemoteSync) SyncCounts() (completed, failed int) {
+	return int(m.completedSyncs.Load()), int(m.failedSyncs.Load())
+}
+
+// noteBlockCommitted records one block reaching the remote durably. Every carve
+// routes its commits through the same sink, so counting here covers both the
+// background dispatcher and the drain's force-carve — the latter runs as a
+// single call that can span minutes, and counting only on its return would
+// leave the progress signal flat for that whole time. The block's byte count
+// goes to noteBlockUploaded instead, one step earlier.
+func (m *RemoteSync) noteBlockCommitted(int64) {
+	m.completedSyncs.Add(1)
+}
