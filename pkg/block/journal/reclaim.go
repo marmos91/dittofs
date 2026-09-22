@@ -57,16 +57,13 @@ type EvictResult struct {
 // set smaller than the segment-roll threshold otherwise sits entirely in the
 // never-sealed active segment, where nothing can reclaim it.
 func (s *Store) Evict(ctx context.Context, targetBytes int64) (EvictResult, error) {
-	return s.evict(ctx, targetBytes, true)
+	return s.evict(ctx, targetBytes)
 }
 
-// evict is the shared eviction loop. allowActiveSeal enables the force-seal
-// fall-through, which both callers want: without it the sealed set is the only
-// reclaimable set, and a working set below the rotation threshold never enters
-// it. The parameter stays so a caller that must not disturb segment layout can
-// opt out. The fall-through is bounded to one pass per call, and sealableActive
-// keeps it from touching an active holding unsynced records.
-func (s *Store) evict(ctx context.Context, targetBytes int64, allowActiveSeal bool) (EvictResult, error) {
+// evict is the shared eviction loop. Its force-seal fall-through is bounded to
+// one pass per call, and sealableActive keeps it from touching an active
+// holding unsynced records.
+func (s *Store) evict(ctx context.Context, targetBytes int64) (EvictResult, error) {
 	if err := ctx.Err(); err != nil {
 		return EvictResult{}, err
 	}
@@ -81,11 +78,11 @@ func (s *Store) evict(ctx context.Context, targetBytes int64, allowActiveSeal bo
 	for {
 		seg, sh := s.claimColdestEvictable()
 		if seg == nil {
-			// Sealed set exhausted. On an explicit force-evict, seal the
-			// fully-synced active segments once so their bytes become evictable —
-			// the next iteration drains them. Bounded to a single pass so a fresh
-			// (empty) active segment is never sealed in a spin.
-			if allowActiveSeal && !sealedActives {
+			// Sealed set exhausted. Seal the fully-synced active segments once so
+			// their bytes become evictable — the next iteration drains them.
+			// Bounded to a single pass so a fresh (empty) active segment is never
+			// sealed in a spin.
+			if !sealedActives {
 				sealedActives = true
 				sealed, err := s.sealSyncedActives(ctx)
 				if err != nil {
@@ -360,15 +357,15 @@ func (s *Store) ensureSpace(ctx context.Context, needed int64) error {
 			return err
 		}
 		overage := s.diskBytes.Load() + needed - s.cfg.MaxLocalBytes
-		// Force-sealing is enabled here for the same reason the explicit drain
-		// enables it: sealing happens only when an append would overflow
+		// evict's force-seal fall-through is what makes the cap reachable at all:
+		// sealing otherwise happens only when an append would overflow
 		// SegmentSize, so a working set below that threshold sits entirely in
-		// active segments, and eviction scans the sealed set alone. Denying the
-		// gate a seal leaves the cap structurally unreachable — every byte synced
-		// and droppable, nothing evictable. It cannot strand this writer's own
-		// dirty bytes: sealableActive refuses any active still holding an unsynced
-		// record, so a sustained writer's segment stays put and backpressures.
-		res, err := s.evict(ctx, overage, true)
+		// active segments, and eviction scans the sealed set alone — every byte
+		// synced and droppable, nothing evictable. It cannot strand this writer's
+		// own dirty bytes: sealableActive refuses any active still holding an
+		// unsynced record, so a sustained writer's segment stays put and
+		// backpressures.
+		res, err := s.evict(ctx, overage)
 		if err != nil {
 			return err
 		}
