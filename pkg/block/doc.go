@@ -110,10 +110,9 @@
 //   - remote: the block-keyed [remote.RemoteStore] contract, its backend
 //     implementations (s3, memory), and Passthrough, the forwarding
 //     base the compression / encryption decorators embed.
-//   - blockstoretest: conformance suites — BlockStoreConformance for
-//     the hash-keyed Store surface and RemoteBlockStoreConformance for
-//     the block-keyed one — let backends opt into the contract surface
-//     they claim.
+//   - blockstoretest: RemoteBlockStoreConformance, the one conformance
+//     suite, pinning the block-keyed remote contract. There is no
+//     hash-keyed suite.
 //   - engine: BlockStore engine composing local store + syncer +
 //     unified Cache + metadata.
 //   - journal: the append-log write-back store behind local/fs —

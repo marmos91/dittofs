@@ -48,9 +48,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// BlockSize is the size of a single block (8MB), used for byte estimation.
-const BlockSize = block.BlockSize
-
 // gcRootLocks serializes CollectGarbage invocations that share a
 // GCStateRoot.: without this, two concurrent calls
 // against the same root race in CleanStaleGCStateDirs — Run B can sweep

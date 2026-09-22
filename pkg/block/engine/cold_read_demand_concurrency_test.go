@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marmos91/dittofs/pkg/block"
 	memorylocal "github.com/marmos91/dittofs/pkg/block/local/memory"
 	metastore "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
@@ -29,7 +30,7 @@ func TestColdRead_DemandFetchIsConcurrent(t *testing.T) {
 	mds := metastore.NewMemoryMetadataStoreWithDefaults()
 
 	// Seed nBlocks remote-only chunks, one per block stride, so a single read
-	// over [0, nBlocks*BlockSize) must fetch every one from the remote. Each
+	// over [0, nBlocks*block.BlockSize) must fetch every one from the remote. Each
 	// block gets DISTINCT bytes (distinct CAS hash) — identical content would
 	// dedup to local after the first fetch and hide the serial-vs-parallel
 	// difference behind CAS, not the loop.
@@ -38,13 +39,13 @@ func TestColdRead_DemandFetchIsConcurrent(t *testing.T) {
 		for j := range chunk {
 			chunk[j] = byte(i*7 + j)
 		}
-		seedSyncedRemoteChunk(t, fbs, rs, mds, "p", uint64(i)*uint64(BlockSize), chunk)
+		seedSyncedRemoteChunk(t, fbs, rs, mds, "p", uint64(i)*uint64(block.BlockSize), chunk)
 	}
 
 	m := newFetchSyncer(loc, rs, fbs, mds)
 	m.config.PrefetchBlocks = 0 // isolate the demand loop from the prefetch pump
 
-	if err := m.EnsureAvailable(ctx, "p", 0, uint32(nBlocks*BlockSize)); err != nil {
+	if err := m.EnsureAvailable(ctx, "p", 0, uint32(nBlocks*block.BlockSize)); err != nil {
 		t.Fatalf("EnsureAvailable: %v", err)
 	}
 

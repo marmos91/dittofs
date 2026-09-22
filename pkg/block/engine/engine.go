@@ -192,14 +192,10 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 	// the per-(file,offset) FileChunk manifest rows atomically in its commit
 	// transaction (metadata.DefaultCommitBlock). There is no rollup-completion
 	// persister, no write-side cache warm hook, and no per-chunk emitter.
-	// wire the Store back-reference onto the RemoteSync so it can reach the
-	// owning Store for dataplane metrics (RemoteSync.dataplaneMetrics) and
-	// cache access (InvalidateFile on delete). Reading through the
-	// back-reference (instead of caching a cacheInterface field on the
-	// RemoteSync at construction time) lets test code swap `bs.cache = rec`
-	// post-construction and still observe the invalidation — mirrors the
-	// TestClose_ClosesCache pattern.
-	cfg.RemoteSync.bs = bs
+	// Hand the syncer the metrics cell rather than its current value: the
+	// registry is built after shares load, so SetMetrics back-fills this cell
+	// on an already-serving share and the syncer must see that write.
+	cfg.RemoteSync.metrics = &bs.metrics
 	return bs, nil
 }
 

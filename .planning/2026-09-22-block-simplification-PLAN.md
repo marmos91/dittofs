@@ -458,8 +458,10 @@ Nothing above changes a wave's scope except #2829, which was already in it.
   be placed explicitly — they appear nowhere in the tree today. `dedupGuard` is a deliberately
   package-private rendezvous between the write and sweep paths (`dedup_sweep_guard.go:92-94`);
   moving it means **exporting** it. Also note 2A is a **public-API change across four more trees** —
-  `cmd/dfsctl`, `internal/controlplane/api/handlers`, `pkg/config`, `pkg/controlplane/runtime` all
-  consume `engine.BlockSize`, `engine.GCStats`, `engine.ManifestCheckResult` and friends.
+  `cmd/dfsctl`, `internal/controlplane/api/handlers`, `pkg/config`, `pkg/controlplane/runtime`
+  consume `engine.GCStats`, `engine.ManifestCheckResult` and friends. **Not `engine.BlockSize`** —
+  it had zero references outside the package and Wave 0 deleted it as a bare alias of
+  `block.BlockSize`. Fourth wrong file list in this plan; re-derive before trusting one.
 - **2B** Same package ← `manifest_check.go`, `manifest_repair.go`, `audit_state.go`. Move
   `repairPayload` (`manifest_check.go:374`) into `repair.go`; collapse the two persist-last-run
   implementations into `lastrun.go`. Collapses #3. *Land 2A first.*

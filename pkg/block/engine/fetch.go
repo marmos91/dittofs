@@ -126,7 +126,7 @@ func (m *RemoteSync) collectCoveringChunks(ctx context.Context, payloadID string
 			claimEnd = cur + 1 // a zero/short DataSize row must still advance the walk
 		}
 		out = append(out, coveringChunk{
-			blockIdx: absOff / uint64(BlockSize),
+			blockIdx: absOff / uint64(block.BlockSize),
 			fb:       fb,
 			span:     hydrateSpan{From: cur, To: claimEnd, At: at},
 		})
@@ -388,8 +388,8 @@ func (m *RemoteSync) fetchBlock(ctx context.Context, payloadID string, blockIdx 
 		return m.remoteUnavailableError()
 	}
 
-	start := blockIdx * uint64(BlockSize)
-	chunks, err := m.collectCoveringChunks(ctx, payloadID, start, start+uint64(BlockSize))
+	start := blockIdx * uint64(block.BlockSize)
+	chunks, err := m.collectCoveringChunks(ctx, payloadID, start, start+uint64(block.BlockSize))
 	if err != nil {
 		return err
 	}
@@ -465,7 +465,7 @@ func (m *RemoteSync) fetchResolvedBlock(ctx context.Context, fb *block.FileChunk
 
 // blockRange returns the start and end block indices for a byte range.
 func blockRange(offset uint64, length uint32) (start, end uint64) {
-	return offset / uint64(BlockSize), (offset + uint64(length) - 1) / uint64(BlockSize)
+	return offset / uint64(block.BlockSize), (offset + uint64(length) - 1) / uint64(block.BlockSize)
 }
 
 // EnsureAvailable hydrates the local tier for [offset, offset+length) so
@@ -503,7 +503,7 @@ func (m *RemoteSync) EnsureAvailable(ctx context.Context, payloadID string, offs
 	// Health gate: fail fast when remote is unreachable
 	if !m.IsRemoteHealthy() {
 		m.offlineReadsBlocked.Add(1)
-		m.logOfflineRead("EnsureAvailable", payloadID, offset/uint64(BlockSize))
+		m.logOfflineRead("EnsureAvailable", payloadID, offset/uint64(block.BlockSize))
 		return m.remoteUnavailableError()
 	}
 
@@ -558,7 +558,7 @@ func (m *RemoteSync) EnsureAvailable(ctx context.Context, payloadID string, offs
 		// rather than a generic read failure; anything else is returned unchanged.
 		if fetchCtx.Err() != nil && ctx.Err() == nil {
 			m.offlineReadsBlocked.Add(1)
-			m.logOfflineRead("EnsureAvailable", payloadID, offset/uint64(BlockSize))
+			m.logOfflineRead("EnsureAvailable", payloadID, offset/uint64(block.BlockSize))
 			return m.remoteUnavailableError()
 		}
 		return err

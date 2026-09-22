@@ -61,15 +61,11 @@ type RemoteSync struct {
 	// SetSyncedHashStore.
 	syncedHashStore metadata.SyncedHashStore
 
-	// bs is a back-reference to the owning Store.
-	// the file-level dedup short-circuit needs to reach
-	// Store.cache to fire InvalidateFile on orphaned speculative
-	// chunks. Reading through the back-reference (rather than copying a
-	// `cache` field on the RemoteSync at construction time) lets test code
-	// swap `bs.cache = rec` after construction and still observe the
-	// invalidation — mirrors the TestClose_ClosesCache pattern. May be
-	// nil in pre-wiring tests; callers must nil-check before use.
-	bs *Store
+	// metrics points at the owning Store's data-plane metrics cell, not at a
+	// copy of its value: SetMetrics back-fills that cell on already-serving
+	// shares, so a value captured at construction time would stay nil for the
+	// lifetime of the syncer. Nil in pre-wiring tests; callers must nil-check.
+	metrics *atomic.Pointer[DataplaneMetrics]
 
 	config RemoteSyncConfig
 
@@ -463,10 +459,10 @@ func (m *RemoteSync) Flush(ctx context.Context, payloadID string) (*block.FlushR
 // the syncer is detached from a Store or no recorder was injected. Call sites
 // must guard the result: it is a plain interface, not a nil-safe *Metrics.
 func (m *RemoteSync) dataplaneMetrics() DataplaneMetrics {
-	if m.bs == nil {
+	if m.metrics == nil {
 		return nil
 	}
-	if p := m.bs.metrics.Load(); p != nil {
+	if p := m.metrics.Load(); p != nil {
 		return *p
 	}
 	return nil

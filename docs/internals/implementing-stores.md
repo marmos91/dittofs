@@ -566,12 +566,11 @@ were removed when the journal replaced the two-tier local design.
 
 ### Conformance tests
 
-The journal-native `LocalStore` surface is `(FileID, offset)`-keyed, not the
-content-addressed `block.Store` surface, so the `blockstoretest` suites below
-(`BlockStoreConformance` / `RemoteBlockStoreConformance`) do **not** apply to it —
-they target the CAS `block.Store` surface that block stores implement (see
-[Implementing a Remote Store](#implementing-a-remote-store)). The journal and the
-in-memory local store are exercised by their own package tests under
+The journal-native `LocalStore` surface is `(FileID, offset)`-keyed, so the one
+`blockstoretest` suite (`RemoteBlockStoreConformance`) does **not** apply to it — that
+suite targets the block-keyed `remote.RemoteBlockStore` surface (see
+[Implementing a Remote Block Store](#implementing-a-remote-block-store-block-keyed)).
+The journal and the in-memory local store are exercised by their own package tests under
 `pkg/block/journal/` and `pkg/block/local/`.
 
 ## Implementing a Remote Store
@@ -747,34 +746,9 @@ definitively-wrong object.
 
 ### Conformance Tests
 
-Test your remote store with the conformance suite:
-
-```go
-package myremote_test
-
-import (
-    "testing"
-
-    "github.com/marmos91/dittofs/pkg/block"
-    "github.com/marmos91/dittofs/pkg/block/blockstoretest"
-)
-
-func TestMyRemoteStore(t *testing.T) {
-    factory := func(t *testing.T) (block.Store, func()) {
-        store, cleanup := createTestStore(t)
-        return store, cleanup
-    }
-    blockstoretest.BlockStoreConformance(t, factory)
-}
-```
-
-The `BlockStoreConformance` suite pins the CAS contract: `Put` + `Get`
-round-trip with no aliasing, idempotent re-`Put` of identical bytes,
-`Get`/`GetRange`/`Has`/`Head`/`Delete` semantics, and `Walk` enumeration.
-The dedicated `ReadBlockVerified` path on `RemoteStore` (round-trip succeeds;
-body-mismatch returns `block.ErrCASContentMismatch`; corrupt bytes never
-surface upstream) is exercised separately — see `pkg/block/remote/s3` for the
-verification tests.
+There is no conformance suite for the legacy CAS surface — it was deleted along with
+the `block.Store` interface. The only suite is `RemoteBlockStoreConformance`, covered
+under [Implementing a Remote Block Store](#implementing-a-remote-block-store-block-keyed).
 
 ## Implementing a Remote Block Store (block-keyed)
 

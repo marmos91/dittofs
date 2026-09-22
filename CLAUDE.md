@@ -145,10 +145,13 @@ composition layer over six sub-services: `adapters/`, `stores/`, `shares/`, `mou
    `ErrAccess`, `ErrExist`, `ErrNotEmpty`, …). Log expected errors at `Debug`, unexpected at `Error`.
 
 7. **Store contracts** live in `pkg/metadata/storetest/` — any new metadata backend must pass
-   that conformance suite. Block stores have a unified suite in `pkg/block/blockstoretest/`
-   (`BlockStoreConformance` for the hash-keyed `block.Store` surface,
-   `RemoteBlockStoreConformance` for the block-keyed one). The local tier is
-   payload-keyed and is covered by its own package tests, not by that suite.
+   that conformance suite. Block stores have exactly one suite,
+   `blockstoretest.RemoteBlockStoreConformance`, and it covers only the block-keyed
+   `remote.RemoteBlockStore` surface. There is **no hash-keyed suite**: the CAS `block.Store`
+   interface and its `BlockStoreConformance` were deleted, leaving orphan godoc for the
+   interface in `pkg/block/blockstore.go` — that file's `Meta`, `DurabilityReporter` and
+   `IsDurable` are still live. The local tier is payload-keyed and is covered by its own
+   package tests.
 
 ## Verifying a change
 

@@ -3,6 +3,8 @@ package engine
 import (
 	"strconv"
 	"testing"
+
+	"github.com/marmos91/dittofs/pkg/block"
 )
 
 // newRAsyncer builds a RemoteSync exercising only planWindow (no queue/remote).
@@ -123,7 +125,7 @@ func drainPrefetch(q *SyncQueue) []uint64 {
 // must be confirmed by a real-VM cold-read A/B (see the design doc's method).
 func TestScheduleReadahead_SlidesOnEveryRead(t *testing.T) {
 	m := newSchedSyncer(4)
-	bs := uint64(BlockSize)
+	bs := uint64(block.BlockSize)
 
 	// First read anchors the frontier only.
 	m.scheduleReadahead("p", 0, 1)

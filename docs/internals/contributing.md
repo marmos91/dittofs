@@ -321,12 +321,11 @@ DittoFS uses a Service-oriented architecture where **stores are simple CRUD inte
 
 **Block Store (Remote):**
 
-1. Implement `pkg/block/remote.RemoteStore` interface. It embeds the
-   content-addressed `block.Store` surface and adds `ReadBlockVerified`,
-   `HealthCheck`, `Healthcheck`, and `Close` — see
-   `pkg/block/remote/remote.go`.
+1. Implement `pkg/block/remote.RemoteStore` interface. It embeds `RemoteBlockStore`,
+   `ChunkReader` and `ChunkSealer`, and adds `HealthCheck`, `Healthcheck`, and
+   `Close` — see `pkg/block/remote/remote.go`.
 2. Remote stores are shared across shares via ref counting
-3. Test with the `BlockStoreConformance` suite in `pkg/block/blockstoretest/`
+3. Test with the `RemoteBlockStoreConformance` suite in `pkg/block/blockstoretest/`
 
 Example:
 ```go
