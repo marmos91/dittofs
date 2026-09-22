@@ -38,7 +38,7 @@ func reopen(t *testing.T, s *Store, cfg Config) *Store {
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	r, err := Open(dir, merged)
+	r, err := openJournal(dir, merged)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
@@ -59,7 +59,7 @@ func readAll(t *testing.T, s *Store, id FileID, n int) []byte {
 // asserts every byte survives recovery unchanged.
 func TestRecoveryRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	s, err := Open(dir, Config{ShardCount: 4})
+	s, err := openJournal(dir, Config{ShardCount: 4})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -109,7 +109,7 @@ func segTail(t *testing.T, s *Store, id uint64) int64 {
 // record in segment 0.
 func TestTornWriteRecoveryLSL06(t *testing.T) {
 	dir := t.TempDir()
-	s, err := Open(dir, Config{ShardCount: 1})
+	s, err := openJournal(dir, Config{ShardCount: 1})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestTornWriteRecoveryLSL06(t *testing.T) {
 // reject it before any allocation, so recovery treats it as the torn boundary.
 func TestCRCCoincidenceTornRecordGuarded(t *testing.T) {
 	dir := t.TempDir()
-	s, err := Open(dir, Config{ShardCount: 1})
+	s, err := openJournal(dir, Config{ShardCount: 1})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestCRCCoincidenceTornRecordGuarded(t *testing.T) {
 // past every replayed record and never reissues an observed version.
 func TestVersionLSNMonotonicAfterReopen(t *testing.T) {
 	dir := t.TempDir()
-	s, err := Open(dir, Config{ShardCount: 1})
+	s, err := openJournal(dir, Config{ShardCount: 1})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestVersionLSNMonotonicAfterReopen(t *testing.T) {
 // invisible to the MaxLocalBytes gate and never reclaimed.
 func TestIdxSidecarsSwept(t *testing.T) {
 	dir := t.TempDir()
-	s, err := Open(dir, Config{ShardCount: 1, SegmentSize: minSegmentSize})
+	s, err := openJournal(dir, Config{ShardCount: 1, SegmentSize: minSegmentSize})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -269,7 +269,7 @@ func TestIdxSidecarsSwept(t *testing.T) {
 // unlinked on reopen, while the store's real data is untouched.
 func TestOrphanSweepAgeGated(t *testing.T) {
 	dir := t.TempDir()
-	s, err := Open(dir, Config{ShardCount: 1})
+	s, err := openJournal(dir, Config{ShardCount: 1})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -295,7 +295,7 @@ func TestOrphanSweepAgeGated(t *testing.T) {
 		t.Fatalf("chtimes: %v", err)
 	}
 
-	r, err := Open(dir, Config{ShardCount: 1})
+	r, err := openJournal(dir, Config{ShardCount: 1})
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
@@ -312,7 +312,7 @@ func TestOrphanSweepAgeGated(t *testing.T) {
 // TestOrphanSweepSparesYoung asserts a fresh (young) orphan is left in place.
 func TestOrphanSweepSparesYoung(t *testing.T) {
 	dir := t.TempDir()
-	s, err := Open(dir, Config{ShardCount: 1})
+	s, err := openJournal(dir, Config{ShardCount: 1})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -327,7 +327,7 @@ func TestOrphanSweepSparesYoung(t *testing.T) {
 	if err := os.WriteFile(s.segPath(orphanID), []byte("not a segment header at all!!!"), 0o644); err != nil {
 		t.Fatalf("write orphan: %v", err)
 	}
-	r, err := Open(dir, Config{ShardCount: 1})
+	r, err := openJournal(dir, Config{ShardCount: 1})
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
@@ -343,7 +343,7 @@ func TestOrphanSweepSparesYoung(t *testing.T) {
 // gate, warns about it, and serves the store's real data untouched.
 func TestSealedSegmentWithNoValidRecords(t *testing.T) {
 	dir := t.TempDir()
-	s, err := Open(dir, Config{ShardCount: 1})
+	s, err := openJournal(dir, Config{ShardCount: 1})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -374,7 +374,7 @@ func TestSealedSegmentWithNoValidRecords(t *testing.T) {
 
 	logger, warned := captureWarnings(t)
 
-	r, err := Open(dir, Config{ShardCount: 1, Logger: logger})
+	r, err := openJournal(dir, Config{ShardCount: 1, Logger: logger})
 	if err != nil {
 		t.Fatalf("reopen over damaged sealed segment: %v", err)
 	}
@@ -404,7 +404,7 @@ func TestSealedSegmentWithNoValidRecords(t *testing.T) {
 // race detector with concurrent readers and writers.
 func TestConcurrentReadWriteAfterRecovery(t *testing.T) {
 	dir := t.TempDir()
-	s, err := Open(dir, Config{ShardCount: 4})
+	s, err := openJournal(dir, Config{ShardCount: 4})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -451,7 +451,7 @@ func TestConcurrentReadWriteAfterRecovery(t *testing.T) {
 // writes. Recovery must replay both and every byte must read back.
 func TestRecoveryReadsV1FramedRecords(t *testing.T) {
 	dir := t.TempDir()
-	s, err := Open(dir, Config{ShardCount: 1})
+	s, err := openJournal(dir, Config{ShardCount: 1})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -484,7 +484,7 @@ func TestRecoveryReadsV1FramedRecords(t *testing.T) {
 		t.Fatalf("close segment: %v", err)
 	}
 
-	r, err := Open(dir, cfg)
+	r, err := openJournal(dir, cfg)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}

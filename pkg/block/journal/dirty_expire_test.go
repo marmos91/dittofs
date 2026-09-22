@@ -13,7 +13,7 @@ import (
 // write, so it can never observe it unset.
 func openDirtyExpireStore(t *testing.T, id FileID, expiry time.Duration) (*Store, *shard, *atomic.Int32) {
 	t.Helper()
-	s, err := Open(t.TempDir(), Config{DirtyExpiry: expiry})
+	s, err := openJournal(t.TempDir(), Config{DirtyExpiry: expiry})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -73,6 +73,15 @@ func TestDirtyExpiry_IdleStoreDoesNotSync(t *testing.T) {
 func TestDirtyExpiry_Disabled(t *testing.T) {
 	const id FileID = "disabled"
 	s, sh, syncs := openDirtyExpireStore(t, id, -1)
+
+	// Clock-free discriminator, asserted first: the sleep below passes just as
+	// well against a loop running at the 30s default, whose first tick is far
+	// beyond it. Only withDefaults leaving a negative interval alone tells the
+	// two apart.
+	if s.cfg.DirtyExpiry > 0 {
+		t.Fatalf("negative DirtyExpiry normalized to %v: the loop is running and "+
+			"nothing below tests the disable path", s.cfg.DirtyExpiry)
+	}
 
 	if err := s.WriteAt(context.Background(), id, 0, []byte("payload")); err != nil {
 		t.Fatalf("WriteAt: %v", err)

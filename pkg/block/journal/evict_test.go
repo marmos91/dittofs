@@ -26,7 +26,7 @@ func evictStore(t *testing.T, cfg Config) (*Store, *fakeClock) {
 	if cfg.SegmentSize == 0 {
 		cfg.SegmentSize = minSegmentSize
 	}
-	s, err := Open(t.TempDir(), cfg)
+	s, err := openJournal(t.TempDir(), cfg)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -499,7 +499,7 @@ func TestInvalidatedRangeSurvivesEviction(t *testing.T) {
 	cfg := Config{ShardCount: 1, SegmentSize: minSegmentSize}
 	ctx := context.Background()
 
-	s, err := Open(dir, cfg)
+	s, err := openJournal(dir, cfg)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -518,7 +518,7 @@ func TestInvalidatedRangeSurvivesEviction(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	s2, err := Open(dir, cfg)
+	s2, err := openJournal(dir, cfg)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
@@ -657,7 +657,7 @@ func TestReopenedSegmentsHaveEvictionAge(t *testing.T) {
 	dir := t.TempDir()
 	cfg := Config{ShardCount: 1, SegmentSize: minSegmentSize, Clock: newFakeClock()}
 
-	s, err := Open(dir, cfg)
+	s, err := openJournal(dir, cfg)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -666,7 +666,7 @@ func TestReopenedSegmentsHaveEvictionAge(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	s2, err := Open(dir, cfg)
+	s2, err := openJournal(dir, cfg)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}

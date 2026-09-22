@@ -32,7 +32,7 @@ import (
 func BenchmarkWave7GroupCommit_ShardFanOut(b *testing.B) {
 	for _, shards := range []int{1, 2, 4, 16} {
 		b.Run(fmt.Sprintf("shards=%d", shards), func(b *testing.B) {
-			s, err := Open(b.TempDir(), Config{ShardCount: shards})
+			s, err := openJournal(b.TempDir(), Config{ShardCount: shards})
 			if err != nil {
 				b.Fatalf("Open: %v", err)
 			}
@@ -69,7 +69,7 @@ func BenchmarkWave7GroupCommit_ShardFanOut(b *testing.B) {
 // cheaper per operation than shards=16, then batching is weak regardless of
 // how writers are distributed and shard fan-out was never the lever.
 func BenchmarkWave7GroupCommit_SharedFile(b *testing.B) {
-	s, err := Open(b.TempDir(), Config{})
+	s, err := openJournal(b.TempDir(), Config{})
 	if err != nil {
 		b.Fatalf("Open: %v", err)
 	}

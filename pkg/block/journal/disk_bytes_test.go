@@ -51,7 +51,7 @@ func TestDiskBytesSeededOverCapConvergesDown(t *testing.T) {
 	ctx := context.Background()
 	cfg := Config{ShardCount: 1, SegmentSize: minSegmentSize}
 
-	first, err := Open(dir, cfg)
+	first, err := openJournal(dir, cfg)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestDiskBytesSeededOverCapConvergesDown(t *testing.T) {
 	capBytes := onDisk / 4
 	reopened := Config{ShardCount: 1, SegmentSize: minSegmentSize, MaxLocalBytes: capBytes}
 
-	s, err := Open(dir, reopened)
+	s, err := openJournal(dir, reopened)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}

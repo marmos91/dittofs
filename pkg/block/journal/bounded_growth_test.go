@@ -17,7 +17,7 @@ func TestOpenSetsDefaultLocalCapWhenUnset(t *testing.T) {
 	if free, err := diskFreeBytes(dir); err != nil || free == 0 {
 		t.Skipf("free-space probe unavailable (free=%d err=%v); default cap not expected", free, err)
 	}
-	s, err := Open(dir, Config{})
+	s, err := openJournal(dir, Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestGCReclaimsDeadOverwrites(t *testing.T) {
 	// reclaim and the delta assertion measuring the loop instead of the repack.
 	const segSize = 1 << 20
 	cfg := Config{SegmentSize: segSize, ShardCount: 1, MaxLocalBytes: 1 << 30, GCInterval: -1}
-	s, err := Open(t.TempDir(), cfg)
+	s, err := openJournal(t.TempDir(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

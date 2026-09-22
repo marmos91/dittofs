@@ -57,7 +57,7 @@ func TestIntervalIndexStaysSortedAndDisjoint(t *testing.T) {
 	dir := t.TempDir()
 	ctx := context.Background()
 
-	s, err := Open(dir, Config{ShardCount: 1})
+	s, err := openJournal(dir, Config{ShardCount: 1})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestIntervalIndexStaysSortedAndDisjoint(t *testing.T) {
 	}
 	_ = s.Close()
 
-	r, err := Open(dir, Config{ShardCount: 1})
+	r, err := openJournal(dir, Config{ShardCount: 1})
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}

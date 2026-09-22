@@ -4,6 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -12,7 +17,7 @@ func TestInputGuards(t *testing.T) {
 	ctx := context.Background()
 
 	// SegmentSize below the floor is rejected at Open.
-	if _, err := Open(t.TempDir(), Config{SegmentSize: 100}); err == nil {
+	if _, err := openJournal(t.TempDir(), Config{SegmentSize: 100}); err == nil {
 		t.Fatalf("expected too-small SegmentSize to be rejected")
 	}
 
@@ -40,16 +45,60 @@ func TestInputGuards(t *testing.T) {
 	}
 }
 
-func testStore(t *testing.T, cfg Config) *Store {
-	t.Helper()
+// openJournal is the only Open call in this package's tests, so every fixture
+// — the shared ones and the one-off opens inside individual tests — starts from
+// the same config. TestTestsOpenThroughHelper holds that property.
+func openJournal(dir string, cfg Config) (*Store, error) {
 	if cfg.GCInterval == 0 {
 		// Keep the background repack loop out of every test that did not ask for
 		// it: it drives the same non-Force pass tests call directly, so a tick
 		// inside a long test steals the segments an explicit pass was going to
 		// reclaim. A test that wants the loop sets a positive interval itself.
+		// A fake clock is no substitute — the loop tickers on real time.
 		cfg.GCInterval = -1
 	}
-	s, err := Open(t.TempDir(), cfg)
+	return Open(dir, cfg)
+}
+
+// TestTestsOpenThroughHelper fails if a test file calls Open directly, which
+// is how a fixture silently loses the defaults openJournal stamps. The
+// background repack loop is the one that bites: it runs on real time, so a
+// fake clock does not hide it, and it reclaims the very segments the tests
+// fed by such a fixture assert on.
+func TestTestsOpenThroughHelper(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	fset := token.NewFileSet()
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, e.Name(), nil, 0)
+		if err != nil {
+			t.Fatalf("ParseFile %s: %v", e.Name(), err)
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			if fn, ok := n.(*ast.FuncDecl); ok && fn.Name.Name == "openJournal" {
+				return false // the one sanctioned direct call
+			}
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if id, ok := call.Fun.(*ast.Ident); ok && id.Name == "Open" {
+				t.Errorf("%s: open the store through openJournal, not Open",
+					fset.Position(call.Pos()))
+			}
+			return true
+		})
+	}
+}
+
+func testStore(t *testing.T, cfg Config) *Store {
+	t.Helper()
+	s, err := openJournal(t.TempDir(), cfg)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -181,7 +230,7 @@ func TestShardForDeterministicAndMasked(t *testing.T) {
 
 func TestReopenPopulatedDirRecovers(t *testing.T) {
 	dir := t.TempDir()
-	s, err := Open(dir, Config{})
+	s, err := openJournal(dir, Config{})
 	if err != nil {
 		t.Fatalf("first Open: %v", err)
 	}
@@ -189,7 +238,7 @@ func TestReopenPopulatedDirRecovers(t *testing.T) {
 		t.Fatalf("WriteAt: %v", err)
 	}
 	_ = s.Close()
-	r, err := Open(dir, Config{})
+	r, err := openJournal(dir, Config{})
 	if err != nil {
 		t.Fatalf("reopen should recover, got: %v", err)
 	}

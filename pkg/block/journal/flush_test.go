@@ -39,7 +39,7 @@ func seamStore(t *testing.T, cfg Config) (*Store, *fakeClock) {
 	t.Helper()
 	clk := newFakeClock()
 	cfg.Clock = clk
-	s, err := Open(t.TempDir(), cfg)
+	s, err := openJournal(t.TempDir(), cfg)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

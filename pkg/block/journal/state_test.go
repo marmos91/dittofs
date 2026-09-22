@@ -35,7 +35,7 @@ func extentStates(t *testing.T, s *Store, id FileID) []Extent {
 // test needs (a default-sized segment would never roll).
 func evictStoreT(t *testing.T, cfg Config) *Store {
 	t.Helper()
-	s, err := Open(t.TempDir(), cfg)
+	s, err := openJournal(t.TempDir(), cfg)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

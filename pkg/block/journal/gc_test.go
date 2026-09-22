@@ -274,7 +274,7 @@ func TestGCCrashBeforeUnlinkOrphanSwept(t *testing.T) {
 	// before unlinking via a package-level flag, so a concurrent loop pass would
 	// both consume the flag and change the segment count asserted below.
 	cfg := Config{SegmentSize: minSegmentSize, ShardCount: 1, GCInterval: -1}
-	s, err := Open(dir, cfg)
+	s, err := openJournal(dir, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +302,7 @@ func TestGCCrashBeforeUnlinkOrphanSwept(t *testing.T) {
 	_ = s.Close()
 
 	// Restart: recovery replays both segments (identical Version -> byte-identical).
-	r, err := Open(dir, cfg)
+	r, err := openJournal(dir, cfg)
 	if err != nil {
 		t.Fatalf("recovery after crash-before-unlink: %v", err)
 	}
@@ -541,6 +541,17 @@ func TestGCIntervalDrivesBackgroundRepack(t *testing.T) {
 // gone before that pass looks.
 func TestGCIntervalNegativeDisablesBackgroundRepack(t *testing.T) {
 	s := testStore(t, Config{SegmentSize: minSegmentSize, ShardCount: 1, GCInterval: -1})
+
+	// Clock-free discriminator, asserted first: everything below is equally
+	// true of a loop that is off and of one running at the default interval,
+	// because the first tick is a whole interval away. Only withDefaults
+	// leaving a negative interval alone separates the two, and that line is
+	// the only one there not written as the house "<= 0 -> default".
+	if s.cfg.GCInterval > 0 {
+		t.Fatalf("negative GCInterval normalized to %v: the loop is running and "+
+			"nothing below tests the disable path", s.cfg.GCInterval)
+	}
+
 	seedRepackable(t, s, true)
 
 	// Far longer than the interval its sibling above repacks within.
