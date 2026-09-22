@@ -339,6 +339,15 @@ func TestBackchannelSender_CbProgramRace(t *testing.T) {
 	const iterations = 500
 	done := make(chan struct{}, 2)
 
+	// decision: this test leaks goroutines and is allowed to. Every
+	// UpdateBackchannelParams below spawns a detached probeV41CallbackPath,
+	// which nothing joins, so up to `iterations` of them outlive the test and
+	// keep drawing from package state. The only package state they touch is
+	// nextCallbackXID, and the tests that read it assert a strict advance
+	// rather than an exact delta, so a foreign draw cannot fail them. The
+	// tolerance is worth exactly that much: any new assertion on package state
+	// this test's probes can reach has to join them first.
+
 	// Writer: BACKCHANNEL_CTL updating the callback program number.
 	go func() {
 		defer func() { done <- struct{}{} }()
