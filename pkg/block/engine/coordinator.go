@@ -146,16 +146,6 @@ type MetadataCoordinator interface {
 // coordinator needed).
 var ErrMetadataCoordinatorNotWired = errors.New("engine: metadata coordinator not wired")
 
-// ErrPersistFileChunksNotWired signals that PersistFileChunks was invoked
-// against a coordinator whose payloadID → fileHandle resolution chain has
-// not yet been wired. The RemoteSync's post-Flush
-// hook recognises this sentinel and tolerates it (the dual-read shim keeps
-// reads correct), but logs a warning so the silent-drop window is
-// observable. Other callers should treat it as a hard error so a future
-// plan flipping WriteAt to return real ChunkRefs is forced to implement
-// the method rather than silently succeed.
-var ErrPersistFileChunksNotWired = errors.New("engine: PersistFileChunks not wired (dual-read shim covers reads)")
-
 // ErrObjectIDConflict signals that PersistFileChunks rejected a write
 // because another file already holds the same FileAttr.ObjectID
 // (first-committer-wins). The short-circuit

@@ -44,7 +44,7 @@ type RemoteSync struct {
 	remoteStore remote.RemoteStore
 	// hasRemote mirrors "remoteStore != nil" as an atomic so hot-path gating
 	// (the carveActive recompute and the readahead scheduler) can read it
-	// without taking m.mu, avoiding a data race with SetRemoteStore.
+	// without taking m.mu, avoiding a data race with Start.
 	hasRemote atomic.Bool
 	// fileChunkStore is the per-file chunk manifest, and the syncer needs the
 	// wide EngineFileChunkStore surface rather than a narrower one because it
@@ -1222,51 +1222,4 @@ func (m *RemoteSync) HealthCheck(ctx context.Context) error {
 	}
 
 	return m.remoteStore.HealthCheck(ctx)
-}
-
-// SetRemoteStore transitions the syncer from local-only mode to remote-backed mode.
-// This is a one-shot operation -- calling it again returns an error.
-// It sets the remoteStore, enables local store eviction, and starts the periodic syncer.
-//
-// It does NOT seed the pending-upload set from disk: chunks written while the
-// syncer was local-only are picked up by the next periodic drift reconcile
-// (seedPendingFromDisk), not immediately. Not currently wired into any
-// production control-plane path; Start() is the seeded entry point.
-func (m *RemoteSync) SetRemoteStore(ctx context.Context, remoteStore remote.RemoteStore) error {
-	hm, err := m.setRemoteStoreLocked(ctx, remoteStore)
-	if err != nil {
-		return err
-	}
-
-	// Eager probe outside m.mu; see Start.
-	hm.Start(ctx)
-
-	logger.Info("Remote store attached, periodic syncer started")
-	return nil
-}
-
-// setRemoteStoreLocked performs the locked half of SetRemoteStore and returns
-// the health monitor still to be started.
-func (m *RemoteSync) setRemoteStoreLocked(ctx context.Context, remoteStore remote.RemoteStore) (*HealthMonitor, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if m.closed {
-		return nil, ErrClosed
-	}
-	if m.remoteStore != nil {
-		return nil, errors.New("remote store already set")
-	}
-	if remoteStore == nil {
-		return nil, errors.New("remoteStore must not be nil")
-	}
-
-	m.remoteStore = remoteStore
-	m.hasRemote.Store(true)
-	m.recomputeCarveActive()
-	m.local.SetEvictionEnabled(true)
-
-	hm := m.newHealthMonitorLocked()
-	m.startPeriodicUploader(ctx)
-	return hm, nil
 }

@@ -7,7 +7,6 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/block/local"
-	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
@@ -129,81 +128,6 @@ func TestNilRemoteStoreStart(t *testing.T) {
 
 	// Give it a moment to verify no goroutine panics
 	time.Sleep(50 * time.Millisecond)
-}
-
-func TestSetRemoteStoreSuccess(t *testing.T) {
-	m, _, cleanup := newNilRemoteStoreEnv(t)
-	defer cleanup()
-	ctx := context.Background()
-	m.Start(ctx)
-
-	bs := remotememory.New()
-	defer func() { _ = bs.Close() }()
-
-	err := m.SetRemoteStore(ctx, bs)
-	if err != nil {
-		t.Fatalf("SetRemoteStore should succeed, got: %v", err)
-	}
-
-	// Verify remoteStore is now set by checking that operations work
-	exists, err := m.Exists(ctx, "test/file.bin")
-	if err != nil {
-		t.Fatalf("Exists after SetRemoteStore should work, got: %v", err)
-	}
-	if exists {
-		t.Error("Exists for non-existent file should return false")
-	}
-}
-
-func TestSetRemoteStoreOneShot(t *testing.T) {
-	m, _, cleanup := newNilRemoteStoreEnv(t)
-	defer cleanup()
-	ctx := context.Background()
-	m.Start(ctx)
-
-	bs := remotememory.New()
-	defer func() { _ = bs.Close() }()
-
-	if err := m.SetRemoteStore(ctx, bs); err != nil {
-		t.Fatalf("first SetRemoteStore should succeed, got: %v", err)
-	}
-
-	bs2 := remotememory.New()
-	defer func() { _ = bs2.Close() }()
-
-	err := m.SetRemoteStore(ctx, bs2)
-	if err == nil {
-		t.Fatal("second SetRemoteStore should return error (one-shot)")
-	}
-}
-
-func TestSetRemoteStoreOnClosed(t *testing.T) {
-	m, _, cleanup := newNilRemoteStoreEnv(t)
-	ctx := context.Background()
-	m.Start(ctx)
-
-	// Close the syncer first
-	cleanup()
-
-	bs := remotememory.New()
-	defer func() { _ = bs.Close() }()
-
-	err := m.SetRemoteStore(ctx, bs)
-	if err == nil {
-		t.Fatal("SetRemoteStore on closed syncer should return error")
-	}
-}
-
-func TestSetRemoteStoreNilArg(t *testing.T) {
-	m, _, cleanup := newNilRemoteStoreEnv(t)
-	defer cleanup()
-	ctx := context.Background()
-	m.Start(ctx)
-
-	err := m.SetRemoteStore(ctx, nil)
-	if err == nil {
-		t.Fatal("SetRemoteStore with nil remoteStore should return error")
-	}
 }
 
 func TestNilRemoteStoreSyncNow(t *testing.T) {

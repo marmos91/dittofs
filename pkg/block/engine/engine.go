@@ -98,11 +98,6 @@ type Store struct {
 	// contract.
 	coordinator MetadataCoordinator
 
-	// syncedHashStore persists per-CAS-hash local→remote mirror state.
-	// Held alongside the coordinator so the engine constructor can thread
-	// it into the RemoteSync (via SetSyncedHashStore). May be nil in tests.
-	syncedHashStore metadata.SyncedHashStore
-
 	// cache is the CAS-keyed cache (CACHE-01..05). The block-coord
 	// ReadBuffer + standalone Prefetcher are folded into this single
 	// Cache type. Never nil — the constructor substitutes nullCache{}
@@ -171,7 +166,6 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 		syncer:          cfg.RemoteSync,
 		fileChunkStore:  cfg.FileChunkStore,
 		coordinator:     cfg.Coordinator,
-		syncedHashStore: cfg.SyncedHashStore,
 		readBufferBytes: cfg.ReadBufferBytes,
 		prefetchWorkers: cfg.PrefetchWorkers,
 	}
