@@ -15,9 +15,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// Compile-time interface satisfaction check.
-var _ block.ComposedStore = (*Store)(nil)
-
 // BlockStoreConfig holds the components that make up a Store.
 type BlockStoreConfig struct {
 	// Local is the on-node block store (required).

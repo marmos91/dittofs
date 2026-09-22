@@ -167,119 +167,8 @@ type EngineFileChunkStore interface {
 	EnumeratePayloads(ctx context.Context, fn func(payloadID string) error) error
 }
 
-// Reader defines read operations on the block store.
-//
-// Reads resolve the covering chunks from the store's own manifest, so no
-// caller-supplied []ChunkRef snapshot is threaded through the read path.
-type Reader interface {
-	// ReadAt reads data from storage at the given offset into dest.
-	ReadAt(ctx context.Context, payloadID string, dest []byte, offset uint64) (int, error)
-
-	// GetSize returns the stored size of a payload.
-	GetSize(ctx context.Context, payloadID string) (uint64, error)
-
-	// Exists checks whether a payload exists.
-	Exists(ctx context.Context, payloadID string) (bool, error)
-}
-
-// Writer defines write operations on the block store.
-//
-// write operations thread a caller-supplied
-// []ChunkRef snapshot of the file's FileAttr.Blocks. WriteAt returns the
-// new []ChunkRef (caller persists via SetManifest in the same metadata txn).
-// Truncate / Delete invoke the MetadataCoordinator to decrement RefCount
-// for hashes the operation drops; CopyPayload becomes O(1) — increments
-// RefCount per unique source hash, no data copy.
-type Writer interface {
-	// WriteAt writes data to storage at the given offset and returns
-	// the file's new ChunkRef list (sorted, sparse-hole-preserving).
-	// Caller persists via SetManifest in the same metadata txn.
-	WriteAt(ctx context.Context, payloadID string, currentBlocks []ChunkRef, data []byte, offset uint64) ([]ChunkRef, error)
-
-	// Truncate changes the size of a payload. Returns the new ChunkRef
-	// list (blocks past newSize are dropped; the coordinator
-	// decrements their RefCount).
-	Truncate(ctx context.Context, payloadID string, currentBlocks []ChunkRef, newSize uint64) ([]ChunkRef, error)
-
-	// Delete removes all data for a payload and decrements RefCount on
-	// every hash in blocks via the coordinator.
-	Delete(ctx context.Context, payloadID string, blocks []ChunkRef) error
-
-	// CopyPayload duplicates a file's ChunkRef list with O(1) cost.
-	// Increments the RefCount of each unique hash via the coordinator
-	// (no per-block data copy); returns a deep copy of srcBlocks as
-	// the destination's ChunkRef list. The caller's metadata txn
-	// rolls back all increments on any error.
-	CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID string, srcBlocks []ChunkRef) ([]ChunkRef, error)
-}
-
-// Flusher defines flush/sync operations on the block store.
-type Flusher interface {
-	// Flush quiesces the payload's local-side state and (when a healthy
-	// remote is configured) mirrors every locally stored CAS chunk to
-	// the remote store. Return-value contract:
-	//
-	//   - (Finalized=true, nil)
-	//     All locally-mirrored data for payloadID is durable on the
-	//     configured remote. Callers may report COMMIT/Flush success
-	//     to the client.
-	//
-	//   - (Finalized=false, nil)
-	//     A NON-fatal soft condition prevented finalization THIS call:
-	//     no remote is configured (local-only mode — local quiesce
-	//     completed but no remote durability target exists), the remote
-	//     is configured but currently unhealthy, or another in-flight
-	//     mirror pass (periodic uploader or overlapping Flush) is
-	//     already running. The dirty state is unchanged and will be
-	//     re-attempted on the next Flush or the next periodic uploader
-	//     tick.
-	//
-	//     Callers driving NFS COMMIT or SMB Flush loops MUST rate-limit
-	//     their retries against this branch. A tight retry storm on
-	//     Finalized=false starves the uploading goroutine (the
-	//     CompareAndSwap gate in syncer.Flush makes the explicit caller
-	//     LOSE every retry attempt against the periodic uploader's
-	//     in-flight tick) and pegs the CPU without making progress.
-	//     Recommended pattern: surface the soft-fail to the protocol
-	//     adapter and let the client drive the next attempt on its own
-	//     schedule (e.g. NFSv3 reports the WRITE's "committed" enum as
-	//     UNSTABLE rather than DATASYNC/FILESYNC so the client reissues
-	//     COMMIT later; SMB Flush returns success after a bounded
-	//     attempt) rather than spin in-handler.
-	//
-	//   - (nil, err)
-	//     Hard failure (I/O error, remote.Put rejection, MarkSynced
-	//     metadata error). Do NOT retry until the underlying condition
-	//     is addressed; the caller should surface a protocol-level
-	//     error to the client.
-	Flush(ctx context.Context, payloadID string) (*FlushResult, error)
-
-	// DrainAllUploads waits for all pending uploads to complete.
-	DrainAllUploads(ctx context.Context) error
-}
-
-// ComposedStore is the composed block store interface that combines all sub-interfaces
-// with lifecycle and health operations.
-type ComposedStore interface {
-	Reader
-	Writer
-	Flusher
-
-	// Stats returns storage statistics.
-	Stats() (*Stats, error)
-
-	// HealthCheck verifies the store is operational.
-	HealthCheck(ctx context.Context) error
-
-	// Start initializes the store and starts background goroutines.
-	Start(ctx context.Context) error
-
-	// Close releases resources held by the store.
-	Close() error
-}
-
-// FlushResult indicates the outcome of a flush operation. See the Flush
-// method on Flusher for the full (Finalized, err) state-machine and
+// FlushResult indicates the outcome of a flush operation. See the block
+// store's Flush method for the full (Finalized, err) state-machine and
 // caller-retry guidance.
 type FlushResult struct {
 	// Finalized indicates all blocks have been synced to the backend
@@ -287,7 +176,8 @@ type FlushResult struct {
 	// non-fatal condition (remote unhealthy or another mirror pass
 	// already in flight); the dirty state is unchanged and will be
 	// re-attempted by the next Flush or the periodic uploader. Callers
-	// MUST NOT spin-retry on Finalized=false — see Flusher.Flush godoc.
+	// MUST NOT spin-retry on Finalized=false — see the block store's
+	// Flush godoc.
 	Finalized bool
 }
 

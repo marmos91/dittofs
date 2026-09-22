@@ -495,6 +495,42 @@ func (s engineBlockSink) commit(ctx context.Context, payloadID string, rec block
 // makes the payload's page-cache-resident records durable BEFORE the syncer
 // drain and BEFORE we report success. A fsync failure aborts the flush so the
 // durability point never falsely acks.
+//
+// Return-value contract:
+//
+//   - (Finalized=true, nil)
+//     All locally-mirrored data for payloadID is durable on the
+//     configured remote. Callers may report COMMIT/Flush success
+//     to the client.
+//
+//   - (Finalized=false, nil)
+//     A NON-fatal soft condition prevented finalization THIS call:
+//     no remote is configured (local-only mode — local quiesce
+//     completed but no remote durability target exists), the remote
+//     is configured but currently unhealthy, or another in-flight
+//     mirror pass (periodic uploader or overlapping Flush) is
+//     already running. The dirty state is unchanged and will be
+//     re-attempted on the next Flush or the next periodic uploader
+//     tick.
+//
+//     Callers driving NFS COMMIT or SMB Flush loops MUST rate-limit
+//     their retries against this branch. A tight retry storm on
+//     Finalized=false starves the uploading goroutine (the
+//     CompareAndSwap gate in syncer.Flush makes the explicit caller
+//     LOSE every retry attempt against the periodic uploader's
+//     in-flight tick) and pegs the CPU without making progress.
+//     Recommended pattern: surface the soft-fail to the protocol
+//     adapter and let the client drive the next attempt on its own
+//     schedule (e.g. NFSv3 reports the WRITE's "committed" enum as
+//     UNSTABLE rather than DATASYNC/FILESYNC so the client reissues
+//     COMMIT later; SMB Flush returns success after a bounded
+//     attempt) rather than spin in-handler.
+//
+//   - (nil, err)
+//     Hard failure (I/O error, remote.Put rejection, MarkSynced
+//     metadata error). Do NOT retry until the underlying condition
+//     is addressed; the caller should surface a protocol-level
+//     error to the client.
 func (bs *Store) Flush(ctx context.Context, payloadID string) (*block.FlushResult, error) {
 	if err := bs.enter(); err != nil {
 		return nil, err

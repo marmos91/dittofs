@@ -18,7 +18,7 @@ import (
 // orphan block object (reclaimed by GC) and re-carves the chunks into a new
 // block — never losing or double-committing them.
 //
-// Return contract — see block.Flusher godoc for the full state
+// Return contract — see Store.Flush godoc for the full state
 // machine and caller-retry guidance. In brief:
 //   - Finalized=true, err=nil: the file's bytes are committed to their
 //     sink — on a remote-backed share that is the remote; in local-only
