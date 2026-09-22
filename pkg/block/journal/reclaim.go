@@ -204,10 +204,27 @@ func (s *Store) claimColdestEvictable() (*segmentMeta, *shard) {
 	}
 }
 
-// evictable reports whether seg can be dropped whole: sealed, unclaimed, and with
-// every record synced to the remote store. Caller holds seg's shard lock.
+// evictable reports whether seg can be dropped whole: sealed, unclaimed, holding
+// at least one record, and with every record synced to the remote store. Caller
+// holds seg's shard lock.
+//
+// The record count is what the synced-gate is measured against, and markers
+// (tombstone, truncate) do not raise it — only a payload-bearing record does. A
+// segment holding only markers therefore reports 0 == 0 and would read as fully
+// synced, letting eviction unlink the one durable trace of a delete while the
+// records it buries are still on disk elsewhere; recovery would then replay
+// them. Requiring a record excludes that segment, which is the same reason
+// sealableActive requires one.
+//
+// decision: excluding it makes a marker-only segment permanent — pickVictim
+// already skips one (deadBytes stays 0, so a repack would copy it to an
+// identical segment forever), so no path reclaims it now. That holds because a
+// marker must outlive every record it buries and nothing tracks when the last
+// of those is gone; the cost is the segment's tail, a marker being 0-payload.
+// Withdraw it for a rule that can prove a marker's records are all reclaimed —
+// a store-wide minimum live Version would do it — not for disk pressure alone.
 func evictable(seg *segmentMeta) bool {
-	return seg.sealed.Load() && !seg.busy.Load() &&
+	return seg.sealed.Load() && !seg.busy.Load() && seg.records.Load() > 0 &&
 		seg.syncedRecords.Load() == seg.records.Load()
 }
 

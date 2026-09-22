@@ -686,3 +686,63 @@ func TestReopenedSegmentsHaveEvictionAge(t *testing.T) {
 		}
 	}
 }
+
+// TestEvictKeepsMarkerOnlySegment pins what a segment holding nothing but a
+// tombstone survives. Markers carry no payload, so no path raises a segment's
+// record count for one: a segment holding only markers reports zero records and
+// zero synced records, which reads as "every record is durable remotely" and,
+// once sealed, as droppable. Retiring it unlinks the only durable trace of the
+// delete while the file's data records are still on disk in another segment, so
+// the next recovery replays them and the removed file comes back.
+func TestEvictKeepsMarkerOnlySegment(t *testing.T) {
+	const victim, filler = FileID("aa"), FileID("bb")
+	s := testStore(t, Config{ShardCount: 1, SegmentSize: minSegmentSize})
+	ctx := context.Background()
+
+	// A payload that fills a fresh segment to exactly SegmentSize, leaving no
+	// room for the 0-byte marker that follows it: the marker then rotates the
+	// segment and lands alone in the next one.
+	payload := bytes.Repeat([]byte("resurrect"), 1+int(s.cfg.SegmentSize)/9)
+	payload = payload[:s.cfg.SegmentSize-segHeaderSize-recordLen(len(victim), 0)]
+
+	if err := s.WriteAt(ctx, victim, 0, payload); err != nil {
+		t.Fatalf("WriteAt %q: %v", victim, err)
+	}
+	if err := s.Commit(ctx, victim); err != nil {
+		t.Fatalf("Commit %q: %v", victim, err)
+	}
+	// Seals the data segment and puts the tombstone alone in a fresh one. The
+	// data segment holds an unsynced record, so eviction can never take it.
+	if err := s.Delete(ctx, victim); err != nil {
+		t.Fatalf("Delete %q: %v", victim, err)
+	}
+	// Rotate again so the tombstone's segment is sealed — only the sealed set is
+	// scanned for eviction.
+	if err := s.WriteAt(ctx, filler, 0, payload); err != nil {
+		t.Fatalf("WriteAt %q: %v", filler, err)
+	}
+
+	// Setup guard: the framing constants above must still yield a sealed segment
+	// with no records, or the eviction below has nothing to get wrong.
+	sh := s.shardFor(victim)
+	sh.mu.Lock()
+	markerOnly := 0
+	for _, seg := range sh.sealed {
+		if seg.records.Load() == 0 {
+			markerOnly++
+		}
+	}
+	sh.mu.Unlock()
+	if markerOnly != 1 {
+		t.Fatalf("setup no longer builds a marker-only sealed segment: got %d", markerOnly)
+	}
+
+	if _, err := s.Evict(ctx, s.cfg.SegmentSize); err != nil {
+		t.Fatalf("Evict: %v", err)
+	}
+
+	r := reopen(t, s, Config{})
+	if size, ok := r.FileSize(ctx, victim); ok {
+		t.Fatalf("deleted file %q came back after reopen with size %d", victim, size)
+	}
+}
