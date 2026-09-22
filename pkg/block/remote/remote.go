@@ -8,9 +8,9 @@
 // keyed by an opaque blockID string; the on-wire key is
 // block.FormatBlockKey(blockID).
 //
-// No hash-keyed CAS read/write/enumerate operation is exposed here. Backends
-// still carry a hash-keyed surface on their concrete types (see each backend's
-// cas.go), reachable only by type-asserting past this interface.
+// No hash-keyed CAS operation is exposed here, and none survives on the
+// backends' concrete types either: the cas/<hash> accessors were removed with
+// the block.Store interface, so pre-flip objects are unreachable from this tree.
 package remote
 
 import (
@@ -37,9 +37,8 @@ var ErrChunkReadUnsupported = errors.New("remote: wrapped store does not support
 // The production surface is block-keyed: RemoteBlockStore (PutBlock / GetBlock /
 // GetBlockRange / DeleteBlock / WalkBlocks) for whole packed block objects,
 // ChunkReader.ReadChunk / ChunkSealer.SealChunk for the per-chunk transform, and
-// Close / HealthCheck / Healthcheck for lifecycle and health. No hash-keyed CAS
-// operation is exposed here; a backend's hash-keyed surface lives on its
-// concrete type.
+// Close / HealthCheck / Healthcheck for lifecycle and health. There is no
+// hash-keyed CAS operation, here or on the concrete backends.
 type RemoteStore interface {
 	RemoteBlockStore
 	ChunkReader

@@ -579,20 +579,17 @@ Remote stores provide durable block storage shared across shares via ref countin
 
 ### The RemoteStore Interface
 
-The `pkg/block/remote.RemoteStore` interface defines the contract. Unlike the
-journal, a block store is **content-addressed**: the interface embeds the
-CAS `block.Store` surface (`Put`, `Get`, `GetRange`, `Has`, `Delete`, `Head`,
-`Walk` — keyed by `block.ContentHash`) and adds verification + health methods.
-See `pkg/block/remote/remote.go` for the authoritative definition:
+The `pkg/block/remote.RemoteStore` interface defines the contract. Its surface is
+entirely block-keyed: packed block objects under the `blocks/` prefix, read and
+written through `RemoteBlockStore`, plus the per-chunk `ChunkReader` /
+`ChunkSealer` transform seam and the lifecycle/health probes. See
+`pkg/block/remote/remote.go` for the authoritative definition:
 
 ```go
 type RemoteStore interface {
-    block.Store // CAS Put/Get/GetRange/Has/Delete/Head/Walk
-
-    // ReadBlockVerified GETs the object addressed by hash and verifies the
-    // body's BLAKE3 hash matches `expected` before returning bytes. Returns
-    // block.ErrCASContentMismatch on any verification failure.
-    ReadBlockVerified(ctx context.Context, hash block.ContentHash, expected block.ContentHash) ([]byte, error)
+    RemoteBlockStore // PutBlock/GetBlock/GetBlockRange/DeleteBlock/WalkBlocks
+    ChunkReader      // ReadChunk: one chunk's plaintext out of a block object
+    ChunkSealer      // SealChunk: one chunk's plaintext into its wire bytes
 
     // HealthCheck is the legacy error-returning probe used by the syncer.
     HealthCheck(ctx context.Context) error
@@ -605,67 +602,13 @@ type RemoteStore interface {
 }
 ```
 
-### Implementation Pattern
-
-```go
-package myremote
-
-import (
-    "context"
-
-    "github.com/marmos91/dittofs/pkg/block"
-)
-
-type MyRemoteStore struct {
-    client *MyCloudClient
-    bucket string
-}
-
-func New(config Config) (*MyRemoteStore, error) {
-    client, err := connectToCloud(config)
-    if err != nil {
-        return nil, err
-    }
-    return &MyRemoteStore{client: client, bucket: config.Bucket}, nil
-}
-
-// objectKey derives the storage key from the content hash. The CAS key is
-// the hash; backends typically use its hex form, optionally sharded.
-func (s *MyRemoteStore) objectKey(hash block.ContentHash) string {
-    return hash.String()
-}
-
-func (s *MyRemoteStore) Get(ctx context.Context, hash block.ContentHash) ([]byte, error) {
-    // Fetch the chunk addressed by hash. Return block.ErrChunkNotFound if absent.
-    return s.client.GetObject(ctx, s.bucket, s.objectKey(hash))
-}
-
-func (s *MyRemoteStore) Put(ctx context.Context, hash block.ContentHash, data []byte) error {
-    // Upload the chunk under its content-hash key (idempotent for identical bytes).
-    return s.client.PutObject(ctx, s.bucket, s.objectKey(hash), data)
-}
-
-func (s *MyRemoteStore) Delete(ctx context.Context, hash block.ContentHash) error {
-    // Remove the chunk (idempotent).
-    err := s.client.DeleteObject(ctx, s.bucket, s.objectKey(hash))
-    if err != nil && !isNotFoundError(err) {
-        return err
-    }
-    return nil
-}
-
-func (s *MyRemoteStore) HealthCheck(ctx context.Context) error {
-    // Verify connectivity (e.g., HEAD bucket)
-    return s.client.HeadBucket(ctx, s.bucket)
-}
-
-func (s *MyRemoteStore) Close() error {
-    return s.client.Close()
-}
-
-// ... implement the remaining block.Store methods (GetRange, Has, Head, Walk),
-// ReadBlockVerified, and Healthcheck — see pkg/block/remote/s3 for a full example.
-```
+There is no hash-keyed CAS operation on this surface, and no method on it
+verifies content: `ReadChunk` returns chunk plaintext and the engine recomputes
+its BLAKE3 afterwards (`readChunkVerified` in `pkg/block/engine/fetch.go`),
+because no single decorator layer holds both the wire bytes and the
+plaintext-hash domain. Per-method semantics are documented under
+[Implementing a Remote Block Store](#implementing-a-remote-block-store-block-keyed);
+implement that interface and the three methods above.
 
 ### Ref Counting
 
@@ -683,67 +626,6 @@ See `pkg/block/remote/s3/` for a production S3 remote store implementation with:
 - Health check via HEAD bucket
 - Efficient multipart uploads for large blocks
 
-### CAS contracts
-
-All uploads go through a content-addressable keyspace
-`cas/{hh}/{hh}/{hex}`, and every byte downloaded from the remote is
-verified against the expected BLAKE3 hash. Two contract methods are
-required for any RemoteStore implementation that participates in the write
-path.
-
-#### RemoteStore.WriteBlockWithHash
-
-```go
-// WriteBlockWithHash uploads data under the CAS key derived from h
-// and sets a backend-native object-metadata header carrying the hash.
-//
-// Semantics:
-//   - The key MUST be derived from h via FormatCASKey (cas/{hh}/{hh}/{hex}).
-//   - The backend-native object metadata MUST set "content-hash" to
-//     "blake3:" + hex(h). For S3, this becomes the user-metadata header
-//     x-amz-meta-content-hash. For other backends, set the equivalent
-//     custom-metadata field.
-//   - The PUT MUST be atomic: either the object exists at the CAS key
-//     with the correct bytes AND the metadata header, or it does not
-//     exist at all.
-//   - The call MUST be idempotent: re-uploading the same h with the
-//     same bytes is a no-op (or an overwrite that yields identical
-//     state). This is what makes the syncer's restart-recovery janitor
-//     safe.
-//   - Errors are returned as typed values mapped through
-//     internal/adapter/common/.
-WriteBlockWithHash(ctx context.Context, blockKey string, hash ContentHash, data []byte) error
-```
-
-External tooling (e.g. `aws s3api head-object`) MUST be able to verify
-the header without DittoFS-specific tooling.
-
-#### RemoteStore.ReadBlockVerified
-
-```go
-// ReadBlockVerified reads the object at the CAS key derived from h
-// and verifies its bytes against h end-to-end before returning them
-// to the caller.
-//
-// Semantics:
-//   - HEAD-style pre-check: if the backend exposes the content-hash
-//     header cheaply (S3 GetObject returns it in the same response,
-//     so no extra round-trip is needed), reject early with
-//     ErrCASContentMismatch when the header does not match h.
-//   - Streaming verification: the body is fed to a blake3.Hasher as
-//     the caller reads it. On EOF, hasher.Sum(nil) MUST equal h or
-//     the call returns ErrCASContentMismatch and the buffer is
-//     discarded -- corrupt bytes MUST NOT be surfaced upstream.
-//   - The streaming verifier sees bytes once (zero extra allocation).
-//   - Verification is hard-required: there is no opt-out knob.
-ReadBlockVerified(ctx context.Context, blockKey string, expected ContentHash) ([]byte, error)
-```
-
-Header pre-check + streaming recompute is "fail-closed twice" by
-design: the header alone is not sufficient (would trust the backend
-to never silently corrupt); recompute alone wastes a body read on a
-definitively-wrong object.
-
 ### Conformance Tests
 
 There is no conformance suite for the legacy CAS surface — it was deleted along with
@@ -754,7 +636,7 @@ under [Implementing a Remote Block Store](#implementing-a-remote-block-store-blo
 
 The `pkg/block/remote.RemoteBlockStore` interface is the **block-keyed** (non-CAS) remote store surface used by the live write path. Every new write is packed into block objects under the `blocks/` prefix, separate from the legacy CAS `cas/` namespace — the two namespaces never collide. New remote backends should implement `RemoteBlockStore`.
 
-> **Legacy CAS reads:** The per-chunk CAS object path (`cas/<hash>`, hash-keyed `Get`/`GetRange` on `RemoteStore`) is **read-only** and exists purely for backward compatibility with data written before the blocks-only flip. No new `cas/` objects are ever written; a later migration re-packs the remaining ones, after which the legacy `RemoteStore` CAS surface is removed. A backend that only ever serves fresh DittoFS deployments does not need it.
+> **Legacy CAS objects:** `cas/<hash>` objects written before the blocks-only flip are no longer reachable — the hash-keyed accessors that read them were removed along with the `block.Store` interface, and no backend carries them any more. A deployment holding pre-flip data must be migrated before upgrading; see [architecture.md](architecture.md) for the consequences of skipping that. A new backend implements `RemoteBlockStore` only.
 
 ### The RemoteBlockStore Interface
 

@@ -1,10 +1,9 @@
-// Unified BlockStore contract.
+// Types shared by both block-store tiers.
 //
-// This file declares the single CAS-keyed surface that replaces the
-// split LocalStore (22 methods) + RemoteStore (12 methods) of v0.15.
-// It covers the hash-keyed tier only. The local random-write absorber
-// (per-file append log + rollup) is payload-keyed, not hash-keyed, and
-// is declared on pkg/block/local.LocalStore instead.
+// The tier contracts themselves live with their tiers: the block-keyed remote
+// surface on remote.RemoteBlockStore, the payload-keyed local absorber
+// (per-file append log + rollup) on pkg/block/local.LocalStore. What stays here
+// is what both sides speak — per-object metadata and the durability capability.
 //
 // The on-disk format-version stamp and the boot guard that refuses state
 // from a newer release (ErrFutureFormat) live in doc.go and errors.go.
@@ -15,17 +14,14 @@ import (
 	"time"
 )
 
-// Meta is the minimal per-object metadata returned by BlockStore.Head
-// and BlockStore.Walk. The lookup key (ContentHash) is NEVER echoed
-// inside Meta — it is the input, not output.
+// Meta is the minimal per-object metadata a backend reports for a stored
+// object — see remote.RemoteBlockStore.WalkBlocks. The lookup key is NEVER
+// echoed inside Meta: it is the input, not the output.
 //
-// The S3 backend continues to stamp x-amz-meta-content-hash on every
-// PutObject as defense-in-depth (ReadBlockVerified compares
-// the header against the recomputed BLAKE3 before returning bytes), but
-// that header stays inside the s3 backend and is not surfaced through
-// Meta. Callers that need integrity verification use BlockStore.Get
-// (which performs the verification on backends that support it) rather
-// than reading metadata.
+// No store operation verifies content. A chunk's BLAKE3 is recomputed by the
+// engine once the decorator stack has returned its plaintext
+// (readChunkVerified, pkg/block/engine/fetch.go) — the only layer holding both
+// the plaintext and the hash it must match.
 type Meta struct {
 	// Size is the object body length in bytes.
 	Size int64
@@ -37,30 +33,6 @@ type Meta struct {
 	// and surface that value here.
 	LastModified time.Time
 }
-
-// Store is the content-addressed block storage contract. Every
-// implementation is keyed by ContentHash (BLAKE3-256, 32 bytes)
-// no opaque "block key" strings appear on this surface.
-//
-// The production REMOTE tier no longer exposes this hash-keyed surface — it is
-// block-keyed via remote.RemoteBlockStore (packed blocks/<id> objects, #1414).
-// The remote s3/memory backends still implement Store on their concrete types,
-// under the hash-keyed cas/<hash> layout. New production code must not depend on
-// remote backends implementing this interface.
-//
-// Implementations
-//   - pkg/block/remote/s3.Store, pkg/block/remote/memory.Store (hash-keyed only)
-//   - the compression / encryption decorators, which forward this surface
-//     inward through remote.Passthrough
-//
-// The local tier does NOT implement this interface: *journal.Store is
-// payload-keyed (WriteAt / ReadAt / Hydrate / Commit) and satisfies
-// pkg/block/local.LocalStore instead.
-//
-// All methods take ctx context.Context as the first argument and MUST
-// honor cancellation. All hash arguments are the full 32-byte
-// ContentHash; backends translate to their storage-native location
-// (log-blob index entry, in-memory map, …) internally.
 
 // DurabilityReporter is an optional capability a block store (local or
 // remote) MAY implement to report whether data it has accepted survives a
