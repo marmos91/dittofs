@@ -454,35 +454,11 @@ func TestStore_GetBlock_NoContentLength(t *testing.T) {
 }
 
 // ---- RemoteBlockStore method tests ----
-
-// TestStore_PutBlock_GetBlock_RoundTrip drives the PutBlock→GetBlock wire
-// path using the mock S3 server.
-func TestStore_PutBlock_GetBlock_RoundTrip(t *testing.T) {
-	store, _ := newTestStore(t)
-	ctx := context.Background()
-
-	data := []byte("block round-trip payload — s3 wire path")
-	if err := store.PutBlock(ctx, "blk-1", strings.NewReader(string(data))); err != nil {
-		t.Fatalf("PutBlock: %v", err)
-	}
-	got, err := store.GetBlock(ctx, "blk-1")
-	if err != nil {
-		t.Fatalf("GetBlock: %v", err)
-	}
-	if string(got) != string(data) {
-		t.Fatalf("GetBlock = %q, want %q", got, data)
-	}
-}
-
-// TestStore_GetBlock_NotFound pins the NoSuchKey → ErrChunkNotFound mapping.
-func TestStore_GetBlock_NotFound(t *testing.T) {
-	store, _ := newTestStore(t)
-	ctx := context.Background()
-
-	if _, err := store.GetBlock(ctx, "absent"); !errors.Is(err, block.ErrChunkNotFound) {
-		t.Fatalf("GetBlock absent: want ErrChunkNotFound, got %v", err)
-	}
-}
+//
+// What remains here is what TestS3_RemoteBlockStoreConformance does not reach:
+// the S3 key-space rules (which listed keys count as blocks), the bounds cases
+// the shared suite deliberately leaves loose, and the wire-level error and
+// cancellation behaviour of the walk.
 
 // TestStore_GetBlockRange_Bounds exercises mid-block, past-EOF clamping, and
 // the argument-validation sentinels.
@@ -536,76 +512,32 @@ func TestStore_GetBlockRange_Bounds(t *testing.T) {
 	}
 }
 
-// TestStore_DeleteBlock_Idempotent confirms DeleteBlock succeeds whether or
-// not the block exists and that a subsequent GetBlock misses.
-func TestStore_DeleteBlock_Idempotent(t *testing.T) {
-	store, _ := newTestStore(t)
+// TestStore_WalkBlocks_SkipsNonBlockKeys pins which listed keys WalkBlocks
+// reports as blocks. The shared conformance suite only ever puts blocks in the
+// bucket, so it cannot see this: a key outside the blocks/ prefix and the bare
+// prefix key itself (which would yield an empty blockID) must both be passed
+// over, or a GC sweep driving off WalkBlocks would delete CAS objects.
+func TestStore_WalkBlocks_SkipsNonBlockKeys(t *testing.T) {
+	store, mock := newTestStore(t)
 	ctx := context.Background()
 
-	data := []byte("delete-me block")
-	if err := store.PutBlock(ctx, "blk-del", strings.NewReader(string(data))); err != nil {
+	if err := store.PutBlock(ctx, "blk-0", strings.NewReader("walk-block-payload")); err != nil {
 		t.Fatalf("PutBlock: %v", err)
 	}
-	if err := store.DeleteBlock(ctx, "blk-del"); err != nil {
-		t.Fatalf("DeleteBlock: %v", err)
-	}
-	if _, err := store.GetBlock(ctx, "blk-del"); !errors.Is(err, block.ErrChunkNotFound) {
-		t.Fatalf("GetBlock after delete: want ErrChunkNotFound, got %v", err)
-	}
-	// Idempotent.
-	if err := store.DeleteBlock(ctx, "blk-del"); err != nil {
-		t.Fatalf("DeleteBlock idempotent: %v", err)
-	}
-}
-
-// TestStore_WalkBlocks_EnumeratesAll verifies WalkBlocks visits every block
-// object exactly once with correct size and non-zero LastModified, skips CAS
-// keys, and spans multiple paginator pages.
-func TestStore_WalkBlocks_EnumeratesAll(t *testing.T) {
-	store, mock := newTestStore(t)
-	mock.mu.Lock()
-	mock.listPageSize = 2 // force multi-page pagination
-	mock.mu.Unlock()
-	ctx := context.Background()
-
-	want := make(map[string]int64)
-	for i := 0; i < 5; i++ {
-		id := fmt.Sprintf("blk-%d", i)
-		data := []byte(fmt.Sprintf("walk-block-%d-payload", i))
-		want[id] = int64(len(data))
-		if err := store.PutBlock(ctx, id, strings.NewReader(string(data))); err != nil {
-			t.Fatalf("PutBlock %s: %v", id, err)
-		}
-	}
-
-	// Seed two keys WalkBlocks must skip: one outside the blocks/ prefix
-	// entirely, and the bare prefix key itself (empty blockID).
 	mock.mu.Lock()
 	mock.objects["cas/aa/bb/deadbeef"] = mockObject{data: []byte("cas-only"), lastModified: time.Now().UTC()}
 	mock.objects["blocks/"] = mockObject{data: nil, lastModified: time.Now().UTC()}
 	mock.mu.Unlock()
 
-	seen := make(map[string]int)
-	err := store.WalkBlocks(ctx, func(blockID string, m block.Meta) error {
-		seen[blockID]++
-		if m.LastModified.IsZero() {
-			t.Errorf("WalkBlocks: LastModified zero for %s", blockID)
-		}
-		if w, ok := want[blockID]; ok && m.Size != w {
-			t.Errorf("WalkBlocks size for %s = %d, want %d", blockID, m.Size, w)
-		}
+	var seen []string
+	if err := store.WalkBlocks(ctx, func(blockID string, _ block.Meta) error {
+		seen = append(seen, blockID)
 		return nil
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("WalkBlocks: %v", err)
 	}
-	if len(seen) != len(want) {
-		t.Fatalf("WalkBlocks visited %d blocks, want %d", len(seen), len(want))
-	}
-	for id, n := range seen {
-		if n != 1 {
-			t.Errorf("WalkBlocks visited %s %d times, want 1", id, n)
-		}
+	if len(seen) != 1 || seen[0] != "blk-0" {
+		t.Fatalf("WalkBlocks visited %v, want only [blk-0]", seen)
 	}
 }
 
@@ -673,85 +605,6 @@ func TestStore_WalkBlocks_StopSentinel(t *testing.T) {
 	}
 	if seen != 1 {
 		t.Fatalf("WalkBlocks should stop after first ErrStopWalk; saw %d", seen)
-	}
-}
-
-// TestStore_PutBlock_Idempotent verifies a second PutBlock for the same ID
-// overwrites the stored content.
-func TestStore_PutBlock_Idempotent(t *testing.T) {
-	store, _ := newTestStore(t)
-	ctx := context.Background()
-
-	original := []byte("original-block-content")
-	updated := []byte("updated-block-content-v2")
-	if err := store.PutBlock(ctx, "blk-idem", strings.NewReader(string(original))); err != nil {
-		t.Fatalf("PutBlock original: %v", err)
-	}
-	if err := store.PutBlock(ctx, "blk-idem", strings.NewReader(string(updated))); err != nil {
-		t.Fatalf("PutBlock updated: %v", err)
-	}
-	got, err := store.GetBlock(ctx, "blk-idem")
-	if err != nil {
-		t.Fatalf("GetBlock: %v", err)
-	}
-	if string(got) != string(updated) {
-		t.Fatalf("PutBlock idempotent: got %q, want %q", got, updated)
-	}
-}
-
-// TestStore_PutBlock_ZeroBody verifies a zero-byte PutBlock is accepted and
-// GetBlock returns an empty slice.
-func TestStore_PutBlock_ZeroBody(t *testing.T) {
-	store, _ := newTestStore(t)
-	ctx := context.Background()
-
-	if err := store.PutBlock(ctx, "blk-zero", strings.NewReader("")); err != nil {
-		t.Fatalf("PutBlock zero-byte: %v", err)
-	}
-	got, err := store.GetBlock(ctx, "blk-zero")
-	if err != nil {
-		t.Fatalf("GetBlock zero-byte: %v", err)
-	}
-	if len(got) != 0 {
-		t.Fatalf("GetBlock zero-byte: want 0 bytes, got %d", len(got))
-	}
-}
-
-// TestStore_PutBlock_Concurrent_SameID verifies concurrent PutBlock calls for
-// the same blockID don't corrupt the mock; the last writer wins on the store.
-func TestStore_PutBlock_Concurrent_SameID(t *testing.T) {
-	store, _ := newTestStore(t)
-	ctx := context.Background()
-
-	const id = "blk-concurrent"
-	payloadA := strings.Repeat("A", 512)
-	payloadB := strings.Repeat("B", 512)
-
-	done := make(chan error, 2)
-	go func() { done <- store.PutBlock(ctx, id, strings.NewReader(payloadA)) }()
-	go func() { done <- store.PutBlock(ctx, id, strings.NewReader(payloadB)) }()
-	for i := 0; i < 2; i++ {
-		if err := <-done; err != nil {
-			t.Errorf("concurrent PutBlock: %v", err)
-		}
-	}
-
-	got, err := store.GetBlock(ctx, id)
-	if err != nil {
-		t.Fatalf("GetBlock after concurrent put: %v", err)
-	}
-	// Must be entirely A or entirely B — no interleaving.
-	if len(got) != 512 {
-		t.Fatalf("GetBlock length = %d, want 512", len(got))
-	}
-	first := got[0]
-	if first != 'A' && first != 'B' {
-		t.Fatalf("unexpected first byte 0x%02X", first)
-	}
-	for i, b := range got {
-		if b != first {
-			t.Fatalf("GetBlock[%d] = %q, want all %q (concurrent blend)", i, b, first)
-		}
 	}
 }
 
