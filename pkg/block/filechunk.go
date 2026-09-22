@@ -13,7 +13,7 @@ import (
 //
 // decision: two rows may share one ContentHash, and this is the live steady
 // state rather than a tolerance for old data. A row's ID is
-// "{payloadID}/{fileOffset}" (see ParseBlockID), so two files whose content
+// "{payloadID}/{fileOffset}" (see ParseChunkOffset), so two files whose content
 // hash-matches produce two rows by construction, and a carve whose chunks are
 // all deduped still commits their manifest rows — the bytes are already
 // remote-durable, but without the rows the range has no manifest coverage.

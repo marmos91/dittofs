@@ -80,83 +80,6 @@ func TestContentHashString_Unchanged(t *testing.T) {
 // "{payloadID}/block-{N}" key shape is gone post-CAS — content
 // addressing supersedes the path-keyed form.
 
-// TestParseBlockID_RoundTrip covers the canonical internal blockID parser
-// (format: "{payloadID}/{blockIdx}"). Part of consolidation (5 -> 2).
-func TestParseBlockID_RoundTrip(t *testing.T) {
-	tests := []struct {
-		name          string
-		blockID       string
-		wantPayloadID string
-		wantBlockIdx  uint64
-	}{
-		{
-			name:          "nested payload with numeric idx",
-			blockID:       "export/docs/report.pdf/7",
-			wantPayloadID: "export/docs/report.pdf",
-			wantBlockIdx:  7,
-		},
-		{
-			name:          "simple payload with idx 0",
-			blockID:       "export/file.txt/0",
-			wantPayloadID: "export/file.txt",
-			wantBlockIdx:  0,
-		},
-		{
-			name:          "payload with multiple slashes splits on LAST /",
-			blockID:       "a/b/c/d/42",
-			wantPayloadID: "a/b/c/d",
-			wantBlockIdx:  42,
-		},
-		{
-			name:          "high block index",
-			blockID:       "share/big.bin/9999999",
-			wantPayloadID: "share/big.bin",
-			wantBlockIdx:  9999999,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			pid, idx, err := ParseBlockID(tt.blockID)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if pid != tt.wantPayloadID {
-				t.Errorf("payloadID = %q, want %q", pid, tt.wantPayloadID)
-			}
-			if idx != tt.wantBlockIdx {
-				t.Errorf("blockIdx = %d, want %d", idx, tt.wantBlockIdx)
-			}
-		})
-	}
-}
-
-// TestParseBlockID_Invalid asserts the canonical parser rejects malformed
-// inputs that the superseded per-site parsers either silently accepted or
-// handled via sentinel zero-values (mitigation).
-func TestParseBlockID_Invalid(t *testing.T) {
-	tests := []struct {
-		name    string
-		blockID string
-	}{
-		{name: "missing slash", blockID: "onlyOneSegment"},
-		{name: "empty string", blockID: ""},
-		{name: "trailing slash (no idx)", blockID: "export/file.txt/"},
-		{name: "non-integer idx", blockID: "export/file.txt/abc"},
-		{name: "negative idx", blockID: "export/file.txt/-1"},
-		{name: "leading slash only", blockID: "/"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			pid, idx, err := ParseBlockID(tt.blockID)
-			if err == nil {
-				t.Fatalf("expected error for %q, got payloadID=%q blockIdx=%d", tt.blockID, pid, idx)
-			}
-		})
-	}
-}
-
 // blake3EmptyHex is the BLAKE3-256 of the empty input — used as a known
 // vector for the ContentHash parse and JSON round-trip tests.
 const blake3EmptyHex = "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"
@@ -480,25 +403,6 @@ func TestContentHash_JSONBackwardCompat_V014Array(t *testing.T) {
 	}
 	if !bytes.Equal(got2[:], want[:]) {
 		t.Fatalf("v0.14 non-zero array decode mismatch:\n got: %x\nwant: %x", got2[:], want[:])
-	}
-}
-
-// TestErrChunkRefMissing asserts the new sentinel exists, is self-identical
-// via errors.Is, and has the expected message style ("blockstore:" prefix
-// + mentions "block ref")..
-func TestErrChunkRefMissing(t *testing.T) {
-	if !errors.Is(ErrChunkRefMissing, ErrChunkRefMissing) {
-		t.Error("errors.Is(ErrChunkRefMissing, ErrChunkRefMissing) = false")
-	}
-	if errors.Is(ErrChunkRefMissing, ErrChunkContentMismatch) {
-		t.Error("ErrChunkRefMissing should be distinct from ErrChunkContentMismatch")
-	}
-	msg := ErrChunkRefMissing.Error()
-	if !strings.HasPrefix(msg, "blockstore:") {
-		t.Errorf("ErrChunkRefMissing.Error() = %q, want prefix %q", msg, "blockstore:")
-	}
-	if !strings.Contains(strings.ToLower(msg), "block ref") {
-		t.Errorf("ErrChunkRefMissing.Error() = %q, want it to mention %q", msg, "block ref")
 	}
 }
 

@@ -1,3 +1,7 @@
+// Package block is the shared vocabulary of the block layer: content hashes,
+// chunk and manifest types, block state, the error sentinels and the on-disk
+// format-version convention. It is a leaf — it imports nothing else in this
+// repository. See README.md.
 package block
 
 import (
@@ -5,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -184,44 +187,6 @@ type ChunkRef struct {
 	StartOffset uint32      `json:"start_offset,omitempty"`
 }
 
-// MergeChunkRefsByOffset overlays incoming block refs onto existing ones,
-// keyed by byte range. Every incoming ref is kept; an existing ref is kept
-// only if its [Offset, Offset+Size) range does not overlap any incoming ref.
-// The result is sorted by Offset ascending.
-//
-// This models a rollup pass committing a slice of a file: appended chunks
-// (new, non-overlapping offsets) extend the list, while an in-place rewrite
-// (incoming chunks covering an existing byte range, possibly with different
-// FastCDC boundaries) replaces the overlapped existing chunks. It is the
-// accumulation step that keeps FileAttr.Blocks complete across multi-pass
-// rollups instead of replacing it with only the latest pass (#789).
-func MergeChunkRefsByOffset(existing, incoming []ChunkRef) []ChunkRef {
-	if len(incoming) == 0 {
-		out := make([]ChunkRef, len(existing))
-		copy(out, existing)
-		sortChunkRefsByOffset(out)
-		return out
-	}
-	out := make([]ChunkRef, 0, len(existing)+len(incoming))
-	for _, e := range existing {
-		eEnd := e.Offset + uint64(e.Size)
-		overlaps := false
-		for _, in := range incoming {
-			inEnd := in.Offset + uint64(in.Size)
-			if e.Offset < inEnd && in.Offset < eEnd {
-				overlaps = true
-				break
-			}
-		}
-		if !overlaps {
-			out = append(out, e)
-		}
-	}
-	out = append(out, incoming...)
-	sortChunkRefsByOffset(out)
-	return out
-}
-
 func sortChunkRefsByOffset(b []ChunkRef) {
 	sort.Slice(b, func(i, j int) bool { return b[i].Offset < b[j].Offset })
 }
@@ -233,10 +198,9 @@ func sortChunkRefsByOffset(b []ChunkRef) {
 // ignored on read; only fully-past-EOF refs are removed. The input slice is
 // not mutated; the result is sorted by Offset ascending.
 //
-// This is the truncate counterpart to MergeChunkRefsByOffset: a size-down
-// SetAttr must trim FileAttr.Blocks the same way a rewrite would, otherwise
-// stale-tail refs survive, the GC holds extra blocks, and a restore would
-// emit a file longer than the current size.
+// A size-down SetAttr must trim FileAttr.Blocks the same way a rewrite
+// would, otherwise stale-tail refs survive, the GC holds extra blocks, and
+// a restore would emit a file longer than the current size.
 func PruneChunkRefsToSize(refs []ChunkRef, size uint64) []ChunkRef {
 	out := make([]ChunkRef, 0, len(refs))
 	for _, r := range refs {
@@ -312,30 +276,4 @@ type FileChunk struct {
 // IsRemote returns true if the chunk has been synced to the remote block store.
 func (b *FileChunk) IsRemote() bool {
 	return b.State == BlockStateRemote
-}
-
-// ParseBlockID extracts the payloadID and block index from an internal
-// blockID string. BlockID format: "{payloadID}/{blockIdx}" where payloadID
-// may itself contain '/' characters (only the LAST '/' separates the index).
-//
-// Example: "export/docs/report.pdf/7" -> ("export/docs/report.pdf", 7, nil).
-//
-// Returns a wrapped error for malformed inputs: missing separator
-// empty trailing index, or non-numeric index. Callers that previously
-// relied on silent zero-value returns must now propagate the error.
-func ParseBlockID(blockID string) (payloadID string, blockIdx uint64, err error) {
-	lastSlash := strings.LastIndex(blockID, "/")
-	if lastSlash <= 0 {
-		return "", 0, fmt.Errorf("parse blockID %q: missing payloadID/idx separator: %w", blockID, ErrInvalidPayloadID)
-	}
-	payloadID = blockID[:lastSlash]
-	idxStr := blockID[lastSlash+1:]
-	if idxStr == "" {
-		return "", 0, fmt.Errorf("parse blockID %q: empty block index: %w", blockID, ErrInvalidPayloadID)
-	}
-	blockIdx, parseErr := strconv.ParseUint(idxStr, 10, 64)
-	if parseErr != nil {
-		return "", 0, fmt.Errorf("parse blockID %q: invalid block index: %w", blockID, parseErr)
-	}
-	return payloadID, blockIdx, nil
 }

@@ -114,16 +114,3 @@ func TestHashSet_Sorted(t *testing.T) {
 		}
 	}
 }
-
-func TestHashSet_Hashes(t *testing.T) {
-	s := NewHashSet(0)
-	h1 := testHash(1)
-	s.Add(h1)
-
-	m := s.Hashes()
-	// Verify identity (same map, not a copy).
-	m[testHash(42)] = struct{}{}
-	if !s.Contains(testHash(42)) {
-		t.Fatalf("Hashes() should return the internal map (not a copy)")
-	}
-}

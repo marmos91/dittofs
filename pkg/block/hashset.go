@@ -62,9 +62,3 @@ func (s *HashSet) Sorted() []ContentHash {
 	})
 	return out
 }
-
-// Hashes returns the underlying map for direct read access.
-// The returned map is NOT a copy; mutations are visible to the HashSet.
-func (s *HashSet) Hashes() map[ContentHash]struct{} {
-	return s.m
-}
