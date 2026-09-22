@@ -88,13 +88,20 @@ func (s *Store) retireSegment(sh *shard, seg *segmentMeta) (int64, error) {
 // an identical segment forever. The cost is that segment's tail plus its open
 // fd, so the ceiling is RLIMIT_NOFILE, not disk. Now that both retire paths
 // carry markers forward, dropping the records clause would be safe for the
-// markers themselves; it is kept because nothing yet proves the records a
-// marker buries are all reclaimed, and retiring it early would unbury them.
-// Withdraw it for a rule that can prove that — a store-wide minimum live
-// Version would do it — never for disk pressure alone.
+// markers themselves; it is kept because it would also make every retire
+// re-append the whole accumulated marker set, charging a delete-heavy shard
+// O(markers) per delete. Withdraw it for a rule that lets a marker be dropped
+// rather than carried — a store-wide minimum live Version would do it — never
+// for disk pressure alone.
+//
+// A quarantined segment is refused outright. corrupt means a scan of its record
+// stream stopped short, so neither retire path can read the markers it has to
+// carry forward, and retiring it would drop them; pickVictim refuses it for the
+// mirror-image reason. The refusal is permanent until the store reopens, which
+// is what keeps a pass from re-claiming the same damaged segment forever.
 func evictable(seg *segmentMeta) bool {
-	return seg.sealed.Load() && !seg.busy.Load() && seg.records.Load() > 0 &&
-		seg.syncedRecords.Load() == seg.records.Load()
+	return seg.sealed.Load() && !seg.busy.Load() && !seg.corrupt.Load() &&
+		seg.records.Load() > 0 && seg.syncedRecords.Load() == seg.records.Load()
 }
 
 // pinned reports whether a live snapshot's watermark protects any record in seg:
@@ -176,6 +183,12 @@ func (s *Store) reclaimEmptied(sh *shard) error {
 		// replacement target it is already writing.
 		if err := s.carryMarkersForward(sh, seg); err != nil {
 			seg.busy.Store(false)
+			if errors.Is(err, errTornRecord) {
+				// Quarantined: its bytes stay, evictable now refuses it, and the
+				// rest of this shard's dead segments are still worth reclaiming.
+				// Failing here instead would fail the Delete that drove the pass.
+				continue
+			}
 			return err
 		}
 		if _, err := s.retireSegment(sh, seg); err != nil {

@@ -3,6 +3,7 @@ package journal
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -82,6 +83,14 @@ func (s *Store) evict(ctx context.Context, targetBytes int64) (EvictResult, erro
 		}
 		freed, err := s.evictSegment(sh, seg)
 		if err != nil {
+			if errors.Is(err, errTornRecord) {
+				// carryMarkersForward quarantined it: its bytes stay on disk and
+				// evictable now refuses it, so the next claim picks a different
+				// segment instead of this one forever. Aborting here would hand
+				// the error to ensureSpace and turn one damaged segment into a
+				// store-wide write outage.
+				continue
+			}
 			return res, err
 		}
 		res.SegmentsEvicted++
@@ -162,6 +171,17 @@ func (s *Store) claimColdestEvictable() (*segmentMeta, *shard) {
 			bestAccess int64
 		)
 		for _, sh := range s.shards {
+			// decision: a shard whose fsync has permanently failed yields no
+			// candidate at all, not merely no marker-bearing one. Retiring a
+			// segment there means carrying its markers to a segment whose bytes
+			// no fsync can be trusted to have written, and the over-refusal
+			// costs nothing a broken shard was still going to deliver — its
+			// durable watermark is frozen and every Commit on it already fails.
+			// Skipping the shard rather than failing the pass keeps one such
+			// shard from failing every writer's capacity gate.
+			if sh.syncFailed.Load() {
+				continue
+			}
 			sh.mu.Lock()
 			for _, seg := range sh.sealed {
 				if !evictable(seg) {
@@ -206,9 +226,14 @@ func (s *Store) claimColdestEvictable() (*segmentMeta, *shard) {
 // A failure drops the claim (as reclaimEmptied does) so a later pass can retry the
 // segment: the claim is exclusive, so keeping it would bar the segment from every
 // subsequent eviction and GC pass, stranding its bytes under the very disk pressure
-// eviction serves. Retrying is safe because the failure leaves the index and the
-// segment untouched; at worst it left markers for bytes that are still local, which
-// the persist-first order already tolerates.
+// eviction serves. Retrying is safe, but not because the failure changed nothing:
+// the cold-flip above has already run, and carryMarkersForward is a fallible step
+// after it that can fail having appended and group-committed some of the victim's
+// markers. A retry therefore runs against an already-cold-flipped index and
+// re-appends duplicates of those markers. Neither costs data: a duplicate carries
+// the marker's ORIGINAL Version, so the recovery fold (highest Version per file)
+// replays it identically, and a cold marker left for bytes that are still local
+// costs a needless remote fetch, which the persist-first order already tolerates.
 //
 // flushMu is held for the same reason reclaimEmptied and the GC pass hold it, and
 // the segment-busy claim does not cover: a carve pass flips its records synced as
@@ -320,25 +345,84 @@ func (s *Store) evictSegment(sh *shard, seg *segmentMeta) (freed int64, err erro
 // when the delete was first appended.
 //
 // Markers stay uncounted in seg.records here too, matching the append path and
-// the recovery replay, so a restart reconstructs the same counters.
+// the recovery replay, so a restart reconstructs the same counters. seg.markers
+// is the separate counter, and the reason the common case is free: finding the
+// markers means a scan that CRC-verifies and retains every record in the
+// segment, up to a whole SegmentSize on the heap, taken while the caller holds
+// flushMu and so blocking that shard's entire carve pass. Eviction touched none
+// of the victim's bytes before this function existed — the bytes are already
+// remote — and a segment carrying no marker must keep it that way.
 //
 // The append lands in the active segment rather than a fresh one on purpose. A
 // marker-only segment can never be evicted (evictable requires a record) and
 // never repacked (its deadBytes stay 0), so it would live for the process's
 // lifetime holding an open fd — trading a data-loss bug for an fd leak bounded
 // by RLIMIT_NOFILE.
+//
+// decision: markers are immortal AND migrating, so the set compounds. A
+// segment's marker set includes whatever earlier retires carried into it, and
+// every retire re-appends the whole set, so under a delete-heavy workload both
+// the bytes and the per-retire work grow with the number of deletes the store
+// has ever served. It is accepted because nothing on this path can tell that a
+// marker has no records left to bury. Withdraw it for the rule evictable's own
+// decision names — a store-wide minimum live Version, below which a marker can
+// be dropped outright instead of carried.
 func (s *Store) carryMarkersForward(sh *shard, seg *segmentMeta) error {
+	if seg.markers.Load() == 0 {
+		return nil
+	}
+	// decision: a shard whose fsync has permanently failed may not retire a
+	// segment, however the commit below reports. groupCommit makes an fsync
+	// error sticky only for waiters already enqueued; a caller enqueuing after
+	// the failure gets a fresh batch and reads that fsync's own return, which
+	// under Linux fsync-error semantics can be success for pages the kernel has
+	// already dropped (see shard.syncFailed). This is the first place a commit's
+	// success would license DESTROYING the previous durable copy, so it refuses
+	// instead, the same way Restore refuses to report success. Withdraw it only
+	// if an fsync failure stops being sticky.
+	if sh.syncFailed.Load() {
+		return fmt.Errorf("journal: cannot carry segment %d markers forward: an earlier fsync on this shard failed permanently", seg.id)
+	}
 	markers, err := victimMarkers(seg, s.cfg.SegmentSize)
 	if err != nil {
+		// Mirror repack's quarantine rather than propagating: the scan stopped
+		// short, so every marker behind the torn record would be dropped, and the
+		// segment must keep its bytes. corrupt takes it out of evictable and
+		// pickVictim, so the pass that caught it moves on instead of re-claiming
+		// the same coldest segment forever.
+		seg.corrupt.Store(true)
+		s.log.Warn("journal: segment failed the marker scan its retire needs; leaving it in place and skipping it",
+			"segment", seg.id, "err", err)
 		return err
 	}
 	if len(markers) == 0 {
 		return nil
 	}
 
+	// Every marker framed below occupies bytes in the active segment, and the
+	// retire that follows subtracts the whole of seg.tail — the markers it
+	// carried included. Without this each marker is subtracted again on every
+	// retire it survives, and diskBytes is only recomputed from disk at open, so
+	// the drift accumulates across an uptime until MaxLocalBytes stops firing.
+	// Deferred because a framed record is on disk whichever way the loop exits.
+	// repackSegment accounts for the markers it carries the same way.
+	var added int64
+	defer func() { s.diskBytes.Add(added) }()
+
 	sh.mu.Lock()
 	for _, mk := range markers {
 		if sh.active.tail.Load()+recordLen(len(mk.id), 0) > s.cfg.SegmentSize {
+			// decision: the segment this seals can be marker-only, and a
+			// marker-only segment is permanent — evictable requires a record and
+			// pickVictim requires dead bytes, so nothing retires it. It needs an
+			// active already holding nothing but carried markers, because a
+			// segment's marker set fit beside at least one data record and so
+			// fits in a fresh segment; the cost is one fd and that tail for the
+			// process's lifetime, ceiling RLIMIT_NOFILE. The obvious fix, letting
+			// evictable accept a marker-bearing segment, is wrong for a different
+			// reason: markers migrate, so it would make every retire re-append
+			// the whole accumulated set and charge a delete-heavy shard O(markers)
+			// per delete forever.
 			if err := s.sealSegment(sh); err != nil {
 				sh.mu.Unlock()
 				return err
@@ -356,6 +440,7 @@ func (s *Store) carryMarkersForward(sh *shard, seg *segmentMeta) error {
 			return werr
 		}
 		target.noteMinVersion(mk.version)
+		added += recordLen(len(mk.id), 0)
 	}
 	sh.mu.Unlock()
 
