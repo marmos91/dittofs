@@ -72,7 +72,7 @@ DITTOFS_TEST_KMIP=1 \
   DITTOFS_TEST_KMIP_KEY=test/fixtures/kmip/client.key \
   DITTOFS_TEST_KMIP_CA=test/fixtures/kmip/ca.pem \
   DITTOFS_TEST_KMIP_KEY_UID=<your-key-uid> \
-  go test ./pkg/block/encryption/keyprovider/...
+  go test ./pkg/block/middleware/encryption/keyprovider/...
 ```
 
 ## Prior art

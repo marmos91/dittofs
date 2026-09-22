@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Brings up a PyKMIP server in Docker, provisions the keys the KMIP
 # interop tests need, and writes the DITTOFS_TEST_KMIP_* environment the
-# gated tests in pkg/block/encryption/keyprovider read.
+# gated tests in pkg/block/middleware/encryption/keyprovider read.
 #
 #   ./test/kmip/start-pykmip.sh [certs-dir] [env-file]
 #
