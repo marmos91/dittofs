@@ -92,7 +92,8 @@ The ones with a contract beyond "this went wrong":
   eviction and GC.
 - `engine` — the composition root: local store + syncer + cache + metadata.
 - `carver`, `chunker` — the FastCDC carve pass over dirty ranges.
-- `compression`, `encryption` — the decorators wrapping a remote store.
+- `middleware` — the two decorators wrapping a remote store, `middleware/compression`
+  and `middleware/encryption`, and the composition order they must be stacked in.
 - `blockcodec` — the packed-block wire framing.
 - `syncer` — the adaptive upload window.
 - `blockstoretest` — `RemoteBlockStoreConformance`, the one conformance suite,

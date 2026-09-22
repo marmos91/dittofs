@@ -21,7 +21,7 @@
 // onto the new key. There is no re-wrap tooling, so a retired key must
 // stay configured for as long as any block references it; dropping it
 // makes those blocks permanently unreadable. See
-// [github.com/marmos91/dittofs/pkg/block/encryption/keyprovider] for the
+// [github.com/marmos91/dittofs/pkg/block/middleware/encryption/keyprovider] for the
 // full behaviour.
 //
 // The decorator should sit BELOW any compression decorator: compress on

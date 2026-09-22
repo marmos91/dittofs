@@ -1052,8 +1052,9 @@ dittofs/
 │   │   │                         # BLAKE3 hashing; consumed by the carve pass
 │   │   ├── carver/               # Carve pass: chunk a file into blocks
 │   │   ├── blockcodec/           # On-disk block payload encoding
-│   │   ├── compression/          # Optional per-block compression
-│   │   ├── encryption/           # Optional per-block encryption
+│   │   ├── middleware/           # The remote-store decorators
+│   │   │   ├── compression/      # Optional per-chunk compression
+│   │   │   └── encryption/       # Optional per-chunk encryption
 │   │   ├── engine/               # BlockStore orchestrator + read cache + syncer + GC
 │   │   ├── journal/              # The per-share journal (append-only segments)
 │   │   ├── syncer/               # Local -> remote sync

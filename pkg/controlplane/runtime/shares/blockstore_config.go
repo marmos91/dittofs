@@ -12,9 +12,9 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/compression"
-	"github.com/marmos91/dittofs/pkg/block/encryption"
-	"github.com/marmos91/dittofs/pkg/block/encryption/keyprovider"
+	"github.com/marmos91/dittofs/pkg/block/middleware/compression"
+	"github.com/marmos91/dittofs/pkg/block/middleware/encryption"
+	"github.com/marmos91/dittofs/pkg/block/middleware/encryption/keyprovider"
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/block/remote"

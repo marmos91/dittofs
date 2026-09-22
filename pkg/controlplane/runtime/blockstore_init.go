@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/marmos91/dittofs/pkg/block/encryption"
-	"github.com/marmos91/dittofs/pkg/block/encryption/keyprovider"
+	"github.com/marmos91/dittofs/pkg/block/middleware/encryption"
+	"github.com/marmos91/dittofs/pkg/block/middleware/encryption/keyprovider"
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	s3store "github.com/marmos91/dittofs/pkg/block/remote/s3"
 )

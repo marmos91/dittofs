@@ -14,7 +14,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/blockstoretest"
-	"github.com/marmos91/dittofs/pkg/block/encryption/keyprovider"
+	"github.com/marmos91/dittofs/pkg/block/middleware/encryption/keyprovider"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 )
 

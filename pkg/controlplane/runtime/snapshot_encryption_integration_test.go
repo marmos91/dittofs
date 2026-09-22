@@ -11,8 +11,8 @@ import (
 	"lukechampine.com/blake3"
 
 	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/encryption"
-	"github.com/marmos91/dittofs/pkg/block/encryption/keyprovider"
+	"github.com/marmos91/dittofs/pkg/block/middleware/encryption"
+	"github.com/marmos91/dittofs/pkg/block/middleware/encryption/keyprovider"
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	bsmemory "github.com/marmos91/dittofs/pkg/block/local/memory"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"

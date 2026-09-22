@@ -50,7 +50,7 @@ dfsctl store block add \
 Generate a fresh key file (no dedicated subcommand — call the Go helper directly):
 
 ```go
-import "github.com/marmos91/dittofs/pkg/block/encryption/keyprovider"
+import "github.com/marmos91/dittofs/pkg/block/middleware/encryption/keyprovider"
 
 bytes, _ := keyprovider.GenerateKeyFile("your-strong-passphrase")
 os.WriteFile("/etc/dittofs/keys/share.key", bytes, 0o600)

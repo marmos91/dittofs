@@ -9,8 +9,8 @@ import (
 	"lukechampine.com/blake3"
 
 	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/compression"
-	"github.com/marmos91/dittofs/pkg/block/encryption"
+	"github.com/marmos91/dittofs/pkg/block/middleware/compression"
+	"github.com/marmos91/dittofs/pkg/block/middleware/encryption"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 )
 
