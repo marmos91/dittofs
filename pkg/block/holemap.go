@@ -62,12 +62,19 @@ func normalizedExtents(refs []ChunkRef, fileSize uint64) [][2]uint64 {
 		}
 		ext = append(ext, [2]uint64{start, end})
 	}
+	// Caller invariant is sorted-by-offset, but DEALLOCATE splits and the
+	// dual-read shim can produce unsorted input, so CoalesceExtents sorts
+	// defensively (cheap; block lists are small).
+	return CoalesceExtents(ext)
+}
+
+// CoalesceExtents sorts ext by start and merges overlapping/adjacent ranges
+// into the canonical sorted, non-overlapping form. Mutates the input backing
+// array; returns nil for empty input.
+func CoalesceExtents(ext [][2]uint64) [][2]uint64 {
 	if len(ext) == 0 {
 		return nil
 	}
-	// Caller invariant is sorted-by-offset, but DEALLOCATE splits and the
-	// dual-read shim can produce unsorted input, so sort defensively (cheap;
-	// block lists are small).
 	sort.Slice(ext, func(i, j int) bool { return ext[i][0] < ext[j][0] })
 
 	merged := ext[:1]

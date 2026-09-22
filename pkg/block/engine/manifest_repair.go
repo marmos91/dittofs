@@ -286,7 +286,7 @@ func applyPayloadRepairs(ctx context.Context, store metadata.Store, f *metadata.
 			// silently overwriting the first.
 			byID[row.ID] = row
 			delete(byID, a.FromRowID)
-			covered = coalesceExtents(append(covered, [2]uint64{a.Offset, a.Offset + uint64(a.Size)}))
+			covered = block.CoalesceExtents(append(covered, [2]uint64{a.Offset, a.Offset + uint64(a.Size)}))
 			// The file's block list already carries this claim — it is where
 			// the repair came from — so its projection needs no rewrite.
 			a.Applied = true
@@ -314,7 +314,7 @@ func indexChunkRows(rows []*block.FileChunk, size uint64) (map[string]*block.Fil
 			covered = append(covered, e)
 		}
 	}
-	return byID, coalesceExtents(covered)
+	return byID, block.CoalesceExtents(covered)
 }
 
 // claimedOffsets indexes a file's own block list as the set of offsets it

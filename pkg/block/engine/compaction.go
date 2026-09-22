@@ -266,7 +266,7 @@ func compactOneBlock(
 	// Pack the live chunks into a fresh block (verbatim wire bodies; the codec
 	// re-frames the record headers with the new block ID). nil Sealer matches
 	// the carver/migration — per-chunk encryption already lives in the body.
-	newID, err := newBlockID()
+	newID, err := block.NewBlockID()
 	if err != nil {
 		slog.Warn("compaction: new block id failed — skipping", "block_id", blockID, "err", err)
 		report.Errors++

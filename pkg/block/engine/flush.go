@@ -385,7 +385,7 @@ func (s engineBlockSink) CommitBlock(ctx context.Context, chunks []CarveChunk) e
 		return commitManifestRows(ctx, s.committer, s.commitLocks, string(chunks[0].FileID), fileChunks)
 	}
 
-	blockID, err := newBlockID()
+	blockID, err := block.NewBlockID()
 	if err != nil {
 		return err
 	}

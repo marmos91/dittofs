@@ -337,8 +337,8 @@ func checkFileManifest(
 		}
 	}
 
-	claimed = coalesceExtents(claimed)
-	coveredExtents := coalesceExtents(covered)
+	claimed = block.CoalesceExtents(claimed)
+	coveredExtents := block.CoalesceExtents(covered)
 	for _, hole := range uncoveredRanges(coveredExtents, f.Size) {
 		for _, piece := range splitByClaim(hole, claimed) {
 			found = true
@@ -446,7 +446,7 @@ func clipRange(off, length, size uint64) ([2]uint64, bool) {
 }
 
 // uncoveredRanges returns [0, size) minus covered, which must already be
-// sorted and non-overlapping (coalesceExtents output).
+// sorted and non-overlapping (block.CoalesceExtents output).
 func uncoveredRanges(covered [][2]uint64, size uint64) [][2]uint64 {
 	var (
 		out [][2]uint64

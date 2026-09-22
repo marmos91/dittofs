@@ -2,9 +2,6 @@ package engine
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
-	"fmt"
 	"sync"
 	"time"
 
@@ -154,16 +151,4 @@ func (m *RemoteSync) carvePass(ctx context.Context) {
 		}(id)
 	}
 	wg.Wait()
-}
-
-// newBlockID returns a fresh, unguessable block object key. crypto/rand keeps it
-// collision-free under concurrent carvers (unlike a timestamp) and unrelated to
-// the block's content hash, so a re-carve after a crash always targets a new
-// object.
-func newBlockID() (string, error) {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", fmt.Errorf("carve: generate block id: %w", err)
-	}
-	return hex.EncodeToString(b[:]), nil
 }

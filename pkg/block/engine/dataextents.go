@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"sort"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block"
@@ -122,27 +121,5 @@ func (bs *Store) DataExtents(ctx context.Context, payloadID string, fileSize uin
 		}
 	}
 
-	return coalesceExtents(ext), nil
-}
-
-// coalesceExtents sorts ext by start and merges overlapping/adjacent ranges
-// into the canonical sorted, non-overlapping form. Mutates the input backing
-// array; returns nil for empty input.
-func coalesceExtents(ext [][2]uint64) [][2]uint64 {
-	if len(ext) == 0 {
-		return nil
-	}
-	sort.Slice(ext, func(i, j int) bool { return ext[i][0] < ext[j][0] })
-	merged := ext[:1]
-	for _, e := range ext[1:] {
-		last := &merged[len(merged)-1]
-		if e[0] <= last[1] {
-			if e[1] > last[1] {
-				last[1] = e[1]
-			}
-			continue
-		}
-		merged = append(merged, e)
-	}
-	return merged
+	return block.CoalesceExtents(ext), nil
 }

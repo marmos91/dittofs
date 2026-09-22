@@ -308,11 +308,11 @@ func placedRanges(rows []*block.FileChunk) ([][2]uint64, int64) {
 			end = rowEnd
 		}
 	}
-	return coalesceExtents(placed), int64(end)
+	return block.CoalesceExtents(placed), int64(end)
 }
 
 // subtractExtents returns the parts of a that no extent of b covers. Both must
-// be sorted and non-overlapping, as coalesceExtents and DataExtents return
+// be sorted and non-overlapping, as block.CoalesceExtents and DataExtents return
 // them; the result is too.
 //
 // ponytail: rescans b from the front for every span of a. Both lists are one
