@@ -303,71 +303,6 @@ func (m *RemoteSync) SetHealthCallback(fn healthTransitionCallback) {
 	}
 }
 
-// CanEvict reports whether reclaiming local bytes is safe: they may only be
-// dropped when something can fetch them back. That is carveActive — the carve
-// path wired to a remote — AND that remote being healthy.
-//
-// carveActive is deliberately the same flag that decides whether a record can
-// ever become synced, so "may be evicted" and "can be re-fetched" are one answer
-// by construction rather than two that agree by luck. Health alone is not
-// enough: IsRemoteHealthy reports true for a nil monitor, so a share with no
-// remote at all reads as healthy, and a journal carrying synced records from a
-// previous remote-backed life would then satisfy the eviction gate and lose the
-// only copy of those bytes.
-func (m *RemoteSync) CanEvict() bool {
-	return m.carveActive.Load() && m.IsRemoteHealthy()
-}
-
-// IsRemoteHealthy returns the health state of the remote store.
-// Returns true when there is no HealthMonitor (local-only mode) — which is why
-// it is not sufficient on its own to decide whether eviction is safe. Use
-// CanEvict for that.
-func (m *RemoteSync) IsRemoteHealthy() bool {
-	if m.healthMonitor == nil {
-		return true
-	}
-	return m.healthMonitor.IsHealthy()
-}
-
-// RemoteOutageDuration returns how long the remote store has been unhealthy.
-// Returns 0 when healthy or when there is no HealthMonitor.
-func (m *RemoteSync) RemoteOutageDuration() time.Duration {
-	if m.healthMonitor == nil {
-		return 0
-	}
-	return m.healthMonitor.OutageDuration()
-}
-
-// remoteUnavailableError returns an ErrRemoteUnavailable wrapped with outage duration context.
-func (m *RemoteSync) remoteUnavailableError() error {
-	dur := m.RemoteOutageDuration()
-	return fmt.Errorf("remote store unavailable (offline for %s): %w", dur.Truncate(time.Second), block.ErrRemoteUnavailable)
-}
-
-// OfflineReadsBlocked returns the count of read operations that failed
-// because the requested blocks were remote-only during an outage.
-func (m *RemoteSync) OfflineReadsBlocked() int64 {
-	return m.offlineReadsBlocked.Load()
-}
-
-// logOfflineRead logs a read failure due to remote unavailability.
-// First failure after a healthy->unhealthy transition logs at WARN level
-// subsequent failures log at DEBUG to avoid log spam.
-func (m *RemoteSync) logOfflineRead(method, payloadID string, blockIdx uint64) {
-	if m.firstOfflineRead.CompareAndSwap(false, true) {
-		logger.Warn("Read blocked: remote store unavailable",
-			"method", method,
-			"payloadID", payloadID,
-			"blockIdx", blockIdx,
-			"outage_duration", m.RemoteOutageDuration().Truncate(time.Second))
-	} else {
-		logger.Debug("Read blocked: remote store unavailable",
-			"method", method,
-			"payloadID", payloadID,
-			"blockIdx", blockIdx)
-	}
-}
-
 // checkReady returns nil if the syncer can process requests.
 // Returns ctx.Err() if the context is cancelled, or ErrClosed if the RemoteSync is closed.
 func (m *RemoteSync) checkReady(ctx context.Context) error {
@@ -819,24 +754,6 @@ func (m *RemoteSync) startLocked(ctx context.Context) *HealthMonitor {
 	return hm
 }
 
-// newHealthMonitorLocked creates and wires the health monitor for the remote
-// store, without starting it. Must be called with m.mu held.
-func (m *RemoteSync) newHealthMonitorLocked() *HealthMonitor {
-	m.healthMonitor = NewHealthMonitor(m.remoteStore.HealthCheck, m.config)
-	// Wrap the user's callback to also reset the offline-read WARN flag
-	// on each healthy->unhealthy transition.
-	userCallback := m.onHealthChanged
-	m.healthMonitor.SetTransitionCallback(func(healthy bool) {
-		if !healthy {
-			m.firstOfflineRead.Store(false)
-		}
-		if userCallback != nil {
-			userCallback(healthy)
-		}
-	})
-	return m.healthMonitor
-}
-
 // startPeriodicUploader launches the carve dispatcher and the maintenance
 // loop, if not already running. Must be called with m.mu held.
 func (m *RemoteSync) startPeriodicUploader(ctx context.Context) {
@@ -1196,21 +1113,4 @@ func waitBounded(wg *gosync.WaitGroup, timeout time.Duration) bool {
 	case <-time.After(timeout):
 		return false
 	}
-}
-
-// HealthCheck verifies the remote store is accessible.
-// Returns nil (healthy) when remoteStore is nil -- local-only mode is valid.
-func (m *RemoteSync) HealthCheck(ctx context.Context) error {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	if m.closed {
-		return ErrClosed
-	}
-
-	if m.remoteStore == nil {
-		return nil // Local-only mode is healthy
-	}
-
-	return m.remoteStore.HealthCheck(ctx)
 }
