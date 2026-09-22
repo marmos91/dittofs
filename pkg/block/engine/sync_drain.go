@@ -46,7 +46,10 @@ func (m *RemoteSync) Flush(ctx context.Context, payloadID string) (*block.FlushR
 	// restore resolve the file's chunks. Only report the soft condition when
 	// even the manifest substrate is missing.
 	if m.remoteStore == nil {
-		if m.blockCommitter == nil {
+		m.mu.RLock()
+		committer := m.blockCommitter
+		m.mu.RUnlock()
+		if committer == nil {
 			return &block.FlushResult{Finalized: false}, nil
 		}
 	} else if !m.IsRemoteHealthy() {
@@ -99,6 +102,16 @@ func (m *RemoteSync) flushFn() (journal.FlushFunc, func(context.Context, journal
 	if params.Validate() != nil {
 		params = chunker.DefaultParams()
 	}
+	// Snapshot the wired deps under one read lock. The setters publish them
+	// under m.mu and can run on an already-serving share, so reading them one
+	// field at a time could build a closure from a torn mix of two wirings —
+	// a sealer from the old remote paired with the new remote's store. One
+	// acquisition also keeps this off the four-lock path the field-by-field
+	// alternative would need.
+	m.mu.RLock()
+	rbs, sealer, committer, hashStore := m.remoteBlockStore, m.chunkSealer, m.blockCommitter, m.syncedHashStore
+	m.mu.RUnlock()
+
 	// A tier with no flush shape of its own answers 0 for both and the
 	// defaults below stand in.
 	window, blockSize := m.local.UploadConcurrency(), m.local.BlockSize()
@@ -108,7 +121,7 @@ func (m *RemoteSync) flushFn() (journal.FlushFunc, func(context.Context, journal
 	if blockSize <= 0 {
 		blockSize = paramsBlockSize(params)
 	}
-	if m.remoteBlockStore != nil {
+	if rbs != nil {
 		// The syncer's own uploadLimiter is the window, shared by every
 		// concurrent pass rather than rebuilt per pass: blocks hold a slot from
 		// submit until CommitBlock returns, so at most Limit() uploads (and
@@ -116,7 +129,7 @@ func (m *RemoteSync) flushFn() (journal.FlushFunc, func(context.Context, journal
 		// semaphore here would nest inside the dispatcher's own window and make
 		// the PUTs in flight their product, which is both a bound nobody
 		// declared and a peak the controller cannot see.
-		sink := engineBlockSink{sealer: m.chunkSealer, rbs: m.remoteBlockStore, committer: m.blockCommitter, commitLocks: &carveCommitLocks{}, onPutInFlight: m.notePutInFlight, onBlockUploaded: m.noteBlockUploaded, onBlockCommitted: m.noteBlockCommitted}
+		sink := engineBlockSink{sealer: sealer, rbs: rbs, committer: committer, commitLocks: &carveCommitLocks{}, onPutInFlight: m.notePutInFlight, onBlockUploaded: m.noteBlockUploaded, onBlockCommitted: m.noteBlockCommitted}
 		// The dedup Skip hook consults the per-share synced-hash store: without
 		// it every flush treats every chunk as novel and uploads whole new
 		// blocks instead of landing manifest-only rows for content the remote
@@ -130,7 +143,7 @@ func (m *RemoteSync) flushFn() (journal.FlushFunc, func(context.Context, journal
 		if slots == nil {
 			slots = syncer.NewDynamicSemaphore(window)
 		}
-		return newFlushClosure(m.local, params, blockSize, engineDeduper{synced: m.syncedHashStore}, sink, slots)
+		return newFlushClosure(m.local, params, blockSize, engineDeduper{synced: hashStore}, sink, slots)
 	}
 	// Local-only (no remote block store): the flush cannot upload, but it must
 	// still populate the FileChunk manifest (and project File.Blocks) so a
@@ -141,7 +154,7 @@ func (m *RemoteSync) flushFn() (journal.FlushFunc, func(context.Context, journal
 	// This branch keeps a window of its own: uploadLimiter is an *upload*
 	// window sized by a controller chasing uplink goodput, and there is no
 	// uplink here to chase.
-	sink := localBlockSink{committer: m.blockCommitter, commitLocks: &carveCommitLocks{}}
+	sink := localBlockSink{committer: committer, commitLocks: &carveCommitLocks{}}
 	return newFlushClosure(m.local, params, blockSize, localDeduper{}, sink, syncer.NewDynamicSemaphore(window))
 }
 
