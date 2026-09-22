@@ -2,6 +2,10 @@ package journal
 
 import (
 	"go/build"
+	"go/parser"
+	"go/token"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -23,6 +27,28 @@ func TestNoForeignImports(t *testing.T) {
 		t.Fatalf("build.ImportDir: %v", err)
 	}
 
+	// build.ImportDir resolves //go:build tags and _GOOS/_GOARCH filename
+	// suffixes against the host, so a file that does not match lands in
+	// IgnoredGoFiles and its imports never reach the lists above: a forbidden
+	// import behind //go:build darwin would pass unseen on a linux run. Parse
+	// those files directly so the rule holds for every platform rather than
+	// only the one the test happens to run on.
+	var otherPlatform []string
+	fset := token.NewFileSet()
+	for _, name := range pkg.IgnoredGoFiles {
+		f, err := parser.ParseFile(fset, filepath.Join(pkg.Dir, name), nil, parser.ImportsOnly)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		for _, spec := range f.Imports {
+			path, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				t.Fatalf("unquote %s in %s: %v", spec.Path.Value, name, err)
+			}
+			otherPlatform = append(otherPlatform, path)
+		}
+	}
+
 	for _, group := range []struct {
 		kind    string
 		imports []string
@@ -30,6 +56,7 @@ func TestNoForeignImports(t *testing.T) {
 		{"import", pkg.Imports},
 		{"test import", pkg.TestImports},
 		{"external test import", pkg.XTestImports},
+		{"other-platform import", otherPlatform},
 	} {
 		for _, imp := range group.imports {
 			if importAllowed(imp) {
