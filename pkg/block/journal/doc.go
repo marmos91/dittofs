@@ -22,7 +22,7 @@
 // dirty (must be flushed before it can be evicted).
 //
 // GC never touches the remote store: repack relocates local cache bytes
-// between segments only (see reclaim.go). Remote-block refcount reclamation
-// stays with the engine's block-GC sweep, whose per-remote serialization is
+// between segments only (see gc.go and repack.go). Remote-block refcount
+// reclamation stays with the block-GC sweep, whose per-remote serialization is
 // what makes a decrement safe — journal must not drive one concurrently.
 package journal

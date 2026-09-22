@@ -5,7 +5,8 @@ import "context"
 // This file holds the LocalStore admin surface the composition layer holds
 // the local tier through: the disk cap probe, the durability report, and the
 // liveness flag. The data plane lives in store.go/index.go; the flush seam in
-// flush.go; eviction in reclaim.go.
+// flush.go; eviction in evict.go, and the retirement tail it ends on in
+// reclaim.go.
 
 // MaxLocalBytes reports the effective local on-disk cap eviction gates against
 // (an explicit config value, or the free-space default Open derived). 0 means

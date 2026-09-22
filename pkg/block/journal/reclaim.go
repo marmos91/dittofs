@@ -6,16 +6,25 @@ import (
 	"os"
 )
 
-// Segment reclamation: two distinct policies over one shared retirement tail.
+// Segment reclamation: the retirement tail, and the predicates that gate it.
 //
-//   - Eviction (disk pressure) marks a sealed, fully-synced segment's intervals
-//     cold — its bytes now live only remotely, reads refetch — then retires it.
-//   - GC/repack (dead-byte ratio) relocates a victim's still-live records into a
-//     fresh local segment and repoints the index — data stays warm — then retires
-//     the victim.
+// Two policies live elsewhere and decide WHICH segment retires:
 //
-// Both end by dropping the segment from the sealed set, draining in-flight preads,
-// closing the fd, unlinking the files, and decrementing diskBytes: retireSegment.
+//   - Eviction (disk pressure, evict.go) marks a sealed, fully-synced segment's
+//     intervals cold — its bytes now live only remotely, reads refetch — then
+//     retires it.
+//   - GC/repack (dead-byte ratio, gc.go and repack.go) relocates a victim's
+//     still-live records into a fresh local segment and repoints the index —
+//     data stays warm — then retires the victim.
+//
+// Both end on retireSegment below, which drops the segment from the sealed set,
+// drains in-flight preads, closes the fd, unlinks the files, and decrements
+// diskBytes. evictable and pinned are the predicates the two share.
+//
+// reclaimEmptied is a third caller and is neither policy: the delete path runs
+// it to retire whatever a tombstone just emptied. It reuses the predicates here
+// but reaches back into eviction for sealableActive (evict.go), so this file is
+// not independent of the policies above.
 
 // retireSegment is the shared reclamation tail both eviction and GC end on. The
 // caller has already done its policy-specific index work (evict: mark intervals
@@ -50,11 +59,12 @@ func (s *Store) retireSegment(sh *shard, seg *segmentMeta) (int64, error) {
 // evictable reports whether a segment can be unlinked outright: sealed, idle,
 // and every record it holds already durable on the remote.
 //
-// It has two callers on two different paths, and lives here rather than beside
-// either of them for that reason: claimColdestEvictable scans for a disk-pressure
-// eviction victim, and reclaimEmptied below gates the post-delete retire of a
-// segment a tombstone just emptied. A change here moves both — narrowing it to
-// protect eviction also pins bytes the delete path would otherwise reclaim.
+// It has two callers on two different paths: claimColdestEvictable (evict.go)
+// scans for a disk-pressure eviction victim, and reclaimEmptied below gates the
+// post-delete retire of a segment a tombstone just emptied. It sits beside the
+// retirement tail both of them end on rather than beside either caller. A change
+// here moves both — narrowing it to protect eviction also pins bytes the delete
+// path would otherwise reclaim.
 //
 // records counts only payload-bearing records — markers (tombstone, truncate)
 // never raise it, on the append path, the recovery replay, or the repack

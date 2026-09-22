@@ -1496,7 +1496,7 @@ then runs the post-Flush hook.
 
 Source-of-truth file:line anchors:
 
-- `pkg/block/engine/syncer.go::Flush` — entry point + branch
+- `pkg/block/engine/sync_drain.go::Flush` — entry point + branch
   selection; `snapshotPendingBlockRefs` (short-circuit input) and
   `snapshotBlockRefs` (post-Flush input) helpers.
 - `pkg/block/engine/dedup.go::TrySpeculativeFileLevelDedup` and

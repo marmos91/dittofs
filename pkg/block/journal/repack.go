@@ -83,6 +83,14 @@ func (s *Store) repackSegment(sh *shard, victim *segmentMeta, live map[uint64]in
 	// quarantine condemns the victim: it keeps its bytes (a repack that cannot
 	// verify a record must not copy it forward under a fresh CRC) and is skipped
 	// by every later pass, so one damaged segment does not stall the shard.
+	//
+	// decision: that skip is permanent. pickVictim refuses a corrupt segment
+	// outright, so its dead bytes are never reclaimed and its fd stays open for
+	// the life of the store. The cost is that segment's tail plus one descriptor,
+	// so the real ceiling is RLIMIT_NOFILE, not disk. Withdraw it for a rule that
+	// can salvage the records that still verify and retire the rest — per-record
+	// quarantine rather than per-segment — never by re-admitting the segment to
+	// pickVictim, which is the copy-an-unverifiable-record path this refuses.
 	quarantine := func(err error) error {
 		victim.corrupt.Store(true)
 		s.log.Warn("journal: segment failed a repack integrity check; leaving it in place and skipping it",
