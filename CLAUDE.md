@@ -148,10 +148,17 @@ composition layer over six sub-services: `adapters/`, `stores/`, `shares/`, `mou
    that conformance suite. Block stores have exactly one suite,
    `blockstoretest.RemoteBlockStoreConformance`, and it covers only the block-keyed
    `remote.RemoteBlockStore` surface. There is **no hash-keyed suite**: the CAS `block.Store`
-   interface and its `BlockStoreConformance` were deleted, leaving orphan godoc for the
-   interface in `pkg/block/blockstore.go` — that file's `Meta`, `DurabilityReporter` and
-   `IsDurable` are still live. The local tier is payload-keyed and is covered by its own
-   package tests.
+   interface and its `BlockStoreConformance` were deleted. The local tier is payload-keyed and
+   is covered by its own package tests.
+
+   **`pkg/block` no longer declares a whole-block-store interface.** `Reader`, `Writer`, `Flusher` and
+   `ComposedStore` are gone too — nothing consumed them but one `var _` assertion and some doc
+   cross-references, while every method they declared was already pinned by concrete call sites
+   on `*engine.Store`. The tier contracts live with their tiers (`remote.RemoteBlockStore`,
+   `local.LocalStore`); what stays in `pkg/block/blockstore.go` is what both sides speak —
+   `Meta`, `DurabilityReporter` and `IsDurable`, all live. So a method reachable only from tests
+   now has nothing holding its signature up: say so with a `decision:` marker at the method
+   rather than reintroducing an interface to pin it.
 
 ## Verifying a change
 
