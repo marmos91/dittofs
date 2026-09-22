@@ -132,7 +132,7 @@ func TestSavings_PairedRawZstdLZ4(t *testing.T) {
 
 // --- alloc bound --------------------------------------------------------
 
-// TestSealChunk_AllocBounded pins sealLayer's single-buffer design: the frame
+// TestSealChunk_AllocBounded pins Seal's single-buffer design: the frame
 // header is reserved up front and the codec streams the body straight after it,
 // so sealing a 4 MiB chunk must not cost a second full copy of the plaintext.
 func TestSealChunk_AllocBounded(t *testing.T) {

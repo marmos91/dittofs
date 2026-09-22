@@ -1,3 +1,5 @@
+// Package compression — the compression stage of a block middleware pipeline.
+// See README.md.
 package compression
 
 import (
@@ -11,15 +13,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/remote"
 )
 
-// Decorator wraps a remote.RemoteStore and transparently compresses
-// block bodies on Put while decompressing on Get. The plaintext BLAKE3
-// remains the CAS key — dedup, GC, and verification semantics are
-// unchanged from the perspective of callers above the decorator.
-//
-// Compression is per-block adaptive: if the compressed body is not
-// strictly smaller than the plaintext, the decorator stores the raw
-// plaintext with no header. Get detects framed vs raw by checking the
-// 5-byte DFCMP magic prefix.
 // Transform is the compression stage of a middleware pipeline. It compresses a
 // chunk body on the way out and decompresses it on the way back in.
 //
@@ -59,10 +52,9 @@ func NewRemote(inner remote.RemoteStore, p CompressionPolicy) (*middleware.Pipel
 
 // --- write path ---------------------------------------------------------
 
-// sealLayer is the single source of this decorator's compression transform,
-// shared by Put and SealChunk. It compresses data and returns the framed
-// compressed body when that is strictly smaller than the input, otherwise the
-// raw plaintext (incompressible blocks skip the frame).
+// Seal compresses data and returns the framed compressed body when that is
+// strictly smaller than the input, otherwise the raw plaintext — incompressible
+// bodies skip the frame, which is why Open must accept an unframed body.
 func (d *Transform) Seal(_ context.Context, _ block.ContentHash, data []byte) ([]byte, error) {
 	// Reserve the frame header up front and let the codec stream the compressed
 	// body straight after it, so the buffer already holds the wire form when the
@@ -91,6 +83,9 @@ func (d *Transform) Seal(_ context.Context, _ block.ContentHash, data []byte) ([
 
 // --- read path ----------------------------------------------------------
 
+// Open decompresses a framed body and passes an unframed one through
+// unchanged: this stage skips its own frame whenever the body would not shrink,
+// so an unframed body is plaintext this stage wrote, not a foreign object.
 func (d *Transform) Open(_ context.Context, _ block.ContentHash, raw []byte) ([]byte, error) {
 	algo, origSize, body, framed, err := tryDecodeFrame(raw)
 	if !framed {

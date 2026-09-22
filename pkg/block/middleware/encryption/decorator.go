@@ -1,3 +1,5 @@
+// Package encryption — the encryption stage of a block middleware pipeline.
+// See README.md.
 package encryption
 
 import (
@@ -56,10 +58,9 @@ func NewRemote(inner remote.RemoteStore, policy EncryptionPolicy, provider keypr
 // implements io.Closer.
 func (d *Transform) Close() error { return d.provider.Close() }
 
-// sealLayer is the single source of this decorator's encryption transform,
-// shared by Put and SealChunk. It generates a fresh per-chunk block key + nonce,
-// AEAD-seals data with hash as AAD, wraps the block key, and returns the encoded
-// frame.
+// Seal generates a fresh per-chunk block key and nonce, AEAD-seals data with
+// hash as AAD, wraps the block key with the provider's master key, and returns
+// the encoded frame.
 func (d *Transform) Seal(ctx context.Context, hash block.ContentHash, data []byte) ([]byte, error) {
 	blockKey := make([]byte, 32)
 	if _, err := rand.Read(blockKey); err != nil {
@@ -88,17 +89,11 @@ func (d *Transform) Seal(ctx context.Context, hash block.ContentHash, data []byt
 	return aead.Seal(wire, nonce, data, hash[:]), nil
 }
 
-// ReadChunk reads the chunk's encrypted wire bytes from the inner store's
-// block object and decrypts them against hash as the AEAD AAD, returning the
-// plaintext (for the next layer up / the engine). A block stores each chunk's
-// full self-framed encryption blob (header||nonce||ciphertext||tag) verbatim, so
-// decrypting the chunk's [offset, length) slice is identical to decrypting its
-// standalone object. No verification here — the engine verifies the BLAKE3 after
-
-// decrypt parses the frame, unwraps the block key, and authenticated-
-// decrypts the ciphertext against hash as AAD. An unframed block on an
-// encryption-enabled share is rejected — it indicates external mutation
-// or a stale policy.
+// Open parses the frame (header||nonce||ciphertext||tag), unwraps the block key,
+// and authenticated-decrypts the ciphertext against hash as AAD. An unframed
+// body is rejected: on an encryption-enabled share one means external mutation
+// or a stale policy. No hash verification happens here — this stage never sees
+// the plaintext hash domain, so the engine hashes the recovered plaintext.
 func (d *Transform) Open(ctx context.Context, hash block.ContentHash, raw []byte) ([]byte, error) {
 	view, framed, err := tryDecodeFrame(raw)
 	if !framed {
