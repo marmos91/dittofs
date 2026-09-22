@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/block/engine"
+	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/health"
 )
@@ -71,7 +71,7 @@ func (r *Runtime) runIntegrityScanOnce(ctx context.Context) {
 
 // recordShareIntegrity stores a completed scan's outcome as the share's current
 // integrity status. Called by every scan, scheduled or operator-run.
-func (r *Runtime) recordShareIntegrity(share string, res *engine.ManifestCheckResult) {
+func (r *Runtime) recordShareIntegrity(share string, res *blockgc.ManifestCheckResult) {
 	r.setShareIntegrity(share, &health.IntegrityStatus{
 		LastRunAt:              res.CompletedAt,
 		DurationMS:             res.DurationMS,
@@ -87,7 +87,7 @@ func (r *Runtime) recordShareIntegrity(share string, res *engine.ManifestCheckRe
 // scanShareIntegrity runs one read-only manifest scan. CheckManifests records
 // the outcome; this adds the failure case and the operator-facing warning.
 func (r *Runtime) scanShareIntegrity(ctx context.Context, share string) {
-	res, err := r.CheckManifests(ctx, share, engine.ManifestCheckOptions{})
+	res, err := r.CheckManifests(ctx, share, blockgc.ManifestCheckOptions{})
 	if err != nil {
 		// Context cancellation is shutdown, not a finding: recording it
 		// would leave every share reporting a failed scan across a restart.

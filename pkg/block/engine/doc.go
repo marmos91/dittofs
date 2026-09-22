@@ -58,26 +58,10 @@
 // The RemoteSync struct is created via NewRemoteSync() and requires a LocalStore
 // RemoteStore, and FileChunkStore.
 //
-// # Block garbage collection (formerly pkg/block/gc)
+// # Block garbage collection
 //
-// Orphan blocks are blocks that exist in the block store but have no
-// corresponding metadata. This can happen when file deletion fails after
-// metadata is removed but before blocks are deleted, or when the server
-// crashes during file deletion.
-//
-// The CollectGarbage function scans the block store, groups blocks by
-// payloadID, and checks each payloadID against the metadata store. Blocks
-// without metadata are deleted.
-//
-// Usage
-//
-//	// Dry run first
-//	dryStats := engine.CollectGarbage(ctx, remoteStore, registry, &engine.Options{DryRun: true})
-//	logger.Info("Would delete", "orphanBlocks", dryStats.OrphanBlocks)
-//
-//	// Then actually delete
-//	stats := engine.CollectGarbage(ctx, remoteStore, registry, nil)
-//
-// The garbage collector has zero coupling to the RemoteSync - it only needs a
-// RemoteStore and a MetadataReconciler to check metadata existence.
+// GC, block compaction, orphan reclamation and the manifest audit live in
+// pkg/block/gc. The engine's only edge into that package is the carve dedup
+// oracle, which answers through gc.AdoptDedup so a sweep cannot reclaim the
+// hash a carver is about to point a manifest row at.
 package engine

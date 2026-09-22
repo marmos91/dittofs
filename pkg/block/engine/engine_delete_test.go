@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/block"
+	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
 	"github.com/marmos91/dittofs/pkg/block/local/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -210,7 +211,7 @@ func (s *recordingSyncedHashStore) deletedHashes() []block.ContentHash {
 
 var (
 	_ metadata.SyncedHashStore = (*recordingSyncedHashStore)(nil)
-	_ SyncedHashIndex          = (*recordingSyncedHashStore)(nil)
+	_ blockgc.SyncedHashIndex  = (*recordingSyncedHashStore)(nil)
 )
 
 // buildCascadeFixture wires a Store with the supplied coordinator

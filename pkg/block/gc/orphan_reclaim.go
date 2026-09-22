@@ -18,7 +18,7 @@
 // point back at it. Deleting it (and any lingering remote object) is therefore safe
 // with no grace window. Class 3 alone needs a grace window, because a just-uploaded
 // object may still have a commit in flight.
-package engine
+package gc
 
 import (
 	"context"

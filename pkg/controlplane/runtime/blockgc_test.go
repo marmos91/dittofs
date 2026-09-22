@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/engine"
+	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	"github.com/marmos91/dittofs/pkg/health"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
@@ -52,15 +52,15 @@ func (f *fakeRemoteStore) Close() error { return nil }
 
 // installCollectGarbageSpy replaces collectGarbageFn with a capturing spy
 // and registers automatic restoration via t.Cleanup. Returned slice pointer
-// collects every invocation's *engine.Options so tests can assert on the
+// collects every invocation's *gc.Options so tests can assert on the
 // DryRun / SharePrefix contract.
-func installCollectGarbageSpy(t *testing.T) *[]*engine.Options {
+func installCollectGarbageSpy(t *testing.T) *[]*blockgc.Options {
 	t.Helper()
-	captured := make([]*engine.Options, 0, 4)
+	captured := make([]*blockgc.Options, 0, 4)
 	orig := collectGarbageFn
-	collectGarbageFn = func(_ context.Context, _ engine.MetadataReconciler, opts *engine.Options) *engine.GCStats {
+	collectGarbageFn = func(_ context.Context, _ blockgc.MetadataReconciler, opts *blockgc.Options) *blockgc.GCStats {
 		captured = append(captured, opts)
-		return &engine.GCStats{}
+		return &blockgc.GCStats{}
 	}
 	t.Cleanup(func() { collectGarbageFn = orig })
 	return &captured
@@ -162,8 +162,8 @@ func TestRunBlockGC_NoRemoteShares(t *testing.T) {
 // with a bare "errors: N".
 func TestRunBlockGC_PropagatesRemoteTierErrorDetail(t *testing.T) {
 	orig := collectGarbageFn
-	collectGarbageFn = func(_ context.Context, _ engine.MetadataReconciler, _ *engine.Options) *engine.GCStats {
-		return &engine.GCStats{
+	collectGarbageFn = func(_ context.Context, _ blockgc.MetadataReconciler, _ *blockgc.Options) *blockgc.GCStats {
+		return &blockgc.GCStats{
 			ErrorCount:       2,
 			FirstErrors:      []string{"s3: connection refused", "s3: access denied"},
 			DryRun:           true,

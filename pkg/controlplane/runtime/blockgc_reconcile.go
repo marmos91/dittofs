@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/block/engine"
+	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -32,7 +32,7 @@ const (
 // namespace (EnumerateLivePayloadIDs), reaps the rows the namespace no longer
 // references, then lets the grace- and snapshot-hold-aware sweep delete the
 // chunks.
-func (r *Runtime) RunBlockGCReconcile(ctx context.Context, dryRun bool) (*engine.GCStats, error) {
+func (r *Runtime) RunBlockGCReconcile(ctx context.Context, dryRun bool) (*blockgc.GCStats, error) {
 	stats, _, err := r.runBlockGCReconcile(ctx, dryRun, nil)
 	return stats, err
 }
@@ -49,11 +49,11 @@ func (r *Runtime) RunBlockGCReconcile(ctx context.Context, dryRun bool) (*engine
 func (r *Runtime) runBlockGCReconcile(
 	ctx context.Context,
 	dryRun bool,
-	progress func(engine.GCStats),
-) (*engine.GCStats, map[string]struct{}, error) {
+	progress func(blockgc.GCStats),
+) (*blockgc.GCStats, map[string]struct{}, error) {
 	graceCutoff := time.Now().Add(-r.reconcileGracePeriod())
 
-	total := &engine.GCStats{DryRun: dryRun}
+	total := &blockgc.GCStats{DryRun: dryRun}
 	failed := make(map[string]struct{})
 	for _, shareName := range r.ListShares() {
 		if err := ctx.Err(); err != nil {

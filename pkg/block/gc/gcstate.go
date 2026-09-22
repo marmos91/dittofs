@@ -16,7 +16,7 @@
 // last-run.json is written under the gc-state root after a
 // successful run with aggregate counts that the operator and `dfsctl
 // store block gc-status` consume.
-package engine
+package gc
 
 import (
 	"encoding/json"

@@ -19,7 +19,7 @@ import (
 var ErrNoGCRunYet = errors.New("no GC run recorded for share yet")
 
 // gcStatusCmd reads <gcStateRoot>/last-run.json for the named share and
-// prints the parsed engine.GCRunSummary so operators can confirm the
+// prints the parsed gc.GCRunSummary so operators can confirm the
 // last GC run completed cleanly without tailing logs.
 var gcStatusCmd = &cobra.Command{
 	Use:   "gc-status <share>",

@@ -1,9 +1,4 @@
-// Package engine — read-only orphan-storage reporter. Reconcile enumerates
-// and classifies orphaned block storage WITHOUT mutating anything: no
-// DeleteBlock, no DecrLiveChunkCount, no marker changes. It is the
-// report-only first stage; an operator reviews the report before the later
-// delete stages (reclaim.go) act.
-package engine
+package gc
 
 import (
 	"context"
@@ -119,7 +114,10 @@ type ReconcileOptions struct {
 }
 
 // Reconcile scans one remote-store scope for orphaned block storage and returns
-// a structured, READ-ONLY report of the three orphan classes.
+// a structured, READ-ONLY report of the three orphan classes. It is the
+// report-only first stage — no DeleteBlock, no DecrLiveChunkCount, no marker
+// changes — and an operator reviews the report before the later delete stages
+// (orphan_reclaim.go) act.
 //
 // views are the per-share metadata views that share one remote store. Classes 1
 // and 2 are per-share (a share's records vs its own live locator set); class 3

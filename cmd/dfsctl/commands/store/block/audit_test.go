@@ -12,7 +12,7 @@ import (
 
 	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/marmos91/dittofs/pkg/apiclient"
-	"github.com/marmos91/dittofs/pkg/block/engine"
+	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
 )
 
 // auditServer is a recording stub for the refcount audit endpoint.
@@ -20,7 +20,7 @@ type auditServer struct {
 	*httptest.Server
 	lastMethod string
 	lastPath   string
-	result     *engine.AuditRefcountsResult
+	result     *blockgc.AuditRefcountsResult
 	status     int
 }
 
@@ -89,7 +89,7 @@ func TestAuditCmd_CallsClient_AndPrintsSummary(t *testing.T) {
 	s := newAuditServer(t)
 	defer s.Close()
 	now := time.Now().UTC().Truncate(time.Second)
-	s.result = &engine.AuditRefcountsResult{
+	s.result = &blockgc.AuditRefcountsResult{
 		Share:        "myshare",
 		StartedAt:    now,
 		CompletedAt:  now.Add(time.Second),
@@ -131,7 +131,7 @@ func TestAuditCmd_DriftSurfacesViolation(t *testing.T) {
 	s := newAuditServer(t)
 	defer s.Close()
 	now := time.Now().UTC().Truncate(time.Second)
-	s.result = &engine.AuditRefcountsResult{
+	s.result = &blockgc.AuditRefcountsResult{
 		Share:        "myshare",
 		StartedAt:    now,
 		CompletedAt:  now.Add(time.Second),
@@ -171,7 +171,7 @@ func TestAuditCmd_DriftExitsNonZeroAcrossFormats(t *testing.T) {
 		t.Run(format, func(t *testing.T) {
 			s := newAuditServer(t)
 			defer s.Close()
-			s.result = &engine.AuditRefcountsResult{
+			s.result = &blockgc.AuditRefcountsResult{
 				Share:        "myshare",
 				TotalRefs:    10,
 				BackedRefs:   7,

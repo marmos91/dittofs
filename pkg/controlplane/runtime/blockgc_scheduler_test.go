@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block/engine"
+	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 )
 
@@ -15,9 +15,9 @@ import (
 func TestStartScheduledGC_TicksAndStops(t *testing.T) {
 	var runs int32
 	orig := collectGarbageFn
-	collectGarbageFn = func(_ context.Context, _ engine.MetadataReconciler, _ *engine.Options) *engine.GCStats {
+	collectGarbageFn = func(_ context.Context, _ blockgc.MetadataReconciler, _ *blockgc.Options) *blockgc.GCStats {
 		atomic.AddInt32(&runs, 1)
-		return &engine.GCStats{}
+		return &blockgc.GCStats{}
 	}
 	t.Cleanup(func() { collectGarbageFn = orig })
 

@@ -10,7 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/block/engine"
+	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -21,7 +21,7 @@ import (
 type ManifestCheckRuntime interface {
 	// CheckManifests runs the manifest-coverage scan for the named share,
 	// planning and applying repairs as opts asks.
-	CheckManifests(ctx context.Context, shareName string, opts engine.ManifestCheckOptions) (*engine.ManifestCheckResult, error)
+	CheckManifests(ctx context.Context, shareName string, opts blockgc.ManifestCheckOptions) (*blockgc.ManifestCheckResult, error)
 }
 
 // BlockStoreManifestCheckHandler exposes the on-demand manifest-coverage scan.
@@ -36,10 +36,10 @@ func NewBlockStoreManifestCheckHandler(rt ManifestCheckRuntime) *BlockStoreManif
 	return &BlockStoreManifestCheckHandler{runtime: rt}
 }
 
-// BlockStoreManifestCheckResponse wraps engine.ManifestCheckResult for JSON
+// BlockStoreManifestCheckResponse wraps gc.ManifestCheckResult for JSON
 // output. Returned by POST /api/v1/shares/{name}/audit/manifest.
 type BlockStoreManifestCheckResponse struct {
-	Result *engine.ManifestCheckResult `json:"result"`
+	Result *blockgc.ManifestCheckResult `json:"result"`
 }
 
 // BlockStoreManifestCheckRequest is the optional body of
@@ -94,7 +94,7 @@ func (h *BlockStoreManifestCheckHandler) RunManifestCheck(w http.ResponseWriter,
 		return
 	}
 
-	res, err := h.runtime.CheckManifests(r.Context(), name, engine.ManifestCheckOptions{
+	res, err := h.runtime.CheckManifests(r.Context(), name, blockgc.ManifestCheckOptions{
 		PlanRepairs:  req.PlanRepairs || req.ApplyRepairs,
 		ApplyRepairs: req.ApplyRepairs,
 	})

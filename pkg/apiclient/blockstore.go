@@ -5,6 +5,7 @@ import (
 	"net/url"
 
 	"github.com/marmos91/dittofs/pkg/block/engine"
+	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
 )
 
 // BlockStoreStats is the wire-shape for block store statistics returned by
@@ -113,7 +114,7 @@ func (c *Client) GetShareWarm(name, jobID string) (*WarmJobStatus, error) {
 
 // BlockStoreGCOptions is the request body for
 // POST /api/v1/shares/{name}/blockstore/gc. DryRun maps to
-// engine.Options.DryRun: mark + sweep enumeration runs but no DELETEs
+// gc.Options.DryRun: mark + sweep enumeration runs but no DELETEs
 // are issued; candidate keys are returned in the job's
 // GCJobStatus.Stats.DryRunCandidates (capped at the engine dry-run
 // sample size, default 1000).
@@ -135,19 +136,19 @@ type BlockStoreGCOptions struct {
 // populated once State is terminal ("done"/"failed"); the live counters track
 // the in-flight run.
 type GCJobStatus struct {
-	ID             string          `json:"id"`
-	State          string          `json:"state"`
-	Share          string          `json:"share"`
-	Reconcile      bool            `json:"reconcile"`
-	DryRun         bool            `json:"dry_run"`
-	HashesMarked   int64           `json:"hashes_marked"`
-	ObjectsScanned int64           `json:"objects_scanned"`
-	ObjectsSwept   int64           `json:"objects_swept"`
-	BytesFreed     int64           `json:"bytes_freed"`
-	StartedAt      string          `json:"started_at,omitempty"`
-	FinishedAt     string          `json:"finished_at,omitempty"`
-	Stats          *engine.GCStats `json:"stats,omitempty"`
-	Error          string          `json:"error,omitempty"`
+	ID             string           `json:"id"`
+	State          string           `json:"state"`
+	Share          string           `json:"share"`
+	Reconcile      bool             `json:"reconcile"`
+	DryRun         bool             `json:"dry_run"`
+	HashesMarked   int64            `json:"hashes_marked"`
+	ObjectsScanned int64            `json:"objects_scanned"`
+	ObjectsSwept   int64            `json:"objects_swept"`
+	BytesFreed     int64            `json:"bytes_freed"`
+	StartedAt      string           `json:"started_at,omitempty"`
+	FinishedAt     string           `json:"finished_at,omitempty"`
+	Stats          *blockgc.GCStats `json:"stats,omitempty"`
+	Error          string           `json:"error,omitempty"`
 }
 
 // gcStartResponse is the 202 body from POST .../blockstore/gc.
@@ -197,19 +198,19 @@ func (c *Client) GetBlockStoreGCJob(shareName, jobID string) (*GCJobStatus, erro
 // BlockStoreGCStatus reads the last-run summary for the named share's
 // GC engine. Returns an APIError with IsNotFound() == true when no run
 // has been recorded yet (no `last-run.json` exists for the share).
-func (c *Client) BlockStoreGCStatus(shareName string) (*engine.GCRunSummary, error) {
-	return getResource[engine.GCRunSummary](
+func (c *Client) BlockStoreGCStatus(shareName string) (*blockgc.GCRunSummary, error) {
+	return getResource[blockgc.GCRunSummary](
 		c,
 		fmt.Sprintf("/api/v1/shares/%s/blockstore/gc-status", url.PathEscape(normalizeShareNameForAPI(shareName))),
 	)
 }
 
 // BlockStoreReconcileReport scans every remote-backed share for orphaned block
-// storage and returns the classified engine.ReconcileReport. Server-wide,
+// storage and returns the classified gc.ReconcileReport. Server-wide,
 // admin-only, and READ-ONLY: it mutates nothing (#1493/#1525 reconcile
 // reporter), so an operator can review orphans before the delete stages act.
-func (c *Client) BlockStoreReconcileReport() (*engine.ReconcileReport, error) {
-	return getResource[engine.ReconcileReport](c, "/api/v1/blockstore/reconcile-report")
+func (c *Client) BlockStoreReconcileReport() (*blockgc.ReconcileReport, error) {
+	return getResource[blockgc.ReconcileReport](c, "/api/v1/blockstore/reconcile-report")
 }
 
 // BlockStoreReclaimRequest is the request body for the reclaim endpoint.
@@ -220,18 +221,18 @@ type BlockStoreReclaimRequest struct {
 // BlockStoreReclaim deletes orphaned block storage server-wide — class-1 zero-ref
 // and class-2 leaked block records (with their remote objects) plus class-3
 // record-less remote objects past the grace window — returning the
-// engine.ReclaimReport tally. Server-wide, admin-only. Set DryRun to preview the
+// gc.ReclaimReport tally. Server-wide, admin-only. Set DryRun to preview the
 // set without deleting (#1493/#1525 PR5b+PR5c).
-func (c *Client) BlockStoreReclaim(req *BlockStoreReclaimRequest) (*engine.ReclaimReport, error) {
-	return createResource[engine.ReclaimReport](c, "/api/v1/blockstore/reconcile/reclaim", req)
+func (c *Client) BlockStoreReclaim(req *BlockStoreReclaimRequest) (*blockgc.ReclaimReport, error) {
+	return createResource[blockgc.ReclaimReport](c, "/api/v1/blockstore/reconcile/reclaim", req)
 }
 
 // BlockStoreAuditResult is the response body for
 // POST /api/v1/shares/{name}/audit/refcounts. Wraps the
-// engine.AuditRefcountsResult value (CAS manifest-consistency audit).
+// gc.AuditRefcountsResult value (CAS manifest-consistency audit).
 // Mirrors the server-side handlers.BlockStoreAuditResponse shape.
 type BlockStoreAuditResult struct {
-	Result *engine.AuditRefcountsResult `json:"result"`
+	Result *blockgc.AuditRefcountsResult `json:"result"`
 }
 
 // BlockStoreAuditRefcounts triggers the on-demand CAS manifest-consistency
@@ -257,7 +258,7 @@ func (c *Client) BlockStoreAuditRefcounts(shareName string) (*BlockStoreAuditRes
 // POST /api/v1/shares/{name}/audit/manifest. Mirrors the server-side
 // handlers.BlockStoreManifestCheckResponse shape.
 type BlockStoreManifestCheckResult struct {
-	Result *engine.ManifestCheckResult `json:"result"`
+	Result *blockgc.ManifestCheckResult `json:"result"`
 }
 
 // BlockStoreCheckManifests runs the metadata-only manifest-coverage scan for

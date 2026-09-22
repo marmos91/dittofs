@@ -8,7 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/block/engine"
+	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -23,7 +23,7 @@ type BlockAuditRuntime interface {
 	// AuditRefcounts dispatches a refcount reconciliation walk for the
 	// named share and persists last-inv02.json under the share's
 	// audit-state directory.
-	AuditRefcounts(ctx context.Context, shareName string) (*engine.AuditRefcountsResult, error)
+	AuditRefcounts(ctx context.Context, shareName string) (*blockgc.AuditRefcountsResult, error)
 }
 
 // BlockStoreAuditHandler exposes the on-demand refcount audit endpoint.
@@ -38,10 +38,10 @@ func NewBlockStoreAuditHandler(rt BlockAuditRuntime) *BlockStoreAuditHandler {
 	return &BlockStoreAuditHandler{runtime: rt}
 }
 
-// BlockStoreAuditResponse wraps engine.AuditRefcountsResult for JSON
+// BlockStoreAuditResponse wraps gc.AuditRefcountsResult for JSON
 // output. Returned by POST /api/v1/shares/{name}/audit/refcounts.
 type BlockStoreAuditResponse struct {
-	Result *engine.AuditRefcountsResult `json:"result"`
+	Result *blockgc.AuditRefcountsResult `json:"result"`
 }
 
 // RunAudit handles POST /api/v1/shares/{name}/audit/refcounts.

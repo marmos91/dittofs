@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/block/engine"
+	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 )
 
@@ -19,15 +19,15 @@ import (
 // it (mirroring the GC per-remote reconciler) so a sibling share's live block
 // is never misreported as a record-less object. Per-remote reports are folded
 // into one aggregate.
-func (r *Runtime) ReconcileReport(ctx context.Context) (*engine.ReconcileReport, error) {
+func (r *Runtime) ReconcileReport(ctx context.Context) (*blockgc.ReconcileReport, error) {
 	grace := r.reconcileGracePeriod()
 
-	total := &engine.ReconcileReport{}
+	total := &blockgc.ReconcileReport{}
 	for _, entry := range r.sharesSvc.DistinctRemoteStores() {
 		if err := ctx.Err(); err != nil {
 			return total, err
 		}
-		views := make([]engine.ReconcileMetaView, 0, len(entry.Shares))
+		views := make([]blockgc.ReconcileMetaView, 0, len(entry.Shares))
 		for _, shareName := range entry.Shares {
 			mds, err := r.GetMetadataStoreForShare(shareName)
 			if err != nil {
@@ -38,7 +38,7 @@ func (r *Runtime) ReconcileReport(ctx context.Context) (*engine.ReconcileReport,
 			// EnumerateSynced is an off-interface concrete method; a backend
 			// that lacks it cannot supply the live locator set, so its records
 			// would be misreported as orphans. Exclude it rather than misreport.
-			view, ok := mds.(engine.ReconcileMetaView)
+			view, ok := mds.(blockgc.ReconcileMetaView)
 			if !ok {
 				logger.Warn("ReconcileReport: metadata store does not support reconcile scan — share excluded",
 					"share", shareName)
@@ -59,7 +59,7 @@ func (r *Runtime) ReconcileReport(ctx context.Context) (*engine.ReconcileReport,
 		// A remote that cannot hold packed blocks (no RemoteBlockStore) still
 		// gets classes 1/2 scanned; class 3 is skipped with a nil remote.
 		rbs, _ := entry.Store.(remote.RemoteBlockStore)
-		rep, err := engine.Reconcile(ctx, views, rbs, engine.ReconcileOptions{GracePeriod: grace})
+		rep, err := blockgc.Reconcile(ctx, views, rbs, blockgc.ReconcileOptions{GracePeriod: grace})
 		if err != nil {
 			return total, err
 		}

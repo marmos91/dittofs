@@ -1,4 +1,4 @@
-package engine
+package gc
 
 import (
 	"sync"
@@ -98,6 +98,17 @@ func (g *dedupSweepGuard) stripeFor(h block.ContentHash) *dedupGuardStripe {
 	// The hash is already uniformly distributed; one byte of it is as good a
 	// stripe index as any derived mix.
 	return &g.stripes[uint(h[1])&(numDedupGuardStripes-1)]
+}
+
+// AdoptDedup is the write path's entry into the guard: the carve dedup oracle
+// calls it instead of probing the synced-hash store directly, so an adoption is
+// recorded under the same stripe lock that the sweep's claim takes.
+//
+// It is the only exported member of the rendezvous. The guard, its stripes and
+// the sweep-side claim stay package-private because the sweep lives here; the
+// write path lives in the engine and needs exactly this one call.
+func AdoptDedup(h block.ContentHash, probe func() (bool, error)) (bool, error) {
+	return dedupGuard.adopt(h, probe)
 }
 
 // adopt runs probe under h's stripe and records an adoption when probe reports

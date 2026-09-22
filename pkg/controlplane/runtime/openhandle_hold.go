@@ -7,7 +7,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/engine"
+	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -109,7 +109,7 @@ func (r *Runtime) forEachOpenUnlinkedFile(ctx context.Context, scope map[string]
 	return nil
 }
 
-// openHandleHoldProvider implements engine.HoldProvider by injecting the
+// openHandleHoldProvider implements gc.HoldProvider by injecting the
 // block hashes of every open-but-unlinked file into the GC mark live set
 // (#1448). The store live-set query (EnumerateFileChunks) deliberately
 // excludes nlink=0 inodes (#1433) so deleted files are reclaimed; this hold
@@ -123,7 +123,7 @@ type openHandleHoldProvider struct {
 	shares map[string]struct{}
 }
 
-// HeldHashes implements engine.HoldProvider. The engine-passed shares
+// HeldHashes implements gc.HoldProvider. The engine-passed shares
 // argument is informational only; iteration uses the closure-captured share
 // set fixed at construction time (same contract as SnapshotHoldProvider).
 func (p *openHandleHoldProvider) HeldHashes(ctx context.Context, remoteEndpointID string, _ []string, fn func(block.ContentHash) error) error {
@@ -180,7 +180,7 @@ func (r *Runtime) openPayloadIDsForShare(ctx context.Context, shareName string) 
 // multiHoldProvider chains hold providers: every provider contributes its
 // held hashes to the mark live set; any error fails the whole enumeration
 // (fail-closed).
-type multiHoldProvider []engine.HoldProvider
+type multiHoldProvider []blockgc.HoldProvider
 
 func (m multiHoldProvider) HeldHashes(ctx context.Context, remoteEndpointID string, shares []string, fn func(block.ContentHash) error) error {
 	for _, p := range m {
@@ -197,7 +197,7 @@ func (m multiHoldProvider) HeldHashes(ctx context.Context, remoteEndpointID stri
 // gcHoldForRemote returns the full hold set for a remote-tier GC pass scoped
 // to the shares that reference the remote: snapshot manifests plus
 // open-but-unlinked files.
-func (r *Runtime) gcHoldForRemote(shareNames []string) engine.HoldProvider {
+func (r *Runtime) gcHoldForRemote(shareNames []string) blockgc.HoldProvider {
 	scope := make(map[string]struct{}, len(shareNames))
 	for _, name := range shareNames {
 		scope[name] = struct{}{}

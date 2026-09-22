@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/block/engine"
+	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
 )
 
 // Block-GC job states.
@@ -49,8 +49,8 @@ type GCJob struct {
 	BytesFreed     int64 `json:"bytes_freed"`
 
 	// Stats is the final accumulated GCStats, set when the run finishes.
-	Stats *engine.GCStats `json:"stats,omitempty"`
-	Err   string          `json:"error,omitempty"`
+	Stats *blockgc.GCStats `json:"stats,omitempty"`
+	Err   string           `json:"error,omitempty"`
 }
 
 // clone returns a copy safe to hand outside the registry lock.
@@ -106,7 +106,7 @@ func (r *gcRegistry) retire(jobID string) {
 // request that triggered it. If a run is already in flight, the existing job is
 // returned and run is not invoked. run receives a progress sink it must forward
 // to the engine. Returns a snapshot of the (new or already-running) job.
-func (r *gcRegistry) start(share string, dryRun, reconcile bool, run func(ctx context.Context, progress func(engine.GCStats)) (*engine.GCStats, error)) *GCJob {
+func (r *gcRegistry) start(share string, dryRun, reconcile bool, run func(ctx context.Context, progress func(blockgc.GCStats)) (*blockgc.GCStats, error)) *GCJob {
 	r.mu.Lock()
 	if r.activeID != "" {
 		job := r.jobs[r.activeID].clone()
@@ -142,7 +142,7 @@ func (r *gcRegistry) start(share string, dryRun, reconcile bool, run func(ctx co
 		// knows the run returned and its terminal state is recorded, not just
 		// that it noticed the cancellation.
 		defer close(done)
-		progress := func(s engine.GCStats) {
+		progress := func(s blockgc.GCStats) {
 			r.mu.Lock()
 			if j, ok := r.jobs[jobID]; ok {
 				// Merge by max: the mark callback reports only HashesMarked, the
@@ -270,7 +270,7 @@ func (r *Runtime) StartBlockGC(shareName string, dryRun, reconcile bool, gracePe
 			return nil, err
 		}
 	}
-	return r.gcReg.start(shareName, dryRun, reconcile, func(ctx context.Context, progress func(engine.GCStats)) (*engine.GCStats, error) {
+	return r.gcReg.start(shareName, dryRun, reconcile, func(ctx context.Context, progress func(blockgc.GCStats)) (*blockgc.GCStats, error) {
 		if reconcile {
 			stats, _, rerr := r.runBlockGCReconcile(ctx, dryRun, progress)
 			return stats, rerr

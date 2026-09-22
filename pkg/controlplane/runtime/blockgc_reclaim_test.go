@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/engine"
+	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -118,7 +118,7 @@ func TestBlockGC_SerializesPerRemote(t *testing.T) {
 	inFlight := map[string]int{}
 	peak := map[string]int{}
 	orig := collectGarbageFn
-	collectGarbageFn = func(_ context.Context, _ engine.MetadataReconciler, opts *engine.Options) *engine.GCStats {
+	collectGarbageFn = func(_ context.Context, _ blockgc.MetadataReconciler, opts *blockgc.Options) *blockgc.GCStats {
 		cid := opts.RemoteEndpointID
 		mu.Lock()
 		inFlight[cid]++
@@ -132,7 +132,7 @@ func TestBlockGC_SerializesPerRemote(t *testing.T) {
 		mu.Lock()
 		inFlight[cid]--
 		mu.Unlock()
-		return &engine.GCStats{}
+		return &blockgc.GCStats{}
 	}
 	t.Cleanup(func() { collectGarbageFn = orig })
 

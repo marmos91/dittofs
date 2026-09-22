@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/block/engine"
+	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
 )
 
 // CheckManifests runs the metadata-only manifest-coverage scan for the named
@@ -26,7 +26,7 @@ import (
 // call writes nothing, which is what a plain check does.
 //
 // Returns ErrShareNotFound (wrapped) when the share is unknown.
-func (r *Runtime) CheckManifests(ctx context.Context, shareName string, opts engine.ManifestCheckOptions) (*engine.ManifestCheckResult, error) {
+func (r *Runtime) CheckManifests(ctx context.Context, shareName string, opts blockgc.ManifestCheckOptions) (*blockgc.ManifestCheckResult, error) {
 	mds, err := r.GetMetadataStoreForShare(shareName)
 	if err != nil {
 		return nil, err
@@ -45,7 +45,7 @@ func (r *Runtime) CheckManifests(ctx context.Context, shareName string, opts eng
 		opts.CheckSynced = true
 	}
 
-	res, err := engine.CheckManifests(ctx, shareName, mds, opts)
+	res, err := blockgc.CheckManifests(ctx, shareName, mds, opts)
 	if err != nil {
 		return nil, err
 	}

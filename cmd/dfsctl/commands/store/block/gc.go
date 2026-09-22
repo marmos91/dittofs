@@ -19,7 +19,7 @@ const (
 )
 
 // gcCmd triggers an on-demand block-store GC run for the named share and
-// prints the engine.GCStats summary.
+// prints the gc.GCStats summary.
 var gcCmd = &cobra.Command{
 	Use:   "gc <share>",
 	Short: "Run garbage collection for a block store share",

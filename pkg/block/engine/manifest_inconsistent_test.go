@@ -18,7 +18,7 @@ func TestFindRowCoveringOffset_MalformedIDIsNotAHole(t *testing.T) {
 		{ID: "payload-1/4096", DataSize: 1 << 20}, // well-formed, covers past 4096
 	}
 
-	rw, err := findRowCoveringOffset(rows, 0)
+	rw, _, err := block.FindRowCoveringOffset(rows, 0)
 	if err == nil {
 		t.Fatalf("offset 0 returned rw=%v err=nil; an unplaceable row must not read back as a hole", rw)
 	}
@@ -36,7 +36,7 @@ func TestFindRowCoveringOffset_AbsentRowIsStillAHole(t *testing.T) {
 		{ID: "payload-1/8192", DataSize: 4096},
 	}
 
-	rw, err := findRowCoveringOffset(rows, 5000)
+	rw, _, err := block.FindRowCoveringOffset(rows, 5000)
 	if err != nil {
 		t.Fatalf("unexpected error for a genuine hole: %v", err)
 	}
@@ -54,11 +54,11 @@ func TestFindRowCoveringOffset_UnplaceableRowDoesNotPoisonCoveredOffsets(t *test
 		{ID: "payload-1/4096", DataSize: 1 << 20}, // covers 4096..1052672
 	}
 
-	rw, err := findRowCoveringOffset(rows, 8192)
+	rw, abs, err := block.FindRowCoveringOffset(rows, 8192)
 	if err != nil {
 		t.Fatalf("unexpected error for a covered offset: %v", err)
 	}
-	if rw == nil || rw.absOffset != 4096 {
+	if rw == nil || abs != 4096 {
 		t.Fatalf("rw = %+v, want the row starting at 4096", rw)
 	}
 }
@@ -69,15 +69,15 @@ func TestFindRowCoveringOffset_WellFormedRowResolves(t *testing.T) {
 		{ID: "payload-1/4096", DataSize: 1 << 20},
 	}
 
-	rw, err := findRowCoveringOffset(rows, 4096)
+	rw, abs, err := block.FindRowCoveringOffset(rows, 4096)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if rw == nil {
 		t.Fatal("rw = nil, want the row starting at 4096")
 	}
-	if rw.absOffset != 4096 {
-		t.Fatalf("absOffset = %d, want 4096", rw.absOffset)
+	if abs != 4096 {
+		t.Fatalf("absOffset = %d, want 4096", abs)
 	}
 }
 
@@ -91,17 +91,17 @@ func TestFindRowCoveringOffset_OverlapResolvesToGreatestStart(t *testing.T) {
 		{ID: "payload-1/4096", DataSize: 4096}, // newer row over [4096, 8192)
 	}
 
-	rw, err := findRowCoveringOffset(rows, 5000)
+	rw, abs, err := block.FindRowCoveringOffset(rows, 5000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if rw == nil || rw.absOffset != 4096 {
+	if rw == nil || abs != 4096 {
 		t.Fatalf("rw = %+v, want the row starting at 4096", rw)
 	}
 
 	// Offsets only the older row covers still resolve to it.
-	rw, err = findRowCoveringOffset(rows, 1000)
-	if err != nil || rw == nil || rw.absOffset != 0 {
-		t.Fatalf("findRowCoveringOffset(1000) = %+v, %v; want the row at 0", rw, err)
+	rw, abs, err = block.FindRowCoveringOffset(rows, 1000)
+	if err != nil || rw == nil || abs != 0 {
+		t.Fatalf("FindRowCoveringOffset(1000) = %+v, %v; want the row at 0", rw, err)
 	}
 }

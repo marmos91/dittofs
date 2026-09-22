@@ -1,4 +1,4 @@
-package engine
+package gc
 
 import (
 	"context"
@@ -7,7 +7,22 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
+
+// dedupOracle is the carve dedup oracle's decision, made the way the engine's
+// deduper makes it: the synced-hash probe runs inside AdoptDedup rather than
+// against the store directly, which is the whole of the engine-side body.
+//
+// decision: the oracle is reproduced here rather than driven through the
+// engine's own deduper, because the engine imports this package and a test in
+// it cannot import back. What that costs is the pin on the engine's three-line
+// forwarder still routing through AdoptDedup; the ordering this test exists for
+// is pinned either way. Drive the production deduper from here if the forwarder
+// ever grows a decision of its own.
+func dedupOracle(ctx context.Context, st metadata.Store, h block.ContentHash) (bool, error) {
+	return AdoptDedup(h, func() (bool, error) { return st.IsSynced(ctx, h) })
+}
 
 // reclaimHook runs before delegating to the wrapped reclaimer, which places it
 // exactly in the sweep's decision window: the sweep has already read syncedAt
@@ -46,12 +61,12 @@ func TestGCIndexSweep_ConcurrentDedupKeepsBytes(t *testing.T) {
 		h := hashFromString("dedup-race-before")
 		seedRemoteChunk(t, st, rs, h) // synced, backdated past grace, no manifest row
 
-		durable, err := (engineDeduper{synced: st}).IsChunkDurable(ctx, ChunkHash(h))
+		durable, err := dedupOracle(ctx, st, h)
 		if err != nil {
 			t.Fatalf("IsChunkDurable: %v", err)
 		}
 		if !durable {
-			t.Fatalf("IsChunkDurable = false for a synced hash; fixture no longer exercises a dedup hit")
+			t.Fatalf("dedup oracle = false for a synced hash; fixture no longer exercises a dedup hit")
 		}
 
 		stats := collectGarbageBlocks(t, rec, st, rs, &Options{
@@ -81,7 +96,6 @@ func TestGCIndexSweep_ConcurrentDedupKeepsBytes(t *testing.T) {
 		h := hashFromString("dedup-race-during")
 		seedRemoteChunk(t, st, rs, h)
 
-		deduper := engineDeduper{synced: st}
 		var durable bool
 		var dedupErr error
 		opts := &Options{
@@ -99,13 +113,13 @@ func TestGCIndexSweep_ConcurrentDedupKeepsBytes(t *testing.T) {
 				if swept != h {
 					return
 				}
-				durable, dedupErr = deduper.IsChunkDurable(ctx, ChunkHash(swept))
+				durable, dedupErr = dedupOracle(ctx, st, swept)
 			},
 		}
 
 		stats := CollectGarbage(ctx, rec, opts)
 		if dedupErr != nil {
-			t.Fatalf("IsChunkDurable during sweep: %v", dedupErr)
+			t.Fatalf("dedup oracle during sweep: %v", dedupErr)
 		}
 		if stats.ObjectsSwept != 1 {
 			t.Fatalf("ObjectsSwept = %d, want 1 (the hook must fire inside a real reclamation)", stats.ObjectsSwept)

@@ -27,11 +27,8 @@ func (s *indexedChunkStore) GetFileChunkAtOffset(ctx context.Context, payloadID 
 	if err != nil {
 		return nil, err
 	}
-	rw, err := findRowCoveringOffset(rows, off)
-	if err != nil || rw == nil {
-		return nil, err
-	}
-	return rw.fb, nil
+	fb, _, err := block.FindRowCoveringOffset(rows, off)
+	return fb, err
 }
 
 func (s *indexedChunkStore) GetFileChunkAtOrAfterOffset(ctx context.Context, payloadID string, off uint64) (*block.FileChunk, error) {

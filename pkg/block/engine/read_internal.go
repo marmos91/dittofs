@@ -131,71 +131,6 @@ func (bs *Store) ensureAndReadFromLocal(ctx context.Context, payloadID string, d
 		payloadID, offset, len(dest), block.ErrChunkNotFound)
 }
 
-// rowWithOffset bundles a FileChunk row with the absolute payload
-// offset of its first byte. The carve BlockSink encodes the chunk's
-// absolute offset directly as the numeric component of the row ID
-// ("<payloadID>/<chunkOffset>"), so absOffset is the parsed
-// component verbatim.
-type rowWithOffset struct {
-	fb        *block.FileChunk
-	absOffset uint64
-}
-
-// findRowCoveringOffset returns the row whose absolute byte range
-// [absOffset, absOffset+DataSize) contains target, or nil if no row
-// in rows covers it. The walk is O(N) over the per-payload row
-// list — acceptable for the FastCDC steady-state (chunks average ~4 MiB
-// so even a 4 GiB file produces ~1000 rows).
-//
-// A row whose ID does not parse cannot be placed, so its range is unknown. That
-// is only fatal to reads it might have covered: if some other row covers target,
-// that answer is unaffected and is returned. Only when nothing covers target does
-// the unplaceable row matter, because then the choice is between reporting a hole
-// — which the caller zero-fills, inventing data the file may never have had — and
-// admitting the manifest is inconsistent. It admits.
-//
-// Scoping it this way keeps one bad row from making a whole payload unreadable.
-// The alternative, refusing the moment such a row is seen at any offset, would
-// take a file that reads correctly apart from one damaged range and make all of
-// it unavailable.
-//
-// When two rows cover target, the greatest start wins, which is what the indexed
-// badger lookup returns. Returning whichever row the walk reached first made the
-// answer depend on ListFileChunks ordering, so the same read could serve
-// different bytes on different backends. Overlap is not hypothetical: a truncate
-// narrows a straddling row to the new size, and a later write re-carves from an
-// earlier chunk boundary, leaving the narrowed row still claiming bytes the new
-// row also covers. The greater start is the newer row, so it is also the one
-// holding the bytes the last write put there.
-func findRowCoveringOffset(rows []*block.FileChunk, target uint64) (*rowWithOffset, error) {
-	unplaceable := ""
-	var hit *rowWithOffset
-	for _, fb := range rows {
-		if fb == nil {
-			continue
-		}
-		abs, ok := block.ParseChunkOffset(fb.ID)
-		if !ok {
-			if unplaceable == "" {
-				unplaceable = fb.ID
-			}
-			continue
-		}
-		// target-abs is overflow-free because target >= abs is checked first;
-		// abs+DataSize would wrap on an absurd offset.
-		if target >= abs && target-abs < uint64(fb.DataSize) {
-			if hit == nil || abs > hit.absOffset {
-				hit = &rowWithOffset{fb: fb, absOffset: abs}
-			}
-		}
-	}
-	if hit == nil && unplaceable != "" {
-		return nil, fmt.Errorf("%w: nothing covers offset %d and manifest holds unplaceable row %q",
-			block.ErrManifestInconsistent, target, unplaceable)
-	}
-	return hit, nil
-}
-
 // chunkAtOffsetResolver is the indexed covering-chunk lookup, implemented only
 // by the badger metadata backend. resolveCovering type-asserts for it and falls
 // back to a ListFileChunks walk otherwise.
@@ -294,14 +229,7 @@ func (r *chunkWindowResolver) coveringRow(ctx context.Context, off uint64) (*blo
 	if err != nil {
 		return nil, 0, err
 	}
-	rw, err := findRowCoveringOffset(rows, off)
-	if err != nil {
-		return nil, 0, err
-	}
-	if rw == nil {
-		return nil, 0, nil
-	}
-	return rw.fb, rw.absOffset, nil
+	return block.FindRowCoveringOffset(rows, off)
 }
 
 // resolveCovering returns the FileChunk covering absolute byte offset off and

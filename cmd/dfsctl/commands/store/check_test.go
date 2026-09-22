@@ -11,7 +11,7 @@ import (
 
 	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/marmos91/dittofs/pkg/apiclient"
-	"github.com/marmos91/dittofs/pkg/block/engine"
+	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
 )
 
 // checkServer is a recording stub for the manifest-check endpoint. It also
@@ -24,15 +24,15 @@ type checkServer struct {
 	// opts records the repair switches of every scan request in order, so a
 	// test can assert what the command asked the server to do.
 	opts    []apiclient.BlockStoreManifestCheckOptions
-	results map[string]*engine.ManifestCheckResult
+	results map[string]*blockgc.ManifestCheckResult
 	// respond overrides results when set, so a test can answer the plan, the
 	// apply and the re-scan differently within one run.
-	respond func(name string, opts apiclient.BlockStoreManifestCheckOptions) *engine.ManifestCheckResult
+	respond func(name string, opts apiclient.BlockStoreManifestCheckOptions) *blockgc.ManifestCheckResult
 }
 
 func newCheckServer(t *testing.T) *checkServer {
 	t.Helper()
-	s := &checkServer{results: map[string]*engine.ManifestCheckResult{}}
+	s := &checkServer{results: map[string]*blockgc.ManifestCheckResult{}}
 	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.paths = append(s.paths, r.Method+" "+r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
@@ -45,7 +45,7 @@ func newCheckServer(t *testing.T) *checkServer {
 		var opts apiclient.BlockStoreManifestCheckOptions
 		_ = json.NewDecoder(r.Body).Decode(&opts)
 		s.opts = append(s.opts, opts)
-		var res *engine.ManifestCheckResult
+		var res *blockgc.ManifestCheckResult
 		ok := false
 		if s.respond != nil {
 			res = s.respond(name, opts)
@@ -99,8 +99,8 @@ func captureStdoutCheck(t *testing.T, fn func()) string {
 
 // damagedResult is a share holding one payload with a claimed-but-uncovered
 // leading page — the shape of the field report this command exists to answer.
-func damagedResult() *engine.ManifestCheckResult {
-	return &engine.ManifestCheckResult{
+func damagedResult() *blockgc.ManifestCheckResult {
+	return &blockgc.ManifestCheckResult{
 		Share:                  "myshare",
 		FilesScanned:           42,
 		SyncedHashesChecked:    true,
@@ -110,11 +110,11 @@ func damagedResult() *engine.ManifestCheckResult {
 		UncoveredBytes:         4096,
 		ClaimedUncoveredRanges: 1,
 		ClaimedUncoveredBytes:  4096,
-		Findings: []engine.PayloadFinding{{
+		Findings: []blockgc.PayloadFinding{{
 			Path:      "/docs/report.pdf",
 			PayloadID: "payload-1",
 			Size:      1048576,
-			Uncovered: []engine.ByteRange{{Start: 0, End: 4096, Claimed: true}},
+			Uncovered: []blockgc.ByteRange{{Start: 0, End: 4096, Claimed: true}},
 		}},
 	}
 }
@@ -173,19 +173,19 @@ func TestCheckCmd_DamageExitsNonZeroAcrossFormats(t *testing.T) {
 // file's hole must neither fail the command nor clutter the default detail
 // table, but must still be counted and reachable with --include-holes.
 func TestCheckCmd_UnclaimedHoleIsNotDamage(t *testing.T) {
-	sparse := func() *engine.ManifestCheckResult {
-		return &engine.ManifestCheckResult{
+	sparse := func() *blockgc.ManifestCheckResult {
+		return &blockgc.ManifestCheckResult{
 			Share:                "myshare",
 			FilesScanned:         1,
 			SyncedCheckSkipped:   "share has no remote store",
 			PayloadsWithFindings: 1,
 			UncoveredRanges:      1,
 			UncoveredBytes:       4096,
-			Findings: []engine.PayloadFinding{{
+			Findings: []blockgc.PayloadFinding{{
 				Path:      "/sparse.img",
 				PayloadID: "payload-1",
 				Size:      8192,
-				Uncovered: []engine.ByteRange{{Start: 0, End: 4096}},
+				Uncovered: []blockgc.ByteRange{{Start: 0, End: 4096}},
 			}},
 		}
 	}
@@ -228,7 +228,7 @@ func TestCheckCmd_UnclaimedHoleIsNotDamage(t *testing.T) {
 func TestCheckCmd_NoArgScansEveryShare(t *testing.T) {
 	s := newCheckServer(t)
 	s.shares = []apiclient.Share{{Name: "clean"}, {Name: "myshare"}}
-	s.results["clean"] = &engine.ManifestCheckResult{Share: "clean", FilesScanned: 7}
+	s.results["clean"] = &blockgc.ManifestCheckResult{Share: "clean", FilesScanned: 7}
 	s.results["myshare"] = damagedResult()
 	withCheckTestServer(t, s.URL)
 
@@ -276,7 +276,7 @@ func TestCheckCmd_SkipReasonDistinguishesCases(t *testing.T) {
 		"block store could not be resolved for this share",
 	} {
 		s := newCheckServer(t)
-		s.results["myshare"] = &engine.ManifestCheckResult{
+		s.results["myshare"] = &blockgc.ManifestCheckResult{
 			Share:              "myshare",
 			FilesScanned:       1,
 			SyncedCheckSkipped: reason,
@@ -296,11 +296,11 @@ func TestCheckCmd_SkipReasonDistinguishesCases(t *testing.T) {
 
 // repairPlanResult is the damaged share with one repairable finding: a claimed
 // range whose hash the remote resolves.
-func repairPlanResult() *engine.ManifestCheckResult {
+func repairPlanResult() *blockgc.ManifestCheckResult {
 	r := damagedResult()
 	r.RepairsPlanned = 1
-	r.Repairs = []engine.RepairAction{{
-		Kind:      engine.RepairRecreateRow,
+	r.Repairs = []blockgc.RepairAction{{
+		Kind:      blockgc.RepairRecreateRow,
 		Path:      "/docs/report.pdf",
 		PayloadID: "payload-1",
 		Offset:    0,
@@ -312,8 +312,8 @@ func repairPlanResult() *engine.ManifestCheckResult {
 
 // repairStages answers a whole --repair run: the plan, then the apply, then the
 // read-only re-scan that reports the store as it now stands.
-func repairStages() func(string, apiclient.BlockStoreManifestCheckOptions) *engine.ManifestCheckResult {
-	return func(_ string, opts apiclient.BlockStoreManifestCheckOptions) *engine.ManifestCheckResult {
+func repairStages() func(string, apiclient.BlockStoreManifestCheckOptions) *blockgc.ManifestCheckResult {
+	return func(_ string, opts apiclient.BlockStoreManifestCheckOptions) *blockgc.ManifestCheckResult {
 		switch {
 		case opts.ApplyRepairs:
 			r := repairPlanResult()
@@ -323,7 +323,7 @@ func repairStages() func(string, apiclient.BlockStoreManifestCheckOptions) *engi
 		case opts.PlanRepairs:
 			return repairPlanResult()
 		default:
-			return &engine.ManifestCheckResult{Share: "myshare", FilesScanned: 42, SyncedHashesChecked: true}
+			return &blockgc.ManifestCheckResult{Share: "myshare", FilesScanned: 42, SyncedHashesChecked: true}
 		}
 	}
 }
@@ -479,7 +479,7 @@ func TestCheckCmd_RepairKeepsMachineOutputClean(t *testing.T) {
 	if strings.Contains(out, "Nothing to repair") {
 		t.Errorf("human text landed in the JSON document: %q", out)
 	}
-	var decoded []*engine.ManifestCheckResult
+	var decoded []*blockgc.ManifestCheckResult
 	if err := json.Unmarshal([]byte(out), &decoded); err != nil {
 		t.Fatalf("stdout is not a JSON document: %v (got %q)", err, out)
 	}

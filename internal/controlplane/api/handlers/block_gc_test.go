@@ -15,7 +15,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/marmos91/dittofs/pkg/block/engine"
+	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 )
@@ -37,11 +37,11 @@ type fakeGCRuntime struct {
 	gcStateRootEr error
 
 	// ReconcileReport hooks
-	report    *engine.ReconcileReport
+	report    *blockgc.ReconcileReport
 	reportErr error
 
 	// ReconcileReclaim hooks
-	reclaim        *engine.ReclaimReport
+	reclaim        *blockgc.ReclaimReport
 	reclaimErr     error
 	reclaimDryRuns []bool
 }
@@ -75,17 +75,17 @@ func (f *fakeGCRuntime) GCStateDirForShare(_ string) (string, error) {
 	return f.gcStateRoot, nil
 }
 
-func (f *fakeGCRuntime) ReconcileReport(context.Context) (*engine.ReconcileReport, error) {
+func (f *fakeGCRuntime) ReconcileReport(context.Context) (*blockgc.ReconcileReport, error) {
 	if f.reportErr != nil {
 		return nil, f.reportErr
 	}
 	if f.report != nil {
 		return f.report, nil
 	}
-	return &engine.ReconcileReport{}, nil
+	return &blockgc.ReconcileReport{}, nil
 }
 
-func (f *fakeGCRuntime) ReconcileReclaim(_ context.Context, dryRun bool) (*engine.ReclaimReport, error) {
+func (f *fakeGCRuntime) ReconcileReclaim(_ context.Context, dryRun bool) (*blockgc.ReclaimReport, error) {
 	f.reclaimDryRuns = append(f.reclaimDryRuns, dryRun)
 	if f.reclaimErr != nil {
 		return nil, f.reclaimErr
@@ -93,7 +93,7 @@ func (f *fakeGCRuntime) ReconcileReclaim(_ context.Context, dryRun bool) (*engin
 	if f.reclaim != nil {
 		return f.reclaim, nil
 	}
-	return &engine.ReclaimReport{}, nil
+	return &blockgc.ReclaimReport{}, nil
 }
 
 // gcStartBody mirrors the 202 response shape from RunGC.
@@ -357,7 +357,7 @@ func TestBlockStoreHandler_GCJobStatus_Success(t *testing.T) {
 		statusJob: &runtime.GCJob{
 			ID: "gc-7", State: runtime.GCStateDone, Share: "/myshare",
 			ObjectsSwept: 3, BytesFreed: 2048,
-			Stats: &engine.GCStats{RunID: "r-7", ObjectsSwept: 3, BytesFreed: 2048},
+			Stats: &blockgc.GCStats{RunID: "r-7", ObjectsSwept: 3, BytesFreed: 2048},
 		},
 	}
 	h := NewBlockStoreGCHandler(fake)
@@ -398,7 +398,7 @@ func TestBlockStoreHandler_GCJobStatus_NotFound(t *testing.T) {
 // share's gc-state directory and round-trips the parsed GCRunSummary as JSON.
 func TestBlockStoreHandler_GCStatus_Success(t *testing.T) {
 	root := t.TempDir()
-	summary := engine.GCRunSummary{
+	summary := blockgc.GCRunSummary{
 		RunID:        "test-run-1",
 		StartedAt:    time.Now().UTC().Truncate(time.Second),
 		CompletedAt:  time.Now().UTC().Truncate(time.Second).Add(time.Second),
@@ -407,7 +407,7 @@ func TestBlockStoreHandler_GCStatus_Success(t *testing.T) {
 		BytesFreed:   2048,
 		DurationMs:   1000,
 	}
-	if err := engine.PersistLastRunSummary(root, summary); err != nil {
+	if err := blockgc.PersistLastRunSummary(root, summary); err != nil {
 		t.Fatalf("seed last-run.json: %v", err)
 	}
 
@@ -423,7 +423,7 @@ func TestBlockStoreHandler_GCStatus_Success(t *testing.T) {
 		t.Fatalf("GCStatus: expected 200, got %d (body=%q)", w.Code, w.Body.String())
 	}
 
-	var got engine.GCRunSummary
+	var got blockgc.GCRunSummary
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatalf("GCStatus: decode response: %v", err)
 	}
@@ -522,10 +522,10 @@ func TestBlockStoreHandler_GCStatus_NilRuntime(t *testing.T) {
 
 // TestBlockStoreHandler_ReconcileReport_Success returns the runtime's report.
 func TestBlockStoreHandler_ReconcileReport_Success(t *testing.T) {
-	fake := &fakeGCRuntime{report: &engine.ReconcileReport{
-		ZeroRefRecords:      engine.ReconcileClass{Count: 1, Sample: []string{"blk-zeroref"}},
-		LeakedBlocks:        engine.ReconcileClass{Count: 2},
-		OrphanRemoteObjects: engine.ReconcileClass{Count: 3},
+	fake := &fakeGCRuntime{report: &blockgc.ReconcileReport{
+		ZeroRefRecords:      blockgc.ReconcileClass{Count: 1, Sample: []string{"blk-zeroref"}},
+		LeakedBlocks:        blockgc.ReconcileClass{Count: 2},
+		OrphanRemoteObjects: blockgc.ReconcileClass{Count: 3},
 	}}
 	h := NewBlockStoreGCHandler(fake)
 
@@ -537,7 +537,7 @@ func TestBlockStoreHandler_ReconcileReport_Success(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("ReconcileReport: expected 200, got %d (body=%q)", w.Code, w.Body.String())
 	}
-	var got engine.ReconcileReport
+	var got blockgc.ReconcileReport
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatalf("ReconcileReport: decode: %v", err)
 	}
@@ -579,8 +579,8 @@ func TestBlockStoreHandler_ReconcileReport_NilRuntime(t *testing.T) {
 // TestBlockStoreHandler_ReclaimZeroRef_PropagatesDryRun asserts the dry_run flag
 // reaches the runtime and the report is returned.
 func TestBlockStoreHandler_ReclaimZeroRef_PropagatesDryRun(t *testing.T) {
-	fake := &fakeGCRuntime{reclaim: &engine.ReclaimReport{
-		Reclaimed: engine.ReconcileClass{Count: 2, Bytes: 42, Sample: []string{"blk-a", "blk-b"}},
+	fake := &fakeGCRuntime{reclaim: &blockgc.ReclaimReport{
+		Reclaimed: blockgc.ReconcileClass{Count: 2, Bytes: 42, Sample: []string{"blk-a", "blk-b"}},
 		DryRun:    true,
 	}}
 	h := NewBlockStoreGCHandler(fake)
@@ -597,7 +597,7 @@ func TestBlockStoreHandler_ReclaimZeroRef_PropagatesDryRun(t *testing.T) {
 	if len(fake.reclaimDryRuns) != 1 || !fake.reclaimDryRuns[0] {
 		t.Fatalf("ReconcileReclaim: expected dry_run=true propagated, got %v", fake.reclaimDryRuns)
 	}
-	var got engine.ReclaimReport
+	var got blockgc.ReclaimReport
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatalf("ReconcileReclaim: decode: %v", err)
 	}

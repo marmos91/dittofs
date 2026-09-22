@@ -14,7 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/block/engine"
+	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -46,13 +46,13 @@ type BlockGCRuntime interface {
 	// ReconcileReport scans every remote-backed share for orphaned block
 	// storage and returns a READ-ONLY report of the three orphan classes. It
 	// mutates nothing (#1493/#1525 reconcile reporter).
-	ReconcileReport(ctx context.Context) (*engine.ReconcileReport, error)
+	ReconcileReport(ctx context.Context) (*blockgc.ReconcileReport, error)
 
 	// ReconcileReclaim deletes orphaned block storage server-wide: class-1
 	// zero-ref and class-2 leaked records (with their remote objects) plus class-3
 	// record-less remote objects past the grace window. dryRun previews without
 	// deleting (#1493 PR5b+PR5c).
-	ReconcileReclaim(ctx context.Context, dryRun bool) (*engine.ReclaimReport, error)
+	ReconcileReclaim(ctx context.Context, dryRun bool) (*blockgc.ReclaimReport, error)
 }
 
 // BlockStoreGCHandler exposes on-demand GC + last-run-summary endpoints.
@@ -68,9 +68,9 @@ func NewBlockStoreGCHandler(rt BlockGCRuntime) *BlockStoreGCHandler {
 }
 
 // BlockStoreGCRequest is the JSON body for POST /api/v1/shares/{name}/blockstore/gc.
-// The dry_run flag flows through to engine.Options.DryRun: mark + sweep
+// The dry_run flag flows through to gc.Options.DryRun: mark + sweep
 // enumeration runs, but no DELETEs are issued, and the candidate set is
-// captured in GCStats.DryRunCandidates (capped at engine.Options.DryRunSampleSize,
+// captured in GCStats.DryRunCandidates (capped at gc.Options.DryRunSampleSize,
 // default 1000).
 type BlockStoreGCRequest struct {
 	DryRun bool `json:"dry_run,omitempty"`
@@ -90,19 +90,19 @@ type BlockStoreGCRequest struct {
 // both RunGC (202) and GCJobStatus (200). Mirrors runtime.GCJob's wire shape;
 // Stats is populated once the job reaches a terminal state.
 type GCJobStatusResponse struct {
-	ID             string          `json:"id"`
-	State          string          `json:"state"`
-	Share          string          `json:"share"`
-	Reconcile      bool            `json:"reconcile"`
-	DryRun         bool            `json:"dry_run"`
-	HashesMarked   int64           `json:"hashes_marked"`
-	ObjectsScanned int64           `json:"objects_scanned"`
-	ObjectsSwept   int64           `json:"objects_swept"`
-	BytesFreed     int64           `json:"bytes_freed"`
-	StartedAt      string          `json:"started_at,omitempty"`
-	FinishedAt     string          `json:"finished_at,omitempty"`
-	Stats          *engine.GCStats `json:"stats,omitempty"`
-	Error          string          `json:"error,omitempty"`
+	ID             string           `json:"id"`
+	State          string           `json:"state"`
+	Share          string           `json:"share"`
+	Reconcile      bool             `json:"reconcile"`
+	DryRun         bool             `json:"dry_run"`
+	HashesMarked   int64            `json:"hashes_marked"`
+	ObjectsScanned int64            `json:"objects_scanned"`
+	ObjectsSwept   int64            `json:"objects_swept"`
+	BytesFreed     int64            `json:"bytes_freed"`
+	StartedAt      string           `json:"started_at,omitempty"`
+	FinishedAt     string           `json:"finished_at,omitempty"`
+	Stats          *blockgc.GCStats `json:"stats,omitempty"`
+	Error          string           `json:"error,omitempty"`
 }
 
 func gcJobToResponse(j *runtime.GCJob) GCJobStatusResponse {
@@ -236,12 +236,12 @@ func (h *BlockStoreGCHandler) GCJobStatus(w http.ResponseWriter, r *http.Request
 // GCStatus handles GET /api/v1/shares/{name}/blockstore/gc-status.
 //
 // Reads `<gcStateRoot>/last-run.json` for the share and returns the
-// parsed engine.GCRunSummary. Returns 404 when no run has
+// parsed gc.GCRunSummary. Returns 404 when no run has
 // completed yet (file does not exist), letting operators distinguish
 // "GC has never run for this share" from "GC ran and reported errors".
 //
 // Status codes:
-//   - 200 OK with engine.GCRunSummary
+//   - 200 OK with gc.GCRunSummary
 //   - 400 Bad Request when {name} is empty
 //   - 404 Not Found when the share is unknown OR when no last-run.json exists
 //   - 500 Internal Server Error on filesystem or parse failures
@@ -288,7 +288,7 @@ func (h *BlockStoreGCHandler) GCStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var summary engine.GCRunSummary
+	var summary blockgc.GCRunSummary
 	if err := json.Unmarshal(data, &summary); err != nil {
 		logger.Debug("Block store GC status parse error", "share", name, "path", summaryPath, "error", err)
 		// IN-4-02: don't leak parse-error internals (file path embedded
@@ -303,12 +303,12 @@ func (h *BlockStoreGCHandler) GCStatus(w http.ResponseWriter, r *http.Request) {
 // ReconcileReport handles GET /api/v1/blockstore/reconcile-report.
 //
 // Server-wide, admin-only, READ-ONLY: it scans every remote-backed share for
-// orphaned block storage and returns the classified engine.ReconcileReport. It
+// orphaned block storage and returns the classified gc.ReconcileReport. It
 // mutates nothing — no deletes, no decrements — so an operator can review
 // orphans before the later delete stages act (#1493/#1525).
 //
 // Status codes:
-//   - 200 OK with engine.ReconcileReport
+//   - 200 OK with gc.ReconcileReport
 //   - 500 Internal Server Error on unexpected runtime errors
 func (h *BlockStoreGCHandler) ReconcileReport(w http.ResponseWriter, r *http.Request) {
 	if h.runtime == nil {
@@ -340,7 +340,7 @@ type ReconcileReclaimRequest struct {
 // deleting. Deleting reconcile stages (#1493/#1525 PR5b+PR5c).
 //
 // Status codes:
-//   - 200 OK with engine.ReclaimReport
+//   - 200 OK with gc.ReclaimReport
 //   - 400 Bad Request when the body decode fails
 //   - 500 Internal Server Error on unexpected runtime errors
 func (h *BlockStoreGCHandler) ReconcileReclaim(w http.ResponseWriter, r *http.Request) {

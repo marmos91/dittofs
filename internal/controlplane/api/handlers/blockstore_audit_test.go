@@ -10,19 +10,19 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/marmos91/dittofs/pkg/block/engine"
+	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 )
 
 // fakeAuditRuntime is a recording stand-in for handlers.BlockAuditRuntime.
 // Tests assert on captured shares and feed canned results.
 type fakeAuditRuntime struct {
-	res   *engine.AuditRefcountsResult
+	res   *blockgc.AuditRefcountsResult
 	err   error
 	calls []string
 }
 
-func (f *fakeAuditRuntime) AuditRefcounts(_ context.Context, shareName string) (*engine.AuditRefcountsResult, error) {
+func (f *fakeAuditRuntime) AuditRefcounts(_ context.Context, shareName string) (*blockgc.AuditRefcountsResult, error) {
 	f.calls = append(f.calls, shareName)
 	if f.err != nil {
 		return nil, f.err
@@ -41,7 +41,7 @@ func newAuditRequest(method, path, share string) *http.Request {
 // AuditRefcounts with the share name and round-trips the result as JSON.
 func TestBlockStoreAuditHandler_RunAudit_Success(t *testing.T) {
 	fake := &fakeAuditRuntime{
-		res: &engine.AuditRefcountsResult{
+		res: &blockgc.AuditRefcountsResult{
 			Share:        "myshare",
 			TotalFiles:   3,
 			TotalRefs:    10,
@@ -82,7 +82,7 @@ func TestBlockStoreAuditHandler_RunAudit_Success(t *testing.T) {
 // the response so operators can branch scripts on `delta != 0`.
 func TestBlockStoreAuditHandler_RunAudit_Drift(t *testing.T) {
 	fake := &fakeAuditRuntime{
-		res: &engine.AuditRefcountsResult{
+		res: &blockgc.AuditRefcountsResult{
 			Share:        "myshare",
 			TotalFiles:   3,
 			TotalRefs:    10,

@@ -368,7 +368,7 @@ func runStartWithExit(cmd *cobra.Command, args []string) error {
 		PrefetchWorkers:   deduced.PrefetchWorkers,
 	})
 	// Wire operator-configured GC knobs into the runtime so
-	// engine.CollectGarbage receives them in engine.Options. Without this,
+	// gc.CollectGarbage receives them in gc.Options. Without this,
 	// the validated gc.* config in pkg/config/config.go is silently dropped
 	// and the engine falls back to hardcoded defaults.
 	rt.SetGCDefaults(&runtime.GCDefaults{

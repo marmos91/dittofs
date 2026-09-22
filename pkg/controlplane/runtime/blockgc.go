@@ -8,7 +8,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/engine"
+	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -17,7 +17,7 @@ import (
 // gcResult maps accumulated GC stats to a bounded result label for the
 // gc_runs_total counter: "error" if the pass captured any per-object or
 // fatal error, "ok" otherwise.
-func gcResult(total *engine.GCStats) string {
+func gcResult(total *blockgc.GCStats) string {
 	if total == nil || total.ErrorCount > 0 {
 		return "error"
 	}
@@ -28,7 +28,7 @@ func gcResult(total *engine.GCStats) string {
 // collection. It enumerates every share with a remote block store,
 // deduplicates distinct underlying remote stores (ref-counted sharing
 // across shares is possible — see docs/ARCHITECTURE.md "per-share
-// isolation; remote stores ref-counted"), and invokes engine.CollectGarbage
+// isolation; remote stores ref-counted"), and invokes gc.CollectGarbage
 // once per remote.
 //
 // Cross-share aggregation: each per-remote invocation receives a
@@ -39,25 +39,25 @@ func gcResult(total *engine.GCStats) string {
 //
 // dryRun reports orphans without deleting.
 //
-// Returns the summed *engine.GCStats across all per-remote invocations and any
+// Returns the summed *gc.GCStats across all per-remote invocations and any
 // fatal error.
-func (r *Runtime) RunBlockGC(ctx context.Context, dryRun bool) (*engine.GCStats, error) {
+func (r *Runtime) RunBlockGC(ctx context.Context, dryRun bool) (*blockgc.GCStats, error) {
 	// Index-based remote sweep (synced − live), no S3 LIST.
 	return r.runBlockGCSweep(ctx, dryRun, nil)
 }
 
-// applyGCProgress wires an optional progress sink into engine.Options so a
+// applyGCProgress wires an optional progress sink into gc.Options so a
 // long-running run (mark phase on a snapshot-heavy deployment) reports liveness
 // to an async caller. The mark phase reports the running hash count;
 // ProgressCallback reports post-sweep totals. Both are best-effort liveness —
 // the authoritative result is the returned (accumulated) GCStats. No-op when
 // progress is nil (the scheduler / synchronous callers).
-func applyGCProgress(opts *engine.Options, progress func(engine.GCStats)) {
+func applyGCProgress(opts *blockgc.Options, progress func(blockgc.GCStats)) {
 	if progress == nil {
 		return
 	}
 	opts.MarkProgress = func(hashesMarked int64) {
-		progress(engine.GCStats{HashesMarked: hashesMarked})
+		progress(blockgc.GCStats{HashesMarked: hashesMarked})
 	}
 	opts.ProgressCallback = progress
 }
@@ -68,7 +68,7 @@ func applyGCProgress(opts *engine.Options, progress func(engine.GCStats)) {
 // Markers are cleared on reclaim, preserving the synced ⊆ remote invariant
 // (#1433). Orphan block objects the index cannot see (a PutBlock-then-commit
 // crash gap) are the #1525 reconcile sweep's job (PR5).
-func (r *Runtime) runBlockGCSweep(ctx context.Context, dryRun bool, progress func(engine.GCStats)) (*engine.GCStats, error) {
+func (r *Runtime) runBlockGCSweep(ctx context.Context, dryRun bool, progress func(blockgc.GCStats)) (*blockgc.GCStats, error) {
 	// Enumerate distinct underlying remote stores. Dedup is by configID (not
 	// by the per-share nonClosingRemote wrapper pointer), so two shares that
 	// reference the same remote-store config produce one GC invocation.
@@ -76,11 +76,11 @@ func (r *Runtime) runBlockGCSweep(ctx context.Context, dryRun bool, progress fun
 	if len(entries) == 0 {
 		logger.Info("RunBlockGC: no remote-backed shares registered; nothing to scan",
 			"dryRun", dryRun)
-		return &engine.GCStats{}, nil
+		return &blockgc.GCStats{}, nil
 	}
 
 	gcDefaults := r.gcDefaultsSnapshot()
-	total := &engine.GCStats{}
+	total := &blockgc.GCStats{}
 	// Inline GC metrics: treat the whole multi-remote invocation as one pass.
 	// `running` flips 1→0 across the loop (also surfaces a stuck/incomplete
 	// pass); GCFinished records the accumulated totals + result + duration.
@@ -97,10 +97,10 @@ func (r *Runtime) runBlockGCSweep(ctx context.Context, dryRun bool, progress fun
 			lock := r.remoteGCLock(entry.ConfigID)
 			lock.Lock()
 			defer lock.Unlock()
-			opts := &engine.Options{
+			opts := &blockgc.Options{
 				DryRun: dryRun,
 				// Thread the remote-store config UUID and the per-remote
-				// share scope into engine.Options so the engine's own
+				// share scope into gc.Options so the engine's own
 				// start/complete log lines carry the correlation keys SREs
 				// need for cross-checking against S3 access logs.
 				RemoteEndpointID: entry.ConfigID,
@@ -153,13 +153,13 @@ func (r *Runtime) runBlockGCSweep(ctx context.Context, dryRun bool, progress fun
 }
 
 // perRemoteReconciler scopes the GC mark phase to the shares pointing at
-// a single remote store. Implements engine.MultiShareReconciler.
+// a single remote store. Implements gc.MultiShareReconciler.
 type perRemoteReconciler struct {
 	rt     *Runtime
 	shares []string
 }
 
-// SharesForGC implements engine.MultiShareReconciler.
+// SharesForGC implements gc.MultiShareReconciler.
 func (p *perRemoteReconciler) SharesForGC() []string { return p.shares }
 
 // GetMetadataStoreForShare delegates to the wrapped Runtime so the engine
@@ -177,7 +177,7 @@ func (p *perRemoteReconciler) GetMetadataStoreForShare(shareName string) (metada
 // marked or swept.
 //
 // Returns an ErrShareNotFound-wrapped error if name is unknown.
-func (r *Runtime) RunBlockGCForShare(ctx context.Context, name string, dryRun bool) (*engine.GCStats, error) {
+func (r *Runtime) RunBlockGCForShare(ctx context.Context, name string, dryRun bool) (*blockgc.GCStats, error) {
 	return r.runBlockGCForShare(ctx, name, dryRun, nil, nil)
 }
 
@@ -187,7 +187,7 @@ func (r *Runtime) RunBlockGCForShare(ctx context.Context, name string, dryRun bo
 // server-configured sweep grace for this run only — including zero, which reaps
 // every eligible orphan with no age guard (dfsctl store block gc
 // --grace-period).
-func (r *Runtime) runBlockGCForShare(ctx context.Context, name string, dryRun bool, progress func(engine.GCStats), gracePeriod *time.Duration) (*engine.GCStats, error) {
+func (r *Runtime) runBlockGCForShare(ctx context.Context, name string, dryRun bool, progress func(blockgc.GCStats), gracePeriod *time.Duration) (*blockgc.GCStats, error) {
 	gcRoot, err := r.sharesSvc.GetGCStateDirForShare(name)
 	if err != nil {
 		return nil, err
@@ -197,11 +197,11 @@ func (r *Runtime) runBlockGCForShare(ctx context.Context, name string, dryRun bo
 	if len(entries) == 0 {
 		logger.Info("RunBlockGCForShare: no remote-backed shares registered; nothing to scan",
 			"share", name, "dryRun", dryRun)
-		return &engine.GCStats{}, nil
+		return &blockgc.GCStats{}, nil
 	}
 
 	gcDefaults := r.gcDefaultsSnapshot()
-	total := &engine.GCStats{}
+	total := &blockgc.GCStats{}
 	gcStart := time.Now()
 	r.metrics.GCStarted()
 	defer func() {
@@ -216,7 +216,7 @@ func (r *Runtime) runBlockGCForShare(ctx context.Context, name string, dryRun bo
 			lock := r.remoteGCLock(entry.ConfigID)
 			lock.Lock()
 			defer lock.Unlock()
-			opts := &engine.Options{
+			opts := &blockgc.Options{
 				DryRun:      dryRun,
 				GCStateRoot: gcRoot,
 				// Surface per-remote correlation in the engine logs even on
@@ -288,7 +288,7 @@ func (r *Runtime) GCStateDirForShare(name string) (string, error) {
 //
 // Per-call opts fields take precedence over defaults so a future caller
 // can still override on a single run.
-func applyGCDefaults(opts *engine.Options, defaults *GCDefaults) {
+func applyGCDefaults(opts *blockgc.Options, defaults *GCDefaults) {
 	if defaults == nil || opts == nil {
 		return
 	}
@@ -301,9 +301,9 @@ func applyGCDefaults(opts *engine.Options, defaults *GCDefaults) {
 }
 
 // collectGarbageFn is a package-level indirection that lets tests intercept
-// the engine.CollectGarbage call. Production code always resolves to
-// engine.CollectGarbage.
-var collectGarbageFn = engine.CollectGarbage
+// the gc.CollectGarbage call. Production code always resolves to
+// gc.CollectGarbage.
+var collectGarbageFn = blockgc.CollectGarbage
 
 // accumulateGCStats folds a per-remote stats result into total and returns
 // the per-remote snapshot for logging. Returns a zero value when stats is
@@ -313,9 +313,9 @@ var collectGarbageFn = engine.CollectGarbage
 // DryRun, DryRunCandidates and FirstErrors propagate like every other field.
 // FirstErrors in particular is the only cause detail an operator gets for a
 // failed sweep — ErrorCount alone renders as a count with no explanation.
-func accumulateGCStats(total, stats *engine.GCStats) engine.GCStats {
+func accumulateGCStats(total, stats *blockgc.GCStats) blockgc.GCStats {
 	if stats == nil {
-		return engine.GCStats{}
+		return blockgc.GCStats{}
 	}
 	s := *stats
 	total.HashesMarked += s.HashesMarked
@@ -343,14 +343,14 @@ func (r *Runtime) setShareRemoteForTest(shareName string, rs remote.RemoteStore)
 }
 
 // multiSyncedHashStore unions the per-share synced-hash indexes on a shared
-// remote into the single engine.SyncedHashIndex the GC sweep consumes:
+// remote into the single gc.SyncedHashIndex the GC sweep consumes:
 // EnumerateSynced for the LIST-free candidate set and DeleteSynced to clear a
 // swept hash everywhere it was recorded. It implements ONLY what GC needs — the
 // per-hash IsSynced/MarkSynced live on the underlying metadata stores for the
 // syncer and eviction paths and are deliberately not re-exposed here.
-type multiSyncedHashStore []engine.SyncedHashIndex
+type multiSyncedHashStore []blockgc.SyncedHashIndex
 
-var _ engine.SyncedHashIndex = multiSyncedHashStore(nil)
+var _ blockgc.SyncedHashIndex = multiSyncedHashStore(nil)
 
 // EnumerateSynced fans enumeration across every share's index and unions the
 // results. The same hash can be synced in several shares (CAS dedup) at
@@ -404,12 +404,12 @@ func (m multiSyncedHashStore) DeleteSynced(ctx context.Context, h block.ContentH
 }
 
 // syncedHashStoreForShares unions the synced-hash indexes of the given shares
-// into the engine.SyncedHashIndex a remote-tier GC sweep consumes: the LIST-free
+// into the gc.SyncedHashIndex a remote-tier GC sweep consumes: the LIST-free
 // candidate source (EnumerateSynced) and the marker-clear for every hash it
 // deletes (DeleteSynced) (#1433). Each share's metadata store provides both via
 // its concrete EnumerateSynced/DeleteSynced. Returns nil when none are
 // available, which forces the sweep onto the full-Walk path.
-func (r *Runtime) syncedHashStoreForShares(shares []string) engine.SyncedHashIndex {
+func (r *Runtime) syncedHashStoreForShares(shares []string) blockgc.SyncedHashIndex {
 	var stores multiSyncedHashStore
 	for _, shareName := range shares {
 		mds, err := r.GetMetadataStoreForShare(shareName)
@@ -422,7 +422,7 @@ func (r *Runtime) syncedHashStoreForShares(shares []string) engine.SyncedHashInd
 				"share", shareName, "err", err)
 			continue
 		}
-		if shs, ok := mds.(engine.SyncedHashIndex); ok {
+		if shs, ok := mds.(blockgc.SyncedHashIndex); ok {
 			stores = append(stores, shs)
 		} else {
 			logger.Warn("GC: metadata store does not implement EnumerateSynced — share excluded from index sweep, marker-clear disabled",
@@ -448,9 +448,9 @@ func (r *Runtime) syncedHashStoreForShares(shares []string) engine.SyncedHashInd
 // handled=false from every share means no share resolves a block locator for
 // the hash; the sweep keeps the marker and records the drift rather than
 // guessing at a remote key.
-type unionBlockReclaimer []*engine.BlockGCReclaimer
+type unionBlockReclaimer []*blockgc.BlockGCReclaimer
 
-var _ engine.BlockReclaimer = unionBlockReclaimer(nil)
+var _ blockgc.BlockReclaimer = unionBlockReclaimer(nil)
 
 func (u unionBlockReclaimer) ReclaimDeadChunk(ctx context.Context, hash block.ContentHash) (bool, int64, error) {
 	var anyHandled bool
@@ -475,7 +475,7 @@ func (u unionBlockReclaimer) ReclaimDeadChunk(ctx context.Context, hash block.Co
 // cleared the synced markers of past-grace dead chunks — the signal compaction
 // uses to tell live chunks from dead. Errors are logged; per-block failures are
 // counted in the returned engine report and folded into total.BytesReclaimed.
-func (r *Runtime) compactRemoteForEntry(ctx context.Context, entry shares.RemoteStoreEntry, dryRun bool, gcDefaults *GCDefaults, total *engine.GCStats) {
+func (r *Runtime) compactRemoteForEntry(ctx context.Context, entry shares.RemoteStoreEntry, dryRun bool, gcDefaults *GCDefaults, total *blockgc.GCStats) {
 	if dryRun || gcDefaults == nil || gcDefaults.CompactionLiveRatio <= 0 {
 		return
 	}
@@ -483,7 +483,7 @@ func (r *Runtime) compactRemoteForEntry(ctx context.Context, entry shares.Remote
 	if !ok {
 		return // remote cannot hold packed blocks — nothing to compact
 	}
-	var views []engine.CompactMetaView
+	var views []blockgc.CompactMetaView
 	for _, shareName := range entry.Shares {
 		mds, err := r.GetMetadataStoreForShare(shareName)
 		if err != nil {
@@ -493,7 +493,7 @@ func (r *Runtime) compactRemoteForEntry(ctx context.Context, entry shares.Remote
 		}
 		// EnumerateSynced is a concrete backend method, not on metadata.Store —
 		// assert the compaction view like the reconcile/reclaim passes do.
-		if cv, ok := mds.(engine.CompactMetaView); ok {
+		if cv, ok := mds.(blockgc.CompactMetaView); ok {
 			views = append(views, cv)
 		} else {
 			logger.Warn("GC compaction: metadata store does not implement the compaction view — share excluded",
@@ -503,7 +503,7 @@ func (r *Runtime) compactRemoteForEntry(ctx context.Context, entry shares.Remote
 	if len(views) == 0 {
 		return
 	}
-	rep, err := engine.CompactBlocks(ctx, views, rbs, engine.CompactOptions{LiveRatio: gcDefaults.CompactionLiveRatio})
+	rep, err := blockgc.CompactBlocks(ctx, views, rbs, blockgc.CompactOptions{LiveRatio: gcDefaults.CompactionLiveRatio})
 	if err != nil {
 		logger.Warn("GC compaction: aborted", "configID", entry.ConfigID, "err", err)
 		return
@@ -538,10 +538,10 @@ func (r *Runtime) remoteGCLock(configID string) *sync.Mutex {
 }
 
 // blockReclaimerForEntry builds the per-remote union BlockReclaimer for a GC
-// sweep: one engine.BlockGCReclaimer per share pointing at this remote, each
+// sweep: one gc.BlockGCReclaimer per share pointing at this remote, each
 // bound to that share's metadata store (locator / block-record / local-index
 // surfaces) and the shared block-keyed remote. It is set on
-// engine.Options.BlockReclaimer so the sweep reclaims a swept hash that lives
+// gc.Options.BlockReclaimer so the sweep reclaims a swept hash that lives
 // inside a blocks/<id> object instead of trying to delete a cas/<hash> object
 // that does not exist.
 //
@@ -549,7 +549,7 @@ func (r *Runtime) remoteGCLock(configID string) *sync.Mutex {
 // blocks) or no share resolves; with no reclaimer wired the sweep reclaims
 // nothing and records the drift. Set for the remote (index) tier only; the
 // local tier and reconcile leave it nil.
-func (r *Runtime) blockReclaimerForEntry(entry shares.RemoteStoreEntry) engine.BlockReclaimer {
+func (r *Runtime) blockReclaimerForEntry(entry shares.RemoteStoreEntry) blockgc.BlockReclaimer {
 	rbs, ok := entry.Store.(remote.RemoteBlockStore)
 	if !ok {
 		return nil
@@ -562,7 +562,7 @@ func (r *Runtime) blockReclaimerForEntry(entry shares.RemoteStoreEntry) engine.B
 				"share", shareName, "err", err)
 			continue
 		}
-		u = append(u, &engine.BlockGCReclaimer{
+		u = append(u, &blockgc.BlockGCReclaimer{
 			Locators:     mds,
 			Records:      mds,
 			RemoteBlocks: rbs,

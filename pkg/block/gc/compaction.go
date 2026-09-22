@@ -50,7 +50,7 @@
 // re-resolves the locator once on ErrChunkNotFound and retries against the moved
 // chunk's new block — without that guard this delete would surface a spurious
 // EIO to the client, not the "harmless same-window-as-reclaim" it looks like.
-package engine
+package gc
 
 import (
 	"bytes"

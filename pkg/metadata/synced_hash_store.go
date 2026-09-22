@@ -72,7 +72,7 @@ type SyncedHashStore interface {
 //
 // method used by the LIST-free GC sweep (#1433). It is deliberately NOT part of
 // the SyncedHashStore contract: only the GC consumer needs it, so the engine
-// declares the narrow interface it depends on (see engine.SyncedHashIndex)
+// declares the narrow interface it depends on (see gc.SyncedHashIndex)
 // rather than widening this surface, which is consumed by the syncer and
 // eviction paths that need only the per-hash CRUD above. The enumerator
 // conformance is shared via RunSyncedHashEnumeratorSuite.

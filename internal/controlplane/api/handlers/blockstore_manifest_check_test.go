@@ -10,23 +10,23 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/engine"
+	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 )
 
 // fakeManifestCheckRuntime is a recording stand-in for ManifestCheckRuntime.
 type fakeManifestCheckRuntime struct {
-	res   *engine.ManifestCheckResult
+	res   *blockgc.ManifestCheckResult
 	err   error
 	calls []string
-	opts  []engine.ManifestCheckOptions
+	opts  []blockgc.ManifestCheckOptions
 }
 
 func (f *fakeManifestCheckRuntime) CheckManifests(
 	_ context.Context,
 	shareName string,
-	opts engine.ManifestCheckOptions,
-) (*engine.ManifestCheckResult, error) {
+	opts blockgc.ManifestCheckOptions,
+) (*blockgc.ManifestCheckResult, error) {
 	f.calls = append(f.calls, shareName)
 	f.opts = append(f.opts, opts)
 	if f.err != nil {
@@ -59,24 +59,24 @@ func TestManifestCheckHandler_RepairOptions(t *testing.T) {
 	cases := []struct {
 		name string
 		body string
-		want engine.ManifestCheckOptions
+		want blockgc.ManifestCheckOptions
 	}{
-		{name: "no body", body: "", want: engine.ManifestCheckOptions{}},
-		{name: "empty object", body: "{}", want: engine.ManifestCheckOptions{}},
+		{name: "no body", body: "", want: blockgc.ManifestCheckOptions{}},
+		{name: "empty object", body: "{}", want: blockgc.ManifestCheckOptions{}},
 		{
 			name: "plan only",
 			body: `{"plan_repairs":true}`,
-			want: engine.ManifestCheckOptions{PlanRepairs: true},
+			want: blockgc.ManifestCheckOptions{PlanRepairs: true},
 		},
 		{
 			name: "apply implies plan",
 			body: `{"apply_repairs":true}`,
-			want: engine.ManifestCheckOptions{PlanRepairs: true, ApplyRepairs: true},
+			want: blockgc.ManifestCheckOptions{PlanRepairs: true, ApplyRepairs: true},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			fake := &fakeManifestCheckRuntime{res: &engine.ManifestCheckResult{Share: "/myshare"}}
+			fake := &fakeManifestCheckRuntime{res: &blockgc.ManifestCheckResult{Share: "/myshare"}}
 			var w *httptest.ResponseRecorder
 			if tc.body == "" {
 				w = runManifestCheck(fake, "myshare")
@@ -96,7 +96,7 @@ func TestManifestCheckHandler_RepairOptions(t *testing.T) {
 // TestManifestCheckHandler_BadBody asserts a malformed body is refused rather
 // than silently read as a read-only scan.
 func TestManifestCheckHandler_BadBody(t *testing.T) {
-	fake := &fakeManifestCheckRuntime{res: &engine.ManifestCheckResult{}}
+	fake := &fakeManifestCheckRuntime{res: &blockgc.ManifestCheckResult{}}
 	w := runManifestCheckBody(fake, "myshare", "{not json")
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d (body=%q)", w.Code, w.Body.String())
@@ -109,7 +109,7 @@ func TestManifestCheckHandler_BadBody(t *testing.T) {
 // TestManifestCheckHandler_Success asserts the handler normalizes the share
 // name, invokes the runtime once, and round-trips the findings as JSON.
 func TestManifestCheckHandler_Success(t *testing.T) {
-	fake := &fakeManifestCheckRuntime{res: &engine.ManifestCheckResult{
+	fake := &fakeManifestCheckRuntime{res: &blockgc.ManifestCheckResult{
 		Share:                  "/myshare",
 		FilesScanned:           3,
 		DamagedPayloads:        1,
@@ -117,12 +117,12 @@ func TestManifestCheckHandler_Success(t *testing.T) {
 		UncoveredBytes:         8192,
 		ClaimedUncoveredRanges: 1,
 		ClaimedUncoveredBytes:  4096,
-		Findings: []engine.PayloadFinding{{
+		Findings: []blockgc.PayloadFinding{{
 			Path:      "/docs/report.pdf",
 			PayloadID: "payload-1",
 			Size:      1048576,
 			Damaged:   true,
-			Uncovered: []engine.ByteRange{{Start: 0, End: 4096, Claimed: true}},
+			Uncovered: []blockgc.ByteRange{{Start: 0, End: 4096, Claimed: true}},
 		}},
 	}}
 
@@ -193,7 +193,7 @@ func TestManifestCheckHandler_RuntimeError(t *testing.T) {
 // reads. The switches it carries are two booleans, so anything approaching the
 // limit is a caller the handler should refuse rather than read.
 func TestManifestCheckHandler_OversizedBody(t *testing.T) {
-	fake := &fakeManifestCheckRuntime{res: &engine.ManifestCheckResult{}}
+	fake := &fakeManifestCheckRuntime{res: &blockgc.ManifestCheckResult{}}
 	body := `{"plan_repairs":true,"pad":"` + strings.Repeat("x", 2<<20) + `"}`
 	w := runManifestCheckBody(fake, "myshare", body)
 	if w.Code != http.StatusRequestEntityTooLarge {

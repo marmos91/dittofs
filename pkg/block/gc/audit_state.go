@@ -24,7 +24,7 @@
 // last-run.json under <gcStateRoot>/last-run.json. An empty localStoreRoot
 // means "do not persist" — used when the share's local store has no
 // persistent root (in-memory backend).
-package engine
+package gc
 
 import (
 	"context"

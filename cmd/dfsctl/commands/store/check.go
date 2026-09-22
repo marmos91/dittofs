@@ -10,7 +10,7 @@ import (
 	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/marmos91/dittofs/internal/cli/output"
 	"github.com/marmos91/dittofs/pkg/apiclient"
-	"github.com/marmos91/dittofs/pkg/block/engine"
+	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
 )
 
 // checkIncludeHoles adds the uncovered ranges no file claims to the detail
@@ -180,8 +180,8 @@ func scanShares(
 	client *apiclient.Client,
 	shareNames []string,
 	opts apiclient.BlockStoreManifestCheckOptions,
-) ([]*engine.ManifestCheckResult, error) {
-	results := make([]*engine.ManifestCheckResult, 0, len(shareNames))
+) ([]*blockgc.ManifestCheckResult, error) {
+	results := make([]*blockgc.ManifestCheckResult, 0, len(shareNames))
 	for _, name := range shareNames {
 		res, err := client.BlockStoreCheckManifests(name, opts)
 		if err != nil {
@@ -195,7 +195,7 @@ func scanShares(
 	return results, nil
 }
 
-func printCheckResults(results []*engine.ManifestCheckResult, format output.Format) error {
+func printCheckResults(results []*blockgc.ManifestCheckResult, format output.Format) error {
 	switch format {
 	case output.FormatJSON:
 		return output.PrintJSON(os.Stdout, results)
@@ -212,7 +212,7 @@ func confirmAndRepair(
 	client *apiclient.Client,
 	shareNames []string,
 	format output.Format,
-	planned []*engine.ManifestCheckResult,
+	planned []*blockgc.ManifestCheckResult,
 ) (bool, error) {
 	var total uint64
 	for _, r := range planned {
@@ -256,7 +256,7 @@ func confirmAndRepair(
 
 // printCheckTables renders a summary per share followed by the per-payload
 // detail, mirroring printAuditTable's key/value shape for the summary half.
-func printCheckTables(results []*engine.ManifestCheckResult) error {
+func printCheckTables(results []*blockgc.ManifestCheckResult) error {
 	for i, r := range results {
 		if i > 0 {
 			fmt.Println()
@@ -299,7 +299,7 @@ func printCheckTables(results []*engine.ManifestCheckResult) error {
 
 // printCheckDetail lists the affected payloads, one row per payload, with the
 // findings joined into a single cell so a wide store still reads as a table.
-func printCheckDetail(r *engine.ManifestCheckResult) error {
+func printCheckDetail(r *blockgc.ManifestCheckResult) error {
 	table := output.NewTableData("PATH", "SIZE", "FINDINGS")
 	var listed bool
 	for i := range r.Findings {
@@ -339,7 +339,7 @@ func printCheckDetail(r *engine.ManifestCheckResult) error {
 // phrases. Returns nil when the payload has nothing worth listing, which is
 // the case for a payload holding only unclaimed holes unless --include-holes
 // is set.
-func checkFindingNotes(f *engine.PayloadFinding) []string {
+func checkFindingNotes(f *blockgc.PayloadFinding) []string {
 	var notes []string
 	for _, rng := range f.Uncovered {
 		if !rng.Claimed && !checkIncludeHoles {
@@ -370,7 +370,7 @@ func checkFindingNotes(f *engine.PayloadFinding) []string {
 
 // printRepairPlan lists the writes a repair run would make for one share, so
 // the operator sees every row before answering the prompt.
-func printRepairPlan(r *engine.ManifestCheckResult) error {
+func printRepairPlan(r *blockgc.ManifestCheckResult) error {
 	if len(r.Repairs) == 0 || repairRunWrote(r) {
 		// Nothing planned, or the run already wrote — printRepairOutcome
 		// reports what a run that wrote actually did.
@@ -396,7 +396,7 @@ func printRepairPlan(r *engine.ManifestCheckResult) error {
 
 // repairSummary renders one share's repair counters, reading as a plan before
 // the writes and as an outcome after them.
-func repairSummary(r *engine.ManifestCheckResult) string {
+func repairSummary(r *blockgc.ManifestCheckResult) string {
 	if !repairRunWrote(r) {
 		return fmt.Sprintf("%d planned", r.RepairsPlanned)
 	}
@@ -407,16 +407,16 @@ func repairSummary(r *engine.ManifestCheckResult) string {
 // repairRunWrote reports whether this result came from a pass that wrote,
 // as opposed to one that only planned. Every action of a pass that wrote is
 // either applied or skipped, so the two counters are zero only before it ran.
-func repairRunWrote(r *engine.ManifestCheckResult) bool {
+func repairRunWrote(r *blockgc.ManifestCheckResult) bool {
 	return r.RepairsApplied+r.RepairsSkipped > 0
 }
 
 // repairActionLabel names a repair kind in the words the help text uses.
-func repairActionLabel(k engine.RepairKind) string {
+func repairActionLabel(k blockgc.RepairKind) string {
 	switch k {
-	case engine.RepairReplaceRow:
+	case blockgc.RepairReplaceRow:
 		return "move row to offset"
-	case engine.RepairRecreateRow:
+	case blockgc.RepairRecreateRow:
 		return "write row for claim"
 	default:
 		return string(k)
@@ -424,7 +424,7 @@ func repairActionLabel(k engine.RepairKind) string {
 }
 
 // repairRowNote renders the manifest keys one action touches.
-func repairRowNote(a *engine.RepairAction) string {
+func repairRowNote(a *blockgc.RepairAction) string {
 	if a.FromRowID != "" {
 		return a.FromRowID + " -> " + a.ToRowID
 	}
@@ -433,7 +433,7 @@ func repairRowNote(a *engine.RepairAction) string {
 
 // printRepairOutcome reports what a repair pass wrote, naming every action it
 // declined so a skipped repair is never mistaken for a done one.
-func printRepairOutcome(results []*engine.ManifestCheckResult) {
+func printRepairOutcome(results []*blockgc.ManifestCheckResult) {
 	var applied, skipped uint64
 	for _, r := range results {
 		applied += r.RepairsApplied

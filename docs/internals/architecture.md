@@ -467,7 +467,7 @@ ever mutated by one run at a time.
 
 Refcount reclamation alone frees a block only when its *last* live chunk dies,
 so a block that keeps a few live chunks but has shed many dead ones pins the
-dead bytes forever. Compaction (`engine.CompactBlocks`, #1487) closes that gap.
+dead bytes forever. Compaction (`gc.CompactBlocks`, #1487) closes that gap.
 It runs as an optional final phase of each per-remote sweep, under the same
 per-remote lock and immediately **after** the sweep — by which point the sweep
 has already cleared the synced marker of every past-grace dead chunk. So a

@@ -1,4 +1,4 @@
-// Package engine — Mark-Sweep CollectGarbage.
+// Package gc — Mark-Sweep CollectGarbage. See README.md.
 //
 // Two phases
 //
@@ -25,7 +25,7 @@
 // distinct remote stores and invokes CollectGarbage once per remote
 // with a MultiShareReconciler that fans EnumerateFileChunks across every
 // share pointing at that remote.
-package engine
+package gc
 
 import (
 	"context"

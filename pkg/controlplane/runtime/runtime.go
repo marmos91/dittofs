@@ -1133,7 +1133,7 @@ func (r *Runtime) SetSyncerDefaults(cfg *shares.SyncerDefaults) {
 }
 
 // GCDefaults captures the operator-configured GC knobs the runtime threads
-// into engine.Options on every CollectGarbage invocation. Without this
+// into gc.Options on every CollectGarbage invocation. Without this
 // wiring the engine silently falls back to its hardcoded defaults (1h
 // grace, 1000-sample dry run) regardless of what the operator put in
 // gc.* config.
@@ -1147,7 +1147,7 @@ type GCDefaults struct {
 }
 
 // SetGCDefaults sets the operator-configured GC knobs the runtime forwards
-// to engine.CollectGarbage via engine.Options. Pass nil to revert to engine
+// to gc.CollectGarbage via gc.Options. Pass nil to revert to engine
 // defaults.
 func (r *Runtime) SetGCDefaults(cfg *GCDefaults) {
 	r.mu.Lock()

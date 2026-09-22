@@ -1,4 +1,4 @@
-package engine
+package gc
 
 import (
 	"context"
@@ -31,14 +31,8 @@ func resolveAt(t *testing.T, store metadata.Store, payloadID string, off uint64)
 	if err != nil && !errors.Is(err, block.ErrFileChunkNotFound) {
 		t.Fatalf("ListFileChunks: %v", err)
 	}
-	hit, err := findRowCoveringOffset(rows, off)
-	if err != nil {
-		return nil, err
-	}
-	if hit == nil {
-		return nil, nil
-	}
-	return hit.fb, nil
+	hit, _, err := block.FindRowCoveringOffset(rows, off)
+	return hit, err
 }
 
 // manifestSnapshot captures every row of a payload so a test can assert what a

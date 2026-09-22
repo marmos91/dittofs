@@ -9,7 +9,7 @@ import (
 
 	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/marmos91/dittofs/internal/cli/output"
-	"github.com/marmos91/dittofs/pkg/block/engine"
+	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
 )
 
 // reconcileCmd reports orphaned block storage across all remote-backed shares
@@ -89,7 +89,7 @@ func runBlockStoreReconcile(cmd *cobra.Command, args []string) error {
 }
 
 // classSummary renders one class's count + bytes for the summary table.
-func classSummary(c engine.ReconcileClass) string {
+func classSummary(c blockgc.ReconcileClass) string {
 	s := fmt.Sprintf("%d", c.Count)
 	if c.Bytes > 0 {
 		s += " (" + formatBytes(c.Bytes) + ")"
@@ -98,7 +98,7 @@ func classSummary(c engine.ReconcileClass) string {
 }
 
 // printSample lists a class's sampled IDs, noting truncation.
-func printSample(w *os.File, label string, c engine.ReconcileClass) {
+func printSample(w *os.File, label string, c blockgc.ReconcileClass) {
 	if len(c.Sample) == 0 {
 		return
 	}

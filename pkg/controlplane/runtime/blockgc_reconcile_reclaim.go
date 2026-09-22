@@ -5,7 +5,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/engine"
+	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 )
 
@@ -29,9 +29,9 @@ import (
 // would be misread as an orphan and deleted. A read-only backend (records
 // enumerable but not deletable) still contributes to the union and keeps class 3
 // safe; only its class-1/2 records are left unreclaimed.
-func (r *Runtime) ReconcileReclaim(ctx context.Context, dryRun bool) (*engine.ReclaimReport, error) {
+func (r *Runtime) ReconcileReclaim(ctx context.Context, dryRun bool) (*blockgc.ReclaimReport, error) {
 	grace := r.reconcileGracePeriod()
-	total := &engine.ReclaimReport{}
+	total := &blockgc.ReclaimReport{}
 	// remoteBytes/liveLogical accumulate across every remote-backed share
 	// visited this sweep, for the space-amplification log below.
 	var remoteBytes, liveLogical int64
@@ -48,7 +48,7 @@ func (r *Runtime) ReconcileReclaim(ctx context.Context, dryRun bool) (*engine.Re
 		// metadata store instance isn't double-counted there.
 		// allEnumerated: false if any share could not be fully walked, which
 		// makes the class-3 union incomplete and unsafe to act on.
-		views := make([]engine.ReclaimMetaView, 0, len(entry.Shares))
+		views := make([]blockgc.ReclaimMetaView, 0, len(entry.Shares))
 		metaBlockIDs := make(map[string]struct{})
 		countedBlockIDs := make(map[string]struct{})
 		allEnumerated := true
@@ -60,7 +60,7 @@ func (r *Runtime) ReconcileReclaim(ctx context.Context, dryRun bool) (*engine.Re
 				allEnumerated = false
 				continue
 			}
-			rv, ok := mds.(engine.ReconcileMetaView)
+			rv, ok := mds.(blockgc.ReconcileMetaView)
 			if !ok {
 				logger.Warn("ReconcileReclaim: metadata store does not support reconcile — class-3 sweep disabled for this remote",
 					"share", shareName)
@@ -104,22 +104,22 @@ func (r *Runtime) ReconcileReclaim(ctx context.Context, dryRun bool) (*engine.Re
 			// DeleteBlockRecord is the extra method the reclaimer needs beyond the
 			// read-only view; a backend lacking it still contributes to the union
 			// above but its records cannot be reclaimed.
-			if wv, ok := mds.(engine.ReclaimMetaView); ok {
+			if wv, ok := mds.(blockgc.ReclaimMetaView); ok {
 				views = append(views, wv)
 			}
 		}
 
 		rbs, _ := entry.Store.(remote.RemoteBlockStore)
-		opts := engine.ReclaimOptions{DryRun: dryRun, GracePeriod: grace}
+		opts := blockgc.ReclaimOptions{DryRun: dryRun, GracePeriod: grace}
 
-		var rep engine.ReclaimReport
+		var rep blockgc.ReclaimReport
 		err := func() error {
 			lock := r.remoteGCLock(entry.ConfigID)
 			lock.Lock()
 			defer lock.Unlock()
 
 			var e error
-			if rep, e = engine.ReclaimRecords(ctx, views, rbs, opts); e != nil {
+			if rep, e = blockgc.ReclaimRecords(ctx, views, rbs, opts); e != nil {
 				return e
 			}
 			if rbs == nil {
@@ -132,7 +132,7 @@ func (r *Runtime) ReconcileReclaim(ctx context.Context, dryRun bool) (*engine.Re
 					"configID", entry.ConfigID)
 				return nil
 			}
-			orep, e := engine.ReclaimOrphanObjects(ctx, metaBlockIDs, rbs, opts)
+			orep, e := blockgc.ReclaimOrphanObjects(ctx, metaBlockIDs, rbs, opts)
 			if e != nil {
 				return e
 			}

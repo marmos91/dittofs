@@ -11,7 +11,7 @@
 // hazard is excluded — no live manifest row, past grace, and claimed against
 // any carve deduping onto it right now — so DecrLiveChunkCount here cannot
 // race a live sibling.
-package engine
+package gc
 
 import (
 	"context"

@@ -13,7 +13,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/engine"
+	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/snapshot"
 )
@@ -47,7 +47,7 @@ type SnapshotHoldProvider struct {
 	locks  []*sync.RWMutex
 }
 
-// HeldHashes implements engine.HoldProvider. The engine-passed shares
+// HeldHashes implements gc.HoldProvider. The engine-passed shares
 // argument is informational only; iteration uses the closure-captured
 // per-remote share list set at construction time.
 func (p *SnapshotHoldProvider) HeldHashes(ctx context.Context, remoteEndpointID string, _ []string, fn func(block.ContentHash) error) error {
@@ -241,7 +241,7 @@ func (p *SnapshotHoldProvider) AcquireDeleteLock(shareName string) (release func
 	return lock.Unlock
 }
 
-// snapshotHoldForRemote returns an engine.HoldProvider that streams held
+// snapshotHoldForRemote returns an gc.HoldProvider that streams held
 // hashes for the supplied per-remote share scope. Every share in the
 // list, by construction, points at the caller's remote.
 //
@@ -251,7 +251,7 @@ func (p *SnapshotHoldProvider) AcquireDeleteLock(shareName string) (release func
 // per share, so AcquireDeleteLock on any instance blocks (or is blocked
 // by) every concurrent mark, closing the delete-vs-mark race the
 // per-instance mutex previously left open.
-func (r *Runtime) snapshotHoldForRemote(shareNames []string) engine.HoldProvider {
+func (r *Runtime) snapshotHoldForRemote(shareNames []string) blockgc.HoldProvider {
 	scoped := append([]string(nil), shareNames...)
 	locks := make([]*sync.RWMutex, 0, len(scoped))
 	for _, name := range scoped {

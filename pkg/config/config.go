@@ -76,7 +76,7 @@ type Config struct {
 	// (e.g. the BadgerDB block/index cache sizes). See MetadataConfig.
 	Metadata MetadataConfig `mapstructure:"metadata" yaml:"metadata"`
 
-	// GC configures the engine.CollectGarbage mark-sweep run.
+	// GC configures the gc.CollectGarbage mark-sweep run.
 	// These knobs apply globally to every block-store GC invocation.
 	GC GCConfig `mapstructure:"gc" yaml:"gc"`
 
@@ -134,7 +134,7 @@ func (c *IdentityConfig) Validate() error {
 	return nil
 }
 
-// GCConfig configures the engine.CollectGarbage mark-sweep run. Knobs
+// GCConfig configures the gc.CollectGarbage mark-sweep run. Knobs
 // cover the grace TTL, the dry-run sample bound, and the background
 // auto-GC schedule. GC is also runnable on demand (dfsctl/REST).
 type GCConfig struct {
@@ -194,7 +194,7 @@ func (c *GCConfig) AutoGCEnabled() bool {
 // Validate returns an error if the GCConfig has invalid values.
 //
 // GracePeriod: zero is allowed (the engine substitutes the 1h default in
-// ApplyDefaults / engine.Options). Any positive value below 5m is
+// ApplyDefaults / gc.Options). Any positive value below 5m is
 // rejected: server-S3 clock skew under sustained load can easily exceed
 // a few minutes, and a sub-5m grace TTL collapses the snapshot-grace
 // contract that protects in-flight CAS PUTs from being reaped on the

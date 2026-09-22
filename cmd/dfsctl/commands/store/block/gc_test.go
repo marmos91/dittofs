@@ -13,7 +13,7 @@ import (
 
 	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/marmos91/dittofs/pkg/apiclient"
-	"github.com/marmos91/dittofs/pkg/block/engine"
+	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
 )
 
 // gcServer is a recording stub that answers either the GC trigger or
@@ -26,8 +26,8 @@ type gcServer struct {
 	lastPostPath  string
 	lastDryRun    bool
 	lastReconcile bool
-	gcStats       *engine.GCStats
-	summary       engine.GCRunSummary
+	gcStats       *blockgc.GCStats
+	summary       blockgc.GCRunSummary
 	status        int
 }
 
@@ -122,7 +122,7 @@ func captureStdoutBlock(t *testing.T, fn func()) string {
 func TestGCCmd_CallsClient_AndPrintsSummary(t *testing.T) {
 	s := newGCServer(t)
 	defer s.Close()
-	s.gcStats = &engine.GCStats{
+	s.gcStats = &blockgc.GCStats{
 		RunID:          "run-1",
 		HashesMarked:   11,
 		ObjectsScanned: 14,
@@ -158,7 +158,7 @@ func TestGCCmd_CallsClient_AndPrintsSummary(t *testing.T) {
 func TestGCCmd_DryRunFlag(t *testing.T) {
 	s := newGCServer(t)
 	defer s.Close()
-	s.gcStats = &engine.GCStats{
+	s.gcStats = &blockgc.GCStats{
 		RunID:            "run-2",
 		DryRun:           true,
 		HashesMarked:     20,
@@ -196,7 +196,7 @@ func TestGCCmd_SweepErrorsExitNonZeroAcrossFormats(t *testing.T) {
 		t.Run(format, func(t *testing.T) {
 			s := newGCServer(t)
 			defer s.Close()
-			s.gcStats = &engine.GCStats{
+			s.gcStats = &blockgc.GCStats{
 				RunID:       "run-err",
 				ErrorCount:  2,
 				FirstErrors: []string{"delete blocks/1f2e3d4c: timeout"},
@@ -241,7 +241,7 @@ func TestGCCmd_NoArg_Errors(t *testing.T) {
 func TestGCStatusCmd_PrintsSummary(t *testing.T) {
 	s := newGCServer(t)
 	defer s.Close()
-	s.summary = engine.GCRunSummary{
+	s.summary = blockgc.GCRunSummary{
 		RunID:          "run-7",
 		StartedAt:      time.Date(2026, 4, 25, 10, 0, 0, 0, time.UTC),
 		CompletedAt:    time.Date(2026, 4, 25, 10, 0, 1, 0, time.UTC),

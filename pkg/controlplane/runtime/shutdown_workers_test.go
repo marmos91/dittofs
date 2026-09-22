@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block/engine"
+	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
 	metamem "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
@@ -73,7 +73,7 @@ func TestServerShutdownStopsBackgroundWorkers(t *testing.T) {
 	// whether the store it writes through was already closed.
 	gcCancelled := make(chan struct{})
 	var metaClosedAtGCCancel atomic.Bool
-	rt.gcReg.start("/gc", false, false, func(ctx context.Context, _ func(engine.GCStats)) (*engine.GCStats, error) {
+	rt.gcReg.start("/gc", false, false, func(ctx context.Context, _ func(blockgc.GCStats)) (*blockgc.GCStats, error) {
 		<-ctx.Done()
 		metaClosedAtGCCancel.Store(meta.wasClosed())
 		close(gcCancelled)

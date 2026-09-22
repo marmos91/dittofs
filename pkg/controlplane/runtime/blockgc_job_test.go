@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block/engine"
+	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
 )
 
 // TestGCRegistry_SingleActiveJob asserts that while a run is in flight a second
@@ -16,11 +16,11 @@ func TestGCRegistry_SingleActiveJob(t *testing.T) {
 
 	release := make(chan struct{})
 	started := make(chan struct{})
-	run := func(ctx context.Context, progress func(engine.GCStats)) (*engine.GCStats, error) {
+	run := func(ctx context.Context, progress func(blockgc.GCStats)) (*blockgc.GCStats, error) {
 		close(started)
-		progress(engine.GCStats{HashesMarked: 5})
+		progress(blockgc.GCStats{HashesMarked: 5})
 		<-release // block so the job stays "running" for the second start
-		return &engine.GCStats{HashesMarked: 5, ObjectsSwept: 2, BytesFreed: 1024}, nil
+		return &blockgc.GCStats{HashesMarked: 5, ObjectsSwept: 2, BytesFreed: 1024}, nil
 	}
 
 	first := reg.start("/s", false, false, run)
@@ -31,7 +31,7 @@ func TestGCRegistry_SingleActiveJob(t *testing.T) {
 
 	// Second start while the first is in flight must return the same job and
 	// must NOT invoke run again.
-	second := reg.start("/s", false, false, func(context.Context, func(engine.GCStats)) (*engine.GCStats, error) {
+	second := reg.start("/s", false, false, func(context.Context, func(blockgc.GCStats)) (*blockgc.GCStats, error) {
 		t.Fatal("second start must not launch a concurrent run")
 		return nil, nil
 	})
@@ -57,7 +57,7 @@ func TestGCRegistry_SingleActiveJob(t *testing.T) {
 // subsequent run.
 func TestGCRegistry_FailedJob(t *testing.T) {
 	reg := newGCRegistry()
-	job := reg.start("/s", false, false, func(context.Context, func(engine.GCStats)) (*engine.GCStats, error) {
+	job := reg.start("/s", false, false, func(context.Context, func(blockgc.GCStats)) (*blockgc.GCStats, error) {
 		return nil, context.DeadlineExceeded
 	})
 	waitForGCJob(t, func() bool {
@@ -70,8 +70,8 @@ func TestGCRegistry_FailedJob(t *testing.T) {
 	}
 
 	// Active slot is freed: a new run launches with a fresh id.
-	next := reg.start("/s", false, false, func(context.Context, func(engine.GCStats)) (*engine.GCStats, error) {
-		return &engine.GCStats{}, nil
+	next := reg.start("/s", false, false, func(context.Context, func(blockgc.GCStats)) (*blockgc.GCStats, error) {
+		return &blockgc.GCStats{}, nil
 	})
 	if next.ID == job.ID {
 		t.Fatal("a new run after completion must get a fresh job id")
@@ -83,8 +83,8 @@ func TestGCRegistry_RetireBound(t *testing.T) {
 	reg := newGCRegistry()
 	var ids []string
 	for i := 0; i < maxRetainedGCJobs+5; i++ {
-		job := reg.start("/s", false, false, func(context.Context, func(engine.GCStats)) (*engine.GCStats, error) {
-			return &engine.GCStats{}, nil
+		job := reg.start("/s", false, false, func(context.Context, func(blockgc.GCStats)) (*blockgc.GCStats, error) {
+			return &blockgc.GCStats{}, nil
 		})
 		ids = append(ids, job.ID)
 		waitForGCJob(t, func() bool {

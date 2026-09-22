@@ -116,7 +116,7 @@ type Share struct {
 	// persists per-run gc-state and `last-run.json`.
 	// Populated for fs-backed local stores at share creation; empty for
 	// in-memory stores (no persistent gc-state then — last-run.json is
-	// skipped, matching engine.PersistLastRunSummary's empty-root contract).
+	// skipped, matching gc.PersistLastRunSummary's empty-root contract).
 	gcStateRoot string
 
 	// localStoreDir is the on-disk per-share local data directory used by

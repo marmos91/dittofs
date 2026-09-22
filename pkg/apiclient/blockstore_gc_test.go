@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/marmos91/dittofs/pkg/block/engine"
+	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
 )
 
 // TestStartBlockStoreGC_RoundTrip verifies the kick-off call posts to the
@@ -80,7 +80,7 @@ func TestGetBlockStoreGCJob_RoundTrip(t *testing.T) {
 			HashesMarked: 12,
 			ObjectsSwept: 3,
 			BytesFreed:   4096,
-			Stats: &engine.GCStats{
+			Stats: &blockgc.GCStats{
 				HashesMarked:     12,
 				ObjectsSwept:     3,
 				BytesFreed:       4096,
@@ -102,9 +102,9 @@ func TestGetBlockStoreGCJob_RoundTrip(t *testing.T) {
 }
 
 // TestBlockStoreGCStatus_RoundTrip verifies the GC-status read returns
-// the parsed engine.GCRunSummary intact.
+// the parsed gc.GCRunSummary intact.
 func TestBlockStoreGCStatus_RoundTrip(t *testing.T) {
-	want := engine.GCRunSummary{
+	want := blockgc.GCRunSummary{
 		RunID:        "abc-123",
 		StartedAt:    time.Date(2026, 4, 25, 10, 0, 0, 0, time.UTC),
 		CompletedAt:  time.Date(2026, 4, 25, 10, 0, 1, 0, time.UTC),
