@@ -71,11 +71,15 @@ ordering that preserves any space saving.
 A `[]Transform` makes the wrong order expressible in one line, and it fails
 *silently*: both arrangements round-trip, neither errors, and no log line
 distinguishes them. The only symptom is a compression ratio that never improves.
-So the order is pinned by tests rather than by the type system:
+So the order is pinned by tests rather than by the type system, and only one of
+the two is load-bearing:
 
-- `TestPipeline_CompressBeforeEncrypt` shows the two orders differ, by size.
-- `shares.TestRemoteStages_CompressionBeforeEncryption` pins which order
-  actually ships.
+- `shares.TestRemoteStages_CompressionBeforeEncryption` calls `remoteStages` and
+  asserts the stage types in the order it returns. Swapping the two blocks in
+  `remoteStages` fails this test and no other.
+- `TestPipeline_CompressBeforeEncrypt` shows *why* that matters — the two orders
+  differ by sealed size — but it builds its own stages and never calls
+  `remoteStages`, so it stays green through a swap there.
 
 Give the order its own type the moment a second site builds a stack;
 `remoteStages` in `pkg/controlplane/runtime/shares/blockstore_config.go` is the

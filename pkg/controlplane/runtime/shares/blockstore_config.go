@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"path/filepath"
@@ -691,6 +692,13 @@ func (s *Service) acquireRemoteStore(ctx context.Context, ref string, provider B
 	if len(stages) > 0 {
 		wrapped, err := middleware.New(newStore, stages...)
 		if err != nil {
+			// No pipeline exists to close the stages, so release them here:
+			// the encryption stage holds the key provider.
+			for _, stage := range stages {
+				if c, ok := stage.(io.Closer); ok {
+					_ = c.Close()
+				}
+			}
 			_ = newStore.Close()
 			return nil, "", fmt.Errorf("failed to build the block store pipeline: %w", err)
 		}
@@ -730,8 +738,11 @@ func (s *Service) acquireRemoteStore(ctx context.Context, ref string, provider B
 // ~1.0 forever, silently — no error, no log line, just a ratio that never
 // improves. It stays an ordering convention rather than a type because this is
 // the sole construction site; give the order its own type the moment a second
-// site builds a stack. TestPipeline_CompressBeforeEncrypt pins the property
-// itself so a reordering here fails a test rather than shipping.
+// site builds a stack. TestRemoteStages_CompressionBeforeEncryption is the only
+// test a reordering here fails: it calls this function and asserts the stage
+// types in the order returned. TestPipeline_CompressBeforeEncrypt shows the two
+// arrangements differ by sealed size, but it builds its own stages and never
+// reaches this code, so it stays green through a swap here.
 func remoteStages(ctx context.Context, cfg *models.BlockStoreConfig) ([]middleware.Transform, error) {
 	parsed, err := cfg.GetConfig()
 	if err != nil {
