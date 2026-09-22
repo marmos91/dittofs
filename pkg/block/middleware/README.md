@@ -1,100 +1,94 @@
 # `pkg/block/middleware`
 
-The two decorators that transform block bodies on their way to and from a
-remote store: `compression` and `encryption`. Both wrap a
-`remote.RemoteStore` and are themselves a `remote.RemoteStore`, so a
-decorated store is indistinguishable from a bare one to everything above
-it — engine, cache, GC and the metadata stores see only plaintext.
+A generic pipeline for transforming block bodies on their way to and from a
+remote store.
 
-This directory holds no Go code of its own. It groups the two packages
-and is the single home for the contract they share, which used to be
-stated twice, once in each package doc.
+The interface is deliberately not specific to any particular transform. A
+`Transform` is any reversible per-chunk byte transform, and `Pipeline` is a
+`remote.RemoteStore` that runs a fixed stack of them. Everything above the
+pipeline — engine, cache, GC, metadata stores — sees only plaintext, so a
+pipelined store is indistinguishable from a bare one.
 
-## What a decorator is
+## Current implementations
 
-A decorator embeds `remote.Passthrough` and overrides exactly the two
-per-chunk operations its transform touches:
+| Stage | Package | What it does |
+|---|---|---|
+| compression | [`compression/`](compression) | zstd/lz4 framing; adaptive, skips its frame when the body would not shrink |
+| encryption | [`encryption/`](encryption) | AEAD seal with the plaintext content hash bound as additional authenticated data |
 
-- `SealChunk(ctx, hash, plaintext)` — apply this layer's transform, then
-  hand the result to the inner store's `SealChunk`.
-- `ReadChunk(ctx, blockID, offset, length, hash)` — read the inner
-  store's bytes, then invert this layer's transform.
+That is the whole list today. Nothing in this package knows either of them
+exists — a third stage is one `Transform` implementation and one more argument
+to `New`.
 
-Everything else forwards verbatim. The block-keyed operations
-(`PutBlock`, `GetBlock`, `GetBlockRange`, `DeleteBlock`, `WalkBlocks`)
-MUST forward untransformed: a packed block object carries per-chunk
-bodies that `SealChunk` already transformed, so transforming the
-assembled block again would double-seal it. `Close`, `HealthCheck`,
-`Healthcheck` and `Durable` forward because a transform changes the shape
-of the bytes, not where they land or whether the backend is reachable.
-`remote.Passthrough` is where all of that lives, and its doc comment is
-the authority on it.
+## The contract
 
-A decorator keeps its own `inner remote.RemoteStore` field alongside the
-embedded `Passthrough`, because `Passthrough` deliberately keeps its copy
-unexported: embedding must not promote a handle to the untransformed
-store onto a decorator's public surface, where a caller could read and
-write bytes straight past the transform.
-
-## There is no `Layer` interface, and no `Compose`
-
-The shape the two decorators share is already an interface pair —
-`remote.ChunkSealer` and `remote.ChunkReader` — and the shared forwarding
-is already a type, `remote.Passthrough`. What is left in each decorator
-after those is the transform itself: zstd/lz4 framing on one side, an
-AEAD seal with the content hash as additional authenticated data on the
-other. Those share a signature, not any logic.
-
-A `Layer` interface over the two transforms would be a second abstraction
-across the same seam, and it would cost more than it saves: compression
-needs neither the context nor the content hash, so it would have to
-accept and ignore both, and encryption's `Close` — which must also close
-the key provider — would have to be recovered through an optional
-`io.Closer` assertion. The generic decorator, the interface and its
-documentation together come to more lines than the per-decorator glue
-they would replace.
-
-Add one when a third transform appears, or when a transform needs to be
-selected at runtime rather than fixed at store construction. Neither is
-true today: the stack is two layers deep and built once per remote.
-
-## Composition order
-
-Compression is the OUTERMOST wrapper and encryption the INNERMOST, so the
-write path is:
-
-```
-caller plaintext
-  → compression.Decorator     (compress)
-  → encryption.EncryptedRemote (encrypt the compressed bytes)
-  → inner remote.RemoteStore
+```go
+type Transform interface {
+	Seal(ctx context.Context, hash block.ContentHash, data []byte) ([]byte, error)
+	Open(ctx context.Context, hash block.ContentHash, data []byte) ([]byte, error)
+}
 ```
 
-Reads invert it: fetch, decrypt, then decompress.
+`Seal` runs on the way out, `Open` inverts it on the way back in. Both take
+`ctx` and `hash` because some stages need them — encryption binds `hash` as AEAD
+AAD — and a stage needing neither ignores both, as compression does.
 
-AEAD output has near-maximum entropy, so compressing ciphertext yields a
-ratio of ~1.0 and burns CPU for nothing. Compressing plaintext first is
-the only ordering that preserves any space saving.
+`New(inner, stages...)` takes stages in **seal order**; `Open` runs them in
+reverse. A stage holding resources may implement `io.Closer`, and
+`Pipeline.Close` closes every stage that does — that is how the encryption
+stage's key provider is released.
 
-Encryption operates on whatever the compression layer hands it — the
-compressed body when the chunk was compressible, the raw plaintext
-otherwise, since compression skips its frame when the body would not
-shrink. The encryption layer neither knows nor cares which shape it sees.
+Only `SealChunk` and `ReadChunk` are intercepted. The block-keyed operations
+(`PutBlock`, `GetBlock`, `GetBlockRange`, `DeleteBlock`, `WalkBlocks`) forward
+untransformed through the embedded `remote.Passthrough`: a packed block object
+carries per-chunk bodies that `SealChunk` has already transformed, so
+transforming the assembled block again would double-seal it.
 
-The order is established once, in
-`pkg/controlplane/runtime/shares/blockstore_config.go`, and is immutable
-for the lifetime of the remote. There is no runtime toggle.
+## Each stage owns its unframed-body policy
 
-## The CAS key is BLAKE3 over the plaintext
+**A stage must frame its own output, and must decide for itself what an
+unrecognised body means. The pipeline does not decide this, and must not.**
 
-Both decorators preserve that. Compression leaves the hash untouched;
-encryption binds it into the AEAD's additional authenticated data, so a
-swapped block at the inner store fails authentication on read because its
-declared hash will not match the AAD bound when it was sealed.
+The two current stages disagree, correctly:
 
-Neither the compression framing nor the encryption keys influence the
-hash, so dedup works across remotes that differ in compression algorithm,
-encryption key or AEAD choice: identical plaintexts always map to the
-same content hash. No single layer holds both the wire bytes and the
-plaintext hash domain, so no layer verifies; the engine read path hashes
-the recovered plaintext after the full stack has unsealed it.
+- **compression** treats an unframed body as plaintext and passes it through,
+  because it skips its own frame whenever the body would not shrink.
+- **encryption** *rejects* an unframed body (`ErrCiphertextWithoutFrame`),
+  because on an encryption-enabled share one means external mutation or a stale
+  policy.
+
+Hoisting a single "not my frame → pass it through" rule into the pipeline would
+turn the second behaviour into the first and make encryption **fail open**. Any
+new stage must state which of the two it is and why.
+
+## Order matters and nothing can check it
+
+The write path is caller → compression → encryption → inner store; reads invert
+it. AEAD output has near-maximum entropy, so compressing ciphertext yields a
+ratio of ~1.0 and burns CPU for nothing. Compressing plaintext first is the only
+ordering that preserves any space saving.
+
+A `[]Transform` makes the wrong order expressible in one line, and it fails
+*silently*: both arrangements round-trip, neither errors, and no log line
+distinguishes them. The only symptom is a compression ratio that never improves.
+So the order is pinned by tests rather than by the type system:
+
+- `TestPipeline_CompressBeforeEncrypt` shows the two orders differ, by size.
+- `shares.TestRemoteStages_CompressionBeforeEncryption` pins which order
+  actually ships.
+
+Give the order its own type the moment a second site builds a stack;
+`remoteStages` in `pkg/controlplane/runtime/shares/blockstore_config.go` is the
+only one today.
+
+## The CAS key stays BLAKE3 over plaintext
+
+Every stage preserves that. Compression leaves the hash untouched; encryption
+binds it as AAD, so a block swapped at the inner store fails authentication on
+read because its declared hash will not match the AAD bound when it was sealed.
+
+Neither compression framing nor encryption keys influence the hash, so dedup
+works across remotes differing in algorithm, key or AEAD choice: identical
+plaintexts always map to the same content hash. No single stage holds both the
+wire bytes and the plaintext hash domain, so no stage verifies — the engine
+hashes the recovered plaintext after the whole stack has run.

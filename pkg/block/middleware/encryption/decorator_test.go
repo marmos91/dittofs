@@ -14,6 +14,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/blockstoretest"
+	"github.com/marmos91/dittofs/pkg/block/middleware"
 	"github.com/marmos91/dittofs/pkg/block/middleware/encryption/keyprovider"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 )
@@ -81,7 +82,7 @@ func hashOf(payload []byte) block.ContentHash {
 // sealInto seals payload and stages the sealed bytes as a one-chunk block,
 // returning the wire bytes. The base store's SealChunk is the identity
 // transform, so the wire bytes are exactly what this decorator emitted.
-func sealInto(t *testing.T, d *EncryptedRemote, blockID string, payload []byte) []byte {
+func sealInto(t *testing.T, d *middleware.Pipeline, blockID string, payload []byte) []byte {
 	t.Helper()
 	ctx := context.Background()
 	wire, err := d.SealChunk(ctx, hashOf(payload), payload)

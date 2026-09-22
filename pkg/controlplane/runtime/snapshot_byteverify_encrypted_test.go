@@ -13,7 +13,7 @@ import (
 
 // encryptedRemoteCfg builds a remote BlockStoreConfig (kind=remote, type=memory)
 // whose Config JSON carries an "encryption" block, so the real share-build path
-// (shares.maybeWrapEncryption) interposes an EncryptedRemote in front of the
+// (shares.remoteStages) interposes an encryption stage in front of the
 // in-memory remote. The master key is a fresh passphrase-protected local key
 // file scoped to this test.
 func encryptedRemoteCfg(t *testing.T) *models.BlockStoreConfig {

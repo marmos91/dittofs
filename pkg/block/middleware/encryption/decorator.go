@@ -6,65 +6,61 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"fmt"
+	"io"
 
 	"golang.org/x/crypto/chacha20poly1305"
 
 	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/middleware"
 	"github.com/marmos91/dittofs/pkg/block/middleware/encryption/keyprovider"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 )
 
-// EncryptedRemote wraps a remote.RemoteStore and transparently encrypts
-// block bodies on Put while decrypting on Get. The plaintext BLAKE3
-// remains the CAS key — dedup, GC, and verification semantics are
-// unchanged from the perspective of callers above the decorator.
-type EncryptedRemote struct {
-	remote.Passthrough
-	// inner is the wrapped store, held separately because Passthrough keeps
-	// its own copy unexported to stay off this type's public surface.
-	inner    remote.RemoteStore
+// Transform is the encryption stage of a middleware pipeline. It AEAD-seals a
+// chunk body on the way out and authenticated-decrypts it on the way back in,
+// binding the plaintext content hash as additional authenticated data.
+//
+// The plaintext BLAKE3 remains the CAS key, so dedup, GC and verification are
+// unchanged above this stage. Because the hash is bound as AAD, a block swapped
+// at the inner store fails authentication on read.
+type Transform struct {
 	aead     AEAD
 	provider keyprovider.KeyProvider
 }
 
-// NewRemote wraps inner with the encryption decorator. policy.AEAD must
-// be a recognised algorithm; provider must be non-nil and already
-// initialised.
-func NewRemote(inner remote.RemoteStore, policy EncryptionPolicy, provider keyprovider.KeyProvider) (*EncryptedRemote, error) {
-	if inner == nil {
-		return nil, fmt.Errorf("encryption: inner RemoteStore is nil")
-	}
+// NewTransform builds the encryption stage. policy.AEAD must be a recognised
+// algorithm; provider must be non-nil and already initialised.
+func NewTransform(policy EncryptionPolicy, provider keyprovider.KeyProvider) (*Transform, error) {
 	if provider == nil {
 		return nil, fmt.Errorf("encryption: keyprovider is nil")
 	}
 	if _, err := newAEAD(policy.AEAD, make([]byte, 32)); err != nil {
 		return nil, err
 	}
-	return &EncryptedRemote{
-		Passthrough: remote.NewPassthrough(inner),
-		inner:       inner,
-		aead:        policy.AEAD,
-		provider:    provider,
-	}, nil
+	return &Transform{aead: policy.AEAD, provider: provider}, nil
 }
 
-// SealChunk encrypts one chunk's plaintext into a frame and delegates inward so
-// a decorated chain produces the fully-transformed wire bytes for a packed
-// block. hash is bound as AEAD AAD. Symmetric with ReadChunk, which decrypts
-// the ranged frame with the same AAD.
-func (d *EncryptedRemote) SealChunk(ctx context.Context, hash block.ContentHash, plaintext []byte) ([]byte, error) {
-	wire, err := d.sealLayer(ctx, hash, plaintext)
+// NewRemote wraps inner in a pipeline whose only stage is encryption.
+func NewRemote(inner remote.RemoteStore, policy EncryptionPolicy, provider keyprovider.KeyProvider) (*middleware.Pipeline, error) {
+	if inner == nil {
+		return nil, fmt.Errorf("encryption: inner RemoteStore is nil")
+	}
+	t, err := NewTransform(policy, provider)
 	if err != nil {
 		return nil, err
 	}
-	return d.inner.SealChunk(ctx, hash, wire)
+	return middleware.New(inner, t)
 }
+
+// Close releases the key provider. The pipeline calls it because Transform
+// implements io.Closer.
+func (d *Transform) Close() error { return d.provider.Close() }
 
 // sealLayer is the single source of this decorator's encryption transform,
 // shared by Put and SealChunk. It generates a fresh per-chunk block key + nonce,
 // AEAD-seals data with hash as AAD, wraps the block key, and returns the encoded
 // frame.
-func (d *EncryptedRemote) sealLayer(ctx context.Context, hash block.ContentHash, data []byte) ([]byte, error) {
+func (d *Transform) Seal(ctx context.Context, hash block.ContentHash, data []byte) ([]byte, error) {
 	blockKey := make([]byte, 32)
 	if _, err := rand.Read(blockKey); err != nil {
 		return nil, fmt.Errorf("encryption: read block key: %w", err)
@@ -98,30 +94,12 @@ func (d *EncryptedRemote) sealLayer(ctx context.Context, hash block.ContentHash,
 // full self-framed encryption blob (header||nonce||ciphertext||tag) verbatim, so
 // decrypting the chunk's [offset, length) slice is identical to decrypting its
 // standalone object. No verification here — the engine verifies the BLAKE3 after
-// the full stack.
-func (d *EncryptedRemote) ReadChunk(ctx context.Context, blockID string, offset, length int64, hash block.ContentHash) ([]byte, error) {
-	raw, err := d.inner.ReadChunk(ctx, blockID, offset, length, hash)
-	if err != nil {
-		return nil, err
-	}
-	return d.decrypt(ctx, hash, raw)
-}
-
-// Close releases inner resources and the provider.
-func (d *EncryptedRemote) Close() error {
-	innerErr := d.Passthrough.Close()
-	provErr := d.provider.Close()
-	if innerErr != nil {
-		return innerErr
-	}
-	return provErr
-}
 
 // decrypt parses the frame, unwraps the block key, and authenticated-
 // decrypts the ciphertext against hash as AAD. An unframed block on an
 // encryption-enabled share is rejected — it indicates external mutation
 // or a stale policy.
-func (d *EncryptedRemote) decrypt(ctx context.Context, hash block.ContentHash, raw []byte) ([]byte, error) {
+func (d *Transform) Open(ctx context.Context, hash block.ContentHash, raw []byte) ([]byte, error) {
 	view, framed, err := tryDecodeFrame(raw)
 	if !framed {
 		return nil, ErrCiphertextWithoutFrame
@@ -184,9 +162,6 @@ func newAEAD(algo AEAD, key []byte) (cipher.AEAD, error) {
 
 // Compile-time interface assertions.
 var (
-	_ remote.RemoteStore       = (*EncryptedRemote)(nil)
-	_ remote.RemoteBlockStore  = (*EncryptedRemote)(nil)
-	_ remote.ChunkReader       = (*EncryptedRemote)(nil)
-	_ remote.ChunkSealer       = (*EncryptedRemote)(nil)
-	_ block.DurabilityReporter = (*EncryptedRemote)(nil)
+	_ middleware.Transform = (*Transform)(nil)
+	_ io.Closer            = (*Transform)(nil)
 )
