@@ -547,9 +547,26 @@ func (s *Store) sweepIdxSidecars() {
 		return
 	}
 	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), idxSuffix) {
-			_ = os.Remove(filepath.Join(s.dir, e.Name()))
+		if e.IsDir() {
+			continue
 		}
+		// Rebuild the name from a parsed segment ID rather than removing
+		// whatever matched the suffix. A sidecar this store wrote is always
+		// <id>.idx, so anything else in the directory belongs to someone
+		// else and is not ours to unlink; going through ParseUint also means
+		// no byte read off disk reaches the path passed to os.Remove.
+		stem := strings.TrimSuffix(e.Name(), idxSuffix)
+		if stem == e.Name() {
+			continue
+		}
+		id, err := strconv.ParseUint(stem, 10, 64)
+		if err != nil {
+			continue
+		}
+		// Reformat through segIDFmt so the name removed is one segPath could
+		// have produced: a stem that parses but is not zero-padded to width
+		// names no segment of this store's.
+		_ = os.Remove(filepath.Join(s.dir, fmt.Sprintf(segIDFmt+idxSuffix, id)))
 	}
 }
 
