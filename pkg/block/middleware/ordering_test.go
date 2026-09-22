@@ -110,9 +110,15 @@ func TestPipeline_CompressBeforeEncrypt(t *testing.T) {
 	}
 }
 
-// TestPipeline_RoundTripsInReverse pins that Open inverts Seal in reverse stage
-// order — the property that makes a swap silent rather than loud, and therefore
-// the reason the size assertion above has to exist.
+// TestPipeline_RoundTripsInReverse pins that Pipeline.ReadChunk inverts
+// SealChunk by running the stages in reverse — the property that makes a swap
+// silent rather than loud, and therefore the reason the size assertion above
+// has to exist.
+//
+// The read side is driven through ReadChunk rather than by opening the stages
+// by hand: a hand-rolled inverse asserts only that the two stages are each
+// other's inverse, which stays true no matter which direction the pipeline
+// walks them.
 func TestPipeline_RoundTripsInReverse(t *testing.T) {
 	ctx := context.Background()
 	c, e := stages(t)
@@ -136,13 +142,16 @@ func TestPipeline_RoundTripsInReverse(t *testing.T) {
 		t.Fatal("sealed bytes equal the plaintext: no stage ran")
 	}
 
-	got := wire
-	for i, s := range []middleware.Transform{e, c} {
-		out, err := s.Open(ctx, hash, got)
-		if err != nil {
-			t.Fatalf("Open stage %d: %v", i, err)
-		}
-		got = out
+	// ReadChunk reads from the inner store, so the sealed bytes have to be
+	// there first — a single-chunk block object is exactly those bytes.
+	const blockID = "round-trip"
+	if err := inner.PutBlock(ctx, blockID, bytes.NewReader(wire)); err != nil {
+		t.Fatalf("PutBlock: %v", err)
+	}
+
+	got, err := p.ReadChunk(ctx, blockID, 0, int64(len(wire)), hash)
+	if err != nil {
+		t.Fatalf("ReadChunk: %v", err)
 	}
 	if !bytes.Equal(got, body) {
 		t.Fatalf("round trip lost bytes: got %d, want %d", len(got), len(body))
