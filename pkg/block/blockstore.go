@@ -39,7 +39,7 @@ type Meta struct {
 // process crash / restart.
 //
 // Durability is a per-store property and is the foundation of the honest
-// CLOSE/COMMIT contract (#1274). The commit rule used by the adapter flush
+// CLOSE/COMMIT contract. The commit rule used by the adapter flush
 // seam (internal/adapter/common.CommitBlockStore) is:
 //
 //	committed := localDurable || (Finalized && remoteDurable)

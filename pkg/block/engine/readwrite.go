@@ -46,6 +46,14 @@ func (bs *Store) GetSize(ctx context.Context, payloadID string) (uint64, error) 
 
 // Exists checks whether a payload exists.
 // Checks local store first, falls back to syncer (remote).
+//
+// decision: nothing in production calls this — its only callers are
+// api_accessors_test.go, close_gate_test.go and an SMB hardlink-replace
+// handler test, and the compile-time interface assertion that used to pin the
+// signature is gone with the interface. It is kept because it is two lines
+// over local.FileSize and the syncer, not because anything depends on it;
+// delete it if the tests that drive it go, rather than reintroducing an
+// interface to hold it up.
 func (bs *Store) Exists(ctx context.Context, payloadID string) (bool, error) {
 	if err := bs.enter(); err != nil {
 		return false, err
