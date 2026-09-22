@@ -54,7 +54,7 @@ func (r *gcMSReconciler) SharesForGC() []string { return append([]string(nil), r
 // never bumps it; cross-file keep-alive comes from sibling rows in the GC live
 // set, not RefCount). The Remote-gated GetByHash returns nil for these, which is
 // why the reap path resolves rows by EXACT ID, never by hash. Used by the
-// #832-regression tests that exercise the real reap path.
+// regression tests that exercise the real reap path.
 func putPendingBlock(t *testing.T, st metadata.Store, id string, h block.ContentHash) {
 	t.Helper()
 	if err := st.Put(t.Context(), &block.FileChunk{
@@ -108,7 +108,7 @@ func hashFromString(seed string) block.ContentHash {
 
 // seedRemoteChunk packs h into its own single-chunk packed block on rbs and
 // records the block record + local location + backdated (past-grace) synced
-// marker in st — the post-#1493 shape of "this chunk is on remote". Returns
+// marker in st — the block-locator shape of "this chunk is on remote". Returns
 // the block object's length: the bytes a sweep frees when it reclaims the
 // chunk.
 func seedRemoteChunk(t *testing.T, st metadata.Store, rbs remote.RemoteBlockStore, h block.ContentHash) int64 {
@@ -122,7 +122,7 @@ func seedRemoteChunk(t *testing.T, st metadata.Store, rbs remote.RemoteBlockStor
 	return rec.Length
 }
 
-// chunkOnRemote reports whether h is still remote-reachable post-#1493: its
+// chunkOnRemote reports whether h is still remote-reachable: its
 // synced marker resolves to a block locator whose block record still exists.
 func chunkOnRemote(t *testing.T, st metadata.Store, h block.ContentHash) bool {
 	t.Helper()
@@ -141,7 +141,7 @@ func chunkOnRemote(t *testing.T, st metadata.Store, h block.ContentHash) bool {
 	return ok
 }
 
-// collectGarbageBlocks runs the post-#1493 remote sweep over a single-share
+// collectGarbageBlocks runs the block-keyed remote sweep over a single-share
 // fixture: orphan candidates come from st's synced-hash index and reclamation
 // goes through a per-share gc.BlockGCReclaimer bound to rbs. opts may carry any
 // other knob (DryRun, GracePeriod, HoldProvider, ...).
@@ -277,7 +277,7 @@ func newReapEngine(t *testing.T, st metadata.Store) *Store {
 	return bs
 }
 
-// TestGCMarkSweep_TruncateReclaimsRemoteChunk (#832): a Truncate that drops a
+// TestGCMarkSweep_TruncateReclaimsRemoteChunk: a Truncate that drops a
 // tail block's LAST reference must reap its FileChunk index row so the hash
 // leaves the GC live set and the sweep reclaims the remote chunk. The retained
 // block's chunk survives. This test FAILS on develop — where Truncate only
@@ -323,7 +323,7 @@ func TestGCMarkSweep_TruncateReclaimsRemoteChunk(t *testing.T) {
 
 	// H2's chunk MUST be swept (its row was reaped → left the live set).
 	if chunkOnRemote(t, st, h2) {
-		t.Errorf("dropped chunk H2 still present on remote after Truncate+GC; want swept (#832 leak)")
+		t.Errorf("dropped chunk H2 still present on remote after Truncate+GC; want swept (reap leaked the row)")
 	}
 	// H1's chunk MUST survive (still referenced).
 	if !chunkOnRemote(t, st, h1) {
@@ -334,7 +334,7 @@ func TestGCMarkSweep_TruncateReclaimsRemoteChunk(t *testing.T) {
 	}
 }
 
-// TestGCMarkSweep_TruncateDedupSafety (#832 data-loss guard, by-ID model): two
+// TestGCMarkSweep_TruncateDedupSafety (data-loss guard, by-ID model): two
 // files reference the same content hash, each via its OWN per-offset row
 // (file-A/<off> and file-B/<off>). Truncating file-A reaps file-A's own row by
 // EXACT ID; file-B's SIBLING row keeps the hash in EnumerateFileChunks (the GC
@@ -386,7 +386,7 @@ func TestGCMarkSweep_TruncateDedupSafety(t *testing.T) {
 	}
 }
 
-// TestGCMarkSweep_DeleteDuplicateHashNoOverReap (#832 data-loss guard, by-ID
+// TestGCMarkSweep_DeleteDuplicateHashNoOverReap (data-loss guard, by-ID
 // model): file-A references the SAME hash at TWO offsets (two rows), and file-B
 // references it via its own sibling row. Deleting file-A reaps BOTH of file-A's
 // rows by exact ID; file-B's sibling row keeps the hash in the GC live set, so
@@ -436,7 +436,7 @@ func TestGCMarkSweep_DeleteDuplicateHashNoOverReap(t *testing.T) {
 	}
 }
 
-// TestGCMarkSweep_TruncateStraddleHashNoOverReap (#832 data-loss guard, by-ID
+// TestGCMarkSweep_TruncateStraddleHashNoOverReap (data-loss guard, by-ID
 // model): the same hash sits on BOTH sides of newSize within ONE file, each at
 // its own offset (its own row). Truncate reaps only the DROPPED row (file-S/4MiB)
 // by exact ID; the KEPT row (file-S/0) is a different ID and survives, keeping
@@ -485,7 +485,7 @@ func TestGCMarkSweep_TruncateStraddleHashNoOverReap(t *testing.T) {
 	}
 }
 
-// TestGCMarkSweep_PendingReclaimsRemoteChunk (#832, the real-world gap): the
+// TestGCMarkSweep_PendingReclaimsRemoteChunk (the real-world gap): the
 // engine rollup creates per-chunk FileChunk rows in BlockStatePending and never
 // transitions them to Remote. On develop, Delete/Truncate routed the reap
 // through the Remote-gated GetByHash, which returns nil for a Pending row — so
@@ -534,7 +534,7 @@ func TestGCMarkSweep_PendingReclaimsRemoteChunk(t *testing.T) {
 	// H2's Pending row (file-pend/1048576) must have been reaped by ID → its
 	// hash leaves EnumerateFileChunks (no sibling row references it).
 	if hashInLiveSet(t, ctx, st, h2) {
-		t.Errorf("dropped Pending hash H2 still in EnumerateFileChunks after reap; want gone (#832 no-op reap)")
+		t.Errorf("dropped Pending hash H2 still in EnumerateFileChunks after reap; want gone (the reap was a no-op)")
 	}
 	if !hashInLiveSet(t, ctx, st, h1) {
 		t.Errorf("retained hash H1 missing from EnumerateFileChunks; want present")
@@ -545,7 +545,7 @@ func TestGCMarkSweep_PendingReclaimsRemoteChunk(t *testing.T) {
 		t.Fatalf("ErrorCount = %d, want 0; FirstErrors=%v", stats.ErrorCount, stats.FirstErrors)
 	}
 	if chunkOnRemote(t, st, h2) {
-		t.Errorf("dropped chunk H2 still remote-reachable after Truncate+GC; want swept (#832 leak)")
+		t.Errorf("dropped chunk H2 still remote-reachable after Truncate+GC; want swept (reap leaked the row)")
 	}
 	if !chunkOnRemote(t, st, h1) {
 		t.Errorf("retained chunk H1 swept; want retained")
@@ -625,7 +625,7 @@ func TestGCMarkSweep_CrossFileDedupKeepAlive(t *testing.T) {
 	}
 }
 
-// TestGCMarkSweep_SameHashTwoOffsetsBothReaped (#832 + by-ID regression): one
+// TestGCMarkSweep_SameHashTwoOffsetsBothReaped (by-ID regression): one
 // file holds IDENTICAL content at TWO offsets — TWO independent FileChunk rows
 // keyed file-X/0 and file-X/<off>, both carrying the same hash H. Deleting the
 // file must reap BOTH rows so H leaves EnumerateFileChunks and the chunk is
@@ -677,7 +677,7 @@ func TestGCMarkSweep_SameHashTwoOffsetsBothReaped(t *testing.T) {
 		t.Errorf("row %s survived delete (the by-hash leak); want reaped", id1)
 	}
 	if hashInLiveSet(t, ctx, st, dup) {
-		t.Fatalf("dup hash still in EnumerateFileChunks after deleting both rows; want gone (#832 by-hash leak)")
+		t.Fatalf("dup hash still in EnumerateFileChunks after deleting both rows; want gone (the by-hash reap stranded a row)")
 	}
 
 	// Resolve the packed block the chunk lives in BEFORE the sweep: reclaiming
