@@ -1,6 +1,5 @@
 // Bench / regression gate for the []ChunkRef-threaded read path
-// (binary search via findBlocksForRange, Cache OnRead hint
-// RAM-cache-backed local.Get on miss).
+// (Cache OnRead hint, RAM-cache-backed local.Get on miss).
 //
 // This file is the in-tree microbench canary. Real-S3 performance is
 // verified separately at milestone-gate VER-02 against the bench/infra
@@ -21,7 +20,6 @@ import (
 	"context"
 	"math/rand"
 	"testing"
-	"time"
 
 	"lukechampine.com/blake3"
 
@@ -267,40 +265,3 @@ func BenchmarkPerfGate_Phase12RandReadRegression(b *testing.B) {
 // NOTE: this is NOT the real-S3 1,350 IOPS rand-read figure. The
 // real-S3 lane is verified separately at milestone-gate VER-02.
 const phase12MicrobenchFloorIOPS = 50000.0
-
-// TestPerfGate_Phase12_BinarySearchOverhead is a supporting bound
-// findBlocksForRange over a 16 K ChunkRef slice (the VM-workload upper
-// bound — 16 K × 4 MiB = 64 GiB file) MUST average <1 µs per call. If
-// the lookup grows linear (or worse) the rand-read gate will trip
-// this test localises the regression to the binary-search seam itself.
-func TestPerfGate_Phase12_BinarySearchOverhead(t *testing.T) {
-	const N = 16000
-	blocks := make([]block.ChunkRef, N)
-	for i := range blocks {
-		blocks[i] = block.ChunkRef{
-			Offset: uint64(i) * (4 << 20),
-			Size:   4 << 20,
-		}
-	}
-	const trials = 1_000_000
-
-	// Cover the full offset range so each call exercises a fresh
-	// search target rather than hitting the same hot block on every
-	// iteration.
-	totalSize := uint64(N) * (4 << 20)
-	start := time.Now()
-	for i := 0; i < trials; i++ {
-		offset := uint64(i) % (totalSize - phase12ReadSize)
-		_, _ = findBlocksForRange(blocks, offset, phase12ReadSize)
-	}
-	perCall := time.Since(start) / trials
-	t.Logf("findBlocksForRange over %d blocks: %v per call (%.0f ns)", N, perCall, float64(perCall.Nanoseconds()))
-
-	// 10µs tolerance: binary search over 16K blocks measures ~50ns
-	// locally; shared GitHub runners are 6-8x noisier. Linear scan
-	// over 16K ChunkRefs would be ~50µs, so this still catches O(N)
-	// regressions while tolerating CI hardware variance.
-	if perCall > 10*time.Microsecond {
-		t.Fatalf("supporting gate FAILED: findBlocksForRange %v per call > 10µs (likely linear scan)", perCall)
-	}
-}
