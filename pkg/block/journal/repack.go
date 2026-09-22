@@ -176,7 +176,9 @@ func (s *Store) repackSegment(sh *shard, victim *segmentMeta, live map[uint64]in
 	target.liveBytes.Store(relocated)
 	// Data records only — the markers carried forward above are excluded, matching
 	// the append path and the recovery replay so a restart reconstructs the same
-	// denominator. Leaving it zero makes evictable's synced-gate compare against
+	// denominator. They are counted in target.markers instead, raised by the two
+	// framers above, so the replacement segment answers the retire paths' marker
+	// question the same way the victim did. Leaving it zero makes evictable's synced-gate compare against
 	// zero: a target holding only unsynced records reads as fully synced and
 	// eviction discards the sole copy of dirty bytes, while one holding synced
 	// records never reaches equality again and its space is never reclaimed.
@@ -273,7 +275,9 @@ func (s *Store) dropVictim(sh *shard, victim *segmentMeta, occupied int64) (int6
 	return occupied, nil
 }
 
-// markRec is a tombstone or truncate marker carried forward across a repack.
+// markRec is a tombstone or truncate marker carried forward off a segment that
+// is about to be retired — by a repack into its replacement target, or by an
+// eviction/reclaim into the shard's active segment.
 // newSize is meaningful only for truncate markers (flags&flagTruncate != 0).
 type markRec struct {
 	id      FileID
@@ -282,14 +286,21 @@ type markRec struct {
 	newSize int64
 }
 
-// victimMarkers scans a sealed victim's record stream for the non-data records
-// (tombstones and truncate markers) a repack must carry forward so the deletes
-// and size-downs they encode survive the source segment's reclamation.
+// victimMarkers scans a sealed segment's record stream for the non-data records
+// (tombstones and truncate markers) its retire path must carry forward so the
+// deletes and size-downs they encode survive the segment's reclamation. Both
+// repack and the evict/reclaim carry-forward call it.
+//
+// It reads and retains every payload in the segment — scanValidRecords keeps
+// what it scans — so a caller with a cheaper way to know the segment holds no
+// marker (segmentMeta.markers) must check that first rather than pay a whole
+// SegmentSize of heap for an empty answer.
 //
 // A scan that stops short of the segment's record end means a record failed its
 // integrity check, and every marker behind it would be silently dropped — the
-// delete or size-down it encodes would come back to life once the victim is
-// reclaimed. That reports an error so the repack leaves the victim alone.
+// delete or size-down it encodes would come back to life once the segment is
+// reclaimed. That reports an error, and every caller quarantines the segment and
+// leaves it alone.
 func victimMarkers(seg *segmentMeta, segSize int64) ([]markRec, error) {
 	recs, validUpTo := scanValidRecords(seg.fd, segSize, segSize)
 	if tail := seg.tail.Load(); validUpTo < tail {

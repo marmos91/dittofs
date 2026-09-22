@@ -56,7 +56,15 @@ type segmentMeta struct {
 	deadBytes     atomic.Int64 // superseded/tombstoned payload bytes (GC input)
 	records       atomic.Int64 // physical records appended (eviction synced-gate denominator)
 	syncedRecords atomic.Int64 // records with the synced flag set (eviction gate)
-	lastAccess    atomic.Int64 // unix nanos, approx-LRU victim key; 0 = never stamped
+	// markers counts the zero-payload tombstone and truncate records framed into
+	// this segment. records deliberately excludes them, so this is the only way to
+	// ask whether a segment carries a marker without re-reading it — and reading
+	// it means a scan that CRC-verifies and RETAINS every payload, a whole
+	// SegmentSize on the heap. The retire paths must carry markers forward before
+	// unlinking, so they ask this first. Bumped by writeTombstoneRecord and
+	// writeTruncateRecord, rebuilt by the recovery replay.
+	markers    atomic.Int64
+	lastAccess atomic.Int64 // unix nanos, approx-LRU victim key; 0 = never stamped
 	// minVersion is the lowest record Version stored in this segment (0 = empty).
 	// Segments fill sequentially, so a segment's records span a contiguous
 	// [minVersion, maxVersion]; minVersion<=pinVersion means the segment holds a
@@ -452,6 +460,12 @@ func (s *Store) appendTombstone(ctx context.Context, id FileID) (uint64, error) 
 		return 0, err
 	}
 	seg.noteMinVersion(version)
+	// Marker bytes occupy the segment like any other record, and retireSegment
+	// subtracts the whole tail when the segment goes. Leaving them uncounted here
+	// would make every retire over-subtract, and diskBytes is only recomputed from
+	// disk at open, so the error accumulates across an uptime until MaxLocalBytes
+	// stops firing.
+	s.diskBytes.Add(recLen)
 	sh.mu.Unlock()
 	// Durability goes through the shard's commit leader rather than a private
 	// fd.Sync: the record is already written, so a barrier that starts now covers
@@ -496,6 +510,7 @@ func (s *Store) appendTruncateMarker(ctx context.Context, id FileID, newSize int
 		return 0, err
 	}
 	seg.noteMinVersion(version)
+	s.diskBytes.Add(recLen) // same accounting as appendTombstone
 	sh.mu.Unlock()
 	// Same commit-leader path as the tombstone: the marker's bytes are written,
 	// so any barrier that starts after this point makes them durable.
@@ -507,7 +522,8 @@ func (s *Store) appendTruncateMarker(ctx context.Context, id FileID, newSize int
 
 // writeTruncateRecord frames a zero-payload truncate marker at seg's tail, with
 // FileOffset carrying newSize, and advances the tail. Shared by the live
-// truncate path and repack's marker carry-forward.
+// truncate path and by both carry-forward paths: repack's, into its replacement
+// target, and the retire paths', into the shard's active segment.
 func writeTruncateRecord(seg *segmentMeta, id FileID, version uint64, newSize int64) (recStart int64, err error) {
 	fileID := []byte(id)
 	recStart = seg.tail.Load()
@@ -526,11 +542,13 @@ func writeTruncateRecord(seg *segmentMeta, id FileID, version uint64, newSize in
 		return 0, fmt.Errorf("journal: write truncate CRC: %w", err)
 	}
 	seg.tail.Store(recStart + recordLen(len(fileID), 0))
+	seg.markers.Add(1)
 	return recStart, nil
 }
 
 // writeTombstoneRecord frames a zero-payload tombstone at seg's tail and advances
-// it. Shared by the delete path and by repack's tombstone carry-forward.
+// it. Shared by the delete path and by both carry-forward paths: repack's, into
+// its replacement target, and the retire paths', into the shard's active segment.
 func writeTombstoneRecord(seg *segmentMeta, id FileID, version uint64) (recStart int64, err error) {
 	fileID := []byte(id)
 	recStart = seg.tail.Load()
@@ -548,6 +566,7 @@ func writeTombstoneRecord(seg *segmentMeta, id FileID, version uint64) (recStart
 		return 0, fmt.Errorf("journal: write tombstone CRC: %w", err)
 	}
 	seg.tail.Store(recStart + recordLen(len(fileID), 0))
+	seg.markers.Add(1)
 	return recStart, nil
 }
 

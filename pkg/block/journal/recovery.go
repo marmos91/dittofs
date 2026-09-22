@@ -288,6 +288,11 @@ func (r *recoveryState) replayRecords(m *segmentMeta, sh, id uint64, recs []reco
 			if rec.header.Version > r.tombstones[fid] {
 				r.tombstones[fid] = rec.header.Version
 			}
+			// Rebuild the marker counter the retire paths consult before deciding
+			// whether a segment is worth scanning. A restart that lost it would
+			// let the first eviction skip the scan and unlink a segment with its
+			// markers still inside.
+			m.markers.Add(1)
 			continue
 		}
 		if rec.header.Flags&flagTruncate != 0 {
@@ -295,6 +300,7 @@ func (r *recoveryState) replayRecords(m *segmentMeta, sh, id uint64, recs []reco
 			if cur, ok := r.truncations[fid]; !ok || rec.header.Version > cur.version {
 				r.truncations[fid] = truncMark{version: rec.header.Version, newSize: int64(rec.header.FileOffset)}
 			}
+			m.markers.Add(1)
 			continue
 		}
 		payloadOff := rec.segOff + recordHeaderSize + int64(len(rec.fileID))
