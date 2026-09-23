@@ -189,7 +189,8 @@ Two things follow, and both make checks cheap:
 
 - **Same input, same output, always.** Two implementations — or one before and
   after a change — can be checked for identical results over random input. The
-  11.6× speed-up in Appendix A.2 was established exactly this way.
+  warm-up result in Appendix A.2 was established exactly this way: two variants,
+  512 MiB of random input, assert the chunks come out identical, then time both.
 - **No state means properties can be fuzzed.** The invariants in §8 are properties
   of a return value, so random inputs and random settings are enough to test them.
 
@@ -325,9 +326,10 @@ Every term where `i − j` is 64 or more is a 64-bit value shifted left by at le
 ![One candidate chunk: the Min-byte warmed region that affects nothing, the 64-byte window that does, and the tested positions beyond it](img/rfc2-dependency-window.svg)
 
 Warming from the start of the chunk therefore does `Min` bytes of work to reach a
-search that finishes after roughly `Target` bytes. At the shipped settings that is
-about 97% wasted effort, and fixing it is 11.6× faster for byte-identical output.
-*Measurements in Appendix A.2.*
+search that finishes after roughly `Target` bytes. At the shipped settings that
+means gear-hashing every byte of the file to use about 3% of the work. Fixing it
+makes a whole carve pass about 1.4× faster on the production CPU, for output that
+is bit-for-bit identical. *Measurements in Appendix A.2.*
 
 ### 3.5 What "deterministic" covers
 
@@ -351,7 +353,7 @@ file's chunk list freezes its boundaries (RFC 0 §2.2), so content written under
 one set of settings reads fine under any other.
 
 Changing a share's settings — or the boundary function, or anything derived from
-it — is therefore **MUST NOT** be treated as a configuration change. New writes
+it — **MUST NOT** therefore be treated as a configuration change. New writes
 cut in different places, hash to different chunks, and dedup against nothing
 already stored. An implementation **MUST** record which settings produced a
 share's existing content, and **MUST** report a change as a migration instead of
@@ -533,7 +535,7 @@ Every check here is a pure function of a byte slice and a set of settings (§1.3
 If a check needs a fixture, the implementation has picked up a dependency it is
 not allowed to have, and that is the finding.
 
-Each check names its layer, because that is where the defect is. Five of the eight
+Each check names its layer, because that is where the defect is. Six of the nine
 need no reader and no hash at all.
 
 | Layer | Requirement | Check |
@@ -628,6 +630,12 @@ data:
 | 1 MiB / 4 MiB / 16 MiB | 248 | **1.029 MiB** | 1.000 MiB | 1.154 MiB | none |
 | 64 KiB / 256 KiB / 1 MiB | 2,765 | **94.8 KiB** | 64.0 KiB | 258.6 KiB | none |
 
+That is 0.24% from prediction. The second profile confirms the masks are the cause
+rather than the profile: moving `Min` and `Avg` together shifts the average by
+exactly the change in `Min`. Neither run produced a single chunk that reached
+`Avg`; for the default profile that would need 3 MiB of consecutive positions to
+all fail a 1-in-32,768 test.
+
 **How to read this.** In both rows the average sits about 30 KB above `Min`, and
 nowhere near `Target`. That 30 KB is the masks' own scale showing through — the
 small-region mask has 15 bits set, so a boundary turns up on average every
@@ -637,12 +645,6 @@ approached in either row.
 
 ![Chunk size on a log scale: the 8 KiB target the masks imply, the declared Min of 1 MiB, Target of 4 MiB and Max of 16 MiB, and the whole measured distribution as a narrow spike sitting on Min](img/rfc2-size-distribution.svg)
 
-
-That is 0.24% from prediction. The second profile confirms the masks are the cause
-rather than the profile: moving `Min` and `Avg` together shifts the average by
-exactly the change in `Min`. Neither run produced a single chunk that reached
-`Avg`; for the default profile that would need 3 MiB of consecutive positions to
-all fail a 1-in-32,768 test.
 
 
 For comparison, the FastCDC paper's own recommended setup [1] is normalisation
