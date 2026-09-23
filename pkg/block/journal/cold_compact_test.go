@@ -225,28 +225,99 @@ func TestColdLogGrowthBoundedAcrossCycles(t *testing.T) {
 	}
 }
 
-// TestColdLogSnapshotRefusesUnsyncedShard pins the durability half of the
-// snapshot rule. The entries a snapshot leaves out are the ones a rewrite drops,
-// and an entry superseded by a record no fsync has covered has to be kept: losing
-// that record turns the range back into a hole, and without the entry the read
-// serves zeros instead of fetching. The snapshot refuses wholesale rather than
-// deciding entry by entry.
-func TestColdLogSnapshotRefusesUnsyncedShard(t *testing.T) {
+// TestColdLogCompactionCarriesUnverifiedShardsForward pins what a shard holding
+// unfsynced records costs: that shard's entries, not the pass. Dropping one of
+// them would be unsafe — the record that superseded it can still be lost, and the
+// range would come back a hole — but keeping it only costs a replay that resolves
+// it away, so the other shards are still compacted. Without that split a store
+// under sustained writes never compacts at all, which is the load the log grows
+// under in the first place.
+//
+// DirtyExpiry is negative so no loop fsyncs on its own schedule, which is both
+// the operator opt-out and the only way to hold a shard dirty across the pass.
+func TestColdLogCompactionCarriesUnverifiedShardsForward(t *testing.T) {
 	ctx := context.Background()
-	s := testStore(t, Config{ShardCount: 1, SegmentSize: minSegmentSize})
-	if _, ok := s.liveColdSnapshot(); !ok {
-		t.Fatal("a store holding nothing unsynced must snapshot")
+	s := testStore(t, Config{ShardCount: 4, SegmentSize: minSegmentSize, DirtyExpiry: -1})
+	dirtyID, cleanID := twoShardIDs(t, s)
+
+	// A cold entry the index no longer calls cold, superseded by a record no
+	// fsync has covered: exactly the entry a rewrite must not drop.
+	if err := s.SeedCold(ctx, dirtyID, [][2]int64{{0, 4096}}); err != nil {
+		t.Fatalf("SeedCold: %v", err)
 	}
-	if err := s.WriteAt(ctx, "f", 0, randBytes(4096, 3)); err != nil {
+	if err := s.WriteAt(ctx, dirtyID, 0, randBytes(4096, 7)); err != nil {
 		t.Fatalf("WriteAt: %v", err)
 	}
-	if _, ok := s.liveColdSnapshot(); ok {
-		t.Fatal("a shard holding a record no fsync has covered must refuse the snapshot, or a cold entry that record supersedes is dropped while the record can still be lost")
+	if _, unverified := s.liveColdSnapshot(); !unverified[s.shardIndex(dirtyID)] {
+		t.Fatal("the shard holding an unfsynced record should be reported unverified")
 	}
-	if err := s.Commit(ctx, "f"); err != nil {
-		t.Fatalf("Commit: %v", err)
+	seedDeadColdEntries(t, s, cleanID, 1200)
+
+	before := coldLogSize(t, s)
+	s.maybeCompactColdLog()
+	if after := coldLogSize(t, s); after >= before {
+		t.Fatalf("a single dirty shard blocked the whole pass: cold log %d -> %d bytes", before, after)
 	}
-	if _, ok := s.liveColdSnapshot(); !ok {
-		t.Fatal("a committed shard must snapshot again")
+
+	// The dirty shard's entry survives the rewrite, so a lost record still leaves
+	// the range fetchable rather than a hole.
+	kept, _, err := loadCold(s.dir, s.log)
+	if err != nil {
+		t.Fatalf("loadCold: %v", err)
 	}
+	found := false
+	for _, e := range kept {
+		if e.id == dirtyID && e.fileOff == 0 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the unverified shard's entry was dropped; log now holds %d entries", len(kept))
+	}
+}
+
+// TestColdLogCompactionKeepsEvictionsAppendedButUnpublished is the same window as
+// the batch-seed regression, on the path that makes it expensive: eviction
+// appends its markers, re-takes the shard lock to flip the intervals cold, and
+// then unlinks the segment holding the only local copy. A compaction that
+// rewrote the log from an index snapshotted in that window would drop markers for
+// bytes that are about to stop existing locally.
+func TestColdLogCompactionKeepsEvictionsAppendedButUnpublished(t *testing.T) {
+	ctx := context.Background()
+	s := testStore(t, Config{ShardCount: 1, SegmentSize: minSegmentSize})
+	if err := s.SeedCold(ctx, "seeded", [][2]int64{{0, 4096}}); err != nil {
+		t.Fatalf("SeedCold: %v", err)
+	}
+	seedDeadColdEntries(t, s, "pad", 1200)
+	fillUntilSealed(t, s, "evicted", true, 2)
+
+	setColdHooks(s, func() { s.maybeCompactColdLog() }, nil)
+	if _, err := s.Evict(ctx, 1<<30); err != nil {
+		t.Fatalf("Evict: %v", err)
+	}
+	setColdHooks(s, nil, nil)
+
+	live := coldOffsets(t, s, "evicted")
+	if len(live) < 2 {
+		t.Fatalf("expected the evicted file to hold several cold ranges, got %v", live)
+	}
+	s2 := reopen(t, s, Config{})
+	for _, off := range live {
+		wantColdAt(t, s2, "evicted", off, "after reopen")
+	}
+	wantColdAt(t, s2, "seeded", 0, "after reopen")
+}
+
+// twoShardIDs returns two file IDs that hash to different shards.
+func twoShardIDs(t *testing.T, s *Store) (FileID, FileID) {
+	t.Helper()
+	first := FileID("f0")
+	for i := 1; i < 200; i++ {
+		id := FileID(fmt.Sprintf("f%d", i))
+		if s.shardIndex(id) != s.shardIndex(first) {
+			return first, id
+		}
+	}
+	t.Fatal("no two of 200 file IDs landed in different shards")
+	return "", ""
 }

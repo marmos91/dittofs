@@ -285,10 +285,10 @@ type Store struct {
 	// the other half: coldEntries moves when the log gains entries, this moves
 	// while the index does not describe them yet. See appendColdPublish.
 	coldInFlight int
-	// coldCompactChecked is the coldEntries value a compaction last found not
-	// worth acting on, so the next tick does not repeat the shard walk that
-	// produced that verdict.
-	coldCompactChecked int
+	// coldRefusals is the current run of compaction passes that could not get to
+	// a verdict. Every reason to block fails closed, so the run length is what
+	// separates a collision with an appender from compaction having stopped.
+	coldRefusals int
 
 	// bgCancel stops the background loops started by Open — the dead-ratio
 	// repack and the dirty-age commit. Close cancels it and waits on bgWG so

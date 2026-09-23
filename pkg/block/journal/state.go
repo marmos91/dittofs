@@ -146,10 +146,11 @@ func (s *Store) Extents(ctx context.Context, id FileID) ([]Extent, error) {
 // A failed append returns ErrStateLost joined with the cause and runs nothing:
 // the intervals stay resident, the caller's read fails closed rather than
 // proceeding on a demotion the store cannot keep.
-// flip is the publish half and must do all of it, including taking whatever lock
-// it needs: a caller that flips its own intervals after demote returns leaves the
-// log describing ranges the index still calls resident, which is the window
-// appendColdPublish exists to keep a compaction out of.
+// flip is the publish half. It must be non-nil and must do all of the publishing,
+// including taking whatever lock it needs: a caller that flips its own intervals
+// after demote returns leaves the log describing ranges the index still calls
+// resident, which is the window appendColdPublish exists to keep a compaction out
+// of.
 func (s *Store) demote(entries []coldEntry, flip func()) error {
 	if err := s.appendColdPublish(entries, flip); err != nil {
 		return errors.Join(ErrStateLost, err)
