@@ -10,7 +10,7 @@ import (
 )
 
 // failingExtentsLocal answers every DataExtents call with an error and
-// delegates the rest of the interface to a real in-memory store, so only the
+// delegates the rest of the interface to a real journal store, so only the
 // one failure under test is simulated.
 type failingExtentsLocal struct {
 	journal.LocalStore

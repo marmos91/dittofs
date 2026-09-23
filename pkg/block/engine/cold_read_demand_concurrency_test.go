@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/block"
-	memorylocal "github.com/marmos91/dittofs/pkg/block/local/memory"
+	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
 	metastore "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
@@ -24,7 +24,7 @@ func TestColdRead_DemandFetchIsConcurrent(t *testing.T) {
 	const nBlocks = 8
 	ctx := context.Background()
 
-	loc := memorylocal.New()
+	loc := journaltest.New(t)
 	rs := newLatencyRemote(20 * time.Millisecond) // injected per-GET WAN latency
 	fbs := newStubFileChunkStore()
 	mds := metastore.NewMemoryMetadataStoreWithDefaults()

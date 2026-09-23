@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/block"
-	memorylocal "github.com/marmos91/dittofs/pkg/block/local/memory"
+	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/block/syncer"
 )
@@ -75,7 +75,7 @@ func TestSyncerClose_JoinsInFlightDownloadWorker(t *testing.T) {
 	// A non-nil remote is required for fetchBlock to reach resolveFileChunk;
 	// a nil remote short-circuits before the store lookup. No HealthMonitor is
 	// started (we never call RemoteSync.Start), so IsRemoteHealthy() is true.
-	syncer := NewRemoteSync(memorylocal.New(), remotememory.New(), gs, cfg)
+	syncer := NewRemoteSync(journaltest.New(t), remotememory.New(), gs, cfg)
 
 	syncer.Queue().Start(context.Background())
 
@@ -135,7 +135,7 @@ func TestSyncerClose_JoinsInFlightDownloadWorker(t *testing.T) {
 // join is the only thing Close can block on.
 func TestSyncerClose_JoinsCarveDispatcher(t *testing.T) {
 	fl := &carveFanoutLocal{
-		LocalStore: memorylocal.New(),
+		LocalStore: journaltest.New(t),
 		files:      []string{"pinned"},
 		started:    make(chan string, 1),
 		release:    make(chan struct{}),

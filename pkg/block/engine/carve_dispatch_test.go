@@ -8,17 +8,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/require"
-
 	"github.com/marmos91/dittofs/pkg/block/journal"
-	"github.com/marmos91/dittofs/pkg/block/local/memory"
+	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
 	"github.com/marmos91/dittofs/pkg/block/syncer"
+	"github.com/stretchr/testify/require"
 )
 
 // carveFanoutLocal is a LocalStore that records per-file Flush calls and
 // synchronizes on channels so a test can observe how many flush passes run at
 // once. It overrides ListFiles + Flush; everything else is delegated to a real
-// in-memory store rather than to a nil embed, so a carve path that reaches for
+// journal store rather than to a nil embed, so a carve path that reaches for
 // another part of the interface gets that store's honest answer instead of a
 // nil dereference.
 type carveFanoutLocal struct {
@@ -72,7 +71,7 @@ func TestCarvePass_FanOutIsCappedIndependentlyOfUploadWindow(t *testing.T) {
 		files = append(files, fmt.Sprintf("f%02d", i))
 	}
 	fl := &carveFanoutLocal{
-		LocalStore: memory.New(),
+		LocalStore: journaltest.New(t),
 		files:      files,
 		started:    make(chan string, len(files)), // never blocks a Flush on send
 		release:    make(chan struct{}),
@@ -124,7 +123,7 @@ func TestCarvePass_FanOutIsCappedIndependentlyOfUploadWindow(t *testing.T) {
 
 // TestCarvePass_NoFilesIsNoop guards the empty working-set path.
 func TestCarvePass_NoFilesIsNoop(t *testing.T) {
-	fl := &carveFanoutLocal{LocalStore: memory.New(), started: make(chan string, 1), release: make(chan struct{}), carved: map[string]int{}}
+	fl := &carveFanoutLocal{LocalStore: journaltest.New(t), started: make(chan string, 1), release: make(chan struct{}), carved: map[string]int{}}
 	m := &RemoteSync{local: fl, uploadLimiter: syncer.NewDynamicSemaphore(4), stopCh: make(chan struct{}), config: DefaultConfig()}
 	m.carvePass(context.Background()) // returns immediately, acquires nothing
 	require.Equal(t, int32(0), fl.inFlight.Load())
@@ -143,7 +142,7 @@ func TestCarvePass_NoFilesIsNoop(t *testing.T) {
 // fan-out floor.
 func TestCarvePass_NilUploadLimiterDoesNotPanic(t *testing.T) {
 	fl := &carveFanoutLocal{
-		LocalStore: memory.New(),
+		LocalStore: journaltest.New(t),
 		files:      []string{"a", "b", "c"},
 		started:    make(chan string, 3),
 		release:    make(chan struct{}),

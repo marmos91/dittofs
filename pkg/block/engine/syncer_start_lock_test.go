@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	memorylocal "github.com/marmos91/dittofs/pkg/block/local/memory"
+	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 )
@@ -32,7 +32,7 @@ func TestSyncerStart_EagerProbeDoesNotHoldLock(t *testing.T) {
 			return nil
 		},
 	}
-	m = NewRemoteSync(memorylocal.New(), rem, newStubFileChunkStore(), DefaultConfig())
+	m = NewRemoteSync(journaltest.New(t), rem, newStubFileChunkStore(), DefaultConfig())
 
 	done := make(chan struct{})
 	go func() {

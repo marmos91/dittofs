@@ -8,7 +8,7 @@ import (
 	adaptercommon "github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
-	localmemory "github.com/marmos91/dittofs/pkg/block/local/memory"
+	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
@@ -59,7 +59,8 @@ func TestNonClosingRemote_DelegatesDurable(t *testing.T) {
 // for a Finalized write.
 func TestNonClosingRemote_EngineRemoteDurableAndCommit(t *testing.T) {
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	localStore := localmemory.New() // volatile local — durability must come from the remote
+	localStore := journaltest.New(t) // volatile local — durability must come from the remote
+	localStore.SetDurable(false)     // the journal substrate is durable by default; flip it so this test keeps proving the remote's report carries the commit
 	durableRemote := remotememory.New()
 	durableRemote.SetDurable(true)
 
@@ -88,7 +89,7 @@ func TestNonClosingRemote_EngineRemoteDurableAndCommit(t *testing.T) {
 		t.Fatal("engine.RemoteDurable() must be TRUE through the production *nonClosingRemote wrapper (#1274)")
 	}
 	if bs.LocalDurable() {
-		t.Fatal("memory local store must report NOT durable (test premise: durability comes from the remote)")
+		t.Fatal("local store must report NOT durable (test premise: durability comes from the remote)")
 	}
 
 	// Write + commit: a Finalized flush to the durable wrapped remote must commit.

@@ -8,7 +8,8 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/block/engine"
-	localmemory "github.com/marmos91/dittofs/pkg/block/local/memory"
+	"github.com/marmos91/dittofs/pkg/block/journal"
+	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
 	metamem "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
@@ -41,7 +42,7 @@ func newGatedShares(t *testing.T, n int) (*Service, []*gatedLocal) {
 	svc := New()
 	gates := make([]*gatedLocal, 0, n)
 	for i := range n {
-		gl := &gatedLocal{LocalStore: localmemory.New(), release: make(chan struct{})}
+		gl := &gatedLocal{LocalStore: journaltest.New(t), release: make(chan struct{})}
 		bs, err := engine.New(engine.BlockStoreConfig{
 			Local:          gl,
 			RemoteSync:     engine.NewRemoteSync(gl, nil, mds, engine.DefaultConfig()),

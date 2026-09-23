@@ -5,7 +5,11 @@ import (
 	"testing"
 )
 
-// TestStats_EmptyStore verifies Stats() returns UsedSize==0 for an empty store.
+// TestStats_EmptyStore verifies Stats() reports no user content for an empty
+// store. UsedSize is the tier's physical footprint, and a fresh journal
+// preallocates one segment, so it is not zero — the invariant that matters is
+// that it matches the tier's own figure and that nothing was counted as
+// content.
 func TestStats_EmptyStore(t *testing.T) {
 	bs := newTestEngine(t, 0, 0)
 
@@ -14,8 +18,14 @@ func TestStats_EmptyStore(t *testing.T) {
 		t.Fatalf("Stats() failed: %v", err)
 	}
 
-	if stats.UsedSize != 0 {
-		t.Fatalf("expected UsedSize==0 for empty store, got %d", stats.UsedSize)
+	if want := uint64(bs.local.Stats().DiskBytes); stats.UsedSize != want {
+		t.Fatalf("expected UsedSize==%d (empty tier footprint), got %d", want, stats.UsedSize)
+	}
+	// The footprint is the preallocated segment, not data: an empty store must
+	// have charged no payload bytes. Without this the UsedSize check above
+	// would pass for a store that had counted content as structural overhead.
+	if live := bs.local.Stats().LiveBytes; live != 0 {
+		t.Fatalf("expected 0 live payload bytes in an empty store, got %d", live)
 	}
 	if stats.ContentCount != 0 {
 		t.Fatalf("expected ContentCount==0 for empty store, got %d", stats.ContentCount)

@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/marmos91/dittofs/pkg/block/journal"
-	"github.com/marmos91/dittofs/pkg/block/local/memory"
+	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	badgerstore "github.com/marmos91/dittofs/pkg/metadata/store/badger"
 )
@@ -17,7 +17,7 @@ import (
 // each with a payload the local store also holds, so the scan sees the shape a
 // warmed share presents at start: every locally-resident file matched by a
 // metadata row whose size is already correct.
-func buildReconcileFixture(tb testing.TB, n int) (*badgerstore.BadgerMetadataStore, *memory.MemoryStore, []string) {
+func buildReconcileFixture(tb testing.TB, n int) (*badgerstore.BadgerMetadataStore, *journal.Store, []string) {
 	tb.Helper()
 	ctx := context.Background()
 
@@ -44,7 +44,7 @@ func buildReconcileFixture(tb testing.TB, n int) (*badgerstore.BadgerMetadataSto
 		return h
 	}
 
-	local := memory.New()
+	local := journaltest.New(tb)
 	ids := make([]string, n)
 	for i := range ids {
 		dir, path := root, ""

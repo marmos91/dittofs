@@ -12,7 +12,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
-	bsmemory "github.com/marmos91/dittofs/pkg/block/local/memory"
+	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
 	"github.com/marmos91/dittofs/pkg/block/middleware"
 	"github.com/marmos91/dittofs/pkg/block/middleware/encryption"
 	"github.com/marmos91/dittofs/pkg/block/middleware/encryption/keyprovider"
@@ -97,7 +97,7 @@ func newEncryptedFixture(t *testing.T) *encryptedFixture {
 	localStoreDir := t.TempDir()
 	shareName := "data"
 
-	localStore := bsmemory.New()
+	localStore := journaltest.New(t)
 	inner := remotememory.New()
 	t.Cleanup(func() { _ = inner.Close() })
 

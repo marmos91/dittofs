@@ -10,7 +10,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/journal"
-	memorylocal "github.com/marmos91/dittofs/pkg/block/local/memory"
+	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
@@ -88,7 +88,7 @@ func TestEnsureAvailable_ChunkAfterHoleIsFetched(t *testing.T) {
 			chunk := make([]byte, chunkSize)
 			rand.New(rand.NewSource(0xC01D)).Read(chunk) //nolint:gosec // deterministic fixture
 
-			loc := memorylocal.New()
+			loc := journaltest.New(t)
 			rs := remotememory.New()
 			stub := newStubFileChunkStore()
 			mds := metadatamemory.NewMemoryMetadataStoreWithDefaults()

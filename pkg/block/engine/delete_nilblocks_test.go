@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/local/memory"
+	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
 )
 
 // newReapFixture wires a Store with both a FileChunkStore and a refcount
@@ -15,7 +15,7 @@ import (
 // depends on it, so this fixture supplies one.
 func newReapFixture(t *testing.T, coord MetadataCoordinator, fbs *stubFileChunkStore) *Store {
 	t.Helper()
-	localStore := memory.New()
+	localStore := journaltest.New(t)
 	syncer := NewRemoteSync(localStore, nil, fbs, DefaultConfig())
 	bs, err := New(BlockStoreConfig{
 		Local:          localStore,
