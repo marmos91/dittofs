@@ -1,4 +1,4 @@
-# RFC 4 — content metadata
+# RFC 4 — block metadata
 
 **Status:** draft.
 **Depends on:** RFC 0, for the terms, the residency function and the invariants.
@@ -10,7 +10,7 @@ that reads them — the read path, flush, sweep.
 The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT** and **MAY** are
 to be interpreted as in RFC 2119.
 
-This document specifies what content metadata is required to be. It was written
+This document specifies what block metadata is required to be. It was written
 from the model in RFC 0–3, not from the current schema. Where the current
 implementation does not satisfy a requirement, that is recorded once, in §11, as
 a **deviation**. A deviation is a defect to be fixed or migrated, never a rule for
@@ -20,7 +20,7 @@ an implementer to build around.
 
 ## 1. Purpose
 
-Content metadata is the second oracle of RFC 0 §4.1. It answers, for any offset of
+Block metadata is the second oracle of RFC 0 §4.1. It answers, for any offset of
 any file:
 
 > **Does content exist here, which chunk holds it, which block holds that chunk,
@@ -36,7 +36,7 @@ atomically and answer from them without distortion.
 
 ### 1.1 Non-goals
 
-Content metadata **MUST NOT**:
+Block metadata **MUST NOT**:
 
 - record where bytes sit on local disk, or whether they are local at all
   (RFC 0 §4.1) — that is the journal's question, and residency is computed, not
@@ -54,7 +54,7 @@ RFC 5 and this document are usually implemented in one database, often in one
 transaction. They are specified separately because their write patterns are
 different in kind:
 
-| | Namespace (RFC 5) | Content (this RFC) |
+| | Namespace metadata (RFC 5) | Block metadata (this RFC) |
 | --- | --- | --- |
 | Written by | client operations | client writes *and* background flush |
 | Unit | one entry | one extent, one chunk, one block |
@@ -67,7 +67,7 @@ failed once.
 
 ## 2. The records
 
-Content metadata holds four kinds of record. Each is keyed by exactly one thing,
+Block metadata holds four kinds of record. Each is keyed by exactly one thing,
 and none holds a list that grows with its file.
 
 ![Four record kinds: per-file existence (size, holes, truncation epoch), refs keyed by file and offset, chunks keyed by hash, blocks keyed by remote key, with the direction each one points](img/rfc4-records.svg)
@@ -81,7 +81,9 @@ and none holds a list that grows with its file.
 
 ### 2.1 Ref
 
-A ref is RFC 0's **ChunkRef**: one file's use of one chunk at one offset.
+A ref is RFC 0's **ChunkRef**: one file's use of one chunk at one offset. A file
+here is an inode. A snapshot's copy of a file also owns refs, keyed by
+`(snapshot, file)` in place of the file (§6.5).
 
     Ref(file, offset) = { hash, skip, length }
 
@@ -132,6 +134,40 @@ records is that the block exists remotely and how much of it is still wanted.
 deallocated. `epoch` is a counter that only truncation and deallocation advance
 (§6.2). §3 is entirely about why this record exists.
 
+### 2.5 Refs name hashes, never blocks
+
+A ref carries a chunk hash, and the chunk record says where that chunk lives. A ref
+**MUST NOT** carry a block key or a position in a block.
+
+The indirection is what lets a chunk move. Relocating a chunk into a new block
+(§7.3) then rewrites one chunk record. If refs carried the location, the same move
+would rewrite every ref of every file sharing the chunk, and any copy of the refs
+taken earlier — a snapshot, a backup — would name a block that no longer exists.
+
+### 2.6 The scope of a count
+
+A refcount is only as good as the set of refs it counts. If a ref exists that the
+count does not include, the count is low, and sweep deletes referenced content.
+
+The records of §2 **MUST** therefore be held in one store per remote key
+namespace (RFC 3 §2.2). A deployment **MUST** do one of two things:
+
+- **One store per namespace.** Every share whose blocks can share a remote key
+  records its refs in the store that counts them.
+- **One namespace per store.** Key derivation includes the store's identity, so
+  two stores can never name one object.
+
+Two stores that can name one key, each keeping its own count, are forbidden. Each
+count is then correct about its own store and too low about the object, and
+neither store can tell.
+
+The same reasoning bounds what absence proves. **The absence of a record here
+MUST NOT be taken as evidence that a remote object is unreferenced.** It shows
+only that this store does not reference the object. Another store, another
+process or another deployment writing to the same bucket may reference it. How an
+unrecorded object is collected is RFC 7's problem. This document only forbids
+treating a missing record as proof that nothing references the object.
+
 ## 3. Existence
 
 ### 3.1 The gap this closes
@@ -151,7 +187,7 @@ answer. **Existence is recorded at write time, independently of carving.**
 
 ### 3.2 Every offset is in exactly one class
 
-For an offset below `size`, content metadata answers with one of three classes,
+For an offset below `size`, block metadata answers with one of three classes,
 and the classes are disjoint and exhaustive:
 
 | Class | Meaning | Residency with journal present | Residency with journal absent |
@@ -295,7 +331,7 @@ The extents a commit covers are the extents the flush callback returns as durabl
 (RFC 0 §5.2). The callback **MUST NOT** return an extent whose commit has not
 succeeded. That ordering is what lets a reseeding pass after a crash trust
 metadata over the journal's unset flush bits (RFC 1 §9.2): a flush bit is never
-set for content metadata does not hold.
+set for content that metadata does not hold.
 
 ### 4.4 Commits for one file apply in order
 
@@ -364,6 +400,9 @@ are the ones under the heaviest write load, the slowest to flush.
   preallocated or zero-filled region of every file then contends on it.
 - **A popular block's `live`.** Moves only when a chunk's refcount crosses zero,
   so it is far colder than the refcount.
+- **Usage accounting.** A per-owner byte or quota counter updated on every write
+  is one record shared by all of that owner's files. It belongs to the write path
+  and RFC 5, and by §5.1 the flush commit **MUST NOT** update it.
 
 An implementation **SHOULD** measure both under a zero-heavy workload before
 shipping. Remedies — a sharded counter, or not carving known-zero chunks and
@@ -431,6 +470,45 @@ than lose:
 - a refcount decremented before its ref is removed is a sweep hazard, and **MUST
   NOT** happen.
 
+### 6.5 Who owns a ref
+
+Refs belong to an **inode**, not to a name. Hard links, a rename over an existing
+file, moving a file to trash, and a file unlinked while still open are all
+namespace states of one inode. None of them changes a ref. Block metadata **MUST
+NOT** be told about names. It learns of a deletion only when RFC 5 releases the
+inode, and that release is the delete of §6.4.
+
+A **snapshot** that can be restored holds its content exactly as a file does, so
+its refs **MUST** be counted exactly as a file's are. A snapshot's refs are owned
+by `(snapshot, file)` rather than by a file, and creating a snapshot increments
+every chunk it names.
+
+The content a snapshot holds **MUST NOT** be protected by a separate list that
+sweep consults instead of the count: a hold set, a pin list, or an extra root for
+a mark phase. That is a second way of keeping content alive, and it fails open.
+Every path that decides liveness has to remember to consult it. The path that
+forgets deletes snapshotted content, and any check that reads the refcounts
+reports that nothing is wrong. The same applies to any future holder of content:
+if it can keep a chunk alive, it holds refs and is counted.
+
+The cost is O(refs) increments per snapshot, paid when the snapshot is taken
+(§13).
+
+### 6.6 Clone and server-side copy
+
+Cloning carved content copies refs, not bytes. Writing the destination's refs and
+incrementing their chunks **MUST** happen in one transaction, and that transaction
+is an adoption (§7.2): it **MUST** fail if any chunk it names has been retired. Any
+refs the destination had over the cloned range are replaced, and their chunks are
+decremented in the same transaction.
+
+**Uncarved content cannot be cloned by reference**, because no chunk covers it
+yet. For the uncarved extents of the source, a clone **MUST** either flush the
+source first, or copy the bytes through the destination's write path (§3.4). It
+**MUST NOT** record the destination range as existing, whether carved or
+uncarved, unless its bytes are staged or its refs are written. Doing so claims
+bytes that exist nowhere under the destination, and a read resolves to **Lost**.
+
 ## 7. What sweep needs from this component
 
 Sweep's protocol is RFC 7's. It needs two atomic operations from this document,
@@ -467,6 +545,63 @@ An implementation **MUST NOT** substitute a grace period for either operation.
 RFC 0 §4.3 forbids inferring durability from elapsed time. Inferring that a block
 is safe to delete because it has been unreferenced "for long enough" is the same
 inference with worse consequences.
+
+### 7.3 Relocation
+
+Rewriting a block's surviving chunks into a new block, so that a mostly
+unreferenced block can be retired, changes where chunks live. Deciding when to do
+it belongs to RFC 7. This section covers only the record change.
+
+After the syncer reports the new block durable, one transaction:
+
+- points each moved chunk record at the new block and position;
+- creates the new block record, with `live` equal to the number of moved chunks
+  whose refcount is nonzero;
+- decrements the old block's `live` by the same number.
+
+Refs are untouched, by §2.5. If the old block's `live` reaches zero it becomes
+retirable (§7.1). A chunk adopted by a commit that races the relocation is
+counted in whichever block its record names when the adoption applies. That is
+correct in both orders, because both transactions read and write that chunk
+record and so cannot interleave.
+
+### 7.4 Restore
+
+Restoring block metadata from a copy — a snapshot, a backup — is not a write of
+old records. It is a batch of adoptions.
+
+- Every ref the restore writes names a chunk, and that chunk **MUST** exist when
+  the restore applies (§7.2). A restore that would write a ref to a retired chunk
+  **MUST** fail. Writing the ref would produce content that is **Lost** on first
+  read, and nobody would know until then.
+- Chunk and block records **MUST** be taken from the live store, never from the
+  copy. The copy's locations may predate a relocation (§7.3). The copy's counts
+  describe a store that no longer exists.
+- Refcounts and `live` **MUST** change by the refs the restore adds and removes,
+  as for any commit (§6.1).
+
+A restore from a counted snapshot (§6.5) cannot fail the first check, because the
+snapshot held its chunks. A restore from an uncounted copy can, and failing is
+the correct outcome for it. Probing the remote tier after the restore does not
+substitute for the first check: it runs after the records are written, and races
+every sweep that runs in between.
+
+### 7.5 Audit
+
+Refcounts are sweep's only authority, so there **MUST** be a way to check them. An
+audit recomputes each chunk's refcount from the refs that name it, and each
+block's `live` from its chunks, and reports every mismatch.
+
+A recomputation is valid only if it reads one consistent state of the store. A
+walk that spans concurrent commits recounts a mixture of states and can come out
+low.
+
+- A repair **MAY** raise a count to its recomputed value. Raising a count that
+  was right only leaks.
+- A repair **MUST NOT** lower a count unless the recomputation came from a single
+  consistent read and no commit, clone or restore ran between that read and the
+  write. Lowering a count on the strength of a walk made while commits were
+  running makes sweep unsafe.
 
 ## 8. Queries
 
@@ -527,10 +662,15 @@ flush.
 | M8 | No record is written by both the write path and the flush commit. |
 | M9 | A flush commit's cost is bounded by what it changed, not by the file. |
 | M10 | A commit never replaces refs from content offered later, nor commits past a truncation it did not see. |
-| M11 | Content metadata records nothing about local placement. |
+| M11 | Block metadata records nothing about local placement. |
+| M12 | Every holder of content — file, snapshot — holds counted refs. Nothing keeps content alive outside the count. |
+| M13 | No two stores that can name one remote key keep separate counts, and the absence of a record is never evidence that an object is unreferenced. |
+| M14 | Refs name hashes, never blocks. |
+| M15 | A restore or clone is an adoption, and never copies a count or a location. |
 
 M1, M3, M4 and M10 are the ones whose violation loses data or serves wrong
-content. M6 and M7 are sweep's safety, without which I3 cannot hold. M8 and M9
+content. M6, M7, M12, M13 and M15 are sweep's safety, without which I3 cannot
+hold. M8 and M9
 are the ones whose violation stops the system, and M8 is the one that already has.
 
 ## 10. Consequences for RFC 0
@@ -562,6 +702,12 @@ written. The design above does not follow from any of what is listed here.
 | §7.2 no grace period | A one-hour grace window, plus an in-process adoption guard that a second process cannot see. | `gc/sweep_index.go:50`, `gc/sweepguard.go` |
 | §8.1 declared, O(log n) | Reached by type assertion with a full-list fallback. Badger scans O(n) per lookup. The memory backend scans every row in the store. | `engine/read_internal.go:217`, `store/badger/objects.go:543`, `store/memory/objects.go:503` |
 | §8.3 ObjectID current | Computed only on shrink and punch, so a stored value goes stale on the next flush. | `pkg/metadata/file_modify.go:1049`, `pkg/metadata/sparse.go:91` |
+| §2.6 scope of a count | Each share has its own metadata store, and shares with the same remote config share one bucket whose keys are not namespaced. GC unions the shares it knows about. Orphan reclaim deletes any object with no record in that union once it is older than the grace window. A second server, or a second config pointing at the same bucket, has its blocks deleted. | `pkg/block/locator.go:31`, `runtime/blockgc.go:72`, `runtime/blockgc_reconcile_reclaim.go:55`, `gc/orphan_reclaim.go` |
+| §6.1, §6.5 the count is the authority | Sweep is decided by a mark phase over every chunk row, and refcounts decide nothing. Snapshots and open-but-unlinked files are protected by hold providers that add extra roots to the mark phase. | `gc/gc.go:494`, `gc/sweep_index.go:38`, `runtime/snapshot_hold.go:53`, `runtime/openhandle_hold.go:200` |
+| §6.6 clone | Clone copies refs, but the refcount increment always misses (§6.1's row). Clone on a local-only share copies bytes instead. SMB server-side copy copies bytes. | `internal/adapter/common/clone.go:74`, `:116`, `engine/readwrite.go:598`, `ioctl_copychunk.go:503` |
+| §7.4 restore adopts | A snapshot restore writes the dump's records, including its block records and their `live` counts. The only guard is a remote probe after the restore. A relocation after the snapshot leaves the dump naming a deleted block. | `pkg/snapshot/verify.go`, `gc/compaction.go:342` |
+| §7.5 audit | Nothing recomputes `live`. The audit checks only that every ref has a chunk row. | `gc/audit.go`, `gc/repair.go` |
+| RFC 0 §3 one identity | `PayloadID` is a second content identity with its own reverse index, although it is set once at create and never reassigned. | `pkg/metadata/file_create.go:445`, `store/badger/encoding.go:61` |
 
 §4.2's ordering holds today, because the put comes before the commit
 (`engine/flush.go:438`). §8.2 holds as a property of the synced marker rather than
@@ -592,6 +738,11 @@ written after.
 | §6.2 epoch | Offer, truncate, commit. Assert the commit is refused and no ref lies past `size`. |
 | §6.3 underflow | Force a double decrement. Assert the transaction fails and the count is unchanged. |
 | §7.1, §7.2 sweep race | Interleave `Retire` and an adopting commit in every order. Assert that either the block survives with the new ref, or the commit fails, and never a ref to a retired chunk. |
+| §6.5 snapshot counted | Snapshot a file, delete the file. Assert every chunk's refcount is still nonzero and its block is not retirable, with no other liveness input configured. |
+| §6.6 clone uncarved | Write a source without flushing, clone it, drop the source's journal extent. Assert the destination reads the written bytes, not a failure and not zeros. |
+| §7.3 relocation | Relocate a block's chunks. Assert no ref changed, every read still resolves, and the old block is retirable. |
+| §7.4 restore after retire | Take an uncounted copy, retire one of its chunks, restore. Assert the restore fails and wrote nothing. |
+| §2.6 two stores | Point two stores at one remote namespace. Assert the configuration is refused, or that keys differ. |
 
 ### 12.2 Group B — cost
 
@@ -629,7 +780,17 @@ written after.
 4. **Refs of a deleted file** (§6.4). Deferring the decrement keeps delete fast.
    The durable record of pending deletions is one more thing a restart resumes.
    Whether deletion is ever slow enough to justify it is unmeasured.
-5. **Where existence lives.** §1.2 separates it from the namespace by write
+5. **Snapshot cost** (§6.5). Counting a snapshot's refs costs O(refs) increments
+   when it is taken, and those increments land on the hottest counters (§5.3).
+   A copy-on-write snapshot, which counts a whole ref set once and copies it only
+   when a file diverges, avoids that. But it makes "which refs name this chunk" a
+   two-level question, which §7.5's audit must then answer too.
+6. **Mark-sweep instead of counts.** RFC 0 §8.3 chose reference counting, and this
+   document specifies it. Mark-sweep has no hot counters and cannot drift. It
+   costs a walk of every ref per sweep, and it needs its own answer to adoption
+   during the walk. If §5.3 or §6.5 turn out too costly under measurement, the
+   choice belongs in RFC 0, not in a second mechanism added beside the first.
+7. **Where existence lives.** §1.2 separates it from the namespace by write
    pattern. But `size` is also a namespace attribute that RFC 5 returns on every
    `GETATTR`. Whether one record serves both, or existence owns `size` and RFC 5
    reads it, is RFC 5's to settle, and it must not reintroduce §5.1's shared

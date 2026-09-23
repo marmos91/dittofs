@@ -38,8 +38,8 @@ beyond its relationship to content.
 | **1** | journal | local bytes: on-disk format, placement, crash safety, capacity | what data exists; remote durability |
 | **2** | carver | bytes → chunks → blocks: boundaries, identity, packing | I/O, files, when to carve |
 | **3** | syncer | transferring blocks to and from the remote tier | what to transfer, or why |
-| **4** | metadata — content | chunks, refs, blocks, refcounts, durability | byte placement, transport, namespace |
-| **5** | metadata — namespace | files, directories, handles, permissions, locks | content bytes |
+| **4** | block metadata | chunks, refs, blocks, refcounts, durability | byte placement, transport, namespace |
+| **5** | namespace metadata | files, directories, handles, permissions, locks | content bytes |
 | **6** | engine | composition, policy, the facade adapters call | every format and algorithm above |
 | **7** | GC | mark/sweep and remote deletion | local space (§8.1, §8.2) |
 
