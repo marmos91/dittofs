@@ -28,6 +28,9 @@ to be interpreted as in RFC 2119.
   carver's job.
 - The settings are public, so chunk sizes are predictable. This layer does not
   hide which files you have (§6).
+- Repetitive data — zeros, fixed-width records, plain text — cannot be cut at all,
+  and comes out in `Max`-sized pieces. That is inherent, and it is why `Max`
+  exists (§3.8).
 - The shipped code misses two requirements here. Appendix A shows what it does
   instead, and how that was measured.
 
@@ -247,7 +250,7 @@ These are properties, not an algorithm. Any function with them will do.
 | --- | --- | --- |
 | B1 | **Content-defined** | Where a boundary falls depends on the bytes around it, never on a position or a running count. |
 | B2 | **Deterministic** | Same bytes and same settings give the same boundaries — any process, any machine, any version. |
-| B3 | **Bounded** | No chunk larger than `Max`. None smaller than `Min`, except the last one in a stretch. |
+| B3 | **Bounded** | No chunk larger than `Max`. None smaller than `Min`, except the last one in a stretch. `Max` is not a safety margin — on some real inputs it is the *only* thing that ends the search (§3.8). |
 | B4 | **Shift-resistant** | Inserting or deleting bytes re-cuts only the chunks near the edit. Everything further on is untouched. |
 | B5 | **Locally dependent** | A decision looks back only a fixed number of bytes, and the function **MUST** say how many (§3.4). |
 
@@ -370,6 +373,42 @@ operator expected, at sixteen times the read amplification they planned for, wit
 nothing anywhere reporting a problem. This is RFC 0 §1.2's silent-fallback hazard
 wearing configuration as a disguise: the missing thing is the requested chunk
 size, and its absence **MUST** be loud.
+
+### 3.8 What happens on repetitive data
+
+Repetitive input is not an edge case worth a footnote — it is log files, CSV with
+fixed-width records, zero-filled regions of sparse files, and VM images full of
+identical pages. It has a specific and severe failure mode, and it follows
+directly from the 64-byte window of §3.4.
+
+**If the data repeats with a period of 64 bytes or less, the search can never
+succeed.** The fingerprint depends only on the last 64 bytes, so at every tested
+position it takes the *same* value. If that one value does not match the mask, it
+never matches — not in this chunk, not anywhere in the file. There is no
+randomness left to save it.
+
+Measured over 64 MiB at the default profile:
+
+| Input | Chunks | Average size | Boundaries found |
+| --- | --- | --- | --- |
+| random bytes | 62 | 1.03 MiB | normally |
+| all zeros | 4 | **16 MiB — every chunk hit `Max`** | none, ever |
+| 64-byte repeating pattern | 4 | **16 MiB — every chunk hit `Max`** | none, ever |
+| repeated ASCII text (44-byte period) | 4 | **16 MiB — every chunk hit `Max`** | none, ever |
+| 4 KiB repeating pattern | 64 | 1.00 MiB | yes, at a fixed period |
+
+Three consequences, and an implementation **MUST NOT** treat any as incidental:
+
+- **`Max` is load-bearing.** On three of these five inputs it is the only reason
+  chunking terminates at all. Removing it, or setting it very high, turns
+  repetitive files into single enormous chunks.
+- **Repetitive data does not dedup well, and cannot.** Whole-file-sized chunks
+  only match other whole-file-sized chunks. This is inherent to any CDC scheme
+  with a bounded window, not a defect in this one.
+- **Where the period is longer than the window, chunking becomes fixed-size at a
+  multiple of that period.** The 4 KiB pattern cut at exactly 8 KiB every time
+  under a 4 KiB minimum. Sizes on structured data are set by the data's period,
+  not by `Target`.
 
 ## 4. Chunk identity
 
@@ -503,6 +542,7 @@ need no reader and no hash at all.
 | chunker | §3.2 mask comes from target | Build at several targets; assert the mask's bit count tracks the target, and that one hard-coded mask cannot satisfy two of them. |
 | chunker | §3.7 bad settings refused | Build with `Min` below the floor, with `Min ≥ Target`, and with `Max` above the ceiling; assert each errors and nothing usable comes back. |
 | chunker | §3.4 warm-up equivalence | Assert boundaries are identical whether the fingerprint is warmed from the chunk start or over the last 64 bytes, across several profiles. |
+| chunker | §3.8 repetitive input still terminates | Chunk 64 MiB of zeros and of a 64-byte repeating pattern; assert every chunk comes out exactly `Max` and the pass ends. Without `Max` the search never succeeds and the whole file becomes one chunk. |
 | chunker | B4 shift resistance | Insert one byte early in a large input; assert every boundary past the edited chunk is unchanged. |
 | carver | §4 hash covers the chunk | Cut identical content at two different `base` offsets; assert one hash. |
 | carver | §2.2 borrowed bytes | Hold on to the slice passed to `emit` and assert it is seen to change. The check exists to prove the contract is real, so a caller that copies is not doing it out of superstition. |
@@ -529,14 +569,18 @@ Two things **MUST NOT** stand in:
    profile. What is unmeasured is the right `Target` for the SMB large-file
    workload: smaller chunks cut read amplification and raise index and refcount
    counts. The trade is at least legible now that the distribution is known.
-2. **The warm-up fix** (§3.4, Appendix A.2). 11.6× on the boundary decision for
-   identical output, verified. What is unmeasured is the effect on a whole pass,
-   where cutting was 13% (amd64) and 29% (arm64) of CPU behind buffer allocation.
-   Independent of everything else here, and the cheapest thing on this list.
-3. **Whether `Min` survives at all** (§3.2). Once the mask comes from `Target`,
-   `Max` still guards against repetitive input and read amplification, but `Min`
-   would only be bounding per-chunk overhead. `Target` plus `Max` is simpler and
-   not obviously worse. Deciding needs the repetitive-input case measured.
+2. **The warm-up fix** (§3.4, Appendix A.2). **Answered — do it.** Measured at
+   **1.43× on a whole carve pass** on the production CPU (EPYC 7543) and 2.34× on
+   arm64, for bit-identical output and no migration. It also settles a second
+   thing: after the fix BLAKE3 is 97% of the pass, so there is no further chunker
+   optimisation worth chasing. This is a task now, not a question.
+3. **Whether `Min` and `Max` survive** (§3.2). **Half answered.** `Max` must stay
+   — §3.8 measured it as the only thing that ends the search on data repeating
+   with a period of 64 bytes or less, which covers zero-filled regions and
+   ordinary text. `Min` is the one that might go: once the mask derives from
+   `Target` it would only bound per-chunk overhead. That decision has to wait for
+   a target-derived mask to exist, because today `Min` is what sets chunk size at
+   all.
 4. **How much §6 gives away.** That boundaries are public is certain. What an
    observer can actually recover from DittoFS's object sizes is not. Randomised
    block assembly is cheap enough that it may be worth doing without waiting for
@@ -617,50 +661,36 @@ This document does not choose between them. See §10, question 1.
 ### A.2 Warm-up runs over the whole chunk instead of the last 64 bytes
 
 Only the previous 64 bytes can affect a boundary decision (§3.4). The shipped code
-warms its rolling state from the start of the candidate chunk, which at the
-default profile means about 1 MiB of work to reach a search that ends after about
-32 KiB — roughly 97% of it deciding nothing.
+warms its fingerprint from the start of the candidate chunk instead. In practice
+that means it gear-hashes **every byte of the file**, where the fix gear-hashes
+only the search window after each minimum — about 3% of the data.
 
-Measured per boundary decision, default profile:
+Measured by chunking 512 MiB of incompressible data end to end, hashing each chunk
+with BLAKE3 exactly as a real pass does. Both variants produced the same 496
+chunks with the same hashes.
 
-| Fingerprint warmed over | Time to find one boundary | Equivalent throughput |
-| --- | --- | --- |
-| the whole chunk (1 MiB) | 759 µs | 1.4 GB/s |
-| the last 64 bytes | **66 µs** | **15.9 GB/s** |
+| Machine | What is being timed | Full warm-up | 64-byte warm-up | Gain |
+| --- | --- | --- | --- | --- |
+| **AMD EPYC 7543** (production) | boundary search + BLAKE3 | 1,300 MB/s | **1,855 MB/s** | **1.43×** |
+| | boundary search alone | 2,880 MB/s | 54,440 MB/s | 18.9× |
+| **Apple M1 Max** (dev) | boundary search + BLAKE3 | 820 MB/s | **1,917 MB/s** | **2.34×** |
+| | boundary search alone | 1,506 MB/s | 45,928 MB/s | 30.5× |
 
-**How to read this.** Both rows do the same job — find one chunk boundary at the
-default settings — and both produce the *identical* boundary. The only difference
-is how many bytes of fingerprint get computed before the search can begin. So this
-is not a trade between speed and quality: the faster row is the same answer for a
-eleventh of the work.
+**How to read this.** The row that matters is the first of each pair, because a
+real pass hashes what it cuts. The fix is worth about **1.4× on the production
+CPU** and more on arm64. The second row shows why the gap between them is so
+large: once the wasted warm-up is gone, boundary searching is nearly free, and
+BLAKE3 becomes **97%** of what the pass does (96% on arm64).
 
+That last number is the useful one. After this fix there is no point optimising
+the chunker further — the hash is the wall.
 
-11.6× faster, with bit-identical boundaries. Verified across three profiles (`Min`
-of 4 KiB, 64 KiB and 1 MiB), 200 random inputs each, for both end-of-stream cases.
+> *A prediction that was wrong.* Before measuring, I expected the fix to matter
+> *more* on amd64, reasoning that its faster BLAKE3 would leave chunking a larger
+> share. The opposite happened: EPYC's gear hash is about 1.9× faster than the
+> M1's while its BLAKE3 is only about 1.3× faster, so the wasted warm-up costs
+> proportionally less there. The numbers above are measured; the reasoning that
+> preceded them was not worth much.
 
 Unlike A.1 this is **not** a migration. The output does not change, so it can be
 fixed whenever convenient.
-
----
-
-## References
-
-1. Wen Xia, Yukun Zhou, Hong Jiang, Dan Feng, Yu Hua, Yuchong Hu, Qing Liu,
-   Yucheng Zhang. **FastCDC: a Fast and Efficient Content-Defined Chunking
-   Approach for Data Deduplication.** USENIX ATC '16.
-   <https://www.usenix.org/system/files/conference/atc16/atc16-paper-xia.pdf>
-2. Jack O'Connor, Jean-Philippe Aumasson, Samuel Neves, Zooko Wilcox-O'Hearn.
-   **BLAKE3: one function, fast everywhere.** 2020.
-   <https://github.com/BLAKE3-team/BLAKE3-specs>
-3. Athicha Muthitacharoen, Benjie Chen, David Mazières. **A Low-Bandwidth Network
-   File System.** SOSP '01. The paper that introduced content-defined chunking.
-   <https://pdos.csail.mit.edu/papers/lbfs:sosp01/lbfs.pdf>
-4. **restic/chunker** — a production CDC implementation with the same
-   reader-plus-callback shape and the same borrowed-bytes contract; `restic`
-   keeps block assembly in a separate component for the reason §5 gives.
-   <https://pkg.go.dev/github.com/restic/chunker> ·
-   <https://github.com/restic/restic/blob/master/doc/design.rst>
-5. Kien Tuong Truong, Simon-Philipp Merz, Matteo Scarlata, Felix Günther, Kenneth
-   G. Paterson. **Breaking and Fixing Content-Defined Chunking.** IACR ePrint
-   2025/558. Relevant to §6: keyed chunking is not a settled mitigation.
-   <https://eprint.iacr.org/2025/558.pdf>
