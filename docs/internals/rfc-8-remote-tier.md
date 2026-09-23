@@ -247,10 +247,9 @@ voices, with no mechanism for noticing when they diverged — and the pair most
 likely to diverge is idempotent delete, which both depend on for crash recovery and
 neither would think to check against the other.
 
-**RFC 3 keeps its subject and loses a section it never wanted.** RFC 8 §4 states two
-properties of transformation and stops, because a syncer that says more about
-compression is a syncer that knows a transform happened, which §4.4 forbids. Those
-two properties are requirements *on* this tier, and §4 is where they are discharged.
+**RFC 3 keeps its subject and loses a section it never wanted.** Transformation is
+specified here, in §4, and nowhere else. A syncer that says anything about
+compression is a syncer that knows a transform happened, which §4.4 forbids.
 
 The one place the plan grows is the reading order, which stops being the numbering:
 this document sits between RFC 3 and RFC 7 conceptually and at the end numerically,
@@ -321,7 +320,7 @@ opening the seal.
 
 | # | Guarantee | Why it is load-bearing |
 | --- | --- | --- |
-| F1 | A record is addressable without reading the whole object | this is what makes RFC 8 §6.1's partial retrieval possible at all |
+| F1 | A record is addressable without reading the whole object | this is what makes a partial retrieval possible at all (§6.1) |
 | F2 | Every record carries the content hash of its plaintext | verification (§6) needs an anchor inside the object |
 | F3 | The object names itself | a misdelivered or mis-keyed object is detectable rather than served |
 | F4 | The version is in the first bytes | an object this build cannot read fails loudly instead of being misparsed |
@@ -339,12 +338,11 @@ one, and **MUST NOT** begin framing before it has one. A caller that supplies a 
 it drew at random, or that expects the tier to supply one, is using this contract
 wrongly in a way §5 cannot detect.
 
-Three documents meet at this rule and each owns one part of it. **RFC 2 §4.2** owns
-the derivation, because a block's name is a function of the chunk hashes it holds
-and that is an identity rule, sitting beside the chunk rule rather than in a second
-document. **RFC 2 §4.2–§2.3** owns the properties the name must have — stable,
-content-derived, encoding nothing mutable — because the syncer is what an unstable
-name would break. **This section** owns only the timing: the name must be fixed
+Two documents meet at this rule and each owns one part of it. **RFC 2 §4.2 and
+§4.3** own the derivation and the properties the name must have — content-derived,
+stable, encoding nothing mutable, scoped deliberately — because a name is an
+identity rule and belongs beside the chunk rule rather than in a second document.
+**This section** owns only the timing: the name must be fixed
 before the first byte is framed, because §3.2 carries it in the object and binds it
 into every authenticated record, so a name that arrives late cannot be threaded
 back through bytes already written.
@@ -380,8 +378,8 @@ written in different places and will drift if nothing pins them together.
 
 ### 4.2 Identity is over plaintext, at every layer
 
-The content hash of a chunk, and the key of a block, **MUST** be functions of
-plaintext (RFC 8 §4.2).
+The content hash of a chunk, and the name of a block, **MUST** be functions of
+plaintext (RFC 2 §4.1, §4.2).
 
 If either were a function of transformed bytes, it would depend on the compression
 level, the encryption key and the library version, so identical content would stop
@@ -391,7 +389,7 @@ would re-key the corpus.
 ### 4.3 The chain travels with the object
 
 How an object was transformed **MUST** be recoverable from the object, not from
-configuration (RFC 8 §4.3). Configuration describes the *next* write; if it is also
+configuration. Configuration describes the *next* write; if it is also
 the only record of past writes, changing it makes existing data unreadable.
 
 ### 4.4 The syncer MUST NOT observe that a transform happened
@@ -508,7 +506,7 @@ already happened turns recovery into an error.
 A backend **MUST** state which of its responses means the object is durably stored,
 and **MUST NOT** report success on a weaker one.
 
-RFC 8 §5.6 requires an implementation to *know* this; this is where it is written
+RFC 3 §2.6 requires an implementation to *know* this; this is where it is written
 down. A backend that acknowledges before committing, that buffers, that writes
 through a cache, or that acknowledges at a weaker consistency level than the
 deployment requires has not supplied the evidence, and the declaration is what
@@ -579,17 +577,17 @@ The read a caller may use **MUST** take the expected content hash of exactly the
 unit it returns, **MUST** verify before returning any byte, and **MUST** return an
 error rather than unverified bytes.
 
-This is where RFC 8 §6.1 and §4.3 are discharged, and §2.4 explains why here rather
-than above: the anchor is the hash in the record (F2), which is local to one object.
+This is where the verified read RFC 3 §4.1 relies on is discharged, and §2.4
+explains why here rather than above: the anchor is the hash in the record (F2),
+which is local to one object.
 A verification that happens above this line happens once per caller, and the number
 of callers only grows.
 
 ### 6.2 Deviation — the raw range read is exported
 
 `GetBlockRange` sits on the same interface as the verified chunk read, takes no
-hash, and returns whatever the backend gives it. RFC 8 §6.2 records the symptom
-and leaves the choice open; this document makes the choice: the range read is how
-§6.1 is *built*, and it belongs below the contract's surface, not on it.
+hash, and returns whatever the backend gives it. The range read is how §6.1 is
+*built*, and it belongs below the contract's surface rather than on it.
 
 That resolution is not yet implemented, and until it is, the one caller that uses
 the raw form (`pkg/snapshot/verify.go:72`, a one-byte presence probe) is safe only
