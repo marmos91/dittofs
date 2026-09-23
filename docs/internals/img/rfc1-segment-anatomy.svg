@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 400" width="900" height="400" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b04a4a"/></marker>
+    <style>
+      .t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:12px;font-weight:700;fill:#1b1f24}
+      .l{font-size:12px;fill:#3d444d}.s{font-size:11px;fill:#5b6472}
+      .m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;fill:#1b1f24}
+      .rec{fill:#eceff2;stroke:#9aa4b2;stroke-width:1.2}
+      .cat{fill:#dce9f7;stroke:#4a7fb5;stroke-width:1.5}
+      .tr{fill:#f8dcdc;stroke:#b04a4a;stroke-width:1.5}
+      .a{stroke:#b04a4a;stroke-width:1.4;fill:none;marker-end:url(#b)}
+    </style>
+  </defs>
+  <rect width="900" height="400" fill="#ffffff"/>
+  <text x="16" y="26" class="t">A sealed segment: records, then the catalog, then a fixed trailer.</text>
+  <text x="16" y="46" class="s">Recovery reads the file backwards from the last 32 bytes. Nothing is scanned.</text>
+
+  <rect x="40" y="82" width="440" height="52" class="rec"/>
+  <text x="56" y="106" class="m">record  record  record  …</text>
+  <text x="56" y="125" class="s">header + payload, each checksummed over both</text>
+  <rect x="480" y="82" width="290" height="52" class="cat"/>
+  <text x="496" y="106" class="m">catalog — 44 bytes per record</text>
+  <text x="496" y="125" class="s">FileID, file offset, recordOffset, length, version</text>
+  <rect x="770" y="82" width="90" height="52" class="tr"/>
+  <text x="782" y="106" class="m">trailer</text><text x="782" y="125" class="s">32 bytes</text>
+
+  <text x="40" y="76" class="s">offset 0</text>
+  <text x="820" y="76" class="s">EOF</text>
+
+  <path d="M815,150 C815,190 640,180 625,150" class="a"/>
+  <text x="640" y="205" class="s" fill="#b04a4a">2. read entryCount × 44 bytes at footerOffset, verify its CRC</text>
+  <text x="640" y="223" class="s" fill="#b04a4a">1. read last 32 bytes, verify trailer CRC, take footerOffset</text>
+
+  <rect x="40" y="248" width="560" height="74" rx="4" fill="#fbfcfd" stroke="#c3cad3"/>
+  <text x="56" y="270" class="h">trailer, 32 bytes</text>
+  <text x="56" y="290" class="m">magic(4) version(2) flags(2) footerOffset(8) entryCount(4)</text>
+  <text x="56" y="308" class="m">footerCRC(4) trailerCRC(4) reserved(4)</text>
+
+  <text x="16" y="352" class="l">Any failure — bad magic, either CRC, a count that does not fit — means <tspan font-weight="600">"no catalog"</tspan>, and the segment is scanned.</text>
+  <text x="16" y="372" class="l">An unrecognised format version means the same. The catalog is an accelerator; not understanding it costs only speed.</text>
+  <text x="16" y="392" class="s">Written once, at seal, after the records are durable. The active segment has no catalog and is always scanned.</text>
+</svg>
