@@ -412,7 +412,14 @@ Three consequences, and an implementation **MUST NOT** treat any as incidental:
   under a 4 KiB minimum. Sizes on structured data are set by the data's period,
   not by `Target`.
 
-## 4. Chunk identity
+## 4. Identity
+
+*Both rules live here because identity is a property of content. Neither says who
+computes it: a chunk's hash is taken by whoever cuts it, a block's by whoever
+assembles it (RFC 6, and RFC 7 when compaction repacks). Nothing in this document
+holds state to do either.*
+
+### 4.1 A chunk
 
 A chunk's identity is the BLAKE3-256 [2] hash of its bytes, and nothing else. An
 implementation **MUST NOT** feed an offset, a file identity, a length, a settings
@@ -421,6 +428,53 @@ profile or a version number into the hash.
 The hash covers exactly the bytes handed to `emit` — the same bytes a later read
 has to reproduce. It **MUST** be computed over the chunk as cut, never over a
 buffer that merely contains it.
+
+### 4.2 A block
+
+A block's identity is **derived** from the ordered hashes of the chunks it holds,
+under a distinct domain from §4.1, together with the namespace of RFC 3 §2.2. It
+**MUST NOT** be generated, allocated, sequenced, drawn at random, or assigned by
+the remote tier.
+
+Three things follow, and none of them is optional:
+
+- **Order counts.** P2 and P3 make membership *and* order decide the object's
+  bytes, so two blocks holding the same chunks in different order are different
+  objects and **MUST** get different identities.
+- **The domain must be separated** from §4.1, or a block holding exactly one chunk
+  would take that chunk's own hash as its identity, and two different things would
+  answer to one name.
+- **The input is hashes, not bytes.** The assembler already holds the chunk hash
+  list; re-reading the chunk bytes to name the block would be a second pass over
+  the data for a value the first pass already determined.
+
+**What this removes.** Identity stops being *minted* anywhere. There is no
+generator to call, no uniqueness to defend, and no moment between allocating a name
+and using it. Two callers that assemble the same chunks in the same order arrive at
+the same name without coordinating, which is what makes a repacked block
+idempotent: compaction that crashes and re-runs rewrites the same object rather
+than leaving one behind under a name nothing recorded.
+
+This is the same argument as §4.1, one level up. A chunk's hash is not allocated
+either.
+
+#### 4.2.1 Deviation — a block's identity is generated, in two places
+
+The current implementation fails §4.2. `block.NewBlockID()`
+(`pkg/block/block_record.go:29`) returns sixteen bytes of `crypto/rand`, and two
+components call it:
+
+| Caller | When | Consequence |
+| --- | --- | --- |
+| `pkg/block/engine/flush.go:392` | every flush carrying novel chunks | the name is unrelated to what the block holds, so identical blocks are distinct objects |
+| `pkg/block/gc/compaction.go:269` | every repack | a crashed repack leaves an object under a name nothing records |
+
+The engine's call also puts an algorithm in the component RFC 0 §1.1 says owns none.
+
+The full cost of the random name, and the machinery it obliges the rest of the
+system to carry, is recorded once in RFC 3 §2.1.1 rather than restated here. What
+belongs here is the part this document is responsible for: the rule that says a
+block's name is derived, like a chunk's, and that no component needs a generator.
 
 ## 5. Packing: three rules, not a component
 

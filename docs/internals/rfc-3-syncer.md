@@ -133,9 +133,9 @@ block hash the code already computes (`flush.go:436`) cannot serve as the key: t
 framed block carries the block id in its preamble, and the encryption layer binds
 that same id as AEAD additional data (`pkg/block/blockcodec/codec.go:304`). Hashing
 the stored object in order to name the object is circular, twice over. The key must
-instead be derived from the *plaintext* payload — the chunk hash list, or a hash
-over the concatenated chunk plaintexts — computed before framing and then handed to
-the builder as the block id. That ordering keeps both the preamble and the AAD
+instead be derived from the *plaintext* payload — the ordered chunk hash list, per
+RFC 2 §4.2, which owns that rule — computed before framing and then handed to the
+builder as the block id. That ordering keeps both the preamble and the AAD
 self-consistent, and it is exactly the property §7.1 already requires: identity is
 a function of untransformed content. §4.2's whole-block verification then verifies
 the payload rather than the object.
