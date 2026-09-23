@@ -36,7 +36,7 @@ beyond its relationship to content.
 | --- | --- | --- | --- |
 | **0** | — | terms, data model, residency, lifecycle, invariants, failure model | component internals |
 | **1** | journal | local bytes: on-disk format, placement, crash safety, capacity | what data exists; remote durability |
-| **2** | carver | bytes → chunks → blocks, as a pure function | I/O, state, files |
+| **2** | carver | bytes → chunks → blocks: boundaries, identity, packing | I/O, files, when to carve |
 | **3** | syncer | transferring blocks to and from the remote tier | what to transfer, or why |
 | **4** | metadata — content | chunks, refs, blocks, refcounts, durability | byte placement, transport, namespace |
 | **5** | metadata — namespace | files, directories, handles, permissions, locks | content bytes |
