@@ -42,15 +42,14 @@
 
   <text x="16" y="234" class="rl">Insert one unbounded queue anywhere in that chain</text>
   <rect x="16"  y="250" width="132" height="34" rx="3" class="bx"/><text x="32"  y="272" class="m">remote slows</text>
-  <line x1="148" y1="267" x2="176" y2="267" stroke="#b04a4a" stroke-width="1.4" marker-end="url(#a3r)"/>
-  <rect x="180" y="250" width="150" height="34" rx="3" class="br"/><text x="196" y="272" class="m">queue absorbs</text>
-  <line x1="330" y1="267" x2="358" y2="267" stroke="#b04a4a" stroke-width="1.4" marker-end="url(#a3r)"/>
-  <rect x="362" y="250" width="174" height="34" rx="3" class="br"/><text x="378" y="272" class="m">nothing downstream stalls</text>
-  <line x1="536" y1="267" x2="564" y2="267" stroke="#b04a4a" stroke-width="1.4" marker-end="url(#a3r)"/>
-  <rect x="568" y="250" width="180" height="34" rx="3" class="br"/><text x="584" y="272" class="m">memory grows without limit</text>
-  <line x1="748" y1="267" x2="776" y2="267" stroke="#b04a4a" stroke-width="1.4" marker-end="url(#a3r)"/>
-  <rect x="780" y="250" width="104" height="34" rx="3" class="br"/><text x="800" y="272" class="m">the process dies</text>
-  <text x="180" y="304" class="why">the queue looks like resilience: every caller is served promptly, right up to the moment none of them are</text>
+  <line x1="148" y1="267" x2="180" y2="267" stroke="#b04a4a" stroke-width="1.4" marker-end="url(#a3r)"/>
+  <rect x="184" y="250" width="140" height="34" rx="3" class="br"/><text x="200" y="272" class="m">queue absorbs</text>
+  <line x1="324" y1="267" x2="356" y2="267" stroke="#b04a4a" stroke-width="1.4" marker-end="url(#a3r)"/>
+  <rect x="360" y="250" width="140" height="34" rx="3" class="br"/><text x="376" y="272" class="m">memory grows</text>
+  <line x1="500" y1="267" x2="532" y2="267" stroke="#b04a4a" stroke-width="1.4" marker-end="url(#a3r)"/>
+  <rect x="536" y="250" width="152" height="34" rx="3" class="br"/><text x="552" y="272" class="m">the process dies</text>
+  <text x="700" y="272" class="why">nothing downstream ever stalls</text>
+  <text x="16" y="306" class="why">the queue looks like resilience: every caller is served promptly, right up to the moment none of them are</text>
 
   <line x1="16" y1="330" x2="884" y2="330" stroke="#c3cad3"/>
   <text x="16" y="354" class="l">A refused write is a result the caller can act on. A dead process is not, and it takes the journal&#8217;s</text>
