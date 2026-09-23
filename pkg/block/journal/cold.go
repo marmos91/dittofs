@@ -561,8 +561,9 @@ func (s *Store) maybeCompactColdLog() {
 }
 
 // liveColdSnapshot gathers the live cold entries a shard at a time, each under
-// that shard's own lock, which is the order appendCold's callers take: shard lock
-// first, coldMu second.
+// that shard's own lock and never with coldMu held: a caller that holds a shard
+// lock across its append takes coldMu second, so taking them the other way round
+// here would invert that.
 //
 // ok is false if a shard holds a record no fsync has covered yet. The entries a
 // snapshot leaves out are the ones a rewrite drops, and an entry superseded by a
