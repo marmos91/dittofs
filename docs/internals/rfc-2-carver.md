@@ -162,9 +162,10 @@ drift together:
 - the carver **MUST NOT** work out a boundary itself, look at a fingerprint, or
   depend on how the chunker reached its answer.
 
-That second rule is the one to enforce. The design this document replaced had a
-carver reaching into the boundary search to manage its own buffer, and that is how
-callers ended up having to track two positions in the file at once.
+The second rule is the one that decays quietly. A carver that reaches into the
+boundary search to manage its own buffer makes its callers track two positions in
+the file at once — how many bytes have been handed over, and how many have been
+cut — and any drift between them tiles some bytes into two chunks.
 
 **Which layer owns what.** Section 3 is all chunker. Sections 2 and 4 are all
 carver. Section 5 belongs to neither, and section 6 is about the pair.
@@ -230,11 +231,10 @@ largest single cost of a carve pass. The whole point of handing bytes to a
 callback is that the consumer is right there and can decide, once, whether these
 particular bytes are worth keeping.
 
-> *Note.* An earlier draft required the opposite — that the bytes become the
-> caller's outright. That rule was written for an interface that returned finished
-> *blocks*, used long after the call, where borrowing really is unsafe. For a
-> callback that runs inside the call, borrowing is the normal contract, and
-> `restic/chunker` [4] uses exactly it.
+> *Note.* Borrowing is safe here precisely because the callback runs inside the
+> call, where the lifetime is visible at the call site. An interface that returned
+> finished chunks for use later could not borrow, because nothing would bound how
+> long the bytes had to stay valid. `restic/chunker` [4] uses the same contract.
 
 ## 3. The boundary function
 
@@ -457,8 +457,7 @@ chunk is already stored. If that oracle can see the block currently being built,
 it will call a chunk stored before it has been uploaded — so an identical chunk
 later in the same pass carries no bytes, and if the upload then fails the content
 exists nowhere while metadata records two references to it. That hazard is real
-and it belongs to **RFC 6**, because that is where the oracle gets asked. It is
-named here so that taking it out of the carver does not look like dropping it.
+and it belongs to **RFC 6**, because that is where the oracle gets asked.
 
 ## 6. Boundaries are public
 
@@ -520,9 +519,10 @@ produces the same chunks. A failed pass costs work and never correctness.
 C3 is the one the shipped code fails (Appendix A.1). C1 and C2 are what make a
 hash usable as an address; the rest cost wrong sizing or an unreadable file.
 
-Two invariants from an earlier draft are gone because the shape made them
-impossible to break: a chunk cannot straddle a hole (§2.1), and there is no
-leftover state to clear. Two more moved to RFC 6 along with the dedup oracle.
+Two properties are absent from this list because the shape of §1.2 makes them
+unbreakable rather than merely required: a chunk cannot straddle a hole, and there
+is no leftover state to clear between calls. The invariants covering block
+assembly against a dedup oracle belong to RFC 6.
 
 ## 9. Conformance
 
@@ -598,11 +598,11 @@ Two things **MUST NOT** stand in:
 
 ## Appendix A — what the shipped code actually does
 
-Two requirements in §3 are not met. Both are recorded here with their evidence, so
-that §3 reads as the specification and this reads as the report against it.
+Two requirements in §3 are not met by the current implementation. Each is recorded
+below with the measurement that establishes it.
 
 A deviation is a defect to fix or migrate. It is never a rule for an implementer
-to build around, and the mismatch **MUST NOT** be closed by amending §3.
+to build around, and a mismatch **MUST NOT** be closed by amending §3.
 
 ### A.1 The masks encode a different target than the profile declares
 
@@ -687,12 +687,10 @@ BLAKE3 becomes **97%** of what the pass does (96% on arm64).
 That last number is the useful one. After this fix there is no point optimising
 the chunker further — the hash is the wall.
 
-> *A prediction that was wrong.* Before measuring, I expected the fix to matter
-> *more* on amd64, reasoning that its faster BLAKE3 would leave chunking a larger
-> share. The opposite happened: EPYC's gear hash is about 1.9× faster than the
-> M1's while its BLAKE3 is only about 1.3× faster, so the wasted warm-up costs
-> proportionally less there. The numbers above are measured; the reasoning that
-> preceded them was not worth much.
+The gap between the two machines is not noise. The EPYC's gear hash is about
+1.9× faster than the M1's, while its BLAKE3 is only about 1.3× faster, so the
+wasted warm-up accounts for proportionally less of an amd64 pass. Neither ratio is
+predictable from the other; both were measured.
 
 Unlike A.1 this is **not** a migration. The output does not change, so it can be
 fixed whenever convenient.
