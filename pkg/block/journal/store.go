@@ -271,6 +271,12 @@ type Store struct {
 	// after restart). No append is attempted while set — a demotion the store
 	// cannot keep is refused, which the caller already treats as fail-closed.
 	coldBroken bool
+	// coldEntries is how many entries the cold log holds: seeded by recovery
+	// from what loadCold read, raised by each append and reset by each rewrite.
+	// It feeds the compaction ratio gate, and doubles as the append detector a
+	// background compaction verifies its snapshot against — an append only ever
+	// raises it, so an unchanged value means no entry landed mid-snapshot.
+	coldEntries int
 
 	// bgCancel stops the background loops started by Open — the dead-ratio
 	// repack and the dirty-age commit. Close cancels it and waits on bgWG so
@@ -285,6 +291,11 @@ type Store struct {
 	// production.
 	failTombstone FileID
 	failTruncate  FileID
+	// beforeColdCompactVerify is a test seam run by a background cold-log
+	// compaction after it has snapshotted the live set and before it verifies
+	// that snapshot under coldMu, so a test can land an append in exactly that
+	// window. Always nil in production.
+	beforeColdCompactVerify func()
 	// beforeTruncateMarker is a test seam run between Truncate publishing its
 	// provisional fence and minting the marker that supersedes it, so a test can
 	// land the concurrent write that opens the window between the two versions.
@@ -440,11 +451,13 @@ func (s *Store) startBackground() {
 	}
 }
 
-// gcLoop is the periodic dead-ratio repack. Overwrites leave dead records
-// behind; without proactive repacking they are only reclaimed on the write-path
-// eviction gate, so a store whose writes outpace carve grows until the cap
-// forces backpressure. The loop keeps local bytes bounded relative to live
-// bytes regardless of whether a cap is set. See Config.GCInterval.
+// gcLoop is the periodic dead-ratio repack and cold-log compaction. Overwrites
+// leave dead records behind; without proactive repacking they are only reclaimed
+// on the write-path eviction gate, so a store whose writes outpace carve grows
+// until the cap forces backpressure. The loop keeps local bytes bounded relative
+// to live bytes regardless of whether a cap is set. The cold log has no gate at
+// all to fall back on: only appends touch it, so the compaction pass is the only
+// thing that ever shrinks it while the store is up. See Config.GCInterval.
 func (s *Store) gcLoop(ctx context.Context) {
 	t := time.NewTicker(s.cfg.GCInterval)
 	defer t.Stop()
@@ -460,6 +473,7 @@ func (s *Store) gcLoop(ctx context.Context) {
 				!errors.Is(err, context.Canceled) && !errors.Is(err, errClosed) {
 				s.log.Warn("journal: background GC pass failed", "error", err)
 			}
+			s.maybeCompactColdLog()
 		}
 	}
 }

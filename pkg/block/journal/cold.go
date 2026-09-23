@@ -228,7 +228,10 @@ func (s *Store) appendCold(entries []coldEntry) error {
 		}
 		s.coldFD = fd
 	}
-	var buf []byte
+	var (
+		buf     []byte
+		written int
+	)
 	for _, e := range entries {
 		if e.length <= 0 {
 			continue
@@ -239,6 +242,7 @@ func (s *Store) appendCold(entries []coldEntry) error {
 			return fmt.Errorf("journal: cold log FileID length %d exceeds max %d", len(e.id), maxFileIDLen)
 		}
 		buf = append(buf, encodeColdEntry(e)...)
+		written++
 	}
 	if len(buf) == 0 {
 		return nil
@@ -277,6 +281,9 @@ func (s *Store) appendCold(entries []coldEntry) error {
 		}
 		return errors.Join(fmt.Errorf("journal: fsync cold log: %w", err), terr)
 	}
+	// Counted only once the bytes are fsynced, so the count describes the log a
+	// restart would read rather than one a rolled-back write left behind.
+	s.coldEntries += written
 	return nil
 }
 
@@ -340,18 +347,26 @@ func truncateColdTail(dir string, validUpTo int64, log *slog.Logger) error {
 	return nil
 }
 
-// rewriteCold replaces the log with exactly entries, dropping the ones recovery
-// found superseded, deleted or truncated away. Written to a temp file and
-// renamed so a crash mid-rewrite leaves the previous log intact.
+// rewriteCold replaces the log with exactly entries, dropping the ones a
+// compaction found superseded, deleted or truncated away. Written to a temp file
+// and renamed so a crash mid-rewrite leaves the previous log intact.
 func (s *Store) rewriteCold(entries []coldEntry) error {
 	s.coldMu.Lock()
 	defer s.coldMu.Unlock()
+	return s.rewriteColdLocked(entries)
+}
+
+// rewriteColdLocked is rewriteCold with coldMu already held, for a caller that
+// has to decide whether to rewrite under the same hold that protects the
+// decision (maybeCompactColdLog).
+func (s *Store) rewriteColdLocked(entries []coldEntry) error {
 	if s.coldFD != nil {
 		_ = s.coldFD.Close()
 		s.coldFD = nil
 	}
 	path := s.coldPath()
 	if len(entries) == 0 {
+		s.coldEntries = 0
 		if err := os.Remove(path); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				return nil
@@ -388,12 +403,109 @@ func (s *Store) rewriteCold(entries []coldEntry) error {
 	if err := fsyncDir(s.dir); err != nil {
 		return fmt.Errorf("journal: fsync dir after cold log rewrite: %w", err)
 	}
+	s.coldEntries = len(entries)
 	return nil
 }
 
-// liveColdEntries collects the cold intervals a recovery ended up with, which is
-// the set a compaction should keep. Called during recovery, before the shards are
-// published, so it needs no locking.
+// coldCompactWorthIt reports whether a log holding logged entries is worth
+// rewriting down to a live set of live entries: the dead weight has to outweigh
+// what would be rewritten, and pay for at least a few pages of I/O. Recovery and
+// the background pass share the predicate so a log that one of them would leave
+// alone is not rewritten by the other on the next tick.
+func coldCompactWorthIt(logged, live int) bool {
+	return logged > 2*live+coldCompactFloor
+}
+
+// maybeCompactColdLog rewrites the cold log down to the entries still live. It
+// runs off the GC ticker because eviction and seeding only ever append: a range
+// evicted, hydrated back and evicted again leaves its first entry behind as dead
+// weight, so without this the log grows for as long as the process stays up and
+// a restart pays for all of it in loadCold.
+//
+// appendCold takes coldMu while holding a shard lock, so this must never hold
+// coldMu across one. It snapshots the live set shard by shard instead, then
+// verifies under coldMu that no append landed while it was walking. Compaction
+// is opportunistic — skipping a pass costs a stale log, dropping an entry an
+// append added mid-walk costs silent zeros for a range that appender has already
+// unlinked.
+func (s *Store) maybeCompactColdLog() {
+	if s.closed.Load() {
+		return
+	}
+	s.coldMu.Lock()
+	logged, broken := s.coldEntries, s.coldBroken
+	s.coldMu.Unlock()
+	// A broken log has no appendable tail and must not be rewritten from a
+	// snapshot either: replay ends at its tear, so the live set is not what the
+	// log describes. The cheap size gate keeps an idle or small log from costing
+	// a shard walk every tick.
+	if broken || logged <= coldCompactFloor {
+		return
+	}
+	// decision: an entry is dropped because a record, tombstone or truncate
+	// marker superseded it, and dropping it is only safe once that marker is
+	// itself durable — a lost record leaves the range a hole, which is the
+	// silent-zeros failure the log exists to prevent. Delete and Truncate fsync
+	// their markers before touching the index, but a plain record is durable only
+	// after a shard commit, so ask for one here rather than waiting for the
+	// dirty-age loop to have happened to run. liveColdSnapshot still verifies it
+	// under each shard lock; this only keeps a write-heavy store from aborting
+	// every pass.
+	if err := s.commitDirtyShards(); err != nil {
+		s.log.Warn("journal: cold log compaction skipped, shard commit failed", "error", err)
+		return
+	}
+	live, ok := s.liveColdSnapshot()
+	if !ok || !coldCompactWorthIt(logged, len(live)) {
+		return
+	}
+	if s.beforeColdCompactVerify != nil {
+		s.beforeColdCompactVerify()
+	}
+	s.coldMu.Lock()
+	defer s.coldMu.Unlock()
+	// An append only ever raises the count, so an unchanged count means the
+	// snapshot still describes the whole log. If one landed, its entry may be
+	// missing from the snapshot and rewriting would drop it; leave the log to the
+	// next pass instead.
+	if s.coldEntries != logged {
+		return
+	}
+	if err := s.rewriteColdLocked(live); err != nil {
+		// Non-fatal for the same reason recovery's compaction is: a
+		// stale-but-valid log costs redundant replay, not correctness.
+		s.log.Warn("journal: cold log compaction failed, keeping the existing log", "error", err)
+	}
+}
+
+// liveColdSnapshot gathers the live cold entries a shard at a time, each under
+// that shard's own lock, which is the order appendCold's callers take: shard lock
+// first, coldMu second.
+//
+// ok is false if a shard holds a record no fsync has covered yet. The entries a
+// snapshot leaves out are the ones a rewrite drops, and an entry superseded by a
+// record that can still be lost must be kept: losing the record would turn the
+// range into a hole that reads as zeros with no fetch.
+func (s *Store) liveColdSnapshot() ([]coldEntry, bool) {
+	var live []coldEntry
+	for _, sh := range s.shards {
+		sh.mu.Lock()
+		durable := sh.lastVersion <= sh.syncedVersion.Load()
+		if durable {
+			live = append(live, liveColdEntries([]map[FileID]*fileIndex{sh.index})...)
+		}
+		sh.mu.Unlock()
+		if !durable {
+			return nil, false
+		}
+	}
+	return live, true
+}
+
+// liveColdEntries collects the cold intervals an index walk ended up with, which
+// is the set a compaction should keep. It locks nothing: recovery calls it before
+// the shards are published, and liveColdSnapshot calls it per shard under that
+// shard's lock.
 func liveColdEntries(indexByShard []map[FileID]*fileIndex) []coldEntry {
 	var out []coldEntry
 	for _, idxMap := range indexByShard {
