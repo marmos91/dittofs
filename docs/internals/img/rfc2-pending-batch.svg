@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 400" width="900" height="400" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <style>
+      .t  { font-size: 15px; font-weight: 600; fill: #1b1f24 }
+      .rl { font-size: 12px; font-weight: 600; fill: #1b1f24 }
+      .l  { font-size: 12px; fill: #3d444d }
+      .s  { font-size: 11px; fill: #5b6472 }
+      .m  { font-family: ui-monospace,SFMono-Regular,Menlo,monospace; font-size: 11px; fill: #1b1f24 }
+      .why  { font-size: 11px; fill: #b04a4a }
+      .ok   { font-size: 11px; font-weight: 600; fill: #2f6f4f }
+    </style>
+    <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,1 L9,5 L0,9" fill="none" stroke="#b04a4a" stroke-width="1.4"/>
+    </marker>
+  </defs>
+  <rect width="900" height="400" fill="#ffffff"/>
+
+  <text x="16" y="26" class="t">The skip oracle must not see the block being packed.</text>
+  <text x="16" y="46" class="s">Chunk X is packed into the in-flight block. An identical X is cut later in the same pass.</text>
+
+  <rect x="150" y="76" width="240" height="70" rx="4" fill="#eaf4ec" stroke="#2f6f4f" stroke-width="1.5"/>
+  <text x="162" y="98" class="ok">committed &#8212; durable remotely</text>
+  <text x="162" y="118" class="s">the oracle MAY answer from this</text>
+  <text x="162" y="138" class="m">&#8230; earlier blocks &#8230;</text>
+
+  <rect x="470" y="76" width="380" height="70" rx="4" fill="#fbecec" stroke="#b04a4a" stroke-width="1.5" stroke-dasharray="5 3"/>
+  <text x="482" y="98" class="why">in flight &#8212; not durable, may still fail</text>
+  <text x="482" y="118" class="s">the oracle MUST NOT answer from this</text>
+  <rect x="482" y="124" width="60" height="16" rx="2" fill="#dce9f7" stroke="#4a7fb5"/>
+  <text x="504" y="136" class="m">X</text>
+  <rect x="548" y="124" width="60" height="16" rx="2" fill="#dce9f7" stroke="#4a7fb5"/>
+  <text x="572" y="136" class="m">Y</text>
+
+  <text x="16" y="192" class="rl">If it can</text>
+  <text x="16" y="216" class="l">1. The first X is novel, carries its bytes into the in-flight block.</text>
+  <text x="16" y="236" class="l">2. The dedup index is populated from that block before it is durable.</text>
+  <text x="16" y="256" class="l">3. The second X asks the oracle, is told durable, and carries no bytes.</text>
+  <text x="16" y="276" class="l">4. Metadata records two refs to X.</text>
+  <text x="16" y="296" class="why">5. The upload fails. X exists nowhere, and two files reference it.</text>
+
+  <line x1="640" y1="196" x2="640" y2="288" stroke="#b04a4a" stroke-width="1.4" marker-end="url(#a3)"/>
+  <text x="656" y="214" class="why">the pass returns success</text>
+  <text x="656" y="232" class="why">the manifest is complete</text>
+  <text x="656" y="250" class="why">the bytes are gone</text>
+  <text x="656" y="276" class="s">nothing errors at the point</text>
+  <text x="656" y="292" class="s">the decision is made</text>
+
+  <line x1="16" y1="326" x2="884" y2="326" stroke="#c3cad3"/>
+  <text x="16" y="350" class="l">The rule: oracle answers derive only from content the caller has committed, and a dedup index is never</text>
+  <text x="16" y="370" class="l">populated from a block before that block is durable.</text>
+  <text x="16" y="394" class="s">A false &#8220;novel&#8221; costs one redundant upload. A false &#8220;durable&#8221; loses data. Every uncertainty resolves as novel.</text>
+</svg>
