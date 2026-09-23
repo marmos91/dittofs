@@ -110,6 +110,12 @@ func (s *Store) evict(ctx context.Context, targetBytes int64, pressure bool) (Ev
 		// on it reads as pressure. The cost is that a drain's reclaim is invisible
 		// to the metric; withdraw this only for a counter that carries a reason
 		// label, never by widening the unlabelled one.
+		//
+		// It also sits after the error return above, so a reclaim whose unlink
+		// failed is not counted although its intervals are already demoted and its
+		// segment already out of the index. That under-reports rather than
+		// over-reports, and the appender gets the error, so the operator learns of
+		// it from the failed write rather than from a counter.
 		if pressure {
 			s.recordEviction(freed)
 		}

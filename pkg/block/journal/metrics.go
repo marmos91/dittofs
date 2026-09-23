@@ -24,8 +24,10 @@ func (s *Store) SetMetrics(rec MetricsRecorder) {
 }
 
 // recordEviction and recordBackpressure are the nil-tolerant call-site wrappers.
-// Two nils are possible and both mean "no recorder": no SetMetrics call yet (nil
-// cell), and SetMetrics(nil) (a cell holding a nil interface).
+// Two nils reach here and both mean "no recorder": no SetMetrics call yet (a nil
+// cell), and SetMetrics(nil) (a cell holding a nil interface). A third shape — a
+// non-nil interface holding a nil handle, which is what a server started without
+// metrics installs — is the recorder's own to absorb, and *metrics.Metrics does.
 func (s *Store) recordEviction(bytes int64) {
 	if rec := s.metrics.Load(); rec != nil && *rec != nil {
 		(*rec).RecordEviction(bytes)
