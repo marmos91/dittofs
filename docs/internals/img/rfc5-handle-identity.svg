@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 400" width="900" height="400" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <style>
+      .t  { font-size: 15px; font-weight: 600; fill: #1b1f24 }
+      .rl { font-size: 12px; font-weight: 600; fill: #1b1f24 }
+      .l  { font-size: 12px; fill: #3d444d }
+      .s  { font-size: 11px; fill: #5b6472 }
+      .m  { font-family: ui-monospace,SFMono-Regular,Menlo,monospace; font-size: 11px; fill: #1b1f24 }
+      .why { font-size: 11px; fill: #b04a4a }
+      .bx { fill: #dce9f7; stroke: #4a7fb5; stroke-width: 1.4 }
+      .bg { fill: #eaf4ec; stroke: #2f6f4f; stroke-width: 1.4 }
+      .bn { fill: #f4f6f8; stroke: #9aa4b2; stroke-width: 1.1 }
+      .bad { fill: #fbeceb; stroke: #b04a4a; stroke-width: 1.4 }
+    </style>
+    <marker id="h5r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5b6472"/>
+    </marker>
+    <marker id="h5x" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b04a4a"/>
+    </marker>
+  </defs>
+  <rect width="900" height="400" fill="#ffffff"/>
+
+  <text x="16" y="26" class="t">A handle names an inode, so a rename is invisible to it</text>
+  <text x="16" y="46" class="s">Both handles are opaque to the client. Only one of them survives an operation the client was never told about.</text>
+
+  <rect x="16" y="76" width="420" height="180" rx="3" class="bn"/>
+  <text x="32" y="100" class="rl">Handle over the inode</text>
+
+  <rect x="32" y="116" width="180" height="52" rx="3" class="bx"/>
+  <text x="44" y="136" class="m">share | 7f3a… | gen 3</text>
+  <text x="44" y="154" class="s">no name, no parent</text>
+
+  <rect x="264" y="116" width="156" height="52" rx="3" class="bg"/>
+  <text x="276" y="136" class="rl">inode 7f3a…</text>
+  <text x="276" y="154" class="s">gen 3</text>
+
+  <line x1="214" y1="142" x2="260" y2="142" stroke="#5b6472" stroke-width="1.4" marker-end="url(#h5r)"/>
+
+  <text x="32" y="196" class="l">mv /a/report.txt /b/old.txt</text>
+  <text x="32" y="216" class="l">→ one entry removed, one installed</text>
+  <text x="32" y="240" class="l">→ the handle still resolves, first try</text>
+
+  <rect x="464" y="76" width="420" height="180" rx="3" class="bn"/>
+  <text x="480" y="100" class="rl">Handle over the path</text>
+
+  <rect x="480" y="116" width="180" height="52" rx="3" class="bad"/>
+  <text x="492" y="136" class="m">hash("/a/report.txt")</text>
+  <text x="492" y="154" class="s">the name is the key</text>
+
+  <rect x="712" y="116" width="156" height="52" rx="3" class="bg"/>
+  <text x="724" y="136" class="rl">inode 7f3a…</text>
+
+  <line x1="662" y1="142" x2="708" y2="142" stroke="#b04a4a" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#h5x)"/>
+
+  <text x="480" y="196" class="l">mv /a/report.txt /b/old.txt</text>
+  <text x="480" y="216" class="why">→ the key no longer resolves</text>
+  <text x="480" y="240" class="why">→ reported as missing, so the client recreates</text>
+
+  <line x1="16" y1="286" x2="884" y2="286" stroke="#eef1f4"/>
+
+  <text x="16" y="312" class="rl">What the generation is for</text>
+  <text x="16" y="334" class="l">The inode is released and its FileID is later reused. The old handle's generation no longer matches, so it resolves to stale.</text>
+  <text x="16" y="352" class="l">Without it, the same handle resolves to a different file, and the client reads someone else's content through a handle it never reopened.</text>
+  <text x="16" y="380" class="why">Stale and missing are different answers: missing tells a client to create, stale tells it to look the name up again.</text>
+</svg>
