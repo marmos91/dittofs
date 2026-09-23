@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 420" width="900" height="420" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <style>
+      .t  { font-size: 15px; font-weight: 600; fill: #1b1f24 }
+      .rl { font-size: 12px; font-weight: 600; fill: #1b1f24 }
+      .l  { font-size: 12px; fill: #3d444d }
+      .s  { font-size: 11px; fill: #5b6472 }
+      .m  { font-family: ui-monospace,SFMono-Regular,Menlo,monospace; font-size: 11px; fill: #1b1f24 }
+      .why  { font-size: 11px; fill: #b04a4a }
+      .ok   { font-size: 11px; font-weight: 600; fill: #2f6f4f }
+      .bx { fill: #dce9f7; stroke: #4a7fb5; stroke-width: 1.4 }
+      .bg { fill: #eaf4ec; stroke: #2f6f4f; stroke-width: 1.4 }
+      .br { fill: #fbecec; stroke: #b04a4a; stroke-width: 1.4 }
+    </style>
+    <marker id="a3b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5b6472"/>
+    </marker>
+    <marker id="a3r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b04a4a"/>
+    </marker>
+  </defs>
+  <rect width="900" height="420" fill="#ffffff"/>
+
+  <text x="16" y="26" class="t">Every link pushes back, or one of them absorbs until the process dies.</text>
+  <text x="16" y="46" class="s">The remote slows down. Nothing else changes.</text>
+
+  <rect x="16"  y="80" width="132" height="34" rx="3" class="bx"/><text x="32"  y="102" class="m">remote slows</text>
+  <line x1="148" y1="97" x2="176" y2="97" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a3b)"/>
+  <rect x="180" y="80" width="150" height="34" rx="3" class="bx"/><text x="196" y="102" class="m">bound saturates</text>
+  <line x1="330" y1="97" x2="358" y2="97" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a3b)"/>
+  <rect x="362" y="80" width="132" height="34" rx="3" class="bx"/><text x="378" y="102" class="m">flush stalls</text>
+  <line x1="494" y1="97" x2="522" y2="97" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a3b)"/>
+  <rect x="526" y="80" width="174" height="34" rx="3" class="bx"/><text x="542" y="102" class="m">extents not released</text>
+  <line x1="700" y1="97" x2="728" y2="97" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a3b)"/>
+  <rect x="732" y="80" width="152" height="34" rx="3" class="bx"/><text x="748" y="102" class="m">journal fills</text>
+
+  <path d="M808,114 L808,140 L360,140" fill="none" stroke="#2f6f4f" stroke-width="1.6" marker-end="url(#a3b)"/>
+  <rect x="200" y="148" width="156" height="34" rx="3" class="bg"/><text x="216" y="170" class="m">writes are refused</text>
+  <text x="372" y="170" class="ok">the specified outcome: the system declines work and keeps running</text>
+
+  <line x1="16" y1="206" x2="884" y2="206" stroke="#eef1f4"/>
+
+  <text x="16" y="234" class="rl">Insert one unbounded queue anywhere in that chain</text>
+  <rect x="16"  y="250" width="132" height="34" rx="3" class="bx"/><text x="32"  y="272" class="m">remote slows</text>
+  <line x1="148" y1="267" x2="176" y2="267" stroke="#b04a4a" stroke-width="1.4" marker-end="url(#a3r)"/>
+  <rect x="180" y="250" width="150" height="34" rx="3" class="br"/><text x="196" y="272" class="m">queue absorbs</text>
+  <line x1="330" y1="267" x2="358" y2="267" stroke="#b04a4a" stroke-width="1.4" marker-end="url(#a3r)"/>
+  <rect x="362" y="250" width="174" height="34" rx="3" class="br"/><text x="378" y="272" class="m">nothing downstream stalls</text>
+  <line x1="536" y1="267" x2="564" y2="267" stroke="#b04a4a" stroke-width="1.4" marker-end="url(#a3r)"/>
+  <rect x="568" y="250" width="180" height="34" rx="3" class="br"/><text x="584" y="272" class="m">memory grows without limit</text>
+  <line x1="748" y1="267" x2="776" y2="267" stroke="#b04a4a" stroke-width="1.4" marker-end="url(#a3r)"/>
+  <rect x="780" y="250" width="104" height="34" rx="3" class="br"/><text x="800" y="272" class="m">the process dies</text>
+  <text x="180" y="304" class="why">the queue looks like resilience: every caller is served promptly, right up to the moment none of them are</text>
+
+  <line x1="16" y1="330" x2="884" y2="330" stroke="#c3cad3"/>
+  <text x="16" y="354" class="l">A refused write is a result the caller can act on. A dead process is not, and it takes the journal&#8217;s</text>
+  <text x="16" y="372" class="l">in-memory state with it &#8212; so the cost of absorbing is paid by work that had already been accepted.</text>
+  <text x="16" y="402" class="why">A buffer whose size is not configured is an unbounded queue with a slower onset.</text>
+</svg>
