@@ -105,20 +105,29 @@ func newInstruments(reg *prometheus.Registry) *instruments {
 
 		backpressureTotal: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: Namespace, Subsystem: "localstore", Name: "backpressure_total",
-			Help: "Times a write stalled waiting for the local cache to free space.",
+			Help: "Times a local-store append (client write or cold-read fault-in) stalled waiting for space.",
 		}),
 		backpressureWaitSeconds: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Namespace: Namespace, Subsystem: "localstore", Name: "backpressure_wait_seconds",
-			Help:    "Duration a write stalled under local-cache backpressure, in seconds.",
-			Buckets: prometheus.DefBuckets,
+			Help: "Duration an append stalled under local-store backpressure, in seconds.",
+			// Not DefBuckets: its 10s ceiling is below the stall the store
+			// permits. An append waits out an eviction at the short end (sub-
+			// millisecond when nothing has to be carved) and, at the long end, a
+			// give-up budget that defaults to 30s in the store and 60s in the
+			// server config — and one refreshed on every observed drain, so a
+			// writer merely outpacing a live syncer has no bound at all. These
+			// nine buckets span 1ms to ~65s, so both ends land in a finite bucket
+			// and quantiles mean something; DefBuckets put essentially every real
+			// stall in +Inf, leaving only _sum and _count with signal.
+			Buckets: prometheus.ExponentialBuckets(0.001, 4, 9),
 		}),
 		evictionsTotal: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: Namespace, Subsystem: "localstore", Name: "evictions_total",
-			Help: "Local-store segments evicted to reclaim space.",
+			Help: "Local-store segments evicted under disk pressure to reclaim space.",
 		}),
 		evictedBytesTotal: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: Namespace, Subsystem: "localstore", Name: "evicted_bytes_total",
-			Help: "Bytes reclaimed by local-cache eviction.",
+			Help: "Bytes reclaimed by local-store eviction under disk pressure.",
 		}),
 
 		gcRuns: factory(prometheus.CounterOpts{
@@ -270,8 +279,10 @@ func (m *Metrics) RecordAuth(protocol, mechanism string, ok bool) {
 	}
 }
 
-// RecordBackpressure records one write stall under local-cache backpressure and
-// the duration it waited for space.
+// RecordBackpressure records one append stalled under local-store backpressure
+// and the duration it waited for space. The append is a client write or a
+// cold-read fault-in: both land in the same local store and meet the same
+// capacity gate.
 func (m *Metrics) RecordBackpressure(d time.Duration) {
 	if m == nil {
 		return
@@ -280,8 +291,10 @@ func (m *Metrics) RecordBackpressure(d time.Duration) {
 	m.in.backpressureWaitSeconds.Observe(d.Seconds())
 }
 
-// RecordEviction records one evicted local-store segment and the bytes it
-// reclaimed. Cheap (two atomic Incs) — safe on the write hot path.
+// RecordEviction records one local-store segment evicted under disk pressure and
+// the bytes it reclaimed. The operator drain reclaims segments too and is
+// deliberately not counted here, so a step in this counter always means the
+// store was short of space. Cheap (two atomic Incs) — safe on the write hot path.
 func (m *Metrics) RecordEviction(bytes int64) {
 	if m == nil {
 		return

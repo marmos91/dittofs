@@ -44,13 +44,17 @@ type EvictResult struct {
 // set smaller than the segment-roll threshold otherwise sits entirely in the
 // never-sealed active segment, where nothing can reclaim it.
 func (s *Store) Evict(ctx context.Context, targetBytes int64) (EvictResult, error) {
-	return s.evict(ctx, targetBytes)
+	return s.evict(ctx, targetBytes, false)
 }
 
 // evict is the shared eviction loop. Its force-seal fall-through is bounded to
 // one pass per call, and sealableActive keeps it from touching an active
 // holding unsynced records.
-func (s *Store) evict(ctx context.Context, targetBytes int64) (EvictResult, error) {
+//
+// pressure says the caller is the write-path capacity gate rather than the
+// operator drain, and only sets whether the reclaim is metered — see the
+// observation below.
+func (s *Store) evict(ctx context.Context, targetBytes int64, pressure bool) (EvictResult, error) {
 	if err := ctx.Err(); err != nil {
 		return EvictResult{}, err
 	}
@@ -95,15 +99,20 @@ func (s *Store) evict(ctx context.Context, targetBytes int64) (EvictResult, erro
 		}
 		res.SegmentsEvicted++
 		res.BytesFreed += freed
-		// decision: one observation per segment reclaimed HERE, and nowhere else,
-		// even though repackSegment/dropVictim (repack.go) and reclaimEmptied
-		// (reclaim.go) also unlink a segment through the same retirement tail.
-		// Only this path demotes live bytes to remote-only — the thing the metric
-		// names. A repack relocates them and stays warm, and a post-delete reclaim
-		// frees bytes nobody holds; counting either makes the eviction rate read
-		// high on a store under no pressure at all. Withdraw only if the metric is
-		// ever redefined as "segments unlinked".
-		s.recordEviction(freed)
+		// decision: only a reclaim the capacity gate drove is counted. Three other
+		// callers reach a segment unlink — repackSegment and dropVictim (repack.go),
+		// reclaimEmptied (reclaim.go) — and so does this loop under Evict, the
+		// operator drain. None of them says anything about disk pressure: a repack
+		// relocates bytes and keeps them warm, a post-delete reclaim frees bytes
+		// nobody holds, and the drain reclaims the whole resident set of an idle
+		// store on request. Counting any of them puts a step into evictions_total
+		// on a store that was never short of space, which is what a rate() alert
+		// on it reads as pressure. The cost is that a drain's reclaim is invisible
+		// to the metric; withdraw this only for a counter that carries a reason
+		// label, never by widening the unlabelled one.
+		if pressure {
+			s.recordEviction(freed)
+		}
 		if targetBytes <= 0 || res.BytesFreed >= targetBytes {
 			return res, nil
 		}
@@ -488,12 +497,16 @@ func (s *Store) ensureSpace(ctx context.Context, needed int64) error {
 	deadline := time.Now().Add(s.cfg.EvictMaxWait)
 	lastUnsynced := s.unsynced.Load()
 	warned := false
-	// stallStart is set the first time this call actually waits, and stays zero on
-	// a call that found room or freed it by evicting. The gate below is checked on
-	// every write, so recording on a check rather than on a wait would report
-	// constant backpressure on an idle store. Recorded once per stalled call, for
-	// the wall time the writer was held, so the histogram reads as the delay a
-	// write saw and not as the backoff step.
+	// decision: the observation hangs off entering the loop, not off the gate
+	// check and not off the backoff. Recording on a check would count every
+	// append on an idle store, since the gate is consulted on all of them.
+	// Recording on the backoff would count only the dirty-pinned poll and drop
+	// the longest stalls there are: an eviction that succeeds holds the appender
+	// across evictSegment's flushMu, which waits out the shard's whole carve pass,
+	// uploads included, and then clears the gate without ever reaching the
+	// backoff. Loop entry means the cap was genuinely met, so every iteration of
+	// it is time the appender was held, and the window runs from there to the
+	// return. Withdraw only if the gate stops meaning "no room".
 	var stallStart time.Time
 	defer func() {
 		if !stallStart.IsZero() {
@@ -501,6 +514,9 @@ func (s *Store) ensureSpace(ctx context.Context, needed int64) error {
 		}
 	}()
 	for s.diskBytes.Load()+needed > s.cfg.MaxLocalBytes {
+		if stallStart.IsZero() {
+			stallStart = time.Now()
+		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -513,7 +529,7 @@ func (s *Store) ensureSpace(ctx context.Context, needed int64) error {
 		// own dirty bytes: sealableActive refuses any active still holding an
 		// unsynced record, so a sustained writer's segment stays put and
 		// backpressures.
-		res, err := s.evict(ctx, overage)
+		res, err := s.evict(ctx, overage, true)
 		if err != nil {
 			return err
 		}
@@ -551,9 +567,6 @@ func (s *Store) ensureSpace(ctx context.Context, needed int64) error {
 		}
 		if time.Now().After(deadline) {
 			return ErrLocalStoreFull
-		}
-		if stallStart.IsZero() {
-			stallStart = time.Now()
 		}
 		select {
 		case <-ctx.Done():

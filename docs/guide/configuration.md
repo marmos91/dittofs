@@ -2117,7 +2117,7 @@ spec:
 | ⭐ `dittofs_remote_up{share}` | `1` if the share's remote backend is healthy, else `0`. |
 | ⭐ `dittofs_sync_pending_bytes{share}` | On-disk bytes present locally but not yet mirrored to the remote (data at risk). |
 | `dittofs_localstore_disk_used_bytes{share}` | Local block-store disk bytes in use. |
-| `dittofs_localstore_evictions_total` / `dittofs_localstore_backpressure_total` | Local block-store evictions and write-backpressure events (process-wide). |
+| `dittofs_localstore_evictions_total` / `dittofs_localstore_backpressure_total` | Local block-store segments evicted under disk pressure (an operator drain is not counted) and appends held waiting for space (process-wide). |
 | `dittofs_quota_used_bytes{scope,principal,share}` | Bytes used by a quota principal (`scope` user/group, `principal` is the uid/gid). |
 | `dittofs_gc_runs_total{result}` / `dittofs_gc_last_run_timestamp_seconds` / `dittofs_gc_freed_bytes_total` | GC run count (`result` ok/error), last-run time, bytes reclaimed. |
 | ⭐ `dittofs_snapshot_operations_total{op,result}` | Snapshot operations by `op` (create/delete/restore) and `result` (ok/error). |

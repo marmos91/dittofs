@@ -62,13 +62,13 @@ func TestInstruments_EvictionAndBackpressure(t *testing.T) {
 	m.RecordEviction(0) // zero bytes: counts the eviction, adds no bytes.
 
 	expected := `
-# HELP dittofs_localstore_backpressure_total Times a write stalled waiting for the local cache to free space.
+# HELP dittofs_localstore_backpressure_total Times a local-store append (client write or cold-read fault-in) stalled waiting for space.
 # TYPE dittofs_localstore_backpressure_total counter
 dittofs_localstore_backpressure_total 1
-# HELP dittofs_localstore_evicted_bytes_total Bytes reclaimed by local-cache eviction.
+# HELP dittofs_localstore_evicted_bytes_total Bytes reclaimed by local-store eviction under disk pressure.
 # TYPE dittofs_localstore_evicted_bytes_total counter
 dittofs_localstore_evicted_bytes_total 1.2582912e+07
-# HELP dittofs_localstore_evictions_total Local-store segments evicted to reclaim space.
+# HELP dittofs_localstore_evictions_total Local-store segments evicted under disk pressure to reclaim space.
 # TYPE dittofs_localstore_evictions_total counter
 dittofs_localstore_evictions_total 3
 `

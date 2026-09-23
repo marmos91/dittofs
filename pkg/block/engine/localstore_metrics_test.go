@@ -56,7 +56,7 @@ func (r *localTierRecorder) stallsSeen() (int, time.Duration) {
 // the tests below observe what the journal emitted, so a probe that answers
 // false (the state this seam shipped in) shows up as a missing observation
 // rather than as a passing "recorder installed" check.
-func meteredEngine(t *testing.T, cfg journal.Config, rec journal.MetricsRecorder) (*engine.Store, *journal.Store) {
+func meteredEngine(t *testing.T, cfg journal.Config, rec journal.MetricsRecorder) *engine.Store {
 	t.Helper()
 	if cfg.SegmentSize == 0 {
 		cfg.SegmentSize = 1 << 20
@@ -79,60 +79,73 @@ func meteredEngine(t *testing.T, cfg journal.Config, rec journal.MetricsRecorder
 	}
 	t.Cleanup(func() { _ = bs.Close() })
 	bs.SetMetrics(rec)
-	return bs, local
+	return bs
 }
 
 // TestLocalTierRecordsEviction pins the eviction counter end to end: a real
-// journal store, the recorder installed through the engine seam, and a
-// disk-pressure eviction driven to completion. Removing the observation from the
-// eviction path fails this on its assertion with "recorded 0 evictions, want 1".
+// journal store, the recorder installed through the engine seam, and an eviction
+// the write path's capacity gate drove — the only reclaim the counter claims to
+// describe. ColdExtents is the independent witness that bytes really were demoted,
+// so the recorder assertion cannot pass by never evicting.
 func TestLocalTierRecordsEviction(t *testing.T) {
 	var rec localTierRecorder
-	bs, _ := meteredEngine(t, journal.Config{MaxLocalBytes: 64 << 20}, &rec)
+	bs := meteredEngine(t, journal.Config{
+		MaxLocalBytes: 2 << 20,
+		EvictMaxWait:  2 * time.Second,
+	}, &rec)
 	ctx := context.Background()
 
 	// Hydrate: the records are born remote-durable, so they satisfy the eviction
 	// gate (a dirty record's local copy is its only copy and is never evicted).
-	// 1.5 MiB over a 1 MiB segment guarantees a sealed segment to reclaim.
+	// 4 MiB into a 2 MiB cap makes the gate evict rather than merely check.
 	buf := bytes.Repeat([]byte{0xAB}, 256<<10)
-	for i := range 6 {
+	for i := range 16 {
 		if err := bs.Local().Hydrate(ctx, "f", int64(i)*int64(len(buf)), buf, 0); err != nil {
 			t.Fatalf("hydrate %d: %v", i, err)
 		}
 	}
 
-	res, err := bs.Local().Evict(ctx, 0) // 0: reclaim exactly one segment
+	cold, _, err := bs.Local().ColdExtents(ctx)
 	if err != nil {
-		t.Fatalf("Evict: %v", err)
+		t.Fatalf("ColdExtents: %v", err)
 	}
-	if res.SegmentsEvicted != 1 {
-		t.Fatalf("SegmentsEvicted = %d, want 1 (nothing was reclaimed, so the "+
-			"assertion below would pass vacuously)", res.SegmentsEvicted)
+	if cold == 0 {
+		t.Fatal("no bytes were demoted, so nothing was evicted and the assertions below would pass vacuously")
 	}
+
 	evictions, freed := rec.evictionsSeen()
-	if evictions != 1 {
-		t.Fatalf("recorded %d evictions, want 1", evictions)
+	if evictions == 0 {
+		t.Fatalf("recorded 0 evictions, want 1 or more (%d bytes were demoted)", cold)
 	}
-	if freed != res.BytesFreed {
-		t.Fatalf("recorded %d evicted bytes, want %d", freed, res.BytesFreed)
+	if freed == 0 {
+		t.Fatalf("recorded %d evictions but 0 evicted bytes", evictions)
+	}
+
+	// The same gate event held this appender across the eviction and then cleared,
+	// without ever reaching the dirty-pinned backoff. A stall measured from the
+	// backoff rather than from the gate would see none of it — and this is the
+	// expensive shape, since the eviction waits out the shard's carve pass.
+	if stalls, waited := rec.stallsSeen(); stalls == 0 {
+		t.Fatal("recorded 0 stalls for appends held across an eviction, want 1 or more")
+	} else if waited <= 0 {
+		t.Fatalf("recorded %d stalls totalling a %v wait, want a measured duration", stalls, waited)
 	}
 }
 
 // TestLocalTierRecordsBackpressure pins the backpressure counter end to end, and
 // with it the property that separates an honest counter from the always-zero one
-// it replaces: the writes that found room must not appear in it. The capacity
-// gate is consulted on every write, so counting checks rather than waits would
-// report constant backpressure on a store that never stalled.
+// it replaces: the appends that found room must not appear in it. The capacity
+// gate is consulted on every append, so counting checks rather than stalls would
+// report constant backpressure on a store that never waited.
 //
 // The wait is the production backoff, not a sleep in the test: with every record
 // dirty nothing is evictable, so the writer that meets the cap waits out
-// EvictMaxWait and fails with ErrLocalStoreFull. Removing the observation fails
-// this on its assertion with "recorded 0 write stalls, want 1".
+// EvictMaxWait and fails with ErrLocalStoreFull.
 func TestLocalTierRecordsBackpressure(t *testing.T) {
 	var rec localTierRecorder
-	bs, _ := meteredEngine(t, journal.Config{
+	bs := meteredEngine(t, journal.Config{
 		MaxLocalBytes: 2 << 20,
-		EvictMaxWait:  50 * time.Millisecond,
+		EvictMaxWait:  500 * time.Millisecond,
 	}, &rec)
 	ctx := context.Background()
 
@@ -162,6 +175,6 @@ func TestLocalTierRecordsBackpressure(t *testing.T) {
 		t.Fatalf("recorded %d write stalls, want 1", stalls)
 	}
 	if waited <= 0 {
-		t.Fatalf("recorded a %v wait, want the duration actually slept", waited)
+		t.Fatalf("recorded a %v wait, want the duration actually spent held", waited)
 	}
 }

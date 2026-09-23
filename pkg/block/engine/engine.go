@@ -350,12 +350,6 @@ func (bs *Store) Close() error {
 // store does not, so the probe is what tells them apart. The runtime calls this
 // after it learns its metrics handle, since shares are constructed before the
 // registry exists.
-//
-// The probe names the method inline rather than through an interface declared
-// next to LocalStore: the recorder type belongs to journal (it is the package
-// whose call sites emit, and it imports only the standard library), and an
-// interface declared beside LocalStore would have to name it from a package
-// journal cannot import back.
 func (bs *Store) SetMetrics(rec journal.MetricsRecorder) {
 	if aware, ok := bs.local.(interface {
 		SetMetrics(journal.MetricsRecorder)
