@@ -71,14 +71,36 @@ dittofs_localstore_evicted_bytes_total 1.2582912e+07
 # HELP dittofs_localstore_evictions_total Local-store segments evicted under disk pressure to reclaim space.
 # TYPE dittofs_localstore_evictions_total counter
 dittofs_localstore_evictions_total 3
+# HELP dittofs_localstore_backpressure_wait_seconds Duration an append stalled under local-store backpressure, in seconds.
+# TYPE dittofs_localstore_backpressure_wait_seconds histogram
+dittofs_localstore_backpressure_wait_seconds_bucket{le="0.001"} 0
+dittofs_localstore_backpressure_wait_seconds_bucket{le="0.005"} 0
+dittofs_localstore_backpressure_wait_seconds_bucket{le="0.025"} 0
+dittofs_localstore_backpressure_wait_seconds_bucket{le="0.1"} 0
+dittofs_localstore_backpressure_wait_seconds_bucket{le="0.5"} 0
+dittofs_localstore_backpressure_wait_seconds_bucket{le="1"} 0
+dittofs_localstore_backpressure_wait_seconds_bucket{le="2.5"} 1
+dittofs_localstore_backpressure_wait_seconds_bucket{le="5"} 1
+dittofs_localstore_backpressure_wait_seconds_bucket{le="10"} 1
+dittofs_localstore_backpressure_wait_seconds_bucket{le="20"} 1
+dittofs_localstore_backpressure_wait_seconds_bucket{le="30"} 1
+dittofs_localstore_backpressure_wait_seconds_bucket{le="45"} 1
+dittofs_localstore_backpressure_wait_seconds_bucket{le="60"} 1
+dittofs_localstore_backpressure_wait_seconds_bucket{le="90"} 1
+dittofs_localstore_backpressure_wait_seconds_bucket{le="+Inf"} 1
+dittofs_localstore_backpressure_wait_seconds_sum 2
+dittofs_localstore_backpressure_wait_seconds_count 1
 `
+	// The histogram is in the golden block, not merely counted: the 30 and 60
+	// boundaries are the store's and the server config's give-up budgets, so an
+	// append that gave up waiting lands in a finite bucket rather than in +Inf.
+	// Collapsing them back to a default or exponential span is the silent change
+	// this pins.
 	if err := testutil.GatherAndCompare(m.Registry(), strings.NewReader(expected),
 		"dittofs_localstore_backpressure_total", "dittofs_localstore_evicted_bytes_total",
-		"dittofs_localstore_evictions_total"); err != nil {
+		"dittofs_localstore_evictions_total",
+		"dittofs_localstore_backpressure_wait_seconds"); err != nil {
 		t.Fatalf("eviction/backpressure mismatch: %v", err)
-	}
-	if got := testutil.CollectAndCount(m.Registry(), "dittofs_localstore_backpressure_wait_seconds"); got == 0 {
-		t.Fatal("expected backpressure_wait_seconds series")
 	}
 }
 

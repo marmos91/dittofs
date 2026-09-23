@@ -79,6 +79,50 @@ func TestForceDrainRecordsNoEviction(t *testing.T) {
 	}
 }
 
+// TestCancelledAppendRecordsNoStall pins the one way the gate can be entered
+// without the appender waiting for anything: the context is already cancelled, so
+// ensureSpace turns around immediately. Stamping the stall before that check
+// records a ~0ns backpressure event for a wait that never happened, which is a
+// step in the counter an operator cannot tell from a real one.
+func TestCancelledAppendRecordsNoStall(t *testing.T) {
+	s, _ := evictStore(t, Config{MaxLocalBytes: 1 << 20, EvictMaxWait: time.Second})
+	var rec stallRecorder
+	s.SetMetrics(&rec)
+
+	// Put the store over its cap so the gate is genuinely met, then enter with a
+	// context that is already done.
+	s.diskBytes.Store(s.cfg.MaxLocalBytes + 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := s.ensureSpace(ctx, 1); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ensureSpace = %v, want context.Canceled (the gate was not entered, "+
+			"so the assertion below would pass vacuously)", err)
+	}
+	if got := rec.stallCount(); got != 0 {
+		t.Fatalf("recorded %d stalls for an append that waited for nothing, want 0", got)
+	}
+}
+
+// stallRecorder counts only what the append path emits.
+type stallRecorder struct {
+	mu     sync.Mutex
+	stalls int
+}
+
+func (r *stallRecorder) RecordEviction(int64) {}
+
+func (r *stallRecorder) RecordBackpressure(time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.stalls++
+}
+
+func (r *stallRecorder) stallCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.stalls
+}
+
 // nilHandleRecorder is the production nil shape: *metrics.Metrics is installed
 // as a non-nil interface that may hold a nil pointer, and every method on it
 // early-returns on the nil receiver.

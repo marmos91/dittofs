@@ -513,6 +513,14 @@ func (s *Store) ensureSpace(ctx context.Context, needed int64) error {
 	// backoff. Loop entry means the cap was genuinely met, so every iteration of
 	// it is time the appender was held, and the window runs from there to the
 	// return. Withdraw only if the gate stops meaning "no room".
+	//
+	// The price of that choice: a share sitting at MaxLocalBytes with a healthy
+	// syncer steps the counter on roughly every append that trips the gate, each
+	// one an eviction cleared in well under a millisecond. A nonzero rate is
+	// therefore ordinary steady state, not an incident, and the counter alone
+	// does not distinguish the two — the wait histogram is what separates the
+	// sub-millisecond eviction from the append that waited out the give-up
+	// budget. Alert on the duration, not on the count.
 	var stallStart time.Time
 	defer func() {
 		if !stallStart.IsZero() {
@@ -520,11 +528,14 @@ func (s *Store) ensureSpace(ctx context.Context, needed int64) error {
 		}
 	}()
 	for s.diskBytes.Load()+needed > s.cfg.MaxLocalBytes {
-		if stallStart.IsZero() {
-			stallStart = time.Now()
-		}
+		// Ahead of the stamp: an append arriving with an already-cancelled context
+		// leaves without waiting for anything, and a zero-length observation is
+		// still an observation.
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		if stallStart.IsZero() {
+			stallStart = time.Now()
 		}
 		overage := s.diskBytes.Load() + needed - s.cfg.MaxLocalBytes
 		// evict's force-seal fall-through is what makes the cap reachable at all:

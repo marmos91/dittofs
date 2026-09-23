@@ -110,16 +110,24 @@ func newInstruments(reg *prometheus.Registry) *instruments {
 		backpressureWaitSeconds: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Namespace: Namespace, Subsystem: "localstore", Name: "backpressure_wait_seconds",
 			Help: "Duration an append stalled under local-store backpressure, in seconds.",
-			// Not DefBuckets: its 10s ceiling is below the stall the store
-			// permits. An append waits out an eviction at the short end (sub-
-			// millisecond when nothing has to be carved) and, at the long end, a
-			// give-up budget that defaults to 30s in the store and 60s in the
-			// server config — and one refreshed on every observed drain, so a
-			// writer merely outpacing a live syncer has no bound at all. These
-			// nine buckets span 1ms to ~65s, so both ends land in a finite bucket
-			// and quantiles mean something; DefBuckets put essentially every real
-			// stall in +Inf, leaving only _sum and _count with signal.
-			Buckets: prometheus.ExponentialBuckets(0.001, 4, 9),
+			// Explicit rather than DefBuckets, whose 10s ceiling is below the
+			// stall this store permits, and rather than an exponential span,
+			// which puts the whole give-up range in one bucket. The boundaries
+			// track the regimes: sub-millisecond when an eviction clears the gate
+			// with nothing to carve, tens of milliseconds per dirty-pinned poll,
+			// seconds when the eviction waits out a carve pass, and then 30 and 60
+			// as boundaries because those are the give-up budgets themselves (the
+			// store's default and the server config's). An append that gives up is
+			// therefore always in a finite bucket, and 20s, 45s and nearly-gave-up
+			// are told apart rather than summed into one.
+			//
+			// A stall is NOT bounded by that budget: the deadline is refreshed on
+			// every observed drain, so an append merely outpacing a live syncer can
+			// run past the top boundary and land in +Inf, where only _sum and
+			// _count carry it. That case is rare and is the one a rate on _count
+			// plus _sum still shows; widening for it would cost resolution in the
+			// range that is not rare.
+			Buckets: []float64{0.001, 0.005, 0.025, 0.1, 0.5, 1, 2.5, 5, 10, 20, 30, 45, 60, 90},
 		}),
 		evictionsTotal: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: Namespace, Subsystem: "localstore", Name: "evictions_total",

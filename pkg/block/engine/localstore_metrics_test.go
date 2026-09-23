@@ -54,8 +54,9 @@ func (r *localTierRecorder) stallsSeen() (int, time.Duration) {
 // production runs — and installs rec the way the runtime does, through
 // engine.Store.SetMetrics. Nothing here asserts the forwarding probe matched:
 // the tests below observe what the journal emitted, so a probe that answers
-// false (the state this seam shipped in) shows up as a missing observation
-// rather than as a passing "recorder installed" check.
+// false shows up as a missing observation rather than as a passing "recorder
+// installed" check — and a probe naming a method no local store has is a
+// capability that silently does not exist, with nothing else to catch it.
 func meteredEngine(t *testing.T, cfg journal.Config, rec journal.MetricsRecorder) *engine.Store {
 	t.Helper()
 	if cfg.SegmentSize == 0 {
@@ -125,6 +126,11 @@ func TestLocalTierRecordsEviction(t *testing.T) {
 	// without ever reaching the dirty-pinned backoff. A stall measured from the
 	// backoff rather than from the gate would see none of it — and this is the
 	// expensive shape, since the eviction waits out the shard's carve pass.
+	//
+	// This is not a second independent witness: an eviction is recorded only from
+	// inside the gate's loop, which stamps the stall first, so evictions > 0
+	// implies stalls > 0 by construction. What it pins is the placement — it is
+	// the assertion that fails when the stall is stamped at the backoff instead.
 	if stalls, waited := rec.stallsSeen(); stalls == 0 {
 		t.Fatal("recorded 0 stalls for appends held across an eviction, want 1 or more")
 	} else if waited <= 0 {
@@ -133,10 +139,10 @@ func TestLocalTierRecordsEviction(t *testing.T) {
 }
 
 // TestLocalTierRecordsBackpressure pins the backpressure counter end to end, and
-// with it the property that separates an honest counter from the always-zero one
-// it replaces: the appends that found room must not appear in it. The capacity
-// gate is consulted on every append, so counting checks rather than stalls would
-// report constant backpressure on a store that never waited.
+// with it the property the counter's meaning rests on: the appends that found
+// room must not appear in it. The capacity gate is consulted on every append, so
+// counting checks rather than stalls would report constant backpressure on a
+// store that never waited.
 //
 // The wait is the production backoff, not a sleep in the test: with every record
 // dirty nothing is evictable, so the writer that meets the cap waits out
