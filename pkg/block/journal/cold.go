@@ -368,6 +368,9 @@ func (s *Store) rewriteCold(entries []coldEntry) error {
 // temp file before taking coldMu, and re-verify there, if a shard is measured
 // stalling on a compaction.
 func (s *Store) rewriteColdLocked(entries []coldEntry) error {
+	// Whatever a pass last decided was not worth acting on was decided about the
+	// log this replaces.
+	s.coldCompactChecked = 0
 	if s.coldFD != nil {
 		_ = s.coldFD.Close()
 		s.coldFD = nil
