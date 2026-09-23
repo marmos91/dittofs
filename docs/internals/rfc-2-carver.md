@@ -432,7 +432,7 @@ buffer that merely contains it.
 ### 4.2 A block
 
 A block's identity is **derived** from the ordered hashes of the chunks it holds,
-under a distinct domain from §4.1, together with the namespace of RFC 3 §2.2. It
+under a distinct domain from §4.1, together with the key scope of RFC 3 §2.2. It
 **MUST NOT** be generated, allocated, sequenced, drawn at random, or assigned by
 the remote tier.
 
@@ -522,8 +522,8 @@ not hide which files a deployment holds.**
 The consequence is a known-file channel. The run of chunk sizes a file produces is
 a fingerprint, so an observer who can see object sizes and counts in the remote
 tier can test whether a particular file is stored. The same channel sits under
-cross-tenant dedup: the fact that two tenants share an object is itself an answer
-about their content.
+dedup across shares: the fact that two shares resolve to one object is itself an
+answer about their content.
 
 An implementation **MUST NOT** claim otherwise, and a deployment that needs this
 hidden **MUST** get it from another layer. Two mitigations exist, neither free:
