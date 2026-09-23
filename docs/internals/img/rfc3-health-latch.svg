@@ -36,11 +36,12 @@
   <text x="16" y="228" class="rl">Derived</text>
   <rect x="120" y="212" width="126" height="32" rx="3" class="br"/><text x="136" y="233" class="m">failure seen</text>
   <line x1="246" y1="228" x2="284" y2="228" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a3h)"/>
-  <rect x="288" y="212" width="126" height="32" rx="3" class="bx"/><text x="300" y="233" class="m">probe, on a timer</text>
-  <line x1="414" y1="228" x2="452" y2="228" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a3h)"/>
-  <rect x="456" y="212" width="152" height="32" rx="3" class="bg"/><text x="472" y="233" class="m">one success &#8594; usable</text>
-  <path d="M288,244 L288,264 L352,264 L352,244" fill="none" stroke="#4a7fb5" stroke-width="1.4"/>
-  <text x="120" y="284" class="ok">the probe does not depend on there being work to do, so the recovery is observed whether or not anything is being uploaded</text>
+  <rect x="288" y="212" width="152" height="32" rx="3" class="bx"/><text x="300" y="233" class="m">probe, on a timer</text>
+  <line x1="440" y1="228" x2="478" y2="228" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a3h)"/>
+  <rect x="482" y="212" width="160" height="32" rx="3" class="bg"/><text x="496" y="233" class="m">one success &#8594; usable</text>
+  <path d="M420,244 L420,262 L308,262 L308,246" fill="none" stroke="#4a7fb5" stroke-width="1.4" marker-end="url(#a3h)"/>
+  <text x="432" y="266" class="s">runs whether or not anything is being uploaded</text>
+  <text x="120" y="292" class="ok">the recovery is observed because the probe does not depend on the belief it would overturn</text>
 
   <line x1="16" y1="308" x2="884" y2="308" stroke="#c3cad3"/>
   <text x="16" y="332" class="l">The difference is not how quickly failure is noticed. Both notice it. The difference is what has to happen</text>

@@ -25,7 +25,7 @@
   <line x1="136" y1="103" x2="196" y2="103" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a3u)"/>
   <text x="142" y="96" class="s">bytes sent</text>
   <line x1="300" y1="103" x2="236" y2="103" stroke="#b04a4a" stroke-width="1.4" stroke-dasharray="4 3"/>
-  <text x="240" y="126" class="why">response lost</text>
+  <text x="180" y="126" class="why">response lost</text>
 
   <rect x="300" y="70" width="230" height="34" rx="3" class="bn"/><text x="316" y="92" class="m">stored, acknowledged</text>
   <rect x="300" y="112" width="230" height="34" rx="3" class="bn"/><text x="316" y="134" class="m">stored, not yet acknowledged</text>
