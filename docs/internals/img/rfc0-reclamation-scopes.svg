@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 400" width="900" height="400" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <style>
+      .t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:13px;font-weight:700;fill:#1b1f24}
+      .l{font-size:12px;fill:#3d444d}.s{font-size:11px;fill:#5b6472}
+      .m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;fill:#1b1f24}
+      .safe{fill:#d7ecd9;stroke:#4c8a58;stroke-width:1.5}
+      .mid{fill:#fdf1e3;stroke:#d9a441;stroke-width:1.5}
+      .danger{fill:#f8dcdc;stroke:#b04a4a;stroke-width:1.8}
+      .tier{fill:#f4f6f8;stroke:#9aa4b2;stroke-width:1.1}
+    </style>
+  </defs>
+  <rect width="900" height="400" fill="#ffffff"/>
+  <text x="16" y="26" class="t">Three operations recover space. They differ in what they may destroy.</text>
+  <text x="16" y="46" class="s">Keeping the words apart is why "GC" stopped being read as something that touches remote refcounts.</text>
+
+  <rect x="30" y="76" width="266" height="200" rx="6" class="safe"/>
+  <text x="48" y="102" class="h">evict</text>
+  <text x="48" y="124" class="s">destroys: <tspan font-weight="700">one local copy</tspan></text>
+  <rect x="48" y="140" width="106" height="36" rx="3" class="tier"/><text x="60" y="163" class="m">local ✗</text>
+  <rect x="166" y="140" width="112" height="36" rx="3" class="tier"/><text x="178" y="163" class="m">remote ✓</text>
+  <text x="48" y="204" class="s">Resident → Remote.</text>
+  <text x="48" y="222" class="s">Refused unless the content is</text>
+  <text x="48" y="238" class="s">already durable remotely.</text>
+  <text x="48" y="262" class="s">Never touches the remote tier.</text>
+
+  <rect x="316" y="76" width="266" height="200" rx="6" class="mid"/>
+  <text x="334" y="102" class="h">reclaim</text>
+  <text x="334" y="124" class="s">destroys: <tspan font-weight="700">nothing</tspan></text>
+  <rect x="334" y="140" width="106" height="36" rx="3" class="tier"/><text x="346" y="163" class="m">local ✓</text>
+  <rect x="452" y="140" width="112" height="36" rx="3" class="tier"/><text x="464" y="163" class="m">remote ✓</text>
+  <text x="334" y="204" class="s">Repack a sparse segment, retire</text>
+  <text x="334" y="222" class="s">an empty one, drop an orphan.</text>
+  <text x="334" y="246" class="s">Changes where bytes are,</text>
+  <text x="334" y="262" class="s">never whether they are.</text>
+
+  <rect x="602" y="76" width="266" height="200" rx="6" class="danger"/>
+  <text x="620" y="102" class="h">sweep</text>
+  <text x="620" y="124" class="s">destroys: <tspan font-weight="700">the last copy</tspan></text>
+  <rect x="620" y="140" width="106" height="36" rx="3" class="tier"/><text x="632" y="163" class="m">local —</text>
+  <rect x="738" y="140" width="112" height="36" rx="3" class="tier"/><text x="750" y="163" class="m">remote ✗</text>
+  <text x="620" y="204" class="s">Deletes a block nothing</text>
+  <text x="620" y="222" class="s">references any more.</text>
+  <text x="620" y="246" class="s">The only operation after which</text>
+  <text x="620" y="262" class="s">content cannot be recovered.</text>
+
+  <line x1="16" y1="304" x2="884" y2="304" stroke="#c3cad3"/>
+  <text x="16" y="328" class="l">Safety rests on refcounts: a chunk counts the refs naming it, a block counts its chunks still referenced,</text>
+  <text x="16" y="348" class="l">and a block is sweepable only at zero.</text>
+  <text x="16" y="376" class="s">Sweep's hazard is time-of-check to time-of-use, not arithmetic: content created after a sweep began must survive it,</text>
+  <text x="16" y="394" class="s">even when every individual observation was correct when it was made.</text>
+</svg>
