@@ -1140,11 +1140,12 @@ it cannot produce. Once the unreadable records' extents have been dropped as
 above, the segment holds only extents it can produce, and repack **MAY** proceed
 normally — carrying forward what is still live and unlinking the rest.
 
-> *Note.* An earlier formulation quarantined the whole segment permanently. That
-> strands the segment's storage for the lifetime of the store and re-strands it
-> after every restart, so a single flipped bit becomes a permanent leak of up to
-> one segment. Dropping the extents instead lets reclamation reclaim the segment
-> and lets the two-oracle model repair everything that was durable.
+> *Note.* Quarantining the whole segment permanently would be the simpler rule and
+> is the wrong one. It strands the segment's storage for the lifetime of the store
+> and re-strands it after every restart, so a single flipped bit becomes a
+> permanent leak of up to one segment. Dropping the affected extents instead lets
+> reclamation reclaim the segment, and lets the two-oracle model repair everything
+> that was durable.
 
 ### 9.4 Scrub
 
