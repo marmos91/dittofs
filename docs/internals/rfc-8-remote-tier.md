@@ -608,6 +608,8 @@ that is worth running and not required for correctness (§5.4.1). The argument f
 this contract's existence therefore rests on the first three, which survive that
 fix; the last two are evidence about today, not about the design.
 
+![Five consumers above the contract, two of them dashed because they exist only while keys are allocated; three backends below it, one of which is a backend that loses and corrupts](img/rfc8-consumers.svg)
+
 ### 7.1 Deviation — consumers take the provider's interface, not their own
 
 RFC 0 §1.2 requires a component to declare, in its own package, an interface for
@@ -693,7 +695,7 @@ does not reach.
 | §5.7 no cross-operation state | Assert that the total attempts reaching the transport for one operation matches the declared bound, and that the bound is readable from outside the backend. |
 | §5.8 probe is stateless | Fail the probe, then restore it; assert the very next probe succeeds with no intervening call and no reset. |
 | §5.2 closed error set | Force every failure the backend can produce; assert each maps to a named error and none escapes natively. |
-| §5.3 range semantics | Assert the first three rows exactly, and the fourth as *some* error. A check that asserts a specific error for a past-the-end offset is testing the backend, not the contract. |
+| §5.3 exactness | Drive a backend that silently returns less than was asked for; assert the read errors rather than returning a short result. A check that accepts a short read has asserted the opposite of the rule. |
 | §5.4 walk | Assert every object is visited once, early exit is clean, and cancellation aborts. |
 | §4.4 transform invisibility | Run the full consumer-side suite against a store with and without a chain configured; assert no observable difference beyond timing. |
 
@@ -745,8 +747,9 @@ does not reach.
    document does not settle, and moving it is not free while four call sites import
    it.
 7. **What the deviation pass could not check.** Four deviations are recorded
-   (§2.5, §5.7.1, §6.2, §7.1), of which §6.2 is inherited from RFC 3. Three requirements could not be
-   settled by reading, because they are properties of a backend under fault:
+   (§2.5, §5.7.1, §6.2, §7.1), of which §6.2 is inherited from RFC 3. Three
+   requirements could not be settled by reading, because they are properties of a backend under fault:
    §5.6's acknowledgement semantics, §5.2's error closure under every native
-   failure, and §5.3's fourth row. §9.3 says why the memory backend cannot answer
-   them, and no fixture that could exists.
+   failure, and §5.3's exactness against a backend that silently returns less than
+   was asked for. §9.3 says why the memory backend cannot answer them, and no
+   fixture that could exists.
