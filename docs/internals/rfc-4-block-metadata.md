@@ -404,9 +404,9 @@ are the ones under the heaviest write load, the slowest to flush.
   is one record shared by all of that owner's files. It belongs to the write path
   and RFC 5, and by §5.1 the flush commit **MUST NOT** update it.
 
-An implementation **SHOULD** measure both under a zero-heavy workload before
+An implementation **SHOULD** measure the first two under a zero-heavy workload before
 shipping. Remedies — a sharded counter, or not carving known-zero chunks and
-recording them as holes — are open (§12).
+recording them as holes — are open (§13).
 
 ## 6. Reference counting
 
