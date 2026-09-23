@@ -150,7 +150,7 @@ from §2.1 in every case; the rightmost column says which.
 | An unknown outcome | report it as unknown | resolve it as not durable (RFC 3 §5.2) | reporting is local; resolving implies a next attempt |
 | Concurrency | none | the window, its ceiling, its adaptation | a limit exists only across operations |
 | Peak memory | none | the bound, per process | memory is not a backend's to bound |
-| The key | derives it from content (§3.4) | requires its properties (RFC 3 §2.1–§2.3) | the name is part of the format |
+| The key | receives it final, before framing (§3.4) | requires its properties (RFC 3 §2.1–§2.3) | derived from content by RFC 2 §4.2; neither side invents it |
 | Compression, encryption | the whole chain (§4) | **MUST NOT** know one happened | a transform is per object |
 | Verification | verifies before returning (§6) | need not re-verify | the hash is in the object |
 | Byte ranges | internal only (§6.2) | never issues one | a range is how a verified read is built |
@@ -332,19 +332,29 @@ the wrong key is indistinguishable from the right one until a hash check fails, 
 with RFC 3 §2.1's content-derived key the preamble name and the fetch key are the
 same value, so the check is free.
 
-### 3.4 The object's name is part of the format, not of the transport
+### 3.4 The object's name is final before framing begins
 
-The key **MUST** be derived by this layer, from plaintext content, and **MUST NOT**
-be supplied by the caller as an opaque token the caller invented.
+The tier **MUST** receive the object's name already derived, **MUST NOT** invent
+one, and **MUST NOT** begin framing before it has one. A caller that supplies a name
+it drew at random, or that expects the tier to supply one, is using this contract
+wrongly in a way §5 cannot detect.
 
-RFC 3 §2.1–§2.3 state the *properties* the key must have — content-derived, stable,
-encoding nothing mutable. Those are requirements the syncer places on the tier.
-This section says the derivation is the tier's to perform, and the reason is §3.2:
-the name is carried inside the object and, where records are authenticated, bound
-into their authentication. A name chosen elsewhere therefore has to exist before
-the framing does and be threaded into it. A layer that both derives and frames has
-one ordering to get right; a layer handed a name from outside has two, and the
-second one is a cross-component ordering nobody owns.
+Three documents meet at this rule and each owns one part of it. **RFC 2 §4.2** owns
+the derivation, because a block's name is a function of the chunk hashes it holds
+and that is an identity rule, sitting beside the chunk rule rather than in a second
+document. **RFC 3 §2.1–§2.3** owns the properties the name must have — stable,
+content-derived, encoding nothing mutable — because the syncer is what an unstable
+name would break. **This section** owns only the timing: the name must be fixed
+before the first byte is framed, because §3.2 carries it in the object and binds it
+into every authenticated record, so a name that arrives late cannot be threaded
+back through bytes already written.
+
+Timing is the whole of the tier's interest here, and it is worth saying why the
+derivation is *not* also the tier's, since that is the tempting simplification. A
+tier that derived the name would have to know what a chunk is and how blocks are
+assembled, which §1.1 denies it, and identity would then be specified in two
+documents that could drift. Requiring the name to arrive final costs one
+precondition and keeps identity in one place.
 
 ### 3.5 Format changes are migrations
 
@@ -649,7 +659,7 @@ closed by amending RFC 0 §1.2.
 | R1 | A stored object is interpretable from its own bytes. |
 | R2 | Every record carries the content hash of its plaintext. |
 | R3 | The exported read verifies against a caller-supplied hash before returning a byte. |
-| R4 | The key is derived at this layer, from plaintext content. |
+| R4 | The name the tier is given is final before framing begins, and the tier invents none. |
 | R5 | Seal and read are exact inverses. |
 | R6 | The transform chain is recoverable from the object, not from configuration. |
 | R7 | A put of an existing key succeeds, and a delete of an absent key succeeds. |
