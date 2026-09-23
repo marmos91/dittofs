@@ -35,7 +35,7 @@ This document **MUST NOT** be read as specifying:
 - when to transfer, or what — that is flush and eviction policy (RFC 0 §5.2, §8.1);
 - what to delete — that is sweep (RFC 0 §8.3, RFC 7);
 - how many transfers may be in flight, or what happens when the remote is
-  unavailable — that is the syncer (RFC 3 §5, §6);
+  unavailable — that is the syncer (RFC 3 §2, §5);
 - what a file, an extent or a segment is.
 
 ### 1.2 Why this is a contract and not a component
@@ -98,7 +98,7 @@ The syncer is almost nothing but memory.
 Fold the syncer into the backends — let each backend manage its own concurrency,
 health and retries — and three things break.
 
-**The bound cannot be stated.** RFC 3 §6.1 makes the concurrency limit a *memory*
+**The bound cannot be stated.** RFC 3 §2.2 makes the concurrency limit a *memory*
 bound before it is anything else. Memory is a property of the process, not of a
 backend. In this system a share owns a block store while the backend behind it is
 ref-counted across shares (CLAUDE.md, architecture invariant 4), so one backend can
@@ -106,7 +106,7 @@ serve several shares and one share's traffic can span the same backend as anothe
 A limit owned by a backend therefore bounds neither the share nor the process, and
 a process with two backends would have two bounds and no total.
 
-**Every cross-transfer rule gets N chances to be wrong.** RFC 3 §5.3's latched
+**Every cross-transfer rule gets N chances to be wrong.** RFC 3 §5's latched
 health flag is the canonical failure, and it is a state-machine bug, not a backend
 bug. Written once above the contract it is one state machine with one conformance
 check. Written per backend it is N state machines, N chances to latch, and a
@@ -124,7 +124,7 @@ the thing being uploaded through.
 Fold the backend into the syncer — one component that speaks S3 directly — and two
 things break.
 
-**Failure injection loses its seam.** RFC 3 §10.3 requires that every Group A check
+**Failure injection loses its seam.** RFC 3 §7.3 requires that every Group A check
 run against a backend that can lose, corrupt, delay and half-complete, and forbids
 a sink that always succeeds from standing in. That requirement is satisfiable only
 if there is a substitutable seam, and this contract *is* that seam. The split is
@@ -147,10 +147,10 @@ from §2.1 in every case; the rightmost column says which.
 | What "durable" means | which response from *this* backend carries it (§5.6) | what to do once told | the answer is per backend; the action spans transfers |
 | Liveness | one probe operation (§5.8) | the derived state, its thresholds, its recovery | a probe is one operation; a state is many |
 | Retry | none (§5.7) | whether, when, and within what bound | an attempt is one operation; a budget spans them |
-| An unknown outcome | report it as unknown | resolve it as not durable (RFC 3 §5.2) | reporting is local; resolving implies a next attempt |
+| An unknown outcome | report it as unknown | resolve it as not durable (RFC 3 §2.5) | reporting is local; resolving implies a next attempt |
 | Concurrency | none | the window, its ceiling, its adaptation | a limit exists only across operations |
 | Peak memory | none | the bound, per process | memory is not a backend's to bound |
-| The key | receives it final, before framing (§3.4) | requires its properties (RFC 3 §2.1–§2.3) | derived from content by RFC 2 §4.2; neither side invents it |
+| The key | receives it final, before framing (§3.4) | requires its properties (RFC 2 §4.2–§2.3) | derived from content by RFC 2 §4.2; neither side invents it |
 | Compression, encryption | the whole chain (§4) | **MUST NOT** know one happened | a transform is per object |
 | Verification | verifies before returning (§6) | need not re-verify | the hash is in the object |
 | Byte ranges | internal only (§6.2) | never issues one | a range is how a verified read is built |
@@ -160,7 +160,7 @@ from §2.1 in every case; the rightmost column says which.
 
 Two rows are worth reading twice, because they are the ones an implementation
 drifts across without noticing. **Retry** looks local — one call, one backoff loop
-— but a retry budget is a bound, and RFC 3 §5.1 makes bounded time the syncer's
+— but a retry budget is a bound, and RFC 3 §2.4 makes bounded time the syncer's
 obligation; §5.7.1 records that this row is where the current code drifts.
 **Verification** looks like the syncer's job because the syncer is the one that
 would be blamed for corrupt bytes, but the hash lives in the stored record, so the
@@ -181,9 +181,9 @@ no boundary at all.
 | The put itself, and the durability report (§3, §4.1) | `pkg/block/engine/flush.go`, `engineBlockSink.CommitBlock` | — |
 
 The consequence is not a bug today; it is that two of RFC 3's rules are currently
-unenforceable by construction. RFC 3 §5.4 says the syncer reports health and *the
+unenforceable by construction. RFC 3 §5 says the syncer reports health and *the
 engine* decides what follows — but both sides are the same package, so nothing
-stops a decision from being taken where the report is produced. RFC 3 §3.3 says the
+stops a decision from being taken where the report is produced. RFC 3 §2.7 says the
 syncer reports durability and does not record it — but the recording call site
 (`CommitBlock`) and the reporting one are in the same file. A rule whose whole
 content is "these two things are separate" needs them to be separable.
@@ -241,13 +241,13 @@ additive in none.
 this tier owns none.
 
 **RFC 7 does not restate transfer semantics.** Sweep deletes through this contract
-and, while RFC 3 §2.1.1 stands, enumerates through it (§5.4.1). Without a shared
+and, while RFC 2 §4.2.1 stands, enumerates through it (§5.4.1). Without a shared
 document those semantics would have to appear in both RFC 3 and RFC 7, in two
 voices, with no mechanism for noticing when they diverged — and the pair most
 likely to diverge is idempotent delete, which both depend on for crash recovery and
 neither would think to check against the other.
 
-**RFC 3 keeps its subject and loses a section it never wanted.** RFC 3 §7 states two
+**RFC 3 keeps its subject and loses a section it never wanted.** RFC 8 §4 states two
 properties of transformation and stops, because a syncer that says more about
 compression is a syncer that knows a transform happened, which §4.4 forbids. Those
 two properties are requirements *on* this tier, and §4 is where they are discharged.
@@ -321,7 +321,7 @@ opening the seal.
 
 | # | Guarantee | Why it is load-bearing |
 | --- | --- | --- |
-| F1 | A record is addressable without reading the whole object | this is what makes RFC 3 §4.3's partial retrieval possible at all |
+| F1 | A record is addressable without reading the whole object | this is what makes RFC 8 §6.1's partial retrieval possible at all |
 | F2 | Every record carries the content hash of its plaintext | verification (§6) needs an anchor inside the object |
 | F3 | The object names itself | a misdelivered or mis-keyed object is detectable rather than served |
 | F4 | The version is in the first bytes | an object this build cannot read fails loudly instead of being misparsed |
@@ -329,7 +329,7 @@ opening the seal.
 
 F3 is the one that looks redundant and is not. Without it, an object fetched under
 the wrong key is indistinguishable from the right one until a hash check fails, and
-with RFC 3 §2.1's content-derived key the preamble name and the fetch key are the
+with RFC 2 §4.2's content-derived key the preamble name and the fetch key are the
 same value, so the check is free.
 
 ### 3.4 The object's name is final before framing begins
@@ -342,7 +342,7 @@ wrongly in a way §5 cannot detect.
 Three documents meet at this rule and each owns one part of it. **RFC 2 §4.2** owns
 the derivation, because a block's name is a function of the chunk hashes it holds
 and that is an identity rule, sitting beside the chunk rule rather than in a second
-document. **RFC 3 §2.1–§2.3** owns the properties the name must have — stable,
+document. **RFC 2 §4.2–§2.3** owns the properties the name must have — stable,
 content-derived, encoding nothing mutable — because the syncer is what an unstable
 name would break. **This section** owns only the timing: the name must be fixed
 before the first byte is framed, because §3.2 carries it in the object and binds it
@@ -381,7 +381,7 @@ written in different places and will drift if nothing pins them together.
 ### 4.2 Identity is over plaintext, at every layer
 
 The content hash of a chunk, and the key of a block, **MUST** be functions of
-plaintext (RFC 3 §7.1).
+plaintext (RFC 8 §4.2).
 
 If either were a function of transformed bytes, it would depend on the compression
 level, the encryption key and the library version, so identical content would stop
@@ -391,7 +391,7 @@ would re-key the corpus.
 ### 4.3 The chain travels with the object
 
 How an object was transformed **MUST** be recoverable from the object, not from
-configuration (RFC 3 §7.2). Configuration describes the *next* write; if it is also
+configuration (RFC 8 §4.3). Configuration describes the *next* write; if it is also
 the only record of past writes, changing it makes existing data unreadable.
 
 ### 4.4 The syncer MUST NOT observe that a transform happened
@@ -416,13 +416,13 @@ correct, and the one that gets it wrong is whichever is used less:
 
 | Operation | Obligation |
 | --- | --- |
-| put | make one object retrievable under one key, atomically in effect (RFC 3 §4.1) |
+| put | make one object retrievable under one key, atomically in effect (RFC 3 §3.4) |
 | read | return a verified unit (§6.1) |
 | delete | remove one object, idempotently (§5.5) |
 
 A fourth, **enumeration**, is required only by consumers that must find objects
 they cannot name. §5.4 states its obligations and §5.4.1 states why it is not
-unconditional, because the answer bears on RFC 3 §2.1.1.
+unconditional, because the answer bears on RFC 2 §4.2.1.
 
 A **probe** (§5.8) is not an operation on an object and is listed apart from these.
 
@@ -442,7 +442,7 @@ backend it was not written against.
 The set **MUST** distinguish at least: the object is absent; the request was
 malformed; the backend refused; the backend failed. The first three are decisions
 a caller can act on differently and collapsing any pair of them removes a choice
-the caller is required to make (RFC 3 §5.1's classification).
+the caller is required to make (RFC 3 §2.4's classification).
 
 ### 5.3 A read returns the requested unit or an error
 
@@ -486,10 +486,10 @@ An object store that can be enumerated is convenient. An object store that *must
 be enumerated is a store whose contents cannot be reached from what references
 them, and that is a property of the naming scheme rather than of the tier.
 
-Under RFC 3 §2.1, where a key is a function of content, everything durable is
+Under RFC 2 §4.2, where a key is a function of content, everything durable is
 reachable from the content that names it, and the only remaining reason to walk is
 to audit for objects nothing should have written. Under an allocated key it is the
-sole way to find an object whose record never landed — which is why RFC 3 §2.1.1's
+sole way to find an object whose record never landed — which is why RFC 2 §4.2.1's
 deviation is what currently makes this operation load-bearing.
 
 An implementation **MUST NOT** read that as licence to depend on enumeration for
@@ -499,7 +499,7 @@ that has made the listing an index, and RFC 1 §4.4 governs indexes.
 ### 5.5 A put of an existing key succeeds; so does a delete of an absent one
 
 Both **MUST** be idempotent, and for the same reason: the caller that issues either
-may be a retry of a caller that already succeeded and did not learn so (RFC 3 §5.2),
+may be a retry of a caller that already succeeded and did not learn so (RFC 3 §2.5),
 or a sweep re-running after a crash mid-pass. An operation that fails because it
 already happened turns recovery into an error.
 
@@ -508,7 +508,7 @@ already happened turns recovery into an error.
 A backend **MUST** state which of its responses means the object is durably stored,
 and **MUST NOT** report success on a weaker one.
 
-RFC 3 §3.1 requires an implementation to *know* this; this is where it is written
+RFC 8 §5.6 requires an implementation to *know* this; this is where it is written
 down. A backend that acknowledges before committing, that buffers, that writes
 through a cache, or that acknowledges at a weaker consistency level than the
 deployment requires has not supplied the evidence, and the declaration is what
@@ -521,7 +521,7 @@ concurrency limit or a queue.
 
 All five are §2.1's other side, and all five are invisible to the component that
 is required to bound them. The specific damage differs — a hidden retry budget
-breaks RFC 3 §5.1's bounded time, a hidden health flag reintroduces §5.3's latch
+breaks RFC 3 §2.4's bounded time, a hidden health flag reintroduces RFC 3 §5's latch
 below where anything can observe it — but the shape is the same: a bound that is
 not stated where it is owned is a bound nobody can add up.
 
@@ -536,20 +536,20 @@ therefore retries below the contract.
 | --- | --- | --- |
 | Attempts per operation | the backend, at construction | 10 by default (`store.go:160`) |
 | Maximum backoff | the backend | 30 s |
-| Retry policy across operations | the syncer (RFC 3 §5.1) | bounded, with classification |
+| Retry policy across operations | the syncer (RFC 3 §2.4) | bounded, with classification |
 | The product of the two | nobody | — |
 
 This is not automatically wrong — bounded attempts have to live somewhere, and the
-SDK's are bounded. What is wrong is that they are not *visible*: RFC 3 §5.1 makes
+SDK's are bounded. What is wrong is that they are not *visible*: RFC 3 §2.4 makes
 bounded completion the syncer's obligation, and the syncer cannot see, configure
 per operation, or compose with a budget it is not told about. The effective worst
 case is the product of two independently-chosen limits and neither layer states it.
 
 There is a second, sharper consequence. A put retried inside the SDK has already
-resolved an ambiguous outcome once, silently, before RFC 3 §5.2 ever sees one — and
+resolved an ambiguous outcome once, silently, before RFC 3 §2.5 ever sees one — and
 that is safe today only because the key is allocated rather than content-derived,
 so the retry is a plain overwrite of the same key. The deviation that makes this
-one harmless is RFC 3 §2.1.1. Fixing §2.1.1 does not make this worse, but it does
+one harmless is RFC 2 §4.2.1. Fixing it does not make this worse, but it does
 mean the two must be reasoned about together rather than separately.
 
 Two ways out, and this document does not choose:
@@ -567,7 +567,7 @@ state, and **MUST NOT** expose a health *status*.
 
 The difference is the whole of §2.1 in miniature. A probe answers "did this one
 call work". A status answers "is this backend usable", which is a claim about
-recent history, and history is the syncer's (RFC 3 §5.3). A backend that returns a
+recent history, and history is the syncer's (RFC 3 §5). A backend that returns a
 status has already decided a question RFC 3 requires to be derived and never
 latched, below the layer that could observe the latch.
 
@@ -579,7 +579,7 @@ The read a caller may use **MUST** take the expected content hash of exactly the
 unit it returns, **MUST** verify before returning any byte, and **MUST** return an
 error rather than unverified bytes.
 
-This is where RFC 3 §4.2 and §4.3 are discharged, and §2.4 explains why here rather
+This is where RFC 8 §6.1 and §4.3 are discharged, and §2.4 explains why here rather
 than above: the anchor is the hash in the record (F2), which is local to one object.
 A verification that happens above this line happens once per caller, and the number
 of callers only grows.
@@ -587,7 +587,7 @@ of callers only grows.
 ### 6.2 Deviation — the raw range read is exported
 
 `GetBlockRange` sits on the same interface as the verified chunk read, takes no
-hash, and returns whatever the backend gives it. RFC 3 §4.2.1 records the symptom
+hash, and returns whatever the backend gives it. RFC 8 §6.2 records the symptom
 and leaves the choice open; this document makes the choice: the range read is how
 §6.1 is *built*, and it belongs below the contract's surface, not on it.
 
@@ -612,7 +612,7 @@ of it.
 | reconcile | enumerate | RFC 7 | **contingent** |
 
 The last two are marked because the case must not be overstated. Both exist to find
-objects that cannot be reached from what references them, and RFC 3 §2.1.1 is why
+objects that cannot be reached from what references them, and RFC 2 §4.2.1 is why
 that is currently necessary. Under a content-derived key they shrink to an audit
 that is worth running and not required for correctness (§5.4.1). The argument for
 this contract's existence therefore rests on the first three, which survive that
@@ -729,8 +729,8 @@ does not reach.
 1. **Where the retry budget lives** (§5.7.1). Two exits are stated and neither is
    obviously right. Surfacing the SDK's bound is cheap and leaves the retry logic
    where it is tested; owning it above makes the bound and the classification one
-   decision, and RFC 3 §5.1 already assigns the classification there. This wants
-   deciding with RFC 3 §2.1.1, not separately.
+   decision, and RFC 3 §2.4 already assigns the classification there. This wants
+   deciding with RFC 2 §4.2.1, not separately.
 2. **Whether the sealed record header earns its cost** (§3.2.1). Sealing the header
    hides chunk hashes and lengths from anyone who can read the object, at the cost
    of a per-record AEAD open before the record can even be located. Whether the
@@ -741,13 +741,13 @@ does not reach.
    replication lag, consistency level and regional durability all qualify it, and
    none of it is written down for either backend today.
 4. **Whether the preamble name should be the content key** (§3.3 F3, §3.4). With
-   RFC 3 §2.1.1 fixed, the two become the same value and F3's check is free. While
+   RFC 2 §4.2.1 fixed, the two become the same value and F3's check is free. While
    the key is allocated, the preamble name is a second copy of a value that means
    nothing outside the object, and F3 detects only misdelivery.
 5. **Whether the collapse of §2.6 should be done now, and in what order.** The
    deletions follow from the rules, but they are not independent: exporting one
    verified read (§6.1) requires framing to move inside the tier (§3.4), which
-   requires the key derivation to move with it, which is RFC 3 §2.1.1. Done in that
+   requires the key derivation to move with it, which is RFC 2 §4.2.1. Done in that
    order each step is small; done in any other, the middle steps have to keep two
    naming schemes alive at once. Whether that sequence is worth running before the
    metadata RFCs land is a scheduling question this document cannot answer alone.

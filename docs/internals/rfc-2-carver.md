@@ -432,7 +432,7 @@ buffer that merely contains it.
 ### 4.2 A block
 
 A block's identity is **derived** from the ordered hashes of the chunks it holds,
-under a distinct domain from §4.1, together with the key scope of RFC 3 §2.2. It
+under a distinct domain from §4.1, together with the key scope of §4.3. It
 **MUST NOT** be generated, allocated, sequenced, drawn at random, or assigned by
 the remote tier.
 
@@ -472,9 +472,31 @@ components call it:
 The engine's call also puts an algorithm in the component RFC 0 §1.1 says owns none.
 
 The full cost of the random name, and the machinery it obliges the rest of the
-system to carry, is recorded once in RFC 3 §2.1.1 rather than restated here. What
+system to carry, is recorded once in RFC 3 rather than restated here. What
 belongs here is the part this document is responsible for: the rule that says a
 block's name is derived, like a chunk's, and that no component needs a generator.
+
+### 4.3 Key scope
+
+A name **MAY** include a scope that partitions the name space. The scope decides
+whether two shares holding identical content resolve to one object or to two.
+
+The scope **MUST** be chosen explicitly rather than inherited from how names happen
+to be built, and **MUST NOT** vary between attempts to store one block, or the
+idempotency §4.2 buys is lost.
+
+The two settings differ in kind, not in degree:
+
+| | One scope | Scope per share |
+| --- | --- | --- |
+| Identical content in two shares | one object | one object per share |
+| Storage cost | paid once | paid per share |
+| Sweep | counts references across shares | independent per share |
+| What one share can infer | that another holds the same block, from a dedup hit | nothing |
+
+The scope is encoded in every name ever written, so changing it later orphans
+every existing object at once (§4.2). It is settled before the first deployment
+that shares a remote store between shares, not after.
 
 ## 5. Packing: three rules, not a component
 

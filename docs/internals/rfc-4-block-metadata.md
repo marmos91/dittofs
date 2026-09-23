@@ -42,7 +42,7 @@ Block metadata **MUST NOT**:
   (RFC 0 §4.1) — that is the journal's question, and residency is computed, not
   stored (RFC 0 §4.2);
 - observe durability — it records reports, and a record with no report behind it
-  is a claim nothing verified (RFC 0 §4.3, RFC 3 §3.3);
+  is a claim nothing verified (RFC 0 §4.3, RFC 3 §2.7);
 - own names, directories, handles, permissions or locks — that is RFC 5;
 - decide what to flush, evict or sweep — it supplies the atomic operations those
   decisions need (§7) and nothing more;
@@ -107,13 +107,13 @@ it makes the list a key every flush and every writer contend on (§5).
     Chunk(hash) = { block, position, length, refcount }
 
 A chunk is keyed by its BLAKE3-256 hash and by nothing else (RFC 2 §4). There is
-**one chunk record per hash** in a namespace (RFC 3 §2.2), however many files and
+**one chunk record per hash** in a namespace (RFC 2 §4.3), however many files and
 offsets use it. A record keyed by `(file, offset)` that also carries a refcount
 is a ref wearing a chunk's name, and the refcount on it counts nothing.
 
 `block` and `position` locate the chunk's bytes: the remote key of the block that
 carries it and where in that block it sits. This is what a partial retrieval
-aligns to (RFC 3 §4.3).
+aligns to (RFC 8 §6.1).
 
 ### 2.3 Block
 
@@ -150,7 +150,7 @@ A refcount is only as good as the set of refs it counts. If a ref exists that th
 count does not include, the count is low, and sweep deletes referenced content.
 
 The records of §2 **MUST** therefore be held in one store per remote key
-namespace (RFC 3 §2.2). A deployment **MUST** do one of two things:
+namespace (RFC 2 §4.3). A deployment **MUST** do one of two things:
 
 - **One store per namespace.** Every share whose blocks can share a remote key
   records its refs in the store that counts them.
@@ -307,7 +307,7 @@ later read or a later sweep into a guess.
 ### 4.2 Only after durability
 
 A commit **MUST NOT** run before the syncer has reported the block durable
-(RFC 3 §3). Chunk and block records are therefore records of durable content, and
+(RFC 3 §2.6). Chunk and block records are therefore records of durable content, and
 nothing else.
 
 This is the rule that collapses RFC 0's five metadata states into §3.2's three. No
@@ -315,7 +315,7 @@ record says "this chunk exists but its block might not", so no reader has to
 decide what that means.
 
 > *Note.* Recording refs before the put would let a crash leave refs to a block
-> that was never written. With content-derived keys (RFC 3 §2.1) that is not a
+> that was never written. With content-derived keys (RFC 2 §4.2) that is not a
 > leak, but it is a ref to nothing, and every reader would have to check
 > durability on every ref. Committing after the report costs a window in which an
 > uploaded block is recorded nowhere. That window is safe, because the key is its
@@ -525,7 +525,7 @@ separate step deletes a block that a commit re-adopted between the read and the
 delete.
 
 Retiring the records before deleting the remote object means a crash between the
-two leaves an object nothing references. With content-derived keys (RFC 3 §2.1)
+two leaves an object nothing references. With content-derived keys (RFC 2 §4.2)
 that object is findable by its content, and it is RFC 7's to collect. The reverse
 order leaves records naming an object that no longer exists, so every read of
 those chunks fails — which is **Lost** for content that was durable.
