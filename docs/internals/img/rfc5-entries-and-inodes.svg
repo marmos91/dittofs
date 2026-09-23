@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 400" width="900" height="400" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <style>
+      .t  { font-size: 15px; font-weight: 600; fill: #1b1f24 }
+      .rl { font-size: 12px; font-weight: 600; fill: #1b1f24 }
+      .l  { font-size: 12px; fill: #3d444d }
+      .s  { font-size: 11px; fill: #5b6472 }
+      .m  { font-family: ui-monospace,SFMono-Regular,Menlo,monospace; font-size: 11px; fill: #1b1f24 }
+      .why { font-size: 11px; fill: #b04a4a }
+      .bx { fill: #dce9f7; stroke: #4a7fb5; stroke-width: 1.4 }
+      .bg { fill: #eaf4ec; stroke: #2f6f4f; stroke-width: 1.4 }
+      .bn { fill: #f4f6f8; stroke: #9aa4b2; stroke-width: 1.1 }
+    </style>
+    <marker id="a5r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5b6472"/>
+    </marker>
+  </defs>
+  <rect width="900" height="400" fill="#ffffff"/>
+
+  <text x="16" y="26" class="t">One entry is one name; the inode is named by entries and does not name itself</text>
+  <text x="16" y="46" class="s">Each entry is its own record. A directory is never one record holding a list, however few names it has today.</text>
+
+  <text x="16" y="82" class="rl">Entries — key (parent, name)</text>
+  <text x="516" y="82" class="rl">Inodes — key FileID</text>
+
+  <rect x="16" y="96" width="232" height="34" rx="3" class="bx"/>
+  <text x="28" y="118" class="m">(dir-A, "report.txt")</text>
+
+  <rect x="16" y="142" width="232" height="34" rx="3" class="bx"/>
+  <text x="28" y="164" class="m">(dir-B, "copy.txt")</text>
+
+  <rect x="16" y="188" width="232" height="34" rx="3" class="bx"/>
+  <text x="28" y="210" class="m">(dir-A, "notes.md")</text>
+
+  <rect x="516" y="96" width="256" height="80" rx="3" class="bg"/>
+  <text x="528" y="118" class="rl">inode 7f3a…</text>
+  <text x="528" y="138" class="m">mode, uid, gid, times</text>
+  <text x="528" y="156" class="m">nlink = 2</text>
+
+  <rect x="516" y="188" width="256" height="62" rx="3" class="bg"/>
+  <text x="528" y="210" class="rl">inode c104…</text>
+  <text x="528" y="230" class="m">nlink = 1</text>
+
+  <line x1="250" y1="113" x2="512" y2="124" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a5r)"/>
+  <line x1="250" y1="159" x2="512" y2="146" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a5r)"/>
+  <line x1="250" y1="205" x2="512" y2="212" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a5r)"/>
+
+  <text x="290" y="106" class="s">two names,</text>
+  <text x="290" y="120" class="s">one inode</text>
+
+  <text x="784" y="122" class="s">size is not</text>
+  <text x="784" y="136" class="s">here — it is</text>
+  <text x="784" y="150" class="s">in existence</text>
+
+  <line x1="16" y1="274" x2="884" y2="274" stroke="#eef1f4"/>
+
+  <text x="16" y="300" class="rl">Which side each operation writes</text>
+  <text x="16" y="322" class="l">Rename — one entry removed, one installed. The inode is untouched, so the handle, the locks and the refs are untouched too.</text>
+  <text x="16" y="340" class="l">Link, unlink — one entry, and nlink in the same transaction. Unlink of the last name does not release an inode that is still open.</text>
+  <text x="16" y="358" class="l">chmod, chown — the inode only. No entry moves, and no name is read to find it.</text>
+  <text x="16" y="386" class="why">Not here: size, mtime on write, holes. Those move with existence, in one transaction, because a write past EOF changes all three at once.</text>
+</svg>
