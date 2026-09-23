@@ -55,7 +55,7 @@ an unknown outcome recoverable by simple retry.
 ### 2.1 A block's key MUST be derived from its content
 
 The remote key of a block **MUST** be a pure function of the block's bytes (and of
-the namespace of §2.2). It **MUST NOT** be allocated, sequenced, randomly
+the scope of §2.2). It **MUST NOT** be allocated, sequenced, randomly
 generated, or assigned by the remote tier.
 
 This single rule is what makes the rest of the document possible, and the
@@ -87,7 +87,7 @@ The current implementation fails §2.1. A block's key is sixteen bytes of
 
 | | Required by §2.1 | Shipped |
 | --- | --- | --- |
-| Key source | `f(content, namespace)` | `crypto/rand`, 16 bytes hex (`pkg/block/block_record.go:29`) |
+| Key source | `f(content, scope)` | `crypto/rand`, 16 bytes hex (`pkg/block/block_record.go:29`) |
 | On-wire key | — | `blocks/<blockID>` (`pkg/block/locator.go:35`) |
 | Allocated | — | before the transfer (`pkg/block/engine/flush.go:392`) |
 | Recorded | — | after it (`flush.go:446` put, then the commit) |
@@ -140,30 +140,29 @@ self-consistent, and it is exactly the property §7.1 already requires: identity
 a function of untransformed content. §4.2's whole-block verification then verifies
 the payload rather than the object.
 
-Deciding this also forces §2.2, because the namespace is part of the key.
+Deciding this also forces §2.2, because the scope is part of the key.
 
 This document does not schedule the migration. It records that the current state
 fails §2.1, that the failure is paid for rather than suffered, and that the
 discrepancy **MUST NOT** be closed by amending §2.1.
 
-### 2.2 Namespace
+### 2.2 Key scope
 
-A key **MAY** additionally be a function of a namespace fixed for the lifetime of
-the store. The namespace decides whether two tenants holding identical content
-share an object.
+A key **MAY** include a scope that partitions the key space. The scope decides
+whether two shares holding identical content resolve to one object or to two.
 
-An implementation **MUST** make that choice explicit rather than inheriting it
-from how keys happen to be built, because the two outcomes differ in kind:
-
-| | One namespace | Namespace per tenant |
-| --- | --- | --- |
-| Identical content across tenants | one object | one object per tenant |
-| Storage cost | paid once | paid per tenant |
-| Sweep | must count refs across tenants | independent per tenant |
-| Disclosure | a tenant can learn another holds a block, by observing dedup | none |
-
-The namespace **MUST NOT** vary between attempts at the same transfer, or §2.1's
+The scope **MUST** be chosen explicitly rather than inherited from how keys happen
+to be built, and **MUST NOT** vary between attempts at one transfer, or §2.1's
 idempotency is lost.
+
+The two settings differ in kind, not in degree:
+
+| | One scope | Scope per share |
+| --- | --- | --- |
+| Identical content in two shares | one object | one object per share |
+| Storage cost | paid once | paid per share |
+| Sweep | counts references across shares | independent per share |
+| What one share can infer | that another holds the same block, from a dedup hit | nothing |
 
 ### 2.3 What a key MUST NOT encode
 
@@ -575,11 +574,11 @@ reverting the code and watching it fail on its own assertion.
 
 ## 11. Open questions
 
-1. **Namespace granularity** (§2.2). One namespace maximises dedup; per-tenant
-   maximises isolation and makes sweep independent. The disclosure channel is
-   real but narrow, and the storage saving is unmeasured on the actual corpus.
-   This wants deciding before the first multi-tenant deployment, because it is
-   encoded in every key ever written (§2.3).
+1. **Key scope** (§2.2). One scope maximises deduplication; a scope per share
+   isolates shares and makes sweep independent. The inference channel is real but
+   narrow, and the storage saving is unmeasured on the actual corpus. The scope is
+   encoded in every key ever written (§2.3), so it is settled before the first
+   deployment that shares a remote store between shares, not after.
 2. **Partial retrieval's value** (§4.3). The mechanism is specified; whether it
    earns its complexity depends on how often a read touches a small part of a
    block, which depends on the chunk target of RFC 2 open question 1. The two
