@@ -11,7 +11,6 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/journal"
-	"github.com/marmos91/dittofs/pkg/block/local"
 	memorylocal "github.com/marmos91/dittofs/pkg/block/local/memory"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
@@ -62,7 +61,7 @@ func (f *failingPutLocal) Hydrate(_ context.Context, _ journal.FileID, _ int64, 
 // post-#1493 fetch path resolves block locators from, the inFlight map, and a
 // nil HealthMonitor (so IsRemoteHealthy returns true). Coordinator is unused
 // on this path.
-func newFetchSyncer(localStore local.LocalStore, rs remote.RemoteStore, fbs block.EngineFileChunkStore, shs metadata.SyncedHashStore) *RemoteSync {
+func newFetchSyncer(localStore journal.LocalStore, rs remote.RemoteStore, fbs block.EngineFileChunkStore, shs metadata.SyncedHashStore) *RemoteSync {
 	return &RemoteSync{
 		local:           localStore,
 		remoteStore:     rs,

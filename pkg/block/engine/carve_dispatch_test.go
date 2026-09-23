@@ -11,7 +11,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/marmos91/dittofs/pkg/block/journal"
-	"github.com/marmos91/dittofs/pkg/block/local"
 	"github.com/marmos91/dittofs/pkg/block/local/memory"
 	"github.com/marmos91/dittofs/pkg/block/syncer"
 )
@@ -23,7 +22,7 @@ import (
 // another part of the interface gets that store's honest answer instead of a
 // nil dereference.
 type carveFanoutLocal struct {
-	local.LocalStore
+	journal.LocalStore
 	files    []string
 	started  chan string   // one send per Flush entry
 	release  chan struct{} // closed to let every held Flush return

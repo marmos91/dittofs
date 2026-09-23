@@ -135,12 +135,12 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 
 **6. BlockStore** (`pkg/block/`)
 - Per-share block storage orchestrator. Each share gets its own `*engine.Store` instance.
-- `engine.Store` composes the share's journal (`local.LocalStore`, in production always `*journal.Store`) + its one block store (`remote.RemoteStore`) + `engine.RemoteSync`
+- `engine.Store` composes the share's journal (`journal.LocalStore`, in production always `*journal.Store`) + its one block store (`remote.RemoteStore`) + `engine.RemoteSync`
 - Each share gets an isolated journal directory beneath `blockstore.journal.path`; block stores can be shared across shares (ref counted)
 - `shares.Service` owns the lifecycle (create on AddShare, close on RemoveShare)
 - Sub-packages:
   - `engine/`: BlockStore orchestrator — composes the journal and the block store and owns the unified CAS-keyed `Cache` (read buffering + prefetch), the syncer, and the garbage collector. See `pkg/block/engine/cache.go` for the Cache type.
-  - `journal/`: the on-disk journal every share gets — the production `local.LocalStore`
+  - `journal/`: the on-disk journal every share gets — the production `journal.LocalStore`
   - `local/`: the `LocalStore` interface plus `memory/`, an in-memory implementation used by tests
   - `remote/`: block store interface and implementations (`s3/` production, `memory/` testing)
   - `storetest/`: Conformance test helpers for new backend implementations
@@ -1598,7 +1598,7 @@ The offline `.blk`->CAS tool (`migrate-to-cas`) shipped through v0.21 and has
 been removed. The journal format stamp (`cmd/dfs/commands/start.go`'s
 `handleFormatMismatch`) refuses a directory a newer release wrote and exits 78
 (`EX_CONFIG`); the pre-journal blobs/+logs/ guard was deleted with
-`pkg/block/local/fs` — no production stores exist in field, so opening such a
+`pkg/block/journal/fs` — no production stores exist in field, so opening such a
 directory as an empty journal is accepted. Unlike the standalone-CAS case
 above, this one is a read-time answer, not a boot refusal.
 

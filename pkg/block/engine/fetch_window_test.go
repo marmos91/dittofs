@@ -9,7 +9,6 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/journal"
-	"github.com/marmos91/dittofs/pkg/block/local"
 	memorylocal "github.com/marmos91/dittofs/pkg/block/local/memory"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
@@ -97,7 +96,7 @@ func TestFetchBlock_StagesEveryChunkInBlock(t *testing.T) {
 // so a read path that reaches for another part of the interface gets that
 // store's honest answer instead of a nil dereference.
 type alwaysColdLocal struct {
-	local.LocalStore
+	journal.LocalStore
 }
 
 func (alwaysColdLocal) ReadAt(_ context.Context, _ journal.FileID, _ int64, dst []byte) (int, journal.ReadState, error) {

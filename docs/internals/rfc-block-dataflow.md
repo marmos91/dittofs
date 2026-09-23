@@ -162,7 +162,7 @@ split` stays mechanical as long as the import-graph test passes, so the option c
 hold.
 
 **DittoFS will use only the libraries' public APIs.** Today there are two contracts: the declared
-`local.LocalStore` (18 methods) and an informal one reached by embedding `*journal.Store` and by
+`journal.LocalStore` (18 methods) and an informal one reached by embedding `*journal.Store` and by
 unexported structural interfaces (`restorer`, `pinner`, `versioner`, `coldSeeder`,
 `coldRangeReporter`, `coldSeedTracker`). Those assertions **no-op silently on failure** — a
 rename inside journal would quietly disable snapshot pinning rather than break the build. After the

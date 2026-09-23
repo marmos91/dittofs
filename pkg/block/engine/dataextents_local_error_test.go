@@ -7,14 +7,13 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block/journal"
-	"github.com/marmos91/dittofs/pkg/block/local"
 )
 
 // failingExtentsLocal answers every DataExtents call with an error and
 // delegates the rest of the interface to a real in-memory store, so only the
 // one failure under test is simulated.
 type failingExtentsLocal struct {
-	local.LocalStore
+	journal.LocalStore
 	err error
 }
 

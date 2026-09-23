@@ -8,7 +8,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
-	"github.com/marmos91/dittofs/pkg/block/local"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -47,7 +47,7 @@ const coldSeedBatchExtents = 64 << 10
 func seedColdIfNeeded(
 	ctx context.Context,
 	bs *engine.Store,
-	localStore local.LocalStore,
+	localStore journal.LocalStore,
 	fileChunkStore block.EngineFileChunkStore,
 	remoteConfigured bool,
 	shareName string,

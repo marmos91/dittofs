@@ -20,7 +20,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/block/journal"
-	"github.com/marmos91/dittofs/pkg/block/local"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -251,7 +250,7 @@ type staleSize struct {
 // swallowed — skipping a file would leave its metadata.Size stale and truncate
 // reads. A file the metadata store does not know is an orphan journal entry and
 // is simply skipped.
-func findStaleSizes(ctx context.Context, metadataStore metadata.Store, localStore local.LocalStore, files []string) ([]staleSize, error) {
+func findStaleSizes(ctx context.Context, metadataStore metadata.Store, localStore journal.LocalStore, files []string) ([]staleSize, error) {
 	if len(files) == 0 {
 		return nil, nil
 	}

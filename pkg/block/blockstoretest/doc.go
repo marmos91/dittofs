@@ -11,7 +11,7 @@
 // interface survives in pkg/block/blockstore.go.
 //
 // There is no append-log entrypoint either. The local tier (*journal.Store)
-// is payload-keyed — it exposes local.LocalStore (WriteAt / ReadAt / Hydrate
+// is payload-keyed — it exposes journal.LocalStore (WriteAt / ReadAt / Hydrate
 // / Commit) — and is covered by the journal suites and its own package tests.
 //
 // Each scenario uses a factory that returns a fresh (store, cleanup) pair per

@@ -2,7 +2,7 @@
 //
 // The tier contracts themselves live with their tiers: the block-keyed remote
 // surface on remote.RemoteBlockStore, the payload-keyed local absorber
-// (per-file append log + rollup) on pkg/block/local.LocalStore. What stays here
+// (per-file append log + rollup) on pkg/block/journal.LocalStore. What stays here
 // is what both sides speak — per-object metadata and the durability capability.
 //
 // The on-disk format-version stamp and the boot guard that refuses state
@@ -50,9 +50,8 @@ type Meta struct {
 // Type defaults (resolved at construction; an operator may override via the
 // per-store config["durable"] bool):
 //
-//   - local fs store        → true  (bytes are on disk, un-mirrored chunks are
+//   - local journal store   → true  (bytes are on disk, un-mirrored chunks are
 //     not evicted, survive restart, re-mirror async)
-//   - local memory store    → false (lost on crash/restart)
 //   - remote s3 store       → true  (durable object storage)
 //   - remote memory store   → false (test fixture, lost on restart)
 //

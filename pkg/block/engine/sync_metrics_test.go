@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block/local/memory"
+	"github.com/marmos91/dittofs/pkg/block/journal/memory"
 )
 
 // nopDataplaneMetrics satisfies both journal.MetricsRecorder (what SetMetrics
