@@ -428,6 +428,14 @@ func coldCompactWorthIt(logged, live int) bool {
 // is opportunistic — skipping a pass costs a stale log, dropping an entry an
 // append added mid-walk costs silent zeros for a range that appender has already
 // unlinked.
+//
+// ponytail: the abort is whole-snapshot rather than a per-shard merge of the
+// loaded log, and the log is still outside diskBytes, so what bounds its size is
+// this pass getting to run: a store whose shards never reach a completed fsync
+// (a sticky fsync failure freezes syncedVersion) or one appending through every
+// verify window grows the log as before. Merge the loaded log with the snapshot
+// shard by shard, or charge cold.log to the local cap, if a store is measured
+// growing it across ticks.
 func (s *Store) maybeCompactColdLog() {
 	if s.closed.Load() {
 		return
