@@ -2,142 +2,164 @@
 
 **Status:** draft.
 **Depends on:** RFC 0, for the terms, the data model and the invariants. RFC 1
-supplies the extents this component consumes. Nothing here redefines them.
+supplies the bytes this component reads. Nothing here redefines them.
 **Audience:** anyone changing `pkg/block/carver` or `pkg/block/chunker`.
 
 The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT** and **MAY** are
 to be interpreted as in RFC 2119.
 
-This document specifies what the carver is required to do. Where the current
-implementation does not satisfy a requirement, that is recorded as a **deviation**
-in its own subsection, with evidence. A deviation is a defect to be fixed or
-migrated, never a rule for an implementer to build around.
+Where the current implementation does not satisfy a requirement, that is recorded
+as a **deviation** in its own subsection, with evidence. A deviation is a defect
+to be fixed or migrated, never a rule for an implementer to build around.
 
 ---
 
 ## 1. Purpose
 
-The carver turns bytes into the units the remote tier addresses. Given a stream
-of one file's bytes, it answers one question:
+The carver cuts the bytes the journal is holding into the pieces that get uploaded.
 
-> **Where do the chunk boundaries fall, what is each chunk's identity, and which
-> chunks belong in this block?**
+> **Given a contiguous run of a file's bytes, say where the chunk boundaries fall
+> and what each chunk's content hash is.**
 
-It is the only component that decides a chunk boundary, and the only one that
-computes a chunk hash. Everything downstream — dedup, refcounts, sweep safety —
-rests on those two answers being reproducible.
+That is all of it. Chunks are not the product — blocks are, and a block is a whole
+number of chunks (RFC 0 §2.1). But assembling blocks is a fold over what the
+carver returns (§5), not a thing the carver does.
+
+The cutting earns its place for one reason: boundaries chosen by content, rather
+than by position, survive an edit elsewhere in the file. A region that did not
+change keeps its hash, so its bytes can be recognised as already stored and left
+out of the upload. Everything downstream — dedup, refcounts, sweep safety — rests
+on those cuts being reproducible, which is why most of this document is about
+them.
 
 ### 1.1 Non-goals
 
 The carver **MUST NOT**:
 
-- read from or write to any store, local or remote;
-- decide *when* to carve, or which extents to offer — that is flush policy
-  (RFC 0 §5.2);
-- record what it produced, or learn whether an upload succeeded;
-- know what a segment, a record or a remote key is;
-- import another component in this set (RFC 0 §1.2).
+- open, read or write anything — it is handed a reader and returns descriptors;
+- decide *when* to cut, or which bytes to offer — that is flush policy (RFC 0 §5.2);
+- assemble blocks, upload anything, or learn whether an upload succeeded;
+- know whether a chunk is already stored — it has no dedup oracle and requires no
+  interface from any other component;
+- know what a segment, a record, a block or a remote key is;
+- hold state between calls.
 
 Its dependency set is the standard library and a BLAKE3 implementation, and an
 import test **MUST** enforce that.
 
-### 1.2 Two parts, and only one of them is pure
+### 1.2 It is one function
 
-RFC 0 §1.1 assigns this component "bytes → chunks → blocks" and denies it I/O.
-Within that, exactly one half is a pure function, and purity **MUST NOT** be
-assumed of the other.
+The carver is a function, not an object with a lifecycle. Two calls with the same
+bytes and parameters produce the same result, in any order, concurrently, in any
+process.
 
-| | boundary function | accumulator |
-| --- | --- | --- |
-| What it is | where a chunk ends | packing chunks into blocks |
-| Cross-call state | none beyond immutable parameters | the pending batch, its byte arena, the un-cut residual |
-| Determinism | total: output is a function of its arguments | per stream, given the same feed sequence |
-| Calls out | never | to the skip oracle (§6) |
-| Instances | **MAY** be shared | one per file per pass; **MUST NOT** be shared |
+An indicative shape — the obligations, not the signature, are normative:
 
-The boundary function **MUST** be pure. That is what makes boundaries
-reproducible across processes, versions and machines, which is what makes a
-content hash an address.
+    Cut(r io.Reader, base int64, p Params, emit func(Chunk, []byte) error) error
 
-The accumulator is stateful, and has to be. A block spans more than one call by
-design (§5.2), so the batch being packed necessarily survives between calls. An
-implementation **MUST NOT** try to make it pure by emitting a block per call;
-block size would become a function of how the caller sliced its reads.
+    Chunk = { Offset int64; Length int32; Hash [32]byte }
 
-The split is a requirement, not a packaging choice. Whether the two live in one
-package or two is not this document's concern.
+`Cut` reads `r` to EOF, and for each chunk it cuts calls `emit` with the chunk's
+descriptor and its bytes. `base` is the file offset `r`'s first byte sits at, so
+`Offset` is a file offset and the carver never has to be told anything else about
+the file.
 
-## 2. What it produces
+Streaming happens inside. The carver holds one buffer and a partial chunk while it
+looks for the next boundary; neither is visible to the caller, and neither
+survives the call. A caller therefore has no cursor to advance and no state to
+keep in step.
 
-### 2.1 Chunk and block
+### 1.3 It is testable on its own, by construction
 
-A **chunk** is a run of bytes with content-defined ends, identified by the hash of
-its content (RFC 0 §2.1). The carver reports, for each chunk, its offset in the
-file, its length, its hash, and — only when the bytes still need uploading — the
-bytes.
+The carver declares no interfaces and requires no capability from any other
+component (§1.1). RFC 0 §1.2 obliges every component to build and pass its tests
+with each declared interface stubbed; here that holds vacuously, because there is
+nothing to stub.
 
-A **block** is a whole number of chunks (RFC 0 §2.1). A chunk **MUST NOT** span
-two blocks; §5.1 is how that is guaranteed.
+This is a requirement, not a happy accident, and an implementation **MUST**
+preserve it. Concretely, a conformance check for this document **MUST** be
+expressible as: construct parameters, hand `Cut` a byte slice and a closure,
+assert on what the closure saw. No store, no fake backend, no temp directory, no
+network, no clock, no goroutine.
 
-A chunk the skip oracle reported as already durable **MUST** still appear in the
-block's chunk list, carrying no bytes. It tiles the range without contributing to
-the upload. Dropping it leaves the file's chunk-ref list with a gap that no later
-pass reconstructs.
+Two properties follow that are worth naming because they decide how cheap the
+checks are:
 
-### 2.2 Three cursors, not one
+- **Determinism (B2) makes differential testing free.** Two implementations, or
+  one before and after a change, can be asserted bit-identical over random input.
+  The 11.6× result in §3.4 was established exactly this way, and that check is
+  the template rather than a one-off.
+- **Purity makes property testing free.** The invariants of §8 are properties of
+  a return value, so they can be fuzzed over random inputs and random parameters
+  without a fixture.
 
-A carve pass tracks three positions, and they advance at different rates.
-Conflating any two is the defect this section exists to prevent.
+An implementation that acquires a dependency here — a metadata lookup, a store
+handle, a logger with behaviour, a clock — forfeits both, and **MUST NOT**.
 
-| Cursor | Advances by | Names |
-| --- | --- | --- |
-| **fed** | bytes handed to the accumulator | the next byte to read from storage |
-| **cut** | bytes tiled into chunks | the first byte of the un-cut residual |
-| **emitted** | bytes in blocks handed back | what the caller may report durable |
+## 2. What a call covers
 
-![Three cursors on one file mid-pass: emitted, cut and fed, with the packed prefix, the cut chunks, the sub-minimum residual and the unread tail](img/rfc2-three-cursors.svg)
+### 2.1 One contiguous run per call
 
-`fed` leads `cut`, because a residual below the minimum chunk size is held until
-more bytes arrive or the stream ends. `cut` leads `emitted`, because a batch is
-not a block until it reaches the target.
+`r` **MUST** yield one contiguous run of the file's bytes. The caller splits at
+the gaps — RFC 1 §3.2 already hands it the gaps, so this costs it nothing.
 
-An implementation **MUST** drive its read position from `fed` and the chunk-offset
-argument from `cut`. Driving both from one cursor re-feeds bytes the residual
-already holds, and every re-fed byte is tiled into two chunks — the chunk-ref
-list then covers some offsets twice and the file's content is wrong from the first
-duplicated byte on.
+This is a structural guarantee rather than a rule, and that is the point. A chunk
+cannot span a gap because no call ever sees two runs, so a chunk can never hash
+bytes that are not adjacent in the file. There is no rolling state to reset at a
+run's end because there is no state between calls at all.
 
-## 3. Chunking
+A run's last chunk is emitted whole at whatever length remains and **MAY** be
+below the minimum. Content **MUST NOT** be padded to reach a chunk size.
 
-### 3.1 What the boundary function must guarantee
+> *Consequence, stated because it is a real cost:* a heavily fragmented file
+> produces one short chunk per run, and those chunks dedup only against other
+> copies of the same fragment. This is inherent — non-adjacent bytes cannot share
+> a chunk — and it is the caller's to avoid by offering larger runs.
 
-The requirements are properties, not an algorithm:
+### 2.2 The emitted bytes are borrowed
+
+The bytes passed to `emit` alias the carver's buffer and are valid **only for the
+duration of that call**. A caller that keeps them **MUST** copy them.
+
+The carver **MUST** document this and **MUST NOT** allocate per chunk to avoid it.
+Per-chunk allocation is what makes large-buffer zeroing the dominant cost of a
+carve pass, and the whole point of a synchronous callback is that the consumer is
+right there and can decide, once, whether these bytes are worth keeping.
+
+> *Note.* An earlier draft of this document required the opposite — that emitted
+> bytes belong to the caller outright. That rule was written for an interface
+> which returned assembled *blocks*, consumed long after the call, where
+> borrowing is genuinely unsafe. For a synchronous per-chunk callback it is the
+> standard contract, and `restic/chunker` uses exactly it.
+
+## 3. The boundary function
+
+### 3.1 What it must guarantee
+
+Properties, not an algorithm:
 
 | # | Requirement |
 | --- | --- |
 | B1 | **Content-defined.** A boundary's position depends on the bytes around it, not on an absolute offset or a count. |
 | B2 | **Deterministic.** The same bytes and parameters yield the same boundaries in any process, on any platform, at any version. |
-| B3 | **Bounded.** No chunk exceeds `Max`. No chunk is below `Min`, except a stream's final chunk. |
+| B3 | **Bounded.** No chunk exceeds `Max`. No chunk is below `Min`, except a run's final chunk. |
 | B4 | **Shift-resistant.** Inserting or removing bytes re-cuts only the chunks near the edit; boundaries beyond it are unchanged. |
 | B5 | **Locally dependent.** A boundary decision depends on a bounded window of preceding bytes, and the function **MUST** declare that window's size (§3.4). |
 
-B4 is the property the whole content-addressed model rests on — without it an
-edit re-hashes every chunk after it and nothing downstream dedups (RFC 0 §2.2).
-B5 is what makes the function cheap to evaluate and resumable.
+B4 is what the whole content-addressed model rests on — without it an edit
+re-hashes every chunk after it and nothing downstream dedups (RFC 0 §2.2). B5 is
+what makes the function cheap to evaluate.
 
 FastCDC with gear hashing and normalisation level 2 is the chosen instantiation,
-and BLAKE3-256 the chunk hash (RFC 0 §2.1, §3). An implementation **MAY** be
-replaced only by one satisfying B1–B5, and any replacement re-cuts all content
-and is a migration (§3.6).
+and BLAKE3-256 the chunk hash (RFC 0 §2.1, §3). A replacement **MUST** satisfy
+B1–B5, and any replacement re-cuts all content and is a migration (§3.6).
 
 ### 3.2 Parameters
-
-Three parameters, and each **MUST** mean what it says:
 
 | Parameter | **MUST** mean |
 | --- | --- |
 | `Target` | the expected chunk size the function realises on data with no exploitable structure |
-| `Min` | no chunk below this, except a stream's final chunk |
+| `Min` | no chunk below this, except a run's final chunk |
 | `Max` | no chunk above this, unconditionally |
 
 An implementation **MUST** realise `Target` as the expected chunk size, within a
@@ -145,21 +167,21 @@ stated tolerance, on incompressible input. It **MUST NOT** ship a boundary
 function whose expected chunk size is some other value, and **MUST NOT** resolve
 such a discrepancy by documenting the actual value as the specification.
 
-`Min` and `Max` are bounds on a distribution whose centre is `Target`. They
-therefore **MUST** bracket it: `Min ≤ Target ≤ Max`. A configuration with
-`Min` at or above `Target` is invalid, not merely unusual — the minimum gate then
-suppresses the boundary search entirely and `Target` describes nothing (§3.3).
+`Min` and `Max` bound a distribution whose centre is `Target`, so they **MUST**
+bracket it: `Min ≤ Target ≤ Max`. `Min` at or above `Target` is invalid, not
+merely unusual — the minimum gate then suppresses the search entirely and `Target`
+describes nothing (§3.3).
 
 **Any breakpoint threshold MUST be derived from `Target`, not fixed.** In a
 gear-hash design the thresholds are bit masks whose population counts encode the
-expected size, so a hardcoded mask pair silently pins the expected size regardless
-of what `Target` is configured to. An implementation **MUST** compute them from
-`Target` and **SHOULD** assert the relationship at construction.
+expected size, so a hardcoded pair silently pins that size whatever `Target` says.
+An implementation **MUST** compute them from `Target` and **SHOULD** assert the
+relationship at construction.
 
 #### 3.2.1 Deviation — the shipped masks encode a different target
 
-The current implementation fails §3.2. Its mask pair is hardcoded, and it encodes
-a target of 8 KiB while the default profile declares 4 MiB.
+The mask pair is hardcoded and encodes a target of 8 KiB, while the default
+profile declares 4 MiB.
 
 For FastCDC at normalisation level *nl* and target `2^k`, the small-region mask
 carries `k + nl` set bits and the large-region mask `k − nl`. The shipped pair has
@@ -170,8 +192,8 @@ population counts 15 and 11, which solves to `k = 13`, `nl = 2`:
 | Target average | 8 KiB (`k = 13`) | 4 MiB (`k = 22`) |
 | Minimum | — | 1 MiB |
 
-`Min` is 128× the masks' natural target, so the minimum gate dominates completely
-and every chunk is `Min` plus a geometric draw with mean `2^15`. Predicted mean
+`Min` is 128× the masks' natural target, so the minimum gate dominates and every
+chunk is `Min` plus a geometric draw with mean `2^15`. Predicted mean
 `1,048,576 + 32,768 = 1,081,344`. Measured over 256 MiB of incompressible data:
 
 | Profile — Min / Avg / Max | Chunks | Mean | Smallest | Largest | Reached Avg | Mean − Min |
@@ -179,93 +201,89 @@ and every chunk is `Min` plus a geometric draw with mean `2^15`. Predicted mean
 | 1 MiB / 4 MiB / 16 MiB | 248 | 1,078,800 | 1,048,896 | 1,210,151 | 0 | 30,224 |
 | 64 KiB / 256 KiB / 1 MiB | 2,765 | 97,047 | 65,553 | 264,776 | 0 | 31,511 |
 
-0.24% from prediction, and the second profile confirms the mechanism is the mask
-pair rather than the profile: changing `Min` and `Avg` together moves the mean by
-exactly the change in `Min`. No chunk in either run reached `Avg`; for the default
-profile that needs 3 MiB of consecutive positions to fail a 2⁻¹⁵ test, probability
-about e⁻⁹⁶.
+0.24% from prediction. The second profile confirms the mechanism is the mask pair
+rather than the profile: moving `Min` and `Avg` together moves the mean by exactly
+the change in `Min`. No chunk in either run reached `Avg`; for the default profile
+that needs 3 MiB of consecutive positions to fail a 2⁻¹⁵ test, probability about
+e⁻⁹⁶.
 
 ![Chunk size on a log scale: the masks' implied 8 KiB target, the declared Min of 1 MiB, Avg of 4 MiB and Max of 16 MiB, and the entire measured distribution as a narrow spike sitting on Min](img/rfc2-size-distribution.svg)
 
-The consequences, while this stands: the declared average is not the average, the
-configured `Avg` and `Max` are inert on realistic data, and the only parameter that
-moves chunk size is `Min` — which §3.2 says may not be the case, because a `Min`
-that sets the size is a `Min` that has replaced the target.
+For context, FastCDC's own recommended regime is normalisation level 2 with a
+minimum of 4–8 KB — that is, `Min` near `Target`, not 128× it.
 
 Two ways out, both migrations (§3.6):
 
-1. **Derive the masks from `Target`** and collapse `Min`/`Max` to true guard
-   rails. Correct per §3.2; re-cuts all existing content.
-2. **Redeclare the profile** to the target the masks implement, keeping the
-   masks. Cheaper to reason about, still re-cuts content unless `Min` is also
-   lowered to match, and leaves a design where the mask pair cannot be retuned.
+1. **Derive the masks from `Target`** and demote `Min`/`Max` to guard rails.
+   Correct per §3.2; re-cuts all existing content.
+2. **Redeclare the profile** to the target the masks implement. Cheaper to reason
+   about, still re-cuts content unless `Min` is lowered to match, and leaves a
+   design where the masks cannot be retuned.
 
 This document does not choose. It records that the current state satisfies
 neither, and that the discrepancy **MUST NOT** be closed by amending §3.2.
 
 ### 3.3 Why a minimum above the target suppresses the search
 
-Stated separately because it is the general rule, independent of the deviation
-above. A minimum chunk size is enforced by not testing for a boundary until `Min`
-bytes have accumulated. If `Min` is much larger than `Target`, then at the moment
-testing begins a boundary is almost immediately available, because the threshold
-was chosen to fire about every `Target` bytes.
+The general rule, independent of the deviation above. A minimum is enforced by not
+testing for a boundary until `Min` bytes have accumulated. If `Min` is much larger
+than `Target`, a boundary is available almost immediately once testing begins,
+because the threshold was chosen to fire about every `Target` bytes.
 
-The resulting distribution is `Min + Geom(1/Target)`: concentrated just above
-`Min`, with `Target` visible only as the small spread and `Max` unreachable. An
-implementation **MUST** therefore treat `Min ≥ Target` as invalid configuration
-(§3.7), because it is not a conservative setting — it is a silent replacement of
-content-defined chunking with fixed-size chunking plus jitter, which forfeits B4.
+The distribution is then `Min + Geom(1/Target)`: concentrated just above `Min`,
+with `Target` visible only as the spread and `Max` unreachable. An implementation
+**MUST** treat `Min ≥ Target` as invalid (§3.7), because it is not a conservative
+setting — it is a silent replacement of content-defined chunking with fixed-size
+chunking plus jitter, which forfeits B4.
 
 ### 3.4 The dependency window must be declared, and warm-up must match it
 
-By B5 the function declares how many preceding bytes a boundary decision depends
-on. An implementation **MUST** warm its rolling state over exactly that window
-before the first tested position, and **MUST NOT** warm it from the start of the
-candidate chunk.
+By B5 the function declares how many preceding bytes a decision depends on. An
+implementation **MUST** warm its rolling state over exactly that window before the
+first tested position, and **MUST NOT** warm it from the start of the candidate
+chunk.
 
-For gear hashing with a one-bit shift per byte over 64-bit arithmetic, the window
-is exactly 64 bytes. Expanding the recurrence `fp = (fp << 1) + g[b]`:
+For gear hashing with a one-bit shift per byte over 64-bit arithmetic the window
+is exactly 64 bytes. Expanding `fp = (fp << 1) + g[b]`:
 
-    fp_i  =  Σ_{j ≤ i}  g[b_j] << (i − j)      (mod 2⁶⁴)
+fp_i = Σ_{j ≤ i} g[b_j] << (i − j) (mod 2⁶⁴)
 
 every term with `i − j ≥ 64` is a 64-bit value shifted left by at least 64 bits,
-so it is exactly zero. Nothing earlier than 64 bytes back can affect the decision.
+so it is exactly zero. Nothing earlier than 64 bytes back can reach the decision.
 
 ![One candidate chunk: the Min-byte warmed region that affects nothing, the 64-byte dependency window, and the tested positions, with the measured cost of warming the whole region anyway](img/rfc2-dependency-window.svg)
 
 Warming from the chunk start is therefore `Min` bytes of work to reach a scan that
-terminates after about `Target` bytes — at the shipped profile, roughly 97% of the
-work decides nothing. Measured per boundary decision, default profile:
+ends after about `Target` bytes — at the shipped profile, roughly 97% of the work
+decides nothing. Measured per boundary decision, default profile:
 
 | Warm-up | Per boundary | Effective rate |
 | --- | --- | --- |
 | from the chunk start (`Min` bytes) | 758.7 µs | 1.38 GB/s |
 | the declared window (64 bytes) | 65.8 µs | 15.9 GB/s |
 
-11.6×, with bit-identical boundaries — verified on three profiles (`Min` of
-4 KiB, 64 KiB and 1 MiB), 200 random inputs each, for both end-of-stream values.
+11.6×, with bit-identical boundaries — verified on three profiles (`Min` of 4 KiB,
+64 KiB and 1 MiB), 200 random inputs each, for both end-of-stream values.
 
-The current implementation warms from the chunk start, and this is a second
-deviation. Unlike §3.2.1 it is not a migration: the output is unchanged, so it can
-be fixed at any time.
+The current implementation warms from the chunk start. Unlike §3.2.1 this is not a
+migration: the output is unchanged, so it can be fixed at any time.
 
 ### 3.5 Determinism and its scope
 
-Determinism is **per stream, not per call**. Boundaries depend on where the stream
-starts, because the first `Min` bytes of a stream are never tested. The same bytes
-at a different stream start chunk differently, which is why §5.2 forbids a chunk
-from spanning a gap.
+Determinism is per call. Boundaries depend on where a run starts, because its
+first `Min` bytes are never tested — so the same bytes at a different run start
+cut differently. §2.1 is what keeps that from mattering: a run is always the same
+run.
 
-An implementation **MUST NOT** make the boundary function depend on anything
-outside `(bytes, parameters)` — not a file identity, an offset, a salt, a clock or
-a random seed.
+The boundary function **MUST NOT** depend on anything outside `(bytes,
+parameters)` — not a file identity, an offset, a clock or a random seed. A
+deployment secret is the one contemplated exception, and it is not free (§6).
 
 ### 3.6 Changing parameters is a migration event
 
-Parameters are a **write-time, per-share** property. Reads never re-chunk: a
-file's chunk-ref list freezes its boundaries (RFC 0 §2.2), so content written
-under any parameters is readable under any other.
+Parameters are a **write-time, per-share** property. Reads never re-cut: a file's
+chunk-ref list freezes its boundaries (RFC 0 §2.2), so content written under any
+parameters is readable under any other.
 
 Changing a share's parameters — or the boundary function, or a threshold derived
 from it — therefore **MUST NOT** be treated as a configuration change. New writes
@@ -280,14 +298,14 @@ An implementation **MUST** reject invalid parameters at construction, with an
 error, and **MUST NOT** substitute a default profile.
 
 Invalid means: `Min` below the floor below which chunking is pointless;
-`Min ≤ Target ≤ Max` violated, including `Min ≥ Target` (§3.3); or `Max` above
-the largest chunk the buffer contract admits (§7.2).
+`Min ≤ Target ≤ Max` violated, including `Min ≥ Target` (§3.3); or `Max` above the
+largest chunk the buffer contract admits.
 
 Silently substituting defaults is a data-shape failure disguised as robustness. A
-share configured for 64 KiB chunks and quietly chunked at 1 MiB produces valid,
+share configured for 64 KiB chunks and quietly cut at 1 MiB produces valid,
 readable, correctly hashed content that dedups against nothing the operator
 expected and carries 16× the read amplification they sized for — and nothing
-reports a problem. This is the silent-fallback hazard of RFC 0 §1.2 in its
+reports a problem. This is RFC 0 §1.2's silent-fallback hazard in its
 configuration form: the absent capability is the requested chunk size, and its
 absence **MUST** be loud.
 
@@ -297,257 +315,164 @@ A chunk's identity is the BLAKE3-256 hash of its bytes, and nothing else. An
 implementation **MUST NOT** include an offset, a file identity, a length, a
 parameter set or a version in the hashed input.
 
-The hash covers exactly the chunk's bytes as emitted — the same bytes a later read
-must reproduce. It **MUST** be computed over the chunk as cut, never over a buffer
+The hash covers exactly the bytes emitted — the same bytes a later read must
+reproduce — and **MUST** be computed over the chunk as cut, never over a buffer
 that merely contains it.
 
-Hash comparison **SHOULD** be constant-time. The hash is the authorisation to skip
-an upload (§6) and to decrement a refcount (RFC 0 §8.3).
+## 5. Packing is a rule, not a component
 
-## 5. Block assembly
+Blocks are assembled by whoever owns the dedup query, which is not the carver
+(RFC 6). The rules that assembly **MUST** follow belong here, because they are
+properties of chunks:
 
-### 5.1 Target and overshoot
+| # | Rule |
+| --- | --- |
+| P1 | A block is a whole number of chunks. A chunk is never split to make a block an exact size. |
+| P2 | A block reaches at least the block target and exceeds it by at most one chunk. |
+| P3 | A block contains only chunks whose bytes it carries. |
 
-Chunks accumulate into a batch. When the batch reaches the configured block size
-it is emitted as one block **ending at that chunk's boundary** (RFC 0 §2.2).
+P1 is RFC 0 §2.2: a split chunk would have one hash naming content in two blocks,
+so the hash would stop being a locator, and a refcount would stop having a single
+answer. P2 follows from P1 — ending at a chunk boundary means overshooting by at
+most the crossing chunk.
 
-A block therefore **MUST** be at least the block target unless it is the last of a
-pass, and **MUST NOT** exceed it by more than one chunk. An implementation
-**MUST NOT** cut a chunk to make a block an exact size; RFC 0 §2.2 gives the three
-properties that breaks.
+P3 is worth stating because the obvious mistake is to let already-stored chunks
+ride along in the block so the block's chunk list tiles a contiguous range. It
+must not. A chunk that is already durable lives in some other block under its own
+key; putting it in this one either duplicates its bytes or produces a block whose
+chunk list disagrees with its contents. What needs every chunk — stored or not —
+is the **file's manifest**, and the manifest is a different consumer of the same
+sequence `Cut` returns.
 
-A block's reported byte count **MUST** be the bytes needing upload — novel chunks
-only. Skipped chunks tile the range at no upload cost, and counting them makes
-every accounting derived from the figure wrong.
+> *Note.* Keeping these two consumers apart is also what lets pack-assignment
+> policy change without touching chunking or breaking dedup. `restic` relies on
+> exactly that separation, and used it to swap sequential pack assembly for a
+> randomised one without a migration.
 
-### 5.2 What may span a gap, and what may not
+**Where the dangerous rule went.** Assembly consults a dedup oracle, and an oracle
+that can see the block currently being assembled will report a chunk durable
+before it has been uploaded — so an identical later chunk carries no bytes, and if
+the block then fails to upload the content exists nowhere while metadata records
+two refs to it. That hazard is real and it is **RFC 6's**, because that is where
+the oracle is consulted. It is named here only so that removing it from the carver
+does not look like deleting it.
 
-The carver is fed contiguous streams. Between two streams is a gap — an extent the
-journal does not hold (RFC 1 §2).
+## 6. Boundaries are public
 
-- **A chunk MUST NOT span a gap.** At a stream end the residual is cut as a final
-  chunk. A chunk spanning a gap would hash bytes that are not adjacent in the
-  file, so it would not reproduce on a read.
-- **A block MAY span a gap**, and normally does. The batch carries over, so one
-  block holds chunks from either side. This is why the accumulator is stateful
-  (§1.2).
+The boundary function and its parameters are fixed constants in the source. Chunk
+boundaries for any given content are therefore computable by anyone, and this
+document does **not** provide membership privacy.
 
-An implementation **MUST** reset the boundary function's rolling state at a stream
-end, not merely flush the residual. Carrying state across a gap makes the next
-stream's first boundary depend on bytes from the previous one, breaking B2 and
-§3.5 with no observable error.
+The consequence is a known-file channel: the sequence of chunk sizes a file
+produces is a fingerprint, and an observer who can see object sizes and counts in
+the remote tier can use it to test whether a particular file is stored. The same
+channel underlies cross-tenant deduplication disclosure — that two tenants share
+an object is itself an answer about content.
 
-![Two held extents with a gap: chunks stopping short at the stream end, and one block bracketing chunks from both sides of the gap](img/rfc2-gap-rule.svg)
+An implementation **MUST NOT** claim otherwise, and a deployment that needs
+membership privacy **MUST** obtain it at another layer. Two mitigations exist and
+neither is free:
 
-### 5.3 The contract needs two distinct signals
+- **A per-deployment secret in the boundary function** makes boundaries
+  unpredictable. It also makes chunks incomparable across deployments, so
+  cross-deployment dedup stops, and adopting it is a migration (§3.6). Keyed
+  chunking is itself an active research target and recent work has broken
+  deployed schemes, so it **MUST NOT** be adopted on the assumption that a key
+  settles the question.
+- **Randomising block assembly** blurs the relationship between chunk sizes and
+  stored object sizes. It costs nothing in dedup and is not a migration, because
+  by §5 assembly is policy. It is RFC 6's to adopt.
 
-The interface **MUST** distinguish two events, and **MUST NOT** conflate them:
+How much the channel actually reveals against DittoFS's block sizes is unmeasured
+(§10).
 
-| Signal | Means | Cuts the sub-minimum tail | Resets rolling state | Emits the trailing partial batch |
-| --- | --- | --- | --- | --- |
-| end of stream | this contiguous run is over; another may follow | yes | yes | **no** |
-| end of pass | no more bytes at all | — | — | yes |
+## 7. Errors
 
-End of stream **MUST NOT** emit the trailing partial batch. If it did, every gap
-would force a short block and a fragmented file would produce one undersized block
-per extent. Only end of pass emits it, and it **MUST** release every buffered byte
-so no chunk's bytes outlive the carver. An end of pass with an empty batch
-**MUST** produce nothing rather than an empty block.
+`Cut` fails without losing the work it completed.
 
-Whether these are two methods, or one with a flag, is not specified. What is
-specified is that a caller can signal either without implying the other.
+- An error from `emit` or from `r` **MUST** stop the call and be returned. Chunks
+  already emitted have already been delivered; the carver **MUST NOT** try to
+  retract them.
+- A partial chunk held when an error occurs **MUST** be discarded, never emitted
+  short. A short chunk is indistinguishable from a legitimate final chunk and
+  would hash to something no later read reproduces.
+- The carver **MUST NOT** report anything durable, or retain state that would let
+  a retry cut differently. Failure handling is RFC 0 §5.2: extents stay **Dirty**
+  and the pass is retried.
 
-## 6. Deduplication
+Because cutting is deterministic (B2) and stateless (§1.2), a retry over the same
+run converges on the same chunks, so a failed pass costs work and never
+correctness.
 
-### 6.1 The skip oracle
-
-The carver consults one capability it does not own: whether a chunk's content is
-already durable in the remote tier. It **MUST** declare that as an interface in
-its own package, named for the need, and accept an implementation at construction
-(RFC 0 §1.2).
-
-The oracle answers about **content** — given one or more chunk hashes, which are
-already durable. It is the chunk-deduplication mechanism of RFC 0 §3.1, and it
-**MUST NOT** be given a file identity, an offset or a block.
-
-A chunk reported durable is emitted without bytes; one reported novel carries its
-bytes. With no oracle supplied every chunk **MUST** be treated as novel —
-correct, and slower.
-
-Granularity is deliberately unspecified. A per-chunk synchronous call puts one
-oracle round-trip on the carve hot path for every chunk cut; a batched query
-amortises it but delays the novel/skipped decision until after a group is cut,
-which the byte-ownership rule of §7.1 constrains. Open question 2.
-
-### 6.2 The oracle MUST NOT observe the batch being packed
-
-A chunk in the block currently being assembled has not been uploaded. If the
-oracle can see it as durable, a later identical chunk in the same pass is skipped
-and carries no bytes — and if that in-flight block then fails to upload, the
-content exists nowhere while metadata records two refs to it.
-
-An implementation **MUST** ensure the oracle's answers derive only from content
-the caller has committed, and **MUST NOT** populate a dedup index from a block
-before that block is durable.
-
-This is the one rule here whose violation loses data, and it is invisible at the
-point it happens: the pass succeeds, the manifest is complete, the bytes are gone.
-
-![Committed content the oracle may answer from, versus the in-flight block it must not, and the five steps by which seeing it loses the bytes of a chunk two files reference](img/rfc2-pending-batch.svg)
-
-### 6.3 The oracle is best-effort and never authoritative
-
-A false *novel* costs a redundant upload. A false *durable* loses data. The
-asymmetry is total, so an implementation **MUST** resolve every uncertainty —
-lookup failure, index miss, ambiguous row, timeout — as *novel*.
-
-The oracle **MUST NOT** be consulted for any other purpose. It is not an answer
-about residency (RFC 0 §4.2), and a skipped chunk **MUST NOT** be reported durable
-to the journal on the oracle's word; only the report of RFC 0 §5.2 does that.
-
-### 6.4 Whole-file deduplication is not the carver's
-
-RFC 0 §3.1 permits short-circuiting a whole file whose `ObjectID` matches an
-existing one. That decision is made before any bytes are read, so it belongs to
-the caller. The carver **MUST NOT** implement it, and **MUST NOT** be given a file
-identity in order to.
-
-## 7. Buffers and ownership
-
-### 7.1 Emitted bytes belong to the caller
-
-A block's chunk bytes **MUST** be the caller's once emitted. The carver **MUST
-NOT** retain, reuse or mutate them.
-
-The alternative — bytes valid only until the next call — is rejected. It obliges
-every consumer to copy defensively, and an implementation that gets it wrong
-produces blocks whose content changes after they were handed over, with the hash
-computed before the change. That corruption is caught on a later read, if ever.
-
-### 7.2 Bounds
-
-Memory **MUST** be bounded by configuration, never by input:
-
-- the residual accumulator **MUST NOT** exceed one `Max`;
-- the batch's byte arena **MUST NOT** exceed the block target plus one `Max`,
-  which is what §5.1 bounds the overshoot at;
-- nothing **MUST** be retained past an end of pass.
-
-Bounds **MUST** be computed from the configured parameters, not from a
-package-wide ceiling. Sizing from the ceiling makes a share that chunks small
-reserve as though it chunked large, and the two sizes then disagree about how much
-a buffer may hold.
-
-## 8. Errors and partial progress
-
-A pass fails without losing the work it completed.
-
-- An error from the oracle or the context **MUST** stop the call and return the
-  blocks already cut alongside the error. Discarding them forces the bytes to be
-  re-read and re-hashed to reach the same result.
-- A returned block **MUST** be complete and internally consistent whether or not
-  the call returned an error.
-- The carver **MUST NOT** retain partial state across an error that would let a
-  retry cut a boundary the un-errored path would not.
-- The carver **MUST NOT** report anything durable. Failure handling above it is
-  RFC 0 §5.2: extents stay **Dirty** and the pass is retried.
-
-Because chunking is deterministic (B2), a retry over the same bytes converges on
-the same chunk identities, so a partial pass costs work and never correctness.
-
-## 9. Invariants
+## 8. Invariants
 
 | # | Invariant |
 | --- | --- |
 | C1 | A chunk's hash is a function of its bytes alone. |
 | C2 | The same bytes and parameters yield the same boundaries, in any process or version. |
-| C3 | A chunk never spans a gap between two streams. |
-| C4 | A chunk never spans two blocks. |
-| C5 | A block exceeds its target by at most one chunk. |
-| C6 | The skip oracle never observes the batch being packed. |
-| C7 | Every uncertainty in the oracle resolves as novel. |
-| C8 | A skipped chunk still tiles its range in the block's chunk list. |
-| C9 | Memory is bounded by configuration, never by input length. |
-| C10 | The expected chunk size is the configured target. |
+| C3 | The expected chunk size is the configured target. |
+| C4 | Every chunk is within `[Min, Max]`, except a run's final chunk. |
+| C5 | A block is a whole number of chunks and exceeds its target by at most one. |
+| C6 | A block contains only chunks whose bytes it carries. |
 
-C6 and C7 are the two whose violation loses data. C10 is the one the current
-implementation fails (§3.2.1). The rest cost work, wrong sizing, or an unreadable
-file.
+C3 is the one the current implementation fails (§3.2.1). C1 and C2 are what make
+a hash an address; the rest cost wrong sizing or an unreadable file.
 
-## 10. Conformance
+Two invariants that appeared in an earlier draft are gone because they became
+structural: a chunk cannot span a gap (§2.1), and there is no rolling state to
+reset. Two more moved to RFC 6 with the dedup oracle.
 
-RFC 1 §11 applies unchanged: conformance is every **MUST** holding, the checks
-below are evidence for the ones that fail *silently*, and a check is validated by
-reverting the code and watching it fail on its own assertion.
+## 9. Conformance
 
-### 10.1 Group A — silent data loss or unreadable content
+RFC 1 §11 applies unchanged: conformance is every **MUST** holding, and a check is
+validated by reverting the code and watching it fail on its own assertion.
 
-| Requirement | Check |
-| --- | --- |
-| §6.2 pending batch invisible | Feed two identical chunks inside one block; assert the second carries bytes. Fail that block's upload; assert no chunk of it was reported durable. |
-| §6.3 uncertainty is novel | Make the oracle return an error, a timeout and a miss in turn; assert every chunk carries bytes in all three. |
-| §5.2 no chunk spans a gap | Feed two streams with a gap; assert no chunk crosses it, and that the chunk at each stream start matches feeding that stream alone. |
-| §5.2 state resets at a gap | Feed stream B after A, and separately B alone; assert identical boundaries. Carried-over rolling state fails here and nowhere else. |
-| §2.2 cursors are distinct | Feed a run in buffers smaller than `Min` so a residual always exists; assert the tiling covers every offset exactly once. |
-| §7.1 byte ownership | Emit a block, drive the carver further, and assert the emitted bytes still hash to their reported hashes. |
-| §4 hash covers the chunk | Cut identical content at two different file offsets; assert one hash. |
-
-### 10.2 Group B — wrong shape, correct bytes
+Every check below is a pure function of a byte slice and a set of parameters, per
+§1.3. If a check here needs a fixture, the implementation has acquired a
+dependency it is not allowed to have, and that is itself the finding.
 
 | Requirement | Check |
 | --- | --- |
-| §3.2 target is realised | Chunk incompressible data and assert the mean chunk size is within tolerance of `Target`. **This check fails against the current implementation** (§3.2.1) and is the regression gate for fixing it. |
-| §3.2 thresholds derive from target | Construct at several targets; assert the derived threshold's population count tracks the target and that a hardcoded pair cannot satisfy two of them. |
-| §3.7 invalid params rejected | Construct with `Min` below the floor, `Min ≥ Target`, and `Max` above the ceiling; assert each errors and no carver is produced. |
-| §3.3 min does not replace target | Configure `Min` well above `Target`; assert construction is refused rather than yielding a `Min + jitter` distribution. |
-| §3.4 warm-up equivalence | Assert boundaries are identical whether rolling state is warmed from the chunk start or over the declared window, across several profiles and both end-of-stream values. |
-| §5.1 overshoot bounded | Assert every block but the pass's last is at least the target and at most target plus one `Max`. |
-| §5.3 end of stream does not emit | Feed many short streams; assert block count tracks total bytes over block size, not stream count. |
-| §5.1 byte count excludes skipped | Skip every chunk of a block; assert reported bytes are zero and the chunk list is full. |
-| §7.2 bounds | Feed a stream far larger than any buffer; assert peak allocation stays within the configured bound and does not grow with stream length. |
-| B4 shift resistance | Insert one byte early in a large input; assert all boundaries past the edited chunk are unchanged. |
+| §3.2 target is realised | Cut incompressible data; assert the mean is within tolerance of `Target`. **Fails against the current implementation** (§3.2.1) and is the regression gate for fixing it. |
+| §3.2 thresholds derive from target | Construct at several targets; assert the derived threshold's population count tracks the target, and that one hardcoded pair cannot satisfy two of them. |
+| §3.7 invalid params rejected | Construct with `Min` below the floor, with `Min ≥ Target`, and with `Max` above the ceiling; assert each errors and no carver is produced. |
+| §3.4 warm-up equivalence | Assert boundaries are identical whether rolling state is warmed from the chunk start or over the declared window, across several profiles. |
+| B4 shift resistance | Insert one byte early in a large input; assert every boundary past the edited chunk is unchanged. |
+| §4 hash covers the chunk | Cut identical content at two different `base` offsets; assert one hash. |
+| §2.2 borrowed bytes | Retain the slice passed to `emit` and assert it is observed to change — the check exists to prove the contract is real, so that a caller that copies is not doing so out of superstition. |
+| §7 no short chunk on error | Fail `emit` mid-run and fail `r` mid-chunk; assert no emitted chunk is a truncated prefix of a chunk the un-errored path would produce. |
 
-### 10.3 What must not stand in for the real thing
+Two things **MUST NOT** stand in:
 
-- **An oracle that always answers novel MUST NOT be the only one under test.** It
-  cannot exhibit C6 or C8 — the invariants that lose data. At least one check
-  **MUST** run against an oracle answering durable for committed content.
-- **Compressible or synthetic-pattern data MUST NOT be the only input for the
+- **Compressible or patterned data MUST NOT be the only input for the
   distribution checks.** A gear hash degenerates on repetitive input, which is the
   one regime where `Max` is reachable, so such a rig measures the opposite of the
-  common case. It **MUST** however be covered separately, since it is what `Max`
-  exists for.
-- **A single-stream rig MUST NOT be the only path under test.** C3 and the reset
-  rule are unobservable without a gap.
-- **A benchmark whose oracle is stubbed MUST NOT be cited for carve cost.** Dedup
-  is a first-order term in a real pass and a stub removes it entirely.
+  common case. It **MUST** be covered separately, since it is what `Max` is for.
+- **A single fixed profile MUST NOT be the only parameters under test.** The
+  defect in §3.2.1 is invisible at one profile and obvious across two.
 
-## 11. Open questions
+## 10. Open questions
 
-1. **Which way out of §3.2.1.** Deriving thresholds from `Target` is correct per
-   §3.2; redeclaring the profile to 8 KiB is cheaper but leaves thresholds
-   untunable. Both re-cut all existing content, so the choice wants deciding
-   before more data is written under the current profile, not after. What is
+1. **Which way out of §3.2.1.** Both exits re-cut existing content, so the choice
+   gets more expensive the longer shares write under the current profile. What is
    unmeasured is the right `Target` for the SMB large-file workload — the trade is
-   read amplification against index and refcount cardinality, and it is now legible
-   because the distribution is characterised.
-2. **Oracle granularity** (§6.1). Per-chunk puts one round-trip per chunk on the
-   hot path; batched amortises it but interacts with §7.1. Neither has been
-   measured, and the existing carve profiles stubbed the oracle, so its cost share
-   is unknown.
-3. **Warm-up fix** (§3.4). 11.6× on the boundary decision with identical output,
-   verified. Unmeasured is the end-to-end effect on a pass, where chunking was
-   13% (amd64) and 29% (arm64) of CPU behind buffer allocation. Independent of
-   every other item here and the cheapest to land.
-4. **Buffer pooling** (§7.2). Two profiles put large-buffer allocation and zeroing
-   at 53% (amd64) and 9% (arm64) of carve cost, but on a workload whose oracle was
-   stubbed, and the absolute figures did not reproduce an earlier baseline on the
-   same VM type. The ordering is solid; the magnitude is not.
-5. **Whether `Min` and `Max` are needed at all once thresholds derive from
-   `Target`.** `Max` bounds degenerate repetitive input and read amplification;
-   `Min` would exist only to bound per-chunk overhead. A design with `Target` plus
-   `Max` and no `Min` is simpler and is not obviously worse — it needs the
-   repetitive-input case measured rather than reasoned about.
-6. **Whole-file dedup's placement** (§6.4, RFC 0 §3.1). This document says the
-   carver **MUST NOT** implement it and does not say who does. RFC 6 must, and
-   RFC 0's open question 1 — whether it earns its index at all — is still open.
+   read amplification against index and refcount cardinality, and it is now
+   legible because the distribution is characterised.
+2. **Warm-up fix** (§3.4). 11.6× on the boundary decision with identical output,
+   verified. Unmeasured is the end-to-end effect on a pass, where cutting was 13%
+   (amd64) and 29% (arm64) of CPU behind buffer allocation. Independent of
+   everything else here and the cheapest to land.
+3. **Whether `Min` survives** (§3.2). Once thresholds derive from `Target`, `Max`
+   still bounds degenerate repetitive input and read amplification, but `Min`
+   would exist only to bound per-chunk overhead. `Target` plus `Max` is simpler
+   and not obviously worse; deciding needs the repetitive-input case measured.
+4. **How much §6 leaks.** That boundaries are public is certain; what an observer
+   can actually recover from DittoFS's object sizes is not. Whether randomised
+   block assembly is worth adopting pre-emptively depends on it, and it is cheap
+   enough that it may be worth doing without the measurement.
+5. **Buffer cost after the split.** Per-chunk allocation is now forbidden (§2.2)
+   and the block-sized buffer moved to RFC 6. Two profiles put large-buffer
+   allocation and zeroing at 53% (amd64) and 9% (arm64) of carve cost, but on a
+   workload whose dedup oracle was stubbed and whose absolute figures did not
+   reproduce an earlier baseline. The ordering is solid; the magnitude is not, and
+   the split changes where the cost lands.
