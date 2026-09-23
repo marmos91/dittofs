@@ -12,7 +12,7 @@ to be interpreted as in RFC 2119.
 
 ## 1. Purpose
 
-The journal is the local tier. It holds bytes on this machine, durably against
+The journal holds bytes on this machine, durably against
 process and machine failure, and it answers exactly one question about them:
 
 > **Do I hold these bytes, and at what offset?**
@@ -995,12 +995,12 @@ the index by all implemented sources and assert equality (§11).
 
 Scanning alone reads enough of every segment to touch every record header, so its
 cost grows with content held rather than with the number of files, and for
-densely packed small records it approaches reading the whole local tier.
+densely packed small records it approaches reading everything the journal holds.
 
 **The active segments are always scanned**, because they carry no footer. This
 bounds the unavoidable part of recovery at *segment size × number of append
 streams* — with a 256 MiB segment and eight streams, two gigabytes read
-sequentially, whatever the total size of the local tier. A periodic placement cache
+sequentially, whatever the total size of the journal. A periodic placement cache
 (§9.1.1) reduces even that, because it records how far into each active segment
 its knowledge extends and the scan resumes from there.
 
@@ -1184,7 +1184,7 @@ or a reclamation pass needs (§10.5).
 
 **Whether to enable it.** Beneath a filesystem that checksums and repairs data
 itself, scrub is close to redundant and its cost buys little. It is most
-valuable where the local tier holds **dirty** content for long periods, because
+valuable where the journal holds **dirty** content for long periods, because
 that content exists nowhere else: no refetch can restore it, so early warning is
 the only thing available, and it is the difference between discovering the loss
 now and discovering it when a client asks for the bytes.
