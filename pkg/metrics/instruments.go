@@ -117,16 +117,18 @@ func newInstruments(reg *prometheus.Registry) *instruments {
 			// with nothing to carve, tens of milliseconds per dirty-pinned poll,
 			// seconds when the eviction waits out a carve pass, and then 30 and 60
 			// as boundaries because those are the give-up budgets themselves (the
-			// store's default and the server config's). An append that gives up is
-			// therefore always in a finite bucket, and 20s, 45s and nearly-gave-up
-			// are told apart rather than summed into one.
+			// store's default and the server config's). An append that gives up on
+			// either of those lands in a finite bucket, and 20s, 45s and
+			// nearly-gave-up are told apart rather than summed into one.
 			//
-			// A stall is NOT bounded by that budget: the deadline is refreshed on
-			// every observed drain, so an append merely outpacing a live syncer can
-			// run past the top boundary and land in +Inf, where only _sum and
-			// _count carry it. That case is rare and is the one a rate on _count
-			// plus _sum still shows; widening for it would cost resolution in the
-			// range that is not rare.
+			// Two stalls still land in +Inf, and the boundaries do not pretend
+			// otherwise: one under a backpressure_max_wait configured above 90s,
+			// and one that outruns any budget because the deadline is refreshed on
+			// every observed drain, so an append merely outpacing a live syncer is
+			// not bounded by it at all. Both leave only _sum and _count carrying
+			// the observation. Widening for them would cost resolution across the
+			// range that is not rare; revisit if a deployment routinely configures
+			// a longer budget.
 			Buckets: []float64{0.001, 0.005, 0.025, 0.1, 0.5, 1, 2.5, 5, 10, 20, 30, 45, 60, 90},
 		}),
 		evictionsTotal: prometheus.NewCounter(prometheus.CounterOpts{
