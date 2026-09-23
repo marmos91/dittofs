@@ -295,12 +295,6 @@ func (s *Store) evictSegment(sh *shard, seg *segmentMeta) (freed int64, err erro
 	// describes are unlinked below, so the log is about to be their only record.
 	// demote is the residency-loss chokepoint: a failed append leaves the
 	// intervals resident and returns ErrStateLost instead of evicting blind.
-	if err = s.demote(entries, nil); err != nil {
-		// Without a durable marker the range would come back from a restart as a
-		// hole, so keep the segment (and its bytes) instead of evicting blind.
-		return 0, err
-	}
-
 	// Flip only the files the scan above found backed by this segment, rather
 	// than walking the shard index a second time. No file can join that set in
 	// between: the segment is sealed (nothing appends to it) and claimed, so no
@@ -308,23 +302,34 @@ func (s *Store) evictSegment(sh *shard, seg *segmentMeta) (freed int64, err erro
 	// its interval superseded while the cold log was being written — simply has
 	// nothing left to flip.
 	//
+	// The flip runs as demote's publish half rather than after it returns: the
+	// shard lock is dropped for the append, and until the flip lands the log
+	// describes ranges this index still calls resident. A compaction that
+	// snapshotted the index in that gap would rewrite the log without them, and
+	// retireSegment below unlinks their only local copy.
+	//
 	// ponytail: one full index walk remains, in the scan above. Removing it needs
 	// a segment→intervals reverse index, worth building only if eviction shows up
 	// in a profile.
-	sh.mu.Lock()
-	for id := range backed {
-		fi := sh.index[id]
-		if fi == nil {
-			continue
-		}
-		for k := range fi.ivs {
-			if fi.ivs[k].loc.SegmentID == seg.id && !fi.ivs[k].cold {
-				fi.ivs[k].cold = true
+	if err = s.demote(entries, func() {
+		sh.mu.Lock()
+		defer sh.mu.Unlock()
+		for id := range backed {
+			fi := sh.index[id]
+			if fi == nil {
+				continue
+			}
+			for k := range fi.ivs {
+				if fi.ivs[k].loc.SegmentID == seg.id && !fi.ivs[k].cold {
+					fi.ivs[k].cold = true
+				}
 			}
 		}
+	}); err != nil {
+		// Without a durable marker the range would come back from a restart as a
+		// hole, so keep the segment (and its bytes) instead of evicting blind.
+		return 0, err
 	}
-	sh.mu.Unlock()
-
 	// The markers move before the bytes go. retireSegment unlinks the file, and
 	// a tombstone inside it is a delete's only durable trace.
 	if err = s.carryMarkersForward(sh, seg); err != nil {

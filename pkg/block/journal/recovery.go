@@ -388,12 +388,7 @@ func (r *recoveryState) applyColdLog() error {
 // what the log holds: entries superseded by a later hydrate, buried by a
 // tombstone or clipped by a truncate are dead weight the next recovery would
 // replay again. Rewriting is atomic (temp + rename), so a crash here keeps the
-// previous log.
-//
-// This is the cheap half of the job: recovery holds the whole surviving set with
-// no locking to respect, whereas the in-uptime pass (maybeCompactColdLog) has to
-// snapshot it shard by shard and can abort. Both apply coldCompactWorthIt, so a
-// log one leaves alone the other does not immediately rewrite.
+// previous log. The in-uptime pass is maybeCompactColdLog.
 func (r *recoveryState) compactColdLog() {
 	live := liveColdEntries(r.indexByShard)
 	if !coldCompactWorthIt(r.coldLoaded, len(live)) {

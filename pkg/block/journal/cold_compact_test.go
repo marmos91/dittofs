@@ -5,15 +5,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
-// coldLogSize is the on-disk footprint of the cold log, 0 when it does not
-// exist. It is read off the filesystem rather than off the store's own counter,
-// so a test asserts the file the next recovery would read.
-func coldLogSize(t *testing.T, dir string) int64 {
+// coldLogSize is the on-disk footprint of the store's cold log, 0 when it does
+// not exist. It is read off the filesystem rather than off the store's own
+// counter, so a test asserts the file the next recovery would read.
+func coldLogSize(t *testing.T, s *Store) int64 {
 	t.Helper()
-	st, err := os.Stat(filepath.Join(dir, coldLogName))
+	st, err := os.Stat(filepath.Join(s.dir, coldLogName))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return 0
@@ -21,6 +22,15 @@ func coldLogSize(t *testing.T, dir string) int64 {
 		t.Fatalf("stat cold log: %v", err)
 	}
 	return st.Size()
+}
+
+// setColdHooks installs the cold-log test seams under the lock the store reads
+// them with.
+func setColdHooks(s *Store, betweenAppendAndPublish, beforeCompactVerify func()) {
+	s.coldMu.Lock()
+	defer s.coldMu.Unlock()
+	s.betweenColdAppendAndPublish = betweenAppendAndPublish
+	s.beforeColdCompactVerify = beforeCompactVerify
 }
 
 // seedDeadColdEntries appends n cold entries and then buries every one of them:
@@ -74,12 +84,7 @@ func coldOffsets(t *testing.T, s *Store, id FileID) []int64 {
 // drops comes back as a POSIX hole and reads as zeros with no fetch.
 func TestColdLogCompactionKeepsLiveRangesCold(t *testing.T) {
 	ctx := context.Background()
-	dir := t.TempDir()
-	cfg := Config{ShardCount: 1, SegmentSize: minSegmentSize}
-	s, err := Open(dir, cfg)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
+	s := testStore(t, Config{ShardCount: 1, SegmentSize: minSegmentSize})
 
 	// The eviction path: synced records so the whole shard is evictable, then a
 	// target large enough to drain it. Every one of the file's ranges is cold
@@ -98,9 +103,9 @@ func TestColdLogCompactionKeepsLiveRangesCold(t *testing.T) {
 	}
 	seedDeadColdEntries(t, s, "pad", 1200)
 
-	before := coldLogSize(t, dir)
+	before := coldLogSize(t, s)
 	s.maybeCompactColdLog()
-	after := coldLogSize(t, dir)
+	after := coldLogSize(t, s)
 	if after >= before {
 		t.Fatalf("compaction did not shrink the cold log: before=%d after=%d", before, after)
 	}
@@ -110,63 +115,80 @@ func TestColdLogCompactionKeepsLiveRangesCold(t *testing.T) {
 	}
 	wantColdAt(t, s, "seeded", 0, "after compaction")
 
-	if err := s.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	s2, err := Open(dir, cfg)
-	if err != nil {
-		t.Fatalf("reopen: %v", err)
-	}
-	defer func() { _ = s2.Close() }()
+	s2 := reopen(t, s, Config{})
 	for _, off := range live {
 		wantColdAt(t, s2, "evicted", off, "after reopen")
 	}
 	wantColdAt(t, s2, "seeded", 0, "after reopen")
 }
 
-// TestColdLogCompactionAbortsOnConcurrentAppend lands an append inside the
-// window between the compactor's snapshot and its verify — deterministically,
-// through the seam, not by timing one — and pins both halves of the contract:
-// the pass abandons the rewrite, and the entry that landed is still in the log a
-// reopen reads. Rewriting the snapshot instead would drop that entry, which is
-// silent zeros for a range its appender has already stopped keeping locally.
-func TestColdLogCompactionAbortsOnConcurrentAppend(t *testing.T) {
+// TestColdLogCompactionKeepsAppendedButUnpublishedEntries is the regression for
+// the window between a cold-log append and the index publish that follows it.
+// SeedColdBatch appends once for the whole batch and only then takes each shard
+// lock to insert, exactly as eviction appends before re-locking to flip; a
+// compaction that snapshots an index in that window finds nothing cold for those
+// entries and would rewrite the log without them, while the caller goes on to
+// publish — and, in eviction's case, to unlink the only local copy. The loss is
+// invisible until the next open.
+//
+// The compaction is driven from the seam inside that window rather than raced
+// against it, so the ordering is the same on every run.
+func TestColdLogCompactionKeepsAppendedButUnpublishedEntries(t *testing.T) {
 	ctx := context.Background()
-	dir := t.TempDir()
-	cfg := Config{ShardCount: 1, SegmentSize: minSegmentSize}
-	s, err := Open(dir, cfg)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
+	s := testStore(t, Config{ShardCount: 1, SegmentSize: minSegmentSize})
 	if err := s.SeedCold(ctx, "seeded", [][2]int64{{0, 4096}}); err != nil {
 		t.Fatalf("SeedCold: %v", err)
 	}
 	seedDeadColdEntries(t, s, "pad", 1200)
 
-	before := coldLogSize(t, dir)
-	s.beforeColdCompactVerify = func() {
+	before := coldLogSize(t, s)
+	setColdHooks(s, func() { s.maybeCompactColdLog() }, nil)
+	if err := s.SeedColdBatch(ctx, []ColdSeed{{ID: "victim", Extents: [][2]int64{{0, 4096}}}}); err != nil {
+		t.Fatalf("SeedColdBatch: %v", err)
+	}
+	setColdHooks(s, nil, nil)
+
+	// The log has to be longer than it was — the victim's entry appended, nothing
+	// rewritten away. A shorter log means the pass rewrote from an index that did
+	// not describe the entry yet.
+	if got := coldLogSize(t, s); got <= before {
+		t.Fatalf("compaction rewrote the log while an append was unpublished: %d -> %d bytes, so the entry the log already held was dropped", before, got)
+	}
+	// In-uptime the index carries the range whether or not the log kept it, which
+	// is why the assertion that matters is the one after the reopen.
+	wantColdAt(t, s, "victim", 0, "after the compaction that raced the publish")
+	s2 := reopen(t, s, Config{})
+	wantColdAt(t, s2, "victim", 0, "after reopen")
+	wantColdAt(t, s2, "seeded", 0, "after reopen")
+}
+
+// TestColdLogCompactionAbortsOnConcurrentAppend covers the other half of the
+// verify: an append that lands after the pass read the log's entry count, which
+// SeedCold does here under its own shard lock. The pass has to abandon the
+// rewrite, and the entry has to still be in the log a reopen reads.
+func TestColdLogCompactionAbortsOnConcurrentAppend(t *testing.T) {
+	ctx := context.Background()
+	s := testStore(t, Config{ShardCount: 1, SegmentSize: minSegmentSize})
+	if err := s.SeedCold(ctx, "seeded", [][2]int64{{0, 4096}}); err != nil {
+		t.Fatalf("SeedCold: %v", err)
+	}
+	seedDeadColdEntries(t, s, "pad", 1200)
+
+	before := coldLogSize(t, s)
+	setColdHooks(s, nil, func() {
 		if err := s.SeedCold(ctx, "late", [][2]int64{{0, 4096}}); err != nil {
 			t.Errorf("SeedCold inside the snapshot window: %v", err)
 		}
-	}
+	})
 	s.maybeCompactColdLog()
-	s.beforeColdCompactVerify = nil
+	setColdHooks(s, nil, nil)
 
-	// An aborted pass leaves the log as the append found it: longer by that one
-	// entry, never rewritten down to the snapshot.
-	if got := coldLogSize(t, dir); got <= before {
+	if got := coldLogSize(t, s); got <= before {
 		t.Fatalf("compaction did not abort: cold log went from %d to %d bytes, so the entry appended inside the snapshot window was dropped", before, got)
 	}
 	wantColdAt(t, s, "late", 0, "after the aborted compaction")
 
-	if err := s.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	s2, err := Open(dir, cfg)
-	if err != nil {
-		t.Fatalf("reopen: %v", err)
-	}
-	defer func() { _ = s2.Close() }()
+	s2 := reopen(t, s, Config{})
 	wantColdAt(t, s2, "late", 0, "after reopen")
 	wantColdAt(t, s2, "seeded", 0, "after reopen")
 }
@@ -178,12 +200,7 @@ func TestColdLogCompactionAbortsOnConcurrentAppend(t *testing.T) {
 // the bound is not the trivial one of an emptied log.
 func TestColdLogGrowthBoundedAcrossCycles(t *testing.T) {
 	ctx := context.Background()
-	dir := t.TempDir()
-	s, err := Open(dir, Config{ShardCount: 1, SegmentSize: minSegmentSize})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer func() { _ = s.Close() }()
+	s := testStore(t, Config{ShardCount: 1, SegmentSize: minSegmentSize})
 	if err := s.SeedCold(ctx, "keep", [][2]int64{{0, 4096}}); err != nil {
 		t.Fatalf("SeedCold: %v", err)
 	}
@@ -193,16 +210,19 @@ func TestColdLogGrowthBoundedAcrossCycles(t *testing.T) {
 	for c := 0; c < cycles; c++ {
 		seedDeadColdEntries(t, s, FileID(fmt.Sprintf("pad-%d", c)), 600)
 		s.maybeCompactColdLog()
-		sizes = append(sizes, coldLogSize(t, dir))
+		sizes = append(sizes, coldLogSize(t, s))
 	}
 
 	// The first cycle is below the compaction floor, so sizes[0] is one cycle's
 	// worth of appends and the right yardstick: the log must not outgrow it by
 	// more than the batch a pass can be mid-way through.
-	if bound := 2 * sizes[0]; sizes[len(sizes)-1] > sizes[2] || maxSize(sizes) > bound {
+	if bound := 2 * sizes[0]; sizes[len(sizes)-1] > sizes[2] || slices.Max(sizes) > bound {
 		t.Fatalf("cold log grows with churn instead of being reclaimed: sizes=%v, bound=%d", sizes, bound)
 	}
 	wantColdAt(t, s, "keep", 0, "after the last compaction")
+	if got := s.Stats().ColdLogEntries; got == 0 || got > 2 {
+		t.Fatalf("Stats should report the surviving cold-log entries, got %d", got)
+	}
 }
 
 // TestColdLogSnapshotRefusesUnsyncedShard pins the durability half of the
@@ -229,14 +249,4 @@ func TestColdLogSnapshotRefusesUnsyncedShard(t *testing.T) {
 	if _, ok := s.liveColdSnapshot(); !ok {
 		t.Fatal("a committed shard must snapshot again")
 	}
-}
-
-func maxSize(xs []int64) int64 {
-	var m int64
-	for _, x := range xs {
-		if x > m {
-			m = x
-		}
-	}
-	return m
 }

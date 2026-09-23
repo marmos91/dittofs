@@ -67,8 +67,9 @@ const (
 	// been seeded from the caller's manifest. See ColdSeeded.
 	coldSeededName = "cold-seeded"
 
-	// coldCompactFloor keeps recovery from rewriting a log that is merely small:
-	// compaction only pays once the dead entries outweigh a few pages of I/O.
+	// coldCompactFloor keeps a compaction from rewriting a log that is merely
+	// small: a rewrite only pays once the dead entries outweigh a few pages of
+	// I/O. Both passes apply it through coldCompactWorthIt.
 	coldCompactFloor = 1024
 )
 
@@ -359,6 +360,13 @@ func (s *Store) rewriteCold(entries []coldEntry) error {
 // rewriteColdLocked is rewriteCold with coldMu already held, for a caller that
 // has to decide whether to rewrite under the same hold that protects the
 // decision (maybeCompactColdLog).
+//
+// ponytail: the temp write and both fsyncs run under coldMu, so a seed or an
+// invalidate waits out the whole rewrite while holding its shard lock — the
+// stall Invalidate's own marker calls out for one append, multiplied by the
+// surviving log. Only the rename has to be atomic against an append: build the
+// temp file before taking coldMu, and re-verify there, if a shard is measured
+// stalling on a compaction.
 func (s *Store) rewriteColdLocked(entries []coldEntry) error {
 	if s.coldFD != nil {
 		_ = s.coldFD.Close()
@@ -366,14 +374,22 @@ func (s *Store) rewriteColdLocked(entries []coldEntry) error {
 	}
 	path := s.coldPath()
 	if len(entries) == 0 {
-		s.coldEntries = 0
 		if err := os.Remove(path); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
+				s.coldEntries = 0
 				return nil
 			}
 			return fmt.Errorf("journal: remove cold log: %w", err)
 		}
-		return fsyncDir(s.dir)
+		if err := fsyncDir(s.dir); err != nil {
+			return fmt.Errorf("journal: fsync dir after cold log removal: %w", err)
+		}
+		// Counted only once the file is actually gone, exactly as the rewrite
+		// below counts only a log it finished renaming: a refused unlink leaves N
+		// entries on disk, and a counter reading zero would let the next
+		// compaction rewrite from a snapshot it never verified against them.
+		s.coldEntries = 0
+		return nil
 	}
 	tmp := path + ".tmp"
 	fd, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
@@ -407,6 +423,41 @@ func (s *Store) rewriteColdLocked(entries []coldEntry) error {
 	return nil
 }
 
+// appendColdPublish records entries in the log and then publishes them into the
+// index as one unit, marked in flight for as long as the two disagree.
+//
+// The halves are deliberately separated in two callers: eviction scans under the
+// shard lock, drops it, appends, and re-takes the lock to flip the intervals
+// cold, and a batch seed appends once for many files and then takes each shard
+// lock in turn to insert. In that gap the log holds entries no index shows as
+// cold, so a compaction that snapshotted the index there would write a log
+// missing exactly them — and the appender goes on to unlink their bytes. They
+// would come back from a restart as holes that read as zeros with no fetch.
+//
+// Refusing while in flight is the whole guard: the count is raised before the
+// append, so an entry the log holds is either already published or in flight and
+// keeping the compactor off the log. A caller that returned without releasing
+// would stall compaction rather than lose an entry.
+func (s *Store) appendColdPublish(entries []coldEntry, publish func()) error {
+	s.coldMu.Lock()
+	s.coldInFlight++
+	hook := s.betweenColdAppendAndPublish
+	s.coldMu.Unlock()
+	defer func() {
+		s.coldMu.Lock()
+		s.coldInFlight--
+		s.coldMu.Unlock()
+	}()
+	if err := s.appendCold(entries); err != nil {
+		return err
+	}
+	if hook != nil {
+		hook()
+	}
+	publish()
+	return nil
+}
+
 // coldCompactWorthIt reports whether a log holding logged entries is worth
 // rewriting down to a live set of live entries: the dead weight has to outweigh
 // what would be rewritten, and pay for at least a few pages of I/O. Recovery and
@@ -422,32 +473,37 @@ func coldCompactWorthIt(logged, live int) bool {
 // weight, so without this the log grows for as long as the process stays up and
 // a restart pays for all of it in loadCold.
 //
-// appendCold takes coldMu while holding a shard lock, so this must never hold
-// coldMu across one. It snapshots the live set shard by shard instead, then
-// verifies under coldMu that no append landed while it was walking. Compaction
-// is opportunistic — skipping a pass costs a stale log, dropping an entry an
-// append added mid-walk costs silent zeros for a range that appender has already
-// unlinked.
+// Cold-log callers take their shard lock before coldMu (SeedCold and Invalidate
+// hold it across the append), so this must never hold coldMu across a shard
+// lock. It snapshots the live set shard by shard instead and then verifies,
+// under coldMu, that the log it is about to replace is still the one it
+// snapshotted: nothing appended, and nothing appended-but-not-yet-indexed
+// (appendColdPublish). Either way it abandons the pass — skipping one costs a
+// stale log, while rewriting without an entry some caller is relying on costs
+// silent zeros for a range that caller has already stopped keeping locally.
 //
-// ponytail: the abort is whole-snapshot rather than a per-shard merge of the
-// loaded log, and the log is still outside diskBytes, so what bounds its size is
-// this pass getting to run: a store whose shards never reach a completed fsync
-// (a sticky fsync failure freezes syncedVersion) or one appending through every
-// verify window grows the log as before. Merge the loaded log with the snapshot
-// shard by shard, or charge cold.log to the local cap, if a store is measured
-// growing it across ticks.
+// ponytail: a pass is refused whole rather than merging the log it read with the
+// snapshot, so a store that is always mid-append, one whose shards never reach a
+// completed fsync (a sticky fsync failure freezes syncedVersion), and one whose
+// operator disabled the dirty-age commit all keep growing the log.
+// Stats.ColdLogEntries is what says whether that is happening: merge per shard,
+// or charge the log to the local cap, if a store is measured growing it across
+// ticks.
 func (s *Store) maybeCompactColdLog() {
 	if s.closed.Load() {
 		return
 	}
 	s.coldMu.Lock()
-	logged, broken := s.coldEntries, s.coldBroken
+	logged, broken, inFlight := s.coldEntries, s.coldBroken, s.coldInFlight
+	checked, verify := s.coldCompactChecked, s.beforeColdCompactVerify
 	s.coldMu.Unlock()
 	// A broken log has no appendable tail and must not be rewritten from a
 	// snapshot either: replay ends at its tear, so the live set is not what the
-	// log describes. The cheap size gate keeps an idle or small log from costing
-	// a shard walk every tick.
-	if broken || logged <= coldCompactFloor {
+	// log describes. The size gate keeps an idle or small log from costing a
+	// shard walk every tick, and checked keeps a log that is large but all live
+	// from paying for the same verdict every tick: only an append can change that
+	// verdict, and an append moves logged.
+	if broken || inFlight > 0 || logged == checked || !coldCompactWorthIt(logged, 0) {
 		return
 	}
 	// decision: an entry is dropped because a record, tombstone or truncate
@@ -457,26 +513,41 @@ func (s *Store) maybeCompactColdLog() {
 	// their markers before touching the index, but a plain record is durable only
 	// after a shard commit, so ask for one here rather than waiting for the
 	// dirty-age loop to have happened to run. liveColdSnapshot still verifies it
-	// under each shard lock; this only keeps a write-heavy store from aborting
-	// every pass.
-	if err := s.commitDirtyShards(); err != nil {
-		s.log.Warn("journal: cold log compaction skipped, shard commit failed", "error", err)
-		return
+	// under each shard lock; this only keeps a write-heavy store from refusing
+	// every pass. A negative DirtyExpiry is an operator saying no loop may fsync
+	// on its own schedule, and that answer is taken here too: such a store
+	// compacts only while its shards happen to be clean.
+	if s.cfg.DirtyExpiry > 0 {
+		if err := s.commitDirtyShards(); err != nil {
+			s.log.Warn("journal: cold log compaction skipped, shard commit failed", "error", err)
+			return
+		}
 	}
 	live, ok := s.liveColdSnapshot()
-	if !ok || !coldCompactWorthIt(logged, len(live)) {
+	if !ok {
+		s.log.Debug("journal: cold log compaction deferred, a shard holds records no fsync has covered",
+			"entries", logged)
 		return
 	}
-	if s.beforeColdCompactVerify != nil {
-		s.beforeColdCompactVerify()
+	if !coldCompactWorthIt(logged, len(live)) {
+		s.coldMu.Lock()
+		s.coldCompactChecked = logged
+		s.coldMu.Unlock()
+		return
+	}
+	if verify != nil {
+		verify()
 	}
 	s.coldMu.Lock()
 	defer s.coldMu.Unlock()
 	// An append only ever raises the count, so an unchanged count means the
-	// snapshot still describes the whole log. If one landed, its entry may be
-	// missing from the snapshot and rewriting would drop it; leave the log to the
-	// next pass instead.
-	if s.coldEntries != logged {
+	// snapshot still describes the whole log; an append in flight means the index
+	// it was taken from does not describe entries the log already holds. Either
+	// way those entries are the ones a rewrite would drop, so leave the log to
+	// the next pass.
+	if s.coldEntries != logged || s.coldInFlight > 0 {
+		s.log.Debug("journal: cold log compaction deferred, the log moved under the snapshot",
+			"snapshot_entries", logged, "entries", s.coldEntries, "appends_in_flight", s.coldInFlight)
 		return
 	}
 	if err := s.rewriteColdLocked(live); err != nil {
@@ -511,9 +582,7 @@ func (s *Store) liveColdSnapshot() ([]coldEntry, bool) {
 }
 
 // liveColdEntries collects the cold intervals an index walk ended up with, which
-// is the set a compaction should keep. It locks nothing: recovery calls it before
-// the shards are published, and liveColdSnapshot calls it per shard under that
-// shard's lock.
+// is the set a compaction should keep. It locks nothing; its callers say why.
 func liveColdEntries(indexByShard []map[FileID]*fileIndex) []coldEntry {
 	var out []coldEntry
 	for _, idxMap := range indexByShard {
