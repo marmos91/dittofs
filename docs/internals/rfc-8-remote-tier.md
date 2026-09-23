@@ -150,7 +150,7 @@ from §2.1 in every case; the rightmost column says which.
 | An unknown outcome | report it as unknown | resolve it as not durable (RFC 3 §2.5) | reporting is local; resolving implies a next attempt |
 | Concurrency | none | the window, its ceiling, its adaptation | a limit exists only across operations |
 | Peak memory | none | the bound, per process | memory is not a backend's to bound |
-| The key | receives it final, before framing (§3.4) | requires its properties (RFC 2 §4.2–§2.3) | derived from content by RFC 2 §4.2; neither side invents it |
+| The key | receives it final, before framing (§3.4) | requires its properties (RFC 2 §4.2, §4.3) | derived from content by RFC 2 §4.2; neither side invents it |
 | Compression, encryption | the whole chain (§4) | **MUST NOT** know one happened | a transform is per object |
 | Verification | verifies before returning (§6) | need not re-verify | the hash is in the object |
 | Byte ranges | internal only (§6.2) | never issues one | a range is how a verified read is built |
@@ -174,11 +174,11 @@ no boundary at all.
 
 | Obligation (RFC 3) | Where it lives | Lines |
 | --- | --- | --- |
-| The upload window, its ceiling and adaptation (§6.1, §6.3) | `pkg/block/syncer/dynsem.go`, `upload_controller.go` | 311 |
-| The transfer surface, locator resolution, verified reads (§4) | `pkg/block/engine/syncer.go` | 328 |
-| Health, derived and never latched (§5.3) | `pkg/block/engine/sync_health.go` | 317 |
-| The bounded prefetch queue (§6.2) | `pkg/block/engine/sync_queue.go` | 216 |
-| The put itself, and the durability report (§3, §4.1) | `pkg/block/engine/flush.go`, `engineBlockSink.CommitBlock` | — |
+| The upload window and its bound (RFC 3 §2.1, §2.2) | `pkg/block/syncer/dynsem.go`, `upload_controller.go` | 311 |
+| The fetch path, locator resolution, verified reads (RFC 3 §4) | `pkg/block/engine/syncer.go` | 328 |
+| Health, derived and never latched (RFC 3 §5) | `pkg/block/engine/sync_health.go` | 317 |
+| The bounded prefetch queue (RFC 3 §2.3, §4.4) | `pkg/block/engine/sync_queue.go` | 216 |
+| The put itself, and the durability report (RFC 3 §3, §2.6) | `pkg/block/engine/flush.go`, `engineBlockSink.CommitBlock` | — |
 
 The consequence is not a bug today; it is that two of RFC 3's rules are currently
 unenforceable by construction. RFC 3 §5 says the syncer reports health and *the
