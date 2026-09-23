@@ -68,7 +68,7 @@ dittofs_localstore_backpressure_total 1
 # HELP dittofs_localstore_evicted_bytes_total Bytes reclaimed by local-cache eviction.
 # TYPE dittofs_localstore_evicted_bytes_total counter
 dittofs_localstore_evicted_bytes_total 1.2582912e+07
-# HELP dittofs_localstore_evictions_total Local-cache CAS chunks evicted to reclaim space.
+# HELP dittofs_localstore_evictions_total Local-store segments evicted to reclaim space.
 # TYPE dittofs_localstore_evictions_total counter
 dittofs_localstore_evictions_total 3
 `

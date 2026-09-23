@@ -12,7 +12,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
-	"github.com/marmos91/dittofs/pkg/block/local"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -313,7 +313,7 @@ type Service struct {
 	// SetMetrics (which back-fills already-registered shares); createBlockStore-
 	// ForShare applies it to shares added later. Guarded by mu. Nil disables
 	// inline recording.
-	metricsRec local.MetricsRecorder
+	metricsRec journal.MetricsRecorder
 
 	// rebindMu serializes RebindShareBlockStore calls. A rebind tears down and
 	// rebuilds a share's per-share BlockStore over the same local dir, which is
@@ -482,7 +482,7 @@ func (s *Service) ListShares() []string {
 // after the metrics registry is built (which happens after startup share
 // loading). Shares added afterwards pick the recorder up in
 // createBlockStoreForShare. Idempotent and nil-tolerant.
-func (s *Service) SetMetrics(rec local.MetricsRecorder) {
+func (s *Service) SetMetrics(rec journal.MetricsRecorder) {
 	s.mu.Lock()
 	s.metricsRec = rec
 	stores := make([]*engine.Store, 0, len(s.registry))

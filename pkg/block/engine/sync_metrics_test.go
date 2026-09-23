@@ -7,7 +7,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/local/memory"
 )
 
-// nopDataplaneMetrics satisfies both local.MetricsRecorder (what SetMetrics
+// nopDataplaneMetrics satisfies both journal.MetricsRecorder (what SetMetrics
 // accepts) and DataplaneMetrics (the capability it probes for), which is what
 // makes it reach the Store's metrics cell.
 type nopDataplaneMetrics struct{}

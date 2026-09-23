@@ -95,6 +95,15 @@ func (s *Store) evict(ctx context.Context, targetBytes int64) (EvictResult, erro
 		}
 		res.SegmentsEvicted++
 		res.BytesFreed += freed
+		// decision: one observation per segment reclaimed HERE, and nowhere else,
+		// even though repackSegment/dropVictim (repack.go) and reclaimEmptied
+		// (reclaim.go) also unlink a segment through the same retirement tail.
+		// Only this path demotes live bytes to remote-only — the thing the metric
+		// names. A repack relocates them and stays warm, and a post-delete reclaim
+		// frees bytes nobody holds; counting either makes the eviction rate read
+		// high on a store under no pressure at all. Withdraw only if the metric is
+		// ever redefined as "segments unlinked".
+		s.recordEviction(freed)
 		if targetBytes <= 0 || res.BytesFreed >= targetBytes {
 			return res, nil
 		}
@@ -479,6 +488,18 @@ func (s *Store) ensureSpace(ctx context.Context, needed int64) error {
 	deadline := time.Now().Add(s.cfg.EvictMaxWait)
 	lastUnsynced := s.unsynced.Load()
 	warned := false
+	// stallStart is set the first time this call actually waits, and stays zero on
+	// a call that found room or freed it by evicting. The gate below is checked on
+	// every write, so recording on a check rather than on a wait would report
+	// constant backpressure on an idle store. Recorded once per stalled call, for
+	// the wall time the writer was held, so the histogram reads as the delay a
+	// write saw and not as the backoff step.
+	var stallStart time.Time
+	defer func() {
+		if !stallStart.IsZero() {
+			s.recordBackpressure(time.Since(stallStart))
+		}
+	}()
 	for s.diskBytes.Load()+needed > s.cfg.MaxLocalBytes {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -530,6 +551,9 @@ func (s *Store) ensureSpace(ctx context.Context, needed int64) error {
 		}
 		if time.Now().After(deadline) {
 			return ErrLocalStoreFull
+		}
+		if stallStart.IsZero() {
+			stallStart = time.Now()
 		}
 		select {
 		case <-ctx.Done():

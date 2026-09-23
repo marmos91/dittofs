@@ -6,7 +6,7 @@ import "time"
 // It follows the nil-safe Record* convention of pkg/metrics, which *Metrics
 // satisfies. The engine depends on this interface rather than importing
 // pkg/metrics directly, keeping pkg/block free of the metrics dependency
-// (the same reason local.MetricsRecorder exists for the local store).
+// (the same reason journal.MetricsRecorder exists for the local store).
 type DataplaneMetrics interface {
 	// RecordUpload records one packed-block upload to remote: result is "ok"
 	// or "error", bytes is the block size, d is the remote PutBlock latency.

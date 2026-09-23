@@ -114,7 +114,7 @@ func newInstruments(reg *prometheus.Registry) *instruments {
 		}),
 		evictionsTotal: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: Namespace, Subsystem: "localstore", Name: "evictions_total",
-			Help: "Local-cache CAS chunks evicted to reclaim space.",
+			Help: "Local-store segments evicted to reclaim space.",
 		}),
 		evictedBytesTotal: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: Namespace, Subsystem: "localstore", Name: "evicted_bytes_total",
@@ -280,7 +280,7 @@ func (m *Metrics) RecordBackpressure(d time.Duration) {
 	m.in.backpressureWaitSeconds.Observe(d.Seconds())
 }
 
-// RecordEviction records one evicted local-cache chunk and the bytes it
+// RecordEviction records one evicted local-store segment and the bytes it
 // reclaimed. Cheap (two atomic Incs) — safe on the write hot path.
 func (m *Metrics) RecordEviction(bytes int64) {
 	if m == nil {

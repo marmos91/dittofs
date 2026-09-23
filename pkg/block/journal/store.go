@@ -256,6 +256,11 @@ type Store struct {
 
 	closed atomic.Bool
 
+	// metrics holds the eviction/backpressure recorder (see metrics.go). A
+	// pointer cell rather than a field because SetMetrics runs while the store is
+	// already serving, concurrently with the paths that read it.
+	metrics atomic.Pointer[MetricsRecorder]
+
 	// durable is the operator-overridable durability report (config["durable"]);
 	// the journal substrate is durable, so Open stores the true default.
 	durable atomic.Bool

@@ -345,14 +345,21 @@ func (bs *Store) Close() error {
 	return bs.closeErr
 }
 
-// SetMetrics forwards the inline metrics recorder to the underlying local
-// store when it participates in the [local.MetricsAware] capability surface
-// (the *fs.FSStore eviction/backpressure path). Stores that emit no inline
-// metrics (e.g. the in-memory store) simply don't implement MetricsAware, so
-// this is a no-op for them. The runtime calls this after it learns its metrics
-// handle — shares are constructed before the registry exists.
-func (bs *Store) SetMetrics(rec local.MetricsRecorder) {
-	if aware, ok := bs.local.(local.MetricsAware); ok {
+// SetMetrics forwards the inline metrics recorder to the underlying local store
+// when it records eviction and backpressure — *journal.Store does, the in-memory
+// store does not, so the probe is what tells them apart. The runtime calls this
+// after it learns its metrics handle, since shares are constructed before the
+// registry exists.
+//
+// The probe names the method inline rather than through an interface declared
+// next to LocalStore: the recorder type belongs to journal (it is the package
+// whose call sites emit, and it imports only the standard library), and an
+// interface declared beside LocalStore would have to name it from a package
+// journal cannot import back.
+func (bs *Store) SetMetrics(rec journal.MetricsRecorder) {
+	if aware, ok := bs.local.(interface {
+		SetMetrics(journal.MetricsRecorder)
+	}); ok {
 		aware.SetMetrics(rec)
 	}
 	// The injected recorder (*metrics.Metrics in production) also carries the
