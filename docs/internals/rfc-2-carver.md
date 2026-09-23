@@ -47,34 +47,69 @@ The carver **MUST NOT**:
 Its dependency set is the standard library and a BLAKE3 implementation, and an
 import test **MUST** enforce that.
 
-### 1.2 It is one function
+### 1.2 Two layers: the chunker and the carver
 
-The carver is a function, not an object with a lifecycle. Two calls with the same
-bytes and parameters produce the same result, in any order, concurrently, in any
-process.
+This document specifies two things, and keeping them apart is what keeps either
+of them simple.
 
-An indicative shape — the obligations, not the signature, are normative:
+**The chunker answers *where*. The carver answers *what*.**
 
+| | chunker | carver |
+| --- | --- | --- |
+| Answers | where does this buffer's next boundary fall? | what chunks does this run contain, and what are they? |
+| Input | parameters, a byte slice, and whether it is the last | parameters, a reader, the file offset it starts at |
+| Output | one position, or "not yet — give me more" | one callback per chunk: offset, length, hash, bytes |
+| Knows about | bytes and parameters, nothing else | a reader, a hash function, a file offset |
+| State | none whatsoever | one buffer, for the duration of one call |
+| Allocates | never | once per call |
+
+Indicative shapes — the obligations, not the signatures, are normative:
+
+    // chunker: pure, stateless, allocation-free
+    NextBoundary(p Params, buf []byte, final bool) (end int)
+
+    // carver: drives the chunker across one run
     Cut(r io.Reader, base int64, p Params, emit func(Chunk, []byte) error) error
 
     Chunk = { Offset int64; Length int32; Hash [32]byte }
 
-`Cut` reads `r` to EOF, and for each chunk it cuts calls `emit` with the chunk's
-descriptor and its bytes. `base` is the file offset `r`'s first byte sits at, so
-`Offset` is a file offset and the carver never has to be told anything else about
-the file.
+`NextBoundary` returns the index just past the chunk that starts at `buf[0]`, or
+zero to mean it has not seen enough bytes to decide — which `final` resolves, by
+making the remainder a chunk. It is a function of its arguments and nothing else.
 
-Streaming happens inside. The carver holds one buffer and a partial chunk while it
-looks for the next boundary; neither is visible to the caller, and neither
-survives the call. A caller therefore has no cursor to advance and no state to
-keep in step.
+`Cut` reads `r` to EOF, refilling its buffer, asking `NextBoundary` where each
+chunk ends, hashing it, and calling `emit`. `base` is the file offset `r`'s first
+byte sits at, so `Offset` comes out a file offset and the carver never has to be
+told anything else about the file.
+
+**Neither does the other's job**, and an implementation **MUST NOT** let them
+drift together:
+
+- the chunker **MUST NOT** hash, hold a file offset, read from anything, or
+  allocate;
+- the carver **MUST NOT** re-derive a boundary, inspect a fingerprint, or depend
+  on how the chunker reached its answer.
+
+That last prohibition is the one worth enforcing. The mess this document replaced
+came from a carver that reached into boundary-search state to manage its own
+buffer, which is how a caller ended up needing to track two cursors.
+
+**Which layer owns what.** §3 is entirely the chunker's — B1–B5, the parameters,
+and both deviations are properties of the boundary function. §2 and §4 are the
+carver's: runs, borrowed bytes, and identity. §5 is neither's, and §6 is a
+property of the pair.
+
+The split is not packaging. It is what makes B1–B5 checkable against a byte slice
+with no reader and no hash in sight (§1.3), and it is what makes a replacement
+boundary function a change to one thing rather than two.
 
 ### 1.3 It is testable on its own, by construction
 
-The carver declares no interfaces and requires no capability from any other
+Neither layer declares an interface or requires a capability from any other
 component (§1.1). RFC 0 §1.2 obliges every component to build and pass its tests
 with each declared interface stubbed; here that holds vacuously, because there is
-nothing to stub.
+nothing to stub. The chunker goes further: taking no reader and no hash, it is
+testable with a byte slice alone.
 
 This is a requirement, not a happy accident, and an implementation **MUST**
 preserve it. Concretely, a conformance check for this document **MUST** be
@@ -431,16 +466,24 @@ Every check below is a pure function of a byte slice and a set of parameters, pe
 §1.3. If a check here needs a fixture, the implementation has acquired a
 dependency it is not allowed to have, and that is itself the finding.
 
-| Requirement | Check |
-| --- | --- |
-| §3.2 target is realised | Cut incompressible data; assert the mean is within tolerance of `Target`. **Fails against the current implementation** (§3.2.1) and is the regression gate for fixing it. |
-| §3.2 thresholds derive from target | Construct at several targets; assert the derived threshold's population count tracks the target, and that one hardcoded pair cannot satisfy two of them. |
-| §3.7 invalid params rejected | Construct with `Min` below the floor, with `Min ≥ Target`, and with `Max` above the ceiling; assert each errors and no carver is produced. |
-| §3.4 warm-up equivalence | Assert boundaries are identical whether rolling state is warmed from the chunk start or over the declared window, across several profiles. |
-| B4 shift resistance | Insert one byte early in a large input; assert every boundary past the edited chunk is unchanged. |
-| §4 hash covers the chunk | Cut identical content at two different `base` offsets; assert one hash. |
-| §2.2 borrowed bytes | Retain the slice passed to `emit` and assert it is observed to change — the check exists to prove the contract is real, so that a caller that copies is not doing so out of superstition. |
-| §7 no short chunk on error | Fail `emit` mid-run and fail `r` mid-chunk; assert no emitted chunk is a truncated prefix of a chunk the un-errored path would produce. |
+Each check names the layer it belongs to (§1.2), because that is where the defect
+is. Five of the eight need no reader and no hash — they are chunker checks over a
+byte slice.
+
+| Layer | Requirement | Check |
+| --- | --- | --- |
+| chunker | §3.2 target is realised | Cut incompressible data; assert the mean is within tolerance of `Target`. **Fails against the current implementation** (§3.2.1) and is the regression gate for fixing it. |
+| chunker | §3.2 thresholds derive from target | Construct at several targets; assert the derived threshold's population count tracks the target, and that one hardcoded pair cannot satisfy two of them. |
+| chunker | §3.7 invalid params rejected | Construct with `Min` below the floor, with `Min ≥ Target`, and with `Max` above the ceiling; assert each errors and nothing usable is produced. |
+| chunker | §3.4 warm-up equivalence | Assert boundaries are identical whether rolling state is warmed from the chunk start or over the declared window, across several profiles. |
+| chunker | B4 shift resistance | Insert one byte early in a large input; assert every boundary past the edited chunk is unchanged. |
+| carver | §4 hash covers the chunk | Cut identical content at two different `base` offsets; assert one hash. |
+| carver | §2.2 borrowed bytes | Retain the slice passed to `emit` and assert it is observed to change — the check exists to prove the contract is real, so that a caller that copies is not doing so out of superstition. |
+| carver | §7 no short chunk on error | Fail `emit` mid-run and fail `r` mid-chunk; assert no emitted chunk is a truncated prefix of a chunk the un-errored path would produce. |
+
+A check that needs both layers to be wrong at once is a check in the wrong place.
+If a boundary defect can only be observed through `Cut`, the chunker's own checks
+are too weak, and strengthening them is the fix rather than adding a carver check.
 
 Two things **MUST NOT** stand in:
 
