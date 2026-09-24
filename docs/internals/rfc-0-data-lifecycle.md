@@ -188,6 +188,8 @@ blocks and many files.
 | **box** | group chunks into one block |
 | **put** / **get** | make durable in the remote tier / retrieve from it |
 | **fill** | place retrieved remote bytes into the journal |
+| **demand** fetch | a get a reader is waiting on |
+| **speculate** | get a block no reader has asked for yet: **read-ahead** (following an observed access pattern) or **pre-warm** (an explicit request over a share or subtree) |
 | **evict** | release local bytes that are durable remotely ([§8.1](#8.1%20Evict)) |
 | **reclaim** | recover local space without losing content ([§8.2](#8.2%20Reclaim)) |
 | **sweep** | delete a remote block that nothing references ([§8.3](#8.3%20Sweep)) |
