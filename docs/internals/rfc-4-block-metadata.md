@@ -126,11 +126,17 @@ produced only by LSM compaction and the ~50-byte value pointer each commit adds
 to the LSM never generates any. A captured store held 245 GiB of value log
 against 0.15 GiB of live data.
 
-So the rule is not only about cost. **A whole-list record can be unreclaimable,
-and an implementation that keeps one MUST be able to state what reclaims it.**
-Where a backend must hold a list at all, it **MUST** bound each stored value
-below its engine's inline threshold rather than relying on a reclamation pass
-whose trigger the workload does not produce.
+So the rule is not only about cost: a whole-list record can be unreclaimable.
+That is the general obligation, and it is stated once as **RFC 0 §9.1 (I7)** —
+every stored record names what reclaims it, at its maximum size. The predicate
+there is a record that grows with use rather than a list, because the identical
+failure reached the namespace's attribute blob, which is a map and holds no refs
+at all (RFC 5 §12.1).
+
+A backend that holds a list at all **MUST** satisfy I7 for it. Segmenting the
+list so no stored value reaches the threshold is one way; spilling each ref into
+its own record, which is what §2.1 asks for on its own terms, is another and
+satisfies both rules at once.
 
 ### 2.2 Chunk
 
@@ -723,7 +729,7 @@ written. The design above does not follow from any of what is listed here.
 | Requirement | Current state | Evidence |
 | --- | --- | --- |
 | §2.1 refs are records | Neither backend makes a ref a record. Badger stores the list in segments of at most 4096 refs under `fm:<uuid>:<seq>`, rewriting only the segments whose bytes changed, so an append at EOF costs one segment rather than the list; SQL stores one row per ref but loads the whole list to commit. | `store/badger/encoding.go:53`, `:87`, `store/badger/files.go:178`; `store/sql/files.go:141` |
-| §2.1 value below the inline threshold | Met on Badger, which is the backend the requirement was written after: 4096 refs is ~471 KiB typically and ~628 KiB at worst, against a 1 MiB threshold, and appending to a large manifest adds nothing to the value log. The bound is a constant with no run-time check, so a variable-length field on `ChunkRef` would retire it silently. Not applicable to SQL, which stores no list value. | `store/badger/encoding.go:87`, `store/badger/files.go:266` |
+| RFC 0 §9.1 (I7) reclamation path | Met on Badger, which is the backend the requirement was written after: 4096 refs is ~471 KiB typically and ~628 KiB at worst, against a 1 MiB threshold, and appending to a large manifest adds nothing to the value log. The bound is a constant with no run-time check, so a variable-length field on `ChunkRef` would retire it silently. Not applicable to SQL, which stores no list value. | `store/badger/encoding.go:87`, `store/badger/files.go:266` |
 | §2.2 one chunk per hash | Chunk rows are keyed `(payload, offset)` and carry the refcount, so there is no per-hash record. Hash durability lives in a separate per-hash "synced" marker. | `pkg/block/types.go:226`, `store/badger/objects.go:41`, `store/badger/synced_hash_store.go:97` |
 | §3 existence | Not recorded. Size is batched in memory and grown from the journal's high-water mark at startup (§3.4 forbids this). Hole-versus-evicted is decided by the journal's `cold.log`, and `SEEK_HOLE` derives holes from gaps between refs (§3.2 forbids this). | `pkg/metadata/pending_writes.go`, `pkg/block/journal/cold.go`, `pkg/block/holemap.go:6` |
 | §5.1 disjoint write sets | Every carve commit rewrites the per-file record. A per-file commit lock exists to stop the resulting conflicts, and the production outage in the residency decision record is this conflict, livelocked. | `engine/flush.go:227`, `.planning/2026-09-23-residency-decision-record.md` §2 |
@@ -783,11 +789,11 @@ written after.
 | §5.1 write sets | Stream appends to one file while its flush commits. Assert every commit succeeds without a retry caused by the writer. |
 | §8.1 lookup | Assert records **read** per covering lookup grow at most logarithmically in *N*. |
 | §8.1 declared | Build every backend against the interface with the lookup method. A backend that lacks it **MUST** fail to compile. |
-| §2.1 inline threshold | Store manifests across a range of sizes. Assert no single stored value reaches the engine's inline threshold, sizing the refs at their worst-case encoding rather than a fixture's. Then append to a manifest past the old threshold and assert the store reclaimed by the *other* mechanism does not grow at all. |
+| RFC 0 §9.1 (I7) | Store manifests across a range of sizes. Assert no single stored value reaches the engine's inline threshold, sizing the refs at their worst-case encoding rather than a fixture's. Then append to a manifest past the old threshold and assert the store reclaimed by the *other* mechanism does not grow at all. |
 
 ### 12.3 What must not stand in
 
-- **A correctness assertion MUST NOT stand in for §5.2 or §2.1.** The quadratic
+- **A correctness assertion MUST NOT stand in for §5.2 or RFC 0 §9.1.** The quadratic
   implementation returns the right refs, and so does the one filling an
   unreclaimable log. Only a count of writes, or of bytes landing on the far side
   of the threshold, observes either.
