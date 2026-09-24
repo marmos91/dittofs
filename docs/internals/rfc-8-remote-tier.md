@@ -582,6 +582,91 @@ recent history, and history is the syncer's ([RFC 3 §5](rfc-3-syncer.md#5.%20Wh
 status has already decided a question [RFC 3](rfc-3-syncer.md) requires to be derived and never
 latched, below the layer that could observe the latch.
 
+### 5.9 A backend's client never queues below the pools
+
+Most backends reach their service through a client that bounds how many requests
+it runs at once, whatever it calls that bound:
+
+| Backend kind | Its concurrency limit is |
+| --- | --- |
+| HTTP object store, one request per connection (S3 and its compatibles) | the connection pool's size per host |
+| HTTP/2 or gRPC object store | the streams allowed per connection, times the connections |
+| SDK with its own request scheduler | its maximum requests in flight |
+| local or network filesystem | the open-file or I/O-thread cap the backend imposes |
+
+A request past the limit does not fail. It waits inside the client, where the
+syncer cannot see it, cannot schedule it fairly ([RFC 3 §2.9](rfc-3-syncer.md#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) and cannot count
+it against a memory bound. So:
+
+- **the limit MUST be derived at construction from what the backend is given**,
+  and the backend **MUST** be given at least `upload_workers + fetch_workers`
+  ([RFC 3 §2.10](rfc-3-syncer.md#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)) — the worst case, every worker of both pools sent to
+  this one store;
+- **a hard-coded limit is not permitted.** The pools are the only concurrency
+  control ([RFC 3 §2.1](rfc-3-syncer.md#2.1%20A%20worker%20pool%20is%20the%20only%20concurrency%20control)); a limit below them is a second one, with no
+  stated interaction, and one above them is never reached;
+- **a backend whose service has no client-side limit declares none**, and has
+  nothing to derive.
+
+The limit bounds, it does not preallocate: connections, streams or threads open on
+demand, so sizing it to the worst case costs nothing while the workers are idle.
+
+**The limit scales with the pools and has no setting of its own.** To move more
+data, an operator raises `upload_workers` or `fetch_workers` — from the sizing
+tool's output ([RFC 3 §2.11](rfc-3-syncer.md#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) or by choice — and restarts, and every
+backend's client grows with them. A separate "maximum connections" setting could
+add nothing: set below the pools it is a hidden second limit, set above them it
+is never reached. What bounds scaling is then only what is real — the link, the
+service's own throttling, and the memory each worker costs, which
+[RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound) makes the operator state. Past the point where the tool
+shows throughput flat as workers rise, more workers buy only memory, and more
+throughput needs another host.
+
+The pool-sizing tool builds its store the same way, with a limit no smaller than
+its highest step, so a measurement never reports a queue inside the client as the
+link's knee.
+
+A backend **MUST NOT** expose a speed test, nor a ceiling for callers to read.
+Timing many transfers is state across operations, and each backend's own loop
+would differ in ways that have nothing to do with the network.
+
+**Example — S3.** S3 serves HTTP/1.1, so each connection carries one request at
+a time and the client's limit is its connection pool: Go's `http.Transport`
+`MaxConnsPerHost`. With `upload_workers = 32` and `fetch_workers = 32`, the S3
+backend is built with `MaxConnsPerHost = 64`, and `MaxIdleConnsPerHost` the same
+so a connection a worker released is reused rather than closed and reopened
+under a new TLS handshake. An operator who measures a faster link and raises
+`upload_workers` to 96 restarts with `MaxConnsPerHost = 128`; nothing else
+changes. Sixty-four idle connections cost file descriptors and a small buffer
+each, not the block-sized buffers of [RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound), which are the workers'.
+
+S3 also throttles on its side — a few thousand puts per second per key prefix —
+and that limit is the service's, not the client's: a derived client limit
+reaches it, and the sizing tool measures it as part of the link.
+
+#### 5.9.1 Deviation — today's S3 client limit is a constant
+
+`pkg/block/remote/s3/store.go` fixes the connection limit at 256
+(`maxS3ConnsPerHost`), chosen to exceed the largest pinnable upload window plus
+downloads. It is not derived from the pools, and an operator cannot raise it.
+
+It cannot simply be replaced by the sum of the pools yet, because today there
+is a syncer per share ([RFC 3 §9](rfc-3-syncer.md#9.%20Deviations), D1): each share has its own
+upload window and fetch pool, and every share on a store goes through one shared,
+reference-counted client. The requests that can reach that client are the sum
+over those shares, which grows with the share count, and the constant is the only
+thing capping it. Removing it before the syncer is one per process would leave
+that sum uncapped.
+
+Until then, the constant **SHOULD** be replaced by a value derived the same way
+from today's settings — the pinned upload window plus the fetch pool, times the
+number of shares on the store — so that raising either setting raises the client
+with it. The derivation collapses to `upload_workers + fetch_workers` when the
+syncer becomes one per process.
+
+The comment on `newHTTPClient` states a worst case for 128 connections, about
+64 MiB of buffers; at 256 it is about twice that.
+
 ## 6. Reads are verified at this boundary
 
 ### 6.1 The exported read takes the expected hash

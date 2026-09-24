@@ -211,6 +211,24 @@ Two things follow, and both make checks cheap:
 An implementation that picks up a dependency here — a metadata lookup, a store
 handle, a logger that does something, a clock — loses both, and **MUST NOT**.
 
+In practice the carver's checks are of four kinds, and none needs more than a
+byte slice:
+
+- **Golden vectors.** For a fixed seed and each supported profile, the list of
+  boundaries and hashes is committed with the tests. A chunk's hash is its
+  identity, and a change that moves a boundary re-names every chunk after it and
+  ends deduplication against everything already stored — so a changed vector
+  **MUST** fail the build, and changing one is a format migration, not a test
+  update.
+- **Properties, fuzzed.** Go's native fuzzing (`testing.F`) drives random input
+  and random valid settings through `Cut`, and asserts the invariants of
+  [§8](#8.%20Invariants) on what `emit` saw.
+- **Differential.** Two implementations, or one before and after a change, over
+  the same random input, **MUST** emit identical chunks. This is how a faster
+  chunker is admitted.
+- **Allocation.** `testing.AllocsPerRun` over a whole `Cut` **MUST** report zero
+  once the carver's buffer exists ([§2.2](#2.2%20The%20bytes%20handed%20to%20%60emit%60%20are%20borrowed)).
+
 ## 2. What one call covers
 
 ### 2.1 One unbroken stretch per call
@@ -654,6 +672,28 @@ Two things **MUST NOT** stand in:
   normal case. It **MUST** be covered separately, since it is what `Max` is for.
 - **One fixed profile MUST NOT be the only settings under test.** The defect in
   Appendix A.1 is invisible at a single profile and obvious across two.
+
+### 9.1 Benchmarks and quality measures
+
+Speed and quality are measured separately: a faster carver that finds worse
+boundaries costs more in storage than it saves in CPU.
+
+| # | Measures | Setup | Reports |
+| --- | --- | --- | --- |
+| C1 | chunker speed | `NextBoundary` over 64 MiB of seeded random bytes, per profile | MiB/s; zero allocations |
+| C2 | carver speed | `Cut` over the same input, hashing included, against BLAKE3 alone over the same bytes | MiB/s for each; the difference is the carver's own cost, since hashing dominates |
+| C3 | the worst case | `Cut` over all-zero and short-period input, where every chunk reaches `Max` ([§3.8](#3.8%20What%20happens%20on%20repetitive%20data)) | MiB/s; it must stay within a small factor of C2 |
+| C4 | edit stability | a corpus file, then the same file with bytes inserted near the start | the fraction of chunk hashes the two versions share; content-defined chunking exists to keep this near one |
+| C5 | size distribution | real files of several kinds — source trees, VM images, media | the chunk-size histogram against `Min`, `Target` and `Max`; Appendix A.1 was found this way |
+
+C1 to C3 use `b.SetBytes` and report allocations. They run on amd64 **and**
+arm64, because the ratios differ between them (Appendix A.2), and a result is
+recorded with the machine and commit that produced it. C4 and C5 are not timed;
+they run on a fixed corpus so a change of profile can be compared against the
+last one, and they are what decide a profile — speed alone never does.
+
+Seeded random input is the right input for C1 and C2 and the wrong one for C4
+and C5: random bytes contain no edits to survive and no structure to find.
 
 ## 10. Open questions
 

@@ -58,6 +58,42 @@ content-defined and are found later, by the carver, over the extents the journal
 offers at flush. The journal **MUST NOT** assume any relationship between its
 records and any chunk, block or remote object.
 
+### 1.3 It is testable on its own
+
+The journal's dependencies are the ones [§1.1](#1.1%20Non-goals) allows, and each is supplied:
+
+| Dependency | In production | In a test |
+| --- | --- | --- |
+| a directory on a filesystem | the configured journal path | `t.TempDir()` on a real filesystem |
+| time | the Go runtime clock | `testing/synctest`, for the sync timer and every wait |
+| an event recorder | the engine's metrics | none, or one that records calls ([§3.8](#3.8%20Event%20reporting)) |
+
+No metadata store, no carver, no syncer, no block store. A check **MUST** be
+writable as: open a journal on a temporary directory, drive the interface of
+[§3](#3.%20Interface), assert on what comes back and what is on disk.
+
+**The filesystem is real, never faked, for correctness.** Hole-punch alignment,
+torn tails, and whether a write survived are properties of real storage
+([§11.5](#11.5%20What%20must%20not%20stand%20in%20for%20the%20real%20thing)); a fake filesystem answers them however it was written to.
+
+**Storage loss is simulated beneath the journal, not by killing it.** The
+journal reaches its segment files through a narrow, package-internal seam — open,
+write at an offset, sync, punch, close — that production satisfies with the
+operating system's file. A test wraps the real file and remembers every write
+since the last sync; a simulated crash discards exactly those and reopens the
+journal on the same directory. This is the loss [§6](#6.%20Durability%20ordering) is written against: a
+killed process leaves its unsynced writes in the page cache, so killing it proves
+a durability the journal does not have ([§11.3](#11.3%20Environments%20a%20check%20set%20must%20cover)). The seam is not an interface
+the journal exposes, and nothing outside its package supplies one.
+
+**Time is virtual.** The sync timer ([§6.2](#6.2%20Sync%20policy)), write stalls and every bounded wait
+run inside a `synctest` bubble, so a check of a 30-second expiry takes
+microseconds and gives the same answer every run. The journal therefore **MUST
+NOT** read time from anywhere a bubble cannot fake.
+
+**Concurrency checks run under the race detector,** with at least two files on
+at least two append streams ([§11.3](#11.3%20Environments%20a%20check%20set%20must%20cover)).
+
 ## 2. The model it presents
 
 For each `FileID`, the journal maintains a set of **held extents**: disjoint
@@ -1478,6 +1514,31 @@ A substitute that cannot exhibit the failure cannot be evidence of its absence.
 - A harness that constructs the journal differently from production **MUST NOT**
   be the only path under test. Where construction differs, a whole class of
   defect cannot fail for a production reason.
+
+### 11.6 Benchmarks
+
+The journal is on every write's path and every warm read's, so what it costs is
+measured, not assumed. Benchmarks run on a real filesystem on the kind of device
+a deployment uses. A RAM-backed filesystem makes `fsync` free and so measures
+everything except what bounds a write; the device and filesystem are recorded
+with every result, together with the commit.
+
+| # | Measures | Setup | Reports |
+| --- | --- | --- | --- |
+| J1 | write path | `WriteAt` sequential and random, 4 KiB to 1 MiB, under each sync policy ([§6.2](#6.2%20Sync%20policy)) | MiB/s, p50 and p99 latency, syncs per GiB |
+| J2 | write scaling | 1, 4, 16 and 64 files written concurrently | aggregate MiB/s; where it stops rising |
+| J3 | read path | `ReadAt` over held extents, index at 10^3, 10^4, 10^5 and 10^6 extents ([§5.1](#5.1%20What%20it%20must%20answer)) | lookup cost per read, which must grow as `log n` or slower |
+| J4 | flush offer | `Flush` over files of many small extents and of few large ones | cost per offered extent, with `fn` returning at once |
+| J5 | reclamation under load | release and repack ([§8](#8.%20Reclamation%20mechanisms)) while J1 runs | reclaimed MiB/s, and J1's p99 during it against J1 alone |
+| J6 | recovery | reopen after 1 GiB, 100 GiB and 1 TiB held, with and without the placement cache ([§9.1.1](#9.1.1%20The%20placement%20cache%2C%20and%20how%20it%20is%20validated%20cheaply)) | time to first read served |
+
+J1 to J4 run in seconds and belong in CI as regression checks against their last
+recorded value, on a runner whose device does not change between runs. J5 and J6
+need space and time, and run in the benchmark environment. J6 at scale answers
+open question 1.
+
+Benchmark time is real time: `synctest` makes waiting free, which is the opposite
+of what a benchmark measures.
 
 ## 12. Open questions
 
