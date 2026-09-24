@@ -1,6 +1,7 @@
 package badger
 
 import (
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -35,8 +36,13 @@ import (
 // list it read inside its own transaction, so a retried attempt re-derives from
 // whatever committed in between and no committed append is lost.
 func TestWithTransaction_HotFileNeverSurfacesConflict(t *testing.T) {
-	if testing.Short() {
-		t.Skip("contention probe; skipped under -short")
+	// A herd needs more than one runnable thread to be a herd. On a single P the
+	// 32 writers are serialized by the scheduler, so what bounds a writer's wait
+	// is its place in the run queue rather than the backoff it drew, and the
+	// budget is spent on queueing — the run fails on the fixed schedule and the
+	// jittered one alike, measuring neither.
+	if runtime.GOMAXPROCS(0) < 2 {
+		t.Skip("needs at least 2 procs for concurrent writers to contend rather than queue")
 	}
 
 	const (
