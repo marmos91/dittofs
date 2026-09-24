@@ -19,7 +19,7 @@ func TestCloneWholeFile_O1(t *testing.T) {
 	ctx := context.Background()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	coord := &fakeCoordinator{}
-	bs := newCopyTestEngineWithMS(t, coord, ms)
+	bs := newCloneTestEngineWithMS(t, coord, ms)
 
 	srcBlocks := []block.ChunkRef{
 		{Hash: block.ContentHash{0x01}, Offset: 0, Size: 4096},
@@ -72,7 +72,7 @@ func TestCloneWholeFile_SelfCloneNoOp(t *testing.T) {
 	ctx := context.Background()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	coord := &fakeCoordinator{}
-	bs := newCopyTestEngineWithMS(t, coord, ms)
+	bs := newCloneTestEngineWithMS(t, coord, ms)
 
 	srcBlocks := []block.ChunkRef{{Hash: block.ContentHash{0x01}, Offset: 0, Size: 4096}}
 	selfHandle := putTestFile(t, ms, "/self.bin", "same-pid", srcBlocks, 4096)
@@ -99,7 +99,7 @@ func TestCloneWholeFile_RollsBackOnIncrementError(t *testing.T) {
 		failOnNthIncrTrip: 2, // fail the 2nd unique-hash increment
 		failOnNthIncrErr:  errors.New("synthetic increment failure"),
 	}
-	bs := newCopyTestEngineWithMS(t, coord, ms)
+	bs := newCloneTestEngineWithMS(t, coord, ms)
 
 	srcBlocks := []block.ChunkRef{
 		{Hash: block.ContentHash{0x01}, Offset: 0, Size: 4096},
@@ -134,7 +134,7 @@ func TestCloneWholeFile_RollsBackOnIncrementError(t *testing.T) {
 func TestCloneWholeFile_SeedsDestinationRanges(t *testing.T) {
 	ctx := context.Background()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	bs, local := newCopyTestEngineWithLocal(t, &fakeCoordinator{}, ms)
+	bs, local := newCloneTestEngineWithLocal(t, &fakeCoordinator{}, ms)
 
 	srcBlocks := []block.ChunkRef{
 		{Hash: block.ContentHash{0x11}, Offset: 0, Size: 4096},
@@ -178,7 +178,7 @@ func TestCloneWholeFile_SeedsDestinationRanges(t *testing.T) {
 func TestCloneWholeFile_SelfCloneSeedsNothing(t *testing.T) {
 	ctx := context.Background()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	bs, local := newCopyTestEngineWithLocal(t, &fakeCoordinator{}, ms)
+	bs, local := newCloneTestEngineWithLocal(t, &fakeCoordinator{}, ms)
 
 	srcBlocks := []block.ChunkRef{{Hash: block.ContentHash{0x44}, Offset: 0, Size: 4096}}
 	selfHandle := putTestFile(t, ms, "/seed-self.bin", "seed-self-pid", srcBlocks, 4096)
@@ -221,7 +221,7 @@ func TestCloneWholeFile_SelfCloneSeedsNothing(t *testing.T) {
 func TestCloneWholeFile_DropsTheDestinationsStaleLocalRanges(t *testing.T) {
 	ctx := context.Background()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	bs, _ := newCopyTestEngineWithLocal(t, &fakeCoordinator{}, ms)
+	bs, _ := newCloneTestEngineWithLocal(t, &fakeCoordinator{}, ms)
 
 	srcBlocks := []block.ChunkRef{
 		{Hash: block.ContentHash{0x11}, Offset: 0, Size: 4096},
@@ -275,7 +275,7 @@ func TestCloneWholeFile_DropsTheDestinationsStaleLocalRanges(t *testing.T) {
 func TestCloneWholeFile_SelfCloneKeepsItsLocalRanges(t *testing.T) {
 	ctx := context.Background()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	bs, local := newCopyTestEngineWithLocal(t, &fakeCoordinator{}, ms)
+	bs, local := newCloneTestEngineWithLocal(t, &fakeCoordinator{}, ms)
 
 	const size = 4096
 	selfHandle := putTestFile(t, ms, "/self.bin", "self-pid",

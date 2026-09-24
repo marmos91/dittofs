@@ -52,7 +52,7 @@ func TestCloneRangeRevalidatesTransactionSizes(t *testing.T) {
 			ctx := context.Background()
 			ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 			coord := &fakeCoordinator{}
-			bs := newCopyTestEngineWithMS(t, coord, ms)
+			bs := newCloneTestEngineWithMS(t, coord, ms)
 			refs := []block.ChunkRef{{Hash: block.ContentHash{1}, Size: 4096}}
 			src := putTestFile(t, ms, "/src", "range-src", refs, 4096)
 			dst := putTestFile(t, ms, "/dst", "range-dst", nil, 4096)

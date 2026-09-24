@@ -124,7 +124,7 @@ func TestMetadataCoordinator_FallsBackToPublicStoreWithoutTx(t *testing.T) {
 // Memory backend prior to CR-01 was technically correct (single mutex
 // makes everything serialized), but the test still exercises the
 // context-routing wiring: a regression that drops metadata.WithTx in
-// CopyPayload would route Increments to the public-store path and
+// common.CloneWholeFile would route Increments to the public-store path and
 // demonstrate the bug as a Postgres-only failure, undetectable by
 // memory-only test runs.
 //
@@ -156,7 +156,7 @@ func TestMetadataCoordinator_RollsBackOnDownstreamPutFileFailure(t *testing.T) {
 
 	coord := newMetadataCoordinator(store)
 
-	// Simulate the exact wiring common.CopyPayload uses: open a real
+	// Simulate the exact wiring common.CloneWholeFile uses: open a real
 	// txn, bump refcount on every hash through the coordinator (via
 	// WithTx-bound ctx), then trigger a synthetic UpdateAttrs failure.
 	// WithTransaction MUST roll back; refcounts MUST be unchanged.

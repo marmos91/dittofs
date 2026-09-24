@@ -23,13 +23,13 @@ import (
 // pkg/block/engine/*.go).
 //
 // Transaction ownership rule (BLOCKER-1/2/3 resolution): the engine
-// NEVER opens a metadata txn. The CALLER (per-share runtime wrapper for
-// CopyPayload/WriteAt; common.WriteToBlockStore for the adapter path;
+// NEVER opens a metadata txn. The CALLER (common.CloneWholeFile for the
+// clone path; common.WriteToBlockStore for the adapter path;
 // syncer post-Flush wrapper for PersistFileChunks) opens the txn around
 // the engine call. This implementation calls into metadataStore at the
 // public surface; callers that need atomicity across multiple
-// IncrementRefCount calls (e.g. CopyPayload) MUST drive this from inside
-// a metadataStore.WithTransaction wrapper.
+// IncrementRefCount calls (e.g. the clone manifest replacement) MUST drive
+// this from inside a metadataStore.WithTransaction wrapper.
 type metadataCoordinator struct {
 	metadataStore metadata.Store
 }
@@ -49,7 +49,7 @@ func newMetadataCoordinator(metadataStore metadata.Store) engine.MetadataCoordin
 }
 
 // resolveStore picks between a context-bound metadata.Transaction (when
-// the caller used metadata.WithTx, e.g. common.CopyPayload) and the
+// the caller used metadata.WithTx, e.g. common.CloneWholeFile) and the
 // public metadata.Store surface (Truncate/Delete which do not
 // run inside a metadata txn). The Transaction interface embeds the
 // FileChunkStore, so GetByHash / IncrementRefCount / DecrementRefCount
@@ -58,7 +58,7 @@ func newMetadataCoordinator(metadataStore metadata.Store) engine.MetadataCoordin
 // Without this, every coordinator mutation routes through the Postgres
 // connection pool and commits immediately on its own connection —
 // defeating the BLOCKER-2 atomic rollback contract documented in
-// copy_payload.go and engine.go. The returned
+// clone.go and engine.go. The returned
 // block.FileChunkStore-shaped surface is the narrow set of methods
 // the coordinator needs.
 func (c *metadataCoordinator) resolveStore(ctx context.Context) block.FileChunkStore {
@@ -70,7 +70,7 @@ func (c *metadataCoordinator) resolveStore(ctx context.Context) block.FileChunkS
 
 // IncrementRefCount looks up the FileChunk by hash and bumps its
 // RefCount. If no FileChunk with the hash exists, returns
-// ErrFileChunkNotFound (the caller — typically CopyPayload — surfaces
+// ErrFileChunkNotFound (the caller — typically the clone helper — surfaces
 // this so the metadata txn can roll back).
 //
 // When the caller has bound an active metadata.Transaction into ctx

@@ -11,7 +11,7 @@ type txContextKey struct{}
 // transaction is retrievable via TxFromContext from anywhere in the
 // call chain.
 //
-// It is wired by common.CopyPayload (and any other caller that needs to
+// It is wired by common.CloneWholeFile (and any other caller that needs to
 // bind engine-level RefCount mutations to its WithTransaction-owned tx).
 // The per-share metadataCoordinator
 // (pkg/controlplane/runtime/shares/coordinator.go)

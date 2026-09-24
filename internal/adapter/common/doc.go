@@ -11,7 +11,7 @@
 //
 // # Block-store helpers
 //
-// ReadFromBlockStore, WriteToBlockStore, CommitBlockStore, and CopyPayload are
+// ReadFromBlockStore, WriteToBlockStore, and CommitBlockStore are
 // the single fan-in points for block-store I/O. Every adapter routes its
 // READ/WRITE/COMMIT data path through them so the engine contract is exercised
 // in exactly one place. ReadFromBlockStore allocates its response buffer from

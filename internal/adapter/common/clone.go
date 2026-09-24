@@ -152,7 +152,7 @@ func validateWholeCloneRange(srcSize, dstSize, count uint64) error {
 }
 
 // discardStaleDestination drops the local tier's account of a copy's
-// destination. Both reflink helpers in this package call it, post-commit, on
+// destination. The reflink helper in this package calls it, post-commit, on
 // every destination whose content the copy replaced.
 //
 // The copy rewrites the destination's manifest wholesale and moves no byte, so
@@ -186,7 +186,7 @@ func discardStaleDestination(ctx context.Context, blockStore *engine.Store, dstP
 }
 
 // seedClonedRanges tells the destination's local tier which ranges the copy just
-// gave it. Both reflink helpers in this package call it. The copy moves no
+// gave it. The reflink helper in this package calls it. The copy moves no
 // bytes, so the destination's ranges land in the
 // manifest and nowhere in the index, and everything that reads residency off the
 // index — the remote-only byte count, the offline-readiness answer — cannot

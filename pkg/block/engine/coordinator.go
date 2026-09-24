@@ -14,9 +14,9 @@ import (
 // metadata-store backend at construction time.
 //
 // Transaction ownership rule (BLOCKER-1/2/3 resolution, 2026-04-26)
-// the engine NEVER opens a metadata txn. The CALLER (per-share runtime
-// wrapper for CopyPayload/WriteAt; common.WriteToBlockStore for the
-// adapter path; syncer post-Flush wrapper for PersistFileChunks) opens
+// the engine NEVER opens a metadata txn. The CALLER (common.CloneWholeFile
+// for the clone path; common.WriteToBlockStore for the adapter path;
+// syncer post-Flush wrapper for PersistFileChunks) opens
 // the txn around the engine call. The coordinator's IncrementRefCount /
 // DecrementRefCount / PersistFileChunks operations run inside that
 // caller-owned txn.

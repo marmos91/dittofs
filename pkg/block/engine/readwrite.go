@@ -653,7 +653,7 @@ func (bs *Store) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID str
 	// carry no chunk). No data is moved; this is O(blocks) metadata puts.
 	//
 	// Route the Put through the txn bound in ctx when present. The clone
-	// callers (common.CopyPayload / common.CloneWholeFile) invoke us inside
+	// caller (common.CloneWholeFile) invokes us inside
 	// metadataStore.WithTransaction, which on the memory backend holds the
 	// store mutex for the life of fn; the store-level fileChunkStore.Put would
 	// re-acquire that same (non-reentrant) mutex and self-deadlock. The

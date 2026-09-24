@@ -62,10 +62,10 @@ func writeAndSeal(t *testing.T, ctx context.Context, bs *engine.Store, payloadID
 	}
 }
 
-// CopyPayload's local fallback deliberately shares the whole-source clone
-// contract. It refuses an initially longer destination rather than offering a
-// range copy, and leaves both the local content and manifest intact.
-func TestCopyPayloadLocal_RejectsLongerDestination(t *testing.T) {
+// The local-only clone deliberately shares the whole-source contract. It
+// refuses an initially longer destination rather than offering a range copy,
+// and leaves both the local content and manifest intact.
+func TestMaterializeLocalClone_RejectsLongerDestination(t *testing.T) {
 	ctx := context.Background()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	bs, _ := newLocalOnlyTestEngine(t, &fakeCoordinator{}, ms)
@@ -84,31 +84,31 @@ func TestCopyPayloadLocal_RejectsLongerDestination(t *testing.T) {
 		t.Fatal(err)
 	}
 	beforeRows := mustListChunks(t, ctx, ms, "tail-dst-pid")
-	err = CopyPayload(ctx, bs, ms, nil, srcHandle, dstHandle, "tail-src-pid", "tail-dst-pid")
+	err = CloneWholeFile(ctx, bs, ms, nil, srcHandle, dstHandle, "tail-dst-pid", 0)
 	var storeErr *metadata.StoreError
 	if !errors.As(err, &storeErr) || storeErr.Code != metadata.ErrNotSupported {
-		t.Errorf("copy error = %v, want unsupported whole-file replacement", err)
+		t.Errorf("clone error = %v, want unsupported whole-file replacement", err)
 	}
 	after, err := ms.GetFile(ctx, dstHandle)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if after.Size != dstSize || !reflect.DeepEqual(after.Blocks, before.Blocks) {
-		t.Errorf("rejected copy changed destination size/manifest: size=%d want=%d", after.Size, dstSize)
+		t.Errorf("rejected clone changed destination size/manifest: size=%d want=%d", after.Size, dstSize)
 	}
 	afterRows := mustListChunks(t, ctx, ms, "tail-dst-pid")
 	if !reflect.DeepEqual(afterRows, beforeRows) {
-		t.Error("rejected copy changed destination chunk rows")
+		t.Error("rejected clone changed destination chunk rows")
 	}
 	back := make([]byte, dstSize)
 	if _, err := bs.ReadAt(ctx, "tail-dst-pid", back, 0); err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(back[:srcSize], replaced[:srcSize]) {
-		t.Error("rejected copy overwrote the destination prefix")
+		t.Error("rejected clone overwrote the destination prefix")
 	}
 	if !bytes.Equal(back[srcSize:], replaced[srcSize:]) {
-		t.Error("rejected copy discarded the destination tail")
+		t.Error("rejected clone discarded the destination tail")
 	}
 
 	// The source is unchanged too; it must still read back intact.
