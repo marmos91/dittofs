@@ -31,6 +31,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A file's extended attributes are now bounded in total, at 256 KiB.** Each
+  value was already capped at 64 KiB but nothing capped their sum, so enough
+  legal attributes pushed the file's whole attribute record past the metadata
+  backend's large-value threshold. Past that every attribute-only write —
+  `chmod`, `utimes`, `rename`, `close` — rewrote the record in full into a log
+  the workload never triggered reclamation of: measured at 592 MiB of growth
+  over 300 `chmod`s. A write whose result would exceed the total is refused
+  with `NFS4ERR_XATTR2BIG`, or `STATUS_EA_TOO_LARGE` over SMB, and stores
+  nothing at all rather than part of the set. The bound counts the encoded
+  size, so attribute names and framing count toward it, and a replace is
+  charged only for its net change. Records already over the threshold are not
+  repaired by this; only deleting attributes brings one back.
+
 - **A read over a sparse region no longer rescans the chunk index once per
   preceding chunk.** Finding the chunk that covers a byte offset restarted the
   whole keys-only index scan for every candidate whose row turned out not to
