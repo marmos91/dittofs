@@ -178,10 +178,26 @@ transfer per entry.
 
 ```go
 Flush(id FileID, fn func(dirty []Extent, offered io.ReaderAt) (durable []Extent, err error)) error
+
+FlushMany(ids []FileID, fn func(offers []Offer) (durable map[FileID][]Extent, err error)) error
+
+type Offer struct {
+    ID      FileID
+    Dirty   []Extent
+    Offered io.ReaderAt
+}
 ```
 
 Offers every held extent of `id` whose flush bit is unset, and marks exactly the
 extents `fn` returns.
+
+`FlushMany` is the same offer over several files in one callback, so the engine
+can pack small files into one block ([RFC 6 §5.7](rfc-6-engine.md#5.7%20Small%20files%20are%20packed%20across%20files)). Every rule of this section
+holds per file within it: each file's extents are marked exactly as its entry in
+`durable` says, a file absent from `durable` has nothing marked, and each
+`Offered` reader stays valid until `fn` returns. `Flush(id, …)` is `FlushMany`
+with one file, and an implementation **SHOULD** build it that way rather than
+keep two paths.
 
 The journal **MUST** mark exactly the returned extents and **MUST NOT** mark an
 extent for which no report was received, including when `fn` returns an error

@@ -538,7 +538,7 @@ The rules live here because they are properties of chunks.*
 | # | Rule |
 | --- | --- |
 | P1 | A block holds whole chunks only. A chunk is never split to make a block come out an exact size. |
-| P2 | A block reaches at least the block target, and overshoots it by at most one chunk. |
+| P2 | A block reaches at least the block target, and overshoots it by at most one chunk. The last block of a pass **MAY** fall short: the pass ends with what it has. |
 | P3 | A block holds only the chunks whose bytes it actually carries. |
 
 
