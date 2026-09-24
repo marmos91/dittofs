@@ -340,9 +340,16 @@ func (a *FileAttr) ApplyEAMutations(muts []EAMutation) error {
 
 	// decision: only a chain that sets something is measured. A delete can only
 	// shrink the set, and refusing one would strand a file whose set already
-	// exceeds the cap — recorded by a build that had no cap, which still decodes
-	// — with no way to trim it back. Withdraw the exemption only if a delete can
+	// exceeds the bound — recorded by a build that had none, which still decodes —
+	// with no way to trim it back. Withdraw the exemption only if a delete can
 	// ever grow the encoded form.
+	//
+	// The ceiling that buys: on such a file the amplification this bound exists to
+	// stop is still live and stays live. Every non-EA attribute write is outside
+	// this check entirely, so a chmod on a record already past a backend's
+	// large-value threshold still rewrites the whole record, and nothing but a
+	// client deleting attributes brings it back under — there is no migration and
+	// no repair path. This bound prevents the state; it does not escape it.
 	if sets && encodedEABytes(next) > XattrTotalMaxBytes {
 		return ErrXattrTooLarge
 	}
@@ -351,16 +358,23 @@ func (a *FileAttr) ApplyEAMutations(muts []EAMutation) error {
 	return nil
 }
 
-// encodedEABytes reports the encoded size of an EA set, measured the way the
-// backends store it: as one JSON object per file, values base64-encoded by
-// encoding/json's []byte rule. Both families marshal this same map with
-// encoding/json — badger inside the attribute record, SQL into its own column —
-// so the number here is the stored size rather than an estimate of it. A backend
-// whose EA encoding is bulkier than encoding/json's would make this an
-// under-measurement and needs its own bound. Measuring the encoding rather than the raw value
-// bytes is what makes the bound cover names and framing too — at ~22 bytes of
-// object overhead per entry, a set of many tiny EAs is almost entirely framing,
-// and a value-bytes-only bound would not see it at all.
+// encodedEABytes reports the encoded size of an EA set as one JSON object per
+// file, values base64-encoded by encoding/json's []byte rule.
+//
+// Measuring the encoding rather than the raw value bytes is what makes the bound
+// cover names and framing too — at ~22 bytes of object overhead per entry, a set
+// of many tiny EAs is almost entirely framing, and a value-bytes-only bound would
+// not see it at all.
+//
+// It is the exact stored size on the backend the bound exists for: badger marshals
+// this same map with encoding/json into the attribute record, and sqlite stores
+// the marshalled text in a column. Postgres does not — its column is JSONB, so it
+// re-encodes the text into its own binary form, which costs two 4-byte entry
+// headers per attribute and so runs a little larger for a set of many small ones.
+// That backend has no large-value threshold for the bound to keep the record
+// under, which is why the difference is left unaccounted rather than measured per
+// backend; a backend that both re-encodes AND has such a threshold needs its own
+// bound rather than this one.
 //
 // decision: the marshal error is dropped and a failure measures 0, which admits
 // the set. A map[string][]byte holds nothing encoding/json rejects — no channel,

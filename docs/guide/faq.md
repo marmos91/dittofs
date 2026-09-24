@@ -671,6 +671,9 @@ namespace is exposed, and values are stored inline up to 64 KiB (a larger value 
 `NFS4ERR_XATTR2BIG`). A file's attributes are additionally bounded at 256 KiB encoded in
 total, counting names as well as values, so a write that would carry the file past it is
 refused with `NFS4ERR_XATTR2BIG` and changes nothing; remove an attribute to make room.
+Values are base64-encoded in that total, which costs a third on top, so the budget is
+roughly 192 KiB of value bytes in practice — enough for two attributes at the 64 KiB
+per-value ceiling, or thousands of ordinary ones.
 That is still far more than ext4 (one 4 KiB block for a file's whole set) or NTFS
 (64 KiB - 5) allow. The xattr namespace is shared with SMB extended attributes / named
 streams, so a value set over one protocol is readable over the other. See

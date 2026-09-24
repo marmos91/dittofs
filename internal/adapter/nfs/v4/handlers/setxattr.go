@@ -12,7 +12,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// SETXATTR4args / SETXATTR4res (RFC 8276 Section 8.6):
+// SETXATTR4args / SETXATTR4res (RFC 8276 §8.4.2):
 //
 //	enum setxattr_option4 {
 //	    SETXATTR4_EITHER  = 0,
@@ -110,9 +110,11 @@ func (h *Handler) handleSetXattr(ctx *types.CompoundContext, reader io.Reader) *
 	}
 
 	if err := backend.SetXattr(authCtx, handle, canonical, value); err != nil {
-		// RFC 8276 §11.2: a value exceeding the server's limit is XATTR2BIG.
-		// ErrXattrTooLarge is a metadata sentinel (ErrInvalidArgument-coded), so
-		// it would otherwise coarsen to NFS4ERR_INVAL via the generic map.
+		// RFC 8276 §8.3.2 defines NFS4ERR_XATTR2BIG as covering the value's size
+		// or "the collective size of all xattrs of the file resulting from the
+		// SETXATTR operation", so it answers both of ErrXattrTooLarge's causes.
+		// The sentinel is a metadata ErrInvalidArgument-coded StoreError, so it
+		// would otherwise coarsen to NFS4ERR_INVAL via the generic map.
 		if errors.Is(err, metadata.ErrXattrTooLarge) {
 			return xattrErr(types.OP_SETXATTR, types.NFS4ERR_XATTR2BIG)
 		}

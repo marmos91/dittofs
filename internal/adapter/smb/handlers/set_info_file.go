@@ -1648,10 +1648,13 @@ func (h *Handler) setFileInfoFromStore(
 		if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs); err != nil {
 			logger.Debug("SET_INFO: FileFullEaInformation persist failed",
 				"path", openFile.Name().Path, "error", err)
-			// A set the file's EA total cannot hold is STATUS_EA_TOO_LARGE per
-			// MS-FSA §2.1.5.15.6 ("FileFullEaInformation") step 2.5, and the
-			// metadata layer refuses the whole chain that step also requires be
-			// undone. The sentinel is ErrInvalidArgument-coded, so it would
+			// A set the file's EA total cannot hold is STATUS_EA_TOO_LARGE, and
+			// the metadata layer refuses the whole chain rather than part of it —
+			// the status and the all-or-nothing are both what MS-FSA §2.1.5.15.6
+			// ("FileFullEaInformation") step 2.5 requires. The threshold is not:
+			// that step fails a list past 64 KB - 5 and re-checks it per entry,
+			// while this bound is four times larger and measured once on the
+			// resulting set. The sentinel is ErrInvalidArgument-coded, so it would
 			// otherwise coarsen to STATUS_INVALID_PARAMETER via the generic map.
 			if errors.Is(err, metadata.ErrXattrTooLarge) {
 				return setInfoStatus(types.StatusEaTooLarge), nil
