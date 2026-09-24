@@ -675,7 +675,7 @@ follows is everything else.
 | --- | --- | --- |
 | §5.1 one transaction | Entry moves, link counts and the renamed inode's `ctime` are in one transaction, guarded by re-reading both edges inside it and aborting on change. The **parent directories' timestamps are not**: they are coalesced into an in-process tracker after the transaction returns. | `pkg/metadata/file_modify.go:1359` (re-resolve), `:1598` (`recordDirTimes`) |
 | §5.1 a coalesced attribute survives | `DirTimesTracker` has a 2 s flush interval, no background evictor and no shutdown flush, so up to 2 s of directory timestamps is lost on a clean stop, and an idle directory keeps a pending entry indefinitely. | `pkg/metadata/dir_times.go:12`, `:38` |
-| §5.2 the loop check | **There is none, inside the transaction or outside it.** `Move` validates names, types, permissions, the sticky bit and destination path length; no caller or adapter checks whether the destination is a descendant of the source. Renaming a directory under itself produces a cycle that no path reaches, that `nlink` reports as alive, and that no reaper visits (§12.2). | `pkg/metadata/file_modify.go:1140`–`:1200`; `internal/adapter/nfs/v3/handlers/rename.go:405` |
+| §5.2 the loop check | **Met, except concurrently on Postgres.** `Move` walks the destination parent's ancestors inside the rename transaction and refuses with `EINVAL` when the walk meets the source. Every edge is read through the transaction, not the store, so each one enters its read set and a concurrent rename that re-parents any inode on the walked chain aborts this one — a walk run before the transaction opens answers a question that dissolves before the write lands, because the entry re-resolution compares only the two edges the rename names. The walk runs only for a directory source changing parent; neither a file nor a same-parent rename can close a loop. It terminates on a repeated id rather than a depth bound, reporting `EIO` — a repeat is a cycle that predates the rename. **It compares decoded ids, not handle strings:** one inode has many handle spellings, and the destination handle arrives from the client while the source handle is store-minted, so a re-cased UUID walks past a string comparison and closes the loop the check exists to refuse (§12.4). Concurrently, memory holds a store-wide mutex and sqlite admits one transaction at a time, so neither can serve a stale walk; Badger alone *detects* the race, by SSI over the keys the walk read, and that guarantee is the operator's to keep because its options pass through verbatim. Postgres runs at REPEATABLE READ — snapshot isolation — where two renames writing disjoint parent edges are not a write-write conflict, so two racing cross-parent directory renames whose four parent handles all miss each other's `lockParentLinks` shards can still compose a cycle. A single rename, which is all one client can drive, is refused on every backend. Cycles an unguarded build already created remain unreachable and uncollected (§12.2). | `pkg/metadata/file_modify.go:1398`, `:1655` |
 
 ### 12.4 Handles
 
@@ -685,6 +685,7 @@ follows is everything else.
 | §6.1 a generation | None. Nothing distinguishes a handle to a released inode from a handle to a new inode that reused the `FileID`. UUIDv4 makes reuse improbable; nothing makes it impossible, and nothing detects it. | `pkg/metadata/types.go:68`; `internal/adapter/nfs/v4/handlers/putfh.go:33` |
 | §6.3 stale, not missing | A well-formed handle in a known share whose inode is gone returns `ErrNotFound` → NOENT. `ErrStaleHandle` is produced only for an unknown share and for a closed block store. A client told "missing" recreates a file that was merely unlinked out from under it. | `pkg/metadata/service.go:241`; `pkg/metadata/errors/errors.go:272`; `internal/adapter/common/errclassify.go:27` |
 | §6.5 numeric file id | `HandleToINode` is the first 8 bytes of SHA-256 over the handle, with no collision check and no stored alternative. | `pkg/metadata/types.go:116` |
+| §6.1 one spelling per inode | **Not met, and it is load-bearing.** Handles are never canonicalized on the way in. `DecodeFileHandle` splits on the first `:` and hands the remainder to `uuid.Parse`, which accepts upper case, the dashless form, the braced form and the `urn:uuid:` prefix — so one inode has many handle spellings and a client can choose which to send. Any check that compares handles **as strings** is therefore bypassable by re-spelling the UUID, and two such comparisons sit on the rename path: the §5.2 loop check (§12.3) refused a re-cased destination only after it was changed to compare decoded ids, and `sameDir` still computes false for one directory addressed two ways, which routes a same-parent rename down the cross-parent path and takes its `lockParentLinks` ordering. A guard whose subject the caller can re-spell is not a guard. | `pkg/metadata/types.go:84`; `pkg/metadata/file_modify.go:1398` |
 
 ### 12.5 Names
 
@@ -708,10 +709,13 @@ follows is everything else.
 
 ### 12.7 What is worth fixing first
 
-§12.3's missing loop check and §12.2's missing reaper compose: a rename cycle is
-unreachable and nothing collects it, so it is a permanent leak of both namespace
-rows and the content they reference, creatable by any client with write
-permission on two directories.
+§12.2's missing reaper is now the whole of what §12.3's loop check used to
+compose with. No client can create a rename cycle on its own any more, but every
+cycle an unguarded build already created is still unreachable, still reported
+alive by `nlink`, and still visited by nothing — as is every inode `RemoveFile`
+left at `nlink = 0`. A reaper is the only thing that recovers either, and it
+needs its own design: when it runs, how it avoids racing a live rename, and
+coverage in every backend.
 
 §12.1's first row is the one the rest of the set is already waiting on — it is
 RFC 4 §5's shared record, still present on the namespace side.
