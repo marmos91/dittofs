@@ -25,7 +25,7 @@
   <text x="16" y="76" class="rl">Decide from a snapshot</text>
   <line x1="120" y1="84" x2="884" y2="84" stroke="#9aa4b2" stroke-width="1.1" marker-end="url(#a7t)"/>
   <text x="16" y="110" class="s">sweep</text>
-  <rect x="120" y="94" width="200" height="26" rx="3" class="bn"/><text x="130" y="111" class="m">mark: read live set, h absent</text>
+  <rect x="120" y="94" width="212" height="26" rx="3" class="bn"/><text x="130" y="111" class="m">mark: read live set, h absent</text>
   <rect x="640" y="94" width="130" height="26" rx="3" class="br"/><text x="650" y="111" class="m">delete B</text>
   <text x="16" y="150" class="s">carve</text>
   <rect x="340" y="134" width="150" height="26" rx="3" class="bn"/><text x="350" y="151" class="m">adopt h: "durable"</text>
