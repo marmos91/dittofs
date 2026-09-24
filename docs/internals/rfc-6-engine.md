@@ -284,6 +284,9 @@ across anything but the pass it serialises.
 Blocks within one pass cover disjoint offsets, so their commits **MAY** run
 concurrently; what the guard protects is the order *between* passes.
 
+A pass over several files ([§5.7](#5.7%20Small%20files%20are%20packed%20across%20files)) holds every one of their guards, taken
+in file-identity order so that two such passes cannot deadlock on each other.
+
 ### 4.4 The truncation epoch is captured at offer and checked at commit
 
 When the journal offers a run, the engine reads the file's `epoch` ([RFC 4 §6.2](rfc-4-block-metadata.md#6.2%20Truncation%20and%20deallocation))
@@ -352,8 +355,10 @@ from the page cache, otherwise as a sequential local read — cheap beside the
 network the upload waits on. A buffer would save that read and make memory follow
 the number of blocks *waiting* for a worker rather than the pool.
 
-An assembler is per file and per pass. One **MUST NOT** be shared between two
-files or survive its pass: it would interleave two files' chunks into one block.
+An assembler is per pass and **MUST NOT** survive it. A pass may cover several
+files of one share, and its assembler packs their chunks into shared blocks
+([§5.7](#5.7%20Small%20files%20are%20packed%20across%20files)); within a block, each file's carried chunks are contiguous and in
+file-offset order.
 
 ### 5.2 The target counts carried bytes
 
@@ -418,6 +423,38 @@ A longer stretch dedups better and is the caller's lever. The engine **MAY** wid
 a run over contiguous bytes the journal holds and that are already durable, but
 **only** so the new chunking re-tiles a ref the run partially replaces. Widening
 for dedup alone re-uploads content that is already remote.
+
+### 5.7 Small files are packed across files
+
+S3 is slow on small objects: every put pays a round trip and a per-request price
+whatever its size, and a key prefix accepts a few thousand writes per second
+([RFC 8 §5.10](rfc-8-remote-tier.md#5.10%20Transfer%20practice%20a%20backend%20owes%20its%20service)). One block per small file turns a directory of a hundred thousand
+small files into a hundred thousand puts. The engine therefore packs the dirty
+bytes of several files of one share into shared blocks, as restic packs blobs
+from many files into its pack files.
+
+- **A pass covers several files** through the journal's `FlushMany`
+  ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Flush)), and gathers files until their dirty bytes reach one block
+  target or the oldest of them reaches the flush age ([§4.2](#4.2%20Flush%20is%20scheduled%20here)).
+- **Only within one share.** A share is one flow ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)) and one key scope
+  ([§5.4](#5.4%20A%20block%27s%20name%20is%20derived%20here)); a block never mixes two.
+- **A file's chunks stay together.** Within a block, one file's carried chunks
+  are contiguous and in offset order, so reading a packed small file is one
+  ranged read ([§6.8](#6.8%20A%20cold%20read%20asks%20for%20chunks%2C%20or%20for%20the%20block)).
+- **Large files are not split to fill a pack.** A file with a block target of dirty
+  bytes or more fills its own blocks; only its tail packs with others.
+- **The last block of a pass may be short** ([RFC 2 §5](rfc-2-carver.md#5.%20Packing%3A%20three%20rules%2C%20not%20a%20component), P2).
+- **One commit per block** records every file's refs in it in one transaction
+  ([RFC 4 §4.1](rfc-4-block-metadata.md#4.1%20What%20one%20commit%20records)); the callback then reports each file's durable extents in its
+  entry of `durable`.
+
+JuiceFS stores one object per block however small, "to prevent read
+amplification". That objection is to reading a whole pack to serve one file, and
+a cold read here asks for the chunks it needs by range ([§6.8](#6.8%20A%20cold%20read%20asks%20for%20chunks%2C%20or%20for%20the%20block)), so the
+objection does not apply. The cost that remains is deletion: a pack whose files
+are mostly deleted keeps its dead bytes until relocation copies the live chunks
+out ([RFC 7 §4.1](rfc-7-gc.md#4.1%20A%20block%20that%20is%20mostly%20dead%20pins%20its%20dead%20bytes)), so a share of short-lived small files spends relocation work to
+save puts.
 
 ## 6. The read
 
@@ -532,6 +569,24 @@ a timeout is not evidence the chunk moved, and **MUST NOT** trigger it.
 Relocation is safe only while this rule holds ([RFC 7 §4.3](rfc-7-gc.md#4.3%20A%20reader%20can%20hold%20the%20old%20location)). An engine that fails
 the first miss turns every relocation into a window of spurious read errors; one
 that retries indefinitely turns a lost chunk into a hung read.
+
+
+### 6.8 A cold read asks for chunks, or for the block
+
+A fetch names the chunks it needs, or asks for the whole block ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)).
+Every chunk is verified on its own either way, so the choice is only about bytes
+moved and requests made.
+
+**Proposal**, the rule JuiceFS applies: a read whose missing bytes lie within a
+quarter of one block, and which is not part of a sequential scan, asks for the
+chunks it covers; any other read asks for the whole block. A small random read
+then moves little more than it needs, a packed small file is one ranged read
+([§5.7](#5.7%20Small%20files%20are%20packed%20across%20files)), and a scan moves whole blocks in one request each. Read-ahead and
+pre-warm ask for whole blocks ([§6.4](#6.4%20Speculation%20is%20planned%20here%2C%20and%20yields%20to%20demand%20and%20to%20writes)).
+
+The quarter is JuiceFS's number, not a measurement of this system. Overturned by
+a comparison of bytes fetched and read latency, on a random-read and a scan
+workload, across a few thresholds.
 
 ## 7. Local space
 
@@ -892,18 +947,10 @@ runs against the engine as production composes it ([RFC 1 §11.5](rfc-1-journal.
    historical defaults, not measured ones.
 
 ---
-8. **When a cold read widens to the whole block** ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)). A read
-   asks the fetcher for only the chunks it covers, or for the whole block. JuiceFS
-   reads a range only when the request is within a quarter of a block and not at
-   its start, and the whole block otherwise; a sequential scan wants the whole
-   block. The threshold is unmeasured.
-9. **Packing small files across files** ([§5.1](#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output)). One assembler per file means one
-   block, one put, per small file. restic packs blobs from many files into 16 MiB
-   pack files to cut object count; JuiceFS deliberately does not, "to prevent
-   read amplification", and stores one object per block however small. A per-put
-   price and a per-prefix request rate argue for packing; reading one small file
-   out of a pack is a ranged read either way. Whether to pack, and how it
-   interacts with deletion and compaction ([RFC 7](rfc-7-gc.md)), is open.
+8. **When a cold read widens to the whole block.** **Answered** in [§6.8](#6.8%20A%20cold%20read%20asks%20for%20chunks%2C%20or%20for%20the%20block):
+   JuiceFS's quarter-block rule, as a proposal whose threshold is measured.
+9. **Packing small files across files.** **Answered** in [§5.7](#5.7%20Small%20files%20are%20packed%20across%20files): packed,
+   within one share, to keep S3's per-request cost off small-file workloads.
 10. **Engine policy the code has and no document states.** Upload delay — not
    uploading data young enough to be overwritten, as JuiceFS's `--upload-delay`
    and rclone's `--vfs-write-back` do; the small-file threshold that flushes
