@@ -63,7 +63,10 @@ The syncer **MUST NOT**:
 - derive a block's name ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block));
 - know how an object is framed, transformed or verified ([RFC 8 §3](rfc-8-remote-tier.md#3.%20The%20stored%20object), [§4](rfc-8-remote-tier.md#4.%20The%20transform%20chain), [§6](rfc-8-remote-tier.md#6.%20Reads%20are%20verified%20at%20this%20boundary));
 - persist anything;
-- know what a file, an [extent](rfc-0-data-lifecycle.md#2.1%20Entities), a [chunk](rfc-0-data-lifecycle.md#2.1%20Entities) or a [segment](rfc-0-data-lifecycle.md#2.1%20Entities) is.
+- know what a file, an [extent](rfc-0-data-lifecycle.md#2.1%20Entities) or a [segment](rfc-0-data-lifecycle.md#2.1%20Entities) is, or which files a block's
+  [chunks](rfc-0-data-lifecycle.md#2.1%20Entities) came from. To the syncer a chunk is a hash and its bytes, the unit it
+  verifies and streams; where chunk boundaries fall, what refers to a chunk, and
+  how chunks were grouped into a block are not its concern.
 
 ### 1.2 Two halves, one component
 
@@ -610,10 +613,12 @@ The reference is to the bytes **as offered for flush**, not to the file as it is
 now. A client may overwrite an extent while its block waits for a worker
 ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Flush)); a reference by file offset would then read the newer bytes, whose
 hash is not the block's. So the engine describes a block as a plan — its name and,
-per chunk, a hash and an offset into the offered version — and `src` reads the
-plan through the journal's `offered` reader, which keeps returning the offered
-bytes until the flush callback returns ([RFC 6 §5.1](rfc-6-engine.md#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output)). The syncer sees none of
-this: to it, `src` is a stream of chunks.
+per chunk, a hash and where its bytes sit in the offered version — and `src` reads
+the plan through the journal's `offered` readers, which keeps returning the offered
+bytes until the flush callback returns ([RFC 6 §5.1](rfc-6-engine.md#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output)). A block may hold chunks of
+several files ([RFC 6 §5.7](rfc-6-engine.md#5.7%20A%20block%20packs%20chunks%2C%20whichever%20files%20they%20came%20from)), so one plan may read through several files'
+readers. The syncer sees none of this: to it, `src` is a stream of chunks, and a
+block is the same thing whether its chunks came from one file or from a hundred.
 
 The difference is the bound of [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound). A copy taken at queue time is held for the
 whole time the block waits for a worker, so peak memory follows the queue depth;
