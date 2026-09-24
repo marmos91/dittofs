@@ -436,6 +436,7 @@ CLONE (reflink) **is** supported. Inter-server COPY (OP_COPY) is **not** — it 
 **Extended attribute implementation notes:**
 
 - **64 KiB value limit**: xattr values over 64 KiB return `NFS4ERR_XATTR2BIG`. This matches the SMB alternate-data-stream limit for cross-protocol consistency.
+- **256 KiB per-file total**: a SETXATTR whose result would encode past `metadata.XattrTotalMaxBytes` returns `NFS4ERR_XATTR2BIG` and stores nothing, which RFC 8276 §8.3.2 defines that error to cover ("the collective size of all xattrs of the file resulting from the SETXATTR operation"). The bound exists because the whole set rides inside the file's attribute record, and a record past a backend's large-value threshold makes every later attribute-only write rewrite it. The SMB EA channel reports the same refusal as `STATUS_EA_TOO_LARGE`.
 - **Stream-backed xattrs**: xattrs whose keys start with `user.smb:` are mapped to SMB alternate data streams and vice versa — cross-protocol attribute sharing is transparent.
 - **Read-only exports**: SETXATTR and REMOVEXATTR on read-only exports return `NFS4ERR_NOXATTR` (no xattr support signal) rather than `NFS4ERR_ROFS`, because some clients treat `NFS4ERR_NOXATTR` as a softer error and fall back gracefully. Clients that genuinely query xattr support should check `FATTR4_XATTR_SUPPORT` first.
 - **Capability attribute**: `FATTR4_XATTR_SUPPORT` is advertised as `true` for all writable v4.2 exports; read-only exports advertise `false`.

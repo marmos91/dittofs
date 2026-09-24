@@ -663,12 +663,16 @@ NFSv4 has built-in locking support with no setup.
 | Status | Reason |
 |--------|--------|
 | NFSv3 / v4.0 / v4.1: Not supported | No xattr operations in those protocol versions |
-| NFSv4.2: Supported | RFC 8276 (`user.*` namespace, values up to 64 KiB) |
+| NFSv4.2: Supported | RFC 8276 (`user.*` namespace, values up to 64 KiB, 256 KiB per file in total) |
 
 Extended attributes are not part of NFSv3, NFSv4.0, or NFSv4.1. Mount with `-o vers=4.2`
 to use them via the standard Linux tools (`setfattr` / `getfattr`). Only the `user.*`
 namespace is exposed, and values are stored inline up to 64 KiB (a larger value returns
-`NFS4ERR_XATTR2BIG`). The xattr namespace is shared with SMB extended attributes / named
+`NFS4ERR_XATTR2BIG`). A file's attributes are additionally bounded at 256 KiB encoded in
+total, counting names as well as values, so a write that would carry the file past it is
+refused with `NFS4ERR_XATTR2BIG` and changes nothing; remove an attribute to make room.
+That is still far more than ext4 (one 4 KiB block for a file's whole set) or NTFS
+(64 KiB - 5) allow. The xattr namespace is shared with SMB extended attributes / named
 streams, so a value set over one protocol is readable over the other. See
 [NFS.md → NFSv4.2 Status](nfs.md#nfsv42-status) for details.
 
