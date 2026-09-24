@@ -5,7 +5,43 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+> **This file does not cover every release.** It lapsed after 0.13.0 and was
+> picked up again at 0.34.0, so the versions in between are documented only by
+> their GitHub release pages, which are generated from commit history. The
+> entries that were written during the gap are filed below under the version
+> that actually shipped them. Nothing here has been reconstructed after the
+> fact.
+
 ## Unreleased
+
+### Changed
+
+- **The metadata store's on-disk format is now version 2, and the move is
+  one-way.** Once a 0.34.0 server opens a Badger metadata store, 0.33.0 and
+  earlier refuse to open it and report a future-format error. Nothing is lost
+  and nothing is corrupted, but the only way back is a backup taken before the
+  upgrade. Existing stores migrate themselves with no migration step to run: a
+  file's chunk list is now held in segments rather than one value, reads accept
+  both shapes, and the old whole-list key is retired the first time the file is
+  written. The reason for the change is that a chunk list past a few thousand
+  refs crossed Badger's large-value threshold, after which every commit
+  appended a whole fresh copy to a log whose reclamation pass the workload
+  never triggered; one field store reached 245 GiB of log against 0.15 GiB of
+  live data.
+
+### Fixed
+
+- **Renaming a directory into its own subtree is refused with `EINVAL`.** It
+  used to be accepted, and it built a cycle of directories that no path
+  reached, that the link count reported as alive, and that nothing ever
+  collected, so the rows and the content they referenced leaked permanently.
+  Any client with write permission on two directories could create one. The
+  check runs inside the rename transaction and reads each parent edge through
+  it, so a concurrent rename that re-parents anything on the walked chain
+  aborts this one. Cycles created by an earlier build are still present and
+  still uncollected.
+
+## [0.30.0] — 2026-08-22
 
 ### Fixed
 
@@ -19,6 +55,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   them forward. Downgrading after this change is one-way — an older build reads
   a new record as a torn tail and truncates the segment there.
 
+## [0.15.0] — 2026-05-27
+
 ### Added
 
 - **Block-level compression on remote stores (opt-in).** A new
@@ -31,7 +69,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   incompressible bodies are stored raw with no header. See
   `docs/CONFIGURATION.md` for the operator guide.
 
-## [0.13.0] — YYYY-MM-DD
+## [0.13.0] — 2026-04-18
 
 ### Breaking Changes
 
