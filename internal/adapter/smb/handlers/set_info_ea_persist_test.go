@@ -6,6 +6,7 @@ package handlers
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
@@ -149,6 +150,44 @@ func TestSetInfo_EA_SetGetDelete(t *testing.T) {
 	}
 	if got["EAONE"] != "one" {
 		t.Fatalf("EAONE disturbed by NewEA deletion: %v", got)
+	}
+}
+
+// TestSetInfo_EA_TotalTooLargeIsEaTooLarge: a SET that pushes the file's EA set
+// past metadata.XattrTotalMaxBytes must surface STATUS_EA_TOO_LARGE, the answer
+// MS-FSA §2.1.5.15.6 ("FileFullEaInformation") step 2.5 requires, and must leave
+// the EAs already on the file exactly as they were — step 2.5 also undoes every
+// change the refused operation made.
+//
+// Asserted at this layer rather than at the store: the metadata sentinel is
+// ErrInvalidArgument-coded, so without the mapping here the client is told
+// STATUS_INVALID_PARAMETER and a store-level test would never notice.
+func TestSetInfo_EA_TotalTooLargeIsEaTooLarge(t *testing.T) {
+	h, authCtx, open := setupEATest(t)
+
+	// One byte under the per-value ceiling, because EaValueLength is a uint16 on
+	// the wire (MS-FSCC §2.4.16 ("FileFullEaInformation")) and a value at the
+	// ceiling itself wraps to zero there, which the decoder reads as a delete.
+	atLimit := make([]byte, metadata.XattrInlineMaxBytes-1)
+	accepted := 0
+	var status types.Status
+	for i := range 24 {
+		status = setEA(t, h, authCtx, open, fmt.Sprintf("BIG%02d", i), atLimit)
+		if status != types.StatusSuccess {
+			break
+		}
+		accepted++
+	}
+	if status != types.StatusEaTooLarge {
+		t.Fatalf("EA #%d at the per-value ceiling returned %v, want STATUS_EA_TOO_LARGE", accepted+1, status)
+	}
+	if accepted == 0 {
+		t.Fatalf("the first EA at the per-value ceiling was refused; the total bound must admit at least one")
+	}
+
+	got := queryEAs(t, h, authCtx, open)
+	if len(got) != accepted {
+		t.Fatalf("QUERY_INFO reports %d EAs after the refusal, want the %d accepted before it", len(got), accepted)
 	}
 }
 
