@@ -63,9 +63,9 @@ type badgerTransaction struct {
 
 // Sanity ceiling on conflict retries. It is NOT the bound that decides whether
 // a contended write succeeds — txretry.Deadline is, and it is generally reached
-// first: the jittered backoff spends the 5s budget in roughly 55 attempts. This
-// only stops a pathological hot key from spinning without end once the backoff
-// happens to draw short waits throughout.
+// first: the jittered backoff spends the 5s budget in roughly 55 attempts. The
+// ceiling only bites when the jitter draws short waits throughout, capping how
+// many attempts fit inside the budget.
 //
 // An atomic (not a const) so tests can lower it via
 // SetMaxTransactionRetriesForTest to deterministically exercise the
@@ -131,8 +131,17 @@ func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx me
 
 	// Backpressure deadline: retry a conflict until this budget elapses rather
 	// than returning one after a fixed attempt count — the same contract the SQL
-	// backends run under. Tightened to an earlier ctx deadline when the caller
-	// set one.
+	// backends run under.
+	//
+	// decision: callers that hold a lock across this call now hold it for up to
+	// the budget where the old fixed attempt count capped them near 400ms — the
+	// per-payload stripe in pkg/block/engine/flush.go and the per-handle flush
+	// lock in Service.SetFileAttributes. That is latency, not a cycle: neither
+	// lock is needed by the writer whose commit we are losing to, so the conflict
+	// still clears while we hold it, and a caller who would rather not wait
+	// shortens the budget by passing a ctx deadline. Revisit if a path ever waits
+	// on one of those locks to release the key this loop is contending for, which
+	// would make the wait unwinnable instead of merely long.
 	deadline := txretry.Deadline(ctx)
 
 	var lastErr error
@@ -229,18 +238,21 @@ func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx me
 			// Record the SSI abort so tests can assert a workload stayed
 			// conflict-free (a shared hot key is the only thing that bumps this).
 			s.txnConflicts.Add(1)
-			// Randomised full-jitter exponential backoff. Every loser of one
-			// conflict draws its own wait, so they re-enter spread out instead of
-			// colliding again as a herd — a shared schedule made each retry as
+			// Every loser of one conflict draws its own wait instead of
+			// re-colliding as a herd: a shared schedule made each retry as
 			// contended as the attempt that failed, which is how eight writers to
 			// one file exhausted a 20-attempt budget and surfaced the conflict.
 			if txretry.Backoff(ctx, deadline, attempt) {
 				continue
 			}
-			// Budget spent, or the caller went away. Either way this contended
-			// write did not get through: report the conflict, which is what the
-			// callers that key off it (the object-ID dedup short-circuit) need to
-			// see, rather than the deadline that stopped the waiting.
+			// Backoff gives up for two different reasons and they do not report
+			// the same thing. A caller that went away gets its own error, which is
+			// what the ctx re-check at the loop top returned while the backoff was
+			// a plain sleep; a spent budget gets the conflict, so a contended
+			// write stays distinguishable from an abandoned one.
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
 			break
 		}
 
@@ -251,8 +263,7 @@ func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx me
 	// All retries exhausted. Classify the raw badgerdb.ErrConflict SSI abort as a
 	// StoreError{Code: ErrConflict} so codebase-wide conflict detection
 	// (errors.As(*StoreError) / IsConflictError, the runtime coordinator's
-	// mapObjectIDConflict, the rollup persister's isObjectIDConflict) recognizes
-	// it uniformly with the SQL backends. The raw sentinel stays reachable via
+	// mapObjectIDConflict) recognizes it uniformly with the SQL backends. The raw sentinel stays reachable via
 	// Cause/Unwrap for diagnostics and errors.Is.
 	if goerrors.Is(lastErr, badgerdb.ErrConflict) {
 		return mapBadgerError(lastErr, "badger WithTransaction", "")

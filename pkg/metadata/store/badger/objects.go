@@ -152,8 +152,8 @@ func (s *BadgerMetadataStore) Delete(ctx context.Context, id string) error {
 // in-flight Updates touch the same key — the retry converts that into
 // the "atomic, TOCTOU-free" contract mandates for the refcount
 // mutators (IncrementRefCount, DecrementRefCount, AddRef). Returns the
-// last conflict error if all retries are exhausted; non-conflict
-// errors short-circuit.
+// conflict when the retry budget is spent; non-conflict errors
+// short-circuit.
 func (s *BadgerMetadataStore) updateWithConflictRetry(ctx context.Context, fn func(*badger.Txn) error) error {
 	deadline := txretry.Deadline(ctx)
 
@@ -176,6 +176,9 @@ func (s *BadgerMetadataStore) updateWithConflictRetry(ctx context.Context, fn fu
 			// WithTransaction.
 			if txretry.Backoff(ctx, deadline, attempt) {
 				continue
+			}
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
 			}
 			break
 		}

@@ -1,7 +1,6 @@
 package badger
 
 import (
-	"context"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -21,19 +20,16 @@ import (
 // absorb turns into an I/O error at the protocol layer.
 //
 // The guard reads the store's conflict counter rather than timing the
-// serialization, so it asserts nothing about wall-clock and does not care how
-// loaded the machine is. Two assertions carry it: no commit returns an error,
-// and the conflict count is non-zero — without the latter the workload might
-// have committed first-try throughout and proved nothing about the retry path.
+// serialization, so it asserts nothing about wall-clock. Two assertions carry
+// it: no commit returns an error, and the conflict count is non-zero — without
+// the latter the workload might have committed first-try throughout and proved
+// nothing about the retry path.
 //
-// Writer count is what supplies the contention, deliberately rather than
-// per-commit cost. Eight writers — the reported case — only exhaust a fixed
-// attempt budget when each commit is slow enough to widen the conflict window,
-// which takes an already-large manifest to re-encode; the workload's total cost
-// then becomes what the test measures, and on a slow or loaded machine it, not
-// the backoff, decides the outcome. A wider herd over a cheap key produces the
-// same re-collisions with commits fast enough that the whole run drains in a
-// fraction of the retry budget on any machine.
+// A wide herd (32 writers) over a cheap key supplies the contention, rather than
+// the reported eight. Eight only exhaust a fixed attempt budget when each commit
+// is slow enough to widen the conflict window — which takes a large manifest to
+// re-encode, and then the workload's own cost, not the backoff, decides the
+// outcome on a loaded machine.
 //
 // It also pins the other half of the contract: each attempt appends onto the
 // list it read inside its own transaction, so a retried attempt re-derives from
@@ -48,7 +44,7 @@ func TestWithTransaction_HotFileNeverSurfacesConflict(t *testing.T) {
 		perWriter = 8
 	)
 
-	ctx := context.Background()
+	ctx := t.Context()
 	store, err := NewBadgerMetadataStoreWithDefaults(ctx, t.TempDir())
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, store.Close()) })

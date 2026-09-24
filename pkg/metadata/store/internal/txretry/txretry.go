@@ -1,21 +1,20 @@
 // Package txretry holds the transient-conflict backoff shared by the metadata
 // backends (sqlite, postgres, badger).
 //
-// Both backends must backpressure under write contention — block-and-retry
+// Every backend must backpressure under write contention — block-and-retry
 // until a real time budget elapses — rather than surfacing EIO to the caller
 // after a fixed handful of attempts (#1769). Every competitor (rclone/juicefs)
 // goes slow under the same pressure but never errors; a fixed 3-attempt budget
 // was routinely exceeded on hot rows (usedBytes counter, parent-dir mtime,
 // quota) under concurrent writers, turning contention into NFS3ErrIO. Only the
 // backend's already-classified transient conflicts (sqlite BUSY/LOCKED,
-// postgres 40001/40P01) are retried; that classification stays backend-local.
+// postgres 40001/40P01, badger ErrConflict) are retried; that classification
+// stays backend-local.
 //
 // The deadline computation and the jittered exponential backoff between
 // attempts are identical across the backends, so they live here once. Badger's
-// two loops (withTransaction, updateWithConflictRetry) retry badger's own SSI
-// ErrConflict on this same budget; they keep an attempt ceiling on top of it, as
-// a stop for a hot key whose backoff draws short waits throughout, but the
-// deadline is what normally ends the retrying there too.
+// two loops keep an attempt ceiling on top of the deadline, but the deadline is
+// what normally ends the retrying there too.
 package txretry
 
 import (
