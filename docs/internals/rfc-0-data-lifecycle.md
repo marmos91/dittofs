@@ -46,8 +46,8 @@ beyond its relationship to content.
 | --- | --- | --- | --- |
 | **0** | — | terms, data model, residency, lifecycle, invariants, failure model | component internals |
 | **1** | journal | local bytes: on-disk format, placement, crash safety, capacity | what data exists; remote durability |
-| **2** | carver | bytes → chunks → blocks: boundaries, identity, packing | I/O, files, when to carve |
-| **3** | syncer | transferring blocks to and from the remote tier | what to transfer, or why |
+| **2** | carver | bytes → chunks: boundaries, identity; the packing rules blocks obey | I/O, files, when to carve; building blocks, which is the engine's |
+| **3** | syncer | moving chunks to and from the remote tier: out as whole blocks, back as block ranges or whole blocks | what to transfer, or why |
 | **4** | block metadata | chunks, refs, blocks, refcounts, durability | byte placement, transport, namespace |
 | **5** | namespace metadata | files, directories, handles, permissions, locks | content bytes |
 | **6** | engine | composition, policy, the facade adapters call | every format and algorithm above |
@@ -98,9 +98,11 @@ padded to a chunk size.**
 **ChunkRef** — one file's use of one chunk at one offset. A file's content is
 fully described by its ordered list of chunk refs. Many refs MAY name one chunk.
 
-**Block** — the unit of transfer to and from the remote tier: a whole number of
-chunks addressed by one remote key. A block targets a configured size and MAY
-exceed it by at most one chunk, because **a block boundary is always a chunk
+**Block** — the unit of remote storage: a whole number of chunks in one object,
+addressed by one remote key and written by one put. A get retrieves chunks of a
+block, or the whole block. A block targets a configured size and MAY exceed it by
+at most one chunk; the last block of a flush pass MAY fall short
+([RFC 2 §5](rfc-2-carver.md#5.%20Packing%3A%20three%20rules%2C%20not%20a%20component), P2), because **a block boundary is always a chunk
 boundary**. A chunk **MUST NOT** span two blocks ([§2.2](#2.2%20How%20a%20file%20relates%20to%20its%20chunks)).
 
 **Segment** — a local append-only file of records, capped at a configured size,
@@ -145,7 +147,8 @@ differently and nothing downstream of the edit would dedup.
 Chunks are grouped into blocks for transfer. The grouping accumulates chunks
 until the running total reaches the configured target, and then **ends at that
 chunk's boundary** — so a block is usually a little larger than the target,
-never a little different in composition.
+never a little different in composition. Only the last block of a flush pass may
+be smaller.
 
 ![Chunks accumulating to an 8 MiB target: the crossing chunk is included whole, making the block 9.6 MiB, versus the forbidden alternative of cutting that chunk at exactly 8 MiB](img/rfc0-block-packing.svg)
 
@@ -317,9 +320,10 @@ Flush is initiated by policy and driven by the journal, which offers its dirty
 extents and accepts a report of what became durable:
 
 ```
-journal.Flush(id, fn)
-    │  offers dirty extents
-    └──► fn:  carver  — cut chunks, group into blocks
+journal.Flush / FlushMany(ids, fn)
+    │  offers dirty extents, of one file or several
+    └──► fn:  carver  — cut chunks
+              engine  — group chunks into blocks, across files
               syncer  — put blocks
               metadata — record chunks, refs, blocks, durability
     ◄──── returns the extents now durable remotely
@@ -351,7 +355,8 @@ which follows from chunking being deterministic ([RFC 2](rfc-2-carver.md)).
    chunk and its block.
 3. The residency function ([§4.2](#4.2%20The%20residency%20function)) determines the outcome:
    - **Absent** — the extent is a hole. Return zeros.
-   - **Remote** — get the block, fill ([§6.2](#6.2%20Fill)), serve.
+   - **Remote** — get the chunks it needs, or the whole block; serve the verified
+     bytes; fill ([§6.2](#6.2%20Fill)) if policy says so, without the reply waiting on it.
    - **Lost** — fail. An implementation **MUST NOT** return zeros.
 
 ### 6.2 Fill
