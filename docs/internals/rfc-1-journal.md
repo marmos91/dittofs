@@ -1,7 +1,19 @@
+---
+rfc: 1
+title: "RFC 1 — the journal"
+component: journal
+status: draft
+depends_on:
+  - "[[rfc-0-data-lifecycle]]"
+aliases:
+  - RFC 1
+tags:
+  - rfc
+---
 # RFC 1 — the journal
 
 **Status:** draft.
-**Depends on:** RFC 0, for the terms, the residency function and the invariants.
+**Depends on:** [RFC 0](rfc-0-data-lifecycle.md), for the terms, the residency function and the invariants.
 Nothing here redefines them.
 **Audience:** anyone changing `pkg/block/journal`.
 
@@ -25,11 +37,11 @@ a read is served from when the bytes are here.
 The journal **MUST NOT**:
 
 - decide whether an extent that it does not hold is a hole, evicted, or lost — it
-  reports only that it does not hold it (§3.2);
+  reports only that it does not hold it ([§3.2](#3.2%20Read));
 - return zero bytes for an extent it does not hold;
 - know what a chunk or a block is;
 - know which remote tier exists, or speak to one;
-- import another component in this set (RFC 0 §1.2).
+- import another component in this set ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)).
 
 The journal has no dependency on the metadata store, the syncer or the carver,
 and requires no interface from any of them. Its dependency set is the standard
@@ -53,13 +65,14 @@ For each `FileID`, the journal maintains a set of **held extents**: disjoint
 location in local storage.
 
 For each held extent it also records one bit of **flush state**: whether the
-extent has been reported durable elsewhere (§4.2). This bit exists for two
+extent has been reported durable elsewhere ([§4.2](#4.2%20Segments)). This bit exists for two
 purposes and no others — selecting what to offer at flush, and refusing an
-unsafe release (§6.1). It **MUST NOT** be consulted to answer a read, and the
+unsafe release ([§6.1](#6.1%20Ordering%20rules)). It **MUST NOT** be consulted to answer a read, and the
 journal **MUST NOT** expose it as an answer about remote durability; the journal
-is not authoritative for that (RFC 0 §4.1).
+is not authoritative for that ([RFC 0 §4.1](rfc-0-data-lifecycle.md#4.1%20The%20two%20oracles)).
 
-> *Note.* The bit can only be wrong in the safe direction. It is set solely by
+> [!note]
+> The bit can only be wrong in the safe direction. It is set solely by
 > being told, so the journal can believe a durable extent is still dirty — which
 > costs a redundant flush and a refused eviction — but can never believe a dirty
 > extent is durable, which would lose data.
@@ -74,7 +87,7 @@ that it begins at offset zero.
 The gaps carry no explanation. An extent never written, an extent released by
 eviction, and an extent whose bytes were lost are the same observation to the
 journal — it does not hold them — and it **MUST** report all three identically.
-Resolving which is which is RFC 0 §6.1, and it belongs to the engine.
+Resolving which is which is [RFC 0 §6.1](rfc-0-data-lifecycle.md#6.1%20Resolution), and it belongs to the engine.
 
 ![The same held extents mapped to records scattered across three segments in append order, interleaved with another file](img/rfc1-placement.svg)
 
@@ -83,7 +96,7 @@ Extents land wherever the append stream stood when they were written, so a
 sequential file is stored out of order, interleaved with other files.
 
 `FileID` **MUST** be a distinct type constructible only from a file `ID`
-(RFC 0 §3). A journal instance serves exactly one share, so a `FileID` never
+([RFC 0 §3](rfc-0-data-lifecycle.md#3.%20Identity)). A journal instance serves exactly one share, so a `FileID` never
 has to distinguish two shares and **MUST NOT** encode a share.
 
 ## 3. Interface
@@ -97,10 +110,10 @@ WriteAt(id FileID, off int64, p []byte) (n int, err error)
 ```
 
 Stages `p` at `off` and makes it durable according to the configured policy
-(§6.2). On return with `err == nil`, the extent `(off, len(p))` is held, is
+([§6.2](#6.2%20Sync%20policy)). On return with `err == nil`, the extent `(off, len(p))` is held, is
 **Dirty**, and **MUST** survive process death.
 
-`WriteAt` **MUST** reserve capacity before accepting bytes (§7) and **MUST**
+`WriteAt` **MUST** reserve capacity before accepting bytes ([§7](#7.%20Capacity)) and **MUST**
 fail rather than exceed the configured limit.
 
 A write overlapping a held extent supersedes it. The journal **MUST** serve the
@@ -118,7 +131,7 @@ does not hold **MUST** be reported in `missing`, and the corresponding bytes of
 
 `ReadAt` **MUST NOT** zero-fill an extent it does not hold, and **MUST NOT**
 return a short read in place of a `missing` entry. The caller distinguishes
-hole from eviction from loss (RFC 0 §6.1); the journal supplies only the
+hole from eviction from loss ([RFC 0 §6.1](rfc-0-data-lifecycle.md#6.1%20Resolution)); the journal supplies only the
 absence.
 
 `missing` **MUST** be exact: an implementation **MUST NOT** widen it to a whole
@@ -147,7 +160,8 @@ duration of the call. A concurrent write to an offered extent is permitted; the
 newer bytes supersede, and the extent's flush bit **MUST** remain unset for the
 superseding write even if `fn` reports the offset durable.
 
-> *Note.* That last rule is the one a naive implementation gets wrong. `fn`
+> [!note]
+> That last rule is the one a naive implementation gets wrong. `fn`
 > reports durability of the bytes it was given. If the extent changed underneath,
 > the report is about bytes that are no longer there, and marking it durable
 > makes the *new* bytes evictable while only the *old* ones exist remotely.
@@ -179,16 +193,16 @@ leaving content that exists nowhere.
 
 `Fill` and `WriteAt` take the same arguments and are otherwise opposites:
 
-| | `WriteAt` | `Fill` |
-| --- | --- | --- |
-| content comes from | the client | the remote tier |
-| the content is | new | already existing, retrieved |
-| relative to held content | **newer** — supersedes it | **older** — must not touch it |
-| on conflict | the written bytes win | the held bytes win |
-| version | a new, higher one | none; never supersedes |
-| flush bit afterwards | unset — owes a flush | set — already durable |
-| residency transition | `*` → `Dirty` | `Remote` → `Resident` |
-| caller obligation | none beyond capacity | the bytes **MUST** be what the remote tier holds for this extent |
+|                          | `WriteAt`                 | `Fill`                                                           |
+| ------------------------ | ------------------------- | ---------------------------------------------------------------- |
+| content comes from       | the client                | the remote tier                                                  |
+| the content is           | new                       | already existing, retrieved                                      |
+| relative to held content | **newer** — supersedes it | **older** — must not touch it                                    |
+| on conflict              | the written bytes win     | the held bytes win                                               |
+| version                  | a new, higher one         | none; never supersedes                                           |
+| flush bit afterwards     | unset — owes a flush      | set — already durable                                            |
+| residency transition     | `*` → `Dirty`             | `Remote` → `Resident`                                            |
+| caller obligation        | none beyond capacity      | the bytes **MUST** be what the remote tier holds for this extent |
 
 An implementation **MAY** share the append machinery between them, and
 **SHOULD**. It **MUST NOT** expose them as one entry point selected by a
@@ -204,20 +218,20 @@ Release(id FileID, extents []Extent) (freed int64, err error)
 ```
 
 Stops holding `extents` and frees the underlying local storage. This is the
-mechanism of eviction; the policy is the engine's (RFC 0 §8.1).
+mechanism of eviction; the policy is the engine's ([RFC 0 §8.1](rfc-0-data-lifecycle.md#8.1%20Evict)).
 
 `Release` **MUST** refuse an extent whose flush bit is unset, and **MUST** make
 no partial progress on a refused call. The refusal is the journal's enforcement
-of RFC 0's invariant I2; the caller is also obliged not to ask, and both
+of [RFC 0](rfc-0-data-lifecycle.md)'s invariant I2; the caller is also obliged not to ask, and both
 **MUST** hold.
 
 The caller **MUST** have durably recorded that the content is no longer local
 before calling `Release`. The journal cannot verify this and does not try; the
-ordering rule is RFC 0 §8.1 and the consequence of inverting it is reads
+ordering rule is [RFC 0 §8.1](rfc-0-data-lifecycle.md#8.1%20Evict) and the consequence of inverting it is reads
 resolving to zeros.
 
 `freed` is the local storage actually released, which **MAY** be less than the
-extent length (§8.3).
+extent length ([§8.3](#8.3%20Accounting)).
 
 ### 3.6 Truncate and delete
 
@@ -230,7 +244,7 @@ Delete(id FileID) error
 straddling it. `Delete` stops holding every extent of `id`.
 
 Both **MUST** be durable on return, and **MUST NOT** require the affected
-storage to be reclaimed first — reclamation is asynchronous (§8).
+storage to be reclaimed first — reclamation is asynchronous ([§8](#8.%20Reclamation%20mechanisms)).
 
 Neither **MUST** be gated on the flush bit. Discarding content the user removed
 is not data loss, and an unflushed delete that a crash reverts would resurrect a
@@ -255,8 +269,8 @@ because these are polled.
 
 | Field | Kind | Is |
 | --- | --- | --- |
-| `MaxBytes` | gauge | the configured capacity (§7) |
-| `UsedBytes` | gauge | local storage **allocated**, per §8.3 |
+| `MaxBytes` | gauge | the configured capacity ([§7](#7.%20Capacity)) |
+| `UsedBytes` | gauge | local storage **allocated**, per [§8.3](#8.3%20Accounting) |
 | `ReservedBytes` | gauge | reserved by in-flight writes, not yet written |
 | `HeldBytes` | gauge | the sum of held extent lengths |
 | `DirtyBytes` | gauge | held bytes whose flush bit is unset |
@@ -264,12 +278,12 @@ because these are polled.
 | `ExtentCount` | gauge | held extents |
 | `Segments` / `Sealed` | gauge | segments in total, and sealed |
 | `SparseBytes` | gauge | storage released inside segments not yet unlinked |
-| `OpenDescriptors` / `DescriptorLimit` | gauge | open segment descriptors, and the bound they are held under (§8.4) |
-| `PunchSupported` | bool | whether this journal directory's filesystem supports hole punching (§8.1) |
-| `FilesystemBlockSize` | gauge | the punch granularity (§8.1) |
-| `Quarantined` | gauge | quarantined segments (§9.3) |
-| `ReseedComplete` | bool | whether flush state has been re-established (§9.2) |
-| `LastSyncError` | value | the most recent sync failure, and when (§6.2) |
+| `OpenDescriptors` / `DescriptorLimit` | gauge | open segment descriptors, and the bound they are held under ([§8.4](#8.4%20Open%20descriptors)) |
+| `PunchSupported` | bool | whether this journal directory's filesystem supports hole punching ([§8.1](#8.1%20Releasing%20storage)) |
+| `FilesystemBlockSize` | gauge | the punch granularity ([§8.1](#8.1%20Releasing%20storage)) |
+| `Quarantined` | gauge | quarantined segments ([§9.3](#9.3%20Torn%20and%20corrupt%20records)) |
+| `ReseedComplete` | bool | whether flush state has been re-established ([§9.2](#9.2%20Flush%20state%20after%20recovery)) |
+| `LastSyncError` | value | the most recent sync failure, and when ([§6.2](#6.2%20Sync%20policy)) |
 
 Three of these exist because a journal can reach a state it cannot leave, and an
 operator needs to tell which one it is from outside:
@@ -281,11 +295,11 @@ operator needs to tell which one it is from outside:
   thing that distinguishes "full of content" from "full of storage that release
   freed inside segments nobody has repacked".
 - **`ReseedComplete`** distinguishes "nothing is evictable" from "eviction is not
-  enabled yet" (§9.2). Without it those are indistinguishable from outside, and
+  enabled yet" ([§9.2](#9.2%20Flush%20state%20after%20recovery)). Without it those are indistinguishable from outside, and
   they call for opposite responses.
 
 `PunchSupported` and `FilesystemBlockSize` exist for the same reason: without
-them, a deployment on a filesystem that cannot punch (§8.1) looks identical to
+them, a deployment on a filesystem that cannot punch ([§8.1](#8.1%20Releasing%20storage)) looks identical to
 one that can, except that reclamation is mysteriously expensive — and a release
 that frees nothing because it spanned no whole block looks identical to one that
 failed.
@@ -315,7 +329,7 @@ type Recorder interface {
 ```
 
 The journal **MUST** declare this interface itself and accept an implementation
-at construction (RFC 0 §1.2). It **MUST** operate with none supplied, and
+at construction ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)). It **MUST** operate with none supplied, and
 **MUST NOT** treat the absence of a recorder as an error.
 
 Recording **MUST NOT** block, fail, or alter the operation being recorded. An
@@ -341,7 +355,7 @@ One directory per share, containing:
 | `<id>.seg` | a segment, zero-padded fixed-width id, ascending |
 
 An implementation **MUST NOT** require any other file to reconstruct its state
-(§4.4). A file it does not recognise **MUST** be left alone, not deleted.
+([§4.4](#4.4%20The%20segment%20catalog)). A file it does not recognise **MUST** be left alone, not deleted.
 
 ### 4.2 Segments
 
@@ -354,10 +368,11 @@ serialised; writes to different `FileID`s **MAY** proceed concurrently, and the
 number of independent append streams is configurable.
 
 **Records, once written, are immutable.** No operation modifies a record in
-place — not flush, not release, not recovery. The flush bit of §2 lives in
-memory and is re-established at startup (§9.2), which is what permits this.
+place — not flush, not release, not recovery. The flush bit of [§2](#2.%20The%20model%20it%20presents) lives in
+memory and is re-established at startup ([§9.2](#9.2%20Flush%20state%20after%20recovery)), which is what permits this.
 
-> *Note.* Immutability is worth the startup cost it implies. An in-place mutable
+> [!note]
+> Immutability is worth the startup cost it implies. An in-place mutable
 > flag forces the record's checksum to exclude the mutable byte, which means the
 > checksum no longer covers the whole header, which is how a corrupted identity
 > field can verify as intact.
@@ -381,7 +396,7 @@ A record whose checksum does not verify **MUST NOT** be used to serve a read.
 
 **Two distinct things are called the index, and only one of them is on disk.**
 
-The **placement index** (§5) is in memory, is the one every read consults, and
+The **placement index** ([§5](#5.%20The%20placement%20index)) is in memory, is the one every read consults, and
 covers *every* held extent — including those in a segment still being appended
 to. It is updated as part of each write. There is never a moment at which the
 journal cannot locate content it holds.
@@ -392,7 +407,7 @@ index without reading every record. It is never consulted to serve a read.
 
 So an unsealed segment having no footer costs nothing at runtime — its content
 is in the placement index like everything else — and costs only recovery time,
-bounded in §9.1.
+bounded in [§9.1](#9.1%20Rebuilding).
 
 The mapping from file extents to record locations is **derived state**. It
 **MUST** be reconstructible from the segments alone, and no persisted copy of it
@@ -400,11 +415,11 @@ The mapping from file extents to record locations is **derived state**. It
 disagree, the segments win, unconditionally.
 
 That rule is about correctness. It is not a claim that reconstruction by scanning
-is fast enough, and at scale it is not (§9.1). An implementation therefore
+is fast enough, and at scale it is not ([§9.1](#9.1%20Rebuilding)). An implementation therefore
 **SHOULD** persist an index, subject to the rules below.
 
 **The persisted index is the segment catalog**, written into a footer at the end
-of the segment. When a segment is sealed it becomes immutable (§4.2), and an
+of the segment. When a segment is sealed it becomes immutable ([§4.2](#4.2%20Segments)), and an
 implementation **SHOULD** then append a catalog describing every record in it: for each, the `FileID`, file offset, length,
 version, and the record's offset within the segment.
 
@@ -416,7 +431,7 @@ version, and the record's offset within the segment.
   segment holds is detectable rather than silently truncating.
 - The active, unsealed segment has no footer and **MUST** be scanned.
 - The footer is part of the segment file and **MUST** be accounted in capacity
-  with it (§8.3).
+  with it ([§8.3](#8.3%20Accounting)).
 
 **Locating it.** The footer **MUST** be findable without scanning. A segment that
 carries one **MUST** end with a fixed-size trailer giving a magic value, the
@@ -425,7 +440,7 @@ trailer-sized bytes, and on a valid trailer reads backwards by the stated length
 A trailer that does not verify, or a length that does not fit within the file,
 **MUST** be treated as "no footer" and the segment scanned.
 
-**Writing it.** Sealing forbids further *records* (§4.2); appending the footer is
+**Writing it.** Sealing forbids further *records* ([§4.2](#4.2%20Segments)); appending the footer is
 the one write permitted to a sealed segment, and it **MUST** happen at most once.
 An implementation **MAY** write a footer for a segment sealed by a previous
 process — a segment sealed at a crash legitimately has none — and **MUST** verify
@@ -440,7 +455,7 @@ The case *for* a sidecar is real and worth stating at its strongest: a footer ca
 only be written once the segment stops growing, so the active segment has no
 on-disk index and must be scanned at recovery. A sidecar has no such constraint —
 it could be appended to as records land, and recovery would never scan anything.
-It also writes a delta per record, where a whole placement cache (§9.1.1) costs
+It also writes a delta per record, where a whole placement cache ([§9.1.1](#9.1.1%20The%20placement%20cache%2C%20and%20how%20it%20is%20validated%20cheaply)) costs
 the size of the index each time it is taken.
 
 It still does not pay, for three reasons in increasing order of importance.
@@ -464,7 +479,7 @@ Every record header carries the `FileID`, file offset, length and version — th
 whole index entry — and the payload length lets a scan skip the payload without
 reading it. Reconstructing an active segment therefore costs either a stream of
 that one segment, or one small read per record, whichever the record size makes
-cheaper. Bounded by segment size (§9.1), that is seconds at most, once, at
+cheaper. Bounded by segment size ([§9.1](#9.1%20Rebuilding)), that is seconds at most, once, at
 startup. A sidecar would spend write-path cost on every record, forever, to
 remove it.
 
@@ -478,18 +493,19 @@ longer change.
 contains and where; it says nothing about whether those records are still the
 live ones, because a record here may be superseded by a record in another
 segment. Recovery reads footers to learn the record population and then applies
-version precedence (§5.3) to decide what is held. An implementation **MUST NOT**
+version precedence ([§5.3](#5.3%20Versions)) to decide what is held. An implementation **MUST NOT**
 treat a footer as a statement about residency.
 
 **Reading a catalog skips per-record verification.** A catalog that verifies
 attests to the record *layout*, not to each payload's integrity, so recovery via
 footers does not detect a corrupt payload the way a scan does. This is a
-deliberate trade and it costs no safety: §4.3 requires a record's checksum to be
+deliberate trade and it costs no safety: [§4.3](#4.3%20Records) requires a record's checksum to be
 verified when it is read to serve content, so corruption is still caught before
 it can be served — it is simply caught at first read rather than at open, and
-quarantine (§9.3) is applied then.
+quarantine ([§9.3](#9.3%20Torn%20and%20corrupt%20records)) is applied then.
 
-> *Note.* This is the structure an LSM uses: RocksDB and Pebble keep each SST's
+> [!note]
+> This is the structure an LSM uses: RocksDB and Pebble keep each SST's
 > index block inside the SST and read it on open, and never scan data blocks to
 > find keys. The alternative designs are a sparse sidecar (Kafka's `.index`) and
 > full reconstruction by scanning (Bitcask's keydir, which needed *hint files* —
@@ -554,7 +570,7 @@ different things.
 
 | | **placement index** | **segment catalog** | **placement cache** |
 | --- | --- | --- | --- |
-| Where | memory | inside each sealed segment (§4.4) | one file (§9.1.1) |
+| Where | memory | inside each sealed segment ([§4.4](#4.4%20The%20segment%20catalog)) | one file ([§9.1.1](#9.1.1%20The%20placement%20cache%2C%20and%20how%20it%20is%20validated%20cheaply)) |
 | Scope | the whole store | one segment | the whole store |
 | Describes | **held extents** — live content | **records** — everything that segment holds, live or superseded | the placement index, as it was |
 | Consulted to serve a read | **yes, always** | never | never |
@@ -566,8 +582,8 @@ different things.
 
 **The relationship is one-way: the placement index is *built from* the other
 two, and neither is built from it at runtime.** At recovery the journal reads
-catalogs (or scans, §9.1) to learn what records exist, applies version
-precedence (§5.3) to decide which are live, and the result is the placement
+catalogs (or scans, [§9.1](#9.1%20Rebuilding)) to learn what records exist, applies version
+precedence ([§5.3](#5.3%20Versions)) to decide which are live, and the result is the placement
 index. A placement cache short-circuits that by storing the answer.
 
 Two consequences follow, and an implementation **MUST NOT** assume otherwise:
@@ -602,7 +618,7 @@ holding *n* extents, an implementation **MUST** provide:
 | held bytes in a given segment | reclamation | `O(1)` |
 
 A linear walk of a file's extents to answer a point lookup **MUST NOT** be used;
-at the extent counts of §5.2 it is the read path's dominant cost.
+at the extent counts of [§5.2](#5.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes) it is the read path's dominant cost.
 
 #### Representation
 
@@ -614,7 +630,7 @@ The inner level is ordered by file offset. An implementation **SHOULD** use an
 in-memory **B-tree keyed on each extent's start offset**, and the reasons are
 worth stating because they rule out the obvious alternatives:
 
-- **Extents are disjoint by invariant (§5), so an interval tree is not needed.**
+- **Extents are disjoint by invariant ([§5](#5.%20The%20placement%20index)), so an interval tree is not needed.**
   With no overlap, "the extent covering offset *x*" is the predecessor of *x* by
   start offset, plus a bounds check on its length. An interval tree would carry
   augmented max-endpoint bookkeeping to answer a question disjointness has
@@ -625,7 +641,7 @@ worth stating because they rule out the obvious alternatives:
   large *n* is exactly the one that also inserts in the middle.
 - **A skip list** meets the bounds but spends a pointer per level per entry and
   scatters those entries across the heap, which costs both memory and a cache
-  miss per level at the extent counts of §5.2.
+  miss per level at the extent counts of [§5.2](#5.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes).
 - **A B-tree** packs many entries per node contiguously, so a lookup touches few
   cache lines, ordered iteration for `Extents` and `Flush` is a leaf walk, and
   per-entry overhead is a fraction of a pointer-per-node structure.
@@ -635,7 +651,7 @@ worse than a B-tree here on memory and locality, with no compensating advantage.
 
 Whatever the structure, an implementation **MUST** meet the bounds above and
 **MUST** allow reads of one file to proceed while another file is being written
-(§10). A copy-on-write B-tree, giving readers a stable view without a lock,
+([§10](#10.%20Concurrency)). A copy-on-write B-tree, giving readers a stable view without a lock,
 **MAY** be used to extend that to reads and writes of the *same* file.
 
 **No reverse index is required.** Reclamation appears to need *"which extents
@@ -670,22 +686,22 @@ segment it spans.
 Coalescing cannot help content written in scattered small writes, which stays
 scattered. For that case:
 
-- `Stats.ExtentCount` (§3.7) **MUST** expose the entry count, so the pressure is
+- `Stats.ExtentCount` ([§3.7](#3.7%20State%20introspection)) **MUST** expose the entry count, so the pressure is
   observable before it is fatal;
-- repack (§8.2) **MAY** relocate one file's scattered records adjacently, which
+- repack ([§8.2](#8.2%20Repack)) **MAY** relocate one file's scattered records adjacently, which
   coalesces their entries. **Repack reclaims index entries as well as storage**,
   and an implementation under index pressure rather than storage pressure
   **MAY** repack for that reason alone.
 
 An implementation **MUST NOT** silently degrade when the index grows: exceeding a
 configured entry bound **MUST** be reported through `Stats` and the recorder
-(§3.8), in the same way capacity is.
+([§3.8](#3.8%20Event%20reporting)), in the same way capacity is.
 
-This index is held in memory and never stored, so RFC 0 §9.1 (I7) does not reach
+This index is held in memory and never stored, so [RFC 0 §9.1](rfc-0-data-lifecycle.md#9.1%20Records%20and%20their%20reclamation) (I7) does not reach
 it — nothing reclaims it, and the failure is exhaustion rather than growth no
 counter reports. I7 governs this component's *stored* artifacts instead: a
-segment catalog is reclaimed with the segment that carries it (§4.4), and the
-placement cache on invalidation (§9.1.1). The obligation here has the same shape
+segment catalog is reclaimed with the segment that carries it ([§4.4](#4.4%20The%20segment%20catalog)), and the
+placement cache on invalidation ([§9.1.1](#9.1.1%20The%20placement%20cache%2C%20and%20how%20it%20is%20validated%20cheaply)). The obligation here has the same shape
 for a different reason, which is why both are stated.
 
 ### 5.3 Versions
@@ -717,16 +733,17 @@ without stopping it.
 
 It **MUST** also expose per-segment accounting: for each segment, its id, seal
 state, allocated storage, held bytes, and whether it is quarantined. `Stats`
-(§3.7) is a store-wide total and is deliberately `O(1)`; this is the breakdown
+([§3.7](#3.7%20State%20introspection)) is a store-wide total and is deliberately `O(1)`; this is the breakdown
 behind it, and the only way to answer why reclamation is choosing what it
 chooses, or why a journal reporting space to recover is not recovering it.
 
 Verification **MUST** report, rather than repair: the extents the index claims
 that the segments do not support, the records the segments hold that the index
-does not reference, and the footers (§4.4) that did not verify. Repair is a
+does not reference, and the footers ([§4.4](#4.4%20The%20segment%20catalog)) that did not verify. Repair is a
 separate, explicit action.
 
-> *Note.* An index that is rebuilt at every open and never otherwise examined is
+> [!note]
+> An index that is rebuilt at every open and never otherwise examined is
 > unfalsifiable in production. The two questions an operator actually has —
 > "does the journal think it holds what it holds" and "why is this read
 > missing" — cannot be answered from outside without this.
@@ -737,10 +754,10 @@ separate, explicit action.
 
 | Rule | Why |
 | --- | --- |
-| A record **MUST** be durable before `WriteAt` returns success, per §6.2. | The acknowledgement is a promise. |
-| `Release` **MUST NOT** precede the caller's durable record of non-residency. | Inverting it leaves content believed local that is gone (RFC 0 §8.1). |
-| A segment's records **MUST** be durable before the segment is unlinked by reclamation. | A reclaim pass **MUST** be content-preserving (RFC 0 §8.2). |
-| Marking a flush bit **MUST NOT** precede the report that justifies it. | RFC 0 invariant I5. |
+| A record **MUST** be durable before `WriteAt` returns success, per [§6.2](#6.2%20Sync%20policy). | The acknowledgement is a promise. |
+| `Release` **MUST NOT** precede the caller's durable record of non-residency. | Inverting it leaves content believed local that is gone ([RFC 0 §8.1](rfc-0-data-lifecycle.md#8.1%20Evict)). |
+| A segment's records **MUST** be durable before the segment is unlinked by reclamation. | A reclaim pass **MUST** be content-preserving ([RFC 0 §8.2](rfc-0-data-lifecycle.md#8.2%20Reclaim)). |
+| Marking a flush bit **MUST NOT** precede the report that justifies it. | [RFC 0](rfc-0-data-lifecycle.md) invariant I5. |
 
 ### 6.2 Sync policy
 
@@ -773,7 +790,7 @@ accept the bytes and exceed the maximum.
 
 The journal **MUST NOT** evict to satisfy its own reservation. Eviction requires
 knowing what is durable remotely, which the journal is not authoritative for;
-the engine evicts and retries (RFC 0 §10).
+the engine evicts and retries ([RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model)).
 
 ## 8. Reclamation mechanisms
 
@@ -788,7 +805,7 @@ same segment.
 
 Where hole punching is unavailable, the implementation **MUST** still stop
 holding the extents, and **MAY** defer the actual storage recovery to a repack
-(§8.2). `Release` **MUST NOT** silently retain the content in a readable state:
+([§8.2](#8.2%20Repack)). `Release` **MUST NOT** silently retain the content in a readable state:
 a released extent is absent, whatever the filesystem did.
 
 #### Punching frees whole blocks only
@@ -812,7 +829,7 @@ all three identical:
 ![A released extent across filesystem blocks: whole interior blocks deallocated, the partial ends zeroed but still allocated, and nothing outside the range touched](img/rfc1-punch-blocks.svg)
 
 An implementation **MUST NOT** infer freed storage from the length of the extent
-it released. `Release` reports `freed` separately (§3.5) for exactly this reason,
+it released. `Release` reports `freed` separately ([§3.5](#3.5%20Release)) for exactly this reason,
 and for a small or badly aligned extent the honest answer is zero.
 
 **Align anyway, because macOS requires it.** APFS rejects an unaligned
@@ -825,7 +842,7 @@ would have been freed regardless; on macOS it is the difference between working
 and failing.
 
 Storage stranded in the zeroed-but-allocated edges is recovered by repack
-(§8.2), not by further punching. A workload of many small releases therefore
+([§8.2](#8.2%20Repack)), not by further punching. A workload of many small releases therefore
 reclaims little until repack runs, which is a second reason repack is not
 optional.
 
@@ -878,34 +895,34 @@ Btrfs on Linux, or APFS on macOS.
 
 Because no surviving record moves, releasing an extent rewrites no entry in the
 placement index and copies no bytes. The segment becomes sparse, which is why
-§8.3 requires footprint to be accounted from allocated storage: measured by file
+[§8.3](#8.3%20Accounting) requires footprint to be accounted from allocated storage: measured by file
 length, a release frees nothing.
 
 A segment holding no held extent **MUST** be unlinked.
 
 ### 8.2 Repack
 
-Repack is the principal mechanism of *reclaim* (RFC 0 §8.2). It copies the
+Repack is the principal mechanism of *reclaim* ([RFC 0 §8.2](rfc-0-data-lifecycle.md#8.2%20Reclaim)). It copies the
 still-held records of a sparse segment into another segment, repoints the
 placement index, and unlinks the original.
 
 It is deliberately not called compaction: in an LSM that word names an operation
-that drops superseded entries, and repack discards nothing (RFC 0 §8.2).
+that drops superseded entries, and repack discards nothing ([RFC 0 §8.2](rfc-0-data-lifecycle.md#8.2%20Reclaim)).
 
 It is needed for three reasons, only the first of which is about disk:
 
 - on a filesystem without hole punching, `Release` cannot return storage at all
-  (§8.1), and repack is the only thing that does;
+  ([§8.1](#8.1%20Releasing%20storage)), and repack is the only thing that does;
 - a segment that has been punched repeatedly holds little live content in a
   full-length, heavily fragmented file — the storage is back, but the segment
-  still costs an entry in the descriptor budget (§8.4) and scatters the reads
+  still costs an entry in the descriptor budget ([§8.4](#8.4%20Open%20descriptors)) and scatters the reads
   that remain;
 - relocating one file's records adjacently coalesces its placement index entries,
-  so repack reclaims index entries as well as storage (§5.2).
+  so repack reclaims index entries as well as storage ([§5.2](#5.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)).
 
 **Selection.** Candidacy is decided from held bytes per segment against the
 storage that segment still allocates — both of which an implementation already
-maintains (§5.1, §8.3). A repack pass **MUST NOT** need to read a segment to
+maintains ([§5.1](#5.1%20What%20it%20must%20answer), [§8.3](#8.3%20Accounting)). A repack pass **MUST NOT** need to read a segment to
 decide whether to repack it.
 
 **Content preservation.** Repack **MUST** preserve the set of held extents, the
@@ -914,7 +931,7 @@ durable content look dirty and cause it to be re-uploaded; setting one would mak
 undurable content evictable.
 
 **Versions are not preserved, and MUST NOT be.** A relocated record **MUST** be
-written with a new version, higher than any issued so far (§5.3). Copying a
+written with a new version, higher than any issued so far ([§5.3](#5.3%20Versions)). Copying a
 record under its original version would leave two records covering one offset
 with equal versions if the process died between the copy and the unlink, and
 version precedence could not then resolve which is live. A new version makes the
@@ -927,15 +944,15 @@ become dead weight that a later pass reclaims. A crash after the unlink is
 indistinguishable from a completed repack. At no point is an extent unreachable.
 
 **Capacity.** Repack consumes space before it releases any, so it **MUST**
-reserve for its copies like any other write (§7). An implementation **MUST NOT**
+reserve for its copies like any other write ([§7](#7.%20Capacity)). An implementation **MUST NOT**
 allow repack to be the only way out of a full journal, because at capacity the
 reservation fails and the journal cannot repack its way free. Reserving headroom
 that only repack may draw on is the straightforward way to satisfy this; whatever
 the mechanism, a journal at capacity **MUST** still be able to run one.
 
 **Refusals.** A repack **MUST NOT** run on a segment any record of which cannot
-be read (§9.3), because it cannot carry forward what it cannot read. Two passes
-**MUST NOT** select the same segment (§10), and a segment **MUST NOT** be its own
+be read ([§9.3](#9.3%20Torn%20and%20corrupt%20records)), because it cannot carry forward what it cannot read. Two passes
+**MUST NOT** select the same segment ([§10](#10.%20Concurrency)), and a segment **MUST NOT** be its own
 target.
 
 ### 8.3 Accounting
@@ -946,10 +963,10 @@ observe the effect of hole punching, and its capacity limit will not fall when
 storage is released.
 
 Every file the journal creates **MUST** be accounted, including each segment's
-catalog (§4.4) and the placement cache (§9.1.1). Storage that is not accounted is
+catalog ([§4.4](#4.4%20The%20segment%20catalog)) and the placement cache ([§9.1.1](#9.1.1%20The%20placement%20cache%2C%20and%20how%20it%20is%20validated%20cheaply)). Storage that is not accounted is
 storage no limit bounds and no reclamation targets.
 
-Accounting **MUST** be reported through `Stats` (§3.7): `UsedBytes` for what is
+Accounting **MUST** be reported through `Stats` ([§3.7](#3.7%20State%20introspection)): `UsedBytes` for what is
 allocated, `HeldBytes` for what is live, and `SparseBytes` for what release has
 already returned inside segments still in use. The gap between the first two is
 the storage repack would recover, and it is the only signal that distinguishes a
@@ -961,12 +978,13 @@ The number of segment descriptors held open **MUST** be bounded by
 configuration, independently of the number of segments. A read of a segment
 whose descriptor is not open **MUST** reopen it.
 
-The count and its bound **MUST** be reported through `Stats` (§3.7), and a reopen
-**MUST** be reported to the recorder (§3.8). A bound set too low is invisible in
+The count and its bound **MUST** be reported through `Stats` ([§3.7](#3.7%20State%20introspection)), and a reopen
+**MUST** be reported to the recorder ([§3.8](#3.8%20Event%20reporting)). A bound set too low is invisible in
 the count — which simply sits at the limit — and shows up only as a reopen on
 nearly every read, so the event is what makes it diagnosable.
 
-> *Note.* Without this bound, segment size acquires a second job: it becomes the
+> [!note]
+> Without this bound, segment size acquires a second job: it becomes the
 > knob that controls descriptor count, and the process ceases to function past
 > `RLIMIT_NOFILE / segment size` of local content. Bounding descriptors
 > separately lets segment size be chosen for reclamation granularity alone,
@@ -988,8 +1006,8 @@ implement the middle one, and **MAY** implement the fastest.
 
 | Source | Cost at open | Available when |
 | --- | --- | --- |
-| **Placement cache** (§9.1.1) | one `stat` per segment | the previous shutdown was clean and the segment set is unchanged |
-| **Segment catalogs** (§4.4) | one small read per sealed segment, plus a scan of each active segment | a segment carries a verifying catalog |
+| **Placement cache** ([§9.1.1](#9.1.1%20The%20placement%20cache%2C%20and%20how%20it%20is%20validated%20cheaply)) | one `stat` per segment | the previous shutdown was clean and the segment set is unchanged |
+| **Segment catalogs** ([§4.4](#4.4%20The%20segment%20catalog)) | one small read per sealed segment, plus a scan of each active segment | a segment carries a verifying catalog |
 | **Scan** | reads enough of every segment to touch every record header | always |
 
 ![The three recovery sources — placement cache, segment catalogs, full scan — with the conditions that demote each to the next](img/rfc1-recovery-tiers.svg)
@@ -998,7 +1016,7 @@ implement the middle one, and **MAY** implement the fastest.
 they take to say the same thing, and the faster two are optimisations that any
 failure demotes to the next. An implementation **MUST NOT** let a faster source
 produce an index the slower one would not, and a conformance test **MUST** build
-the index by all implemented sources and assert equality (§11).
+the index by all implemented sources and assert equality ([§11](#11.%20Conformance)).
 
 Scanning alone reads enough of every segment to touch every record header, so its
 cost grows with content held rather than with the number of files, and for
@@ -1008,10 +1026,10 @@ densely packed small records it approaches reading everything the journal holds.
 bounds the unavoidable part of recovery at *segment size × number of append
 streams* — with a 256 MiB segment and eight streams, two gigabytes read
 sequentially, whatever the total size of the journal. A periodic placement cache
-(§9.1.1) reduces even that, because it records how far into each active segment
+([§9.1.1](#9.1.1%20The%20placement%20cache%2C%20and%20how%20it%20is%20validated%20cheaply)) reduces even that, because it records how far into each active segment
 its knowledge extends and the scan resumes from there.
 
-This scan is cheap for the reason §4.4 gives: a record header already contains its
+This scan is cheap for the reason [§4.4](#4.4%20The%20segment%20catalog) gives: a record header already contains its
 index entry, and the payload is skipped by length. An implementation **MUST NOT**
 add a second durable log to avoid it.
 
@@ -1021,7 +1039,7 @@ An implementation **MAY** persist the whole in-memory index at shutdown, so that
 a clean restart loads it instead of reading catalogs.
 
 A placement cache **MUST** record, for every segment it describes, the segment's id, its
-exact byte length, and the CRC already present in that segment's trailer (§4.5).
+exact byte length, and the CRC already present in that segment's trailer ([§4.5](#4.5%20Catalog%20layout)).
 It **MUST** record the length of each active segment at the moment the placement cache
 was taken. It **MUST** carry its own checksum.
 
@@ -1034,10 +1052,10 @@ more. The placement cache **MUST** be rejected unless every one of the following
 - every segment's length on disk equals the length recorded for it.
 
 Any mismatch, and any absence, **MUST** demote to catalogs. A placement cache is never
-repaired, never partially applied, and never authoritative: the rule of §4.4
+repaired, never partially applied, and never authoritative: the rule of [§4.4](#4.4%20The%20segment%20catalog)
 applies to it unchanged — where it and the segments disagree, the segments win.
 
-This is sound because a sealed segment is immutable (§4.2): once sealed, its
+This is sound because a sealed segment is immutable ([§4.2](#4.2%20Segments)): once sealed, its
 length can never change again, so equal length is equal content. The active
 segment is the only one that grows, and its recorded length is where the
 cache's knowledge ends — an implementation that trusts a placement cache **MUST**
@@ -1051,7 +1069,7 @@ of, rather than only helping a clean restart.
 A placement cache costs the size of the index each time it is written, not the size of
 the change, so its cadence **MUST NOT** be tied to the write rate. Its purpose is
 to make a clean restart free and an unclean one bounded — not to track the tail,
-which is the active-segment scan's job and is cheap (§4.4).
+which is the active-segment scan's job and is cheap ([§4.4](#4.4%20The%20segment%20catalog)).
 
 ### 9.1.2 Why not a Merkle tree
 
@@ -1069,7 +1087,7 @@ leaves to be trusted, which costs at least what comparing the leaves costs.
 Worse, a hash tree over segment *contents* would require reading those contents
 to verify — which is the scan it was meant to avoid. The only fingerprints cheap
 enough to use are file length and the trailer CRC, and those are exactly what
-§9.1.1 compares directly.
+[§9.1.1](#9.1.1%20The%20placement%20cache%2C%20and%20how%20it%20is%20validated%20cheaply) compares directly.
 
 Merkle structures earn their keep when the comparison is remote, incremental, or
 against an adversary. If segments ever live somewhere a listing is expensive, or
@@ -1081,16 +1099,17 @@ reopening.
 Every recovered extent **MUST** begin with its flush bit unset.
 
 The engine re-establishes the bits it can justify, from metadata, before
-enabling eviction. Until it does, `Release` refuses everything (§3.5), which is
+enabling eviction. Until it does, `Release` refuses everything ([§3.5](#3.5%20Release)), which is
 safe and temporarily wasteful.
 
 An implementation **MUST NOT** infer a flush bit from the record, from the
 segment's age or seal state, or from the absence of a crash.
 
-> *Note.* The cost is that a crash makes every held extent a flush candidate
+> [!note]
+> The cost is that a crash makes every held extent a flush candidate
 > again until reseeded, and reseeding is a pass over metadata proportional to the
 > content held. The alternative — persisting the bit in the record — requires
-> mutable records, and §4.2 declines that trade.
+> mutable records, and [§4.2](#4.2%20Segments) declines that trade.
 
 ### 9.3 Torn and corrupt records
 
@@ -1109,7 +1128,7 @@ backs from the placement index, so that the journal no longer claims to hold
 them, and **MUST NOT** serve any byte from that record.
 
 That is the whole of the recovery action, and it is sufficient because the
-residency function (RFC 0 §4.2) resolves both cases correctly from the journal
+residency function ([RFC 0 §4.2](rfc-0-data-lifecycle.md#4.2%20The%20residency%20function)) resolves both cases correctly from the journal
 simply not holding the extent:
 
 | The extent's flush bit was | Metadata says | Resolves to | Outcome |
@@ -1132,7 +1151,7 @@ naming the affected file and extent, not as a cache miss.
 #### Scope of the refusal
 
 Where record boundaries are known independently of the damaged record — from the
-segment's catalog (§4.4) — the refusal **MUST** be confined to the records that
+segment's catalog ([§4.4](#4.4%20The%20segment%20catalog)) — the refusal **MUST** be confined to the records that
 do not verify. The catalog gives each record's offset and length, so one bad
 record says nothing about its neighbours.
 
@@ -1147,7 +1166,8 @@ it cannot produce. Once the unreadable records' extents have been dropped as
 above, the segment holds only extents it can produce, and repack **MAY** proceed
 normally — carrying forward what is still live and unlinking the rest.
 
-> *Note.* Quarantining the whole segment permanently would be the simpler rule and
+> [!note]
+> Quarantining the whole segment permanently would be the simpler rule and
 > is the wrong one. It strands the segment's storage for the lifetime of the store
 > and re-strands it after every restart, so a single flipped bit becomes a
 > permanent leak of up to one segment. Dropping the affected extents instead lets
@@ -1156,7 +1176,7 @@ normally — carrying forward what is still live and unlinking the rest.
 
 ### 9.4 Scrub
 
-Verification on read (§4.3) only ever checks content that is read. Content that
+Verification on read ([§4.3](#4.3%20Records)) only ever checks content that is read. Content that
 is never read is never checked, so a local copy can decay for as long as it sits
 there — and the first time anyone notices is a read that fails, which may be
 long after the remote copy it could have been repaired from was itself needed.
@@ -1166,7 +1186,7 @@ Scrub is an optional background pass that closes that gap. An implementation
 
 **What it does.** It walks segments and, for each record that backs a currently
 held extent, reads the record and verifies its checksum. Nothing else: scrub has
-no repair path of its own and **MUST** take exactly the action of §9.3 on a
+no repair path of its own and **MUST** take exactly the action of [§9.3](#9.3%20Torn%20and%20corrupt%20records) on a
 failure — drop the extent, report it — so that repair happens the same way it
 does for a read, through the residency function.
 
@@ -1180,7 +1200,7 @@ function of how long data has sat, so the least recently verified content is the
 most likely to have decayed and the least likely to have been read.
 
 **A pass** is complete when every currently held extent has been verified once.
-`Stats` (§3.7) **MUST** report when a pass last completed and how far the current
+`Stats` ([§3.7](#3.7%20State%20introspection)) **MUST** report when a pass last completed and how far the current
 one has progressed; a scrub that silently stops making progress is worse than
 none, because it is mistaken for coverage.
 
@@ -1188,7 +1208,7 @@ none, because it is mistaken for coverage.
 It **MUST** be rate-limited by a configurable byte rate, **MUST** be disabled by
 default, and **MUST** yield to foreground work rather than compete with it — an
 implementation **MUST NOT** allow scrub to hold any guard that a foreground read
-or a reclamation pass needs (§10.5).
+or a reclamation pass needs ([§10.5](#10.5%20Protecting%20readers%20from%20reclamation)).
 
 **Whether to enable it.** Beneath a filesystem that checksums and repairs data
 itself, scrub is close to redundant and its cost buys little. It is most
@@ -1220,7 +1240,7 @@ which domain guards it. The domains are:
 
 | Domain | Guards | Scope |
 | --- | --- | --- |
-| **capacity** | the reservation counter (§7) | store-wide |
+| **capacity** | the reservation counter ([§7](#7.%20Capacity)) | store-wide |
 | **file index** | one file's placement index entries | one `FileID` |
 | **append** | the write position of one active segment | one segment |
 | **storage guard** | a segment's bytes against being freed or relocated | one segment |
@@ -1247,10 +1267,10 @@ wants the file index to repoint entries. Those two orders deadlock. The reader
 acquiring the storage guard.
 
 **No lock may be held across a call into code the journal does not control.**
-This covers the `Flush` callback (§3.3) and every `Recorder` call (§3.8).
+This covers the `Flush` callback ([§3.3](#3.3%20Flush)) and every `Recorder` call ([§3.8](#3.8%20Event%20reporting)).
 `Flush` hands control to the carver, the syncer and the metadata store, any of
 which may take seconds; holding the file index across it would block every read
-of that file for the duration, which §3.3 already forbids by requiring offered
+of that file for the duration, which [§3.3](#3.3%20Flush) already forbids by requiring offered
 extents to stay readable.
 
 **No I/O may be performed while holding the file index.** The index is memory;
@@ -1261,17 +1281,17 @@ holding it converts disk latency into index contention.
 
 | Operation | Must be atomic with respect to | Why |
 | --- | --- | --- |
-| reserve, then accept bytes | other reservations | otherwise N writers pass one limit check (§7) |
+| reserve, then accept bytes | other reservations | otherwise N writers pass one limit check ([§7](#7.%20Capacity)) |
 | append a record, then publish its extents | readers of that file | a reader **MUST NOT** see an extent whose record is not yet durable |
-| `Fill`'s absence check, then its write | `WriteAt` on the same extent | otherwise a fill overwrites a newer client write (§3.4) |
+| `Fill`'s absence check, then its write | `WriteAt` on the same extent | otherwise a fill overwrites a newer client write ([§3.4](#3.4%20Fill)) |
 | `Release`'s flush-bit check, then dropping the extent | `WriteAt` and `Flush` on that extent | a write between check and drop would have its bytes released |
 | repack's index repoint | readers of the affected files | a reader **MUST** see either the old location or the new one, never neither |
-| `Stats` field collection | every mutating operation | fields **MUST** be mutually consistent (§3.7) |
+| `Stats` field collection | every mutating operation | fields **MUST** be mutually consistent ([§3.7](#3.7%20State%20introspection)) |
 
 Publishing an extent **MUST** be the last step of a write, after the record is
 durable. An implementation that inserts into the index before the record is
 durable makes the index describe content that may not survive — which is the
-failure §4.4 prohibits for persisted indexes, reintroduced in memory.
+failure [§4.4](#4.4%20The%20segment%20catalog) prohibits for persisted indexes, reintroduced in memory.
 
 ### 10.5 Protecting readers from reclamation
 
@@ -1314,7 +1334,7 @@ No operation may starve. In particular:
 - reclamation **MUST NOT** hold a segment exclusively for longer than one unit of
   work, so a large repack **MUST** be divisible rather than holding a segment for
   its whole duration;
-- a write blocked on capacity (§7) **MUST** fail rather than wait indefinitely,
+- a write blocked on capacity ([§7](#7.%20Capacity)) **MUST** fail rather than wait indefinitely,
   and **MUST NOT** hold the file index while blocked.
 
 ### 10.7 Shutdown
@@ -1325,8 +1345,8 @@ still be holding. An operation **MUST NOT** observe a partially closed store: a
 read that begins after close **MUST** fail, rather than reading through a
 half-dismantled index.
 
-Background work — scrub (§9.4), reclamation passes, placement-cache writes
-(§9.1.1) — **MUST** be stopped and joined before the segments they touch are
+Background work — scrub ([§9.4](#9.4%20Scrub)), reclamation passes, placement-cache writes
+([§9.1.1](#9.1.1%20The%20placement%20cache%2C%20and%20how%20it%20is%20validated%20cheaply)) — **MUST** be stopped and joined before the segments they touch are
 closed. A background pass that outlives the store's segments is the shape of
 the "DB closed" class of failure, where work continues against state that has
 been torn down.
@@ -1336,7 +1356,7 @@ been torn down.
 ### 11.1 What conformance means
 
 An implementation is conformant when **every MUST in this document holds**. The
-checks in §11.4 are not that definition — they are evidence for the requirements
+checks in [§11.4](#11.4%20The%20checks) are not that definition — they are evidence for the requirements
 that fail *silently*, where nothing errors, no test goes red by accident, and the
 defect is visible only if something deliberately looks for it.
 
@@ -1364,10 +1384,10 @@ distinguishing observation, not on the outcome the two share.
 
 | Dimension | Requirement |
 | --- | --- |
-| Filesystems | at least one **with** hole-punch support and one **without** (§8.1). Alignment behaviour differs by platform — Linux accepts unaligned ranges, APFS rejects them — so the §8.1 checks **MUST** run on every platform the deployment supports, not one representative |
-| Files and streams | at least two files across at least two append streams. A single-file rig maps to one stream and **structurally cannot** observe §10 |
+| Filesystems | at least one **with** hole-punch support and one **without** ([§8.1](#8.1%20Releasing%20storage)). Alignment behaviour differs by platform — Linux accepts unaligned ranges, APFS rejects them — so the [§8.1](#8.1%20Releasing%20storage) checks **MUST** run on every platform the deployment supports, not one representative |
+| Files and streams | at least two files across at least two append streams. A single-file rig maps to one stream and **structurally cannot** observe [§10](#10.%20Concurrency) |
 | Storage loss | simulated by **dropping writes**, not by terminating the process — the page cache outlives process death, so a kill-based rig proves a durability the implementation does not have |
-| Index scale | at least one check at an extent count where `O(n)` and `O(log n)` are distinguishable (§5.1) |
+| Index scale | at least one check at an extent count where `O(n)` and `O(log n)` are distinguishable ([§5.1](#5.1%20What%20it%20must%20answer)) |
 
 ### 11.4 The checks
 
@@ -1380,19 +1400,19 @@ A check here fails by **serving or destroying the wrong bytes without an error**
 
 | Requirement | Check |
 | --- | --- |
-| §3.2 no zero-fill | Read a never-written extent and an explicitly released extent; both report `missing`, neither returns zeros, and the two are indistinguishable to the journal. |
-| §3.3 write during flush | Write to an offered extent mid-callback, report it durable, assert the extent's bit stays unset and `Release` refuses it. |
-| §3.3 partial durability | Return a subset from `fn`, with an error; assert only the returned extents carry flush bits. |
-| §3.4 fill safety | Fill an extent concurrently written; assert the written bytes survive. |
-| §3.4 fill sets the bit | Fill an absent extent; assert `Release` then permits it. `WriteAt` the same extent; assert `Release` refuses it again. |
-| §3.5 refusal | Ask to release an extent with no flush bit; assert refusal and no partial progress. |
-| §8.1 neighbours survive a punch | Place two records so they share a filesystem block; release one; assert the other still reads its exact bytes. Measured to hold on ext4, XFS, btrfs and APFS — the check guards against an implementation that widens the punched range beyond what was released. |
-| §8.2 crash mid-repack | Kill the process between the copy and the unlink; assert recovery selects the relocated records, every held extent still reads, and no extent is duplicated in the placement index. |
-| §9.3 corrupt, dirty | Corrupt a record whose extent is dirty; assert the read **fails** rather than returning zeros, and the event names the file and extent as data loss. |
-| §9.3 corrupt, durable | Corrupt a record whose extent's flush bit is set; assert the extent is dropped, the read refetches it, and the event is reported as repairable. |
-| §10.5 punch under read | Start a read of an extent, punch its storage mid-read; assert the read either completes with correct bytes or reports the extent missing, and never returns zeros. |
-| §10.5 repack under read | Same, with relocation instead of punching; assert the read sees the old or the new location, never neither. |
-| §4.4 footer is not authoritative | Corrupt a sealed segment's footer; assert recovery scans that segment and reaches the same index. Then write a footer that disagrees with the records; assert the records win. |
+| [§3.2](#3.2%20Read) no zero-fill | Read a never-written extent and an explicitly released extent; both report `missing`, neither returns zeros, and the two are indistinguishable to the journal. |
+| [§3.3](#3.3%20Flush) write during flush | Write to an offered extent mid-callback, report it durable, assert the extent's bit stays unset and `Release` refuses it. |
+| [§3.3](#3.3%20Flush) partial durability | Return a subset from `fn`, with an error; assert only the returned extents carry flush bits. |
+| [§3.4](#3.4%20Fill) fill safety | Fill an extent concurrently written; assert the written bytes survive. |
+| [§3.4](#3.4%20Fill) fill sets the bit | Fill an absent extent; assert `Release` then permits it. `WriteAt` the same extent; assert `Release` refuses it again. |
+| [§3.5](#3.5%20Release) refusal | Ask to release an extent with no flush bit; assert refusal and no partial progress. |
+| [§8.1](#8.1%20Releasing%20storage) neighbours survive a punch | Place two records so they share a filesystem block; release one; assert the other still reads its exact bytes. Measured to hold on ext4, XFS, btrfs and APFS — the check guards against an implementation that widens the punched range beyond what was released. |
+| [§8.2](#8.2%20Repack) crash mid-repack | Kill the process between the copy and the unlink; assert recovery selects the relocated records, every held extent still reads, and no extent is duplicated in the placement index. |
+| [§9.3](#9.3%20Torn%20and%20corrupt%20records) corrupt, dirty | Corrupt a record whose extent is dirty; assert the read **fails** rather than returning zeros, and the event names the file and extent as data loss. |
+| [§9.3](#9.3%20Torn%20and%20corrupt%20records) corrupt, durable | Corrupt a record whose extent's flush bit is set; assert the extent is dropped, the read refetches it, and the event is reported as repairable. |
+| [§10.5](#10.5%20Protecting%20readers%20from%20reclamation) punch under read | Start a read of an extent, punch its storage mid-read; assert the read either completes with correct bytes or reports the extent missing, and never returns zeros. |
+| [§10.5](#10.5%20Protecting%20readers%20from%20reclamation) repack under read | Same, with relocation instead of punching; assert the read sees the old or the new location, never neither. |
+| [§4.4](#4.4%20The%20segment%20catalog) footer is not authoritative | Corrupt a sealed segment's footer; assert recovery scans that segment and reaches the same index. Then write a footer that disagrees with the records; assert the records win. |
 
 #### Group B — wedging and unbounded resource use
 
@@ -1400,16 +1420,16 @@ A check here fails by **reaching a state it cannot leave**, or by consuming with
 
 | Requirement | Check |
 | --- | --- |
-| §7 reservation | Drive concurrent writers at the limit; assert the footprint never exceeds it. |
-| §8.2 repack at capacity | Fill to capacity, then repack; assert it can run and that the journal recovers space without an external write succeeding first. |
-| §8.4 descriptors | Create more segments than the descriptor bound; assert reads still succeed and open descriptors stay bounded. |
-| §5.1 coalescing | Write 1 GiB sequentially in small writes; assert the entry count is proportional to segments spanned, not to writes issued. |
-| §5.1 bounds | Build a file index of 10^6 extents; assert point lookup and span query cost does not grow linearly with extent count. |
-| §6.2 sync failure | Fail a sync; assert the caller sees it and that subsequent writes to the same stream still attempt to sync. |
-| §9.3 segment reclaimable | After the dropped extents, assert repack can select the segment and that its storage is recovered. |
-| §10.6 reclaim not starved | Hold sustained read load on one segment; assert reclamation still acquires it within a bounded time. |
-| §10.3 no deadlock | Run readers, writers, repack and release concurrently on the same segments under a deadlock detector; assert no cycle and no lock held across the flush callback. |
-| §10.7 background joined | Close the store with scrub and a repack in flight; assert both stop before any segment is closed and no work continues afterwards. |
+| [§7](#7.%20Capacity) reservation | Drive concurrent writers at the limit; assert the footprint never exceeds it. |
+| [§8.2](#8.2%20Repack) repack at capacity | Fill to capacity, then repack; assert it can run and that the journal recovers space without an external write succeeding first. |
+| [§8.4](#8.4%20Open%20descriptors) descriptors | Create more segments than the descriptor bound; assert reads still succeed and open descriptors stay bounded. |
+| [§5.1](#5.1%20What%20it%20must%20answer) coalescing | Write 1 GiB sequentially in small writes; assert the entry count is proportional to segments spanned, not to writes issued. |
+| [§5.1](#5.1%20What%20it%20must%20answer) bounds | Build a file index of 10^6 extents; assert point lookup and span query cost does not grow linearly with extent count. |
+| [§6.2](#6.2%20Sync%20policy) sync failure | Fail a sync; assert the caller sees it and that subsequent writes to the same stream still attempt to sync. |
+| [§9.3](#9.3%20Torn%20and%20corrupt%20records) segment reclaimable | After the dropped extents, assert repack can select the segment and that its storage is recovered. |
+| [§10.6](#10.6%20Progress) reclaim not starved | Hold sustained read load on one segment; assert reclamation still acquires it within a bounded time. |
+| [§10.3](#10.3%20Lock%20ordering%2C%20and%20what%20may%20never%20be%20held) no deadlock | Run readers, writers, repack and release concurrently on the same segments under a deadlock detector; assert no cycle and no lock held across the flush callback. |
+| [§10.7](#10.7%20Shutdown) background joined | Close the store with scrub and a repack in flight; assert both stop before any segment is closed and no work continues afterwards. |
 
 #### Group C — recovery
 
@@ -1417,19 +1437,19 @@ A check here fails by **coming back up describing something other than what is o
 
 | Requirement | Check |
 | --- | --- |
-| §9.1 rebuild | Kill the process mid-write and reopen; assert no held extent reads as zeros and the last verified record is the tail. |
-| §9.1 sources agree | Build the placement index from the placement cache, from catalogs, and by full scan of the same store; assert all three are identical. |
-| §9.1.1 cache demotion | Alter one segment's length, delete one segment, and corrupt the placement cache checksum, each independently; assert every case falls back to catalogs and reaches the same placement index. |
-| §9.2 pessimistic bits | Reopen after writes; assert `Release` refuses everything before reseeding. |
-| §4.5 trailer torn | Truncate a segment mid-footer, and separately corrupt one entry byte; assert both are treated as "no footer", the segment is scanned, and the resulting index is identical to the footer-read one. |
-| §4.5 unknown version | Write a trailer with a future format version; assert the segment is scanned and the open succeeds. |
-| §5.3 version monotonicity | Reopen after a crash; assert the next version issued exceeds every version on disk, and that recovery in shuffled segment order yields an identical index. |
-| §9.3 neighbours survive | With a catalog present, corrupt one record; assert every other record in that segment still reads. |
-| §8.1 no punch support | Force the punch path to fail; assert the extent is still absent and reclamation falls back to repack. |
-| §8.1 release never grows | Release an extent and assert accounted footprint never *increases*. On Windows this fails outright if segments were not marked sparse. |
-| §8.1 sub-block release | Release an extent smaller than a filesystem block; assert it is absent from reads and that `freed` reports **zero**, not the extent length. |
-| §8.1 alignment is portable | Release an unaligned extent; assert it succeeds on both Linux and macOS. An implementation that passes the range through unaligned fails on APFS with `EINVAL`. |
-| §8.1 storage returned | Release an extent, assert accounted footprint decreases. |
+| [§9.1](#9.1%20Rebuilding) rebuild | Kill the process mid-write and reopen; assert no held extent reads as zeros and the last verified record is the tail. |
+| [§9.1](#9.1%20Rebuilding) sources agree | Build the placement index from the placement cache, from catalogs, and by full scan of the same store; assert all three are identical. |
+| [§9.1.1](#9.1.1%20The%20placement%20cache%2C%20and%20how%20it%20is%20validated%20cheaply) cache demotion | Alter one segment's length, delete one segment, and corrupt the placement cache checksum, each independently; assert every case falls back to catalogs and reaches the same placement index. |
+| [§9.2](#9.2%20Flush%20state%20after%20recovery) pessimistic bits | Reopen after writes; assert `Release` refuses everything before reseeding. |
+| [§4.5](#4.5%20Catalog%20layout) trailer torn | Truncate a segment mid-footer, and separately corrupt one entry byte; assert both are treated as "no footer", the segment is scanned, and the resulting index is identical to the footer-read one. |
+| [§4.5](#4.5%20Catalog%20layout) unknown version | Write a trailer with a future format version; assert the segment is scanned and the open succeeds. |
+| [§5.3](#5.3%20Versions) version monotonicity | Reopen after a crash; assert the next version issued exceeds every version on disk, and that recovery in shuffled segment order yields an identical index. |
+| [§9.3](#9.3%20Torn%20and%20corrupt%20records) neighbours survive | With a catalog present, corrupt one record; assert every other record in that segment still reads. |
+| [§8.1](#8.1%20Releasing%20storage) no punch support | Force the punch path to fail; assert the extent is still absent and reclamation falls back to repack. |
+| [§8.1](#8.1%20Releasing%20storage) release never grows | Release an extent and assert accounted footprint never *increases*. On Windows this fails outright if segments were not marked sparse. |
+| [§8.1](#8.1%20Releasing%20storage) sub-block release | Release an extent smaller than a filesystem block; assert it is absent from reads and that `freed` reports **zero**, not the extent length. |
+| [§8.1](#8.1%20Releasing%20storage) alignment is portable | Release an unaligned extent; assert it succeeds on both Linux and macOS. An implementation that passes the range through unaligned fails on APFS with `EINVAL`. |
+| [§8.1](#8.1%20Releasing%20storage) storage returned | Release an extent, assert accounted footprint decreases. |
 
 #### Group D — observability
 
@@ -1437,13 +1457,13 @@ A check here fails by **leaving an operator unable to tell which of two opposite
 
 | Requirement | Check |
 | --- | --- |
-| §3.7 wedge is visible | Drive the journal to capacity with nothing evictable; assert one `Stats` call distinguishes at-capacity, nothing-evictable and reseed-incomplete. |
-| §3.7 stats are cheap | Poll `Stats` under concurrent write load; assert it takes no lock a write needs and its cost does not grow with held extents. |
-| §3.7 punch visibility | Run on a filesystem without punch support; assert `PunchSupported` is false and that a release reporting `freed == 0` is distinguishable from a failed one. |
-| §3.8 recorder is optional | Run the full suite with no recorder supplied; assert no behavioural difference. |
-| §5.1 segment held-bytes | Write, release and repack across several segments; assert the per-segment counter matches a recomputed walk at every step. |
-| §5.4 verification reports | Introduce a deliberate index/segment disagreement; assert verification names it and changes nothing. |
-| §9.4 scrub uses one path | Have scrub find planted corruption; assert it takes the §9.3 action and has no repair path of its own. |
+| [§3.7](#3.7%20State%20introspection) wedge is visible | Drive the journal to capacity with nothing evictable; assert one `Stats` call distinguishes at-capacity, nothing-evictable and reseed-incomplete. |
+| [§3.7](#3.7%20State%20introspection) stats are cheap | Poll `Stats` under concurrent write load; assert it takes no lock a write needs and its cost does not grow with held extents. |
+| [§3.7](#3.7%20State%20introspection) punch visibility | Run on a filesystem without punch support; assert `PunchSupported` is false and that a release reporting `freed == 0` is distinguishable from a failed one. |
+| [§3.8](#3.8%20Event%20reporting) recorder is optional | Run the full suite with no recorder supplied; assert no behavioural difference. |
+| [§5.1](#5.1%20What%20it%20must%20answer) segment held-bytes | Write, release and repack across several segments; assert the per-segment counter matches a recomputed walk at every step. |
+| [§5.4](#5.4%20Inspection) verification reports | Introduce a deliberate index/segment disagreement; assert verification names it and changes nothing. |
+| [§9.4](#9.4%20Scrub) scrub uses one path | Have scrub find planted corruption; assert it takes the [§9.3](#9.3%20Torn%20and%20corrupt%20records) action and has no repair path of its own. |
 
 ### 11.5 What must not stand in for the real thing
 
@@ -1453,7 +1473,7 @@ A substitute that cannot exhibit the failure cannot be evidence of its absence.
   Group A or B check. Durability *reporting* is the thing under test, and a sink
   that never fails asserts nothing about it.
 - An in-memory segment implementation **MUST NOT** stand in for the filesystem in
-  §8.1, §9.1 or §9.3: hole-punch alignment, torn tails and bit corruption are
+  [§8.1](#8.1%20Releasing%20storage), [§9.1](#9.1%20Rebuilding) or [§9.3](#9.3%20Torn%20and%20corrupt%20records): hole-punch alignment, torn tails and bit corruption are
   properties of real storage.
 - A harness that constructs the journal differently from production **MUST NOT**
   be the only path under test. Where construction differs, a whole class of
@@ -1461,27 +1481,27 @@ A substitute that cannot exhibit the failure cannot be evidence of its absence.
 
 ## 12. Open questions
 
-1. **Reseeding cost** (§9.2). Beginning pessimistic is safe and removes mutable
+1. **Reseeding cost** ([§9.2](#9.2%20Flush%20state%20after%20recovery)). Beginning pessimistic is safe and removes mutable
    records, but the reseed is proportional to content held and its cost at
    terabyte scale is unmeasured. If it proves prohibitive, the alternatives are a
    separate durable ledger or accepting mutable records, in that order of
    preference.
-2. **Hole-punch behaviour** (§8.1). *Partly answered.* Platform semantics are now
+2. **Hole-punch behaviour** ([§8.1](#8.1%20Releasing%20storage)). *Partly answered.* Platform semantics are now
    pinned: APFS rejects unaligned punches outright (measured), Linux zeroes
    partial blocks (documented), and the support matrix carries versions. Still
    open: whether repeated per-extent punching degrades a segment's extent map at
    scale, and a direct observation of the Linux edge-zeroing — that rule rests on
    documentation, not on a run.
-3. **Segment size** (§4.2). With descriptors bounded separately (§8.4), segment
+3. **Segment size** ([§4.2](#4.2%20Segments)). With descriptors bounded separately ([§8.4](#8.4%20Open%20descriptors)), segment
    size has two remaining effects, and both push the same way: it sets
    reclamation granularity, and it bounds the worst-case active-segment scan at
-   recovery (§9.1). Smaller is better on both counts, against the cost of more
+   recovery ([§9.1](#9.1%20Rebuilding)). Smaller is better on both counts, against the cost of more
    segments and more frequent sealing. The right default is unmeasured.
-4. **Footer format and cost** (§4.4). The footer is specified as a structure, not
+4. **Footer format and cost** ([§4.4](#4.4%20The%20segment%20catalog)). The footer is specified as a structure, not
    a byte layout, and neither its write cost at seal nor the recovery time it
    saves has been measured against a header-only scan.
-5. **Index entry bound** (§5.2). *Partly answered.* The cost is measured at ~40
-   bytes per entry, so the shape of the problem is known (§5.2) and a bound can be
+5. **Index entry bound** ([§5.2](#5.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)). *Partly answered.* The cost is measured at ~40
+   bytes per entry, so the shape of the problem is known ([§5.2](#5.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)) and a bound can be
    set against a memory budget. Undecided: what an implementation should do on
    reaching it beyond reporting. Also unmeasured is **insertion** cost — the
    benchmark covered memory and lookup, and it is insertion, not lookup, where a
