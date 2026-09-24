@@ -122,3 +122,6 @@ docker-compose.override.yml
 .githooks/post-commit
 .githooks/post-checkout
 .rfc-png/
+
+# Obsidian vault settings
+.obsidian/
