@@ -47,7 +47,7 @@
   <line x1="16" y1="248" x2="884" y2="248" stroke="#eef1f4"/>
 
   <text x="16" y="284" class="rl">C. key = f(content)</text>
-  <text x="16" y="302" class="s">what &#167;2.1 requires</text>
+  <text x="16" y="302" class="s">what RFC 2 what RFC 2 &#167;4.2 requires#167;4.2 requires</text>
   <rect x="300" y="268" width="128" height="30" rx="3" class="bg"/><text x="336" y="288" class="m">put</text>
   <line x1="428" y1="283" x2="466" y2="283" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a3k)"/>
   <rect x="470" y="268" width="128" height="30" rx="3" class="br"/><text x="508" y="288" class="m">crash</text>

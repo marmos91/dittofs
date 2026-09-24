@@ -18,7 +18,7 @@
   </defs>
   <rect width="900" height="400" fill="#ffffff"/>
 
-  <text x="16" y="26" class="t">A flag set by failure and cleared by success cannot clear itself.</text>
+  <text x="16" y="26" class="t">A flag set by failure and cleared by success cannot clear itself; a probe can.</text>
   <text x="16" y="46" class="s">Both panels: the remote fails, then recovers, with no operator present.</text>
 
   <text x="16" y="86" class="rl">Latched</text>
@@ -33,7 +33,7 @@
 
   <line x1="16" y1="190" x2="884" y2="190" stroke="#eef1f4"/>
 
-  <text x="16" y="228" class="rl">Derived</text>
+  <text x="16" y="228" class="rl">Probed</text>
   <rect x="120" y="212" width="126" height="32" rx="3" class="br"/><text x="136" y="233" class="m">failure seen</text>
   <line x1="246" y1="228" x2="284" y2="228" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a3h)"/>
   <rect x="288" y="212" width="152" height="32" rx="3" class="bx"/><text x="300" y="233" class="m">probe, on a timer</text>
@@ -46,5 +46,5 @@
   <line x1="16" y1="308" x2="884" y2="308" stroke="#c3cad3"/>
   <text x="16" y="332" class="l">The difference is not how quickly failure is noticed. Both notice it. The difference is what has to happen</text>
   <text x="16" y="350" class="l">for the system to stop believing it &#8212; an attempt that the belief itself is suppressing, or a probe that runs regardless.</text>
-  <text x="16" y="380" class="why">State you store can go stale; state you derive cannot.</text>
+  <text x="16" y="380" class="why">Unhealthy is safe to hold only while something that does not depend on it keeps asking.</text>
 </svg>

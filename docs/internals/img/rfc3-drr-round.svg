@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 430" width="900" height="430" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <style>
+      .t  { font-size: 15px; font-weight: 600; fill: #1b1f24 }
+      .rl { font-size: 12px; font-weight: 600; fill: #1b1f24 }
+      .l  { font-size: 12px; fill: #3d444d }
+      .s  { font-size: 11px; fill: #5b6472 }
+      .m  { font-family: ui-monospace,SFMono-Regular,Menlo,monospace; font-size: 11px; fill: #1b1f24 }
+      .why  { font-size: 11px; fill: #b04a4a }
+      .ok   { font-size: 11px; font-weight: 600; fill: #2f6f4f }
+      .bx { fill: #dce9f7; stroke: #4a7fb5; stroke-width: 1.4 }
+      .bg { fill: #eaf4ec; stroke: #2f6f4f; stroke-width: 1.4 }
+      .br { fill: #fbecec; stroke: #b04a4a; stroke-width: 1.4 }
+      .bn { fill: #f4f6f8; stroke: #8b95a3; stroke-width: 1.2 }
+    </style>
+    <marker id="a3d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5b6472"/>
+    </marker>
+    <marker id="a3dr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b04a4a"/>
+    </marker>
+  </defs>
+  <rect width="900" height="430" fill="#ffffff"/>
+
+  <text x="16" y="26" class="t">Deficit round robin: each flow earns a quantum of bytes per turn, and spends it on whole transfers.</text>
+  <text x="16" y="46" class="s">Quantum = 20 MiB, the largest block. One round, three flows with work waiting.</text>
+  <text x="16" y="84" class="rl">flow</text>
+  <text x="150" y="84" class="rl">queued blocks</text>
+  <text x="470" y="84" class="rl">sent this round</text>
+  <text x="730" y="84" class="rl">deficit left</text>
+  <text x="16" y="117" class="m">flow A</text>
+  <text x="16" y="131" class="s">bulk upload</text>
+  <rect x="150" y="106" width="62" height="20" rx="2" class="bn"/>
+  <rect x="214" y="106" width="62" height="20" rx="2" class="bn"/>
+  <rect x="278" y="106" width="62" height="20" rx="2" class="bn"/>
+  <rect x="470" y="106" width="62" height="20" rx="2" class="bg"/>
+  <text x="473" y="120" class="s">16</text>
+  <text x="730" y="121" class="m">4 MiB</text>
+  <text x="16" y="173" class="m">flow B</text>
+  <text x="16" y="187" class="s">small files</text>
+  <rect x="150" y="162" width="14" height="20" rx="2" class="bn"/>
+  <rect x="166" y="162" width="14" height="20" rx="2" class="bn"/>
+  <rect x="182" y="162" width="14" height="20" rx="2" class="bn"/>
+  <rect x="198" y="162" width="14" height="20" rx="2" class="bn"/>
+  <rect x="214" y="162" width="14" height="20" rx="2" class="bn"/>
+  <rect x="470" y="162" width="14" height="20" rx="2" class="bg"/>
+  <rect x="486" y="162" width="14" height="20" rx="2" class="bg"/>
+  <rect x="502" y="162" width="14" height="20" rx="2" class="bg"/>
+  <rect x="518" y="162" width="14" height="20" rx="2" class="bg"/>
+  <rect x="534" y="162" width="14" height="20" rx="2" class="bg"/>
+  <text x="730" y="177" class="m">0 MiB</text>
+  <text x="790" y="177" class="s">queue empty → reset</text>
+  <text x="16" y="229" class="m">flow C</text>
+  <text x="16" y="243" class="s">one large</text>
+  <rect x="150" y="218" width="78" height="20" rx="2" class="bn"/>
+  <rect x="470" y="218" width="78" height="20" rx="2" class="bg"/>
+  <text x="473" y="232" class="s">20</text>
+  <text x="730" y="233" class="m">0 MiB</text>
+  <text x="790" y="233" class="s">queue empty → reset</text>
+  <text x="470" y="264" class="s">A: 20 earned, one 16 MiB block fits, 4 carried over; next round it has 24 and sends one more.</text>
+  <line x1="16" y1="278" x2="884" y2="278" stroke="#eef1f4"/>
+  <text x="16" y="302" class="rl">The cap</text>
+  <text x="96" y="302" class="l">Pool of 8 workers, cap 6. Flow A already holds 6 in flight on a slow store: its turn is skipped even with deficit left,</text>
+  <text x="96" y="320" class="l">so the next free worker goes to B or C. Without the cap, A could hold all 8 for as long as its puts take, and no turn comes.</text>
+  <text x="16" y="352" class="rl">Why bytes</text>
+  <text x="96" y="352" class="l">Counting requests, B's five small blocks would equal five of A's large ones: A would get four times B's bandwidth.</text>
+  <text x="16" y="384" class="ok">Every flow with work waiting sends at least once a round, because the quantum is at least the largest transfer.</text>
+</svg>
