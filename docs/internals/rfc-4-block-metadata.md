@@ -102,6 +102,31 @@ one value, one document or one row holding the list. A single list costs a rewri
 of the whole list per commit, so writing a file of *N* chunks costs O(*N*²) — and
 it makes the list a key every flush and every writer contend on (§5).
 
+There is a third cost, and it is the one that has actually taken a server down.
+A list that grows with its file eventually crosses whatever threshold the
+storage engine uses to decide that a value is too large to keep inline, and what
+lies on the far side of that threshold is usually reclaimed by a different
+mechanism than ordinary records are. A store whose reclamation is driven by the
+*inline* side can then be unable to see the garbage accumulating on the other:
+each commit leaves a whole superseded list behind while contributing almost
+nothing to the pressure that would trigger a reclamation pass. The growth is
+unbounded and no counter reports it, because by the engine's own accounting
+nothing is wrong.
+
+Measured on the Badger backend: a `ChunkRef` encodes to ~118 bytes, so a
+manifest crosses the 1 MiB inline threshold at ~8,860 refs — a ~34.6 GiB file at
+a 4 MiB average chunk. Past that, 300 appends wrote 332 MiB of value log that a
+GC pass running every five minutes reclaimed **none** of, because the discard
+statistics it selects on are produced only by LSM compaction and the ~50-byte
+value pointer each commit adds to the LSM never generates any. A captured store
+held 245 GiB of value log against 0.15 GiB of live data.
+
+So the rule is not only about cost. **A whole-list record can be unreclaimable,
+and an implementation that keeps one MUST be able to state what reclaims it.**
+Where a backend must hold a list at all, it **MUST** bound each stored value
+below its engine's inline threshold rather than relying on a reclamation pass
+whose trigger the workload does not produce.
+
 ### 2.2 Chunk
 
     Chunk(hash) = { block, position, length, refcount }
