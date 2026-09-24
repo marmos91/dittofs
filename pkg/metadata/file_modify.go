@@ -849,7 +849,13 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 				return nil, err
 			}
 		}
-		file.ApplyEAMutations(attrs.EAMutations)
+		// Refused here so the caller sees the bound before any other field is
+		// committed. This is not where it is enforced, though: the fold onto the
+		// row inside the transaction runs the same check against committed state,
+		// and that one is what decides what is stored.
+		if err := file.ApplyEAMutations(attrs.EAMutations); err != nil {
+			return nil, err
+		}
 		modified = true
 	}
 
@@ -958,7 +964,14 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 			// own keys instead of being replaced wholesale. Re-applying the
 			// same mutations on a retry lands the same map.
 			if len(attrs.EAMutations) > 0 {
-				row.ApplyEAMutations(attrs.EAMutations)
+				// The authoritative bound check: the row carries a peer's
+				// concurrently-committed EAs that the pre-read copy above does
+				// not, so this is the only set whose size describes what the
+				// commit will store. Refusing aborts the transaction, leaving
+				// every field this call would have written unchanged.
+				if err := row.ApplyEAMutations(attrs.EAMutations); err != nil {
+					return err
+				}
 			}
 
 			if attrs.Mode != nil {

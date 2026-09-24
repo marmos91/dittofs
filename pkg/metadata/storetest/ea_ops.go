@@ -191,7 +191,9 @@ func testEACaseInsensitive(t *testing.T, factory StoreFactory) {
 
 	// ApplyEAMutations upsert under a different casing must update in place,
 	// not create a second entry, and preserve the original stored casing.
-	file.ApplyEAMutations([]metadata.EAMutation{{Name: "MIXEDCASEEA", Value: []byte("v2")}})
+	if err := file.ApplyEAMutations([]metadata.EAMutation{{Name: "MIXEDCASEEA", Value: []byte("v2")}}); err != nil {
+		t.Fatalf("ApplyEAMutations(case-different upsert): %v", err)
+	}
 	if len(file.EAs) != 1 {
 		t.Fatalf("case-different upsert created a duplicate entry: %v", file.EAs)
 	}

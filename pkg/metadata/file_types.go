@@ -1,6 +1,8 @@
 package metadata
 
 import (
+	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -8,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
+	metaerrors "github.com/marmos91/dittofs/pkg/metadata/errors"
 )
 
 // File represents a file's complete identity and attributes.
@@ -271,7 +274,7 @@ type EAMutation struct {
 // LookupEA returns the value of the named extended attribute and whether it is
 // present, resolving the name case-insensitively per NTFS semantics.
 func (a *FileAttr) LookupEA(name string) ([]byte, bool) {
-	key, found := a.findEAKey(name)
+	key, found := findEAKey(a.EAs, name)
 	if !found {
 		return nil, false
 	}
@@ -279,23 +282,44 @@ func (a *FileAttr) LookupEA(name string) ([]byte, bool) {
 }
 
 // ApplyEAMutations applies the supplied set/delete mutations to the file's EA
-// map in place, resolving names case-insensitively. An upsert preserves the
-// casing of an existing same-name EA (NTFS keeps the original casing); a brand
-// new EA records the supplied casing. A delete removes any case-insensitive
-// match. Deleting the last EA leaves the map nil so the omitempty wire form is
-// preserved.
-func (a *FileAttr) ApplyEAMutations(muts []EAMutation) {
+// map, resolving names case-insensitively. An upsert preserves the casing of an
+// existing same-name EA (NTFS keeps the original casing); a brand new EA records
+// the supplied casing. A delete removes any case-insensitive match. Deleting the
+// last EA leaves the map nil so the omitempty wire form is preserved.
+//
+// It returns ErrXattrTooLarge, and leaves the file's EA map exactly as it was,
+// when the result would encode to more than XattrTotalMaxBytes. All-or-nothing
+// is what the SMB EA channel requires of a multi-entry set: MS-FSA
+// §2.1.5.15.6 ("FileFullEaInformation") step 2.5 fails the operation and undoes
+// every change it had made. It is also the only safe answer for the cap itself,
+// since a partial apply would persist a set the next read has to tolerate but no
+// write could produce.
+//
+// Every EA write in the tree lands here, which is why the bound lives here
+// rather than at each caller: SetXattr passes one mutation, the SMB EA channel
+// passes a whole decoded chain, and both must be bounded by the same rule.
+func (a *FileAttr) ApplyEAMutations(muts []EAMutation) error {
+	// Built beside the live map rather than folded into it, so a refusal needs
+	// no rollback. ponytail: one map copy per EA write; the write it guards
+	// already re-encodes the whole set, so this is not where the cost is.
+	next := make(map[string][]byte, len(a.EAs)+len(muts))
+	for k, v := range a.EAs {
+		next[k] = v
+	}
+
+	// A mutation resolves its name against the mutations before it, not only
+	// against the stored set, so two sets naming the same EA in one chain land
+	// on one key exactly as an in-place fold did.
+	sets := false
 	for _, m := range muts {
-		existingKey, found := a.findEAKey(m.Name)
+		existingKey, found := findEAKey(next, m.Name)
 		if m.Delete {
 			if found {
-				delete(a.EAs, existingKey)
+				delete(next, existingKey)
 			}
 			continue
 		}
-		if a.EAs == nil {
-			a.EAs = make(map[string][]byte)
-		}
+		sets = true
 		key := m.Name
 		if found {
 			key = existingKey
@@ -305,23 +329,66 @@ func (a *FileAttr) ApplyEAMutations(muts []EAMutation) {
 		// slice so a zero-length EA round-trips as "present".
 		val := make([]byte, len(m.Value))
 		copy(val, m.Value)
-		a.EAs[key] = val
+		next[key] = val
 	}
-	if len(a.EAs) == 0 {
-		a.EAs = nil
+	if len(next) == 0 {
+		next = nil
 	}
+
+	// decision: only a chain that sets something is measured. A delete can only
+	// shrink the set, and refusing one would strand a file whose set already
+	// exceeds the cap — recorded by a build that had no cap, which still decodes
+	// — with no way to trim it back. Withdraw the exemption only if a delete can
+	// ever grow the encoded form.
+	if sets {
+		size, err := encodedEABytes(next)
+		if err != nil {
+			return err
+		}
+		if size > XattrTotalMaxBytes {
+			return ErrXattrTooLarge
+		}
+	}
+
+	a.EAs = next
+	return nil
 }
 
-// findEAKey returns the stored EA key matching name case-insensitively, and
+// encodedEABytes reports the encoded size of an EA set, measured the way the
+// backends store it: as one JSON object per file, values base64-encoded by
+// encoding/json's []byte rule. Measuring the encoding rather than the raw value
+// bytes is what makes the bound cover names and framing too — at ~22 bytes of
+// object overhead per entry, a set of many tiny EAs is almost entirely framing,
+// and a value-bytes-only bound would not see it at all.
+func encodedEABytes(eas map[string][]byte) (int, error) {
+	if len(eas) == 0 {
+		return 0, nil
+	}
+	encoded, err := json.Marshal(eas)
+	if err != nil {
+		return 0, &StoreError{
+			Code:    metaerrors.ErrInvalidArgument,
+			Message: fmt.Sprintf("encode extended attributes: %v", err),
+		}
+	}
+	return len(encoded), nil
+}
+
+// findEAKey returns the EA key in eas matching name case-insensitively, and
 // whether a match exists.
-func (a *FileAttr) findEAKey(name string) (string, bool) {
-	if a.EAs == nil {
+//
+// ponytail: an exact hit is a map lookup, a miss is a full scan, so applying a
+// chain of n new names costs O(n²) case-folded compares. XattrTotalMaxBytes is
+// what makes that a bounded cost rather than an open one; add a folded-key index
+// beside the map only if a profile of a real EA chain shows the scan.
+func findEAKey(eas map[string][]byte, name string) (string, bool) {
+	if eas == nil {
 		return "", false
 	}
-	if _, ok := a.EAs[name]; ok {
+	if _, ok := eas[name]; ok {
 		return name, true
 	}
-	for k := range a.EAs {
+	for k := range eas {
 		if strings.EqualFold(k, name) {
 			return k, true
 		}

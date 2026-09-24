@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"path"
 	"strings"
@@ -1647,6 +1648,14 @@ func (h *Handler) setFileInfoFromStore(
 		if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs); err != nil {
 			logger.Debug("SET_INFO: FileFullEaInformation persist failed",
 				"path", openFile.Name().Path, "error", err)
+			// A set the file's EA total cannot hold is STATUS_EA_TOO_LARGE per
+			// MS-FSA §2.1.5.15.6 ("FileFullEaInformation") step 2.5, and the
+			// metadata layer refuses the whole chain that step also requires be
+			// undone. The sentinel is ErrInvalidArgument-coded, so it would
+			// otherwise coarsen to STATUS_INVALID_PARAMETER via the generic map.
+			if errors.Is(err, metadata.ErrXattrTooLarge) {
+				return setInfoStatus(types.StatusEaTooLarge), nil
+			}
 			return setInfoStatus(types.StatusForErr(err)), nil
 		}
 

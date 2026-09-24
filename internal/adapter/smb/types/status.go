@@ -201,6 +201,14 @@ const (
 	// but the caller's per-user/per-group quota is full.
 	StatusQuotaExceeded Status = 0xC0000044
 
+	// StatusEaTooLarge indicates an EA set operation was refused because the
+	// file's resulting extended-attribute set is too large (MS-ERREF 2.3.1
+	// STATUS_EA_TOO_LARGE). It is the answer MS-FSA §2.1.5.15.6
+	// ("FileFullEaInformation") step 2.5 requires when a set pushes the file's EA
+	// list past the limit, and the status a Windows redirector surfaces for a set
+	// larger than the remote share supports.
+	StatusEaTooLarge Status = 0xC0000050
+
 	// StatusUnexpectedIOError indicates an unexpected I/O error occurred.
 	StatusUnexpectedIOError Status = 0xC00000E9
 
@@ -373,6 +381,8 @@ func (s Status) String() string {
 		return "STATUS_DISK_FULL"
 	case StatusQuotaExceeded:
 		return "STATUS_QUOTA_EXCEEDED"
+	case StatusEaTooLarge:
+		return "STATUS_EA_TOO_LARGE"
 	case StatusUnexpectedIOError:
 		return "STATUS_UNEXPECTED_IO_ERROR"
 	case StatusNotAReparsePoint:

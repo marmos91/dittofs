@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 
@@ -31,6 +32,8 @@ func runXattrOpsTests(t *testing.T, factory StoreFactory) {
 	t.Run("ZeroLengthValue", func(t *testing.T) { testXattrZeroLength(t, factory) })
 	t.Run("CaseInsensitiveResolution", func(t *testing.T) { testXattrCaseInsensitive(t, factory) })
 	t.Run("TooLarge", func(t *testing.T) { testXattrTooLarge(t, factory) })
+	t.Run("TotalTooLarge", func(t *testing.T) { testXattrTotalTooLarge(t, factory) })
+	t.Run("TotalCountsNamesAndFraming", func(t *testing.T) { testXattrTotalCountsNamesAndFraming(t, factory) })
 	t.Run("RemoveMissing", func(t *testing.T) { testXattrRemoveMissing(t, factory) })
 	t.Run("InlineList", func(t *testing.T) { testXattrInlineList(t, factory) })
 	t.Run("MergedListInlinePlusStream", func(t *testing.T) { testXattrMergedList(t, factory) })
@@ -172,6 +175,104 @@ func testXattrTooLarge(t *testing.T, factory StoreFactory) {
 	atLimit := make([]byte, metadata.XattrInlineMaxBytes)
 	if err := store.SetXattr(ctx, handle, "atlimit", atLimit); err != nil {
 		t.Fatalf("SetXattr(at-limit) err = %v, want nil", err)
+	}
+}
+
+// testXattrTotalTooLarge pins the bound on the whole set, which the per-value
+// ceiling above does not imply: values that each pass that ceiling still sum
+// without limit, and the sum is what the file's attribute record has to carry.
+//
+// Refusing must leave the file exactly as it was. A partial apply would store a
+// set no write could have produced, and it is also what MS-FSA §2.1.5.15.6
+// ("FileFullEaInformation") step 2.5 forbids for the SMB EA channel.
+func testXattrTotalTooLarge(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	ctx := t.Context()
+	root := createTestShare(t, store, "/xattr-total")
+	handle := createTestFile(t, store, "/xattr-total", root, "f.txt", 0o600)
+
+	// Values at the per-value ceiling until one is refused. Each is individually
+	// legal, so the only thing that can stop them is the total.
+	atLimit := make([]byte, metadata.XattrInlineMaxBytes)
+	accepted := 0
+	var refusal error
+	for i := range 24 {
+		refusal = store.SetXattr(ctx, handle, fmt.Sprintf("v%02d", i), atLimit)
+		if refusal != nil {
+			break
+		}
+		accepted++
+	}
+	if !errors.Is(refusal, metadata.ErrXattrTooLarge) {
+		t.Fatalf("SetXattr(#%d at the per-value ceiling) err = %v, want ErrXattrTooLarge", accepted+1, refusal)
+	}
+	if accepted == 0 {
+		t.Fatalf("the total bound refused the first value; it must admit at least one at the per-value ceiling")
+	}
+
+	// The refused write must not have disturbed what was already there.
+	names, err := store.ListXattr(ctx, handle)
+	if err != nil {
+		t.Fatalf("ListXattr after refusal: %v", err)
+	}
+	if len(names) != accepted {
+		t.Fatalf("ListXattr after refusal = %d names, want the %d accepted before it: %v", len(names), accepted, names)
+	}
+
+	// Replacing an existing name must not charge its old bytes twice: the bound
+	// is measured on the resulting set, in which the old value no longer exists.
+	// Without that, a file at the bound could never be rewritten in place.
+	if err := store.SetXattr(ctx, handle, names[0], atLimit); err != nil {
+		t.Fatalf("SetXattr(replace %q at the bound) err = %v, want nil — replace must not double-count", names[0], err)
+	}
+
+	// Removing one must free its budget again, so the same write now fits.
+	if err := store.RemoveXattr(ctx, handle, names[0]); err != nil {
+		t.Fatalf("RemoveXattr(%q): %v", names[0], err)
+	}
+	if err := store.SetXattr(ctx, handle, "after-remove", atLimit); err != nil {
+		t.Fatalf("SetXattr after freeing a slot err = %v, want nil", err)
+	}
+}
+
+// testXattrTotalCountsNamesAndFraming pins WHAT the total is measured on. A bound
+// charged on value bytes alone is satisfied by any number of one-byte values,
+// which is the other half of the growth: names and per-entry encoding overhead are
+// almost the whole cost of a large set of tiny attributes.
+//
+// It drives the mutation chain directly because that is the shape the SMB EA
+// channel delivers — one SET_INFO carries a whole decoded chain — and no
+// per-attribute SetXattr test covers it.
+func testXattrTotalCountsNamesAndFraming(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	ctx := t.Context()
+	root := createTestShare(t, store, "/xattr-framing")
+	handle := createTestFile(t, store, "/xattr-framing", root, "f.txt", 0o600)
+
+	file, err := store.GetFile(ctx, handle)
+	if err != nil {
+		t.Fatalf("GetFile: %v", err)
+	}
+
+	muts := make([]metadata.EAMutation, 3000)
+	valueBytes := 0
+	for i := range muts {
+		muts[i] = metadata.EAMutation{
+			Name:  fmt.Sprintf("%s%06d", strings.Repeat("n", 180), i),
+			Value: []byte{'x'},
+		}
+		valueBytes++
+	}
+	if valueBytes >= metadata.XattrTotalMaxBytes {
+		t.Fatalf("fixture is wrong: its %d value bytes already exceed the bound, so it proves nothing about names", valueBytes)
+	}
+
+	if err := file.ApplyEAMutations(muts); !errors.Is(err, metadata.ErrXattrTooLarge) {
+		t.Fatalf("ApplyEAMutations(%d one-byte values, %d value bytes total) err = %v, want ErrXattrTooLarge — the bound must charge names and framing",
+			len(muts), valueBytes, err)
+	}
+	if len(file.EAs) != 0 {
+		t.Fatalf("a refused chain left %d entries behind; it must be all-or-nothing", len(file.EAs))
 	}
 }
 

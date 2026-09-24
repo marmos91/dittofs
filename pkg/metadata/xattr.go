@@ -56,9 +56,43 @@ import (
 // ErrXattrTooLarge (mapped to NFS4ERR_XATTR2BIG by the NFS adapter).
 const XattrInlineMaxBytes = 64 * 1024
 
-// ErrXattrTooLarge is returned by SetXattr (and ResolveSetXattr) when the value
-// exceeds XattrInlineMaxBytes and therefore cannot be stored inline. The NFS
-// adapter maps it to NFS4ERR_XATTR2BIG.
+// XattrTotalMaxBytes bounds the ENCODED size of everything a single file's EA
+// set holds, which XattrInlineMaxBytes on its own does not: any number of
+// individually-legal values still sum without limit.
+//
+// The bound exists because the EA set rides inside the file's attribute record,
+// so its size decides where that record lives. A backend that keeps large values
+// out of a log-structured tier only does so while the record stays small —
+// badger's ValueThreshold is 1 MiB — and past that point every attribute-only
+// write, a chmod or a utimes or a close, appends a fresh copy of the whole record
+// to a log whose reclamation is driven by compaction that such writes never
+// trigger. 24 values at XattrInlineMaxBytes reach 2 MiB of record, and 300 chmods
+// then write 592 MiB that nothing reclaims.
+//
+// 256 KiB is four times under that 1 MiB threshold, which leaves the rest of the
+// record — a few hundred bytes of fixed fields plus an ACL bounded at
+// acl.MaxACECount entries — room it cannot plausibly use up, and covers a backend
+// whose encoding is less compact than the one measured here. It is far more
+// generous than the filesystems DittoFS presents itself as: ext4 holds a file's
+// whole attribute set in a single 4 KiB block, XFS caps one attribute at 64 KiB,
+// and NTFS fails a set past 64 KiB - 5 with STATUS_EA_TOO_LARGE (MS-FSA
+// §2.1.5.15.6 ("FileFullEaInformation")).
+//
+// Measured on the encoding, it admits two values at XattrInlineMaxBytes and not
+// more: encoding/json base64s a []byte, so a 64 KiB value costs 87384 bytes and a
+// third copy would clear the bound. That is deliberately the tight end of the
+// defensible range, because the two directions are not equally reversible —
+// raising the bound later takes nothing but this constant, while lowering it
+// strands every set already stored above the new value.
+const XattrTotalMaxBytes = 256 * 1024
+
+// ErrXattrTooLarge is returned when an xattr write cannot be stored inline:
+// either the value exceeds XattrInlineMaxBytes, or the resulting set would encode
+// to more than XattrTotalMaxBytes. Both are "too big for this file's inline
+// backing" and both carry the same answer on the wire — RFC 8276 §8.3.2 defines
+// NFS4ERR_XATTR2BIG as covering the value's size *or* "the collective size of all
+// xattrs of the file resulting from the SETXATTR operation", and the SMB EA
+// handlers map it to STATUS_EA_TOO_LARGE.
 var ErrXattrTooLarge = &StoreError{
 	Code:    metaerrors.ErrInvalidArgument,
 	Message: "xattr value too large for inline storage",
@@ -247,7 +281,12 @@ func withFileTx(ctx context.Context, files Files, handle FileHandle, fn func(Fil
 // ResolveSetXattr writes an xattr value into the inline backing when it fits
 // (<= XattrInlineMaxBytes), reusing ApplyEAMutations for case-insensitive,
 // casing-preserving upsert. Oversized values return ErrXattrTooLarge (PR1 does
-// not spill to a named-stream entity; see file header / issue #1285).
+// not spill to a named-stream entity; see file header / issue #1285), and so
+// does a value that fits on its own but would push the file's whole EA set past
+// XattrTotalMaxBytes — ApplyEAMutations enforces that bound and leaves the set
+// untouched when it refuses. The replace case is charged correctly by
+// construction: the bound is measured on the resulting set, in which the old
+// value of an overwritten name is already gone.
 func ResolveSetXattr(ctx context.Context, files Files, handle FileHandle, name string, value []byte) error {
 	if len(value) > XattrInlineMaxBytes {
 		return ErrXattrTooLarge
@@ -257,7 +296,9 @@ func ResolveSetXattr(ctx context.Context, files Files, handle FileHandle, name s
 		if err != nil {
 			return err
 		}
-		file.ApplyEAMutations([]EAMutation{{Name: name, Value: value}})
+		if err := file.ApplyEAMutations([]EAMutation{{Name: name, Value: value}}); err != nil {
+			return err
+		}
 		return files.UpdateAttrs(ctx, file)
 	})
 }
@@ -277,7 +318,9 @@ func ResolveRemoveXattr(ctx context.Context, files Files, handle FileHandle, nam
 		if _, found := file.LookupEA(name); !found {
 			return &StoreError{Code: metaerrors.ErrNotFound, Message: "xattr not found"}
 		}
-		file.ApplyEAMutations([]EAMutation{{Name: name, Delete: true}})
+		if err := file.ApplyEAMutations([]EAMutation{{Name: name, Delete: true}}); err != nil {
+			return err
+		}
 		return files.UpdateAttrs(ctx, file)
 	})
 }
