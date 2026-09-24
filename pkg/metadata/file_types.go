@@ -353,7 +353,11 @@ func (a *FileAttr) ApplyEAMutations(muts []EAMutation) error {
 
 // encodedEABytes reports the encoded size of an EA set, measured the way the
 // backends store it: as one JSON object per file, values base64-encoded by
-// encoding/json's []byte rule. Measuring the encoding rather than the raw value
+// encoding/json's []byte rule. Both families marshal this same map with
+// encoding/json — badger inside the attribute record, SQL into its own column —
+// so the number here is the stored size rather than an estimate of it. A backend
+// whose EA encoding is bulkier than encoding/json's would make this an
+// under-measurement and needs its own bound. Measuring the encoding rather than the raw value
 // bytes is what makes the bound cover names and framing too — at ~22 bytes of
 // object overhead per entry, a set of many tiny EAs is almost entirely framing,
 // and a value-bytes-only bound would not see it at all.
