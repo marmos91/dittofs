@@ -31,6 +31,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Local-tier eviction and backpressure counters report real values.**
+  `evictions_total`, `evicted_bytes_total`, `backpressure_total` and
+  `backpressure_wait_seconds` had read zero for the life of every process, which
+  is worse than their being absent: an operator reads `evictions_total = 0` and
+  concludes the local tier never evicts while it evicts constantly. The recorder
+  was declared in a package the only production local tier could not name
+  without an import cycle, so the capability probe that installed it could never
+  match, and the seam's own documentation named a type that does not exist. The
+  recorder now lives beside the tier that emits to it.
+
 - **A file's extended attributes are now bounded in total, at 256 KiB.** Each
   value was already capped at 64 KiB but nothing capped their sum, so enough
   legal attributes pushed the file's whole attribute record past the metadata
