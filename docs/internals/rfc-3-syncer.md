@@ -182,9 +182,9 @@ only the chunks it covers, and each comes back as its own verified range
 ([RFC 8 §6.1](rfc-8-remote-tier.md#6.1%20The%20exported%20read%20takes%20the%20expected%20hash)): fetching a 20 MiB block to serve one 4 KiB read is read amplification
 with no correctness benefit, since every chunk is verified on its own. Whole
 blocks are for sequential scans and pre-warm. When to widen a request from
-chunks to the whole block is the engine's policy ([RFC 6 §6.8](rfc-6-engine.md#6.8%20A%20cold%20read%20asks%20for%20chunks%2C%20or%20for%20the%20block)), which
-adopts JuiceFS's rule: chunks for a read within a quarter of a block, the whole
-block otherwise.
+chunks to the whole block is the engine's policy ([RFC 6 §6.8](rfc-6-engine.md#6.8%20A%20cold%20read%20asks%20for%20chunks%2C%20or%20for%20the%20block)), which asks for
+chunks when a read is small and not sequential, and for the whole block when a
+read needs much of it or begins a scan.
 
 Both return a stream of chunks, and:
 
