@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 420" width="900" height="420" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <style>
+      .t  { font-size: 15px; font-weight: 600; fill: #1b1f24 }
+      .rl { font-size: 12px; font-weight: 600; fill: #1b1f24 }
+      .l  { font-size: 12px; fill: #3d444d }
+      .s  { font-size: 11px; fill: #5b6472 }
+      .m  { font-family: ui-monospace,SFMono-Regular,Menlo,monospace; font-size: 11px; fill: #1b1f24 }
+      .why  { font-size: 11px; fill: #b04a4a }
+      .ok   { font-size: 11px; font-weight: 600; fill: #2f6f4f }
+      .bx { fill: #dce9f7; stroke: #4a7fb5; stroke-width: 1.4 }
+      .bg { fill: #eaf4ec; stroke: #2f6f4f; stroke-width: 1.4 }
+      .br { fill: #fbecec; stroke: #b04a4a; stroke-width: 1.4 }
+      .bn { fill: #f4f6f8; stroke: #8b95a3; stroke-width: 1.2 }
+    </style>
+    <marker id="a3u" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5b6472"/>
+    </marker>
+    <marker id="a3ur" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b04a4a"/>
+    </marker>
+  </defs>
+  <rect width="900" height="420" fill="#ffffff"/>
+
+  <text x="16" y="26" class="t">A block waiting for a worker is a plan, not a buffer.</text>
+  <text x="16" y="46" class="s">The carver reads the offered bytes once to cut and hash; the upload reads them again, one chunk at a time, when a worker takes the block.</text>
+  <text x="16" y="86" class="rl">journal segment</text>
+  <rect x="140" y="72" width="86" height="26" rx="3" class="bx"/>
+  <text x="150" y="89" class="m">rec 1</text>
+  <rect x="230" y="72" width="86" height="26" rx="3" class="bx"/>
+  <text x="240" y="89" class="m">rec 2</text>
+  <rect x="320" y="72" width="86" height="26" rx="3" class="bx"/>
+  <text x="330" y="89" class="m">rec 3</text>
+  <rect x="410" y="72" width="86" height="26" rx="3" class="bx"/>
+  <text x="420" y="89" class="m">rec 4</text>
+  <rect x="500" y="72" width="110" height="26" rx="3" class="br"/>
+  <text x="508" y="89" class="m">rec 5 (newer)</text>
+  <text x="620" y="82" class="why">a client overwrites rec 2's extent</text>
+  <text x="620" y="96" class="why">while the block waits</text>
+  <text x="300" y="118" class="s">offered version: recs 1–4, kept until the flush callback returns</text>
+  <text x="16" y="158" class="rl">block plan</text>
+  <rect x="140" y="140" width="300" height="58" rx="3" class="bg"/>
+  <text x="152" y="158" class="m">name  = f(scope, h1..h4)</text>
+  <text x="152" y="174" class="m">chunks = [(h1,off,len) … (h4,off,len)]</text>
+  <text x="152" y="190" class="s">a few hundred bytes, whatever the block size</text>
+  <path d="M183,98 L183,138" fill="none" stroke="#5b6472" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#a3u)"/>
+  <path d="M273,98 L273,138" fill="none" stroke="#5b6472" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#a3u)"/>
+  <text x="460" y="166" class="s">waits in its flow's queue holding only this</text>
+  <text x="16" y="244" class="rl">worker</text>
+  <rect x="140" y="226" width="300" height="40" rx="3" class="bx"/>
+  <text x="152" y="244" class="m">src(): walk the plan</text>
+  <text x="152" y="258" class="s">read each chunk via offered, re-hash, yield</text>
+  <line x1="290" y1="198" x2="290" y2="224" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a3u)"/>
+  <line x1="440" y1="246" x2="520" y2="246" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a3u)"/>
+  <rect x="524" y="226" width="150" height="40" rx="3" class="bx"/>
+  <text x="536" y="244" class="m">Store.Put</text>
+  <text x="536" y="258" class="s">frames, transforms below</text>
+  <line x1="674" y1="246" x2="720" y2="246" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a3u)"/>
+  <rect x="724" y="226" width="160" height="40" rx="3" class="bg"/>
+  <text x="736" y="244" class="m">remote object</text>
+  <text x="736" y="258" class="s">one put, one name</text>
+  <text x="140" y="286" class="s">rec 5 is never read: the offered reader returns rec 2's bytes, so the hashes still match the name</text>
+  <line x1="16" y1="306" x2="884" y2="306" stroke="#eef1f4"/>
+  <text x="16" y="330" class="l">Memory follows the pool: in flight, each worker holds one chunk. Waiting, a block holds a plan. A buffer taken at carve time</text>
+  <text x="16" y="348" class="l">would make memory follow the number of blocks waiting instead, which nothing bounds but the queue length.</text>
+  <text x="16" y="374" class="l">A retry walks the plan again. The price is one extra local read per block, usually from the page cache.</text>
+  <text x="16" y="402" class="why">A re-hash mismatch refuses the put: a bug here produces an error, never an object whose bytes do not match its name.</text>
+</svg>
