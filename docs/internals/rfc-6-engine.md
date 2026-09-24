@@ -2,7 +2,7 @@
 
 **Status:** draft.
 **Depends on:** RFC 0, for the terms, the residency function, the invariants and
-the failure model. RFC 1, 2, 3, 4, 5 and 8 specify the components this one
+the failure model. RFC 1, 2, 3, 4, 5, 7 and 8 specify the components this one
 composes; each has already deferred a decision here, and Appendix A lists every
 one of them. Nothing here redefines any of them.
 **Audience:** anyone changing `pkg/block/engine`, the per-share composition in
@@ -183,6 +183,7 @@ proceed to close them under a live loop.
 | When to repack | §7.3 | journal repack (RFC 1 §8.2) |
 | Whether to keep accepting writes | §8.2 | journal capacity (RFC 1 §7) |
 | What follows from ill health | §8.1 | — |
+| When GC runs, what it relocates | §7.5 | GC (RFC 7) |
 
 A component that takes one of these decisions itself has absorbed engine policy,
 and a threshold that lives in a component's configuration is such a decision.
@@ -472,6 +473,28 @@ metadata's hole set, through the allocation interface the engine supplies to RFC
 (§9.3 there). They **MUST NOT** be answered from the journal, which cannot tell a
 hole from an evicted extent (RFC 1 §3.7).
 
+### 6.7 An absent object is re-resolved exactly once
+
+Relocation (RFC 7 §4.2) moves a chunk to a new block and leaves the old block to
+sweep. A read that resolved the chunk's location before the move can issue its
+get after the old object is gone. Refs name hashes, not blocks (RFC 4 §2.5), so
+the chunk is still reachable; only the location the reader holds is stale.
+
+When the remote tier reports the object a chunk's get named as absent, the engine
+**MUST** resolve the chunk's location again from block metadata and issue one
+more get, and **MUST** fail the read only if that second resolution also misses —
+names no location, or names one whose object is also absent. The retry is exactly
+one: a second miss is not a race with relocation, which moves a chunk once per
+commit, but content that is gone, and it **MUST** be reported as **Lost**, not
+retried until a deadline.
+
+The retry applies to *absent* only. A verification failure, a transport error or
+a timeout is not evidence the chunk moved, and **MUST NOT** trigger it.
+
+Relocation is safe only while this rule holds (RFC 7 §4.3). An engine that fails
+the first miss turns every relocation into a window of spurious read errors; one
+that retries indefinitely turns a lost chunk into a hung read.
+
 ## 7. Local space
 
 ### 7.1 Eviction is chosen here, and needs no new record
@@ -517,6 +540,33 @@ An operator's retention pin **MAY** exclude a share from eviction, and the engin
 **MAY** suspend eviction while the remote is unreachable, because evicting then
 turns a readable extent into one that fails until the remote returns. Both are
 availability policy. Neither is permitted to be what keeps content safe (§3.2).
+
+### 7.5 When GC runs, and what it relocates, is decided here
+
+GC's cadence, its triggers and its relocation threshold are policy, and RFC 7
+§4.4 and §7.3 give them to the engine. The engine decides them and hands them to
+GC as parameters at composition; GC holds no schedule and no threshold of its own.
+
+- **Cadence and triggers.** **Proposal:** a periodic pass per remote namespace,
+  plus a pass triggered when the count of blocks with zero `live` exceeds a
+  configured bound. Overturned by a measurement showing sweep lag, not pass cost,
+  dominates remote storage on a churn-heavy workload.
+- **Relocation threshold.** A block is a relocation candidate when the fraction
+  of its bytes still referenced falls below a configured ratio, and never when
+  every chunk is referenced (RFC 7 §4.4). **Proposal:** relocation off by
+  default, enabled per remote namespace by the operator, because it spends a
+  read and a put per block and the break-even depends on the backend's pricing.
+
+GC is correct at any cadence and any threshold, including two passes at once
+(RFC 7 §7.3). So this is policy in the sense of §3.2: the engine **MUST NOT**
+serialise passes, delay them or suppress them as a way of keeping content safe,
+and a lock that serialises passes for efficiency **MUST** be removable without
+making a pass unsafe.
+
+The unit is the remote namespace, not the share: a pass covers every store that
+can name a key in it (RFC 4 §2.6). Where several shares' engines compose one
+namespace, the policy is configured once for the namespace, and exactly one of
+them schedules it.
 
 ## 8. Health and failure
 
@@ -629,9 +679,11 @@ exists only because the journal once was one (§12).
 | E11 | Only durability decides whether an extent may be evicted; locks, opens and snapshots never do. |
 | E12 | Sustained flush failure is a health condition, distinct from an unreachable remote. |
 | E13 | No background work outlives a component it uses. |
+| E14 | A get that finds its object absent is re-resolved exactly once, and fails as **Lost** only if the second resolution misses. |
+| E15 | GC's cadence and relocation threshold are engine parameters, and no GC safety property depends on them. |
 
 E3, E4, E5, E7, E9 and E11 are the ones whose violation loses content or serves
-wrong content. E10, E12 and E13 are the ones whose violation stops a share, or
+wrong content; E14 is the one relocation's safety rests on (RFC 7 §4.3). E10, E12 and E13 are the ones whose violation stops a share, or
 makes it look stopped. E1 and E2 are the ones whose violation hides the others.
 
 ## 11. Consequences for RFC 0
@@ -678,6 +730,7 @@ where the engine is the site that must change.
 | §3.1, §7.1, §7.2 eviction and refusal here | The journal evicts to satisfy its own write: its capacity gate selects coldest-first segments, evicts, backpressures and finally refuses — none of it through the engine. Admission reads a counter without reserving (the code says so). | `journal/evict.go:166`, `:453`–`:539` |
 | §4.3 the engine's guard, per file | The outcome holds: passes of one file do not overlap. But the guard is the journal's shard-scoped flush lock, held across the callback, and commits within a pass take a 256-stripe lock in the engine keyed by a hash of the file id. Both serialise unrelated files that collide, and the first puts the engine's decision inside the journal. | `journal/flush.go:98`–`:100`, `:118`–`:120`; `engine/flush.go:115`–`:135` |
 | §4.4 epoch | No epoch is captured or checked; the existence record it lives in does not exist (RFC 4 §11). | `engine/flush_closure.go` (no epoch in the closure) |
+| §7.5 GC policy is the engine's | GC is scheduled by a process-wide ticker in the runtime, fifteen minutes by default, started from the server command; the relocation threshold is a server-wide runtime default applied to every remote. Neither is composed with the engine or configured per remote namespace. Passes are serialised by a process-local lock (RFC 7 §11). | `runtime/blockgc_scheduler.go:18`–`:21`; `cmd/dfs/commands/start.go:439`–`:440`; `runtime/runtime.go:1146`; `runtime/blockgc.go:479` |
 | §8.1 flush in health | A failed pass increments a lifetime counter and logs a warning. Engine health is the local store's closed flag and the remote's probe; share health is the worst of engine and metadata. Flush failure reaches neither. | `engine/carve_dispatch.go:152`–`:153`; `engine/health.go:41`–`:79`; `runtime/shares/healthcheck.go:59`–`:95` |
 
 ### 12.3 Assembly
@@ -700,6 +753,7 @@ where the engine is the site that must change.
 | §6.3 fill is a decision | There is no fill policy: every demanded and every read-ahead fetch fills. Read-ahead keeps 64 blocks ahead of a sequential reader. | `engine/fetch.go:460`, `:669`; `engine/types.go:56`; `engine/readahead.go:80`–`:89` |
 | §6.4 pre-warm yields | Warm fetches every chunk of every file until done, cancelled, or the journal refuses on capacity, which ends the run. | `engine/warm.go:60`–`:63`, `:184`–`:186` |
 | RFC 3 §2.1 one bound per half | Each cold read and each warm run builds its own fetch group bounded at the configured parallelism; the read-ahead pool is a third. Total fetches in flight scale with concurrent readers. | `engine/fetch.go:31`–`:39`, `:540`; `engine/warm.go:175`; `engine/sync_queue.go:89`–`:92` |
+| §6.7 re-resolve once | Mostly met. An absent object is reported as `ErrChunkNotFound` by both backends and passed through the transform chain unchanged, and the fetch re-resolves the locator exactly once on it, excluding the deterministic pre-block-format case; a second miss fails as data loss. Not met when the second resolution names **no** location — a synced marker the sweep has cleared: the fetch reads that as "not uploaded yet" and succeeds with nothing, and the read then fails only if the journal reports the window cold, returning zeros where it reports a hole. | `engine/fetch.go:250`–`:266`, `:289`–`:291`, `:634`–`:645`; `remote/s3/store.go:487`; `remote/memory/store.go:93`; `middleware/middleware.go:119`–`:123`; `engine/read_internal.go:126`–`:131` |
 | §6.6 allocation from the hole set | `SEEK` is answered from the journal's extents joined with the manifest rows. | `engine/dataextents.go:61`, `:84` |
 | E1 no dead state | An in-memory read cache is configured and started, but nothing on the read path consults it and its only loader always misses, so it is never populated. | `engine/cache.go:46`–`:51`, `:425`; `engine/engine.go:256`–`:275` |
 
@@ -735,6 +789,7 @@ runs against the engine as production composes it (RFC 1 §11.5).
 | §5.3 retired adoption | Retire a chunk between the oracle's answer and the commit. Assert the commit fails, the run is re-offered carrying the chunk, and the read succeeds. |
 | §6.1 the join | Drive all four rows of §6.1, including an uncarved extent the journal lost. Assert **Lost** fails — a check of the other three passes a build that serves zeros. |
 | §6.2 fill cannot fail a read | Make `Fill` fail. Assert the read returns the fetched bytes. |
+| §6.7 re-resolve once | Relocate a chunk between a reader's resolution and its get, then sweep the old block. Assert the read succeeds with one extra resolution. Then retire the chunk outright and assert the read fails as **Lost** — not zeros, and not after a deadline. |
 | §6.2 fill loses to a write | Stall a fetch; write the extent; release the stall. Assert the written bytes survive. |
 | §9.2 deallocate | Deallocate a range larger than free journal capacity. Assert it succeeds, reads as zeros, and consumes no journal capacity. |
 
@@ -848,13 +903,16 @@ caller. *Explicit* rows name RFC 6 or the engine; *caller* rows name the caller.
 | RFC 5 §14 q7 | whether the recycle bin is engine policy | explicit | §1.1 — decided: it is not |
 | RFC 8 §1.1 | when and what to transfer | explicit | §3.1 |
 | RFC 8 §2.5 | syncer obligations live in the engine package | explicit | §1.1, §12.5 |
+| RFC 7 §4.3, §9 | the read path re-resolves exactly once when an object is absent | explicit | §6.7, E14 |
+| RFC 7 §4.4, §7.3, §9 | GC cadence, triggers and the relocation threshold are engine policy | explicit | §7.5, E15 — proposal |
 | RFC 8 §7, §7.1 | each consumer's narrow interface over the backend | caller | §2.1, §2.2 |
 | block data flow §3 | orchestration: dedup oracle, manifest rows, scheduling | explicit | §4, §5 |
 | block data flow §5 | only the construction site names concrete types | explicit | §2.1 |
 
-The table holds 52 obligations: 27 that name RFC 6 or the engine, and 25 placed
-on a caller that can only be the engine. 44 are decided outright. Five are
+The table holds 54 obligations: 29 that name RFC 6 or the engine, and 25 placed
+on a caller that can only be the engine. 45 are decided outright. Six are
 decided as proposals that name what would overturn them — fill policy, key scope,
-speculation and pre-warm's yield (two rows), and clone — and three of those stay
+speculation and pre-warm's yield (two rows), clone, and GC cadence and
+relocation threshold — and three of those stay
 in §14 because their parameters are unmeasured. Three are left open with no
 decision: randomised assembly, zero runs, and copies on the flush path.
