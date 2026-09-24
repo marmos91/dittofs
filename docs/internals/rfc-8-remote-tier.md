@@ -667,6 +667,36 @@ syncer becomes one per process.
 The comment on `newHTTPClient` states a worst case for 128 connections, about
 64 MiB of buffers; at 256 it is about twice that.
 
+### 5.10 Transfer practice a backend owes its service
+
+Three practices sit below the syncer because each concerns one request to one
+service:
+
+- **A put carries an end-to-end checksum.** S3 accepts `x-amz-checksum-crc32c`
+  (and CRC32, CRC64NVME, SHA-1, SHA-256) and fails the request with `BadDigest`
+  when the body does not match, so bytes corrupted between process and service
+  never become an object. Without it, corruption in transit surfaces only at a
+  later read's hash check — possibly after the local copy was released. The
+  S3 backend computes it over the spool file of [RFC 3 §3.4](rfc-3-syncer.md#3.4%20One%20put%20per%20block) as it writes it. A
+  get **SHOULD** validate the service's checksum where one is returned; the
+  plaintext hash check of [§6.1](#6.1%20The%20exported%20read%20takes%20the%20expected%20hash) remains the one that decides.
+- **A put has a known length.** A trailing checksum over `aws-chunked` encoding
+  lets an unseekable body be signed, but S3 still requires the decoded length up
+  front; only multipart upload accepts a stream of unknown length, and
+  [RFC 3 §3.4](rfc-3-syncer.md#3.4%20One%20put%20per%20block) rules multipart out. This is why the S3 backend spools.
+- **Connections are spread across the service's addresses** where the service
+  publishes several. S3 resolves to many front-end addresses; the AWS Common
+  Runtime client harvests them continuously so no single one bounds throughput,
+  and AWS's performance guidance asks for requests "spread over a wide pool of
+  Amazon S3 IP addresses". Go's dialer uses the addresses one lookup returned.
+  An S3 backend **MAY** do this; it is deferred until the sizing tool shows a
+  plateau below the link ([RFC 3 §8](rfc-3-syncer.md#8.%20Open%20questions), question 12).
+
+S3's request-rate limit — at least 3,500 writes and 5,500 reads per second per
+key prefix, answered with `503 SlowDown` above it while it scales — is the
+service's, not the client's. A backend reports it as a transient error
+([§5.2](#5.2%20Errors%20are%20a%20closed%20set)) and the syncer retries it ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)).
+
 ## 6. Reads are verified at this boundary
 
 ### 6.1 The exported read takes the expected hash

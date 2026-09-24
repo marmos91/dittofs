@@ -98,7 +98,7 @@ type Chunk struct {
 // that need. The engine adapts the remote tier (RFC 8) to it.
 type Store interface {
     Put(ctx context.Context, name BlockName, chunks iter.Seq2[Chunk, error]) error
-    Get(ctx context.Context, name BlockName) iter.Seq2[Chunk, error] // each chunk verified
+    Get(ctx context.Context, name BlockName, want []ChunkRef) iter.Seq2[Chunk, error] // each chunk verified
     Probe(ctx context.Context) error
 }
 
@@ -106,8 +106,8 @@ Register(name string, store Store) (StoreID, error)
 OpenFlow(store StoreID) (*Flow, error)
 
 func (f *Flow) Upload(ctx context.Context, name BlockName, src func() iter.Seq2[Chunk, error]) error
-func (f *Flow) Fetch(ctx context.Context, name BlockName) iter.Seq2[Chunk, error]
-func (f *Flow) Prefetch(ctx context.Context, name BlockName) iter.Seq2[Chunk, error]
+func (f *Flow) Fetch(ctx context.Context, name BlockName, want []ChunkRef) iter.Seq2[Chunk, error]
+func (f *Flow) Prefetch(ctx context.Context, name BlockName, want []ChunkRef) iter.Seq2[Chunk, error]
 func (f *Flow) Healthy() bool
 func (f *Flow) Close() error
 
@@ -173,7 +173,20 @@ journal reference back.
 **`Fetch`** is a demand: a reader is waiting. **`Prefetch`** is speculation
 ([§4.4](#4.4%20Speculation%20does%20not%20delay%20demand)): nobody is waiting yet. They are two methods rather than one with a
 priority parameter so that which one a call site means is visible at the call
-site. Both return a stream of chunks, and:
+site.
+
+`want` names the chunks the caller needs, each by an opaque `ChunkRef` carrying
+its hash and its place in the object, both of which the syncer passes through to
+the store. An empty `want` asks for the whole block. A cold random read asks for
+only the chunks it covers, and each comes back as its own verified range
+([RFC 8 §6.1](rfc-8-remote-tier.md#6.1%20The%20exported%20read%20takes%20the%20expected%20hash)): fetching a 20 MiB block to serve one 4 KiB read is read amplification
+with no correctness benefit, since every chunk is verified on its own. Whole
+blocks are for sequential scans and pre-warm. When to widen a request from
+chunks to the whole block is the engine's policy ([RFC 6 §14](rfc-6-engine.md#14.%20Open%20questions)); JuiceFS, for
+comparison, issues a ranged read only for a request within a quarter of a block
+and reads the whole block otherwise.
+
+Both return a stream of chunks, and:
 
 - **every chunk is verified before it is yielded** ([§4.1](#4.1%20One%20fetch%2C%20two%20consumers)); no byte of an
   unverified chunk reaches the caller;
@@ -299,7 +312,27 @@ reported to its caller. No transfer retries indefinitely.
 An implementation **SHOULD** distinguish transient failures (timeout, throttle,
 connection reset) from terminal ones (malformed request, rejected credentials,
 absent bucket) and retry only the former, within a stated bound. Misclassification
-either way is recoverable, because both paths end in a report.
+either way is recoverable, because both paths end in a report. A throttling
+response — S3's `503 SlowDown`, returned while it scales a prefix past its
+request rate — is transient.
+
+**Bounded time is enforced by throughput, not by a fixed deadline.** A fixed
+per-transfer timeout is too short for a maximum-size block on a slow link and far
+too long for a connection that has stopped moving. A transfer **MUST** instead
+fail when its throughput stays below a stated floor for a stated interval, the
+rule curl applies as `--speed-limit` / `--speed-time` and the AWS Common Runtime
+S3 client applies by default (at least 1 byte per second over 30 seconds). Time to
+the first byte is bounded separately, since a request can stall before any byte
+moves.
+
+**A slow tail is retried, not waited out.** Following AWS's guidance for S3
+("aggressive timeouts and retries help drive consistent latency"), a transfer
+whose first byte is later than a bound derived from recent latency — the AWS
+Common Runtime client starts from the 90th percentile — **SHOULD** be cancelled and
+retried on a new connection, within the retry bound. Sending a second request
+alongside the first and taking whichever answers ("hedging", Dean and Barroso,
+*The Tail at Scale*, 2013) cuts tail latency further at a few percent more
+requests; it is deferred until a measurement of cold-read latency asks for it.
 
 **The syncer is the only layer that retries.** A backend's client makes one
 attempt per call and returns its error ([RFC 8 §5.7.1](rfc-8-remote-tier.md#5.7.1%20Deviation%20%E2%80%94%20the%20SDK%20retries%20inside%20the%20store)). Retrying is
@@ -679,8 +712,9 @@ no equivalent rule, because a boxed block is work that exists once.
 
 Joining is where the difficulty is, and each of these is required:
 
-- **The fetch is keyed by the block's name.** Two readers of different chunks in
-  one block join; the block is the unit of transfer.
+- **The fetch is keyed by block and chunk.** Two readers of one chunk join, wherever
+  in the chunk each read starts; a reader of the whole block joins any fetch of
+  the chunks it covers. The chunk, not the byte offset, is the unit of joining.
 - **One caller leaving does not cancel it.** A joined fetch runs while any caller
   still waits on it. The first reader's timeout **MUST NOT** fail the others.
 - **A failure reaches every caller and is not kept.** Each joined caller gets the
@@ -899,6 +933,13 @@ it stay valid.
     first transfer when the first flow's store is slow (wants it low).
 11. **Today's settings differ.** Moved to [§9](#9.%20Deviations).
 
+12. **Considered and deferred.** Each is in use elsewhere and each waits for a
+    measurement that asks for it: hedged cold reads ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)); a bandwidth
+    cap per direction, as rclone's `--bwlimit` and JuiceFS's
+    `--upload-limit` / `--download-limit`, which [§2.1](#2.1%20A%20worker%20pool%20is%20the%20only%20concurrency%20control) permits only with its
+    interaction with the pool stated; spreading connections across the service's
+    addresses ([RFC 8 §5.10](rfc-8-remote-tier.md#5.10%20Transfer%20practice%20a%20backend%20owes%20its%20service)).
+
 ## 9. Deviations
 
 Where today's code departs from this document. Each is a change to make, not a
@@ -917,13 +958,14 @@ question to answer.
 | D9 | a retry after an unknown outcome writes the same object ([§2.5](#2.5%20An%20unknown%20outcome%20is%20not%20a%20success)) | block names are 16 random bytes, so a retry writes a second object and the first is an orphan for GC; S5 still holds. Recorded as [RFC 2 §4.2.1](rfc-2-carver.md#4.2.1%20Deviation%20%E2%80%94%20a%20block%27s%20identity%20is%20generated%2C%20in%20two%20places) | `engine/flush.go:392`; `block/block_record.go:29`–`:35` |
 | D10 | one pool bounds fetches in flight ([§2.1](#2.1%20A%20worker%20pool%20is%20the%20only%20concurrency%20control), S1) | each demand read and each warm run builds its own fetch group of the configured size, beside the prefetch queue's own workers; fetches in flight, and their memory, grow with concurrent readers | `engine/fetch.go:31`–`:39`, `:540`–`:549`; `engine/warm.go:175`; `engine/sync_queue.go:89`–`:92` |
 | D11 | one caller leaving does not cancel a joined fetch ([§4.3](#4.3%20Concurrent%20demand%20for%20one%20block%20is%20one%20fetch)) | the shared fetch runs on the first caller's context, so its timeout or cancellation fails every caller that joined | `engine/fetch.go:537`, `:598`–`:608`, `:653` |
-| D12 | a fetch is keyed by block name and streams the block ([§4.3](#4.3%20Concurrent%20demand%20for%20one%20block%20is%20one%20fetch), [§1.3](#1.3%20Interface)) | fetches are ranged reads of one chunk, keyed by chunk and starting offset; two reads of one chunk from different offsets fetch it twice | `engine/fetch.go:340`, `:592`–`:595` |
+| D12 | a fetch is joined per chunk, not per byte offset ([§4.3](#4.3%20Concurrent%20demand%20for%20one%20block%20is%20one%20fetch)) | fetches are ranged reads of one chunk, which [§1.3](#1.3%20Interface) now also requires, but they are joined by chunk *and starting offset*, so two reads of one chunk from different offsets fetch it twice | `engine/fetch.go:340`, `:592`–`:595` |
 | D13 | pre-warm never drives the journal to refusing writes ([§4.5](#4.5%20Speculation%20is%20executed%20here%20and%20decided%20elsewhere)) | a warm run fills until the journal reports full, then stops | `engine/warm.go:175`–`:196` |
 | D14 | an unhealthy store is probed at once on a transient failure, logs as [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) says, and its refusals name it | probing is on the ticker only, so a dead store takes traffic for about three intervals; the unhealthy line is a warning carrying a failure count and no store name or error; there is no periodic line; a refused call's error names neither the store nor the probe's error | `engine/sync_health.go:141`–`:181`, `:255`–`:258` |
 | D15 | everything but the two pool sizes is fixed and derived ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)) | further hard-coded values: a prefetch queue of 1000, a five-minute prefetch timeout, a 60-second demand timeout | `engine/sync_queue.go:49`–`:51`, `:186`; `engine/types.go:52` |
 | D16 | `Close` returns once every transfer has ended ([§1.3](#1.3%20Interface)) | each wait gives up after 30 s and returns anyway; demand fetches on reader goroutines are not tracked | `engine/sync_lifecycle.go:187`–`:203`; `engine/sync_queue.go:118`–`:123` |
 | D17 | the syncer decides nothing and persists nothing ([§1.1](#1.1%20Non-goals), [§2.7](#2.7%20It%20reports%3B%20it%20does%20not%20persist)) | the upload side decides when to carve and commits block records itself; the component this document describes does not exist as a boundary in code yet | `engine/carve_dispatch.go:37`–`:48`; `engine/flush.go:468` |
 | D18 | durability only on the backend's acknowledgement ([§2.6](#2.6%20Durability%20is%20observed%2C%20never%20inferred)) | a store's `durable` setting can declare the in-memory backend durable, and the commit rule then trusts it; not followed end to end | `runtime/shares/blockstore_config.go:856`–`:860`; `remote/memory/store.go:228` |
+| D19 | a put carries an end-to-end checksum ([RFC 8 §5.10](rfc-8-remote-tier.md#5.10%20Transfer%20practice%20a%20backend%20owes%20its%20service)) | the S3 client disables the SDK's default request checksums and response validation | `remote/s3/store.go:185`–`:192` |
 
 Checked and satisfied: no multipart upload anywhere (§3.4); an unknown outcome is
 reported as a failure before any commit (S5); durability is reported only after

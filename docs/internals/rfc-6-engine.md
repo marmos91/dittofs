@@ -892,6 +892,23 @@ runs against the engine as production composes it ([RFC 1 §11.5](rfc-1-journal.
    historical defaults, not measured ones.
 
 ---
+8. **When a cold read widens to the whole block** ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)). A read
+   asks the fetcher for only the chunks it covers, or for the whole block. JuiceFS
+   reads a range only when the request is within a quarter of a block and not at
+   its start, and the whole block otherwise; a sequential scan wants the whole
+   block. The threshold is unmeasured.
+9. **Packing small files across files** ([§5.1](#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output)). One assembler per file means one
+   block, one put, per small file. restic packs blobs from many files into 16 MiB
+   pack files to cut object count; JuiceFS deliberately does not, "to prevent
+   read amplification", and stores one object per block however small. A per-put
+   price and a per-prefix request rate argue for packing; reading one small file
+   out of a pack is a ranged read either way. Whether to pack, and how it
+   interacts with deletion and compaction ([RFC 7](rfc-7-gc.md)), is open.
+10. **Engine policy the code has and no document states.** Upload delay — not
+   uploading data young enough to be overwritten, as JuiceFS's `--upload-delay`
+   and rclone's `--vfs-write-back` do; the small-file threshold that flushes
+   synchronously; the janitor that requeues a claim older than `ClaimTimeout`;
+   and manual sync. Each is policy and belongs here; none is specified yet.
 
 ## Appendix A — obligations this document discharges
 

@@ -81,7 +81,7 @@ journal reaches its segment files through a narrow, package-internal seam — op
 write at an offset, sync, punch, close — that production satisfies with the
 operating system's file. A test wraps the real file and remembers every write
 since the last sync; a simulated crash discards exactly those and reopens the
-journal on the same directory. This is the loss [§6](#6.%20Durability%20ordering) is written against: a
+journal on the same directory. This is the loss [§6](#6.%20Durability%20and%20ordering) is written against: a
 killed process leaves its unsynced writes in the page cache, so killing it proves
 a durability the journal does not have ([§11.3](#11.3%20Environments%20a%20check%20set%20must%20cover)). The seam is not an interface
 the journal exposes, and nothing outside its package supplies one.
