@@ -31,6 +31,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A read over a sparse region no longer rescans the chunk index once per
+  preceding chunk.** Finding the chunk that covers a byte offset restarted the
+  whole keys-only index scan for every candidate whose row turned out not to
+  cover it, so a hole behind *n* chunks cost *n* scans of *n* keys. On a file
+  with 5,000 chunks a single such lookup allocated 25 million times and took
+  seconds of wall clock. The scan now runs once and a second pass collects the
+  remaining candidates, which is 140,000 allocations for the same lookup.
+  Covered reads are unchanged, and no key format or schema changed with it.
+
 - **A serialization conflict no longer reaches the caller as an I/O error.**
   Concurrent writers to one file could exhaust a fixed twenty-attempt retry
   budget, after which the conflict surfaced as a failed operation even though
