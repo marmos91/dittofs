@@ -504,7 +504,7 @@ components call it:
 The engine's call also puts an algorithm in the component [RFC 0 §1.1](rfc-0-data-lifecycle.md#1.1%20The%20component%20set) says owns none.
 
 The full cost of the random name, and the machinery it obliges the rest of the
-system to carry, is recorded once in [RFC 3](rfc-3-syncer.md) rather than restated here. What
+system to carry, is recorded once in [RFC 3 §2.5](rfc-3-syncer.md#2.5%20An%20unknown%20outcome%20is%20not%20a%20success) rather than restated here. What
 belongs here is the part this document is responsible for: the rule that says a
 block's name is derived, like a chunk's, and that no component needs a generator.
 
@@ -621,7 +621,7 @@ produces the same chunks. A failed pass costs work and never correctness.
 | C2 | The same bytes and settings give the same boundaries, in any process or version. |
 | C3 | The average chunk size is the configured `Target`. |
 | C4 | Every chunk is between `Min` and `Max`, except the last one in a stretch. |
-| C5 | A block holds whole chunks and overshoots its target by at most one. |
+| C5 | A block holds whole chunks and overshoots its target by at most one; only the last block of a pass may fall short. |
 | C6 | A block holds only the chunks whose bytes it carries. |
 
 

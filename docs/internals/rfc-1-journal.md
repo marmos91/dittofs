@@ -192,7 +192,7 @@ Offers every held extent of `id` whose flush bit is unset, and marks exactly the
 extents `fn` returns.
 
 `FlushMany` is the same offer over several files in one callback, so the engine
-can pack small files into one block ([RFC 6 §5.7](rfc-6-engine.md#5.7%20A%20block%20packs%20chunks%2C%20whichever%20files%20they%20came%20from)). Every rule of this section
+can pack chunks of several files into one block ([RFC 6 §5.7](rfc-6-engine.md#5.7%20A%20block%20packs%20chunks%2C%20whichever%20files%20they%20came%20from)). Every rule of this section
 holds per file within it: each file's extents are marked exactly as its entry in
 `durable` says, a file absent from `durable` has nothing marked, and each
 `Offered` reader stays valid until `fn` returns. `Flush(id, …)` is `FlushMany`
