@@ -545,7 +545,11 @@ func (s *BadgerMetadataStore) syncIfRelaxed() error {
 //
 // Adding a NEW key or a new self-describing record field needs no bump — an
 // older binary skips what it does not know and loses nothing it had.
-const storeFormatVersion uint32 = 1
+// Version 2 moved the chunk manifest out of fm:<uuid> into fm:<uuid>:<seq>
+// segments and retires the whole-list key on the first write of each file. A
+// version 1 binary still finds the f: record, reads no manifest beside it, and
+// serves every segmented file at its right size with no chunks.
+const storeFormatVersion uint32 = 2
 
 // formatVersionKey is the BadgerDB key holding storeFormatVersion.
 const formatVersionKey = prefixFormat + "store"

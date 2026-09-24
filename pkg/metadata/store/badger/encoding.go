@@ -96,14 +96,24 @@ func keyFileManifest(id uuid.UUID) []byte {
 // bound. A field capture reached 245 GiB of value log against 0.15 GiB of live
 // LSM data this way.
 //
-// A ChunkRef encodes to ~118 bytes, so 4096 refs is ~483 KiB — half the
-// threshold, leaving room for the encoding to grow. Raising this past ~8000
-// puts the value back over the threshold and restores the unbounded growth.
+// A ChunkRef is fixed-shape, so its encoded size has a real worst case: the
+// hash is always "blake3:<64 hex>", and the two integers and the omitempty
+// start_offset are longest at their maximum values. That is 156 bytes against
+// ~108 for a typical ref, so 4096 refs is ~471 KiB typically and ~628 KiB at
+// worst — 61% of the threshold. The worst-case bound breaks around 6600 refs,
+// not at some comfortable distance above this value, and nothing checks it at
+// run time: give ChunkRef a variable-length field and the bound is gone with
+// only this comment to notice.
 const manifestSegmentRefs = 4096
 
 // keyFileManifestPrefix is the scan prefix for one file's manifest segments:
 // "fm:<uuid>:". The UUID is fixed-width, so this cannot collide with another
 // file's segments or with the legacy whole-list key.
+//
+// decision: no production path scans this prefix — reads and deletes walk
+// sequences from zero instead, which is cheaper and cannot splice across a
+// hole. It stays for the tests, which need the opposite property: a scan sees
+// a segment left behind past the end of the list, and walking cannot.
 func keyFileManifestPrefix(id uuid.UUID) []byte {
 	return []byte(prefixFileManifest + id.String() + ":")
 }

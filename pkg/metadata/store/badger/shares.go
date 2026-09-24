@@ -206,18 +206,14 @@ func deleteFileKeys(txn *badgerdb.Txn, id uuid.UUID, objectID metadata.ContentHa
 		keyLinkCount(id),
 	}
 	// The manifest is segmented across fm:<uuid>:<seq>, so the whole-list key
-	// above clears only a store that predates segmentation. Collect the segment
-	// keys before deleting any: badger forbids mutating the transaction while
-	// one of its iterators is open.
-	segPrefix := keyFileManifestPrefix(id)
-	segOpts := badgerdb.DefaultIteratorOptions
-	segOpts.Prefix = segPrefix
-	segOpts.PrefetchValues = false
-	it := txn.NewIterator(segOpts)
-	for it.Seek(segPrefix); it.ValidForPrefix(segPrefix); it.Next() {
-		keys = append(keys, it.Item().KeyCopy(nil))
+	// above clears only a store that predates segmentation. The segments are
+	// walked rather than scanned by prefix: DeleteShare runs every file of the
+	// share in one transaction, and an iterator per file re-sorts that
+	// transaction's whole pending-write set, which is quadratic in the file
+	// count.
+	if err := deleteManifestSegmentsFrom(txn, id, 0); err != nil {
+		return err
 	}
-	it.Close()
 
 	for _, key := range keys {
 		if err := txn.Delete(key); err != nil && err != badgerdb.ErrKeyNotFound {

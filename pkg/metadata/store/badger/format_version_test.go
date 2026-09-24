@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // stampFormatVersion writes fmt:store directly, standing in for the database a
@@ -94,4 +95,32 @@ func TestFormatVersion_FutureRefusesOpen(t *testing.T) {
 	require.Error(t, err)
 	require.True(t, errors.Is(err, block.ErrFutureFormat), "got %v", err)
 	require.Nil(t, store)
+}
+
+// TestFormatVersion_SegmentedStoreOutranksWholeListBuild is why this release's
+// number moved. A build that predates manifest segmentation reads the chunk
+// list from fm:<uuid> alone and knows nothing of fm:<uuid>:<seq>, so it opens a
+// segmented store, finds the f: record it still recognizes, and serves every
+// file at its right size with no chunks. The stamp being above the 1 that build
+// shipped with is the only thing that turns those silent zeros into a refusal.
+func TestFormatVersion_SegmentedStoreOutranksWholeListBuild(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "metadata.db")
+
+	store, err := NewBadgerMetadataStoreWithDefaults(ctx, dbPath)
+	require.NoError(t, err)
+	root := mkPayloadShare(t, store, "/s")
+	h := mkChunkedFile(t, store, "/s", root, "big.bin", "/big.bin", 5000)
+	_, id, err := metadata.DecodeFileHandle(h)
+	require.NoError(t, err)
+
+	// The file is genuinely in the shape a whole-list build cannot read.
+	_, _, segments := manifestSize(t, store, id)
+	require.Greater(t, segments, 1, "fixture must span segments for this to mean anything")
+	require.NoError(t, store.Close())
+
+	stored, found := readFormatVersion(t, dbPath)
+	require.True(t, found)
+	require.Greater(t, stored, uint32(1),
+		"a segmented store stamped at 1 is one a whole-list build opens and serves as empty files")
 }

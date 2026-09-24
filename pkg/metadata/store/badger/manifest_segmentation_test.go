@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"testing"
 
@@ -18,14 +17,15 @@ import (
 )
 
 // These tests guard the manifest segmentation against the growth it was written
-// to stop. A field capture held 245 GiB of value log against 0.15 GiB of live
-// LSM data: the manifest was one value per file, every commit rewrote all of it,
-// and once that value passed Badger's ValueThreshold it was appended to the
-// value log, whose GC could not find it to reclaim.
+// to stop (see manifestSegmentRefs for the mechanism).
 //
-// Both assertions below fail on the unsegmented implementation. Neither is a
-// correctness assertion — the unsegmented store returned exactly the right
-// chunk list while leaking — so what is measured is size and bytes written.
+// The first two are regression guards and fail on the unsegmented
+// implementation, each on its own headline assertion. Neither asserts
+// correctness — the unsegmented store returned exactly the right chunk list
+// while leaking — so what they measure is size and bytes written. The third
+// guards behaviour the unsegmented store had no way to get wrong, because it
+// had only ever one value to delete; it is here so a later change cannot start
+// leaving segments behind.
 
 // dirBytes sums the store directory by file extension, which is what separates
 // live LSM data (.sst) from value-log accumulation (.vlog).
@@ -44,21 +44,6 @@ func dirBytes(t *testing.T, dir string) map[string]int64 {
 		return nil
 	}))
 	return out
-}
-
-// fmtDir renders a directory breakdown compactly, so a failure shows where the
-// bytes actually are rather than only the extensions the test expected.
-func fmtDir(m map[string]int64) string {
-	exts := make([]string, 0, len(m))
-	for e := range m {
-		exts = append(exts, e)
-	}
-	sort.Strings(exts)
-	parts := make([]string, 0, len(exts))
-	for _, e := range exts {
-		parts = append(parts, fmt.Sprintf("%s=%d", e, m[e]))
-	}
-	return strings.Join(parts, " ")
 }
 
 // manifestSize reports the manifest's total encoded bytes, its largest single
@@ -165,13 +150,16 @@ func TestManifestAppendDoesNotRewriteWholeList(t *testing.T) {
 	_, id, err := metadata.DecodeFileHandle(h)
 	require.NoError(t, err)
 
+	// Logged, deliberately not asserted: on the unsegmented implementation this
+	// would fail here and the value-log assertion below — the one this test
+	// exists for — would never be reached. TestManifestSegmentStaysUnderValueThreshold
+	// is what guards the threshold.
 	total, largest, segments := manifestSize(t, store, id)
-	require.Less(t, largest, threshold)
 	t.Logf("manifest: %d bytes across %d segments, largest %d (threshold %d)",
 		total, segments, largest, threshold)
 
 	before := dirBytes(t, dir)
-	t.Logf("before appends: %s", fmtDir(before))
+	t.Logf("before appends: %v", before)
 
 	file, err := store.GetFile(ctx, h)
 	require.NoError(t, err)
@@ -189,7 +177,7 @@ func TestManifestAppendDoesNotRewriteWholeList(t *testing.T) {
 	}
 
 	after := dirBytes(t, dir)
-	t.Logf("after %d appends: %s", appends, fmtDir(after))
+	t.Logf("after %d appends: %v", appends, after)
 
 	vlogGrowth := after["vlog"] - before["vlog"]
 	t.Logf("value log grew %d bytes over %d appends", vlogGrowth, appends)
@@ -212,6 +200,12 @@ func TestManifestAppendDoesNotRewriteWholeList(t *testing.T) {
 // TestManifestShrinkDropsSurplusSegments guards the other direction: a truncate
 // that shortens the list must remove the segments it no longer reaches, or a
 // later read reassembles refs past EOF from segments nothing rewrote.
+//
+// Unlike the two above this is not a regression guard — an unsegmented store
+// had one value and deleting it was the whole job, so it passes this too once
+// the multi-segment fixture is taken away. It pins the cleanup that only exists
+// now, and it scans the segment prefix rather than walking sequences, so a
+// segment orphaned past the end of the list fails it.
 func TestManifestShrinkDropsSurplusSegments(t *testing.T) {
 	ctx := context.Background()
 
