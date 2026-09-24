@@ -451,10 +451,12 @@ func (tx *badgerTransaction) putFile(ctx context.Context, file *metadata.File, w
 	// legacy f: blob off its embedded manifest (the new f: encoding no longer
 	// carries it) without rewriting an already-materialized one.
 	if !writeManifest && len(file.Blocks) > 0 {
-		if _, err := tx.txn.Get(keyFileManifest(file.ID)); goerrors.Is(err, badgerdb.ErrKeyNotFound) {
-			writeManifest = true
-		} else if err != nil {
+		materialized, err := tx.manifestMaterialized(file.ID)
+		if err != nil {
 			return err
+		}
+		if !materialized {
+			writeManifest = true
 		}
 	}
 	if writeManifest {

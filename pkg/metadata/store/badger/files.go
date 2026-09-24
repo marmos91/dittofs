@@ -1,6 +1,7 @@
 package badger
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -91,48 +92,165 @@ func copyForRead(f *metadata.File) *metadata.File {
 	return &cp
 }
 
-// loadManifest populates file.Blocks from the fm:<uuid> manifest key. A legacy
-// f: blob that still embeds the manifest arrives with Blocks already set and is
-// left untouched (the next write migrates it to fm:); new-format blobs carry no
-// inline manifest, so the chunk list is read from its sibling key. A missing
-// fm: key means an empty manifest (directory, symlink, or empty regular file).
+// loadManifest populates file.Blocks from the manifest keys. A legacy f: blob
+// that still embeds the manifest arrives with Blocks already set and is left
+// untouched (the next write migrates it out); new-format blobs carry no inline
+// manifest, so the chunk list is read from its sibling keys. Absent keys mean
+// an empty manifest (directory, symlink, or empty regular file).
+//
+// Two on-disk shapes are read. A store written before segmentation holds the
+// whole list under fm:<uuid>; a segmented one holds it across fm:<uuid>:<seq>.
+// The whole-list key is checked first and wins, because putManifest retires it
+// only when it rewrites the file, so both can exist for exactly as long as it
+// takes that file to be written once.
 func loadManifest(txn *badgerdb.Txn, file *metadata.File) error {
 	if len(file.Blocks) > 0 {
 		return nil // legacy embedded manifest — authoritative for this row
 	}
+
 	item, err := txn.Get(keyFileManifest(file.ID))
-	if errors.Is(err, badgerdb.ErrKeyNotFound) {
-		return nil
+	if err == nil {
+		return item.Value(func(val []byte) error {
+			blocks, derr := decodeManifest(val)
+			if derr != nil {
+				return derr
+			}
+			file.Blocks = blocks
+			return nil
+		})
 	}
-	if err != nil {
+	if !errors.Is(err, badgerdb.ErrKeyNotFound) {
 		return err
 	}
-	return item.Value(func(val []byte) error {
-		blocks, derr := decodeManifest(val)
-		if derr != nil {
-			return derr
-		}
-		file.Blocks = blocks
-		return nil
-	})
-}
 
-// putManifest persists (or, when empty, removes) the fm:<uuid> block manifest.
-// An empty manifest — a truncated/empty regular file, a directory, or a symlink
-// — carries no key, so loadManifest reads a missing key as "no blocks". This
-// keeps the manifest coherent when a truncate prunes every chunk.
-func (tx *badgerTransaction) putManifest(id uuid.UUID, blocks []block.ChunkRef) error {
-	if len(blocks) == 0 {
-		if err := tx.txn.Delete(keyFileManifest(id)); err != nil && !errors.Is(err, badgerdb.ErrKeyNotFound) {
+	// Segmented form: a prefix scan returns segments in sequence order, and
+	// concatenating their values rebuilds the list in offset order.
+	prefix := keyFileManifestPrefix(file.ID)
+	opts := badgerdb.DefaultIteratorOptions
+	opts.Prefix = prefix
+	it := txn.NewIterator(opts)
+	defer it.Close()
+
+	var blocks []block.ChunkRef
+	for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+		if err := it.Item().Value(func(val []byte) error {
+			seg, derr := decodeManifest(val)
+			if derr != nil {
+				return derr
+			}
+			blocks = append(blocks, seg...)
+			return nil
+		}); err != nil {
 			return err
 		}
-		return nil
 	}
-	data, err := encodeManifest(blocks)
-	if err != nil {
+	file.Blocks = blocks
+	return nil
+}
+
+// putManifest persists (or, when empty, removes) the block manifest, split
+// across fm:<uuid>:<seq> segments of at most manifestSegmentRefs refs each.
+//
+// Segmenting is what keeps each value below Badger's ValueThreshold, so the
+// manifest lives in the LSM where compaction reclaims superseded copies rather
+// than in the value log where they accumulate (see manifestSegmentRefs).
+//
+// A segment whose bytes are unchanged is not rewritten. That is what makes an
+// append at EOF cost one segment instead of the whole list: without it, the
+// manifest would still be rewritten in full on every commit, merely into
+// reclaimable space instead of unreclaimable space.
+//
+// An empty manifest — a truncated/empty regular file, a directory, or a symlink
+// — carries no keys, so loadManifest reads their absence as "no blocks". This
+// keeps the manifest coherent when a truncate prunes every chunk.
+func (tx *badgerTransaction) putManifest(id uuid.UUID, blocks []block.ChunkRef) error {
+	// Retire the legacy whole-list key on any write, so a file migrates to the
+	// segmented form the first time it is written and never carries both.
+	if err := tx.txn.Delete(keyFileManifest(id)); err != nil && !errors.Is(err, badgerdb.ErrKeyNotFound) {
 		return err
 	}
-	return tx.txn.Set(keyFileManifest(id), data)
+
+	segments := 0
+	for start := 0; start < len(blocks); start += manifestSegmentRefs {
+		end := min(start+manifestSegmentRefs, len(blocks))
+
+		data, err := encodeManifest(blocks[start:end])
+		if err != nil {
+			return err
+		}
+		key := keyFileManifestSegment(id, segments)
+		segments++
+
+		if unchanged, err := tx.segmentUnchanged(key, data); err != nil {
+			return err
+		} else if unchanged {
+			continue
+		}
+		if err := tx.txn.Set(key, data); err != nil {
+			return err
+		}
+	}
+
+	// Drop segments the list no longer reaches — a truncate, a deallocate, or
+	// any rewrite that shortened it. Scanning forward from the first surplus
+	// sequence stops at the first gap, and there are none: segments are always
+	// written from zero without holes.
+	for seq := segments; ; seq++ {
+		key := keyFileManifestSegment(id, seq)
+		if _, err := tx.txn.Get(key); errors.Is(err, badgerdb.ErrKeyNotFound) {
+			return nil
+		} else if err != nil {
+			return err
+		}
+		if err := tx.txn.Delete(key); err != nil && !errors.Is(err, badgerdb.ErrKeyNotFound) {
+			return err
+		}
+	}
+}
+
+// manifestMaterialized reports whether this file already has a manifest on
+// disk, in either shape. It answers "does an attr-only write still need to
+// materialize the manifest" — true for a file whose blocks are already stored,
+// false for a fresh create or a legacy f: blob that still embeds them.
+//
+// Checking segment zero is sufficient: putManifest writes segments from zero
+// upward with no holes, so a manifest exists if and only if that key does.
+func (tx *badgerTransaction) manifestMaterialized(id uuid.UUID) (bool, error) {
+	for _, key := range [][]byte{keyFileManifest(id), keyFileManifestSegment(id, 0)} {
+		_, err := tx.txn.Get(key)
+		if err == nil {
+			return true, nil
+		}
+		if !errors.Is(err, badgerdb.ErrKeyNotFound) {
+			return false, err
+		}
+	}
+	return false, nil
+}
+
+// segmentUnchanged reports whether the stored segment already holds exactly
+// these bytes. Skipping an identical write is what bounds a commit's cost to
+// the segments it actually changed; the read is served from the LSM and is far
+// cheaper than the write it avoids.
+func (tx *badgerTransaction) segmentUnchanged(key, data []byte) (bool, error) {
+	item, err := tx.txn.Get(key)
+	if errors.Is(err, badgerdb.ErrKeyNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if int(item.ValueSize()) != len(data) {
+		return false, nil
+	}
+	same := false
+	if err := item.Value(func(val []byte) error {
+		same = bytes.Equal(val, data)
+		return nil
+	}); err != nil {
+		return false, err
+	}
+	return same, nil
 }
 
 // UpdateAttrs stores or updates file metadata.

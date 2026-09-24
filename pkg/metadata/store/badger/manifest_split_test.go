@@ -12,26 +12,37 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// readManifest reads the fm:<uuid> manifest key directly: its badger commit
-// version (which advances on every write, even a same-value rewrite), the
-// decoded block list, and whether the key exists. The version is what proves an
-// attr-only write did NOT touch the manifest.
+// readManifest reads the fm:<uuid>:<seq> manifest segments directly: the
+// highest badger commit version across them (each advances on every write, even
+// a same-value rewrite), the decoded block list, and whether any segment exists.
+// The version is what proves an attr-only write did NOT touch the manifest —
+// taking the maximum means a rewrite of any single segment is caught, not only
+// one of the first.
 func readManifest(t *testing.T, s *BadgerMetadataStore, id uuid.UUID) (version uint64, blocks []block.ChunkRef, exists bool) {
 	t.Helper()
 	require.NoError(t, s.db.View(func(txn *badgerdb.Txn) error {
-		item, err := txn.Get(keyFileManifest(id))
-		if err == badgerdb.ErrKeyNotFound {
-			return nil
+		prefix := keyFileManifestPrefix(id)
+		opts := badgerdb.DefaultIteratorOptions
+		opts.Prefix = prefix
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			item := it.Item()
+			exists = true
+			version = max(version, item.Version())
+			if err := item.Value(func(val []byte) error {
+				seg, derr := decodeManifest(val)
+				if derr != nil {
+					return derr
+				}
+				blocks = append(blocks, seg...)
+				return nil
+			}); err != nil {
+				return err
+			}
 		}
-		if err != nil {
-			return err
-		}
-		exists = true
-		version = item.Version()
-		return item.Value(func(val []byte) error {
-			blocks, err = decodeManifest(val)
-			return err
-		})
+		return nil
 	}))
 	return version, blocks, exists
 }
