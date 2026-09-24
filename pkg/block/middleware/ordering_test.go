@@ -3,6 +3,7 @@ package middleware_test
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"os"
 	"path/filepath"
 	"testing"
@@ -155,5 +156,62 @@ func TestPipeline_RoundTripsInReverse(t *testing.T) {
 	}
 	if !bytes.Equal(got, body) {
 		t.Fatalf("round trip lost bytes: got %d, want %d", len(got), len(body))
+	}
+}
+
+// TestPipeline_RoundTripsPlaintextThatLooksLikeACompressionFrame drives the
+// composed stacks the engine builds, compression alone and compression then
+// encryption, over an incompressible chunk whose plaintext begins with a
+// compression frame header, and asserts ReadChunk returns it byte-for-byte.
+func TestPipeline_RoundTripsPlaintextThatLooksLikeACompressionFrame(t *testing.T) {
+	tail := make([]byte, 64<<10)
+	if _, err := rand.Read(tail); err != nil {
+		t.Fatal(err)
+	}
+	body := make([]byte, 0, compression.FrameHeaderFixedSize+len(tail))
+	body = append(body, compression.FrameMagic[:]...)
+	body = append(body, byte(compression.AlgoZstd))
+	body = append(body, tail...)
+	hash := block.ContentHash(blake3.Sum256(body))
+
+	cases := []struct {
+		name   string
+		stages func(t *testing.T) []middleware.Transform
+	}{
+		{"compression", func(t *testing.T) []middleware.Transform {
+			c, _ := stages(t)
+			return []middleware.Transform{c}
+		}},
+		{"compression+encryption", func(t *testing.T) []middleware.Transform {
+			c, e := stages(t)
+			return []middleware.Transform{c, e}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			inner := remotememory.New()
+			t.Cleanup(func() { _ = inner.Close() })
+			p, err := middleware.New(inner, tc.stages(t)...)
+			if err != nil {
+				t.Fatalf("middleware.New: %v", err)
+			}
+
+			wire, err := p.SealChunk(ctx, hash, body)
+			if err != nil {
+				t.Fatalf("SealChunk: %v", err)
+			}
+			const blockID = "magic-prefixed"
+			if err := inner.PutBlock(ctx, blockID, bytes.NewReader(wire)); err != nil {
+				t.Fatalf("PutBlock: %v", err)
+			}
+			got, err := p.ReadChunk(ctx, blockID, 0, int64(len(wire)), hash)
+			if err != nil {
+				t.Fatalf("ReadChunk of a sealed chunk failed: %v", err)
+			}
+			if !bytes.Equal(got, body) {
+				t.Fatalf("ReadChunk returned %d bytes that differ from the %d sealed", len(got), len(body))
+			}
+		})
 	}
 }
