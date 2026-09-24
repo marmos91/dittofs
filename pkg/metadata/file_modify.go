@@ -7,6 +7,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/google/uuid"
+
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
@@ -1390,6 +1392,15 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 			}
 		}
 
+		// A directory moving to a different parent is the only rename that can
+		// make a directory its own ancestor: renaming within one parent leaves
+		// every parent edge above the source where it was.
+		if srcFile.Type == FileTypeDirectory && !sameDir {
+			if err := refuseDirectoryLoop(ctx.Context, tx, srcHandle, toDir); err != nil {
+				return err
+			}
+		}
+
 		// Re-read the source/destination directories inside the transaction so
 		// the pre-op snapshots and the timestamp mutations derive from the same
 		// committed state (After then monotonic w.r.t. Before).
@@ -1614,6 +1625,92 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 	}
 
 	return clobbered, rename, nil
+}
+
+// refuseDirectoryLoop refuses a rename that would make srcHandle its own
+// ancestor, by walking dstDir's parent edges looking for srcHandle. The chain
+// ends at the share root, which has no parent edge.
+//
+// Every edge is read through tx, not through the store, which is what keeps the
+// answer true when the rename commits: each edge the walk touches enters the
+// transaction's read set, so a concurrent rename that re-parents any inode on
+// the walked chain aborts this one. The same walk run before the transaction
+// opens answers a question that can dissolve before the write lands — a racing
+// rename can move dstDir under srcHandle in the gap, and the entry
+// re-resolution above cannot see it, because it compares only the two edges
+// this rename names.
+//
+// decision: three of the four backends cannot serve the walk a stale answer at
+// all — memory holds a store-wide mutex for the whole closure, sqlite admits one
+// transaction at a time, and badger alone actually detects the conflict, by SSI
+// over the keys the walk read. Postgres runs at REPEATABLE READ, which is
+// snapshot isolation: two renames writing disjoint parent edges are not a
+// write-write conflict, so there the walk can be stale. Composing a cycle needs
+// two cross-parent directory renames racing whose four parent handles all miss
+// each other's lockParentLinks shards; a single rename, which is all one client
+// can drive, is refused on every backend. Lock the walked rows (SELECT ... FOR
+// SHARE) or run rename at SERIALIZABLE if a cycle is ever observed on postgres.
+// Badger's guarantee is the operator's to keep: its options are passed through
+// verbatim, so disabling conflict detection voids it silently.
+func refuseDirectoryLoop(ctx context.Context, tx Transaction, srcHandle, dstDir FileHandle) error {
+	_, srcID, err := DecodeFileHandle(srcHandle)
+	if err != nil {
+		return err
+	}
+	handle := dstDir
+
+	// The walk records the ids it has visited and stops when one repeats, rather
+	// than trusting that directory hard links are refused: a namespace an
+	// unguarded build already corrupted would otherwise spin here forever. A
+	// repeat is a cycle that predates this rename, so it reports EIO against the
+	// store rather than EINVAL against the caller.
+	//
+	// decision: a depth bound would be the cheaper stop and a large one would in
+	// fact hold today, because a rename's destination must pass ValidatePath and
+	// so sits at most MaxPathLen/2 levels down. The visited set is used anyway
+	// because that argument lives in another check and is easy to invalidate:
+	// ValidatePath measures only the moved entry's own path, never the paths
+	// beneath it, so subtree moves already stack depth past what mkdir allows,
+	// and a constant justified by a second function's cap silently becomes a
+	// refusal of valid renames if that cap moves. This stop needs no such
+	// argument.
+	seen := make(map[uuid.UUID]struct{})
+	for {
+		// Compare decoded ids, not handle strings. One inode has many handle
+		// spellings — DecodeFileHandle splits on the first colon and accepts any
+		// spelling uuid.Parse does — and dstDir arrives from the client while
+		// srcHandle comes from the store, so a client that re-cases the UUID it
+		// was handed walks straight past a string comparison and closes the loop
+		// this function exists to refuse.
+		_, id, err := DecodeFileHandle(handle)
+		if err != nil {
+			return err
+		}
+		if id == srcID {
+			return &StoreError{
+				Code:    ErrInvalidArgument,
+				Message: "cannot move a directory into itself or one of its own descendants",
+			}
+		}
+		if _, repeat := seen[id]; repeat {
+			return &StoreError{
+				Code:    ErrIOError,
+				Message: "directory parent chain already contains a cycle",
+			}
+		}
+		seen[id] = struct{}{}
+
+		parent, err := tx.GetParent(ctx, handle)
+		if IsNotFoundError(err) {
+			// Reached the share root without meeting the source, so the
+			// destination does not sit below it.
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		handle = parent
+	}
 }
 
 // MarkFileAsOrphaned sets a file's link count to 0, marking it as orphaned.

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -25,6 +26,12 @@ func runDirOpsTests(t *testing.T, factory StoreFactory) {
 	t.Run("LinkCountAgreesWithGetFile", func(t *testing.T) { testLinkCountAgreesWithGetFile(t, factory) })
 	t.Run("DeleteChildIsIdempotent", func(t *testing.T) { testDeleteChildIsIdempotent(t, factory) })
 	t.Run("NamesOnlyMatchesWithAttrs", func(t *testing.T) { testNamesOnlyMatchesWithAttrs(t, factory) })
+	t.Run("RenameDirectoryUnderOwnDescendantRefused", func(t *testing.T) {
+		testRenameDirectoryUnderOwnDescendantRefused(t, factory)
+	})
+	t.Run("RenameAliasHandleCannotDefeatLoopCheck", func(t *testing.T) {
+		testRenameAliasHandleCannotDefeatLoopCheck(t, factory)
+	})
 }
 
 // testCreateDirectory verifies that creating a directory results in the correct type and link count.
@@ -730,4 +737,122 @@ func readRootForCache(ctx context.Context, store metadata.Store, handle metadata
 		return fr.GetFileForRead(ctx, handle)
 	}
 	return store.GetFile(ctx, handle)
+}
+
+// testRenameDirectoryUnderOwnDescendantRefused asserts the rename loop check on
+// every backend: moving a directory under one of its own descendants detaches
+// the whole subtree from the share root, and nothing collects the result because
+// every inode in the cycle keeps a positive link count. The check lives inside
+// the rename transaction, so it is the backend's transaction that must carry the
+// ancestor walk's reads — a backend whose transaction cannot see its own parent
+// edges fails here.
+//
+// No concurrency, deliberately: a rig that races two renames can be satisfied by
+// one of them being refused for an unrelated reason, so it passes on a backend
+// with no check at all.
+func testRenameDirectoryUnderOwnDescendantRefused(t *testing.T, factory StoreFactory) {
+	fx := newCrossProtocolFixture(t, factory)
+	ctx := context.Background()
+
+	mkdir := func(parent metadata.FileHandle, name string) metadata.FileHandle {
+		dir, _, err := fx.svc.CreateDirectory(fx.rootCtx(), parent, name, &metadata.FileAttr{Mode: 0o755})
+		if err != nil {
+			t.Fatalf("CreateDirectory(%q): %v", name, err)
+		}
+		handle, err := metadata.EncodeFileHandle(dir)
+		if err != nil {
+			t.Fatalf("EncodeFileHandle(%q): %v", name, err)
+		}
+		return handle
+	}
+
+	aHandle := mkdir(fx.rootHandle, "a")
+	bHandle := mkdir(aHandle, "b")
+
+	for _, dst := range []struct {
+		desc   string
+		handle metadata.FileHandle
+	}{
+		{"its own descendant a/b", bHandle},
+		{"itself", aHandle},
+	} {
+		_, _, err := fx.svc.Move(fx.rootCtx(), fx.rootHandle, "a", dst.handle, "a")
+		var storeErr *metadata.StoreError
+		if !errors.As(err, &storeErr) || storeErr.Code != metadata.ErrInvalidArgument {
+			t.Fatalf("Move(a into %s): want ErrInvalidArgument, got %v", dst.desc, err)
+		}
+	}
+
+	// The namespace is untouched: a still hangs off the share root.
+	parent, err := fx.store.GetParent(ctx, aHandle)
+	if err != nil {
+		t.Fatalf("GetParent(a): %v", err)
+	}
+	if string(parent) != string(fx.rootHandle) {
+		t.Errorf("GetParent(a) = %q, want the share root", string(parent))
+	}
+	if _, err := fx.store.GetChild(ctx, bHandle, "a"); err == nil {
+		t.Error("a/b gained an entry named a")
+	}
+}
+
+// testRenameAliasHandleCannotDefeatLoopCheck moves a directory into itself while
+// naming the destination by an alias of its own handle: the same share and the
+// same id, spelled in upper case. One inode has many handle spellings, because
+// decoding splits on the first colon and accepts any spelling uuid.Parse accepts,
+// and the destination handle reaches Move from the client while the source handle
+// comes from the store.
+//
+// A loop check that compared handle strings saw two different destinations and
+// let this through on every backend that resolves a handle by its decoded id,
+// leaving the directory as its own parent with the share root's entry for it
+// already deleted. The backends that key on the raw bytes instead refuse the
+// alias as an unknown handle, which is also a refusal — so this asserts the
+// namespace survives, and pins the error code only where the alias resolves.
+func testRenameAliasHandleCannotDefeatLoopCheck(t *testing.T, factory StoreFactory) {
+	fx := newCrossProtocolFixture(t, factory)
+	ctx := context.Background()
+
+	dir, _, err := fx.svc.CreateDirectory(fx.rootCtx(), fx.rootHandle, "a", &metadata.FileAttr{Mode: 0o755})
+	if err != nil {
+		t.Fatalf("CreateDirectory(a): %v", err)
+	}
+	aHandle, err := metadata.EncodeFileHandle(dir)
+	if err != nil {
+		t.Fatalf("EncodeFileHandle(a): %v", err)
+	}
+
+	share, id, err := metadata.DecodeFileHandle(aHandle)
+	if err != nil {
+		t.Fatalf("DecodeFileHandle(a): %v", err)
+	}
+	alias := metadata.FileHandle(share + ":" + strings.ToUpper(id.String()))
+	if string(alias) == string(aHandle) {
+		t.Fatalf("alias %q is not a distinct spelling", string(alias))
+	}
+
+	_, _, moveErr := fx.svc.Move(fx.rootCtx(), fx.rootHandle, "a", alias, "a2")
+	if moveErr == nil {
+		t.Error("Move(a into an alias of its own handle) was accepted")
+	} else if _, resolves := fx.store.GetFile(ctx, alias); resolves == nil {
+		// The store resolved the alias to the inode, so the loop check is what
+		// had to refuse it, and it must say EINVAL rather than blame the handle.
+		var storeErr *metadata.StoreError
+		if !errors.As(moveErr, &storeErr) || storeErr.Code != metadata.ErrInvalidArgument {
+			t.Errorf("Move(a into its own alias): want ErrInvalidArgument, got %v", moveErr)
+		}
+	}
+
+	// Whatever refused it, the namespace must be intact: a is still the share
+	// root's child and not its own.
+	parent, err := fx.store.GetParent(ctx, aHandle)
+	if err != nil {
+		t.Fatalf("GetParent(a): %v", err)
+	}
+	if string(parent) != string(fx.rootHandle) {
+		t.Errorf("GetParent(a) = %q, want the share root — a is unreachable", string(parent))
+	}
+	if _, err := fx.store.GetChild(ctx, fx.rootHandle, "a"); err != nil {
+		t.Errorf("the share root lost its entry for a: %v", err)
+	}
 }
