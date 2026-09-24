@@ -46,8 +46,18 @@ func TestWithTransaction_HotFileNeverSurfacesConflict(t *testing.T) {
 	}
 
 	const (
-		writers   = 32
-		perWriter = 8
+		writers = 32
+		// Commits to one key serialize, so the run's floor is
+		// writers*perWriter multiplied by the cost of one commit — and that
+		// product has to stay well inside txretry.Budget, because a writer
+		// that waits past the budget gets the very error this test asserts
+		// cannot happen. At 8 appends the floor was 256 commits, which on a
+		// CI runner's fsync (~20ms) is ~5s against a 5s budget: the test
+		// then measured the runner's speed rather than the backoff, passing
+		// on a fast box and failing on a slow one. Two appends keeps 32
+		// simultaneous writers — the herd is the writer count, not the
+		// repetition — while leaving the budget four times the headroom.
+		perWriter = 2
 	)
 
 	ctx := t.Context()
