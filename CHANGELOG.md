@@ -31,6 +31,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A serialization conflict no longer reaches the caller as an I/O error.**
+  Concurrent writers to one file could exhaust a fixed twenty-attempt retry
+  budget, after which the conflict surfaced as a failed operation even though
+  nothing was wrong with the write, the store or the data. The backoff made it
+  worse: it was computed from the attempt number alone, so every loser of one
+  conflict waited the same interval and collided again on the next attempt.
+  Retries now use randomised exponential backoff bounded by the caller's
+  deadline rather than by a constant, which is what the SQL backends already
+  did. Measured before the change at one error per two hundred commits with
+  eight writers appending to a single file.
+
 - **Renaming a directory into its own subtree is refused with `EINVAL`.** It
   used to be accepted, and it built a cycle of directories that no path
   reached, that the link count reported as alive, and that nothing ever
