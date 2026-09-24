@@ -200,9 +200,10 @@ A `ponytail:` comment marks a **knowingly-simple implementation**, naming its ce
 the upgrade path that would justify replacing it:
 
 ```go
-// ponytail: O(n) keys-only scan per candidate, and only an overlap yields more
-// than one candidate; upgrade to a big-endian fb-off index for a true O(log n)
-// reverse-seek only if profiling at real N still shows it.
+// ponytail: a covered read scans O(n) keys once; a hole or nested overlap adds
+// a second full scan, O(n log n) sorting and at most O(n) row loads. Upgrade to
+// a numeric offset index, which costs migrating the existing decimal keys, when
+// a payload's row count makes those per-hole row loads show up in a profile.
 func (s *BadgerMetadataStore) GetFileChunkAtOffset(...)
 ```
 

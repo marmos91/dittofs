@@ -555,9 +555,13 @@ func errUnplaceableRow(payloadID, suffix string, off uint64) error {
 // not make a whole payload unreadable. This mirrors block.FindRowCoveringOffset, the
 // walk used by the backends with no such index.
 //
-// ponytail: a covered read still scans O(n) keys; a hole or nested overlap adds
-// O(n log n) sorting and at most O(n) row loads. A numeric offset index could
-// avoid the full scans, but would require migrating the existing decimal keys.
+// ponytail: a covered read scans O(n) keys once; a hole or nested overlap scans
+// them a second time to collect the earlier starts, then adds O(n log n) sorting
+// and at most O(n) row loads. A numeric offset index would avoid both full scans
+// at the cost of migrating the existing decimal keys; pay that when a payload's
+// row count makes the per-hole row loads show up in a profile, which the
+// allocation ceiling in TestGetFileChunkAtOffsetSparseCostStaysLinear will not
+// catch because it bounds the cost class rather than the constant.
 func (s *BadgerMetadataStore) GetFileChunkAtOffset(_ context.Context, payloadID string, off uint64) (*metadata.FileChunk, error) {
 	var result *metadata.FileChunk
 	err := s.db.View(func(txn *badger.Txn) error {
@@ -631,8 +635,9 @@ func (s *BadgerMetadataStore) GetFileChunkAtOffset(_ context.Context, payloadID 
 // successor, and returning a later one would reclassify the bytes it holds as
 // hole for the caller to zero-fill.
 //
-// ponytail: O(n) keys-only scan per hole; shares the fb-off-index upgrade path
-// with GetFileChunkAtOffset if profiling at real N ever demands O(log n).
+// ponytail: O(n) keys-only scan per hole; shares the numeric-offset-index
+// upgrade path with GetFileChunkAtOffset if profiling at real N ever demands
+// O(log n).
 func (s *BadgerMetadataStore) GetFileChunkAtOrAfterOffset(_ context.Context, payloadID string, off uint64) (*metadata.FileChunk, error) {
 	var result *metadata.FileChunk
 	err := s.db.View(func(txn *badger.Txn) error {

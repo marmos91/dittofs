@@ -9,7 +9,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-func TestGetFileChunkAtOffsetFallback(t *testing.T) {
+func TestGetFileChunkAtOffsetDescendingCandidates(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
 		rows         []*metadata.FileChunk
@@ -126,7 +126,7 @@ func TestGetFileChunkAtOffsetFallback(t *testing.T) {
 
 // An index key is a candidate, not a coverage claim: a stale mapping can name
 // a row starting after the requested offset. Coverage comes from that row's ID.
-func TestGetFileChunkAtOffsetFallbackChecksRowOffset(t *testing.T) {
+func TestGetFileChunkAtOffsetDescendingCandidatesChecksRowOffset(t *testing.T) {
 	ctx := t.Context()
 	s := newSizeTestStore(t)
 	for _, row := range []*metadata.FileChunk{
