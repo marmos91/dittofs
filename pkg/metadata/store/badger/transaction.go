@@ -113,36 +113,49 @@ func (s *BadgerMetadataStore) WithTransactionRelaxed(ctx context.Context, fn fun
 // decision: a retried attempt re-runs fn as given; the loop does NOT require fn
 // to re-read the rows it modifies, so a closure that computed its write from
 // state read BEFORE the call re-proposes that same stale write on every attempt.
-// The manifest write path does not do this — every carve-commit, clobber-preserve
-// and reap closure resolves its File row through the txn it was handed
+// The carve path does not do this — every commit, clobber-preserve and reap
+// closure resolves its File row through the txn it was handed
 // (ProjectCommittedChunks -> tx.GetFileByPayloadID) and merges only the rows of
 // its own batch into whatever it finds, under a per-payload lock in
 // pkg/block/engine/flush.go — so a retry there re-derives from the state that
-// committed in between and loses nothing. Callers that instead read outside the
-// call and hand the whole result in (Deallocate's PunchHole) carry a lost-update
-// window, but it is the unlocked read-then-write that opens it, not the retry:
-// it is equally there when the first attempt commits. Withdraw this if a hot,
-// concurrent path ever writes a wholesale list computed outside its txn — then
-// the contract, not the backoff, is what needs changing.
+// committed in between and loses nothing.
+//
+// Two closures elsewhere do hand in a wholesale list computed outside the call,
+// and neither makes the retry the thing at fault. Deallocate's PunchHole
+// (pkg/metadata/sparse.go) reads the file outside and writes the recomputed list
+// back: the lost-update window there is opened by the unlocked read-then-write
+// and is equally open when the first attempt commits. PersistFileChunks
+// (pkg/controlplane/runtime/shares/coordinator.go) overwrites File.Blocks with a
+// list its caller computed — but it has no caller, in or out of this repo's
+// tree: the name occurs only in its own definition, the engine interface it
+// satisfies, and tests, whatever its doc comment says about a syncer. Withdraw
+// this the moment either grows a hot concurrent caller, because then the
+// contract, not the backoff, is what needs changing.
 func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx metadata.Transaction) error, durable bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
-	// Backpressure deadline: retry a conflict until this budget elapses rather
-	// than returning one after a fixed attempt count — the same contract the SQL
-	// backends run under.
+	// Backpressure budget for retrying a conflict, in place of a fixed attempt
+	// count — the same contract the SQL backends run under. Started at the first
+	// conflict, not here: an attempt is not bounded by anything, and one taken
+	// while a realign or a payload-index backfill holds quotaRealign exclusively
+	// can outlast the whole budget on its own, which would leave the first
+	// conflict with nothing left to spend and give a contended write fewer tries
+	// than the fixed count it replaced.
 	//
-	// decision: callers that hold a lock across this call now hold it for up to
-	// the budget where the old fixed attempt count capped them near 400ms — the
-	// per-payload stripe in pkg/block/engine/flush.go and the per-handle flush
-	// lock in Service.SetFileAttributes. That is latency, not a cycle: neither
-	// lock is needed by the writer whose commit we are losing to, so the conflict
-	// still clears while we hold it, and a caller who would rather not wait
-	// shortens the budget by passing a ctx deadline. Revisit if a path ever waits
-	// on one of those locks to release the key this loop is contending for, which
-	// would make the wait unwinnable instead of merely long.
-	deadline := txretry.Deadline(ctx)
+	// decision: three callers hold a lock across this call and so now hold it for
+	// up to the budget, where the old attempt count capped them near 400ms — the
+	// per-payload stripe in pkg/block/engine/flush.go, and the per-handle flush
+	// lock in Service.SetFileAttributes and Service.RemoveFile. That is latency,
+	// not a cycle: badger aborts a transaction only against one that has already
+	// committed, so the writer we lost to is not waiting on anything we hold, and
+	// excluding the next competitor makes our retry likelier to win. None of the
+	// three passes a deadline that would shorten the wait, and no NFS or SMB
+	// request ctx carries one, so the budget is the whole of it. Revisit if a
+	// path ever waits on one of those locks to release the key this loop is
+	// contending for, which would make the wait unwinnable rather than long.
+	var deadline time.Time
 
 	var lastErr error
 	for attempt := 0; attempt < int(maxTransactionRetries.Load()); attempt++ {
@@ -242,6 +255,9 @@ func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx me
 			// re-colliding as a herd: a shared schedule made each retry as
 			// contended as the attempt that failed, which is how eight writers to
 			// one file exhausted a 20-attempt budget and surfaced the conflict.
+			if deadline.IsZero() {
+				deadline = txretry.Deadline(ctx)
+			}
 			if txretry.Backoff(ctx, deadline, attempt) {
 				continue
 			}

@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/dgraph-io/badger/v4"
 	blockpkg "github.com/marmos91/dittofs/pkg/block"
@@ -155,7 +156,10 @@ func (s *BadgerMetadataStore) Delete(ctx context.Context, id string) error {
 // conflict when the retry budget is spent; non-conflict errors
 // short-circuit.
 func (s *BadgerMetadataStore) updateWithConflictRetry(ctx context.Context, fn func(*badger.Txn) error) error {
-	deadline := txretry.Deadline(ctx)
+	// Started at the first conflict, not here, so an attempt that outlasts the
+	// budget on its own cannot leave that conflict with nothing to spend. See
+	// withTransaction.
+	var deadline time.Time
 
 	var lastErr error
 	for attempt := 0; attempt < int(maxTransactionRetries.Load()); attempt++ {
@@ -174,6 +178,9 @@ func (s *BadgerMetadataStore) updateWithConflictRetry(ctx context.Context, fn fu
 			s.txnConflicts.Add(1)
 			// Same jittered exponential backoff and deadline bound as
 			// WithTransaction.
+			if deadline.IsZero() {
+				deadline = txretry.Deadline(ctx)
+			}
 			if txretry.Backoff(ctx, deadline, attempt) {
 				continue
 			}

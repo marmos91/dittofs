@@ -94,8 +94,8 @@ func TestWithTransaction_HotFileNeverSurfacesConflict(t *testing.T) {
 	wg.Wait()
 
 	conflicts := store.TransactionConflictsForTest()
-	t.Logf("%d writers x %d appends: %d commits, %d SSI conflicts, %d errors",
-		writers, perWriter, writers*perWriter, conflicts, failures.Load())
+	t.Logf("%d writers x %d appends: %d committed, %d SSI conflicts, %d errors",
+		writers, perWriter, committed.Load(), conflicts, failures.Load())
 
 	// Checked before the error assertion below so a run that does surface a
 	// conflict still reports whether a committed append was lost with it.
