@@ -177,7 +177,7 @@ transfer per entry.
 ### 3.3 Flush
 
 ```go
-Flush(id FileID, fn func(dirty []Extent) (durable []Extent, err error)) error
+Flush(id FileID, fn func(dirty []Extent, offered io.ReaderAt) (durable []Extent, err error)) error
 ```
 
 Offers every held extent of `id` whose flush bit is unset, and marks exactly the
@@ -192,7 +192,17 @@ intersect it with what it offered. An extent `fn` returns that was not offered
 **MUST** be rejected as an error, not silently accepted.
 
 Offered extents **MUST** remain readable and **MUST NOT** be relocated for the
-duration of the call. A concurrent write to an offered extent is permitted; the
+duration of the call.
+
+`offered` reads the bytes **as offered**, at file offsets, for the duration of
+`fn`. A write that supersedes an offered extent while `fn` runs changes what
+`ReadAt` on the journal returns, and **MUST NOT** change what `offered` returns:
+the superseded record stays in its segment until `fn` returns, and `offered`
+reads it there. Reading `offered` outside an offered extent, or after `fn`
+returns, **MUST** fail rather than return other bytes. This is what lets the
+uploader read a block's bytes at transfer time instead of copying them at carve
+time ([RFC 3 §3.2](rfc-3-syncer.md#3.2%20It%20holds%20a%20reference%2C%20not%20a%20copy)): the carver and the uploader read the same version, whatever
+a client writes meanwhile. A concurrent write to an offered extent is permitted; the
 newer bytes supersede, and the extent's flush bit **MUST** remain unset for the
 superseding write even if `fn` reports the offset durable.
 

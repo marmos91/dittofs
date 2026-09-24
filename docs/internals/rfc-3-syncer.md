@@ -148,6 +148,8 @@ One syncer is what the bounds need: the memory bound is a property of the proces
 ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)), and a store's health is a property of all the traffic it carries,
 from every flow on it ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)). A syncer per share would state neither.
 
+![Three flows, each bound to one store: two queue their transfers per flow, a deficit-round-robin scheduler with a per-flow cap feeds the uploader and fetcher pools, and the pools reach two stores; the third flow's store is unhealthy, its probe keeps running, and its calls are refused before they queue](img/rfc3-overview.svg)
+
 `name` is the block's name ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)) and everything [RFC 8 §6.1](rfc-8-remote-tier.md#6.1%20The%20exported%20read%20takes%20the%20expected%20hash)'s
 verified read needs. The syncer passes it through and **MUST NOT** interpret it.
 
@@ -324,6 +326,8 @@ indistinguishable from having written them once.
 
 ![A put whose response was lost leaves three indistinguishable remote states; a retry under the same content-derived name converges all three to one object](img/rfc3-unknown-outcome.svg)
 
+![Three orders of naming and recording a block, each crashed at its worst moment: a key recorded before the put leaves a dangling reference, a put before the record leaves an orphan only a listing can find, and a key derived from the content makes the retry write the same object](img/rfc3-key-derivation.svg)
+
 ### 2.6 Durability is observed, never inferred
 
 The syncer **MUST** report durability only on the acknowledgement [RFC 8 §5.6](rfc-8-remote-tier.md#5.6%20What%20acknowledgement%20means%20is%20the%20backend%27s%20to%20declare)
@@ -464,6 +468,8 @@ Each half runs its own scheduler over its own pool:
 A transfer at the head of its flow's queue is therefore dispatched within one
 round: at most one turn for each other flow with work waiting.
 
+![One DRR round with a 20 MiB quantum: a flow of 16 MiB blocks sends one and carries 4 MiB over, a flow of 4 MiB blocks sends five, a flow with one 20 MiB block sends it; below, the cap skipping a flow that already holds six of eight workers on a slow store](img/rfc3-drr-round.svg)
+
 All flows have equal weight. Weighting one flow over another is DRR's
 per-flow quantum and needs no other change; it is left out until an operator
 needs it.
@@ -567,10 +573,21 @@ The uploader **MUST** take a reference to the block's bytes in the journal and
 read them, chunk by chunk, while a worker transfers the block. It **MUST NOT**
 copy the block into memory when the block is queued.
 
+The reference is to the bytes **as offered for flush**, not to the file as it is
+now. A client may overwrite an extent while its block waits for a worker
+([RFC 1 §3.3](rfc-1-journal.md#3.3%20Flush)); a reference by file offset would then read the newer bytes, whose
+hash is not the block's. So the engine describes a block as a plan — its name and,
+per chunk, a hash and an offset into the offered version — and `src` reads the
+plan through the journal's `offered` reader, which keeps returning the offered
+bytes until the flush callback returns ([RFC 6 §5.1](rfc-6-engine.md#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output)). The syncer sees none of
+this: to it, `src` is a stream of chunks.
+
 The difference is the bound of [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound). A copy taken at queue time is held for the
 whole time the block waits for a worker, so peak memory follows the queue depth;
 a reference is materialised only while a worker is transferring, so it follows the
 pool size.
+
+![A block waiting for a worker holds only a plan of chunk hashes and offsets into the offered records; the worker walks the plan through the offered reader, re-hashing each chunk, and streams it to the store's put; a newer record written meanwhile is never read](img/rfc3-upload-plan.svg)
 
 ### 3.3 The journal keeps referenced bytes stable
 
@@ -617,7 +634,9 @@ unknown length needs no spool.
 
 The bytes a put transfers **MUST NOT** change while it runs. [§3.3](#3.3%20The%20journal%20keeps%20referenced%20bytes%20stable) supplies that
 for a journal reference; an implementation that transfers from anywhere else
-**MUST** supply it some other way.
+**MUST** supply it some other way. As a second line, `src` recomputes each
+chunk's hash as it reads and fails the transfer on a mismatch
+([RFC 6 §5.1](rfc-6-engine.md#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output)): a violation becomes a refused put, not a misnamed object.
 
 The name is a function of the content ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)), so content that changes mid
 transfer produces an object whose bytes do not match its name, and every later
@@ -637,6 +656,8 @@ Both **MUST** read the same bytes and neither **MAY** modify them. Each chunk is
 verified before either sees it, which is what makes one buffer safe for two
 readers. A reader waiting on one chunk of the block is answered when that chunk
 arrives, not when the whole block has.
+
+![A fetch is verifiable exactly when the caller can name a hash for what it returns: a chunk-aligned range is checked against the chunk's hash, an arbitrary byte range has no hash anywhere and would be returned on trust](img/rfc3-partial-retrieval.svg)
 
 ### 4.2 The reply neither waits on the fill nor fails with it
 
@@ -675,6 +696,8 @@ Joining is where the difficulty is, and each of these is required:
 - **A late caller gets what is still to come.** It receives the chunks not yet
   delivered when it joined. If the chunk it needs has already gone past, it
   starts a new fetch rather than waiting for one that will never bring it.
+
+![One block of six chunks fetched once: the first reader leaves after four chunks and the fetch goes on, a second reader joins after two and receives the remaining four, a third needs the first chunk after it has gone past and starts a new fetch](img/rfc3-joined-fetch.svg)
 
 ### 4.4 Speculation does not delay demand
 
@@ -734,7 +757,7 @@ clears it. Once attempts stop, none can succeed, so nothing ever sees the remote
 come back: a five-minute outage becomes permanent. A probe that keeps running
 while the store is unhealthy is what makes it recover on its own.
 
-![A latched flag suppresses the attempts that would observe the recovery, so it is never cleared; health derived from recent outcomes recovers on the next success](img/rfc3-health-latch.svg)
+![A latched flag suppresses the attempts that would observe the recovery, so it is never cleared; a probe that runs whether or not transfers do observes the recovery, and one success makes the store healthy again](img/rfc3-health-latch.svg)
 
 ## 6. Invariants
 
@@ -889,7 +912,7 @@ question to answer.
 | D4 | one probe interval, one failure turns unhealthy ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) | 30 s healthy, 5 s unhealthy, three failures to turn unhealthy, and a separate demand-fetch timeout | `engine/types.go:108`–`:111`, `:130`–`:133` |
 | D5 | the syncer is the only layer that retries ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) | the S3 SDK retries up to `maxAttempts` with backoff to 30 s, 429 included, beneath the syncer's own retries | `remote/s3/store.go:162`–`:170` |
 | D6 | a backend's client limit derived from the pools ([RFC 8 §5.9](rfc-8-remote-tier.md#5.9%20A%20backend%27s%20client%20never%20queues%20below%20the%20pools)) | fixed at 256 connections | `remote/s3/store.go:49` |
-| D7 | the uploader reads a journal reference and streams ([§3.2](#3.2%20It%20holds%20a%20reference%2C%20not%20a%20copy), [§1.3](#1.3%20Interface)) | the carver copies journal bytes into a block buffer before an upload slot is free, and the put sends the whole sealed block from a second in-memory buffer; per-transfer memory is two block-sized buffers and is stated nowhere. Which of this document and [RFC 6 §5.1](rfc-6-engine.md#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output) changes is undecided | `engine/flush_closure.go:112`–`:151`, `:425`; `engine/flush.go:397`–`:446` |
+| D7 | the uploader reads a journal reference and streams ([§3.2](#3.2%20It%20holds%20a%20reference%2C%20not%20a%20copy), [§1.3](#1.3%20Interface)) | the carver copies journal bytes into a block buffer before an upload slot is free, and the put sends the whole sealed block from a second in-memory buffer; per-transfer memory is two block-sized buffers and is stated nowhere. The fix is decided: a block plan read through the journal's offered reader ([RFC 6 §5.1](rfc-6-engine.md#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output), [RFC 1 §3.3](rfc-1-journal.md#3.3%20Flush)) | `engine/flush_closure.go:112`–`:151`, `:425`; `engine/flush.go:397`–`:446` |
 | D8 | a failed fill does not fail the read ([§4.2](#4.2%20The%20reply%20neither%20waits%20on%20the%20fill%20nor%20fails%20with%20it), S11) | the read is answered by re-reading the journal after the fill; a fill error fails the fetching caller and every joined one | `engine/fetch.go:669`–`:673`; `engine/read_internal.go:117`–`:131` |
 | D9 | a retry after an unknown outcome writes the same object ([§2.5](#2.5%20An%20unknown%20outcome%20is%20not%20a%20success)) | block names are 16 random bytes, so a retry writes a second object and the first is an orphan for GC; S5 still holds. Recorded as [RFC 2 §4.2.1](rfc-2-carver.md#4.2.1%20Deviation%20%E2%80%94%20a%20block%27s%20identity%20is%20generated%2C%20in%20two%20places) | `engine/flush.go:392`; `block/block_record.go:29`–`:35` |
 | D10 | one pool bounds fetches in flight ([§2.1](#2.1%20A%20worker%20pool%20is%20the%20only%20concurrency%20control), S1) | each demand read and each warm run builds its own fetch group of the configured size, beside the prefetch queue's own workers; fetches in flight, and their memory, grow with concurrent readers | `engine/fetch.go:31`–`:39`, `:540`–`:549`; `engine/warm.go:175`; `engine/sync_queue.go:89`–`:92` |

@@ -328,12 +328,29 @@ reaches its target and overshoots it by at most one chunk (P2); a block holds
 only the chunks whose bytes it carries (P3). The file's refs are a different
 reader of the same chunk sequence and name every chunk, carried or adopted.
 
-The carver's bytes are borrowed for the length of `emit` ([RFC 2 §2.2](rfc-2-carver.md#2.2%20The%20bytes%20handed%20to%20%60emit%60%20are%20borrowed)). The engine
-copies a carried chunk into the pending block's buffer once, and that buffer is
-the block's for its whole life — framed, put and released when the commit
-returns. The number of pending and in-flight block buffers is bounded by the
-upload pool ([RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound)); an assembler that allocates ahead of the pool has
-moved the memory bound somewhere nobody stated.
+**A pending block is a plan, not a buffer.** The carver's bytes are borrowed for
+the length of `emit` ([RFC 2 §2.2](rfc-2-carver.md#2.2%20The%20bytes%20handed%20to%20%60emit%60%20are%20borrowed)), and the engine **MUST NOT** copy a carried chunk
+out of them. It records, per carried chunk, the chunk's hash and where its bytes
+sit in the offered version — an offset and a length in the file — and a block is
+its name plus that ordered list: a few hundred bytes, whatever its size.
+
+The upload's `src` ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)) walks the plan and reads each chunk from the
+journal's `offered` reader ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Flush)), so the block's bytes are in memory
+only while a worker transfers them, one chunk at a time ([RFC 3 §3.2](rfc-3-syncer.md#3.2%20It%20holds%20a%20reference%2C%20not%20a%20copy)). A retry
+walks the plan again. The upload therefore runs inside the `Flush` callback that
+offered the bytes: the reader is valid only there, which is also where durability
+is reported back.
+
+`src` **MUST** recompute each chunk's hash as it reads and fail the transfer on a
+mismatch. The offered reader makes a mismatch impossible by construction; the
+check turns a violation of that into a refused put rather than an object whose
+bytes do not match its name ([RFC 3 §3.5](rfc-3-syncer.md#3.5%20The%20bytes%20are%20stable%20for%20the%20duration)).
+
+The price is reading each carried byte twice, once to carve and once to upload.
+The second read follows the first by the time a worker takes the block, usually
+from the page cache, otherwise as a sequential local read — cheap beside the
+network the upload waits on. A buffer would save that read and make memory follow
+the number of blocks *waiting* for a worker rather than the pool.
 
 An assembler is per file and per pass. One **MUST NOT** be shared between two
 files or survive its pass: it would interleave two files' chunks into one block.
@@ -864,9 +881,10 @@ runs against the engine as production composes it ([RFC 1 §11.5](rfc-1-journal.
    hottest refcount in the system. The engine sees the chunks before assembly and
    could do it, but it changes existence from the flush path, which [RFC 4 §5.1](rfc-4-block-metadata.md#5.1%20No%20record%20is%20written%20by%20both%20paths)
    forbids. Where the recognition belongs is unsettled.
-5. **Copies on the flush path** ([§5.1](#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output), [RFC 2 §10](rfc-2-carver.md#10.%20Open%20questions) question 5). The requirement is one copy
-   into the block buffer; whether framing and sealing can write in place over it,
-   and what that saves on the production CPU, is unmeasured.
+5. **Copies on the flush path** ([§5.1](#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output), [RFC 2 §10](rfc-2-carver.md#10.%20Open%20questions) question 5). **Answered in design:** no
+   copy at carve time; the block is a plan and the upload re-reads the offered
+   bytes. What the second local read costs against the saved memory is measured
+   by [RFC 3 §7.4](rfc-3-syncer.md#7.4%20Benchmarks) B1 and [RFC 1 §11.6](rfc-1-journal.md#11.6%20Benchmarks) J1, and is unmeasured.
 6. **Key scope** ([§5.4](#5.4%20A%20block%27s%20name%20is%20derived%20here)). The proposal forgoes cross-share dedup. Whether any
    deployment wants it enough to accept one metadata store per remote namespace
    is a product question, not a measurement.
