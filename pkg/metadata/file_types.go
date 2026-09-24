@@ -2,7 +2,7 @@ package metadata
 
 import (
 	"encoding/json"
-	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -10,7 +10,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
-	metaerrors "github.com/marmos91/dittofs/pkg/metadata/errors"
 )
 
 // File represents a file's complete identity and attributes.
@@ -295,17 +294,21 @@ func (a *FileAttr) LookupEA(name string) ([]byte, bool) {
 // since a partial apply would persist a set the next read has to tolerate but no
 // write could produce.
 //
-// Every EA write in the tree lands here, which is why the bound lives here
-// rather than at each caller: SetXattr passes one mutation, the SMB EA channel
+// The bound lives here rather than at each caller because every caller that adds
+// EA bytes goes through here: SetXattr passes one mutation, the SMB EA channel
 // passes a whole decoded chain, and both must be bounded by the same rule.
+//
+// decision: that is a property of the callers, not a structure that enforces it.
+// Assigning FileAttr.EAs and persisting the record bypasses the bound entirely,
+// and CreateFile takes a *FileAttr whose EAs map nothing stops a caller filling —
+// no caller does today, which is the only reason the bound is total. A caller that
+// populates EAs anywhere but through a mutation needs the check at its own site.
 func (a *FileAttr) ApplyEAMutations(muts []EAMutation) error {
 	// Built beside the live map rather than folded into it, so a refusal needs
 	// no rollback. ponytail: one map copy per EA write; the write it guards
 	// already re-encodes the whole set, so this is not where the cost is.
 	next := make(map[string][]byte, len(a.EAs)+len(muts))
-	for k, v := range a.EAs {
-		next[k] = v
-	}
+	maps.Copy(next, a.EAs)
 
 	// A mutation resolves its name against the mutations before it, not only
 	// against the stored set, so two sets naming the same EA in one chain land
@@ -340,14 +343,8 @@ func (a *FileAttr) ApplyEAMutations(muts []EAMutation) error {
 	// exceeds the cap — recorded by a build that had no cap, which still decodes
 	// — with no way to trim it back. Withdraw the exemption only if a delete can
 	// ever grow the encoded form.
-	if sets {
-		size, err := encodedEABytes(next)
-		if err != nil {
-			return err
-		}
-		if size > XattrTotalMaxBytes {
-			return ErrXattrTooLarge
-		}
+	if sets && encodedEABytes(next) > XattrTotalMaxBytes {
+		return ErrXattrTooLarge
 	}
 
 	a.EAs = next
@@ -360,27 +357,18 @@ func (a *FileAttr) ApplyEAMutations(muts []EAMutation) error {
 // bytes is what makes the bound cover names and framing too — at ~22 bytes of
 // object overhead per entry, a set of many tiny EAs is almost entirely framing,
 // and a value-bytes-only bound would not see it at all.
-func encodedEABytes(eas map[string][]byte) (int, error) {
-	if len(eas) == 0 {
-		return 0, nil
-	}
-	encoded, err := json.Marshal(eas)
-	if err != nil {
-		return 0, &StoreError{
-			Code:    metaerrors.ErrInvalidArgument,
-			Message: fmt.Sprintf("encode extended attributes: %v", err),
-		}
-	}
-	return len(encoded), nil
+//
+// decision: the marshal error is dropped and a failure measures 0, which admits
+// the set. A map[string][]byte holds nothing encoding/json rejects — no channel,
+// func, cycle or NaN can reach it — so there is no input that takes that branch.
+// Withdraw it if the EA value type ever stops being a plain byte slice.
+func encodedEABytes(eas map[string][]byte) int {
+	encoded, _ := json.Marshal(eas)
+	return len(encoded)
 }
 
 // findEAKey returns the EA key in eas matching name case-insensitively, and
 // whether a match exists.
-//
-// ponytail: an exact hit is a map lookup, a miss is a full scan, so applying a
-// chain of n new names costs O(n²) case-folded compares. XattrTotalMaxBytes is
-// what makes that a bounded cost rather than an open one; add a folded-key index
-// beside the map only if a profile of a real EA chain shows the scan.
 func findEAKey(eas map[string][]byte, name string) (string, bool) {
 	if eas == nil {
 		return "", false

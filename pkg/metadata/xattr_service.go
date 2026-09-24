@@ -39,7 +39,7 @@ func (s *Service) GetXattr(ctx *AuthContext, handle FileHandle, name string) ([]
 }
 
 // SetXattr writes the xattr value into the inline backing when it fits
-// (<= XattrInlineMaxBytes) and the file's whole EA set still encodes within
+// (<= XattrInlineMaxBytes) and the file's whole set still fits
 // XattrTotalMaxBytes; either bound exceeded returns ErrXattrTooLarge. Requires
 // WRITE permission and is denied on a read-only share (per-user ceiling).
 func (s *Service) SetXattr(ctx *AuthContext, handle FileHandle, name string, value []byte) error {

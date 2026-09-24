@@ -150,14 +150,18 @@ func TestEncodeFullEaInformation_SkipsOversized(t *testing.T) {
 
 func TestFileAttrEAHelpers_CaseInsensitiveAndPreserveCase(t *testing.T) {
 	a := &metadata.FileAttr{}
-	a.ApplyEAMutations([]metadata.EAMutation{{Name: "MixedEA", Value: []byte("v1")}})
+	if err := a.ApplyEAMutations([]metadata.EAMutation{{Name: "MixedEA", Value: []byte("v1")}}); err != nil {
+		t.Fatalf("ApplyEAMutations(MixedEA): %v", err)
+	}
 
 	if v, ok := a.LookupEA("mixedea"); !ok || !bytes.Equal(v, []byte("v1")) {
 		t.Fatalf("case-insensitive lookup failed: %v %v", v, ok)
 	}
 
 	// Upsert under a different casing updates in place and keeps original case.
-	a.ApplyEAMutations([]metadata.EAMutation{{Name: "MIXEDEA", Value: []byte("v2")}})
+	if err := a.ApplyEAMutations([]metadata.EAMutation{{Name: "MIXEDEA", Value: []byte("v2")}}); err != nil {
+		t.Fatalf("ApplyEAMutations(MIXEDEA upsert): %v", err)
+	}
 	if len(a.EAs) != 1 {
 		t.Fatalf("case-different upsert created a duplicate: %v", a.EAs)
 	}
@@ -169,7 +173,9 @@ func TestFileAttrEAHelpers_CaseInsensitiveAndPreserveCase(t *testing.T) {
 	}
 
 	// Delete via case-insensitive match leaves the map nil (omitempty form).
-	a.ApplyEAMutations([]metadata.EAMutation{{Name: "mixedea", Delete: true}})
+	if err := a.ApplyEAMutations([]metadata.EAMutation{{Name: "mixedea", Delete: true}}); err != nil {
+		t.Fatalf("ApplyEAMutations(delete): %v", err)
+	}
 	if a.EAs != nil {
 		t.Fatalf("deleting the last EA must nil the map, got %v", a.EAs)
 	}

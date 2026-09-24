@@ -302,16 +302,11 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 			}
 			if muts := eaMutationsFromEntries(entries); len(muts) > 0 {
 				metaSvc := h.Registry.GetMetadataService()
-				// decision: a refused EA chain leaves the created file in place
-				// with no EAs rather than failing the CREATE, which is what
-				// MS-FSA §2.1.5.1.1 ("Creation of a New File") would have the
-				// server do. The file entity already exists at this point and
-				// unwinding it is a delete this handler does not own, so the
-				// client is told the open succeeded and its attributes silently
-				// did not — including a chain refused for exceeding
-				// metadata.XattrTotalMaxBytes. Withdraw this once the create can
-				// be rolled back, or once the EA chain is applied before the
-				// entity is committed.
+				// decision: a refused chain leaves the file created with no EAs
+				// and still reports the open as succeeding, because the entity is
+				// already committed here and unwinding it is a delete this
+				// handler does not own. Withdraw it once the chain can be applied
+				// before the create commits.
 				if _, setErr := metaSvc.SetFileAttributes(authCtx, fileHandle, &metadata.SetAttrs{EAMutations: muts}); setErr != nil {
 					logger.Debug("CREATE: failed to apply EA_BUFFER", "path", baseName, "error", setErr)
 				} else if updated, getErr := metaSvc.GetFile(authCtx.Context, fileHandle); getErr == nil {

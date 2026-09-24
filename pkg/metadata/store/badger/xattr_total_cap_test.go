@@ -40,39 +40,40 @@ func attrBlobSize(t *testing.T, s *BadgerMetadataStore, id uuid.UUID) int64 {
 	return size
 }
 
+// maxSizeAttempts is more values at the per-value ceiling than the total bound can
+// hold, so a run that accepts them all has no bound at all. Uncapped, 24 of them
+// put 2 MiB in the attr blob.
+const maxSizeAttempts = 24
+
 // fillMaxSizeXattrs sets xattrs at the per-value ceiling one at a time until one
 // is refused, returning how many landed and that refusal. Nothing else about the
 // store is assumed: each call is the ordinary SetXattr path a client drives.
-func fillMaxSizeXattrs(t *testing.T, s *BadgerMetadataStore, h metadata.FileHandle, limit int) (int, error) {
+func fillMaxSizeXattrs(t *testing.T, s *BadgerMetadataStore, h metadata.FileHandle) (int, error) {
 	t.Helper()
 	ctx := context.Background()
+	// Content does not matter: the encoded size of a []byte is its length.
 	value := make([]byte, metadata.XattrInlineMaxBytes)
-	for i := range value {
-		value[i] = byte('a' + i%26)
-	}
-	for i := range limit {
+	for i := range maxSizeAttempts {
 		if err := s.SetXattr(ctx, h, fmt.Sprintf("user.a%06d", i), value); err != nil {
 			return i, err
 		}
 	}
-	return limit, nil
+	return maxSizeAttempts, nil
 }
 
 // smallXattrChain builds count mutations whose values are one byte each and whose
 // names are long, so the set's cost is almost entirely names and JSON framing
 // rather than value bytes. This is the regime a bound measured on value bytes
 // alone cannot see.
-func smallXattrChain(count int) ([]metadata.EAMutation, int) {
+func smallXattrChain(count int) []metadata.EAMutation {
 	muts := make([]metadata.EAMutation, count)
-	valueBytes := 0
 	for i := range muts {
 		muts[i] = metadata.EAMutation{
 			Name:  fmt.Sprintf("user.%s%06d", strings.Repeat("n", 180), i),
-			Value: []byte{byte('a' + i%26)},
+			Value: []byte{'x'},
 		}
-		valueBytes += 1
 	}
-	return muts, valueBytes
+	return muts
 }
 
 // TestXattrTotalStaysUnderValueThreshold is the size guard. However many
@@ -97,7 +98,7 @@ func TestXattrTotalStaysUnderValueThreshold(t *testing.T) {
 		_, id, err := metadata.DecodeFileHandle(h)
 		require.NoError(t, err)
 
-		set, setErr := fillMaxSizeXattrs(t, store, h, 24)
+		set, setErr := fillMaxSizeXattrs(t, store, h)
 		require.ErrorIs(t, setErr, metadata.ErrXattrTooLarge,
 			"the set must be bounded; %d values at %d bytes were all accepted",
 			set, metadata.XattrInlineMaxBytes)
@@ -119,8 +120,10 @@ func TestXattrTotalStaysUnderValueThreshold(t *testing.T) {
 		require.Len(t, names, set, "every accepted xattr must still be listed")
 	})
 
-	// Regime two: many tiny values. The SMB EA channel delivers a whole chain in
-	// one call, so that is how it is driven here.
+	// Regime two: many tiny values, whose cost is names and framing rather than
+	// value bytes. That the bound charges them at all is the conformance suite's
+	// assertion (XattrOps/TotalCountsNamesAndFraming, which badger runs); what only
+	// badger can show is the size of the value the accepted set actually stores.
 	t.Run("ManySmallValues", func(t *testing.T) {
 		h := mkPayloadFile(t, store, "/s", root, "small.bin", "/small.bin", metadata.PayloadID("/small.bin"))
 		_, id, err := metadata.DecodeFileHandle(h)
@@ -129,20 +132,7 @@ func TestXattrTotalStaysUnderValueThreshold(t *testing.T) {
 		file, err := store.GetFile(ctx, h)
 		require.NoError(t, err)
 
-		// A chain whose value bytes come nowhere near the bound, but whose names
-		// and framing clear it several times over. A bound charged on value bytes
-		// alone accepts this, which is why the bound is measured on the encoding.
-		oversized, valueBytes := smallXattrChain(3000)
-		require.Less(t, valueBytes, metadata.XattrTotalMaxBytes,
-			"the point of this case is that its value bytes alone are legal")
-		require.ErrorIs(t, file.ApplyEAMutations(oversized), metadata.ErrXattrTooLarge,
-			"%d one-byte values carrying %d bytes of value must still be refused on their names and framing",
-			len(oversized), valueBytes)
-		require.Empty(t, file.EAs, "a refused chain must leave the set untouched")
-
-		// A chain that fits must store, and the blob it produces must stay in the
-		// LSM — the bound's whole purpose.
-		fits, _ := smallXattrChain(1000)
+		fits := smallXattrChain(1000)
 		require.NoError(t, file.ApplyEAMutations(fits))
 		require.NoError(t, store.UpdateAttrs(ctx, file))
 
@@ -188,15 +178,14 @@ func TestXattrAttrOnlyWriteDoesNotGrowValueLog(t *testing.T) {
 	_, id, err := metadata.DecodeFileHandle(h)
 	require.NoError(t, err)
 
-	// As many max-size xattrs as the file will take. Uncapped, 24 of these put
-	// 2 MiB in the attr blob — that is the regime the defect lives in.
-	set, setErr := fillMaxSizeXattrs(t, store, h, 24)
+	// As many max-size xattrs as the file will take — the regime the defect lives in.
+	set, setErr := fillMaxSizeXattrs(t, store, h)
 
 	// Logged, deliberately not asserted: uncapped this would fail here and the
 	// value-log assertion below — the one this test exists for — would never be
 	// reached. TestXattrTotalStaysUnderValueThreshold is what guards the threshold.
-	t.Logf("%d of 24 xattrs accepted (refused with %v), f: blob = %d bytes (threshold %d)",
-		set, setErr, attrBlobSize(t, store, id), threshold)
+	t.Logf("%d of %d xattrs accepted (refused with %v), f: blob = %d bytes (threshold %d)",
+		set, maxSizeAttempts, setErr, attrBlobSize(t, store, id), threshold)
 
 	before := dirBytes(t, dir)
 	t.Logf("before chmods: %v", before)

@@ -60,30 +60,26 @@ const XattrInlineMaxBytes = 64 * 1024
 // set holds, which XattrInlineMaxBytes on its own does not: any number of
 // individually-legal values still sum without limit.
 //
-// The bound exists because the EA set rides inside the file's attribute record,
-// so its size decides where that record lives. A backend that keeps large values
-// out of a log-structured tier only does so while the record stays small —
-// badger's ValueThreshold is 1 MiB — and past that point every attribute-only
-// write, a chmod or a utimes or a close, appends a fresh copy of the whole record
-// to a log whose reclamation is driven by compaction that such writes never
-// trigger. 24 values at XattrInlineMaxBytes reach 2 MiB of record, and 300 chmods
-// then write 592 MiB that nothing reclaims.
+// The set rides inside the file's attribute record, so its size decides where
+// that record lives. A backend keeps large values out of a log-structured tier
+// only while the record stays small — badger's ValueThreshold is 1 MiB — and past
+// that point every attribute-only write appends a fresh copy of the whole record
+// to a log that compaction, which such writes barely feed, never gets around to
+// reclaiming: 24 values at XattrInlineMaxBytes reach 2 MiB of record, after which
+// 300 chmods write 592 MiB nothing takes back.
 //
-// 256 KiB is four times under that 1 MiB threshold, which leaves the rest of the
-// record — a few hundred bytes of fixed fields plus an ACL bounded at
-// acl.MaxACECount entries — room it cannot plausibly use up, and covers a backend
-// whose encoding is less compact than the one measured here. It is far more
-// generous than the filesystems DittoFS presents itself as: ext4 holds a file's
-// whole attribute set in a single 4 KiB block, XFS caps one attribute at 64 KiB,
-// and NTFS fails a set past 64 KiB - 5 with STATUS_EA_TOO_LARGE (MS-FSA
-// §2.1.5.15.6 ("FileFullEaInformation")).
+// 256 KiB is four times under that threshold, which the rest of the record — a few
+// hundred bytes of fixed fields plus an ACL bounded at acl.MaxACECount entries —
+// cannot plausibly use up, and it is far more generous than the filesystems
+// DittoFS presents itself as: ext4 holds a file's whole set in one 4 KiB block,
+// XFS caps one attribute at 64 KiB, NTFS fails a set past 64 KiB - 5.
 //
-// Measured on the encoding, it admits two values at XattrInlineMaxBytes and not
-// more: encoding/json base64s a []byte, so a 64 KiB value costs 87384 bytes and a
-// third copy would clear the bound. That is deliberately the tight end of the
-// defensible range, because the two directions are not equally reversible —
-// raising the bound later takes nothing but this constant, while lowering it
-// strands every set already stored above the new value.
+// Measured on the encoding it admits two values at XattrInlineMaxBytes and no
+// more, since encoding/json base64s a []byte and a 64 KiB value therefore costs
+// 87384. That is the tight end of the defensible range on purpose: the two
+// directions are not equally reversible, because raising the bound later takes
+// nothing but this constant while lowering it strands every set already stored
+// above the new value.
 const XattrTotalMaxBytes = 256 * 1024
 
 // ErrXattrTooLarge is returned when an xattr write cannot be stored inline:
@@ -281,12 +277,9 @@ func withFileTx(ctx context.Context, files Files, handle FileHandle, fn func(Fil
 // ResolveSetXattr writes an xattr value into the inline backing when it fits
 // (<= XattrInlineMaxBytes), reusing ApplyEAMutations for case-insensitive,
 // casing-preserving upsert. Oversized values return ErrXattrTooLarge (PR1 does
-// not spill to a named-stream entity; see file header / issue #1285), and so
-// does a value that fits on its own but would push the file's whole EA set past
-// XattrTotalMaxBytes — ApplyEAMutations enforces that bound and leaves the set
-// untouched when it refuses. The replace case is charged correctly by
-// construction: the bound is measured on the resulting set, in which the old
-// value of an overwritten name is already gone.
+// not spill to a named-stream entity; see file header / issue #1285), and so does
+// a value that fits on its own but would carry the file's whole set past
+// XattrTotalMaxBytes — see ApplyEAMutations for that bound.
 func ResolveSetXattr(ctx context.Context, files Files, handle FileHandle, name string, value []byte) error {
 	if len(value) > XattrInlineMaxBytes {
 		return ErrXattrTooLarge

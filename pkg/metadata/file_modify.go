@@ -849,13 +849,11 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 				return nil, err
 			}
 		}
-		// Refused here so the caller sees the bound before any other field is
-		// committed. This is not where it is enforced, though: the fold onto the
-		// row inside the transaction runs the same check against committed state,
-		// and that one is what decides what is stored.
-		if err := file.ApplyEAMutations(attrs.EAMutations); err != nil {
-			return nil, err
-		}
+		// Not applied to this pre-transaction copy: its EA map is never persisted
+		// and never read again, because writeRow folds the mutations onto the row
+		// it re-reads inside the transaction and reports that row's attributes.
+		// Applying here as well would only encode the whole set a second time and
+		// leave two places claiming to enforce the bound.
 		modified = true
 	}
 

@@ -254,22 +254,21 @@ func testXattrTotalCountsNamesAndFraming(t *testing.T, factory StoreFactory) {
 		t.Fatalf("GetFile: %v", err)
 	}
 
+	// One value byte each, so the chain carries len(muts) value bytes in total.
 	muts := make([]metadata.EAMutation, 3000)
-	valueBytes := 0
 	for i := range muts {
 		muts[i] = metadata.EAMutation{
 			Name:  fmt.Sprintf("%s%06d", strings.Repeat("n", 180), i),
 			Value: []byte{'x'},
 		}
-		valueBytes++
 	}
-	if valueBytes >= metadata.XattrTotalMaxBytes {
-		t.Fatalf("fixture is wrong: its %d value bytes already exceed the bound, so it proves nothing about names", valueBytes)
+	if len(muts) >= metadata.XattrTotalMaxBytes {
+		t.Fatalf("fixture is wrong: its %d value bytes already exceed the bound, so it proves nothing about names", len(muts))
 	}
 
 	if err := file.ApplyEAMutations(muts); !errors.Is(err, metadata.ErrXattrTooLarge) {
-		t.Fatalf("ApplyEAMutations(%d one-byte values, %d value bytes total) err = %v, want ErrXattrTooLarge — the bound must charge names and framing",
-			len(muts), valueBytes, err)
+		t.Fatalf("ApplyEAMutations(%d one-byte values) err = %v, want ErrXattrTooLarge — the bound must charge names and framing",
+			len(muts), err)
 	}
 	if len(file.EAs) != 0 {
 		t.Fatalf("a refused chain left %d entries behind; it must be all-or-nothing", len(file.EAs))
