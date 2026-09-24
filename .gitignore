@@ -118,3 +118,6 @@ rig-*/
 # Local port/credential overrides for the root compose stack.
 docker-compose.override.yml
 .rfc-png/
+
+# Obsidian vault settings
+.obsidian/
