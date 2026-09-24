@@ -334,7 +334,7 @@ reader of the same chunk sequence and name every chunk, carried or adopted.
 **A pending block is a plan, not a buffer.** The carver's bytes are borrowed for
 the length of `emit` ([RFC 2 §2.2](rfc-2-carver.md#2.2%20The%20bytes%20handed%20to%20%60emit%60%20are%20borrowed)), and the engine **MUST NOT** copy a carried chunk
 out of them. It records, per carried chunk, the chunk's hash and where its bytes
-sit in the offered version — an offset and a length in the file — and a block is
+sit in the offered version — the file, an offset and a length — and a block is
 its name plus that ordered list: a few hundred bytes, whatever its size.
 
 The upload's `src` ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)) walks the plan and reads each chunk from the

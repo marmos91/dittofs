@@ -41,8 +41,8 @@
   <text x="16" y="158" class="rl">block plan</text>
   <rect x="140" y="140" width="300" height="58" rx="3" class="bg"/>
   <text x="152" y="158" class="m">name  = f(scope, h1..h4)</text>
-  <text x="152" y="174" class="m">chunks = [(h1,off,len) … (h4,off,len)]</text>
-  <text x="152" y="190" class="s">a few hundred bytes, whatever the block size</text>
+  <text x="152" y="174" class="m">chunks = [(h1,file,off,len) … (h4,file,off,len)]</text>
+  <text x="152" y="190" class="s">a few hundred bytes, one file or many</text>
   <path d="M183,98 L183,138" fill="none" stroke="#5b6472" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#a3u)"/>
   <path d="M273,98 L273,138" fill="none" stroke="#5b6472" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#a3u)"/>
   <text x="460" y="166" class="s">waits in its flow's queue holding only this</text>
