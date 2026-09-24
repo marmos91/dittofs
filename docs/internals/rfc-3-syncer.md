@@ -19,7 +19,7 @@ tags:
 **Depends on:** [RFC 0](rfc-0-data-lifecycle.md), for the terms and the residency function. [RFC 8](rfc-8-remote-tier.md) specifies
 the remote tier this component calls. [RFC 1](rfc-1-journal.md) supplies and receives the bytes.
 [RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block) names the blocks.
-**Audience:** anyone changing the component that moves blocks between the journal
+**Audience:** anyone changing the component that moves chunks between the journal
 and the remote tier.
 
 The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT** and **MAY** are
@@ -31,15 +31,16 @@ to be interpreted as in RFC 2119.
 
 - The syncer moves chunks between the journal and the remote tier: out as whole
   blocks, back as the chunks a read needs. It does nothing else.
-- It has two halves. The **uploader** puts boxed blocks out, one object each. The
+- It has two halves. The **uploader** puts boxed blocks out, one object each (a block is *boxed* once
+  the engine has packed its chunks, [RFC 2 §5](rfc-2-carver.md#5.%20Packing%3A%20three%20rules%2C%20not%20a%20component)). The
   **fetcher** gets remote-only chunks back, as a range of their block or as the
   whole block.
 - Each half is a worker pool of configurable size. That pool is the only
   concurrency control, and its size is the memory bound.
 - The uploader holds a *reference* into the journal, not a copy. The journal keeps
   those bytes stable until the upload reports.
-- The fetcher hands verified bytes to two consumers at once: the journal, which
-  fills them, and the engine, which answers the waiting read.
+- The fetcher hands verified chunks to its caller, the engine, which answers the
+  waiting read and may store them in the journal (a *fill*).
 - It names nothing, deletes nothing, decides nothing, and stores nothing.
 
 ---
@@ -49,7 +50,7 @@ to be interpreted as in RFC 2119.
 > **Move chunks between the journal and the remote tier, in both directions,
 > under a bound: out as whole blocks, back as the chunks that are needed.**
 
-The two directions are not symmetric, and the asymmetry is the design. A block is
+The two directions are deliberately asymmetric. A block is
 the unit of **storage**: one object, one name, written by one put, so it goes out
 whole. A chunk is the unit of **verification**: each carries its own hash, so any
 chunk can be read and checked on its own. A fetch therefore asks for the chunks it
@@ -65,7 +66,7 @@ local bytes originates in a fetch it performed.
 The syncer **MUST NOT**:
 
 - decide *what* to transfer, or *when*, or *why* — that is flush, eviction and
-  readahead policy ([RFC 0 §5.2](rfc-0-data-lifecycle.md#5.2%20Flush), [§8.1](rfc-0-data-lifecycle.md#8.1%20Evict), [RFC 6](rfc-6-engine.md));
+  read-ahead policy ([RFC 0 §5.2](rfc-0-data-lifecycle.md#5.2%20Flush), [§8.1](rfc-0-data-lifecycle.md#8.1%20Evict), [RFC 6](rfc-6-engine.md));
 - decide what to delete — that is sweep, which calls the remote tier directly
   ([RFC 0 §8.3](rfc-0-data-lifecycle.md#8.3%20Sweep), [RFC 7](rfc-7-gc.md));
 - derive a block's name ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block));
@@ -83,7 +84,7 @@ The syncer **MUST NOT**:
 | Triggered by | a block finished boxing | a read of bytes held only remotely |
 | Moves | one whole block per transfer | the chunks asked for, as a range of one block, or the whole block |
 | Reads from | the journal, by reference | the remote tier |
-| Writes to | the remote tier | the journal, and the reader waiting on it |
+| Writes to | the remote tier | its caller, which answers the read and may fill the journal |
 | Limited by | its own worker pool | its own worker pool |
 | Work is | known in advance, and unique | demanded, and may be duplicated |
 
@@ -185,9 +186,8 @@ so the bytes behind it **MUST** stay stable until `Upload` returns ([§3.3](#3.3
 journal reference back.
 
 **`Fetch`** is a demand: a reader is waiting. **`Prefetch`** is speculation
-([§4.4](#4.4%20Speculation%20does%20not%20delay%20demand)): nobody is waiting yet. They are two methods rather than one with a
-priority parameter so that which one a call site means is visible at the call
-site.
+([§4.4](#4.4%20Speculation%20does%20not%20delay%20demand)): nobody is waiting yet. They are separate methods, not one method with
+a priority parameter, so each call site shows which it means.
 
 **A fetch is a block range, named by chunks.** `want` names the chunks the caller
 needs, each by an opaque `ChunkRef` carrying its hash and its place in the object,
@@ -219,8 +219,9 @@ Both return a stream of chunks, and:
 **`Close`** stops accepting work and returns once every transfer in flight has
 ended, which [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) bounds. A call after `Close` **MUST** fail.
 
-There is no delete ([§1.1](#1.1%20Non-goals)). Health is not a method here: the syncer probes each
-store itself and refuses work for an unhealthy one; `Healthy` reports the result ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)).
+`Store` has no health method, only `Probe`: the syncer probes each store itself
+and refuses work for an unhealthy one, and `Flow.Healthy` reports the result
+([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)).
 
 ### 1.4 It is testable on its own
 
@@ -262,8 +263,8 @@ S17); the order calls reached it (S13, S18); attempts per block; bytes it holds.
 
 **Memory is checked by holding, then measuring.** With every call held and every
 pool full, the heap in use above the idle baseline **MUST** stay within the bound
-of [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound) plus a stated slack. Blocks tens of MiB in size make the runtime's own
-noise negligible against the bound.
+of [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound) plus a stated slack. The test chooses the chunk `Max` and pool size large
+enough that the runtime's own noise stays under that slack.
 
 The fake covers the syncer's logic. It does not cover the adapter from the remote
 tier to `Store`, nor a real backend's failure modes; those run the same checks
@@ -293,18 +294,18 @@ at most `Max` ([RFC 2](rfc-2-carver.md), B3), so:
 `peak memory of a half = pool size × (chunk Max + one record's framing)`
 
 That holds only if nothing on the path buffers the whole object. Where a stage
-does — a backend SDK that needs the body in memory to sign or retry it — the
+does — a backend SDK that needs the body in memory to sign it — the
 per-transfer figure is the largest block instead, the block target plus one chunk
 ([RFC 2 §5](rfc-2-carver.md#5.%20Packing%3A%20three%20rules%2C%20not%20a%20component), P2). An implementation **MUST** state which applies to each backend it
 uses, and **MUST** be able to state the resulting number for its configuration,
 because it is what an operator sizes the pools from ([§8](#8.%20Open%20questions)). The whole process's
 bound is the uploader's number plus the fetcher's.
 
-The limit belongs to the syncer, not to each backend, because memory runs out for
-the whole process, not for one backend. A limit set per backend cannot bound the
-process. Several shares can use the same backend, so its limit would have to cover
+The limit belongs to the syncer, not to each store, because memory runs out for
+the whole process, not for one store. A limit set per store cannot bound the
+process. Several shares can use the same store, so its limit would have to cover
 all their traffic together, and one share's traffic can go to more than one
-backend, so no single backend's limit covers it. Only a limit set where all the
+store, so no single store's limit covers it. Only a limit set where all the
 transfers happen, in the syncer, adds up to a number the process can hold.
 
 ### 2.3 Backpressure propagates; it does not buffer
@@ -340,7 +341,7 @@ per-transfer timeout is too short for a maximum-size block on a slow link and fa
 too long for a connection that has stopped moving. A transfer **MUST** instead
 fail when its throughput stays below a stated floor for a stated interval, the
 rule curl applies as `--speed-limit` / `--speed-time` and the AWS Common Runtime
-S3 client applies by default (at least 1 byte per second over 30 seconds). Time to
+S3 client applies by default (at least 1 byte per second over 30 s). Time to
 the first byte is bounded separately, since a request can stall before any byte
 moves.
 
@@ -354,8 +355,9 @@ alongside the first and taking whichever answers ("hedging", Dean and Barroso,
 requests; it is deferred until a measurement of cold-read latency asks for it.
 
 **The syncer is the only layer that retries.** A backend's client makes one
-attempt per call and returns its error ([RFC 8 §5.7.1](rfc-8-remote-tier.md#5.7.1%20Deviation%20%E2%80%94%20the%20SDK%20retries%20inside%20the%20store)). Retrying is
-state across operations, which is the syncer's ([RFC 8 §2.1](rfc-8-remote-tier.md#2.1%20The%20rule%3A%20one%20operation%2C%20or%20many)); two layers
+attempt per call and returns its error ([RFC 8 §5.7](rfc-8-remote-tier.md#5.7%20A%20backend%20holds%20no%20state%20that%20spans%20operations); today's code differs,
+[RFC 8 §5.7.1](rfc-8-remote-tier.md#5.7.1%20Deviation%20%E2%80%94%20the%20SDK%20retries%20inside%20the%20store)). Retrying needs state across operations, and that state
+is the syncer's ([RFC 8 §2.1](rfc-8-remote-tier.md#2.1%20The%20rule%3A%20one%20operation%2C%20or%20many)); two layers
 that each retry multiply into a number of attempts nobody stated. A streamed body
 also cannot be rewound by a client that has already sent part of it: only the
 syncer, which can call `src` again ([§1.3](#1.3%20Interface)), can retry one.
@@ -407,8 +409,9 @@ What acknowledgement means is declared per backend ([RFC 8 §5.6](rfc-8-remote-t
 The syncer **MUST NOT** persist durability, residency or health. It returns what
 it observed; [RFC 4](rfc-4-block-metadata.md) records it and [RFC 1](rfc-1-journal.md) is told ([RFC 0 §4.3](rfc-0-data-lifecycle.md#4.3%20Reporting)).
 
-A syncer that kept its own durable record of what it moved would introduce a third
-oracle, which disagrees with the other two after any crash, and nothing in the
+A syncer that kept its own durable record of what it moved would be a third
+record beside block metadata ([RFC 4](rfc-4-block-metadata.md)) and the journal. After a crash it can
+disagree with both, and nothing in the
 residency model resolves a three-way disagreement.
 
 ### 2.8 An unhealthy store refuses work
@@ -481,9 +484,9 @@ flow's read behind all of them. Neither can a pool per flow, whose total grows
 with the number of flows and breaks [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound).
 
 The design is taken whole from two sources rather than invented:
-**Deficit Round Robin** (Shreedhar and Varghese, SIGCOMM 1995), the scheduler Linux
-traffic control ships as `tc-drr`, and the queuing around it from **Kubernetes API
-Priority and Fairness** (KEP-1040), which solves the same problem: one shared
+**Deficit Round Robin** (DRR; Shreedhar and Varghese, SIGCOMM 1995), the scheduler Linux
+traffic control ships as `tc-drr`, and the queueing around it from **Kubernetes API
+Priority and Fairness** (APF, KEP-1040), which solves the same problem: one shared
 concurrency pool, many flows, none allowed to starve another. APF's term is
 used here for the same reason: a flow is whatever the caller wants kept apart.
 
@@ -517,8 +520,9 @@ Each half runs its own scheduler over its own pool:
 - **A waiting transfer leaves its queue when its `ctx` ends**, and a transfer to
   an unhealthy store never enters one ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)).
 
-A transfer at the head of its flow's queue is therefore dispatched within one
-round: at most one turn for each other flow with work waiting.
+A *round* is one visit to every flow with work waiting. A transfer at the head of
+its flow's queue is therefore dispatched within one round — at most one turn for
+each other flow with work waiting — unless its own flow is at its cap.
 
 ![One DRR round with a 20 MiB quantum: a flow of 16 MiB blocks sends one and carries 4 MiB over, a flow of 4 MiB blocks sends five, a flow with one 20 MiB block sends it; below, the cap skipping a flow that already holds six of eight workers on a slow store](img/rfc3-drr-round.svg)
 
@@ -540,7 +544,7 @@ network, so the count that keeps a link busy follows latency and bandwidth: by
 Little's law, workers ≈ throughput × time per transfer ÷ block size. At a 200 ms
 transfer of a 16 MiB block, 32 workers sustain about 2.5 GiB/s, beyond most links.
 Deriving it from cores would also scale memory with cores — 128 fetchers on a
-64-core host is 2 GiB at a 16 MiB chunk `Max` — while a small VM on a fast link
+64-core host is 2 GiB at a 16 MiB largest block, when a stage buffers — while a small VM on a fast link
 gets too few.
 
 Each is a memory budget as much as a concurrency limit ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)), and the
@@ -594,7 +598,8 @@ It **MUST**:
 - **print the pool size, not the knee.** One flow holds at most three quarters
   of a pool ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)), so a flow alone reaches the knee only in a pool of
   at least the knee ÷ 0.75;
-- **print the memory each size implies** at the configured chunk `Max` ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)),
+- **print the memory each size implies** at the largest block, the upper figure
+  of [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound),
   and cap the recommendation at a memory budget when one is given;
 - **with several stores, measure each and print the largest**, since one pool
   serves them all;
@@ -645,9 +650,11 @@ pool size.
 
 ### 3.3 The journal keeps referenced bytes stable
 
-While a reference is outstanding, the journal **MUST NOT** release, overwrite,
-relocate or compact the bytes it names, and **MUST** free them once the uploader
-reports.
+The journal keeps offered bytes stable until the flush callback that offered them
+returns ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Flush)): it **MUST NOT** release, overwrite, relocate or compact them
+before then. The engine runs the upload inside that callback
+([RFC 6 §5.1](rfc-6-engine.md#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output)), so no reference outlives it and `src` is never called after
+`Upload` returns.
 
 This is the other half of [§3.2](#3.2%20It%20holds%20a%20reference%2C%20not%20a%20copy) and it is a requirement on [RFC 1](rfc-1-journal.md), not on this
 component. A reference into storage that may move underneath it is a copy with
@@ -659,7 +666,8 @@ A block is transferred by a single put of the whole block ([RFC 8 §5.1](rfc-8-r
 does not complete **MUST NOT** leave the block retrievable and **MUST NOT** be
 reported durable.
 
-Where a backend transfers in parts, durability is the completion of the whole and
+Where a backend's client splits a put into parts beneath the syncer, durability
+is the completion of the whole and
 **MUST NOT** be inferred from the parts.
 
 The uploader **MUST NOT** use multipart uploads. A block is at most the block
@@ -706,7 +714,7 @@ one at a time, for two consumers:
 - the **journal**, which fills them so the next read is local ([RFC 0 §2.3](rfc-0-data-lifecycle.md#2.3%20Operations));
 - the **engine**, which answers the read that caused the fetch.
 
-Both **MUST** read the same bytes and neither **MAY** modify them. Each chunk is
+Both **MUST** read the same bytes and **MUST NOT** modify them. Each chunk is
 verified before either sees it, which is what makes one buffer safe for two
 readers. A reader waiting on one chunk of the block is answered when that chunk
 arrives, not when the whole block has.
@@ -728,10 +736,10 @@ When a fetch that will bring a chunk is already in flight, a second demand for
 that chunk **MUST** join it rather than start another.
 
 Without this, N readers arriving together on one cold chunk cost N transfers, N
-blocks against the [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound) bound, and N fills of identical bytes. The uploader needs
+times the per-transfer memory of [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound), and N fills of identical bytes. The uploader needs
 no equivalent rule, because a boxed block is work that exists once.
 
-Joining is where the difficulty is, and each of these is required:
+Joining requires each of the following:
 
 - **The fetch is keyed by block and chunk.** Two readers of one chunk join, wherever
   in the chunk each read starts; a reader of the whole block joins any fetch of
@@ -807,9 +815,9 @@ for an outage.
 last said ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)). A share's health is the engine's, computed from the store's
 state together with the outcomes of its own flushes ([RFC 6 §8.1](rfc-6-engine.md#8.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20flush%20included)).
 
-Neither **MAY** be a "remote is down" flag that stops attempts until something
+Neither **MUST** be a "remote is down" flag that stops attempts until something
 clears it. Once attempts stop, none can succeed, so nothing ever sees the remote
-come back: a five-minute outage becomes permanent. A probe that keeps running
+come back: a 5 min outage becomes permanent. A probe that keeps running
 while the store is unhealthy is what makes it recover on its own.
 
 ![A latched flag suppresses the attempts that would observe the recovery, so it is never cleared; a probe that runs whether or not transfers do observes the recovery, and one success makes the store healthy again](img/rfc3-health-latch.svg)
@@ -876,10 +884,10 @@ half-complete. A backend that always succeeds asserts nothing about any of them.
 | [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) no starvation | Saturate flow A with uploads to a store whose puts take seconds; issue one fetch on flow B; assert it starts within one round and flow A never holds more than its cap. |
 | [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) fair by bytes | Run two flows, one uploading maximum-size blocks and one small blocks; assert bytes transferred per flow stay within one quantum of each other. |
 | [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) bounded queue | Fill flow A's queue; assert A's next call is refused while flow B's calls are still accepted. |
-| [§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch) single flight | Demand one cold block from N readers at once; assert one transfer and one fill. |
+| [§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch) single flight | Demand one cold chunk from N readers at once, at different offsets within it; assert one `Get`. |
 | [§4.4](#4.4%20Speculation%20does%20not%20delay%20demand) priority | Saturate the fetch pool with speculation, then demand a block; assert the demand is not queued behind it. |
 | [§4.5](#4.5%20Speculation%20is%20executed%20here%20and%20decided%20elsewhere) pre-warm yields | Pre-warm a subtree larger than free journal capacity while writing; assert writes are not refused and demanded fetches are not delayed. |
-| [§5](#5.%20What%20belongs%20elsewhere) health recovers | Fail every transfer until unhealthy, restore the backend; assert health recovers with no external action and transfers resume. |
+| [§5](#5.%20What%20belongs%20elsewhere) health recovers | Fail the probe until the store is unhealthy — a failed transfer only triggers a probe — then restore the backend; assert it turns healthy and transfers resume with no external action. |
 
 ### 7.3 What must not stand in
 
@@ -889,8 +897,9 @@ half-complete. A backend that always succeeds asserts nothing about any of them.
 - **A backend that returns instantly MUST NOT be used for [§2](#2.%20What%20both%20halves%20obey) or [§4.4](#4.4%20Speculation%20does%20not%20delay%20demand).** With no
   latency the pool is never the binding constraint, so every check in those
   sections passes without exercising what it names.
-- **Lifetime counters MUST NOT be the source for health.** A since-start success
-  rate passes while the windowed view it is meant to test is broken.
+- **Transfer counts MUST NOT be the source for a store's health.** Health is the
+  latest probe's result ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)); a check that fails transfers to make a
+  store unhealthy tests a rule this document does not have.
 
 ### 7.4 Benchmarks
 
@@ -906,7 +915,7 @@ measured.
 | B1 | the syncer's own overhead | the same pool size, once through the syncer and once as raw calls on the fake store | throughput within a few percent of raw; no allocation per chunk once warm, buffers being reused |
 | B2 | scheduler cost | one transfer dispatched with 1, 10, 100 and 1,000 flows waiting | flat: DRR is O(1) per dispatch ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) |
 | B3 | fairness under load | one flow saturating uploads on a slow store; a second issuing fetches | the second flow's p99 wait within one round; the first never above its cap |
-| B4 | joined fetches | N readers on one cold block | one transfer, whatever N ([§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch)) |
+| B4 | joined fetches | N readers on one cold chunk | one transfer, whatever N ([§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch)) |
 | B5 | the real link | the syncer over MinIO locally and over S3 in the benchmark environment, at the pool sizes the sizing tool printed ([§2.11](#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) | within a few percent of the tool's raw figure; the gap is what the syncer costs on a real link |
 
 B1 to B4 run on any machine in seconds and belong in CI as regression checks
@@ -921,7 +930,7 @@ syncer: the pool never fills, so nothing it exists to do happens.
 Numbering is stable: an answered question keeps its number so that references to
 it stay valid.
 
-1. **Pool sizes.** Both bounds are memory bounds with a known formula, so both can
+1. **Pool sizes.** **Partly answered** by [§2.11](#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool). Both bounds are memory bounds with a known formula, so both can
    be set from a budget. What the right values are for a saturating SMB workload,
    and whether the halves contend enough on a shared link to need a joint cap
    rather than two independent ones, are unmeasured. The sizing tool answers the first ([§2.11](#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)); the second wants a third step that runs puts and gets together at their recommended sizes and compares the total against the sum of the two alone.
@@ -938,9 +947,9 @@ it stay valid.
 5. **Where the retry bound lives.** **Answered** in [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports): in the syncer
    only; the backend's client makes one attempt. Today's double retry is a
    deviation ([§9](#9.%20Deviations)).
-6. **No deviation pass has been run against this shape.** **Answered:** run
-   against `pkg/block/engine` and `pkg/block/remote`; its findings are
-   [§9](#9.%20Deviations) D7 to D18.
+6. **Deviation pass against this shape.** **Answered:** run against
+   `pkg/block/engine` and `pkg/block/remote`; its findings are
+   [§9](#9.%20Deviations) D7 to D19.
 7. **The put's length when the upload streams.** **Answered** in [§3.4](#3.4%20One%20put%20per%20block): the
    backend spools to a local file.
 8. **One syncer per share today.** Moved to [§9](#9.%20Deviations).
@@ -979,10 +988,10 @@ question to answer.
 | D9 | a retry after an unknown outcome writes the same object ([§2.5](#2.5%20An%20unknown%20outcome%20is%20not%20a%20success)) | block names are 16 random bytes, so a retry writes a second object and the first is an orphan for GC; S5 still holds. Recorded as [RFC 2 §4.2.1](rfc-2-carver.md#4.2.1%20Deviation%20%E2%80%94%20a%20block%27s%20identity%20is%20generated%2C%20in%20two%20places) | `engine/flush.go:392`; `block/block_record.go:29`–`:35` |
 | D10 | one pool bounds fetches in flight ([§2.1](#2.1%20A%20worker%20pool%20is%20the%20only%20concurrency%20control), S1) | each demand read and each warm run builds its own fetch group of the configured size, beside the prefetch queue's own workers; fetches in flight, and their memory, grow with concurrent readers | `engine/fetch.go:31`–`:39`, `:540`–`:549`; `engine/warm.go:175`; `engine/sync_queue.go:89`–`:92` |
 | D11 | one caller leaving does not cancel a joined fetch ([§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch)) | the shared fetch runs on the first caller's context, so its timeout or cancellation fails every caller that joined | `engine/fetch.go:537`, `:598`–`:608`, `:653` |
-| D12 | a fetch is joined per chunk, not per byte offset ([§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch)) | fetches are ranged reads of one chunk, which [§1.3](#1.3%20Interface) now also requires, but they are joined by chunk *and starting offset*, so two reads of one chunk from different offsets fetch it twice | `engine/fetch.go:340`, `:592`–`:595` |
+| D12 | a fetch is joined per chunk, not per byte offset ([§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch)) | fetches are ranged reads of one chunk, which [§1.3](#1.3%20Interface) permits, but they are joined by chunk *and starting offset*, so two reads of one chunk from different offsets fetch it twice | `engine/fetch.go:340`, `:592`–`:595` |
 | D13 | pre-warm never drives the journal to refusing writes ([§4.5](#4.5%20Speculation%20is%20executed%20here%20and%20decided%20elsewhere)) | a warm run fills until the journal reports full, then stops | `engine/warm.go:175`–`:196` |
 | D14 | an unhealthy store is probed at once on a transient failure, logs as [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) says, and its refusals name it | probing is on the ticker only, so a dead store takes traffic for about three intervals; the unhealthy line is a warning carrying a failure count and no store name or error; there is no periodic line; a refused call's error names neither the store nor the probe's error | `engine/sync_health.go:141`–`:181`, `:255`–`:258` |
-| D15 | everything but the two pool sizes is fixed and derived ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)) | further hard-coded values: a prefetch queue of 1000, a five-minute prefetch timeout, a 60-second demand timeout | `engine/sync_queue.go:49`–`:51`, `:186`; `engine/types.go:52` |
+| D15 | everything but the two pool sizes is fixed and derived ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)) | further hard-coded values: a prefetch queue of 1,000, a 5 min prefetch timeout, a 60 s demand timeout ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) replaces the last with a throughput floor) | `engine/sync_queue.go:49`–`:51`, `:186`; `engine/types.go:52` |
 | D16 | `Close` returns once every transfer has ended ([§1.3](#1.3%20Interface)) | each wait gives up after 30 s and returns anyway; demand fetches on reader goroutines are not tracked | `engine/sync_lifecycle.go:187`–`:203`; `engine/sync_queue.go:118`–`:123` |
 | D17 | the syncer decides nothing and persists nothing ([§1.1](#1.1%20Non-goals), [§2.7](#2.7%20It%20reports%3B%20it%20does%20not%20persist)) | the upload side decides when to carve and commits block records itself; the component this document describes does not exist as a boundary in code yet | `engine/carve_dispatch.go:37`–`:48`; `engine/flush.go:468` |
 | D18 | durability only on the backend's acknowledgement ([§2.6](#2.6%20Durability%20is%20observed%2C%20never%20inferred)) | a store's `durable` setting can declare the in-memory backend durable, and the commit rule then trusts it; not followed end to end | `runtime/shares/blockstore_config.go:856`–`:860`; `remote/memory/store.go:228` |
