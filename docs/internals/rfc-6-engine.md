@@ -596,6 +596,14 @@ them schedules it.
 Share health **MUST** be computed from recent outcomes and **MUST NOT** be a
 stored flag that suppresses the attempts that would clear it ([RFC 3 §5](rfc-3-syncer.md#5.%20What%20belongs%20elsewhere)). Its
 inputs include the outcomes of flush passes, not only the remote's liveness probe.
+Whether the store is reachable is the syncer's to say: it probes each store and
+refuses work for one whose probe fails ([RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work)). The engine reads that
+state through its flow's `Healthy` and **MUST NOT** probe the store again itself.
+The engine opens one syncer flow per share, on that share's store, when the
+share is added, and closes it when the share is removed ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)); the
+syncer never learns that a flow is a share. It
+**SHOULD** skip a flush pass for a share whose store is unhealthy rather than
+carve and pack blocks the syncer will refuse.
 
 Sustained inability to flush **MUST** be a health condition of the share ([RFC 0](rfc-0-data-lifecycle.md)
 [§10.2](rfc-0-data-lifecycle.md#10.2%20No%20state%20requires%20intervention%20to%20leave)), and **MUST** be distinguishable from the remote being unreachable: a flush
