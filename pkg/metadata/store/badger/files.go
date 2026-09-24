@@ -232,6 +232,16 @@ func (tx *badgerTransaction) manifestMaterialized(id uuid.UUID) (bool, error) {
 // these bytes. Skipping an identical write is what bounds a commit's cost to
 // the segments it actually changed; the read is served from the LSM and is far
 // cheaper than the write it avoids.
+//
+// decision: this widens the transaction's conflict read set. Badger's Txn.Get
+// calls addReadKey on an update transaction, so comparing every segment enters
+// every segment in the read set, where the previous blind Set entered none.
+// Two commits racing on one file's manifest now conflict instead of silently
+// taking the later writer's list, which is the outcome RFC 4 §4.4 wants — but
+// it is a widening, and the segmentation alone already fixes the unbounded
+// growth this change was written for. Withdraw the comparison, and write every
+// segment blindly, if commit conflicts on one file are ever measured to cost
+// more than the rewrites it saves.
 func (tx *badgerTransaction) segmentUnchanged(key, data []byte) (bool, error) {
 	item, err := tx.txn.Get(key)
 	if errors.Is(err, badgerdb.ErrKeyNotFound) {

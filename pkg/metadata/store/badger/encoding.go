@@ -35,7 +35,8 @@ import (
 // Data Type             Prefix   Key Format                              Value Type
 // ==================================================================================
 // File Data             "f:"     f:<uuid>                               File attrs (binary; JSON read-fallback)
-// File Manifest         "fm:"    fm:<uuid>                              []block.ChunkRef (JSON)
+// File Manifest         "fm:"    fm:<uuid>:<seq>                        []block.ChunkRef (JSON, one segment)
+// File Manifest (legacy) "fm:"    fm:<uuid>                              []block.ChunkRef (JSON, whole list)
 // Parent Relationships  "p:"     p:<childUUID>                          parentUUID (bytes)
 // Children Map          "c:"     c:<parentUUID>:<childName>             childUUID (bytes)
 // Child Name (reverse)  "cn:"    cn:<parentUUID>:<childUUID>            child name (bytes)
