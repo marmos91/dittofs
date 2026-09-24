@@ -441,8 +441,9 @@ These hold across components. No component can enforce any of them alone.
 | **I5** | Remote durability is reported, never inferred. |
 | **I6** | No component imports another component in this set. |
 | **I7** | Every stored record has a named reclamation path, and that path holds at the record's maximum size. |
+| **I8** | A serialization conflict is retried, never surfaced to the caller as an I/O error. The retry is bounded by the caller's deadline, and the backoff between attempts is randomised. |
 
-An implementation is conformant when all seven hold under concurrent operation,
+An implementation is conformant when all eight hold under concurrent operation,
 across crash and restart, and in every condition in §10.
 
 Each invariant **MUST** be tested at the component that consumes the data, not
@@ -491,6 +492,48 @@ RFC 1 §5.2 bounds the placement index by the same reasoning and requires its
 pressure be observable, but it is not an instance of I7: that index is held in
 memory and never stored, so nothing reclaims it and the failure is exhaustion
 rather than invisible growth.
+
+### 9.2 Conflicts and their retries
+
+I8 constrains what a caller is allowed to observe when two operations serialize
+against each other. It binds every component whose store detects write-write
+conflicts optimistically, which is every backend in this set: a conflict is how
+such a store reports that it did its job, not that it failed.
+
+**A serialization conflict MUST be retried, and MUST NOT reach the caller as an
+I/O error.** The conflict itself is expected and correct — the store observed two
+writers touching one key and aborted the loser so the winner's commit stays
+serializable. Turning that into a protocol-layer error tells a client its write
+failed when nothing is wrong with its write, with the store, or with the data.
+
+**The retry MUST be bounded by the caller's deadline rather than by a fixed
+attempt count.** A fixed budget encodes a guess about how much contention is
+possible, and a key hot enough to exceed it exists in every deployment large
+enough to matter. When the budget is the bound, the error a client sees is a
+statement about the constant, not about the system.
+
+**Backoff between attempts MUST be randomised.** Backoff computed as a function
+of the attempt number alone is not backoff: every loser of the same conflict
+waits the same interval and collides again on the next attempt, so a budget is
+consumed by a herd that re-forms each round rather than by genuine contention.
+An implementation whose "jitter" term is derived from the attempt counter has
+this defect regardless of how generous the budget is.
+
+> *Note.* A retried closure re-runs against state that has changed since it was
+> first called. Whether it may close over values read before the transaction
+> opened, or must re-read the rows it modifies, is **not settled here** — an
+> implementation that closes over pre-read state can re-propose a decision the
+> conflict was raised to prevent, which delays a lost update rather than
+> preventing it. Recorded so the question is inherited rather than rediscovered.
+
+Conformance is checked by driving concurrent writers at one deliberately shared
+key and asserting two things together: that conflicts **occur**, and that
+**none** reaches the caller. Asserting that no conflicts occur tests the wrong
+property — a workload that never conflicts exercises nothing, and a store that
+reports none is more likely miscounting than serializing. A correctness
+assertion **MUST NOT** stand in: every surviving writer's data is intact in the
+run that surfaces the error, because the error is raised instead of a write, not
+alongside a wrong one.
 
 ## 10. Failure model
 
