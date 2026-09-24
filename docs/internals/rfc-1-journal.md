@@ -681,6 +681,13 @@ An implementation **MUST NOT** silently degrade when the index grows: exceeding 
 configured entry bound **MUST** be reported through `Stats` and the recorder
 (§3.8), in the same way capacity is.
 
+This index is held in memory and never stored, so RFC 0 §9.1 (I7) does not reach
+it — nothing reclaims it, and the failure is exhaustion rather than growth no
+counter reports. I7 governs this component's *stored* artifacts instead: a
+segment catalog is reclaimed with the segment that carries it (§4.4), and the
+placement cache on invalidation (§9.1.1). The obligation here has the same shape
+for a different reason, which is why both are stated.
+
 ### 5.3 Versions
 
 Every record carries a version, and where two records cover the same offset the

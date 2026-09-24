@@ -440,13 +440,57 @@ These hold across components. No component can enforce any of them alone.
 | **I4** | Fill never overwrites content the journal holds. |
 | **I5** | Remote durability is reported, never inferred. |
 | **I6** | No component imports another component in this set. |
+| **I7** | Every stored record has a named reclamation path, and that path holds at the record's maximum size. |
 
-An implementation is conformant when all six hold under concurrent operation,
+An implementation is conformant when all seven hold under concurrent operation,
 across crash and restart, and in every condition in §10.
 
 Each invariant **MUST** be tested at the component that consumes the data, not
 the one that produces it. A test placed beside a producer can pass while the
 value is discarded downstream.
+
+### 9.1 Records and their reclamation
+
+I7 constrains the records themselves rather than the content they describe, and
+it binds every component that persists anything. It is an invariant and not a
+cost because components sharing a storage engine share its thresholds and its
+triggers: one component's unbounded record fills the store another component's
+records live in.
+
+**An implementation MUST be able to name what reclaims a stored record's
+superseded copies, and that answer MUST hold at the record's maximum size rather
+than its typical one.** A record that grows with use therefore **MUST** either be
+bounded, or carry a statement of what produces the trigger that reclaims it. An
+implementation that can state neither has an unbounded store and no way to see
+it.
+
+Where an engine relocates values past a threshold into a store reclaimed by a
+different trigger, a record that can cross that threshold **MUST** be bounded
+below it — by segmenting it, by spilling it into sibling records, or by not
+letting it grow. Relying on the relocated store's own reclamation pass is
+conformant only where the workload that writes the record is shown to produce
+that pass's trigger.
+
+**A bound MUST be computed from the record's worst-case encoding**, not from a
+fixture's. A sample whose values encode shorter than the worst case reports a
+margin the implementation does not have.
+
+> *Note.* This failure is invisible rather than merely expensive. Where the
+> relocated store's reclamation is driven by pressure on the store the record
+> left, each commit leaves a whole superseded copy behind while adding almost
+> nothing to the pressure that would reclaim it. Growth is unbounded and no
+> counter reports it, because by the engine's own accounting nothing is wrong.
+
+Conformance is checked per record type, at the record's maximum size: assert no
+single stored value reaches the engine's relocation threshold, then rewrite the
+record repeatedly and assert the relocated store does not grow. A correctness
+assertion **MUST NOT** stand in — an implementation that is leaking returns
+exactly the right data.
+
+RFC 1 §5.2 bounds the placement index by the same reasoning and requires its
+pressure be observable, but it is not an instance of I7: that index is held in
+memory and never stored, so nothing reclaims it and the failure is exhaustion
+rather than invisible growth.
 
 ## 10. Failure model
 
