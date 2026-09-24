@@ -14,6 +14,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 	mderrors "github.com/marmos91/dittofs/pkg/metadata/errors"
 	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
+	"github.com/marmos91/dittofs/pkg/metadata/store/internal/txretry"
 )
 
 // ============================================================================
@@ -60,15 +61,19 @@ type badgerTransaction struct {
 	pendingCapabilities *metadata.FilesystemCapabilities
 }
 
-// Maximum number of retries for conflict errors.
-// Set high because concurrent writes to the same file can cause many
-// conflicts. An atomic (not a const) so tests can lower it via
+// Sanity ceiling on conflict retries. It is NOT the bound that decides whether
+// a contended write succeeds — txretry.Deadline is, and it is generally reached
+// first: the jittered backoff spends the 5s budget in roughly 55 attempts. This
+// only stops a pathological hot key from spinning without end once the backoff
+// happens to draw short waits throughout.
+//
+// An atomic (not a const) so tests can lower it via
 // SetMaxTransactionRetriesForTest to deterministically exercise the
 // retry-exhausted path without racing the concurrent reads in
 // WithTransaction / updateWithConflictRetry under `go test -race`.
 var maxTransactionRetries = func() *atomic.Int32 {
 	v := &atomic.Int32{}
-	v.Store(20)
+	v.Store(200)
 	return v
 }()
 
@@ -104,10 +109,31 @@ func (s *BadgerMetadataStore) WithTransactionRelaxed(ctx context.Context, fn fun
 // data-paired writes survive a crash; when durable is false it relies on the
 // background syncer. In strict mode (SyncWrites=true) the flag is moot — every
 // commit already fsynced — so both paths behave identically.
+//
+// decision: a retried attempt re-runs fn as given; the loop does NOT require fn
+// to re-read the rows it modifies, so a closure that computed its write from
+// state read BEFORE the call re-proposes that same stale write on every attempt.
+// The manifest write path does not do this — every carve-commit, clobber-preserve
+// and reap closure resolves its File row through the txn it was handed
+// (ProjectCommittedChunks -> tx.GetFileByPayloadID) and merges only the rows of
+// its own batch into whatever it finds, under a per-payload lock in
+// pkg/block/engine/flush.go — so a retry there re-derives from the state that
+// committed in between and loses nothing. Callers that instead read outside the
+// call and hand the whole result in (Deallocate's PunchHole) carry a lost-update
+// window, but it is the unlocked read-then-write that opens it, not the retry:
+// it is equally there when the first attempt commits. Withdraw this if a hot,
+// concurrent path ever writes a wholesale list computed outside its txn — then
+// the contract, not the backoff, is what needs changing.
 func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx metadata.Transaction) error, durable bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+
+	// Backpressure deadline: retry a conflict until this budget elapses rather
+	// than returning one after a fixed attempt count — the same contract the SQL
+	// backends run under. Tightened to an earlier ctx deadline when the caller
+	// set one.
+	deadline := txretry.Deadline(ctx)
 
 	var lastErr error
 	for attempt := 0; attempt < int(maxTransactionRetries.Load()); attempt++ {
@@ -203,15 +229,19 @@ func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx me
 			// Record the SSI abort so tests can assert a workload stayed
 			// conflict-free (a shared hot key is the only thing that bumps this).
 			s.txnConflicts.Add(1)
-			// Linear backoff: (2*attempt + 1) ms, so attempt 0 sleeps 1ms and
-			// the last of the default 20 attempts sleeps 39ms, ~400ms total.
-			// The "jitter" term is a deterministic function of attempt, not a
-			// random one — concurrent losers of the same conflict back off on
-			// the same schedule.
-			baseDelay := time.Duration(1+attempt) * time.Millisecond
-			jitter := time.Duration(attempt) * time.Millisecond
-			time.Sleep(baseDelay + jitter)
-			continue
+			// Randomised full-jitter exponential backoff. Every loser of one
+			// conflict draws its own wait, so they re-enter spread out instead of
+			// colliding again as a herd — a shared schedule made each retry as
+			// contended as the attempt that failed, which is how eight writers to
+			// one file exhausted a 20-attempt budget and surfaced the conflict.
+			if txretry.Backoff(ctx, deadline, attempt) {
+				continue
+			}
+			// Budget spent, or the caller went away. Either way this contended
+			// write did not get through: report the conflict, which is what the
+			// callers that key off it (the object-ID dedup short-circuit) need to
+			// see, rather than the deadline that stopped the waiting.
+			break
 		}
 
 		// Non-retryable error

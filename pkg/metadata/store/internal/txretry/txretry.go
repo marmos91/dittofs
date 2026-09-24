@@ -1,5 +1,5 @@
-// Package txretry holds the transient-conflict backoff shared by the SQL
-// metadata backends (sqlite, postgres).
+// Package txretry holds the transient-conflict backoff shared by the metadata
+// backends (sqlite, postgres, badger).
 //
 // Both backends must backpressure under write contention — block-and-retry
 // until a real time budget elapses — rather than surfacing EIO to the caller
@@ -11,9 +11,11 @@
 // postgres 40001/40P01) are retried; that classification stays backend-local.
 //
 // The deadline computation and the jittered exponential backoff between
-// attempts are identical across the two backends, so they live here once. The
-// badger backend uses a structurally different loop (closure-based db.Update,
-// fixed attempt count, no time budget) and deliberately does not share this.
+// attempts are identical across the backends, so they live here once. Badger's
+// two loops (withTransaction, updateWithConflictRetry) retry badger's own SSI
+// ErrConflict on this same budget; they keep an attempt ceiling on top of it, as
+// a stop for a hot key whose backoff draws short waits throughout, but the
+// deadline is what normally ends the retrying there too.
 package txretry
 
 import (
