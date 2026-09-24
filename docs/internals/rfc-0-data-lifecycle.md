@@ -1,3 +1,13 @@
+---
+rfc: 0
+title: "RFC 0 — the data lifecycle"
+component: data lifecycle
+status: draft
+aliases:
+  - RFC 0
+tags:
+  - rfc
+---
 # RFC 0 — the data lifecycle
 
 **Status:** draft.
@@ -41,7 +51,7 @@ beyond its relationship to content.
 | **4** | block metadata | chunks, refs, blocks, refcounts, durability | byte placement, transport, namespace |
 | **5** | namespace metadata | files, directories, handles, permissions, locks | content bytes |
 | **6** | engine | composition, policy, the facade adapters call | every format and algorithm above |
-| **7** | GC | mark/sweep and remote deletion | local space (§8.1, §8.2) |
+| **7** | GC | mark/sweep and remote deletion | local space ([§8.1](#8.1%20Evict), [§8.2](#8.2%20Reclaim)) |
 
 ### 1.2 Component autonomy
 
@@ -57,7 +67,8 @@ A capability **MUST NOT** be negotiated by type assertion on an interface the
 provider does not declare it satisfies. A capability that is absent **MUST**
 produce a build failure, not a silent fallback.
 
-> *Note.* The type-assertion prohibition is specific: an assertion that fails
+> [!note]
+> The type-assertion prohibition is specific: an assertion that fails
 > yields a working program with silently degraded behaviour — an unindexed
 > lookup, a disabled guard — and no test observes it. A declared parameter
 > cannot fail this way.
@@ -90,7 +101,7 @@ fully described by its ordered list of chunk refs. Many refs MAY name one chunk.
 **Block** — the unit of transfer to and from the remote tier: a whole number of
 chunks addressed by one remote key. A block targets a configured size and MAY
 exceed it by at most one chunk, because **a block boundary is always a chunk
-boundary**. A chunk **MUST NOT** span two blocks (§2.2).
+boundary**. A chunk **MUST NOT** span two blocks ([§2.2](#2.2%20How%20a%20file%20relates%20to%20its%20chunks)).
 
 **Segment** — a local append-only file of records, capped at a configured size,
 sealed when full and immutable thereafter.
@@ -147,7 +158,7 @@ cut to make a block an exact size, then:
 - reading that chunk would require two transfers, and reading it during a
   partial fetch would require knowing it was split;
 - a refcount would have to describe parts of a chunk rather than a chunk, so
-  "is this chunk still referenced" — the question sweep depends on (§8.3) — would
+  "is this chunk still referenced" — the question sweep depends on ([§8.3](#8.3%20Sweep)) — would
   stop having a single answer.
 
 The rule costs at most one chunk of overshoot per block. Breaking it costs the
@@ -177,9 +188,9 @@ blocks and many files.
 | **box** | group chunks into one block |
 | **put** / **get** | make durable in the remote tier / retrieve from it |
 | **fill** | place retrieved remote bytes into the journal |
-| **evict** | release local bytes that are durable remotely (§8.1) |
-| **reclaim** | recover local space without losing content (§8.2) |
-| **sweep** | delete a remote block that nothing references (§8.3) |
+| **evict** | release local bytes that are durable remotely ([§8.1](#8.1%20Evict)) |
+| **reclaim** | recover local space without losing content ([§8.2](#8.2%20Reclaim)) |
+| **sweep** | delete a remote block that nothing references ([§8.3](#8.3%20Sweep)) |
 
 These words are disjoint and **MUST NOT** be used interchangeably. In
 particular, *evict*, *reclaim* and *sweep* differ in what they may destroy:
@@ -238,7 +249,7 @@ exactly one question.
 The journal **MUST NOT** record whether content exists or whether it was ever
 written, and **MUST NOT** be consulted about remote durability — it is not
 authoritative for it. It **MAY** record that it has been *told* an extent is
-durable, for the two internal purposes RFC 1 §2 permits: selecting flush
+durable, for the two internal purposes [RFC 1 §2](rfc-1-journal.md#2.%20The%20model%20it%20presents) permits: selecting flush
 candidates, and refusing an unsafe release. That record is never an answer.
 
 The metadata store **MUST NOT** record where bytes sit on local disk.
@@ -246,7 +257,7 @@ The metadata store **MUST NOT** record where bytes sit on local disk.
 **Neither oracle consults the other.** The journal requires no interface from the
 metadata store and **MUST NOT** acquire one. An extent it does not hold is reported
 as absent, with no judgement about why; resolving that absence is the engine's,
-in §6.1. A design in which the journal asks what exists reintroduces the single
+in [§6.1](#6.1%20Resolution). A design in which the journal asks what exists reintroduces the single
 oracle this section exists to remove.
 
 ### 4.2 The residency function
@@ -270,7 +281,8 @@ The function is total: every combination of the two answers yields exactly one
 residency. **Absent** and **Lost** are distinct, and an implementation **MUST**
 distinguish them — returning zeros for **Lost** is data loss reported as data.
 
-> *Note.* The distinction is the reason for the split. A single source cannot
+> [!note]
+> The distinction is the reason for the split. A single source cannot
 > tell "never written" from "no longer held", because both are the absence of a
 > local record. Two sources can, because only one of them is responsible for
 > knowing what exists.
@@ -317,14 +329,15 @@ journal marks exactly those extents
 The callback returns the extents that became durable. The journal **MUST** mark
 exactly those, and **MUST NOT** mark an extent for which no report was received.
 
-> *Note.* The callback shape exists because the acknowledgement has nowhere to
+> [!note]
+> The callback shape exists because the acknowledgement has nowhere to
 > live in a linear `write → carve → put` pipeline. The return edge is the only
 > path by which an extent becomes **Resident**.
 
 A flush that fails leaves every affected extent **Dirty**. Failure **MUST** be
 retryable without duplicating stored content: re-offering the same extent and
 re-deriving the same chunks **MUST** converge on the same chunk identities,
-which follows from chunking being deterministic (RFC 2).
+which follows from chunking being deterministic ([RFC 2](rfc-2-carver.md)).
 
 ## 6. The read path
 
@@ -334,9 +347,9 @@ which follows from chunking being deterministic (RFC 2).
    extents it does not.
 2. For each extent it does not hold, metadata is consulted for the covering
    chunk and its block.
-3. The residency function (§4.2) determines the outcome:
+3. The residency function ([§4.2](#4.2%20The%20residency%20function)) determines the outcome:
    - **Absent** — the extent is a hole. Return zeros.
-   - **Remote** — get the block, fill (§6.2), serve.
+   - **Remote** — get the block, fill ([§6.2](#6.2%20Fill)), serve.
    - **Lost** — fail. An implementation **MUST NOT** return zeros.
 
 ### 6.2 Fill
@@ -353,8 +366,8 @@ extent, serving it without retaining it. Declining is appropriate when retaining
 would displace content more likely to be read again, including under local
 capacity pressure and during large sequential reads.
 
-Whether to fill is policy and belongs to the engine (RFC 6). The mechanism and
-its concurrency safety belong to the journal (RFC 1).
+Whether to fill is policy and belongs to the engine ([RFC 6](rfc-6-engine.md)). The mechanism and
+its concurrency safety belong to the journal ([RFC 1](rfc-1-journal.md)).
 
 ## 7. Mutation and removal
 
@@ -368,7 +381,7 @@ past the new size.
 
 **Delete.** The namespace entry and all the file's chunk refs are removed, and
 each named chunk's refcount is decremented. Deletion **MUST NOT** remove content
-from the remote tier; that is sweep (§8.3), and it is asynchronous.
+from the remote tier; that is sweep ([§8.3](#8.3%20Sweep)), and it is asynchronous.
 
 ## 8. Reclamation
 
@@ -402,7 +415,7 @@ are.
 
 Reclaim is the umbrella; the mechanisms under it are **repack** (relocating live
 records out of a sparse segment and unlinking it), retiring a segment that holds
-nothing, and removing an unattachable file. RFC 1 §8.2 specifies them.
+nothing, and removing an unattachable file. [RFC 1 §8.2](rfc-1-journal.md#8.2%20Repack) specifies them.
 
 **"Compaction" is deliberately not used for any of these.** In an LSM that word
 names an operation that merges runs and *drops* superseded entries; in a
@@ -415,7 +428,7 @@ Sweep deletes blocks from the remote tier. It is the only operation in this
 system that deletes content anywhere, and the only one after which content
 cannot be recovered.
 
-Safety rests on reference counting, specified in RFC 4:
+Safety rests on reference counting, specified in [RFC 4](rfc-4-block-metadata.md):
 
 - a chunk carries the number of chunk refs naming it
 - a block carries the number of its chunks whose refcount is nonzero
@@ -426,7 +439,7 @@ A block **MUST NOT** be deleted while any chunk it contains is referenced.
 Reference counts are read at different instants from the state they describe. An
 implementation **MUST** ensure that content created or referenced after a sweep
 began cannot be deleted by that sweep, even when every individual observation
-was correct when made. RFC 7 specifies the protocol.
+was correct when made. [RFC 7](rfc-7-gc.md) specifies the protocol.
 
 ## 9. Invariants
 
@@ -444,7 +457,7 @@ These hold across components. No component can enforce any of them alone.
 | **I8** | A serialization conflict is retried, never surfaced to the caller as an I/O error. The retry is bounded by the caller's deadline, and the backoff between attempts is randomised. |
 
 An implementation is conformant when all eight hold under concurrent operation,
-across crash and restart, and in every condition in §10.
+across crash and restart, and in every condition in [§10](#10.%20Failure%20model).
 
 Each invariant **MUST** be tested at the component that consumes the data, not
 the one that produces it. A test placed beside a producer can pass while the
@@ -476,7 +489,8 @@ that pass's trigger.
 fixture's. A sample whose values encode shorter than the worst case reports a
 margin the implementation does not have.
 
-> *Note.* This failure is invisible rather than merely expensive. Where the
+> [!note]
+> This failure is invisible rather than merely expensive. Where the
 > relocated store's reclamation is driven by pressure on the store the record
 > left, each commit leaves a whole superseded copy behind while adding almost
 > nothing to the pressure that would reclaim it. Growth is unbounded and no
@@ -488,7 +502,7 @@ record repeatedly and assert the relocated store does not grow. A correctness
 assertion **MUST NOT** stand in — an implementation that is leaking returns
 exactly the right data.
 
-RFC 1 §5.2 bounds the placement index by the same reasoning and requires its
+[RFC 1 §5.2](rfc-1-journal.md#5.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes) bounds the placement index by the same reasoning and requires its
 pressure be observable, but it is not an instance of I7: that index is held in
 memory and never stored, so nothing reclaims it and the failure is exhaustion
 rather than invisible growth.
@@ -519,7 +533,8 @@ consumed by a herd that re-forms each round rather than by genuine contention.
 An implementation whose "jitter" term is derived from the attempt counter has
 this defect regardless of how generous the budget is.
 
-> *Note.* A retried closure re-runs against state that has changed since it was
+> [!note]
+> A retried closure re-runs against state that has changed since it was
 > first called. Whether it may close over values read before the transaction
 > opened, or must re-read the rows it modifies, is **not settled here** — an
 > implementation that closes over pre-read state can re-propose a decision the
@@ -542,10 +557,10 @@ Every condition below has exactly one specified behaviour.
 | Condition | Behaviour |
 | --- | --- |
 | **Remote tier unavailable** | Writes continue into the journal while capacity allows. No extent becomes **Resident**, so no extent becomes evictable. Reads of **Remote** extents fail; they **MUST NOT** return zeros. |
-| **Journal at capacity, remote available** | Evict (§8.1); if nothing is evictable, reclaim (§8.2); then accept the write. |
+| **Journal at capacity, remote available** | Evict ([§8.1](#8.1%20Evict)); if nothing is evictable, reclaim ([§8.2](#8.2%20Reclaim)); then accept the write. |
 | **Journal at capacity, remote unavailable** | Refuse the write. Every local extent is **Dirty**, and I2 forbids evicting it, so refusal is the only behaviour that does not lose data. |
-| **Metadata unwritable** | Flush fails; extents stay **Dirty**; §10.1 applies. |
-| **Crash** | On restart the journal rebuilds its placement index from its segments; a torn tail is truncated to the last record that verifies. Metadata recovers by its backend's own durability. The two recover independently and **MAY** disagree; §10.2 applies. |
+| **Metadata unwritable** | Flush fails; extents stay **Dirty**; [§10.1](#10.1%20Capacity%20is%20a%20bound%2C%20not%20a%20target) applies. |
+| **Crash** | On restart the journal rebuilds its placement index from its segments; a torn tail is truncated to the last record that verifies. Metadata recovers by its backend's own durability. The two recover independently and **MAY** disagree; [§10.2](#10.2%20No%20state%20requires%20intervention%20to%20leave) applies. |
 | **Local content corrupt** | A record failing verification quarantines its segment: excluded from reclaim and eviction, its extents resolve as **Lost**. |
 
 ### 10.1 Capacity is a bound, not a target
@@ -575,16 +590,16 @@ reintroduces the failure this model exists to prevent.
 
 ## 11. Open questions
 
-1. **Whole-file deduplication's cost** (§3.1) — it requires an index and a
+1. **Whole-file deduplication's cost** ([§3.1](#3.1%20Deduplication)) — it requires an index and a
    Merkle computation per file to save work that chunk deduplication performs
    anyway. Whether it earns that on real workloads is unmeasured.
-2. **Fill policy** (§6.2) — this document specifies that filling is
+2. **Fill policy** ([§6.2](#6.2%20Fill)) — this document specifies that filling is
    discretionary and names the conditions under which declining is appropriate.
-   It does not specify a policy. RFC 6 must, and the right one is unmeasured.
-3. **Eviction granularity** (§8.1) — this document constrains eviction by
-   durability, not by unit; the unit is RFC 1's to choose. The trade-off this
+   It does not specify a policy. [RFC 6](rfc-6-engine.md) must, and the right one is unmeasured.
+3. **Eviction granularity** ([§8.1](#8.1%20Evict)) — this document constrains eviction by
+   durability, not by unit; the unit is [RFC 1](rfc-1-journal.md)'s to choose. The trade-off this
    question originally named — eviction precision against the number of open
-   segments — is not a trade-off: RFC 1 §8.4 bounds open descriptors
+   segments — is not a trade-off: [RFC 1 §8.4](rfc-1-journal.md#8.4%20Open%20descriptors) bounds open descriptors
    independently of segment count, so segment size expresses reclamation
    granularity alone. What remains unmeasured is the right default for it, and
-   whether per-extent hole punching degrades at scale (RFC 1 §12).
+   whether per-extent hole punching degrades at scale ([RFC 1 §12](rfc-1-journal.md#12.%20Open%20questions)).
