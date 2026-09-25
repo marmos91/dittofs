@@ -173,7 +173,18 @@ consulted at construction is the engine's.
 
 **Start.** Open the journal, which recovers its placement index alone (RFC 1
 [§9.1](rfc-1-journal.md#9.1%20Rebuilding)). Reseed the journal's flush state from block metadata: every extent that a
-carved ref covers is reported durable to the journal, and no other ([RFC 1 §9.2](rfc-1-journal.md#9.2%20Flush%20state%20after%20recovery)).
+carved ref covers is reported durable to the journal **at that ref's version**,
+through `MarkDurable`, and no other ([RFC 1 §9.2](rfc-1-journal.md#9.2%20Flush%20state%20after%20recovery)). The journal marks it only where no
+held record is newer.
+
+> [!important] Pending review — reseed by version, not by position
+> Reseed used to report every extent a ref covers as durable, by position. After an
+> overwrite of flushed content and a crash before the overwrite flushed, that marked
+> the newer write durable; eviction then lost it and reads returned the old
+> content. Refs now carry a version (RFC 4 §2.1) and reseed passes it.
+> *Added by the RFC 0–3 review, 2026-09-25.*
+
+
 Until reseeding completes, the engine **MUST NOT** request a release. Only then
 start the background policy loops.
 
@@ -266,6 +277,16 @@ few seconds, with capacity pressure making every file with dirty bytes eligible.
 Overturned by a measurement showing the age bound, not the byte bound, is what
 fragments blocks under a streaming SMB workload.
 
+> [!important] Pending review — a pass is bounded in bytes
+> New. Nothing bounded a pass, and nothing became evictable until it returned: on a
+> slow store an overwrite-heavy file filled the journal with records pinned for the
+> pass. RFC 1 §3.3 now takes a `limit` and lets the callback report per block.
+> *Added by the RFC 0–3 review, 2026-09-25.*
+
+**A pass offers at most `upload_workers` block targets of dirty bytes** — enough to
+keep every upload worker busy with one pass, and no more — through the journal's
+`limit` ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Flush)). A large file is flushed as a sequence of such passes.
+
 A failed pass leaves its extents **Dirty** and is retried ([RFC 0 §5.2](rfc-0-data-lifecycle.md#5.2%20Flush)). Retries
 back off with jitter; they **MUST NOT** stop, and a failing pass **MUST** be
 reported to health ([§8.1](#8.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20flush%20included)).
@@ -290,21 +311,36 @@ in file-identity order so that two such passes cannot deadlock on each other.
 ### 4.4 The truncation epoch is captured at offer and checked at commit
 
 When the journal offers a run, the engine reads the file's `epoch` ([RFC 4 §6.2](rfc-4-block-metadata.md#6.2%20Truncation%20and%20deallocation))
-and carries it into every commit that pass makes. A commit whose epoch no longer
-matches is refused by block metadata; the engine treats that refusal as a failed
-pass and re-offers from the journal, which has already truncated ([RFC 1 §3.6](rfc-1-journal.md#3.6%20Truncate%20and%20delete)).
+and carries it into every commit that pass makes. Block metadata drops the refs
+of a file whose epoch no longer matches and applies the rest of the commit
+([RFC 4 §4.1](rfc-4-block-metadata.md#4.1%20What%20one%20commit%20records)). The engine re-offers that file alone from the journal, which has already
+truncated ([RFC 1 §3.6](rfc-1-journal.md#3.6%20Truncate%20and%20delete)); the other files the block carried are durable and reported.
+
+> [!important] Pending review — truncation is handled per file
+> Previously a mismatched epoch refused the whole commit and failed the pass. With
+> blocks packing several files, one file truncated in a loop kept every file packed
+> with it from ever committing.
+> *Added by the RFC 0–3 review, 2026-09-25.*
+
+
 
 ### 4.5 The callback returns only what committed
 
-The flush callback **MUST** return exactly the extents whose commits succeeded,
-in the order the journal offered them, and **MUST** return a committed prefix
-together with the error that stopped the pass ([RFC 0 §5.2](rfc-0-data-lifecycle.md#5.2%20Flush), [RFC 1 §3.3](rfc-1-journal.md#3.3%20Flush)). An extent
-whose put succeeded and whose commit did not is not durable, and **MUST NOT** be
-returned ([RFC 4 §4.3](rfc-4-block-metadata.md#4.3%20The%20commit%20is%20the%20report%27s%20return%20edge)).
+> [!important] Pending review — durability reported per block, as each commits
+> This replaced "return a committed prefix, in offered order". One early failed
+> block no longer holds back every later committed block, and extents become
+> evictable as their block commits rather than when the pass ends.
+> *Added by the RFC 0–3 review, 2026-09-25.*
 
-A block may carry chunks from several offered runs. Its commit makes all of them
-durable at once, and the callback reports each run's share of it when that run's
-turn in the order comes.
+The flush callback **MUST** report, through the journal's `report`, exactly the
+extents whose commits succeeded, as each block's commit lands, and **MUST NOT**
+report any other ([RFC 0 §5.2](rfc-0-data-lifecycle.md#5.2%20Flush), [RFC 1 §3.3](rfc-1-journal.md#3.3%20Flush)). An extent whose put succeeded and whose
+commit did not is not durable, and **MUST NOT** be reported
+([RFC 4 §4.3](rfc-4-block-metadata.md#4.3%20The%20commit%20is%20the%20report%27s%20return%20edge)). Order does not matter: the journal marks each extent on its own, and a
+commit cannot overwrite newer refs because of their versions ([RFC 4 §4.4](rfc-4-block-metadata.md#4.4%20Commits%20for%20one%20file%20apply%20in%20order)).
+
+A block may carry chunks from several offered runs and files. Its commit makes all
+of them durable at once, and the callback reports each file's share of it then.
 
 ### 4.6 A share with no remote tier never reports durability
 
@@ -355,6 +391,17 @@ from the page cache, otherwise as a sequential local read — cheap beside the
 network the upload waits on. A buffer would save that read and make memory follow
 the number of blocks *waiting* for a worker rather than the pool.
 
+> [!important] Pending review — an unknown outcome keeps its plan
+> New. A retried pass could pack the same chunks differently, derive new names and
+> orphan an object the earlier attempt may have written.
+> *Added by the RFC 0–3 review, 2026-09-25.*
+
+**A plan whose upload ended in an unknown outcome survives its pass.** The engine
+keeps it and, on the next pass over those files, offers it again first and
+unchanged if every chunk in it is still dirty at the same version; otherwise it
+drops it. The retry then writes the same name ([RFC 3 §2.5](rfc-3-syncer.md#2.5%20An%20unknown%20outcome%20is%20not%20a%20success)) rather than orphaning
+the first attempt's object.
+
 An assembler is per pass and **MUST NOT** survive it. It cuts blocks from the
 chunks of every file the pass covers, so one block may hold chunks of several
 files ([§5.7](#5.7%20A%20block%20packs%20chunks%2C%20whichever%20files%20they%20came%20from)).
@@ -372,6 +419,15 @@ The oracle is [RFC 4 §8.2](rfc-4-block-metadata.md#8.2%20Deduplication%20lookup
 is durable. It **MUST NOT** answer from anything that knows about a block not yet
 committed — the pending block, a block in flight, a put that succeeded and whose
 commit has not ([RFC 2 §5](rfc-2-carver.md#5.%20Packing%3A%20three%20rules%2C%20not%20a%20component)).
+
+A chunk carried by two blocks in
+flight is committed once: the first block to commit owns its record, and the
+second adopts it ([RFC 4 §4.1](rfc-4-block-metadata.md#4.1%20What%20one%20commit%20records)).
+
+> [!important] Pending review — two blocks carrying one chunk
+> Cross-reference added: RFC 4 §4.1 now states what the second commit does with a
+> chunk the first already recorded.
+> *Added by the RFC 0–3 review, 2026-09-25.*
 
 Two refinements follow, and both are required:
 
@@ -501,8 +557,18 @@ the reply wait on the fill, and makes a fill failure — a full journal, a local
 error — fail a read whose bytes were correct in hand ([RFC 3 §4.2](rfc-3-syncer.md#4.2%20The%20reply%20neither%20waits%20on%20the%20fill%20nor%20fails%20with%20it)).
 
 When it does fill, the engine passes `Fill` exactly the bytes it fetched, at the
-offsets of the extent it resolved, together with the journal version it read
-before resolving, so a write that landed meanwhile wins ([RFC 1 §3.4](rfc-1-journal.md#3.4%20Fill), [RFC 0](rfc-0-data-lifecycle.md) I4).
+offsets of the extent it resolved, together with the `asOf` version `ReadAt`
+returned before resolving. The journal refuses the fill if the file changed after
+it — a write, a release, a truncate — so a write that landed meanwhile wins
+([RFC 1 §3.4](rfc-1-journal.md#3.4%20Fill), [RFC 0](rfc-0-data-lifecycle.md) I4). A refused fill is not an error: the read is already answered.
+
+> [!important] Pending review — `Fill` takes a version
+> RFC 1's `Fill` had no version parameter although this section passed one. A late
+> fill after a write, flush and eviction — or after a truncate down and up — then
+> restored stale bytes and marked them durable.
+> *Added by the RFC 0–3 review, 2026-09-25.*
+
+
 
 ### 6.3 Filling is a decision
 
@@ -534,8 +600,16 @@ as speculative, which the fetcher never lets delay a demand ([RFC 3 §4.4](rfc-3
 the reader. A random access resets it. Its window **MUST** be bounded in bytes,
 and the bound is subtracted from the capacity a fill may use.
 
+> [!important] Pending review — pre-warm's capacity obligation lives here now
+> RFC 3 no longer carries it: only the engine sees journal capacity. The separate
+> flow is new.
+> *Added by the RFC 0–3 review, 2026-09-25.*
+
 **Pre-warm** is an explicit request over a whole share or subtree. It **MUST NOT**
-drive the journal towards refusing writes ([RFC 3 §4.5](rfc-3-syncer.md#4.5%20Speculation%20is%20executed%20here%20and%20decided%20elsewhere)). **Proposal** for how it
+drive the journal towards refusing writes; the obligation is the engine's, since
+only the engine sees capacity ([RFC 3 §4.5](rfc-3-syncer.md#4.5%20Speculation%20is%20executed%20here%20and%20decided%20elsewhere) says why). Pre-warm runs on a flow of its
+own, opened on the share's store ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)), so that a large pre-warm holding its
+flow at the cap never holds the share's demand reads with it. **Proposal** for how it
 yields (RFC 3 open question 3): pre-warm fills only while free capacity is above
 the write low-water mark, pauses when capacity falls below it, and cancels its
 queued fetches on a write that meets capacity pressure. A pre-warm that stops
@@ -572,8 +646,16 @@ one: a second miss is not a race with relocation, which moves a chunk once per
 commit, but content that is gone, and it **MUST** be reported as **Lost**, not
 retried until a deadline.
 
-The retry applies to *absent* only. A verification failure, a transport error or
-a timeout is not evidence the chunk moved, and **MUST NOT** trigger it.
+> [!important] Pending review — re-resolve on a range mismatch too
+> New. A re-put under the same name may lay the object out differently (RFC 8 §5.5),
+> so a range recorded before it can point at the wrong bytes although the data is
+> intact.
+> *Added by the RFC 0–3 review, 2026-09-25.*
+
+The retry applies to *absent* and to a **range mismatch** — a ranged read whose
+bytes fail verification ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)), since a re-put under the same name may have laid
+the object out differently. A verification failure of a whole object, a transport
+error or a timeout is not evidence the chunk moved, and **MUST NOT** trigger it.
 
 Relocation is safe only while this rule holds ([RFC 7 §4.3](rfc-7-gc.md#4.3%20A%20reader%20can%20hold%20the%20old%20location)). An engine that fails
 the first miss turns every relocation into a window of spurious read errors; one
@@ -615,6 +697,16 @@ measurement of this system. Overturned by a comparison of bytes fetched and read
 latency, on a random-read and a scan workload, across a few thresholds.
 
 ## 7. Local space
+
+> [!important] Pending review — spool space is budgeted here
+> New. The S3 backend's spool (RFC 3 §3.4) was neither placed nor counted; a full
+> disk then failed every upload, and nothing cleared it.
+> *Added by the RFC 0–3 review, 2026-09-25.*
+
+**Local space includes the spool.** The engine gives each backend that spools a
+directory on local storage it accounts for, and sets aside `upload_workers` times
+the largest block from the capacity it divides among the journals
+([RFC 3 §3.4](rfc-3-syncer.md#3.4%20One%20put%20per%20block)). A spool therefore never competes with journal writes for space.
 
 ### 7.1 Eviction is chosen here, and needs no new record
 
@@ -694,8 +786,9 @@ them schedules it.
 Share health **MUST** be computed from recent outcomes and **MUST NOT** be a
 stored flag that suppresses the attempts that would clear it ([RFC 3 §5](rfc-3-syncer.md#5.%20What%20belongs%20elsewhere)). Its
 inputs include the outcomes of flush passes, not only the remote's liveness probe.
-Whether the store is reachable is the syncer's to say: it probes each store and
-refuses work for one whose probe fails ([RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work)). The engine reads that
+Whether the store is usable is the syncer's to say: it probes each store, also
+counts a window of failed transfers against it, and refuses work for one that is
+unhealthy ([RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work)). The engine reads that
 state through its flow's `Healthy` and **MUST NOT** probe the store again itself.
 The engine opens one syncer flow per share, on that share's store, when the
 share is added, and closes it when the share is removed ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)); the

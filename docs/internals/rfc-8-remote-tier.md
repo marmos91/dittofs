@@ -161,7 +161,7 @@ from [§2.1](#2.1%20The%20rule%3A%20one%20operation%2C%20or%20many) in every cas
 | Liveness | one probe operation ([§5.8](#5.8%20The%20liveness%20probe%20is%20one%20operation)) | the derived state, its thresholds, its recovery | a probe is one operation; a state is many |
 | Retry | none ([§5.7](#5.7%20A%20backend%20holds%20no%20state%20that%20spans%20operations)) | whether, when, and within what bound | an attempt is one operation; a budget spans them |
 | An unknown outcome | report it as unknown | resolve it as not durable ([RFC 3 §2.5](rfc-3-syncer.md#2.5%20An%20unknown%20outcome%20is%20not%20a%20success)) | reporting is local; resolving implies a next attempt |
-| Concurrency | none | the window, its ceiling, its adaptation | a limit exists only across operations |
+| Concurrency | none | the pools and their fair scheduling | a limit exists only across operations |
 | Peak memory | none | the bound, per process | memory is not a backend's to bound |
 | The key | receives it final, before framing ([§3.4](#3.4%20The%20object%27s%20name%20is%20final%20before%20framing%20begins)) | requires its properties ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block), [§4.3](rfc-2-carver.md#4.3%20Key%20scope)) | derived from content by [RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block); neither side invents it |
 | Compression, encryption | the whole chain ([§4](#4.%20The%20transform%20chain)) | **MUST NOT** know one happened | a transform is per object |
@@ -407,8 +407,16 @@ the only record of past writes, changing it makes existing data unreadable.
 
 ### 4.4 The syncer MUST NOT observe that a transform happened
 
+> [!important] Pending review — ranges are the one exemption
+> Put's ranges vary with transforms by nature; the rule now names them as its only
+> exemption.
+> *Added by the RFC 0–3 review, 2026-09-25.*
+
 No signature, error, metric or return value crossing this contract **MAY** differ
-according to whether a transform is configured.
+according to whether a transform is configured, except the ranges a put reports:
+they locate records in the stored bytes, so they vary with transforms. They are
+opaque above this contract — recorded and passed back, never interpreted —
+which is what keeps the rule's purpose intact.
 
 This is what makes [§2.1](#2.1%20The%20rule%3A%20one%20operation%2C%20or%20many)'s line hold under pressure. The moment the syncer can tell
 that encryption is on, something above the line starts branching on it — a retry
@@ -427,8 +435,8 @@ correct, and the one that gets it wrong is whichever is used less:
 
 | Operation | Obligation |
 | --- | --- |
-| put | make one object retrievable under one key, atomically in effect ([RFC 3 §3.4](rfc-3-syncer.md#3.4%20One%20put%20per%20block)) |
-| read | return a verified unit ([§6.1](#6.1%20The%20exported%20read%20takes%20the%20expected%20hash)) |
+| put | make one object retrievable under one key, atomically in effect ([RFC 3 §3.4](rfc-3-syncer.md#3.4%20One%20put%20per%20block)), and report where each chunk's record sits in it |
+| read | return verified chunks: the ranges asked for, or the whole object ([§6.1](#6.1%20The%20exported%20read%20takes%20the%20expected%20hash)) |
 | delete | remove one object, idempotently ([§5.5](#5.5%20A%20put%20of%20an%20existing%20key%20succeeds%3B%20so%20does%20a%20delete%20of%20an%20absent%20one)) |
 
 A fourth, **enumeration**, is required only by consumers that must find objects
@@ -437,9 +445,22 @@ unconditional, because the answer bears on [RFC 2 §4.2.1](rfc-2-carver.md#4.2.1
 
 A **probe** ([§5.8](#5.8%20The%20liveness%20probe%20is%20one%20operation)) is not an operation on an object and is listed apart from these.
 
-How a read is decomposed internally — whether it fetches a whole object or a byte
-range — is not part of this contract. [§6.2](#6.2%20Deviation%20%E2%80%94%20the%20raw%20range%20read%20is%20exported) says why that is a deliberate exclusion
-rather than an omission.
+> [!important] Pending review — the contract speaks in ranges
+> This replaced "how a read is decomposed is not part of this contract". The
+> syncer's `Store` ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)) asks for chunks by their byte range in the stored object,
+> and a put reports those ranges, so ranges are now part of the contract — always
+> whole chunks, always verified. What stays excluded is a raw byte range with no
+> hash (§6.2).
+> *Added by the RFC 0–3 review, 2026-09-25.*
+
+**Reads and puts speak in ranges.** A put reports, for each chunk in the order given,
+the byte range of its record in the object as stored — after framing and
+transforms — and block metadata keeps it ([RFC 4 §2.2](rfc-4-block-metadata.md#2.2%20Chunk)). A read takes a list of
+`(hash, range)` pairs and returns each chunk verified against its hash; it merges
+ranges adjacent in the object into one request, and an empty list reads the whole
+object. On S3 a ranged read is one `GET` with a `Range: bytes=first-last` header
+per run of adjacent ranges. A range is always a whole chunk's record. A raw byte
+range with no hash to check is not part of the contract, and [§6.2](#6.2%20Deviation%20%E2%80%94%20the%20raw%20range%20read%20is%20exported) says why.
 
 ### 5.2 Errors are a closed set
 
@@ -514,10 +535,33 @@ may be a retry of a caller that already succeeded and did not learn so ([RFC 3 �
 or a sweep re-running after a crash mid-pass. An operation that fails because it
 already happened turns recovery into an error.
 
+> [!important] Pending review — a put never replaces an existing object
+> New. A re-put under the same name could lay the object out differently (another
+> compressor build, say), so ranges recorded from the first put would point at the
+> wrong bytes of the second.
+> *Added by the RFC 0–3 review, 2026-09-25.*
+
+**A put of an existing key succeeds without replacing it.** The backend puts
+conditionally — on S3, with `If-None-Match: *` — and when the key already exists
+it returns the existing object's ranges, read from its own record headers
+(F1, [§3.3](#3.3%20What%20the%20format%20must%20guarantee)), rather than the ranges of the bytes it did not write. The first
+object stored under a name is the one every recorded range describes. A backend
+that cannot put conditionally **MUST** say so, and its reads rely on the range
+mismatch re-resolution of [RFC 6 §6.7](rfc-6-engine.md#6.7%20An%20absent%20object%20is%20re-resolved%20exactly%20once) instead.
+
 ### 5.6 What acknowledgement means is the backend's to declare
 
-A backend **MUST** state which of its responses means the object is durably stored,
-and **MUST NOT** report success on a weaker one.
+> [!important] Pending review — every backend is durable
+> Decision: there is no non-durable store. A backend that cannot promise durable
+> storage on acknowledgement is not admitted, and no setting declares one
+> ([RFC 3 §2.6](rfc-3-syncer.md#2.6%20Durability%20is%20observed%2C%20never%20inferred)). The in-memory backend is a test fixture only.
+> *Added by the RFC 0–3 review, 2026-09-25.*
+
+Every backend is durable: a store holds the only copy of what the journal has
+released. A backend **MUST** state which of its responses means the object is
+durably stored, and **MUST NOT** report success on a weaker one. A service that
+promises nothing on any response is not a backend this design admits, and no
+setting marks a backend as non-durable.
 
 [RFC 3 §2.6](rfc-3-syncer.md#2.6%20Durability%20is%20observed%2C%20never%20inferred) requires an implementation to *know* this; this is where it is written
 down. A backend that acknowledges before committing, that buffers, that writes
@@ -669,6 +713,11 @@ The comment on `newHTTPClient` states a worst case for 128 connections, about
 
 ### 5.10 Transfer practice a backend owes its service
 
+> [!important] Pending review — spool placement
+> The spool bullet below is new: the S3 spool had no stated location or budget, so a
+> full disk failed every upload and nothing cleared it.
+> *Added by the RFC 0–3 review, 2026-09-25.*
+
 Three practices sit below the syncer because each concerns one request to one
 service:
 
@@ -677,7 +726,11 @@ service:
   when the body does not match, so bytes corrupted between process and service
   never become an object. Without it, corruption in transit surfaces only at a
   later read's hash check — possibly after the local copy was released. The
-  S3 backend computes it over the spool file of [RFC 3 §3.4](rfc-3-syncer.md#3.4%20One%20put%20per%20block) as it writes it. A
+  S3 backend computes it over the spool file of [RFC 3 §3.4](rfc-3-syncer.md#3.4%20One%20put%20per%20block) as it writes it.
+- **The spool is placed and budgeted by its constructor.** A backend that spools
+  writes only in the directory it is given, within the space set aside for it
+  ([RFC 6 §7](rfc-6-engine.md#7.%20Local%20space)), and reports running out of it as a local error, which is not the
+  store's failure and does not make it unhealthy. A
   get **SHOULD** validate the service's checksum where one is returned; the
   plaintext hash check of [§6.1](#6.1%20The%20exported%20read%20takes%20the%20expected%20hash) remains the one that decides.
 - **A put has a known length.** A trailing checksum over `aws-chunked` encoding
