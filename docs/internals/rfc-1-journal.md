@@ -1630,6 +1630,21 @@ open question 1.
 Benchmark time is real time: `synctest` makes waiting free, which is the opposite
 of what a benchmark measures.
 
+Method, from the external benchmark of v0.33.0:
+
+- **Exhaust the device's write cache.** Consumer and many datacenter NVMe drives
+  write at one rate until an internal cache fills and at about half after it; the
+  report's drives fell from 1,000–1,280 to 640–790 MB/s past about 100 GB. J1 and
+  J5 run long enough to pass that point and report the rate after it.
+- **State the queue depth.** One serial writer and sixteen concurrent ones differ
+  by 40% on the same link; every J row names its concurrency.
+- **Run below and above capacity.** J1 is repeated with more data than the journal
+  holds, and reports submission latency separately from completion latency.
+- **Report create and overwrite separately**: a create costs about 1.5× an
+  overwrite of the same size.
+- **Keep a noise checklist per run**: no RAID resync, no other load on the host,
+  the same filesystem and mount options, recorded with the result.
+
 ## 12. Open questions
 
 1. **Reseeding cost** ([§9.2](#9.2%20Flush%20state%20after%20recovery)). Beginning pessimistic is safe and removes mutable
