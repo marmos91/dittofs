@@ -99,7 +99,19 @@ A ref is [RFC 0](rfc-0-data-lifecycle.md)'s **ChunkRef**: one file's use of one 
 here is an inode. A snapshot's copy of a file also owns refs, keyed by
 `(snapshot, file)` in place of the file ([§6.5](#6.5%20Who%20owns%20a%20ref)).
 
-    Ref(file, offset) = { hash, skip, length }
+    Ref(file, offset) = { hash, skip, length, version }
+
+> [!important] Pending review — refs carry the journal version
+> `version` is new and mandatory. It closes a data-loss path found in review: reseed
+> after a crash marked extents durable by position alone, so a write that
+> superseded flushed content and was not yet flushed became evictable. See §4.4 and
+> [RFC 1 §9.2](rfc-1-journal.md#9.2%20Flush%20state%20after%20recovery).
+> *Added by the RFC 0–3 review, 2026-09-25.*
+
+`version` is the journal version of the content the ref describes: the `Version`
+of the offer its pass carved ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Flush)). It orders commits for one file (§4.4) and
+lets the journal reseed a flush bit only for the content a ref actually records
+([RFC 1 §9.2](rfc-1-journal.md#9.2%20Flush%20state%20after%20recovery)).
 
 `skip` and `length` select `[skip, skip + length)` of the chunk's bytes. A ref
 that uses a whole chunk has `skip = 0` and `length` equal to the chunk's length.
@@ -161,9 +173,17 @@ A chunk is keyed by its BLAKE3-256 hash and by nothing else ([RFC 2 §4](rfc-2-c
 offsets use it. A record keyed by `(file, offset)` that also carries a refcount
 is a ref wearing a chunk's name, and the refcount on it counts nothing.
 
+> [!important] Pending review — `position` is the store's range
+> `position` now has a stated source: the `Range` the store returns from `Put` for
+> each chunk ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)). Before, nothing produced it — with compression, where a
+> record sits in the stored object is known only below the syncer.
+> *Added by the RFC 0–3 review, 2026-09-25.*
+
 `block` and `position` locate the chunk's bytes: the remote key of the block that
-carries it and where in that block it sits. This is what a partial retrieval
-aligns to ([RFC 8 §6.1](rfc-8-remote-tier.md#6.1%20The%20exported%20read%20takes%20the%20expected%20hash)).
+carries it, and `position`, the byte range of the chunk's record in the object as
+stored — the `Range` the store reported when the block was put ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)). This is
+what a ranged read asks for ([RFC 8 §6.1](rfc-8-remote-tier.md#6.1%20The%20exported%20read%20takes%20the%20expected%20hash)). It is the stored range, after framing and
+transforms, so it is recorded from the store's report and never computed.
 
 ### 2.3 Block
 
@@ -344,7 +364,10 @@ A commit records, in **one transaction**:
 
 - the block record, with `live` set to the number of its chunks that the commit
   references;
-- a chunk record for each chunk the block carries;
+- a chunk record for each chunk the block carries **that has none yet**. A chunk
+  that already has a record keeps it: the commit adopts it, as it adopts a chunk
+  from an earlier block, and the copy this block carries is dead weight, not
+  counted in its `live`;
 - the refs for the extents the pass carved, replacing what they overlap;
 - the refcount changes those refs imply ([§6](#6.%20Reference%20counting)), including for chunks the pass
   adopted from earlier blocks rather than carrying;
@@ -353,6 +376,27 @@ A commit records, in **one transaction**:
 Partial application of that list **MUST NOT** be observable: a ref without its
 chunk, a refcount without its ref, or a chunk without its block each turns a
 later read or a later sweep into a guess.
+
+> [!important] Pending review — two blocks carrying one chunk; truncation per file
+> Two changes from the review. (1) A chunk carried by two blocks in flight — which
+> [RFC 6 §5.3](rfc-6-engine.md#5.3%20The%20dedup%20oracle%20never%20sees%20an%20uncommitted%20block) requires, and two passes over identical content produce — left the
+> second commit's effect on the chunk record unstated; an upsert resets its count,
+> sweep then deletes a block refs still need. (2) The truncation check refused the
+> whole commit; with blocks packing several files, one file truncated often enough
+> kept every other file in its blocks from ever committing.
+> *Added by the RFC 0–3 review, 2026-09-25.*
+
+**The first block to commit a chunk owns its record.** A later commit that carries
+the same chunk finds the record present and adopts it: it adds its refs and their
+counts, and leaves `block` and `position` as they are. Replacing the record would
+reset its count and point it at a block that `live` does not count, so a sweep
+could delete the block the count's refs still need.
+
+**The truncation check is per file.** A block may carry chunks of several files
+([RFC 6 §5.7](rfc-6-engine.md#5.7%20A%20block%20packs%20chunks%2C%20whichever%20files%20they%20came%20from)), and the `epoch` check of §6.2 applies to each file's refs separately:
+a file whose `epoch` advanced has its refs dropped from the commit, and the rest
+of the commit applies. The block is durable either way; a chunk it carries only
+for the dropped file is dead weight, not counted in `live`.
 
 ### 4.2 Only after durability
 
@@ -394,11 +438,18 @@ journal has marked B's bytes durable, so it may release them, and a later read
 fetches A's content for the offsets B wrote. That is silent corruption, and no
 single component observes it.
 
-An implementation **MUST** prevent this, either by never running two commits for
-one file concurrently, or by carrying the journal version of the offered content
-([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions)) on each ref and refusing to replace a ref with one of lower version.
-Serialising per file is the simpler of the two, and it is the engine's to do
-([RFC 6](rfc-6-engine.md)). This document requires only the outcome.
+> [!important] Pending review — versions are mandatory, not an alternative
+> This used to offer two ways to meet the rule — serialise per file, or carry
+> versions. Versions are now required on every ref (§2.1) because reseed needs them;
+> serialising remains the engine's choice on top.
+> *Added by the RFC 0–3 review, 2026-09-25.*
+
+A commit **MUST NOT** replace a ref with one of a lower `version` (§2.1); it refuses
+that ref and applies the rest. Every ref carries the journal version of the
+offered content ([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions)), because reseeding needs it ([RFC 1 §9.2](rfc-1-journal.md#9.2%20Flush%20state%20after%20recovery)) whether or not
+commits are serialised. The engine **MAY** also serialise commits per file
+([RFC 6](rfc-6-engine.md)); that keeps the version check from ever firing, and is cheaper to reason
+about, but no longer stands in for it.
 
 ## 5. Write sets
 
@@ -487,8 +538,9 @@ transaction:
   increment that chunk;
 - update existence ([§3.5](#3.5%20Operations%20that%20make%20holes)) and advance `epoch`.
 
-A flush commit **MUST** be refused if `epoch` has advanced since its extents were
-offered. Without that check a pass that carved `[0, 10 MiB)` commits refs after
+A flush commit **MUST NOT** apply a file's refs if that file's `epoch` has
+advanced since its extents were offered; the refs of other files in the same
+commit still apply (§4.1). Without that check a pass that carved `[0, 10 MiB)` commits refs after
 a concurrent truncate to 5 MiB. The file then holds refs past its end, and a
 later truncate up turns them back into readable content where the user was
 promised zeros. The refused pass is retried from the journal, which has already
