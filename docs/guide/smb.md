@@ -182,19 +182,40 @@ dfsctl share mount --protocol smb /export ~/mnt/dittofs
 
 #### Windows
 
-From Command Prompt or PowerShell:
+The Windows SMB client connects to port 445 unless told otherwise. Connecting to a non-default
+port (such as the default `12445`) requires **Windows 11 24H2 / Windows Server 2025 or later**.
+Older Windows clients can only reach DittoFS when it serves the standard port 445 — see
+[Running on standard ports (production)](install.md#running-on-standard-ports-production).
+
+From Command Prompt:
 
 ```cmd
+:: Standard port 445
 net use Z: \\server\export /user:username password
-# Explicit port:
-net use Z: \\server@12445\export /user:username password
 
-# Disconnect
+:: Non-default port (Windows 11 24H2 / Windows Server 2025+)
+net use Z: \\server\export /user:username /tcpport:12445 password
+
+:: Disconnect
 net use Z: /delete
 ```
 
-From Explorer: right-click "This PC" > "Map network drive", set path to
-`\\server@12445\export`.
+From PowerShell:
+
+```powershell
+# Non-default port (Windows 11 24H2 / Windows Server 2025+)
+New-SmbMapping -LocalPath Z: -RemotePath \\server\export -UserName username -Password 'password' -Persistent $true -TcpPort 12445
+
+# Disconnect
+Remove-SmbMapping -LocalPath Z:
+```
+
+> **Note:** do not use the `\\server@12445\export` form. That is WebDAV (WebClient) syntax,
+> not SMB — Windows will try WebDAV over HTTP and never reach the SMB listener.
+
+From Explorer: right-click "This PC" > "Map network drive", set path to `\\server\export`.
+Explorer cannot set a custom port, so this only works when DittoFS serves port 445; for a
+non-default port, map the drive with `net use` or `New-SmbMapping` as above.
 
 #### macOS (native commands)
 
