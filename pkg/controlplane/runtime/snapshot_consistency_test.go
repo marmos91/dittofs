@@ -12,7 +12,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
-	bsmemory "github.com/marmos91/dittofs/pkg/block/local/memory"
+	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
@@ -287,7 +287,7 @@ func newRealBackupFixture(t *testing.T) *realBackupFixture {
 		t.Fatalf("CreateRootDirectory: %v", err)
 	}
 
-	localStore := bsmemory.New()
+	localStore := journaltest.New(t)
 	innerRemote := remotememory.New()
 	t.Cleanup(func() { _ = innerRemote.Close() })
 	syncer := engine.NewRemoteSync(localStore, innerRemote, mem, engine.RemoteSyncConfig{

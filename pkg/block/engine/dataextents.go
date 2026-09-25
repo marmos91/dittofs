@@ -26,8 +26,8 @@ import (
 // see an unplaceable row either, so a row whose range is unknown widens the map
 // to the whole file rather than failing.
 //
-// The counterpart surface is local.LocalStore.ReadAt's ReadState.Hole, in
-// pkg/block/local/local.go, which obeys the same underlying rule through the
+// The counterpart surface is journal.LocalStore.ReadAt's ReadState.Hole, in
+// pkg/block/journal/localstore.go, which obeys the same underlying rule through the
 // opposite token: there a range the tier cannot classify reports Hole true,
 // never false. The polarity differs because the terminal answer differs — here
 // "hole" ends the inquiry (a sparse-copy client skips the range), while there

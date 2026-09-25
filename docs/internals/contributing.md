@@ -329,17 +329,17 @@ DittoFS uses a Service-oriented architecture where **stores are simple CRUD inte
 
 **Block Store (Local):**
 
-1. Implement the `pkg/block/local.LocalStore` interface. It is the
+1. Implement the `pkg/block/journal.LocalStore` interface. It is the
    journal-native surface keyed by `(payloadID, offset)` — `WriteAt`,
    `ReadAt`, `Hydrate`, `Commit`, `Truncate`, `Delete` — plus carve,
-   eviction, lifecycle and retention methods. See `pkg/block/local/local.go`
+   eviction, lifecycle and retention methods. See `pkg/block/journal/localstore.go`
    for the full list.
 2. Storage is payload-keyed, NOT content-addressed: the local tier is a
    per-file byte cache, so it does not implement `block.Store`.
 3. Each share gets an isolated local storage directory
 4. The `pkg/block/blockstoretest/` suites do not apply here — they target the
    hash-keyed and block-keyed remote surfaces. Model tests on the existing
-   package tests under `pkg/block/local/` and `pkg/block/journal/`.
+   package tests under `pkg/block/journal/`.
 
 **Block Store (Remote):**
 
@@ -348,22 +348,6 @@ DittoFS uses a Service-oriented architecture where **stores are simple CRUD inte
    `Close` — see `pkg/block/remote/remote.go`.
 2. Remote stores are shared across shares via ref counting
 3. Test with the `RemoteBlockStoreConformance` suite in `pkg/block/blockstoretest/`
-
-Example:
-```go
-// pkg/block/local/mybackend/store.go
-type MyLocalStore struct {
-    basePath string
-}
-
-func (s *MyLocalStore) Put(ctx context.Context, hash block.ContentHash, data []byte) error {
-    // Write the chunk to your backend under the content-hash key
-}
-
-func (s *MyLocalStore) Get(ctx context.Context, hash block.ContentHash) ([]byte, error) {
-    // Return the chunk bytes addressed by hash (freshly allocated, no aliasing)
-}
-```
 
 See [IMPLEMENTING_STORES.md](implementing-stores.md) for detailed implementation guide.
 

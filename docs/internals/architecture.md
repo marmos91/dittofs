@@ -135,13 +135,12 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 
 **6. BlockStore** (`pkg/block/`)
 - Per-share block storage orchestrator. Each share gets its own `*engine.Store` instance.
-- `engine.Store` composes the share's journal (`local.LocalStore`, in production always `*journal.Store`) + its one block store (`remote.RemoteStore`) + `engine.RemoteSync`
+- `engine.Store` composes the share's journal (`journal.LocalStore`, in production always `*journal.Store`) + its one block store (`remote.RemoteStore`) + `engine.RemoteSync`
 - Each share gets an isolated journal directory beneath `blockstore.journal.path`; block stores can be shared across shares (ref counted)
 - `shares.Service` owns the lifecycle (create on AddShare, close on RemoveShare)
 - Sub-packages:
   - `engine/`: BlockStore orchestrator — composes the journal and the block store and owns the unified CAS-keyed `Cache` (read buffering + prefetch), the syncer, and the garbage collector. See `pkg/block/engine/cache.go` for the Cache type.
-  - `journal/`: the on-disk journal every share gets — the production `local.LocalStore`
-  - `local/`: the `LocalStore` interface plus `memory/`, an in-memory implementation used by tests
+  - `journal/`: the on-disk journal every share gets — the production `journal.LocalStore`. The `LocalStore` interface lives here too, alongside it. Tests outside the package open a real store through `journal/journaltest/`.
   - `remote/`: block store interface and implementations (`s3/` production, `memory/` testing)
   - `storetest/`: Conformance test helpers for new backend implementations
 
@@ -1057,10 +1056,10 @@ dittofs/
 │   │   │   └── encryption/       # Optional per-chunk encryption
 │   │   ├── engine/               # BlockStore orchestrator + read cache + syncer + GC
 │   │   ├── journal/              # The per-share journal (append-only segments)
+│   │   │   ├── localstore.go     # LocalStore interface (*Store implements it)
+│   │   │   └── journaltest/      # Throwaway real store for outside tests
 │   │   ├── syncer/               # Local -> remote sync
 │   │   ├── blockstoretest/       # Conformance suites for block store impls
-│   │   ├── local/                # LocalStore interface (journal.Store implements it)
-│   │   │   └── memory/           # In-memory local store (testing)
 │   │   └── remote/               # Block store interface
 │   │       ├── s3/               # S3-backed block store
 │   │       └── memory/           # In-memory block store (testing)

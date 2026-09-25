@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block/engine"
-	"github.com/marmos91/dittofs/pkg/block/local/memory"
+	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
@@ -18,7 +18,7 @@ import (
 // teardown path only needs a live Close.
 func newLocalEngineStore(t *testing.T) *engine.Store {
 	t.Helper()
-	local := memory.New()
+	local := journaltest.New(t)
 	// The in-memory metadata store satisfies EngineFileChunkStore (NewRemoteSync
 	// requires a non-nil one); the teardown path never exercises it.
 	fbs := metadatamemory.NewMemoryMetadataStoreWithDefaults()

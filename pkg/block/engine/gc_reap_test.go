@@ -10,7 +10,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
-	"github.com/marmos91/dittofs/pkg/block/local/memory"
+	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -257,7 +257,7 @@ var _ MetadataCoordinator = (*reapCoordinator)(nil)
 // separate remote store via gc.CollectGarbage.
 func newReapEngine(t *testing.T, st metadata.Store) *Store {
 	t.Helper()
-	localStore := memory.New()
+	localStore := journaltest.New(t)
 	fbs := newStubFileChunkStore()
 	syncer := NewRemoteSync(localStore, nil, fbs, DefaultConfig())
 	bs, err := New(BlockStoreConfig{

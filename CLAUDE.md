@@ -155,7 +155,7 @@ composition layer over six sub-services: `adapters/`, `stores/`, `shares/`, `mou
    `ComposedStore` are gone too — nothing consumed them but one `var _` assertion and some doc
    cross-references, while every method they declared was already pinned by concrete call sites
    on `*engine.Store`. The tier contracts live with their tiers (`remote.RemoteBlockStore`,
-   `local.LocalStore`); what stays in `pkg/block/blockstore.go` is what both sides speak —
+   `journal.LocalStore`); what stays in `pkg/block/blockstore.go` is what both sides speak —
    `Meta`, `DurabilityReporter` and `IsDurable`, all live. So a method reachable only from tests
    now has nothing holding its signature up: say so with a `decision:` marker at the method
    rather than reintroducing an interface to pin it.

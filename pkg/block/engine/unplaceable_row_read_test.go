@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block"
-	memorylocal "github.com/marmos91/dittofs/pkg/block/local/memory"
+	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatabadger "github.com/marmos91/dittofs/pkg/metadata/store/badger"
@@ -46,7 +46,7 @@ func manifestBackends() []manifestBackend {
 func newRemoteBackedEngine(t *testing.T, b manifestBackend) (*Store, block.EngineFileChunkStore, *remotememory.Store, metadata.SyncedHashStore) {
 	t.Helper()
 	fbs, shs := b.build(t)
-	localStore := memorylocal.New()
+	localStore := journaltest.New(t)
 	rs := remotememory.New()
 
 	syncer := NewRemoteSync(localStore, rs, fbs, DefaultConfig())

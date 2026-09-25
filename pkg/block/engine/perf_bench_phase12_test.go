@@ -24,7 +24,7 @@ import (
 	"lukechampine.com/blake3"
 
 	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/local/memory"
+	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
 )
 
 // phase12FixtureFileSize is the seeded file size for the rand-read
@@ -71,7 +71,7 @@ func (f *phase12Fixture) Close() {}
 // phase12FixtureBlockSize chunks. Each chunk's ChunkRef carries a
 // stable BLAKE3 hash of its (deterministic) payload so the OnRead hint
 // path in engine.ReadAt sees a realistic []ContentHash sequence — but
-// the actual byte-serving comes from the in-memory local store
+// the actual byte-serving comes from the journal local store
 // keeping the bench network-free.
 //
 // Cache budget is large enough to keep all hashes live (16 entries ×
@@ -101,7 +101,7 @@ func setupPerfFixture(tb testing.TB) *phase12Fixture {
 		}
 		offset := i * phase12FixtureBlockSize
 
-		// Write into the engine — populates the memory local store.
+		// Write into the engine — populates the journal local store.
 		if _, err := bs.WriteAt(ctx, payloadID, nil, buf, offset); err != nil {
 			tb.Fatalf("WriteAt(offset=%d): %v", offset, err)
 		}
@@ -126,13 +126,21 @@ func setupPerfFixture(tb testing.TB) *phase12Fixture {
 }
 
 // newPerfTestEngine mirrors newTestEngine (engine_test.go) but is
-// reachable from benchmarks (testing.TB instead of *testing.T). Memory
+// reachable from benchmarks (testing.TB instead of *testing.T). Journal
 // local store + nil remote + stub fileChunkStore — the bench measures
 // the engine's read-path overhead (binary search, OnRead, copy out)
 // without any network or remote-store latency.
+//
+// Read verification is pinned off, as it is in newWriteBenchEngine: a
+// verifying warm read re-reads and CRCs the whole record covering the
+// request, which for this fixture's 4 MiB blocks is three orders of
+// magnitude more bytes than the 4 KiB the bench asks for. That is a
+// different path under the same benchmark name, and the read-path
+// overhead this bench exists to measure is not in it.
 func newPerfTestEngine(tb testing.TB, readBufferBytes int64, prefetchWorkers int) *Store {
 	tb.Helper()
-	localStore := memory.New()
+	localStore := journaltest.New(tb)
+	localStore.SetVerifyReads(false)
 	fbs := newStubFileChunkStore()
 	syncer := NewRemoteSync(localStore, nil, fbs, DefaultConfig())
 
@@ -196,7 +204,7 @@ func BenchmarkRandRead_Phase12(b *testing.B) {
 //
 // Local runs: make bench-phase12.
 //
-// The microbench uses an in-tree fixture (memory metadata + memory
+// The microbench uses an in-tree fixture (memory metadata + journal
 // local store), NOT real S3. The ~1,350 IOPS rand-read figure in
 // BENCHMARKS.md refers to the bench/infra real-S3 lane on a different
 // machine class. The gate here uses the per-machine microbench floor
@@ -229,11 +237,11 @@ func BenchmarkPerfGate_Phase12RandReadRegression(b *testing.B) {
 	opsPerSec := float64(b.N) / b.Elapsed().Seconds()
 	reportOpsPerSec(b, b.N)
 
-	// Per-machine microbench floor. The in-tree fixture is memory +
-	// stub-fbs so absolute numbers depend on CPU + memory bandwidth +
-	// Go scheduler. On Apple M1 Max the bench lands ~150 K ops/s; on
-	// Linux amd64 CI it's a different absolute. The floor below is
-	// the conservative cross-platform anchor — re-baseline per
+	// Per-machine microbench floor. The in-tree fixture is journal-backed
+	// (page-cached preads) + stub-fbs so absolute numbers depend on CPU +
+	// memory bandwidth + Go scheduler. On Apple M1 Max the bench lands
+	// ~150 K ops/s; on Linux amd64 CI it's a different absolute. The floor
+	// below is the conservative cross-platform anchor — re-baseline per
 	// BENCHMARKS.md after a confirmed regression-free run on a new
 	// machine class.
 	const microbenchFloorIOPS = phase12MicrobenchFloorIOPS
@@ -256,7 +264,7 @@ func BenchmarkPerfGate_Phase12RandReadRegression(b *testing.B) {
 // BENCHMARKS.md when re-baselining.
 //
 // Conservative cross-platform anchor: 50 K ops/s. On the M1 Max the
-// actual measurement was ~150 K ops/s (in-memory local store + 4 KiB
+// actual measurement was ~150 K ops/s (journal local store + 4 KiB
 // reads + binary search + OnRead). On Linux amd64 CI we expect similar
 // in-memory throughput; if a CI runner is materially slower the floor
 // must be re-anchored there rather than tightened against this

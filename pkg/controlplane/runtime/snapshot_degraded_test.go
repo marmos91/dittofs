@@ -9,7 +9,7 @@ import (
 
 	badgerdb "github.com/dgraph-io/badger/v4"
 	"github.com/marmos91/dittofs/pkg/block/engine"
-	bsmemory "github.com/marmos91/dittofs/pkg/block/local/memory"
+	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
@@ -99,7 +99,7 @@ func newDegradedFixture(t *testing.T) *degradedFixture {
 
 	// No remote: the restore path then skips the HEAD-probe verify, keeping the
 	// test about the safety snapshot rather than about durability plumbing.
-	localStore := bsmemory.New()
+	localStore := journaltest.New(t)
 	syncer := engine.NewRemoteSync(localStore, nil, meta, engine.RemoteSyncConfig{ParallelDownloads: 1})
 	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:          localStore,
