@@ -695,7 +695,7 @@ reaches it, and the sizing tool measures it as part of the link.
 downloads. It is not derived from the pools, and an operator cannot raise it.
 
 It cannot simply be replaced by the sum of the pools yet, because today there
-is a syncer per share ([RFC 3 §9](rfc-3-syncer.md#9.%20Deviations), D1): each share has its own
+is a syncer per share ([RFC 3 §10](rfc-3-syncer.md#10.%20Deviations), D1): each share has its own
 upload window and fetch pool, and every share on a store goes through one shared,
 reference-counted client. The requests that can reach that client are the sum
 over those shares, which grows with the share count, and the constant is the only
@@ -743,7 +743,7 @@ service:
   and AWS's performance guidance asks for requests "spread over a wide pool of
   Amazon S3 IP addresses". Go's dialer uses the addresses one lookup returned.
   An S3 backend **MAY** do this; it is deferred until the sizing tool shows a
-  plateau below the link ([RFC 3 §8](rfc-3-syncer.md#8.%20Open%20questions), question 12).
+  plateau below the link ([RFC 3 §9](rfc-3-syncer.md#9.%20Open%20questions), question 12).
 
 S3's request-rate limit — at least 3,500 writes and 5,500 reads per second per
 key prefix, answered with `503 SlowDown` above it while it scales — is the

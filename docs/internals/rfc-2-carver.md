@@ -674,7 +674,7 @@ need no reader and no hash at all.
 
 | Layer | Requirement | Check |
 | --- | --- | --- |
-| chunker | [§3.2](#3.2%20The%20three%20settings) target is real | Cut incompressible data; assert the average is within tolerance of `Target`. **This fails against the shipped code** (Appendix A.1) and is the regression gate for fixing it. |
+| chunker | [§3.2](#3.2%20The%20three%20settings) target is real | Cut incompressible data; assert the average is within tolerance of `Target`. A mask that does not follow `Target` fails it (Appendix A.1). |
 | chunker | [§3.2](#3.2%20The%20three%20settings) mask comes from target | Build at several targets; assert the mask's bit count tracks the target, and that one hard-coded mask cannot satisfy two of them. |
 | chunker | [§3.7](#3.7%20Bad%20settings%20must%20be%20refused%2C%20not%20replaced) bad settings refused | Build with `Min` below the floor, with `Min ≥ Target`, and with `Max` above the ceiling; assert each errors and nothing usable comes back. |
 | chunker | [§3.4](#3.4%20How%20far%20back%20a%20decision%20looks) warm-up equivalence | Assert boundaries are identical whether the fingerprint is warmed from the chunk start or over the last 64 bytes, across several profiles. |
@@ -743,7 +743,7 @@ in the shape [RFC 1 §12](rfc-1-journal.md#12.%20Test%20plan%20and%20performance
 | Conformance | every check in [§9](#9.%20Conformance) | pure functions of a byte slice and settings |
 | Reader and emit faults | [§7](#7.%20Errors) | a reader and an `emit` that fail at a chosen byte or chunk ([§10.3](#10.3%20Faults%20and%20determinism)) |
 | Architecture | B2: any machine | the golden vectors run on amd64 and arm64; BLAKE3 takes different code paths on each |
-| Benchmark | [§9.1](#9.1%20Benchmarks%20and%20quality%20measures), C1–C5 | real time on a named box; never in CI ([§10.4](#10.4%20What%20CI%20checks%20instead%20of%20timing)) |
+| Benchmark | [§9.1](#9.1%20Benchmarks%20and%20quality%20measures), C1–C5 | real time on the reference box, on `develop` ([RFC 1 §12.4](rfc-1-journal.md#12.4%20What%20CI%20checks%20instead%20of%20timing)); C4 and C5 are counts and also run on pull requests |
 
 There is no crash test, no soak and no concurrency test, and that is the design
 working rather than a gap: the carver holds nothing that a crash can tear,
@@ -823,26 +823,29 @@ chose ([§3.6](#3.6%20Changing%20any%20of%20this%20is%20a%20migration)).
 
 ### 10.4 What CI checks instead of timing
 
-Timed benchmarks do not run in CI, for the reason [RFC 1 §12.4](rfc-1-journal.md#12.4%20What%20CI%20checks%20instead%20of%20timing) gives. The
-regressions that matter here can all be counted, and a count gives the same
-answer on any runner:
+Tiers are those of [RFC 1 §12.4](rfc-1-journal.md#12.4%20What%20CI%20checks%20instead%20of%20timing). On a pull request, only counts, which give the
+same answer on any runner:
 
 - **golden vectors** unchanged, on amd64 and arm64;
 - **allocations**: `NextBoundary` makes none, and `Cut` makes one buffer per
   call and nothing per chunk ([§2.2](#2.2%20The%20bytes%20handed%20to%20%60emit%60%20are%20borrowed));
-- **bytes fingerprinted per byte cut**, counted by the chunker over seeded
-  random input at the default profile. With the warm-up of [§3.4](#3.4%20How%20far%20back%20a%20decision%20looks) it is a few
-  percent; a value near one is [Appendix A.2](#A.2%20Warm-up%20runs%20over%20the%20whole%20chunk%20instead%20of%20the%20last%2064%20bytes) come back, and fails the check;
+
 - **average chunk size** over 256 MiB of seeded random input, within 10% of
-  `Target` at every profile. **This fails against the shipped code** ([Appendix A.1](#A.1%20The%20masks%20encode%20a%20different%20target%20than%20the%20profile%20declares));
+    `Target` at every profile;
 - **edit stability** (C4) on the fixed corpus, at or above the target of [§10.5](#10.5%20Performance%20targets).
+
+A warm-up that crept back over the whole chunk ([Appendix A.2](#A.2%20Warm-up%20runs%20over%20the%20whole%20chunk%20instead%20of%20the%20last%2064%20bytes)) changes no output, so
+no count on a pull request sees it. C1 on `develop` does: the boundary search
+falls from about 28× BLAKE3's rate to about 2×, far below its target. Counting
+it on pull requests would need a test-only hook inside a chunker that holds no
+state, which costs more than a day's delay in finding it.
 
 ### 10.5 Performance targets
 
-> [!question] Proposed, not agreed
-> Speed targets are stated against BLAKE3 alone over the same bytes on the same
-> box, so they hold on any hardware. Results are recorded in absolute numbers
-> ([§10.6](#10.6%20Recording%20results)).
+Speed targets are stated against BLAKE3 alone over the same bytes on the same
+box, so they hold on any hardware. Results are recorded in absolute numbers
+([§10.6](#10.6%20Recording%20results)). Each target leaves room below what was measured, so a real
+regression trips it and noise does not.
 
 The hash is the wall. With the warm-up fixed, BLAKE3 is 97% of a carve pass on
 the production CPU ([Appendix A.2](#A.2%20Warm-up%20runs%20over%20the%20whole%20chunk%20instead%20of%20the%20last%2064%20bytes)), so the carver's target is to cost almost
@@ -853,7 +856,7 @@ nothing on top of it, and the quality targets decide a profile, not speed
 | --- | --- | --- |
 | C1 | boundary search alone, random input | ≥ 10× BLAKE3's rate, so the search stays under a tenth of a pass (about 28× on EPYC 7543 and 23× on M1 Max, from [Appendix A.2](#A.2%20Warm-up%20runs%20over%20the%20whole%20chunk%20instead%20of%20the%20last%2064%20bytes)) |
 | C2 | a whole `Cut`, hashing included | ≥ 90% of BLAKE3 alone (measured 97%) |
-| C3 | all-zero and short-period input | ≥ 50% of C2 |
+| C3 | all-zero and short-period input | ≥ 50% of C2; the search does nothing useful here, but it must not cost more than the hash |
 | C4 | edit stability: a byte inserted near the start of a 1 GiB corpus file | every chunk shared except the one or two around the edit |
 | C5 | average chunk size, random input | within 10% of `Target` |
 | C5 | chunks at `Max`, on a corpus with no repetitive regions | ≤ 1% |

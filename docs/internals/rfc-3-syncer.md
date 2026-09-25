@@ -142,6 +142,7 @@ func (f *Flow) Healthy() bool
 func (f *Flow) Close() error
 
 Close() error // the syncer's own
+Stats() Stats // a consistent snapshot of the counters of §2.12
 ```
 
 Streams are the standard library's `iter.Seq2`: a caller consumes one with
@@ -337,7 +338,7 @@ does — a backend SDK that needs the body in memory to sign it — the
 per-transfer figure is the largest block instead, the block target plus one chunk
 ([RFC 2 §5](rfc-2-carver.md#5.%20Packing%3A%20three%20rules%2C%20not%20a%20component), P2). An implementation **MUST** state which applies to each backend it
 uses, and **MUST** be able to state the resulting number for its configuration,
-because it is what an operator sizes the pools from ([§8](#8.%20Open%20questions)). The whole process's
+because it is what an operator sizes the pools from ([§9](#9.%20Open%20questions)). The whole process's
 bound is the uploader's number plus the fetcher's.
 
 The limit belongs to the syncer, not to each store, because memory runs out for
@@ -487,7 +488,10 @@ whether the store is **healthy** or **unhealthy**:
   than continuously, and never latched;
 - an unhealthy store **MUST** keep being probed. Once transfers stop, the probe
   is the only thing that can observe recovery, so without it unhealthy would be
-  the latch [§5](#5.%20What%20belongs%20elsewhere) forbids.
+    the latch [§5](#5.%20What%20belongs%20elsewhere) forbids;
+- a probe **MUST** be bounded in time like any call, and one that does not
+  return within its bound is a failed probe. A hung probe that left the store
+  healthy would keep sending traffic to a dead store.
 
 **An unhealthy store refuses work.** `Upload`, `Fetch` and `Prefetch` targeting it
 **MUST** fail at once, before taking a worker and without calling the backend.
@@ -616,7 +620,7 @@ gets too few.
 Each is a memory budget as much as a concurrency limit ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)), and the
 documentation of each **MUST** state the memory it implies at the configured
 chunk `Max`. Both are fixed for the life of the process: the pool does not adapt
-([§8](#8.%20Open%20questions), question 2).
+([§9](#9.%20Open%20questions), question 2).
 
 Everything else the syncer needs is derived or fixed, and **MUST NOT** be a
 setting:
@@ -631,7 +635,7 @@ setting:
 | throughput floor | 64 KiB/s over 30 s, and 10 s to the first byte | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) |
 | detach bound | 5 s without taking the next chunk | a joined caller that falls behind is detached ([§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch)) |
 | unhealthy log interval | 60 s | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)'s summary line |
-| retry bound | the syncer's own, stated in code | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports), [§8](#8.%20Open%20questions) question 5 |
+| retry bound | the syncer's own, stated in code | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports), [§9](#9.%20Open%20questions) question 5 |
 
 Each fixed value becomes a setting only when a measurement shows the fixed value
 is wrong for a workload an operator can name. A setting nobody can reason about
@@ -689,7 +693,71 @@ It does not see CPU. Where compression and encryption cannot keep up with the
 printed pool size ([RFC 9](rfc-9-transforms.md)), the pool is larger than the process can use, and
 only memory is wasted; measuring the transforms' throughput is RFC 9's.
 
+### 2.12 What the syncer makes observable
+
+The syncer keeps counters, as [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)'s log lines already require, and returns a
+consistent snapshot of them from a `Stats` call on the syncer. It imports no
+metrics library ([§1.4](#1.4%20It%20is%20testable%20on%20its%20own)); the engine exports the snapshot to Prometheus and to
+`dfsctl`'s stats output. Taking a snapshot **MUST NOT** take a lock a dispatch
+needs, and its cost **MUST NOT** grow with the number of transfers in flight.
+
+Every metric is labelled with `half` (`upload` or `fetch`) and `store`. Queue
+metrics are also reported per flow; the syncer knows a flow by its id, and the
+engine replaces it with the share when it exports ([§1.3](#1.3%20Interface)). The syncer also
+reports each queue metric summed over all flows, so the total needs no query
+across series and survives the engine capping how many shares it exports one by
+one. The syncer
+**MUST** make every metric below observable:
+
+**Pools** — is the syncer the limit?
+
+| Metric | Type | Answers |
+| --- | --- | --- |
+| `dittofs_syncer_workers` | gauge | the pool size ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)) |
+| `dittofs_syncer_workers_busy` | gauge | workers transferring. A full pool while throughput is low means the store is slow; a pool that is not full while writes back up means the limit is upstream ([§7.4](#7.4%20Benchmarks)) |
+| `dittofs_syncer_inflight_bytes` | gauge | bytes held by transfers in flight, against the bound of [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound) |
+| `dittofs_syncer_queue_depth` | gauge | transfers waiting, per flow and in total ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) |
+| `dittofs_syncer_queue_wait_seconds` | histogram | time from call to dispatch; a flow whose wait exceeds one round is being starved (S18) |
+| `dittofs_syncer_refused_total` | counter | calls refused, labelled `reason` = `unhealthy`, `queue_full` or `closed` |
+
+**Transfers** — what moved, and how it ended?
+
+| Metric | Type | Answers |
+| --- | --- | --- |
+| `dittofs_syncer_transfers_total` | counter | transfers ended, labelled `outcome` = `ok`, `failed` or `unknown` ([§2.5](#2.5%20An%20unknown%20outcome%20is%20not%20a%20success)) |
+| `dittofs_syncer_bytes_total` | counter | plaintext bytes transferred |
+| `dittofs_syncer_transfer_duration_seconds` | histogram | time from dispatch to end |
+| `dittofs_syncer_first_byte_seconds` | histogram | time to the first byte; the tail that slow-tail retries and hedging aim at ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
+| `dittofs_syncer_retries_total` | counter | attempts beyond the first, labelled `reason` = `transient`, `slow_tail` or `floor` ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
+
+**Fetches** — are reads being shared and verified?
+
+| Metric | Type | Answers |
+| --- | --- | --- |
+| `dittofs_syncer_fetch_joined_total` | counter | callers that joined a fetch already in flight ([§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch)) |
+| `dittofs_syncer_fetch_detached_total` | counter | joined callers detached for falling behind |
+| `dittofs_syncer_get_requests_total` | counter | requests sent to the store; against chunks fetched, how well adjacent ranges merge ([§1.3](#1.3%20Interface)) |
+| `dittofs_syncer_chunks_fetched_total` | counter | chunks fetched and verified |
+| `dittofs_syncer_verify_failures_total` | counter | chunks that failed verification, labelled `kind` = `range_mismatch` or `corrupt` ([§4.1](#4.1%20One%20fetch%2C%20two%20consumers)). Any `corrupt` is an alert |
+| `dittofs_syncer_speculation_preempted_total` | counter | speculative fetches that yielded to demand ([§4.4](#4.4%20Speculation%20does%20not%20delay%20demand)) |
+
+**Health** — is each store usable?
+
+| Metric | Type | Answers |
+| --- | --- | --- |
+| `dittofs_syncer_store_healthy` | gauge (0/1) | the latest probe's verdict ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) |
+| `dittofs_syncer_store_unhealthy_seconds_total` | counter | time spent unhealthy |
+| `dittofs_syncer_store_transitions_total` | counter | changes of state; a high rate is flapping ([§9](#9.%20Open%20questions), question 9) |
+| `dittofs_syncer_probe_duration_seconds` | histogram | time per probe |
+
+Two metrics distinguish situations the logs cannot. `workers_busy` against
+throughput tells a slow store from a starved syncer, which is the question the
+v0.33.0 benchmark left open at 28% of raw S3 ([§7.4](#7.4%20Benchmarks)). `verify_failures_total`
+separates a range that no longer matches its metadata, which re-resolves, from
+stored bytes that are wrong, which nothing downstream repairs.
+
 ## 3. The uploader
+
 
 ### 3.1 It is triggered, not scheduled
 
@@ -1017,9 +1085,8 @@ measured.
 | B4 | joined fetches | N readers on one cold chunk | one transfer, whatever N ([§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch)) |
 | B5 | the real link | the syncer over MinIO locally and over S3 in the benchmark environment, at the pool sizes the sizing tool printed ([§2.11](#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) | within a few percent of the tool's raw figure; the gap is what the syncer costs on a real link |
 
-B1 to B4 run on any machine in seconds and belong in CI as regression checks
-against their last recorded value. B5 needs a real store and credentials, and
-runs where those are.
+Benchmarks run on `develop`, never on a pull request; what a pull request checks
+instead is in [§8.4](#8.4%20What%20CI%20checks%20instead%20of%20timing). B5 needs a real store and credentials, and runs where those are.
 
 A benchmark whose fake answers instantly measures the scheduler's lock, not the
 syncer: the pool never fills, so nothing it exists to do happens.
@@ -1030,7 +1097,127 @@ v0.33.0 measured about 28% of raw S3 through the whole stack; a syncer pool that
 is not full while that happens means the limit is upstream of the syncer, and
 [RFC 6 §13.5](rfc-6-engine.md#13.5%20Benchmarks) measures the pipeline end to end to find where.
 
-## 8. Open questions
+## 8. Test plan and performance targets
+
+[§7](#7.%20Conformance) says what must be checked and how a check is validated, and [§1.4](#1.4%20It%20is%20testable%20on%20its%20own) what
+a check is built from. This section is the plan around it, in the shape
+[RFC 1 §12](rfc-1-journal.md#12.%20Test%20plan%20and%20performance%20targets) set.
+
+### 8.1 Kinds of test
+
+| Kind | What it covers | How |
+| --- | --- | --- |
+| Conformance | every check in [§7](#7.%20Conformance), Groups A and B | the fault-injecting fake store of [§1.4](#1.4%20It%20is%20testable%20on%20its%20own), virtual time, race detector |
+| Real backend | what the fake cannot fail like ([§7.3](#7.3%20What%20must%20not%20stand%20in)) | nightly: the Group A checks and the lifecycle checks against MinIO in a container, with a fault proxy between them |
+| Scheduler model | S17 and S18 over arrivals no hand-written case thinks of | random flows, block sizes and arrival times under `synctest`, checked after every dispatch against a reference deficit-round-robin: who runs next, and that no flow or store exceeds its cap. A failing run is shrunk and kept |
+| Memory | S2 | held-pool heap checks ([§1.4](#1.4%20It%20is%20testable%20on%20its%20own)) |
+| Structure | the dependency set of [§1.4](#1.4%20It%20is%20testable%20on%20its%20own) | an import test |
+| Benchmark | [§7.4](#7.4%20Benchmarks), B1–B5 | real time; B1–B4 on a fake with a simulated link, B5 on a real store; on `develop`, never on a pull request ([§8.4](#8.4%20What%20CI%20checks%20instead%20of%20timing)) |
+| Soak | leaks and drift | hours, nightly, against MinIO with outages injected on a cycle, asserting goroutines, open connections, `inflight_bytes` and queue depth return to idle after each |
+| Sizing tool | [§2.11](#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool) | the tool against a fake with a known knee; it **MUST** print that knee |
+
+There is no crash test here. The syncer persists nothing (S7), so a crash leaves
+nothing of its own to recover; what a crash does to transfers in flight is the
+engine's to test ([RFC 6 §2.5](rfc-6-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)).
+
+### 8.2 Edge cases
+
+The conformance, model and fault tests **MUST** reach these.
+
+**Shape of a transfer**
+
+- a block of one chunk, and one at the largest block size;
+- a `src` that yields an error before its first chunk, and after its last;
+- `want` empty, one range, every range, adjacent ranges, ranges that are not
+  adjacent, the same range twice, and a range ending at the object's last byte.
+
+**Timing of a call**
+
+- `ctx` cancelled while queued, while transferring, and after the store answered
+  but before the call returned;
+- `Flow.Close` with transfers queued and running, and `Close` while a `Prefetch`
+  is joined by a demand;
+- a store that turns unhealthy while transfers to it are running.
+
+**Scale of the scheduler**
+
+- a pool of one, where the cap rules meet ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed));
+- a thousand flows, one of which has work;
+- a flow opened and closed without ever transferring.
+
+**Probes**
+
+- a probe that never returns. It **MUST** be bounded like any call and count as a
+  failure; a hung probe that left the store healthy would keep sending traffic to
+  a dead store.
+
+### 8.3 Faults and outside interference
+
+Faults are injected systematically: the fake store fails the *n*th call of a
+scripted run, for every *n*, with each failure kind of [§1.4](#1.4%20It%20is%20testable%20on%20its%20own) — transient,
+terminal, committed with the response lost, stopped part-way, corrupted, held.
+After each, every transfer has ended with a report (S4), nothing unconfirmed was
+reported durable (S5, S6), and no chunk that failed verification was yielded
+(S10).
+
+Against the real backend, a fault proxy adds what the fake cannot: a connection
+reset mid-body, a bandwidth cap below the throughput floor, `503 SlowDown`, and
+a response dropped after the store committed.
+
+The store can also change behind the syncer, and the tests cover what it then
+sees:
+
+| Change | What the syncer does |
+| --- | --- |
+| an object deleted | the `Get` fails as absent; the engine re-resolves once ([RFC 6 §6.7](rfc-6-engine.md#6.7%20An%20absent%20object%20is%20re-resolved%20exactly%20once)) |
+| an object overwritten with other bytes | verification fails; reported as corrupt, or as a range mismatch where the ranges no longer line up |
+| the bucket removed, or credentials revoked | terminal failures; the probe fails and the store turns unhealthy |
+| the store slowed below the floor | transfers fail on the floor and are retried within the bound |
+
+### 8.4 What CI checks instead of timing
+
+Tiers are those of [RFC 1 §12.4](rfc-1-journal.md#12.4%20What%20CI%20checks%20instead%20of%20timing): on a pull request, only the counts below, under
+`synctest` and against the fake, with the same answer on any runner. Each is the
+count behind one benchmark:
+
+- **allocations**: none per chunk once warm (B1);
+- **scheduler work per dispatch**: queue operations counted at 1, 10, 100 and
+  1,000 waiting flows **MUST** be the same (B2);
+- **fairness**: bytes dispatched per flow within one quantum, and no flow or
+  store above its cap (B3);
+- **single flight**: one `Get` for N readers of one cold chunk (B4);
+- **peak in flight** never above the pool size (S1).
+
+### 8.5 Performance targets
+
+B1 is stated against raw calls on the same fake, and B5 against the sizing
+tool's raw figure for the same store, so both hold on any link. Results are
+recorded in absolute numbers ([§8.6](#8.6%20Recording%20results)).
+
+The goal is to saturate the link. The syncer moves bytes it does not look at, so
+anything it costs on top of the store is overhead to remove, not a budget to
+spend.
+
+| # | Metric | Proposed target |
+| --- | --- | --- |
+| B1 | throughput through the syncer, same pool size | ≥ 97% of raw calls on the fake |
+| B2 | one dispatch with 1,000 flows waiting | ≤ 1 µs, and flat from 1 flow |
+| B3 | a fetch's queue wait while another flow saturates uploads | p99 within one round |
+| B5 | throughput through the syncer on a real store | ≥ 95% of the sizing tool's raw figure; below 90% is a regression. v0.33.0 managed 28% through the whole stack |
+| — | peak memory per half | ≤ pool × the per-transfer figure of [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound), plus 10% |
+| — | a failed store refused | within one probe interval plus the probe's bound |
+| — | a recovered store accepting work | within one probe interval |
+
+B4 is a count, not a speed, and is fully checked in CI.
+
+### 8.6 Recording results
+
+Results are recorded as [RFC 1 §12.6](rfc-1-journal.md#12.6%20Recording%20results) requires, with the link in place of
+the disk: the backend and its region, round-trip time, bandwidth, object size,
+the pool sizes, and the sizing tool's raw figures for that store. For B1–B4 the
+fake's simulated latency and per-byte time are part of the result.
+
+## 9. Open questions
 
 Numbering is stable: an answered question keeps its number so that references to
 it stay valid.
@@ -1052,13 +1239,13 @@ it stay valid.
 4. **What durable acknowledgement is, per backend.** **Answered** in [§2.6](#2.6%20Durability%20is%20observed%2C%20never%20inferred).
 5. **Where the retry bound lives.** **Answered** in [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports): in the syncer
    only; the backend's client makes one attempt. Today's double retry is a
-   deviation ([§9](#9.%20Deviations)).
+   deviation ([§10](#10.%20Deviations)).
 6. **Deviation pass against this shape.** **Answered:** run against
    `pkg/block/engine` and `pkg/block/remote`; its findings are
-   [§9](#9.%20Deviations) D7 to D20.
+   [§10](#10.%20Deviations) D7 to D20.
 7. **The put's length when the upload streams.** **Answered** in [§3.4](#3.4%20One%20put%20per%20block): the
    backend spools to a local file.
-8. **One syncer per share today.** Moved to [§9](#9.%20Deviations).
+8. **One syncer per share today.** Moved to [§10](#10.%20Deviations).
 9. **Probe interval and flapping** ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)). One failed probe makes a store unhealthy
    and one success makes it healthy. Whether a store that fails intermittently needs a run of failures
    before turning unhealthy depends on how often real probes fail spuriously, which is
@@ -1067,7 +1254,7 @@ it stay valid.
     and the two pool defaults are reasoned, not measured. The cap trades a flow
     alone on the system (wants it high) against the wait of a second flow's
     first transfer when the first flow's store is slow (wants it low).
-11. **Today's settings differ.** Moved to [§9](#9.%20Deviations).
+11. **Today's settings differ.** Moved to [§10](#10.%20Deviations).
 
 12. **Considered and deferred.** Each is in use elsewhere and each waits for a
     measurement that asks for it: hedged cold reads ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)); a bandwidth
@@ -1076,7 +1263,7 @@ it stay valid.
     interaction with the pool stated; spreading connections across the service's
     addresses ([RFC 8 §5.10](rfc-8-remote-tier.md#5.10%20Transfer%20practice%20a%20backend%20owes%20its%20service)).
 
-## 9. Deviations
+## 10. Deviations
 
 Where today's code departs from this document. Each is a change to make, not a
 question to answer.
