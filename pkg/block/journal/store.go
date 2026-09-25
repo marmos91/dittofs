@@ -277,17 +277,19 @@ type Store struct {
 	// cannot keep is refused, which the caller already treats as fail-closed.
 	coldBroken bool
 	// coldEntries is how many entries the cold log holds: seeded by recovery from
-	// what loadCold read, raised by each append and reset by each rewrite. It
-	// feeds the compaction ratio gate and is half of what a compaction verifies
-	// its snapshot against (see maybeCompactColdLog).
+	// what loadCold read, raised by each append, reset by each rewrite, and
+	// resynced from the file by a compaction that finds the two disagree. It feeds
+	// the compaction ratio gate and is half of what a compaction verifies its
+	// snapshot against (see maybeCompactColdLog).
 	coldEntries int
 	// coldInFlight counts the append-then-publish units currently running. It is
 	// the other half: coldEntries moves when the log gains entries, this moves
 	// while the index does not describe them yet. See appendColdPublish.
 	coldInFlight int
-	// coldRefusals is the current run of compaction passes that could not get to
-	// a verdict. Every reason to block fails closed, so the run length is what
-	// separates a collision with an appender from compaction having stopped.
+	// coldRefusals is the current run of compaction passes blocked before reaching
+	// a verdict. Every reason counted here fails closed, so the run length is what
+	// separates a collision with an appender from compaction having stopped; the
+	// one reason that is not counted reports itself every time (drift).
 	coldRefusals int
 
 	// bgCancel stops the background loops started by Open — the dead-ratio

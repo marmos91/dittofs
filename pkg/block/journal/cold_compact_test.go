@@ -2,11 +2,13 @@ package journal
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"testing"
+	"time"
 )
 
 // coldLogSize is the on-disk footprint of the store's cold log, 0 when it does
@@ -306,6 +308,56 @@ func TestColdLogCompactionKeepsEvictionsAppendedButUnpublished(t *testing.T) {
 		wantColdAt(t, s2, "evicted", off, "after reopen")
 	}
 	wantColdAt(t, s2, "seeded", 0, "after reopen")
+}
+
+// TestColdLogCompactionSurvivesAFailedShardCommit pins that the commit sweep
+// decides how much of the store a pass shrinks and nothing else. A shard whose
+// fsync fails is left dirty by that very failure, so the carry already covers it;
+// abandoning the pass would take the healthy shards down with it, which is the
+// same store-wide inertness by another route.
+func TestColdLogCompactionSurvivesAFailedShardCommit(t *testing.T) {
+	ctx := context.Background()
+	// DirtyExpiry is long rather than negative: the compaction's own commit sweep
+	// has to run (that is the path under test) while the background loop does not
+	// get to mark the shard failed before the pass does.
+	s := testStore(t, Config{ShardCount: 4, SegmentSize: minSegmentSize, DirtyExpiry: 10 * time.Minute})
+	failID, cleanID := twoShardIDs(t, s)
+	s.shardFor(failID).segSync = func(*segmentMeta) error {
+		return errors.New("simulated fsync failure")
+	}
+
+	if err := s.SeedCold(ctx, failID, [][2]int64{{0, 4096}}); err != nil {
+		t.Fatalf("SeedCold: %v", err)
+	}
+	if err := s.WriteAt(ctx, failID, 0, randBytes(4096, 11)); err != nil {
+		t.Fatalf("WriteAt: %v", err)
+	}
+	seedDeadColdEntries(t, s, cleanID, 1200)
+
+	// The sweep has to fail inside the pass, so nothing may commit that shard
+	// first: the failure is sticky, and a shard already marked failed is skipped
+	// by the sweep rather than reported by it.
+	before := coldLogSize(t, s)
+	s.maybeCompactColdLog()
+	if !s.shardFor(failID).syncFailed.Load() {
+		t.Fatal("the pass's own commit sweep never reached the failing shard, so this proves nothing about a failed commit")
+	}
+	if after := coldLogSize(t, s); after >= before {
+		t.Fatalf("a failed shard commit blocked the whole pass: cold log %d -> %d bytes", before, after)
+	}
+	kept, _, err := loadCold(s.dir, s.log)
+	if err != nil {
+		t.Fatalf("loadCold: %v", err)
+	}
+	found := false
+	for _, e := range kept {
+		if e.id == failID && e.fileOff == 0 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the entry of the shard that could not commit was dropped; log now holds %d entries", len(kept))
+	}
 }
 
 // twoShardIDs returns two file IDs that hash to different shards.
