@@ -695,6 +695,13 @@ last one, and they are what decide a profile — speed alone never does.
 Seeded random input is the right input for C1 and C2 and the wrong one for C4
 and C5: random bytes contain no edits to survive and no structure to find.
 
+Any benchmark that runs the carver inside the full stack uses data that does not
+deduplicate, and reports bytes stored against bytes written. The external
+benchmark of v0.33.0 found 2.9× deduplication that came from fio reusing its
+buffers, not from the workload, and it inflated every throughput figure it
+touched. The object-size histogram of a real bucket is a check on C5 from the
+other side.
+
 ## 10. Open questions
 
 1. **Which way out of Appendix A.1.** Both exits re-cut everything already

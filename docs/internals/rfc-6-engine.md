@@ -733,6 +733,29 @@ The journal refuses a write it cannot reserve for, and does not evict for itself
 The retry is bounded by the caller's deadline. A wait that outlives it is a
 refusal the client did not get.
 
+> [!important] Pending review — pace writes before the limit
+> Measured on v0.33.0: once 24 GiB of writes crossed the 15.5 GB journal budget,
+> clients saw multi-second submission stalls (p99.9 430 ms, max 3.2 s) with no
+> slowdown before them. The refusal path above is correct; nothing paced writes
+> ahead of it.
+> *Added from the external staging benchmark of v0.33.0 (Hetzner AX42 pair, 1 GbE, Hetzner Object Storage and Cubbit DS3, September 2026), 2026-09-25.*
+
+### 7.2.1 Writes are paced before the limit, not stopped at it
+
+Refusal at the limit is the specified last resort; reaching it abruptly is not.
+Between a **soft threshold** of dirty bytes and the limit, the engine delays each
+write in proportion to how far past the threshold the journal is, scaled to the
+measured rate at which flush makes bytes durable, so writes slow to the drain rate
+instead of running at full speed into a wall. Above the soft threshold every file
+with dirty bytes is flush-eligible ([§4.2](#4.2%20Flush%20is%20scheduled%20here)). Linux's `balance_dirty_pages` does the
+same for the page cache, for the same reason.
+
+The delay is bounded by the caller's deadline, like the retry above, and the
+engine **SHOULD** state the submission-latency objective the pacing is tuned
+against. **Proposal:** a soft threshold at half the journal's capacity and a delay
+rising linearly to the drain rate at the limit. Overturned by a measurement
+showing another curve keeps p99 submission latency lower at the same throughput.
+
 ### 7.3 Repack is triggered here
 
 The engine requests a repack when the journal's statistics show storage it can
@@ -827,6 +850,21 @@ retry, not a failed pass.
 The per-file guard of [§4.3](#4.3%20Commits%20for%20one%20file%20are%20serialised%20here) reduces flush-against-flush conflicts. It **MUST NOT**
 be relied on for correctness: [RFC 4 §5.1](rfc-4-block-metadata.md#5.1%20No%20record%20is%20written%20by%20both%20paths) removes flush-against-writer conflicts
 structurally, and a conflict the guard missed is retried like any other.
+
+> [!important] Pending review — durability is observable, and benchmarks stop at it
+> Measured on v0.33.0: throughput acknowledged to the client ranked Cubbit 15% ahead
+> of Hetzner; throughput made durable at the store ranked it 30% behind. A benchmark
+> that stops at client acknowledgement measures the journal, not the system.
+> *Added from the external staging benchmark of v0.33.0 (Hetzner AX42 pair, 1 GbE, Hetzner Object Storage and Cubbit DS3, September 2026), 2026-09-25.*
+
+### 8.4 How far behind durability is, is observable
+
+The engine **MUST** report, per share and summed: dirty bytes, the drain rate over a
+recent window, and the time to drain at that rate; and **MUST** offer a way to wait
+until every byte written before the call is durable. The journal's own counters
+([RFC 1 §3.7](rfc-1-journal.md#3.7%20State%20introspection)) say how much is dirty; only the engine knows how fast it is
+leaving. A benchmark of the write path **MUST** stop its clock at that wait, not at
+the last client acknowledgement ([§13.5](#13.5%20Benchmarks)).
 
 ## 9. The facade
 
@@ -1039,6 +1077,47 @@ runs against the engine as production composes it ([RFC 1 §11.5](rfc-1-journal.
   or two blocks in flight at once.
 - **A health check that reads the remote probe MUST NOT stand in for [§8.1](#8.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20flush%20included).** The
   failure it exists for passes the probe.
+
+> [!important] Pending review — end-to-end benchmarks
+> New. Measured on v0.33.0: flush-to-durable throughput was about 28% of raw S3 on
+> both backends (about 30 MB/s against 108 MB/s raw on Hetzner; 21 against 74 on
+> Cubbit). The report attributed it to the upload window sitting at its floor; its
+> own raw figures (one 10 MB PUT alone at 49 MB/s) point instead at a stage before
+> the upload. E1 and the occupancy rule below exist to find out which.
+> *Added from the external staging benchmark of v0.33.0 (Hetzner AX42 pair, 1 GbE, Hetzner Object Storage and Cubbit DS3, September 2026), 2026-09-25.*
+
+### 13.5 Benchmarks
+
+The component benchmarks ([RFC 1 §11.6](rfc-1-journal.md#11.6%20Benchmarks), [RFC 2 §9.1](rfc-2-carver.md#9.1%20Benchmarks%20and%20quality%20measures), [RFC 3 §7.4](rfc-3-syncer.md#7.4%20Benchmarks)) measure parts. These
+measure the pipeline, and are the ones that say whether the parts compose.
+
+| # | Measures | Setup | Reports |
+| --- | --- | --- | --- |
+| E1 | flush to durable | sustained writes of non-deduplicating data larger than the journal, against a real store | durable MiB/s as a **fraction of the sizing tool's raw figure** ([RFC 3 §2.11](rfc-3-syncer.md#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) for the same store and pool sizes |
+| E2 | small files | create, write and close 10^4 and 10^5 files of 64 KiB, into directories of 10^2 to 10^5 entries | files/s, derived from wall time and file count; create and overwrite reported separately |
+| E3 | pacing | E1 run below and above the soft threshold of §7.2.1 | p50/p99/max submission latency against durable throughput |
+| E4 | cold reads | random 4 KiB and sequential reads of evicted content | p50/p99 latency and bytes fetched per byte read |
+
+**Every stage reports its occupancy** — carver, assembler, upload pool, commit —
+as busy time over a window. A pool that is not full while dirty bytes wait means
+the limit is upstream of it, and E1 is only interpretable with that beside it.
+
+Method, from the external benchmark of v0.33.0:
+
+- **Three layers.** Measure the raw link, then raw object storage, then the full
+  stack, on the same hosts at the same time, and report each layer as a fraction
+  of the one below. A number without its layer below cannot be judged.
+- **Data that does not deduplicate.** fio reuses its buffers by default and made
+  2.9× of the bytes written deduplicate; use `--refill_buffers=1
+  --dedupe_percentage=0`, and report bytes stored against bytes written.
+- **The clock stops at durability** (§8.4), and for small files per-file cost is
+  derived from files per second: fio's completion latency excludes open and
+  close, and under-reported per-file cost by 2.6×.
+- **Repeat single-connection cells at least three times**, and report by regime
+  rather than as a mean of percentage differences.
+- **Record the network distance** to the store: round-trip time and hop count.
+- **Run long enough to exhaust the local device's write cache** (the report's
+  NVMe halved its rate past about 100 GB) and report the rate after it.
 
 ## 14. Open questions
 
