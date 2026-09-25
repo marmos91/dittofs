@@ -161,7 +161,7 @@ newer bytes thereafter, and **MUST NOT** require the caller to invalidate first.
 ### 3.2 Read
 
 ```go
-ReadAt(id FileID, off int64, p []byte) (n int, missing []Extent, asOf Version, err error)
+ReadAt(id FileID, off int64, p []byte) (n int, missing []Extent, asOf Seq, err error)
 ```
 
 Fills `p` from held extents. Every sub-extent of `(off, len(p))` that the journal
@@ -177,8 +177,8 @@ absence.
 segment, record or block for convenience, because the caller pays a remote
 transfer per entry.
 
-`asOf` is the file's change version at the moment of the read: the highest version
-of any operation that has changed the file's extents ([§3.4](#3.4%20Fill)). A caller that fetches
+`asOf` is the file's change sequence at the moment of the read: the highest
+sequence number of any operation that has changed the file's extents ([§3.4](#3.4%20Fill), [§5.3](#5.3%20Versions)). A caller that fetches
 a `missing` extent passes it back to `Fill`.
 
 ### 3.3 Flush
@@ -191,7 +191,8 @@ FlushMany(ids []FileID, limit int64, fn func(offers []Offer, report func(id File
 type Offer struct {
     ID      FileID
     Dirty   []Extent
-    Version Version     // the highest version among the offered records
+        Oldest  Version     // the oldest content version among the offered records
+    Newest  Version     // the newest
     Offered io.ReaderAt // the bytes as offered; see below
 }
 ```
@@ -214,9 +215,11 @@ block uploads. The engine chooses the limit ([RFC 6 §4.2](rfc-6-engine.md#4.2%2
 chose, so it costs one chunk boundary per pass that the chunker did not pick
 ([RFC 2 §2.1](rfc-2-carver.md#2.1%20One%20unbroken%20stretch%20per%20call)).
 
-**`Version`** is the highest version of any record in the offer ([§5.3](#5.3%20Versions)). The engine
-records it on the refs the pass commits ([RFC 4 §4.4](rfc-4-block-metadata.md#4.4%20Commits%20for%20one%20file%20apply%20in%20order)) and names it again when it reseeds
-after a crash ([§9.2](#9.2%20Flush%20state%20after%20recovery)).
+**`Oldest` and `Newest`** bound the content versions of the records in the offer
+([§5.3](#5.3%20Versions)). The engine records both on the refs the pass commits ([RFC 4 §4.4](rfc-4-block-metadata.md#4.4%20Commits%20for%20one%20file%20apply%20in%20order)) and
+names them again when it reseeds after a crash ([§9.2](#9.2%20Flush%20state%20after%20recovery)). A range is enough: every
+extent in the pass lies inside it, which is all reseed and the stale rule need,
+and the engine does not have to track versions per extent.
 
 `FlushMany` is the same offer over several files in one callback, so the engine
 can pack chunks of several files into one block ([RFC 6 §5.7](rfc-6-engine.md#5.7%20A%20block%20packs%20chunks%2C%20whichever%20files%20they%20came%20from)). Every rule of this section
@@ -258,7 +261,7 @@ superseding write even if `fn` reports the offset durable.
 ### 3.4 Fill
 
 ```go
-Fill(id FileID, off int64, p []byte, asOf Version) error
+Fill(id FileID, off int64, p []byte, asOf Seq, v Version) error
 ```
 
 Places retrieved remote bytes into local storage. This is the only path by which
@@ -269,9 +272,9 @@ an extent becomes held without a client write.
 make that determination and the write atomic with respect to concurrent
 `WriteAt` on the same file.
 
-**A Fill older than the file is refused.** `asOf` is the version `ReadAt` returned
+**A Fill older than the file is refused.** `asOf` is the sequence `ReadAt` returned
 when the caller found the extent missing ([RFC 6 §6.2](rfc-6-engine.md#6.2%20The%20reply%20is%20served%20from%20the%20fetched%20bytes)). The journal keeps, per file, the
-highest version of any operation that changed its extents — `WriteAt`, `Release`,
+highest sequence number of any operation that changed its extents — `WriteAt`, `Release`,
 `Truncate`, `Delete` — and keeps it through all of them, deletion included. If it
 is newer than `asOf`, `Fill` **MUST** write nothing and return a distinct error.
 Without this, a fetch that began before a write can land after that write was
@@ -291,6 +294,12 @@ filled after the content they came from was superseded, produce an extent the
 journal believes is durable elsewhere and will therefore allow to be released —
 leaving content that exists nowhere.
 
+`v` is the content version of the ref the bytes were fetched from: its `newest`
+([RFC 4 §2.1](rfc-4-block-metadata.md#2.1%20Ref)). The filled record carries it, so reseed and the stale rule treat
+filled content like any other ([§9.2](#9.2%20Flush%20state%20after%20recovery)). Its sequence number is new, like every
+append's, so an older superseded write still on disk cannot win over it at
+recovery.
+
 #### Fill is not a write
 
 `Fill` and `WriteAt` take nearly the same arguments and are otherwise opposites:
@@ -301,7 +310,7 @@ leaving content that exists nowhere.
 | the content is           | new                       | already existing, retrieved                                      |
 | relative to held content | **newer** — supersedes it | **older** — must not touch it                                    |
 | on conflict              | the written bytes win     | the held bytes win                                               |
-| version                  | a new, higher one         | none; never supersedes                                           |
+| content version          | a new one, its own sequence number | the fetched ref's; never supersedes held content      |
 | flush bit afterwards     | unset — owes a flush      | set — already durable                                            |
 | residency transition     | `*` → `Dirty`             | `Remote` → `Resident`                                            |
 | caller obligation        | none beyond capacity      | the bytes **MUST** be what the remote tier holds for this extent |
@@ -334,6 +343,17 @@ resolving to zeros.
 
 `freed` is the local storage actually released, which **MAY** be less than the
 extent length ([§8.3](#8.3%20Accounting)).
+
+**A release is recorded.** `Release` appends a **release record** naming the
+file and extents, with a new sequence number ([§5.3](#5.3%20Versions)). Recovery applies it like
+any record: extents it covers are not held, whatever older record on disk still
+covers them. Without it, a superseded write whose successor was released and
+punched would be held again after a restart, and served.
+
+`Release` does not sync for it. The release record **MUST** be durable before
+any storage it frees is punched or its segment unlinked ([§6.1](#6.1%20Ordering%20rules)). If a crash
+loses the record, it loses the punch too, and the released record is still whole
+on disk: held again after recovery, current, and evictable once reseeded.
 
 ### 3.6 Truncate and delete
 
@@ -582,18 +602,29 @@ memory and is re-established at startup ([§9.2](#9.2%20Flush%20state%20after%20
 
 ### 4.3 Records
 
-Each record carries a header and a payload. The header **MUST** identify:
+Each record carries a header, and a write or fill record a payload. The header
+**MUST** identify:
 
-- the `FileID` the payload belongs to
-- the file offset the payload begins at
-- the payload length
-- a monotonic version, for ordering two records covering the same offset
-- a checksum
+- the record's kind: write, fill, release, truncate or delete
+- the `FileID` it belongs to
+- the file offset it begins at, and its length
+- its sequence number and, for a write or fill, its content version ([§5.3](#5.3%20Versions))
+- a checksum of the payload
+- a checksum of the header
 
-The checksum **MUST** cover the entire header and the entire payload. An
-implementation **MUST NOT** exclude any header field from checksum coverage.
+The header checksum **MUST** cover every other header field, the payload
+checksum included, so between them the two cover the whole record. An
+implementation **MUST NOT** exclude any header field from coverage.
 
-A record whose checksum does not verify **MUST NOT** be used to serve a read.
+They are separate so that a record's boundaries survive a punch. Releasing an
+extent punches its payload ([§8.1](#8.1%20Releasing%20storage)) and leaves its header, which still verifies;
+a scan reads the length from it and steps over. With one checksum over both, a
+punched record would look corrupt, and in a scanned segment every record after it
+would be refused ([§9.3](#9.3%20Torn%20and%20corrupt%20records)).
+
+A record whose payload checksum does not verify **MUST NOT** be used to serve a
+read. A record wholly covered by a newer release, truncate or delete record is
+not held, and recovery **MUST NOT** verify or report its payload.
 
 ### 4.4 The segment catalog
 
@@ -734,18 +765,21 @@ All integers are little-endian and packed without padding.
 | 24 | 4 | CRC32C over trailer bytes `[0, 24)` |
 | 28 | 4 | reserved, zero |
 
-**Entry — 44 bytes, repeated `entryCount` times, ascending by `recordOffset`.**
+**Entry — 56 bytes, repeated `entryCount` times, ascending by `recordOffset`.**
 
 | Offset | Size | Field |
 | --- | --- | --- |
 | 0 | 16 | `FileID` |
 | 16 | 8 | file offset of the record's first byte |
 | 24 | 8 | `recordOffset` — the record's offset within this segment |
-| 32 | 4 | payload length |
-| 36 | 8 | version |
+| 32 | 4 | length |
+| 36 | 8 | sequence number |
+| 44 | 8 | content version, zero for a record that has none |
+| 52 | 1 | record kind ([§4.3](#4.3%20Records)) |
+| 53 | 3 | reserved, zero |
 
-At 44 bytes per record, a 256 MiB segment of 1 MiB records carries an 11 KiB
-footer, and one of 64 KiB records carries 180 KiB — under 0.1% either way.
+At 56 bytes per record, a 256 MiB segment of 1 MiB records carries a 14 KiB
+footer, and one of 64 KiB records carries 224 KiB — under 0.1% either way.
 An implementation **MAY** compress or dictionary-encode the `FileID` column,
 whose values repeat heavily; it **MUST NOT** do so in a way that prevents the
 whole footer being validated by the single CRC in the trailer.
@@ -753,7 +787,7 @@ whole footer being validated by the single CRC in the trailer.
 ![A sealed segment laid out as records, then catalog, then trailer, with recovery reading backwards from the last 32 bytes](img/rfc1-segment-anatomy.svg)
 
 **Reading.** Read the final 32 bytes; verify the trailer CRC; check the magic.
-Then read `entryCount × 44` bytes at `footerOffset` and verify the footer CRC.
+Then read `entryCount × 56` bytes at `footerOffset` and verify the footer CRC.
 Any failure — short file, bad magic, either CRC, an `entryCount` that does not
 fit between `footerOffset` and the trailer — **MUST** be treated as "no footer"
 and the segment scanned. **An unrecognised format version is also "no footer",
@@ -911,22 +945,38 @@ for a different reason, which is why both are stated.
 
 ### 5.3 Versions
 
-Every record carries a version, and where two records cover the same offset the
-higher version is the live one.
+A record carries two numbers, because two questions need them and the answers
+diverge.
 
-Versions **MUST** be assigned from a single monotonically increasing sequence per
-journal instance. They **MUST NOT** be per-file or per-segment: recovery compares
-records that reached different segments in an order the segment ids do not
-express, and a sequence that restarts or is scoped narrower makes that comparison
-meaningless.
+| | Sequence number | Content version |
+| --- | --- | --- |
+| answers | which record wins where two cover the same offset | which bytes these are |
+| carried by | every record | write and fill records |
+| a write | a new one | its own sequence number |
+| a fill | a new one | the version of the ref it was fetched from ([§3.4](#3.4%20Fill)) |
+| a repack copy | a new one | the original's, unchanged ([§8.2](#8.2%20Repack)) |
+| used by | recovery, `Fill`'s staleness check | `Flush` offers, reseed, the stale rule ([§9.2](#9.2%20Flush%20state%20after%20recovery)) |
 
-A version **MUST NOT** be reused. On recovery the next version issued **MUST**
-exceed every version found on disk, which an implementation **MUST** establish by
-taking the maximum observed during reconstruction rather than by persisting a
-counter separately — a separately persisted counter is a second source of truth
-and can be stale exactly when it matters.
+One number cannot do both. Repack needs a new number so a crash between copy and
+unlink resolves to the copy, and needs the old one so reseed still recognises the
+content its ref describes. A fill needs a new number so it wins over older records
+still on disk, and needs the ref's so reseed can mark it.
 
-Because precedence is decided by version and not by position, **recovery MAY
+Sequence numbers **MUST** be assigned from a single monotonically increasing
+counter per journal instance. They **MUST NOT** be per-file or per-segment:
+recovery compares records that reached different segments in an order the
+segment ids do not express, and a counter that restarts or is scoped narrower
+makes that comparison meaningless. Content versions are sequence numbers, so they
+share the space and a content version never exceeds its record's sequence number.
+
+A sequence number **MUST NOT** be reused. On recovery the next one issued **MUST**
+exceed every sequence number found on disk and the floor supplied at open
+([§9.1](#9.1%20Rebuilding)), which an implementation **MUST** establish by taking the maximum observed
+during reconstruction rather than by persisting a counter separately — a
+separately persisted counter is a second source of truth and can be stale exactly
+when it matters.
+
+Because precedence is decided by sequence number and not by position, **recovery MAY
 process segments in any order, including concurrently.** An implementation
 **MUST NOT** depend on ascending segment order for correctness.
 
@@ -961,6 +1011,7 @@ separate, explicit action.
 | --- | --- |
 | A record **MUST** be durable before `WriteAt` returns success, per [§6.2](#6.2%20Sync%20policy). | The acknowledgement is a promise. |
 | `Release` **MUST NOT** precede the caller's durable record of non-residency. | Inverting it leaves content believed local that is gone ([RFC 0 §8.1](rfc-0-data-lifecycle.md#8.1%20Evict)). |
+| A release record **MUST** be durable before any storage it frees is punched or unlinked. | Otherwise a crash can lose the record and keep the punch, and an older record the release covered is held again ([§3.5](#3.5%20Release)). |
 | A segment's records **MUST** be durable before the segment is unlinked by reclamation. | A reclaim pass **MUST** be content-preserving ([RFC 0 §8.2](rfc-0-data-lifecycle.md#8.2%20Reclaim)). |
 | Marking a flush bit **MUST NOT** precede the report that justifies it. | [RFC 0](rfc-0-data-lifecycle.md) invariant I5. |
 
@@ -1135,16 +1186,28 @@ bytes they produce, and their flush bits. Resetting a flush bit would make
 durable content look dirty and cause it to be re-uploaded; setting one would make
 undurable content evictable.
 
-**Versions are not preserved, and MUST NOT be.** A relocated record **MUST** be
-written with a new version, higher than any issued so far ([§5.3](#5.3%20Versions)). Copying a
-record under its original version would leave two records covering one offset
-with equal versions if the process died between the copy and the unlink, and
-version precedence could not then resolve which is live. A new version makes the
-copy unambiguously the successor, so a crash at any point resolves correctly.
+**A copy gets a new sequence number and keeps its content version** ([§5.3](#5.3%20Versions)).
+Copying under the original sequence number would leave two records covering one
+offset with equal numbers if the process died between the copy and the unlink,
+and precedence could not then resolve which is live. A new one makes the copy
+unambiguously the successor. The content version is kept because the bytes are
+the same bytes: a new one would make repacked durable content look newer than its
+ref, and reseed would never mark it again.
+
+**Release records are carried forward** while any older record they cover may
+still be on disk. A release record whose sequence number is below the lowest
+sequence number in every other segment on disk can outrank nothing, and repack
+drops it.
+
+> [!note] ponytail
+> A release record lives until the oldest segment on disk is newer than it, so
+> release records accumulate for as long as one long-lived segment holds cached
+> content; each costs a header. Upgrade to tracking which older records a release
+> actually covers when release records show up in footprint or in scan time.
 
 **Ordering.** Copy the records; make the copies durable; repoint the placement
 index; only then unlink the source. A crash before the unlink leaves both copies
-on disk, and recovery selects the relocated one by version — the source's records
+on disk, and recovery selects the relocated one by sequence number — the source's records
 become dead weight that a later pass reclaims. A crash after the unlink is
 indistinguishable from a completed repack. At no point is an extent unreachable.
 
@@ -1221,15 +1284,15 @@ into the loss of every dirty extent the segment holds. A segment whose header is
 torn and which holds no record was being created at a crash; it is an orphan
 ([§9.5](#9.5%20Unattachable%20files)), not damage.
 
-**The version floor.** The journal is opened with a version floor supplied by
-its caller: the highest version the caller has recorded as durable for this
+**The version floor.** The journal is opened with a floor supplied by its
+caller: the highest content version the caller has recorded as durable for this
 journal ([RFC 6 §2.5](rfc-6-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). This is a number, not a dependency, and recovery still
-consults nothing. The next version issued **MUST** exceed both the floor and
-every version on disk ([§5.3](#5.3%20Versions)). The journal does not compare the floor with what it
-holds: released content leaves no version on disk, so a healthy journal is
+consults nothing. The next sequence number issued **MUST** exceed both the floor and every one on
+disk ([§5.3](#5.3%20Versions)). The journal does not compare the floor with what it
+holds: released content can leave nothing on disk, so a healthy journal is
 routinely below its floor. A restored directory shows up at reseed instead, as
-stale extents ([§9.2](#9.2%20Flush%20state%20after%20recovery)). Without the floor such a journal would issue versions
-the caller has already recorded for other content, and a reseed by version
+stale extents ([§9.2](#9.2%20Flush%20state%20after%20recovery)). Without the floor such a journal would issue content versions the caller has
+already recorded for other content, and a reseed by version
 ([§9.2](#9.2%20Flush%20state%20after%20recovery)) would then mark new, unflushed writes durable.
 
 There are three sources for the index, in decreasing speed and increasing
@@ -1345,26 +1408,28 @@ segment's age or seal state, or from the absence of a crash.
 The engine reseeds through:
 
 ```go
-MarkDurable(id FileID, extents []Extent, asOf Version) error
+MarkDurable(id FileID, extents []Extent, oldest, newest Version) error
 ```
 
-naming for each extent the version recorded on the ref that covers it
-([RFC 4 §4.4](rfc-4-block-metadata.md#4.4%20Commits%20for%20one%20file%20apply%20in%20order)). The journal marks an extent only where no held record in it is newer
-than `asOf`. Marking by position alone loses data: a write that superseded
+naming for each extent the content versions recorded on the ref that covers it
+([RFC 4 §4.4](rfc-4-block-metadata.md#4.4%20Commits%20for%20one%20file%20apply%20in%20order)). The journal marks an extent only where no held content in it is newer
+than `newest`. Marking by position alone loses data: a write that superseded
 flushed content and had not been flushed when the process crashed is held again
 after recovery, covered by the old content's ref; marked durable by position, it
 becomes evictable, and the next read fetches the old content in its place.
 
-**A held write older than `asOf` is stale.** In normal operation the newest
-record the journal holds for an extent is at least as new as the version the
-caller recorded as durable for it, because that version was the journal's own
-write. A held extent whose newest record is a write with a version **below**
-`asOf` therefore holds content older than what is durable remotely — it came
-back from a restored segment or a restored directory. The journal **MUST** drop
+**Held content older than `oldest` is stale.** Every extent a flush pass offered
+has a content version of at least the pass's `Oldest`, repack keeps content
+versions, and a fill carries its ref's. So in normal operation no held content is
+older than the `oldest` of the ref that covers it. Content that is came back from
+a restored segment or a restored directory. The journal **MUST** drop
 such an extent from the index, exactly as it drops a corrupt one ([§9.3](#9.3%20Torn%20and%20corrupt%20records)), and
 report it as stale. The next read resolves it as **Remote** and fetches the
-current content. A filled record carries no write version ([§3.4](#3.4%20Fill)) and is not
-subject to this rule.
+current content.
+
+Restored content with a version between `oldest` and `newest` is not caught. It
+is marked durable, which is safe, and it can be served until it is evicted. That
+needs an edit from outside ([§12.3](#12.3%20Corruption%2C%20crashes%20and%20edits%20from%20outside)); normal operation never produces it.
 
 > [!note]
 > The cost is that a crash makes every held extent a flush candidate
@@ -1725,17 +1790,22 @@ A check here fails by **coming back up describing something other than what is o
 | [§9.1](#9.1%20Rebuilding) sources agree | Build the placement index from the placement cache, from catalogs, and by full scan of the same store; assert all three are identical. |
 | [§9.1.1](#9.1.1%20The%20placement%20cache%2C%20and%20how%20it%20is%20validated%20cheaply) cache demotion | Alter one segment's length, delete one segment, and corrupt the placement cache checksum, each independently; assert every case falls back to catalogs and reaches the index a scan of the directory as it now is would build. |
 | [§9.2](#9.2%20Flush%20state%20after%20recovery) pessimistic bits | Reopen after writes; assert `Release` refuses everything before reseeding. |
-| [§9.2](#9.2%20Flush%20state%20after%20recovery) reseed by version | Flush A, overwrite with B, crash before B is flushed; `MarkDurable` the extent at A's version; assert B stays unmarked and `Release` refuses it. |
+| [§9.2](#9.2%20Flush%20state%20after%20recovery) reseed by version | Flush A, overwrite with B, crash before B is flushed; `MarkDurable` the extent at A's versions; assert B stays unmarked and `Release` refuses it. |
+| [§8.2](#8.2%20Repack) reseed after repack | Flush an extent, repack its segment, crash; `MarkDurable` at the flush's versions; assert the extent is marked and `Release` permits it. |
+| [§3.5](#3.5%20Release) release survives restart | Write A, flush; write B over it into another segment, flush, release and punch B; reopen; assert the extent reads `missing`, not A. |
+| [§3.5](#3.5%20Release) release record lost | Release an extent and crash before the release record syncs; assert the punch did not happen and the extent is held with its original bytes. |
+| [§4.3](#4.3%20Records) punched record in a scan | Punch a record in the active segment and reopen by scan; assert no corruption is reported and every record after it is held. |
+| [§3.4](#3.4%20Fill) fill beats an older write | Write A, flush, write B, flush, release B; `Fill` the extent with B's bytes; crash and reopen; assert the extent reads B, not A. |
 | [§3.4](#3.4%20Fill) stale Fill | Read an extent missing; write, flush and release it; then `Fill` with the first read's `asOf`; assert nothing is written. Repeat with a truncate down and up in place of the write. |
 | [§3.3](#3.3%20Flush) incremental report | Report one block's extents mid-callback, then fail the callback; assert the reported extents are marked and releasable and the rest are not. |
 | [§4.5](#4.5%20Catalog%20layout) trailer torn | Truncate a segment mid-footer, and separately corrupt one entry byte; assert both are treated as "no footer", the segment is scanned, and the resulting index is identical to the footer-read one. |
 | [§9.3](#9.3%20Torn%20and%20corrupt%20records) truncated sealed segment | Truncate a segment that a later one names as its predecessor, mid-record and with its footer gone; assert it is reported as corruption, not as a torn tail. Truncate the newest segment of a stream the same way; assert it is treated as a torn tail. |
 | [§9.1](#9.1%20Rebuilding) foreign segment | Copy a valid segment from another journal into the directory; assert it is not attached, no read serves its bytes, it is reported and left on disk. |
-| [§9.1](#9.1%20Rebuilding) version floor | Reopen with a floor above every version on disk; assert the next write's version exceeds the floor, and that `MarkDurable` at the floor leaves that write unmarked. |
-| [§9.2](#9.2%20Flush%20state%20after%20recovery) stale extent | Write A into one segment and flush it; write B over it into a later segment, flush and release it, and let reclamation unlink B's segment; restore A's segment from a copy taken before; reopen and `MarkDurable` at B's version; assert A is dropped, reported as stale, and the read reports the extent missing. |
+| [§9.1](#9.1%20Rebuilding) version floor | Reopen with a floor above every version on disk; assert the next write's version exceeds the floor, and that `MarkDurable` with the floor as `newest` leaves that write unmarked. |
+| [§9.2](#9.2%20Flush%20state%20after%20recovery) stale extent | Write A into one segment and flush it; write B over it into a later segment, flush and release it, and let reclamation unlink B's segment; restore A's segment from a copy taken before; reopen and `MarkDurable` at B's versions; assert A is dropped, reported as stale, and the read reports the extent missing. |
 | [§9.5](#9.5%20Unattachable%20files) unidentified directory | Open a directory holding segments and no `format` file, and separately one holding only unrelated files; assert both fail to open, nothing in either is modified or deleted, and an empty directory opens as a new journal. |
 | [§4.5](#4.5%20Catalog%20layout) unknown version | Write a trailer with a future format version; assert the segment is scanned and the open succeeds. |
-| [§5.3](#5.3%20Versions) version monotonicity | Reopen after a crash; assert the next version issued exceeds every version on disk, and that recovery in shuffled segment order yields an identical index. |
+| [§5.3](#5.3%20Versions) sequence monotonicity | Reopen after a crash; assert the next sequence number issued exceeds every one on disk, and that recovery in shuffled segment order yields an identical index. |
 | [§9.3](#9.3%20Torn%20and%20corrupt%20records) neighbours survive | With a catalog present, corrupt one record; assert every other record in that segment still reads. |
 
 #### Group D — observability
@@ -2018,23 +2088,3 @@ from other boxes are recorded the same way and compared only with themselves.
    reaching it beyond reporting. Also unmeasured is **insertion** cost — the
    benchmark covered memory and lookup, and it is insertion, not lookup, where a
    sorted slice actually fails.
-6. **A release leaves no record, and a punch looks like corruption** ([§3.5](#3.5%20Release), [§8.1](#8.1%20Releasing%20storage), [§9.3](#9.3%20Torn%20and%20corrupt%20records)).
-   Nothing on disk says an extent was released. A released record that was not
-   punched (sub-block, or no punch support) is held again after a restart. One
-   that was punched fails its checksum. In a scanned segment it is then reported
-   as corruption, and every record after it is refused, acknowledged writes
-   included. Candidates: a release record that recovery applies by version, and a
-   header checksum separate from the payload's, so record boundaries survive a
-   punch. §12.3's crash tests will hit this as soon as they run.
-7. **One version does two jobs** ([§3.3](#3.3%20Flush), [§5.3](#5.3%20Versions), [§8.2](#8.2%20Repack)). A version orders records at
-   recovery, and it names content for reseed and the stale rule of [§9.2](#9.2%20Flush%20state%20after%20recovery). The two
-   pull apart in three places. `Offer.Version` is the highest in a pass, so a ref
-   can carry a version newer than some extents it covers, and the stale rule then
-   drops content that is current. Repack gives relocated records new versions, so
-   after a crash a repacked durable extent is newer than its ref and `MarkDurable`
-   never marks it. A filled record has no version, so a superseded older write
-   still on disk can win over it at recovery. Candidate: split a **content
-   version**, kept through repack and carried per extent into refs, from a
-   **precedence sequence** used only to order records. Until this is settled, the
-   stale rule is safe but noisy: it can drop durable content, which is refetched,
-   and it never drops a dirty extent.
