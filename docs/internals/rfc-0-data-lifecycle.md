@@ -609,4 +609,4 @@ reintroduces the failure this model exists to prevent.
    segments — is not a trade-off: [RFC 1 §8.4](rfc-1-journal.md#8.4%20Open%20descriptors) bounds open descriptors
    independently of segment count, so segment size expresses reclamation
    granularity alone. What remains unmeasured is the right default for it, and
-   whether per-extent hole punching degrades at scale ([RFC 1 §12](rfc-1-journal.md#12.%20Open%20questions)).
+   whether per-extent hole punching degrades at scale ([RFC 1 §13](rfc-1-journal.md#13.%20Open%20questions)).
