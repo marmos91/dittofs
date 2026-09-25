@@ -181,9 +181,17 @@ held record is newer.
 > Reseed used to report every extent a ref covers as durable, by position. After an
 > overwrite of flushed content and a crash before the overwrite flushed, that marked
 > the newer write durable; eviction then lost it and reads returned the old
-> content. Refs now carry a version (RFC 4 §2.1) and reseed passes it.
-> *Added by the RFC 0–3 review, 2026-09-25.*
+> content. Refs now carry a version ([RFC 4 §2.1](rfc-4-block-metadata.md#2.1%20Ref)) and reseed passes it.
+> *Added by the [RFC 0](rfc-0-data-lifecycle.md)–3 review, 2026-09-25.*
 
+> [!important] Pending review — the journal is opened with a version floor
+> The engine opens each share's journal with the highest version block metadata
+> records as durable for that share ([RFC 1 §9.1](rfc-1-journal.md#9.1%20Rebuilding)). A journal restored from an old
+> copy would otherwise issue versions metadata already holds, and a reseed by
+> version would mark new writes durable. Block metadata must be able to answer that
+> number cheaply, which [RFC 4](rfc-4-block-metadata.md) does not yet state. A journal that opens behind its
+> floor is reported, and its stale extents are dropped at reseed.
+> *Added by the RFC 1 test-plan review, 2026-09-25.*
 
 Until reseeding completes, the engine **MUST NOT** request a release. Only then
 start the background policy loops.
@@ -280,8 +288,8 @@ fragments blocks under a streaming SMB workload.
 > [!important] Pending review — a pass is bounded in bytes
 > New. Nothing bounded a pass, and nothing became evictable until it returned: on a
 > slow store an overwrite-heavy file filled the journal with records pinned for the
-> pass. RFC 1 §3.3 now takes a `limit` and lets the callback report per block.
-> *Added by the RFC 0–3 review, 2026-09-25.*
+> pass. [RFC 1 §3.3](rfc-1-journal.md#3.3%20Flush) now takes a `limit` and lets the callback report per block.
+> *Added by the [RFC 0](rfc-0-data-lifecycle.md)–3 review, 2026-09-25.*
 
 **A pass offers at most `upload_workers` block targets of dirty bytes** — enough to
 keep every upload worker busy with one pass, and no more — through the journal's
@@ -394,7 +402,7 @@ the number of blocks *waiting* for a worker rather than the pool.
 > [!important] Pending review — an unknown outcome keeps its plan
 > New. A retried pass could pack the same chunks differently, derive new names and
 > orphan an object the earlier attempt may have written.
-> *Added by the RFC 0–3 review, 2026-09-25.*
+> *Added by the [RFC 0](rfc-0-data-lifecycle.md)–3 review, 2026-09-25.*
 
 **A plan whose upload ended in an unknown outcome survives its pass.** The engine
 keeps it and, on the next pass over those files, offers it again first and
@@ -425,7 +433,7 @@ flight is committed once: the first block to commit owns its record, and the
 second adopts it ([RFC 4 §4.1](rfc-4-block-metadata.md#4.1%20What%20one%20commit%20records)).
 
 > [!important] Pending review — two blocks carrying one chunk
-> Cross-reference added: RFC 4 §4.1 now states what the second commit does with a
+> Cross-reference added: [RFC 4 §4.1](rfc-4-block-metadata.md#4.1%20What%20one%20commit%20records) now states what the second commit does with a
 > chunk the first already recorded.
 > *Added by the RFC 0–3 review, 2026-09-25.*
 
@@ -563,7 +571,7 @@ it — a write, a release, a truncate — so a write that landed meanwhile wins
 ([RFC 1 §3.4](rfc-1-journal.md#3.4%20Fill), [RFC 0](rfc-0-data-lifecycle.md) I4). A refused fill is not an error: the read is already answered.
 
 > [!important] Pending review — `Fill` takes a version
-> RFC 1's `Fill` had no version parameter although this section passed one. A late
+> [RFC 1](rfc-1-journal.md)'s `Fill` had no version parameter although this section passed one. A late
 > fill after a write, flush and eviction — or after a truncate down and up — then
 > restored stale bytes and marked them durable.
 > *Added by the RFC 0–3 review, 2026-09-25.*
@@ -647,7 +655,7 @@ commit, but content that is gone, and it **MUST** be reported as **Lost**, not
 retried until a deadline.
 
 > [!important] Pending review — re-resolve on a range mismatch too
-> New. A re-put under the same name may lay the object out differently (RFC 8 §5.5),
+> New. A re-put under the same name may lay the object out differently ([RFC 8 §5.5](rfc-8-remote-tier.md#5.5%20A%20put%20of%20an%20existing%20key%20succeeds%3B%20so%20does%20a%20delete%20of%20an%20absent%20one)),
 > so a range recorded before it can point at the wrong bytes although the data is
 > intact.
 > *Added by the RFC 0–3 review, 2026-09-25.*
@@ -699,9 +707,9 @@ latency, on a random-read and a scan workload, across a few thresholds.
 ## 7. Local space
 
 > [!important] Pending review — spool space is budgeted here
-> New. The S3 backend's spool (RFC 3 §3.4) was neither placed nor counted; a full
+> New. The S3 backend's spool ([RFC 3 §3.4](rfc-3-syncer.md#3.4%20One%20put%20per%20block)) was neither placed nor counted; a full
 > disk then failed every upload, and nothing cleared it.
-> *Added by the RFC 0–3 review, 2026-09-25.*
+> *Added by the [RFC 0](rfc-0-data-lifecycle.md)–3 review, 2026-09-25.*
 
 **Local space includes the spool.** The engine gives each backend that spools a
 directory on local storage it accounts for, and sets aside `upload_workers` times
@@ -1095,7 +1103,7 @@ measure the pipeline, and are the ones that say whether the parts compose.
 | --- | --- | --- | --- |
 | E1 | flush to durable | sustained writes of non-deduplicating data larger than the journal, against a real store | durable MiB/s as a **fraction of the sizing tool's raw figure** ([RFC 3 §2.11](rfc-3-syncer.md#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) for the same store and pool sizes |
 | E2 | small files | create, write and close 10^4 and 10^5 files of 64 KiB, into directories of 10^2 to 10^5 entries | files/s, derived from wall time and file count; create and overwrite reported separately |
-| E3 | pacing | E1 run below and above the soft threshold of §7.2.1 | p50/p99/max submission latency against durable throughput |
+| E3 | pacing | E1 run below and above the soft threshold of [§7.2.1](#7.2.1%20Writes%20are%20paced%20before%20the%20limit%2C%20not%20stopped%20at%20it) | p50/p99/max submission latency against durable throughput |
 | E4 | cold reads | random 4 KiB and sequential reads of evicted content | p50/p99 latency and bytes fetched per byte read |
 
 **Every stage reports its occupancy** — carver, assembler, upload pool, commit —
@@ -1110,7 +1118,7 @@ Method, from the external benchmark of v0.33.0:
 - **Data that does not deduplicate.** fio reuses its buffers by default and made
   2.9× of the bytes written deduplicate; use `--refill_buffers=1
   --dedupe_percentage=0`, and report bytes stored against bytes written.
-- **The clock stops at durability** (§8.4), and for small files per-file cost is
+- **The clock stops at durability** ([§8.4](#8.4%20How%20far%20behind%20durability%20is%2C%20is%20observable)), and for small files per-file cost is
   derived from files per second: fio's completion latency excludes open and
   close, and under-reported per-file cost by 2.6×.
 - **Repeat single-connection cells at least three times**, and report by regime

@@ -104,12 +104,12 @@ here is an inode. A snapshot's copy of a file also owns refs, keyed by
 > [!important] Pending review — refs carry the journal version
 > `version` is new and mandatory. It closes a data-loss path found in review: reseed
 > after a crash marked extents durable by position alone, so a write that
-> superseded flushed content and was not yet flushed became evictable. See §4.4 and
+> superseded flushed content and was not yet flushed became evictable. See [§4.4](#4.4%20Commits%20for%20one%20file%20apply%20in%20order) and
 > [RFC 1 §9.2](rfc-1-journal.md#9.2%20Flush%20state%20after%20recovery).
 > *Added by the RFC 0–3 review, 2026-09-25.*
 
 `version` is the journal version of the content the ref describes: the `Version`
-of the offer its pass carved ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Flush)). It orders commits for one file (§4.4) and
+of the offer its pass carved ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Flush)). It orders commits for one file ([§4.4](#4.4%20Commits%20for%20one%20file%20apply%20in%20order)) and
 lets the journal reseed a flush bit only for the content a ref actually records
 ([RFC 1 §9.2](rfc-1-journal.md#9.2%20Flush%20state%20after%20recovery)).
 
@@ -384,7 +384,7 @@ later read or a later sweep into a guess.
 > sweep then deletes a block refs still need. (2) The truncation check refused the
 > whole commit; with blocks packing several files, one file truncated often enough
 > kept every other file in its blocks from ever committing.
-> *Added by the RFC 0–3 review, 2026-09-25.*
+> *Added by the [RFC 0](rfc-0-data-lifecycle.md)–3 review, 2026-09-25.*
 
 **The first block to commit a chunk owns its record.** A later commit that carries
 the same chunk finds the record present and adopts it: it adds its refs and their
@@ -393,7 +393,7 @@ reset its count and point it at a block that `live` does not count, so a sweep
 could delete the block the count's refs still need.
 
 **The truncation check is per file.** A block may carry chunks of several files
-([RFC 6 §5.7](rfc-6-engine.md#5.7%20A%20block%20packs%20chunks%2C%20whichever%20files%20they%20came%20from)), and the `epoch` check of §6.2 applies to each file's refs separately:
+([RFC 6 §5.7](rfc-6-engine.md#5.7%20A%20block%20packs%20chunks%2C%20whichever%20files%20they%20came%20from)), and the `epoch` check of [§6.2](#6.2%20Truncation%20and%20deallocation) applies to each file's refs separately:
 a file whose `epoch` advanced has its refs dropped from the commit, and the rest
 of the commit applies. The block is durable either way; a chunk it carries only
 for the dropped file is dead weight, not counted in `live`.
@@ -440,11 +440,11 @@ single component observes it.
 
 > [!important] Pending review — versions are mandatory, not an alternative
 > This used to offer two ways to meet the rule — serialise per file, or carry
-> versions. Versions are now required on every ref (§2.1) because reseed needs them;
+> versions. Versions are now required on every ref ([§2.1](#2.1%20Ref)) because reseed needs them;
 > serialising remains the engine's choice on top.
 > *Added by the RFC 0–3 review, 2026-09-25.*
 
-A commit **MUST NOT** replace a ref with one of a lower `version` (§2.1); it refuses
+A commit **MUST NOT** replace a ref with one of a lower `version` ([§2.1](#2.1%20Ref)); it refuses
 that ref and applies the rest. Every ref carries the journal version of the
 offered content ([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions)), because reseeding needs it ([RFC 1 §9.2](rfc-1-journal.md#9.2%20Flush%20state%20after%20recovery)) whether or not
 commits are serialised. The engine **MAY** also serialise commits per file
@@ -540,7 +540,7 @@ transaction:
 
 A flush commit **MUST NOT** apply a file's refs if that file's `epoch` has
 advanced since its extents were offered; the refs of other files in the same
-commit still apply (§4.1). Without that check a pass that carved `[0, 10 MiB)` commits refs after
+commit still apply ([§4.1](#4.1%20What%20one%20commit%20records)). Without that check a pass that carved `[0, 10 MiB)` commits refs after
 a concurrent truncate to 5 MiB. The file then holds refs past its end, and a
 later truncate up turns them back into readable content where the user was
 promised zeros. The refused pass is retried from the journal, which has already
