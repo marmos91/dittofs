@@ -1024,6 +1024,12 @@ runs where those are.
 A benchmark whose fake answers instantly measures the scheduler's lock, not the
 syncer: the pool never fills, so nothing it exists to do happens.
 
+B5 reports its result as a **fraction of the sizing tool's raw figure** for the
+same store, and exports the pools' occupancy beside it. The external benchmark of
+v0.33.0 measured about 28% of raw S3 through the whole stack; a syncer pool that
+is not full while that happens means the limit is upstream of the syncer, and
+[RFC 6 §13.5](rfc-6-engine.md#13.5%20Benchmarks) measures the pipeline end to end to find where.
+
 ## 8. Open questions
 
 Numbering is stable: an answered question keeps its number so that references to
@@ -1136,7 +1142,15 @@ through concurrency 1, 2, 4, 8, … and at each step:
   a slow link and a fast one spend the same time per step;
 - the first 3 s are discarded: connections are still opening and TCP is still
   ramping, and counting them understates every low step;
-- the step records throughput in MiB/s and the p50 and p99 latency per call.
+- the step records throughput in MiB/s, the p50 and p99 latency per call, and the
+  time to first byte separately from the transfer time, since a store can be slow
+  to answer and fast to send, or the reverse;
+- object sizes step through 64 KiB, 1 MiB, the chunk target and the largest block.
+  The external benchmark of v0.33.0 found single-connection gets 10× slower on one
+  store than another at 100 MB and much less apart at 10 MB: per-request latency,
+  not bandwidth, and only small objects show it;
+- single-connection cells are repeated at least three times, and the run records
+  the round-trip time and hop count to the store.
 
 Latency is what explains the result. While throughput doubles with `n` and
 latency stays flat, the link is not full. Where latency climbs and throughput
