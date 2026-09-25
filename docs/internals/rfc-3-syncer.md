@@ -1104,13 +1104,13 @@ question to answer.
 | D19 | a put carries an end-to-end checksum ([RFC 8 §5.10](rfc-8-remote-tier.md#5.10%20Transfer%20practice%20a%20backend%20owes%20its%20service)) | the S3 client disables the SDK's default request checksums and response validation | `remote/s3/store.go:185`–`:192` |
 | D20 | fair scheduling across stores and flows ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) | no per-flow or per-store queue, round robin or cap exists; demand fetches run on the reader's goroutine and uploads share a per-share window | `engine/fetch.go`; `engine/upload_window.go` |
 
-Checked and satisfied: no multipart upload anywhere (§3.4); an unknown outcome is
+Checked and satisfied: no multipart upload anywhere ([§3.4](#3.4%20One%20put%20per%20block)); an unknown outcome is
 reported as a failure before any commit (S5); durability is reported only after
 the put and its commit, in order (S6); every fetched chunk is hash-verified before
 it is filled or served (S10); probing continues while unhealthy and one success
 recovers (S15, [§5](#5.%20What%20belongs%20elsewhere)); a failed shared fetch is not remembered; demand fetches never
 queue behind prefetch (S13); health gates run before any backend call (S14); the
-prefetch queue is bounded and drops when full (§2.3); a fill that raced a write is
+prefetch queue is bounded and drops when full ([§2.3](#2.3%20Backpressure%20propagates%3B%20it%20does%20not%20buffer)); a fill that raced a write is
 fenced off (S8).
 
 ## Appendix A. Running the pool-sizing tool

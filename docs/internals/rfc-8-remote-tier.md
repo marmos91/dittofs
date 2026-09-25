@@ -410,7 +410,7 @@ the only record of past writes, changing it makes existing data unreadable.
 > [!important] Pending review — ranges are the one exemption
 > Put's ranges vary with transforms by nature; the rule now names them as its only
 > exemption.
-> *Added by the RFC 0–3 review, 2026-09-25.*
+> *Added by the [RFC 0](rfc-0-data-lifecycle.md)–3 review, 2026-09-25.*
 
 No signature, error, metric or return value crossing this contract **MAY** differ
 according to whether a transform is configured, except the ranges a put reports:
@@ -450,8 +450,8 @@ A **probe** ([§5.8](#5.8%20The%20liveness%20probe%20is%20one%20operation)) is n
 > syncer's `Store` ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)) asks for chunks by their byte range in the stored object,
 > and a put reports those ranges, so ranges are now part of the contract — always
 > whole chunks, always verified. What stays excluded is a raw byte range with no
-> hash (§6.2).
-> *Added by the RFC 0–3 review, 2026-09-25.*
+> hash ([§6.2](#6.2%20Deviation%20%E2%80%94%20the%20raw%20range%20read%20is%20exported)).
+> *Added by the [RFC 0](rfc-0-data-lifecycle.md)–3 review, 2026-09-25.*
 
 **Reads and puts speak in ranges.** A put reports, for each chunk in the order given,
 the byte range of its record in the object as stored — after framing and
