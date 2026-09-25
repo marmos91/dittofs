@@ -268,6 +268,31 @@ particular bytes are worth keeping.
 > finished chunks for use later could not borrow, because nothing would bound how
 > long the bytes had to stay valid. `restic/chunker` [4] uses the same contract.
 
+### 2.3 What a pass makes observable
+
+The carver keeps nothing between calls ([§1.2](#1.2%20Two%20layers%3A%20the%20chunker%20and%20the%20carver)), so it holds no counters and exports
+nothing. Everything below is derived by its caller from what `Cut` hands back:
+each chunk's offset, length and hash through `emit`, and the error `Cut` returns.
+The caller **MUST** make every metric below observable; the engine exports them
+to Prometheus and to `dfsctl`'s stats output, labelled with the share
+([RFC 6](rfc-6-engine.md)). A metric is listed only if it says something about cutting;
+whether a chunk was already stored is the engine's ([§1.1](#1.1%20Non-goals)).
+
+| Metric | Type | Answers |
+| --- | --- | --- |
+| `dittofs_carver_bytes_total` | counter | bytes cut |
+| `dittofs_carver_chunks_total` | counter | chunks emitted; with bytes, the average chunk size, which [§3.2](#3.2%20The%20three%20settings) says is `Target` |
+| `dittofs_carver_chunk_size_bytes` | histogram | the chunk-size distribution, with buckets at `Min`, `Target` and `Max`. Appendix A.1 is what a spike on `Min` looks like; this is how production would have shown it |
+| `dittofs_carver_max_chunks_total` | counter | chunks cut at `Max` because no boundary was found: repetitive content ([§3.8](#3.8%20What%20happens%20on%20repetitive%20data)). A high share on data that is not repetitive means the boundary function is broken |
+| `dittofs_carver_short_chunks_total` | counter | last-in-stretch chunks below `Min` ([§2.1](#2.1%20One%20unbroken%20stretch%20per%20call)); against chunks, how fragmented the offered stretches are |
+| `dittofs_carver_stretches_total` | counter | `Cut` calls; bytes per stretch is the caller's lever on dedup ([§2.1](#2.1%20One%20unbroken%20stretch%20per%20call)) |
+| `dittofs_carver_errors_total` | counter | calls that ended in an error, labelled `source` = `reader` or `emit` ([§7](#7.%20Errors)) |
+| `dittofs_carver_duration_seconds` | histogram | time per `Cut` call; with bytes, carve throughput |
+
+The size histogram is the one that matters most. The shipped code has cut every
+chunk just above `Min` since it was written ([Appendix A.1](#A.1%20The%20masks%20encode%20a%20different%20target%20than%20the%20profile%20declares)), and nothing downstream
+noticed, because a wrong average costs sizing and dedup, never correctness.
+
 ## 3. The boundary function
 
 *This section is the chunker's contract: what a boundary function has to
@@ -594,7 +619,7 @@ hidden **MUST** get it from another layer. Two mitigations exist, neither free:
   because assembly is policy ([§5](#5.%20Packing%3A%20three%20rules%2C%20not%20a%20component)). It is [RFC 6](rfc-6-engine.md)'s call.
 
 How much this actually gives away, at DittoFS's block sizes, has not been
-measured ([§10](#10.%20Open%20questions)).
+measured ([§11](#11.%20Open%20questions)).
 
 ## 7. Errors
 
@@ -702,7 +727,151 @@ buffers, not from the workload, and it inflated every throughput figure it
 touched. The object-size histogram of a real bucket is a check on C5 from the
 other side.
 
-## 10. Open questions
+## 10. Test plan and performance targets
+
+[§9](#9.%20Conformance) says what must be checked and how a check is validated, and [§1.3](#1.3%20It%20is%20testable%20on%20its%20own%2C%20by%20construction) why
+every check needs nothing but a byte slice. This section is the plan around it,
+in the shape [RFC 1 §12](rfc-1-journal.md#12.%20Test%20plan%20and%20performance%20targets) set.
+
+### 10.1 Kinds of test
+
+| Kind | What it covers | How |
+| --- | --- | --- |
+| Golden vectors | that boundaries and hashes never move ([§3.6](#3.6%20Changing%20any%20of%20this%20is%20a%20migration)) | a fixed seed per supported profile, boundaries and hashes committed; a changed vector fails the build |
+| Properties | the invariants of [§8](#8.%20Invariants) | Go native fuzzing over random input and random valid settings, asserting on what `emit` saw |
+| Differential | a faster or refactored implementation | two implementations over the same random input **MUST** emit identical chunks ([§1.3](#1.3%20It%20is%20testable%20on%20its%20own%2C%20by%20construction)) |
+| Conformance | every check in [§9](#9.%20Conformance) | pure functions of a byte slice and settings |
+| Reader and emit faults | [§7](#7.%20Errors) | a reader and an `emit` that fail at a chosen byte or chunk ([§10.3](#10.3%20Faults%20and%20determinism)) |
+| Architecture | B2: any machine | the golden vectors run on amd64 and arm64; BLAKE3 takes different code paths on each |
+| Benchmark | [§9.1](#9.1%20Benchmarks%20and%20quality%20measures), C1–C5 | real time on a named box; never in CI ([§10.4](#10.4%20What%20CI%20checks%20instead%20of%20timing)) |
+
+There is no crash test, no soak and no concurrency test, and that is the design
+working rather than a gap: the carver holds nothing that a crash can tear,
+nothing that grows over time, and nothing two calls share.
+
+The one thing a byte slice cannot test is whether the caller uses the output
+correctly — that a block holds whole chunks, that bytes are copied before `emit`
+returns. Those are checked at the consumer, in [RFC 6](rfc-6-engine.md).
+
+### 10.2 Edge cases
+
+The unit, property and fault tests **MUST** reach these.
+
+**Stretch shape**
+
+- an empty stretch, which emits nothing and succeeds;
+- a stretch of one byte, of `Min − 1`, `Min`, `Max` and `Max + 1` bytes;
+- a stretch whose length is an exact multiple of `Max`, of repetitive content, so
+  the last chunk is exactly `Max` rather than short;
+- `base` at zero, at an odd offset, and near the largest file offset: offsets are
+  file offsets and **MUST NOT** overflow.
+
+**The buffer edge**
+
+- a boundary landing exactly where the carver's buffer is refilled, one byte
+  before it and one byte after it;
+- a chunk exactly as long as the buffer;
+- the chunker returning "not yet" at the very end of the buffer, then `final`.
+
+These are where a carver that manages its own positions drifts and tiles a byte
+into two chunks ([§1.2](#1.2%20Two%20layers%3A%20the%20chunker%20and%20the%20carver)).
+
+**Readers that are legal but awkward**
+
+- one that returns one byte per call;
+- one that returns its last bytes together with `io.EOF`, which **MUST** be cut,
+  not dropped;
+- one that returns zero bytes and no error, repeatedly. That is legal for
+  `io.Reader`; the carver **MUST NOT** treat it as the end, and **MUST** fail
+  after a bounded number of such reads rather than spin, as `bufio` does with
+  `io.ErrNoProgress`.
+
+**Content**
+
+- random data, where boundaries come from the fingerprint;
+- zeros and a repeating pattern of period 64 or less, where only `Max` ends a
+  chunk ([§3.8](#3.8%20What%20happens%20on%20repetitive%20data)), and a period just above 64, where boundaries return;
+- random data with a repetitive region in the middle, crossing in and out of it;
+- the same bytes at two `base` offsets, which **MUST** produce one set of hashes.
+
+**Settings**
+
+- every profile the implementation supports;
+- each limit of [§3.7](#3.7%20Bad%20settings%20must%20be%20refused%2C%20not%20replaced) exactly at the floor or ceiling, and one past it.
+
+### 10.3 Faults and determinism
+
+The carver has no storage, so there is nothing to corrupt and no crash to
+simulate. What can go wrong is the input failing and the output being refused,
+and both are injected systematically, not by example:
+
+- the reader fails at **every byte offset** of a stretch spanning several chunks
+  and at least two buffer refills;
+- `emit` fails at **every chunk** of that stretch.
+
+After each, the chunks already delivered **MUST** be exactly a prefix of the
+chunks the clean run delivers, byte for byte, and no delivered chunk may be a
+shortened version of one ([§7](#7.%20Errors)). A retry over the same bytes **MUST** then
+deliver exactly the clean run.
+
+Determinism is tested across what could vary without anyone deciding to vary it:
+architecture, Go version and buffer size. Golden vectors run on amd64 and arm64,
+and the property tests run the same input with two buffer sizes and require
+identical output. A carver whose output depends on its buffer size cuts
+differently after a harmless tuning change, and that is a migration nobody
+chose ([§3.6](#3.6%20Changing%20any%20of%20this%20is%20a%20migration)).
+
+### 10.4 What CI checks instead of timing
+
+Timed benchmarks do not run in CI, for the reason [RFC 1 §12.4](rfc-1-journal.md#12.4%20What%20CI%20checks%20instead%20of%20timing) gives. The
+regressions that matter here can all be counted, and a count gives the same
+answer on any runner:
+
+- **golden vectors** unchanged, on amd64 and arm64;
+- **allocations**: `NextBoundary` makes none, and `Cut` makes one buffer per
+  call and nothing per chunk ([§2.2](#2.2%20The%20bytes%20handed%20to%20%60emit%60%20are%20borrowed));
+- **bytes fingerprinted per byte cut**, counted by the chunker over seeded
+  random input at the default profile. With the warm-up of [§3.4](#3.4%20How%20far%20back%20a%20decision%20looks) it is a few
+  percent; a value near one is [Appendix A.2](#A.2%20Warm-up%20runs%20over%20the%20whole%20chunk%20instead%20of%20the%20last%2064%20bytes) come back, and fails the check;
+- **average chunk size** over 256 MiB of seeded random input, within 10% of
+  `Target` at every profile. **This fails against the shipped code** ([Appendix A.1](#A.1%20The%20masks%20encode%20a%20different%20target%20than%20the%20profile%20declares));
+- **edit stability** (C4) on the fixed corpus, at or above the target of [§10.5](#10.5%20Performance%20targets).
+
+### 10.5 Performance targets
+
+> [!question] Proposed, not agreed
+> Speed targets are stated against BLAKE3 alone over the same bytes on the same
+> box, so they hold on any hardware. Results are recorded in absolute numbers
+> ([§10.6](#10.6%20Recording%20results)).
+
+The hash is the wall. With the warm-up fixed, BLAKE3 is 97% of a carve pass on
+the production CPU ([Appendix A.2](#A.2%20Warm-up%20runs%20over%20the%20whole%20chunk%20instead%20of%20the%20last%2064%20bytes)), so the carver's target is to cost almost
+nothing on top of it, and the quality targets decide a profile, not speed
+([§9.1](#9.1%20Benchmarks%20and%20quality%20measures)).
+
+| # | Metric | Proposed target |
+| --- | --- | --- |
+| C1 | boundary search alone, random input | ≥ 10× BLAKE3's rate, so the search stays under a tenth of a pass (about 28× on EPYC 7543 and 23× on M1 Max, from [Appendix A.2](#A.2%20Warm-up%20runs%20over%20the%20whole%20chunk%20instead%20of%20the%20last%2064%20bytes)) |
+| C2 | a whole `Cut`, hashing included | ≥ 90% of BLAKE3 alone (measured 97%) |
+| C3 | all-zero and short-period input | ≥ 50% of C2 |
+| C4 | edit stability: a byte inserted near the start of a 1 GiB corpus file | every chunk shared except the one or two around the edit |
+| C5 | average chunk size, random input | within 10% of `Target` |
+| C5 | chunks at `Max`, on a corpus with no repetitive regions | ≤ 1% |
+| — | allocations | none per chunk; one buffer per call |
+| — | memory per call | one buffer, at least `Max` so a whole chunk can be handed to `emit`, and at most `2 × Max` |
+
+In absolute terms the production CPU carved 1,855 MB/s after the warm-up fix,
+about 15× the 1 GbE link of the v0.33.0 staging benchmark. One carve stream is
+not where a pass waits.
+
+### 10.6 Recording results
+
+Results are recorded as [RFC 1 §12.6](rfc-1-journal.md#12.6%20Recording%20results) requires, with two additions that
+matter here: the CPU's SIMD extensions BLAKE3 used (AVX-512, AVX2, NEON), and
+the Go version. The same carver on the same box differs by more across those than
+across commits.
+
+## 11. Open questions
 
 1. **Which way out of Appendix A.1.** Both exits re-cut everything already
    written, so the choice gets more expensive the longer shares run on the current
@@ -796,7 +965,7 @@ level 2 with a minimum of 4–8 KB — `Min` close to `Target`, not 128 times it
    Easier to reason about, still re-cuts content unless `Min` comes down to match,
    and leaves a design where the masks can never be retuned.
 
-This document does not choose between them. See [§10](#10.%20Open%20questions), question 1.
+This document does not choose between them. See [§11](#11.%20Open%20questions), question 1.
 
 ### A.2 Warm-up runs over the whole chunk instead of the last 64 bytes
 
