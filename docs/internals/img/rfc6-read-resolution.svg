@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 470" width="900" height="470" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <style>
+      .t  { font-size: 15px; font-weight: 600; fill: #1b1f24 }
+      .rl { font-size: 12px; font-weight: 600; fill: #1b1f24 }
+      .l  { font-size: 12px; fill: #3d444d }
+      .s  { font-size: 11px; fill: #5b6472 }
+      .m  { font-family: ui-monospace,SFMono-Regular,Menlo,monospace; font-size: 11px; fill: #1b1f24 }
+      .why  { font-size: 11px; fill: #b04a4a }
+      .ok   { font-size: 11px; font-weight: 600; fill: #2f6f4f }
+      .bx { fill: #dce9f7; stroke: #4a7fb5; stroke-width: 1.4 }
+      .bg { fill: #eaf4ec; stroke: #2f6f4f; stroke-width: 1.4 }
+      .br { fill: #fbecec; stroke: #b04a4a; stroke-width: 1.4 }
+      .nu { fill: #f4f6f8; stroke: #9aa4b2; stroke-width: 1.1 }
+    </style>
+    <marker id="a6b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5b6472"/>
+    </marker>
+  </defs>
+  <rect width="900" height="470" fill="#ffffff"/>
+
+  <text x="16" y="26" class="t">The reply leaves with the fetched bytes. Whether to keep them is a separate decision.</text>
+  <text x="16" y="46" class="s">One read, resolved per missing extent. Nothing here is stored: every arrow is asked again on the next read.</text>
+
+  <rect x="16" y="78" width="150" height="34" rx="3" class="bx"/><text x="32" y="100" class="m">journal.ReadAt</text>
+  <line x1="166" y1="95" x2="196" y2="95" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a6b)"/>
+  <rect x="200" y="62" width="150" height="30" rx="3" class="bg"/><text x="216" y="81" class="m">held bytes</text>
+  <rect x="200" y="100" width="150" height="30" rx="3" class="nu"/><text x="216" y="119" class="m">missing extents</text>
+  <text x="200" y="146" class="s">exact, one entry per gap</text>
+
+  <line x1="350" y1="115" x2="380" y2="115" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a6b)"/>
+  <rect x="384" y="100" width="170" height="30" rx="3" class="nu"/><text x="400" y="119" class="m">metadata: Covering</text>
+
+  <path d="M554,115 L580,115 L580,78 L604,78" fill="none" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a6b)"/>
+  <path d="M554,115 L604,115" fill="none" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a6b)"/>
+  <path d="M554,115 L580,115 L580,152 L604,152" fill="none" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a6b)"/>
+
+  <rect x="608" y="62" width="100" height="30" rx="3" class="bg"/><text x="622" y="81" class="m">hole</text>
+  <text x="720" y="81" class="ok">Absent: zeros</text>
+  <rect x="608" y="100" width="100" height="30" rx="3" class="br"/><text x="622" y="119" class="m">uncarved</text>
+  <text x="720" y="119" class="why">Lost: fail the read</text>
+  <rect x="608" y="138" width="100" height="30" rx="3" class="bx"/><text x="622" y="157" class="m">carved</text>
+  <text x="720" y="157" class="rl">Remote: get</text>
+
+  <line x1="658" y1="168" x2="658" y2="196" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a6b)"/>
+  <rect x="578" y="200" width="160" height="30" rx="3" class="bx"/><text x="594" y="219" class="m">verified bytes</text>
+
+  <path d="M578,215 L300,215 L300,254" fill="none" stroke="#2f6f4f" stroke-width="1.6" marker-end="url(#a6b)"/>
+  <rect x="200" y="258" width="200" height="34" rx="3" class="bg"/><text x="216" y="280" class="m">reply to the client</text>
+  <text x="200" y="310" class="ok">never waits on the fill, never fails with it</text>
+
+  <path d="M658,230 L658,254" fill="none" stroke="#5b6472" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#a6b)"/>
+  <rect x="578" y="258" width="160" height="34" rx="3" class="nu"/><text x="594" y="280" class="m">fill? &#8212; policy</text>
+  <path d="M658,292 L658,318" fill="none" stroke="#5b6472" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#a6b)"/>
+  <rect x="578" y="322" width="160" height="30" rx="3" class="bx"/><text x="594" y="341" class="m">journal.Fill</text>
+  <text x="750" y="280" class="s">or decline:</text>
+  <text x="750" y="296" class="s">serve, do not keep</text>
+
+  <line x1="16" y1="378" x2="884" y2="378" stroke="#c3cad3"/>
+  <text x="16" y="402" class="l">Two answers are joined, and neither source is asked the other's question: the journal says only what it holds,</text>
+  <text x="16" y="420" class="l">metadata says only what exists. The join is the engine's, and so is the dashed edge.</text>
+  <text x="16" y="448" class="why">A read that is answered by re-reading the journal after a fill has made the reply depend on local capacity.</text>
+</svg>

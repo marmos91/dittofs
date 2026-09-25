@@ -1,0 +1,15 @@
+filters:
+  and:
+    - file.hasTag("rfc")
+views:
+  - type: table
+    name: RFCs
+    order:
+      - rfc
+      - file.name
+      - component
+      - status
+      - depends_on
+    sort:
+      - property: rfc
+        direction: ASC
