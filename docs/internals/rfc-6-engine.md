@@ -1135,14 +1135,14 @@ Method, from the external benchmark of v0.33.0:
 2. **Pre-warm's yield mechanism** ([§6.4](#6.4%20Speculation%20is%20planned%20here%2C%20and%20yields%20to%20demand%20and%20to%20writes)). Pause-and-cancel is proposed over a
    fixed reservation; they behave differently when a write burst arrives mid-warm,
    and neither has been run.
-3. **Randomised assembly** ([§5.5](#5.5%20Assembly%20is%20sequential%2C%20and%20may%20change%20without%20migration), [RFC 2 §10](rfc-2-carver.md#10.%20Open%20questions) question 4). Free to adopt and not a migration.
+3. **Randomised assembly** ([§5.5](#5.5%20Assembly%20is%20sequential%2C%20and%20may%20change%20without%20migration), [RFC 2 §11](rfc-2-carver.md#11.%20Open%20questions) question 4). Free to adopt and not a migration.
    What an observer can recover from object sizes at DittoFS's block sizes has
    not been measured, so neither has the value of adopting it.
 4. **Zero runs** ([RFC 4 §13.1](rfc-4-block-metadata.md#13.%20Open%20questions)). Recording an all-zero chunk as a hole removes the
    hottest refcount in the system. The engine sees the chunks before assembly and
    could do it, but it changes existence from the flush path, which [RFC 4 §5.1](rfc-4-block-metadata.md#5.1%20No%20record%20is%20written%20by%20both%20paths)
    forbids. Where the recognition belongs is unsettled.
-5. **Copies on the flush path** ([§5.1](#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output), [RFC 2 §10](rfc-2-carver.md#10.%20Open%20questions) question 5). **Answered in design:** no
+5. **Copies on the flush path** ([§5.1](#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output), [RFC 2 §11](rfc-2-carver.md#11.%20Open%20questions) question 5). **Answered in design:** no
    copy at carve time; the block is a plan and the upload re-reads the offered
    bytes. What the second local read costs against the saved memory is measured
    by [RFC 3 §7.4](rfc-3-syncer.md#7.4%20Benchmarks) B1 and [RFC 1 §11.6](rfc-1-journal.md#11.6%20Benchmarks) J1, and is unmeasured.
@@ -1199,7 +1199,7 @@ caller. *Explicit* rows name RFC 6 or the engine; *caller* rows name the caller.
 | [RFC 2 §5](rfc-2-carver.md#5.%20Packing%3A%20three%20rules%2C%20not%20a%20component) | the oracle hazard | explicit | [§5.3](#5.3%20The%20dedup%20oracle%20never%20sees%20an%20uncommitted%20block) |
 | [RFC 2 §6](rfc-2-carver.md#6.%20Boundaries%20are%20public) | randomised assembly | explicit | [§5.5](#5.5%20Assembly%20is%20sequential%2C%20and%20may%20change%20without%20migration) — open ([§14.3](#14.%20Open%20questions)) |
 | [RFC 2 §8](rfc-2-carver.md#8.%20Invariants) | invariants for assembly against the oracle | explicit | E7, E8 |
-| [RFC 2 §10](rfc-2-carver.md#10.%20Open%20questions) q5 | the block-sized buffer | explicit | [§5.1](#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output) — open ([§14.5](#14.%20Open%20questions)) |
+| [RFC 2 §11](rfc-2-carver.md#11.%20Open%20questions) q5 | the block-sized buffer | explicit | [§5.1](#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output) — open ([§14.5](#14.%20Open%20questions)) |
 | [RFC 3 §1.1](rfc-3-syncer.md#1.1%20Non-goals), [§5](rfc-3-syncer.md#5.%20What%20belongs%20elsewhere) | what to box, when to flush, what to evict, read ahead, pre-warm | explicit | [§3.1](#3.1%20Policy%20is%20decided%20here%20and%20executed%20below), [§4.2](#4.2%20Flush%20is%20scheduled%20here), [§6.4](#6.4%20Speculation%20is%20planned%20here%2C%20and%20yields%20to%20demand%20and%20to%20writes), [§7.1](#7.1%20Eviction%20is%20chosen%20here%2C%20and%20needs%20no%20new%20record) |
 | [RFC 3 §4.1](rfc-3-syncer.md#4.1%20One%20fetch%2C%20two%20consumers), [§4.2](rfc-3-syncer.md#4.2%20The%20reply%20neither%20waits%20on%20the%20fill%20nor%20fails%20with%20it) | answer the read independently of the fill | explicit | [§6.2](#6.2%20The%20reply%20is%20served%20from%20the%20fetched%20bytes) |
 | [RFC 3 §4.5](rfc-3-syncer.md#4.5%20Speculation%20is%20executed%20here%20and%20decided%20elsewhere) | decide speculation; make pre-warm yield | explicit | [§6.4](#6.4%20Speculation%20is%20planned%20here%2C%20and%20yields%20to%20demand%20and%20to%20writes) — proposal |
