@@ -1853,8 +1853,8 @@ with every result, together with the commit.
 | J6 | recovery | reopen after 1 GiB, 100 GiB and 1 TiB held, with and without the placement cache ([§9.1.1](#9.1.1%20The%20placement%20cache%2C%20and%20how%20it%20is%20validated%20cheaply)) | time to first read served |
 | J7 | reseed | `MarkDurable` every held extent after reopen ([§9.2](#9.2%20Flush%20state%20after%20recovery)), at 10^4, 10^6 and 10^7 extents | journal time per extent; wall time until `Release` is permitted everywhere |
 
-Benchmarks run in the benchmark environment, not in CI; what CI checks instead
-is in [§12.4](#12.4%20What%20CI%20checks%20instead%20of%20timing). J6 and J7 at scale answer open question 1.
+Benchmarks run on `develop` and nightly, never on a pull request; what a pull
+request checks instead is in [§12.4](#12.4%20What%20CI%20checks%20instead%20of%20timing). J6 and J7 at scale answer open question 1.
 
 Benchmark time is real time: `synctest` makes waiting free, which is the opposite
 of what a benchmark measures.
@@ -1891,7 +1891,7 @@ and what performance the journal is expected to deliver.
 | Fuzz | parsers of bytes the journal did not just write: records, segment trailers, the placement cache | Go native fuzzing; the property is that any input is either accepted as valid or rejected, never panics and never yields an extent the bytes do not contain |
 | Concurrency | [§10](#10.%20Concurrency): lock order, readers against reclamation, progress | race detector, at least two files on two streams, with `synctest` for the waits |
 | Structure | the dependency set of [§1.1](#1.1%20Non-goals) | an import test |
-| Benchmark | [§11.6](#11.6%20Benchmarks), J1–J7 | real time, real device, in the benchmark environment; never in CI ([§12.4](#12.4%20What%20CI%20checks%20instead%20of%20timing)) |
+| Benchmark | [§11.6](#11.6%20Benchmarks), J1–J7 | real time, real device; on `develop` and nightly, never on a pull request ([§12.4](#12.4%20What%20CI%20checks%20instead%20of%20timing)) |
 | Soak | what only appears after hours: index growth, descriptor leaks, footprint drift | mixed write, flush, release and repack load for hours against a capacity smaller than the data written, asserting that the [§5.1](#5.1%20What%20it%20must%20answer) counters, open descriptors and footprint stay flat |
 
 The model-based test is what this plan adds beyond [§11](#11.%20Conformance). Group A failures
@@ -1984,7 +1984,16 @@ trusted with its content.
 
 ### 12.4 What CI checks instead of timing
 
-Timed benchmarks do not run in CI. A shared runner's device changes between
+Tests run in three tiers, so a pull request stays fast and the heavy work still
+runs every day. This split holds for every RFC in the series.
+
+| Tier | Runs | Contains |
+| --- | --- | --- |
+| **Pull request** | on every push to a PR | unit, conformance, property and fuzz seeds, the model-based test at a fixed budget, and the counted checks below; minutes, no timing, no external service |
+| **Develop** | after each merge to `develop` | the benchmarks on the reference box, recorded ([§12.6](#12.6%20Recording%20results)); a result more than 10% worse than the last is reported, not blocking |
+| **Nightly** | once a day on `develop` | benchmarks that need space or hours (J5, J6, J7 at scale), the soak, longer fuzz and model runs, and the real-backend tests of other components |
+
+No timed check runs on a pull request. A shared runner's device changes between
 runs and is shared with other jobs, so a timing gate either fails on noise or
 is set so wide it misses the regressions that matter.
 
