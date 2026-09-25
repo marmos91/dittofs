@@ -654,7 +654,7 @@ is fast enough, and at scale it is not ([§9.1](#9.1%20Rebuilding)). An implemen
 
 **The persisted index is the segment catalog**, written into a footer at the end
 of the segment. When a segment is sealed it becomes immutable ([§4.2](#4.2%20Segments)), and an
-implementation **SHOULD** then append a catalog describing every record in it: for each, the `FileID`, file offset, length,
+implementation **SHOULD** then append a catalog describing every record in it: for each, the `FileID`, file offset, length, kind, sequence number and content
 version, and the record's offset within the segment.
 
 - The footer **MUST** be written and made durable **after** the records it
@@ -709,7 +709,8 @@ opportunities to miss it. A footer shares the fate of its data by construction,
 and needs no such check.
 
 **The scan it removes is already cheap, because the records are the index.**
-Every record header carries the `FileID`, file offset, length and version — the
+Every record header carries the `FileID`, file offset, length, kind, sequence
+number and content version — the
 whole index entry — and the payload length lets a scan skip the payload without
 reading it. Reconstructing an active segment therefore costs either a stream of
 that one segment, or one small read per record, whichever the record size makes
@@ -726,8 +727,7 @@ longer change.
 **A catalog describes records, not held extents.** It says what this segment
 contains and where; it says nothing about whether those records are still the
 live ones, because a record here may be superseded by a record in another
-segment. Recovery reads footers to learn the record population and then applies
-version precedence ([§5.3](#5.3%20Versions)) to decide what is held. An implementation **MUST NOT**
+segment. Recovery reads footers to learn the record population and then applies sequence-number precedence ([§5.3](#5.3%20Versions)) to decide what is held. An implementation **MUST NOT**
 treat a footer as a statement about residency.
 
 **Reading a catalog skips per-record verification.** A catalog that verifies
@@ -821,8 +821,7 @@ different things.
 
 **The relationship is one-way: the placement index is *built from* the other
 two, and neither is built from it at runtime.** At recovery the journal reads
-catalogs (or scans, [§9.1](#9.1%20Rebuilding)) to learn what records exist, applies version
-precedence ([§5.3](#5.3%20Versions)) to decide which are live, and the result is the placement
+catalogs (or scans, [§9.1](#9.1%20Rebuilding)) to learn what records exist, applies sequence-number precedence ([§5.3](#5.3%20Versions)) to decide which are live, and the result is the placement
 index. A placement cache short-circuits that by storing the answer.
 
 Two consequences follow, and an implementation **MUST NOT** assume otherwise:
@@ -836,11 +835,11 @@ Two consequences follow, and an implementation **MUST NOT** assume otherwise:
 
 The rest of this section specifies the placement index. In memory, the journal
 maintains for each `FileID` an offset-ordered set of disjoint held extents, each
-mapped to a record location and carrying its version and flush bit.
+mapped to a record location and carrying its content version and flush bit.
 
 Extents **MUST** be disjoint: a write superseding part of an existing extent
 **MUST** split or narrow it, never leave two extents covering one offset. A
-lookup **MUST** be unambiguous without consulting versions — versions order
+lookup **MUST** be unambiguous without consulting sequence numbers — they order
 records during recovery, not during a read.
 
 ### 5.1 What it must answer
@@ -1265,8 +1264,7 @@ nearly every read, so the event is what makes it diagnosable.
 
 ### 9.1 Rebuilding
 
-On open, the journal **MUST** reconstruct its placement index. For two records
-covering the same offset, the higher version wins.
+On open, the journal **MUST** reconstruct its placement index. For two records covering the same offset, the higher sequence number wins.
 
 Recovery **MUST NOT** consult any component outside the journal, and **MUST NOT**
 require the process that wrote the segments to have exited cleanly.
@@ -1274,7 +1272,7 @@ require the process that wrote the segments to have exited cleanly.
 **A segment from another journal is not attached.** A segment whose header
 names a journal identity other than the one in `format` **MUST NOT** contribute
 to the index. It is reported and left alone ([§9.5](#9.5%20Unattachable%20files)). Its records would verify, and
-could win on version over this journal's own.
+could win on sequence number over this journal's own.
 
 A header that does not verify is damage, not evidence of a foreign segment. The
 segment is reported as damaged and its records are attached on their own
@@ -1909,7 +1907,7 @@ Beyond the named checks, the unit, model and fault tests **MUST** reach these.
 
 - a zero-length write, and a write at an offset close to the largest file offset;
 - an overwrite that splits one held extent into three, and one that covers several whole extents and parts of two more;
-- the same extent overwritten many times, so versions and index churn grow while held bytes do not;
+- the same extent overwritten many times, so sequence numbers and index churn grow while held bytes do not;
 - a write that crosses a segment boundary, and a record that exactly fills a segment;
 - a file whose first held byte is far from offset zero ([§2](#2.%20The%20model%20it%20presents)).
 
