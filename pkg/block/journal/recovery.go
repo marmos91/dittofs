@@ -359,6 +359,9 @@ func (r *recoveryState) applyColdLog() error {
 		return err
 	}
 	r.coldLoaded = len(coldLoaded)
+	// Seed the live count with what the log holds, so the ratio gate the
+	// background compaction applies has the same input this one does.
+	r.s.coldEntries = r.coldLoaded
 	for _, e := range coldLoaded {
 		if e.length <= 0 {
 			continue
@@ -388,13 +391,11 @@ func (r *recoveryState) applyColdLog() error {
 // compactColdLog rewrites the cold log once the live set has drifted well below
 // what the log holds: entries superseded by a later hydrate, buried by a
 // tombstone or clipped by a truncate are dead weight the next recovery would
-// replay again. Recovery is the only place the surviving set is known, and
-// rewriting is atomic (temp + rename), so a crash here keeps the previous log.
-// ponytail: compaction only at open — the log grows within one uptime only as
-// fast as eviction marks new ranges cold, which is bounded by the local cap.
+// replay again. Rewriting is atomic (temp + rename), so a crash here keeps the
+// previous log. The in-uptime pass is maybeCompactColdLog.
 func (r *recoveryState) compactColdLog() {
 	live := liveColdEntries(r.indexByShard)
-	if r.coldLoaded <= 2*len(live)+coldCompactFloor {
+	if !coldCompactWorthIt(r.coldLoaded, len(live)) {
 		return
 	}
 	if werr := r.s.rewriteCold(live); werr != nil {

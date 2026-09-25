@@ -51,6 +51,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 )
 
 const (
@@ -67,9 +68,16 @@ const (
 	// been seeded from the caller's manifest. See ColdSeeded.
 	coldSeededName = "cold-seeded"
 
-	// coldCompactFloor keeps recovery from rewriting a log that is merely small:
-	// compaction only pays once the dead entries outweigh a few pages of I/O.
+	// coldCompactFloor keeps a compaction from rewriting a log that is merely
+	// small: a rewrite only pays once the dead entries outweigh a few pages of
+	// I/O. Both passes apply it through coldCompactWorthIt.
 	coldCompactFloor = 1024
+
+	// coldCompactWarnEvery is how many consecutive blocked passes it takes to
+	// raise the report from Debug to Warn. A single block is a collision with an
+	// appender and resolves itself; a run of them is compaction not happening,
+	// which is invisible otherwise because the log just keeps growing.
+	coldCompactWarnEvery = 20
 )
 
 // coldProvenance records which writer made an entry, because that is what says
@@ -228,7 +236,10 @@ func (s *Store) appendCold(entries []coldEntry) error {
 		}
 		s.coldFD = fd
 	}
-	var buf []byte
+	var (
+		buf     []byte
+		written int
+	)
 	for _, e := range entries {
 		if e.length <= 0 {
 			continue
@@ -239,6 +250,7 @@ func (s *Store) appendCold(entries []coldEntry) error {
 			return fmt.Errorf("journal: cold log FileID length %d exceeds max %d", len(e.id), maxFileIDLen)
 		}
 		buf = append(buf, encodeColdEntry(e)...)
+		written++
 	}
 	if len(buf) == 0 {
 		return nil
@@ -277,6 +289,9 @@ func (s *Store) appendCold(entries []coldEntry) error {
 		}
 		return errors.Join(fmt.Errorf("journal: fsync cold log: %w", err), terr)
 	}
+	// Counted only once the bytes are fsynced, so the count describes the log a
+	// restart would read rather than one a rolled-back write left behind.
+	s.coldEntries += written
 	return nil
 }
 
@@ -340,12 +355,26 @@ func truncateColdTail(dir string, validUpTo int64, log *slog.Logger) error {
 	return nil
 }
 
-// rewriteCold replaces the log with exactly entries, dropping the ones recovery
-// found superseded, deleted or truncated away. Written to a temp file and
-// renamed so a crash mid-rewrite leaves the previous log intact.
+// rewriteCold replaces the log with exactly entries, dropping the ones a
+// compaction found superseded, deleted or truncated away. Written to a temp file
+// and renamed so a crash mid-rewrite leaves the previous log intact.
 func (s *Store) rewriteCold(entries []coldEntry) error {
 	s.coldMu.Lock()
 	defer s.coldMu.Unlock()
+	return s.rewriteColdLocked(entries)
+}
+
+// rewriteColdLocked is rewriteCold with coldMu already held, for a caller that
+// has to decide whether to rewrite under the same hold that protects the
+// decision (maybeCompactColdLog).
+//
+// ponytail: the temp write and both fsyncs run under coldMu, so a seed or an
+// invalidate waits out the whole rewrite while holding its shard lock — the
+// stall Invalidate's own marker calls out for one append, multiplied by the
+// surviving log. Only the rename has to be atomic against an append: build the
+// temp file before taking coldMu, and re-verify there, if a shard is measured
+// stalling on a compaction.
+func (s *Store) rewriteColdLocked(entries []coldEntry) error {
 	if s.coldFD != nil {
 		_ = s.coldFD.Close()
 		s.coldFD = nil
@@ -354,11 +383,20 @@ func (s *Store) rewriteCold(entries []coldEntry) error {
 	if len(entries) == 0 {
 		if err := os.Remove(path); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
+				s.coldEntries = 0
 				return nil
 			}
 			return fmt.Errorf("journal: remove cold log: %w", err)
 		}
-		return fsyncDir(s.dir)
+		if err := fsyncDir(s.dir); err != nil {
+			return fmt.Errorf("journal: fsync dir after cold log removal: %w", err)
+		}
+		// Counted only once the file is actually gone, exactly as the rewrite
+		// below counts only a log it finished renaming: a refused unlink leaves N
+		// entries on disk, and a counter reading zero would let the next
+		// compaction rewrite from a snapshot it never verified against them.
+		s.coldEntries = 0
+		return nil
 	}
 	tmp := path + ".tmp"
 	fd, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
@@ -388,12 +426,286 @@ func (s *Store) rewriteCold(entries []coldEntry) error {
 	if err := fsyncDir(s.dir); err != nil {
 		return fmt.Errorf("journal: fsync dir after cold log rewrite: %w", err)
 	}
+	s.coldEntries = len(entries)
 	return nil
 }
 
-// liveColdEntries collects the cold intervals a recovery ended up with, which is
-// the set a compaction should keep. Called during recovery, before the shards are
-// published, so it needs no locking.
+// appendColdPublish records entries in the log and then publishes them into the
+// index as one unit, marked in flight for as long as the two disagree.
+//
+// The halves are deliberately separated in two callers: eviction scans under the
+// shard lock, drops it, appends, and re-takes the lock to flip the intervals
+// cold, and a batch seed appends once for many files and then takes each shard
+// lock in turn to insert. In that gap the log holds entries no index shows as
+// cold, so a compaction that snapshotted the index there would write a log
+// missing exactly them — and the appender goes on to unlink their bytes. They
+// would come back from a restart as holes that read as zeros with no fetch.
+//
+// Refusing while in flight is the whole guard: the count is raised before the
+// append, so an entry the log holds is either already published or in flight and
+// keeping the compactor off the log. A caller that returned without releasing
+// would stall compaction rather than lose an entry.
+func (s *Store) appendColdPublish(entries []coldEntry, publish func()) error {
+	s.coldMu.Lock()
+	s.coldInFlight++
+	hook := s.betweenColdAppendAndPublish
+	s.coldMu.Unlock()
+	defer func() {
+		s.coldMu.Lock()
+		s.coldInFlight--
+		s.coldMu.Unlock()
+	}()
+	if err := s.appendCold(entries); err != nil {
+		return err
+	}
+	if hook != nil {
+		hook()
+	}
+	publish()
+	return nil
+}
+
+// coldCompactWorthIt reports whether a log holding logged entries is worth
+// rewriting down to a live set of live entries: the dead weight has to outweigh
+// what would be rewritten, and pay for at least a few pages of I/O. Recovery and
+// the background pass share the predicate so a log that one of them would leave
+// alone is not rewritten by the other on the next tick.
+func coldCompactWorthIt(logged, live int) bool {
+	return logged > 2*live+coldCompactFloor
+}
+
+// maybeCompactColdLog rewrites the cold log down to the entries still live, plus
+// those of any shard it could not verify (below). It runs off the GC ticker
+// because eviction and seeding only ever append: a range
+// evicted, hydrated back and evicted again leaves its first entry behind as dead
+// weight, so without this the log grows for as long as the process stays up and
+// a restart pays for all of it in loadCold.
+//
+// Cold-log callers take their shard lock before coldMu (SeedCold and Invalidate
+// hold it across the append), so this must never hold coldMu across a shard
+// lock. It snapshots the live set shard by shard instead and then verifies,
+// under coldMu, that the log it is about to replace is still the one it
+// snapshotted: nothing appended, and nothing appended-but-not-yet-indexed
+// (appendColdPublish). If either moved it abandons the pass, because rewriting
+// without an entry some caller is relying on is silent zeros for a range that
+// caller has already stopped keeping locally.
+//
+// A shard whose records are not all fsynced yet is not a reason to abandon the
+// pass, only a reason not to drop anything of that shard's: its entries are
+// carried over from the log untouched. Keeping an entry that is already dead
+// costs a replay that resolves it away — recovery inserts by Version, so a later
+// record shadows it and a tombstone or truncate clips it — which is the same
+// reason a crash before the rename is harmless. So each pass shrinks what it
+// could verify and leaves the rest for the next one.
+//
+// ponytail: two things are traded for that. The carried set is read back with
+// loadCold rather than held in memory, so a pass that gets past the ratio gate
+// with any shard unverified costs one read of the whole log. And a shard written
+// to continuously is unverified on most passes, so under heavy write load only a
+// minority of shards are shrunk per pass and the log converges over several
+// rather than one. The Debug line a compacting pass emits is what says whether it
+// is converging; hold the entry set in memory, or verify per file instead of per
+// shard, if a log is measured not.
+func (s *Store) maybeCompactColdLog() {
+	if s.closed.Load() {
+		return
+	}
+	s.coldMu.Lock()
+	logged, broken, inFlight := s.coldEntries, s.coldBroken, s.coldInFlight
+	verify := s.beforeColdCompactVerify
+	s.coldMu.Unlock()
+	// The size gate keeps an idle or small log from costing a shard walk every
+	// tick. It is not a refusal: there is nothing to do.
+	if !coldCompactWorthIt(logged, 0) {
+		s.clearColdCompactBlocked()
+		return
+	}
+	// A broken log has no appendable tail and must not be rewritten from a
+	// snapshot either: replay ends at its tear, so the live set is not what the
+	// log describes.
+	if broken {
+		s.blockColdCompact("the cold log is unusable after a failed tail rollback", logged)
+		return
+	}
+	if inFlight > 0 {
+		s.blockColdCompact("an append is between the log and the index", logged)
+		return
+	}
+	// decision: an entry is dropped because a record, tombstone or truncate
+	// marker superseded it, and dropping it is only safe once that marker is
+	// itself durable — a lost record leaves the range a hole, which is the
+	// silent-zeros failure the log exists to prevent. Delete and Truncate fsync
+	// their markers before touching the index, but a plain record is durable only
+	// after a shard commit, so ask for one here rather than waiting for the
+	// dirty-age loop to have happened to run. It decides how much of the store a
+	// pass can shrink, and nothing else: a shard that is still dirty afterwards —
+	// including one whose own commit just failed, which leaves it dirty by
+	// definition — keeps its entries rather than blocking the others, so the
+	// failure is reported and the pass goes on. A negative DirtyExpiry is an
+	// operator saying no loop may fsync on its own schedule, and that answer is
+	// taken here too: such a store shrinks only the shards a client commit
+	// happens to have cleaned.
+	if s.cfg.DirtyExpiry > 0 {
+		if err := s.commitDirtyShards(); err != nil {
+			s.log.Warn("journal: shard commit failed, compacting the cold log without those shards", "error", err)
+		}
+	}
+	live, unverified := s.liveColdSnapshot()
+	// Decided on the live set before reading anything back: the predicate only
+	// falls as the kept set grows, and the kept set is the live one plus whatever
+	// is carried, so a live set that is not worth rewriting settles the pass. On a
+	// store whose cold entries are nearly all live — a seeded remote share — this
+	// is the verdict every pass reaches, and paying for a read of the whole log to
+	// reach it again is the cost the gate exists to avoid.
+	if !coldCompactWorthIt(logged, len(live)) {
+		s.clearColdCompactBlocked()
+		return
+	}
+	keep, loadedCount := live, -1
+	if slices.Contains(unverified, true) {
+		loaded, _, err := loadCold(s.dir, s.log)
+		if err != nil {
+			s.blockColdCompact("the cold log could not be read back", logged)
+			return
+		}
+		loadedCount = len(loaded)
+		for _, e := range loaded {
+			if unverified[s.shardIndex(e.id)] {
+				keep = append(keep, e)
+			}
+		}
+		if !coldCompactWorthIt(logged, len(keep)) {
+			s.clearColdCompactBlocked()
+			return
+		}
+	}
+	if verify != nil {
+		verify()
+	}
+	s.coldMu.Lock()
+	// An append only ever raises the count and the rewrite below is the only thing
+	// that lowers it, which the ticker runs one at a time, so an unchanged count
+	// means the snapshot still describes the whole log. An append in flight means
+	// the index it was taken from does not describe entries the log already holds.
+	// Either way those entries are the ones a rewrite would drop, so leave the log
+	// to the next pass.
+	moved := s.coldEntries != logged || s.coldInFlight > 0
+	if moved {
+		s.coldRefusals++
+		n := s.coldRefusals
+		s.coldMu.Unlock()
+		s.logColdCompactBlocked(n, "the log moved under the snapshot", logged)
+		return
+	}
+	// Nothing appended over the window, so the log is the one loadCold read and a
+	// count that disagrees with it is the counter having drifted from the file —
+	// reachable if a rewrite's directory fsync failed after it had already replaced
+	// or removed the file, which returns before the count is set. The file
+	// is the truth, so take the count from it and let the next pass decide on a
+	// figure that matches; this pass stops because the decision above rested on
+	// the drifted one. It reports itself every time rather than through the
+	// blocked-run throttle, because one occurrence is already a lost rewrite.
+	if loadedCount >= 0 && loadedCount != logged {
+		s.coldEntries = loadedCount
+		s.coldMu.Unlock()
+		s.log.Warn("journal: cold log entry count disagreed with the log on disk, resynced from the file",
+			"counted", logged, "on_disk", loadedCount)
+		return
+	}
+	s.coldRefusals = 0
+	err := s.rewriteColdLocked(keep)
+	s.coldMu.Unlock()
+	// The pass's own account of itself: whether the log is shrinking, and how much
+	// of it a dirty shard is holding back.
+	s.log.Debug("journal: cold log compacted", "entries", logged, "kept", len(keep),
+		"carried", len(keep)-len(live), "unverified_shards", unverifiedCount(unverified))
+	if err != nil {
+		// Non-fatal for the same reason recovery's compaction is: a
+		// stale-but-valid log costs redundant replay, not correctness.
+		s.log.Warn("journal: cold log compaction failed, keeping the existing log", "error", err)
+	}
+}
+
+// unverifiedCount counts the shards a snapshot could not verify.
+func unverifiedCount(unverified []bool) int {
+	n := 0
+	for _, u := range unverified {
+		if u {
+			n++
+		}
+	}
+	return n
+}
+
+// blockColdCompact records a pass that could not get to a verdict and says so:
+// at Debug for one, and at Warn once a run of them means compaction has stopped
+// happening at all. Every such reason fails closed — the log keeps growing while
+// nothing shrinks it — so the run length is the only thing that distinguishes a
+// collision with an appender from a store where an append never released.
+// coldMu must not be held.
+func (s *Store) blockColdCompact(reason string, logged int) {
+	s.coldMu.Lock()
+	s.coldRefusals++
+	n := s.coldRefusals
+	s.coldMu.Unlock()
+	s.logColdCompactBlocked(n, reason, logged)
+}
+
+// logColdCompactBlocked is blockColdCompact's reporting half, for the caller
+// that already bumped the run under coldMu.
+func (s *Store) logColdCompactBlocked(n int, reason string, logged int) {
+	if n%coldCompactWarnEvery == 0 {
+		s.log.Warn("journal: cold log compaction has been blocked for consecutive passes",
+			"reason", reason, "passes", n, "entries", logged)
+		return
+	}
+	s.log.Debug("journal: cold log compaction deferred", "reason", reason, "passes", n, "entries", logged)
+}
+
+// clearColdCompactBlocked ends a run of blocked passes: the pass reached a
+// verdict, whether or not it had anything to do. coldMu must not be held.
+func (s *Store) clearColdCompactBlocked() {
+	s.coldMu.Lock()
+	s.coldRefusals = 0
+	s.coldMu.Unlock()
+}
+
+// liveColdSnapshot gathers the live cold entries a shard at a time, each under
+// that shard's own lock and never with coldMu held: a caller that holds a shard
+// lock across its append takes coldMu second, so taking them the other way round
+// here would invert that.
+//
+// ponytail: the walk is O(files x intervals) per shard and runs under that
+// shard's lock, so it blocks that shard's reads and appends for its duration —
+// once per tick on a store whose log is past the size gate, where before this it
+// ran only at recovery with nothing else running. Keep a per-shard count of live
+// cold intervals, so the ratio can be decided without walking, if a shard is
+// measured stalling on a pass.
+//
+// A shard is skipped, and reported in the returned mask, when it still holds a
+// record no fsync has covered. The entries a snapshot leaves out are the ones a
+// rewrite drops, and an entry superseded by a record that can still be lost must
+// be kept: losing the record would turn the range into a hole that reads as
+// zeros with no fetch. The caller carries a skipped shard's entries over from
+// the log instead, so one dirty shard costs that shard's dead weight rather than
+// the whole pass.
+func (s *Store) liveColdSnapshot() ([]coldEntry, []bool) {
+	var live []coldEntry
+	unverified := make([]bool, len(s.shards))
+	for i, sh := range s.shards {
+		sh.mu.Lock()
+		if sh.lastVersion <= sh.syncedVersion.Load() {
+			live = append(live, liveColdEntries([]map[FileID]*fileIndex{sh.index})...)
+		} else {
+			unverified[i] = true
+		}
+		sh.mu.Unlock()
+	}
+	return live, unverified
+}
+
+// liveColdEntries collects the cold intervals an index walk ended up with, which
+// is the set a compaction should keep. It locks nothing; its callers say why.
 func liveColdEntries(indexByShard []map[FileID]*fileIndex) []coldEntry {
 	var out []coldEntry
 	for _, idxMap := range indexByShard {

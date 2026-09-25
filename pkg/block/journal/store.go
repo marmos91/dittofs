@@ -193,6 +193,11 @@ type Stats struct {
 	Writes        int64
 	Reads         int64
 	ColdReads     int64
+	// ColdLogEntries is how many entries the cold side-log holds (cold.go). It is
+	// not part of DiskBytes — the log is not a segment and the eviction gate does
+	// not weigh it — and it is the figure that says whether the compaction pass is
+	// keeping up with the appends eviction and seeding make.
+	ColdLogEntries int
 	// MaxLogBytes is the append-log size hint the caller resolved from config
 	// (a Stats size hint only — it does not gate writes; see Config.MaxLogBytes
 	// and Open's hint resolution). Zero means no hint was configured.
@@ -276,6 +281,21 @@ type Store struct {
 	// after restart). No append is attempted while set — a demotion the store
 	// cannot keep is refused, which the caller already treats as fail-closed.
 	coldBroken bool
+	// coldEntries is how many entries the cold log holds: seeded by recovery from
+	// what loadCold read, raised by each append, reset by each rewrite, and
+	// resynced from the file by a compaction that finds the two disagree. It feeds
+	// the compaction ratio gate and is half of what a compaction verifies its
+	// snapshot against (see maybeCompactColdLog).
+	coldEntries int
+	// coldInFlight counts the append-then-publish units currently running. It is
+	// the other half: coldEntries moves when the log gains entries, this moves
+	// while the index does not describe them yet. See appendColdPublish.
+	coldInFlight int
+	// coldRefusals is the current run of compaction passes blocked before reaching
+	// a verdict. Every reason counted here fails closed, so the run length is what
+	// separates a collision with an appender from compaction having stopped; the
+	// one reason that is not counted reports itself every time (drift).
+	coldRefusals int
 
 	// bgCancel stops the background loops started by Open — the dead-ratio
 	// repack and the dirty-age commit. Close cancels it and waits on bgWG so
@@ -290,6 +310,16 @@ type Store struct {
 	// production.
 	failTombstone FileID
 	failTruncate  FileID
+	// beforeColdCompactVerify is a test seam run by a background cold-log
+	// compaction after it has snapshotted the live set and before it verifies
+	// that snapshot under coldMu, so a test can land an append in exactly that
+	// window. betweenColdAppendAndPublish is the mirror seam, run between a
+	// cold-log append and the index publish that follows it; a test firing a
+	// compaction from there must do it from a caller holding no shard lock, since
+	// the compaction takes them. Both are read under coldMu and always nil in
+	// production.
+	beforeColdCompactVerify     func()
+	betweenColdAppendAndPublish func()
 	// beforeTruncateMarker is a test seam run between Truncate publishing its
 	// provisional fence and minting the marker that supersedes it, so a test can
 	// land the concurrent write that opens the window between the two versions.
@@ -445,11 +475,13 @@ func (s *Store) startBackground() {
 	}
 }
 
-// gcLoop is the periodic dead-ratio repack. Overwrites leave dead records
-// behind; without proactive repacking they are only reclaimed on the write-path
-// eviction gate, so a store whose writes outpace carve grows until the cap
-// forces backpressure. The loop keeps local bytes bounded relative to live
-// bytes regardless of whether a cap is set. See Config.GCInterval.
+// gcLoop is the periodic dead-ratio repack and cold-log compaction. Overwrites
+// leave dead records behind; without proactive repacking they are only reclaimed
+// on the write-path eviction gate, so a store whose writes outpace carve grows
+// until the cap forces backpressure. The loop keeps local bytes bounded relative
+// to live bytes regardless of whether a cap is set. The cold log has no gate at
+// all to fall back on: only appends touch it, so the compaction pass is the only
+// thing that ever shrinks it while the store is up. See Config.GCInterval.
 func (s *Store) gcLoop(ctx context.Context) {
 	t := time.NewTicker(s.cfg.GCInterval)
 	defer t.Stop()
@@ -465,6 +497,7 @@ func (s *Store) gcLoop(ctx context.Context) {
 				!errors.Is(err, context.Canceled) && !errors.Is(err, errClosed) {
 				s.log.Warn("journal: background GC pass failed", "error", err)
 			}
+			s.maybeCompactColdLog()
 		}
 	}
 }
@@ -642,22 +675,20 @@ func (s *Store) SeedCold(_ context.Context, id FileID, extents [][2]int64) error
 	if len(entries) == 0 {
 		return nil
 	}
-	if err := s.appendCold(entries); err != nil {
-		return err
-	}
-	fi := sh.indexFor(id)
-	for _, e := range entries {
-		fi.insert(interval{
-			fileOff: e.fileOff,
-			length:  e.length,
-			version: e.version,
-			synced:  true,
-			cold:    true,
-			// Carried so a compaction can write it back out (liveColdEntries).
-			provenance: e.provenance,
-		})
-	}
-	return nil
+	return s.appendColdPublish(entries, func() {
+		fi := sh.indexFor(id)
+		for _, e := range entries {
+			fi.insert(interval{
+				fileOff: e.fileOff,
+				length:  e.length,
+				version: e.version,
+				synced:  true,
+				cold:    true,
+				// Carried so a compaction can write it back out (liveColdEntries).
+				provenance: e.provenance,
+			})
+		}
+	})
 }
 
 // planColdSeed turns one file's extents into the cold entries that would cover
@@ -743,24 +774,26 @@ func (s *Store) SeedColdBatch(_ context.Context, seeds []ColdSeed) error {
 	// copy is being unlinked, and an interrupted seed leaves no ColdSeeded marker
 	// so it simply repeats. That batching belongs on this side of the call, by
 	// accumulating entries before it — never inside appendCold.
-	if err := s.appendCold(entries); err != nil {
-		return err
-	}
-	for _, e := range entries {
-		sh := s.shardFor(e.id)
-		sh.mu.Lock()
-		sh.indexFor(e.id).insert(interval{
-			fileOff: e.fileOff,
-			length:  e.length,
-			version: e.version,
-			synced:  true,
-			cold:    true,
-			// Carried so a compaction can write it back out (liveColdEntries).
-			provenance: e.provenance,
-		})
-		sh.mu.Unlock()
-	}
-	return nil
+	// The insert loop is the publish half of the same unit as the append: until
+	// it has run, the log holds entries no shard index shows as cold, and a
+	// compaction snapshotting an index in that window would rewrite the log
+	// without them.
+	return s.appendColdPublish(entries, func() {
+		for _, e := range entries {
+			sh := s.shardFor(e.id)
+			sh.mu.Lock()
+			sh.indexFor(e.id).insert(interval{
+				fileOff: e.fileOff,
+				length:  e.length,
+				version: e.version,
+				synced:  true,
+				cold:    true,
+				// Carried so a compaction can write it back out (liveColdEntries).
+				provenance: e.provenance,
+			})
+			sh.mu.Unlock()
+		}
+	})
 }
 
 // Commit fsyncs the file's shard so buffered writes become durable. NFS COMMIT
@@ -850,13 +883,17 @@ func (s *Store) UnsyncedBytes() int64 { return s.unsynced.Load() }
 
 // Stats returns a coarse snapshot of store state.
 func (s *Store) Stats() Stats {
+	s.coldMu.Lock()
+	coldEntries := s.coldEntries
+	s.coldMu.Unlock()
 	st := Stats{
-		DiskBytes:     s.diskBytes.Load(),
-		UnsyncedBytes: s.unsynced.Load(),
-		Writes:        s.writes.Load(),
-		Reads:         s.reads.Load(),
-		ColdReads:     s.coldReads.Load(),
-		MaxLogBytes:   s.cfg.MaxLogBytes,
+		ColdLogEntries: coldEntries,
+		DiskBytes:      s.diskBytes.Load(),
+		UnsyncedBytes:  s.unsynced.Load(),
+		Writes:         s.writes.Load(),
+		Reads:          s.reads.Load(),
+		ColdReads:      s.coldReads.Load(),
+		MaxLogBytes:    s.cfg.MaxLogBytes,
 	}
 	for _, sh := range s.shards {
 		sh.mu.Lock()
