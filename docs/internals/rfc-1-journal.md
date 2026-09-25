@@ -111,7 +111,10 @@ is not authoritative for that ([RFC 0 §4.1](rfc-0-data-lifecycle.md#4.1%20The%2
 > The bit can only be wrong in the safe direction. It is set solely by
 > being told, so the journal can believe a durable extent is still dirty — which
 > costs a redundant flush and a refused eviction — but can never believe a dirty
-> extent is durable, which would lose data.
+> extent is durable, which would lose data. That holds only because every report
+> is about a version: an extent is marked only where no held record in it is
+> newer than the content reported durable ([§3.3](#3.3%20Flush), [§9.2](#9.2%20Flush%20state%20after%20recovery)). A report applied by
+> position alone can mark a newer write durable.
 
 Held extents are **disjoint and need not be adjacent**. A file is routinely
 described by several extents with unheld gaps between them, and
@@ -158,7 +161,7 @@ newer bytes thereafter, and **MUST NOT** require the caller to invalidate first.
 ### 3.2 Read
 
 ```go
-ReadAt(id FileID, off int64, p []byte) (n int, missing []Extent, err error)
+ReadAt(id FileID, off int64, p []byte) (n int, missing []Extent, asOf Version, err error)
 ```
 
 Fills `p` from held extents. Every sub-extent of `(off, len(p))` that the journal
@@ -174,38 +177,62 @@ absence.
 segment, record or block for convenience, because the caller pays a remote
 transfer per entry.
 
+`asOf` is the file's change version at the moment of the read: the highest version
+of any operation that has changed the file's extents ([§3.4](#3.4%20Fill)). A caller that fetches
+a `missing` extent passes it back to `Fill`.
+
 ### 3.3 Flush
 
 ```go
-Flush(id FileID, fn func(dirty []Extent, offered io.ReaderAt) (durable []Extent, err error)) error
+Flush(id FileID, limit int64, fn func(o Offer, report func(durable []Extent)) error) error
 
-FlushMany(ids []FileID, fn func(offers []Offer) (durable map[FileID][]Extent, err error)) error
+FlushMany(ids []FileID, limit int64, fn func(offers []Offer, report func(id FileID, durable []Extent)) error) error
 
 type Offer struct {
     ID      FileID
     Dirty   []Extent
-    Offered io.ReaderAt
+    Version Version     // the highest version among the offered records
+    Offered io.ReaderAt // the bytes as offered; see below
 }
 ```
 
-Offers every held extent of `id` whose flush bit is unset, and marks exactly the
-extents `fn` returns.
+Offers held extents of `id` whose flush bit is unset, and marks exactly the
+extents reported durable through `report`.
+
+**`report` may be called any number of times while `fn` runs**, and each call marks
+its extents at once, under every rule below. It is how a pass makes extents
+evictable block by block, as each block's commit lands, rather than all at its
+end. Once `fn` returns, `report` **MUST** fail. The error `fn` returns reports that
+the rest of the offer failed; it takes back nothing already reported.
+
+**`limit` bounds the dirty bytes one call offers.** The journal offers extents in
+offset order until the next would pass the limit, and offers an extent larger than
+what remains as a prefix ending at the limit; the rest is offered by a later call.
+Without a bound, one pass over a 100 GiB dirty file keeps all of it offered, its
+superseded records pinned for `offered`, and none of it evictable until the last
+block uploads. The engine chooses the limit ([RFC 6 §4.2](rfc-6-engine.md#4.2%20Flush%20is%20scheduled%20here)). A prefix ends where no content
+chose, so it costs one chunk boundary per pass that the chunker did not pick
+([RFC 2 §2.1](rfc-2-carver.md#2.1%20One%20unbroken%20stretch%20per%20call)).
+
+**`Version`** is the highest version of any record in the offer ([§5.3](#5.3%20Versions)). The engine
+records it on the refs the pass commits ([RFC 4 §4.4](rfc-4-block-metadata.md#4.4%20Commits%20for%20one%20file%20apply%20in%20order)) and names it again when it reseeds
+after a crash ([§9.2](#9.2%20Flush%20state%20after%20recovery)).
 
 `FlushMany` is the same offer over several files in one callback, so the engine
 can pack chunks of several files into one block ([RFC 6 §5.7](rfc-6-engine.md#5.7%20A%20block%20packs%20chunks%2C%20whichever%20files%20they%20came%20from)). Every rule of this section
-holds per file within it: each file's extents are marked exactly as its entry in
-`durable` says, a file absent from `durable` has nothing marked, and each
-`Offered` reader stays valid until `fn` returns. `Flush(id, …)` is `FlushMany`
+holds per file within it: each file's extents are marked exactly as the reports
+naming it say, a file never named has nothing marked, each `Offered` reader stays
+valid until `fn` returns, and `limit` bounds the total across the files. `Flush(id, …)` is `FlushMany`
 with one file, and an implementation **SHOULD** build it that way rather than
 keep two paths.
 
-The journal **MUST** mark exactly the returned extents and **MUST NOT** mark an
+The journal **MUST** mark exactly the reported extents and **MUST NOT** mark an
 extent for which no report was received, including when `fn` returns an error
-alongside a partial list — a partial success **MUST** be honoured.
+after some reports — a partial success **MUST** be honoured.
 
-The journal **MUST NOT** interpret, reorder or subdivide `durable` except to
-intersect it with what it offered. An extent `fn` returns that was not offered
-**MUST** be rejected as an error, not silently accepted.
+The journal **MUST NOT** interpret, reorder or subdivide a report except to
+intersect it with what it offered. A reported extent that was not offered **MUST**
+be rejected as an error, not silently accepted.
 
 Offered extents **MUST** remain readable and **MUST NOT** be relocated for the
 duration of the call.
@@ -231,7 +258,7 @@ superseding write even if `fn` reports the offset durable.
 ### 3.4 Fill
 
 ```go
-Fill(id FileID, off int64, p []byte) error
+Fill(id FileID, off int64, p []byte, asOf Version) error
 ```
 
 Places retrieved remote bytes into local storage. This is the only path by which
@@ -241,6 +268,19 @@ an extent becomes held without a client write.
 **MUST** write only the sub-extents that are currently absent, and it **MUST**
 make that determination and the write atomic with respect to concurrent
 `WriteAt` on the same file.
+
+**A Fill older than the file is refused.** `asOf` is the version `ReadAt` returned
+when the caller found the extent missing ([RFC 6 §6.2](rfc-6-engine.md#6.2%20The%20reply%20is%20served%20from%20the%20fetched%20bytes)). The journal keeps, per file, the
+highest version of any operation that changed its extents — `WriteAt`, `Release`,
+`Truncate`, `Delete` — and keeps it through all of them, deletion included. If it
+is newer than `asOf`, `Fill` **MUST** write nothing and return a distinct error.
+Without this, a fetch that began before a write can land after that write was
+flushed and evicted, find the extent absent, and fill the old bytes with the flush
+bit set; or land after a truncate down and up, and put old bytes back where the
+file now has a hole. Either way the journal then serves stale content and
+believes it durable. The check is per file, not per extent, and deliberately
+coarse: a Fill refused because another part of the file changed costs only a
+cache miss.
 
 A filled extent's flush bit **MUST** be set, because the content came from the
 remote tier and is by construction durable there. **This makes `Fill` as
@@ -253,7 +293,7 @@ leaving content that exists nowhere.
 
 #### Fill is not a write
 
-`Fill` and `WriteAt` take the same arguments and are otherwise opposites:
+`Fill` and `WriteAt` take nearly the same arguments and are otherwise opposites:
 
 |                          | `WriteAt`                 | `Fill`                                                           |
 | ------------------------ | ------------------------- | ---------------------------------------------------------------- |
@@ -1037,7 +1077,10 @@ journal full of content from one full of fragmentation.
 ### 8.4 Open descriptors
 
 The number of segment descriptors held open **MUST** be bounded by
-configuration, independently of the number of segments. A read of a segment
+configuration, independently of the number of segments. The bound is per
+process: the journals of one process draw on one budget, because the limit it
+protects, `RLIMIT_NOFILE`, is per process, and a bound per journal bounds nothing
+once there is one journal per share. A read of a segment
 whose descriptor is not open **MUST** reopen it.
 
 The count and its bound **MUST** be reported through `Stats` ([§3.7](#3.7%20State%20introspection)), and a reopen
@@ -1090,6 +1133,11 @@ streams* — with a 256 MiB segment and eight streams, two gigabytes read
 sequentially, whatever the total size of the journal. A periodic placement cache
 ([§9.1.1](#9.1.1%20The%20placement%20cache%2C%20and%20how%20it%20is%20validated%20cheaply)) reduces even that, because it records how far into each active segment
 its knowledge extends and the scan resumes from there.
+
+An active segment that has taken no append for 30 s **MUST** be sealed. The
+unavoidable scan then covers only streams written to in the last seconds before a
+crash, not every stream of every journal: with one journal per share, the bound
+above is otherwise multiplied by the number of shares.
 
 This scan is cheap for the reason [§4.4](#4.4%20The%20segment%20catalog) gives: a record header already contains its
 index entry, and the payload is skipped by length. An implementation **MUST NOT**
@@ -1166,6 +1214,19 @@ safe and temporarily wasteful.
 
 An implementation **MUST NOT** infer a flush bit from the record, from the
 segment's age or seal state, or from the absence of a crash.
+
+The engine reseeds through:
+
+```go
+MarkDurable(id FileID, extents []Extent, asOf Version) error
+```
+
+naming for each extent the version recorded on the ref that covers it
+([RFC 4 §4.4](rfc-4-block-metadata.md#4.4%20Commits%20for%20one%20file%20apply%20in%20order)). The journal marks an extent only where no held record in it is newer
+than `asOf`. Marking by position alone loses data: a write that superseded
+flushed content and had not been flushed when the process crashed is held again
+after recovery, covered by the old content's ref; marked durable by position, it
+becomes evictable, and the next read fetches the old content in its place.
 
 > [!note]
 > The cost is that a crash makes every held extent a flush candidate
@@ -1503,6 +1564,9 @@ A check here fails by **coming back up describing something other than what is o
 | [§9.1](#9.1%20Rebuilding) sources agree | Build the placement index from the placement cache, from catalogs, and by full scan of the same store; assert all three are identical. |
 | [§9.1.1](#9.1.1%20The%20placement%20cache%2C%20and%20how%20it%20is%20validated%20cheaply) cache demotion | Alter one segment's length, delete one segment, and corrupt the placement cache checksum, each independently; assert every case falls back to catalogs and reaches the same placement index. |
 | [§9.2](#9.2%20Flush%20state%20after%20recovery) pessimistic bits | Reopen after writes; assert `Release` refuses everything before reseeding. |
+| [§9.2](#9.2%20Flush%20state%20after%20recovery) reseed by version | Flush A, overwrite with B, crash before B is flushed; `MarkDurable` the extent at A's version; assert B stays unmarked and `Release` refuses it. |
+| [§3.4](#3.4%20Fill) stale Fill | Read an extent missing; write, flush and release it; then `Fill` with the first read's `asOf`; assert nothing is written. Repeat with a truncate down and up in place of the write. |
+| [§3.3](#3.3%20Flush) incremental report | Report one block's extents mid-callback, then fail the callback; assert the reported extents are marked and releasable and the rest are not. |
 | [§4.5](#4.5%20Catalog%20layout) trailer torn | Truncate a segment mid-footer, and separately corrupt one entry byte; assert both are treated as "no footer", the segment is scanned, and the resulting index is identical to the footer-read one. |
 | [§4.5](#4.5%20Catalog%20layout) unknown version | Write a trailer with a future format version; assert the segment is scanned and the open succeeds. |
 | [§5.3](#5.3%20Versions) version monotonicity | Reopen after a crash; assert the next version issued exceeds every version on disk, and that recovery in shuffled segment order yields an identical index. |

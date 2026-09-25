@@ -107,22 +107,37 @@ type Chunk struct {
     Bytes []byte // borrowed until the next iteration
 }
 
+// Range is where one chunk's record sits in a stored object: a byte offset and a
+// length in the object as stored, after framing and transforms. The store
+// reports it on Put; the syncer passes it through and reads only Len.
+type Range struct {
+    Off, Len int64
+}
+
+// ChunkRange asks for one chunk: the hash to verify it against, and its range.
+type ChunkRange struct {
+    Hash  Hash
+    Range Range
+}
+
 // Store is what the syncer needs from a backend, declared here and named for
 // that need. The engine adapts the remote tier (RFC 8) to it.
 type Store interface {
-    Put(ctx context.Context, name BlockName, chunks iter.Seq2[Chunk, error]) error
-    // Get reads the chunks named in want from the block, or the whole block when
-    // want is empty. Each chunk comes back verified against its own hash.
-    Get(ctx context.Context, name BlockName, want []ChunkRef) iter.Seq2[Chunk, error]
+    // Put stores the block and returns one Range per chunk, in the order given.
+    Put(ctx context.Context, name BlockName, chunks iter.Seq2[Chunk, error]) ([]Range, error)
+    // Get reads the chunks named in want, or the whole block when want is empty.
+    // Ranges adjacent in the object are read with one request. Each chunk comes
+    // back verified against its own hash.
+    Get(ctx context.Context, name BlockName, want []ChunkRange) iter.Seq2[Chunk, error]
     Probe(ctx context.Context) error
 }
 
 Register(name string, store Store) (StoreID, error)
 OpenFlow(store StoreID) (*Flow, error)
 
-func (f *Flow) Upload(ctx context.Context, name BlockName, src func() iter.Seq2[Chunk, error]) error
-func (f *Flow) Fetch(ctx context.Context, name BlockName, want []ChunkRef) iter.Seq2[Chunk, error]
-func (f *Flow) Prefetch(ctx context.Context, name BlockName, want []ChunkRef) iter.Seq2[Chunk, error]
+func (f *Flow) Upload(ctx context.Context, name BlockName, size int64, src func() iter.Seq2[Chunk, error]) ([]Range, error)
+func (f *Flow) Fetch(ctx context.Context, name BlockName, want []ChunkRange) iter.Seq2[Chunk, error]
+func (f *Flow) Prefetch(ctx context.Context, name BlockName) iter.Seq2[Chunk, error]
 func (f *Flow) Healthy() bool
 func (f *Flow) Close() error
 
@@ -165,8 +180,9 @@ from every flow on it ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)).
 
 ![Three flows, each bound to one store: two queue their transfers per flow, a deficit-round-robin scheduler with a per-flow cap feeds the uploader and fetcher pools, and the pools reach two stores; the third flow's store is unhealthy, its probe keeps running, and its calls are refused before they queue](img/rfc3-overview.svg)
 
-`name` is the block's name ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)) and everything [RFC 8 §6.1](rfc-8-remote-tier.md#6.1%20The%20exported%20read%20takes%20the%20expected%20hash)'s
-verified read needs. The syncer passes it through and **MUST NOT** interpret it.
+`name` is the block's name ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)). With `want` it is everything
+[RFC 8 §6.1](rfc-8-remote-tier.md#6.1%20The%20exported%20read%20takes%20the%20expected%20hash)'s verified read needs. The syncer passes both through and **MUST NOT**
+interpret them, except to sum the lengths of `want` for scheduling ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)).
 
 **Both directions stream, one chunk at a time.** The object format makes this
 possible: one record per chunk, each carrying its own plaintext hash and each
@@ -177,33 +193,50 @@ is what sets the bound of [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20b
 **`Upload`** puts the block whose chunks `src` yields from the journal
 ([§3.2](#3.2%20It%20holds%20a%20reference%2C%20not%20a%20copy)). It hands that stream to the store's `Put`, which frames and transforms
 each chunk beneath the syncer; the syncer never sees a transformed byte
-([RFC 8 §4.4](rfc-8-remote-tier.md#4.4%20The%20syncer%20MUST%20NOT%20observe%20that%20a%20transform%20happened)). It blocks until a worker is free or
-`ctx` ends, which is the backpressure of [§2.3](#2.3%20Backpressure%20propagates%3B%20it%20does%20not%20buffer). It returns `nil` only on a
-durable acknowledgement ([§2.6](#2.6%20Durability%20is%20observed%2C%20never%20inferred)); every other ending, an unknown one included
-([§2.5](#2.5%20An%20unknown%20outcome%20is%20not%20a%20success)), is an error. A retry calls `src` again for a fresh stream from the first chunk,
-so the bytes behind it **MUST** stay stable until `Upload` returns ([§3.3](#3.3%20The%20journal%20keeps%20referenced%20bytes%20stable)). It
-**MUST NOT** call `src` after it returns, which is what lets the caller hand the
-journal reference back.
+([RFC 8 §4.4](rfc-8-remote-tier.md#4.4%20The%20syncer%20MUST%20NOT%20observe%20that%20a%20transform%20happened)). `size` is the block's plaintext length, which the engine knows from
+its plan and the scheduler charges ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)).
+
+It waits in its flow's queue until a worker is free or `ctx` ends, which is the
+backpressure of [§2.3](#2.3%20Backpressure%20propagates%3B%20it%20does%20not%20buffer), and fails at once if its store is unhealthy ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) or its
+flow's queue is full ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)). It returns the store's `Range` for each chunk, and a
+`nil` error, only on the store's acknowledgement, which is durable because every
+store is ([§2.6](#2.6%20Durability%20is%20observed%2C%20never%20inferred)); every other ending, an unknown one included
+([§2.5](#2.5%20An%20unknown%20outcome%20is%20not%20a%20success)), is an error. The ranges go into the block's commit, where later reads
+find them ([RFC 4 §2.2](rfc-4-block-metadata.md#2.2%20Chunk)).
+
+A retry calls `src` again for a fresh stream from the first chunk, so the bytes
+behind it **MUST** stay stable until `Upload` returns ([§3.3](#3.3%20The%20journal%20keeps%20referenced%20bytes%20stable)). It **MUST NOT**
+call `src` after it returns, which is what lets the caller hand the journal
+reference back.
 
 **`Fetch`** is a demand: a reader is waiting. **`Prefetch`** is speculation
 ([§4.4](#4.4%20Speculation%20does%20not%20delay%20demand)): nobody is waiting yet. They are separate methods, not one method with
-a priority parameter, so each call site shows which it means.
+a priority parameter, so each call site shows which it means. `Prefetch` always
+fetches the whole block: speculation is read-ahead or pre-warm, and both want
+whole blocks ([RFC 6 §6.8](rfc-6-engine.md#6.8%20A%20cold%20read%20asks%20for%20chunks%2C%20or%20for%20the%20block)).
 
-**A fetch is a block range, named by chunks.** `want` names the chunks the caller
-needs, each by an opaque `ChunkRef` carrying its hash and its place in the object,
-both of which the syncer passes through to the store. An empty `want` asks for the
-whole block. The store turns chunks that are adjacent in the object into one
-ranged read, so a packed small file, or a run of one file's chunks, costs one
-request ([RFC 6 §5.7](rfc-6-engine.md#5.7%20A%20block%20packs%20chunks%2C%20whichever%20files%20they%20came%20from)); chunks that are not adjacent cost one request each, or
-the engine asks for the whole block instead. A range is always whole chunks: a
-range that splits one has no hash to check it against ([§4.1](#4.1%20One%20fetch%2C%20two%20consumers)). A cold random read asks for
-only the chunks it covers, and each comes back as its own verified range
-([RFC 8 §6.1](rfc-8-remote-tier.md#6.1%20The%20exported%20read%20takes%20the%20expected%20hash)): fetching a 20 MiB block to serve one 4 KiB read is read amplification
-with no correctness benefit, since every chunk is verified on its own. Whole
-blocks are for sequential scans and pre-warm. When to widen a request from
-chunks to the whole block is the engine's policy ([RFC 6 §6.8](rfc-6-engine.md#6.8%20A%20cold%20read%20asks%20for%20chunks%2C%20or%20for%20the%20block)), which asks for
-chunks when a read is small and not sequential, and for the whole block when a
-read needs much of it or begins a scan.
+**A fetch is a set of whole-chunk ranges of one block.** `want` names the chunks
+the caller needs, each by its hash and the `Range` the store reported when the
+block was put, which block metadata keeps ([RFC 4 §2.2](rfc-4-block-metadata.md#2.2%20Chunk)). An empty `want` asks for the
+whole block; each record is then verified against its own hash, and the ordered
+hashes against `name`, from which [RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block) derives it. The store merges ranges
+adjacent in the object into one ranged read — on S3, one `GET` with a
+`Range: bytes=first-last` header — so a packed small file, or a run of one file's
+chunks, costs one request ([RFC 6 §5.7](rfc-6-engine.md#5.7%20A%20block%20packs%20chunks%2C%20whichever%20files%20they%20came%20from)); ranges that are not adjacent cost
+one request each, or the engine asks for the whole block instead. A range is
+always a whole chunk: a range that splits one has no hash to check it against
+([§4.1](#4.1%20One%20fetch%2C%20two%20consumers)).
+
+A cold random read asks for only the chunks it covers, and each comes back as its
+own verified range: fetching a 20 MiB block to serve one 4 KiB read is read
+amplification with no correctness benefit. When to widen a request from chunks to
+the whole block is the engine's policy ([RFC 6 §6.8](rfc-6-engine.md#6.8%20A%20cold%20read%20asks%20for%20chunks%2C%20or%20for%20the%20block)): chunks for a read that is small
+and not sequential, the whole block for a scan or a read that needs most of it.
+
+A range whose bytes fail verification is reported as a **range mismatch**, distinct
+from a corrupt object, so the engine can re-resolve once ([RFC 6 §6.7](rfc-6-engine.md#6.7%20An%20absent%20object%20is%20re-resolved%20exactly%20once)): a re-put under
+the same name may lay the object out differently ([RFC 8 §5.5](rfc-8-remote-tier.md#5.5%20A%20put%20of%20an%20existing%20key%20succeeds%3B%20so%20does%20a%20delete%20of%20an%20absent%20one)), and a range recorded
+before it then points at the wrong bytes.
 
 Both return a stream of chunks, and:
 
@@ -216,8 +249,11 @@ Both return a stream of chunks, and:
 - **leaving the loop, or cancelling `ctx`, detaches the caller** — from its own
   fetch, or only from a joined one ([§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch)). There is no `Close` to forget.
 
-**`Close`** stops accepting work and returns once every transfer in flight has
-ended, which [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) bounds. A call after `Close` **MUST** fail.
+The syncer's **`Close`** stops accepting work and returns once every transfer in
+flight has ended, which [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) bounds. `Flow.Close` refuses the flow's queued
+transfers with an error and lets its running ones finish. A call after either
+**MUST** fail. Stores are registered for the life of the process; a store removed
+from the configuration is dropped at the next start.
 
 `Store` has no health method, only `Probe`: the syncer probes each store itself
 and refuses work for an unhealthy one, and `Flow.Healthy` reports the result
@@ -258,7 +294,8 @@ nothing to do with the syncer.
 - hold every call until the test releases it;
 - fail or pass the probe.
 
-And it records: calls in flight, per store and per flow, and their peak (S1,
+And it records, with the syncer's own per-flow counters beside it: calls in
+flight, per store and per flow, and their peak (S1,
 S17); the order calls reached it (S13, S18); attempts per block; bytes it holds.
 
 **Memory is checked by holding, then measuring.** With every call held and every
@@ -282,8 +319,10 @@ interaction with the pool size is unstated.
 Two limits that can each be the binding one produce a system whose throughput has
 no single explanation, and the one an operator tunes is whichever is not binding.
 
-The per-flow cap of [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) is not a second limiter in this sense: it is
-a fixed fraction of the pool ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)), so the pool size still determines it.
+The per-flow and per-store caps of [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) are not second limiters in this sense:
+each is a fixed fraction of the pool ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)), so the pool size still determines
+it. Nor is a queue's length, which bounds how many transfers wait, not how many
+run.
 
 ### 2.2 The pool size is a memory bound
 
@@ -340,10 +379,17 @@ request rate — is transient.
 per-transfer timeout is too short for a maximum-size block on a slow link and far
 too long for a connection that has stopped moving. A transfer **MUST** instead
 fail when its throughput stays below a stated floor for a stated interval, the
-rule curl applies as `--speed-limit` / `--speed-time` and the AWS Common Runtime
-S3 client applies by default (at least 1 byte per second over 30 s). Time to
-the first byte is bounded separately, since a request can stall before any byte
-moves.
+rule curl applies as `--speed-limit` / `--speed-time`. The floor is fixed
+([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)) at 64 KiB/s over 30 s: below any working link, and high enough that a
+maximum-size block cannot crawl for more than about five minutes. The AWS Common
+Runtime S3 client's default, 1 byte per second over 30 s, catches a stalled
+connection but not a crawling one. Time to the first byte is bounded separately,
+since a request can stall before any byte moves.
+
+Only the store's side counts. Time a caller spends not reading a fetched stream is
+the caller's, and never trips the floor: a consumer that stops reading is
+[§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch)'s to handle, by detaching it, not a reason to fail the transfer for every
+caller joined to it.
 
 **A slow tail is retried, not waited out.** Following AWS's guidance for S3
 ("aggressive timeouts and retries help drive consistent latency"), a transfer
@@ -378,6 +424,13 @@ This is safe only because a block's name is a function of its content ([RFC 2](r
 [§4.2](rfc-2-carver.md#4.2%20A%20block)), which makes the retry idempotent — the same bytes to the same name,
 indistinguishable from having written them once.
 
+The idempotence covers a retry of the same block: `Upload` retrying, or the engine
+re-offering the same plan. A later pass that groups the chunks differently derives
+a different name, and an object the earlier attempt may have written is then an
+orphan until garbage collection finds it ([RFC 7](rfc-7-gc.md)). The engine keeps the plan of
+any block whose outcome was unknown and offers it again, unchanged, before
+packing anything new ([RFC 6 §5.1](rfc-6-engine.md#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output)), so that is the exception rather than the routine.
+
 ![A put whose response was lost leaves three indistinguishable remote states; a retry under the same content-derived name converges all three to one object](img/rfc3-unknown-outcome.svg)
 
 ![Three orders of naming and recording a block, each crashed at its worst moment: a key recorded before the put leaves a dangling reference, a put before the record leaves an orphan only a listing can find, and a key derived from the content makes the retry write the same object](img/rfc3-key-derivation.svg)
@@ -396,13 +449,16 @@ implementation **MUST NOT** report durability on any of them:
 | enough time has passed | time is not an acknowledgement |
 | a later read succeeded | the read may be served from a cache the write populated |
 
-What acknowledgement means is declared per backend ([RFC 8 §5.6](rfc-8-remote-tier.md#5.6%20What%20acknowledgement%20means%20is%20the%20backend%27s%20to%20declare)):
+**Every store is durable.** A store holds the only copy of data the journal has
+released, so a store that can lose an acknowledged object is not one this design
+admits: there is no non-durable store, and no setting that declares one. What
+counts as the acknowledgement is fixed per backend ([RFC 8 §5.6](rfc-8-remote-tier.md#5.6%20What%20acknowledgement%20means%20is%20the%20backend%27s%20to%20declare)):
 
-| Backend | Durable acknowledgement |
+| Backend | Acknowledgement |
 | --- | --- |
 | AWS S3 | a successful `PutObject` response: S3 answers only once the object is stored redundantly, and a read after it sees the object |
-| S3-compatible services | the same response, **only** where the provider promises the same; each store declares it with its `durable` setting, and one that does not promise it is configured not durable |
-| in-memory store | never: it is a test fixture and loses everything on exit |
+| S3-compatible services | the same response; a service that does not promise redundant storage on it **MUST NOT** be configured as a store |
+| in-memory store | a test fixture, not a store an installation can configure; it acknowledges a put once it holds the bytes, so tests exercise the same path as production |
 
 ### 2.7 It reports; it does not persist
 
@@ -423,6 +479,12 @@ whether the store is **healthy** or **unhealthy**:
 - the syncer **MUST** probe every registered store at a configured interval, and
   **SHOULD** probe at once when a transfer to it fails transiently ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports));
 - a failed probe makes the store unhealthy; a successful one makes it healthy;
+- a store also turns unhealthy when every transfer to it failed transiently over
+  a stated window ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)) although its probe passed — a store that answers the
+  probe but throttles or refuses puts, as S3 does with `503 SlowDown` on a busy
+  prefix or `403` after a bucket-policy change. It turns healthy on the next
+  successful probe, so such a store is retried once per probe interval rather
+  than continuously, and never latched;
 - an unhealthy store **MUST** keep being probed. Once transfers stop, the probe
   is the only thing that can observe recovery, so without it unhealthy would be
   the latch [§5](#5.%20What%20belongs%20elsewhere) forbids.
@@ -499,16 +561,20 @@ Each half runs its own scheduler over its own pool:
   **deficit**, and dispatches from the head of its queue while the head's size
   fits within the deficit, subtracting each one's size. A flow whose queue
   empties has its deficit reset to zero. A transfer is charged its size: an
-  upload's is known, a fetch is charged the block's size from metadata, or the
-  largest block size ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)) when that is unknown. A flow sending large blocks
+  upload the `size` it declares, a fetch the sum of its `want` ranges' lengths,
+  and a whole-block fetch the largest block ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)), since its size is unknown. A flow sending large blocks
   therefore gets no more bandwidth than one sending small ones.
 - **The quantum is at least the largest block**, so every flow with work
   waiting dispatches at least once per round. Each dispatch costs O(1).
+- **Two levels: stores, then flows.** The scheduler first picks a store, by the
+  same round robin over stores with work waiting, then a flow on that store.
+  Without the store level, eight shares on one slow store hold eight flows' caps
+  between them — the whole pool — and the flows on a healthy store starve.
 - **Within a flow, demand goes before speculation** ([§4.4](#4.4%20Speculation%20does%20not%20delay%20demand)). The scheduler
   picks the flow; the flow's queue picks the transfer.
-- **No flow holds more than a configured cap of the pool's workers at once**,
+- **No store, and no flow, holds more than a fixed cap of the pool's workers at once**,
   stated as a fraction of the pool (after APF's borrowing limit). Fair turns only
-  decide who gets the *next* free worker: without the cap, a flow whose store is
+  decide who gets the *next* free worker: without the cap, a flow or a store that is
   slow but healthy can hold every worker for as long as its puts take, and no
   turn comes round. The cap is not a reservation. A flow alone on the system uses
   up to the cap, and no worker sits idle waiting for a flow that has no work.
@@ -558,9 +624,12 @@ setting:
 | Value | Is | Because |
 | --- | --- | --- |
 | DRR quantum | the largest block: block target plus chunk `Max` | [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) needs it to be at least that, and nothing is gained above it |
-| per-flow cap | three quarters of the pool, at least one worker | leaves a quarter for every other flow while letting a flow alone use most of the pool |
+| per-store and per-flow cap | three quarters of the pool, rounded down, at least one worker; with a pool of more than one, at most the pool less one | leaves a quarter for every other flow while letting a flow alone use most of the pool |
 | per-flow queue length | four times the pool | a waiting transfer holds a reference, not bytes ([§3.2](#3.2%20It%20holds%20a%20reference%2C%20not%20a%20copy)), so the length bounds bookkeeping, not memory |
 | probe interval | 5 s, healthy or not | one interval; one failed probe is unhealthy, one success healthy ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) |
+| failure window | 30 s | a store whose every transfer failed for this long, with its probe passing, turns unhealthy ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) |
+| throughput floor | 64 KiB/s over 30 s, and 10 s to the first byte | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) |
+| detach bound | 5 s without taking the next chunk | a joined caller that falls behind is detached ([§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch)) |
 | unhealthy log interval | 60 s | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)'s summary line |
 | retry bound | the syncer's own, stated in code | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports), [§8](#8.%20Open%20questions) question 5 |
 
@@ -589,6 +658,10 @@ transfers, and the backend knows only one ([RFC 8 §2.1](rfc-8-remote-tier.md#2.
 
 It **MUST**:
 
+- **measure gets twice**: whole blocks, and single-chunk ranges at the chunk
+  target, which is what cold random reads issue; small reads are bound by
+  latency, so their knee is higher, and the fetch pool takes the larger
+  recommendation;
 - **measure puts and gets separately**, at doubling concurrency (1, 2, 4, …), and
   take for each the smallest concurrency past which throughput stops rising by a
   stated margin;
@@ -692,6 +765,15 @@ disk and double the transform CPU; the spool is chosen because the link, not
 local disk, is what a block upload waits on. A backend that accepts a put of
 unknown length needs no spool.
 
+The spool is placed and budgeted, never left to find free space. It lives in a
+directory the engine gives the backend at construction, on local storage the
+engine accounts for, and its space — `upload_workers` times the largest block — is
+set aside from the local capacity the engine hands the journals
+([RFC 6](rfc-6-engine.md)), so a spool write is never the one that finds the disk full. The backend
+computes the put's checksum as it writes the spool ([RFC 8 §5.10](rfc-8-remote-tier.md#5.10%20Transfer%20practice%20a%20backend%20owes%20its%20service)). A spool write
+that still fails for lack of space is a **local** error: the backend reports it as
+one, and it does not make the store unhealthy, since the store is not at fault.
+
 ### 3.5 The bytes are stable for the duration
 
 The bytes a put transfers **MUST NOT** change while it runs. [§3.3](#3.3%20The%20journal%20keeps%20referenced%20bytes%20stable) supplies that
@@ -708,25 +790,28 @@ verification of that object fails.
 
 ### 4.1 One fetch, two consumers
 
-A fetch of chunks held only remotely — a range of one block, or all of it — produces verified chunks ([RFC 8 §6.1](rfc-8-remote-tier.md#6.1%20The%20exported%20read%20takes%20the%20expected%20hash)),
-one at a time, for two consumers:
+A fetch of chunks held only remotely — some ranges of one block, or all of it —
+produces verified chunks, one at a time, and yields them to its caller. The caller
+is the engine, which uses them twice: to answer the read that caused the fetch,
+and, where its fill policy says so, to fill the journal so the next read is local
+([RFC 6 §6.2](rfc-6-engine.md#6.2%20The%20reply%20is%20served%20from%20the%20fetched%20bytes), [RFC 0 §2.3](rfc-0-data-lifecycle.md#2.3%20Operations)). The syncer imports no journal and fills nothing ([§1.4](#1.4%20It%20is%20testable%20on%20its%20own)).
 
-- the **journal**, which fills them so the next read is local ([RFC 0 §2.3](rfc-0-data-lifecycle.md#2.3%20Operations));
-- the **engine**, which answers the read that caused the fetch.
-
-Both **MUST** read the same bytes and **MUST NOT** modify them. Each chunk is
-verified before either sees it, which is what makes one buffer safe for two
-readers. A reader waiting on one chunk of the block is answered when that chunk
-arrives, not when the whole block has.
+Both uses **MUST** read the same bytes and **MUST NOT** modify them. Each chunk is
+verified before it is yielded, which is what makes one buffer safe for both. A
+reader waiting on one chunk is answered when that chunk arrives, not when the
+whole range has.
 
 ![A fetch is verifiable exactly when the caller can name a hash for what it returns: a chunk-aligned range is checked against the chunk's hash, an arbitrary byte range has no hash anywhere and would be returned on trust](img/rfc3-partial-retrieval.svg)
 
 ### 4.2 The reply neither waits on the fill nor fails with it
 
-The engine **MUST** be able to answer its read as soon as the bytes are verified,
-and a failed fill **MUST NOT** fail the read.
+Answering the read before, and regardless of, the fill is the engine's obligation
+([RFC 6 §6.2](rfc-6-engine.md#6.2%20The%20reply%20is%20served%20from%20the%20fetched%20bytes)), because the engine does both. What it needs from the syncer is that each
+chunk is yielded as soon as it is verified, and stays valid until the caller's
+next iteration ([§1.3](#1.3%20Interface)). A fill that copies the chunk into journal-owned space in
+that window, and drops its own failure, delays nothing and fails nothing.
 
-A fill that fails means the block is not cached locally. The bytes are correct —
+A fill that fails means the chunk is not cached locally. The bytes are correct —
 they were verified — so withholding them, or failing a client's read because a
 cache write failed, converts a performance problem into an error.
 
@@ -741,9 +826,15 @@ no equivalent rule, because a boxed block is work that exists once.
 
 Joining requires each of the following:
 
-- **The fetch is keyed by block and chunk.** Two readers of one chunk join, wherever
-  in the chunk each read starts; a reader of the whole block joins any fetch of
-  the chunks it covers. The chunk, not the byte offset, is the unit of joining.
+- **The fetch is keyed by store, block and chunk.** Two readers of one chunk join,
+  wherever in the chunk each read starts. A whole-block fetch joins only another
+  whole-block fetch of the same block; a chunk fetch may join a whole-block fetch
+  that has not yet passed that chunk. The chunk, not the byte offset, is the unit
+  of joining, and the store is in the key because one content-derived name can
+  exist on two stores.
+- **A joined fetch belongs to the flow that started it.** A caller that joins takes
+  no worker and no turn of its own; the fetch keeps its starter's place in the
+  scheduler and counts against its starter's caps.
 - **One caller leaving does not cancel it.** A joined fetch runs while any caller
   still waits on it. The first reader's timeout **MUST NOT** fail the others.
 - **A failure reaches every caller and is not kept.** Each joined caller gets the
@@ -752,10 +843,14 @@ Joining requires each of the following:
 - **A demand joining a speculative fetch promotes it.** From then on it is a
   demand and [§4.4](#4.4%20Speculation%20does%20not%20delay%20demand) applies to it as one; a reader **MUST NOT** wait at
   speculative priority because a guess got there first.
-- **A joined stream moves at the pace of its slowest caller.** A chunk is
-  released once every attached caller has moved past it; nothing is buffered
-  for a caller that is behind ([§2.3](#2.3%20Backpressure%20propagates%3B%20it%20does%20not%20buffer)). A caller that stops reading stalls the
-  others until it leaves the loop or its `ctx` ends.
+- **No caller holds the others back for long.** A chunk is released once every
+  attached caller has moved past it, and nothing is buffered for a caller that is
+  behind ([§2.3](#2.3%20Backpressure%20propagates%3B%20it%20does%20not%20buffer)). A caller that has not taken the next chunk within the detach
+  bound ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)) is detached: its stream ends with an error saying so, and it
+  fetches again or reads what a fill left. A speculative caller is detached as
+  soon as it is the only one holding a demanded caller back. A stalled reader
+  therefore costs a worker and a chunk buffer for seconds, not for as long as its
+  client takes.
 - **A late caller gets what is still to come.** It receives the chunks not yet
   delivered when it joined. If the chunk it needs has already gone past, it
   starts a new fetch rather than waiting for one that will never bring it.
@@ -788,14 +883,12 @@ So the syncer's speculation surface is mechanism only: `Prefetch`, and
 cancellation through its context ([§1.3](#1.3%20Interface)). It takes no hint about what to
 fetch next and keeps no access history.
 
-Both are speculative under [§4.4](#4.4%20Speculation%20does%20not%20delay%20demand). Pre-warm carries one further obligation, because
-it is the only speculative work large enough to matter: filling consumes journal
-capacity, and the journal refusing writes is a specified outcome ([RFC 0 §10.1](rfc-0-data-lifecycle.md#10.1%20Capacity%20is%20a%20bound%2C%20not%20a%20target)).
-Pre-warm **MUST NOT** drive the journal into that state, and **MUST** yield
-capacity to writes and to demanded fetches rather than compete with them.
-
-A pre-warm that fills the cache until writes start failing has traded a cold read
-for an outage.
+Both are speculative under [§4.4](#4.4%20Speculation%20does%20not%20delay%20demand). Pre-warm carries one further obligation — it
+must not fill the journal until writes are refused ([RFC 0 §10.1](rfc-0-data-lifecycle.md#10.1%20Capacity%20is%20a%20bound%2C%20not%20a%20target)) — and that
+obligation is the engine's ([RFC 6 §6.4](rfc-6-engine.md#6.4%20Speculation%20is%20planned%20here%2C%20and%20yields%20to%20demand%20and%20to%20writes)), because only the engine sees journal capacity.
+The syncer's part is that a `Prefetch` can be abandoned at any point without
+failing anything. An engine that runs pre-warm on a flow of its own ([§1.3](#1.3%20Interface)) also
+keeps it from holding its share's flow at its cap while that share's reads wait.
 
 ## 5. What belongs elsewhere
 
@@ -836,13 +929,13 @@ while the store is unhealthy is what makes it recover on its own.
 | S8 | Bytes referenced by an in-flight upload do not change or move. |
 | S9 | A partially transferred block is never retrievable and never reported durable. |
 | S10 | Every fetched chunk is verified before any consumer sees it. |
-| S11 | A read is answered independently of whether its fill succeeded. |
+| S11 | A chunk is yielded as soon as it is verified, and stays valid until its caller's next iteration. |
 | S12 | Concurrent demand for one chunk produces one fetch of it. |
 | S13 | A demanded fetch is never delayed by a speculative one. |
 | S14 | A call to an unhealthy store fails without taking a worker or calling the backend. |
 | S15 | An unhealthy store is probed until it is healthy. |
 | S16 | Log volume while a store is unhealthy does not grow with traffic. |
-| S17 | No flow holds more workers of a half than its cap. |
+| S17 | No store and no flow holds more workers of a half than its cap. |
 | S18 | A transfer at the head of its flow's queue is dispatched within one round of the other waiting flows. |
 
 S5, S6, S8, S9 and S10 are the ones whose violation loses data. S1, S2, S3 and S13
@@ -864,11 +957,11 @@ half-complete. A backend that always succeeds asserts nothing about any of them.
 | Requirement | Check |
 | --- | --- |
 | [§2.5](#2.5%20An%20unknown%20outcome%20is%20not%20a%20success) unknown is failure | Drop the response of a put the backend committed; assert failure is reported, then that the retry produces one object, not two. |
-| [§2.6](#2.6%20Durability%20is%20observed%2C%20never%20inferred) no inference | Drive a backend that acknowledges before committing and then loses the write; assert nothing was reported durable. |
+| [§2.6](#2.6%20Durability%20is%20observed%2C%20never%20inferred) no inference | Drive the S3 backend against a service that closes the connection after receiving the whole body and before responding; assert `Upload` returns an error. |
 | [§3.4](#3.4%20One%20put%20per%20block) partial put | Interrupt a transfer; assert the name is not retrievable and was not reported durable. |
-| [§3.3](#3.3%20The%20journal%20keeps%20referenced%20bytes%20stable), [§3.5](#3.5%20The%20bytes%20are%20stable%20for%20the%20duration) stability | Release or overwrite the referenced journal bytes during a transfer; assert the journal refuses, and that no stored object ever disagrees with its name. |
-| [§4.1](#4.1%20One%20fetch%2C%20two%20consumers) verification | Corrupt the fetched bytes; assert no byte reaches either consumer. |
-| [§4.2](#4.2%20The%20reply%20neither%20waits%20on%20the%20fill%20nor%20fails%20with%20it) reply independence | Fail the fill; assert the read is still answered, and answered correctly. |
+| [§3.3](#3.3%20The%20journal%20keeps%20referenced%20bytes%20stable), [§3.5](#3.5%20The%20bytes%20are%20stable%20for%20the%20duration) stability | Give `Upload` a `src` whose bytes change mid-stream; assert the put is refused and nothing is stored under the name. That the journal keeps offered bytes stable is [RFC 1](rfc-1-journal.md)'s check. |
+| [§4.1](#4.1%20One%20fetch%2C%20two%20consumers) verification | Corrupt the fetched bytes; assert no byte of the chunk is yielded. Corrupt one range of a ranged read; assert a range mismatch, not a corrupt-object error. |
+| [§4.2](#4.2%20The%20reply%20neither%20waits%20on%20the%20fill%20nor%20fails%20with%20it) yield before fill | Hold one caller mid-iteration; assert the chunk it holds is unchanged until its next iteration, and that each chunk is yielded before the next is read from the store. |
 
 ### 7.2 Group B — wedging and unbounded resource use
 
@@ -886,8 +979,14 @@ half-complete. A backend that always succeeds asserts nothing about any of them.
 | [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) bounded queue | Fill flow A's queue; assert A's next call is refused while flow B's calls are still accepted. |
 | [§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch) single flight | Demand one cold chunk from N readers at once, at different offsets within it; assert one `Get`. |
 | [§4.4](#4.4%20Speculation%20does%20not%20delay%20demand) priority | Saturate the fetch pool with speculation, then demand a block; assert the demand is not queued behind it. |
-| [§4.5](#4.5%20Speculation%20is%20executed%20here%20and%20decided%20elsewhere) pre-warm yields | Pre-warm a subtree larger than free journal capacity while writing; assert writes are not refused and demanded fetches are not delayed. |
-| [§5](#5.%20What%20belongs%20elsewhere) health recovers | Fail the probe until the store is unhealthy — a failed transfer only triggers a probe — then restore the backend; assert it turns healthy and transfers resume with no external action. |
+| [§4.4](#4.4%20Speculation%20does%20not%20delay%20demand) abandonable | Cancel a `Prefetch` mid-stream while a demand has joined it; assert the demand completes and nothing fails. |
+| [§5](#5.%20What%20belongs%20elsewhere) health recovers | Fail the probe until the store is unhealthy, then restore the backend; assert it turns healthy and transfers resume with no external action. |
+| [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) failure window | Pass the probe while failing every put with `503` for the window; assert the store turns unhealthy, then healthy on the next probe, and that puts are retried once per probe interval, not continuously. |
+| [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) throughput floor | Trickle a put below the floor; assert it fails within the interval. Stall a reader of a fetch instead; assert the transfer does not fail. |
+| [§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch) joining | Leave the loop as the first of three joined callers; assert the others complete. Fail the fetch; assert all callers see the error and the next demand starts a fresh fetch. Join a speculative fetch with a demand; assert it is promoted. Join after the needed chunk has passed; assert a new fetch. Stop reading as one caller; assert it is detached within the bound and the others continue. |
+| [§1.3](#1.3%20Interface) lifecycle | Call on a closed flow and after `Close`; assert both fail. Assert `Close` returns only when transfers have ended, and that `src` is never called after `Upload` returns. |
+| [§1.3](#1.3%20Interface) stream rules | Assert an error is yielded once and ends the stream, and that leaving the loop stops the store's read. |
+| [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) store level | Run eight flows on a slow store and one on a healthy one; assert the healthy store's flow starts within one round and the slow store never holds more than its cap. |
 
 ### 7.3 What must not stand in
 
@@ -897,9 +996,9 @@ half-complete. A backend that always succeeds asserts nothing about any of them.
 - **A backend that returns instantly MUST NOT be used for [§2](#2.%20What%20both%20halves%20obey) or [§4.4](#4.4%20Speculation%20does%20not%20delay%20demand).** With no
   latency the pool is never the binding constraint, so every check in those
   sections passes without exercising what it names.
-- **Transfer counts MUST NOT be the source for a store's health.** Health is the
-  latest probe's result ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)); a check that fails transfers to make a
-  store unhealthy tests a rule this document does not have.
+- **A lifetime count MUST NOT be the source for a store's health.** Health is the
+  latest probe, or a window of failures since it ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)); a since-start rate
+  never lets a recovered store count as healthy.
 
 ### 7.4 Benchmarks
 
@@ -940,7 +1039,8 @@ it stay valid.
    second thing to observe, and a failure mode where the window collapses and is
    indistinguishable from a slow network. Reopen only on a measurement showing a
    fixed pool, sized by the tool, leaves throughput on the table.
-3. **How pre-warm yields** ([§4.5](#4.5%20Speculation%20is%20executed%20here%20and%20decided%20elsewhere)). The obligation is stated; the mechanism is not.
+3. **How pre-warm yields.** Moved to [RFC 6 §6.4](rfc-6-engine.md#6.4%20Speculation%20is%20planned%20here%2C%20and%20yields%20to%20demand%20and%20to%20writes), which now owns the obligation.
+   What follows is kept for that discussion. The obligation is stated; the mechanism is not.
    A capacity reservation, a low-water mark, and cancellation on pressure are all
    plausible and they behave differently when a write burst arrives mid-warm.
 4. **What durable acknowledgement is, per backend.** **Answered** in [§2.6](#2.6%20Durability%20is%20observed%2C%20never%20inferred).
@@ -949,7 +1049,7 @@ it stay valid.
    deviation ([§9](#9.%20Deviations)).
 6. **Deviation pass against this shape.** **Answered:** run against
    `pkg/block/engine` and `pkg/block/remote`; its findings are
-   [§9](#9.%20Deviations) D7 to D19.
+   [§9](#9.%20Deviations) D7 to D20.
 7. **The put's length when the upload streams.** **Answered** in [§3.4](#3.4%20One%20put%20per%20block): the
    backend spools to a local file.
 8. **One syncer per share today.** Moved to [§9](#9.%20Deviations).
@@ -994,8 +1094,9 @@ question to answer.
 | D15 | everything but the two pool sizes is fixed and derived ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)) | further hard-coded values: a prefetch queue of 1,000, a 5 min prefetch timeout, a 60 s demand timeout ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) replaces the last with a throughput floor) | `engine/sync_queue.go:49`–`:51`, `:186`; `engine/types.go:52` |
 | D16 | `Close` returns once every transfer has ended ([§1.3](#1.3%20Interface)) | each wait gives up after 30 s and returns anyway; demand fetches on reader goroutines are not tracked | `engine/sync_lifecycle.go:187`–`:203`; `engine/sync_queue.go:118`–`:123` |
 | D17 | the syncer decides nothing and persists nothing ([§1.1](#1.1%20Non-goals), [§2.7](#2.7%20It%20reports%3B%20it%20does%20not%20persist)) | the upload side decides when to carve and commits block records itself; the component this document describes does not exist as a boundary in code yet | `engine/carve_dispatch.go:37`–`:48`; `engine/flush.go:468` |
-| D18 | durability only on the backend's acknowledgement ([§2.6](#2.6%20Durability%20is%20observed%2C%20never%20inferred)) | a store's `durable` setting can declare the in-memory backend durable, and the commit rule then trusts it; not followed end to end | `runtime/shares/blockstore_config.go:856`–`:860`; `remote/memory/store.go:228` |
+| D18 | every store is durable; none is declared otherwise ([§2.6](#2.6%20Durability%20is%20observed%2C%20never%20inferred)) | a store's `durable` setting can declare a store not durable, the in-memory backend defaults to not durable, and the commit rule branches on it; the setting and the branch are to be removed | `runtime/shares/blockstore_config.go:856`–`:860`; `remote/memory/store.go:228`; `remote/s3/store.go:126`–`:134` |
 | D19 | a put carries an end-to-end checksum ([RFC 8 §5.10](rfc-8-remote-tier.md#5.10%20Transfer%20practice%20a%20backend%20owes%20its%20service)) | the S3 client disables the SDK's default request checksums and response validation | `remote/s3/store.go:185`–`:192` |
+| D20 | fair scheduling across stores and flows ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) | no per-flow or per-store queue, round robin or cap exists; demand fetches run on the reader's goroutine and uploads share a per-share window | `engine/fetch.go`; `engine/upload_window.go` |
 
 Checked and satisfied: no multipart upload anywhere (§3.4); an unknown outcome is
 reported as a failure before any commit (S5); durability is reported only after
