@@ -481,7 +481,7 @@ Caveats:
 - Exclude globs (`--trash-exclude GLOB`, repeatable) cause matching
   deletions to bypass the bin entirely.
 
-See [CLI.md](cli.md#recycle-bin-trash) for the full command reference,
+See [CLI.md](cli.md#dfsctl-trash) for the full command reference,
 [CONFIGURATION.md](configuration.md#recycle-bin-trash) for the
 per-share settings, and [ARCHITECTURE.md](../internals/architecture.md#metadataservice)
 for the recycle-trap design.
@@ -677,7 +677,7 @@ per-value ceiling, or thousands of ordinary ones.
 That is still far more than ext4 (one 4 KiB block for a file's whole set) or NTFS
 (64 KiB - 5) allow. The xattr namespace is shared with SMB extended attributes / named
 streams, so a value set over one protocol is readable over the other. See
-[NFS.md → NFSv4.2 Status](nfs.md#nfsv42-status) for details.
+[NFS.md → Supported Versions](nfs.md#supported-versions) for details.
 
 #### fallocate/posix_fallocate
 

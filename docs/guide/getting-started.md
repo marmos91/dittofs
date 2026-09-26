@@ -16,9 +16,8 @@ SMB.
 Pick one:
 
 ```bash
-# Nix (runs without installing)
-nix run github:marmos91/dittofs -- init
-nix run github:marmos91/dittofs -- start
+# Nix (temporary shell with dfs and dfsctl; no permanent install)
+nix shell github:marmos91/dittofs
 
 # Homebrew (macOS / Linux)
 brew tap marmos91/tap
@@ -40,19 +39,18 @@ go build -o dfs    cmd/dfs/main.go
 go build -o dfsctl cmd/dfsctl/main.go
 ```
 
+If you built from source, use `./dfs` and `./dfsctl` in the commands below.
+
 ## 2. Initialize and start the server
+
+On first start DittoFS creates an `admin` user. **Choose and pre-set the password before
+that first start** with `DITTOFS_ADMIN_INITIAL_PASSWORD`. This is the recommended path
+for every deployment and the only reliable one for Docker/Kubernetes/CI and systemd:
 
 ```bash
 dfs init      # writes ~/.config/dittofs/config.yaml
-dfs start
-```
-
-On first start DittoFS creates an `admin` user. **Pre-set the password** with
-`DITTOFS_ADMIN_INITIAL_PASSWORD` — this is the recommended path for every deployment and
-the only reliable one for Docker/Kubernetes/CI and systemd:
-
-```bash
-# Choose your own password (also skips the forced first-login password change)
+# Replace the example with your own password before running this command.
+# A supplied password also skips the forced first-login password change.
 DITTOFS_ADMIN_INITIAL_PASSWORD=my-secure-password dfs start
 ```
 
@@ -82,16 +80,18 @@ By default the server listens on these ports:
 dfsctl login --server http://localhost:8080 --username admin
 ```
 
-On first login you **must** change the admin password before any other command will
-work — until you do, the rest are rejected with HTTP 403:
+If you used `DITTOFS_ADMIN_INITIAL_PASSWORD` above, log in with that password and
+continue to step 4. If you let DittoFS generate the password instead, you **must**
+change it on first login before any other command will work — until you do, the rest
+are rejected with HTTP 403:
 
 ```bash
 dfsctl user change-password
 ```
 
-(If you set `DITTOFS_ADMIN_INITIAL_PASSWORD` yourself, this forced change is already
-cleared. You can disable it entirely with `controlplane.require_initial_password_change:
-false` — see [Configuration](configuration.md).)
+You can disable the forced change entirely with
+`controlplane.require_initial_password_change: false` — see
+[Configuration](configuration.md).
 
 ## 4. Create a user
 
