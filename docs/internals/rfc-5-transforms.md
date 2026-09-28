@@ -21,7 +21,7 @@ The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT** and **MAY** are
 to be interpreted as in RFC 2119.
 
 This document specifies behaviour, not the current code. Where the code differs,
-[Appendix C](#Appendix%20D%20%E2%80%94%20where%20the%20current%20code%20differs) lists it for the refactor.
+[Appendix D](#Appendix%20D%20%E2%80%94%20where%20the%20current%20code%20differs) lists it for the refactor.
 
 ---
 
@@ -45,7 +45,7 @@ Data leaving the machine may need to be smaller, secret, or both, and what "both
 means differs per deployment. This document specifies the generic mechanism: what
 a transform is, how transforms are stacked and configured, where they run, and
 what any transform must guarantee. Compression ([Appendix A](#Appendix%20A%20%E2%80%94%20compression)) and encryption
-([Appendix B](#Appendix%20B%20%E2%80%94%20encryption)) are the two transforms DittoFS provides, and serve as worked
+([Appendix B](#Appendix%20B%20%E2%80%94%20encryption)) are the two transforms that ship, and serve as worked
 examples.
 
 ### 1.1 Non-goals
@@ -215,15 +215,19 @@ knowing the plaintext already.
   material it needs and cannot get), the store **MUST NOT** open, and **MUST
   NOT** fall back to writing without it. Writing plaintext because encryption
   failed to load is the failure this rule exists for.
-- **`Decode` errors are one of three.** `ErrMalformed` (the body is not something
-  this transform wrote, fails its own integrity check, or names material the
-  store has never had), `ErrMaterialUnavailable` (material the store knows but
-  cannot reach now), and `ErrTooLarge` (the output would exceed `max`). The
-  difference between the first two matters: a material ID planted by a bucket
-  writer must not turn a corrupt body into a remote that looks unavailable
-  forever. The codec reports the first and third as verification failures of the
-  chunk, and the second as the remote being unavailable: retryable, never zeros,
-  never an absent chunk ([RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model)).
+- **`Decode` errors are one of four.**
+
+  | Error | Meaning | Reported by the codec as |
+  | --- | --- | --- |
+  | `ErrMalformed` | the body is not something this transform wrote, fails its own integrity check, or names material the store never had | a verification failure of the chunk |
+  | `ErrTooLarge` | the output would exceed `max` | a verification failure of the chunk |
+  | `ErrMaterialUnavailable` | material the store holds cannot be reached now | the remote being unavailable: retryable, never zeros, never an absent chunk ([RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model)) |
+  | `ErrMaterialDestroyed` | material the store once held is gone for good | the chunk is **Lost** ([RFC 0 §4.2](rfc-0-data-lifecycle.md#4.2%20The%20residency%20function)); not retried |
+
+  The distinctions matter. A material ID planted by a bucket writer must not
+  turn a corrupt body into a remote that looks unavailable forever, and a key
+  that is gone for good must not be retried forever as if it might return. The
+  syncer sees these through its own closed set ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)).
 - **`Encode` errors** fail the put. A declined chunk is not an error.
 
 A transform's own error types **MUST NOT** cross the codec. Callers see only the
@@ -236,8 +240,6 @@ codec's errors, so nothing above it can tell which transforms are configured.
 Signatures are indicative; the obligations of [§2](#2.%20The%20model) are normative.
 
 ```go
-package transform
-
 // ID names a transform in every body it was applied to. Assigned once, never reused.
 type ID uint16
 
@@ -275,7 +277,8 @@ type Materials interface {
 	// Current is the material new bodies of this kind use.
 	Current(ctx context.Context, kind string) (MaterialID, error)
 	// Get returns material by ID: ErrUnknownMaterial for an ID the store never
-	// had, ErrMaterialUnavailable for one it cannot reach now.
+	// had, ErrMaterialUnavailable for one it cannot reach now,
+	// ErrMaterialDestroyed for one it once had and has lost for good.
 	Get(ctx context.Context, id MaterialID) ([]byte, error)
 }
 
@@ -309,6 +312,7 @@ type Config struct {
 var (
 	ErrMalformed           = errors.New("transform: malformed body")
 	ErrMaterialUnavailable = errors.New("transform: material unavailable")
+	ErrMaterialDestroyed   = errors.New("transform: material destroyed")
 	ErrTooLarge            = errors.New("transform: output exceeds its bound")
 )
 ```
@@ -349,10 +353,10 @@ encrypted under one key is readable only by a store that holds it.
 
 ## 4. Writing a custom transform
 
-A transform is a Go package that registers itself at init. It **MUST**:
+A transform is compiled in and registers itself at start. It **MUST**:
 
 1. take an ID from the range reserved for custom transforms (`0x8000`–`0xFFFF`;
-   `0x0000`–`0x7FFF` is DittoFS's) and never reuse it;
+   `0x0000`–`0x7FFF` is reserved for shipped ones) and never reuse it;
 2. declare an honest `MaxEncodedLen`: [§8.1](#8.1%20Transform%20conformance) checks it on every input;
 3. put a format version in its own header if its format can ever change, and
    decode every version it has written;
@@ -363,7 +367,7 @@ A transform is a Go package that registers itself at init. It **MUST**:
 
 Custom transforms are compiled in. Loading them at run time would put foreign
 code in the data path with nothing to check it before it writes; revisit if an
-operator needs one DittoFS does not build.
+operator needs one that is not built in.
 
 ## 5. Changing a chain over time
 
@@ -384,12 +388,24 @@ as long as its chunks live.
 ### 5.3 Retiring material or a transform needs a census
 
 To stop holding material, or to stop compiling a transform in, no stored body may
-still need it. That takes an index of which blocks use which transform, version and material: the
-codec collects the `Encoded` descriptors of every body ([§3.1](#3.1%20Interfaces)) and block metadata
-records them per block when the block is written ([RFC 6](rfc-6-block-metadata.md), [§9](#9.%20Consequences%20for%20other%20RFCs)),
-and GC relocates the blocks it lists. A fully live block is not normally relocated
-([RFC 9 §4.4](rfc-9-gc.md#4.4%20When%20to%20relocate%20is%20policy)), so a retirement forces its relocation; how it is renamed is open
-([§10](#10.%20Open%20questions)).
+still need it. That takes a **census**: which blocks use which transform, version
+and material.
+
+- **It is written with the block.** The codec collects the `Encoded` descriptors
+  of every body ([§3.1](#3.1%20Interfaces)). The engine's `Store` returns the distinct ones with the
+  put, beside the chunk ranges ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)), and the block's commit records
+  them in the block record ([RFC 6 §2.3](rfc-6-block-metadata.md#2.3%20Block)). A block's census never changes, since
+  a block is never re-encoded in place.
+- **Retirement is ordinary relocation.** GC lists the blocks whose census names
+  what is being retired and relocates each ([RFC 9 §4.2](rfc-9-gc.md#4.2%20Read%20verified%2C%20name%20by%20content%2C%20put%2C%20then%20move)): its chunks are
+  re-encoded under the current chain into a block whose encoding generation is
+  one above the source's, so the new block has a new name ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)); the
+  chunks move and the source is swept. A relocation never writes its source's
+  name. Retirement relocates a block even when it is fully live, the one
+  exception to [RFC 9 §4.4](rfc-9-gc.md#4.4%20When%20to%20relocate%20is%20policy).
+- **Removal waits for an empty census.** Once no block names the material or
+  transform, it may be removed. Removed material is destroyed: the provider keeps
+  its ID and reports it `ErrMaterialDestroyed` ([§2.7](#2.7%20Failures)).
 
 ## 6. Observability
 
@@ -401,7 +417,7 @@ without writing any: the chain exports them around each call.
 | chunks encoded, labelled `applied` = `true` or `false` | `dittofs_transform_chunks_total` | counter |
 | bytes in and out, labelled `direction` = `encode` or `decode`; their ratio is what the transform costs or saves | `dittofs_transform_bytes_total` | counter |
 | time per call, by direction | `dittofs_transform_seconds` | histogram |
-| decode failures, labelled `error` = `malformed`, `material_unavailable` or `too_large`. `malformed` is an alert | `dittofs_transform_decode_failures_total` | counter |
+| decode failures, labelled `error` = `malformed`, `material_unavailable`, `material_destroyed` or `too_large`, counted after the stale-position repair of [RFC 4 §3.4](rfc-4-remote-tier.md#3.4%20Every%20read%20is%20verified%20by%20the%20codec): a decode at a stale position that the repair resolves is not a failure. `malformed` and `material_destroyed` are alerts | `dittofs_transform_decode_failures_total` | counter |
 | bodies written per transform ID, version and material ID, from block metadata ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)) | `dittofs_transform_census_blocks` | gauge |
 
 A chain that fails to build logs the transform and the reason at `Error` and
@@ -418,11 +434,11 @@ that never moves.
 | --- | --- |
 | T1 | A transform never changes a chunk's hash or a block's name, and never sees more than one chunk. |
 | T2 | `Decode(Encode(p)) == p` for every input. |
-| T3 | Every body lists the transforms applied to it; reading needs the registry and keys, never the configuration. |
+| T3 | Every body lists the transforms applied to it; reading needs the registry and material, never the configured chain. The one exception is `require` ([§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material)), which can only refuse a body, never change how one decodes. |
 | T4 | No body exceeds its transform's `MaxEncodedLen`, and no step of `Decode` produces or allocates more than the bound the chain gives it. |
 | T5 | A store whose chain cannot be built does not open, and never writes without its chain. |
 | T6 | The plaintext hash is checked after the whole chain is undone, before any byte is returned. |
-| T7 | A key failure is never zeros and never an absent chunk. |
+| T7 | A material failure is never zeros and never an absent chunk: unavailable material is the remote being unavailable, destroyed material makes the chunk Lost. |
 | T8 | No transform error type crosses the codec. |
 
 ## 8. Test plan and benchmarks
@@ -444,7 +460,7 @@ alike. A new transform gets it by registering.
 | [§2.1](#2.1%20A%20transform%20acts%20on%20one%20chunk) | For every round-trip input, the body is no longer than `MaxEncodedLen(len(input))`, and an input built to hit the worst case reaches it. |
 | concurrency | Encode and decode from 64 goroutines under the race detector: same results as sequential. |
 | [§2.7](#2.7%20Failures) | Flip every byte of a body in turn: `Decode` returns an error of [§2.7](#2.7%20Failures) or bytes the codec's hash check rejects, and never panics. A transform that authenticates (encryption) **MUST** return `ErrMalformed` itself for every flip. |
-| [§2.7](#2.7%20Failures) | For an authenticating transform: decode chunk A's body with chunk B's hash, and a body naming material the store never had: both `ErrMalformed`. |
+| [§2.7](#2.7%20Failures) | For an authenticating transform: decode chunk A's body with chunk B's hash, and a body naming material the store never had: both `ErrMalformed`. A body naming destroyed material: `ErrMaterialDestroyed`. |
 | [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | Encode the same chunk twice: two different salts and bodies, both decode. |
 | [§3.1](#3.1%20Interfaces) | A transform that enlarges its input (a test transform adding 50%) before another: a chunk of exactly the maximum round-trips. |
 
@@ -458,16 +474,16 @@ alike. A new transform gets it by registering.
 | T3 | Remove the encryption transform from the chain, keeping the store's material: every encrypted body still decodes. |
 | [§2.4](#2.4%20Every%20body%20records%20what%20was%20applied) | Envelopes listing an unregistered ID, a duplicate ID, or more IDs than are registered: `ErrMalformed` before any decode runs. |
 | [§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material) | With `require: [aes-gcm]`, a body without it is `ErrMalformed`; without `require`, it decodes. |
-| [§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census) | Write blocks under two keys and two chains: the census lists exactly the transform IDs, versions and material IDs used. |
+| [§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census) | Write blocks under two keys and two chains: the census each put returns, and the block records it reaches, list exactly the transform IDs, versions and material IDs used. Retire one key: every block naming it is relocated to a new name, fully live ones included, and the census then shows none. |
 | T5 | Make a transform's factory fail: the store does not open, and no body is written. |
 | T6 | A fake transform that decodes to wrong bytes: every read through the codec fails. |
-| T7 | A decode that returns `ErrMaterialUnavailable` reaches the engine as the remote being unavailable, is retried, and never yields zeros or an absent chunk. |
+| T7 | A decode that returns `ErrMaterialUnavailable` reaches the engine as the remote being unavailable, is retried, and never yields zeros or an absent chunk. One that returns `ErrMaterialDestroyed` is not retried and reports the chunk Lost. |
 | T8 | Force each decode error: the codec returns only its own errors. |
 | [§5.2](#5.2%20Relocation%20re-encodes) | Relocate a block written under an old chain: every body in the new block carries the current envelope. |
 
 ### 8.3 Benchmarks and targets
 
-Run on the reference box of [RFC 1 §12](rfc-1-journal.md#12.%20Test%20plan%20and%20performance%20targets) on every merge to develop, over three
+Run on the reference box of [RFC 1 §12](rfc-1-journal.md#12.%20Test%20plan%20and%20performance%20targets) on every merge, over three
 corpora: random bytes, a text and source tree, and a mixed VM image. Record the
 corpus, chunk size distribution and CPU with each result.
 
@@ -480,28 +496,24 @@ corpus, chunk size distribution and CPU with each result.
 | Compression ratio per corpus | bytes out / in | report; tracked against the previous run |
 | A put and a whole-block get with the default chain | MB/s | within 10% of the same without a chain, on the reference link, or the chain is what the link waits on and pool sizing must say so ([RFC 3 §2.11](rfc-3-syncer.md#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) |
 
-A regression of more than 10% is reported on develop and does not block a merge.
+A regression of more than 10% is reported after merge and does not block one.
 
 ## 9. Consequences for other RFCs
 
 | RFC | Change |
 | --- | --- |
-| [RFC 0 §1.1](rfc-0-data-lifecycle.md#1.1%20The%20component%20set) | Add a row for transforms: the chain and the registry. Unlike the remote store, a chain holds state that outlives a call (keys), so it is a component. |
-| [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model) | Add a row: a key provider unavailable, or a known key missing, handled as the remote being unavailable ([§2.7](#2.7%20Failures)). |
-| [RFC 0 §4.2](rfc-0-data-lifecycle.md#4.2%20The%20residency%20function) | Add a case: a chunk whose block is durable but whose key is lost for good is **Lost**. Today the function would call it Remote. |
+| [RFC 0 §1.1](rfc-0-data-lifecycle.md#1.1%20The%20component%20set) | Add a row for transforms: the chain and the registry. Unlike the remote store, a chain holds state that outlives a call (material), so it is a component. |
+| [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model) | Add a row: material unavailable is handled as the remote being unavailable ([§2.7](#2.7%20Failures)). |
+| [RFC 0 §4.2](rfc-0-data-lifecycle.md#4.2%20The%20residency%20function) | Add a case: a chunk whose block is durable but whose material is destroyed is **Lost**. |
+| [RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface) | `Put` returns the block's census beside its ranges; material errors map onto the syncer's closed set. |
 | [RFC 4 §3.3](rfc-4-remote-tier.md#3.3%20Transforms) | Points here for the chain; the envelope of [§2.4](#2.4%20Every%20body%20records%20what%20was%20applied) is how the chain "travels with the block". |
-| [RFC 6](rfc-6-block-metadata.md) | A block record lists the transform IDs, versions and material IDs its bodies use ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)). |
-| [RFC 9 §4.2](rfc-9-gc.md#4.2%20Read%20verified%2C%20name%20by%20content%2C%20put%2C%20then%20move), [§4.4](rfc-9-gc.md#4.4%20When%20to%20relocate%20is%20policy) | Relocation re-encodes under the current chain; a retirement is a second reason to relocate a block, even a fully live one. A re-run after a crash puts the same name and chunks, but different bytes (a new salt, perhaps a new key); [RFC 4 §3.4](rfc-4-remote-tier.md#3.4%20Every%20read%20is%20verified%20by%20the%20codec) repairs the offsets. |
+| [RFC 6 §2.3](rfc-6-block-metadata.md#2.3%20Block) | A block record lists the transform IDs, versions and material IDs its bodies use, from the census the put returned ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)). |
+| [RFC 9 §4.2](rfc-9-gc.md#4.2%20Read%20verified%2C%20name%20by%20content%2C%20put%2C%20then%20move), [§4.4](rfc-9-gc.md#4.4%20When%20to%20relocate%20is%20policy) | Relocation re-encodes under the current chain into the next encoding generation; retirement is a second reason to relocate a block, even a fully live one. |
 
 ## 10. Open questions
 
-1. **Renaming a re-encoded, fully live block** ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)). Re-encoded under its old
-   name, it overwrites the old block with a new layout, which [RFC 4 §3.4](rfc-4-remote-tier.md#3.4%20Every%20read%20is%20verified%20by%20the%20codec)
-   repairs, but a read racing the overwrite of a key being retired could need that
-   key. Settle with [RFC 9 §4.4](rfc-9-gc.md#4.4%20When%20to%20relocate%20is%20policy): overwrite in place only after the census shows no
-   reader can hold the old key's bodies, or put a key epoch in the block name.
-2. **Hiding chunk hashes from the service** ([Appendix B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns)). A product decision.
-3. **External key services that never release a key.** The key provider of
+1. **Hiding chunk hashes from the service** ([Appendix B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns)). A product decision.
+2. **External key services that never release a key.** The key provider of
    [Appendix B.2](#B.2%20Keys) holds master keys in memory. A service that only unwraps remotely
    would cost a round trip per chunk; measure before supporting one.
 
@@ -574,8 +586,9 @@ the worst case with a 255-byte key ID: 1 + 1 + 255 + 32 + 16.
 
 Keys are material of kind `key` ([§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material)): encryption asks the store's `Materials`
 for the current key when it encodes and for the key a body names when it decodes.
-The provider keeps a list of every key ID it has ever issued, even after a key is
-gone, so it can tell a key it never had from one it cannot reach. Two providers
+The provider keeps a list of every key ID it has ever issued, marking a key
+destroyed once it is retired ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)) or declared lost by the operator, so it can
+tell a key it never had, one it cannot reach now, and one that is gone for good. Two providers
 ship: a key file, and a KMIP server whose keys are fetched at start and held in
 memory. Encryption **MUST** fail its construction if it cannot get the current
 key ([§2.7](#2.7%20Failures)).
@@ -590,14 +603,14 @@ stop holding an old key, relocate the blocks that use it ([§5.3](#5.3%20Retirin
 
 Every chunk encrypted under a master key is unreadable without it. There is no
 recovery path, by design: a recovery path is a second key. Backing up master keys
-is the operator's job; DittoFS can only make the dependency visible.
+is the operator's job; the system can only make the dependency visible.
 
 | What happens | Result |
 | --- | --- |
 | The provider is unreachable at start | the store does not open ([§2.7](#2.7%20Failures)) |
 | The provider becomes unreachable, or a key is missing, when reading | the read fails as the remote being unavailable, and recovers when the key returns. Never zeros |
 | A tag fails | a verification failure of the chunk |
-| A master key is lost for good | every chunk it covered is **Lost** ([RFC 0 §4.2](rfc-0-data-lifecycle.md#4.2%20The%20residency%20function)) |
+| A master key is lost for good, and the provider records it destroyed ([Appendix B.2](#B.2%20Keys)) | `ErrMaterialDestroyed`: every chunk it covered is **Lost** ([RFC 0 §4.2](rfc-0-data-lifecycle.md#4.2%20The%20residency%20function)) |
 
 Each of these is a health condition of the store, not only a log line.
 
@@ -610,12 +623,12 @@ not the key. It does not hide everything.
 | --- | --- | --- |
 | Someone who can read the bucket (a leaked credential, the provider's staff) | read every stored byte | the content of every chunk whose content they cannot already guess |
 | Someone who can also write the bucket | alter, delete or replace blocks | nothing is silently corrupted: any change fails the tag or the plaintext hash. Deletion is still loss |
-| Someone on the DittoFS host | read memory and keys | nothing; they hold the keys |
+| Someone on the host running the system | read memory and keys | nothing; they hold the keys |
 
 What a bucket reader can still see, encryption on or off:
 
 - **the chunk hashes in each block's header** ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)). Anyone holding a
-  file can chunk it the way DittoFS does ([RFC 2 §6](rfc-2-carver.md#6.%20Boundaries%20are%20public)), hash the chunks and
+  file can chunk it the same way ([RFC 2 §6](rfc-2-carver.md#6.%20Boundaries%20are%20public)), hash the chunks and
   look for them: a match proves the file is stored. The same works for a chunk
   with few possible contents, such as a form with one field;
 - **sizes**: of blocks, of chunks, and with compression, how compressible each
@@ -626,14 +639,14 @@ What a bucket reader can still see, encryption on or off:
 **Proposal, for decision:** a store created with hash hiding writes each index
 hash as `HMAC-SHA256(store secret, hash)` instead of the hash, and includes the
 same secret in every block name ([RFC 2 §4.3](rfc-2-carver.md#4.3%20Key%20scope)). Repair and verification still
-work, since DittoFS holds the secret and can compute both; a bucket reader holding
+work, since the system holds the secret and can compute both; a bucket reader holding
 a file can no longer look it up. It is a property of the store, chosen when the
 store is created and never changed, independent of whether the chain encrypts:
 tying it to the chain would change every name when encryption is toggled. The
 secret comes from the key provider and never rotates, since it is part of every
 name; a leaked secret is permanent, and the only remedy is renaming every block
 into a new store. Sizes, repetition and timing
-remain visible either way ([§10](#10.%20Open%20questions), question 2).
+remain visible either way ([§10](#10.%20Open%20questions), question 1).
 
 ### B.6 What it adds to observability
 
@@ -692,5 +705,7 @@ Descriptive, for the refactor.
 | D7 | No transform error crosses the codec (T8) | encryption and compression errors reach callers as their own types |
 | D8 | The hash is checked once, in the codec (T6) | each consumer re-hashes; relocation does not |
 | D9 | A chain that cannot be built stops the store (T5) | the offload finds its encryptor by type assertion, and a missing one writes unencrypted bodies |
-| D11 | A key failure is the remote being unavailable, and recovers ([Appendix B.4](#B.4%20Losing%20a%20key%20loses%20the%20data)) | a provider failure at start fails the share's whole block store, journal included, until it is re-attached; a retired key that fails to load is logged and skipped, with no health condition |
-| D10 | Chunk hashes can be hidden ([Appendix B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns)) | record headers carry plaintext hashes on every store |
+| D10 | Chunk hashes can be hidden ([Appendix B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns)) | block headers carry plaintext hashes on every store |
+| D11 | A key failure is the remote being unavailable, and recovers ([Appendix B.4](#B.4%20Losing%20a%20key%20loses%20the%20data)) | a provider failure at start fails the share's whole block store, journal included; a retired key that fails to load is logged and skipped, with no health condition |
+| D12 | Material lost for good is told apart and makes a chunk Lost ([§2.7](#2.7%20Failures)) | no such outcome exists |
+| D13 | Retirement relocates through a census ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)) | no census is recorded |
