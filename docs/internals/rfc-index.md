@@ -17,14 +17,16 @@ order: each part builds on the ones before it.
 | --- | --- | --- |
 | **Foundations** | | |
 | [RFC 0](rfc-0-data-lifecycle.md) | data lifecycle | terms, data model, residency, invariants, failure model |
-| **Storage**, in write-path order | | |
+| **Content**, in write-path order | | |
 | [RFC 1](rfc-1-journal.md) | journal | local bytes: on-disk format, placement, crash safety, capacity |
 | [RFC 2](rfc-2-carver.md) | carver | bytes → chunks → blocks: boundaries, identity, packing |
 | [RFC 3](rfc-3-syncer.md) | syncer | transferring blocks to and from the remote tier |
 | [RFC 4](rfc-4-remote-tier.md) | remote tier | object format and backend contract |
 | [RFC 5](rfc-5-transforms.md) | transforms | compression, encryption, threat model |
+| **Metadata** | | |
 | [RFC 6](rfc-6-block-metadata.md) | block metadata | shape, holes, refs, chunks, blocks, refcounts |
 | [RFC 7](rfc-7-namespace-metadata.md) | namespace metadata | files, directories, handles, permissions, locks |
+| **Composition** | | |
 | [RFC 8](rfc-8-engine.md) | engine | composition, policy, the facade adapters call |
 | [RFC 9](rfc-9-gc.md) | GC | sweep, relocation, remote deletion |
 | **Cluster** | | |
