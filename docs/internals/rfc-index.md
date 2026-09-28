@@ -63,6 +63,22 @@ graph LR
   R9[9 GC] --> R2 & R6 & R4
 ```
 
+## Test tiers
+
+Every RFC's test plan runs in three tiers, so a change is checked fast and the
+heavy work still runs every day.
+
+| Tier | Runs | Contains |
+| --- | --- | --- |
+| **Per change** | on every proposed change | unit, conformance, property and fuzz seeds, model-based tests at a fixed budget, and each RFC's counted checks; minutes, no timing, no external service |
+| **After merge** | after each merge to the integration branch | benchmarks on the reference box, recorded; a result more than 10% worse than the last is reported, not blocking |
+| **Daily** | once a day on the integration branch | benchmarks that need space or hours, soaks, longer fuzz and model runs, and tests against real backends |
+
+No timed check runs per change: a shared runner's device changes between runs,
+so a timing gate either fails on noise or is set so wide it misses the
+regressions that matter. Each RFC states the regressions it catches by counting
+instead.
+
 ## Reading them in Obsidian
 
 - Every `RFC N §x.y` is a link to that section. Hover for a preview; the backlinks pane shows

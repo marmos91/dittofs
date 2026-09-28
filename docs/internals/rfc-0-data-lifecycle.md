@@ -11,11 +11,7 @@ tags:
 # RFC 0 — the data lifecycle
 
 **Status:** draft.
-**Audience:** anyone implementing or reviewing a component in `pkg/block/` or
-`pkg/metadata/`.
-**Rationale and history:** `.planning/2026-09-23-residency-decision-record.md`.
-This document states what the system *is*; that one states why. Where a rule
-here looks arbitrary, the reason is there.
+**Audience:** anyone implementing or reviewing a storage component.
 
 This is the root of the RFC set. It defines the terms, the data model, the
 residency function, the operations and the invariants that no single component
@@ -42,16 +38,10 @@ beyond its relationship to content.
 
 ### 1.1 The component set
 
-| RFC | Component | Owns | Does not own |
-| --- | --- | --- | --- |
-| **0** | — | terms, data model, residency, lifecycle, invariants, failure model | component internals |
-| **1** | journal | local bytes: on-disk format, placement, crash safety, capacity | what data exists; remote durability |
-| **2** | carver | bytes → chunks: boundaries, identity; the packing rules blocks obey | I/O, files, when to carve; building blocks, which is the engine's |
-| **3** | syncer | moving chunks to and from the remote tier: out as whole blocks, back as block ranges or whole blocks | what to transfer, or why |
-| **4** | block metadata | chunks, refs, blocks, refcounts, durability | byte placement, transport, namespace |
-| **5** | namespace metadata | files, directories, handles, permissions, locks | content bytes |
-| **6** | engine | composition, policy, the facade adapters call | every format and algorithm above |
-| **7** | GC | mark/sweep and remote deletion | local space ([§8.1](#8.1%20Evict), [§8.2](#8.2%20Reclaim)) |
+The components, what each owns, and the order to read them in are listed in
+[the RFC index](rfc-index.md). This document owns the terms, the data model,
+residency, the lifecycle, the cross-component invariants and the failure model;
+it owns no component's internals.
 
 ### 1.2 Component autonomy
 
@@ -97,6 +87,12 @@ padded to a chunk size.**
 
 **ChunkRef** — one file's use of one chunk at one offset. A file's content is
 fully described by its ordered list of chunk refs. Many refs MAY name one chunk.
+
+**Version** — the content version of a file's bytes: a number that orders every
+write and removal of one file, assigned when the operation is staged
+([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions)). Where two operations cover the same byte, the higher version
+wins, whatever order they arrived in. A chunk ref records the versions of the
+content it was committed from ([RFC 6 §4.4](rfc-6-block-metadata.md#4.4%20Commits%20for%20one%20file%20apply%20in%20order)).
 
 **Block** — the unit of remote storage: a whole number of chunks in one object,
 addressed by one remote key and written by one put. A get retrieves chunks of a
@@ -279,6 +275,11 @@ An extent's residency is not stored. It is computed from the two answers:
 
 ![The two oracles and the five states their answers imply, with journal silence shown as the ambiguity a single source cannot resolve](img/rfc0-residency-join.svg)
 
+A block counts as durable only while it can be decoded. A block whose material
+is lost for good ([RFC 5 §2.7](rfc-5-transforms.md#2.7%20Failures)) is not durable, so an extent it covers that the
+journal no longer holds is **Lost**. Material that is only unavailable is a
+failure of the remote tier, not of residency ([§10](#10.%20Failure%20model)).
+
 An implementation **MUST NOT** persist the resolved residency of an extent, and
 **MUST NOT** maintain a cache of it that can outlive either input.
 
@@ -299,6 +300,11 @@ corresponding block is durable remotely. An implementation **MUST NOT** infer
 remote durability from the completion of a transfer, the absence of an error, or
 elapsed time. Durability is reported by the component that observed it, to the
 component that records it.
+
+The journal's offloaded bit is set in exactly two ways: by a durability report,
+from an offload ([§5.2](#5.2%20Offload)) or from reseeding after a restart, and by fill
+([§6.2](#6.2%20Fill)), whose bytes came from the remote tier and are therefore durable there
+by construction ([RFC 1 §3.4](rfc-1-journal.md#3.4%20Fill)).
 
 ## 5. The write path
 
@@ -340,10 +346,14 @@ exactly those, and **MUST NOT** mark an extent for which no report was received.
 > live in a linear `write → carve → put` pipeline. The return edge is the only
 > path by which an extent becomes **Resident**.
 
-An offload that fails leaves every affected extent **Dirty**. Failure **MUST** be
-retryable without duplicating stored content: re-offering the same extent and
-re-deriving the same chunks **MUST** converge on the same chunk identities,
-which follows from chunking being deterministic ([RFC 2](rfc-2-carver.md)).
+An offload that fails leaves every affected extent **Dirty**, and **MUST** be
+retryable without loss. Chunking is deterministic ([RFC 2](rfc-2-carver.md)), so a retry that
+offers the same stretch of bytes converges on the same chunk identities. A retry
+whose stretch starts elsewhere — an offer cut at a limit, or a partial report that
+moved the start of what remains dirty — cuts its first chunks differently until
+its boundaries rejoin the earlier ones. Those few chunks are stored again under
+new hashes and the earlier ones are left to sweep: a cost in space and transfer,
+never in correctness.
 
 ## 6. The read path
 
@@ -408,11 +418,11 @@ definition of the operation, not a check applied to it.
 
 Eviction **MUST NOT** modify the remote tier.
 
-The order is: record that the content is no longer local, then release the
-bytes. A crash between the two leaves content that metadata believes is remote
-and the journal still holds, which is **Resident** — correct, if wasteful. The
-reverse order leaves content believed local that is gone, which is **Lost**
-misreported as **Resident**, and reads it as zeros.
+Eviction writes nothing to metadata ([RFC 8 §7.1](rfc-8-engine.md#7.1%20Eviction%20is%20chosen%20here%2C%20and%20needs%20no%20new%20record)): residency is computed, so
+once the journal stops holding durable content, it resolves as **Remote**. Its
+one ordering rule is that local bytes **MUST** be released only after the offload
+commit that made them durable is itself durable. A release that precedes it can
+leave, after a crash, content whose only copy is gone: **Lost**.
 
 ### 8.2 Reclaim
 
@@ -420,7 +430,7 @@ Reclaim recovers local space without changing what content exists. A reclaim pas
 **MUST** be content-preserving — it changes where bytes are, never whether they
 are.
 
-Reclaim is the umbrella; the mechanisms under it are **repack** (relocating live
+Reclaim is the umbrella; the mechanisms under it are **repack** (copying live
 records out of a sparse segment and unlinking it), retiring a segment that holds
 nothing, and removing an unattachable file. [RFC 1 §8.2](rfc-1-journal.md#8.2%20Repack) specifies them.
 
@@ -460,8 +470,8 @@ These hold across components. No component can enforce any of them alone.
 | **I4** | Fill never overwrites content the journal holds. |
 | **I5** | Remote durability is reported, never inferred. |
 | **I6** | No component imports another component in this set. |
-| **I7** | Every stored record has a named reclamation path, and that path holds at the record's maximum size. |
-| **I8** | A serialization conflict is retried, never surfaced to the caller as an I/O error. The retry is bounded by the caller's deadline, and the backoff between attempts is randomised. |
+| **I7** | Every stored record has a named reclamation path that holds at the record's maximum size. |
+| **I8** | A serialization conflict is retried within the caller's deadline, never surfaced as an I/O error. |
 
 An implementation is conformant when all eight hold under concurrent operation,
 across crash and restart, and in every condition in [§10](#10.%20Failure%20model).
@@ -472,90 +482,46 @@ value is discarded downstream.
 
 ### 9.1 Records and their reclamation
 
-I7 constrains the records themselves rather than the content they describe, and
-it binds every component that persists anything. It is an invariant and not a
-cost because components sharing a storage engine share its thresholds and its
-triggers: one component's unbounded record fills the store another component's
-records live in.
+I7 binds every component that persists anything, because components sharing a
+storage engine share its thresholds and triggers: one component's unbounded
+record fills the store another component's records live in. An implementation
+**MUST** be able to name what reclaims a stored record's superseded copies, and
+the answer **MUST** hold at the record's maximum size, computed from its
+worst-case encoding. A record that could cross the engine's threshold for moving
+values into a separately reclaimed store **MUST** be bounded below it. Each
+metadata RFC applies this to its own records ([RFC 6](rfc-6-block-metadata.md), [RFC 7](rfc-7-namespace-metadata.md)).
 
-**An implementation MUST be able to name what reclaims a stored record's
-superseded copies, and that answer MUST hold at the record's maximum size rather
-than its typical one.** A record that grows with use therefore **MUST** either be
-bounded, or carry a statement of what produces the trigger that reclaims it. An
-implementation that can state neither has an unbounded store and no way to see
-it.
-
-Where an engine relocates values past a threshold into a store reclaimed by a
-different trigger, a record that can cross that threshold **MUST** be bounded
-below it — by segmenting it, by spilling it into sibling records, or by not
-letting it grow. Relying on the relocated store's own reclamation pass is
-conformant only where the workload that writes the record is shown to produce
-that pass's trigger.
-
-**A bound MUST be computed from the record's worst-case encoding**, not from a
-fixture's. A sample whose values encode shorter than the worst case reports a
-margin the implementation does not have.
-
-> [!note]
-> This failure is invisible rather than merely expensive. Where the
-> relocated store's reclamation is driven by pressure on the store the record
-> left, each commit leaves a whole superseded copy behind while adding almost
-> nothing to the pressure that would reclaim it. Growth is unbounded and no
-> counter reports it, because by the engine's own accounting nothing is wrong.
-
-Conformance is checked per record type, at the record's maximum size: assert no
-single stored value reaches the engine's relocation threshold, then rewrite the
-record repeatedly and assert the relocated store does not grow. A correctness
-assertion **MUST NOT** stand in — an implementation that is leaking returns
-exactly the right data.
-
-[RFC 1 §5.2](rfc-1-journal.md#5.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes) bounds the placement index by the same reasoning and requires its
-pressure be observable, but it is not an instance of I7: that index is held in
-memory and never stored, so nothing reclaims it and the failure is exhaustion
-rather than invisible growth.
+The placement index of [RFC 1 §5.2](rfc-1-journal.md#5.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes) is held in memory and never stored, so I7
+does not reach it; that RFC bounds it for a different reason.
 
 ### 9.2 Conflicts and their retries
 
-I8 constrains what a caller is allowed to observe when two operations serialize
-against each other. It binds every component whose store detects write-write
-conflicts optimistically, which is every backend in this set: a conflict is how
-such a store reports that it did its job, not that it failed.
+I8 binds every component whose store detects write-write conflicts
+optimistically. A conflict is the store doing its job, so it **MUST** be retried
+and **MUST NOT** reach the caller as an I/O error. The retry **MUST** be bounded
+by the caller's deadline, not by a fixed attempt count, and the backoff between
+attempts **MUST** be randomised: a backoff computed from the attempt number alone
+makes every loser of one conflict collide again on the next attempt.
 
-**A serialization conflict MUST be retried, and MUST NOT reach the caller as an
-I/O error.** The conflict itself is expected and correct — the store observed two
-writers touching one key and aborted the loser so the winner's commit stays
-serializable. Turning that into a protocol-layer error tells a client its write
-failed when nothing is wrong with its write, with the store, or with the data.
+Conformance drives concurrent writers at one deliberately shared key and asserts
+two things together: conflicts **occur**, and **none** reaches the caller.
 
-**The retry MUST be bounded by the caller's deadline rather than by a fixed
-attempt count.** A fixed budget encodes a guess about how much contention is
-possible, and a key hot enough to exceed it exists in every deployment large
-enough to matter. When the budget is the bound, the error a client sees is a
-statement about the constant, not about the system.
+### 9.3 Where each invariant is tested and observed
 
-**Backoff between attempts MUST be randomised.** Backoff computed as a function
-of the attempt number alone is not backoff: every loser of the same conflict
-waits the same interval and collides again on the next attempt, so a budget is
-consumed by a herd that re-forms each round rather than by genuine contention.
-An implementation whose "jitter" term is derived from the attempt counter has
-this defect regardless of how generous the budget is.
+An invariant spans components, so its test lives with the component that
+consumes the data ([§9](#9.%20Invariants)), and its signal with the component that can see
+it break.
 
-> [!note]
-> A retried closure re-runs against state that has changed since it was
-> first called. Whether it may close over values read before the transaction
-> opened, or must re-read the rows it modifies, is **not settled here** — an
-> implementation that closes over pre-read state can re-propose a decision the
-> conflict was raised to prevent, which delays a lost update rather than
-> preventing it. Recorded so the question is inherited rather than rediscovered.
-
-Conformance is checked by driving concurrent writers at one deliberately shared
-key and asserting two things together: that conflicts **occur**, and that
-**none** reaches the caller. Asserting that no conflicts occur tests the wrong
-property — a workload that never conflicts exercises nothing, and a store that
-reports none is more likely miscounting than serializing. A correctness
-assertion **MUST NOT** stand in: every surviving writer's data is intact in the
-run that surfaces the error, because the error is raised instead of a write, not
-alongside a wrong one.
+| # | Test owned by | Signal owned by |
+| --- | --- | --- |
+| **I1** | [RFC 8](rfc-8-engine.md): reads of **Lost** and **Remote** extents | RFC 8: reads failed as **Lost**, reads failed because the remote tier is unavailable |
+| **I2** | [RFC 1](rfc-1-journal.md): `Release` refuses unmarked extents; RFC 8: eviction choice | RFC 1: dirty bytes against held bytes |
+| **I3** | [RFC 9](rfc-9-gc.md): sweep against concurrent reference | RFC 9: blocks swept, deletions refused; [RFC 6](rfc-6-block-metadata.md): count audit mismatches |
+| **I4** | RFC 1: `Fill` against a concurrent write | RFC 1: fills refused as older than the file |
+| **I5** | RFC 1: marking follows reports only; RFC 8: reports follow durable commits | RFC 1: bytes offered against bytes marked durable |
+| **I6** | every RFC: its own import test | the build |
+| **I7** | RFC 6, RFC 7, RFC 9: each stored record at its maximum size | the owning RFC: store size under rewrite |
+| **I8** | RFC 6, RFC 7: concurrent writers on one key | the owning RFC: conflicts retried, and conflicts surfaced (which must stay zero) |
 
 ## 10. Failure model
 
@@ -564,11 +530,12 @@ Every condition below has exactly one specified behaviour.
 | Condition | Behaviour |
 | --- | --- |
 | **Remote tier unavailable** | Writes continue into the journal while capacity allows. No extent becomes **Resident**, so no extent becomes evictable. Reads of **Remote** extents fail; they **MUST NOT** return zeros. |
-| **Journal at capacity, remote available** | Evict ([§8.1](#8.1%20Evict)); if nothing is evictable, reclaim ([§8.2](#8.2%20Reclaim)); then accept the write. |
+| **Journal at capacity, remote available** | Evict ([§8.1](#8.1%20Evict)); if nothing is evictable, reclaim ([§8.2](#8.2%20Reclaim)); if everything is **Dirty**, offload it and then evict it. The write is accepted once space is free, or refused at its deadline. |
 | **Journal at capacity, remote unavailable** | Refuse the write. Every local extent is **Dirty**, and I2 forbids evicting it, so refusal is the only behaviour that does not lose data. |
-| **Metadata unwritable** | Offload fails; extents stay **Dirty**; [§10.1](#10.1%20Capacity%20is%20a%20bound%2C%20not%20a%20target) applies. |
+| **Metadata unwritable** | A write fails at its namespace update ([§5.1](#5.1%20Write)) and is not acknowledged. Offload fails, so extents stay **Dirty** and the journal fills until [§10.1](#10.1%20Capacity%20is%20a%20bound%2C%20not%20a%20target) refuses writes. Reads continue while metadata is readable. |
 | **Crash** | On restart the journal rebuilds its placement index from its segments; a torn tail is truncated to the last record that verifies. Metadata recovers by its backend's own durability. The two recover independently and **MAY** disagree; [§10.2](#10.2%20No%20state%20requires%20intervention%20to%20leave) applies. |
-| **Local content corrupt** | A record failing verification quarantines its segment: excluded from reclaim and eviction, its extents resolve as **Lost**. |
+| **Local content corrupt** | The journal drops only the extents backed by records that fail verification ([RFC 1 §9.3](rfc-1-journal.md#9.3%20Torn%20and%20corrupt%20records)). A dropped extent that was durable resolves as **Remote** and is fetched again; one that was **Dirty** resolves as **Lost**. The rest of the segment stays usable and reclaimable. |
+| **Material unavailable** | The material provider cannot supply a key ([RFC 5 §2.7](rfc-5-transforms.md#2.7%20Failures)). Behaves as **Remote tier unavailable**: offload cannot encode and reads of **Remote** extents cannot decode. Material lost for good is not this row: its blocks are not durable ([§4.2](#4.2%20The%20residency%20function)). |
 
 ### 10.1 Capacity is a bound, not a target
 
@@ -604,9 +571,12 @@ reintroduces the failure this model exists to prevent.
    discretionary and names the conditions under which declining is appropriate.
    It does not specify a policy. [RFC 8](rfc-8-engine.md) must, and the right one is unmeasured.
 3. **Eviction granularity** ([§8.1](#8.1%20Evict)) — this document constrains eviction by
-   durability, not by unit; the unit is [RFC 1](rfc-1-journal.md)'s to choose. The trade-off this
-   question originally named — eviction precision against the number of open
-   segments — is not a trade-off: [RFC 1 §8.4](rfc-1-journal.md#8.4%20Open%20descriptors) bounds open descriptors
-   independently of segment count, so segment size expresses reclamation
-   granularity alone. What remains unmeasured is the right default for it, and
-   whether per-extent hole punching degrades at scale ([RFC 1 §13](rfc-1-journal.md#13.%20Open%20questions)).
+   durability, not by unit; the unit is [RFC 1](rfc-1-journal.md)'s to choose. The right segment size
+   is unmeasured, as is whether per-extent hole punching degrades at scale
+   ([RFC 1 §13](rfc-1-journal.md#13.%20Open%20questions)).
+4. **What a retried transaction may close over** ([§9.2](#9.2%20Conflicts%20and%20their%20retries)) — a retried closure
+   re-runs against state that changed since it was first called. Whether it may
+   close over values read before the transaction opened, or must re-read every
+   row it modifies, is not settled. One that closes over pre-read state can
+   re-propose the decision the conflict was raised to prevent, which delays a
+   lost update rather than preventing it.
