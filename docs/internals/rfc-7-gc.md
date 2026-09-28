@@ -115,7 +115,7 @@ reports nothing wrong because by the counts nothing was.
 ### 2.2 Zero is a candidate, not a verdict
 
 `live` is read at one instant and the delete happens at another. Between them a
-flush commit can adopt one of the block's chunks ([RFC 4 §7.2](rfc-4-block-metadata.md#7.2%20Adoption%20is%20conditional%20on%20existence)), a clone can copy a
+offload commit can adopt one of the block's chunks ([RFC 4 §7.2](rfc-4-block-metadata.md#7.2%20Adoption%20is%20conditional%20on%20existence)), a clone can copy a
 ref to one, and a relocation can move one in or out. So a zero read outside a
 transaction **MUST** be treated as a candidate only. The verdict is taken inside
 the retirement transaction, which re-reads `live` and refuses if it is nonzero
@@ -196,7 +196,7 @@ the amendment.
 
 ### 3.3 The race with adoption is closed by transactions, not by time
 
-Adoption is a flush commit referencing a chunk it did not carry ([RFC 4 §7.2](rfc-4-block-metadata.md#7.2%20Adoption%20is%20conditional%20on%20existence)).
+Adoption is an offload commit referencing a chunk it did not carry ([RFC 4 §7.2](rfc-4-block-metadata.md#7.2%20Adoption%20is%20conditional%20on%20existence)).
 Retirement and adoption are the only two operations that can disagree about
 whether a chunk is alive, and both touch the same two records:
 
@@ -218,7 +218,7 @@ the write statements themselves:
   count of rows it updated — and not from a read made earlier in the transaction.
 
 A retried adoption carries the chunk's bytes, which the journal still holds: the
-extent was offered because it is **Dirty** ([RFC 0 §5.2](rfc-0-data-lifecycle.md#5.2%20Flush)), and nothing reports it
+extent was offered because it is **Dirty** ([RFC 0 §5.2](rfc-0-data-lifecycle.md#5.2%20Offload)), and nothing reports it
 durable until a commit succeeds ([RFC 4 §4.3](rfc-4-block-metadata.md#4.3%20The%20commit%20is%20the%20report%27s%20return%20edge)). So losing this race costs one
 upload and never a client-visible error.
 
@@ -228,29 +228,29 @@ Under [RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block) a block's name is derived f
 assemblies of the same chunks in the same order produce the same key. That makes
 this sequence possible:
 
-1. A flush, finding a chunk's record gone ([§3.3](#3.3%20The%20race%20with%20adoption%20is%20closed%20by%20transactions%2C%20not%20by%20time)), re-uploads it and happens to
+1. An offload, finding a chunk's record gone ([§3.3](#3.3%20The%20race%20with%20adoption%20is%20closed%20by%20transactions%2C%20not%20by%20time)), re-uploads it and happens to
    assemble a block whose key equals a retired block's key *K*. It puts *K*.
 2. GC, resuming the pending deletion of *K*, deletes *K*.
-3. The flush commits a block record for *K*.
+3. The offload commits a block record for *K*.
 
 The records now name an object that was deleted after it was put. **A delete of
 key *K* MUST NOT run concurrently with a put of *K* whose commit can succeed.**
 
 A check made only at commit time cannot provide this, because the put happens
 outside any transaction and the commit cannot tell whether the delete came before
-or after it. The commit has to be conditioned on something the flush read
+or after it. The commit has to be conditioned on something the offload read
 *before* its put.
 
 > [!question] Proposal for discussion
 > Keep a fixed array of **deletion generations**,
-> indexed by a hash of the block key. The flush reads its key's generation before
+> indexed by a hash of the block key. The offload reads its key's generation before
 > the put, and its commit **MUST** fail if the generation has changed. GC
 > increments the generation, in a transaction, after the delete returns and
-> before it removes the pending-deletion record. A flush whose put preceded the
-> delete then fails its commit and re-puts. A flush that read the generation
+> before it removes the pending-deletion record. An offload whose put preceded the
+> delete then fails its commit and re-puts. An offload that read the generation
 > after the increment put after the delete and is safe. A commit also **MUST**
 > fail while a pending-deletion record for its key exists. The array is bounded,
-> so I7 holds, and a flush is refused spuriously only when an unrelated key in
+> so I7 holds, and an offload is refused spuriously only when an unrelated key in
 > the same bucket was deleted during its put. What the bucket count should be is
 > unmeasured.
 
@@ -453,8 +453,8 @@ decides nothing by itself, and its scratch state obeys [§7.2](#7.2%20Every%20re
 GC **MUST** bound, per process, the number of remote operations it has in flight
 and the memory it holds for them, and **MUST** state the bound where it is
 configured. It **MUST NOT** borrow the syncer's window ([RFC 8 §2.2](rfc-8-remote-tier.md#2.2%20Why%20the%20syncer%20must%20exist)): a sweep that
-waits behind flush uploads makes no progress while space fills, and a relocation
-that takes upload slots delays the flushes that make content evictable.
+waits behind offload uploads makes no progress while space fills, and a relocation
+that takes upload slots delays the offloads that make content evictable.
 
 The memory a pass holds **MUST NOT** grow with the size of the store. A pass that
 needs a set of every referenced hash, in memory or on disk, has become a mark
@@ -484,7 +484,7 @@ over one namespace at once, from one process or two. No lock held in process
 memory is a safety input ([§2.1](#2.1%20The%20count%20is%20the%20only%20authority)); where an implementation serializes passes for
 efficiency, removing the serialization **MUST NOT** make a pass unsafe.
 
-A pass **MUST NOT** require quiescence. Writes, flushes, clones, snapshots and
+A pass **MUST NOT** require quiescence. Writes, offloads, clones, snapshots and
 reads continue during it, and [§3.3](#3.3%20The%20race%20with%20adoption%20is%20closed%20by%20transactions%2C%20not%20by%20time) and [§4.5](#4.5%20What%20relocation%20races) are what make that safe.
 
 ## 8. What GC declares
@@ -511,7 +511,7 @@ This document requires four changes elsewhere, so that the set carries one answe
    ([§3.2](#3.2%20A%20retirement%20not%20yet%20deleted%20is%20durably%20recorded)), and deletes the chunk records whose `block` names the retired block.
    The write-set table gains that record under **Sweep**. If [§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete)'s and [§3.5](#3.5%20Finding%20candidates%20costs%20what%20is%20retirable)'s
    proposals are adopted, the deletion generations and candidate records join it,
-   and the flush commit reads a generation.
+   and the offload commit reads a generation.
 2. **[RFC 4 §7.2](rfc-4-block-metadata.md#7.2%20Adoption%20is%20conditional%20on%20existence), [§7.3](rfc-4-block-metadata.md#7.3%20Relocation).** Adoption's failure on a missing record, and the
    isolation requirement of [§3.3](#3.3%20The%20race%20with%20adoption%20is%20closed%20by%20transactions%2C%20not%20by%20time), are stated in the write statement where the
    backend's isolation level needs it.
@@ -590,9 +590,9 @@ remote backend that can fail a delete after performing it ([RFC 8 §9.3](rfc-8-r
 | [§3.3](#3.3%20The%20race%20with%20adoption%20is%20closed%20by%20transactions%2C%20not%20by%20time) adoption race | Interleave `Retire` and an adopting commit at every step boundary, in both orders. Assert that either the block survives with the new ref, or the commit fails and the retry uploads. Assert that no ref ever names a chunk whose object is gone. |
 | [§3.3](#3.3%20The%20race%20with%20adoption%20is%20closed%20by%20transactions%2C%20not%20by%20time) isolation | Run the interleaving on each backend at its configured isolation level, with the conditions forced into separate statements. Assert the check fails, so the rig can see the defect it guards. |
 | [§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object) order | Fail the metadata write after the delete, then adopt the chunk. Assert the adoption fails. A rig that only crashes between steps misses the failure that needs no crash. |
-| [§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete) fence | Put key *K* for a flush, delete *K* for a resumed pending deletion, then commit the flush. Assert the commit fails. |
+| [§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete) fence | Put key *K* for an offload, delete *K* for a resumed pending deletion, then commit the offload. Assert the commit fails. |
 | [§2.1](#2.1%20The%20count%20is%20the%20only%20authority) no hold | Snapshot a file, delete the file, sweep with no hold provider configured. Assert every block the snapshot names survives. Repeat with the sweep running between the snapshot's metadata capture and its completion. |
-| [§2.1](#2.1%20The%20count%20is%20the%20only%20authority) no process state | Run two sweeps against one store from two processes, with an adopting flush in a third. Assert no referenced block is deleted. |
+| [§2.1](#2.1%20The%20count%20is%20the%20only%20authority) no process state | Run two sweeps against one store from two processes, with an adopting offload in a third. Assert no referenced block is deleted. |
 | [§4.5](#4.5%20What%20relocation%20races) relocation race | Relocate a block while adopting one of its chunks and while reading another. Assert every read returns the right bytes after at most one re-resolution. |
 | [§5.3](#5.3%20It%20runs%20only%20where%20the%20namespace%20is%20proven) namespace | Point two stores at one bucket and prefix, run collection from one. Assert it refuses. |
 | [§5.4](#5.4%20Age%20is%20not%20the%20guard) in-flight commit | Put a block, stall its commit past any age filter, run collection. Assert the object survives, or the commit fails and re-puts. |
@@ -605,7 +605,7 @@ remote backend that can fail a delete after performing it ([RFC 8 §9.3](rfc-8-r
 | [§3.5](#3.5%20Finding%20candidates%20costs%20what%20is%20retirable) cost | Grow the store with no garbage, sweep. Assert records read per pass do not grow with the store. |
 | [§3.6](#3.6%20Failures%20resolve%20on%20their%20own) no intervention | Fail every delete until the backlog is reported, then restore the remote. Assert the backlog drains and the health condition clears with no operator action. |
 | [§3.6](#3.6%20Failures%20resolve%20on%20their%20own) I8 | Drive retirements and adoptions at one shared chunk. Assert conflicts occur and that none reaches a caller as an error. |
-| [§7.1](#7.1%20GC%20bounds%20its%20own%20work) bound | Stall the remote at full GC concurrency. Assert in-flight operations and memory stay within the stated bound and that flush uploads are not delayed. |
+| [§7.1](#7.1%20GC%20bounds%20its%20own%20work) bound | Stall the remote at full GC concurrency. Assert in-flight operations and memory stay within the stated bound and that offload uploads are not delayed. |
 | [§7.2](#7.2%20Every%20record%20GC%20stores%20names%20its%20reclamation) I7 | Run many passes with retirements, relocations and failed deletes. Assert each record kind stays within its table row. |
 
 ### 12.3 What must not stand in
@@ -629,7 +629,7 @@ remote backend that can fail a delete after performing it ([RFC 8 §9.3](rfc-8-r
    it is the space amplification — remote bytes over referenced bytes — of a
    churning workload under each candidate policy, against the transfer cost each
    spends.
-2. **Deletion generation buckets** ([§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete)). The bucket count trades spurious flush
+2. **Deletion generation buckets** ([§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete)). The bucket count trades spurious offload
    refusals against a record per bucket. Unmeasured, and moot until [RFC 2 §4.2.1](rfc-2-carver.md#4.2.1%20Deviation%20%E2%80%94%20a%20block%27s%20identity%20is%20generated%2C%20in%20two%20places)
    is fixed.
 3. **Whether a low count should halt sweep** ([§6](#6.%20Audit)). Suspending only the named

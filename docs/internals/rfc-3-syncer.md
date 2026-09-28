@@ -65,8 +65,8 @@ local bytes originates in a fetch it performed.
 
 The syncer **MUST NOT**:
 
-- decide *what* to transfer, or *when*, or *why* — that is flush, eviction and
-  read-ahead policy ([RFC 0 §5.2](rfc-0-data-lifecycle.md#5.2%20Flush), [§8.1](rfc-0-data-lifecycle.md#8.1%20Evict), [RFC 6](rfc-6-engine.md));
+- decide *what* to transfer, or *when*, or *why* — that is offload, eviction and
+  read-ahead policy ([RFC 0 §5.2](rfc-0-data-lifecycle.md#5.2%20Offload), [§8.1](rfc-0-data-lifecycle.md#8.1%20Evict), [RFC 6](rfc-6-engine.md));
 - decide what to delete — that is sweep, which calls the remote tier directly
   ([RFC 0 §8.3](rfc-0-data-lifecycle.md#8.3%20Sweep), [RFC 7](rfc-7-gc.md));
 - derive a block's name ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block));
@@ -356,7 +356,7 @@ buffer whose size is not configured.
 
 The chain this preserves runs the whole depth of the system:
 
-remote slows → the pool saturates → flush stalls → dirty [extents](rfc-0-data-lifecycle.md#2.1%20Entities) are not released
+remote slows → the pool saturates → offload stalls → dirty [extents](rfc-0-data-lifecycle.md#2.1%20Entities) are not released
 → the journal approaches capacity → writes are refused ([RFC 0 §10.1](rfc-0-data-lifecycle.md#10.1%20Capacity%20is%20a%20bound%2C%20not%20a%20target))
 
 Refusing a write is the specified outcome. An unbounded queue at any link replaces
@@ -506,8 +506,8 @@ mid-flight.
 
 `Flow.Healthy` reports the current state of the flow's store. It reads memory and never calls the
 backend, so a caller can check it before doing work that would end in a refused
-upload — the engine skips carving and packing a flush for a store it would
-refuse ([RFC 6 §8.1](rfc-6-engine.md#8.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20flush%20included)). The state is re-derived from the next probe, so it is not
+upload — the engine skips carving and packing an offload for a store it would
+refuse ([RFC 6 §8.1](rfc-6-engine.md#8.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included)). The state is re-derived from the next probe, so it is not
 persisted ([§2.7](#2.7%20It%20reports%3B%20it%20does%20not%20persist)).
 
 Only the flows on that store are affected — with one flow per share, only that
@@ -641,7 +641,7 @@ Each fixed value becomes a setting only when a measurement shows the fixed value
 is wrong for a workload an operator can name. A setting nobody can reason about
 is tuned by trial, and a wrong value shows up as a stall with no stated cause.
 
-Read-ahead depth, pre-warm pacing and when to flush are policy and belong to
+Read-ahead depth, pre-warm pacing and when to offload are policy and belong to
 [RFC 6](rfc-6-engine.md), not here. Chunk and block sizes belong to [RFC 2](rfc-2-carver.md).
 
 ### 2.11 Pool sizes are measured once, by a tool
@@ -771,13 +771,13 @@ The uploader **MUST** take a reference to the block's bytes in the journal and
 read them, chunk by chunk, while a worker transfers the block. It **MUST NOT**
 copy the block into memory when the block is queued.
 
-The reference is to the bytes **as offered for flush**, not to the file as it is
+The reference is to the bytes **as offered for offload**, not to the file as it is
 now. A client may overwrite an extent while its block waits for a worker
-([RFC 1 §3.3](rfc-1-journal.md#3.3%20Flush)); a reference by file offset would then read the newer bytes, whose
+([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)); a reference by file offset would then read the newer bytes, whose
 hash is not the block's. So the engine describes a block as a plan — its name and,
 per chunk, a hash and where its bytes sit in the offered version — and `src` reads
 the plan through the journal's `offered` readers, which keeps returning the offered
-bytes until the flush callback returns ([RFC 6 §5.1](rfc-6-engine.md#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output)). A block may hold chunks of
+bytes until the offload callback returns ([RFC 6 §5.1](rfc-6-engine.md#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output)). A block may hold chunks of
 several files ([RFC 6 §5.7](rfc-6-engine.md#5.7%20A%20block%20packs%20chunks%2C%20whichever%20files%20they%20came%20from)), so one plan may read through several files'
 readers. The syncer sees none of this: to it, `src` is a stream of chunks, and a
 block is the same thing whether its chunks came from one file or from a hundred.
@@ -791,8 +791,8 @@ pool size.
 
 ### 3.3 The journal keeps referenced bytes stable
 
-The journal keeps offered bytes stable until the flush callback that offered them
-returns ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Flush)): it **MUST NOT** release, overwrite, relocate or compact them
+The journal keeps offered bytes stable until the offload callback that offered them
+returns ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)): it **MUST NOT** release, overwrite, relocate or compact them
 before then. The engine runs the upload inside that callback
 ([RFC 6 §5.1](rfc-6-engine.md#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output)), so no reference outlives it and `src` is never called after
 `Upload` returns.
@@ -968,13 +968,13 @@ keeps it from holding its share's flow at its cap while that share's reads wait.
 | Recording durability and residency | [RFC 4](rfc-4-block-metadata.md) |
 | Keeping referenced bytes stable; filling fetched ones | [RFC 1](rfc-1-journal.md) |
 | Deleting a remote block | [RFC 7](rfc-7-gc.md), calling [RFC 8](rfc-8-remote-tier.md) directly |
-| What to box, when to flush, what to evict, what to read ahead or pre-warm | [RFC 6](rfc-6-engine.md) |
+| What to box, when to offload, what to evict, what to read ahead or pre-warm | [RFC 6](rfc-6-engine.md) |
 | Whether the system keeps accepting writes when the remote is unavailable | RFC 6 |
-| A share's health, from its store's state and its own flush outcomes | [RFC 6 §8.1](rfc-6-engine.md#8.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20flush%20included) |
+| A share's health, from its store's state and its own offload outcomes | [RFC 6 §8.1](rfc-6-engine.md#8.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included) |
 
 **Health is probed, never stored as a flag.** A store's health is what its probe
 last said ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)). A share's health is the engine's, computed from the store's
-state together with the outcomes of its own flushes ([RFC 6 §8.1](rfc-6-engine.md#8.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20flush%20included)).
+state together with the outcomes of its own offloads ([RFC 6 §8.1](rfc-6-engine.md#8.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included)).
 
 Neither **MUST** be a "remote is down" flag that stops attempts until something
 clears it. Once attempts stop, none can succeed, so nothing ever sees the remote
@@ -1276,7 +1276,7 @@ question to answer.
 | D4 | one probe interval, one failure turns unhealthy ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) | 30 s healthy, 5 s unhealthy, three failures to turn unhealthy, and a separate demand-fetch timeout | `engine/types.go:108`–`:111`, `:130`–`:133` |
 | D5 | the syncer is the only layer that retries ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) | the S3 SDK retries up to `maxAttempts` with backoff to 30 s, 429 included, beneath the syncer's own retries | `remote/s3/store.go:162`–`:170` |
 | D6 | a backend's client limit derived from the pools ([RFC 8 §5.9](rfc-8-remote-tier.md#5.9%20A%20backend%27s%20client%20never%20queues%20below%20the%20pools)) | fixed at 256 connections | `remote/s3/store.go:49` |
-| D7 | the uploader reads a journal reference and streams ([§3.2](#3.2%20It%20holds%20a%20reference%2C%20not%20a%20copy), [§1.3](#1.3%20Interface)) | the carver copies journal bytes into a block buffer before an upload slot is free, and the put sends the whole sealed block from a second in-memory buffer; per-transfer memory is two block-sized buffers and is stated nowhere. The fix is decided: a block plan read through the journal's offered reader ([RFC 6 §5.1](rfc-6-engine.md#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output), [RFC 1 §3.3](rfc-1-journal.md#3.3%20Flush)) | `engine/flush_closure.go:112`–`:151`, `:425`; `engine/flush.go:397`–`:446` |
+| D7 | the uploader reads a journal reference and streams ([§3.2](#3.2%20It%20holds%20a%20reference%2C%20not%20a%20copy), [§1.3](#1.3%20Interface)) | the carver copies journal bytes into a block buffer before an upload slot is free, and the put sends the whole sealed block from a second in-memory buffer; per-transfer memory is two block-sized buffers and is stated nowhere. The fix is decided: a block plan read through the journal's offered reader ([RFC 6 §5.1](rfc-6-engine.md#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output), [RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)) | `engine/flush_closure.go:112`–`:151`, `:425`; `engine/flush.go:397`–`:446` |
 | D8 | a failed fill does not fail the read ([§4.2](#4.2%20The%20reply%20neither%20waits%20on%20the%20fill%20nor%20fails%20with%20it), S11) | the read is answered by re-reading the journal after the fill; a fill error fails the fetching caller and every joined one | `engine/fetch.go:669`–`:673`; `engine/read_internal.go:117`–`:131` |
 | D9 | a retry after an unknown outcome writes the same object ([§2.5](#2.5%20An%20unknown%20outcome%20is%20not%20a%20success)) | block names are 16 random bytes, so a retry writes a second object and the first is an orphan for GC; S5 still holds. Recorded as [RFC 2 §4.2.1](rfc-2-carver.md#4.2.1%20Deviation%20%E2%80%94%20a%20block%27s%20identity%20is%20generated%2C%20in%20two%20places) | `engine/flush.go:392`; `block/block_record.go:29`–`:35` |
 | D10 | one pool bounds fetches in flight ([§2.1](#2.1%20A%20worker%20pool%20is%20the%20only%20concurrency%20control), S1) | each demand read and each warm run builds its own fetch group of the configured size, beside the prefetch queue's own workers; fetches in flight, and their memory, grow with concurrent readers | `engine/fetch.go:31`–`:39`, `:540`–`:549`; `engine/warm.go:175`; `engine/sync_queue.go:89`–`:92` |

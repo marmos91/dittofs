@@ -45,7 +45,7 @@ component:
 
 This document **MUST NOT** be read as specifying:
 
-- when to transfer, or what — that is flush and eviction policy ([RFC 0 §5.2](rfc-0-data-lifecycle.md#5.2%20Flush), [§8.1](rfc-0-data-lifecycle.md#8.1%20Evict));
+- when to transfer, or what — that is offload and eviction policy ([RFC 0 §5.2](rfc-0-data-lifecycle.md#5.2%20Offload), [§8.1](rfc-0-data-lifecycle.md#8.1%20Evict));
 - what to delete — that is sweep ([RFC 0 §8.3](rfc-0-data-lifecycle.md#8.3%20Sweep), [RFC 7](rfc-7-gc.md));
 - how many transfers may be in flight, or what happens when the remote is
   unavailable — that is the syncer ([RFC 3 §2](rfc-3-syncer.md#2.%20What%20both%20halves%20obey), [§5](rfc-3-syncer.md#5.%20What%20belongs%20elsewhere));
@@ -129,7 +129,7 @@ to learn nothing new each time.
 **Other consumers would inherit upload policy.** [§7](#7.%20This%20contract%20has%20more%20than%20one%20consumer) lists what else reads, writes
 and deletes through this contract. If the upload window lived inside the backend, a
 compaction repack would contend for upload slots and a snapshot probe would be
-throttled by a flush. The window belongs to the thing doing the uploading, not to
+throttled by an offload. The window belongs to the thing doing the uploading, not to
 the thing being uploaded through.
 
 ### 2.3 Why the remote tier must exist
@@ -779,7 +779,7 @@ because it discards the byte.
 The syncer is one consumer of this contract, not its owner. That is the concrete
 reason [§2.1](#2.1%20The%20rule%3A%20one%20operation%2C%20or%20many)'s line is drawn where it is rather than around the syncer: a rule that
 made sense only for uploads — an upload window, a retry policy tuned for puts, a
-health flag set by a failed flush — would be inherited by a GC pass that wants none
+health flag set by a failed offload — would be inherited by a GC pass that wants none
 of it.
 
 | Consumer | What it needs | Specified by | Durable? |

@@ -40,6 +40,6 @@
   <text x="470" y="278" class="yes">✓</text>
 
   <line x1="16" y1="330" x2="884" y2="330" stroke="#c3cad3"/>
-  <text x="16" y="352" class="l">Two further rules, for the same reason: <tspan font-weight="600">no lock is held across the Flush callback or a Recorder call</tspan>,</text>
+  <text x="16" y="352" class="l">Two further rules, for the same reason: <tspan font-weight="600">no lock is held across the Offload callback or a Recorder call</tspan>,</text>
   <text x="16" y="372" class="l">and <tspan font-weight="600">no I/O happens under the file index</tspan> — that would turn disk latency into index contention.</text>
 </svg>

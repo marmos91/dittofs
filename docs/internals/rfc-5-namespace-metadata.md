@@ -56,7 +56,7 @@ Namespace metadata **MUST NOT**:
   residency is computed and never stored ([RFC 0 §4.2](rfc-0-data-lifecycle.md#4.2%20The%20residency%20function));
 - hold chunks, refs, blocks or refcounts — those are [RFC 4](rfc-4-block-metadata.md)'s, and this component
   learns of them only through the interfaces it declares ([§2.5](#2.5%20Where%20%60size%60%20lives), [§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees));
-- decide what to flush, evict or sweep;
+- decide what to offload, evict or sweep;
 - encode or decode a wire protocol. A handle is opaque at this boundary and
   *stays* opaque above it ([§6](#6.%20Handles));
 - import another component in this set ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)).
@@ -137,8 +137,8 @@ path does not.
 | `nlink` | link, unlink, rename over an existing entry | the entry change that caused it ([§4.1](#4.1%20%60nlink%60%20is%20exactly%20its%20entries)) |
 | `size` | a client write, truncate, deallocate | **not stored here** ([§2.5](#2.5%20Where%20%60size%60%20lives)) |
 
-The flush commit appears nowhere in that table, and **MUST NOT** ([RFC 4 §5.1](rfc-4-block-metadata.md#5.1%20No%20record%20is%20written%20by%20both%20paths)).
-Flushing changes where content is, not what it is, and an inode record it could
+The offload commit appears nowhere in that table, and **MUST NOT** ([RFC 4 §5.1](rfc-4-block-metadata.md#5.1%20No%20record%20is%20written%20by%20both%20paths)).
+Offloading changes where content is, not what it is, and an inode record it could
 write would be a record the client path and a background pass share — the shape
 that has already wedged this system once ([RFC 4 §5](rfc-4-block-metadata.md#5.%20Write%20sets)).
 
@@ -590,7 +590,7 @@ and [RFC 0 §4.2](rfc-0-data-lifecycle.md#4.2%20The%20residency%20function) forb
 `mtime` and `ctime` on write are written with existence ([§2.5](#2.5%20Where%20%60size%60%20lives)). `ctime` advances
 on every attribute and link change, `mtime` only on content change. An
 implementation **MUST NOT** advance `mtime` for an operation that changed no
-content — a flush, an eviction, a fill and a relocation all leave it untouched,
+content — an offload, an eviction, a fill and a relocation all leave it untouched,
 because none of them changed what the file is.
 
 `atime` **MAY** be omitted, or updated on a coarse schedule. An implementation
@@ -665,7 +665,7 @@ follows is everything else.
 
 | Requirement | Current state | Evidence |
 | --- | --- | --- |
-| [§2.4](#2.4%20Attributes%2C%20and%20who%20writes%20them) the flush commit writes no namespace record | `SetManifest` persists the file's attributes as well as its manifest, and the post-flush seam calls it with the attributes it happened to read. Every flush therefore rewrites `size`, `mtime`, `mode`, `uid` and `gid`. This is [RFC 4 §5.1](rfc-4-block-metadata.md#5.1%20No%20record%20is%20written%20by%20both%20paths)'s forbidden shared record, at the namespace row. The backends differ only in what else rides along: SQL rewrites all 21 inode columns plus the ref rows, while Badger writes the attribute blob and its manifest keys separately — the namespace record is rewritten either way. | `store/postgres/transaction.go:306`, `store/sqlite/transaction.go:190`, `store/badger/transaction.go:383`, all reaching `putFile`; `runtime/shares/coordinator.go:187`, `pkg/metadata/block_record_store.go:173` |
+| [§2.4](#2.4%20Attributes%2C%20and%20who%20writes%20them) the offload commit writes no namespace record | `SetManifest` persists the file's attributes as well as its manifest, and the post-offload seam calls it with the attributes it happened to read. Every offload therefore rewrites `size`, `mtime`, `mode`, `uid` and `gid`. This is [RFC 4 §5.1](rfc-4-block-metadata.md#5.1%20No%20record%20is%20written%20by%20both%20paths)'s forbidden shared record, at the namespace row. The backends differ only in what else rides along: SQL rewrites all 21 inode columns plus the ref rows, while Badger writes the attribute blob and its manifest keys separately — the namespace record is rewritten either way. | `store/postgres/transaction.go:306`, `store/sqlite/transaction.go:190`, `store/badger/transaction.go:383`, all reaching `putFile`; `runtime/shares/coordinator.go:187`, `pkg/metadata/block_record_store.go:173` |
 | [RFC 0 §9.1](rfc-0-data-lifecycle.md#9.1%20Records%20and%20their%20reclamation) (I7) reclamation path | Not met on Badger, for the attribute blob rather than the chunk manifest. The blob embeds extended attributes, and while each value is capped at 64 KiB nothing caps their count, so ~16 max-size attributes put the record over the 1 MiB inline threshold. Past that it is rewritten in full by every attr-only write — chmod, utimes, rename, close — and accumulates in the store reclaimed by the mechanism the workload does not trigger: measured at +592 MiB of value log over 300 chmods. This is the same I7 failure as the chunk manifest ([RFC 4 §2.1](rfc-4-block-metadata.md#2.1%20Ref)), one key over and on a record written far more often: an attr-only write is frequent, and the manifest was deliberately moved out of its path. | `store/badger/encoding.go:372` (`putJSONField(buf, fEAs, ...)`), `pkg/metadata/xattr.go:57`, `:251` |
 | [§2.5](#2.5%20Where%20%60size%60%20lives) `size` is stored once | Three sources reconciled at runtime: the `inodes.size` column, `PendingWritesTracker.MaxSize` overlaid on every read, and the journal's durable high-water mark, which clamps the published size on write. | `pkg/metadata/pending_writes.go:33`, `service.go:408`, `io.go:480` |
 | [§2.5](#2.5%20Where%20%60size%60%20lives), [RFC 4 §3.4](rfc-4-block-metadata.md#3.4%20Ordering%20against%20the%20journal) existence is never reconstructed from the journal | `reconcileMetadataSizeFromJournal` grows `inodes.size` from the journal's extent on share start. Grow-only, so it cannot recover what the journal lost — which is the only case the record exists for. | `runtime/shares/lifecycle.go:315`, called from `:125` |

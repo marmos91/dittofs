@@ -101,7 +101,7 @@ fully described by its ordered list of chunk refs. Many refs MAY name one chunk.
 **Block** — the unit of remote storage: a whole number of chunks in one object,
 addressed by one remote key and written by one put. A get retrieves chunks of a
 block, or the whole block. A block targets a configured size and MAY exceed it by
-at most one chunk; the last block of a flush pass MAY fall short
+at most one chunk; the last block of an offload pass MAY fall short
 ([RFC 2 §5](rfc-2-carver.md#5.%20Packing%3A%20three%20rules%2C%20not%20a%20component), P2), because **a block boundary is always a chunk
 boundary**. A chunk **MUST NOT** span two blocks ([§2.2](#2.2%20How%20a%20file%20relates%20to%20its%20chunks)).
 
@@ -147,7 +147,7 @@ differently and nothing downstream of the edit would dedup.
 Chunks are grouped into blocks for transfer. The grouping accumulates chunks
 until the running total reaches the configured target, and then **ends at that
 chunk's boundary** — so a block is usually a little larger than the target,
-never a little different in composition. Only the last block of a flush pass may
+never a little different in composition. Only the last block of an offload pass may
 be smaller.
 
 ![Chunks accumulating to an 8 MiB target: the crossing chunk is included whole, making the block 9.6 MiB, versus the forbidden alternative of cutting that chunk at exactly 8 MiB](img/rfc0-block-packing.svg)
@@ -186,7 +186,7 @@ blocks and many files.
 | --- | --- |
 | **write** | stage bytes in the journal and acknowledge the client |
 | **sync** | make durable in the journal |
-| **flush** | the journal's pass: offer dirty extents, accept durability reports |
+| **offload** | the journal's pass: offer dirty extents, accept durability reports. Not a client's flush (NFS `COMMIT`, SMB `FLUSH`, `fsync`), which only syncs the journal ([RFC 6 §9.4](rfc-6-engine.md#9.4%20Commit%20is%20answered%20by%20the%20journal)) |
 | **chunk** | place one content-defined boundary |
 | **box** | group chunks into one block |
 | **put** / **get** | make durable in the remote tier / retrieve from it |
@@ -254,7 +254,7 @@ exactly one question.
 The journal **MUST NOT** record whether content exists or whether it was ever
 written, and **MUST NOT** be consulted about remote durability — it is not
 authoritative for it. It **MAY** record that it has been *told* an extent is
-durable, for the two internal purposes [RFC 1 §2](rfc-1-journal.md#2.%20The%20model%20it%20presents) permits: selecting flush
+durable, for the two internal purposes [RFC 1 §2](rfc-1-journal.md#2.%20The%20model%20it%20presents) permits: selecting offload
 candidates, and refusing an unsafe release. That record is never an answer.
 
 The metadata store **MUST NOT** record where bytes sit on local disk.
@@ -314,13 +314,13 @@ chunked, hashed or transferred on this path.
 
 The resulting extent is **Dirty**.
 
-### 5.2 Flush
+### 5.2 Offload
 
-Flush is initiated by policy and driven by the journal, which offers its dirty
+Offload is initiated by policy and driven by the journal, which offers its dirty
 extents and accepts a report of what became durable:
 
 ```
-journal.Flush / FlushMany(ids, fn)
+journal.Offload / OffloadMany(ids, fn)
     │  offers dirty extents, of one file or several
     └──► fn:  carver  — cut chunks
               engine  — group chunks into blocks, across files
@@ -330,7 +330,7 @@ journal.Flush / FlushMany(ids, fn)
 journal marks exactly those extents
 ```
 
-![The write path: client acknowledged from the journal, then a later flush whose callback carves, puts and records durability, returning the durable extents along the edge that is the only path to Resident](img/rfc0-lifecycle.svg)
+![The write path: client acknowledged from the journal, then a later offload whose callback carves, puts and records durability, returning the durable extents along the edge that is the only path to Resident](img/rfc0-lifecycle.svg)
 
 The callback returns the extents that became durable. The journal **MUST** mark
 exactly those, and **MUST NOT** mark an extent for which no report was received.
@@ -340,7 +340,7 @@ exactly those, and **MUST NOT** mark an extent for which no report was received.
 > live in a linear `write → carve → put` pipeline. The return edge is the only
 > path by which an extent becomes **Resident**.
 
-A flush that fails leaves every affected extent **Dirty**. Failure **MUST** be
+An offload that fails leaves every affected extent **Dirty**. Failure **MUST** be
 retryable without duplicating stored content: re-offering the same extent and
 re-deriving the same chunks **MUST** converge on the same chunk identities,
 which follows from chunking being deterministic ([RFC 2](rfc-2-carver.md)).
@@ -379,7 +379,7 @@ its concurrency safety belong to the journal ([RFC 1](rfc-1-journal.md)).
 ## 7. Mutation and removal
 
 **Overwrite.** New bytes are staged at the same offsets and become new chunks at
-the next flush. Superseded chunk refs are dropped from the file's list. The
+the next offload. Superseded chunk refs are dropped from the file's list. The
 chunks themselves persist until their refcounts reach zero.
 
 **Truncate.** Chunk refs beyond the new size are dropped; a ref straddling the
@@ -566,7 +566,7 @@ Every condition below has exactly one specified behaviour.
 | **Remote tier unavailable** | Writes continue into the journal while capacity allows. No extent becomes **Resident**, so no extent becomes evictable. Reads of **Remote** extents fail; they **MUST NOT** return zeros. |
 | **Journal at capacity, remote available** | Evict ([§8.1](#8.1%20Evict)); if nothing is evictable, reclaim ([§8.2](#8.2%20Reclaim)); then accept the write. |
 | **Journal at capacity, remote unavailable** | Refuse the write. Every local extent is **Dirty**, and I2 forbids evicting it, so refusal is the only behaviour that does not lose data. |
-| **Metadata unwritable** | Flush fails; extents stay **Dirty**; [§10.1](#10.1%20Capacity%20is%20a%20bound%2C%20not%20a%20target) applies. |
+| **Metadata unwritable** | Offload fails; extents stay **Dirty**; [§10.1](#10.1%20Capacity%20is%20a%20bound%2C%20not%20a%20target) applies. |
 | **Crash** | On restart the journal rebuilds its placement index from its segments; a torn tail is truncated to the last record that verifies. Metadata recovers by its backend's own durability. The two recover independently and **MAY** disagree; [§10.2](#10.2%20No%20state%20requires%20intervention%20to%20leave) applies. |
 | **Local content corrupt** | A record failing verification quarantines its segment: excluded from reclaim and eviction, its extents resolve as **Lost**. |
 
@@ -587,7 +587,7 @@ Every condition in this section **MUST** resolve on its own once the underlying
 cause is removed. An implementation **MUST NOT** have a state reachable by
 normal operation from which it cannot return without operator action.
 
-In particular: sustained inability to flush **MUST** be reported as a health
+In particular: sustained inability to offload **MUST** be reported as a health
 condition of the share, and **MUST NOT** be represented only as log output.
 
 Recovery after a crash is required to be *truthful*, not to make the two oracles

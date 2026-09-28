@@ -16,7 +16,7 @@
   <rect width="900" height="360" fill="#ffffff"/>
 
   <text x="16" y="26" class="t">Every offset below size is a hole, uncarved, or carved, and metadata must say which</text>
-  <text x="16" y="46" class="s">A file of 10 units. Refs cover what the last flush committed; the uncarved run was written and acknowledged after it.</text>
+  <text x="16" y="46" class="s">A file of 10 units. Refs cover what the last offload committed; the uncarved run was written and acknowledged after it.</text>
 
   <rect x="16"  y="74" width="240" height="40" rx="2" class="bx"/>
   <text x="26" y="98" class="m">ref  ref  ref</text>

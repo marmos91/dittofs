@@ -28,7 +28,7 @@
   <line x1="148" y1="97" x2="176" y2="97" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a3b)"/>
   <rect x="180" y="80" width="150" height="34" rx="3" class="bx"/><text x="196" y="102" class="m">bound saturates</text>
   <line x1="330" y1="97" x2="358" y2="97" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a3b)"/>
-  <rect x="362" y="80" width="132" height="34" rx="3" class="bx"/><text x="378" y="102" class="m">flush stalls</text>
+  <rect x="362" y="80" width="132" height="34" rx="3" class="bx"/><text x="378" y="102" class="m">offload stalls</text>
   <line x1="494" y1="97" x2="522" y2="97" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a3b)"/>
   <rect x="526" y="80" width="174" height="34" rx="3" class="bx"/><text x="542" y="102" class="m">extents not released</text>
   <line x1="700" y1="97" x2="728" y2="97" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a3b)"/>

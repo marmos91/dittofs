@@ -37,7 +37,7 @@
   <!-- Content map -->
   <rect x="246" y="64" width="430" height="196" rx="6" class="grp"/>
   <text x="258" y="84" class="h">CONTENT MAP</text>
-  <text x="258" y="100" class="s">written by the flush commit</text>
+  <text x="258" y="100" class="s">written by the offload commit</text>
   <rect x="258" y="112" width="190" height="120" rx="3" class="bx"/>
   <text x="268" y="130" class="rl">Ref</text><text x="296" y="130" class="m">(FileID, offset)</text>
   <text x="268" y="156" class="m">hash</text>
@@ -54,7 +54,7 @@
   <!-- Blocks -->
   <rect x="696" y="64" width="188" height="196" rx="6" class="grp"/>
   <text x="708" y="84" class="h">BLOCKS</text>
-  <text x="708" y="100" class="s">created at flush, retired by sweep</text>
+  <text x="708" y="100" class="s">created at offload, retired by sweep</text>
   <rect x="708" y="112" width="164" height="120" rx="3" class="bg"/>
   <text x="718" y="130" class="rl">Block</text><text x="764" y="130" class="m">remote key</text>
   <text x="718" y="156" class="m">live</text>
