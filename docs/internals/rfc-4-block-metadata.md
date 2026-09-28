@@ -197,6 +197,8 @@ B (3 MiB) and C (3 MiB). Its refs tile it:
   adopts it: `(g, 0) → A, skip 0, length 4M`, and A's refcount goes to 2. That is
   all deduplication is — two refs naming one hash.
 
+[§2.7](#2.7%20A%20file%27s%20life%2C%20record%20by%20record) follows one file through every record, from create to delete.
+
 **Why a ref carries content versions.** Every write the journal stages gets a
 content version, higher than any before it for that file ([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions)). An offload
 pass is offered extents whose versions lie in `[Oldest, Newest]` ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)),
@@ -373,6 +375,113 @@ process or another deployment writing to the same bucket may reference it. How a
 unrecorded object is collected is [RFC 7](rfc-7-gc.md)'s problem. This document only forbids
 treating a missing record as proof that nothing references the object.
 
+### 2.7 A file's life, record by record
+
+One file `f`, from create to delete, with every record that exists after each
+step. Block positions ignore framing.
+
+**t0 — create.**
+
+| Record | Value |
+| --- | --- |
+| Shape(f) | size 0, epoch 0 |
+
+**t1 — write 4 MiB at 0, content version v1.** The journal stages the bytes, the
+write path grows `size`, the client is acknowledged.
+
+| Record | Value |
+| --- | --- |
+| Shape(f) | size **4M**, epoch 0 |
+
+`[0, 4M)` is **uncarved**: below `size`, not a hole, no ref ([§3.2](#3.2%20Every%20offset%20is%20in%20exactly%20one%20class)). Only the
+journal holds the bytes, and `size` is the only record that says they exist. If
+the journal loses them, a read fails as **Lost**; it does not return zeros.
+
+**t2 — write 1 MiB at 10M, v2.** The write starts past the end of the file, so
+the gap becomes a hole.
+
+| Record | Value |
+| --- | --- |
+| Shape(f) | size **11M**, epoch 0 |
+| Hole(f, 4M) | end 10M |
+
+`[0, 4M)` and `[10M, 11M)` are uncarved; `[4M, 10M)` is a hole and reads as
+zeros. Without the hole record the two kinds of range are indistinguishable.
+Had the write started at 4M instead — an append — no hole would exist.
+
+**t3 — offload.** The journal offers both extents, with `Oldest` v1 and `Newest`
+v2. The carver cuts chunk A (4 MiB) and chunk B (1 MiB), the engine packs both
+into block K1, the syncer puts it and reports it durable, and one commit writes:
+
+| Record | Value |
+| --- | --- |
+| Shape(f) | size 11M, epoch 0 — read, not written: the epoch is unchanged |
+| Hole(f, 4M) | end 10M |
+| Ref(f, 0) | A, skip 0, length 4M, oldest 1, newest 2 |
+| Ref(f, 10M) | B, skip 0, length 1M, oldest 1, newest 2 |
+| Chunk(A) | block K1, position `[0, 4M)`, refcount 1 |
+| Chunk(B) | block K1, position `[4M, 5M)`, refcount 1 |
+| Block(K1) | live 2 |
+
+The journal marks both extents durable. They are **Resident** and evictable.
+
+**t4 — overwrite 1 MiB at 1M, v3.** The write path touches only Shape, and
+`size` does not change. No ref changes: `Ref(f, 0)` still covers `[0, 4M)`. The
+journal holds v3 at `[1M, 2M)`, newer than the ref's `newest`, so that extent is
+**Dirty** again and reads are served from the journal.
+
+A crash here is the case [§2.1](#2.1%20Ref)'s versions exist for. Reseed calls
+`MarkDurable([0, 4M), oldest 1, newest 2)`; the journal finds v3 > 2 at
+`[1M, 2M)` and leaves it unmarked, so v3 is offloaded again rather than evicted.
+
+**t5 — offload the overwrite.** The journal offers `[1M, 2M)` at v3. The carver
+cuts chunk C into block K2, and the commit splits the ref around it:
+
+| Record | Value |
+| --- | --- |
+| Ref(f, 0) | A, skip 0, length **1M**, 1–2 |
+| Ref(f, 1M) | **C**, skip 0, length 1M, 3–3 |
+| Ref(f, 2M) | A, skip **2M**, length 2M, 1–2 |
+| Ref(f, 10M) | B, skip 0, length 1M, 1–2 |
+| Chunk(A) | K1, `[0, 4M)`, refcount **2** — two refs name it |
+| Chunk(B) | K1, `[4M, 5M)`, refcount 1 |
+| Chunk(C) | K2, `[0, 1M)`, refcount 1 |
+| Block(K1) | live 2 |
+| Block(K2) | live 1 |
+
+A was not rewritten. Its middle MiB, the v1 bytes, is dead weight in K1 that no
+ref uses.
+
+**t6 — truncate to 3 MiB.** One transaction ([§6.2](#6.2%20Truncation%20and%20deallocation)):
+
+| Record | Change |
+| --- | --- |
+| Shape(f) | size **3M**, epoch **1** |
+| Hole(f, 4M) | deleted — past the new end of file |
+| Ref(f, 2M) | narrowed to A, skip 2M, length **1M** |
+| Ref(f, 10M) | deleted, so B's refcount goes 1 → **0** |
+| Block(K1) | live 2 → **1** — A is still referenced, B is not |
+
+An offload that had been offered the 11 MiB file and commits now finds epoch 1,
+not 0, and drops `f`'s refs from its commit ([§2.4](#2.4%20Shape%20and%20holes)).
+
+**t7 — delete.** The namespace releases the inode ([RFC 5 §4.3](rfc-5-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)) and its three
+refs are dropped. A's refcount goes 2 → 0 and C's 1 → 0, so K1's `live` and
+K2's `live` both reach 0. Sweep's `Retire(K1)` checks `live == 0` and deletes
+Block(K1), Chunk(A) and Chunk(B) in one transaction, and only then deletes the
+object ([§7.1](#7.1%20Conditional%20retirement)). K2 goes the same way.
+
+| Record | Written when | Its job above |
+| --- | --- | --- |
+| **Shape** | a write grows the file; truncate | `size` was the only record of the uncarved bytes (t1); `epoch` guarded offload against the truncate (t6) |
+| **Hole** | a write past EOF; truncate; deallocate | told the zeros at `[4M, 10M)` from the uncarved bytes (t2) |
+| **Ref** | offload commit; truncate; deallocate; delete | mapped file bytes to chunk bytes and split on overwrite (t5); its versions kept reseed from releasing v3 (t4) |
+| **Chunk** | offload commit; retirement | located A, B and C in their blocks and counted their refs |
+| **Block** | offload commit; retirement | counted live chunks, so sweep knew when K1 could go (t7) |
+
+The write path wrote only Shape and Hole (t1, t2, t4). Offload wrote only Ref,
+Chunk and Block, and read `epoch` (t3, t5).
+
 ## 3. Existence
 
 ### 3.1 The gap this closes
@@ -433,6 +542,17 @@ what each costs the write path:
 Almost every write is an overwrite or an append, and those already update `size`
 ([RFC 0 §5.1](rfc-0-data-lifecycle.md#5.1%20Write)). Recording holes adds nothing to them. A dense file has an empty hole
 set however it was written.
+
+**Holes are routine even on a share with no sparse files.** NFS and SMB clients
+send one file's writes as many concurrent requests — RPC slots, multi-credit
+writes — and the server receives them in any order. A sequential copy that
+arrives as `@2M, @0, @3M, @1M` creates a hole at the first request and fills it
+over the next three: write past EOF, write into a hole, append, write into a
+hole. Hole creation and removal are therefore on the write path's hot path, and
+the per-write cost bound below applies to them as much as to appends. Deliberate
+sparseness — disk images, preallocated database files, out-of-order downloads,
+punched ranges — adds holes that last; out-of-order arrival adds holes that last
+microseconds.
 
 The chosen representation is not otherwise normative. An implementation **MAY**
 record written extents instead if it meets [§3.2](#3.2%20Every%20offset%20is%20in%20exactly%20one%20class) and [§3.4](#3.4%20Ordering%20against%20the%20journal), and **MUST** then show
@@ -971,7 +1091,7 @@ written after.
 | [§3.5](#3.5%20Operations%20that%20make%20holes) allocate | Allocate a range with nothing staged. Assert it reads zeros, not a failure. |
 | [§4.4](#4.4%20Commits%20for%20one%20file%20apply%20in%20order) commit order | Commit B, then commit A over the same offsets with a lower `newest`. Assert B's refs survive. |
 | [§6.1](#6.1%20A%20refcount%20is%20exactly%20its%20refs) refcount | Over random interleavings of commit, truncate, deallocate and delete, assert after every transaction that each refcount equals a count of refs naming it. |
-| [§6.2](#6.2%20Truncation%20and%20deallocation) epoch | Offer, truncate, commit. Assert the commit is refused and no ref lies past `size`. |
+| [§6.2](#6.2%20Truncation%20and%20deallocation) epoch | Offer, truncate, commit. Assert the truncated file's refs are dropped from the commit, the rest of the commit applies, and no ref lies past `size`. |
 | [§6.3](#6.3%20Underflow%20is%20corruption%2C%20not%20a%20boundary) underflow | Force a double decrement. Assert the transaction fails and the count is unchanged. |
 | [§7.1](#7.1%20Conditional%20retirement), [§7.2](#7.2%20Adoption%20is%20conditional%20on%20existence) sweep race | Interleave `Retire` and an adopting commit in every order. Assert that either the block survives with the new ref, or the commit fails, and never a ref to a retired chunk. |
 | [§6.5](#6.5%20Who%20owns%20a%20ref) snapshot counted | Snapshot a file, delete the file. Assert every chunk's refcount is still nonzero and its block is not retirable, with no other liveness input configured. |
@@ -985,6 +1105,7 @@ written after.
 | Requirement | Check |
 | --- | --- |
 | [§5.2](#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed) amplification | Write a file of *N* chunks for several *N*. Assert records **written** per commit are constant in *N*. A correctness assertion on the resulting refs passes a quadratic implementation. |
+| [§3.3](#3.3%20Why%20holes%2C%20not%20written%20extents) out-of-order writes | Write a file of *N* MiB as 1 MiB writes in shuffled order, for several *N*. Assert the file ends with no hole records, and that records written per write are constant in *N*. |
 | [§5.1](#5.1%20No%20record%20is%20written%20by%20both%20paths) write sets | Stream appends to one file while its offload commits. Assert every commit succeeds without a retry caused by the writer. |
 | [§8.1](#8.1%20Covering%20lookup) lookup | Assert records **read** per covering lookup grow at most logarithmically in *N*. Count index iterator steps as well as row loads: the quadratic cost in [§12.3](#12.3%20What%20must%20not%20stand%20in) is in keys scanned, which a row-read count alone does not see. A benchmark is not this check — it has no threshold, so `go test` never fails on it. |
 | [§8.1](#8.1%20Covering%20lookup) declared | Build every backend against the interface with the lookup method. A backend that lacks it **MUST** fail to compile. |
