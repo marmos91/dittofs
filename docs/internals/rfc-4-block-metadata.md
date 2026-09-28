@@ -1,6 +1,6 @@
 ---
 rfc: 4
-title: "RFC 4 — block metadata"
+title: RFC 4 — block metadata
 component: block metadata
 status: draft
 depends_on:
@@ -34,19 +34,30 @@ an implementer to build around.
 
 ## 1. Purpose
 
-Block metadata is the second oracle of [RFC 0 §4.1](rfc-0-data-lifecycle.md#4.1%20The%20two%20oracles). It answers, for any offset of
-any file:
+Block metadata is the source of truth for file content: which chunks make up each
+file, which block holds each chunk, which blocks exist remotely, and what state
+each of them is in. It is the second oracle of [RFC 0 §4.1](rfc-0-data-lifecycle.md#4.1%20The%20two%20oracles), and it answers, for any
+offset of any file:
 
 > **Does content exist here, which chunk holds it, which block holds that chunk,
 > and is that block durable?**
 
+The one fact about content it does not hold is local placement ([§1.1](#1.1%20Non-goals)).
+
 It also counts references, so that sweep can tell what is safe to delete
 ([RFC 0 §8.3](rfc-0-data-lifecycle.md#8.3%20Sweep)).
 
-It is a **ledger**, not an observer. Every fact in it was reported by the
-component that observed it — existence by the write path, chunks by the carver,
-durability by the syncer — and this component's job is to record those facts
-atomically and answer from them without distortion.
+It is a **ledger**, not an observer. Every fact in it was observed by another
+component and delivered by the engine — existence by the write path, chunks by
+the carver, durability by the syncer. Block metadata imports none of them and
+observes nothing itself. Its job is to record those facts atomically and answer
+from them without distortion.
+
+The engine is its caller on the content path: write, flush, read, truncate,
+clone. Two other components hold narrow views of it, which the engine wires at
+construction ([RFC 6 §2.1](rfc-6-engine.md#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one)) and which they then call directly: the namespace reads
+`size` and releases an inode's refs ([RFC 5 §2.5](rfc-5-namespace-metadata.md#2.5%20Where%20%60size%60%20lives), [RFC 5 §4.3](rfc-5-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)), and sweep
+retires blocks and audits counts ([§7](#7.%20What%20sweep%20needs%20from%20this%20component)). Neither holds more than its view.
 
 ### 1.1 Non-goals
 
@@ -54,21 +65,28 @@ Block metadata **MUST NOT**:
 
 - record where bytes sit on local disk, or whether they are local at all
   ([RFC 0 §4.1](rfc-0-data-lifecycle.md#4.1%20The%20two%20oracles)) — that is the journal's question, and residency is computed, not
-  stored ([RFC 0 §4.2](rfc-0-data-lifecycle.md#4.2%20The%20residency%20function));
+  stored ([RFC 0 §4.2](rfc-0-data-lifecycle.md#4.2%20The%20residency%20function)). It does know which content has a durable remote copy: a
+  carved offset has one, and an uncarved offset has only the journal ([§3.2](#3.2%20Every%20offset%20is%20in%20exactly%20one%20class)).
+  What it cannot say is whether a carved offset is *also* held locally —
+  **Resident** or **Remote** — and it **MUST NOT** try;
 - observe durability — it records reports, and a record with no report behind it
   is a claim nothing verified ([RFC 0 §4.3](rfc-0-data-lifecycle.md#4.3%20Reporting), [RFC 3 §2.7](rfc-3-syncer.md#2.7%20It%20reports%3B%20it%20does%20not%20persist));
-- own names, directories, handles, permissions or locks — that is [RFC 5](rfc-5-namespace-metadata.md);
+- own names, directories, attributes, handles, permissions or locks — the
+  filesystem model that the NFS and SMB adapters both translate into, which is
+  [RFC 5](rfc-5-namespace-metadata.md)'s. It is not per-adapter state: both protocols share one namespace, and its
+  rules are enforced once, below the adapters;
 - decide what to flush, evict or sweep — it supplies the atomic operations those
   decisions need ([§7](#7.%20What%20sweep%20needs%20from%20this%20component)) and nothing more;
 - import another component in this set ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)).
 
 ### 1.2 Why it is a separate RFC from the namespace
 
-RFC 5 and this document are usually implemented in one database, often in one
-transaction. They are specified separately because their write patterns are
-different in kind:
+RFC 5 and this document are one database and two sets of records. The separation
+is logical: each side has its own records and its own interface, and neither
+writes the other's records. They are specified separately because their write
+patterns are different in kind:
 
-| | Namespace metadata (RFC 5) | Block metadata (this RFC) |
+| | Namespace metadata ([RFC 5](rfc-5-namespace-metadata.md)): the filesystem model the adapters speak | Block metadata (this RFC): file content |
 | --- | --- | --- |
 | Written by | client operations | client writes *and* background flush |
 | Unit | one entry | one extent, one chunk, one block |
@@ -79,39 +97,102 @@ A design that stores both in one record per file puts a background process and
 the client on the same key. [§5](#5.%20Write%20sets) exists because that is how the system has already
 failed once.
 
+Both **MUST** live in one physical database, because two rules need a
+transaction that spans them. A client write records `mtime` and `ctime` in the
+same transaction as existence ([RFC 5 §2.5](rfc-5-namespace-metadata.md#2.5%20Where%20%60size%60%20lives)), and releasing an inode drops its refs
+([§6.4](#6.4%20Delete)). Across two databases, each of those needs a cross-store protocol whose
+failure modes are exactly the torn states this document forbids. What one
+database does not require is one keyspace: a backend **MAY** give each side its
+own tables or key prefix, so that flush-commit churn is not reclaimed together
+with namespace records. Splitting them onto separate servers is open ([§13](#13.%20Open%20questions)).
+
 ## 2. The records
 
-Block metadata holds four kinds of record. Each is keyed by exactly one thing,
+Block metadata holds five kinds of record. Each is keyed by exactly one thing,
 and none holds a list that grows with its file.
 
-![Four record kinds: per-file existence (size, holes, truncation epoch), refs keyed by file and offset, chunks keyed by hash, blocks keyed by remote key, with the direction each one points](img/rfc4-records.svg)
+![Five record kinds: per-file shape (size, truncation epoch) and one hole record per unwritten range, refs keyed by file and offset, chunks keyed by hash, blocks keyed by remote key, with the direction each one points](img/rfc4-records.svg)
 
 | Record | Keyed by | Holds | Written by |
 | --- | --- | --- | --- |
-| **Existence** | `FileID` | size, hole set, truncation epoch | the write path ([§3](#3.%20Existence)) |
-| **Ref** | `(FileID, offset)` | chunk hash, skip, length | flush commit ([§4](#4.%20The%20flush%20commit)) |
+| **Shape** | `FileID` | size, truncation epoch | the write path, truncate, deallocate ([§3](#3.%20Existence)) |
+| **Hole** | `(FileID, start)` | end | the write path, truncate, deallocate ([§3](#3.%20Existence)) |
+| **Ref** | `(FileID, offset)` | chunk hash, skip, length, content versions | flush commit ([§4](#4.%20The%20flush%20commit)) |
 | **Chunk** | chunk hash | block key, position in block, refcount | flush commit ([§4](#4.%20The%20flush%20commit)) |
 | **Block** | remote key | live-chunk count | flush commit, sweep ([§7](#7.%20What%20sweep%20needs%20from%20this%20component)) |
 
+A file's shape and its holes are together what this document calls its
+**existence**: what the file's size is and which parts of it were written.
+
 ### 2.1 Ref
 
-A ref is [RFC 0](rfc-0-data-lifecycle.md)'s **ChunkRef**: one file's use of one chunk at one offset. A file
-here is an inode. A snapshot's copy of a file also owns refs, keyed by
-`(snapshot, file)` in place of the file ([§6.5](#6.5%20Who%20owns%20a%20ref)).
+A ref says: *these bytes of this file are that range of that chunk.* It is
+[RFC 0](rfc-0-data-lifecycle.md)'s **ChunkRef** — one file's use of one chunk at one offset:
 
-    Ref(file, offset) = { hash, skip, length, version }
+    Ref(file, offset) = { hash, skip, length, oldest, newest }
 
-> [!important] Pending review — refs carry the journal version
-> `version` is new and mandatory. It closes a data-loss path found in review: reseed
-> after a crash marked extents durable by position alone, so a write that
-> superseded flushed content and was not yet flushed became evictable. See [§4.4](#4.4%20Commits%20for%20one%20file%20apply%20in%20order) and
-> [RFC 1 §9.2](rfc-1-journal.md#9.2%20Flush%20state%20after%20recovery).
-> *Added by the RFC 0–3 review, 2026-09-25.*
+- `file` is the inode that owns the ref, never a name ([§6.5](#6.5%20Who%20owns%20a%20ref)). A snapshot's copy
+  of a file owns refs too, keyed by `(snapshot, file)` in place of the file.
+- `offset` is where in the file the ref's bytes begin.
+- `hash` names the chunk. A ref never names a block ([§2.5](#2.5%20Refs%20name%20hashes%2C%20never%20blocks)).
+- `skip` and `length` select which bytes of the chunk the ref uses.
+- `oldest` and `newest` bound the journal content versions of what the ref
+  describes (below).
 
-`version` is the journal version of the content the ref describes: the `Version`
-of the offer its pass carved ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Flush)). It orders commits for one file ([§4.4](#4.4%20Commits%20for%20one%20file%20apply%20in%20order)) and
-lets the journal reseed a flush bit only for the content a ref actually records
-([RFC 1 §9.2](rfc-1-journal.md#9.2%20Flush%20state%20after%20recovery)).
+To read offset *x*, take the ref with the greatest `offset` ≤ *x*. If
+*x* < `offset + length`, the byte at *x* is byte `skip + (x − offset)` of chunk
+`hash`. Otherwise no ref covers *x*, and existence says whether it is a hole or
+uncarved ([§3.2](#3.2%20Every%20offset%20is%20in%20exactly%20one%20class)).
+
+![Refs of two files over three chunks: file f tiled by refs to A, B and C, the ref to B split in two by a deallocation, and file g adopting A, so that A's refcount is 2 and B's is 2](img/rfc4-refs.svg)
+
+**An example.** File `f` is 10 MiB and was carved into three chunks: A (4 MiB),
+B (3 MiB) and C (3 MiB). Its refs tile it:
+
+| Ref | hash | skip | length | covers |
+| --- | --- | --- | --- | --- |
+| `(f, 0)` | A | 0 | 4 MiB | `[0, 4M)` |
+| `(f, 4M)` | B | 0 | 3 MiB | `[4M, 7M)` |
+| `(f, 7M)` | C | 0 | 3 MiB | `[7M, 10M)` |
+
+- **Deallocate `[5M, 6M)`.** The ref over B splits into `(f, 4M) → B, skip 0,
+  length 1M` and `(f, 6M) → B, skip 2M, length 1M`, and `[5M, 6M)` becomes a
+  hole. B's refcount goes from 1 to 2: one chunk, two uses. No byte moved and B
+  was not rewritten.
+- **Truncate to 9 MiB.** The last ref narrows to `(f, 7M) → C, skip 0, length 2M`.
+  C keeps all 3 MiB in its block; the ref stops using the tail.
+- **File `g` writes the same 4 MiB as A.** Its flush finds A's chunk record and
+  adopts it: `(g, 0) → A, skip 0, length 4M`, and A's refcount goes to 2. That is
+  all deduplication is — two refs naming one hash.
+
+**Why a ref carries content versions.** Every write the journal stages gets a
+content version, higher than any before it for that file ([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions)). A flush
+pass is offered extents whose versions lie in `[Oldest, Newest]` ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Flush)),
+and the commit records that range on every ref the pass writes. A range, not a
+version per byte, is enough for both of its uses.
+
+The first use is ordering commits: of two passes over overlapping offsets, the
+one with the lower `newest` carries older content and must not overwrite the
+other ([§4.4](#4.4%20Commits%20for%20one%20file%20apply%20in%20order)).
+
+The second is reseeding after a crash ([RFC 1 §9.2](rfc-1-journal.md#9.2%20Flush%20state%20after%20recovery)). A crash forgets which journal
+extents were already flushed, and the engine rebuilds that from the refs: what a
+ref covers is durable remotely, so the journal may evict it. Position alone is
+not enough to say so:
+
+1. Write version 1 over `[0, 4M)` and flush it. The ref `(f, 0)` records
+   `newest = 1`.
+2. Write version 2 over `[0, 1M)`. The journal holds it; it is not flushed yet.
+3. Crash and recover. The journal still holds version 2 at `[0, 1M)`, and the ref
+   still covers `[0, 4M)`.
+4. Judged by position, the ref covers `[0, 1M)`, so reseed marks it durable and
+   eviction may drop version 2. The next read fetches version 1. An
+   acknowledged write is gone, and nothing reports it.
+
+With the versions, reseed passes the ref's `oldest` and `newest` to
+`MarkDurable`. The journal sees version 2 > `newest` at `[0, 1M)`, leaves that
+extent unmarked, and it is flushed again. Held content *older* than `oldest` can
+only have come back from a restored segment, and the journal drops it as stale.
 
 `skip` and `length` select `[skip, skip + length)` of the chunk's bytes. A ref
 that uses a whole chunk has `skip = 0` and `length` equal to the chunk's length.
@@ -196,13 +277,35 @@ A block record has **no durability flag**, because it has no non-durable state:
 by [§4.2](#4.2%20Only%20after%20durability) a block record exists only once its block is durable. What a block record
 records is that the block exists remotely and how much of it is still wanted.
 
-### 2.4 Existence
+### 2.4 Shape and holes
 
-    Existence(file) = { size, holes, epoch }
+    Shape(file)       = { size, epoch }
+    Hole(file, start) = { end }
 
-`holes` is the set of extents in `[0, size)` that were never written, or were
-deallocated. `epoch` is a counter that only truncation and deallocation advance
-([§6.2](#6.2%20Truncation%20and%20deallocation)). [§3](#3.%20Existence) is entirely about why this record exists.
+A hole record is one extent `[start, end)` below `size` that was never written,
+or was deallocated. A file's holes never overlap or touch — adjacent holes merge
+— so they are exactly its unwritten ranges, ordered by `start`, and a dense file
+has none. A hole is its own record for the reason a ref is ([§2.1](#2.1%20Ref)): a hole list
+on the shape record would grow with the file's sparseness, and every write into
+a hole would rewrite it.
+
+`epoch` is a counter, not a clock. It starts at zero, and only truncate-down and
+deallocate advance it ([§6.2](#6.2%20Truncation%20and%20deallocation)). It lets a flush commit detect that the file shrank
+under it:
+
+1. The journal offers `[0, 10M)` of `f`. The engine reads `epoch = 3` and
+   carries it with the pass ([RFC 6 §4.4](rfc-6-engine.md#4.4%20The%20truncation%20epoch%20is%20captured%20at%20offer%20and%20checked%20at%20commit)).
+2. A client truncates `f` to 5 MiB, and `epoch` becomes 4.
+3. The pass commits, finds `epoch = 4`, and drops `f`'s refs from the commit;
+   the rest of the commit applies. The journal, already truncated, offers
+   `[0, 5M)` again later.
+
+Without the check, the commit would leave refs past the new end of file ([§6.2](#6.2%20Truncation%20and%20deallocation)).
+A timestamp cannot do this job: two operations in one tick look identical, and
+clocks step backwards. Nor can the content version, which every write advances,
+so every flush would conflict with every write — the livelock [§5.1](#5.1%20No%20record%20is%20written%20by%20both%20paths) forbids.
+
+[§3](#3.%20Existence) is entirely about why these records exist.
 
 ### 2.5 Refs name hashes, never blocks
 
@@ -323,7 +426,7 @@ Each crash point then resolves to a truthful answer:
 Reversing 2 and 3 makes the first crash resolve to **Lost** for a write that was
 never acknowledged — a loud failure for data no client was promised.
 
-The existence record **MUST** be at least as durable at step 4 as the journal's
+Existence **MUST** be at least as durable at step 4 as the journal's
 record is under the configured policy ([RFC 1 §6.2](rfc-1-journal.md#6.2%20Sync%20policy)). An acknowledged write whose
 bytes survive and whose existence does not is invisible, which is I1's violation
 by the other route.
@@ -335,8 +438,8 @@ acknowledge any write in the group before the group's commit.
 **Existence MUST NOT be reconstructed from the journal.** Growing `size` after a
 crash to cover what the journal holds makes the journal the oracle for existence
 again, which [RFC 0 §4.1](rfc-0-data-lifecycle.md#4.1%20The%20two%20oracles) forbids — and it fails in the direction that matters: it
-cannot recover what the journal lost, which is the only case the existence record
-is for.
+cannot recover what the journal lost, which is the only case existence is recorded
+for.
 
 ### 3.5 Operations that make holes
 
@@ -444,9 +547,12 @@ single component observes it.
 > serialising remains the engine's choice on top.
 > *Added by the RFC 0–3 review, 2026-09-25.*
 
-A commit **MUST NOT** replace a ref with one of a lower `version` ([§2.1](#2.1%20Ref)); it refuses
-that ref and applies the rest. Every ref carries the journal version of the
-offered content ([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions)), because reseeding needs it ([RFC 1 §9.2](rfc-1-journal.md#9.2%20Flush%20state%20after%20recovery)) whether or not
+A commit **MUST NOT** replace a ref with one whose `newest` is lower ([§2.1](#2.1%20Ref)); it
+refuses that ref and applies the rest. This is sufficient: content at an offset
+that differs between two passes was written after the earlier pass was offered,
+so its version, and the later pass's `newest`, exceeds every version the earlier
+pass holds. Every ref carries the content versions of its offer
+([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions)), because reseeding needs it ([RFC 1 §9.2](rfc-1-journal.md#9.2%20Flush%20state%20after%20recovery)) whether or not
 commits are serialised. The engine **MAY** also serialise commits per file
 ([RFC 6](rfc-6-engine.md)); that keeps the version check from ever firing, and is cheaper to reason
 about, but no longer stands in for it.
@@ -837,7 +943,7 @@ written after.
 | [§3.2](#3.2%20Every%20offset%20is%20in%20exactly%20one%20class) hole vs uncarved | Write past EOF, do not flush, drop the journal's extent. Assert the gap reads zeros and the written range **fails**. A rig that only checks the zeros passes the build that serves zeros for both. |
 | [§3.4](#3.4%20Ordering%20against%20the%20journal) no reconstruction | Crash with journal bytes past recorded `size`. Assert `size` is not grown on restart. |
 | [§3.5](#3.5%20Operations%20that%20make%20holes) allocate | Allocate a range with nothing staged. Assert it reads zeros, not a failure. |
-| [§4.4](#4.4%20Commits%20for%20one%20file%20apply%20in%20order) commit order | Commit B, then commit A over the same offsets with a lower version. Assert B's refs survive. |
+| [§4.4](#4.4%20Commits%20for%20one%20file%20apply%20in%20order) commit order | Commit B, then commit A over the same offsets with a lower `newest`. Assert B's refs survive. |
 | [§6.1](#6.1%20A%20refcount%20is%20exactly%20its%20refs) refcount | Over random interleavings of commit, truncate, deallocate and delete, assert after every transaction that each refcount equals a count of refs naming it. |
 | [§6.2](#6.2%20Truncation%20and%20deallocation) epoch | Offer, truncate, commit. Assert the commit is refused and no ref lies past `size`. |
 | [§6.3](#6.3%20Underflow%20is%20corruption%2C%20not%20a%20boundary) underflow | Force a double decrement. Assert the transaction fails and the count is unchanged. |
@@ -900,8 +1006,11 @@ written after.
    costs a walk of every ref per sweep, and it needs its own answer to adoption
    during the walk. If [§5.3](#5.3%20Hot%20records%20that%20are%20not%20per-file) or [§6.5](#6.5%20Who%20owns%20a%20ref) turn out too costly under measurement, the
    choice belongs in [RFC 0](rfc-0-data-lifecycle.md), not in a second mechanism added beside the first.
-7. **Where existence lives.** [§1.2](#1.2%20Why%20it%20is%20a%20separate%20RFC%20from%20the%20namespace) separates it from the namespace by write
-   pattern. But `size` is also a namespace attribute that [RFC 5](rfc-5-namespace-metadata.md) returns on every
-   `GETATTR`. Whether one record serves both, or existence owns `size` and RFC 5
-   reads it, is RFC 5's to settle, and it must not reintroduce [§5.1](#5.1%20No%20record%20is%20written%20by%20both%20paths)'s shared
-   record.
+7. **Where existence lives** — settled by [RFC 5 §2.5](rfc-5-namespace-metadata.md#2.5%20Where%20%60size%60%20lives). `size` is stored once, on the
+   shape record ([§2.4](#2.4%20Shape%20and%20holes)), and the namespace reads it through a declared
+   interface. `mtime` and `ctime` on write are written in the same transaction,
+   which is one reason the two sides share a database ([§1.2](#1.2%20Why%20it%20is%20a%20separate%20RFC%20from%20the%20namespace)).
+8. **Separate metadata servers.** [§1.2](#1.2%20Why%20it%20is%20a%20separate%20RFC%20from%20the%20namespace) keeps both sides in one database. High
+   availability, or pNFS with data servers apart from a metadata server, may want
+   them on separate machines. That needs an answer for the two transactions
+   [§1.2](#1.2%20Why%20it%20is%20a%20separate%20RFC%20from%20the%20namespace) names, and it spans this document, [RFC 5](rfc-5-namespace-metadata.md) and [RFC 6](rfc-6-engine.md).

@@ -173,7 +173,7 @@ consulted at construction is the engine's.
 
 **Start.** Open the journal, which recovers its placement index alone (RFC 1
 [§9.1](rfc-1-journal.md#9.1%20Rebuilding)). Reseed the journal's flush state from block metadata: every extent that a
-carved ref covers is reported durable to the journal **at that ref's version**,
+carved ref covers is reported durable to the journal **at that ref's `oldest` and `newest`**,
 through `MarkDurable`, and no other ([RFC 1 §9.2](rfc-1-journal.md#9.2%20Flush%20state%20after%20recovery)). The journal marks it only where no
 held record is newer.
 
@@ -897,7 +897,7 @@ caller. A caller holding one can do what the facade orders, out of order.
 
 ### 9.2 Deallocate records a hole; it does not write zeros
 
-Deallocation makes the range a hole in the existence record, drops or narrows the
+Deallocation makes the range a hole record, drops or narrows the
 refs over it and advances `epoch`, in one transaction ([RFC 4 §3.5](rfc-4-block-metadata.md#3.5%20Operations%20that%20make%20holes), [§6.2](rfc-4-block-metadata.md#6.2%20Truncation%20and%20deallocation)), then has
 the journal stop holding the range.
 
@@ -995,7 +995,7 @@ where the engine is the site that must change.
 | [§4.2](#4.2%20Flush%20is%20scheduled%20here), [§8.1](#8.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20flush%20included) flush retried and never stopped | While the remote is unhealthy the dispatcher skips every pass, and an explicit flush returns "not finalized". Only the liveness probe can clear it. | `engine/carve_dispatch.go:45`; `engine/sync_drain.go:64`–`:70` |
 | [§3.1](#3.1%20Policy%20is%20decided%20here%20and%20executed%20below), [§7.1](#7.1%20Eviction%20is%20chosen%20here%2C%20and%20needs%20no%20new%20record), [§7.2](#7.2%20A%20capacity%20refusal%20comes%20back%20here) eviction and refusal here | The journal evicts to satisfy its own write: its capacity gate selects coldest-first segments, evicts, backpressures and finally refuses — none of it through the engine. Admission reads a counter without reserving (the code says so). | `journal/evict.go:166`, `:453`–`:539` |
 | [§4.3](#4.3%20Commits%20for%20one%20file%20are%20serialised%20here) the engine's guard, per file | The outcome holds: passes of one file do not overlap. But the guard is the journal's shard-scoped flush lock, held across the callback, and commits within a pass take a 256-stripe lock in the engine keyed by a hash of the file id. Both serialise unrelated files that collide, and the first puts the engine's decision inside the journal. | `journal/flush.go:98`–`:100`, `:118`–`:120`; `engine/flush.go:115`–`:135` |
-| [§4.4](#4.4%20The%20truncation%20epoch%20is%20captured%20at%20offer%20and%20checked%20at%20commit) epoch | No epoch is captured or checked; the existence record it lives in does not exist ([RFC 4 §11](rfc-4-block-metadata.md#11.%20Deviations)). | `engine/flush_closure.go` (no epoch in the closure) |
+| [§4.4](#4.4%20The%20truncation%20epoch%20is%20captured%20at%20offer%20and%20checked%20at%20commit) epoch | No epoch is captured or checked; the shape record it lives in does not exist ([RFC 4 §11](rfc-4-block-metadata.md#11.%20Deviations)). | `engine/flush_closure.go` (no epoch in the closure) |
 | [§7.5](#7.5%20When%20GC%20runs%2C%20and%20what%20it%20relocates%2C%20is%20decided%20here) GC policy is the engine's | GC is scheduled by a process-wide ticker in the runtime, fifteen minutes by default, started from the server command; the relocation threshold is a server-wide runtime default applied to every remote. Neither is composed with the engine or configured per remote namespace. Passes are serialised by a process-local lock ([RFC 7 §11](rfc-7-gc.md#11.%20Deviations)). | `runtime/blockgc_scheduler.go:18`–`:21`; `cmd/dfs/commands/start.go:439`–`:440`; `runtime/runtime.go:1146`; `runtime/blockgc.go:479` |
 | [§8.1](#8.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20flush%20included) flush in health | A failed pass increments a lifetime counter and logs a warning. Engine health is the local store's closed flag and the remote's probe; share health is the worst of engine and metadata. Flush failure reaches neither. | `engine/carve_dispatch.go:152`–`:153`; `engine/health.go:41`–`:79`; `runtime/shares/healthcheck.go:59`–`:95` |
 
@@ -1014,7 +1014,7 @@ where the engine is the site that must change.
 | Requirement | Current state | Evidence |
 | --- | --- | --- |
 | [§6.1](#6.1%20Resolution%20is%20a%20join%2C%20computed%20per%20request) per missing extent | The journal reports two booleans for the whole window, not extents, so the engine fetches every covering chunk of the window when any byte is missing. | `journal/index.go:293`–`:296`; `engine/read_internal.go:56`–`:64`; `engine/fetch.go:491`–`:499` |
-| [§6.1](#6.1%20Resolution%20is%20a%20join%2C%20computed%20per%20request) hole vs uncarved | With no existence record, a missing extent no ref covers is served as zeros whatever its cause, and on a share with no remote tier a missing extent is never looked up at all. | `engine/read_internal.go:56` |
+| [§6.1](#6.1%20Resolution%20is%20a%20join%2C%20computed%20per%20request) hole vs uncarved | With no existence records, a missing extent no ref covers is served as zeros whatever its cause, and on a share with no remote tier a missing extent is never looked up at all. | `engine/read_internal.go:56` |
 | [§6.2](#6.2%20The%20reply%20is%20served%20from%20the%20fetched%20bytes) reply independent of fill | Every demanded fetch fills, and the read is answered by re-reading the journal afterwards. A fill failure fails the fetch, and a window still unfilled after two tries fails the read. | `engine/fetch.go:669`–`:674`; `engine/read_internal.go:117`–`:131` |
 | [§6.3](#6.3%20Filling%20is%20a%20decision) fill is a decision | There is no fill policy: every demanded and every read-ahead fetch fills. Read-ahead keeps 64 blocks ahead of a sequential reader. | `engine/fetch.go:460`, `:669`; `engine/types.go:56`; `engine/readahead.go:80`–`:89` |
 | [§6.4](#6.4%20Speculation%20is%20planned%20here%2C%20and%20yields%20to%20demand%20and%20to%20writes) pre-warm yields | Warm fetches every chunk of every file until done, cancelled, or the journal refuses on capacity, which ends the run. | `engine/warm.go:60`–`:63`, `:184`–`:186` |
