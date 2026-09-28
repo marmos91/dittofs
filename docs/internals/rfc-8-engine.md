@@ -1,6 +1,6 @@
 ---
-rfc: 6
-title: "RFC 6 — the engine"
+rfc: 8
+title: "RFC 8 — the engine"
 component: engine
 status: draft
 depends_on:
@@ -8,16 +8,16 @@ depends_on:
   - "[[rfc-1-journal]]"
   - "[[rfc-2-carver]]"
   - "[[rfc-3-syncer]]"
-  - "[[rfc-4-block-metadata]]"
-  - "[[rfc-5-namespace-metadata]]"
-  - "[[rfc-7-gc]]"
-  - "[[rfc-8-remote-tier]]"
+  - "[[rfc-6-block-metadata]]"
+  - "[[rfc-7-namespace-metadata]]"
+  - "[[rfc-9-gc]]"
+  - "[[rfc-4-remote-tier]]"
 aliases:
-  - RFC 6
+  - RFC 8
 tags:
   - rfc
 ---
-# RFC 6 — the engine
+# RFC 8 — the engine
 
 **Status:** draft.
 **Depends on:** [RFC 0](rfc-0-data-lifecycle.md), for the terms, the residency function, the invariants and
@@ -32,7 +32,7 @@ The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT** and **MAY** are
 to be interpreted as in RFC 2119.
 
 This document specifies what the engine is required to be. It was written from
-the model in RFC 0–5 and [RFC 8](rfc-8-remote-tier.md), not from the current package. Where the current
+the model in RFC 0–3, [RFC 6](rfc-6-block-metadata.md), [RFC 7](rfc-7-namespace-metadata.md) and [RFC 4](rfc-4-remote-tier.md), not from the current package. Where the current
 implementation does not satisfy a requirement, that is recorded once, in [§12](#12.%20Deviations), as
 a **deviation**. A deviation is a defect to be fixed or migrated, never a rule
 for an implementer to build around.
@@ -74,17 +74,17 @@ parties and belongs to none of them.
 The engine **MUST NOT**:
 
 - define a format, an encoding or an algorithm — a record layout, a boundary
-  function, a block framing, a key derivation ([RFC 1](rfc-1-journal.md), [RFC 2](rfc-2-carver.md), [RFC 8](rfc-8-remote-tier.md));
+  function, a block framing, a key derivation ([RFC 1](rfc-1-journal.md), [RFC 2](rfc-2-carver.md), [RFC 4](rfc-4-remote-tier.md));
 - move bytes to or from the remote tier itself — that is the syncer ([RFC 3](rfc-3-syncer.md)), and
   the engine hands it work;
 - hold a copy of any oracle's answer that outlives the operation that asked —
-  no residency cache, no durability record, no size ([RFC 0 §4.2](rfc-0-data-lifecycle.md#4.2%20The%20residency%20function), [RFC 5 §2.5](rfc-5-namespace-metadata.md#2.5%20Where%20%60size%60%20lives));
+  no residency cache, no durability record, no size ([RFC 0 §4.2](rfc-0-data-lifecycle.md#4.2%20The%20residency%20function), [RFC 7 §2.5](rfc-7-namespace-metadata.md#2.5%20Where%20%60size%60%20lives));
 - persist anything. Every durable fact is recorded by the component that owns
   it, and a fact the engine persisted would be a third oracle;
-- decide when an inode stops existing ([RFC 5 §4](rfc-5-namespace-metadata.md#4.%20What%20keeps%20an%20inode%20alive)), or what to delete remotely
-  ([RFC 7](rfc-7-gc.md));
+- decide when an inode stops existing ([RFC 7 §4](rfc-7-namespace-metadata.md#4.%20What%20keeps%20an%20inode%20alive)), or what to delete remotely
+  ([RFC 9](rfc-9-gc.md));
 - carry namespace features that nothing below the namespace needs to know
-  about. The recycle bin [RFC 5 §14](rfc-5-namespace-metadata.md#14.%20Open%20questions) asks about is one: it is a rename, block
+  about. The recycle bin [RFC 7 §14](rfc-7-namespace-metadata.md#14.%20Open%20questions) asks about is one: it is a rename, block
   metadata never learns of it, and it is not policy over content. It is not the
   engine's.
 
@@ -125,10 +125,10 @@ The engine supplies, at construction:
 | Declared by | Need | Supplied from |
 | --- | --- | --- |
 | [RFC 1](rfc-1-journal.md) | an event recorder ([§3.8](rfc-1-journal.md#3.8%20Event%20reporting)) | the process's metrics |
-| [RFC 3](rfc-3-syncer.md) | a put, a verified read ([RFC 8 §7](rfc-8-remote-tier.md#7.%20This%20contract%20has%20more%20than%20one%20consumer)) | the remote tier, through the transform chain |
-| [RFC 4](rfc-4-block-metadata.md) | nothing | — |
-| [RFC 5](rfc-5-namespace-metadata.md) | `Size(file)` ([§2.5](rfc-5-namespace-metadata.md#2.5%20Where%20%60size%60%20lives)), release of an inode's refs ([§4.3](rfc-5-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)), allocation for `SEEK` ([§9.3](rfc-5-namespace-metadata.md#9.3%20Residency%20is%20not%20an%20attribute)) | block metadata's existence record and refs |
-| [RFC 7](rfc-7-gc.md) | its narrow views of metadata and the remote tier | block metadata; the remote tier |
+| [RFC 3](rfc-3-syncer.md) | a put, a verified read ([RFC 4 §7](rfc-4-remote-tier.md#7.%20This%20contract%20has%20more%20than%20one%20consumer)) | the remote tier, through the transform chain |
+| [RFC 6](rfc-6-block-metadata.md) | nothing | — |
+| [RFC 7](rfc-7-namespace-metadata.md) | `Size(file)` ([§2.5](rfc-7-namespace-metadata.md#2.5%20Where%20%60size%60%20lives)), release of an inode's refs ([§4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)), allocation for `SEEK` ([§9.3](rfc-7-namespace-metadata.md#9.3%20Residency%20is%20not%20an%20attribute)) | block metadata's existence record and refs |
+| [RFC 9](rfc-9-gc.md) | its narrow views of metadata and the remote tier | block metadata; the remote tier |
 
 ### 2.2 Capabilities are parameters, never assertions
 
@@ -153,7 +153,7 @@ Each share has exactly one engine, one journal and one assembly of policy state.
 Backends below the engine — a remote store, a metadata store — **MAY** be shared
 between shares and are reference-counted outside it.
 
-Sharing a remote store between shares is subject to [RFC 4 §2.6](rfc-4-block-metadata.md#2.6%20The%20scope%20of%20a%20count): the engine
+Sharing a remote store between shares is subject to [RFC 6 §2.6](rfc-6-block-metadata.md#2.6%20The%20scope%20of%20a%20count): the engine
 **MUST** refuse a composition in which two block-metadata stores can name one
 remote key. [§5.4](#5.4%20A%20block%27s%20name%20is%20derived%20here) is how it avoids that.
 
@@ -181,7 +181,7 @@ held record is newer.
 > Reseed used to report every extent a ref covers as durable, by position. After an
 > overwrite of offloaded content and a crash before the overwrite offloaded, that marked
 > the newer write durable; eviction then lost it and reads returned the old
-> content. Refs now carry a version ([RFC 4 §2.1](rfc-4-block-metadata.md#2.1%20Ref)) and reseed passes it.
+> content. Refs now carry a version ([RFC 6 §2.1](rfc-6-block-metadata.md#2.1%20Ref)) and reseed passes it.
 > *Added by the [RFC 0](rfc-0-data-lifecycle.md)–3 review, 2026-09-25.*
 
 > [!important] Pending review — the journal is opened with a version floor
@@ -189,7 +189,7 @@ held record is newer.
 > records as durable for that share ([RFC 1 §9.1](rfc-1-journal.md#9.1%20Rebuilding)). A journal restored from an old
 > copy would otherwise issue versions metadata already holds, and a reseed by
 > version would mark new writes durable. Block metadata must be able to answer that
-> number cheaply, which [RFC 4](rfc-4-block-metadata.md) does not yet state. A journal that opens behind its
+> number cheaply, which [RFC 6](rfc-6-block-metadata.md) does not yet state. A journal that opens behind its
 > floor is reported, and its stale extents are dropped at reseed.
 > *Added by the RFC 1 test-plan review, 2026-09-25.*
 
@@ -222,7 +222,7 @@ proceed to close them under a live loop.
 | When to repack | [§7.3](#7.3%20Repack%20is%20triggered%20here) | journal repack ([RFC 1 §8.2](rfc-1-journal.md#8.2%20Repack)) |
 | Whether to keep accepting writes | [§8.2](#8.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here) | journal capacity ([RFC 1 §7](rfc-1-journal.md#7.%20Capacity)) |
 | What follows from ill health | [§8.1](#8.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included) | — |
-| When GC runs, what it relocates | [§7.5](#7.5%20When%20GC%20runs%2C%20and%20what%20it%20relocates%2C%20is%20decided%20here) | GC ([RFC 7](rfc-7-gc.md)) |
+| When GC runs, what it relocates | [§7.5](#7.5%20When%20GC%20runs%2C%20and%20what%20it%20relocates%2C%20is%20decided%20here) | GC ([RFC 9](rfc-9-gc.md)) |
 
 A component that takes one of these decisions itself has absorbed engine policy,
 and a threshold that lives in a component's configuration is such a decision.
@@ -256,19 +256,19 @@ unsafely.
 
 A write is one facade operation. The engine performs, in this order:
 
-1. authorise the write against the namespace ([RFC 5 §7](rfc-5-namespace-metadata.md#7.%20Permissions));
+1. authorise the write against the namespace ([RFC 7 §7](rfc-7-namespace-metadata.md#7.%20Permissions));
 2. stage the bytes in the journal ([RFC 1 §3.1](rfc-1-journal.md#3.1%20Write));
 3. record existence — `size` grown, holes shrunk, `mtime` and `ctime` in the same
-   transaction ([RFC 4 §3.4](rfc-4-block-metadata.md#3.4%20Ordering%20against%20the%20journal), [RFC 5 §2.5](rfc-5-namespace-metadata.md#2.5%20Where%20%60size%60%20lives));
+   transaction ([RFC 6 §3.4](rfc-6-block-metadata.md#3.4%20Ordering%20against%20the%20journal), [RFC 7 §2.5](rfc-7-namespace-metadata.md#2.5%20Where%20%60size%60%20lives));
 4. acknowledge.
 
 No adapter **MAY** perform these steps itself or in another order. A sequence
 copied into each protocol handler is a sequence each handler can get wrong
 differently, and the one that gets it wrong serves zeros for acknowledged data
-([RFC 4 §3.1](rfc-4-block-metadata.md#3.1%20The%20gap%20this%20closes)).
+([RFC 6 §3.1](rfc-6-block-metadata.md#3.1%20The%20gap%20this%20closes)).
 
 The engine **MAY** group-commit step 3 across writes, and **MUST NOT**
-acknowledge any write in a group before the group commits ([RFC 4 §3.4](rfc-4-block-metadata.md#3.4%20Ordering%20against%20the%20journal)).
+acknowledge any write in a group before the group commits ([RFC 6 §3.4](rfc-6-block-metadata.md#3.4%20Ordering%20against%20the%20journal)).
 
 ### 4.2 Offload is scheduled here
 
@@ -302,7 +302,7 @@ reported to health ([§8.1](#8.1%20Health%20is%20derived%20from%20recent%20outco
 
 ### 4.3 Commits for one file are serialised here
 
-[RFC 4 §4.4](rfc-4-block-metadata.md#4.4%20Commits%20for%20one%20file%20apply%20in%20order) leaves the choice of mechanism to the engine. The engine **MUST NOT**
+[RFC 6 §4.4](rfc-6-block-metadata.md#4.4%20Commits%20for%20one%20file%20apply%20in%20order) leaves the choice of mechanism to the engine. The engine **MUST NOT**
 run two offload passes of one file concurrently: it holds a per-file guard from the
 moment the journal offers a run until the callback returns its durable extents.
 
@@ -319,10 +319,10 @@ in file-identity order so that two such passes cannot deadlock on each other.
 
 ### 4.4 The truncation epoch is captured at offer and checked at commit
 
-When the journal offers a run, the engine reads the file's `epoch` ([RFC 4 §6.2](rfc-4-block-metadata.md#6.2%20Truncation%20and%20deallocation))
+When the journal offers a run, the engine reads the file's `epoch` ([RFC 6 §6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation))
 and carries it into every commit that pass makes. Block metadata drops the refs
 of a file whose epoch no longer matches and applies the rest of the commit
-([RFC 4 §4.1](rfc-4-block-metadata.md#4.1%20What%20one%20commit%20records)). The engine re-offers that file alone from the journal, which has already
+([RFC 6 §4.1](rfc-6-block-metadata.md#4.1%20What%20one%20commit%20records)). The engine re-offers that file alone from the journal, which has already
 truncated ([RFC 1 §3.6](rfc-1-journal.md#3.6%20Truncate%20and%20delete)); the other files the block carried are durable and reported.
 
 > [!important] Pending review — truncation is handled per file
@@ -345,8 +345,8 @@ The offload callback **MUST** report, through the journal's `report`, exactly th
 extents whose commits succeeded, as each block's commit lands, and **MUST NOT**
 report any other ([RFC 0 §5.2](rfc-0-data-lifecycle.md#5.2%20Offload), [RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)). An extent whose put succeeded and whose
 commit did not is not durable, and **MUST NOT** be reported
-([RFC 4 §4.3](rfc-4-block-metadata.md#4.3%20The%20commit%20is%20the%20report%27s%20return%20edge)). Order does not matter: the journal marks each extent on its own, and a
-commit cannot overwrite newer refs because of their versions ([RFC 4 §4.4](rfc-4-block-metadata.md#4.4%20Commits%20for%20one%20file%20apply%20in%20order)).
+([RFC 6 §4.3](rfc-6-block-metadata.md#4.3%20The%20commit%20is%20the%20report%27s%20return%20edge)). Order does not matter: the journal marks each extent on its own, and a
+commit cannot overwrite newer refs because of their versions ([RFC 6 §4.4](rfc-6-block-metadata.md#4.4%20Commits%20for%20one%20file%20apply%20in%20order)).
 
 A block may carry chunks from several offered runs and files. Its commit makes all
 of them durable at once, and the callback reports each file's share of it then.
@@ -354,7 +354,7 @@ of them durable at once, and the callback reports each file's share of it then.
 ### 4.6 A share with no remote tier never reports durability
 
 On a share with no remote tier nothing is ever durable remotely, so the offload
-callback **MUST** return nothing, and no offloaded bit is ever set ([RFC 4 §4.2](rfc-4-block-metadata.md#4.2%20Only%20after%20durability)). The
+callback **MUST** return nothing, and no offloaded bit is ever set ([RFC 6 §4.2](rfc-6-block-metadata.md#4.2%20Only%20after%20durability)). The
 content stays **Dirty** for its lifetime, and eviction has nothing to act on —
 by definition, not by a gate.
 
@@ -424,17 +424,17 @@ is a block of a few kilobytes.
 
 ### 5.3 The dedup oracle never sees an uncommitted block
 
-The oracle is [RFC 4 §8.2](rfc-4-block-metadata.md#8.2%20Deduplication%20lookup)'s `Durable(hash)`: a chunk record exists, so its block
+The oracle is [RFC 6 §8.2](rfc-6-block-metadata.md#8.2%20Deduplication%20lookup)'s `Durable(hash)`: a chunk record exists, so its block
 is durable. It **MUST NOT** answer from anything that knows about a block not yet
 committed — the pending block, a block in flight, a put that succeeded and whose
 commit has not ([RFC 2 §5](rfc-2-carver.md#5.%20Packing%3A%20three%20rules%2C%20not%20a%20component)).
 
 A chunk carried by two blocks in
 flight is committed once: the first block to commit owns its record, and the
-second adopts it ([RFC 4 §4.1](rfc-4-block-metadata.md#4.1%20What%20one%20commit%20records)).
+second adopts it ([RFC 6 §4.1](rfc-6-block-metadata.md#4.1%20What%20one%20commit%20records)).
 
 > [!important] Pending review — two blocks carrying one chunk
-> Cross-reference added: [RFC 4 §4.1](rfc-4-block-metadata.md#4.1%20What%20one%20commit%20records) now states what the second commit does with a
+> Cross-reference added: [RFC 6 §4.1](rfc-6-block-metadata.md#4.1%20What%20one%20commit%20records) now states what the second commit does with a
 > chunk the first already recorded.
 > *Added by the RFC 0–3 review, 2026-09-25.*
 
@@ -448,22 +448,22 @@ Two refinements follow, and both are required:
   would then name bytes that exist nowhere.
 
 The oracle's answer is advisory. A chunk it reports may be retired before the
-adopting commit applies; that commit then fails ([RFC 4 §7.2](rfc-4-block-metadata.md#7.2%20Adoption%20is%20conditional%20on%20existence)), and the engine
+adopting commit applies; that commit then fails ([RFC 6 §7.2](rfc-6-block-metadata.md#7.2%20Adoption%20is%20conditional%20on%20existence)), and the engine
 **MUST** re-offer the run with that chunk carried. The engine **MUST NOT** hold
 anything — a lock, a reservation, an in-process guard — to make the answer
 binding. A guard another process cannot see protects nothing across processes,
-and [RFC 4 §7.2](rfc-4-block-metadata.md#7.2%20Adoption%20is%20conditional%20on%20existence) makes one unnecessary within a process.
+and [RFC 6 §7.2](rfc-6-block-metadata.md#7.2%20Adoption%20is%20conditional%20on%20existence) makes one unnecessary within a process.
 
 ### 5.4 A block's name is derived here
 
 The engine assembles the block, so it computes the name ([RFC 2 §4](rfc-2-carver.md#4.%20Identity)): a hash, under
 a domain distinct from chunk hashing, of the key scope and the block's chunk
-hashes in order. The name is final before framing begins ([RFC 8 §3.4](rfc-8-remote-tier.md#3.4%20The%20object%27s%20name%20is%20final%20before%20framing%20begins)) and does
+hashes in order. The name is final before framing begins ([RFC 4 §3.4](rfc-4-remote-tier.md#3.4%20The%20object%27s%20name%20is%20final%20before%20framing%20begins)) and does
 not vary between attempts to store one block, so a retry after an unknown outcome
 writes the same object ([RFC 3 §2.5](rfc-3-syncer.md#2.5%20An%20unknown%20outcome%20is%20not%20a%20success)).
 
 **Proposal — the key scope is the identity of the block-metadata store that
-counts the block.** This is [RFC 4 §2.6](rfc-4-block-metadata.md#2.6%20The%20scope%20of%20a%20count)'s second option: two stores can never name
+counts the block.** This is [RFC 6 §2.6](rfc-6-block-metadata.md#2.6%20The%20scope%20of%20a%20count)'s second option: two stores can never name
 one object, so each store's counts are complete for every key it can name, and a
 remote store can be shared between shares whose metadata is separate. The cost is
 dedup across such shares, which today's per-share metadata stores do not provide
@@ -475,7 +475,7 @@ accepts one metadata store per remote namespace.
 **Proposal:** chunks are assembled into blocks in file-offset order, which keeps
 a sequential read's chunks in few blocks. Randomised assembly ([RFC 2 §6](rfc-2-carver.md#6.%20Boundaries%20are%20public)) blurs the
 chunk-size fingerprint an observer of object sizes could use, costs nothing in
-dedup, and — because names derive from content and refs name hashes ([RFC 4 §2.5](rfc-4-block-metadata.md#2.5%20Refs%20name%20hashes%2C%20never%20blocks))
+dedup, and — because names derive from content and refs name hashes ([RFC 6 §2.5](rfc-6-block-metadata.md#2.5%20Refs%20name%20hashes%2C%20never%20blocks))
 — can be adopted later with no migration. It is left open ([§14](#14.%20Open%20questions)).
 
 ### 5.6 A run is what the journal offers, widened only to re-tile
@@ -500,7 +500,7 @@ files are many small chunks, and they pack like any others.
 
 This matters because S3 is slow on small objects: every put pays a round trip and
 a per-request price whatever its size, and a key prefix accepts a few thousand
-writes per second ([RFC 8 §5.10](rfc-8-remote-tier.md#5.10%20Transfer%20practice%20a%20backend%20owes%20its%20service)). One block per small file would turn a directory
+writes per second ([RFC 4 §5.10](rfc-4-remote-tier.md#5.10%20Transfer%20practice%20a%20backend%20owes%20its%20service)). One block per small file would turn a directory
 of a hundred thousand small files into a hundred thousand puts. restic packs blobs
 from many files into its pack files for the same reason.
 
@@ -518,7 +518,7 @@ from many files into its pack files for the same reason.
   ([§6.8](#6.8%20A%20cold%20read%20asks%20for%20chunks%2C%20or%20for%20the%20block)). That is a consequence of the stream order, and randomised
   assembly ([§5.5](#5.5%20Assembly%20is%20sequential%2C%20and%20may%20change%20without%20migration)) would give it up.
 - **One commit per block** records the refs of every file with chunks in it, in
-  one transaction ([RFC 4 §4.1](rfc-4-block-metadata.md#4.1%20What%20one%20commit%20records)); the callback then reports each file's durable
+  one transaction ([RFC 6 §4.1](rfc-6-block-metadata.md#4.1%20What%20one%20commit%20records)); the callback then reports each file's durable
   extents in its entry of `durable`.
 
 The usual objection to packing is read amplification: to serve one small file,
@@ -527,7 +527,7 @@ that refuse to pack give that as the reason. It does not apply here, because a
 cold read of a small file asks for its chunks by range ([§6.8](#6.8%20A%20cold%20read%20asks%20for%20chunks%2C%20or%20for%20the%20block)), and moves only
 that file's bytes whatever else the block holds. The cost that remains is deletion: a block whose chunks are mostly
 unreferenced keeps its dead bytes until relocation copies the live chunks out
-([RFC 7 §4.1](rfc-7-gc.md#4.1%20A%20block%20that%20is%20mostly%20dead%20pins%20its%20dead%20bytes)), so a share of short-lived small files spends relocation work to save
+([RFC 9 §4.1](rfc-9-gc.md#4.1%20A%20block%20that%20is%20mostly%20dead%20pins%20its%20dead%20bytes)), so a share of short-lived small files spends relocation work to save
 puts.
 
 ## 6. The read
@@ -540,9 +540,9 @@ For a read of `(file, off, len)`, the engine:
 
 1. asks the journal, and receives the bytes it holds and the exact extents it does
    not ([RFC 1 §3.2](rfc-1-journal.md#3.2%20Read));
-2. for each missing extent, asks block metadata which class covers it ([RFC 4](rfc-4-block-metadata.md)
-   [§8.1](rfc-4-block-metadata.md#8.1%20Covering%20lookup)), using the range form where one is available;
-3. resolves each part by [RFC 0 §4.2](rfc-0-data-lifecycle.md#4.2%20The%20residency%20function) as amended by [RFC 4 §3.2](rfc-4-block-metadata.md#3.2%20Every%20offset%20is%20in%20exactly%20one%20class):
+2. for each missing extent, asks block metadata which class covers it ([RFC 6](rfc-6-block-metadata.md)
+   [§8.1](rfc-6-block-metadata.md#8.1%20Covering%20lookup)), using the range form where one is available;
+3. resolves each part by [RFC 0 §4.2](rfc-0-data-lifecycle.md#4.2%20The%20residency%20function) as amended by [RFC 6 §3.2](rfc-6-block-metadata.md#3.2%20Every%20offset%20is%20in%20exactly%20one%20class):
 
 | Metadata | Residency | The engine |
 | --- | --- | --- |
@@ -636,15 +636,15 @@ second is data loss and must be reported as such.
 ### 6.6 Allocation answers from the hole set
 
 `SEEK_DATA`, `SEEK_HOLE` and sparse-read replies are answered from block
-metadata's hole set, through the allocation interface the engine supplies to [RFC 5](rfc-5-namespace-metadata.md)
+metadata's hole set, through the allocation interface the engine supplies to [RFC 7](rfc-7-namespace-metadata.md)
 ([§9.3](#9.3%20Clone%20adopts%20refs%2C%20and%20offloads%20uncarved%20content%20first) there). They **MUST NOT** be answered from the journal, which cannot tell a
 hole from an evicted extent ([RFC 1 §3.7](rfc-1-journal.md#3.7%20State%20introspection)).
 
 ### 6.7 An absent object is re-resolved exactly once
 
-Relocation ([RFC 7 §4.2](rfc-7-gc.md#4.2%20Read%20verified%2C%20name%20by%20content%2C%20put%2C%20then%20move)) moves a chunk to a new block and leaves the old block to
+Relocation ([RFC 9 §4.2](rfc-9-gc.md#4.2%20Read%20verified%2C%20name%20by%20content%2C%20put%2C%20then%20move)) moves a chunk to a new block and leaves the old block to
 sweep. A read that resolved the chunk's location before the move can issue its
-get after the old object is gone. Refs name hashes, not blocks ([RFC 4 §2.5](rfc-4-block-metadata.md#2.5%20Refs%20name%20hashes%2C%20never%20blocks)), so
+get after the old object is gone. Refs name hashes, not blocks ([RFC 6 §2.5](rfc-6-block-metadata.md#2.5%20Refs%20name%20hashes%2C%20never%20blocks)), so
 the chunk is still reachable; only the location the reader holds is stale.
 
 When the remote tier reports the object a chunk's get named as absent, the engine
@@ -656,7 +656,7 @@ commit, but content that is gone, and it **MUST** be reported as **Lost**, not
 retried until a deadline.
 
 > [!important] Pending review — re-resolve on a range mismatch too
-> New. A re-put under the same name may lay the object out differently ([RFC 8 §5.5](rfc-8-remote-tier.md#5.5%20A%20put%20of%20an%20existing%20key%20succeeds%3B%20so%20does%20a%20delete%20of%20an%20absent%20one)),
+> New. A re-put under the same name may lay the object out differently ([RFC 4 §5.5](rfc-4-remote-tier.md#5.5%20A%20put%20of%20an%20existing%20key%20succeeds%3B%20so%20does%20a%20delete%20of%20an%20absent%20one)),
 > so a range recorded before it can point at the wrong bytes although the data is
 > intact.
 > *Added by the RFC 0–3 review, 2026-09-25.*
@@ -666,7 +666,7 @@ bytes fail verification ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)), since 
 the object out differently. A verification failure of a whole object, a transport
 error or a timeout is not evidence the chunk moved, and **MUST NOT** trigger it.
 
-Relocation is safe only while this rule holds ([RFC 7 §4.3](rfc-7-gc.md#4.3%20A%20reader%20can%20hold%20the%20old%20location)). An engine that fails
+Relocation is safe only while this rule holds ([RFC 9 §4.3](rfc-9-gc.md#4.3%20A%20reader%20can%20hold%20the%20old%20location)). An engine that fails
 the first miss turns every relocation into a window of spurious read errors; one
 that retries indefinitely turns a lost chunk into a hung read.
 
@@ -726,7 +726,7 @@ set by capacity pressure is met.
 [RFC 1 §3.5](rfc-1-journal.md#3.5%20Release) requires the caller to have durably recorded that content is no longer
 local before releasing it. Under the model that record already exists and is the
 offload commit: an offloaded bit is set only after the ref, chunk and block are committed
-([RFC 4 §4.3](rfc-4-block-metadata.md#4.3%20The%20commit%20is%20the%20report%27s%20return%20edge)), and a carved extent the journal does not hold resolves to
+([RFC 6 §4.3](rfc-6-block-metadata.md#4.3%20The%20commit%20is%20the%20report%27s%20return%20edge)), and a carved extent the journal does not hold resolves to
 **Remote**. Eviction therefore writes nothing to metadata. [§11](#11.%20Consequences%20for%20RFC%200) records the
 consequence for [RFC 0 §8.1](rfc-0-data-lifecycle.md#8.1%20Evict)'s wording.
 
@@ -776,8 +776,8 @@ reserved headroom exists for exactly that ([RFC 1 §8.2](rfc-1-journal.md#8.2%20
 ### 7.4 Nothing but durability makes an extent unevictable
 
 Locks, deny modes, delegations and open handles **MUST NOT** make an extent
-ineligible for eviction ([RFC 5 §8.6](rfc-5-namespace-metadata.md#8.6%20Locks%20do%20not%20pin%20bytes)). Neither **MAY** a snapshot: a snapshot holds
-counted refs ([RFC 4 §6.5](rfc-4-block-metadata.md#6.5%20Who%20owns%20a%20ref)), and its content is as evictable as any carved content.
+ineligible for eviction ([RFC 7 §8.6](rfc-7-namespace-metadata.md#8.6%20Locks%20do%20not%20pin%20bytes)). Neither **MAY** a snapshot: a snapshot holds
+counted refs ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)), and its content is as evictable as any carved content.
 
 An operator's retention pin **MAY** exclude a share from eviction, and the engine
 **MAY** suspend eviction while the remote is unreachable, because evicting then
@@ -786,8 +786,8 @@ availability policy. Neither is permitted to be what keeps content safe ([§3.2]
 
 ### 7.5 When GC runs, and what it relocates, is decided here
 
-GC's cadence, its triggers and its relocation threshold are policy, and [RFC 7](rfc-7-gc.md)
-[§4.4](rfc-7-gc.md#4.4%20When%20to%20relocate%20is%20policy) and [§7.3](rfc-7-gc.md#7.3%20When%20GC%20runs%20is%20the%20engine%27s) give them to the engine. The engine decides them and hands them to
+GC's cadence, its triggers and its relocation threshold are policy, and [RFC 9](rfc-9-gc.md)
+[§4.4](rfc-9-gc.md#4.4%20When%20to%20relocate%20is%20policy) and [§7.3](rfc-9-gc.md#7.3%20When%20GC%20runs%20is%20the%20engine%27s) give them to the engine. The engine decides them and hands them to
 GC as parameters at composition; GC holds no schedule and no threshold of its own.
 
 - **Cadence and triggers.** **Proposal:** a periodic pass per remote namespace,
@@ -796,18 +796,18 @@ GC as parameters at composition; GC holds no schedule and no threshold of its ow
   dominates remote storage on a churn-heavy workload.
 - **Relocation threshold.** A block is a relocation candidate when the fraction
   of its bytes still referenced falls below a configured ratio, and never when
-  every chunk is referenced ([RFC 7 §4.4](rfc-7-gc.md#4.4%20When%20to%20relocate%20is%20policy)). **Proposal:** relocation off by
+  every chunk is referenced ([RFC 9 §4.4](rfc-9-gc.md#4.4%20When%20to%20relocate%20is%20policy)). **Proposal:** relocation off by
   default, enabled per remote namespace by the operator, because it spends a
   read and a put per block and the break-even depends on the backend's pricing.
 
 GC is correct at any cadence and any threshold, including two passes at once
-([RFC 7 §7.3](rfc-7-gc.md#7.3%20When%20GC%20runs%20is%20the%20engine%27s)). So this is policy in the sense of [§3.2](#3.2%20Policy%20never%20makes%20an%20action%20safe): the engine **MUST NOT**
+([RFC 9 §7.3](rfc-9-gc.md#7.3%20When%20GC%20runs%20is%20the%20engine%27s)). So this is policy in the sense of [§3.2](#3.2%20Policy%20never%20makes%20an%20action%20safe): the engine **MUST NOT**
 serialise passes, delay them or suppress them as a way of keeping content safe,
 and a lock that serialises passes for efficiency **MUST** be removable without
 making a pass unsafe.
 
 The unit is the remote namespace, not the share: a pass covers every store that
-can name a key in it ([RFC 4 §2.6](rfc-4-block-metadata.md#2.6%20The%20scope%20of%20a%20count)). Where several shares' engines compose one
+can name a key in it ([RFC 6 §2.6](rfc-6-block-metadata.md#2.6%20The%20scope%20of%20a%20count)). Where several shares' engines compose one
 namespace, the policy is configured once for the namespace, and exactly one of
 them schedules it.
 
@@ -857,7 +857,7 @@ the background pass, whose deadline is the pass's own; a conflict there costs a
 retry, not a failed pass.
 
 The per-file guard of [§4.3](#4.3%20Commits%20for%20one%20file%20are%20serialised%20here) reduces offload-against-offload conflicts. It **MUST NOT**
-be relied on for correctness: [RFC 4 §5.1](rfc-4-block-metadata.md#5.1%20No%20record%20is%20written%20by%20both%20paths) removes offload-against-writer conflicts
+be relied on for correctness: [RFC 6 §5.1](rfc-6-block-metadata.md#5.1%20No%20record%20is%20written%20by%20both%20paths) removes offload-against-writer conflicts
 structurally, and a conflict the guard missed is retried like any other.
 
 > [!important] Pending review — durability is observable, and benchmarks stop at it
@@ -886,9 +886,9 @@ Adapters reach content through one surface, and never through a component:
 | `Write(file, off, bytes)` | [§4.1](#4.1%20The%20facade%20orders%20a%20write%3B%20adapters%20do%20not) |
 | `Read(file, off, len)` | [§6](#6.%20The%20read) |
 | `Commit(file)` | journal sync, nothing else ([§9.4](#9.4%20Commit%20is%20answered%20by%20the%20journal)) |
-| `Truncate(file, size)` | [RFC 4 §6.2](rfc-4-block-metadata.md#6.2%20Truncation%20and%20deallocation) in one transaction, then journal `Truncate` |
+| `Truncate(file, size)` | [RFC 6 §6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation) in one transaction, then journal `Truncate` |
 | `Deallocate(file, off, len)` | [§9.2](#9.2%20Deallocate%20records%20a%20hole%3B%20it%20does%20not%20write%20zeros) |
-| `Release(file)` | [RFC 4 §6.4](rfc-4-block-metadata.md#6.4%20Delete) refs, then journal `Delete` — the implementation of [RFC 5 §4.3](rfc-5-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees) |
+| `Release(file)` | [RFC 6 §6.4](rfc-6-block-metadata.md#6.4%20Delete) refs, then journal `Delete` — the implementation of [RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees) |
 | `Clone(src, dst, …)` | [§9.3](#9.3%20Clone%20adopts%20refs%2C%20and%20offloads%20uncarved%20content%20first) |
 | `Size`, `Allocation` | the interfaces of [§2.1](#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one), read-only |
 | `Stats`, `Health` | [§8](#8.%20Health%20and%20failure) |
@@ -899,17 +899,17 @@ caller. A caller holding one can do what the facade orders, out of order.
 ### 9.2 Deallocate records a hole; it does not write zeros
 
 Deallocation adds a hole record for the range, drops or narrows the
-refs over it and advances `epoch`, in one transaction ([RFC 4 §3.5](rfc-4-block-metadata.md#3.5%20Operations%20that%20make%20holes), [§6.2](rfc-4-block-metadata.md#6.2%20Truncation%20and%20deallocation)), then has
+refs over it and advances `epoch`, in one transaction ([RFC 6 §3.5](rfc-6-block-metadata.md#3.5%20Operations%20that%20make%20holes), [§6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation)), then has
 the journal stop holding the range.
 
 It **MUST NOT** stage zeros through the write path. Zeros staged as data consume
 journal capacity in proportion to the range — a large deallocation can refuse
-writes — and carve into the hottest refcount in any deployment ([RFC 4 §5.3](rfc-4-block-metadata.md#5.3%20Hot%20records%20that%20are%20not%20per-file)).
+writes — and carve into the hottest refcount in any deployment ([RFC 6 §5.3](rfc-6-block-metadata.md#5.3%20Hot%20records%20that%20are%20not%20per-file)).
 
 ### 9.3 Clone adopts refs, and offloads uncarved content first
 
 On a share with a remote tier, a clone offloads the source's uncarved extents,
-then copies the source's refs into the destination as an adoption ([RFC 4 §6.6](rfc-4-block-metadata.md#6.6%20Clone%20and%20server-side%20copy)).
+then copies the source's refs into the destination as an adoption ([RFC 6 §6.6](rfc-6-block-metadata.md#6.6%20Clone%20and%20server-side%20copy)).
 **Proposal:** offload first rather than copy bytes, because it leaves one path for
 clone and makes the destination's content shared from its first byte. On a share
 with no remote tier nothing is carved ([§4.6](#4.6%20A%20share%20with%20no%20remote%20tier%20never%20reports%20durability)), so a clone copies bytes through the
@@ -964,7 +964,7 @@ exists only because the journal once was one ([§12](#12.%20Deviations)).
 | E15 | GC's cadence and relocation threshold are engine parameters, and no GC safety property depends on them. |
 
 E3, E4, E5, E7, E9 and E11 are the ones whose violation loses content or serves
-wrong content; E14 is the one relocation's safety rests on ([RFC 7 §4.3](rfc-7-gc.md#4.3%20A%20reader%20can%20hold%20the%20old%20location)). E10, E12 and E13 are the ones whose violation stops a share, or
+wrong content; E14 is the one relocation's safety rests on ([RFC 9 §4.3](rfc-9-gc.md#4.3%20A%20reader%20can%20hold%20the%20old%20location)). E10, E12 and E13 are the ones whose violation stops a share, or
 makes it look stopped. E1 and E2 are the ones whose violation hides the others.
 
 ## 11. Consequences for RFC 0
@@ -975,7 +975,7 @@ makes it look stopped. E1 and E2 are the ones whose violation hides the others.
    engine ([§2.1](#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one)). I6 should say so, or it reads as forbidding the root.
 2. **[§8.1](#8.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included), the order of eviction.** "Record that the content is no longer local,
    then release" reads as a metadata write about locality, which [§4.1](#4.1%20The%20facade%20orders%20a%20write%3B%20adapters%20do%20not) forbids
-   metadata to hold. Under [RFC 4 §3.2](rfc-4-block-metadata.md#3.2%20Every%20offset%20is%20in%20exactly%20one%20class) the record that makes release safe is the
+   metadata to hold. Under [RFC 6 §3.2](rfc-6-block-metadata.md#3.2%20Every%20offset%20is%20in%20exactly%20one%20class) the record that makes release safe is the
    offload commit, made before the offloaded bit was set, and eviction records nothing
    ([§7.1](#7.1%20Eviction%20is%20chosen%20here%2C%20and%20needs%20no%20new%20record)). The ordering argument is unchanged; the record it names is a different
    one.
@@ -995,7 +995,7 @@ where the engine is the site that must change.
 | --- | --- | --- |
 | [§2.1](#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one) one composition root | Composition is split between the runtime, which opens the journal, builds the remote chain and the syncer, and `engine.New`, which receives them. The runtime names concrete component types throughout. | `runtime/shares/blockstore_config.go:251`–`:447`; `engine/engine.go:152` |
 | [§2.1](#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one) no setters on a serving engine | The remote block store, the committer and the metrics sink are wired by setters after construction, and the code documents that they may run on a serving share. | `engine/syncer.go:235`, `:259`; `engine/engine.go:354`; `engine/sync_drain.go:49`–`:59` |
-| [§2.2](#2.2%20Capabilities%20are%20parameters%2C%20never%20assertions) no type assertions | Capabilities are negotiated by assertion, each with a silent fallback, at fifteen sites: the remote block store (offload disabled), the metadata coordinator and synced-hash store, the committer (offload disabled), the chunk sealer (identity sealing), the metrics sink, four optional sink capabilities in the offload closure, the stale-claim enumerator (janitor becomes a no-op), and the covering and successor lookups ([RFC 4 §11](rfc-4-block-metadata.md#11.%20Deviations) records their cost). | `runtime/shares/blockstore_config.go:335`, `:355`, `:371`; `engine/syncer.go:244`, `:263`; `engine/engine.go:355`, `:360`; `engine/flush_closure.go:188`, `:230`, `:234`, `:314`; `engine/sync_lifecycle.go:116`; `engine/read_internal.go:217`, `:289`, `:354` |
+| [§2.2](#2.2%20Capabilities%20are%20parameters%2C%20never%20assertions) no type assertions | Capabilities are negotiated by assertion, each with a silent fallback, at fifteen sites: the remote block store (offload disabled), the metadata coordinator and synced-hash store, the committer (offload disabled), the chunk sealer (identity sealing), the metrics sink, four optional sink capabilities in the offload closure, the stale-claim enumerator (janitor becomes a no-op), and the covering and successor lookups ([RFC 6 §11](rfc-6-block-metadata.md#11.%20Deviations) records their cost). | `runtime/shares/blockstore_config.go:335`, `:355`, `:371`; `engine/syncer.go:244`, `:263`; `engine/engine.go:355`, `:360`; `engine/flush_closure.go:188`, `:230`, `:234`, `:314`; `engine/sync_lifecycle.go:116`; `engine/read_internal.go:217`, `:289`, `:354` |
 | [§2.4](#2.4%20Settings%20are%20validated%20once%2C%20and%20refused%20rather%20than%20replaced) settings refused | Invalid chunking settings are replaced by the default profile in three places, one with a warning and two silently. No record of the profile that produced a share's content was found by search. | `runtime/shares/journal_open.go:95`–`:99`; `engine/sync_drain.go:110`–`:113`; `carver/carver.go:91`–`:93` |
 | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) reseed before release | There is no reseed. The offloaded bit is written into each record's header, the syncer's start path states that recovery re-marks only not-yet-carved records dirty, and eviction is enabled at start from remote health alone. | `journal/flush.go:244`–`:257`; `engine/sync_lifecycle.go:53`–`:55`; `engine/engine.go:247` |
 | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) join before close | The syncer waits a bounded time for its loops, logs if they have not exited, and the engine then closes the journal and the remote under them. | `engine/sync_lifecycle.go:201`–`:203`; `engine/engine.go:332`–`:342` |
@@ -1011,8 +1011,8 @@ where the engine is the site that must change.
 | [§4.2](#4.2%20Offload%20is%20scheduled%20here), [§8.1](#8.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included) offload retried and never stopped | While the remote is unhealthy the dispatcher skips every pass, and an explicit offload returns "not finalized". Only the liveness probe can clear it. | `engine/carve_dispatch.go:45`; `engine/sync_drain.go:64`–`:70` |
 | [§3.1](#3.1%20Policy%20is%20decided%20here%20and%20executed%20below), [§7.1](#7.1%20Eviction%20is%20chosen%20here%2C%20and%20needs%20no%20new%20record), [§7.2](#7.2%20A%20capacity%20refusal%20comes%20back%20here) eviction and refusal here | The journal evicts to satisfy its own write: its capacity gate selects coldest-first segments, evicts, backpressures and finally refuses — none of it through the engine. Admission reads a counter without reserving (the code says so). | `journal/evict.go:166`, `:453`–`:539` |
 | [§4.3](#4.3%20Commits%20for%20one%20file%20are%20serialised%20here) the engine's guard, per file | The outcome holds: passes of one file do not overlap. But the guard is the journal's shard-scoped offload lock, held across the callback, and commits within a pass take a 256-stripe lock in the engine keyed by a hash of the file id. Both serialise unrelated files that collide, and the first puts the engine's decision inside the journal. | `journal/flush.go:98`–`:100`, `:118`–`:120`; `engine/flush.go:115`–`:135` |
-| [§4.4](#4.4%20The%20truncation%20epoch%20is%20captured%20at%20offer%20and%20checked%20at%20commit) epoch | No epoch is captured or checked; the shape record it lives in does not exist ([RFC 4 §11](rfc-4-block-metadata.md#11.%20Deviations)). | `engine/flush_closure.go` (no epoch in the closure) |
-| [§7.5](#7.5%20When%20GC%20runs%2C%20and%20what%20it%20relocates%2C%20is%20decided%20here) GC policy is the engine's | GC is scheduled by a process-wide ticker in the runtime, fifteen minutes by default, started from the server command; the relocation threshold is a server-wide runtime default applied to every remote. Neither is composed with the engine or configured per remote namespace. Passes are serialised by a process-local lock ([RFC 7 §11](rfc-7-gc.md#11.%20Deviations)). | `runtime/blockgc_scheduler.go:18`–`:21`; `cmd/dfs/commands/start.go:439`–`:440`; `runtime/runtime.go:1146`; `runtime/blockgc.go:479` |
+| [§4.4](#4.4%20The%20truncation%20epoch%20is%20captured%20at%20offer%20and%20checked%20at%20commit) epoch | No epoch is captured or checked; the shape record it lives in does not exist ([RFC 6 §11](rfc-6-block-metadata.md#11.%20Deviations)). | `engine/flush_closure.go` (no epoch in the closure) |
+| [§7.5](#7.5%20When%20GC%20runs%2C%20and%20what%20it%20relocates%2C%20is%20decided%20here) GC policy is the engine's | GC is scheduled by a process-wide ticker in the runtime, fifteen minutes by default, started from the server command; the relocation threshold is a server-wide runtime default applied to every remote. Neither is composed with the engine or configured per remote namespace. Passes are serialised by a process-local lock ([RFC 9 §11](rfc-9-gc.md#11.%20Deviations)). | `runtime/blockgc_scheduler.go:18`–`:21`; `cmd/dfs/commands/start.go:439`–`:440`; `runtime/runtime.go:1146`; `runtime/blockgc.go:479` |
 | [§8.1](#8.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included) offload in health | A failed pass increments a lifetime counter and logs a warning. Engine health is the local store's closed flag and the remote's probe; share health is the worst of engine and metadata. Offload failure reaches neither. | `engine/carve_dispatch.go:152`–`:153`; `engine/health.go:41`–`:79`; `runtime/shares/healthcheck.go:59`–`:95` |
 
 ### 12.3 Assembly
@@ -1021,7 +1021,7 @@ where the engine is the site that must change.
 | --- | --- | --- |
 | [§5.1](#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output) assembly in the engine | Block assembly — the pending batch, the target, emission — is inside the carver, which [RFC 2 §1.1](rfc-2-carver.md#1.1%20Non-goals) forbids. | `carver/carver.go:62`–`:84`, `:175`–`:182`, `:195`–`:217` |
 | [§5.2](#5.2%20The%20target%20counts%20carried%20bytes) target counts carried bytes | The batch counts every chunk it tiles, adopted ones included, and emits when that count reaches the target. | `carver/carver.go:176`, `:180` |
-| [§5.3](#5.3%20The%20dedup%20oracle%20never%20sees%20an%20uncommitted%20block) no binding guard | The oracle answers from the synced-hash marker ([RFC 4 §11](rfc-4-block-metadata.md#11.%20Deviations)) through an in-process adoption guard in the GC package, which a second process cannot see. | `engine/flush.go:148`–`:153` |
+| [§5.3](#5.3%20The%20dedup%20oracle%20never%20sees%20an%20uncommitted%20block) no binding guard | The oracle answers from the synced-hash marker ([RFC 6 §11](rfc-6-block-metadata.md#11.%20Deviations)) through an in-process adoption guard in the GC package, which a second process cannot see. | `engine/flush.go:148`–`:153` |
 | [§5.4](#5.4%20A%20block%27s%20name%20is%20derived%20here) derived name | The name is sixteen random bytes; a separate hash is taken over the framed block bytes. | `engine/flush.go:392`, `:436` |
 | [§5.1](#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output) one buffer | A carried chunk is copied into the carver's arena, the run is read through a separate 16 MiB buffer per run, and the framed block is built in a third buffer. | `carver/carver.go:223`–`:237`; `engine/flush_closure.go:112`; `engine/flush.go:397`–`:403` |
 
@@ -1043,11 +1043,11 @@ where the engine is the site that must change.
 
 | Requirement | Current state | Evidence |
 | --- | --- | --- |
-| [§4.1](#4.1%20The%20facade%20orders%20a%20write%3B%20adapters%20do%20not) the facade orders a write | The facade's write stages bytes only. Authorise and existence are called by each protocol handler around it, at five sites, and existence may be deferred in memory past the acknowledgement ([RFC 5 §12.1](rfc-5-namespace-metadata.md#12.1%20The%20records)). | `internal/adapter/common/write_payload.go:54`–`:69`; `nfs/v3/handlers/write.go:235`, `:266`; `PrepareWrite` also in `nfs/v4`, `smb/handlers/write.go`, `ioctl_copychunk.go`, `ioctl_sparse.go` |
+| [§4.1](#4.1%20The%20facade%20orders%20a%20write%3B%20adapters%20do%20not) the facade orders a write | The facade's write stages bytes only. Authorise and existence are called by each protocol handler around it, at five sites, and existence may be deferred in memory past the acknowledgement ([RFC 7 §12.1](rfc-7-namespace-metadata.md#12.1%20The%20records)). | `internal/adapter/common/write_payload.go:54`–`:69`; `nfs/v3/handlers/write.go:235`, `:266`; `PrepareWrite` also in `nfs/v4`, `smb/handlers/write.go`, `ioctl_copychunk.go`, `ioctl_sparse.go` |
 | [§9.2](#9.2%20Deallocate%20records%20a%20hole%3B%20it%20does%20not%20write%20zeros) deallocate records a hole | Deallocation writes zeros through the journal in 1 MiB pieces across the whole range. | `engine/readwrite.go:330`–`:344` |
 | [§9.1](#9.1%20One%20facade%2C%20shaped%20like%20content) truncate in one transaction | Truncate narrows a straddling row with a store write outside any transaction, then decrements and reaps in a second call, reprojects in a third, then truncates the journal. | `engine/readwrite.go:151`–`:152`, `:233`, `:239`, `:245` |
 | [§9.5](#9.5%20The%20facade%20writes%20no%20residency) no residency writes | The facade marks ranges remote-but-not-local, drops local content to force manifest reads, pins journal versions for snapshots, and rewinds the journal to a version. | `engine/flush.go:639`–`:765` |
-| [RFC 8 §2.5](rfc-8-remote-tier.md#2.5%20Deviation%20%E2%80%94%20the%20boundary%20currently%20runs%20through%20the%20engine) | The fetch path, derived health, the read-ahead queue and the put live in this package. [RFC 8](rfc-8-remote-tier.md) records it; the move is this package's. | [RFC 8 §2.5](rfc-8-remote-tier.md#2.5%20Deviation%20%E2%80%94%20the%20boundary%20currently%20runs%20through%20the%20engine) |
+| [RFC 4 §2.5](rfc-4-remote-tier.md#2.5%20Deviation%20%E2%80%94%20the%20boundary%20currently%20runs%20through%20the%20engine) | The fetch path, derived health, the read-ahead queue and the put live in this package. [RFC 4](rfc-4-remote-tier.md) records it; the move is this package's. | [RFC 4 §2.5](rfc-4-remote-tier.md#2.5%20Deviation%20%E2%80%94%20the%20boundary%20currently%20runs%20through%20the%20engine) |
 
 This document does not schedule the migration. It records that the current state
 fails the requirements above, and that a discrepancy **MUST NOT** be closed by
@@ -1154,9 +1154,9 @@ Method, from the external benchmark of v0.33.0:
 3. **Randomised assembly** ([§5.5](#5.5%20Assembly%20is%20sequential%2C%20and%20may%20change%20without%20migration), [RFC 2 §11](rfc-2-carver.md#11.%20Open%20questions) question 4). Free to adopt and not a migration.
    What an observer can recover from object sizes at DittoFS's block sizes has
    not been measured, so neither has the value of adopting it.
-4. **Zero runs** ([RFC 4 §13.1](rfc-4-block-metadata.md#13.%20Open%20questions)). Recording an all-zero chunk as a hole removes the
+4. **Zero runs** ([RFC 6 §13.1](rfc-6-block-metadata.md#13.%20Open%20questions)). Recording an all-zero chunk as a hole removes the
    hottest refcount in the system. The engine sees the chunks before assembly and
-   could do it, but it changes existence from the offload path, which [RFC 4 §5.1](rfc-4-block-metadata.md#5.1%20No%20record%20is%20written%20by%20both%20paths)
+   could do it, but it changes existence from the offload path, which [RFC 6 §5.1](rfc-6-block-metadata.md#5.1%20No%20record%20is%20written%20by%20both%20paths)
    forbids. Where the recognition belongs is unsettled.
 5. **Copies on the offload path** ([§5.1](#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output), [RFC 2 §11](rfc-2-carver.md#11.%20Open%20questions) question 5). **Answered in design:** no
    copy at carve time; the block is a plan and the upload re-reads the offered
@@ -1182,9 +1182,9 @@ Method, from the external benchmark of v0.33.0:
 
 ## Appendix A — obligations this document discharges
 
-Every sentence in the set that defers to RFC 6 or to "the engine", and every
+Every sentence in the set that defers to RFC 8 or to "the engine", and every
 obligation placed on "the caller" of a component where the engine is the only
-caller. *Explicit* rows name RFC 6 or the engine; *caller* rows name the caller.
+caller. *Explicit* rows name RFC 8 or the engine; *caller* rows name the caller.
 
 | Source | Obligation | Kind | Discharged in |
 | --- | --- | --- | --- |
@@ -1222,28 +1222,28 @@ caller. *Explicit* rows name RFC 6 or the engine; *caller* rows name the caller.
 | [RFC 3 §5](rfc-3-syncer.md#5.%20What%20belongs%20elsewhere) | whether writes continue with the remote unavailable | explicit | [§8.2](#8.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here) |
 | [RFC 3 §5](rfc-3-syncer.md#5.%20What%20belongs%20elsewhere) | aggregate health without latching | caller | [§8.1](#8.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included) |
 | [RFC 3 §9](rfc-3-syncer.md#9.%20Open%20questions) q3 | how pre-warm yields | explicit | [§6.4](#6.4%20Speculation%20is%20planned%20here%2C%20and%20yields%20to%20demand%20and%20to%20writes) — proposal; open ([§14.2](#14.%20Open%20questions)) |
-| [RFC 4 §3.4](rfc-4-block-metadata.md#3.4%20Ordering%20against%20the%20journal) | order stage, existence, acknowledge | caller | [§4.1](#4.1%20The%20facade%20orders%20a%20write%3B%20adapters%20do%20not) |
-| [RFC 4 §4.3](rfc-4-block-metadata.md#4.3%20The%20commit%20is%20the%20report%27s%20return%20edge) | return only committed extents | caller | [§4.5](#4.5%20The%20callback%20returns%20only%20what%20committed) |
-| [RFC 4 §4.4](rfc-4-block-metadata.md#4.4%20Commits%20for%20one%20file%20apply%20in%20order) | serialise commits per file | explicit | [§4.3](#4.3%20Commits%20for%20one%20file%20are%20serialised%20here) |
-| [RFC 4 §6.2](rfc-4-block-metadata.md#6.2%20Truncation%20and%20deallocation) | refuse a commit past a truncation; retry from the journal | caller | [§4.4](#4.4%20The%20truncation%20epoch%20is%20captured%20at%20offer%20and%20checked%20at%20commit) |
-| [RFC 4 §6.6](rfc-4-block-metadata.md#6.6%20Clone%20and%20server-side%20copy) | clone of uncarved content | caller | [§9.3](#9.3%20Clone%20adopts%20refs%2C%20and%20offloads%20uncarved%20content%20first) — proposal |
-| [RFC 4 §8.2](rfc-4-block-metadata.md#8.2%20Deduplication%20lookup) | treat the dedup answer as advisory | caller | [§5.3](#5.3%20The%20dedup%20oracle%20never%20sees%20an%20uncommitted%20block) |
-| [RFC 4 §13.1](rfc-4-block-metadata.md#13.%20Open%20questions) | recognise zero runs | explicit | open ([§14.4](#14.%20Open%20questions)) |
-| [RFC 5 §2.5](rfc-5-namespace-metadata.md#2.5%20Where%20%60size%60%20lives) | supply `Size(file)` at composition | explicit | [§2.1](#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one) |
-| [RFC 5 §4.3](rfc-5-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees) | supply release of an inode's refs | caller | [§2.1](#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one), [§9.1](#9.1%20One%20facade%2C%20shaped%20like%20content) |
-| [RFC 5 §8.6](rfc-5-namespace-metadata.md#8.6%20Locks%20do%20not%20pin%20bytes) | locks never pin bytes | caller | [§7.4](#7.4%20Nothing%20but%20durability%20makes%20an%20extent%20unevictable) |
-| [RFC 5 §9.2](rfc-5-namespace-metadata.md#9.2%20Timestamps) | offload, evict, fill never advance `mtime` | caller | [§4.1](#4.1%20The%20facade%20orders%20a%20write%3B%20adapters%20do%20not) (only the write path writes `mtime`) |
-| [RFC 5 §9.3](rfc-5-namespace-metadata.md#9.3%20Residency%20is%20not%20an%20attribute) | allocation from the hole set | caller | [§2.1](#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one), [§6.6](#6.6%20Allocation%20answers%20from%20the%20hole%20set) |
-| [RFC 5 §14](rfc-5-namespace-metadata.md#14.%20Open%20questions) q7 | whether the recycle bin is engine policy | explicit | [§1.1](#1.1%20Non-goals) — decided: it is not |
-| [RFC 8 §1.1](rfc-8-remote-tier.md#1.1%20Non-goals) | when and what to transfer | explicit | [§3.1](#3.1%20Policy%20is%20decided%20here%20and%20executed%20below) |
-| [RFC 8 §2.5](rfc-8-remote-tier.md#2.5%20Deviation%20%E2%80%94%20the%20boundary%20currently%20runs%20through%20the%20engine) | syncer obligations live in the engine package | explicit | [§1.1](#1.1%20Non-goals), [§12.5](#12.5%20The%20facade) |
-| [RFC 7 §4.3](rfc-7-gc.md#4.3%20A%20reader%20can%20hold%20the%20old%20location), [§9](rfc-7-gc.md#9.%20Consequences%20for%20other%20RFCs) | the read path re-resolves exactly once when an object is absent | explicit | [§6.7](#6.7%20An%20absent%20object%20is%20re-resolved%20exactly%20once), E14 |
-| [RFC 7 §4.4](rfc-7-gc.md#4.4%20When%20to%20relocate%20is%20policy), [§7.3](rfc-7-gc.md#7.3%20When%20GC%20runs%20is%20the%20engine%27s), [§9](rfc-7-gc.md#9.%20Consequences%20for%20other%20RFCs) | GC cadence, triggers and the relocation threshold are engine policy | explicit | [§7.5](#7.5%20When%20GC%20runs%2C%20and%20what%20it%20relocates%2C%20is%20decided%20here), E15 — proposal |
-| [RFC 8 §7](rfc-8-remote-tier.md#7.%20This%20contract%20has%20more%20than%20one%20consumer), [§7.1](rfc-8-remote-tier.md#7.1%20Deviation%20%E2%80%94%20consumers%20take%20the%20provider%27s%20interface%2C%20not%20their%20own) | each consumer's narrow interface over the backend | caller | [§2.1](#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one), [§2.2](#2.2%20Capabilities%20are%20parameters%2C%20never%20assertions) |
+| [RFC 6 §3.4](rfc-6-block-metadata.md#3.4%20Ordering%20against%20the%20journal) | order stage, existence, acknowledge | caller | [§4.1](#4.1%20The%20facade%20orders%20a%20write%3B%20adapters%20do%20not) |
+| [RFC 6 §4.3](rfc-6-block-metadata.md#4.3%20The%20commit%20is%20the%20report%27s%20return%20edge) | return only committed extents | caller | [§4.5](#4.5%20The%20callback%20returns%20only%20what%20committed) |
+| [RFC 6 §4.4](rfc-6-block-metadata.md#4.4%20Commits%20for%20one%20file%20apply%20in%20order) | serialise commits per file | explicit | [§4.3](#4.3%20Commits%20for%20one%20file%20are%20serialised%20here) |
+| [RFC 6 §6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation) | refuse a commit past a truncation; retry from the journal | caller | [§4.4](#4.4%20The%20truncation%20epoch%20is%20captured%20at%20offer%20and%20checked%20at%20commit) |
+| [RFC 6 §6.6](rfc-6-block-metadata.md#6.6%20Clone%20and%20server-side%20copy) | clone of uncarved content | caller | [§9.3](#9.3%20Clone%20adopts%20refs%2C%20and%20offloads%20uncarved%20content%20first) — proposal |
+| [RFC 6 §8.2](rfc-6-block-metadata.md#8.2%20Deduplication%20lookup) | treat the dedup answer as advisory | caller | [§5.3](#5.3%20The%20dedup%20oracle%20never%20sees%20an%20uncommitted%20block) |
+| [RFC 6 §13.1](rfc-6-block-metadata.md#13.%20Open%20questions) | recognise zero runs | explicit | open ([§14.4](#14.%20Open%20questions)) |
+| [RFC 7 §2.5](rfc-7-namespace-metadata.md#2.5%20Where%20%60size%60%20lives) | supply `Size(file)` at composition | explicit | [§2.1](#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one) |
+| [RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees) | supply release of an inode's refs | caller | [§2.1](#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one), [§9.1](#9.1%20One%20facade%2C%20shaped%20like%20content) |
+| [RFC 7 §8.6](rfc-7-namespace-metadata.md#8.6%20Locks%20do%20not%20pin%20bytes) | locks never pin bytes | caller | [§7.4](#7.4%20Nothing%20but%20durability%20makes%20an%20extent%20unevictable) |
+| [RFC 7 §9.2](rfc-7-namespace-metadata.md#9.2%20Timestamps) | offload, evict, fill never advance `mtime` | caller | [§4.1](#4.1%20The%20facade%20orders%20a%20write%3B%20adapters%20do%20not) (only the write path writes `mtime`) |
+| [RFC 7 §9.3](rfc-7-namespace-metadata.md#9.3%20Residency%20is%20not%20an%20attribute) | allocation from the hole set | caller | [§2.1](#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one), [§6.6](#6.6%20Allocation%20answers%20from%20the%20hole%20set) |
+| [RFC 7 §14](rfc-7-namespace-metadata.md#14.%20Open%20questions) q7 | whether the recycle bin is engine policy | explicit | [§1.1](#1.1%20Non-goals) — decided: it is not |
+| [RFC 4 §1.1](rfc-4-remote-tier.md#1.1%20Non-goals) | when and what to transfer | explicit | [§3.1](#3.1%20Policy%20is%20decided%20here%20and%20executed%20below) |
+| [RFC 4 §2.5](rfc-4-remote-tier.md#2.5%20Deviation%20%E2%80%94%20the%20boundary%20currently%20runs%20through%20the%20engine) | syncer obligations live in the engine package | explicit | [§1.1](#1.1%20Non-goals), [§12.5](#12.5%20The%20facade) |
+| [RFC 9 §4.3](rfc-9-gc.md#4.3%20A%20reader%20can%20hold%20the%20old%20location), [§9](rfc-9-gc.md#9.%20Consequences%20for%20other%20RFCs) | the read path re-resolves exactly once when an object is absent | explicit | [§6.7](#6.7%20An%20absent%20object%20is%20re-resolved%20exactly%20once), E14 |
+| [RFC 9 §4.4](rfc-9-gc.md#4.4%20When%20to%20relocate%20is%20policy), [§7.3](rfc-9-gc.md#7.3%20When%20GC%20runs%20is%20the%20engine%27s), [§9](rfc-9-gc.md#9.%20Consequences%20for%20other%20RFCs) | GC cadence, triggers and the relocation threshold are engine policy | explicit | [§7.5](#7.5%20When%20GC%20runs%2C%20and%20what%20it%20relocates%2C%20is%20decided%20here), E15 — proposal |
+| [RFC 4 §7](rfc-4-remote-tier.md#7.%20This%20contract%20has%20more%20than%20one%20consumer), [§7.1](rfc-4-remote-tier.md#7.1%20Deviation%20%E2%80%94%20consumers%20take%20the%20provider%27s%20interface%2C%20not%20their%20own) | each consumer's narrow interface over the backend | caller | [§2.1](#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one), [§2.2](#2.2%20Capabilities%20are%20parameters%2C%20never%20assertions) |
 | block data flow [§3](#3.%20Policy) | orchestration: dedup oracle, manifest rows, scheduling | explicit | [§4](#4.%20The%20write%20and%20the%20offload), [§5](#5.%20Block%20assembly) |
 | block data flow [§5](#5.%20Block%20assembly) | only the construction site names concrete types | explicit | [§2.1](#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one) |
 
-The table holds 54 obligations: 29 that name RFC 6 or the engine, and 25 placed
+The table holds 54 obligations: 29 that name RFC 8 or the engine, and 25 placed
 on a caller that can only be the engine. 45 are decided outright. Six are
 decided as proposals that name what would overturn them — fill policy, key scope,
 speculation and pre-warm's yield (two rows), clone, and GC cadence and

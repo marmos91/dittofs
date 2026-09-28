@@ -1,17 +1,17 @@
 ---
-rfc: 8
-title: "RFC 8 — the remote tier: object format and backend contract"
+rfc: 4
+title: "RFC 4 — the remote tier: object format and backend contract"
 component: remote tier
 status: draft
 depends_on:
   - "[[rfc-0-data-lifecycle]]"
   - "[[rfc-3-syncer]]"
 aliases:
-  - RFC 8
+  - RFC 4
 tags:
   - rfc
 ---
-# RFC 8 — the remote tier: object format and backend contract
+# RFC 4 — the remote tier: object format and backend contract
 
 **Status:** draft.
 **Depends on:** [RFC 0](rfc-0-data-lifecycle.md), for the terms and the residency function. [RFC 3](rfc-3-syncer.md) specifies
@@ -46,7 +46,7 @@ component:
 This document **MUST NOT** be read as specifying:
 
 - when to transfer, or what — that is offload and eviction policy ([RFC 0 §5.2](rfc-0-data-lifecycle.md#5.2%20Offload), [§8.1](rfc-0-data-lifecycle.md#8.1%20Evict));
-- what to delete — that is sweep ([RFC 0 §8.3](rfc-0-data-lifecycle.md#8.3%20Sweep), [RFC 7](rfc-7-gc.md));
+- what to delete — that is sweep ([RFC 0 §8.3](rfc-0-data-lifecycle.md#8.3%20Sweep), [RFC 9](rfc-9-gc.md));
 - how many transfers may be in flight, or what happens when the remote is
   unavailable — that is the syncer ([RFC 3 §2](rfc-3-syncer.md#2.%20What%20both%20halves%20obey), [§5](rfc-3-syncer.md#5.%20What%20belongs%20elsewhere));
 - what a file, an extent or a segment is.
@@ -168,7 +168,7 @@ from [§2.1](#2.1%20The%20rule%3A%20one%20operation%2C%20or%20many) in every cas
 | Verification | verifies before returning ([§6](#6.%20Reads%20are%20verified%20at%20this%20boundary)) | need not re-verify | the hash is in the object |
 | Byte ranges | internal only ([§6.2](#6.2%20Deviation%20%E2%80%94%20the%20raw%20range%20read%20is%20exported)) | never issues one | a range is how a verified read is built |
 | Enumeration | performs the walk ([§5.4](#5.4%20Enumeration%20reports%3B%20it%20does%20not%20interpret)) | does not decide what it means | walking is one operation; interpreting is policy |
-| Deletion | performs it, idempotently ([§5.5](#5.5%20A%20put%20of%20an%20existing%20key%20succeeds%3B%20so%20does%20a%20delete%20of%20an%20absent%20one)) | does not decide what to delete ([RFC 7](rfc-7-gc.md)) | same |
+| Deletion | performs it, idempotently ([§5.5](#5.5%20A%20put%20of%20an%20existing%20key%20succeeds%3B%20so%20does%20a%20delete%20of%20an%20absent%20one)) | does not decide what to delete ([RFC 9](rfc-9-gc.md)) | same |
 | Incomplete transfers | enumerates its own remnants | decides by age which are abandoned | enumeration is local; age is a judgement across time |
 
 Two rows are worth reading twice, because they are the ones an implementation
@@ -253,9 +253,9 @@ additive in none.
 **[RFC 0 §1.1](rfc-0-data-lifecycle.md#1.1%20The%20component%20set) gains no row** ([§1.2](#1.2%20Why%20this%20is%20a%20contract%20and%20not%20a%20component)). The component table lists owners of behaviour;
 this tier owns none.
 
-**RFC 7 does not restate transfer semantics.** Sweep deletes through this contract
+**RFC 9 does not restate transfer semantics.** Sweep deletes through this contract
 and, while [RFC 2 §4.2.1](rfc-2-carver.md#4.2.1%20Deviation%20%E2%80%94%20a%20block%27s%20identity%20is%20generated%2C%20in%20two%20places) stands, enumerates through it ([§5.4.1](#5.4.1%20Enumeration%20is%20required%20by%20a%20condition%2C%20not%20by%20the%20design)). Without a shared
-document those semantics would have to appear in both RFC 3 and RFC 7, in two
+document those semantics would have to appear in both RFC 3 and RFC 9, in two
 voices, with no mechanism for noticing when they diverged — and the pair most
 likely to diverge is idempotent delete, which both depend on for crash recovery and
 neither would think to check against the other.
@@ -265,8 +265,8 @@ specified here, in [§4](#4.%20The%20transform%20chain), and nowhere else. A syn
 compression is a syncer that knows a transform happened, which [§4.4](#4.4%20The%20syncer%20MUST%20NOT%20observe%20that%20a%20transform%20happened) forbids.
 
 The one place the plan grows is the reading order, which stops being the numbering:
-this document sits between RFC 3 and RFC 7 conceptually and at the end numerically,
-because RFC 0, 2 and 3 already carry fourteen forward references to RFCs 4 through 7
+this document sits between RFC 3 and RFC 9 conceptually and at the end numerically,
+because RFC 0, 2 and 3 already carry fourteen forward references to RFCs 6 through 9
 and renumbering them would cost three published documents to save one sentence here.
 
 ## 3. The stored object
@@ -455,7 +455,7 @@ A **probe** ([§5.8](#5.8%20The%20liveness%20probe%20is%20one%20operation)) is n
 
 **Reads and puts speak in ranges.** A put reports, for each chunk in the order given,
 the byte range of its record in the object as stored — after framing and
-transforms — and block metadata keeps it ([RFC 4 §2.2](rfc-4-block-metadata.md#2.2%20Chunk)). A read takes a list of
+transforms — and block metadata keeps it ([RFC 6 §2.2](rfc-6-block-metadata.md#2.2%20Chunk)). A read takes a list of
 `(hash, range)` pairs and returns each chunk verified against its hash; it merges
 ranges adjacent in the object into one request, and an empty list reads the whole
 object. On S3 a ranged read is one `GET` with a `Range: bytes=first-last` header
@@ -547,7 +547,7 @@ it returns the existing object's ranges, read from its own record headers
 (F1, [§3.3](#3.3%20What%20the%20format%20must%20guarantee)), rather than the ranges of the bytes it did not write. The first
 object stored under a name is the one every recorded range describes. A backend
 that cannot put conditionally **MUST** say so, and its reads rely on the range
-mismatch re-resolution of [RFC 6 §6.7](rfc-6-engine.md#6.7%20An%20absent%20object%20is%20re-resolved%20exactly%20once) instead.
+mismatch re-resolution of [RFC 8 §6.7](rfc-8-engine.md#6.7%20An%20absent%20object%20is%20re-resolved%20exactly%20once) instead.
 
 ### 5.6 What acknowledgement means is the backend's to declare
 
@@ -729,7 +729,7 @@ service:
   S3 backend computes it over the spool file of [RFC 3 §3.4](rfc-3-syncer.md#3.4%20One%20put%20per%20block) as it writes it.
 - **The spool is placed and budgeted by its constructor.** A backend that spools
   writes only in the directory it is given, within the space set aside for it
-  ([RFC 6 §7](rfc-6-engine.md#7.%20Local%20space)), and reports running out of it as a local error, which is not the
+  ([RFC 8 §7](rfc-8-engine.md#7.%20Local%20space)), and reports running out of it as a local error, which is not the
   store's failure and does not make it unhealthy. A
   get **SHOULD** validate the service's checksum where one is returned; the
   plaintext hash check of [§6.1](#6.1%20The%20exported%20read%20takes%20the%20expected%20hash) remains the one that decides.
@@ -785,10 +785,10 @@ of it.
 | Consumer | What it needs | Specified by | Durable? |
 | --- | --- | --- | --- |
 | the syncer | put, verified read, delete | [RFC 3](rfc-3-syncer.md) | yes |
-| compaction | verified read of a block's records, put of the repacked block, delete of the old one | [RFC 7](rfc-7-gc.md) | yes |
+| compaction | verified read of a block's records, put of the repacked block, delete of the old one | [RFC 9](rfc-9-gc.md) | yes |
 | snapshot verify | presence | — | yes |
-| orphan reclaim | enumerate, delete | RFC 7 | **contingent** |
-| reconcile | enumerate | RFC 7 | **contingent** |
+| orphan reclaim | enumerate, delete | RFC 9 | **contingent** |
+| reconcile | enumerate | RFC 9 | **contingent** |
 
 The last two are marked because the case must not be overstated. Both exist to find
 objects that cannot be reached from what references them, and [RFC 2 §4.2.1](rfc-2-carver.md#4.2.1%20Deviation%20%E2%80%94%20a%20block%27s%20identity%20is%20generated%2C%20in%20two%20places) is why

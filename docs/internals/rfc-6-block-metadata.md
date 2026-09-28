@@ -1,6 +1,6 @@
 ---
-rfc: 4
-title: RFC 4 — block metadata
+rfc: 6
+title: RFC 6 — block metadata
 component: block metadata
 status: draft
 depends_on:
@@ -8,11 +8,11 @@ depends_on:
   - "[[rfc-2-carver]]"
   - "[[rfc-3-syncer]]"
 aliases:
-  - RFC 4
+  - RFC 6
 tags:
   - rfc
 ---
-# RFC 4 — block metadata
+# RFC 6 — block metadata
 
 **Status:** draft.
 **Depends on:** [RFC 0](rfc-0-data-lifecycle.md), for the terms, the residency function and the invariants.
@@ -55,8 +55,8 @@ from them without distortion.
 
 The engine is its caller on the content path: write, offload, read, truncate,
 clone. Two other components hold narrow views of it, which the engine wires at
-construction ([RFC 6 §2.1](rfc-6-engine.md#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one)) and which they then call directly: the namespace reads
-`size` and releases an inode's refs ([RFC 5 §2.5](rfc-5-namespace-metadata.md#2.5%20Where%20%60size%60%20lives), [RFC 5 §4.3](rfc-5-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)), and sweep
+construction ([RFC 8 §2.1](rfc-8-engine.md#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one)) and which they then call directly: the namespace reads
+`size` and releases an inode's refs ([RFC 7 §2.5](rfc-7-namespace-metadata.md#2.5%20Where%20%60size%60%20lives), [RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)), and sweep
 retires blocks and audits counts ([§7](#7.%20What%20sweep%20needs%20from%20this%20component)). Neither holds more than its view.
 
 ### 1.1 Non-goals
@@ -73,7 +73,7 @@ Block metadata **MUST NOT**:
   is a claim nothing verified ([RFC 0 §4.3](rfc-0-data-lifecycle.md#4.3%20Reporting), [RFC 3 §2.7](rfc-3-syncer.md#2.7%20It%20reports%3B%20it%20does%20not%20persist));
 - own names, directories, attributes, handles, permissions or locks — the
   filesystem model that the NFS and SMB adapters both translate into, which is
-  [RFC 5](rfc-5-namespace-metadata.md)'s. It is not per-adapter state: both protocols share one namespace, and its
+  [RFC 7](rfc-7-namespace-metadata.md)'s. It is not per-adapter state: both protocols share one namespace, and its
   rules are enforced once, below the adapters;
 - decide what to offload, evict or sweep — it supplies the atomic operations those
   decisions need ([§7](#7.%20What%20sweep%20needs%20from%20this%20component)) and nothing more;
@@ -81,12 +81,12 @@ Block metadata **MUST NOT**:
 
 ### 1.2 Why it is a separate RFC from the namespace
 
-RFC 5 and this document are one database and two sets of records. The separation
+RFC 7 and this document are one database and two sets of records. The separation
 is logical: each side has its own records and its own interface, and neither
 writes the other's records. They are specified separately because their write
 patterns are different in kind:
 
-| | Namespace metadata ([RFC 5](rfc-5-namespace-metadata.md)): the filesystem model the adapters speak | Block metadata (this RFC): file content |
+| | Namespace metadata ([RFC 7](rfc-7-namespace-metadata.md)): the filesystem model the adapters speak | Block metadata (this RFC): file content |
 | --- | --- | --- |
 | Written by | client operations | client writes *and* background offload |
 | Unit | one entry | one extent, one chunk, one block |
@@ -99,7 +99,7 @@ failed once.
 
 Both **MUST** live in one physical database, because two rules need a
 transaction that spans them. A client write records `mtime` and `ctime` in the
-same transaction as existence ([RFC 5 §2.5](rfc-5-namespace-metadata.md#2.5%20Where%20%60size%60%20lives)), and releasing an inode drops its refs
+same transaction as existence ([RFC 7 §2.5](rfc-7-namespace-metadata.md#2.5%20Where%20%60size%60%20lives)), and releasing an inode drops its refs
 ([§6.4](#6.4%20Delete)). Across two databases, each of those needs a cross-store protocol whose
 failure modes are exactly the torn states this document forbids. What one
 database does not require is one keyspace: a backend **MAY** give each side its
@@ -147,7 +147,7 @@ somewhere this document forbids:
 | Holes into the ref keyspace, as refs with no chunk | the write path and the offload commit then write one keyspace, and a write into a hole races a commit over the same offsets ([§5.1](#5.1%20No%20record%20is%20written%20by%20both%20paths)) |
 | Chunk into Ref: refs name `(block, position)` | relocating a block rewrites every ref naming its chunks, across every file; deduplication needs a by-hash lookup, which is the chunk record again; the refcount has nowhere to live ([§2.5](#2.5%20Refs%20name%20hashes%2C%20never%20blocks)) |
 | Block into Chunk: `live` computed by scanning a block's chunks | retirement's condition becomes a predicate over a range, and closing the race with adoption then needs serialisable range reads that not every backend has ([§7.1](#7.1%20Conditional%20retirement), [§7.2](#7.2%20Adoption%20is%20conditional%20on%20existence)); sweep finds dead blocks only by scanning every chunk |
-| Shape into the namespace inode | `size` and the holes would move in two records, and every write would rewrite the inode `chmod` writes ([RFC 5 §2.5](rfc-5-namespace-metadata.md#2.5%20Where%20%60size%60%20lives)) |
+| Shape into the namespace inode | `size` and the holes would move in two records, and every write would rewrite the inode `chmod` writes ([RFC 7 §2.5](rfc-7-namespace-metadata.md#2.5%20Where%20%60size%60%20lives)) |
 
 The block record is the one that holds nothing new: `live` is derivable from the
 chunk records. It is kept as a materialised count because it is the single key
@@ -272,7 +272,7 @@ That is the general obligation, and it is stated once as **[RFC 0 §9.1](rfc-0-d
 every stored record names what reclaims it, at its maximum size. The predicate
 there is a record that grows with use rather than a list, because the identical
 failure reached the namespace's attribute blob, which is a map and holds no refs
-at all ([RFC 5 §12.1](rfc-5-namespace-metadata.md#12.1%20The%20records)).
+at all ([RFC 7 §12.1](rfc-7-namespace-metadata.md#12.1%20The%20records)).
 
 A backend that holds a list at all **MUST** satisfy I7 for it. Segmenting the
 list so no stored value reaches the threshold is one way; spilling each ref into
@@ -297,7 +297,7 @@ is a ref wearing a chunk's name, and the refcount on it counts nothing.
 `block` and `position` locate the chunk's bytes: the remote key of the block that
 carries it, and `position`, the byte range of the chunk's record in the object as
 stored — the `Range` the store reported when the block was put ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)). This is
-what a ranged read asks for ([RFC 8 §6.1](rfc-8-remote-tier.md#6.1%20The%20exported%20read%20takes%20the%20expected%20hash)). It is the stored range, after framing and
+what a ranged read asks for ([RFC 4 §6.1](rfc-4-remote-tier.md#6.1%20The%20exported%20read%20takes%20the%20expected%20hash)). It is the stored range, after framing and
 transforms, so it is recorded from the store's report and never computed.
 
 ### 2.3 Block
@@ -328,7 +328,7 @@ deallocate advance it ([§6.2](#6.2%20Truncation%20and%20deallocation)). It lets
 under it:
 
 1. The journal offers `[0, 10M)` of `f`. The engine reads `epoch = 3` and
-   carries it with the pass ([RFC 6 §4.4](rfc-6-engine.md#4.4%20The%20truncation%20epoch%20is%20captured%20at%20offer%20and%20checked%20at%20commit)).
+   carries it with the pass ([RFC 8 §4.4](rfc-8-engine.md#4.4%20The%20truncation%20epoch%20is%20captured%20at%20offer%20and%20checked%20at%20commit)).
 2. A client truncates `f` to 5 MiB, and `epoch` becomes 4.
 3. The pass commits, finds `epoch = 4`, and drops `f`'s refs from the commit;
    the rest of the commit applies. The journal, already truncated, offers
@@ -372,7 +372,7 @@ The same reasoning bounds what absence proves. **The absence of a record here
 MUST NOT be taken as evidence that a remote object is unreferenced.** It shows
 only that this store does not reference the object. Another store, another
 process or another deployment writing to the same bucket may reference it. How an
-unrecorded object is collected is [RFC 7](rfc-7-gc.md)'s problem. This document only forbids
+unrecorded object is collected is [RFC 9](rfc-9-gc.md)'s problem. This document only forbids
 treating a missing record as proof that nothing references the object.
 
 ### 2.7 A file's life, record by record
@@ -465,7 +465,7 @@ ref uses.
 An offload that had been offered the 11 MiB file and commits now finds epoch 1,
 not 0, and drops `f`'s refs from its commit ([§2.4](#2.4%20Shape%20and%20holes)).
 
-**t7 — delete.** The namespace releases the inode ([RFC 5 §4.3](rfc-5-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)) and its three
+**t7 — delete.** The namespace releases the inode ([RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)) and its three
 refs are dropped. A's refcount goes 2 → 0 and C's 1 → 0, so K1's `live` and
 K2's `live` both reach 0. Sweep's `Retire(K1)` checks `live == 0` and deletes
 Block(K1), Chunk(A) and Chunk(B) in one transaction, and only then deletes the
@@ -563,7 +563,7 @@ that its per-write cost does not grow with the number of prior writes.
 An extent leaves the hole set, or `size` grows past it, as a claim that its bytes
 exist. The claim **MUST NOT** precede the bytes:
 
-1. The namespace layer authorises the write ([RFC 5](rfc-5-namespace-metadata.md)).
+1. The namespace layer authorises the write ([RFC 7](rfc-7-namespace-metadata.md)).
 2. The journal stages the bytes ([RFC 1 §3.1](rfc-1-journal.md#3.1%20Write)).
 3. Existence is recorded: `size` grown, holes shrunk.
 4. The client is acknowledged.
@@ -607,7 +607,7 @@ for.
 the journal first, by [§3.4](#3.4%20Ordering%20against%20the%20journal). Removing a hole claims bytes exist. With nothing
 staged the range becomes uncarved and journal-absent — **Lost** — so a
 preallocated file would fail every read of a range it never wrote. Reporting
-allocation to `SEEK_DATA` is RFC 5's, and it **MUST NOT** be done by editing
+allocation to `SEEK_DATA` is RFC 7's, and it **MUST NOT** be done by editing
 existence.
 
 ## 4. The offload commit
@@ -634,7 +634,7 @@ later read or a later sweep into a guess.
 
 > [!important] Pending review — two blocks carrying one chunk; truncation per file
 > Two changes from the review. (1) A chunk carried by two blocks in flight — which
-> [RFC 6 §5.3](rfc-6-engine.md#5.3%20The%20dedup%20oracle%20never%20sees%20an%20uncommitted%20block) requires, and two passes over identical content produce — left the
+> [RFC 8 §5.3](rfc-8-engine.md#5.3%20The%20dedup%20oracle%20never%20sees%20an%20uncommitted%20block) requires, and two passes over identical content produce — left the
 > second commit's effect on the chunk record unstated; an upsert resets its count,
 > sweep then deletes a block refs still need. (2) The truncation check refused the
 > whole commit; with blocks packing several files, one file truncated often enough
@@ -648,7 +648,7 @@ reset its count and point it at a block that `live` does not count, so a sweep
 could delete the block the count's refs still need.
 
 **The truncation check is per file.** A block may carry chunks of several files
-([RFC 6 §5.7](rfc-6-engine.md#5.7%20A%20block%20packs%20chunks%2C%20whichever%20files%20they%20came%20from)), and the `epoch` check of [§6.2](#6.2%20Truncation%20and%20deallocation) applies to each file's refs separately:
+([RFC 8 §5.7](rfc-8-engine.md#5.7%20A%20block%20packs%20chunks%2C%20whichever%20files%20they%20came%20from)), and the `epoch` check of [§6.2](#6.2%20Truncation%20and%20deallocation) applies to each file's refs separately:
 a file whose `epoch` advanced has its refs dropped from the commit, and the rest
 of the commit applies. The block is durable either way; a chunk it carries only
 for the dropped file is dead weight, not counted in `live`.
@@ -706,7 +706,7 @@ so its version, and the later pass's `newest`, exceeds every version the earlier
 pass holds. Every ref carries the content versions of its offer
 ([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions)), because reseeding needs it ([RFC 1 §9.2](rfc-1-journal.md#9.2%20Offload%20state%20after%20recovery)) whether or not
 commits are serialised. The engine **MAY** also serialise commits per file
-([RFC 6](rfc-6-engine.md)); that keeps the version check from ever firing, and is cheaper to reason
+([RFC 8](rfc-8-engine.md)); that keeps the version check from ever firing, and is cheaper to reason
 about, but no longer stands in for it.
 
 ## 5. Write sets
@@ -730,7 +730,7 @@ The offload commit *reads* `epoch` ([§6.2](#6.2%20Truncation%20and%20deallocati
 writers of `epoch` and are rare, so the read conflicts only with the operations it
 must conflict with.
 
-`size` and `mtime` changes belong to the write path and are [RFC 5](rfc-5-namespace-metadata.md)'s attributes.
+`size` and `mtime` changes belong to the write path and are [RFC 7](rfc-7-namespace-metadata.md)'s attributes.
 The offload commit **MUST NOT** touch them. Offloading changes where content is, not
 what it is.
 
@@ -756,7 +756,7 @@ are the ones under the heaviest write load, the slowest to offload.
   so it is far colder than the refcount.
 - **Usage accounting.** A per-owner byte or quota counter updated on every write
   is one record shared by all of that owner's files. It belongs to the write path
-  and RFC 5, and by [§5.1](#5.1%20No%20record%20is%20written%20by%20both%20paths) the offload commit **MUST NOT** update it.
+  and RFC 7, and by [§5.1](#5.1%20No%20record%20is%20written%20by%20both%20paths) the offload commit **MUST NOT** update it.
 
 An implementation **SHOULD** measure the first two under a zero-heavy workload before
 shipping. Remedies — a sharded counter, or not carving known-zero chunks and
@@ -830,7 +830,7 @@ than lose:
 Refs belong to an **inode**, not to a name. Hard links, a rename over an existing
 file, moving a file to trash, and a file unlinked while still open are all
 namespace states of one inode. None of them changes a ref. Block metadata **MUST
-NOT** be told about names. It learns of a deletion only when [RFC 5](rfc-5-namespace-metadata.md) releases the
+NOT** be told about names. It learns of a deletion only when [RFC 7](rfc-7-namespace-metadata.md) releases the
 inode, and that release is the delete of [§6.4](#6.4%20Delete).
 
 A **snapshot** that can be restored holds its content exactly as a file does, so
@@ -866,7 +866,7 @@ bytes that exist nowhere under the destination, and a read resolves to **Lost**.
 
 ## 7. What sweep needs from this component
 
-Sweep's protocol is [RFC 7](rfc-7-gc.md)'s. It needs two atomic operations from this document,
+Sweep's protocol is [RFC 9](rfc-9-gc.md)'s. It needs two atomic operations from this document,
 and it cannot be made safe without them.
 
 ### 7.1 Conditional retirement
@@ -881,7 +881,7 @@ delete.
 
 Retiring the records before deleting the remote object means a crash between the
 two leaves an object nothing references. With content-derived keys ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block))
-that object is findable by its content, and it is RFC 7's to collect. The reverse
+that object is findable by its content, and it is RFC 9's to collect. The reverse
 order leaves records naming an object that no longer exists, so every read of
 those chunks fails — which is **Lost** for content that was durable.
 
@@ -905,7 +905,7 @@ inference with worse consequences.
 
 Rewriting a block's surviving chunks into a new block, so that a mostly
 unreferenced block can be retired, changes where chunks live. Deciding when to do
-it belongs to RFC 7. This section covers only the record change.
+it belongs to RFC 9. This section covers only the record change.
 
 After the syncer reports the new block durable, one transaction:
 
@@ -1153,11 +1153,11 @@ written after.
    costs a walk of every ref per sweep, and it needs its own answer to adoption
    during the walk. If [§5.3](#5.3%20Hot%20records%20that%20are%20not%20per-file) or [§6.5](#6.5%20Who%20owns%20a%20ref) turn out too costly under measurement, the
    choice belongs in [RFC 0](rfc-0-data-lifecycle.md), not in a second mechanism added beside the first.
-7. **Where existence lives** — settled by [RFC 5 §2.5](rfc-5-namespace-metadata.md#2.5%20Where%20%60size%60%20lives). `size` is stored once, on the
+7. **Where existence lives** — settled by [RFC 7 §2.5](rfc-7-namespace-metadata.md#2.5%20Where%20%60size%60%20lives). `size` is stored once, on the
    shape record ([§2.4](#2.4%20Shape%20and%20holes)), and the namespace reads it through a declared
    interface. `mtime` and `ctime` on write are written in the same transaction,
    which is one reason the two sides share a database ([§1.2](#1.2%20Why%20it%20is%20a%20separate%20RFC%20from%20the%20namespace)).
 8. **Separate metadata servers.** [§1.2](#1.2%20Why%20it%20is%20a%20separate%20RFC%20from%20the%20namespace) keeps both sides in one database. High
    availability, or pNFS with data servers apart from a metadata server, may want
    them on separate machines. That needs an answer for the two transactions
-   [§1.2](#1.2%20Why%20it%20is%20a%20separate%20RFC%20from%20the%20namespace) names, and it spans this document, [RFC 5](rfc-5-namespace-metadata.md) and [RFC 6](rfc-6-engine.md).
+   [§1.2](#1.2%20Why%20it%20is%20a%20separate%20RFC%20from%20the%20namespace) names, and it spans this document, [RFC 7](rfc-7-namespace-metadata.md) and [RFC 8](rfc-8-engine.md).

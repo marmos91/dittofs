@@ -211,18 +211,18 @@ offset order until the next would pass the limit, and offers an extent larger th
 what remains as a prefix ending at the limit; the rest is offered by a later call.
 Without a bound, one pass over a 100 GiB dirty file keeps all of it offered, its
 superseded records pinned for `offered`, and none of it evictable until the last
-block uploads. The engine chooses the limit ([RFC 6 §4.2](rfc-6-engine.md#4.2%20Offload%20is%20scheduled%20here)). A prefix ends where no content
+block uploads. The engine chooses the limit ([RFC 8 §4.2](rfc-8-engine.md#4.2%20Offload%20is%20scheduled%20here)). A prefix ends where no content
 chose, so it costs one chunk boundary per pass that the chunker did not pick
 ([RFC 2 §2.1](rfc-2-carver.md#2.1%20One%20unbroken%20stretch%20per%20call)).
 
 **`Oldest` and `Newest`** bound the content versions of the records in the offer
-([§5.3](#5.3%20Versions)). The engine records both on the refs the pass commits ([RFC 4 §4.4](rfc-4-block-metadata.md#4.4%20Commits%20for%20one%20file%20apply%20in%20order)) and
+([§5.3](#5.3%20Versions)). The engine records both on the refs the pass commits ([RFC 6 §4.4](rfc-6-block-metadata.md#4.4%20Commits%20for%20one%20file%20apply%20in%20order)) and
 names them again when it reseeds after a crash ([§9.2](#9.2%20Offload%20state%20after%20recovery)). A range is enough: every
 extent in the pass lies inside it, which is all reseed and the stale rule need,
 and the engine does not have to track versions per extent.
 
 `OffloadMany` is the same offer over several files in one callback, so the engine
-can pack chunks of several files into one block ([RFC 6 §5.7](rfc-6-engine.md#5.7%20A%20block%20packs%20chunks%2C%20whichever%20files%20they%20came%20from)). Every rule of this section
+can pack chunks of several files into one block ([RFC 8 §5.7](rfc-8-engine.md#5.7%20A%20block%20packs%20chunks%2C%20whichever%20files%20they%20came%20from)). Every rule of this section
 holds per file within it: each file's extents are marked exactly as the reports
 naming it say, a file never named has nothing marked, each `Offered` reader stays
 valid until `fn` returns, and `limit` bounds the total across the files. `Offload(id, …)` is `OffloadMany`
@@ -273,7 +273,7 @@ make that determination and the write atomic with respect to concurrent
 `WriteAt` on the same file.
 
 **A Fill older than the file is refused.** `asOf` is the sequence `ReadAt` returned
-when the caller found the extent missing ([RFC 6 §6.2](rfc-6-engine.md#6.2%20The%20reply%20is%20served%20from%20the%20fetched%20bytes)). The journal keeps, per file, the
+when the caller found the extent missing ([RFC 8 §6.2](rfc-8-engine.md#6.2%20The%20reply%20is%20served%20from%20the%20fetched%20bytes)). The journal keeps, per file, the
 highest sequence number of any operation that changed its extents — `WriteAt`, `Release`,
 `Truncate`, `Delete` — and keeps it through all of them, deletion included. If it
 is newer than `asOf`, `Fill` **MUST** write nothing and return a distinct error.
@@ -295,7 +295,7 @@ journal believes is durable elsewhere and will therefore allow to be released �
 leaving content that exists nowhere.
 
 `v` is the content version of the ref the bytes were fetched from: its `newest`
-([RFC 4 §2.1](rfc-4-block-metadata.md#2.1%20Ref)). The filled record carries it, so reseed and the stale rule treat
+([RFC 6 §2.1](rfc-6-block-metadata.md#2.1%20Ref)). The filled record carries it, so reseed and the stale rule treat
 filled content like any other ([§9.2](#9.2%20Offload%20state%20after%20recovery)). Its sequence number is new, like every
 append's, so an older superseded write still on disk cannot win over it at
 recovery.
@@ -1019,7 +1019,7 @@ separate, explicit action.
 The journal **MUST** be on durable local storage: a synced record survives a
 process crash, a host crash and power loss. There is no setting that declares a
 journal not durable. A client's flush is acknowledged once the journal has synced
-the file's records, and on nothing else ([RFC 6 §9.4](rfc-6-engine.md#9.4%20Commit%20is%20answered%20by%20the%20journal)); a journal that could not keep
+the file's records, and on nothing else ([RFC 8 §9.4](rfc-8-engine.md#9.4%20Commit%20is%20answered%20by%20the%20journal)); a journal that could not keep
 them would turn every acknowledged flush into a claim nothing backs.
 
 The policy governing when staged bytes reach stable storage before `WriteAt`
@@ -1290,7 +1290,7 @@ torn and which holds no record was being created at a crash; it is an orphan
 
 **The version floor.** The journal is opened with a floor supplied by its
 caller: the highest content version the caller has recorded as durable for this
-journal ([RFC 6 §2.5](rfc-6-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). This is a number, not a dependency, and recovery still
+journal ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). This is a number, not a dependency, and recovery still
 consults nothing. The next sequence number issued **MUST** exceed both the floor and every one on
 disk ([§5.3](#5.3%20Versions)). The journal does not compare the floor with what it
 holds: released content can leave nothing on disk, so a healthy journal is
@@ -1416,7 +1416,7 @@ MarkDurable(id FileID, extents []Extent, oldest, newest Version) error
 ```
 
 naming for each extent the content versions recorded on the ref that covers it
-([RFC 4 §4.4](rfc-4-block-metadata.md#4.4%20Commits%20for%20one%20file%20apply%20in%20order)). The journal marks an extent only where no held content in it is newer
+([RFC 6 §4.4](rfc-6-block-metadata.md#4.4%20Commits%20for%20one%20file%20apply%20in%20order)). The journal marks an extent only where no held content in it is newer
 than `newest`. Marking by position alone loses data: a write that superseded
 offloaded content and had not been offloaded when the process crashed is held again
 after recovery, covered by the old content's ref; marked durable by position, it
@@ -2053,7 +2053,7 @@ A full scan at 1 TiB is bounded by the device's read rate, about 17 minutes at
 1 GB/s, and has no target. It is the fallback that catalogs and the placement
 cache exist to avoid; J6 reports it so that a regression to it is visible.
 
-Most of a reseed is the engine's walk over metadata ([RFC 6](rfc-6-engine.md)), not the journal.
+Most of a reseed is the engine's walk over metadata ([RFC 8](rfc-8-engine.md)), not the journal.
 J7's wall-time target is for the two together; the journal's share is the
 per-extent row. Until the reseed ends nothing can be evicted, so at a full
 journal it is also how long writes may be paced.
