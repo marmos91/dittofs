@@ -21,7 +21,7 @@ The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT** and **MAY** are
 to be interpreted as in RFC 2119.
 
 This document specifies behaviour, not the current code. Where the code differs,
-[Appendix C](#Appendix%20C%20%E2%80%94%20where%20the%20current%20code%20differs) lists it for the refactor.
+[Appendix C](#Appendix%20D%20%E2%80%94%20where%20the%20current%20code%20differs) lists it for the refactor.
 
 ---
 
@@ -64,42 +64,47 @@ This document **MUST NOT** be read as specifying:
 
 A transform takes one chunk's bytes and returns one body, and can turn that body
 back into the same bytes. It never sees a block, a file, an offset or another
-chunk.
+chunk. Within that, it may do anything: make the body smaller (compression),
+unreadable (encryption), larger (padding, parity for error correction), or
+anything else invertible.
 
 Per-chunk scope is what keeps ranged reads working: a get for one chunk's body
 ([RFC 4 §4.4](rfc-4-remote-tier.md#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)) returns something the chain can undo on its own, without the rest of
-the block. It also means one corrupt body loses one chunk. A transform over a
-whole block would give up both.
+the block. It also means one corrupt body loses one chunk.
 
 A transform **MUST** be:
 
 - **invertible**: `Decode(Encode(p)) == p`, byte for byte, for every input,
-  including inputs chosen to look like the transform's own output;
-- **self-contained**: everything `Decode` needs, apart from key material, is in
-  the body it wrote;
-- **bounded**: `Decode` **MUST NOT** allocate or produce more than the `max` it
-  is given, however large a body claims its output to be. The chain gives each
-  stage the chunk maximum ([RFC 2 §3.2](rfc-2-carver.md#3.2%20The%20three%20settings)) plus the declared `MaxOverhead` of the
-  transforms applied before it, so a stage that legitimately adds bytes is not
-  refused by the next one;
+  including inputs chosen to look like the transform's own output. A lossy
+  transform is not a transform;
+- **self-contained**: everything `Decode` needs is in the body it wrote, apart
+  from **material** held outside it: a key, a dictionary, any versioned input the
+  transform names by ID ([§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material));
+- **size-bounded**: it declares `MaxEncodedLen(n)`, the largest body it can
+  produce from `n` bytes, and never exceeds it. `Decode` **MUST NOT** allocate or
+  produce more than the `max` it is given, however large a body claims its output
+  to be;
 - **stateless per call**: safe to call concurrently, with no memory between calls
-  other than read-only configuration and keys.
+  other than read-only configuration and material.
 
 A transform **MAY** decline a chunk: compression declines one that would not
 shrink. A declined chunk passes to the next transform unchanged, and the body
 records that the transform was not applied ([§2.4](#2.4%20Every%20body%20records%20what%20was%20applied)).
 
+What does not fit, by design: a transform that loses information, one that needs
+another chunk (delta encoding against a neighbour), and one that turns a chunk
+into several bodies stored in different places (erasure coding across failure
+domains). The last belongs to the store layer, as a store that spreads shards
+over several backends, not to the chain.
+
 ### 2.2 Where it runs
 
-The chain runs inside the block codec, which the engine owns ([RFC 4 §3.1](rfc-4-remote-tier.md#3.1%20Who%20writes%20it)):
+The chain runs inside the block codec, which the engine owns ([RFC 4 §3.1](rfc-4-remote-tier.md#3.1%20Who%20writes%20it)).
 
-```
-write: chunk ─ hash taken ─▶ chain.Encode ─▶ body ─▶ codec writes it into the block
-read:  body ─▶ chain.Decode ─▶ chunk ─ hash checked ─▶ caller
-```
+![Write path: the chunk is hashed first, then each configured transform runs in order, a transform that declines is skipped and left out of the envelope; the envelope lists the ones applied. Read path: the envelope says which to undo, in reverse, and the plaintext hash decides](img/rfc5t-chain.svg)
 
 - The hash is taken over plaintext **before** the chain, so identity never
-  depends on a transform's settings, keys or library version ([RFC 4 §3.3](rfc-4-remote-tier.md#3.3%20Transforms)).
+  depends on a transform's settings, material or library version ([RFC 4 §3.3](rfc-4-remote-tier.md#3.3%20Transforms)).
 - The hash is checked **after** the whole chain is undone ([§2.6](#2.6%20The%20plaintext%20hash%20is%20the%20final%20check)).
 - Every consumer of block bytes goes through the codec, so every consumer gets
   the chain: the engine's reads and writes, and GC's relocation, which re-encodes
@@ -112,23 +117,26 @@ chain on or off.
 ### 2.3 The chain is ordered by configuration
 
 A store's operator lists its transforms in order. `Encode` runs them first to
-last and `Decode` last to first. The order is not built into the code and has no
-priorities: the configuration is the order.
+last and `Decode` last to first. The configuration is the order: the code holds no
+ordering rule, priority or compatibility table.
 
-The system refuses an order that cannot work, using traits each transform
-declares about itself ([§3.1](#3.1%20Interfaces)):
+**Every order is correct.** Each transform is invertible and the plaintext hash
+is checked after the whole chain ([§2.6](#2.6%20The%20plaintext%20hash%20is%20the%20final%20check)), so any order reads back exactly what
+was written. An order can only be *ineffective*: compressing after encrypting
+saves nothing, padding before compressing gets squeezed out, parity before
+encryption cannot repair what a flipped ciphertext bit breaks. The system does
+not refuse such an order. It makes it visible: the per-transform metrics of
+[§6](#6.%20Observability) show a compressor declining every chunk or a repair counter that never
+moves. The only chain refused is one that lists a transform twice.
 
-| Trait | Meaning | Rule |
+The recommended order for the transforms this document describes:
+
+| Position | Transform | Why there |
 | --- | --- | --- |
-| `Shrinks` | tries to make the body smaller | **MUST NOT** follow a transform that `Randomizes`: its input would be incompressible, so it would never apply |
-| `Randomizes` | output is indistinguishable from random bytes | — |
-| `MaxOverhead` | the most bytes it can add to a chunk | the chain's total bounds the encoded body size ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)) |
-
-For the two shipped transforms, compression `Shrinks` and encryption
-`Randomizes`, so the rule accepts compression then encryption and refuses the
-reverse. It says nothing about how two custom transforms relate; that is their
-author's and operator's call. A transform **MUST NOT** appear twice in one
-chain.
+| 1 | compression | needs the plaintext's redundancy |
+| 2 | padding | hides the compressed size; must not be compressed away |
+| 3 | encryption | covers everything before it |
+| 4 | parity | protects the stored bytes, so it must see them last |
 
 ### 2.4 Every body records what was applied
 
@@ -149,25 +157,33 @@ configuration:
   to do now.
 
 A transform **MAY** still write a header of its own inside its output: its
-format version, and whatever else `Decode` needs, such as a key ID. The envelope
-costs 1 + 2n bytes per chunk, negligible against a chunk's size.
+format version, and the IDs of the material it used. The envelope costs 1 + 2n
+bytes per chunk.
+
+![A body: the envelope listing the applied transforms, then each transform's own header nested around the next one's output, with the chunk's bytes innermost](img/rfc5t-body.svg)
 
 A reader **MUST** reject with `ErrMalformed`, before decoding anything, an
 envelope that lists an unregistered ID, the same ID twice, or more transforms
 than are registered. Otherwise a bucket writer could wrap a body in hundreds of
 layers that each decode correctly and cost a full decode on every read.
 
-### 2.5 Reading needs no configuration, only keys
+The envelope is outside every transform, so a redundancy transform cannot repair
+it: a damaged envelope fails the chunk loudly, as it would without one. Giving
+the envelope its own protection is deferred until a redundancy transform ships.
+
+### 2.5 Reading needs no configuration, only material
 
 Every transform compiled into the binary is registered by its ID at start, and
 `Decode` looks transforms up by the IDs in the envelope, not in the configured
 chain. For each store, the registry builds every transform once for decoding,
-with its default settings and the store's keys.
+with its default settings and the store's material.
 
-**Keys are configured on the store, apart from the chain** ([§3.2](#3.2%20Configuration)). Removing a
-keyed transform from the chain therefore stops it for new writes but keeps its
-keys, and bodies written under it stay readable. Removing a key is a separate
-act, allowed only once the census shows nothing uses it ([§5.3](#5.3%20Retiring%20a%20key%20or%20a%20transform%20needs%20a%20census)).
+**Material is configured on the store, apart from the chain** ([§3.2](#3.2%20Configuration)). A
+material provider holds it by kind (`key`, `dictionary`, whatever a transform
+declares) and ID. Removing a transform from the chain therefore stops it for new
+writes but keeps its material, and bodies written under it stay readable.
+Removing material is a separate act, allowed only once the census shows nothing
+uses it ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)).
 
 Because reading does not consult the chain, a store accepts a body without a
 transform its chain now applies: an old plaintext body after encryption was
@@ -184,29 +200,30 @@ transform **MUST** keep decoding every version it may still meet.
 After the chain is undone, the codec compares the result with the chunk's
 plaintext hash from block metadata ([RFC 4 §3.4](rfc-4-remote-tier.md#3.4%20Every%20read%20is%20verified%20by%20the%20codec)). That check decides; no
 transform's own check stands in for it. An encryption tag proves a body was
-sealed for that hash, not that decompression then reproduced it.
+sealed for that hash, not that decompression then reproduced it; a parity
+transform that "repairs" a body can still repair it wrongly.
 
-It also makes a tampered envelope harmless. Someone who can write the bucket can
-strip a transform from an envelope or swap a body, but the result must still hash
-to what local metadata expects, and producing that requires knowing the plaintext
-already. Integrity never rests on the envelope.
+It also makes a tampered envelope harmless to integrity. Someone who can write
+the bucket can strip a transform from an envelope or swap a body, but the result
+must still hash to what local metadata expects, and producing that requires
+knowing the plaintext already.
 
 ### 2.7 Failures
 
 - **A chain that cannot be built is a construction failure.** If a store is
-  configured with a transform that cannot start (an unknown ID, bad settings, an
-  unreachable key provider), the store **MUST NOT** open, and **MUST NOT** fall
-  back to writing without it. Writing plaintext because encryption failed to load
-  is the failure this rule exists for.
-- **`Decode` errors are one of three.** `ErrMalformed` (the body is not
-  something this transform wrote, fails its own integrity check, or names a key
-  the store has never had), `ErrKeyUnavailable` (a key the store knows but cannot
-  reach now), and `ErrTooLarge` (the output would exceed `max`). The difference
-  between the first two matters: a key ID planted by a bucket writer must not
-  turn a corrupt body into a remote that looks unavailable forever. The codec reports the first and third
-  as verification failures of the chunk, and the second as the remote being
-  unavailable: retryable, never zeros, never an absent chunk
-  ([RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model)).
+  configured with a transform that cannot start (an unknown name, bad settings,
+  material it needs and cannot get), the store **MUST NOT** open, and **MUST
+  NOT** fall back to writing without it. Writing plaintext because encryption
+  failed to load is the failure this rule exists for.
+- **`Decode` errors are one of three.** `ErrMalformed` (the body is not something
+  this transform wrote, fails its own integrity check, or names material the
+  store has never had), `ErrMaterialUnavailable` (material the store knows but
+  cannot reach now), and `ErrTooLarge` (the output would exceed `max`). The
+  difference between the first two matters: a material ID planted by a bucket
+  writer must not turn a corrupt body into a remote that looks unavailable
+  forever. The codec reports the first and third as verification failures of the
+  chunk, and the second as the remote being unavailable: retryable, never zeros,
+  never an absent chunk ([RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model)).
 - **`Encode` errors** fail the put. A declined chunk is not an error.
 
 A transform's own error types **MUST NOT** cross the codec. Callers see only the
@@ -224,16 +241,12 @@ package transform
 // ID names a transform in every body it was applied to. Assigned once, never reused.
 type ID uint16
 
-type Traits struct {
-	Shrinks     bool // tries to make the body smaller
-	Randomizes  bool // output is indistinguishable from random bytes
-	MaxOverhead int  // most bytes Encode can add to a chunk
-}
-
 // Transform is one invertible, per-chunk step.
 type Transform interface {
 	ID() ID
-	Traits() Traits
+
+	// MaxEncodedLen is the largest body Encode can produce from n bytes.
+	MaxEncodedLen(n int) int
 
 	// Encode transforms plain. Applied=false declines the chunk: plain passes on
 	// unchanged. hash is the plaintext hash, for transforms that bind to it.
@@ -245,25 +258,43 @@ type Transform interface {
 
 // Encoded is one transform's output, and what the census records about it.
 type Encoded struct {
-	Body    []byte
-	Applied bool
-	Version uint8  // the transform's own format version
-	KeyID   string // the key used, or "" for an unkeyed transform
+	Body     []byte
+	Applied  bool
+	Version  uint8        // the transform's own format version
+	Material []MaterialID // the material used, if any
 }
 
-// Factory builds a transform from its settings and the store's keys. It fails
-// rather than returning a transform that cannot work.
-type Factory func(ctx context.Context, settings map[string]any, keys KeyProvider) (Transform, error)
+// MaterialID names one piece of material of one kind: a key, a dictionary.
+type MaterialID struct {
+	Kind string
+	ID   string
+}
+
+// Materials holds a store's material. A transform asks it for what it needs.
+type Materials interface {
+	// Current is the material new bodies of this kind use.
+	Current(ctx context.Context, kind string) (MaterialID, error)
+	// Get returns material by ID: ErrUnknownMaterial for an ID the store never
+	// had, ErrMaterialUnavailable for one it cannot reach now.
+	Get(ctx context.Context, id MaterialID) ([]byte, error)
+}
+
+// Factory builds a transform from its settings and the store's material. It
+// fails rather than returning a transform that cannot work.
+type Factory func(ctx context.Context, settings map[string]any, m Materials) (Transform, error)
 
 // Register makes a transform available for configuration and for decoding.
 // Called at init; a duplicate ID panics.
 func Register(id ID, name string, f Factory)
 
-// Chain is a store's configured, validated list of transforms.
+// Chain is a store's configured list of transforms.
 type Chain struct{ /* ... */ }
 
-// NewChain builds and validates the configured transforms (§2.3).
-func NewChain(ctx context.Context, cfg []Config) (*Chain, error)
+// NewChain builds the configured transforms, in order. It refuses a duplicate.
+func NewChain(ctx context.Context, cfg []Config, m Materials) (*Chain, error)
+
+// MaxEncodedLen composes the transforms' bounds, in chain order, plus the envelope.
+func (c *Chain) MaxEncodedLen(n int) int
 
 // Encode writes the envelope and returns the body with one Encoded per applied
 // transform, which the codec collects into the block's census (§5.3).
@@ -276,18 +307,22 @@ type Config struct {
 }
 
 var (
-	ErrMalformed      = errors.New("transform: malformed body")
-	ErrKeyUnavailable = errors.New("transform: key unavailable")
-	ErrTooLarge       = errors.New("transform: output exceeds chunk maximum")
+	ErrMalformed           = errors.New("transform: malformed body")
+	ErrMaterialUnavailable = errors.New("transform: material unavailable")
+	ErrTooLarge            = errors.New("transform: output exceeds its bound")
 )
 ```
 
-`Chain.Decode` uses the registry, not the configured list ([§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20keys)), so a chain
-decodes what an older configuration wrote. `dst` **MUST NOT** overlap the input;
-the result may be `dst` resliced or a new slice. `KeyProvider` is specified with
-the encryption example ([Appendix B.2](#B.2%20Keys)), but any keyed transform uses it. Its `Key`
-distinguishes a key the store never had (`ErrUnknownKey`, reported as
-`ErrMalformed`) from one it cannot reach now (`ErrKeyUnavailable`).
+`Chain.Decode` uses the registry, not the configured list ([§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material)), so a chain
+decodes what an older configuration wrote. It gives each step the chunk maximum
+([RFC 2 §3.2](rfc-2-carver.md#3.2%20The%20three%20settings)) passed through the `MaxEncodedLen` of the steps applied before it, so
+a step that legitimately enlarges the body is not refused by the next one. `dst`
+**MUST NOT** overlap the input; the result may be `dst` resliced or a new slice.
+`ErrUnknownMaterial` from `Materials` is reported as `ErrMalformed`.
+
+`Chain.MaxEncodedLen` of the chunk maximum is what sizes everything downstream:
+the largest encoded block, and so the upload spool ([RFC 3 §3.4](rfc-3-syncer.md#3.4%20One%20put%20per%20block)) and the block
+header's bound ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)).
 
 ### 3.2 Configuration
 
@@ -299,18 +334,18 @@ blockstores:
   remote:
     main:
       type: s3
-      keys:
+      materials:
         provider: file
-        file: /etc/dittofs/master.keys
+        file: /etc/dittofs/materials.yaml
       transforms:
         - name: zstd
         - name: aes-gcm
       require: [aes-gcm]   # optional (§2.5)
 ```
 
-A share that needs a different chain, or a different key, uses a different store.
-Deduplication then never spans two keys, which matters because a chunk encrypted
-under one key is readable only by a store that holds it.
+A share that needs a different chain, or different material, uses a different
+store. Deduplication then never spans two keys, which matters because a chunk
+encrypted under one key is readable only by a store that holds it.
 
 ## 4. Writing a custom transform
 
@@ -318,7 +353,7 @@ A transform is a Go package that registers itself at init. It **MUST**:
 
 1. take an ID from the range reserved for custom transforms (`0x8000`–`0xFFFF`;
    `0x0000`–`0x7FFF` is DittoFS's) and never reuse it;
-2. declare honest traits: [§8.1](#8.1%20Transform%20conformance) checks them;
+2. declare an honest `MaxEncodedLen`: [§8.1](#8.1%20Transform%20conformance) checks it on every input;
 3. put a format version in its own header if its format can ever change, and
    decode every version it has written;
 4. bound `Decode` by `max` before allocating;
@@ -336,20 +371,20 @@ operator needs one DittoFS does not build.
 
 Adding, removing, reordering or re-configuring transforms changes only what is
 written from then on. Every stored body keeps the envelope it was written with,
-and [§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20keys) keeps it readable as long as its keys are held.
+and [§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material) keeps it readable as long as its material is held.
 
 ### 5.2 Relocation re-encodes
 
 GC relocation reads chunks through the codec and writes them into a new block
 under the current chain ([RFC 9 §4.2](rfc-9-gc.md#4.2%20Read%20verified%2C%20name%20by%20content%2C%20put%2C%20then%20move)). This is how old bodies migrate to a new chain:
-each relocated chunk leaves its old transforms, and its old keys, behind. A
+each relocated chunk leaves its old transforms, and its old material, behind. A
 relocation that copied bodies unchanged would keep every retired key in use for
 as long as its chunks live.
 
-### 5.3 Retiring a key or a transform needs a census
+### 5.3 Retiring material or a transform needs a census
 
-To stop holding a key, or to stop compiling a transform in, no stored body may
-still need it. That takes an index of which blocks use which transform, version and key: the
+To stop holding material, or to stop compiling a transform in, no stored body may
+still need it. That takes an index of which blocks use which transform, version and material: the
 codec collects the `Encoded` descriptors of every body ([§3.1](#3.1%20Interfaces)) and block metadata
 records them per block when the block is written ([RFC 6](rfc-6-block-metadata.md), [§9](#9.%20Consequences%20for%20other%20RFCs)),
 and GC relocates the blocks it lists. A fully live block is not normally relocated
@@ -364,14 +399,18 @@ without writing any: the chain exports them around each call.
 | Answers | Metric | Type |
 | --- | --- | --- |
 | chunks encoded, labelled `applied` = `true` or `false` | `dittofs_transform_chunks_total` | counter |
-| bytes in and out, labelled `direction` = `encode` or `decode`; their ratio is the saving | `dittofs_transform_bytes_total` | counter |
+| bytes in and out, labelled `direction` = `encode` or `decode`; their ratio is what the transform costs or saves | `dittofs_transform_bytes_total` | counter |
 | time per call, by direction | `dittofs_transform_seconds` | histogram |
-| decode failures, labelled `error` = `malformed`, `key_unavailable` or `too_large`. `malformed` is an alert | `dittofs_transform_decode_failures_total` | counter |
-| bodies written per transform ID and version, from block metadata ([§5.3](#5.3%20Retiring%20a%20key%20or%20a%20transform%20needs%20a%20census)) | `dittofs_transform_census_blocks` | gauge |
+| decode failures, labelled `error` = `malformed`, `material_unavailable` or `too_large`. `malformed` is an alert | `dittofs_transform_decode_failures_total` | counter |
+| bodies written per transform ID, version and material ID, from block metadata ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)) | `dittofs_transform_census_blocks` | gauge |
 
 A chain that fails to build logs the transform and the reason at `Error` and
 refuses the store ([§2.7](#2.7%20Failures)). A transform logs nothing per chunk: its outcomes
-are metrics. Encryption adds the key metrics of [Appendix B.6](#B.6%20What%20it%20adds%20to%20observability).
+are metrics. A transform with outcomes of its own exports them under its name, as
+encryption does ([Appendix B.6](#B.6%20What%20it%20adds%20to%20observability)) and a parity transform would with a count of
+repaired bodies ([Appendix C](#Appendix%20C%20%E2%80%94%20example%2C%20a%20parity%20transform)). An ineffective chain order ([§2.3](#2.3%20The%20chain%20is%20ordered%20by%20configuration)) shows
+here: a transform whose `applied=false` share is near 100%, or a repair count
+that never moves.
 
 ## 7. Invariants
 
@@ -380,7 +419,7 @@ are metrics. Encryption adds the key metrics of [Appendix B.6](#B.6%20What%20it%
 | T1 | A transform never changes a chunk's hash or a block's name, and never sees more than one chunk. |
 | T2 | `Decode(Encode(p)) == p` for every input. |
 | T3 | Every body lists the transforms applied to it; reading needs the registry and keys, never the configuration. |
-| T4 | No stage of `Decode` produces or allocates more than the chunk maximum plus the overhead of the stages applied before it. |
+| T4 | No body exceeds its transform's `MaxEncodedLen`, and no step of `Decode` produces or allocates more than the bound the chain gives it. |
 | T5 | A store whose chain cannot be built does not open, and never writes without its chain. |
 | T6 | The plaintext hash is checked after the whole chain is undone, before any byte is returned. |
 | T7 | A key failure is never zeros and never an absent chunk. |
@@ -402,27 +441,27 @@ alike. A new transform gets it by registering.
 | T2 | Round-trip 10,000 inputs: random, all zeros, all one byte, 1 byte to the chunk maximum, and inputs that begin with this transform's own header and with any envelope. |
 | T2 | Every body in the transform's fixture decodes to the recorded plaintext. |
 | T4 | Fuzz `Decode`: no panic, and no allocation above `max` before the header is validated. A body declaring an output of `max + 1` fails with `ErrTooLarge`. |
-| traits | `Randomizes`: output of a compressible corpus does not compress by more than 1% under zstd. `MaxOverhead`: no output exceeds input plus the declared overhead. `Shrinks`: the transform declines when it cannot shrink. |
+| [§2.1](#2.1%20A%20transform%20acts%20on%20one%20chunk) | For every round-trip input, the body is no longer than `MaxEncodedLen(len(input))`, and an input built to hit the worst case reaches it. |
 | concurrency | Encode and decode from 64 goroutines under the race detector: same results as sequential. |
 | [§2.7](#2.7%20Failures) | Flip every byte of a body in turn: `Decode` returns an error of [§2.7](#2.7%20Failures) or bytes the codec's hash check rejects, and never panics. A transform that authenticates (encryption) **MUST** return `ErrMalformed` itself for every flip. |
-| [§2.7](#2.7%20Failures) | For an authenticating transform: decode chunk A's body with chunk B's hash, and a body naming a key ID the provider never had: both `ErrMalformed`. |
+| [§2.7](#2.7%20Failures) | For an authenticating transform: decode chunk A's body with chunk B's hash, and a body naming material the store never had: both `ErrMalformed`. |
 | [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | Encode the same chunk twice: two different salts and bodies, both decode. |
-| [§2.1](#2.1%20A%20transform%20acts%20on%20one%20chunk) | A transform with positive `MaxOverhead` before another: a chunk of exactly the maximum round-trips. |
+| [§3.1](#3.1%20Interfaces) | A transform that enlarges its input (a test transform adding 50%) before another: a chunk of exactly the maximum round-trips. |
 
 ### 8.2 Chain tests
 
 | Invariant | Check |
 | --- | --- |
-| [§2.3](#2.3%20The%20chain%20is%20ordered%20by%20configuration) | A chain with a `Shrinks` transform after a `Randomizes` one, or one transform twice, fails to build. |
+| [§2.3](#2.3%20The%20chain%20is%20ordered%20by%20configuration) | Every permutation of the shipped transforms plus a test transform builds and round-trips the whole corpus. A chain listing one transform twice fails to build. |
 | T3 | Write under chain A, reconfigure to chain B (reordered, a transform removed, another added), read everything back. |
 | T3 | A declined chunk's envelope omits the transform, and decodes. |
-| T3 | Remove the encryption transform from the chain, keeping the store's keys: every encrypted body still decodes. |
+| T3 | Remove the encryption transform from the chain, keeping the store's material: every encrypted body still decodes. |
 | [§2.4](#2.4%20Every%20body%20records%20what%20was%20applied) | Envelopes listing an unregistered ID, a duplicate ID, or more IDs than are registered: `ErrMalformed` before any decode runs. |
-| [§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20keys) | With `require: [aes-gcm]`, a body without it is `ErrMalformed`; without `require`, it decodes. |
-| [§5.3](#5.3%20Retiring%20a%20key%20or%20a%20transform%20needs%20a%20census) | Write blocks under two keys and two chains: the census lists exactly the transform IDs, versions and key IDs used. |
+| [§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material) | With `require: [aes-gcm]`, a body without it is `ErrMalformed`; without `require`, it decodes. |
+| [§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census) | Write blocks under two keys and two chains: the census lists exactly the transform IDs, versions and material IDs used. |
 | T5 | Make a transform's factory fail: the store does not open, and no body is written. |
 | T6 | A fake transform that decodes to wrong bytes: every read through the codec fails. |
-| T7 | A decode that returns `ErrKeyUnavailable` reaches the engine as the remote being unavailable, is retried, and never yields zeros or an absent chunk. |
+| T7 | A decode that returns `ErrMaterialUnavailable` reaches the engine as the remote being unavailable, is retried, and never yields zeros or an absent chunk. |
 | T8 | Force each decode error: the codec returns only its own errors. |
 | [§5.2](#5.2%20Relocation%20re-encodes) | Relocate a block written under an old chain: every body in the new block carries the current envelope. |
 
@@ -437,6 +476,7 @@ corpus, chunk size distribution and CPU with each result.
 | Each transform, encode and decode | MB/s per core | report, per transform, against the previous run |
 | The chain around its transforms | overhead | within 2% of the sum of its transforms' own times, median of 10 runs |
 | Envelope size | bytes per chunk | 1 + 2n |
+| `Chain.MaxEncodedLen` against the largest body seen | ratio | at most 1: the declared bound is never exceeded on any corpus |
 | Compression ratio per corpus | bytes out / in | report; tracked against the previous run |
 | A put and a whole-block get with the default chain | MB/s | within 10% of the same without a chain, on the reference link, or the chain is what the link waits on and pool sizing must say so ([RFC 3 §2.11](rfc-3-syncer.md#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) |
 
@@ -450,12 +490,12 @@ A regression of more than 10% is reported on develop and does not block a merge.
 | [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model) | Add a row: a key provider unavailable, or a known key missing, handled as the remote being unavailable ([§2.7](#2.7%20Failures)). |
 | [RFC 0 §4.2](rfc-0-data-lifecycle.md#4.2%20The%20residency%20function) | Add a case: a chunk whose block is durable but whose key is lost for good is **Lost**. Today the function would call it Remote. |
 | [RFC 4 §3.3](rfc-4-remote-tier.md#3.3%20Transforms) | Points here for the chain; the envelope of [§2.4](#2.4%20Every%20body%20records%20what%20was%20applied) is how the chain "travels with the block". |
-| [RFC 6](rfc-6-block-metadata.md) | A block record lists the transform IDs and key IDs its bodies use ([§5.3](#5.3%20Retiring%20a%20key%20or%20a%20transform%20needs%20a%20census)). |
+| [RFC 6](rfc-6-block-metadata.md) | A block record lists the transform IDs, versions and material IDs its bodies use ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)). |
 | [RFC 9 §4.2](rfc-9-gc.md#4.2%20Read%20verified%2C%20name%20by%20content%2C%20put%2C%20then%20move), [§4.4](rfc-9-gc.md#4.4%20When%20to%20relocate%20is%20policy) | Relocation re-encodes under the current chain; a retirement is a second reason to relocate a block, even a fully live one. A re-run after a crash puts the same name and chunks, but different bytes (a new salt, perhaps a new key); [RFC 4 §3.4](rfc-4-remote-tier.md#3.4%20Every%20read%20is%20verified%20by%20the%20codec) repairs the offsets. |
 
 ## 10. Open questions
 
-1. **Renaming a re-encoded, fully live block** ([§5.3](#5.3%20Retiring%20a%20key%20or%20a%20transform%20needs%20a%20census)). Re-encoded under its old
+1. **Renaming a re-encoded, fully live block** ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)). Re-encoded under its old
    name, it overwrites the old block with a new layout, which [RFC 4 §3.4](rfc-4-remote-tier.md#3.4%20Every%20read%20is%20verified%20by%20the%20codec)
    repairs, but a read racing the overwrite of a key being retired could need that
    key. Settle with [RFC 9 §4.4](rfc-9-gc.md#4.4%20When%20to%20relocate%20is%20policy): overwrite in place only after the census shows no
@@ -469,7 +509,7 @@ A regression of more than 10% is reported on develop and does not block a merge.
 
 ## Appendix A — compression
 
-A shipped transform, and an example of one that `Shrinks`.
+A shipped transform, and an example of one that makes bodies smaller.
 
 **What it does.** Compresses a chunk with zstd (ID `0x0001`) or LZ4 (ID `0x0002`).
 The algorithm is the transform, so the envelope records it; the level is not
@@ -485,7 +525,7 @@ and no stored overhead.
 decoder with its window capped at the chunk maximum, so a body cannot make it
 allocate more than one chunk however it was crafted.
 
-**Traits.** `Shrinks`; `MaxOverhead` 0, since a chunk that would grow is declined.
+**Bound.** `MaxEncodedLen(n) = n`: a chunk that would not shrink, header included, is declined.
 
 **Settings.** `level` (default 3 for zstd). Changing it affects the next write
 only.
@@ -498,8 +538,8 @@ chunk and watch the size change; a deployment with such writers in one share
 
 ## Appendix B — encryption
 
-A shipped transform (ID `0x0010`), and an example of one that `Randomizes` and
-needs keys.
+A shipped transform (ID `0x0010`), and an example of one that needs material:
+keys, of kind `key`.
 
 ### B.1 How a chunk is encrypted
 
@@ -511,6 +551,8 @@ data key = HKDF-SHA256(master key, salt, "dittofs chunk v1")
 body     = AES-256-GCM(data key, nonce = 0, plaintext,
                         AAD = transform ID ‖ version ‖ key ID ‖ salt ‖ plaintext hash)
 ```
+
+![Encrypting one chunk: the master key and a random salt give a per-chunk data key through HKDF; AES-256-GCM with nonce zero seals the plaintext, authenticating the header fields and the plaintext hash](img/rfc5t-key-derivation.svg)
 
 In plain terms:
 
@@ -525,34 +567,24 @@ In plain terms:
   salt and the key ID are stored.
 
 **Its header:** version (1 byte), key ID length (1 byte), key ID, salt (32
-bytes). Then the ciphertext and its 16-byte tag. `MaxOverhead` is the worst
-case, with a 255-byte key ID: 1 + 1 + 255 + 32 + 16 = 305 bytes.
+bytes). Then the ciphertext and its 16-byte tag. `MaxEncodedLen(n) = n + 305`,
+the worst case with a 255-byte key ID: 1 + 1 + 255 + 32 + 16.
 
 ### B.2 Keys
 
-A key provider holds master keys:
-
-```go
-type KeyProvider interface {
-	// Current is the key ID new chunks are encrypted under.
-	Current(ctx context.Context) (KeyID, error)
-	// Key returns a master key by ID. It fails with ErrUnknownKey for an ID the
-	// store has never had, and ErrKeyUnavailable for one it cannot reach now.
-	Key(ctx context.Context, id KeyID) ([]byte, error)
-}
-```
-
-The provider keeps a list of every key ID it has ever issued, even after a key's
-material is gone, so it can tell a key it never had from one it cannot reach.
-Two providers ship: a key file, and a KMIP server whose keys are fetched at start
-and held in memory. A provider **MUST** fail the chain's construction if it cannot
-return its current key ([§2.7](#2.7%20Failures)).
+Keys are material of kind `key` ([§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material)): encryption asks the store's `Materials`
+for the current key when it encodes and for the key a body names when it decodes.
+The provider keeps a list of every key ID it has ever issued, even after a key is
+gone, so it can tell a key it never had from one it cannot reach. Two providers
+ship: a key file, and a KMIP server whose keys are fetched at start and held in
+memory. Encryption **MUST** fail its construction if it cannot get the current
+key ([§2.7](#2.7%20Failures)).
 
 ### B.3 Rotation
 
 Rotating means making a new key current. New chunks use it; existing chunks name
 their key ID and stay readable as long as the provider still holds that key. To
-stop holding an old key, relocate the blocks that use it ([§5.3](#5.3%20Retiring%20a%20key%20or%20a%20transform%20needs%20a%20census)).
+stop holding an old key, relocate the blocks that use it ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)).
 
 ### B.4 Losing a key loses the data
 
@@ -611,20 +643,54 @@ remain visible either way ([§10](#10.%20Open%20questions), question 2).
 | the key ID new chunks use | `dittofs_encryption_current_key` | gauge (1 on the current key's label) |
 | whether the provider can currently return each configured key | `dittofs_encryption_key_available` | gauge (0/1) |
 
-## Appendix C — where the current code differs
+## Appendix C — example, a parity transform
+
+Not shipped. An example of a transform that makes bodies **larger**, written the
+way a custom transform would be ([§4](#4.%20Writing%20a%20custom%20transform)).
+
+**What it does.** Splits the body into `k` data shards, adds `m` Reed-Solomon
+parity shards, and stores all of them in the one body. `Decode` rebuilds the
+body from any `k` intact shards, so it can repair damage to up to `m` shards
+without fetching anything else. A per-shard CRC32C tells it which shards are
+damaged.
+
+**Its header.** Version, `k`, `m`, the original length, and one CRC per shard.
+
+**Bound.** `MaxEncodedLen(n) = ceil(n / k) × (k + m) + header`: with `k = 4`,
+`m = 2`, a 16 MiB chunk encodes to about 24 MiB. The chain's bound grows with it,
+and so do the upload spool and the block size ([§3.1](#3.1%20Interfaces)).
+
+**Position.** Last in the chain ([§2.3](#2.3%20The%20chain%20is%20ordered%20by%20configuration)), so it protects the bytes actually
+stored. Placed before encryption, a flipped ciphertext bit fails decryption before
+parity can repair it; the chain still reads correctly, but the parity is wasted.
+
+**What it cannot protect.** The envelope and the block header, which are outside
+every transform ([§2.4](#2.4%20Every%20body%20records%20what%20was%20applied)). A repaired body is still checked against the
+plaintext hash ([§2.6](#2.6%20The%20plaintext%20hash%20is%20the%20final%20check)).
+
+**Observability.** `dittofs_transform_parity_repaired_total`, bodies repaired
+on decode. A value that never moves on a store means the parity costs space for
+nothing.
+
+**Whether to use it.** Only for a store with no redundancy of its own, such as a
+single disk. Object stores already store data redundantly, and corruption in
+transit is caught by the put check ([RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success)); there it costs `m / k` more
+storage and bandwidth on every chunk for nothing.
+
+## Appendix D — where the current code differs
 
 Descriptive, for the refactor.
 
 | # | This document says | The code today |
 | --- | --- | --- |
-| C1 | The envelope records what was applied ([§2.4](#2.4%20Every%20body%20records%20what%20was%20applied)) | each layer marks its own output; compression stores declined chunks unmarked, so an incompressible chunk that begins with the compression marker is read back as a frame and is unreadable. Data loss |
-| C2 | Decoding is bounded by the chunk maximum (T4) | the declared-size ceiling is 64 MiB against a 16 MiB chunk maximum, the buffer is allocated before decoding, and the zstd window is unbounded |
-| C3 | The order comes from configuration ([§2.3](#2.3%20The%20chain%20is%20ordered%20by%20configuration)) | compression then encryption is fixed in code |
-| C4 | Reading needs only the registry and keys (T3) | decoders exist only for configured layers: disabling compression fails every compressed body, enabling encryption rejects existing plaintext bodies, and disabling encryption is refused |
-| C5 | Every header field is authenticated ([Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted)) | a random data key is wrapped under the master key with AES-GCM; frame fields are outside the AAD, and nothing counts the master key's nonces |
-| C6 | Relocation re-encodes ([§5.2](#5.2%20Relocation%20re-encodes)) | relocation copies encrypted bodies unchanged |
-| C7 | No transform error crosses the codec (T8) | encryption and compression errors reach callers as their own types |
-| C8 | The hash is checked once, in the codec (T6) | each consumer re-hashes; relocation does not |
-| C9 | A chain that cannot be built stops the store (T5) | the offload finds its encryptor by type assertion, and a missing one writes unencrypted bodies |
-| C11 | A key failure is the remote being unavailable, and recovers ([Appendix B.4](#B.4%20Losing%20a%20key%20loses%20the%20data)) | a provider failure at start fails the share's whole block store, journal included, until it is re-attached; a retired key that fails to load is logged and skipped, with no health condition |
-| C10 | Chunk hashes can be hidden ([Appendix B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns)) | record headers carry plaintext hashes on every store |
+| D1 | The envelope records what was applied ([§2.4](#2.4%20Every%20body%20records%20what%20was%20applied)) | each layer marks its own output; compression stores declined chunks unmarked, so an incompressible chunk that begins with the compression marker is read back as a frame and is unreadable. Data loss |
+| D2 | Decoding is bounded by the chunk maximum (T4) | the declared-size ceiling is 64 MiB against a 16 MiB chunk maximum, the buffer is allocated before decoding, and the zstd window is unbounded |
+| D3 | The order comes from configuration ([§2.3](#2.3%20The%20chain%20is%20ordered%20by%20configuration)) | compression then encryption is fixed in code |
+| D4 | Reading needs only the registry and keys (T3) | decoders exist only for configured layers: disabling compression fails every compressed body, enabling encryption rejects existing plaintext bodies, and disabling encryption is refused |
+| D5 | Every header field is authenticated ([Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted)) | a random data key is wrapped under the master key with AES-GCM; frame fields are outside the AAD, and nothing counts the master key's nonces |
+| D6 | Relocation re-encodes ([§5.2](#5.2%20Relocation%20re-encodes)) | relocation copies encrypted bodies unchanged |
+| D7 | No transform error crosses the codec (T8) | encryption and compression errors reach callers as their own types |
+| D8 | The hash is checked once, in the codec (T6) | each consumer re-hashes; relocation does not |
+| D9 | A chain that cannot be built stops the store (T5) | the offload finds its encryptor by type assertion, and a missing one writes unencrypted bodies |
+| D11 | A key failure is the remote being unavailable, and recovers ([Appendix B.4](#B.4%20Losing%20a%20key%20loses%20the%20data)) | a provider failure at start fails the share's whole block store, journal included, until it is re-attached; a retired key that fails to load is logged and skipped, with no health condition |
+| D10 | Chunk hashes can be hidden ([Appendix B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns)) | record headers carry plaintext hashes on every store |

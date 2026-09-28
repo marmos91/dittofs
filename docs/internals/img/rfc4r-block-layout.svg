@@ -18,33 +18,33 @@
   <text x="16" y="26" class="t">A block: a header that indexes its chunks, then the chunk bodies.</text>
   <text x="16" y="46" class="s">Written and read by the block codec. The store keeps the bytes and never parses them.</text>
 
-  <text x="16" y="98" class="rl">header</text>
-  <rect x="90"  y="78" width="118" height="34" rx="3" class="pre"/><text x="102" y="99" class="m">marker+version</text>
-  <rect x="208" y="78" width="100" height="34" rx="3" class="pre"/><text x="220" y="99" class="m">header len</text>
-  <rect x="308" y="78" width="100" height="34" rx="3" class="pre"/><text x="320" y="99" class="m">block name</text>
-  <rect x="408" y="78" width="130" height="34" rx="3" class="idx"/><text x="420" y="99" class="m">hash₀ off₀ len₀</text>
-  <rect x="538" y="78" width="130" height="34" rx="3" class="idx"/><text x="550" y="99" class="m">hash₁ off₁ len₁</text>
-  <rect x="668" y="78" width="60"  height="34" rx="3" class="idx"/><text x="690" y="99" class="m">…</text>
+  <text x="16" y="96" class="rl">header</text>
+  <rect x="80"  y="76" width="130" height="34" rx="3" class="pre"/><text x="92"  y="97" class="m">marker, version</text>
+  <rect x="210" y="76" width="100" height="34" rx="3" class="pre"/><text x="222" y="97" class="m">header len</text>
+  <rect x="310" y="76" width="100" height="34" rx="3" class="pre"/><text x="322" y="97" class="m">block name</text>
+  <rect x="410" y="76" width="200" height="34" rx="3" class="idx"/><text x="422" y="97" class="m">chunk 0: hash, off, len</text>
+  <rect x="610" y="76" width="200" height="34" rx="3" class="idx"/><text x="622" y="97" class="m">chunk 1: hash, off, len</text>
+  <rect x="810" y="76" width="74"  height="34" rx="3" class="idx"/><text x="838" y="97" class="m">…</text>
 
-  <text x="90"  y="130" class="s">fail loudly on the wrong</text>
-  <text x="90"  y="144" class="s">version or a non-block</text>
-  <text x="208" y="130" class="s">one request</text>
-  <text x="208" y="144" class="s">fetches it all</text>
-  <text x="308" y="130" class="s">catches a block</text>
-  <text x="308" y="144" class="s">under the wrong key</text>
-  <text x="408" y="130" class="s">chunk index: plaintext hash to verify against,</text>
-  <text x="408" y="144" class="s">offset and length in the encoded block</text>
+  <text x="80"  y="128" class="s">wrong version or</text>
+  <text x="80"  y="142" class="s">not a block: fails</text>
+  <text x="210" y="128" class="s">header in one</text>
+  <text x="210" y="142" class="s">request</text>
+  <text x="310" y="128" class="s">wrong key:</text>
+  <text x="310" y="142" class="s">detected</text>
+  <text x="410" y="128" class="s">the chunk index: the plaintext hash to verify</text>
+  <text x="410" y="142" class="s">against, and where the body sits in this block</text>
 
-  <text x="16" y="214" class="rl">bodies</text>
-  <rect x="90"  y="194" width="210" height="34" rx="3" class="rec"/><text x="102" y="215" class="m">body₀</text>
-  <rect x="300" y="194" width="140" height="34" rx="3" class="rec"/><text x="312" y="215" class="m">body₁</text>
-  <rect x="440" y="194" width="250" height="34" rx="3" class="rec"/><text x="452" y="215" class="m">body₂</text>
-  <rect x="690" y="194" width="60"  height="34" rx="3" class="rec"/><text x="712" y="215" class="m">…</text>
+  <text x="16" y="222" class="rl">bodies</text>
+  <rect x="80"  y="202" width="230" height="34" rx="3" class="rec"/><text x="92"  y="223" class="m">body 0</text>
+  <rect x="310" y="202" width="150" height="34" rx="3" class="rec"/><text x="322" y="223" class="m">body 1</text>
+  <rect x="460" y="202" width="350" height="34" rx="3" class="rec"/><text x="472" y="223" class="m">body 2</text>
+  <rect x="810" y="202" width="74"  height="34" rx="3" class="rec"/><text x="838" y="223" class="m">…</text>
 
-  <path d="M600,112 C600,160 370,160 370,192" class="arr" marker-end="url(#a)"/>
-  <text x="560" y="170" class="l">off₁, len₁ → one ranged get</text>
+  <path d="M710,110 C710,170 385,165 385,200" class="arr" marker-end="url(#a)"/>
+  <text x="640" y="176" class="l">off, len of chunk 1 → one ranged get</text>
 
-  <text x="16" y="266" class="l">Each body is one chunk, compressed and encrypted if the chain is configured, and decodable on its own:</text>
-  <text x="16" y="284" class="l">a corrupt body loses one chunk, not the block. Offsets describe the encoded block, so they differ from</text>
-  <text x="16" y="302" class="l">the chunk's offsets in the journal; block metadata records these.</text>
+  <text x="16" y="270" class="l">Each body is one chunk, transformed if a chain is configured, and decodable on its own: a corrupt body loses</text>
+  <text x="16" y="288" class="l">one chunk, not the block. Offsets describe the encoded block, so they differ from the chunk's offsets in the</text>
+  <text x="16" y="306" class="l">journal; block metadata records these.</text>
 </svg>
