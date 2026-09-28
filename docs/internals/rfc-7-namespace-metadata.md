@@ -24,10 +24,8 @@ protocol adapter that consumes them.
 The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT** and **MAY** are
 to be interpreted as in RFC 2119.
 
-This document specifies what namespace metadata is required to be. It was
-written from the model in RFC 0 and RFC 6, not from the current schema. Where
-the current implementation does not satisfy a requirement, that is recorded
-once, in [§12](#12.%20Deviations), as a **deviation**. A deviation is a defect to be fixed or
+This document specifies behaviour, not the current code. Where the code differs,
+[Appendix A](#Appendix%20A%20%E2%80%94%20where%20the%20current%20code%20differs) lists it for the refactor. A difference is a defect to be fixed or
 migrated, never a rule for an implementer to build around.
 
 ---
@@ -44,7 +42,7 @@ component that knows about paths, and it is the only component that decides
 whether an operation is allowed to happen at all.
 
 It is also the component that decides when an inode stops existing, which is
-what releases its content ([RFC 6 §6.4](rfc-6-block-metadata.md#6.4%20Delete)). Nothing else in the set may make that
+what releases its content, through the engine's `Release` ([§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees)). Nothing else in the set may make that
 decision, and nothing else may keep content alive behind this component's back
 ([§4.4](#4.4%20There%20is%20no%20third%20holder)).
 
@@ -74,21 +72,31 @@ about when content may be destroyed, one component removed.
 
 ## 2. The records
 
-Namespace metadata holds two kinds of record.
+Namespace metadata holds three kinds of record.
 
 | Record | Keyed by | Holds | Written by |
 | --- | --- | --- | --- |
-| **Inode** | `FileID` | type, mode, owner, group, times, `nlink`, parent (directories only) | attribute operations, link and unlink ([§4](#4.%20What%20keeps%20an%20inode%20alive)) |
+| **Inode** | `FileID` | type, generation, mode, owner, group, times, `nlink`, parent (directories only) | attribute operations, link and unlink ([§4](#4.%20What%20keeps%20an%20inode%20alive)) |
 | **Entry** | `(parent FileID, name)` | child `FileID`, child type | create, link, unlink, rename ([§3](#3.%20Names), [§5](#5.%20Rename)) |
+| **Pending release** | `FileID` | — | the unlink that leaves an open inode with no entry ([§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees)) |
 
 ![A directory's entries as separate records pointing at inodes, two entries naming one inode, and the operations that write each side](img/rfc5-entries-and-inodes.svg)
 
 ### 2.1 Inode
 
-    Inode(id) = { type, mode, uid, gid, atime, mtime, ctime, nlink, parent? }
+    Inode(id) = { type, generation, mode, uid, gid, atime, ctime, nlink, mtime?, parent? }
 
 `id` is [RFC 0 §3](rfc-0-data-lifecycle.md#3.%20Identity)'s `ID`: a UUID, stable for the life of the file, unchanged by
 rename, relink or rewriting the contents.
+
+`generation` goes into every handle ([§6.1](#6.1%20A%20handle%20names%20an%20inode%2C%20never%20a%20path)). A new inode's generation **MUST**
+exceed that of every earlier inode with the same `id`, including released ones,
+whose records are gone. The store therefore draws generations from a per-share
+counter that only increases and outlives every release; it **MAY** allocate them
+in batches, so that the counter is not a record every create writes.
+
+`mtime` is on the inode for directories only. A regular file's `mtime`, and the
+`ctime` a write sets, live on [RFC 6](rfc-6-block-metadata.md)'s shape record ([§2.5](#2.5%20Where%20%60size%60%20lives)).
 
 An inode **MUST NOT** carry its own name, its own path, or a list of the entries
 that name it. It is named *by* entries; it does not name itself. A name stored
@@ -131,24 +139,24 @@ path does not.
 | Attribute | Changed by | Written in the transaction of |
 | --- | --- | --- |
 | `mode`, `uid`, `gid` | chmod, chown, ACL change | its own operation |
-| `atime` | read, and only if the policy records it ([§9.3](#9.3%20Residency%20is%20not%20an%20attribute)) | its own operation |
-| `mtime`, `ctime` on write | a client write | **existence** ([§2.5](#2.5%20Where%20%60size%60%20lives)) |
+| `atime` | read, and only if the policy records it ([§9.2](#9.2%20Timestamps)) | its own operation |
+| `mtime`, `ctime` on write, and an explicit set of a file's `mtime` | a client write, a set-attribute | **existence**, on the shape record ([§2.5](#2.5%20Where%20%60size%60%20lives)) |
 | `ctime` on attribute change | chmod, chown, link, unlink, rename | its own operation |
 | `nlink` | link, unlink, rename over an existing entry | the entry change that caused it ([§4.1](#4.1%20%60nlink%60%20is%20exactly%20its%20entries)) |
 | `size` | a client write, truncate, deallocate | **not stored here** ([§2.5](#2.5%20Where%20%60size%60%20lives)) |
 
 The offload commit appears nowhere in that table, and **MUST NOT** ([RFC 6 §5.1](rfc-6-block-metadata.md#5.1%20No%20record%20is%20written%20by%20both%20paths)).
 Offloading changes where content is, not what it is, and an inode record it could
-write would be a record the client path and a background pass share — the shape
-that has already wedged this system once ([RFC 6 §5](rfc-6-block-metadata.md#5.%20Write%20sets)).
+write would be a record the client path and a background pass share, which
+[RFC 6 §5](rfc-6-block-metadata.md#5.%20Write%20sets) forbids.
 
 ### 2.5 Where `size` lives
 
-[RFC 6 §13.7](rfc-6-block-metadata.md#13.%20Open%20questions) leaves this open. It is settled here: **`size` is not a namespace
-record.** This component does not store it, and reads it through an interface it
-declares for the need:
+**`size` is not a namespace record.** This component does not store it, and
+reads it through an interface it declares for the need:
 
-    Size(file) → bytes
+    Size(file)  → bytes
+    Times(file) → mtime, ctime
 
 The engine supplies [RFC 6](rfc-6-block-metadata.md)'s shape record ([RFC 6 §2.4](rfc-6-block-metadata.md#2.4%20Shape%20and%20holes)) at composition time.
 Per [RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy) this **MUST** be a declared interface; a backend that does not
@@ -168,10 +176,11 @@ Three reasons, in order of how much they cost to get wrong:
 3. **Two copies drift and nothing notices.** `GETATTR` and a read would answer
    from different records, and the disagreement is silent in both directions.
 
-The same applies to `mtime` and `ctime` when a write changes them: this
-component defines what they mean, and they **MUST** be written in the same
-transaction as existence. Whether they share its record is free — [§2.4](#2.4%20Attributes%2C%20and%20who%20writes%20them)'s
-requirement is the transaction, not the layout.
+The same applies to a file's `mtime` and to the `ctime` a write sets: this
+component defines what they mean, and they are stored on the shape record,
+written in the transaction that records existence. On the inode they would make
+every write rewrite the record `chmod` writes. `GETATTR` reports the shape's
+`mtime`, and as `ctime` the later of the shape's and the inode's.
 
 What this component **MUST NOT** do is keep a second `size` "for `GETATTR`
 speed". That is the drift in reason 3 with a justification attached.
@@ -287,30 +296,33 @@ and the release condition is both:
 ### 4.3 Release is what block metadata sees
 
 Releasing an inode drops its refs and decrements the chunks they name
-([RFC 0 §7](rfc-0-data-lifecycle.md#7.%20Mutation%20and%20removal), [RFC 6 §6.4](rfc-6-block-metadata.md#6.4%20Delete)). This component **MUST** perform the release through an
-interface it declares for the need — it does not reach into block metadata, and
-block metadata is never told the name that was removed ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)).
+([RFC 0 §7](rfc-0-data-lifecycle.md#7.%20Mutation%20and%20removal), [RFC 6 §6.4](rfc-6-block-metadata.md#6.4%20Delete)), and drops the journal's copy of its content. This
+component **MUST** perform it through the engine's `Release` ([RFC 8 §9.1](rfc-8-engine.md#9.1%20One%20facade%2C%20shaped%20like%20content)),
+declared here as a need, and never through block metadata directly: a release
+that drops the refs and leaves the journal holding the file is half a release.
+Block metadata is never told the name that was removed ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)).
 
-Release **MAY** be deferred past the namespace removal, and **MUST** then be
-recorded durably so that a restart resumes it ([RFC 6 §6.4](rfc-6-block-metadata.md#6.4%20Delete)). An unlink that
-returns to the client before the release is durable, and is then forgotten,
+**An unlink that leaves an open inode with no entry writes a pending-release
+record** in the same transaction that removes the entry. The last close releases
+the inode and deletes the record. After a restart, open state is gone, so the
+store processes pending-release records once the grace period ends ([§8.3](#8.3%20Lock%20state%20is%20volatile%2C%20and%20the%20grace%20period%20is%20what%20makes%20that%20safe)),
+releasing every inode no reclaimed open references. A pending-release record is
+not a holder: it keeps nothing alive, it only remembers a release that open state
+deferred.
+
+Release **MAY** otherwise be deferred past the namespace removal, and **MUST**
+then be recorded the same way, so that a restart resumes it. An unlink that
+returns to the client before the release is recorded, and is then forgotten,
 leaks every chunk of the file with nothing left to find them by.
 
 ### 4.4 There is no third holder
 
 `nlink` and open state are the only things that keep an inode alive. An
 implementation **MUST NOT** add a second mechanism — a hold list, a pin set, a
-protected-inode table, an extra root consulted by a sweep.
-
-This is [RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref) and M12 restated where the temptation actually arises. A
-snapshot holds counted refs; an open-but-unlinked file is an ordinary inode with
-zero entries. Both are already alive by the rules above, and neither needs a
-list.
-
-A second mechanism fails open. Every path that decides liveness has to remember
-to consult it; the path that forgets deletes content that was held, and an audit
-that recomputes counts ([RFC 6 §7.5](rfc-6-block-metadata.md#7.5%20Audit)) reports nothing wrong, because by the counts
-nothing *was* wrong.
+protected-inode table, an extra root consulted by a sweep. [RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref) (M12)
+gives the reason: a second mechanism fails open. A snapshot holds counted refs,
+and an open-but-unlinked file is an ordinary inode with zero entries; both are
+already alive by the rules above.
 
 ## 5. Rename
 
@@ -535,12 +547,17 @@ same client can take twice.
 Lock state **MAY** be held in memory and lost on restart. It **MUST NOT** be the
 reason an operation blocks on a holder that no longer exists.
 
-An implementation that discards lock state on restart **MUST** then refuse to
-grant a *new* conflicting lock for at least one lease period after it starts, so
-that a client reclaiming a lock it held before the restart finds it available
-and a client that did not hold one cannot take it first. Without that window,
-two clients that were correctly serialised before the restart are both granted
-the same lock after it, and neither is told.
+An implementation that discards lock state on restart **MUST** then run a grace
+period of at least one lease period. During it, this component **MUST** refuse
+every request for lock or open state that is not a reclaim — a new lock, a new
+open, a deny mode, a delegation — whether or not it appears to conflict: the
+state it would be checked against is what the restart lost, so a conflict cannot
+be decided. A client reclaiming what it held before the restart then finds it
+available, and a client that did not hold it cannot take it first. Without that
+window, two clients that were correctly serialised before the restart are both
+granted the same lock after it, and neither is told. Open-state leases are
+extended by the grace period, so a client is not expired for time the server
+spent restarting.
 
 The window **MUST** end on its own ([RFC 0 §10.2](rfc-0-data-lifecycle.md#10.2%20No%20state%20requires%20intervention%20to%20leave)). A server that will not leave a
 grace period until an operator acts has replaced one wedge with another.
@@ -580,7 +597,7 @@ and cannot be released because a client left a handle open.
 
 ### 9.1 Attributes are answers, not caches
 
-`GETATTR` joins this component's inode record with `Size(file)` ([§2.5](#2.5%20Where%20%60size%60%20lives)). The join
+`GETATTR` joins this component's inode record with `Size` and `Times` ([§2.5](#2.5%20Where%20%60size%60%20lives)). The join
 happens per request. An implementation **MUST NOT** hold a materialised attribute
 row that a background pass refreshes: it is a cache that can outlive its inputs,
 and [RFC 0 §4.2](rfc-0-data-lifecycle.md#4.2%20The%20residency%20function) forbids exactly that shape for residency for exactly this reason.
@@ -619,16 +636,16 @@ existence ([RFC 6 §3.5](rfc-6-block-metadata.md#3.5%20Operations%20that%20make%
 | --- | --- |
 | N1 | An inode's `nlink` equals the number of entries naming it, changes in the transaction that changes them, and fails the transaction rather than going negative. |
 | N2 | An inode is released when, and only when, `nlink` is zero and no open state references it. Nothing else keeps an inode alive. |
-| N3 | Release drops the inode's refs, through a declared interface, durably enough that a restart resumes a deferred one. |
+| N3 | Release goes through the engine's `Release`, and a deferred one — including an open, unlinked inode — is recorded in the transaction that removed its last entry, so a restart resumes it. |
 | N4 | A rename applies wholly or not at all, and its loop check is evaluated inside its transaction. |
-| N5 | A handle names an inode and a share, is stable across restart, and resolves to stale — never to another inode and never to "not found" — when its inode is gone. |
+| N5 | A handle names an inode, its generation and a share, is stable across restart, and resolves to stale — never to another inode and never to "not found" — when its inode is gone. Generations never repeat for one `FileID`. |
 | N6 | No name, path or parent appears in a handle, a lock, a ref or a journal key. |
 | N7 | Every permission decision is made in this component, against the inode the operation will act on, and a grant made at open is stored and evaluated here rather than in an adapter. |
 | N8 | A cached authorisation or identity is keyed by every field it was derived from. |
-| N9 | Lock state is keyed by inode, visible to every adapter, and never blocks on a holder that no longer exists. |
+| N9 | Lock state is keyed by inode, visible to every adapter, and never blocks on a holder that no longer exists; after its loss, every non-reclaim request is refused until grace ends. |
 | N10 | A grace period, a recall and every other wait in this component ends without operator action. |
 | N11 | Lock state never makes an extent ineligible for eviction or reclamation. |
-| N12 | `size` is stored once, in existence, and this component reads it through a declared interface. |
+| N12 | `size`, a file's `mtime` and its write `ctime` are stored once, in existence, and this component reads them through a declared interface. |
 | N13 | An entry is its own record, and no operation's cost grows with the size of its directory beyond the results it returns. |
 | N14 | Residency is not an attribute. |
 
@@ -639,9 +656,8 @@ user can create.
 
 ## 11. Consequences for RFC 0 and RFC 6
 
-1. **[RFC 6 §13.7](rfc-6-block-metadata.md#13.%20Open%20questions) is answered.** `size` lives in existence and this component
-   reads it ([§2.5](#2.5%20Where%20%60size%60%20lives)). [RFC 6](rfc-6-block-metadata.md)'s open question should record the answer and its
-   [§5.1](#5.1%20One%20transaction) table is unaffected — existence is still written by the write path only.
+1. **[RFC 6 §2.4](rfc-6-block-metadata.md#2.4%20Shape%20and%20holes)'s shape record** carries a file's `mtime` and write `ctime`
+   beside `size` ([§2.5](#2.5%20Where%20%60size%60%20lives)). Existence is still written by the write path only.
 2. **[RFC 0 §5.1](rfc-0-data-lifecycle.md#5.1%20Write), step 1.** "The namespace layer authorises the write and updates
    size and mtime" is two things with different owners. Authorisation is this
    component's and stays at step 1; `size` and `mtime` move to the existence
@@ -651,91 +667,80 @@ user can create.
    and the refs go when [§4.2](#4.2%20Open%20state%20is%20the%20second%20holder)'s release condition holds. [RFC 0](rfc-0-data-lifecycle.md)'s sentence reads
    as though open files do not exist.
 
-## 12. Deviations
+## 12. API surface and observability
 
-The current implementation was checked against this document after it was
-written. The design above does not follow from any deviation listed here.
+### 12.1 Interface
 
-The entry/inode split of [§2](#2.%20The%20records) is already real: `inodes` is keyed by UUID,
-`parent_child_map` is keyed by `(parent_id, child_name)`, hard links are
-supported, no path is stored, and listing is a cursor-paged range scan. What
-follows is everything else.
+Signatures are indicative; the obligations are normative. Every call takes the
+resolved identity ([§7.4](#7.4%20The%20identity%20arrives%20resolved)) and is authorised inside this component ([§7.1](#7.1%20One%20chokepoint)).
 
-### 12.1 The records
+```go
+type Namespace interface {
+    // Names (§3). Lookup and List never enumerate more than they return.
+    Lookup(ctx context.Context, id Identity, dir Handle, name []byte) (Handle, Attr, error)
+    List(ctx context.Context, id Identity, dir Handle, after Cursor, n int) ([]Entry, Cursor, error)
+    Create(ctx context.Context, id Identity, dir Handle, name []byte, a SetAttr) (Handle, Attr, error)
+    Link(ctx context.Context, id Identity, dir Handle, name []byte, target Handle) error
+    Unlink(ctx context.Context, id Identity, dir Handle, name []byte) error      // §4
+    Rename(ctx context.Context, id Identity, from Handle, fromName []byte, to Handle, toName []byte) error // §5
 
-| Requirement | Current state | Evidence |
+    // Handles and attributes (§6, §9).
+    Resolve(ctx context.Context, h Handle) (FileID, error)                       // ErrStale, ErrWrongShare
+    GetAttr(ctx context.Context, id Identity, h Handle) (Attr, error)
+    SetAttr(ctx context.Context, id Identity, h Handle, a SetAttr) (Attr, error)
+    Authorize(ctx context.Context, id Identity, h Handle, want Access) error     // per-operation timing (§7.2)
+
+    // Open and lock state (§8).
+    Open(ctx context.Context, id Identity, h Handle, want Access, deny Access, reclaim bool) (OpenID, Access, error)
+    Close(ctx context.Context, o OpenID) error                                   // last close may release (§4.3)
+    Lock(ctx context.Context, o OpenID, r ByteRange, exclusive, reclaim bool) error
+    Unlock(ctx context.Context, o OpenID, r ByteRange) error
+    Delegate(ctx context.Context, o OpenID) (Delegation, error)
+    Return(ctx context.Context, d Delegation) error
+}
+
+// Content is what this component needs from the engine, declared here (§2.5,
+// §4.3, §9.3). The engine supplies it at construction.
+type Content interface {
+    Size(ctx context.Context, file FileID) (int64, error)
+    Times(ctx context.Context, file FileID) (mtime, ctime time.Time, err error)
+    Allocation(ctx context.Context, file FileID, off int64) (Span, error)
+    Release(ctx context.Context, file FileID) error
+}
+
+var (
+    ErrStale      = errors.New("namespace: stale handle")      // §6.3
+    ErrWrongShare = errors.New("namespace: handle of another share")
+    ErrGrace      = errors.New("namespace: in grace period")   // §8.3
+    ErrInconsistent = errors.New("namespace: nlink underflow") // §4.1
+)
+```
+
+A serialisation conflict is retried inside the call under the caller's deadline
+and never returned ([RFC 0 §9.2](rfc-0-data-lifecycle.md#9.2%20Conflicts%20and%20their%20retries)).
+
+### 12.2 Observability
+
+| Answers | Metric | Type |
 | --- | --- | --- |
-| [§2.4](#2.4%20Attributes%2C%20and%20who%20writes%20them) the offload commit writes no namespace record | `SetManifest` persists the file's attributes as well as its manifest, and the post-offload seam calls it with the attributes it happened to read. Every offload therefore rewrites `size`, `mtime`, `mode`, `uid` and `gid`. This is [RFC 6 §5.1](rfc-6-block-metadata.md#5.1%20No%20record%20is%20written%20by%20both%20paths)'s forbidden shared record, at the namespace row. The backends differ only in what else rides along: SQL rewrites all 21 inode columns plus the ref rows, while Badger writes the attribute blob and its manifest keys separately — the namespace record is rewritten either way. | `store/postgres/transaction.go:306`, `store/sqlite/transaction.go:190`, `store/badger/transaction.go:383`, all reaching `putFile`; `runtime/shares/coordinator.go:187`, `pkg/metadata/block_record_store.go:173` |
-| [RFC 0 §9.1](rfc-0-data-lifecycle.md#9.1%20Records%20and%20their%20reclamation) (I7) reclamation path | Not met on Badger, for the attribute blob rather than the chunk manifest. The blob embeds extended attributes, and while each value is capped at 64 KiB nothing caps their count, so ~16 max-size attributes put the record over the 1 MiB inline threshold. Past that it is rewritten in full by every attr-only write — chmod, utimes, rename, close — and accumulates in the store reclaimed by the mechanism the workload does not trigger: measured at +592 MiB of value log over 300 chmods. This is the same I7 failure as the chunk manifest ([RFC 6 §2.1](rfc-6-block-metadata.md#2.1%20Ref)), one key over and on a record written far more often: an attr-only write is frequent, and the manifest was deliberately moved out of its path. | `store/badger/encoding.go:372` (`putJSONField(buf, fEAs, ...)`), `pkg/metadata/xattr.go:57`, `:251` |
-| [§2.5](#2.5%20Where%20%60size%60%20lives) `size` is stored once | Three sources reconciled at runtime: the `inodes.size` column, `PendingWritesTracker.MaxSize` overlaid on every read, and the journal's durable high-water mark, which clamps the published size on write. | `pkg/metadata/pending_writes.go:33`, `service.go:408`, `io.go:480` |
-| [§2.5](#2.5%20Where%20%60size%60%20lives), [RFC 6 §3.4](rfc-6-block-metadata.md#3.4%20Ordering%20against%20the%20journal) existence is never reconstructed from the journal | `reconcileMetadataSizeFromJournal` grows `inodes.size` from the journal's extent on share start. Grow-only, so it cannot recover what the journal lost — which is the only case the record exists for. | `runtime/shares/lifecycle.go:315`, called from `:125` |
-| [RFC 0 §9.2](rfc-0-data-lifecycle.md#9.2%20Conflicts%20and%20their%20retries) (I8) conflicts are retried, not surfaced | **Partly met on every backend, and the remaining gap is the constant.** The fixed attempt count is gone: all three SQL and Badger loops now share `txretry`, which retries with full-jitter exponential backoff until a time budget elapses. Badger keeps `maxTransactionRetries` only as a sanity ceiling. What is not met is the bound. `txretry.Deadline` returns `min(now+5s, ctx deadline)`, so the caller's deadline can only *tighten* the wait, never extend it: a caller willing to block for a minute still gets five seconds, and past that the conflict reaches it as an I/O error. [§9.2](#9.2%20Timestamps) requires the caller's deadline to be the bound precisely because a constant encodes a guess about how much contention is possible. The guess is already reachable: commits to one key serialize, so 256 appends to a single file cost about 5s at a CI runner's fsync, and the test pinning this invariant failed on exactly that — measuring the runner's speed rather than the backoff until it was resized. This is the shared transaction wrapper, so it binds every record both this RFC and [RFC 6](rfc-6-block-metadata.md) describe, not only namespace rows. | `store/internal/txretry/txretry.go:28`, `:38`; `store/badger/transaction.go:135`, `:236` |
-| [§2.5](#2.5%20Where%20%60size%60%20lives), [RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy) declared interface | `metadata.Transaction` embeds `block.FileChunkStore`, `BlockRecordStore` and `SyncedHashStore`; `Store` embeds `block.EngineFileChunkStore`. There is one transaction type spanning both domains rather than a declared interface for the one thing this side needs. | `pkg/metadata/store.go:289`, `:291`, `:292`, `:464` |
-| [§9.3](#9.3%20Residency%20is%20not%20an%20attribute) residency is not an attribute | `object_id` — a block-derived Merkle root — is a column on the inode row with a partial unique index, and a dedup race surfaces as a namespace unique-constraint violation. | `store/sqlite/migrations/000001_initial_schema.up.sql:41`, `:63`; `runtime/shares/coordinator.go` (`mapObjectIDConflict`) |
+| operations, labelled `op` and `result` | `dittofs_namespace_ops_total` | counter |
+| time per operation, by `op` | `dittofs_namespace_op_seconds` | histogram |
+| handles resolved stale ([§6.3](#6.3%20Staleness%20is%20reported%2C%20never%20guessed)) | `dittofs_namespace_stale_handles_total` | counter |
+| `nlink` underflows ([§4.1](#4.1%20%60nlink%60%20is%20exactly%20its%20entries)); any nonzero value is an alert | `dittofs_namespace_nlink_underflow_total` | counter |
+| pending-release records held ([§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees)) | `dittofs_namespace_pending_releases` | gauge |
+| releases, labelled `result`; a failure is retried, not dropped | `dittofs_namespace_releases_total` | counter |
+| requests refused during grace, and grace periods entered ([§8.3](#8.3%20Lock%20state%20is%20volatile%2C%20and%20the%20grace%20period%20is%20what%20makes%20that%20safe)) | `dittofs_namespace_grace_refusals_total`, `dittofs_namespace_grace_periods_total` | counter |
+| delegations recalled, and revoked at the deadline ([§8.5](#8.5%20A%20delegation%20MUST%20be%20revocable%20within%20a%20bounded%20time)) | `dittofs_namespace_delegation_recalls_total`, `dittofs_namespace_delegation_revocations_total` | counter |
+| conflicts retried, by `op` | `dittofs_namespace_conflict_retries_total` | counter |
 
-### 12.2 Liveness and release
-
-| Requirement | Current state | Evidence |
-| --- | --- | --- |
-| [§4.1](#4.1%20%60nlink%60%20is%20exactly%20its%20entries) `nlink` has one representation | Two. `SetLinkCount` writes the authoritative store (`inodes.nlink`, badger `l:<uuid>`, memory `linkCounts`), while `FileAttr.Nlink` is a second copy that callers also set — and that both encoders silently drop, because `nlink` is deliberately outside the attribute column set. A write to it is a no-op nothing reports. | `pkg/metadata/file_types.go:43`; `store/sql/put_file.go:68`, `store/sql/files.go:415`, `store/badger/encoding.go:294`; caller at `file_remove.go:250` |
-| [§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees) release goes through this component | Refs are released by the **adapters**, outside the metadata transaction, best-effort — failure is logged and swallowed. `RemoveFile` signals "do not delete content" by returning an empty `PayloadID`. | `internal/adapter/nfs/v3/handlers/remove.go:197`; `nfs/v4/handlers/remove.go:113`; `smb/handlers/close.go:908`; convention at `pkg/metadata/file_remove.go:220` |
-| [§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees) a deferred release is durably recorded | There is no orphan reaper. No production path deletes an `nlink = 0` regular-file inode, so those rows accumulate for the life of the share, and a release the adapter dropped is never retried. | `pkg/metadata/file_remove.go:234`; `Store.DeleteFile` reached only from `directory.go:253` and `file_modify.go:1416` |
-| [§4.4](#4.4%20There%20is%20no%20third%20holder) there is no third holder | `openHandleHoldProvider` is exactly the third holder this section forbids: it scans the adapters' in-memory open tables at every GC pass, keeps the `nlink = 0` entries, and injects their hashes into the live set, because the store's live-set query excludes `nlink = 0`. NFSv3 has no hold at all and relies on the client's silly-rename plus the GC grace window. | `runtime/openhandle_hold.go:121`, `:99`; `pkg/metadata/store.go:502`, `store/postgres/objects.go:50`; NFSv3 noted at `store.go:513` |
-
-### 12.3 Rename
-
-| Requirement | Current state | Evidence |
-| --- | --- | --- |
-| [§5.1](#5.1%20One%20transaction) one transaction | Entry moves, link counts and the renamed inode's `ctime` are in one transaction, guarded by re-reading both edges inside it and aborting on change. The **parent directories' timestamps are not**: they are coalesced into an in-process tracker after the transaction returns. | `pkg/metadata/file_modify.go:1359` (re-resolve), `:1598` (`recordDirTimes`) |
-| [§5.1](#5.1%20One%20transaction) a coalesced attribute survives | `DirTimesTracker` has a 2 s flush interval, no background evictor and no shutdown flush, so up to 2 s of directory timestamps is lost on a clean stop, and an idle directory keeps a pending entry indefinitely. | `pkg/metadata/dir_times.go:12`, `:38` |
-| [§5.2](#5.2%20The%20loop%20check%20is%20inside%20the%20transaction) the loop check | **Met, except concurrently on Postgres.** `Move` walks the destination parent's ancestors inside the rename transaction and refuses with `EINVAL` when the walk meets the source. Every edge is read through the transaction, not the store, so each one enters its read set and a concurrent rename that re-parents any inode on the walked chain aborts this one — a walk run before the transaction opens answers a question that dissolves before the write lands, because the entry re-resolution compares only the two edges the rename names. The walk runs only for a directory source changing parent; neither a file nor a same-parent rename can close a loop. It terminates on a repeated id rather than a depth bound, reporting `EIO` — a repeat is a cycle that predates the rename. **It compares decoded ids, not handle strings:** one inode has many handle spellings, and the destination handle arrives from the client while the source handle is store-minted, so a re-cased UUID walks past a string comparison and closes the loop the check exists to refuse ([§12.4](#12.4%20Handles)). Concurrently, memory holds a store-wide mutex and sqlite admits one transaction at a time, so neither can serve a stale walk; Badger alone *detects* the race, by SSI over the keys the walk read, and that guarantee is the operator's to keep because its options pass through verbatim. Postgres runs at REPEATABLE READ — snapshot isolation — where two renames writing disjoint parent edges are not a write-write conflict, so two racing cross-parent directory renames whose four parent handles all miss each other's `lockParentLinks` shards can still compose a cycle. A single rename, which is all one client can drive, is refused on every backend. Cycles an unguarded build already created remain unreachable and uncollected ([§12.2](#12.2%20Liveness%20and%20release)). | `pkg/metadata/file_modify.go:1398`, `:1655` |
-
-### 12.4 Handles
-
-| Requirement | Current state | Evidence |
-| --- | --- | --- |
-| [§6.1](#6.1%20A%20handle%20names%20an%20inode%2C%20never%20a%20path) opaque | A handle is the plaintext string `"<share>:<uuid>"`, capped at 64 bytes, and the share name is capped at 27 so the UUID fits. Decoding is a split on the first `:`. | `pkg/metadata/types.go:68`, `:84`, `:56` |
-| [§6.1](#6.1%20A%20handle%20names%20an%20inode%2C%20never%20a%20path) a generation | None. Nothing distinguishes a handle to a released inode from a handle to a new inode that reused the `FileID`. UUIDv4 makes reuse improbable; nothing makes it impossible, and nothing detects it. | `pkg/metadata/types.go:68`; `internal/adapter/nfs/v4/handlers/putfh.go:33` |
-| [§6.3](#6.3%20Staleness%20is%20reported%2C%20never%20guessed) stale, not missing | A well-formed handle in a known share whose inode is gone returns `ErrNotFound` → NOENT. `ErrStaleHandle` is produced only for an unknown share and for a closed block store. A client told "missing" recreates a file that was merely unlinked out from under it. | `pkg/metadata/service.go:241`; `pkg/metadata/errors/errors.go:272`; `internal/adapter/common/errclassify.go:27` |
-| [§6.5](#6.5%20A%20protocol%27s%20numeric%20file%20id%20is%20derived%2C%20and%20collisions%20are%20its%20problem) numeric file id | `HandleToINode` is the first 8 bytes of SHA-256 over the handle, with no collision check and no stored alternative. | `pkg/metadata/types.go:116` |
-| [§6.1](#6.1%20A%20handle%20names%20an%20inode%2C%20never%20a%20path) one spelling per inode | **Not met, and it is load-bearing.** Handles are never canonicalized on the way in. `DecodeFileHandle` splits on the first `:` and hands the remainder to `uuid.Parse`, which accepts upper case, the dashless form, the braced form and the `urn:uuid:` prefix — so one inode has many handle spellings and a client can choose which to send. Any check that compares handles **as strings** is therefore bypassable by re-spelling the UUID, and two such comparisons sit on the rename path: the [§5.2](#5.2%20The%20loop%20check%20is%20inside%20the%20transaction) loop check ([§12.3](#12.3%20Rename)) refused a re-cased destination only after it was changed to compare decoded ids, and `sameDir` still computes false for one directory addressed two ways, which routes a same-parent rename down the cross-parent path and takes its `lockParentLinks` ordering. A guard whose subject the caller can re-spell is not a guard. | `pkg/metadata/types.go:84`; `pkg/metadata/file_modify.go:1398` |
-
-### 12.5 Names
-
-| Requirement | Current state | Evidence |
-| --- | --- | --- |
-| [§3.2](#3.2%20A%20name%20is%20bytes%2C%20and%20it%20is%20validated%20at%20the%20boundary) validation at the boundary | `ValidateName` rejects the empty name, `.`, `..`, `/` and NUL, and caps at 255 bytes. It performs no UTF-8, normalisation or reserved-name check, and does not consult the share's own maximum. The `.`/`..` rejection is *additionally* duplicated in nine NFSv3 handlers. | `pkg/metadata/validation.go:284`; duplicates at `nfs/v3/handlers/remove.go:273`, `create.go:612`, `rename.go:425`, `mkdir.go:358`, and five more |
-| [§3.3](#3.3%20Case) case | The unique key is byte-exact, so a case-insensitive share can hold both `A.txt` and `a.txt`; nothing refuses the second create. | `store/sqlite/migrations/000001_initial_schema.up.sql:77` |
-| [§3.1](#3.1%20Lookup%20resolves%20a%20name%20to%20an%20inode%2C%20and%20that%20is%20all%20it%20does) lookup is not an enumeration | `LookupCaseInsensitive`, which SMB uses, falls back on an exact miss to a paged **full scan** of the directory, 500 entries at a time. Every SMB lookup of a name that does not exist byte-exact costs the whole directory. | `pkg/metadata/file_modify.go:124`, `:141` |
-| [§3.5](#3.5%20A%20cookie%20survives%20concurrent%20mutation) the cookie is an ordering key | The cookie is an FNV-1a hash of `handle‖name` held in a process-local LRU capped at 8192. Three failures follow: an evicted cookie silently restarts the listing from the beginning; two names hashing equal overwrite one another's token; and `ClearForDirectory` is an empty stub, so a stale token survives the mutation that invalidated it. | `pkg/metadata/cookies.go:70`, `:19`, `:106`, `:167` |
-
-### 12.6 Permissions and locks
-
-| Requirement | Current state | Evidence |
-| --- | --- | --- |
-| [§7.2](#7.2%20Two%20timings%2C%20both%20allowed%3B%20one%20owner%2C%20always) the grant's owner | The open-time grant itself is correct ([§7.2](#7.2%20Two%20timings%2C%20both%20allowed%3B%20one%20owner%2C%20always) allows it). What deviates is where it lives: SMB computes `GrantedAccess` in the adapter at CREATE, stores it on the adapter's own open table, and carries the verdict back into the metadata funnel as three bypass flags. The funnel honours them subject only to an explicit-deny check and the read-only ceilings, and the NFS side cannot see the grant at all. | `internal/adapter/smb/types/open_file.go` (`GrantedAccess`); `pkg/metadata/auth_identity.go:44`, `:62`, `:84`; `pkg/metadata/auth_permissions.go` |
-| [§8.1](#8.1%20Four%20kinds%20of%20state%2C%20one%20owner) one owner per lock kind | Byte-range locks live in two maps in one manager — the legacy SMB `locks` and `unifiedLocks` for NLM and NFSv4 — and every conflict check has to remember to consult both. | `pkg/metadata/lock/manager.go:743`; `lock/byterange.go:343`, `:451`; `lock/delegation.go:230` |
-| [§8.2](#8.2%20A%20lock%20is%20held%20against%20an%20inode) keyed by inode | Lock state is keyed by the handle string, and `locks.file_id` carries no foreign key to `inodes` by design — the schema calls it an opaque lock target. Lock rows can therefore outlive the inode they refer to. | `pkg/metadata/lock/manager.go:743`; `store/sqlite/migrations/000001_initial_schema.up.sql:197` |
-| [§8.3](#8.3%20Lock%20state%20is%20volatile%2C%20and%20the%20grace%20period%20is%20what%20makes%20that%20safe) grace period | **Satisfied.** Lock state is in-memory and per-share, mirrored to a durable `locks` table, with a server epoch, a clean-shutdown marker and a grace period entered when the marker is false or locks were recovered. | `pkg/metadata/share_registry.go:204`; `pkg/metadata/lock/grace.go`, `reclaim.go` |
-| [§8.3](#8.3%20Lock%20state%20is%20volatile%2C%20and%20the%20grace%20period%20is%20what%20makes%20that%20safe) the mirror is a mirror | Persistence is best-effort under a 3 s timeout: a failure is logged and the in-memory grant proceeds. A lock granted and then not persisted is invisible to the reclaim that follows a restart. | `pkg/metadata/lock/manager.go:803`, `:807` |
-| [§9.2](#9.2%20Timestamps) `mtime` reflects the content change | `PendingWritesTracker` freezes `mtime` per file rather than per client, so a second client's in-place overwrite of an already-pending file advances no timestamp. The trade-off is recorded at the site. | `pkg/metadata/pending_writes.go:106` |
-
-### 12.7 What is worth fixing first
-
-[§12.2](#12.2%20Liveness%20and%20release)'s missing reaper is now the whole of what [§12.3](#12.3%20Rename)'s loop check used to
-compose with. No client can create a rename cycle on its own any more, but every
-cycle an unguarded build already created is still unreachable, still reported
-alive by `nlink`, and still visited by nothing — as is every inode `RemoveFile`
-left at `nlink = 0`. A reaper is the only thing that recovers either, and it
-needs its own design: when it runs, how it avoids racing a live rename, and
-coverage in every backend.
-
-[§12.1](#12.1%20The%20records)'s first row is the one the rest of the set is already waiting on — it is
-[RFC 6 §5](rfc-6-block-metadata.md#5.%20Write%20sets)'s shared record, still present on the namespace side.
+An `nlink` underflow logs the inode at `Error`. A revoked delegation logs the
+client at `Warn`. Entering and leaving grace log at `Info`. A stale handle is
+routine for clients and logs at `Debug`.
 
 ## 13. Conformance
 
-Every check runs against every backend through `storetest`. A property that
+[RFC 1 §11](rfc-1-journal.md#11.%20Conformance) applies unchanged. Every check runs against every backend through the
+shared conformance suite. A property that
 holds on one backend and not another is the category of defect this document was
 written after ([RFC 6 §12](rfc-6-block-metadata.md#12.%20Conformance)).
 
@@ -752,7 +757,11 @@ written after ([RFC 6 §12](rfc-6-block-metadata.md#12.%20Conformance)).
 | [§7.2](#7.2%20Two%20timings%2C%20both%20allowed%3B%20one%20owner%2C%20always) grant ownership | Grant an open through one adapter, then reach the same inode through the other. Assert the other adapter observes the grant. A single-adapter rig cannot fail this. |
 | [§7.3](#7.3%20The%20decision%20is%20against%20the%20inode%2C%20not%20the%20name) inode check | Look a name up, replace the entry, then act. Assert the check ran against the inode acted on. |
 | [§7.5](#7.5%20A%20cached%20decision%20is%20keyed%20by%20everything%20it%20read) cache key | Two identities differing only in a field the key omits. Assert the second is not served the first's decision. A test that adds no field to the identity cannot fail. |
-| [§8.3](#8.3%20Lock%20state%20is%20volatile%2C%20and%20the%20grace%20period%20is%20what%20makes%20that%20safe) grace | Grant a lock, restart, have a different client request the conflicting lock immediately. Assert refusal for the lease period. |
+| [§8.3](#8.3%20Lock%20state%20is%20volatile%2C%20and%20the%20grace%20period%20is%20what%20makes%20that%20safe) grace | Grant a lock, restart, have a different client request the conflicting lock immediately. Assert refusal for the lease period. Then request a lock on an inode nobody held. Assert it is refused too, and that a reclaim is granted. |
+| [§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees) pending release | Open a file, unlink it, crash. Assert the refs are still counted until grace ends, and released after it unless the open was reclaimed. |
+| [§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees) release through the engine | Unlink a file the journal still holds dirty. Assert the refs are dropped and the journal holds nothing of it. |
+| [§2.1](#2.1%20Inode) generation outlives release | Release an inode, restart, create an inode with the same `FileID`. Assert the old handle is stale. |
+| [§2.5](#2.5%20Where%20%60size%60%20lives) `ctime` | `chmod` a file, then write it; then write it and `chmod` it. Assert `GETATTR`'s `ctime` is the later change both times. |
 | [§3.5](#3.5%20A%20cookie%20survives%20concurrent%20mutation) cookie | Delete an entry before the cursor mid-listing. Assert no untouched entry is skipped or repeated. Then evict every cached cookie and assert the listing resumes rather than restarting. |
 | [§6.5](#6.5%20A%20protocol%27s%20numeric%20file%20id%20is%20derived%2C%20and%20collisions%20are%20its%20problem) file id | Generate ids for a large share. Assert no two live inodes share one, or that the derivation refuses on collision. |
 | [§5.2](#5.2%20The%20loop%20check%20is%20inside%20the%20transaction) loop, sequential | Rename a directory under its own child with no concurrency at all. Assert refusal — the concurrent check above passes a build that has no check, because one of the two renames fails on the entry re-read. |
@@ -773,25 +782,41 @@ written after ([RFC 6 §12](rfc-6-block-metadata.md#12.%20Conformance)).
   two clients on one object at once.
 - **A single-adapter rig MUST NOT stand in for [§7.2](#7.2%20Two%20timings%2C%20both%20allowed%3B%20one%20owner%2C%20always) or [§8.1](#8.1%20Four%20kinds%20of%20state%2C%20one%20owner).** A grant or a lock
   that only one protocol can see passes every test that only speaks that
-  protocol, which is how both got where they are ([§12.6](#12.6%20Permissions%20and%20locks)).
+  protocol.
 - **A concurrent rig MUST NOT stand in for [§5.2](#5.2%20The%20loop%20check%20is%20inside%20the%20transaction).** The sequential case is the
   one a build with no check fails; the concurrent one is passed by the entry
   re-read that is already there for a different reason.
 - **A correctness assertion MUST NOT stand in for [§2.2](#2.2%20Entry).** A quadratic directory
   returns the right listing.
-- **The memory backend MUST NOT be the only backend for Group B.** Its costs are
+- **An in-memory backend MUST NOT be the only backend for Group B.** Its costs are
   not any durable backend's.
 - **A test that never revokes MUST NOT stand in for [§8.5](#8.5%20A%20delegation%20MUST%20be%20revocable%20within%20a%20bounded%20time).** A recall that is
   always answered never exercises the deadline, which is the whole requirement.
 
+### 13.4 Benchmarks and targets
+
+Run on the reference box of [RFC 1 §12](rfc-1-journal.md#12.%20Test%20plan%20and%20performance%20targets), against every durable backend, on every
+merge. A benchmark reports; the Group B checks are what fail a build.
+
+| Benchmark | Measures | Target |
+| --- | --- | --- |
+| Lookup in directories of 10^2 to 10^7 entries | p99 latency | ≤ 100 µs at 10^7, within 2× of the 10^2 figure |
+| Create into directories of 10^2 to 10^7 entries, 64 clients | creates/s, records written per create | records written constant; creates/s within 20% across sizes |
+| List a page of 1,000 entries | p99 latency | ≤ 5 ms at any directory size |
+| `GETATTR`, the inode joined with existence | p99 latency | ≤ 1.3× a read of the inode record alone; the input to [§14](#14.%20Open%20questions) question 1 |
+| Handle resolution at path depth 1 and 64 | p99 latency | ≤ 50 µs, independent of depth |
+| Rename across directories of 10^6 entries | p99 latency | ≤ 5 ms |
+| Grace refusal and reclaim of 10^4 locks after restart | time to leave grace | one lease period, not more |
+
+A regression of more than 10% is reported and does not block a merge.
+
 ## 14. Open questions
 
-1. **Whether the `size` cut is affordable.** [§2.5](#2.5%20Where%20%60size%60%20lives) moves `size` out of the inode
-   row. Today it is a column there, read by every `GETATTR` on the same read
-   that fetches `mode` and `mtime` ([§12.1](#12.1%20The%20records)). Splitting it makes `GETATTR` a join,
-   and `GETATTR` is the single hottest namespace operation on both protocols.
-   What that costs on each backend is unmeasured, and it is the one number that
-   could send [§2.5](#2.5%20Where%20%60size%60%20lives) back to "one record serves both".
+1. **Whether the `size` cut is affordable.** [§2.5](#2.5%20Where%20%60size%60%20lives) keeps `size` and a file's
+   write times off the inode, so `GETATTR` is a join, and `GETATTR` is the hottest
+   namespace operation on both protocols. What the join costs on each backend is
+   unmeasured ([§13.4](#13.4%20Benchmarks%20and%20targets)), and it is the one number that could send [§2.5](#2.5%20Where%20%60size%60%20lives) back to
+   "one record serves both".
 2. **Where lock state lives under more than one server.** [§8.3](#8.3%20Lock%20state%20is%20volatile%2C%20and%20the%20grace%20period%20is%20what%20makes%20that%20safe) makes lock state
    volatile and per-process, which is correct for a single node and is all this
    system is ([RFC 0](rfc-0-data-lifecycle.md)). A second node makes it wrong in a way a grace period does
@@ -799,28 +824,55 @@ written after ([RFC 6 §12](rfc-6-block-metadata.md#12.%20Conformance)).
    lock table added beside the first.
 3. **What a case-insensitive share should cost.** [§3.3](#3.3%20Case) requires preserving case
    and comparing without it, which means a folded index or a folded key column.
-   The current answer is a full directory scan per SMB lookup miss ([§12.5](#12.5%20Names)), so
-   any index at all is an improvement; which one, and what it costs on writes,
-   is unmeasured.
+   Which one, and what it costs on writes, is unmeasured.
 4. **Directory `mtime` as a hot record.** Every create, unlink and rename in a
    directory writes its inode for `mtime`. That is one record per directory
    under a workload that creates files in parallel — [RFC 6 §5.3](rfc-6-block-metadata.md#5.3%20Hot%20records%20that%20are%20not%20per-file)'s problem with a
-   different key. The current implementation coalesces it out of the transaction
-   and loses up to two seconds of it ([§12.3](#12.3%20Rename)), which is a cost answer to a
-   correctness question. What the uncoalesced cost actually is has not been
-   measured, so it is not known whether the trade was needed.
+   different key. Coalescing it out of the transaction trades a correctness
+   property for cost, and what the uncoalesced cost is has not been measured.
 5. **`atime` cost.** [§9.2](#9.2%20Timestamps) allows a coarse schedule and does not choose one.
    Whether any consumer reads `atime` at all is unmeasured; if none does,
    omitting it removes a write from the read path.
 6. **Whether `parent` is enough.** [§2.1](#2.1%20Inode) stores one parent per directory, which
    is exact because directory hard links are refused. Whether anything needs the
    reverse direction for files — "which names resolve to this inode" — is
-   unmeasured; nothing in the set asks for it today, and adding it would add a
+   unmeasured; nothing in the set asks for it, and adding it would add a
    record that link and unlink both write.
-7. **Where the recycle bin sits.** The current implementation has a share-level
-   `#recycle` feature that turns an unlink into a rename, stamping a deletion
-   time, an original path and a deleting user on the inode. It is a namespace
-   feature and this document does not specify it. Whether it belongs here, or is
-   policy above this component ([RFC 8](rfc-8-engine.md)), turns on whether anything below the
-   namespace has to know a file is in it — and nothing in [RFC 6](rfc-6-block-metadata.md) does, which
-   suggests it is policy.
+7. **Where a recycle bin sits.** A recycle bin turns an unlink into a rename,
+   stamping a deletion time, an original path and a deleting user. Nothing below
+   the namespace has to know a file is in it, so it is not engine policy
+   ([RFC 8 §1.1](rfc-8-engine.md#1.1%20Non-goals)); whether it belongs here or above this component is open.
+
+## Appendix A — where the current code differs
+
+Descriptive, for the refactor. None is a rule to build around, and a difference
+**MUST NOT** be closed by amending the requirement. The entry/inode split of
+[§2](#2.%20The%20records) already holds: inodes keyed by `FileID`, entries by parent and name, no
+stored path, cursor-paged listing.
+
+| Requirement | Code today |
+| --- | --- |
+| [§2.4](#2.4%20Attributes%2C%20and%20who%20writes%20them) the offload commit writes no namespace record | every offload rewrites the inode's attributes with the refs |
+| [RFC 0 §9.1](rfc-0-data-lifecycle.md#9.1%20Records%20and%20their%20reclamation) (I7) | on one backend the inode's attribute value embeds extended attributes with no cap on their count, and can outgrow what the store reclaims |
+| [§2.5](#2.5%20Where%20%60size%60%20lives) `size` stored once, write times on the shape | `size` has three sources reconciled at run time; write times are on the inode |
+| [§2.5](#2.5%20Where%20%60size%60%20lives) existence never reconstructed | `size` is grown from the journal at share start |
+| [RFC 0 §9.2](rfc-0-data-lifecycle.md#9.2%20Conflicts%20and%20their%20retries) (I8) conflicts retried under the caller's deadline | retried under a fixed budget, after which a conflict reaches the client as an I/O error |
+| [§2.5](#2.5%20Where%20%60size%60%20lives) declared interface | one transaction type spans namespace and content records |
+| [§9.3](#9.3%20Residency%20is%20not%20an%20attribute) residency is not an attribute | a content-derived identity is an inode column with a unique index |
+| [§4.1](#4.1%20%60nlink%60%20is%20exactly%20its%20entries) one `nlink` | a second, silently dropped copy on the attribute struct |
+| [§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees) release through the engine, recorded | adapters release refs best-effort outside the transaction; no pending-release record and no reaper |
+| [§4.4](#4.4%20There%20is%20no%20third%20holder) no third holder | open-but-unlinked files are protected by a hold list read by GC |
+| [§5.1](#5.1%20One%20transaction) one transaction | parent directories' timestamps are coalesced outside the transaction and can be lost |
+| [§5.2](#5.2%20The%20loop%20check%20is%20inside%20the%20transaction) loop check | inside the transaction, but not serialisable on one backend's isolation level |
+| [§6.1](#6.1%20A%20handle%20names%20an%20inode%2C%20never%20a%20path) opaque, one spelling, generation | a plaintext share-and-UUID string, accepting several spellings of one UUID, with no generation |
+| [§6.3](#6.3%20Staleness%20is%20reported%2C%20never%20guessed) stale, not missing | a released inode resolves as not found |
+| [§6.5](#6.5%20A%20protocol%27s%20numeric%20file%20id%20is%20derived%2C%20and%20collisions%20are%20its%20problem) numeric file id | a truncated hash of the handle, no collision check |
+| [§3.2](#3.2%20A%20name%20is%20bytes%2C%20and%20it%20is%20validated%20at%20the%20boundary) validation at the boundary | duplicated in protocol handlers; the share's maximum is not consulted |
+| [§3.3](#3.3%20Case) case | the unique key is byte-exact on a case-insensitive share |
+| [§3.1](#3.1%20Lookup%20resolves%20a%20name%20to%20an%20inode%2C%20and%20that%20is%20all%20it%20does) lookup is not an enumeration | a case-insensitive miss scans the directory |
+| [§3.5](#3.5%20A%20cookie%20survives%20concurrent%20mutation) the cookie is an ordering key | a hash held in a bounded in-process cache |
+| [§7.2](#7.2%20Two%20timings%2C%20both%20allowed%3B%20one%20owner%2C%20always) the grant's owner | one adapter computes and stores the open-time grant and passes it back as bypass flags |
+| [§8.1](#8.1%20Four%20kinds%20of%20state%2C%20one%20owner) one owner per lock kind | byte-range locks in two tables that every check must consult |
+| [§8.2](#8.2%20A%20lock%20is%20held%20against%20an%20inode) keyed by inode | keyed by handle string, and can outlive the inode |
+| [§8.3](#8.3%20Lock%20state%20is%20volatile%2C%20and%20the%20grace%20period%20is%20what%20makes%20that%20safe) grace | a grace period exists; the durable mirror of lock state is best-effort |
+| [§9.2](#9.2%20Timestamps) `mtime` reflects the content change | frozen per file while writes are pending, so a second client's overwrite may not advance it |
