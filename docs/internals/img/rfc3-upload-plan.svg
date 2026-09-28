@@ -37,7 +37,7 @@
   <text x="508" y="89" class="m">rec 5 (newer)</text>
   <text x="620" y="82" class="why">a client overwrites rec 2's extent</text>
   <text x="620" y="96" class="why">while the block waits</text>
-  <text x="300" y="118" class="s">offered version: recs 1–4, kept until the flush callback returns</text>
+  <text x="300" y="118" class="s">offered version: recs 1–4, kept until the offload callback returns</text>
   <text x="16" y="158" class="rl">block plan</text>
   <rect x="140" y="140" width="300" height="58" rx="3" class="bg"/>
   <text x="152" y="158" class="m">name  = f(scope, h1..h4)</text>

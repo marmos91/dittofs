@@ -182,7 +182,7 @@ Where a store is configured to encrypt, a chain that cannot be built **MUST** fa
 construction with an error naming the missing piece. It **MUST NOT** fall back to
 uploading plaintext. [RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy) forbids capability negotiation by type assertion
 for this exact reason, and [RFC 6 §2.2](rfc-6-engine.md#2.2%20Capabilities%20are%20parameters%2C%20never%20assertions) names the site where a failed assertion on
-the sealer makes the flush upload bodies unsealed ([§9](#9.%20Deviations), D11).
+the sealer makes the offload upload bodies unsealed ([§9](#9.%20Deviations), D11).
 
 ### 2.6 Nothing above the tier sees the chain
 
@@ -289,7 +289,7 @@ AEAD's nonce size does not matter at this layer. The master key is the key used
 repeatedly, and [§4.5](#4.5%20The%20master%20key%20has%20a%20nonce%20budget) bounds it. The price is one wrap per chunk; both providers
 wrap in process (the KMIP provider fetches its key at start and holds it,
 `keyprovider/kmip.go:28`–`:44`), so a wrap is AES-GCM over 32 bytes. A provider
-that wraps remotely puts a round trip per chunk on the flush path and **MUST** be
+that wraps remotely puts a round trip per chunk on the offload path and **MUST** be
 measured before it is adopted.
 
 ### 4.2 What the AAD binds, and what it does not
@@ -442,11 +442,11 @@ without it.
 
 | Condition | Behaviour | [RFC 0](rfc-0-data-lifecycle.md) row |
 | --- | --- | --- |
-| Provider unavailable when a chunk is sealed | the seal fails; the flush fails; every affected extent stays **Dirty** and is retried. Never uploaded unsealed ([§2.5](#2.5%20An%20absent%20chain%20is%20a%20construction%20failure%2C%20never%20plaintext)). | remote tier unavailable |
+| Provider unavailable when a chunk is sealed | the seal fails; the offload fails; every affected extent stays **Dirty** and is retried. Never uploaded unsealed ([§2.5](#2.5%20An%20absent%20chain%20is%20a%20construction%20failure%2C%20never%20plaintext)). | remote tier unavailable |
 | Provider unavailable when a body is opened | the read fails. **MUST NOT** return zeros (I1). | remote tier unavailable |
 | Frame names a key the provider does not hold | the read fails as a verification failure, not as an absent object, so [RFC 6 §6.7](rfc-6-engine.md#6.7%20An%20absent%20object%20is%20re-resolved%20exactly%20once)'s re-resolution does not apply | local content corrupt, by analogy: the extent resolves **Lost** until the key returns |
 | AEAD or wrap tag fails | verification failure: fail, count, never retry as absent | same |
-| Provider unavailable at start | the share **MUST** attach its journal and serve what the journal holds; flush and remote reads fail as above until the provider returns, and **MUST** recover without restart ([RFC 0 §10.2](rfc-0-data-lifecycle.md#10.2%20No%20state%20requires%20intervention%20to%20leave)) | remote tier unavailable |
+| Provider unavailable at start | the share **MUST** attach its journal and serve what the journal holds; offload and remote reads fail as above until the provider returns, and **MUST** recover without restart ([RFC 0 §10.2](rfc-0-data-lifecycle.md#10.2%20No%20state%20requires%20intervention%20to%20leave)) | remote tier unavailable |
 | Master key lost permanently | the chunks it wrapped are **Lost** | — |
 
 Each of these **MUST** be reported as a health condition of the share, not only as
@@ -682,7 +682,7 @@ compression stage.
 | D8 | [§4.7](#4.7%20Key%20loss%20is%20data%20loss%2C%20and%20key%20unavailability%20is%20remote%20unavailability) | A provider failure at start fails the share's whole block store, journal included, with no recovery short of re-attaching; a retired key that fails to load is logged and skipped, with no health condition. | `runtime/shares/blockstore_config.go:275`–`:279`, `:779`–`:781`; `keyprovider/retired.go:17`–`:23`, `:31`–`:35` |
 | D9 | [§2.6](#2.6%20Nothing%20above%20the%20tier%20sees%20the%20chain), [§4.7](#4.7%20Key%20loss%20is%20data%20loss%2C%20and%20key%20unavailability%20is%20remote%20unavailability) | Transform errors cross the tier as their own types (`ErrDecryptAuth`, `ErrWrongMasterKey`, `ErrCompressedFrameCorrupt`), so a caller can tell a chain is configured. | `middleware/middleware.go:119`–`:133`; `encryption/errors.go:5`–`:26`; `keyprovider/provider.go:95`–`:107` |
 | D10 | [§7](#7.%20Verification%3A%20after%20the%20whole%20chain%2C%20inside%20the%20tier%2C%20once), T11 | The plaintext hash is verified by each consumer above the tier, not inside it. | `engine/fetch.go:337`–`:351`; `snapshot/verify.go:58`–`:70` |
-| D11 | [§2.5](#2.5%20An%20absent%20chain%20is%20a%20construction%20failure%2C%20never%20plaintext), T9 | The flush finds its sealer by type assertion, and a nil sealer frames bodies unsealed. Recorded by [RFC 6 §12](rfc-6-engine.md#12.%20Deviations); repeated here because it is this document's T9. | `engine/syncer.go:263`–`:267`; `engine/flush.go:418`–`:424` |
+| D11 | [§2.5](#2.5%20An%20absent%20chain%20is%20a%20construction%20failure%2C%20never%20plaintext), T9 | The offload finds its sealer by type assertion, and a nil sealer frames bodies unsealed. Recorded by [RFC 6 §12](rfc-6-engine.md#12.%20Deviations); repeated here because it is this document's T9. | `engine/syncer.go:263`–`:267`; `engine/flush.go:418`–`:424` |
 
 D1 and D3 are the security findings. D1 is a data-loss defect any writer can
 trigger for their own data. D3 means a deployment that enables encryption believing

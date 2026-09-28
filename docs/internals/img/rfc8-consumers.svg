@@ -37,7 +37,7 @@
 
   <line x1="16" y1="282" x2="884" y2="282" stroke="#c3cad3"/>
   <text x="16" y="306" class="rl">Two things follow from there being more than one consumer</text>
-  <text x="16" y="328" class="l">A rule that makes sense only for uploads &#8212; a window, a put-tuned retry policy, a flag set by a failed flush &#8212;</text>
+  <text x="16" y="328" class="l">A rule that makes sense only for uploads &#8212; a window, a put-tuned retry policy, a flag set by a failed offload &#8212;</text>
   <text x="16" y="346" class="l">would be inherited by a compaction repack that wants none of it. So none of them belong below the line.</text>
   <text x="16" y="372" class="l">And the format is read and rewritten by components that are not the syncer and never will be, so it cannot</text>
   <text x="16" y="390" class="l">be owned by the syncer either.</text>

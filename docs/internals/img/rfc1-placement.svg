@@ -50,6 +50,6 @@
   <text x="16" y="200" class="l">that knows the correspondence, and it is rebuilt from the segments at startup.</text>
 
   <text x="16" y="358" class="l">Extents land wherever the append stream was when they were written, so a file's bytes scatter.</text>
-  <text x="16" y="376" class="s">A record holds whatever one write staged. Chunk boundaries are found later, by the carver, over the extents flush offers.</text>
+  <text x="16" y="376" class="s">A record holds whatever one write staged. Chunk boundaries are found later, by the carver, over the extents offload offers.</text>
   <text x="16" y="394" class="s">No record corresponds to a chunk, and no segment corresponds to a block.</text>
 </svg>

@@ -19,7 +19,7 @@ tags:
 [RFC 2](rfc-2-carver.md) supplies the chunks this component records and [RFC 3](rfc-3-syncer.md) the durability reports.
 Nothing here redefines them.
 **Audience:** anyone changing a metadata backend's content records, or anything
-that reads them — the read path, flush, sweep.
+that reads them — the read path, offload, sweep.
 
 The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT** and **MAY** are
 to be interpreted as in RFC 2119.
@@ -53,7 +53,7 @@ the carver, durability by the syncer. Block metadata imports none of them and
 observes nothing itself. Its job is to record those facts atomically and answer
 from them without distortion.
 
-The engine is its caller on the content path: write, flush, read, truncate,
+The engine is its caller on the content path: write, offload, read, truncate,
 clone. Two other components hold narrow views of it, which the engine wires at
 construction ([RFC 6 §2.1](rfc-6-engine.md#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one)) and which they then call directly: the namespace reads
 `size` and releases an inode's refs ([RFC 5 §2.5](rfc-5-namespace-metadata.md#2.5%20Where%20%60size%60%20lives), [RFC 5 §4.3](rfc-5-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)), and sweep
@@ -75,7 +75,7 @@ Block metadata **MUST NOT**:
   filesystem model that the NFS and SMB adapters both translate into, which is
   [RFC 5](rfc-5-namespace-metadata.md)'s. It is not per-adapter state: both protocols share one namespace, and its
   rules are enforced once, below the adapters;
-- decide what to flush, evict or sweep — it supplies the atomic operations those
+- decide what to offload, evict or sweep — it supplies the atomic operations those
   decisions need ([§7](#7.%20What%20sweep%20needs%20from%20this%20component)) and nothing more;
 - import another component in this set ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)).
 
@@ -88,9 +88,9 @@ patterns are different in kind:
 
 | | Namespace metadata ([RFC 5](rfc-5-namespace-metadata.md)): the filesystem model the adapters speak | Block metadata (this RFC): file content |
 | --- | --- | --- |
-| Written by | client operations | client writes *and* background flush |
+| Written by | client operations | client writes *and* background offload |
 | Unit | one entry | one extent, one chunk, one block |
-| Rate | per operation | per write, and per chunk at flush |
+| Rate | per operation | per write, and per chunk at offload |
 | Grows with | directory size | file size |
 
 A design that stores both in one record per file puts a background process and
@@ -103,7 +103,7 @@ same transaction as existence ([RFC 5 §2.5](rfc-5-namespace-metadata.md#2.5%20W
 ([§6.4](#6.4%20Delete)). Across two databases, each of those needs a cross-store protocol whose
 failure modes are exactly the torn states this document forbids. What one
 database does not require is one keyspace: a backend **MAY** give each side its
-own tables or key prefix, so that flush-commit churn is not reclaimed together
+own tables or key prefix, so that offload-commit churn is not reclaimed together
 with namespace records. Splitting them onto separate servers is open ([§13](#13.%20Open%20questions)).
 
 ## 2. The records
@@ -113,29 +113,29 @@ and the **blocks** the content lives in — in five kinds of record. Each record
 keyed by exactly one thing, answers exactly one question, and none holds a list
 that grows with its file.
 
-![Three concepts in five records: existence (shape and holes, written by the write path), the content map (refs pointing at chunks by hash, written by the flush commit), and blocks (a live count per remote object, retired by sweep), with the direction each one points](img/rfc4-records.svg)
+![Three concepts in five records: existence (shape and holes, written by the write path), the content map (refs pointing at chunks by hash, written by the offload commit), and blocks (a live count per remote object, retired by sweep), with the direction each one points](img/rfc4-records.svg)
 
-| Concept | Record | Keyed by | Holds | Answers |
-| --- | --- | --- | --- | --- |
-| Existence ([§3](#3.%20Existence)) | **Shape** | `FileID` | size, truncation epoch | how long is the file, and did it shrink under a flush? |
-| | **Hole** | `(FileID, start)` | end | was this range never written? |
-| Content map ([§2.1](#2.1%20Ref)) | **Ref** | `(FileID, offset)` | chunk hash, skip, length, content versions | which bytes of which chunk are these? |
-| | **Chunk** | chunk hash | block key, position in block, refcount | where is this chunk, and who uses it? |
-| Blocks ([§7](#7.%20What%20sweep%20needs%20from%20this%20component)) | **Block** | remote key | live-chunk count | may this remote object be deleted? |
+| Concept                                                             | Record    | Keyed by           | Holds                                      | Answers                                                |
+| ------------------------------------------------------------------- | --------- | ------------------ | ------------------------------------------ | ------------------------------------------------------ |
+| Existence ([§3](#3.%20Existence))                                   | **Shape** | `FileID`           | size, truncation epoch                     | how long is the file, and did it shrink under an offload? |
+|                                                                     | **Hole**  | `(FileID, start)`  | end                                        | was this range never written?                          |
+| Content map ([§2.1](#2.1%20Ref))                                    | **Ref**   | `(FileID, offset)` | chunk hash, skip, length, content versions | which bytes of which chunk are these?                  |
+|                                                                     | **Chunk** | chunk hash         | block key, position in block, refcount     | where is this chunk, and who uses it?                  |
+| Blocks ([§7](#7.%20What%20sweep%20needs%20from%20this%20component)) | **Block** | remote key         | live-chunk count                           | may this remote object be deleted?                     |
 
 Who writes each record follows from the concept, with one exception:
 
 | | Shape, Hole | Ref | Chunk | Block |
 | --- | --- | --- | --- | --- |
 | Write path | writes | — | — | — |
-| Flush commit | reads `epoch` | writes | creates, counts | creates, counts |
+| Offload commit | reads `epoch` | writes | creates, counts | creates, counts |
 | Truncate, deallocate, clone, delete | writes | writes | counts | counts |
 | Relocation, retirement ([§7](#7.%20What%20sweep%20needs%20from%20this%20component)) | — | — | moves, deletes | creates, deletes |
 
-The exception is the flush commit, which writes three records. That is one
+The exception is the offload commit, which writes three records. That is one
 transaction recording one event — a block became durable — and the three records
 are its three consequences: new content at these offsets, these chunks now
-exist, this object now holds them ([§4.1](#4.1%20What%20one%20commit%20records)). The write path and the flush commit
+exist, this object now holds them ([§4.1](#4.1%20What%20one%20commit%20records)). The write path and the offload commit
 share no record ([§5.1](#5.1%20No%20record%20is%20written%20by%20both%20paths)).
 
 **Why not fewer.** Each merge that would remove a record kind moves a cost
@@ -144,7 +144,7 @@ somewhere this document forbids:
 | Merge | What breaks |
 | --- | --- |
 | Holes into Shape, as a list | the list grows with the file's sparseness, and every write into a hole rewrites it (I7) |
-| Holes into the ref keyspace, as refs with no chunk | the write path and the flush commit then write one keyspace, and a write into a hole races a commit over the same offsets ([§5.1](#5.1%20No%20record%20is%20written%20by%20both%20paths)) |
+| Holes into the ref keyspace, as refs with no chunk | the write path and the offload commit then write one keyspace, and a write into a hole races a commit over the same offsets ([§5.1](#5.1%20No%20record%20is%20written%20by%20both%20paths)) |
 | Chunk into Ref: refs name `(block, position)` | relocating a block rewrites every ref naming its chunks, across every file; deduplication needs a by-hash lookup, which is the chunk record again; the refcount has nowhere to live ([§2.5](#2.5%20Refs%20name%20hashes%2C%20never%20blocks)) |
 | Block into Chunk: `live` computed by scanning a block's chunks | retirement's condition becomes a predicate over a range, and closing the race with adoption then needs serialisable range reads that not every backend has ([§7.1](#7.1%20Conditional%20retirement), [§7.2](#7.2%20Adoption%20is%20conditional%20on%20existence)); sweep finds dead blocks only by scanning every chunk |
 | Shape into the namespace inode | `size` and the holes would move in two records, and every write would rewrite the inode `chmod` writes ([RFC 5 §2.5](rfc-5-namespace-metadata.md#2.5%20Where%20%60size%60%20lives)) |
@@ -193,13 +193,13 @@ B (3 MiB) and C (3 MiB). Its refs tile it:
   was not rewritten.
 - **Truncate to 9 MiB.** The last ref narrows to `(f, 7M) → C, skip 0, length 2M`.
   C keeps all 3 MiB in its block; the ref stops using the tail.
-- **File `g` writes the same 4 MiB as A.** Its flush finds A's chunk record and
+- **File `g` writes the same 4 MiB as A.** Its offload finds A's chunk record and
   adopts it: `(g, 0) → A, skip 0, length 4M`, and A's refcount goes to 2. That is
   all deduplication is — two refs naming one hash.
 
 **Why a ref carries content versions.** Every write the journal stages gets a
-content version, higher than any before it for that file ([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions)). A flush
-pass is offered extents whose versions lie in `[Oldest, Newest]` ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Flush)),
+content version, higher than any before it for that file ([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions)). An offload
+pass is offered extents whose versions lie in `[Oldest, Newest]` ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)),
 and the commit records that range on every ref the pass writes. A range, not a
 version per byte, is enough for both of its uses.
 
@@ -207,14 +207,14 @@ The first use is ordering commits: of two passes over overlapping offsets, the
 one with the lower `newest` carries older content and must not overwrite the
 other ([§4.4](#4.4%20Commits%20for%20one%20file%20apply%20in%20order)).
 
-The second is reseeding after a crash ([RFC 1 §9.2](rfc-1-journal.md#9.2%20Flush%20state%20after%20recovery)). A crash forgets which journal
-extents were already flushed, and the engine rebuilds that from the refs: what a
+The second is reseeding after a crash ([RFC 1 §9.2](rfc-1-journal.md#9.2%20Offload%20state%20after%20recovery)). A crash forgets which journal
+extents were already offloaded, and the engine rebuilds that from the refs: what a
 ref covers is durable remotely, so the journal may evict it. Position alone is
 not enough to say so:
 
-1. Write version 1 over `[0, 4M)` and flush it. The ref `(f, 0)` records
+1. Write version 1 over `[0, 4M)` and offload it. The ref `(f, 0)` records
    `newest = 1`.
-2. Write version 2 over `[0, 1M)`. The journal holds it; it is not flushed yet.
+2. Write version 2 over `[0, 1M)`. The journal holds it; it is not offloaded yet.
 3. Crash and recover. The journal still holds version 2 at `[0, 1M)`, and the ref
    still covers `[0, 4M)`.
 4. Judged by position, the ref covers `[0, 1M)`, so reseed marks it durable and
@@ -223,7 +223,7 @@ not enough to say so:
 
 With the versions, reseed passes the ref's `oldest` and `newest` to
 `MarkDurable`. The journal sees version 2 > `newest` at `[0, 1M)`, leaves that
-extent unmarked, and it is flushed again. Held content *older* than `oldest` can
+extent unmarked, and it is offloaded again. Held content *older* than `oldest` can
 only have come back from a restored segment, and the journal drops it as stale.
 
 `skip` and `length` select `[skip, skip + length)` of the chunk's bytes. A ref
@@ -239,7 +239,7 @@ or uncarved ([§3.2](#3.2%20Every%20offset%20is%20in%20exactly%20one%20class)).
 **A ref is its own record.** An implementation **MUST NOT** store a file's refs as
 one value, one document or one row holding the list. A single list costs a rewrite
 of the whole list per commit, so writing a file of *N* chunks costs O(*N*²) — and
-it makes the list a key every flush and every writer contend on ([§5](#5.%20Write%20sets)).
+it makes the list a key every offload and every writer contend on ([§5](#5.%20Write%20sets)).
 
 There is a third cost, and it is the one that has actually taken a server down.
 A list that grows with its file eventually crosses whatever threshold the
@@ -322,7 +322,7 @@ on the shape record would grow with the file's sparseness, and every write into
 a hole would rewrite it.
 
 `epoch` is a counter, not a clock. It starts at zero, and only truncate-down and
-deallocate advance it ([§6.2](#6.2%20Truncation%20and%20deallocation)). It lets a flush commit detect that the file shrank
+deallocate advance it ([§6.2](#6.2%20Truncation%20and%20deallocation)). It lets an offload commit detect that the file shrank
 under it:
 
 1. The journal offers `[0, 10M)` of `f`. The engine reads `epoch = 3` and
@@ -335,7 +335,7 @@ under it:
 Without the check, the commit would leave refs past the new end of file ([§6.2](#6.2%20Truncation%20and%20deallocation)).
 A timestamp cannot do this job: two operations in one tick look identical, and
 clocks step backwards. Nor can the content version, which every write advances,
-so every flush would conflict with every write — the livelock [§5.1](#5.1%20No%20record%20is%20written%20by%20both%20paths) forbids.
+so every offload would conflict with every write — the livelock [§5.1](#5.1%20No%20record%20is%20written%20by%20both%20paths) forbids.
 
 [§3](#3.%20Existence) is entirely about why these records exist.
 
@@ -379,7 +379,7 @@ treating a missing record as proof that nothing references the object.
 
 [RFC 0 §4.2](rfc-0-data-lifecycle.md#4.2%20The%20residency%20function) resolves an extent that no chunk covers to **Absent**, and reads it as
 zeros. That is right for a hole and wrong for content that was written but not yet
-carved: a client write is acknowledged long before its first flush ([RFC 0 §5.1](rfc-0-data-lifecycle.md#5.1%20Write)),
+carved: a client write is acknowledged long before its first offload ([RFC 0 §5.1](rfc-0-data-lifecycle.md#5.1%20Write)),
 and until then no chunk covers it.
 
 If the journal loses such an extent — a corrupt record ([RFC 1 §9.3](rfc-1-journal.md#9.3%20Torn%20and%20corrupt%20records)), a lost
@@ -403,13 +403,13 @@ and the classes are disjoint and exhaustive:
 
 An offset at or beyond `size` is past end of file and is not a residency question.
 
-![A file drawn as a strip below its size: a hole from a write beyond EOF, a carved run of refs, an uncarved run written since the last flush, and the three questions metadata answers for each](img/rfc4-offset-classes.svg)
+![A file drawn as a strip below its size: a hole from a write beyond EOF, a carved run of refs, an uncarved run written since the last offload, and the three questions metadata answers for each](img/rfc4-offset-classes.svg)
 
 An implementation **MUST** distinguish *hole* from *uncarved*. Deriving holes as
 "gaps between refs" is the error this section exists to forbid: it classes every
 uncarved byte as a hole, and every such byte the journal loses reads back as
 zeros. The same derivation gives `SEEK_HOLE` wrong answers for content written
-since the last flush.
+since the last offload.
 
 This table **amends [RFC 0 §4.2](rfc-0-data-lifecycle.md#4.2%20The%20residency%20function)** ([§10](#10.%20Consequences%20for%20RFC%200)). Its metadata column is these three
 classes rather than "chunk exists" and "block durable", and the row
@@ -490,11 +490,11 @@ preallocated file would fail every read of a range it never wrote. Reporting
 allocation to `SEEK_DATA` is RFC 5's, and it **MUST NOT** be done by editing
 existence.
 
-## 4. The flush commit
+## 4. The offload commit
 
 ### 4.1 What one commit records
 
-A flush pass ([RFC 0 §5.2](rfc-0-data-lifecycle.md#5.2%20Flush)) ends in one commit per block, or one commit for several.
+An offload pass ([RFC 0 §5.2](rfc-0-data-lifecycle.md#5.2%20Offload)) ends in one commit per block, or one commit for several.
 A commit records, in **one transaction**:
 
 - the block record, with `live` set to the number of its chunks that the commit
@@ -557,10 +557,10 @@ content with no remote copy.
 
 ### 4.3 The commit is the report's return edge
 
-The extents a commit covers are the extents the flush callback returns as durable
-([RFC 0 §5.2](rfc-0-data-lifecycle.md#5.2%20Flush)). The callback **MUST NOT** return an extent whose commit has not
+The extents a commit covers are the extents the offload callback returns as durable
+([RFC 0 §5.2](rfc-0-data-lifecycle.md#5.2%20Offload)). The callback **MUST NOT** return an extent whose commit has not
 succeeded. That ordering is what lets a reseeding pass after a crash trust
-metadata over the journal's unset flush bits ([RFC 1 §9.2](rfc-1-journal.md#9.2%20Flush%20state%20after%20recovery)): a flush bit is never
+metadata over the journal's unset offloaded bits ([RFC 1 §9.2](rfc-1-journal.md#9.2%20Offload%20state%20after%20recovery)): an offloaded bit is never
 set for content that metadata does not hold.
 
 ### 4.4 Commits for one file apply in order
@@ -584,7 +584,7 @@ refuses that ref and applies the rest. This is sufficient: content at an offset
 that differs between two passes was written after the earlier pass was offered,
 so its version, and the later pass's `newest`, exceeds every version the earlier
 pass holds. Every ref carries the content versions of its offer
-([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions)), because reseeding needs it ([RFC 1 §9.2](rfc-1-journal.md#9.2%20Flush%20state%20after%20recovery)) whether or not
+([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions)), because reseeding needs it ([RFC 1 §9.2](rfc-1-journal.md#9.2%20Offload%20state%20after%20recovery)) whether or not
 commits are serialised. The engine **MAY** also serialise commits per file
 ([RFC 6](rfc-6-engine.md)); that keeps the version check from ever firing, and is cheaper to reason
 about, but no longer stands in for it.
@@ -593,36 +593,36 @@ about, but no longer stands in for it.
 
 ### 5.1 No record is written by both paths
 
-The write path and the flush commit **MUST NOT** write a common record. [§2](#2.%20The%20records)
+The write path and the offload commit **MUST NOT** write a common record. [§2](#2.%20The%20records)
 tabulates who writes what; the write path's column is existence alone.
 
-![Which paths write which records, and the one shared per-file key the rule removes: a writer streaming appends and a flush committing chunks, retrying against each other on one record](img/rfc4-write-sets.svg)
+![Which paths write which records, and the one shared per-file key the rule removes: a writer streaming appends and an offload committing chunks, retrying against each other on one record](img/rfc4-write-sets.svg)
 
 A record written by both is a conflict between a client stream and a background
-pass on every flush. Under optimistic concurrency the pass retries. The retry
+pass on every offload. Under optimistic concurrency the pass retries. The retry
 re-reads the record the client is still writing, so it conflicts again, and the
-pass never commits. Nothing is flushed, nothing becomes evictable, the journal
+pass never commits. Nothing is offloaded, nothing becomes evictable, the journal
 fills, and writes are refused ([RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model)). That is livelock, not contention.
 Backoff does not fix it, because the collision comes from the structure, not the
 timing.
 
-The flush commit *reads* `epoch` ([§6.2](#6.2%20Truncation%20and%20deallocation)). Truncation and deallocation are the only
+The offload commit *reads* `epoch` ([§6.2](#6.2%20Truncation%20and%20deallocation)). Truncation and deallocation are the only
 writers of `epoch` and are rare, so the read conflicts only with the operations it
 must conflict with.
 
 `size` and `mtime` changes belong to the write path and are [RFC 5](rfc-5-namespace-metadata.md)'s attributes.
-The flush commit **MUST NOT** touch them. Flushing changes where content is, not
+The offload commit **MUST NOT** touch them. Offloading changes where content is, not
 what it is.
 
 ### 5.2 Cost per commit is bounded by what changed
 
-A flush commit **MUST** write O(refs replaced + chunks committed + blocks
+An offload commit **MUST** write O(refs replaced + chunks committed + blocks
 committed) records, and **MUST** read no more than O(log *n*) records per ref it
 replaces, where *n* is the number of refs in the file.
 
 No per-commit cost may grow with the size of the file. A commit that is O(file)
 makes a file of *N* chunks O(*N*²) to write, and makes the largest files, which
-are the ones under the heaviest write load, the slowest to flush.
+are the ones under the heaviest write load, the slowest to offload.
 
 ### 5.3 Hot records that are not per-file
 
@@ -636,7 +636,7 @@ are the ones under the heaviest write load, the slowest to flush.
   so it is far colder than the refcount.
 - **Usage accounting.** A per-owner byte or quota counter updated on every write
   is one record shared by all of that owner's files. It belongs to the write path
-  and RFC 5, and by [§5.1](#5.1%20No%20record%20is%20written%20by%20both%20paths) the flush commit **MUST NOT** update it.
+  and RFC 5, and by [§5.1](#5.1%20No%20record%20is%20written%20by%20both%20paths) the offload commit **MUST NOT** update it.
 
 An implementation **SHOULD** measure the first two under a zero-heavy workload before
 shipping. Remedies — a sharded counter, or not carving known-zero chunks and
@@ -660,7 +660,7 @@ between zero and nonzero, for a chunk that block carries.
 
 ### 6.2 Truncation and deallocation
 
-Truncate down and deallocate change refs outside a flush, and **MUST** in one
+Truncate down and deallocate change refs outside an offload, and **MUST** in one
 transaction:
 
 - drop the refs wholly inside the removed range, and decrement their chunks;
@@ -670,7 +670,7 @@ transaction:
   increment that chunk;
 - update existence ([§3.5](#3.5%20Operations%20that%20make%20holes)) and advance `epoch`.
 
-A flush commit **MUST NOT** apply a file's refs if that file's `epoch` has
+An offload commit **MUST NOT** apply a file's refs if that file's `epoch` has
 advanced since its extents were offered; the refs of other files in the same
 commit still apply ([§4.1](#4.1%20What%20one%20commit%20records)). Without that check a pass that carved `[0, 10 MiB)` commits refs after
 a concurrent truncate to 5 MiB. The file then holds refs past its end, and a
@@ -738,7 +738,7 @@ refs the destination had over the cloned range are replaced, and their chunks ar
 decremented in the same transaction.
 
 **Uncarved content cannot be cloned by reference**, because no chunk covers it
-yet. For the uncarved extents of the source, a clone **MUST** either flush the
+yet. For the uncarved extents of the source, a clone **MUST** either offload the
 source first, or copy the bytes through the destination's write path ([§3.4](#3.4%20Ordering%20against%20the%20journal)). It
 **MUST NOT** record the destination range as existing, whether carved or
 uncarved, unless its bytes are staged or its refs are written. Doing so claims
@@ -767,7 +767,7 @@ those chunks fails — which is **Lost** for content that was durable.
 
 ### 7.2 Adoption is conditional on existence
 
-A flush commit that references a chunk it did not carry — deduplication — **MUST**
+An offload commit that references a chunk it did not carry — deduplication — **MUST**
 fail if that chunk's record no longer exists when the commit applies. It **MUST
 NOT** recreate the record.
 
@@ -881,7 +881,7 @@ whole-file deduplication would then reference the wrong content.
 The alternative — computing it on demand, when whole-file deduplication asks — is
 permitted and is the default. Whole-file deduplication is an accelerator
 ([RFC 0 §3.1](rfc-0-data-lifecycle.md#3.1%20Deduplication)), and it is cheaper to pay for it when it is used than on every
-flush.
+offload.
 
 ## 9. Invariants
 
@@ -894,8 +894,8 @@ flush.
 | M5 | A refcount or `live` that would go negative fails the transaction. |
 | M6 | A block record is retired only by a conditional operation that evaluates `live` inside its own transaction. |
 | M7 | Adoption of a chunk fails if its record is gone, and never recreates it. |
-| M8 | No record is written by both the write path and the flush commit. |
-| M9 | A flush commit's cost is bounded by what it changed, not by the file. |
+| M8 | No record is written by both the write path and the offload commit. |
+| M9 | An offload commit's cost is bounded by what it changed, not by the file. |
 | M10 | A commit never replaces refs from content offered later, nor commits past a truncation it did not see. |
 | M11 | Block metadata records nothing about local placement. |
 | M12 | Every holder of content — file, snapshot — holds counted refs. Nothing keeps content alive outside the count. |
@@ -916,7 +916,7 @@ the set does not carry two answers.
 1. **[§4.2](#4.2%20Only%20after%20durability), the residency function.** The metadata column is [§3.2](#3.2%20Every%20offset%20is%20in%20exactly%20one%20class)'s three classes
    — hole, uncarved, carved. The row "chunk exists, block not durable" is
    unreachable by [§4.2](#4.2%20Only%20after%20durability). The outcomes are unchanged, and I1 now holds across the
-   window before the first flush, which it did not.
+   window before the first offload, which it did not.
 2. **[§5.1](#5.1%20No%20record%20is%20written%20by%20both%20paths), the write path.** Step 1's "updates size and mtime" moves after the
    journal stages the bytes, per [§3.4](#3.4%20Ordering%20against%20the%20journal). Authorisation stays first.
 
@@ -937,7 +937,7 @@ written. The design above does not follow from any of what is listed here.
 | [§7.1](#7.1%20Conditional%20retirement) conditional retirement | Reads `live`, decrements, deletes the remote object, then blind-deletes the record, each in its own step. | `gc/gc_block.go:127`, `store/badger/block_record_store.go:220` |
 | [§7.2](#7.2%20Adoption%20is%20conditional%20on%20existence) no grace period | A one-hour grace window, plus an in-process adoption guard that a second process cannot see. | `gc/sweep_index.go:50`, `gc/sweepguard.go` |
 | [§8.1](#8.1%20Covering%20lookup) declared, O(log n) | Reached by type assertion with a full-list fallback. **Badger is quadratic, not linear:** the keys-only scan runs per *candidate*, not per lookup. A candidate whose row does not cover the offset narrows the bound and restarts the whole scan, so a sparse hole behind *n* chunks pays *n* scans of *n* keys. At 5,000 chunks one lookup measures 25,226,656 allocations and seconds of wall clock; collecting the remaining candidates in a second scan instead of rescanning per rejection measures 140,068. The memory backend scans every row in the store. Nothing observes either: [§12.5](#12.%20Conformance)'s lookup check is specified and not implemented, which is how the magnitude went unrecorded here as O(n) — a correctness assertion returns the right row from the quadratic walk and the linear one alike. | `engine/read_internal.go:217`, `store/badger/objects.go:543`, `store/memory/objects.go:503` |
-| [§8.3](#8.3%20Whole-file%20identity) ObjectID current | Computed only on shrink and punch, so a stored value goes stale on the next flush. | `pkg/metadata/file_modify.go:1049`, `pkg/metadata/sparse.go:91` |
+| [§8.3](#8.3%20Whole-file%20identity) ObjectID current | Computed only on shrink and punch, so a stored value goes stale on the next offload. | `pkg/metadata/file_modify.go:1049`, `pkg/metadata/sparse.go:91` |
 | [§2.6](#2.6%20The%20scope%20of%20a%20count) scope of a count | Each share has its own metadata store, and shares with the same remote config share one bucket whose keys are not namespaced. GC unions the shares it knows about. Orphan reclaim deletes any object with no record in that union once it is older than the grace window. A second server, or a second config pointing at the same bucket, has its blocks deleted. | `pkg/block/locator.go:31`, `runtime/blockgc.go:72`, `runtime/blockgc_reconcile_reclaim.go:55`, `gc/orphan_reclaim.go` |
 | [§6.1](#6.1%20A%20refcount%20is%20exactly%20its%20refs), [§6.5](#6.5%20Who%20owns%20a%20ref) the count is the authority | Sweep is decided by a mark phase over every chunk row, and refcounts decide nothing. Snapshots and open-but-unlinked files are protected by hold providers that add extra roots to the mark phase. | `gc/gc.go:494`, `gc/sweep_index.go:38`, `runtime/snapshot_hold.go:53`, `runtime/openhandle_hold.go:200` |
 | [§6.6](#6.6%20Clone%20and%20server-side%20copy) clone | Clone copies refs, but the refcount increment always misses ([§6.1](#6.1%20A%20refcount%20is%20exactly%20its%20refs)'s row). Clone on a local-only share copies bytes instead. SMB server-side copy copies bytes. | `internal/adapter/common/clone.go:74`, `:116`, `engine/readwrite.go:598`, `ioctl_copychunk.go:503` |
@@ -966,7 +966,7 @@ written after.
 
 | Requirement | Check |
 | --- | --- |
-| [§3.2](#3.2%20Every%20offset%20is%20in%20exactly%20one%20class) hole vs uncarved | Write past EOF, do not flush, drop the journal's extent. Assert the gap reads zeros and the written range **fails**. A rig that only checks the zeros passes the build that serves zeros for both. |
+| [§3.2](#3.2%20Every%20offset%20is%20in%20exactly%20one%20class) hole vs uncarved | Write past EOF, do not offload, drop the journal's extent. Assert the gap reads zeros and the written range **fails**. A rig that only checks the zeros passes the build that serves zeros for both. |
 | [§3.4](#3.4%20Ordering%20against%20the%20journal) no reconstruction | Crash with journal bytes past recorded `size`. Assert `size` is not grown on restart. |
 | [§3.5](#3.5%20Operations%20that%20make%20holes) allocate | Allocate a range with nothing staged. Assert it reads zeros, not a failure. |
 | [§4.4](#4.4%20Commits%20for%20one%20file%20apply%20in%20order) commit order | Commit B, then commit A over the same offsets with a lower `newest`. Assert B's refs survive. |
@@ -975,7 +975,7 @@ written after.
 | [§6.3](#6.3%20Underflow%20is%20corruption%2C%20not%20a%20boundary) underflow | Force a double decrement. Assert the transaction fails and the count is unchanged. |
 | [§7.1](#7.1%20Conditional%20retirement), [§7.2](#7.2%20Adoption%20is%20conditional%20on%20existence) sweep race | Interleave `Retire` and an adopting commit in every order. Assert that either the block survives with the new ref, or the commit fails, and never a ref to a retired chunk. |
 | [§6.5](#6.5%20Who%20owns%20a%20ref) snapshot counted | Snapshot a file, delete the file. Assert every chunk's refcount is still nonzero and its block is not retirable, with no other liveness input configured. |
-| [§6.6](#6.6%20Clone%20and%20server-side%20copy) clone uncarved | Write a source without flushing, clone it, drop the source's journal extent. Assert the destination reads the written bytes, not a failure and not zeros. |
+| [§6.6](#6.6%20Clone%20and%20server-side%20copy) clone uncarved | Write a source without offloading, clone it, drop the source's journal extent. Assert the destination reads the written bytes, not a failure and not zeros. |
 | [§7.3](#7.3%20Relocation) relocation | Relocate a block's chunks. Assert no ref changed, every read still resolves, and the old block is retirable. |
 | [§7.4](#7.4%20Restore) restore after retire | Take an uncounted copy, retire one of its chunks, restore. Assert the restore fails and wrote nothing. |
 | [§2.6](#2.6%20The%20scope%20of%20a%20count) two stores | Point two stores at one remote namespace. Assert the configuration is refused, or that keys differ. |
@@ -985,7 +985,7 @@ written after.
 | Requirement | Check |
 | --- | --- |
 | [§5.2](#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed) amplification | Write a file of *N* chunks for several *N*. Assert records **written** per commit are constant in *N*. A correctness assertion on the resulting refs passes a quadratic implementation. |
-| [§5.1](#5.1%20No%20record%20is%20written%20by%20both%20paths) write sets | Stream appends to one file while its flush commits. Assert every commit succeeds without a retry caused by the writer. |
+| [§5.1](#5.1%20No%20record%20is%20written%20by%20both%20paths) write sets | Stream appends to one file while its offload commits. Assert every commit succeeds without a retry caused by the writer. |
 | [§8.1](#8.1%20Covering%20lookup) lookup | Assert records **read** per covering lookup grow at most logarithmically in *N*. Count index iterator steps as well as row loads: the quadratic cost in [§12.3](#12.3%20What%20must%20not%20stand%20in) is in keys scanned, which a row-read count alone does not see. A benchmark is not this check — it has no threshold, so `go test` never fails on it. |
 | [§8.1](#8.1%20Covering%20lookup) declared | Build every backend against the interface with the lookup method. A backend that lacks it **MUST** fail to compile. |
 | [RFC 0 §9.1](rfc-0-data-lifecycle.md#9.1%20Records%20and%20their%20reclamation) (I7) | Store manifests across a range of sizes. Assert no single stored value reaches the engine's inline threshold, sizing the refs at their worst-case encoding rather than a fixture's. Then append to a manifest past the old threshold and assert the store reclaimed by the *other* mechanism does not grow at all. |
@@ -1002,7 +1002,7 @@ written after.
 - **The memory backend MUST NOT be the only backend for Group B.** Its costs are
   not any durable backend's.
 - **A single-writer rig MUST NOT stand in for [§5.1](#5.1%20No%20record%20is%20written%20by%20both%20paths).** The failure needs a client
-  stream and a flush on the same file at once.
+  stream and an offload on the same file at once.
 
 ## 13. Open questions
 

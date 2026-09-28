@@ -26,7 +26,7 @@
 
   <text x="16" y="62" class="rl">One per-file record holding size and the ref list</text>
   <rect x="16" y="76" width="150" height="34" rx="3" class="bn"/><text x="28" y="98" class="m">writer: append</text>
-  <rect x="16" y="130" width="150" height="34" rx="3" class="bn"/><text x="28" y="152" class="m">flush: commit</text>
+  <rect x="16" y="130" width="150" height="34" rx="3" class="bn"/><text x="28" y="152" class="m">offload: commit</text>
   <rect x="300" y="100" width="190" height="40" rx="3" class="br"/><text x="312" y="124" class="m">file record</text>
   <line x1="166" y1="93" x2="298" y2="112" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a4w)"/>
   <line x1="166" y1="147" x2="298" y2="130" stroke="#b04a4a" stroke-width="1.4" marker-end="url(#a4x)"/>
@@ -35,13 +35,13 @@
   <text x="520" y="132" class="why">the record the writer is still changing, and</text>
   <text x="520" y="148" class="why">conflicts again — the commit never lands</text>
 
-  <text x="16" y="194" class="s">nothing flushed → nothing evictable → journal fills → writes refused, from a remote that is healthy</text>
+  <text x="16" y="194" class="s">nothing offloaded → nothing evictable → journal fills → writes refused, from a remote that is healthy</text>
 
   <line x1="16" y1="214" x2="884" y2="214" stroke="#eef1f4"/>
 
   <text x="16" y="242" class="rl">Disjoint write sets</text>
   <rect x="16" y="256" width="150" height="34" rx="3" class="bn"/><text x="28" y="278" class="m">writer: append</text>
-  <rect x="16" y="318" width="150" height="34" rx="3" class="bn"/><text x="28" y="340" class="m">flush: commit</text>
+  <rect x="16" y="318" width="150" height="34" rx="3" class="bn"/><text x="28" y="340" class="m">offload: commit</text>
   <rect x="300" y="256" width="190" height="34" rx="3" class="bg"/><text x="312" y="278" class="m">Shape, Holes</text>
   <rect x="300" y="318" width="190" height="34" rx="3" class="bx"/><text x="312" y="340" class="m">Refs, Chunks, Blocks</text>
   <line x1="166" y1="273" x2="298" y2="273" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a4w)"/>

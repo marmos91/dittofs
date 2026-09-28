@@ -26,7 +26,7 @@
   <text x="400" y="97" class="s">local only; no other copy exists</text>
 
   <line x1="16" y1="156" x2="884" y2="156" stroke="#c3cad3"/>
-  <text x="16" y="180" class="h">later, on a flush the engine schedules</text>
+  <text x="16" y="180" class="h">later, on an offload the engine schedules</text>
 
   <rect x="240" y="200" width="150" height="44" rx="4" class="j"/><text x="258" y="227" class="m">journal</text>
   <text x="240" y="196" class="s">offers its dirty extents</text>
@@ -49,7 +49,7 @@
   <line x1="16" y1="350" x2="884" y2="350" stroke="#c3cad3"/>
   <text x="16" y="374" class="l"><tspan font-weight="600">Nothing becomes Resident except by the journal being told.</tspan> Durability is reported, never inferred —</text>
   <text x="16" y="394" class="l">not from a transfer completing, not from the absence of an error, not from elapsed time.</text>
-  <text x="16" y="422" class="l">Flush is a callback rather than a pipeline stage because a linear write → carve → put has nowhere to</text>
+  <text x="16" y="422" class="l">Offload is a callback rather than a pipeline stage because a linear write → carve → put has nowhere to</text>
   <text x="16" y="442" class="l">put that acknowledgement, and dropping it is how a range becomes evictable while only older bytes exist remotely.</text>
-  <text x="16" y="464" class="s">A flush that fails leaves every affected extent Dirty, and retrying is safe because chunking is deterministic.</text>
+  <text x="16" y="464" class="s">An offload that fails leaves every affected extent Dirty, and retrying is safe because chunking is deterministic.</text>
 </svg>

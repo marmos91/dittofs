@@ -121,7 +121,7 @@ getting the cuts right.
 The carver **MUST NOT**:
 
 - open, read or write anything — it is handed a reader and hands back descriptors;
-- decide *when* to cut, or which bytes to offer; that is flush policy ([RFC 0 §5.2](rfc-0-data-lifecycle.md#5.2%20Flush));
+- decide *when* to cut, or which bytes to offer; that is offload policy ([RFC 0 §5.2](rfc-0-data-lifecycle.md#5.2%20Offload));
 - build blocks, upload anything, or find out whether an upload worked;
 - know whether a chunk is already stored — it has no dedup oracle and asks nothing
   of any other component;
@@ -523,7 +523,7 @@ components call it:
 
 | Caller | When | Consequence |
 | --- | --- | --- |
-| `pkg/block/engine/flush.go:392` | every flush carrying novel chunks | the name is unrelated to what the block holds, so identical blocks are distinct objects |
+| `pkg/block/engine/flush.go:392` | every offload carrying novel chunks | the name is unrelated to what the block holds, so identical blocks are distinct objects |
 | `pkg/block/gc/compaction.go:269` | every repack | a crashed repack leaves an object under a name nothing records |
 
 The engine's call also puts an algorithm in the component [RFC 0 §1.1](rfc-0-data-lifecycle.md#1.1%20The%20component%20set) says owns none.
@@ -632,7 +632,7 @@ measured ([§11](#11.%20Open%20questions)).
   over short. A short chunk is indistinguishable from a legitimate last chunk, and
   it would hash to something no later read can reproduce.
 - The carver **MUST NOT** report anything as stored, or keep state that would let
-  a retry cut differently. What happens next is [RFC 0 §5.2](rfc-0-data-lifecycle.md#5.2%20Flush): the extents stay
+  a retry cut differently. What happens next is [RFC 0 §5.2](rfc-0-data-lifecycle.md#5.2%20Offload): the extents stay
   **Dirty** and the pass is retried.
 
 Because cutting is deterministic and keeps no state, a retry over the same bytes

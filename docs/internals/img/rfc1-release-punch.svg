@@ -29,7 +29,7 @@
   <rect x="446" y="84" width="130" height="30" rx="2" class="keep"/><text x="454" y="104" class="s">other file</text>
   <rect x="580" y="84" width="212" height="30" rx="2" class="keep"/><text x="588" y="104" class="m">ours [7M, 8M)</text>
 
-  <text x="100" y="146" class="l">Release(id, [4M, 6M)) — permitted only because that extent's flush bit is set.</text>
+  <text x="100" y="146" class="l">Release(id, [4M, 6M)) — permitted only because that extent's offloaded bit is set.</text>
 
   <!-- after -->
   <text x="16" y="216" class="rl">after</text>

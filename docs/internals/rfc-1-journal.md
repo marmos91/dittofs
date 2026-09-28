@@ -55,7 +55,7 @@ byte offset. It knows nothing about the structure of that content.
 In particular, a **record is not a chunk**. A record is whatever one write
 staged, possibly coalesced with adjacent writes. Chunk boundaries are
 content-defined and are found later, by the carver, over the extents the journal
-offers at flush. The journal **MUST NOT** assume any relationship between its
+offers at offload. The journal **MUST NOT** assume any relationship between its
 records and any chunk, block or remote object.
 
 ### 1.3 It is testable on its own
@@ -100,9 +100,9 @@ For each `FileID`, the journal maintains a set of **held extents**: disjoint
 `(fileOffset, length)` extents whose bytes it can produce, each mapped to a
 location in local storage.
 
-For each held extent it also records one bit of **flush state**: whether the
+For each held extent it also records one bit of **offload state**: whether the
 extent has been reported durable elsewhere ([§4.2](#4.2%20Segments)). This bit exists for two
-purposes and no others — selecting what to offer at flush, and refusing an
+purposes and no others — selecting what to offer at offload, and refusing an
 unsafe release ([§6.1](#6.1%20Ordering%20rules)). It **MUST NOT** be consulted to answer a read, and the
 journal **MUST NOT** expose it as an answer about remote durability; the journal
 is not authoritative for that ([RFC 0 §4.1](rfc-0-data-lifecycle.md#4.1%20The%20two%20oracles)).
@@ -110,10 +110,10 @@ is not authoritative for that ([RFC 0 §4.1](rfc-0-data-lifecycle.md#4.1%20The%2
 > [!note]
 > The bit can only be wrong in the safe direction. It is set solely by
 > being told, so the journal can believe a durable extent is still dirty — which
-> costs a redundant flush and a refused eviction — but can never believe a dirty
+> costs a redundant offload and a refused eviction — but can never believe a dirty
 > extent is durable, which would lose data. That holds only because every report
 > is about a version: an extent is marked only where no held record in it is
-> newer than the content reported durable ([§3.3](#3.3%20Flush), [§9.2](#9.2%20Flush%20state%20after%20recovery)). A report applied by
+> newer than the content reported durable ([§3.3](#3.3%20Offload), [§9.2](#9.2%20Offload%20state%20after%20recovery)). A report applied by
 > position alone can mark a newer write durable.
 
 Held extents are **disjoint and need not be adjacent**. A file is routinely
@@ -181,12 +181,12 @@ transfer per entry.
 sequence number of any operation that has changed the file's extents ([§3.4](#3.4%20Fill), [§5.3](#5.3%20Versions)). A caller that fetches
 a `missing` extent passes it back to `Fill`.
 
-### 3.3 Flush
+### 3.3 Offload
 
 ```go
-Flush(id FileID, limit int64, fn func(o Offer, report func(durable []Extent)) error) error
+Offload(id FileID, limit int64, fn func(o Offer, report func(durable []Extent)) error) error
 
-FlushMany(ids []FileID, limit int64, fn func(offers []Offer, report func(id FileID, durable []Extent)) error) error
+OffloadMany(ids []FileID, limit int64, fn func(offers []Offer, report func(id FileID, durable []Extent)) error) error
 
 type Offer struct {
     ID      FileID
@@ -197,7 +197,7 @@ type Offer struct {
 }
 ```
 
-Offers held extents of `id` whose flush bit is unset, and marks exactly the
+Offers held extents of `id` whose offloaded bit is unset, and marks exactly the
 extents reported durable through `report`.
 
 **`report` may be called any number of times while `fn` runs**, and each call marks
@@ -211,21 +211,21 @@ offset order until the next would pass the limit, and offers an extent larger th
 what remains as a prefix ending at the limit; the rest is offered by a later call.
 Without a bound, one pass over a 100 GiB dirty file keeps all of it offered, its
 superseded records pinned for `offered`, and none of it evictable until the last
-block uploads. The engine chooses the limit ([RFC 6 §4.2](rfc-6-engine.md#4.2%20Flush%20is%20scheduled%20here)). A prefix ends where no content
+block uploads. The engine chooses the limit ([RFC 6 §4.2](rfc-6-engine.md#4.2%20Offload%20is%20scheduled%20here)). A prefix ends where no content
 chose, so it costs one chunk boundary per pass that the chunker did not pick
 ([RFC 2 §2.1](rfc-2-carver.md#2.1%20One%20unbroken%20stretch%20per%20call)).
 
 **`Oldest` and `Newest`** bound the content versions of the records in the offer
 ([§5.3](#5.3%20Versions)). The engine records both on the refs the pass commits ([RFC 4 §4.4](rfc-4-block-metadata.md#4.4%20Commits%20for%20one%20file%20apply%20in%20order)) and
-names them again when it reseeds after a crash ([§9.2](#9.2%20Flush%20state%20after%20recovery)). A range is enough: every
+names them again when it reseeds after a crash ([§9.2](#9.2%20Offload%20state%20after%20recovery)). A range is enough: every
 extent in the pass lies inside it, which is all reseed and the stale rule need,
 and the engine does not have to track versions per extent.
 
-`FlushMany` is the same offer over several files in one callback, so the engine
+`OffloadMany` is the same offer over several files in one callback, so the engine
 can pack chunks of several files into one block ([RFC 6 §5.7](rfc-6-engine.md#5.7%20A%20block%20packs%20chunks%2C%20whichever%20files%20they%20came%20from)). Every rule of this section
 holds per file within it: each file's extents are marked exactly as the reports
 naming it say, a file never named has nothing marked, each `Offered` reader stays
-valid until `fn` returns, and `limit` bounds the total across the files. `Flush(id, …)` is `FlushMany`
+valid until `fn` returns, and `limit` bounds the total across the files. `Offload(id, …)` is `OffloadMany`
 with one file, and an implementation **SHOULD** build it that way rather than
 keep two paths.
 
@@ -249,7 +249,7 @@ returns, **MUST** fail rather than return other bytes. This is what lets the
 uploader read a block's bytes at transfer time instead of copying them at carve
 time ([RFC 3 §3.2](rfc-3-syncer.md#3.2%20It%20holds%20a%20reference%2C%20not%20a%20copy)): the carver and the uploader read the same version, whatever
 a client writes meanwhile. A concurrent write to an offered extent is permitted; the
-newer bytes supersede, and the extent's flush bit **MUST** remain unset for the
+newer bytes supersede, and the extent's offloaded bit **MUST** remain unset for the
 superseding write even if `fn` reports the offset durable.
 
 > [!note]
@@ -278,14 +278,14 @@ highest sequence number of any operation that changed its extents — `WriteAt`,
 `Truncate`, `Delete` — and keeps it through all of them, deletion included. If it
 is newer than `asOf`, `Fill` **MUST** write nothing and return a distinct error.
 Without this, a fetch that began before a write can land after that write was
-flushed and evicted, find the extent absent, and fill the old bytes with the flush
+offloaded and evicted, find the extent absent, and fill the old bytes with the offload
 bit set; or land after a truncate down and up, and put old bytes back where the
 file now has a hole. Either way the journal then serves stale content and
 believes it durable. The check is per file, not per extent, and deliberately
 coarse: a Fill refused because another part of the file changed costs only a
 cache miss.
 
-A filled extent's flush bit **MUST** be set, because the content came from the
+A filled extent's offloaded bit **MUST** be set, because the content came from the
 remote tier and is by construction durable there. **This makes `Fill` as
 safety-critical as `Release`.** The caller **MUST** pass only bytes it retrieved
 from the remote tier for that exact extent of that exact file. Bytes that were
@@ -296,7 +296,7 @@ leaving content that exists nowhere.
 
 `v` is the content version of the ref the bytes were fetched from: its `newest`
 ([RFC 4 §2.1](rfc-4-block-metadata.md#2.1%20Ref)). The filled record carries it, so reseed and the stale rule treat
-filled content like any other ([§9.2](#9.2%20Flush%20state%20after%20recovery)). Its sequence number is new, like every
+filled content like any other ([§9.2](#9.2%20Offload%20state%20after%20recovery)). Its sequence number is new, like every
 append's, so an older superseded write still on disk cannot win over it at
 recovery.
 
@@ -311,14 +311,14 @@ recovery.
 | relative to held content | **newer** — supersedes it | **older** — must not touch it                                    |
 | on conflict              | the written bytes win     | the held bytes win                                               |
 | content version          | a new one, its own sequence number | the fetched ref's; never supersedes held content      |
-| flush bit afterwards     | unset — owes a flush      | set — already durable                                            |
+| offloaded bit afterwards     | unset — owes an offload      | set — already durable                                            |
 | residency transition     | `*` → `Dirty`             | `Remote` → `Resident`                                            |
 | caller obligation        | none beyond capacity      | the bytes **MUST** be what the remote tier holds for this extent |
 
 An implementation **MAY** share the append machinery between them, and
 **SHOULD**. It **MUST NOT** expose them as one entry point selected by a
 parameter. Such a parameter would select between *supersede* and *must not
-overwrite*, and between *owes a flush* and *evictable* — so a caller passing the
+overwrite*, and between *owes an offload* and *evictable* — so a caller passing the
 wrong value would either discard a client's write or mark undurable content
 evictable, and in neither case would anything fail at the time.
 
@@ -331,7 +331,7 @@ Release(id FileID, extents []Extent) (freed int64, err error)
 Stops holding `extents` and frees the underlying local storage. This is the
 mechanism of eviction; the policy is the engine's ([RFC 0 §8.1](rfc-0-data-lifecycle.md#8.1%20Evict)).
 
-`Release` **MUST** refuse an extent whose flush bit is unset, and **MUST** make
+`Release` **MUST** refuse an extent whose offloaded bit is unset, and **MUST** make
 no partial progress on a refused call. The refusal is the journal's enforcement
 of [RFC 0](rfc-0-data-lifecycle.md)'s invariant I2; the caller is also obliged not to ask, and both
 **MUST** hold.
@@ -368,8 +368,8 @@ straddling it. `Delete` stops holding every extent of `id`.
 Both **MUST** be durable on return, and **MUST NOT** require the affected
 storage to be reclaimed first — reclamation is asynchronous ([§8](#8.%20Reclamation%20mechanisms)).
 
-Neither **MUST** be gated on the flush bit. Discarding content the user removed
-is not data loss, and an unflushed delete that a crash reverts would resurrect a
+Neither **MUST** be gated on the offloaded bit. Discarding content the user removed
+is not data loss, and an un-offloaded delete that a crash reverts would resurrect a
 removed file.
 
 ### 3.7 State introspection
@@ -395,7 +395,7 @@ because these are polled.
 | `UsedBytes` | gauge | local storage **allocated**, per [§8.3](#8.3%20Accounting) |
 | `ReservedBytes` | gauge | reserved by in-flight writes, not yet written |
 | `HeldBytes` | gauge | the sum of held extent lengths |
-| `DirtyBytes` | gauge | held bytes whose flush bit is unset |
+| `DirtyBytes` | gauge | held bytes whose offloaded bit is unset |
 | `Files` | gauge | files with at least one held extent |
 | `ExtentCount` | gauge | held extents |
 | `Segments` / `Sealed` | gauge | segments in total, and sealed |
@@ -404,7 +404,7 @@ because these are polled.
 | `PunchSupported` | bool | whether this journal directory's filesystem supports hole punching ([§8.1](#8.1%20Releasing%20storage)) |
 | `FilesystemBlockSize` | gauge | the punch granularity ([§8.1](#8.1%20Releasing%20storage)) |
 | `DamagedSegments` | gauge | segments holding records that do not verify ([§9.3](#9.3%20Torn%20and%20corrupt%20records)) |
-| `ReseedComplete` | bool | whether flush state has been re-established ([§9.2](#9.2%20Flush%20state%20after%20recovery)) |
+| `ReseedComplete` | bool | whether offload state has been re-established ([§9.2](#9.2%20Offload%20state%20after%20recovery)) |
 | `LastSyncError` | value | the most recent sync failure, and when ([§6.2](#6.2%20Sync%20policy)) |
 | `ExtentLimit` | gauge | the configured index entry bound ([§5.2](#5.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)) |
 | `Counters` | counters | the cumulative counts of [§3.9](#3.9%20Metrics), since open |
@@ -422,7 +422,7 @@ operator needs to tell which one it is from outside:
   thing that distinguishes "full of content" from "full of storage that release
   freed inside segments nobody has repacked".
 - **`ReseedComplete`** distinguishes "nothing is evictable" from "eviction is not
-  enabled yet" ([§9.2](#9.2%20Flush%20state%20after%20recovery)). Without it those are indistinguishable from outside, and
+  enabled yet" ([§9.2](#9.2%20Offload%20state%20after%20recovery)). Without it those are indistinguishable from outside, and
   they call for opposite responses.
 
 `PunchSupported` and `FilesystemBlockSize` exist for the same reason: without
@@ -452,8 +452,8 @@ type Recorder interface {
     ExtentLimitReached(count, limit int)
     SegmentReopened(id uint64)
     SyncFailed(err error)
-    FlushOffered(extents int, bytes int64)
-    FlushMarked(extents int, bytes int64)
+    OffloadOffered(extents int, bytes int64)
+    OffloadMarked(extents int, bytes int64)
     Synced(d time.Duration, records int)
     SegmentRejected(id uint64, reason string)
     StaleDropped(id FileID, extent Extent)
@@ -511,8 +511,8 @@ cannot miss an event. They reset on open.
 | `dittofs_journal_written_bytes_total` | counter | `Stats` | client bytes accepted by `WriteAt` |
 | `dittofs_journal_filled_bytes_total` | counter | `Stats` | remote bytes placed by `Fill`; with written, the cold-read share of local writes |
 | `dittofs_journal_fill_refused_total` | counter | `Stats` | fills refused as older than the file ([§3.4](#3.4%20Fill)) |
-| `dittofs_journal_flush_offered_bytes_total` | counter | `Stats` | bytes offered at flush |
-| `dittofs_journal_flush_marked_bytes_total` | counter | `Stats` | bytes marked durable; its lag behind offered is flush falling behind |
+| `dittofs_journal_offload_offered_bytes_total` | counter | `Stats` | bytes offered at offload |
+| `dittofs_journal_offload_marked_bytes_total` | counter | `Stats` | bytes marked durable; its lag behind offered is offload falling behind |
 | `dittofs_journal_released_bytes_total` | counter | `Stats` | bytes released |
 | `dittofs_journal_freed_bytes_total` | counter | `Stats` | storage actually returned by punching and unlinking ([§8.1](#8.1%20Releasing%20storage)) |
 | `dittofs_journal_repacked_bytes_total` | counter | `Stats` | bytes moved by repack; the write amplification reclamation adds |
@@ -530,8 +530,8 @@ cannot miss an event. They reset on open.
 
 | Metric | Type | Source | Answers |
 | --- | --- | --- | --- |
-| `dittofs_journal_corrupt_extents_total` | counter | `Stats` | extents dropped as corrupt ([§9.3](#9.3%20Torn%20and%20corrupt%20records)), labelled `outcome` = `data_loss` (flush bit unset after reseed), `repairable` (set) or `unclassified` (found before reseed, when no bit is set yet). Any `data_loss` is an alert |
-| `dittofs_journal_stale_extents_total` | counter | `Stats` | extents dropped as older than durable content ([§9.2](#9.2%20Flush%20state%20after%20recovery)) |
+| `dittofs_journal_corrupt_extents_total` | counter | `Stats` | extents dropped as corrupt ([§9.3](#9.3%20Torn%20and%20corrupt%20records)), labelled `outcome` = `data_loss` (offloaded bit unset after reseed), `repairable` (set) or `unclassified` (found before reseed, when no bit is set yet). Any `data_loss` is an alert |
+| `dittofs_journal_stale_extents_total` | counter | `Stats` | extents dropped as older than durable content ([§9.2](#9.2%20Offload%20state%20after%20recovery)) |
 | `dittofs_journal_damaged_segments` | gauge | `DamagedSegments` | segments holding records that do not verify |
 | `dittofs_journal_rejected_segments` | gauge | `Stats` | segments not attached because they belong to another journal ([§9.1](#9.1%20Rebuilding)) |
 | `dittofs_journal_scrub_last_complete_timestamp_seconds` | gauge | `Stats` | when a scrub pass last covered everything ([§9.4](#9.4%20Scrub)) |
@@ -544,7 +544,7 @@ cannot miss an event. They reset on open.
 | `dittofs_journal_recovery_duration_seconds` | gauge | `Stats` | time from open to the index being ready |
 | `dittofs_journal_recovery_source` | gauge (info) | `Stats` | `placement_cache`, `catalogs` or `scan`, and why a faster source was rejected ([§9.1.1](#9.1.1%20The%20placement%20cache%2C%20and%20how%20it%20is%20validated%20cheaply)) |
 | `dittofs_journal_torn_tails_total` | counter | `Stats` | torn tails truncated at open; one per crashed stream is normal |
-| `dittofs_journal_reseed_complete` | gauge (0/1) | `ReseedComplete` | whether eviction can be enabled ([§9.2](#9.2%20Flush%20state%20after%20recovery)) |
+| `dittofs_journal_reseed_complete` | gauge (0/1) | `ReseedComplete` | whether eviction can be enabled ([§9.2](#9.2%20Offload%20state%20after%20recovery)) |
 | `dittofs_journal_punch_supported` | gauge (0/1) | `PunchSupported` | whether release can return storage without repack ([§8.1](#8.1%20Releasing%20storage)) |
 
 The sync is the only operation the journal alone can time, so it is the only
@@ -591,8 +591,8 @@ is a fact about the past and survives a change in the configured number of
 streams.
 
 **Records, once written, are immutable.** No operation modifies a record in
-place — not flush, not release, not recovery. The flush bit of [§2](#2.%20The%20model%20it%20presents) lives in
-memory and is re-established at startup ([§9.2](#9.2%20Flush%20state%20after%20recovery)), which is what permits this.
+place — not offload, not release, not recovery. The offloaded bit of [§2](#2.%20The%20model%20it%20presents) lives in
+memory and is re-established at startup ([§9.2](#9.2%20Offload%20state%20after%20recovery)), which is what permits this.
 
 > [!note]
 > Immutability is worth the startup cost it implies. An in-place mutable
@@ -835,7 +835,7 @@ Two consequences follow, and an implementation **MUST NOT** assume otherwise:
 
 The rest of this section specifies the placement index. In memory, the journal
 maintains for each `FileID` an offset-ordered set of disjoint held extents, each
-mapped to a record location and carrying its content version and flush bit.
+mapped to a record location and carrying its content version and offloaded bit.
 
 Extents **MUST** be disjoint: a write superseding part of an existing extent
 **MUST** split or narrow it, never leave two extents covering one offset. A
@@ -852,7 +852,7 @@ holding *n* extents, an implementation **MUST** provide:
 | the extent covering an offset, or its absence | every read | `O(log n)` |
 | the held extents and gaps across a span, in offset order | `ReadAt`, `Fill` | `O(log n + k)` for *k* results |
 | insert, split, narrow, remove at an offset | write, truncate, release | `O(log n)` amortised |
-| every extent of one file, in offset order | `Extents`, `Flush` | `O(n)` |
+| every extent of one file, in offset order | `Extents`, `Offload` | `O(n)` |
 | held bytes in a given segment | reclamation | `O(1)` |
 
 A linear walk of a file's extents to answer a point lookup **MUST NOT** be used;
@@ -881,7 +881,7 @@ worth stating because they rule out the obvious alternatives:
   scatters those entries across the heap, which costs both memory and a cache
   miss per level at the extent counts of [§5.2](#5.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes).
 - **A B-tree** packs many entries per node contiguously, so a lookup touches few
-  cache lines, ordered iteration for `Extents` and `Flush` is a leaf walk, and
+  cache lines, ordered iteration for `Extents` and `Offload` is a leaf walk, and
   per-entry overhead is a fraction of a pointer-per-node structure.
 
 A red-black or AVL tree meets the bounds and **MAY** be used; it is strictly
@@ -905,7 +905,7 @@ An entry costs about 40 bytes, so the index's footprint tracks how many extents
 exist and is independent of how much content they describe.
 
 Measured, for an entry carrying file offset, segment id, record offset, length,
-version and flush bit: the struct is **40 bytes**; a sorted slice costs 40 bytes
+version and offloaded bit: the struct is **40 bytes**; a sorted slice costs 40 bytes
 per entry and a blocked, B-tree-shaped layout 43. In practice:
 
 | Held as | Extents for 1 TiB | Index |
@@ -954,7 +954,7 @@ diverge.
 | a write | a new one | its own sequence number |
 | a fill | a new one | the version of the ref it was fetched from ([§3.4](#3.4%20Fill)) |
 | a repack copy | a new one | the original's, unchanged ([§8.2](#8.2%20Repack)) |
-| used by | recovery, `Fill`'s staleness check | `Flush` offers, reseed, the stale rule ([§9.2](#9.2%20Flush%20state%20after%20recovery)) |
+| used by | recovery, `Fill`'s staleness check | `Offload` offers, reseed, the stale rule ([§9.2](#9.2%20Offload%20state%20after%20recovery)) |
 
 One number cannot do both. Repack needs a new number so a crash between copy and
 unlink resolves to the copy, and needs the old one so reseed still recognises the
@@ -1012,9 +1012,15 @@ separate, explicit action.
 | `Release` **MUST NOT** precede the caller's durable record of non-residency. | Inverting it leaves content believed local that is gone ([RFC 0 §8.1](rfc-0-data-lifecycle.md#8.1%20Evict)). |
 | A release record **MUST** be durable before any storage it frees is punched or unlinked. | Otherwise a crash can lose the record and keep the punch, and an older record the release covered is held again ([§3.5](#3.5%20Release)). |
 | A segment's records **MUST** be durable before the segment is unlinked by reclamation. | A reclaim pass **MUST** be content-preserving ([RFC 0 §8.2](rfc-0-data-lifecycle.md#8.2%20Reclaim)). |
-| Marking a flush bit **MUST NOT** precede the report that justifies it. | [RFC 0](rfc-0-data-lifecycle.md) invariant I5. |
+| Marking an offloaded bit **MUST NOT** precede the report that justifies it. | [RFC 0](rfc-0-data-lifecycle.md) invariant I5. |
 
 ### 6.2 Sync policy
+
+The journal **MUST** be on durable local storage: a synced record survives a
+process crash, a host crash and power loss. There is no setting that declares a
+journal not durable. A client's flush is acknowledged once the journal has synced
+the file's records, and on nothing else ([RFC 6 §9.4](rfc-6-engine.md#9.4%20Commit%20is%20answered%20by%20the%20journal)); a journal that could not keep
+them would turn every acknowledged flush into a claim nothing backs.
 
 The policy governing when staged bytes reach stable storage before `WriteAt`
 returns is configurable. Whatever the setting:
@@ -1181,7 +1187,7 @@ maintains ([§5.1](#5.1%20What%20it%20must%20answer), [§8.3](#8.3%20Accounting)
 decide whether to repack it.
 
 **Content preservation.** Repack **MUST** preserve the set of held extents, the
-bytes they produce, and their flush bits. Resetting a flush bit would make
+bytes they produce, and their offloaded bits. Resetting an offloaded bit would make
 durable content look dirty and cause it to be re-uploaded; setting one would make
 undurable content evictable.
 
@@ -1289,9 +1295,9 @@ consults nothing. The next sequence number issued **MUST** exceed both the floor
 disk ([§5.3](#5.3%20Versions)). The journal does not compare the floor with what it
 holds: released content can leave nothing on disk, so a healthy journal is
 routinely below its floor. A restored directory shows up at reseed instead, as
-stale extents ([§9.2](#9.2%20Flush%20state%20after%20recovery)). Without the floor such a journal would issue content versions the caller has
+stale extents ([§9.2](#9.2%20Offload%20state%20after%20recovery)). Without the floor such a journal would issue content versions the caller has
 already recorded for other content, and a reseed by version
-([§9.2](#9.2%20Flush%20state%20after%20recovery)) would then mark new, unflushed writes durable.
+([§9.2](#9.2%20Offload%20state%20after%20recovery)) would then mark new, un-offloaded writes durable.
 
 There are three sources for the index, in decreasing speed and increasing
 authority. An implementation **MUST** be able to use the slowest alone, **SHOULD**
@@ -1392,15 +1398,15 @@ against an adversary. If segments ever live somewhere a listing is expensive, or
 a third party must verify the store without reading it, this decision is worth
 reopening.
 
-### 9.2 Flush state after recovery
+### 9.2 Offload state after recovery
 
-Every recovered extent **MUST** begin with its flush bit unset.
+Every recovered extent **MUST** begin with its offloaded bit unset.
 
 The engine re-establishes the bits it can justify, from metadata, before
 enabling eviction. Until it does, `Release` refuses everything ([§3.5](#3.5%20Release)), which is
 safe and temporarily wasteful.
 
-An implementation **MUST NOT** infer a flush bit from the record, from the
+An implementation **MUST NOT** infer an offloaded bit from the record, from the
 segment's age or seal state, or from the absence of a crash.
 
 The engine reseeds through:
@@ -1412,11 +1418,11 @@ MarkDurable(id FileID, extents []Extent, oldest, newest Version) error
 naming for each extent the content versions recorded on the ref that covers it
 ([RFC 4 §4.4](rfc-4-block-metadata.md#4.4%20Commits%20for%20one%20file%20apply%20in%20order)). The journal marks an extent only where no held content in it is newer
 than `newest`. Marking by position alone loses data: a write that superseded
-flushed content and had not been flushed when the process crashed is held again
+offloaded content and had not been offloaded when the process crashed is held again
 after recovery, covered by the old content's ref; marked durable by position, it
 becomes evictable, and the next read fetches the old content in its place.
 
-**Held content older than `oldest` is stale.** Every extent a flush pass offered
+**Held content older than `oldest` is stale.** Every extent an offload pass offered
 has a content version of at least the pass's `Oldest`, repack keeps content
 versions, and a fill carries its ref's. So in normal operation no held content is
 older than the `oldest` of the ref that covers it. Content that is came back from
@@ -1430,7 +1436,7 @@ is marked durable, which is safe, and it can be served until it is evicted. That
 needs an edit from outside ([§12.3](#12.3%20Corruption%2C%20crashes%20and%20edits%20from%20outside)); normal operation never produces it.
 
 > [!note]
-> The cost is that a crash makes every held extent a flush candidate
+> The cost is that a crash makes every held extent an offload candidate
 > again until reseeded, and reseeding is a pass over metadata proportional to the
 > content held. The alternative — persisting the bit in the record — requires
 > mutable records, and [§4.2](#4.2%20Segments) declines that trade.
@@ -1465,7 +1471,7 @@ That is the whole of the recovery action, and it is sufficient because the
 residency function ([RFC 0 §4.2](rfc-0-data-lifecycle.md#4.2%20The%20residency%20function)) resolves both cases correctly from the journal
 simply not holding the extent:
 
-| The extent's flush bit was | Metadata says | Resolves to | Outcome |
+| The extent's offloaded bit was | Metadata says | Resolves to | Outcome |
 | --- | --- | --- | --- |
 | set — durable remotely | the block is durable | **Remote** | fetched on next read; the damage is repaired |
 | unset — dirty | the block is not durable | **Lost** | reads fail, loudly and correctly |
@@ -1478,7 +1484,7 @@ decide what that means.
 
 Although the journal's *action* is the same, the two cases are not equally
 serious, and it **MUST** report them distinguishably. Corruption of an extent
-whose flush bit was set costs a refetch. Before reseed ([§9.2](#9.2%20Flush%20state%20after%20recovery)) no bit is set, so
+whose offloaded bit was set costs a refetch. Before reseed ([§9.2](#9.2%20Offload%20state%20after%20recovery)) no bit is set, so
 corruption found then **MUST** be reported as unclassified, not as data loss;
 the residency function decides it at the first read. Corruption of a dirty extent is
 destruction of the only copy, and **MUST** be surfaced as a data-loss event
@@ -1610,10 +1616,10 @@ wants the file index to repoint entries. Those two orders deadlock. The reader
 acquiring the storage guard.
 
 **No lock may be held across a call into code the journal does not control.**
-This covers the `Flush` callback ([§3.3](#3.3%20Flush)) and every `Recorder` call ([§3.8](#3.8%20Event%20reporting)).
-`Flush` hands control to the carver, the syncer and the metadata store, any of
+This covers the `Offload` callback ([§3.3](#3.3%20Offload)) and every `Recorder` call ([§3.8](#3.8%20Event%20reporting)).
+`Offload` hands control to the carver, the syncer and the metadata store, any of
 which may take seconds; holding the file index across it would block every read
-of that file for the duration, which [§3.3](#3.3%20Flush) already forbids by requiring offered
+of that file for the duration, which [§3.3](#3.3%20Offload) already forbids by requiring offered
 extents to stay readable.
 
 **No I/O may be performed while holding the file index.** The index is memory;
@@ -1627,7 +1633,7 @@ holding it converts disk latency into index contention.
 | reserve, then accept bytes | other reservations | otherwise N writers pass one limit check ([§7](#7.%20Capacity)) |
 | append a record, then publish its extents | readers of that file | a reader **MUST NOT** see an extent whose record is not yet durable |
 | `Fill`'s absence check, then its write | `WriteAt` on the same extent | otherwise a fill overwrites a newer client write ([§3.4](#3.4%20Fill)) |
-| `Release`'s flush-bit check, then dropping the extent | `WriteAt` and `Flush` on that extent | a write between check and drop would have its bytes released |
+| `Release`'s offloaded-bit check, then dropping the extent | `WriteAt` and `Offload` on that extent | a write between check and drop would have its bytes released |
 | repack's index repoint | readers of the affected files | a reader **MUST** see either the old location or the new one, never neither |
 | `Stats` field collection | every mutating operation | fields **MUST** be mutually consistent ([§3.7](#3.7%20State%20introspection)) |
 
@@ -1719,7 +1725,7 @@ failure; the assertion itself must fire.
 
 **A check must distinguish the defect from its absence.** Several requirements
 here forbid a behaviour indistinguishable from the correct one at the point it
-happens — zeros instead of a fetch, a flush bit set too early, a punch that
+happens — zeros instead of a fetch, an offloaded bit set too early, a punch that
 zeroed a neighbour. Where that is so, the check **MUST** assert on the
 distinguishing observation, not on the outcome the two share.
 
@@ -1744,14 +1750,14 @@ A check here fails by **serving or destroying the wrong bytes without an error**
 | Requirement | Check |
 | --- | --- |
 | [§3.2](#3.2%20Read) no zero-fill | Fill `p` with a sentinel pattern, then read a never-written extent and an explicitly released extent; both report `missing`, the sentinel is untouched in both, and the two are indistinguishable to the journal. |
-| [§3.3](#3.3%20Flush) write during flush | Write to an offered extent mid-callback, report it durable, assert the extent's bit stays unset and `Release` refuses it. |
+| [§3.3](#3.3%20Offload) write during offload | Write to an offered extent mid-callback, report it durable, assert the extent's bit stays unset and `Release` refuses it. |
 | [§3.4](#3.4%20Fill) fill safety | Hold a `Fill` at the storage seam after it has found the extent absent, `WriteAt` the same extent, then let the fill continue; assert the written bytes survive. |
 | [§3.4](#3.4%20Fill) fill sets the bit | Fill an absent extent; assert `Release` then permits it. `WriteAt` the same extent; assert `Release` refuses it again. |
-| [§3.5](#3.5%20Release) refusal | Ask to release an extent with no flush bit; assert refusal and no partial progress. |
+| [§3.5](#3.5%20Release) refusal | Ask to release an extent with no offloaded bit; assert refusal and no partial progress. |
 | [§8.1](#8.1%20Releasing%20storage) neighbours survive a punch | Place two records so they share a filesystem block; release one; assert the other still reads its exact bytes. Measured to hold on ext4, XFS, btrfs and APFS — the check guards against an implementation that widens the punched range beyond what was released. |
 | [§8.2](#8.2%20Repack) crash mid-repack | Simulate a crash ([§1.3](#1.3%20It%20is%20testable%20on%20its%20own)) between the copy and the unlink; assert recovery selects the relocated records, every held extent still reads, and no extent is duplicated in the placement index. |
 | [§9.3](#9.3%20Torn%20and%20corrupt%20records) corrupt, dirty | After reseed, corrupt a record whose extent is dirty; assert the read reports the extent `missing`, the sentinel in `p` is untouched, and the event names the file and extent as data loss. |
-| [§9.3](#9.3%20Torn%20and%20corrupt%20records) corrupt, durable | After reseed, corrupt a record whose extent's flush bit is set; assert the read reports the extent `missing` and the event is reported as repairable. |
+| [§9.3](#9.3%20Torn%20and%20corrupt%20records) corrupt, durable | After reseed, corrupt a record whose extent's offloaded bit is set; assert the read reports the extent `missing` and the event is reported as repairable. |
 | [§10.5](#10.5%20Protecting%20readers%20from%20reclamation) punch under read | Write a non-zero pattern, start a read of it, punch its storage mid-read; assert the read either returns the pattern or reports the extent missing with the sentinel in `p` untouched. |
 | [§10.5](#10.5%20Protecting%20readers%20from%20reclamation) repack under read | Same, with relocation instead of punching; assert the read sees the old or the new location, never neither. |
 | [§4.4](#4.4%20The%20segment%20catalog) footer is not authoritative | Corrupt a sealed segment's footer; assert recovery scans that segment and reaches the same index. Then write a verifying footer whose entry disagrees with its record's header; assert the read through that entry is refused as corruption. |
@@ -1775,7 +1781,7 @@ A check here fails by **reaching a state it cannot leave**, or by consuming with
 | [§8.1](#8.1%20Releasing%20storage) alignment is portable | Release an unaligned extent; assert it succeeds on both Linux and macOS. An implementation that passes the range through unaligned fails on APFS with `EINVAL`. |
 | [§8.1](#8.1%20Releasing%20storage) storage returned | Release an extent, assert accounted footprint decreases. |
 | [§10.6](#10.6%20Progress) reclaim not starved | Hold sustained read load on one segment; assert reclamation still acquires it within a bounded time. |
-| [§10.3](#10.3%20Lock%20ordering%2C%20and%20what%20may%20never%20be%20held) no deadlock | Run readers, writers, repack and release concurrently on the same segments under a deadlock detector; assert no cycle and no lock held across the flush callback. |
+| [§10.3](#10.3%20Lock%20ordering%2C%20and%20what%20may%20never%20be%20held) no deadlock | Run readers, writers, repack and release concurrently on the same segments under a deadlock detector; assert no cycle and no lock held across the offload callback. |
 | [§10.7](#10.7%20Shutdown) background joined | Close the store with scrub and a repack in flight; assert both stop before any segment is closed and no work continues afterwards. |
 
 #### Group C — recovery
@@ -1787,20 +1793,20 @@ A check here fails by **coming back up describing something other than what is o
 | [§9.1](#9.1%20Rebuilding) rebuild | Write a non-zero pattern, simulate a crash ([§1.3](#1.3%20It%20is%20testable%20on%20its%20own)) mid-write and reopen; assert every acknowledged extent reads its pattern and the last verified record is the tail. |
 | [§9.1](#9.1%20Rebuilding) sources agree | Build the placement index from the placement cache, from catalogs, and by full scan of the same store; assert all three are identical. |
 | [§9.1.1](#9.1.1%20The%20placement%20cache%2C%20and%20how%20it%20is%20validated%20cheaply) cache demotion | Alter one segment's length, delete one segment, and corrupt the placement cache checksum, each independently; assert every case falls back to catalogs and reaches the index a scan of the directory as it now is would build. |
-| [§9.2](#9.2%20Flush%20state%20after%20recovery) pessimistic bits | Reopen after writes; assert `Release` refuses everything before reseeding. |
-| [§9.2](#9.2%20Flush%20state%20after%20recovery) reseed by version | Flush A, overwrite with B, crash before B is flushed; `MarkDurable` the extent at A's versions; assert B stays unmarked and `Release` refuses it. |
-| [§8.2](#8.2%20Repack) reseed after repack | Flush an extent, repack its segment, crash; `MarkDurable` at the flush's versions; assert the extent is marked and `Release` permits it. |
-| [§3.5](#3.5%20Release) release survives restart | Write A, flush; write B over it into another segment, flush, release and punch B; reopen; assert the extent reads `missing`, not A. |
+| [§9.2](#9.2%20Offload%20state%20after%20recovery) pessimistic bits | Reopen after writes; assert `Release` refuses everything before reseeding. |
+| [§9.2](#9.2%20Offload%20state%20after%20recovery) reseed by version | Offload A, overwrite with B, crash before B is offloaded; `MarkDurable` the extent at A's versions; assert B stays unmarked and `Release` refuses it. |
+| [§8.2](#8.2%20Repack) reseed after repack | Offload an extent, repack its segment, crash; `MarkDurable` at the offload's versions; assert the extent is marked and `Release` permits it. |
+| [§3.5](#3.5%20Release) release survives restart | Write A, offload; write B over it into another segment, offload, release and punch B; reopen; assert the extent reads `missing`, not A. |
 | [§3.5](#3.5%20Release) release record lost | Release an extent and crash before the release record syncs; assert the punch did not happen and the extent is held with its original bytes. |
 | [§4.3](#4.3%20Records) punched record in a scan | Punch a record in the active segment and reopen by scan; assert no corruption is reported and every record after it is held. |
-| [§3.4](#3.4%20Fill) fill beats an older write | Write A, flush, write B, flush, release B; `Fill` the extent with B's bytes; crash and reopen; assert the extent reads B, not A. |
-| [§3.4](#3.4%20Fill) stale Fill | Read an extent missing; write, flush and release it; then `Fill` with the first read's `asOf`; assert nothing is written. Repeat with a truncate down and up in place of the write. |
-| [§3.3](#3.3%20Flush) incremental report | Report one block's extents mid-callback, then fail the callback; assert the reported extents are marked and releasable and the rest are not. |
+| [§3.4](#3.4%20Fill) fill beats an older write | Write A, offload, write B, offload, release B; `Fill` the extent with B's bytes; crash and reopen; assert the extent reads B, not A. |
+| [§3.4](#3.4%20Fill) stale Fill | Read an extent missing; write, offload and release it; then `Fill` with the first read's `asOf`; assert nothing is written. Repeat with a truncate down and up in place of the write. |
+| [§3.3](#3.3%20Offload) incremental report | Report one block's extents mid-callback, then fail the callback; assert the reported extents are marked and releasable and the rest are not. |
 | [§4.5](#4.5%20Catalog%20layout) trailer torn | Truncate a segment mid-footer, and separately corrupt one entry byte; assert both are treated as "no footer", the segment is scanned, and the resulting index is identical to the footer-read one. |
 | [§9.3](#9.3%20Torn%20and%20corrupt%20records) truncated sealed segment | Truncate a segment that a later one names as its predecessor, mid-record and with its footer gone; assert it is reported as corruption, not as a torn tail. Truncate the newest segment of a stream the same way; assert it is treated as a torn tail. |
 | [§9.1](#9.1%20Rebuilding) foreign segment | Copy a valid segment from another journal into the directory; assert it is not attached, no read serves its bytes, it is reported and left on disk. |
 | [§9.1](#9.1%20Rebuilding) version floor | Reopen with a floor above every version on disk; assert the next write's version exceeds the floor, and that `MarkDurable` with the floor as `newest` leaves that write unmarked. |
-| [§9.2](#9.2%20Flush%20state%20after%20recovery) stale extent | Write A into one segment and flush it; write B over it into a later segment, flush and release it, and let reclamation unlink B's segment; restore A's segment from a copy taken before; reopen and `MarkDurable` at B's versions; assert A is dropped, reported as stale, and the read reports the extent missing. |
+| [§9.2](#9.2%20Offload%20state%20after%20recovery) stale extent | Write A into one segment and offload it; write B over it into a later segment, offload and release it, and let reclamation unlink B's segment; restore A's segment from a copy taken before; reopen and `MarkDurable` at B's versions; assert A is dropped, reported as stale, and the read reports the extent missing. |
 | [§9.5](#9.5%20Unattachable%20files) unidentified directory | Open a directory holding segments and no `format` file, and separately one holding only unrelated files; assert both fail to open, nothing in either is modified or deleted, and an empty directory opens as a new journal. |
 | [§4.5](#4.5%20Catalog%20layout) unknown version | Write a trailer with a future format version; assert the segment is scanned and the open succeeds. |
 | [§5.3](#5.3%20Versions) sequence monotonicity | Reopen after a crash; assert the next sequence number issued exceeds every one on disk, and that recovery in shuffled segment order yields an identical index. |
@@ -1848,10 +1854,10 @@ with every result, together with the commit.
 | J1 | write path | `WriteAt` sequential and random, 4 KiB to 1 MiB, under each sync policy ([§6.2](#6.2%20Sync%20policy)) | MiB/s, p50 and p99 latency, syncs per GiB |
 | J2 | write scaling | 1, 4, 16 and 64 files written concurrently | aggregate MiB/s; where it stops rising |
 | J3 | read path | `ReadAt` over held extents, index at 10^3, 10^4, 10^5 and 10^6 extents ([§5.1](#5.1%20What%20it%20must%20answer)) | lookup cost per read, which must grow as `log n` or slower |
-| J4 | flush offer | `Flush` over files of many small extents and of few large ones | cost per offered extent, with `fn` returning at once |
+| J4 | offload offer | `Offload` over files of many small extents and of few large ones | cost per offered extent, with `fn` returning at once |
 | J5 | reclamation under load | release and repack ([§8](#8.%20Reclamation%20mechanisms)) while J1 runs | reclaimed MiB/s, and J1's p99 during it against J1 alone |
 | J6 | recovery | reopen after 1 GiB, 100 GiB and 1 TiB held, with and without the placement cache ([§9.1.1](#9.1.1%20The%20placement%20cache%2C%20and%20how%20it%20is%20validated%20cheaply)) | time to first read served |
-| J7 | reseed | `MarkDurable` every held extent after reopen ([§9.2](#9.2%20Flush%20state%20after%20recovery)), at 10^4, 10^6 and 10^7 extents | journal time per extent; wall time until `Release` is permitted everywhere |
+| J7 | reseed | `MarkDurable` every held extent after reopen ([§9.2](#9.2%20Offload%20state%20after%20recovery)), at 10^4, 10^6 and 10^7 extents | journal time per extent; wall time until `Release` is permitted everywhere |
 
 Benchmarks run on `develop` and nightly, never on a pull request; what a pull
 request checks instead is in [§12.4](#12.4%20What%20CI%20checks%20instead%20of%20timing). J6 and J7 at scale answer open question 1.
@@ -1887,15 +1893,15 @@ and what performance the journal is expected to deliver.
 | Unit | pure logic with no storage: the placement index, coalescing, overlap splitting, the record and catalog codecs | table-driven, in memory; the only place an in-memory stand-in is allowed ([§11.5](#11.5%20What%20must%20not%20stand%20in%20for%20the%20real%20thing)) |
 | Conformance | every check in [§11.4](#11.4%20The%20checks), Groups A–D | real filesystem in `t.TempDir()`, virtual time, on every supported platform ([§11.3](#11.3%20Environments%20a%20check%20set%20must%20cover)) |
 | Fault injection | lost, torn and reordered writes, flipped bits, outside edits ([§12.3](#12.3%20Corruption%2C%20crashes%20and%20edits%20from%20outside)); `EIO` and `ENOSPC` from sync, write and punch | the storage seam of [§1.3](#1.3%20It%20is%20testable%20on%20its%20own), which drops or fails exactly the operations named |
-| Model-based | sequences no hand-written case thinks of | random sequences of `WriteAt`, `Fill`, `Flush`, `Release`, `Truncate`, crash and reopen, compared after every step against a reference model: each file's bytes plus each extent's flush bit. A failing sequence is shrunk to the shortest that still fails and kept as a regression case |
+| Model-based | sequences no hand-written case thinks of | random sequences of `WriteAt`, `Fill`, `Offload`, `Release`, `Truncate`, crash and reopen, compared after every step against a reference model: each file's bytes plus each extent's offloaded bit. A failing sequence is shrunk to the shortest that still fails and kept as a regression case |
 | Fuzz | parsers of bytes the journal did not just write: records, segment trailers, the placement cache | Go native fuzzing; the property is that any input is either accepted as valid or rejected, never panics and never yields an extent the bytes do not contain |
 | Concurrency | [§10](#10.%20Concurrency): lock order, readers against reclamation, progress | race detector, at least two files on two streams, with `synctest` for the waits |
 | Structure | the dependency set of [§1.1](#1.1%20Non-goals) | an import test |
 | Benchmark | [§11.6](#11.6%20Benchmarks), J1–J7 | real time, real device; on `develop` and nightly, never on a pull request ([§12.4](#12.4%20What%20CI%20checks%20instead%20of%20timing)) |
-| Soak | what only appears after hours: index growth, descriptor leaks, footprint drift | mixed write, flush, release and repack load for hours against a capacity smaller than the data written, asserting that the [§5.1](#5.1%20What%20it%20must%20answer) counters, open descriptors and footprint stay flat |
+| Soak | what only appears after hours: index growth, descriptor leaks, footprint drift | mixed write, offload, release and repack load for hours against a capacity smaller than the data written, asserting that the [§5.1](#5.1%20What%20it%20must%20answer) counters, open descriptors and footprint stay flat |
 
 The model-based test is what this plan adds beyond [§11](#11.%20Conformance). Group A failures
-come from interleavings: a write during a flush, a fill racing a write, a release
+come from interleavings: a write during an offload, a fill racing a write, a release
 after a truncate. A hand-picked case confirms the interleavings someone already
 imagined. The model finds the others.
 
@@ -1915,8 +1921,8 @@ Beyond the named checks, the unit, model and fault tests **MUST** reach these.
 
 - truncate inside an extent, truncate to zero and write again, truncate down and back up ([§3.6](#3.6%20Truncate%20and%20delete));
 - `Fill` over an extent that is partly held, partly dirty and partly absent ([§3.4](#3.4%20Fill));
-- `Flush` where `fn` reports extents it was not offered, or reports none ([§3.3](#3.3%20Flush));
-- `Release` of an extent only part of which carries a flush bit ([§3.5](#3.5%20Release));
+- `Offload` where `fn` reports extents it was not offered, or reports none ([§3.3](#3.3%20Offload));
+- `Release` of an extent only part of which carries an offloaded bit ([§3.5](#3.5%20Release));
 - a segment in which every record has been released, which must become reclaimable without a read.
 
 **Capacity and storage**
@@ -1940,7 +1946,7 @@ each region has its own required outcome:
 
 - a record header or payload: caught at open by a scan, otherwise on the read
   that would serve it; the extent is dropped and reported as data loss or as
-  repairable, by its flush bit ([§9.3](#9.3%20Torn%20and%20corrupt%20records));
+  repairable, by its offloaded bit ([§9.3](#9.3%20Torn%20and%20corrupt%20records));
 - a catalog entry, footer, trailer or the placement cache: recovery demotes to
   the next source ([§9.1.1](#9.1.1%20The%20placement%20cache%2C%20and%20how%20it%20is%20validated%20cheaply)) and no byte served changes;
 - a segment header: the segment is reported as damaged and its records are still
@@ -1974,8 +1980,8 @@ assert *when* the journal notices, not *whether*:
 | a file the journal did not name added | at open | left alone ([§4.1](#4.1%20Layout)) |
 | a sealed segment truncated | at open, when a later segment names it as predecessor ([§9.3](#9.3%20Torn%20and%20corrupt%20records)) | reported as corruption; the newest segment of a stream is indistinguishable from a crash and is treated as one |
 | a valid segment copied in from another journal | at open, by its journal identity | not attached, reported, left alone ([§9.1](#9.1%20Rebuilding)) |
-| the whole directory restored from an old copy | at reseed, by version ([§9.2](#9.2%20Flush%20state%20after%20recovery)) | stale extents are dropped and refetched; new versions start above the floor, so no new write can be taken for durable |
-| one old segment of this journal restored | at reseed, by version ([§9.2](#9.2%20Flush%20state%20after%20recovery)) | its extents are dropped as stale and refetched; before reseed reaches a file, a read of it can still serve the old bytes |
+| the whole directory restored from an old copy | at reseed, by version ([§9.2](#9.2%20Offload%20state%20after%20recovery)) | stale extents are dropped and refetched; new versions start above the floor, so no new write can be taken for durable |
+| one old segment of this journal restored | at reseed, by version ([§9.2](#9.2%20Offload%20state%20after%20recovery)) | its extents are dropped as stale and refetched; before reseed reaches a file, a read of it can still serve the old bytes |
 
 Checksums detect accidents, not intent. An edit that rewrites a record and its
 checksum consistently is indistinguishable from a real write, and the journal
@@ -2034,7 +2040,7 @@ figures were measured through the whole stack.
 | J2 | aggregate write, 1 to 64 files | rises to within 5% of the filesystem, then stays there to 64 |
 | J3 | point lookup, 10^6 extents in one file | ≤ 1 µs |
 | J3 | warm `ReadAt` of 1 MiB | ≥ 2 GB/s single stream |
-| J4 | flush offer | ≤ 1 µs per extent |
+| J4 | offload offer | ≤ 1 µs per extent |
 | J4 | index insertion, 10^6 extents | ≤ 2 µs |
 | J5 | J1 p99 while releasing and repacking | ≤ 1.5× J1 p99 alone |
 | J6 | clean restart with the placement cache, 1 TiB held | first read within 2 s |
@@ -2070,7 +2076,7 @@ from other boxes are recorded the same way and compared only with themselves.
 
 ## 13. Open questions
 
-1. **Reseeding cost** ([§9.2](#9.2%20Flush%20state%20after%20recovery)). Beginning pessimistic is safe and removes mutable
+1. **Reseeding cost** ([§9.2](#9.2%20Offload%20state%20after%20recovery)). Beginning pessimistic is safe and removes mutable
    records, but the reseed is proportional to content held and its cost at
    terabyte scale is unmeasured. If it proves prohibitive, the alternatives are a
    separate durable ledger or accepting mutable records, in that order of
