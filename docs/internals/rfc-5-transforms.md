@@ -1,6 +1,6 @@
 ---
 rfc: 5
-title: "RFC 5 — transforms: compression and encryption"
+title: "RFC 5 — transforms"
 component: transforms
 status: draft
 depends_on:
@@ -12,803 +12,619 @@ aliases:
 tags:
   - rfc
 ---
-# RFC 5 — transforms: compression and encryption
+# RFC 5 — transforms
 
-**Status:** draft.
-**Depends on:** [RFC 0](rfc-0-data-lifecycle.md), for the terms, the invariants and the failure model. [RFC 4](rfc-4-remote-tier.md)
-owns the stored object and the contract-level rules for the transform chain
-([§4](#4.%20Encryption) there); this document specifies the transforms that satisfy those rules.
-[RFC 2](rfc-2-carver.md) owns identity, and nothing here changes what a chunk or a block is called.
-**Audience:** anyone changing `pkg/block/middleware` or its key providers, the
-chain's construction in `pkg/controlplane/runtime/shares`, or the transform
-settings of a remote block store; and anyone deciding what a deployment that
-enables encryption is actually protected against.
+**Audience:** anyone writing a transform, configuring a store's transforms, or
+deciding what a deployment that enables one is protected against.
 
 The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT** and **MAY** are
 to be interpreted as in RFC 2119.
 
-This document specifies what the transforms are required to be. It was written
-from RFC 0, 2 and 4, not from the current packages. Where the implementation does
-not satisfy a requirement, that is recorded once, in [§9](#9.%20Deviations), as a **deviation**, with
-evidence. A deviation is a defect to be fixed or migrated, never a rule for an
-implementer to build around. Where this document chooses a policy the set left
-open, the choice is labelled **proposal**.
+This document specifies behaviour, not the current code. Where the code differs,
+[Appendix C](#Appendix%20C%20%E2%80%94%20where%20the%20current%20code%20differs) lists it for the refactor.
 
 ---
 
 ## In short
 
-- A transform acts on one chunk's bytes, after identity is taken and before the
-  record is framed. It never sees a block, and it never changes a name or a hash.
-- The chain is compress, then encrypt. Every layer marks its own output, and a
-  body that one layer cannot recognise is that layer's decision, never the chain's.
-- Encryption is envelope encryption: a fresh data key per chunk, sealed with an
-  AEAD whose additional data is the plaintext hash, wrapped under a master key the
-  provider holds. Lose every copy of the master key and the data is gone.
-- Encryption hides what the remote provider cannot already guess. It does **not**
-  hide which chunks are equal, and today it does not hide the chunk hashes at all,
-  so a provider holding a candidate file can confirm the deployment stores it.
-- How an object was transformed travels with the object. Configuration says what
-  the next write does and sets a floor on what a read accepts.
-- The plaintext hash is checked once, inside the tier's verified read, after the
-  whole chain is undone. No layer's own check stands in for it.
-
----
+- A **transform** is an invertible function over one chunk's bytes: compression
+  and encryption are the two that ship, and anyone can add another.
+- A store's **chain** is the ordered list of transforms its operator configures.
+  The order is the configuration's, not the code's; the system only refuses an
+  order that cannot work.
+- Every chunk body records which transforms were applied to it, so reading needs
+  no configuration, and a transform may skip a chunk it cannot help.
+- The chain runs inside the block codec ([RFC 4 §3](rfc-4-remote-tier.md#3.%20The%20block%20format)), per chunk, after the chunk's
+  hash is taken and before the body is written. Nothing else sees it.
+- After the chain is undone, the codec checks the plaintext hash. That check, not
+  any transform's own, decides whether a chunk is correct.
 
 ## 1. Purpose
 
-[RFC 4 §4](rfc-4-remote-tier.md#4.%20The%20transform%20chain) says an implementation **MAY** compress and encrypt a chunk before it is
-framed, and fixes four rules any such chain must obey. It does not say what the
-transforms are, what their bytes look like, who holds the keys, what happens when
-a key is unavailable, or what an attacker at the remote tier learns. This document
-does.
+Data leaving the machine may need to be smaller, secret, or both, and what "both"
+means differs per deployment. This document specifies the generic mechanism: what
+a transform is, how transforms are stacked and configured, where they run, and
+what any transform must guarantee. Compression ([Appendix A](#Appendix%20A%20%E2%80%94%20compression)) and encryption
+([Appendix B](#Appendix%20B%20%E2%80%94%20encryption)) are the two transforms DittoFS provides, and serve as worked
+examples.
 
 ### 1.1 Non-goals
 
 This document **MUST NOT** be read as specifying:
 
-- the block object, its preamble, its records or their headers — [RFC 4 §3](rfc-4-remote-tier.md#3.%20The%20stored%20object);
-- a chunk's hash or a block's name — [RFC 2 §4](rfc-2-carver.md#4.%20Identity). Where [§5.4](#5.4%20Deduplication%20and%20confirmation%20trade%20against%20each%20other%20%28decision%20for%20discussion%29) proposes a secret in the
-  key scope, it proposes an input to [RFC 2 §4.3](rfc-2-carver.md#4.3%20Key%20scope)'s scope, not a new naming rule;
-- when a chunk is sealed, or whether a block is relocated — [RFC 8](rfc-8-engine.md) and [RFC 9](rfc-9-gc.md);
-- protection of data in the journal, in metadata stores or in transit to the
-  remote. Those are local disk, database and transport concerns. The journal holds
-  plaintext, and metadata holds every chunk hash in the clear;
-- authentication of clients, or access control between shares — [RFC 7](rfc-7-namespace-metadata.md) and the
-  protocol adapters;
-- a key-management service. The provider contract of [§4.4](#4.4%20A%20provider%20wraps%20under%20one%20current%20key%20and%20unwraps%20under%20any%20it%20holds) is what DittoFS needs
-  from one, not a specification of one.
+- the block format, the chunk index or where a body sits: [RFC 4 §3](rfc-4-remote-tier.md#3.%20The%20block%20format);
+- a chunk's hash or a block's name: [RFC 2 §4](rfc-2-carver.md#4.%20Identity). A transform never changes either;
+- when a chunk is encoded, or whether a block is relocated: [RFC 8](rfc-8-engine.md) and [RFC 9](rfc-9-gc.md);
+- protection of data in the journal, in metadata or on the wire to the remote
+  store: those are disk, database and transport concerns.
 
-### 1.2 What RFC 4 keeps and what this document takes
+## 2. The model
 
-[RFC 4 §4](rfc-4-remote-tier.md#4.%20The%20transform%20chain) states the contract; this document states the transforms. The division
-is by who can check the rule. A rule a caller of the remote tier can observe
-stays in [RFC 4](rfc-4-remote-tier.md). A rule only the transform's own bytes or keys can violate lives
-here.
+### 2.1 A transform acts on one chunk
 
-| Rule | Owner | Why there |
+A transform takes one chunk's bytes and returns one body, and can turn that body
+back into the same bytes. It never sees a block, a file, an offset or another
+chunk.
+
+Per-chunk scope is what keeps ranged reads working: a get for one chunk's body
+([RFC 4 §4.4](rfc-4-remote-tier.md#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)) returns something the chain can undo on its own, without the rest of
+the block. It also means one corrupt body loses one chunk. A transform over a
+whole block would give up both.
+
+A transform **MUST** be:
+
+- **invertible**: `Decode(Encode(p)) == p`, byte for byte, for every input,
+  including inputs chosen to look like the transform's own output;
+- **self-contained**: everything `Decode` needs, apart from key material, is in
+  the body it wrote;
+- **bounded**: `Decode` **MUST NOT** allocate or produce more than the `max` it
+  is given, however large a body claims its output to be. The chain gives each
+  stage the chunk maximum ([RFC 2 §3.2](rfc-2-carver.md#3.2%20The%20three%20settings)) plus the declared `MaxOverhead` of the
+  transforms applied before it, so a stage that legitimately adds bytes is not
+  refused by the next one;
+- **stateless per call**: safe to call concurrently, with no memory between calls
+  other than read-only configuration and keys.
+
+A transform **MAY** decline a chunk: compression declines one that would not
+shrink. A declined chunk passes to the next transform unchanged, and the body
+records that the transform was not applied ([§2.4](#2.4%20Every%20body%20records%20what%20was%20applied)).
+
+### 2.2 Where it runs
+
+The chain runs inside the block codec, which the engine owns ([RFC 4 §3.1](rfc-4-remote-tier.md#3.1%20Who%20writes%20it)):
+
+```
+write: chunk ─ hash taken ─▶ chain.Encode ─▶ body ─▶ codec writes it into the block
+read:  body ─▶ chain.Decode ─▶ chunk ─ hash checked ─▶ caller
+```
+
+- The hash is taken over plaintext **before** the chain, so identity never
+  depends on a transform's settings, keys or library version ([RFC 4 §3.3](rfc-4-remote-tier.md#3.3%20Transforms)).
+- The hash is checked **after** the whole chain is undone ([§2.6](#2.6%20The%20plaintext%20hash%20is%20the%20final%20check)).
+- Every consumer of block bytes goes through the codec, so every consumer gets
+  the chain: the engine's reads and writes, and GC's relocation, which re-encodes
+  under the current chain ([§5.2](#5.2%20Relocation%20re-encodes)).
+
+The syncer and the remote store never see a transform. Apart from the byte
+offsets a transform changes, nothing above the codec behaves differently with a
+chain on or off.
+
+### 2.3 The chain is ordered by configuration
+
+A store's operator lists its transforms in order. `Encode` runs them first to
+last and `Decode` last to first. The order is not built into the code and has no
+priorities: the configuration is the order.
+
+The system refuses an order that cannot work, using traits each transform
+declares about itself ([§3.1](#3.1%20Interfaces)):
+
+| Trait | Meaning | Rule |
 | --- | --- | --- |
-| Seal and read are exact inverses | [RFC 4 §4.1](rfc-4-remote-tier.md#4.1%20Seal%20and%20read%20are%20exact%20inverses) | observable at the contract as a round trip |
-| Identity is over plaintext | [RFC 4 §4.2](rfc-4-remote-tier.md#4.2%20Identity%20is%20over%20plaintext%2C%20at%20every%20layer), [RFC 2 §4](rfc-2-carver.md#4.%20Identity) | a naming rule; transforms only have to not break it |
-| The chain travels with the object | [RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20The%20chain%20travels%20with%20the%20object) | a property of the stored object |
-| Nothing above the tier observes a transform | [RFC 4 §4.4](rfc-4-remote-tier.md#4.4%20The%20syncer%20MUST%20NOT%20observe%20that%20a%20transform%20happened) | a property of the contract's surface |
-| Order, scope and framing of each layer | here, [§2](#2.%20The%20chain) | internal to the chain |
-| Codec, marking, decompression bound | here, [§3](#3.%20Compression) | internal to one layer |
-| Construction, frame, keys, rotation, failure | here, [§4](#4.%20Encryption) | internal to one layer and its provider |
-| What the remote learns | here, [§5](#5.%20Threat%20model) | follows from all of the above plus [RFC 2 §6](rfc-2-carver.md#6.%20Boundaries%20are%20public) |
-| What a configuration change does to stored data | here, [§6](#6.%20Configuration%20over%20time) | follows from [RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20The%20chain%20travels%20with%20the%20object) plus [§4](#4.%20Encryption) |
+| `Shrinks` | tries to make the body smaller | **MUST NOT** follow a transform that `Randomizes`: its input would be incompressible, so it would never apply |
+| `Randomizes` | output is indistinguishable from random bytes | — |
+| `MaxOverhead` | the most bytes it can add to a chunk | the chain's total bounds the encoded body size ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)) |
 
-[RFC 4 §4](rfc-4-remote-tier.md#4.%20The%20transform%20chain) **SHOULD** be reduced to its four rules and a pointer here ([§11](#11.%20Consequences%20for%20other%20RFCs)).
+For the two shipped transforms, compression `Shrinks` and encryption
+`Randomizes`, so the rule accepts compression then encryption and refuses the
+reverse. It says nothing about how two custom transforms relate; that is their
+author's and operator's call. A transform **MUST NOT** appear twice in one
+chain.
 
-## 2. The chain
+### 2.4 Every body records what was applied
 
-### 2.1 A transform is per chunk, and runs between identity and framing
+Each body starts with a short **envelope** listing, in order, the IDs of the
+transforms that were applied to it:
 
-A transform **MUST** take one chunk's plaintext and return one body, and **MUST**
-be invertible from that body plus key material alone. It **MUST NOT** see a
-block, a file, an offset or another chunk.
+```
+body = count (1 byte) ‖ transform ID (2 bytes) × count ‖ output of the last applied transform
+```
 
-The sequence is fixed: the chunk's hash is taken over plaintext ([RFC 2 §4.1](rfc-2-carver.md#4.1%20A%20chunk)),
-the chain seals the plaintext into a body, the body is framed as one record of a
-block ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20What%20the%20encoding%20must%20carry)), and the block is named from its chunks' hashes ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)).
-A transform therefore cannot influence identity, and **MUST NOT** try.
+This is what makes the chain self-describing, per chunk, independently of
+configuration:
 
-Per-chunk scope is what lets one chunk be read by opening one record ([RFC 4 §3.3](rfc-4-remote-tier.md#3.3%20What%20the%20format%20must%20guarantee)
-F1) and lets one corrupt body lose one chunk rather than a block (F5). A
-per-block transform would give up both to save a header per chunk. The same rule
-forbids transforming a block a second time: the pipeline's block-keyed operations
-forward untransformed because the records are already sealed
-(`pkg/block/middleware/middleware.go:48`–`:56`), and that exemption **MUST** stay
-tied to callers whose bodies came out of the chain.
+- a declined transform is simply absent from the list;
+- the list, not each transform, says whether a transform ran, so no transform
+  needs a marker of its own and no input can be mistaken for a transform's output;
+- a reader undoes exactly the listed transforms, whatever the chain is configured
+  to do now.
 
-### 2.2 The order is compress, then encrypt
+A transform **MAY** still write a header of its own inside its output: its
+format version, and whatever else `Decode` needs, such as a key ID. The envelope
+costs 1 + 2n bytes per chunk, negligible against a chunk's size.
 
-The chain **MUST** compress before it encrypts, and open in the reverse order.
+A reader **MUST** reject with `ErrMalformed`, before decoding anything, an
+envelope that lists an unregistered ID, the same ID twice, or more transforms
+than are registered. Otherwise a bucket writer could wrap a body in hundreds of
+layers that each decode correctly and cost a full decode on every read.
 
-AEAD output is indistinguishable from random bytes and does not compress, so the
-other order stores every body at full size plus overhead, silently: it round-trips
-and produces no error. That is the only reason, and it is sufficient.
+### 2.5 Reading needs no configuration, only keys
 
-Compressing before encrypting has a known cost: the length of a compressed body
-depends on its content, so the ciphertext length reveals how compressible each
-chunk was. Against a remote provider this adds little to what [§5.2](#5.2%20The%20remote%20sees%20every%20chunk%27s%20hash%20today) already
-concedes, because the chunk hashes and sizes leak more. Against an attacker who
-can inject chosen content next to a secret in one chunk and watch sizes, it is a
-compression side channel of the CRIME class. This document accepts it for a
-storage system whose writers are the share's own clients, and records it in [§5.3](#5.3%20Encryption%20protects%20content%20the%20attacker%20cannot%20guess%2C%20and%20nothing%20else).
+Every transform compiled into the binary is registered by its ID at start, and
+`Decode` looks transforms up by the IDs in the envelope, not in the configured
+chain. For each store, the registry builds every transform once for decoding,
+with its default settings and the store's keys.
 
-### 2.3 Every layer marks its output, and decides for itself what an unmarked body means
+**Keys are configured on the store, apart from the chain** ([§3.2](#3.2%20Configuration)). Removing a
+keyed transform from the chain therefore stops it for new writes but keeps its
+keys, and bodies written under it stay readable. Removing a key is a separate
+act, allowed only once the census shows nothing uses it ([§5.3](#5.3%20Retiring%20a%20key%20or%20a%20transform%20needs%20a%20census)).
 
-A layer **MUST** prefix everything it emits with a marker that identifies the
-layer and its format version, unless it can prove no input can be mistaken for
-its own output. A layer **MUST** state, at the code site, what it does with a
-body that carries no marker, and why.
+Because reading does not consult the chain, a store accepts a body without a
+transform its chain now applies: an old plaintext body after encryption was
+turned on, for example. An operator who wants to refuse such bodies lists the
+transform under `require`; a body missing a required transform is then
+`ErrMalformed`. Turn it on only once the census shows no body lacks it.
 
-The pipeline **MUST NOT** decide this for the layers. The two layers today
-disagree, correctly: compression reads an unmarked body as plaintext it chose not
-to compress, and encryption rejects an unmarked body because on a store that
-encrypts it can only mean tampering or a configuration that predates the object.
-A shared "not mine, pass it through" rule in the pipeline would make encryption
-fail open.
+An ID is assigned once and never reused ([§4](#4.%20Writing%20a%20custom%20transform)). A format change inside a
+transform is a new version in that transform's own header, not a new ID, and the
+transform **MUST** keep decoding every version it may still meet.
 
-A layer that sometimes emits its input unchanged has no marker on those bodies,
-and so cannot tell its own pass-through from its own frame when the plaintext
-happens to begin with the marker. [§3.3](#3.3%20The%20stored%20case%20must%20be%20marked%20too) is that failure, measured.
+### 2.6 The plaintext hash is the final check
 
-### 2.4 A new layer brings a marker, a version and a fixture
+After the chain is undone, the codec compares the result with the chunk's
+plaintext hash from block metadata ([RFC 4 §3.4](rfc-4-remote-tier.md#3.4%20Every%20read%20is%20verified%20by%20the%20codec)). That check decides; no
+transform's own check stands in for it. An encryption tag proves a body was
+sealed for that hash, not that decompression then reproduced it.
 
-A new layer **MUST**:
+It also makes a tampered envelope harmless. Someone who can write the bucket can
+strip a transform from an envelope or swap a body, but the result must still hash
+to what local metadata expects, and producing that requires knowing the plaintext
+already. Integrity never rests on the envelope.
 
-1. declare its position in the chain and the reason for it, in terms of what the
-   neighbouring layers do to entropy and length;
-2. mark every body it emits ([§2.3](#2.3%20Every%20layer%20marks%20its%20output%2C%20and%20decides%20for%20itself%20what%20an%20unmarked%20body%20means)), and state its unmarked-body policy;
-3. carry a format version in its marker, and accept every version it may still
-   encounter ([RFC 4 §3.5](rfc-4-remote-tier.md#3.5%20Format%20changes%20are%20migrations));
-4. bound every length it reads from a body before allocating against it ([§3.4](#3.4%20Decompression%20is%20bounded%20before%20anything%20is%20allocated) is
-   the pattern);
-5. map every error it can raise onto [RFC 4 §5.2](rfc-4-remote-tier.md#5.2%20Errors%20are%20a%20closed%20set)'s closed set ([§4.7](#4.7%20Key%20loss%20is%20data%20loss%2C%20and%20key%20unavailability%20is%20remote%20unavailability));
-6. ship a fixture written by the first version and read by every later one
-   ([RFC 4 §9.3](rfc-4-remote-tier.md#9.3%20What%20must%20not%20stand%20in%20for%20the%20real%20thing)).
+### 2.7 Failures
 
-The chain's order is enforced today by the statement order of one function
-(`pkg/controlplane/runtime/shares/blockstore_config.go:735`–`:745` records this
-as a decision, with the test that pins it). That is adequate while one site builds
-chains. A second site, or a layer whose misordering corrupts data rather than
-wasting space, **MUST** give the order a type.
+- **A chain that cannot be built is a construction failure.** If a store is
+  configured with a transform that cannot start (an unknown ID, bad settings, an
+  unreachable key provider), the store **MUST NOT** open, and **MUST NOT** fall
+  back to writing without it. Writing plaintext because encryption failed to load
+  is the failure this rule exists for.
+- **`Decode` errors are one of three.** `ErrMalformed` (the body is not
+  something this transform wrote, fails its own integrity check, or names a key
+  the store has never had), `ErrKeyUnavailable` (a key the store knows but cannot
+  reach now), and `ErrTooLarge` (the output would exceed `max`). The difference
+  between the first two matters: a key ID planted by a bucket writer must not
+  turn a corrupt body into a remote that looks unavailable forever. The codec reports the first and third
+  as verification failures of the chunk, and the second as the remote being
+  unavailable: retryable, never zeros, never an absent chunk
+  ([RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model)).
+- **`Encode` errors** fail the put. A declined chunk is not an error.
 
-### 2.5 An absent chain is a construction failure, never plaintext
+A transform's own error types **MUST NOT** cross the codec. Callers see only the
+codec's errors, so nothing above it can tell which transforms are configured.
 
-Where a store is configured to encrypt, a chain that cannot be built **MUST** fail
-construction with an error naming the missing piece. It **MUST NOT** fall back to
-uploading plaintext. [RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy) forbids capability negotiation by type assertion
-for this exact reason, and [RFC 8 §2.2](rfc-8-engine.md#2.2%20Capabilities%20are%20parameters%2C%20never%20assertions) names the site where a failed assertion on
-the sealer makes the offload upload bodies unsealed ([§9](#9.%20Deviations), D11).
+## 3. API surface
 
-### 2.6 Nothing above the tier sees the chain
+### 3.1 Interfaces
 
-[RFC 4 §4.4](rfc-4-remote-tier.md#4.4%20The%20syncer%20MUST%20NOT%20observe%20that%20a%20transform%20happened) applies to every layer here. In particular a layer's errors **MUST NOT**
-cross the contract as that layer's own types; [§4.7](#4.7%20Key%20loss%20is%20data%20loss%2C%20and%20key%20unavailability%20is%20remote%20unavailability) gives the mapping. A metric
-that reports bytes transferred **MUST** count the bytes the backend moved, and a
-metric that reports compression **MUST** be emitted from inside the chain, not
-reconstructed above it.
+Signatures are indicative; the obligations of [§2](#2.%20The%20model) are normative.
 
-## 3. Compression
+```go
+package transform
 
-### 3.1 The algorithm is recorded per body; the level is not
+// ID names a transform in every body it was applied to. Assigned once, never reused.
+type ID uint16
 
-Compression **MUST** use a lossless codec whose decoder is deterministic and
-bounded ([§3.4](#3.4%20Decompression%20is%20bounded%20before%20anything%20is%20allocated)). zstd at the library's default level is the default, and LZ4 is
-accepted as a faster, weaker alternative
-(`pkg/block/middleware/compression/policy.go:14`–`:20`).
+type Traits struct {
+	Shrinks     bool // tries to make the body smaller
+	Randomizes  bool // output is indistinguishable from random bytes
+	MaxOverhead int  // most bytes Encode can add to a chunk
+}
 
-The level is not recorded and **MUST NOT** need to be; the algorithm **MUST** be,
-per body ([§3.2](#3.2%20Skip%20what%20does%20not%20shrink%2C%20and%20record%20what%20was%20done)), because a store's setting may change while its objects remain. A
-codec **MAY** be added under a new algorithm value; an existing value **MUST NOT**
-be reassigned.
+// Transform is one invertible, per-chunk step.
+type Transform interface {
+	ID() ID
+	Traits() Traits
 
-### 3.2 Skip what does not shrink, and record what was done
+	// Encode transforms plain. Applied=false declines the chunk: plain passes on
+	// unchanged. hash is the plaintext hash, for transforms that bind to it.
+	Encode(ctx context.Context, dst []byte, hash [32]byte, plain []byte) (Encoded, error)
 
-Compression **MUST** emit the compressed frame only when the frame, header
-included, is strictly smaller than the plaintext. Otherwise it **MUST** emit a
-body that records that the chunk was stored uncompressed.
+	// Decode inverts Encode. It never produces more than max bytes.
+	Decode(ctx context.Context, dst []byte, hash [32]byte, body []byte, max int) (plain []byte, err error)
+}
 
-The record of what was applied is per body, not per object or per store, because
-the decision is per chunk. It **MUST** carry the algorithm, and **MUST** carry the
-declared plaintext length so that the decoder's output can be bounded and checked
-([§3.4](#3.4%20Decompression%20is%20bounded%20before%20anything%20is%20allocated)).
+// Encoded is one transform's output, and what the census records about it.
+type Encoded struct {
+	Body    []byte
+	Applied bool
+	Version uint8  // the transform's own format version
+	KeyID   string // the key used, or "" for an unkeyed transform
+}
 
-### 3.3 The stored case must be marked too
+// Factory builds a transform from its settings and the store's keys. It fails
+// rather than returning a transform that cannot work.
+type Factory func(ctx context.Context, settings map[string]any, keys KeyProvider) (Transform, error)
 
-Today the uncompressed case is not marked: the plaintext is emitted as-is
-(`pkg/block/middleware/compression/decorator.go:65`–`:68`), and a read treats any
-body beginning with the five bytes `DFCMP` and a known algorithm byte as a frame
-(`frame.go:57`–`:74`, `decorator.go:77`–`:80`). So an incompressible chunk whose
-plaintext starts with those bytes is written, acknowledged and made durable, and
-then fails every read. Run against the shipped code: plaintext `DFCMP` `0x01`,
-a uvarint, and 4 KiB of random bytes seals to itself and opens to
-`compression: decode: invalid input: magic number mismatch`.
+// Register makes a transform available for configuration and for decoding.
+// Called at init; a duplicate ID panics.
+func Register(id ID, name string, f Factory)
 
-This violates [RFC 4 §4.1](rfc-4-remote-tier.md#4.1%20Seal%20and%20read%20are%20exact%20inverses), and it is data loss in [RFC 0](rfc-0-data-lifecycle.md)'s sense: metadata records
-the chunk as durable and the bytes can never be read back, so the extent is
-**Lost**. It is unlikely by accident and trivial on purpose: anyone who can write
-a file can make it unreadable. Relocation does not repair
-it, because it copies bodies verbatim ([§6.3](#6.3%20Relocation%20re-seals%20under%20the%20current%20chain)).
+// Chain is a store's configured, validated list of transforms.
+type Chain struct{ /* ... */ }
 
-The requirement is [§2.3](#2.3%20Every%20layer%20marks%20its%20output%2C%20and%20decides%20for%20itself%20what%20an%20unmarked%20body%20means)'s: the stored case **MUST** carry a marker, for example
-the same frame with an algorithm value meaning "stored". It costs a few bytes on
-chunks that did not compress, which are already the chunks where a few bytes
-matter least. Because objects written before the change contain unmarked bodies,
-the change **MUST** be a format migration under [RFC 4 §3.5](rfc-4-remote-tier.md#3.5%20Format%20changes%20are%20migrations), and is the moment to
-give the compression marker the version byte [§2.3](#2.3%20Every%20layer%20marks%20its%20output%2C%20and%20decides%20for%20itself%20what%20an%20unmarked%20body%20means) requires (`DFCMP` has none): an object must say,
-in a place the reader consults before opening any body, whether its bodies are
-all marked, and a reader **MUST** refuse an unmarked body in an object that says
-they are.
+// NewChain builds and validates the configured transforms (§2.3).
+func NewChain(ctx context.Context, cfg []Config) (*Chain, error)
 
-### 3.4 Decompression is bounded before anything is allocated
+// Encode writes the envelope and returns the body with one Encoded per applied
+// transform, which the codec collects into the block's census (§5.3).
+func (c *Chain) Encode(ctx context.Context, dst []byte, hash [32]byte, plain []byte) ([]byte, []Encoded, error)
+func (c *Chain) Decode(ctx context.Context, dst []byte, hash [32]byte, body []byte, max int) ([]byte, error)
 
-A decoder is an interpreter of attacker-supplied input wherever the remote tier
-is not trusted, which is the premise of encryption and a possibility without it.
-Its output and its working memory **MUST** be bounded before decoding begins.
+type Config struct {
+	Name     string         // a registered transform's name
+	Settings map[string]any // passed to its Factory
+}
 
-- The declared plaintext length **MUST** be checked against the largest chunk the
-  deployment can produce — [RFC 2](rfc-2-carver.md)'s hard ceiling, 16 MiB today
-  (`pkg/block/chunker/params.go:20`) — before any buffer is sized from it.
-- The decoder's output **MUST** be cut off one byte past the declared length, and
-  a length mismatch in either direction **MUST** fail the read.
-- The decoder's own window and memory **MUST** be bounded by the same ceiling,
-  not by the library's defaults.
-- Where the caller knows the chunk's plaintext length from metadata, the declared
-  length **SHOULD** also be required to equal it.
+var (
+	ErrMalformed      = errors.New("transform: malformed body")
+	ErrKeyUnavailable = errors.New("transform: key unavailable")
+	ErrTooLarge       = errors.New("transform: output exceeds chunk maximum")
+)
+```
 
-The present code does the second, and the first against a ceiling four times too
-large: 64 MiB (`frame.go:24`), with the output buffer allocated at the declared
-size before a byte is decoded (`decorator.go:102`), so a body of a few bytes
-commits 64 MiB per concurrent read. The zstd decoder is built without a window or
-memory limit (`codec.go:58`–`:61`), which leaves its bound at the library's
-maximum window of 512 MiB. Neither is an exploit against a trusted bucket; both
-are the amplification [§5.1](#5.1%20Encryption%20defends%20against%20the%20bucket%27s%20reader%20and%20detects%20its%20writer)'s A2 is given when encryption is off; with it on, the
-compression frame is inside the ciphertext and the decoder is out of reach ([§4.3](#4.3%20The%20frame%20is%20a%20permanent%20format)).
+`Chain.Decode` uses the registry, not the configured list ([§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20keys)), so a chain
+decodes what an older configuration wrote. `dst` **MUST NOT** overlap the input;
+the result may be `dst` resliced or a new slice. `KeyProvider` is specified with
+the encryption example ([Appendix B.2](#B.2%20Keys)), but any keyed transform uses it. Its `Key`
+distinguishes a key the store never had (`ErrUnknownKey`, reported as
+`ErrMalformed`) from one it cannot reach now (`ErrKeyUnavailable`).
 
-## 4. Encryption
+### 3.2 Configuration
 
-### 4.1 Every chunk gets its own data key
+A chain is configured on a remote block store, and every share on that store
+inherits it:
 
-Encryption **MUST** be envelope encryption:
+```yaml
+blockstores:
+  remote:
+    main:
+      type: s3
+      keys:
+        provider: file
+        file: /etc/dittofs/master.keys
+      transforms:
+        - name: zstd
+        - name: aes-gcm
+      require: [aes-gcm]   # optional (§2.5)
+```
 
-| Element | Requirement | Today |
+A share that needs a different chain, or a different key, uses a different store.
+Deduplication then never spans two keys, which matters because a chunk encrypted
+under one key is readable only by a store that holds it.
+
+## 4. Writing a custom transform
+
+A transform is a Go package that registers itself at init. It **MUST**:
+
+1. take an ID from the range reserved for custom transforms (`0x8000`–`0xFFFF`;
+   `0x0000`–`0x7FFF` is DittoFS's) and never reuse it;
+2. declare honest traits: [§8.1](#8.1%20Transform%20conformance) checks them;
+3. put a format version in its own header if its format can ever change, and
+   decode every version it has written;
+4. bound `Decode` by `max` before allocating;
+5. return only the errors of [§2.7](#2.7%20Failures);
+6. pass the transform conformance suite ([§8.1](#8.1%20Transform%20conformance)), and ship a fixture: bodies
+   written by its first version, which every later version must decode.
+
+Custom transforms are compiled in. Loading them at run time would put foreign
+code in the data path with nothing to check it before it writes; revisit if an
+operator needs one DittoFS does not build.
+
+## 5. Changing a chain over time
+
+### 5.1 Configuration governs the next write
+
+Adding, removing, reordering or re-configuring transforms changes only what is
+written from then on. Every stored body keeps the envelope it was written with,
+and [§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20keys) keeps it readable as long as its keys are held.
+
+### 5.2 Relocation re-encodes
+
+GC relocation reads chunks through the codec and writes them into a new block
+under the current chain ([RFC 9 §4.2](rfc-9-gc.md#4.2%20Read%20verified%2C%20name%20by%20content%2C%20put%2C%20then%20move)). This is how old bodies migrate to a new chain:
+each relocated chunk leaves its old transforms, and its old keys, behind. A
+relocation that copied bodies unchanged would keep every retired key in use for
+as long as its chunks live.
+
+### 5.3 Retiring a key or a transform needs a census
+
+To stop holding a key, or to stop compiling a transform in, no stored body may
+still need it. That takes an index of which blocks use which transform, version and key: the
+codec collects the `Encoded` descriptors of every body ([§3.1](#3.1%20Interfaces)) and block metadata
+records them per block when the block is written ([RFC 6](rfc-6-block-metadata.md), [§9](#9.%20Consequences%20for%20other%20RFCs)),
+and GC relocates the blocks it lists. A fully live block is not normally relocated
+([RFC 9 §4.4](rfc-9-gc.md#4.4%20When%20to%20relocate%20is%20policy)), so a retirement forces its relocation; how it is renamed is open
+([§10](#10.%20Open%20questions)).
+
+## 6. Observability
+
+Each transform is labelled by its name. A custom transform gets these metrics
+without writing any: the chain exports them around each call.
+
+| Answers | Metric | Type |
 | --- | --- | --- |
-| Data key | 256 bits from a CSPRNG, fresh for every sealed chunk, never reused, never stored unwrapped | `encryption/decorator.go:52`–`:55` |
-| AEAD | a 256-bit-key AEAD from a closed set named by a stable byte: AES-256-GCM (default), ChaCha20-Poly1305, XChaCha20-Poly1305 | `encryption/policy.go:16`–`:30`, `decorator.go:113`–`:143` |
-| Nonce | the AEAD's full nonce size from a CSPRNG | `decorator.go:60`–`:63` |
-| AAD | the chunk's 32-byte plaintext hash | `decorator.go:76`, `:103` |
-| Wrap | the data key sealed under the provider's current master key | `decorator.go:65`; `keyprovider/local.go:283`–`:299` |
-| Key ID | the identifier of the wrapping master key, carried in the frame | `decorator.go:72`, `frame.go:78`–`:80` |
-
-Because a data key seals exactly one body, no nonce can repeat under it, and the
-AEAD's nonce size does not matter at this layer. The master key is the key used
-repeatedly, and [§4.5](#4.5%20The%20master%20key%20has%20a%20nonce%20budget) bounds it. The price is one wrap per chunk; both providers
-wrap in process (the KMIP provider fetches its key at start and holds it,
-`keyprovider/kmip.go:28`–`:44`), so a wrap is AES-GCM over 32 bytes. A provider
-that wraps remotely puts a round trip per chunk on the offload path and **MUST** be
-measured before it is adopted.
-
-### 4.2 What the AAD binds, and what it does not
-
-Binding the plaintext hash as AAD makes a body open only as the chunk it was
-sealed for. A body moved to another chunk's locator — by a mis-keyed object, a
-relocation bug, or an attacker splicing records — fails authentication before any
-plaintext is released, whatever key material it carries.
-
-It does **not** bind:
-
-- **the object or position.** Two records with the same hash hold the same
-  plaintext, so a body moved between them is harmless, and a body moved to a
-  different hash fails. Name and position binding for record *headers* is
-  [RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20What%20the%20encoding%20must%20carry)'s, and applies only when headers are sealed ([§5.4](#5.4%20Deduplication%20and%20confirmation%20trade%20against%20each%20other%20%28decision%20for%20discussion%29));
-- **the share, store or tenant.** A body sealed for one store opens in another
-  that holds the same master key and asks for the same hash. Where two stores
-  share a master key they share this, and [§6.1](#6.1%20The%20setting%20is%20per%20store%2C%20and%20so%20per%20share%20in%20effect) says why a deduplication scope must
-  not cross a key boundary anyway;
-- **the header fields.** [§4.3](#4.3%20The%20frame%20is%20a%20permanent%20format).
-
-The hash in the AAD is not a verification. It proves the body was sealed for that
-hash by a holder of the master key; it does not prove that decompressing what it
-yields reproduces the hash. [§7](#7.%20Verification%3A%20after%20the%20whole%20chain%2C%20inside%20the%20tier%2C%20once) is the check.
-
-### 4.3 The frame is a permanent format
-
-A frame, once written, is read for as long as the object exists, and objects have
-no rewrite point ([RFC 4 §3.5](rfc-4-remote-tier.md#3.5%20Format%20changes%20are%20migrations)). Version 1 is therefore specified exactly, because
-it is on disk:
-
-![One sealed chunk body: the master key wraps a per-chunk data key which seals the body with the plaintext hash as AAD; the frame fields coloured by which tag covers them, and the compression frame inside the ciphertext](img/rfc9-sealed-body.svg)
-
-| Field | Encoding | Covered by | Effect of alteration |
-| --- | --- | --- | --- |
-| magic `DFENC` | 5 bytes | nothing | not recognised as a frame; rejected (`ErrCiphertextWithoutFrame`) |
-| version | 1 byte, `0x01` | nothing | any other value rejected |
-| AEAD | 1 byte, 1–3 | nothing | a different cipher under the same data key; the tag fails |
-| wrap kind | 1 byte, `0x01` | nothing | any other value rejected |
-| key ID | uvarint length ≤ 256, bytes | nothing | unwrap routes to another key or none; the wrap tag fails or `ErrWrongMasterKey` |
-| wrapped key | uvarint length ≤ 4096, bytes: nonce ‖ AES-256-GCM(data key), AAD empty | the wrap's own tag | unwrap fails |
-| nonce | 1-byte length ≤ 64, bytes | nothing | decryption with a wrong nonce; the tag fails |
-| ciphertext ‖ tag | rest of the body | the data tag, AAD = hash | decryption fails |
-| compression frame | inside the plaintext | the data tag | unreachable without the data key |
-
-Sources: `encryption/frame.go:10`–`:43`, `:56`–`:89`, `:113`–`:177`;
-`keyprovider/local.go:283`–`:320`.
-
-**So: the header, the key ID and the AEAD byte are not authenticated; the
-compression flag is, when encryption is on, and is not when it is off.** No
-unauthenticated field can make a read return a plaintext other than the one
-sealed, because each is an input to recovering the data key or running the
-cipher, and each alteration ends in a failed tag. That is a property of this
-field set, not a stated design: the AEAD byte is safe only because a tag computed
-by one cipher fails under another, and the wrapped key is not bound to its key ID
-or to its chunk (AAD empty at `local.go:297`), which is safe only because the data
-tag then fails. Neither AES-GCM nor ChaCha20-Poly1305 commits to its key.
-
-A version 2 frame **MUST** make the property explicit rather than incidental: the
-data AAD **MUST** cover the version, the AEAD byte, the key ID and the hash, and
-the wrap's AAD **MUST** cover the key ID and the AEAD byte. Version 1 **MUST**
-remain readable for as long as any object holds it ([§6.4](#6.4%20Leaving%20a%20key%20needs%20a%20census%20and%20a%20name)), and **MUST NOT** be
-written once version 2 exists.
-
-Every length field **MUST** be bounded before use; version 1 does so
-(`frame.go:24`–`:37`, `:136`–`:171`).
-
-### 4.4 A provider wraps under one current key and unwraps under any it holds
-
-A provider holds master keys. It **MUST**:
-
-- wrap a data key under exactly one **current** master key, and return that key's
-  identifier with the wrapped bytes;
-- unwrap under the key the frame names, whether current or **retired**, and fail
-  with a distinguishable error when it holds no key of that name;
-- never wrap under a retired key;
-- refuse at construction two keys claiming one identifier, because an unwrap would
-  then pick one at random (`keyprovider/retired.go:39`–`:50` does);
-- be safe for concurrent use, and hold no state that spans operations beyond its
-  keys ([RFC 4 §5.7](rfc-4-remote-tier.md#5.7%20A%20backend%20holds%20no%20state%20that%20spans%20operations) applies by analogy: a provider carries no retry budget or
-  health flag of its own);
-- make its identifiers stable and never reuse one for different material.
-
-It **SHOULD** hold key material for as short a time and in as few copies as the
-platform allows. Both current providers hold master keys in process memory for the
-process's lifetime and zero them on close as a best effort (`local.go:322`–`:330`);
-a compromise of the process address space recovers them. A provider that performs
-the wrap inside an HSM **MAY** replace that without changing the contract.
-
-### 4.5 The master key has a nonce budget
-
-The master key wraps one data key per chunk with AES-256-GCM under a random 96-bit
-nonce. NIST SP 800-38D limits a key used with random 96-bit nonces to 2^32
-invocations, which holds the chance of any repeat near 2^-32. A single repeat
-reveals the XOR of two wrapped data keys and lets an attacker recover the GCM
-authentication key, and so forge wraps.
-
-A provider **MUST** stop wrapping under a master key before 2^32 wraps, and
-**MUST** make the count observable. The code comment at `keyprovider/local.go:70`
-–`:72` cites the ~2^48 birthday point as the safe limit, which is the point where
-a collision is *likely*, not where it becomes unacceptably probable. At DittoFS's
-~1 MiB chunk target, 2^32 wraps is about 4 PiB of novel content under one master
-key — far off for most deployments, and a limit nobody counts is a limit nobody
-enforces. A wrap with no nonce budget (AES-KW, AES-GCM-SIV) removes the question
-and is a version 2 option.
-
-### 4.6 Rotation re-seals; it does not rewrite in place
-
-Rotation replaces the current master key and keeps the old one as retired, so new
-chunks wrap under the new key and existing frames remain readable. This much
-exists (`keyprovider/provider.go:11`–`:17`).
-
-Retiring a key is not the same as ceasing to depend on it. An old frame needs its
-key for as long as the frame exists. Two ways off a key exist:
-
-| | Re-wrap | Re-seal |
-| --- | --- | --- |
-| What changes | the wrapped key and key ID in each frame | the whole body, under a fresh data key |
-| Protects against | loss or retirement of the old master key | the above, and exposure of old data keys |
-| Cost | rewrites every object anyway: objects are immutable, and a changed header moves every later offset | reads, decrypts and re-encrypts every body |
-| Mechanism | none | relocation ([§6.3](#6.3%20Relocation%20re-seals%20under%20the%20current%20chain)) |
-
-Because an object store cannot patch bytes, re-wrap saves only the decrypt and
-encrypt CPU of a rewrite it cannot avoid. **This document specifies re-seal as
-the only migration off a key**, performed by relocation. Re-wrap is not
-specified and **SHOULD NOT** be built unless re-seal's CPU is measured as the
-bottleneck.
-
-A re-sealed body **MUST NOT** overwrite the object it came from. A locator names a
-byte offset and length within an object ([RFC 4 §3.3](rfc-4-remote-tier.md#3.3%20What%20the%20format%20must%20guarantee) F1), and a re-sealed object
-does not keep its predecessor's offsets; overwriting under the same name leaves
-every reader and every committed locator pointing into different bytes. [§6.4](#6.4%20Leaving%20a%20key%20needs%20a%20census%20and%20a%20name)
-records the naming consequence.
-
-A retired key **MAY** be dropped only when a census shows no stored frame names it
-([§6.4](#6.4%20Leaving%20a%20key%20needs%20a%20census%20and%20a%20name)). Until then it **MUST** stay configured.
-
-### 4.7 Key loss is data loss, and key unavailability is remote unavailability
-
-**Every chunk sealed under a master key is unreadable without that key.** There is
-no recovery path, by design: a recovery path is a second key. A deployment that
-loses every copy of a master key has lost every chunk wrapped under it, and the
-extents naming those chunks are **Lost** in [RFC 0 §4.2](rfc-0-data-lifecycle.md#4.2%20The%20residency%20function)'s sense — metadata records
-them durable and their bytes cannot be produced. Backing up master keys is the
-operator's obligation; this document can only make the dependency visible.
-
-Failure behaviour maps onto [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model) as follows. The key provider is part of the
-remote tier for this purpose, because nothing can be made durable or read back
-without it.
-
-| Condition | Behaviour | [RFC 0](rfc-0-data-lifecycle.md) row |
-| --- | --- | --- |
-| Provider unavailable when a chunk is sealed | the seal fails; the offload fails; every affected extent stays **Dirty** and is retried. Never uploaded unsealed ([§2.5](#2.5%20An%20absent%20chain%20is%20a%20construction%20failure%2C%20never%20plaintext)). | remote tier unavailable |
-| Provider unavailable when a body is opened | the read fails. **MUST NOT** return zeros (I1). | remote tier unavailable |
-| Frame names a key the provider does not hold | the read fails as a verification failure, not as an absent object, so [RFC 8 §6.7](rfc-8-engine.md#6.7%20An%20absent%20object%20is%20re-resolved%20exactly%20once)'s re-resolution does not apply | local content corrupt, by analogy: the extent resolves **Lost** until the key returns |
-| AEAD or wrap tag fails | verification failure: fail, count, never retry as absent | same |
-| Provider unavailable at start | the share **MUST** attach its journal and serve what the journal holds; offload and remote reads fail as above until the provider returns, and **MUST** recover without restart ([RFC 0 §10.2](rfc-0-data-lifecycle.md#10.2%20No%20state%20requires%20intervention%20to%20leave)) | remote tier unavailable |
-| Master key lost permanently | the chunks it wrapped are **Lost** | — |
-
-Each of these **MUST** be reported as a health condition of the share, not only as
-a log line ([RFC 0 §10.2](rfc-0-data-lifecycle.md#10.2%20No%20state%20requires%20intervention%20to%20leave)). Every error in this table **MUST** reach callers of the
-remote tier as one of [RFC 4 §5.2](rfc-4-remote-tier.md#5.2%20Errors%20are%20a%20closed%20set)'s named errors — a tag or unwrap failure as a
-verification failure, provider unavailability as the backend having failed — and
-not as a transform's own type ([RFC 4 §4.4](rfc-4-remote-tier.md#4.4%20The%20syncer%20MUST%20NOT%20observe%20that%20a%20transform%20happened)).
-
-## 5. Threat model
-
-### 5.1 Encryption defends against the bucket's reader and detects its writer
-
-| Attacker | Can | Encryption's claim |
-| --- | --- | --- |
-| **A1** the remote provider, or anyone with read access to the bucket | read every object, its name, size and write time; see access patterns | confidentiality of content the attacker cannot already guess ([§5.3](#5.3%20Encryption%20protects%20content%20the%20attacker%20cannot%20guess%2C%20and%20nothing%20else)) |
-| **A2** as A1, plus write access | alter, replace, delete, replay or withhold objects | detection: no altered body is served ([§4.2](#4.2%20What%20the%20AAD%20binds%2C%20and%20what%20it%20does%20not), [§7](#7.%20Verification%3A%20after%20the%20whole%20chain%2C%20inside%20the%20tier%2C%20once)). Not availability: deletion and withholding are loss |
-| **A3** a client of another share on the same deployment | write chosen content; observe timing and space | none — this is the dedup channel of [§5.4](#5.4%20Deduplication%20and%20confirmation%20trade%20against%20each%20other%20%28decision%20for%20discussion%29) |
-| **A4** the DittoFS host | everything | none. Keys are in its memory ([§4.4](#4.4%20A%20provider%20wraps%20under%20one%20current%20key%20and%20unwraps%20under%20any%20it%20holds)) |
-
-Encryption in this document is a defence against A1 and a detector for A2.
-
-### 5.2 The remote sees every chunk's hash today
-
-| Observable | Source | What it reveals |
-| --- | --- | --- |
-| Chunk hashes, in every record header | record headers are plaintext on every store, encrypted or not: the header sealer is `nil` at both call sites (`engine/flush.go:404`–`:405`, `gc/compaction.go:276`) | the BLAKE3 of every chunk's plaintext |
-| Chunk and body lengths | record headers; ciphertext length | each chunk's size, and with compression, how compressible it was |
-| Object names | [RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block) once derived; random today ([RFC 2 §4.2.1](rfc-2-carver.md#4.2.1%20Deviation%20%E2%80%94%20a%20block%27s%20identity%20is%20generated%2C%20in%20two%20places)) | once derived and unkeyed, a function of chunk hashes anyone can compute |
-| Object sizes and counts | the bucket | the chunk-size fingerprint of [RFC 2 §6](rfc-2-carver.md#6.%20Boundaries%20are%20public) |
-| Equal content | a second put of an existing name; identical chunk hashes across objects | that two writes carried the same content |
-| Key IDs | the frame | how many master keys, and which objects predate a rotation |
-| Timing | puts, gets, deletes | activity, and which content is read back |
-
-The first row decides the rest. Chunk boundaries are public ([RFC 2 §6](rfc-2-carver.md#6.%20Boundaries%20are%20public)) and the hash
-is unkeyed, so **anyone holding a candidate file can chunk it, hash the chunks and
-search the bucket for those hashes**. A match confirms the file is stored. Encryption
-as built does not prevent this, and does not slow it down: the hashes are not even
-inside the ciphertext.
-
-### 5.3 Encryption protects content the attacker cannot guess, and nothing else
-
-It protects the content of chunks the attacker cannot enumerate: documents,
-databases, anything with enough private entropy per chunk. Against A1 that content
-is as confidential as the master key.
-
-It does not protect:
-
-- **membership** — whether a known file, or a known chunk of one, is stored ([§5.2](#5.2%20The%20remote%20sees%20every%20chunk%27s%20hash%20today));
-- **low-entropy content** — a chunk drawn from a small set of possibilities (a form
-  with one field, a configuration file with one secret) can be confirmed by hashing
-  each candidate, which is the same attack at chunk granularity;
-- **equality** — which chunks and objects repeat, within and across shares;
-- **size and shape** — per chunk, per object, and per compressed body ([§2.2](#2.2%20The%20order%20is%20compress%2C%20then%20encrypt));
-- **availability or freshness** — A2 can delete an object or serve an old one. An
-  old object under the same name holds the same chunks ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)), so replay of a
-  derived name is harmless; deletion is loss, and is outside what encryption can do.
-
-### 5.4 Deduplication and confirmation trade against each other (decision for discussion)
-
-Content-addressed deduplication requires equal plaintext to produce an equal
-identifier. Any identifier an outsider can compute from plaintext enables
-confirmation. The question is who can compute it.
-
-| Option | Remote sees | Dedup scope | Cost |
-| --- | --- | --- | --- |
-| **O1** status quo | plaintext chunk hashes in every object | whatever the key scope allows | confirmation of any known file or low-entropy chunk, by anyone with bucket read access |
-| **O2** seal record headers and key the block name *(proposal)* | sealed headers; names under a per-deployment secret | unchanged | one AEAD open per record when a block is parsed; a naming secret to hold |
-| **O3** keyed chunk identity per tenant | keyed hashes | per tenant only | [RFC 2 §4.1](rfc-2-carver.md#4.1%20A%20chunk) amended; cross-tenant dedup lost; the key can never rotate, because it is the identity |
-| **O4** convergent encryption | as O1 | global | nothing gained against confirmation: it is the O1 leak by construction |
-
-**Proposal: O2.** When a store encrypts:
-
-1. record headers **MUST** be sealed ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20What%20the%20encoding%20must%20carry) already provides the form, binding
-   the object name and record index as AAD), under a key the provider derives for
-   the store, so an object no longer shows its chunks' hashes;
-2. the block name's key scope ([RFC 2 §4.3](rfc-2-carver.md#4.3%20Key%20scope)) **MUST** include a per-deployment secret
-   the provider holds, so the remote cannot compute a name from a candidate file.
-
-This keeps identity over plaintext ([RFC 2 §4.1](rfc-2-carver.md#4.1%20A%20chunk) is untouched; the chunk hash stays
-plain in metadata, which is local and outside this threat model) and keeps every
-dedup [RFC 8 §5.4](rfc-8-engine.md#5.4%20A%20block%27s%20name%20is%20derived%20here)'s key scope allows. It is compatible with [RFC 6 §2.6](rfc-6-block-metadata.md#2.6%20The%20scope%20of%20a%20count), which
-already puts the store's identity in the name. The naming secret is not needed to
-read — names are recorded in metadata — so its loss costs future idempotency, not
-data. It **MUST NOT** be rotated, because a rotated scope changes the name of a
-block between attempts ([RFC 2 §4.3](rfc-2-carver.md#4.3%20Key%20scope)); unlike a master key, nothing is exposed by
-leaving it in place except the O1 leak it was introduced to close.
-
-What O2 does not close: sizes and counts ([RFC 2 §6](rfc-2-carver.md#6.%20Boundaries%20are%20public) names randomised assembly as the
-partial mitigation, [RFC 8 §14.3](rfc-8-engine.md#14.%20Open%20questions) leaves it open), equality visible as a repeated put
-of one name, and timing. O2 therefore turns "anyone with a candidate file can
-confirm it" into "a remote observer can see that content repeats and how large it
-is". Whether that residue is acceptable is the question this section puts, and it
-is a product decision rather than a measurement.
-
-O3 is the answer if the residue is not acceptable, and its cost is permanent: the
-identity key becomes the one key in the system that can never rotate or be lost
-without rewriting the corpus.
-
-## 6. Configuration over time
-
-### 6.1 The setting is per store, and so per share in effect
-
-The chain is configured on a remote block store configuration, and every share
-that references that configuration inherits it (`docs/guide/configuration.md:819`
-–`:820`; `runtime/shares/blockstore_config.go:686`–`:706`, where the store is built
-once and ref-counted). A share's chain is therefore its store's. A share that needs
-its own key references its own store configuration.
-
-**Proposal:** keep it so, and do not add a per-share override. A deduplication
-scope **MUST NOT** span two master keys, because a chunk deduplicated across them
-is readable only under the key that sealed it, so one share's reads would depend on
-another share's key. [RFC 8 §5.4](rfc-8-engine.md#5.4%20A%20block%27s%20name%20is%20derived%20here)'s proposal scopes names to one metadata store, and
-one store configuration per key keeps both boundaries in one place.
-
-### 6.2 A setting change governs the next write, never a past one
-
-[RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20The%20chain%20travels%20with%20the%20object) requires the chain to be recoverable from the object, which has two
-consequences. A reader **MUST** hold a decoder for every layer kind it may
-encounter, whatever is configured for writing; only key material depends on
-configuration. And configuration **MUST** describe the next write, not
-past ones — except for one floor: a store that has encrypted **MUST NOT** accept an
-unencrypted body for a block written while encryption was on, because a body that
-declares itself unencrypted is exactly what A2 would write.
-
-**Proposal:** block metadata records, per block, whether its bodies were sealed and
-under which key IDs ([RFC 6](rfc-6-block-metadata.md), [§11](#11.%20Consequences%20for%20other%20RFCs)). That record is trusted — it is local — and gives
-the floor a per-block answer instead of a per-store one, and gives [§6.4](#6.4%20Leaving%20a%20key%20needs%20a%20census%20and%20a%20name)'s census an
-index.
-
-| Change | Existing objects | Required behaviour |
-| --- | --- | --- |
-| Enable compression | unmarked bodies | read as plaintext; new writes compressed |
-| Change algorithm | frames name their algorithm | readable; new writes use the new one |
-| Disable compression | framed bodies | **MUST** stay readable: decoders are not configuration |
-| Enable encryption | plaintext bodies | **MUST** stay readable where metadata records the block unsealed; new blocks sealed |
-| Rotate master key | frames name the retired key | readable while it is configured ([§4.6](#4.6%20Rotation%20re-seals%3B%20it%20does%20not%20rewrite%20in%20place)) |
-| Change AEAD | frames name their AEAD | readable; new writes use the new one |
-| Disable encryption | sealed bodies | readable while keys are configured; new writes plain. **SHOULD** be refused unless the operator states the new blocks may be stored in the clear |
-
-Today three of these rows fail ([§9](#9.%20Deviations), D6): disabling compression makes every
-compressed body fail verification, enabling encryption makes every existing body
-unreadable, and disabling encryption is refused rather than supported.
-
-### 6.3 Relocation re-seals under the current chain
-
-[RFC 9 §4.2](rfc-9-gc.md#4.2%20Read%20verified%2C%20name%20by%20content%2C%20put%2C%20then%20move) relocates by reading each live chunk through the verified read and
-putting a new block, and forbids GC from framing, sealing or parsing an object
-itself. Read through the tier, a chunk arrives as plaintext; put through the tier,
-it is sealed under the current chain. **Relocation is therefore the migration
-path**: each relocated chunk leaves its old codec, AEAD and key behind.
-
-This is required, not incidental. A relocation that copies sealed bodies verbatim
-keeps every retired key in use for as long as the chunk lives, so no key can ever
-be dropped, and propagates any body that was sealed wrong ([§3.3](#3.3%20The%20stored%20case%20must%20be%20marked%20too)). Today's
-relocation does exactly that ([§9](#9.%20Deviations), D7).
-
-### 6.4 Leaving a key needs a census and a name
-
-To drop a retired key, an implementation **MUST** be able to answer "which blocks
-still hold a frame under key *K*" without reading every object, and **MUST**
-relocate each of them. Two gaps stand in the way.
-
-- **The census.** No index exists; the answer today is a scan of every object's
-  frames. [§6.2](#6.2%20A%20setting%20change%20governs%20the%20next%20write%2C%20never%20a%20past%20one)'s per-block record is the proposed index.
-- **The name.** [RFC 9 §4.4](rfc-9-gc.md#4.4%20When%20to%20relocate%20is%20policy) forbids relocating a block whose chunks are all live,
-  and [RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block) would give a re-sealed copy of such a block its old name, which
-  [§4.6](#4.6%20Rotation%20re-seals%3B%20it%20does%20not%20rewrite%20in%20place) forbids overwriting. Re-keying a fully live block therefore needs both an
-  exception in [RFC 9](rfc-9-gc.md) and a different name. The candidates are to include a seal
-  epoch in the key scope — which makes a rotation between an upload and its retry
-  orphan the first attempt, collectable by [RFC 9 §5](rfc-9-gc.md#5.%20Unrecorded%20objects) — or to relocate such blocks
-  together with others so membership changes. Left open ([§12](#12.%20Open%20questions)).
-
-## 7. Verification: after the whole chain, inside the tier, once
-
-The plaintext hash **MUST** be recomputed over the output of the last layer opened
-and compared with the hash the caller supplied, before any byte is returned. This
-is [RFC 4 §6.1](rfc-4-remote-tier.md#6.1%20The%20exported%20read%20takes%20the%20expected%20hash)'s verified read; this section says where in the chain it sits.
-
-- It **MUST** follow the whole chain, because only the final plaintext is in the
-  hash's domain. No layer holds both the wire bytes and the plaintext domain.
-- The AEAD tag **MUST NOT** stand in for it. A tag proves the body was sealed for
-  that hash ([§4.2](#4.2%20What%20the%20AAD%20binds%2C%20and%20what%20it%20does%20not)); it does not prove the decompressor reproduced it, and a
-  compression-only chain has no tag at all.
-- The decompressor's own length check **MUST NOT** stand in for it either.
-- It **MUST** happen inside the tier, so that every consumer inherits it: the
-  engine's fetch, relocation, and snapshot verification.
-
-Today it is performed by each consumer above the tier: the engine
-(`engine/fetch.go:337`–`:351`) and snapshot verification (`snapshot/verify.go:58`
-–`:70`), each recomputing BLAKE3 after `ReadChunk`. Relocation performs neither:
-it checks a whole-object hash against the block record (`gc/compaction.go:217`–
-`:222`) and never opens the chain, so a body that was sealed wrong passes. [RFC 4](rfc-4-remote-tier.md)
-[§6.1](rfc-4-remote-tier.md#6.1%20The%20exported%20read%20takes%20the%20expected%20hash) is unmet: the check is correct where a consumer remembers it and absent where
-one does not.
-
-A verification failure **MUST** be counted, **MUST** fail the read, and **MUST
-NOT** be retried as an absent object ([RFC 8 §6.7](rfc-8-engine.md#6.7%20An%20absent%20object%20is%20re-resolved%20exactly%20once)).
-
-## 8. Invariants
+| chunks encoded, labelled `applied` = `true` or `false` | `dittofs_transform_chunks_total` | counter |
+| bytes in and out, labelled `direction` = `encode` or `decode`; their ratio is the saving | `dittofs_transform_bytes_total` | counter |
+| time per call, by direction | `dittofs_transform_seconds` | histogram |
+| decode failures, labelled `error` = `malformed`, `key_unavailable` or `too_large`. `malformed` is an alert | `dittofs_transform_decode_failures_total` | counter |
+| bodies written per transform ID and version, from block metadata ([§5.3](#5.3%20Retiring%20a%20key%20or%20a%20transform%20needs%20a%20census)) | `dittofs_transform_census_blocks` | gauge |
+
+A chain that fails to build logs the transform and the reason at `Error` and
+refuses the store ([§2.7](#2.7%20Failures)). A transform logs nothing per chunk: its outcomes
+are metrics. Encryption adds the key metrics of [Appendix B.6](#B.6%20What%20it%20adds%20to%20observability).
+
+## 7. Invariants
 
 | # | Invariant |
 | --- | --- |
 | T1 | A transform never changes a chunk's hash or a block's name, and never sees more than one chunk. |
-| T2 | `open(seal(p)) == p` for every plaintext, including plaintext that begins with any layer's marker. |
-| T3 | Compression runs before encryption, and opening runs in reverse. |
-| T4 | Every body a layer emits carries its marker; an unmarked body's meaning is decided by that layer alone. |
-| T5 | No length read from a body is used to allocate before it is bounded by the chunk ceiling. |
-| T6 | A data key seals exactly one chunk body. |
-| T7 | A master key wraps fewer than 2^32 data keys. |
-| T8 | A frame opens only under the hash it was sealed for, and no alteration of a frame yields a different plaintext. |
-| T9 | Where a store encrypts, no body leaves the host unsealed. |
-| T10 | How a body was transformed is recoverable from the body; configuration sets only the next write and the floor. |
-| T11 | The plaintext hash is verified after the whole chain, before any byte is returned. |
-| T12 | A key failure never produces zeros, and never reads as an absent object. |
+| T2 | `Decode(Encode(p)) == p` for every input. |
+| T3 | Every body lists the transforms applied to it; reading needs the registry and keys, never the configuration. |
+| T4 | No stage of `Decode` produces or allocates more than the chunk maximum plus the overhead of the stages applied before it. |
+| T5 | A store whose chain cannot be built does not open, and never writes without its chain. |
+| T6 | The plaintext hash is checked after the whole chain is undone, before any byte is returned. |
+| T7 | A key failure is never zeros and never an absent chunk. |
+| T8 | No transform error type crosses the codec. |
 
-T2, T9 and T11 are the ones whose violation loses or exposes data. T2, T5, T7,
-T10 and T11 fail today ([§9](#9.%20Deviations)).
+## 8. Test plan and benchmarks
 
-## 9. Deviations
+The same rules as [RFC 1 §11](rfc-1-journal.md#11.%20Conformance): every **MUST** has a check, and a check is
+validated by reverting the code it guards and watching it fail on its own
+assertion.
 
-Evidence verified against the tree. D1 was also reproduced by running the shipped
-compression stage.
+### 8.1 Transform conformance
 
-| # | Requirement | Deviation | Evidence |
-| --- | --- | --- | --- |
-| D1 | [§3.3](#3.3%20The%20stored%20case%20must%20be%20marked%20too), T2 | An incompressible chunk beginning with `DFCMP` and a valid algorithm byte is stored unmarked and read as a frame: acknowledged, durable, never readable. **Data loss.** | `compression/decorator.go:65`–`:68`, `:77`–`:80`; `compression/frame.go:57`–`:74` |
-| D2 | [§3.4](#3.4%20Decompression%20is%20bounded%20before%20anything%20is%20allocated), T5 | The declared-size ceiling is 64 MiB against a 16 MiB chunk maximum; the output buffer is allocated at the declared size before decoding; the zstd decoder has no window or memory bound. | `compression/frame.go:24`; `compression/decorator.go:84`, `:102`; `compression/codec.go:58`–`:61`; `chunker/params.go:20` |
-| D3 | [§5.2](#5.2%20The%20remote%20sees%20every%20chunk%27s%20hash%20today), [§5.4](#5.4%20Deduplication%20and%20confirmation%20trade%20against%20each%20other%20%28decision%20for%20discussion%29) | Record headers — the plaintext hash of every chunk — are unsealed on every store, encrypted or not. Encryption does not prevent confirmation of a known file. | `engine/flush.go:404`–`:405`; `gc/compaction.go:276`; `blockcodec/codec.go:219`–`:223` |
-| D4 | [§4.3](#4.3%20The%20frame%20is%20a%20permanent%20format) | No frame field is in the data AAD, and the wrap's AAD is empty. Safe today only because each field feeds key recovery or the cipher; not a stated property. | `encryption/decorator.go:76`, `:103`; `keyprovider/local.go:297`, `:315` |
-| D5 | [§4.5](#4.5%20The%20master%20key%20has%20a%20nonce%20budget), T7 | The master key's nonce budget is stated as ~2^48 and nothing counts wraps. | `keyprovider/local.go:70`–`:72`, `:283`–`:299` |
-| D6 | [§6.2](#6.2%20A%20setting%20change%20governs%20the%20next%20write%2C%20never%20a%20past%20one), T10 | Decoders exist only for configured layers, so disabling compression fails every compressed body; enabling encryption rejects every existing body; disabling encryption is refused. Only the last is guarded. | `runtime/shares/blockstore_config.go:754`–`:789`; `encryption/decorator.go:86`–`:88`; `internal/controlplane/api/handlers/block_stores.go:255`–`:261` |
-| D7 | [§6.3](#6.3%20Relocation%20re-seals%20under%20the%20current%20chain), [§4.6](#4.6%20Rotation%20re-seals%3B%20it%20does%20not%20rewrite%20in%20place) | Relocation copies sealed bodies verbatim and never opens the chain, so no retired key can ever be dropped and no mis-sealed body is caught. | `gc/compaction.go:217`–`:222`, `:265`–`:285` |
-| D8 | [§4.7](#4.7%20Key%20loss%20is%20data%20loss%2C%20and%20key%20unavailability%20is%20remote%20unavailability) | A provider failure at start fails the share's whole block store, journal included, with no recovery short of re-attaching; a retired key that fails to load is logged and skipped, with no health condition. | `runtime/shares/blockstore_config.go:275`–`:279`, `:779`–`:781`; `keyprovider/retired.go:17`–`:23`, `:31`–`:35` |
-| D9 | [§2.6](#2.6%20Nothing%20above%20the%20tier%20sees%20the%20chain), [§4.7](#4.7%20Key%20loss%20is%20data%20loss%2C%20and%20key%20unavailability%20is%20remote%20unavailability) | Transform errors cross the tier as their own types (`ErrDecryptAuth`, `ErrWrongMasterKey`, `ErrCompressedFrameCorrupt`), so a caller can tell a chain is configured. | `middleware/middleware.go:119`–`:133`; `encryption/errors.go:5`–`:26`; `keyprovider/provider.go:95`–`:107` |
-| D10 | [§7](#7.%20Verification%3A%20after%20the%20whole%20chain%2C%20inside%20the%20tier%2C%20once), T11 | The plaintext hash is verified by each consumer above the tier, not inside it. | `engine/fetch.go:337`–`:351`; `snapshot/verify.go:58`–`:70` |
-| D11 | [§2.5](#2.5%20An%20absent%20chain%20is%20a%20construction%20failure%2C%20never%20plaintext), T9 | The offload finds its sealer by type assertion, and a nil sealer frames bodies unsealed. Recorded by [RFC 8 §12](rfc-8-engine.md#12.%20Deviations); repeated here because it is this document's T9. | `engine/syncer.go:263`–`:267`; `engine/flush.go:418`–`:424` |
+One suite that every registered transform passes, shipped ones and custom ones
+alike. A new transform gets it by registering.
 
-D1 and D3 are the security findings. D1 is a data-loss defect any writer can
-trigger for their own data. D3 means a deployment that enables encryption believing
-it hides what it stores is wrong about the most direct question an observer can
-ask. D4 and D5 are latent: neither is exploitable today, and both are the kind of
-property that stops holding when a neighbouring change assumes it was designed.
-
-These deviations **MUST NOT** be closed by amending the requirement they fail.
-
-## 10. Conformance
-
-[RFC 1 §11](rfc-1-journal.md#11.%20Conformance) applies: conformance is every **MUST** holding, the checks below are
-evidence for the ones that fail silently, and a check is validated by reverting the
-code and watching it fail on its own assertion.
-
-### 10.1 Group A — loss or exposure
-
-| Requirement | Check |
+| Invariant | Check |
 | --- | --- |
-| [§3.3](#3.3%20The%20stored%20case%20must%20be%20marked%20too), T2 | Seal and open an incompressible chunk that begins with each layer's marker and a valid next byte; assert byte equality. Fails today. |
-| [§4.2](#4.2%20What%20the%20AAD%20binds%2C%20and%20what%20it%20does%20not), T8 | Seal chunk *a*, present its body under hash *b*; assert the open fails and returns no byte. Flip every header field in turn; assert every open fails. |
-| [§4.3](#4.3%20The%20frame%20is%20a%20permanent%20format) | Read a version 1 frame written by a fixture from the first release that wrote it, under every later build. A round trip in one build does not stand in. |
-| [§2.5](#2.5%20An%20absent%20chain%20is%20a%20construction%20failure%2C%20never%20plaintext), T9 | Build a store configured to encrypt with the sealer made unavailable; assert construction fails. Assert no stored body on an encrypting store lacks the frame marker. |
-| [§4.7](#4.7%20Key%20loss%20is%20data%20loss%2C%20and%20key%20unavailability%20is%20remote%20unavailability), T12 | Remove a retired key; read a chunk under it; assert the read fails, is not re-resolved as absent, and raises a health condition. A fake provider alone does not count: it cannot fail the way a KMIP server or a missing key file does. |
-| [§6.3](#6.3%20Relocation%20re-seals%20under%20the%20current%20chain) | Relocate a block sealed under a retired key; assert the new block's frames name the current key, and that the retired key can then be removed with every chunk still readable. |
-| [§7](#7.%20Verification%3A%20after%20the%20whole%20chain%2C%20inside%20the%20tier%2C%20once), T11 | With a chain that decrypts and decompresses successfully to wrong bytes (a fake layer), assert every consumer's read fails. |
-| [§5.4](#5.4%20Deduplication%20and%20confirmation%20trade%20against%20each%20other%20%28decision%20for%20discussion%29) (once adopted) | Hash a known file's chunks; assert none appears in any stored object's bytes. |
+| T2 | Round-trip 10,000 inputs: random, all zeros, all one byte, 1 byte to the chunk maximum, and inputs that begin with this transform's own header and with any envelope. |
+| T2 | Every body in the transform's fixture decodes to the recorded plaintext. |
+| T4 | Fuzz `Decode`: no panic, and no allocation above `max` before the header is validated. A body declaring an output of `max + 1` fails with `ErrTooLarge`. |
+| traits | `Randomizes`: output of a compressible corpus does not compress by more than 1% under zstd. `MaxOverhead`: no output exceeds input plus the declared overhead. `Shrinks`: the transform declines when it cannot shrink. |
+| concurrency | Encode and decode from 64 goroutines under the race detector: same results as sequential. |
+| [§2.7](#2.7%20Failures) | Flip every byte of a body in turn: `Decode` returns an error of [§2.7](#2.7%20Failures) or bytes the codec's hash check rejects, and never panics. A transform that authenticates (encryption) **MUST** return `ErrMalformed` itself for every flip. |
+| [§2.7](#2.7%20Failures) | For an authenticating transform: decode chunk A's body with chunk B's hash, and a body naming a key ID the provider never had: both `ErrMalformed`. |
+| [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | Encode the same chunk twice: two different salts and bodies, both decode. |
+| [§2.1](#2.1%20A%20transform%20acts%20on%20one%20chunk) | A transform with positive `MaxOverhead` before another: a chunk of exactly the maximum round-trips. |
 
-### 10.2 Group B — drift and resource bounds
+### 8.2 Chain tests
 
-| Requirement | Check |
+| Invariant | Check |
 | --- | --- |
-| [§3.4](#3.4%20Decompression%20is%20bounded%20before%20anything%20is%20allocated), T5 | Present a frame declaring 1 GiB and one declaring the ceiling plus one; assert both fail before allocating. Present a zstd frame declaring a maximal window; assert the decoder refuses it. |
-| [§4.5](#4.5%20The%20master%20key%20has%20a%20nonce%20budget), T7 | Assert the wrap count is observable and that wrapping refuses at the budget, using a provider whose budget is set low. |
-| [§2.6](#2.6%20Nothing%20above%20the%20tier%20sees%20the%20chain), D9 | Force each transform failure; assert the error crossing the tier is one of [RFC 4 §5.2](rfc-4-remote-tier.md#5.2%20Errors%20are%20a%20closed%20set)'s names. |
-| [§6.2](#6.2%20A%20setting%20change%20governs%20the%20next%20write%2C%20never%20a%20past%20one) | Store content under each setting in [§6.2](#6.2%20A%20setting%20change%20governs%20the%20next%20write%2C%20never%20a%20past%20one)'s table, change the setting, and read all of it back. [RFC 4 §9.1](rfc-4-remote-tier.md#9.1%20Group%20A%20%E2%80%94%20silent%20data%20loss)'s cross-setting check is this row for compression. |
-| [§2.2](#2.2%20The%20order%20is%20compress%2C%20then%20encrypt), T3 | The existing check that calls the construction site and asserts the stage order stays; a check that builds its own stages does not count (`blockstore_config.go:735`–`:745`). |
+| [§2.3](#2.3%20The%20chain%20is%20ordered%20by%20configuration) | A chain with a `Shrinks` transform after a `Randomizes` one, or one transform twice, fails to build. |
+| T3 | Write under chain A, reconfigure to chain B (reordered, a transform removed, another added), read everything back. |
+| T3 | A declined chunk's envelope omits the transform, and decodes. |
+| T3 | Remove the encryption transform from the chain, keeping the store's keys: every encrypted body still decodes. |
+| [§2.4](#2.4%20Every%20body%20records%20what%20was%20applied) | Envelopes listing an unregistered ID, a duplicate ID, or more IDs than are registered: `ErrMalformed` before any decode runs. |
+| [§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20keys) | With `require: [aes-gcm]`, a body without it is `ErrMalformed`; without `require`, it decodes. |
+| [§5.3](#5.3%20Retiring%20a%20key%20or%20a%20transform%20needs%20a%20census) | Write blocks under two keys and two chains: the census lists exactly the transform IDs, versions and key IDs used. |
+| T5 | Make a transform's factory fail: the store does not open, and no body is written. |
+| T6 | A fake transform that decodes to wrong bytes: every read through the codec fails. |
+| T7 | A decode that returns `ErrKeyUnavailable` reaches the engine as the remote being unavailable, is retried, and never yields zeros or an absent chunk. |
+| T8 | Force each decode error: the codec returns only its own errors. |
+| [§5.2](#5.2%20Relocation%20re-encodes) | Relocate a block written under an old chain: every body in the new block carries the current envelope. |
 
-## 11. Consequences for other RFCs
+### 8.3 Benchmarks and targets
+
+Run on the reference box of [RFC 1 §12](rfc-1-journal.md#12.%20Test%20plan%20and%20performance%20targets) on every merge to develop, over three
+corpora: random bytes, a text and source tree, and a mixed VM image. Record the
+corpus, chunk size distribution and CPU with each result.
+
+| Benchmark | Measures | Target |
+| --- | --- | --- |
+| Each transform, encode and decode | MB/s per core | report, per transform, against the previous run |
+| The chain around its transforms | overhead | within 2% of the sum of its transforms' own times, median of 10 runs |
+| Envelope size | bytes per chunk | 1 + 2n |
+| Compression ratio per corpus | bytes out / in | report; tracked against the previous run |
+| A put and a whole-block get with the default chain | MB/s | within 10% of the same without a chain, on the reference link, or the chain is what the link waits on and pool sizing must say so ([RFC 3 §2.11](rfc-3-syncer.md#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) |
+
+A regression of more than 10% is reported on develop and does not block a merge.
+
+## 9. Consequences for other RFCs
 
 | RFC | Change |
 | --- | --- |
-| [RFC 0 §1.1](rfc-0-data-lifecycle.md#1.1%20The%20component%20set) | Add the row: **9** · transforms · the per-chunk transform chain, its formats, and the key provider contract · object framing and names ([RFC 4](rfc-4-remote-tier.md), [RFC 2](rfc-2-carver.md)); when to seal or relocate ([RFC 8](rfc-8-engine.md), [RFC 9](rfc-9-gc.md)). Unlike the remote tier ([RFC 4 §1.2](rfc-4-remote-tier.md#1.2%20Why%20this%20is%20a%20contract%20and%20not%20a%20component)), the chain holds state that outlives an operation — master keys, the retired set, the naming secret — so it is a component. |
-| [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model) | Add a row: key provider unavailable, or key missing, as mapped in [§4.7](#4.7%20Key%20loss%20is%20data%20loss%2C%20and%20key%20unavailability%20is%20remote%20unavailability). State in [§4.2](#4.2%20What%20the%20AAD%20binds%2C%20and%20what%20it%20does%20not)'s text that a chunk whose key is lost is **Lost**. |
-| [RFC 2 §6](rfc-2-carver.md#6.%20Boundaries%20are%20public) | Point here: encryption does not close the known-file channel ([§5.2](#5.2%20The%20remote%20sees%20every%20chunk%27s%20hash%20today)), and O2 ([§5.4](#5.4%20Deduplication%20and%20confirmation%20trade%20against%20each%20other%20%28decision%20for%20discussion%29)) is the layer that narrows it. |
-| [RFC 2 §4.3](rfc-2-carver.md#4.3%20Key%20scope) | If O2 is adopted, the key scope includes a per-deployment secret that never rotates. |
-| [RFC 6](rfc-6-block-metadata.md) | If [§6.2](#6.2%20A%20setting%20change%20governs%20the%20next%20write%2C%20never%20a%20past%20one)'s proposal is adopted, a block record carries whether its bodies are sealed and under which key IDs. That record is advisory for the census and authoritative for the downgrade floor. |
-| [RFC 8 §2.1](rfc-8-engine.md#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one), [§8](rfc-8-engine.md#8.%20Health%20and%20failure) | A store whose provider is unavailable at start attaches its journal and reports remote-unavailable health ([§4.7](#4.7%20Key%20loss%20is%20data%20loss%2C%20and%20key%20unavailability%20is%20remote%20unavailability), D8). |
-| [RFC 9 §4.2](rfc-9-gc.md#4.2%20Read%20verified%2C%20name%20by%20content%2C%20put%2C%20then%20move) | State that relocation re-seals under the current chain ([§6.3](#6.3%20Relocation%20re-seals%20under%20the%20current%20chain)); today's verbatim copy is D7. |
-| [RFC 9 §4.4](rfc-9-gc.md#4.4%20When%20to%20relocate%20is%20policy) | Add a second selection reason: a block holding frames under a retired key or an old format, relocated even when fully live, with the naming question of [§6.4](#6.4%20Leaving%20a%20key%20needs%20a%20census%20and%20a%20name). |
-| [RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20What%20the%20encoding%20must%20carry) | Record-header sealing becomes required when a store encrypts (O2). |
-| [RFC 4 §4](rfc-4-remote-tier.md#4.%20The%20transform%20chain) | Reduce to the four contract rules and point here ([§1.2](#1.2%20What%20RFC%208%20keeps%20and%20what%20this%20document%20takes)). [§4.3](#4.3%20The%20frame%20is%20a%20permanent%20format) gains the downgrade floor of [§6.2](#6.2%20A%20setting%20change%20governs%20the%20next%20write%2C%20never%20a%20past%20one). |
-| [RFC 4 §10](rfc-4-remote-tier.md#10.%20Open%20questions) q2 | Discharged by [§5.4](#5.4%20Deduplication%20and%20confirmation%20trade%20against%20each%20other%20%28decision%20for%20discussion%29): sealing the header earns its cost exactly when a store encrypts. |
+| [RFC 0 §1.1](rfc-0-data-lifecycle.md#1.1%20The%20component%20set) | Add a row for transforms: the chain and the registry. Unlike the remote store, a chain holds state that outlives a call (keys), so it is a component. |
+| [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model) | Add a row: a key provider unavailable, or a known key missing, handled as the remote being unavailable ([§2.7](#2.7%20Failures)). |
+| [RFC 0 §4.2](rfc-0-data-lifecycle.md#4.2%20The%20residency%20function) | Add a case: a chunk whose block is durable but whose key is lost for good is **Lost**. Today the function would call it Remote. |
+| [RFC 4 §3.3](rfc-4-remote-tier.md#3.3%20Transforms) | Points here for the chain; the envelope of [§2.4](#2.4%20Every%20body%20records%20what%20was%20applied) is how the chain "travels with the block". |
+| [RFC 6](rfc-6-block-metadata.md) | A block record lists the transform IDs and key IDs its bodies use ([§5.3](#5.3%20Retiring%20a%20key%20or%20a%20transform%20needs%20a%20census)). |
+| [RFC 9 §4.2](rfc-9-gc.md#4.2%20Read%20verified%2C%20name%20by%20content%2C%20put%2C%20then%20move), [§4.4](rfc-9-gc.md#4.4%20When%20to%20relocate%20is%20policy) | Relocation re-encodes under the current chain; a retirement is a second reason to relocate a block, even a fully live one. A re-run after a crash puts the same name and chunks, but different bytes (a new salt, perhaps a new key); [RFC 4 §3.4](rfc-4-remote-tier.md#3.4%20Every%20read%20is%20verified%20by%20the%20codec) repairs the offsets. |
 
-## 12. Open questions
+## 10. Open questions
 
-1. **O2 or not** ([§5.4](#5.4%20Deduplication%20and%20confirmation%20trade%20against%20each%20other%20%28decision%20for%20discussion%29)). Whether the residue after O2 — sizes, repetition, timing —
-   is acceptable, or O3's permanent identity key is needed. A product decision.
-2. **Naming a re-keyed, fully live block** ([§6.4](#6.4%20Leaving%20a%20key%20needs%20a%20census%20and%20a%20name)). A seal epoch in the scope, or
-   forced membership change. Settled together with [RFC 9 §4.4](rfc-9-gc.md#4.4%20When%20to%20relocate%20is%20policy)'s exception.
-3. **Version 2 frame** ([§4.3](#4.3%20The%20frame%20is%20a%20permanent%20format), [§4.5](#4.5%20The%20master%20key%20has%20a%20nonce%20budget)). Whether to adopt a nonce-free wrap (AES-KW or
-   AES-GCM-SIV) at the same time as binding the header. Doing both in one version
-   costs one migration instead of two.
-4. **One wrap per chunk** ([§4.1](#4.1%20Every%20chunk%20gets%20its%20own%20data%20key)). A per-block data key would cut wraps by the
-   chunks-per-block factor, but relocation moves chunks between blocks, so it would
-   force a re-seal on every move. Unmeasured; today's in-process wrap is cheap.
-5. **Copies on the seal path** ([RFC 8 §14.5](rfc-8-engine.md#14.%20Open%20questions)). Whether compression and sealing can
-   write into the block buffer in place. The encryption stage already seals into
-   its header buffer (`encryption/decorator.go:69`–`:76`); compression does not.
-   Unmeasured.
-6. **Where `blockcodec` lives** ([RFC 9 §13](rfc-9-gc.md#13.%20Open%20questions) q5, [RFC 4 §10.6](rfc-4-remote-tier.md#10.%20Open%20questions)). Not settled here: header
-   sealing (O2) puts a key-holding dependency in it, which is an argument for moving
-   it inside the tier but does not decide it.
-7. **Compression side channels** ([§2.2](#2.2%20The%20order%20is%20compress%2C%20then%20encrypt)). Whether any deployment has mutually
-   adversarial writers within one share; if so, compression **SHOULD** be off there.
+1. **Renaming a re-encoded, fully live block** ([§5.3](#5.3%20Retiring%20a%20key%20or%20a%20transform%20needs%20a%20census)). Re-encoded under its old
+   name, it overwrites the old block with a new layout, which [RFC 4 §3.4](rfc-4-remote-tier.md#3.4%20Every%20read%20is%20verified%20by%20the%20codec)
+   repairs, but a read racing the overwrite of a key being retired could need that
+   key. Settle with [RFC 9 §4.4](rfc-9-gc.md#4.4%20When%20to%20relocate%20is%20policy): overwrite in place only after the census shows no
+   reader can hold the old key's bodies, or put a key epoch in the block name.
+2. **Hiding chunk hashes from the service** ([Appendix B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns)). A product decision.
+3. **External key services that never release a key.** The key provider of
+   [Appendix B.2](#B.2%20Keys) holds master keys in memory. A service that only unwraps remotely
+   would cost a round trip per chunk; measure before supporting one.
 
 ---
 
-## Appendix A. Obligations placed on this RFC
+## Appendix A — compression
 
-Every sentence in [RFC 0](rfc-0-data-lifecycle.md)–8 and `rfc-block-dataflow.md` matching *transform,
-compress, encrypt, key, seal, codec, middleware* or *frame* was read. Rows below are
-the ones that place an obligation on transforms; the non-obligations are listed
-after the table.
+A shipped transform, and an example of one that `Shrinks`.
 
-| # | Source | Obligation | Discharged |
-| --- | --- | --- | --- |
-| 1 | [RFC 0 §1.1](rfc-0-data-lifecycle.md#1.1%20The%20component%20set) | the component table has no owner for transforms | [§11](#11.%20Consequences%20for%20other%20RFCs) — row proposed |
-| 2 | [RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy) | no capability by type assertion; absence fails the build | [§2.5](#2.5%20An%20absent%20chain%20is%20a%20construction%20failure%2C%20never%20plaintext); D11 |
-| 3 | [RFC 0 §4.2](rfc-0-data-lifecycle.md#4.2%20The%20residency%20function), [§6.1](rfc-0-data-lifecycle.md#6.1%20Resolution), I1 | **Lost** is never read as zeros | [§4.7](#4.7%20Key%20loss%20is%20data%20loss%2C%20and%20key%20unavailability%20is%20remote%20unavailability), T12 |
-| 4 | [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model) | one behaviour per failure condition | [§4.7](#4.7%20Key%20loss%20is%20data%20loss%2C%20and%20key%20unavailability%20is%20remote%20unavailability) |
-| 5 | [RFC 0 §10.2](rfc-0-data-lifecycle.md#10.2%20No%20state%20requires%20intervention%20to%20leave) | recover without intervention; health, not only logs | [§4.7](#4.7%20Key%20loss%20is%20data%20loss%2C%20and%20key%20unavailability%20is%20remote%20unavailability); D8 |
-| 6 | [RFC 2 §4.1](rfc-2-carver.md#4.1%20A%20chunk) | a chunk's hash is over its bytes and nothing else | [§2.1](#2.1%20A%20transform%20is%20per%20chunk%2C%20and%20runs%20between%20identity%20and%20framing), T1 |
-| 7 | [RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block), [§4.3](rfc-2-carver.md#4.3%20Key%20scope) | a block's name is derived; the key scope is explicit and stable | [§5.4](#5.4%20Deduplication%20and%20confirmation%20trade%20against%20each%20other%20%28decision%20for%20discussion%29) — proposal (secret in scope); [§6.4](#6.4%20Leaving%20a%20key%20needs%20a%20census%20and%20a%20name) open |
-| 8 | [RFC 2 §6](rfc-2-carver.md#6.%20Boundaries%20are%20public) | a deployment that needs the known-file channel closed gets it from another layer | [§5.2](#5.2%20The%20remote%20sees%20every%20chunk%27s%20hash%20today), [§5.3](#5.3%20Encryption%20protects%20content%20the%20attacker%20cannot%20guess%2C%20and%20nothing%20else) (encryption does not), [§5.4](#5.4%20Deduplication%20and%20confirmation%20trade%20against%20each%20other%20%28decision%20for%20discussion%29) — proposal |
-| 9 | [RFC 3 §1.1](rfc-3-syncer.md#1.1%20Non-goals), [§5](rfc-3-syncer.md#5.%20What%20belongs%20elsewhere) | the syncer does not know how an object is transformed | [§2.6](#2.6%20Nothing%20above%20the%20tier%20sees%20the%20chain); D9 |
-| 10 | [RFC 3 §4.1](rfc-3-syncer.md#4.1%20One%20fetch%2C%20two%20consumers), S10 | fetched bytes are verified before any consumer | [§7](#7.%20Verification%3A%20after%20the%20whole%20chain%2C%20inside%20the%20tier%2C%20once), T11 |
-| 11 | [RFC 6 §2.6](rfc-6-block-metadata.md#2.6%20The%20scope%20of%20a%20count) | one namespace per store, key derivation includes store identity | [§5.4](#5.4%20Deduplication%20and%20confirmation%20trade%20against%20each%20other%20%28decision%20for%20discussion%29) (compatible), [§6.1](#6.1%20The%20setting%20is%20per%20store%2C%20and%20so%20per%20share%20in%20effect) |
-| 12 | [RFC 8 §2.2](rfc-8-engine.md#2.2%20Capabilities%20are%20parameters%2C%20never%20assertions) | a failed assertion on the sealer uploads plaintext | [§2.5](#2.5%20An%20absent%20chain%20is%20a%20construction%20failure%2C%20never%20plaintext), T9; D11 |
-| 13 | [RFC 8 §5.4](rfc-8-engine.md#5.4%20A%20block%27s%20name%20is%20derived%20here), [§14.6](rfc-8-engine.md#14.%20Open%20questions) | key scope proposal | [§6.1](#6.1%20The%20setting%20is%20per%20store%2C%20and%20so%20per%20share%20in%20effect) — adopted as the key boundary |
-| 14 | [RFC 8 §6.7](rfc-8-engine.md#6.7%20An%20absent%20object%20is%20re-resolved%20exactly%20once) | re-resolve only on absent; verification failures are not absent | [§4.7](#4.7%20Key%20loss%20is%20data%20loss%2C%20and%20key%20unavailability%20is%20remote%20unavailability), [§7](#7.%20Verification%3A%20after%20the%20whole%20chain%2C%20inside%20the%20tier%2C%20once) |
-| 15 | [RFC 8 §14.5](rfc-8-engine.md#14.%20Open%20questions) | whether framing and sealing can write in place | open, [§12.5](#12.%20Open%20questions) |
-| 16 | [RFC 9 §1.1](rfc-9-gc.md#1.1%20Non-goals) | GC does not frame, seal or parse | [§6.3](#6.3%20Relocation%20re-seals%20under%20the%20current%20chain) |
-| 17 | [RFC 9 §4.2](rfc-9-gc.md#4.2%20Read%20verified%2C%20name%20by%20content%2C%20put%2C%20then%20move) | relocation reads verified and puts through the tier | [§6.3](#6.3%20Relocation%20re-seals%20under%20the%20current%20chain) — re-seal; D7 |
-| 18 | [RFC 9 §4.4](rfc-9-gc.md#4.4%20When%20to%20relocate%20is%20policy) | never relocate a fully live block | [§6.4](#6.4%20Leaving%20a%20key%20needs%20a%20census%20and%20a%20name) — conflict recorded; open, [§12.2](#12.%20Open%20questions) |
-| 19 | [RFC 9 §13](rfc-9-gc.md#13.%20Open%20questions) q5 | where `blockcodec` lives | open, [§12.6](#12.%20Open%20questions) — [RFC 4](rfc-4-remote-tier.md)'s |
-| 20 | [RFC 4 §1.2](rfc-4-remote-tier.md#1.2%20Why%20this%20is%20a%20contract%20and%20not%20a%20component), [§2.7](rfc-4-remote-tier.md#2.7%20What%20this%20means%20for%20the%20rest%20of%20the%20set) | the remote tier adds no row | [§11](#11.%20Consequences%20for%20other%20RFCs) — the chain is argued to differ |
-| 21 | [RFC 4 §2.4](rfc-4-remote-tier.md#2.4%20The%20overlaps%2C%20adjudicated) | compression and encryption are the tier's whole chain; the syncer must not know | [§1.2](#1.2%20What%20RFC%208%20keeps%20and%20what%20this%20document%20takes), [§2.6](#2.6%20Nothing%20above%20the%20tier%20sees%20the%20chain) |
-| 22 | [RFC 4 §3.1](rfc-4-remote-tier.md#3.1%20A%20block%20object%20is%20self-describing) | an object is interpretable given the transform keys | [§4.3](#4.3%20The%20frame%20is%20a%20permanent%20format), [§4.4](#4.4%20A%20provider%20wraps%20under%20one%20current%20key%20and%20unwraps%20under%20any%20it%20holds) |
-| 23 | [RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20What%20the%20encoding%20must%20carry) | records say whether authenticated; name and position bound when they are | [§5.4](#5.4%20Deduplication%20and%20confirmation%20trade%20against%20each%20other%20%28decision%20for%20discussion%29) — proposal; D3 |
-| 24 | [RFC 4 §3.5](rfc-4-remote-tier.md#3.5%20Format%20changes%20are%20migrations) | a format change is a migration | [§3.3](#3.3%20The%20stored%20case%20must%20be%20marked%20too), [§4.3](#4.3%20The%20frame%20is%20a%20permanent%20format) |
-| 25 | [RFC 4 §4.1](rfc-4-remote-tier.md#4.1%20Seal%20and%20read%20are%20exact%20inverses), R5 | seal and read are exact inverses | [§3.3](#3.3%20The%20stored%20case%20must%20be%20marked%20too), T2; D1 |
-| 26 | [RFC 4 §4.2](rfc-4-remote-tier.md#4.2%20Identity%20is%20over%20plaintext%2C%20at%20every%20layer) | identity over plaintext | [§2.1](#2.1%20A%20transform%20is%20per%20chunk%2C%20and%20runs%20between%20identity%20and%20framing), T1 |
-| 27 | [RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20The%20chain%20travels%20with%20the%20object), R6 | the chain travels with the object | [§6.2](#6.2%20A%20setting%20change%20governs%20the%20next%20write%2C%20never%20a%20past%20one), T10; D6 |
-| 28 | [RFC 4 §4.4](rfc-4-remote-tier.md#4.4%20The%20syncer%20MUST%20NOT%20observe%20that%20a%20transform%20happened), R11 | nothing above the tier observes a transform | [§2.6](#2.6%20Nothing%20above%20the%20tier%20sees%20the%20chain), [§4.7](#4.7%20Key%20loss%20is%20data%20loss%2C%20and%20key%20unavailability%20is%20remote%20unavailability); D9 |
-| 29 | [RFC 4 §6.1](rfc-4-remote-tier.md#6.1%20The%20exported%20read%20takes%20the%20expected%20hash) | the exported read verifies before returning a byte | [§7](#7.%20Verification%3A%20after%20the%20whole%20chain%2C%20inside%20the%20tier%2C%20once); D10 |
-| 30 | [RFC 4 §9.1](rfc-4-remote-tier.md#9.1%20Group%20A%20%E2%80%94%20silent%20data%20loss), [§9.2](rfc-4-remote-tier.md#9.2%20Group%20B%20%E2%80%94%20boundary%20drift) | round-trip, cross-setting and invisibility checks | [§10](#10.%20Conformance) |
-| 31 | [RFC 4 §10](rfc-4-remote-tier.md#10.%20Open%20questions) q2 | whether the sealed record header earns its cost | [§5.4](#5.4%20Deduplication%20and%20confirmation%20trade%20against%20each%20other%20%28decision%20for%20discussion%29) — yes when encrypting (proposal) |
-| 32 | [RFC 4 §10](rfc-4-remote-tier.md#10.%20Open%20questions) q6 | where `blockcodec` belongs | open, [§12.6](#12.%20Open%20questions) |
+**What it does.** Compresses a chunk with zstd (ID `0x0001`) or LZ4 (ID `0x0002`).
+The algorithm is the transform, so the envelope records it; the level is not
+recorded, because decoding does not need it.
 
-**Not obligations.** [RFC 1](rfc-1-journal.md)'s "seal" names segment immutability, and its mentions of
-compression concern the journal's own disk format. [RFC 2](rfc-2-carver.md)'s "incompressible" is
-chunker test input. [RFC 7](rfc-7-namespace-metadata.md)'s "plaintext" is a file handle's encoding.
-`rfc-block-dataflow.md` has no matches.
+**It declines what does not shrink.** If the output, header included, would save
+less than 1/16 of the input, `Encode` returns `applied=false` and the chunk passes on unchanged.
+Already-compressed data (media, archives, encrypted files) then costs one attempt
+and no stored overhead.
 
-**Summary.** 32 obligations. 23 discharged by a requirement in this document; 5
-by a labelled proposal (rows 7, 8, 13, 23, 31); 4 left open with the question and
-what would settle it stated (rows 15, 18, 19, 32 — the last two are one question,
-and it is RFC 4's).
+**Its header.** A format version (1 byte) and the decompressed length (varint).
+`Decode` refuses a declared length above `max` before allocating, and runs the
+decoder with its window capped at the chunk maximum, so a body cannot make it
+allocate more than one chunk however it was crafted.
+
+**Traits.** `Shrinks`; `MaxOverhead` 0, since a chunk that would grow is declined.
+
+**Settings.** `level` (default 3 for zstd). Changing it affects the next write
+only.
+
+**Leaks.** Compression makes a body's size depend on its content. Combined with
+encryption, a chunk's stored size says how compressible it was. That matters
+only where an attacker can place data of their own next to a secret inside one
+chunk and watch the size change; a deployment with such writers in one share
+**SHOULD** turn compression off there.
+
+## Appendix B — encryption
+
+A shipped transform (ID `0x0010`), and an example of one that `Randomizes` and
+needs keys.
+
+### B.1 How a chunk is encrypted
+
+Each chunk gets its own key, derived from a master key and a random salt:
+
+```
+salt     = 32 random bytes
+data key = HKDF-SHA256(master key, salt, "dittofs chunk v1")
+body     = AES-256-GCM(data key, nonce = 0, plaintext,
+                        AAD = transform ID ‖ version ‖ key ID ‖ salt ‖ plaintext hash)
+```
+
+In plain terms:
+
+- **a fresh key per chunk.** Because a data key encrypts exactly one chunk, the
+  nonce can be fixed. There is nothing to count and no budget to run out of: the
+  master key is never used to encrypt data directly, only to derive keys, and 256
+  random bits of salt do not repeat.
+- **everything is authenticated.** The header fields and the plaintext hash are
+  all in the AAD, so changing any byte of the body, or presenting it as a
+  different chunk, fails decryption.
+- **the master key never leaves the key provider's process memory**, and only the
+  salt and the key ID are stored.
+
+**Its header:** version (1 byte), key ID length (1 byte), key ID, salt (32
+bytes). Then the ciphertext and its 16-byte tag. `MaxOverhead` is the worst
+case, with a 255-byte key ID: 1 + 1 + 255 + 32 + 16 = 305 bytes.
+
+### B.2 Keys
+
+A key provider holds master keys:
+
+```go
+type KeyProvider interface {
+	// Current is the key ID new chunks are encrypted under.
+	Current(ctx context.Context) (KeyID, error)
+	// Key returns a master key by ID. It fails with ErrUnknownKey for an ID the
+	// store has never had, and ErrKeyUnavailable for one it cannot reach now.
+	Key(ctx context.Context, id KeyID) ([]byte, error)
+}
+```
+
+The provider keeps a list of every key ID it has ever issued, even after a key's
+material is gone, so it can tell a key it never had from one it cannot reach.
+Two providers ship: a key file, and a KMIP server whose keys are fetched at start
+and held in memory. A provider **MUST** fail the chain's construction if it cannot
+return its current key ([§2.7](#2.7%20Failures)).
+
+### B.3 Rotation
+
+Rotating means making a new key current. New chunks use it; existing chunks name
+their key ID and stay readable as long as the provider still holds that key. To
+stop holding an old key, relocate the blocks that use it ([§5.3](#5.3%20Retiring%20a%20key%20or%20a%20transform%20needs%20a%20census)).
+
+### B.4 Losing a key loses the data
+
+Every chunk encrypted under a master key is unreadable without it. There is no
+recovery path, by design: a recovery path is a second key. Backing up master keys
+is the operator's job; DittoFS can only make the dependency visible.
+
+| What happens | Result |
+| --- | --- |
+| The provider is unreachable at start | the store does not open ([§2.7](#2.7%20Failures)) |
+| The provider becomes unreachable, or a key is missing, when reading | the read fails as the remote being unavailable, and recovers when the key returns. Never zeros |
+| A tag fails | a verification failure of the chunk |
+| A master key is lost for good | every chunk it covered is **Lost** ([RFC 0 §4.2](rfc-0-data-lifecycle.md#4.2%20The%20residency%20function)) |
+
+Each of these is a health condition of the store, not only a log line.
+
+### B.5 What a bucket reader still learns
+
+Encryption keeps chunk contents secret from anyone who can read the bucket but
+not the key. It does not hide everything.
+
+| Who | Can | What encryption protects |
+| --- | --- | --- |
+| Someone who can read the bucket (a leaked credential, the provider's staff) | read every stored byte | the content of every chunk whose content they cannot already guess |
+| Someone who can also write the bucket | alter, delete or replace blocks | nothing is silently corrupted: any change fails the tag or the plaintext hash. Deletion is still loss |
+| Someone on the DittoFS host | read memory and keys | nothing; they hold the keys |
+
+What a bucket reader can still see, encryption on or off:
+
+- **the chunk hashes in each block's header** ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)). Anyone holding a
+  file can chunk it the way DittoFS does ([RFC 2 §6](rfc-2-carver.md#6.%20Boundaries%20are%20public)), hash the chunks and
+  look for them: a match proves the file is stored. The same works for a chunk
+  with few possible contents, such as a form with one field;
+- **sizes**: of blocks, of chunks, and with compression, how compressible each
+  chunk was;
+- **repetition**: which content is written more than once;
+- **timing**: what is written and read, and when.
+
+**Proposal, for decision:** a store created with hash hiding writes each index
+hash as `HMAC-SHA256(store secret, hash)` instead of the hash, and includes the
+same secret in every block name ([RFC 2 §4.3](rfc-2-carver.md#4.3%20Key%20scope)). Repair and verification still
+work, since DittoFS holds the secret and can compute both; a bucket reader holding
+a file can no longer look it up. It is a property of the store, chosen when the
+store is created and never changed, independent of whether the chain encrypts:
+tying it to the chain would change every name when encryption is toggled. The
+secret comes from the key provider and never rotates, since it is part of every
+name; a leaked secret is permanent, and the only remedy is renaming every block
+into a new store. Sizes, repetition and timing
+remain visible either way ([§10](#10.%20Open%20questions), question 2).
+
+### B.6 What it adds to observability
+
+| Answers | Metric | Type |
+| --- | --- | --- |
+| chunks encrypted, labelled by key ID | `dittofs_encryption_chunks_total` | counter |
+| the key ID new chunks use | `dittofs_encryption_current_key` | gauge (1 on the current key's label) |
+| whether the provider can currently return each configured key | `dittofs_encryption_key_available` | gauge (0/1) |
+
+## Appendix C — where the current code differs
+
+Descriptive, for the refactor.
+
+| # | This document says | The code today |
+| --- | --- | --- |
+| C1 | The envelope records what was applied ([§2.4](#2.4%20Every%20body%20records%20what%20was%20applied)) | each layer marks its own output; compression stores declined chunks unmarked, so an incompressible chunk that begins with the compression marker is read back as a frame and is unreadable. Data loss |
+| C2 | Decoding is bounded by the chunk maximum (T4) | the declared-size ceiling is 64 MiB against a 16 MiB chunk maximum, the buffer is allocated before decoding, and the zstd window is unbounded |
+| C3 | The order comes from configuration ([§2.3](#2.3%20The%20chain%20is%20ordered%20by%20configuration)) | compression then encryption is fixed in code |
+| C4 | Reading needs only the registry and keys (T3) | decoders exist only for configured layers: disabling compression fails every compressed body, enabling encryption rejects existing plaintext bodies, and disabling encryption is refused |
+| C5 | Every header field is authenticated ([Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted)) | a random data key is wrapped under the master key with AES-GCM; frame fields are outside the AAD, and nothing counts the master key's nonces |
+| C6 | Relocation re-encodes ([§5.2](#5.2%20Relocation%20re-encodes)) | relocation copies encrypted bodies unchanged |
+| C7 | No transform error crosses the codec (T8) | encryption and compression errors reach callers as their own types |
+| C8 | The hash is checked once, in the codec (T6) | each consumer re-hashes; relocation does not |
+| C9 | A chain that cannot be built stops the store (T5) | the offload finds its encryptor by type assertion, and a missing one writes unencrypted bodies |
+| C11 | A key failure is the remote being unavailable, and recovers ([Appendix B.4](#B.4%20Losing%20a%20key%20loses%20the%20data)) | a provider failure at start fails the share's whole block store, journal included, until it is re-attached; a retired key that fails to load is logged and skipped, with no health condition |
+| C10 | Chunk hashes can be hidden ([Appendix B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns)) | record headers carry plaintext hashes on every store |

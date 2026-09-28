@@ -297,7 +297,7 @@ is a ref wearing a chunk's name, and the refcount on it counts nothing.
 `block` and `position` locate the chunk's bytes: the remote key of the block that
 carries it, and `position`, the byte range of the chunk's record in the object as
 stored — the `Range` the store reported when the block was put ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)). This is
-what a ranged read asks for ([RFC 4 §6.1](rfc-4-remote-tier.md#6.1%20The%20exported%20read%20takes%20the%20expected%20hash)). It is the stored range, after framing and
+what a ranged read asks for ([RFC 4 §3.4](rfc-4-remote-tier.md#3.4%20Every%20read%20is%20verified%20by%20the%20codec)). It is the stored range, after framing and
 transforms, so it is recorded from the store's report and never computed.
 
 ### 2.3 Block

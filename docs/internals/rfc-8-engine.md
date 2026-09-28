@@ -125,7 +125,7 @@ The engine supplies, at construction:
 | Declared by | Need | Supplied from |
 | --- | --- | --- |
 | [RFC 1](rfc-1-journal.md) | an event recorder ([§3.8](rfc-1-journal.md#3.8%20Event%20reporting)) | the process's metrics |
-| [RFC 3](rfc-3-syncer.md) | a put, a verified read ([RFC 4 §7](rfc-4-remote-tier.md#7.%20This%20contract%20has%20more%20than%20one%20consumer)) | the remote tier, through the transform chain |
+| [RFC 3](rfc-3-syncer.md) | a put, a verified read ([RFC 4 §1.2](rfc-4-remote-tier.md#1.2%20A%20contract%2C%20not%20a%20component)) | the remote tier, through the transform chain |
 | [RFC 6](rfc-6-block-metadata.md) | nothing | — |
 | [RFC 7](rfc-7-namespace-metadata.md) | `Size(file)` ([§2.5](rfc-7-namespace-metadata.md#2.5%20Where%20%60size%60%20lives)), release of an inode's refs ([§4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)), allocation for `SEEK` ([§9.3](rfc-7-namespace-metadata.md#9.3%20Residency%20is%20not%20an%20attribute)) | block metadata's existence record and refs |
 | [RFC 9](rfc-9-gc.md) | its narrow views of metadata and the remote tier | block metadata; the remote tier |
@@ -458,7 +458,7 @@ and [RFC 6 §7.2](rfc-6-block-metadata.md#7.2%20Adoption%20is%20conditional%20on
 
 The engine assembles the block, so it computes the name ([RFC 2 §4](rfc-2-carver.md#4.%20Identity)): a hash, under
 a domain distinct from chunk hashing, of the key scope and the block's chunk
-hashes in order. The name is final before framing begins ([RFC 4 §3.4](rfc-4-remote-tier.md#3.4%20The%20object%27s%20name%20is%20final%20before%20framing%20begins)) and does
+hashes in order. The name is final before framing begins ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)) and does
 not vary between attempts to store one block, so a retry after an unknown outcome
 writes the same object ([RFC 3 §2.5](rfc-3-syncer.md#2.5%20An%20unknown%20outcome%20is%20not%20a%20success)).
 
@@ -500,7 +500,7 @@ files are many small chunks, and they pack like any others.
 
 This matters because S3 is slow on small objects: every put pays a round trip and
 a per-request price whatever its size, and a key prefix accepts a few thousand
-writes per second ([RFC 4 §5.10](rfc-4-remote-tier.md#5.10%20Transfer%20practice%20a%20backend%20owes%20its%20service)). One block per small file would turn a directory
+writes per second ([RFC 4 Appendix C.3](rfc-4-remote-tier.md#C.3%20How%20the%20contract%20maps%20to%20S3)). One block per small file would turn a directory
 of a hundred thousand small files into a hundred thousand puts. restic packs blobs
 from many files into its pack files for the same reason.
 
@@ -656,7 +656,7 @@ commit, but content that is gone, and it **MUST** be reported as **Lost**, not
 retried until a deadline.
 
 > [!important] Pending review — re-resolve on a range mismatch too
-> New. A re-put under the same name may lay the object out differently ([RFC 4 §5.5](rfc-4-remote-tier.md#5.5%20A%20put%20of%20an%20existing%20key%20succeeds%3B%20so%20does%20a%20delete%20of%20an%20absent%20one)),
+> New. A re-put under the same name may lay the object out differently ([RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success)),
 > so a range recorded before it can point at the wrong bytes although the data is
 > intact.
 > *Added by the RFC 0–3 review, 2026-09-25.*
@@ -1047,7 +1047,7 @@ where the engine is the site that must change.
 | [§9.2](#9.2%20Deallocate%20records%20a%20hole%3B%20it%20does%20not%20write%20zeros) deallocate records a hole | Deallocation writes zeros through the journal in 1 MiB pieces across the whole range. | `engine/readwrite.go:330`–`:344` |
 | [§9.1](#9.1%20One%20facade%2C%20shaped%20like%20content) truncate in one transaction | Truncate narrows a straddling row with a store write outside any transaction, then decrements and reaps in a second call, reprojects in a third, then truncates the journal. | `engine/readwrite.go:151`–`:152`, `:233`, `:239`, `:245` |
 | [§9.5](#9.5%20The%20facade%20writes%20no%20residency) no residency writes | The facade marks ranges remote-but-not-local, drops local content to force manifest reads, pins journal versions for snapshots, and rewinds the journal to a version. | `engine/flush.go:639`–`:765` |
-| [RFC 4 §2.5](rfc-4-remote-tier.md#2.5%20Deviation%20%E2%80%94%20the%20boundary%20currently%20runs%20through%20the%20engine) | The fetch path, derived health, the read-ahead queue and the put live in this package. [RFC 4](rfc-4-remote-tier.md) records it; the move is this package's. | [RFC 4 §2.5](rfc-4-remote-tier.md#2.5%20Deviation%20%E2%80%94%20the%20boundary%20currently%20runs%20through%20the%20engine) |
+| [RFC 4 Appendix A](rfc-4-remote-tier.md#Appendix%20A%20%E2%80%94%20where%20the%20current%20code%20differs) | The fetch path, derived health, the read-ahead queue and the put live in this package. [RFC 4](rfc-4-remote-tier.md) records it; the move is this package's. | [RFC 4 Appendix A](rfc-4-remote-tier.md#Appendix%20A%20%E2%80%94%20where%20the%20current%20code%20differs) |
 
 This document does not schedule the migration. It records that the current state
 fails the requirements above, and that a discrepancy **MUST NOT** be closed by
@@ -1236,10 +1236,10 @@ caller. *Explicit* rows name RFC 8 or the engine; *caller* rows name the caller.
 | [RFC 7 §9.3](rfc-7-namespace-metadata.md#9.3%20Residency%20is%20not%20an%20attribute) | allocation from the hole set | caller | [§2.1](#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one), [§6.6](#6.6%20Allocation%20answers%20from%20the%20hole%20set) |
 | [RFC 7 §14](rfc-7-namespace-metadata.md#14.%20Open%20questions) q7 | whether the recycle bin is engine policy | explicit | [§1.1](#1.1%20Non-goals) — decided: it is not |
 | [RFC 4 §1.1](rfc-4-remote-tier.md#1.1%20Non-goals) | when and what to transfer | explicit | [§3.1](#3.1%20Policy%20is%20decided%20here%20and%20executed%20below) |
-| [RFC 4 §2.5](rfc-4-remote-tier.md#2.5%20Deviation%20%E2%80%94%20the%20boundary%20currently%20runs%20through%20the%20engine) | syncer obligations live in the engine package | explicit | [§1.1](#1.1%20Non-goals), [§12.5](#12.5%20The%20facade) |
+| [RFC 4 Appendix A](rfc-4-remote-tier.md#Appendix%20A%20%E2%80%94%20where%20the%20current%20code%20differs) | syncer obligations live in the engine package | explicit | [§1.1](#1.1%20Non-goals), [§12.5](#12.5%20The%20facade) |
 | [RFC 9 §4.3](rfc-9-gc.md#4.3%20A%20reader%20can%20hold%20the%20old%20location), [§9](rfc-9-gc.md#9.%20Consequences%20for%20other%20RFCs) | the read path re-resolves exactly once when an object is absent | explicit | [§6.7](#6.7%20An%20absent%20object%20is%20re-resolved%20exactly%20once), E14 |
 | [RFC 9 §4.4](rfc-9-gc.md#4.4%20When%20to%20relocate%20is%20policy), [§7.3](rfc-9-gc.md#7.3%20When%20GC%20runs%20is%20the%20engine%27s), [§9](rfc-9-gc.md#9.%20Consequences%20for%20other%20RFCs) | GC cadence, triggers and the relocation threshold are engine policy | explicit | [§7.5](#7.5%20When%20GC%20runs%2C%20and%20what%20it%20relocates%2C%20is%20decided%20here), E15 — proposal |
-| [RFC 4 §7](rfc-4-remote-tier.md#7.%20This%20contract%20has%20more%20than%20one%20consumer), [§7.1](rfc-4-remote-tier.md#7.1%20Deviation%20%E2%80%94%20consumers%20take%20the%20provider%27s%20interface%2C%20not%20their%20own) | each consumer's narrow interface over the backend | caller | [§2.1](#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one), [§2.2](#2.2%20Capabilities%20are%20parameters%2C%20never%20assertions) |
+| [RFC 4 §1.2](rfc-4-remote-tier.md#1.2%20A%20contract%2C%20not%20a%20component), [Appendix A](rfc-4-remote-tier.md#Appendix%20A%20%E2%80%94%20where%20the%20current%20code%20differs) | each consumer's narrow interface over the backend | caller | [§2.1](#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one), [§2.2](#2.2%20Capabilities%20are%20parameters%2C%20never%20assertions) |
 | block data flow [§3](#3.%20Policy) | orchestration: dedup oracle, manifest rows, scheduling | explicit | [§4](#4.%20The%20write%20and%20the%20offload), [§5](#5.%20Block%20assembly) |
 | block data flow [§5](#5.%20Block%20assembly) | only the construction site names concrete types | explicit | [§2.1](#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one) |
 

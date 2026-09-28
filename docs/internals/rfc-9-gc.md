@@ -67,9 +67,9 @@ GC **MUST NOT**:
   keep one of its own;
 - keep content alive by any means other than the count ([§2.1](#2.1%20The%20count%20is%20the%20only%20authority));
 - restate what a put, a read or a delete means. That is [RFC 4](rfc-4-remote-tier.md)'s, and GC inherits
-  it ([RFC 4 §2.7](rfc-4-remote-tier.md#2.7%20What%20this%20means%20for%20the%20rest%20of%20the%20set));
+  it ([RFC 4 §1.2](rfc-4-remote-tier.md#1.2%20A%20contract%2C%20not%20a%20component));
 - name a block by any means other than [RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block), or frame, seal or parse an
-  object ([RFC 4 §3](rfc-4-remote-tier.md#3.%20The%20stored%20object), [§4](rfc-4-remote-tier.md#4.%20The%20transform%20chain));
+  object ([RFC 4 §3](rfc-4-remote-tier.md#3.%20The%20block%20format), [§3.3](rfc-4-remote-tier.md#3.3%20Transforms));
 - import another component in this set ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)).
 
 ### 1.2 Words this document uses, and two it does not
@@ -80,7 +80,7 @@ only as the audit of [§6](#6.%20Audit), which recomputes counts from refs. It i
 the sweep and decides nothing. [§2.4](#2.4%20Why%20not%20mark%20from%20a%20snapshot) says why.
 
 **Relocation** is [RFC 6 §7.3](rfc-6-block-metadata.md#7.3%20Relocation)'s word for rewriting a block's surviving chunks into
-a new block. [RFC 2 §4](rfc-2-carver.md#4.%20Identity) and [RFC 4 §7](rfc-4-remote-tier.md#7.%20This%20contract%20has%20more%20than%20one%20consumer) call the same operation "compaction". [RFC 0](rfc-0-data-lifecycle.md)
+a new block. [RFC 2 §4](rfc-2-carver.md#4.%20Identity) and [RFC 4 §1.2](rfc-4-remote-tier.md#1.2%20A%20contract%2C%20not%20a%20component) call the same operation "compaction". [RFC 0](rfc-0-data-lifecycle.md)
 [§8.2](rfc-0-data-lifecycle.md#8.2%20Reclaim) retires that word because in an LSM it names an operation that discards
 content, and relocation discards none. This document uses "relocation" only.
 
@@ -167,7 +167,7 @@ Sweeping one block is two steps, in this order:
 1. **Retire** ([RFC 6 §7.1](rfc-6-block-metadata.md#7.1%20Conditional%20retirement)): in one transaction, if `live` is zero, delete the
    block record and every chunk record whose `block` names it, and write the
    pending-deletion record of [§3.2](#3.2%20A%20retirement%20not%20yet%20deleted%20is%20durably%20recorded); otherwise refuse.
-2. **Delete** the object through the remote tier ([RFC 4 §5.1](rfc-4-remote-tier.md#5.1%20Operations)).
+2. **Delete** the object through the remote tier ([RFC 4 §4.1](rfc-4-remote-tier.md#4.1%20Interface)).
 
 The order is not a preference. Retiring first means a crash between the two
 leaves an object that no record names, which is a leak. Deleting first means a
@@ -178,7 +178,7 @@ for content that was durable.
 
 GC **MUST** call the remote tier directly and not through the syncer ([RFC 3 §5](rfc-3-syncer.md#5.%20What%20belongs%20elsewhere)).
 Deletion is not a transfer, and it **MUST NOT** occupy the syncer's upload window
-or be subject to its health state ([RFC 4 §2.2](rfc-4-remote-tier.md#2.2%20Why%20the%20syncer%20must%20exist), [§7](rfc-4-remote-tier.md#7.%20This%20contract%20has%20more%20than%20one%20consumer)).
+or be subject to its health state ([RFC 4 §2](rfc-4-remote-tier.md#2.%20The%20dividing%20line), [§1.2](rfc-4-remote-tier.md#1.2%20A%20contract%2C%20not%20a%20component)).
 
 ### 3.2 A retirement not yet deleted is durably recorded
 
@@ -188,7 +188,7 @@ restart **MUST** resume every pending deletion it finds.
 
 This is what removes enumeration from sweep's correctness. Without the record, a
 crash between [§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object)'s steps leaves an object that can only be found by listing the
-bucket, and [RFC 4 §5.4.1](rfc-4-remote-tier.md#5.4.1%20Enumeration%20is%20required%20by%20a%20condition%2C%20not%20by%20the%20design) forbids depending on a listing for correctness. With it,
+bucket, and [RFC 4 §4.6](rfc-4-remote-tier.md#4.6%20List%20is%20a%20complete%2C%20resumable%20walk) forbids depending on a listing for correctness. With it,
 the object is named by a record until the moment it is gone.
 
 The pending-deletion record is a record kind [RFC 6 §2](rfc-6-block-metadata.md#2.%20The%20records) does not list. [§9](#9.%20Consequences%20for%20other%20RFCs) states
@@ -280,7 +280,7 @@ finish.
 
 | Condition | Behaviour |
 | --- | --- |
-| Delete reports the object absent | Success. A delete is idempotent ([RFC 4 §5.5](rfc-4-remote-tier.md#5.5%20A%20put%20of%20an%20existing%20key%20succeeds%3B%20so%20does%20a%20delete%20of%20an%20absent%20one)), and a sweep resuming after a crash will see this. |
+| Delete reports the object absent | Success. A delete is idempotent ([RFC 4 §4.5](rfc-4-remote-tier.md#4.5%20Delete%20is%20idempotent)), and a sweep resuming after a crash will see this. |
 | Delete refused or failed | The pending-deletion record stays, and the next pass retries it. |
 | Remote tier unavailable | Retirements continue, pending deletions accumulate, and nothing is lost. A backlog that does not drain **MUST** be reported as a health condition, not only logged ([RFC 0 §10.2](rfc-0-data-lifecycle.md#10.2%20No%20state%20requires%20intervention%20to%20leave)). |
 | Metadata unwritable | Nothing retires, so nothing is deleted. |
@@ -308,13 +308,13 @@ block is swept by [§3](#3.%20Sweep) exactly like any other block that reached z
 Relocating block *B*:
 
 1. Read each chunk of *B* whose refcount is nonzero, through the remote tier's
-   verified read ([RFC 4 §6.1](rfc-4-remote-tier.md#6.1%20The%20exported%20read%20takes%20the%20expected%20hash)). GC **MUST NOT** parse the object or verify it
+   verified read ([RFC 4 §3.4](rfc-4-remote-tier.md#3.4%20Every%20read%20is%20verified%20by%20the%20codec)). GC **MUST NOT** parse the object or verify it
    itself.
 2. Assemble the chunks into a block under [RFC 2 §5](rfc-2-carver.md#5.%20Packing%3A%20three%20rules%2C%20not%20a%20component): whole chunks only (P1), the
    target size (P2), and only the chunks whose bytes it carries (P3).
 3. Name the block by [RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block), which the assembler computes because it holds
    the hash list ([RFC 2 §4](rfc-2-carver.md#4.%20Identity)). The name **MUST NOT** be generated.
-4. Put it ([RFC 4 §5.1](rfc-4-remote-tier.md#5.1%20Operations)), under the fence of [§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete).
+4. Put it ([RFC 4 §4.1](rfc-4-remote-tier.md#4.1%20Interface)), under the fence of [§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete).
 5. After the put is reported durable, apply [RFC 6 §7.3](rfc-6-block-metadata.md#7.3%20Relocation) in one transaction: point
    each moved chunk record at the new block, create its record, and decrement
    *B*'s `live` by the number moved.
@@ -382,7 +382,7 @@ Under [RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block) everything durable is reach
 and a put that did not commit is retried under the same name. An unrecorded
 object is then a leak of storage, not a threat to content, and the operation
 that finds it is an audit worth running and not required for correctness
-([RFC 4 §5.4.1](rfc-4-remote-tier.md#5.4.1%20Enumeration%20is%20required%20by%20a%20condition%2C%20not%20by%20the%20design), [§7](rfc-4-remote-tier.md#7.%20This%20contract%20has%20more%20than%20one%20consumer)).
+([RFC 4 §4.6](rfc-4-remote-tier.md#4.6%20List%20is%20a%20complete%2C%20resumable%20walk), [§1.2](rfc-4-remote-tier.md#1.2%20A%20contract%2C%20not%20a%20component)).
 
 An implementation **MUST NOT** depend on this operation for correctness, and a
 deployment that never runs it **MUST** only leak.
@@ -452,7 +452,7 @@ decides nothing by itself, and its scratch state obeys [§7.2](#7.2%20Every%20re
 
 GC **MUST** bound, per process, the number of remote operations it has in flight
 and the memory it holds for them, and **MUST** state the bound where it is
-configured. It **MUST NOT** borrow the syncer's window ([RFC 4 §2.2](rfc-4-remote-tier.md#2.2%20Why%20the%20syncer%20must%20exist)): a sweep that
+configured. It **MUST NOT** borrow the syncer's window ([RFC 4 §2](rfc-4-remote-tier.md#2.%20The%20dividing%20line)): a sweep that
 waits behind offload uploads makes no progress while space fills, and a relocation
 that takes upload slots delays the offloads that make content evictable.
 
@@ -496,7 +496,7 @@ engine at composition time:
 | Need | Operations | Semantics from |
 | --- | --- | --- |
 | retiring and relocating | candidates; `Retire(block)`; relocate; pending-deletion records; deletion generations; audit's consistent read | [RFC 6 §7](rfc-6-block-metadata.md#7.%20What%20sweep%20needs%20from%20this%20component) and this document |
-| deleting and moving objects | delete; verified read; put; enumerate ([§5](#5.%20Unrecorded%20objects) only) | [RFC 4 §5](rfc-4-remote-tier.md#5.%20The%20backend%20contract), [§6](rfc-4-remote-tier.md#6.%20Reads%20are%20verified%20at%20this%20boundary) |
+| deleting and moving objects | delete; verified read; put; enumerate ([§5](#5.%20Unrecorded%20objects) only) | [RFC 4 §4](rfc-4-remote-tier.md#4.%20The%20store%20contract), [§3.4](rfc-4-remote-tier.md#3.4%20Every%20read%20is%20verified%20by%20the%20codec) |
 
 GC **MUST NOT** take a provider's full interface, and **MUST NOT** negotiate any
 of these operations by type assertion. A missing capability **MUST** be a build
@@ -517,7 +517,7 @@ This document requires four changes elsewhere, so that the set carries one answe
    backend's isolation level needs it.
 3. **[RFC 8](rfc-8-engine.md).** The read path re-resolves once on an absent object ([§4.3](#4.3%20A%20reader%20can%20hold%20the%20old%20location)). The
    engine owns GC's cadence and relocation threshold ([§7.3](#7.3%20When%20GC%20runs%20is%20the%20engine%27s)).
-4. **[RFC 4 §7](rfc-4-remote-tier.md#7.%20This%20contract%20has%20more%20than%20one%20consumer).** The compaction row becomes relocation, whose needs are verified
+4. **[RFC 4 §1.2](rfc-4-remote-tier.md#1.2%20A%20contract%2C%20not%20a%20component).** The compaction row becomes relocation, whose needs are verified
    read and put. Relocation deletes nothing, so delete leaves that row. Orphan
    reclaim and reconcile become one audit ([§5](#5.%20Unrecorded%20objects)), still contingent.
 
@@ -581,7 +581,7 @@ before the object closes it without any new record kind.
 [RFC 1 §11](rfc-1-journal.md#11.%20Conformance) applies unchanged: conformance is every **MUST** holding, and a check is
 validated by reverting the code and watching it fail on its own assertion. Every
 check runs against every metadata backend, and every Group A check runs against a
-remote backend that can fail a delete after performing it ([RFC 4 §9.3](rfc-4-remote-tier.md#9.3%20What%20must%20not%20stand%20in%20for%20the%20real%20thing)).
+remote backend that can fail a delete after performing it ([RFC 4 §7.1](rfc-4-remote-tier.md#7.1%20Conformance%20suite)).
 
 ### 12.1 Group A — deleting referenced content
 
@@ -640,7 +640,7 @@ remote backend that can fail a delete after performing it ([RFC 4 §9.3](rfc-4-r
    shares, the stores of those shares are one counting domain, which [RFC 6 §2.6](rfc-6-block-metadata.md#2.6%20The%20scope%20of%20a%20count)
    forbids unless they are one store. Which of [RFC 6 §2.6](rfc-6-block-metadata.md#2.6%20The%20scope%20of%20a%20count)'s two options the
    deployment takes is [RFC 2 §4.3](rfc-2-carver.md#4.3%20Key%20scope)'s to settle, and GC's scope follows from it.
-5. **Where `blockcodec` lives** ([RFC 4 §10.6](rfc-4-remote-tier.md#10.%20Open%20questions)). Relocation no longer parses the
+5. **Where `blockcodec` lives** ([RFC 4 §9](rfc-4-remote-tier.md#9.%20Decisions%20and%20open%20questions)). Relocation no longer parses the
    format ([§4.2](#4.2%20Read%20verified%2C%20name%20by%20content%2C%20put%2C%20then%20move)), which removes GC as a reason to keep it outside the remote
    tier. Where it goes is still [RFC 4](rfc-4-remote-tier.md)'s.
 
@@ -692,14 +692,14 @@ document.
 | 35 | [RFC 7 §1.1](rfc-7-namespace-metadata.md#1.1%20Non-goals), [§4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees) | the namespace decides no sweep; release reaches GC as counts | [§1.1](#1.1%20Non-goals) |
 | 36 | [RFC 7 §4.4](rfc-7-namespace-metadata.md#4.4%20There%20is%20no%20third%20holder) | no extra root consulted by a sweep | [§2.1](#2.1%20The%20count%20is%20the%20only%20authority); [§11](#11.%20Deviations) |
 | 37 | [RFC 4 §1.1](rfc-4-remote-tier.md#1.1%20Non-goals) | what to delete is RFC 9's | [§2](#2.%20What%20is%20safe%20to%20delete) |
-| 38 | [RFC 4 §2.4](rfc-4-remote-tier.md#2.4%20The%20overlaps%2C%20adjudicated) | the tier deletes idempotently; RFC 9 decides | [§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object), [§3.6](#3.6%20Failures%20resolve%20on%20their%20own) |
-| 39 | [RFC 4 §2.7](rfc-4-remote-tier.md#2.7%20What%20this%20means%20for%20the%20rest%20of%20the%20set) | RFC 9 does not restate transfer semantics | [§1.1](#1.1%20Non-goals), [§8](#8.%20What%20GC%20declares) |
-| 40 | [RFC 4 §5.4.1](rfc-4-remote-tier.md#5.4.1%20Enumeration%20is%20required%20by%20a%20condition%2C%20not%20by%20the%20design) | no correctness depends on enumeration | [§3.2](#3.2%20A%20retirement%20not%20yet%20deleted%20is%20durably%20recorded), [§5.2](#5.2%20Collecting%20them%20is%20an%20audit) |
-| 41 | [RFC 4 §5.5](rfc-4-remote-tier.md#5.5%20A%20put%20of%20an%20existing%20key%20succeeds%3B%20so%20does%20a%20delete%20of%20an%20absent%20one) | a sweep re-running after a crash relies on idempotent delete | [§3.6](#3.6%20Failures%20resolve%20on%20their%20own) |
-| 42 | [RFC 4 §7](rfc-4-remote-tier.md#7.%20This%20contract%20has%20more%20than%20one%20consumer) | compaction, orphan reclaim and reconcile are specified by RFC 9 | [§4](#4.%20Relocation), [§5](#5.%20Unrecorded%20objects); [§9](#9.%20Consequences%20for%20other%20RFCs) item 4 |
-| 43 | [RFC 4 §7.1](rfc-4-remote-tier.md#7.1%20Deviation%20%E2%80%94%20consumers%20take%20the%20provider%27s%20interface%2C%20not%20their%20own) | GC declares its remote dependency | [§8](#8.%20What%20GC%20declares) |
-| 44 | [RFC 4 §2.2](rfc-4-remote-tier.md#2.2%20Why%20the%20syncer%20must%20exist) | other consumers do not inherit the upload window | [§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object), [§7.1](#7.1%20GC%20bounds%20its%20own%20work) |
-| 45 | [RFC 4 §10.6](rfc-4-remote-tier.md#10.%20Open%20questions) | GC parses the block format directly | [§4.2](#4.2%20Read%20verified%2C%20name%20by%20content%2C%20put%2C%20then%20move); placement **open**, RFC 4's ([§13.5](#13.%20Open%20questions)) |
+| 38 | [RFC 4 §2](rfc-4-remote-tier.md#2.%20The%20dividing%20line) | the tier deletes idempotently; RFC 9 decides | [§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object), [§3.6](#3.6%20Failures%20resolve%20on%20their%20own) |
+| 39 | [RFC 4 §1.2](rfc-4-remote-tier.md#1.2%20A%20contract%2C%20not%20a%20component) | RFC 9 does not restate transfer semantics | [§1.1](#1.1%20Non-goals), [§8](#8.%20What%20GC%20declares) |
+| 40 | [RFC 4 §4.6](rfc-4-remote-tier.md#4.6%20List%20is%20a%20complete%2C%20resumable%20walk) | no correctness depends on enumeration | [§3.2](#3.2%20A%20retirement%20not%20yet%20deleted%20is%20durably%20recorded), [§5.2](#5.2%20Collecting%20them%20is%20an%20audit) |
+| 41 | [RFC 4 §4.5](rfc-4-remote-tier.md#4.5%20Delete%20is%20idempotent) | a sweep re-running after a crash relies on idempotent delete | [§3.6](#3.6%20Failures%20resolve%20on%20their%20own) |
+| 42 | [RFC 4 §1.2](rfc-4-remote-tier.md#1.2%20A%20contract%2C%20not%20a%20component) | compaction, orphan reclaim and reconcile are specified by RFC 9 | [§4](#4.%20Relocation), [§5](#5.%20Unrecorded%20objects); [§9](#9.%20Consequences%20for%20other%20RFCs) item 4 |
+| 43 | [RFC 4 Appendix A](rfc-4-remote-tier.md#Appendix%20A%20%E2%80%94%20where%20the%20current%20code%20differs) | GC declares its remote dependency | [§8](#8.%20What%20GC%20declares) |
+| 44 | [RFC 4 §2](rfc-4-remote-tier.md#2.%20The%20dividing%20line) | other consumers do not inherit the upload window | [§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object), [§7.1](#7.1%20GC%20bounds%20its%20own%20work) |
+| 45 | [RFC 4 §9](rfc-4-remote-tier.md#9.%20Decisions%20and%20open%20questions) | GC parses the block format directly | [§4.2](#4.2%20Read%20verified%2C%20name%20by%20content%2C%20put%2C%20then%20move); placement **open**, RFC 4's ([§13.5](#13.%20Open%20questions)) |
 | 46 | block dataflow [§1](#1.%20Purpose) | a dedup onto an orphaned hash after the mark frees the only copy; transitions must be pinned under concurrency | [§2.4](#2.4%20Why%20not%20mark%20from%20a%20snapshot), [§3.3](#3.3%20The%20race%20with%20adoption%20is%20closed%20by%20transactions%2C%20not%20by%20time), [§12.1](#12.1%20Group%20A%20%E2%80%94%20deleting%20referenced%20content) |
 
 Forty-six obligations. Forty-three are discharged by a requirement here. Three
