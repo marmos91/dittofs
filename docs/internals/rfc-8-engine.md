@@ -12,6 +12,7 @@ depends_on:
   - "[[rfc-7-namespace-metadata]]"
   - "[[rfc-9-gc]]"
   - "[[rfc-4-remote-tier]]"
+  - "[[rfc-5-transforms]]"
 aliases:
   - RFC 8
 tags:
@@ -21,21 +22,18 @@ tags:
 
 **Status:** draft.
 **Depends on:** [RFC 0](rfc-0-data-lifecycle.md), for the terms, the residency function, the invariants and
-the failure model. [RFC 1](rfc-1-journal.md), 2, 3, 4, 5, 7 and 8 specify the components this one
-composes; each has already deferred a decision here, and Appendix A lists every
+the failure model. [RFC 1](rfc-1-journal.md) to [RFC 7](rfc-7-namespace-metadata.md) and [RFC 9](rfc-9-gc.md) specify the components this
+one composes; each has deferred a decision here, and [Appendix A](#Appendix%20A%20%E2%80%94%20obligations%20this%20document%20discharges) lists every
 one of them. Nothing here redefines any of them.
-**Audience:** anyone changing `pkg/block/engine`, the per-share composition in
-`pkg/controlplane/runtime/shares`, or the block-facing helpers adapters call in
-`internal/adapter/common`.
+**Audience:** anyone changing the engine, the per-share composition, or the
+content surface adapters call.
 
 The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT** and **MAY** are
 to be interpreted as in RFC 2119.
 
-This document specifies what the engine is required to be. It was written from
-the model in RFC 0–3, [RFC 6](rfc-6-block-metadata.md), [RFC 7](rfc-7-namespace-metadata.md) and [RFC 4](rfc-4-remote-tier.md), not from the current package. Where the current
-implementation does not satisfy a requirement, that is recorded once, in [§12](#12.%20Deviations), as
-a **deviation**. A deviation is a defect to be fixed or migrated, never a rule
-for an implementer to build around.
+This document specifies behaviour, not the current code. Where the code differs,
+[Appendix B](#Appendix%20B%20%E2%80%94%20where%20the%20current%20code%20differs) lists it for the refactor. A difference is a defect to be fixed or
+migrated, never a rule for an implementer to build around.
 
 Where this document chooses a policy the set left open, the choice is labelled
 **proposal** and names the measurement that would overturn it.
@@ -127,8 +125,8 @@ The engine supplies, at construction:
 | [RFC 1](rfc-1-journal.md) | an event recorder ([§3.8](rfc-1-journal.md#3.8%20Event%20reporting)) | the process's metrics |
 | [RFC 3](rfc-3-syncer.md) | a `Store`: put, verified read, health ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)) | the block codec with the store's transform chain ([RFC 4 §3](rfc-4-remote-tier.md#3.%20The%20block%20format), [RFC 5](rfc-5-transforms.md)), over the remote block store |
 | [RFC 6](rfc-6-block-metadata.md) | nothing | — |
-| [RFC 7](rfc-7-namespace-metadata.md) | `Size(file)` ([§2.5](rfc-7-namespace-metadata.md#2.5%20Where%20%60size%60%20lives)), release of an inode's refs ([§4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)), allocation for `SEEK` ([§9.3](rfc-7-namespace-metadata.md#9.3%20Residency%20is%20not%20an%20attribute)) | block metadata's existence record and refs |
-| [RFC 9](rfc-9-gc.md) | its narrow views of metadata and the remote tier | block metadata; the remote tier |
+| [RFC 7](rfc-7-namespace-metadata.md) | `Size` and `Times` ([§2.5](rfc-7-namespace-metadata.md#2.5%20Where%20%60size%60%20lives)), allocation for `SEEK` ([§9.3](rfc-7-namespace-metadata.md#9.3%20Residency%20is%20not%20an%20attribute)), `Release` ([§4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)) | block metadata's existence records; the facade's `Release` ([§9.1](#9.1%20One%20facade%2C%20shaped%20like%20content)) |
+| [RFC 9](rfc-9-gc.md) | its narrow views of metadata and the remote tier, and the syncer for relocation | block metadata; the remote tier; a syncer flow GC opens on the namespace's store |
 
 ### 2.2 Capabilities are parameters, never assertions
 
@@ -171,30 +169,24 @@ consulted at construction is the engine's.
 
 ### 2.5 Start in order, stop in reverse, and join before closing
 
-**Start.** Open the journal, which recovers its placement index alone (RFC 1
-[§9.1](rfc-1-journal.md#9.1%20Rebuilding)). Reseed the journal's offload state from block metadata: every extent that a
-carved ref covers is reported durable to the journal **at that ref's `oldest` and `newest`**,
-through `MarkDurable`, and no other ([RFC 1 §9.2](rfc-1-journal.md#9.2%20Offload%20state%20after%20recovery)). The journal marks it only where no
-held record is newer.
+**Start.** Open the journal, which recovers its placement index alone
+([RFC 1 §9.1](rfc-1-journal.md#9.1%20Rebuilding)). Then, for each file the journal holds, and no other:
 
-> [!important] Pending review — reseed by version, not by position
-> Reseed used to report every extent a ref covers as durable, by position. After an
-> overwrite of offloaded content and a crash before the overwrite offloaded, that marked
-> the newer write durable; eviction then lost it and reads returned the old
-> content. Refs now carry a version ([RFC 6 §2.1](rfc-6-block-metadata.md#2.1%20Ref)) and reseed passes it.
-> *Added by the [RFC 0](rfc-0-data-lifecycle.md)–3 review, 2026-09-25.*
+1. read the file's durable floor and refs from block metadata ([RFC 6 §8.4](rfc-6-block-metadata.md#8.4%20Reseed%3A%20a%20file%27s%20refs%20and%20its%20durable%20floor)),
+   and give the journal the floor, so that it never issues a version metadata
+   already holds;
+2. drop journal content outside the file's recorded existence — past `size`, or
+   inside a hole — with a journal deallocate or truncate. A crash between a
+   truncate's or deallocate's metadata step and its journal step leaves such
+   content, and without this it would be offloaded as live data;
+3. report every extent a ref covers as durable **at that ref's `oldest` and
+   `newest`**, through `MarkDurable` ([RFC 1 §9.2](rfc-1-journal.md#9.2%20Offload%20state%20after%20recovery)). The journal marks it only where
+   no held content is newer, so an overwrite that had not been offloaded stays
+   dirty; marking by position would let eviction lose it.
 
-> [!important] Pending review — the journal is opened with a version floor
-> The engine opens each share's journal with the highest version block metadata
-> records as durable for that share ([RFC 1 §9.1](rfc-1-journal.md#9.1%20Rebuilding)). A journal restored from an old
-> copy would otherwise issue versions metadata already holds, and a reseed by
-> version would mark new writes durable. Block metadata must be able to answer that
-> number cheaply, which [RFC 6](rfc-6-block-metadata.md) does not yet state. A journal that opens behind its
-> floor is reported, and its stale extents are dropped at reseed.
-> *Added by the RFC 1 test-plan review, 2026-09-25.*
-
-Until reseeding completes, the engine **MUST NOT** request a release. Only then
-start the background policy loops.
+Then delete every removal record ([RFC 6 §2.4](rfc-6-block-metadata.md#2.4%20Shape%20and%20holes)): no pass is in flight. Until
+reseeding completes, the engine **MUST NOT** run offload or request a release.
+Only then start the background policy loops.
 
 **Stop.** Stop accepting operations. Cancel the background loops, then join
 them. A component **MUST NOT** be closed while any work that uses it is still
@@ -202,10 +194,8 @@ running ([RFC 1 §10.7](rfc-1-journal.md#10.7%20Shutdown)). A join that does not
 leave the components it depends on open and report the failure, rather than
 proceed to close them under a live loop.
 
-> [!note]
-> A bounded wait followed by teardown is the shape of the "DB closed"
-> failure the residency decision record describes: shutdown was on time, and the
-> work it abandoned kept running against a closed store.
+A bounded wait followed by teardown looks punctual and leaves the abandoned work
+running against closed stores.
 
 ## 3. Policy
 
@@ -270,6 +260,11 @@ differently, and the one that gets it wrong serves zeros for acknowledged data
 The engine **MAY** group-commit step 3 across writes, and **MUST NOT**
 acknowledge any write in a group before the group commits ([RFC 6 §3.4](rfc-6-block-metadata.md#3.4%20Ordering%20against%20the%20journal)).
 
+If step 3 fails, the write is not acknowledged, and the engine **MUST** remove
+what step 2 staged with a journal `Deallocate` at that write's version
+([RFC 1 §3.6](rfc-1-journal.md#3.6%20Truncate%2C%20deallocate%20and%20delete)). Staged bytes that existence does not cover would otherwise be offloaded
+as content the file never had.
+
 ### 4.2 Offload is scheduled here
 
 A file becomes eligible for an offload pass when any of these holds:
@@ -286,15 +281,13 @@ few seconds, with capacity pressure making every file with dirty bytes eligible.
 Overturned by a measurement showing the age bound, not the byte bound, is what
 fragments blocks under a streaming SMB workload.
 
-> [!important] Pending review — a pass is bounded in bytes
-> New. Nothing bounded a pass, and nothing became evictable until it returned: on a
-> slow store an overwrite-heavy file filled the journal with records pinned for the
-> pass. [RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload) now takes a `limit` and lets the callback report per block.
-> *Added by the [RFC 0](rfc-0-data-lifecycle.md)–3 review, 2026-09-25.*
-
-**A pass offers at most `upload_workers` block targets of dirty bytes** — enough to
-keep every upload worker busy with one pass, and no more — through the journal's
-`limit` ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)). A large file is offloaded as a sequence of such passes.
+**A pass offers at most `upload_workers` block targets of dirty bytes**, across all
+the files it covers — enough to keep every upload worker busy with one pass, and
+no more — through the journal's `limit` ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)). A large file is offloaded as
+a sequence of such passes, and small files are gathered into one pass up to the
+same bound ([§5.7](#5.7%20A%20block%20packs%20chunks%2C%20whichever%20files%20they%20came%20from)). Without a bound nothing became evictable until the pass
+returned, and on a slow store an overwrite-heavy file filled the journal with
+records pinned for the pass.
 
 A failed pass leaves its extents **Dirty** and is retried ([RFC 0 §5.2](rfc-0-data-lifecycle.md#5.2%20Offload)). Retries
 back off with jitter; they **MUST NOT** stop, and a failing pass **MUST** be
@@ -317,36 +310,32 @@ concurrently; what the guard protects is the order *between* passes.
 A pass over several files ([§5.7](#5.7%20A%20block%20packs%20chunks%2C%20whichever%20files%20they%20came%20from)) holds every one of their guards, taken
 in file-identity order so that two such passes cannot deadlock on each other.
 
-### 4.4 The truncation epoch is captured at offer and checked at commit
+`Truncate`, `Deallocate` and `Release` take the same guard and hold it across
+their metadata step and their journal step ([§9.1](#9.1%20One%20facade%2C%20shaped%20like%20content)). An offer between the two
+would capture the new truncation stamp and still read content the journal has
+not yet removed, and commit refs for it that no check can drop.
 
-When the journal offers a run, the engine reads the file's `epoch` ([RFC 6 §6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation))
-and carries it into every commit that pass makes. Block metadata drops the refs
-of a file whose epoch no longer matches and applies the rest of the commit
-([RFC 6 §4.1](rfc-6-block-metadata.md#4.1%20What%20one%20commit%20records)). The engine re-offers that file alone from the journal, which has already
-truncated ([RFC 1 §3.6](rfc-1-journal.md#3.6%20Truncate%2C%20deallocate%20and%20delete)); the other files the block carried are durable and reported.
+### 4.4 The truncation stamp is captured at offer and checked at commit
 
-> [!important] Pending review — truncation is handled per file
-> Previously a mismatched epoch refused the whole commit and failed the pass. With
-> blocks packing several files, one file truncated in a loop kept every file packed
-> with it from ever committing.
-> *Added by the RFC 0–3 review, 2026-09-25.*
-
-
+When the journal offers a run, the engine reads the file's truncation stamp
+([RFC 6 §2.4](rfc-6-block-metadata.md#2.4%20Shape%20and%20holes)) and carries it into every commit that pass makes. Block metadata
+drops only the refs of that file that overlap a range removed since, and applies
+the rest of the commit ([RFC 6 §6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation)). The dropped extents are not reported; what
+the journal still holds there is offered by a later pass. After the pass, the
+engine prunes the file's removal records up to the lowest stamp any of its
+passes still in flight captured.
 
 ### 4.5 The callback returns only what committed
-
-> [!important] Pending review — durability reported per block, as each commits
-> This replaced "return a committed prefix, in offered order". One early failed
-> block no longer holds back every later committed block, and extents become
-> evictable as their block commits rather than when the pass ends.
-> *Added by the RFC 0–3 review, 2026-09-25.*
 
 The offload callback **MUST** report, through the journal's `report`, exactly the
 extents whose commits succeeded, as each block's commit lands, and **MUST NOT**
 report any other ([RFC 0 §5.2](rfc-0-data-lifecycle.md#5.2%20Offload), [RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)). An extent whose put succeeded and whose
 commit did not is not durable, and **MUST NOT** be reported
 ([RFC 6 §4.3](rfc-6-block-metadata.md#4.3%20The%20commit%20is%20the%20report%27s%20return%20edge)). Order does not matter: the journal marks each extent on its own, and a
-commit cannot overwrite newer refs because of their versions ([RFC 6 §4.4](rfc-6-block-metadata.md#4.4%20Commits%20for%20one%20file%20apply%20in%20order)).
+commit cannot overwrite newer refs because of their versions ([RFC 6 §4.4](rfc-6-block-metadata.md#4.4%20Commits%20for%20one%20file%20apply%20in%20order)). One
+failed block therefore holds back no other: its extents stay **Dirty**, and every
+block that committed, before or after it, is reported. Refs a commit found
+already committed are reported like applied ones.
 
 A block may carry chunks from several offered runs and files. Its commit makes all
 of them durable at once, and the callback reports each file's share of it then.
@@ -401,11 +390,6 @@ from the page cache, otherwise as a sequential local read — cheap beside the
 network the upload waits on. A buffer would save that read and make memory follow
 the number of blocks *waiting* for a worker rather than the pool.
 
-> [!important] Pending review — an unknown outcome keeps its plan
-> New. A retried pass could pack the same chunks differently, derive new names and
-> orphan an object the earlier attempt may have written.
-> *Added by the [RFC 0](rfc-0-data-lifecycle.md)–3 review, 2026-09-25.*
-
 **A plan whose upload ended in an unknown outcome survives its pass.** The engine
 keeps it and, on the next pass over those files, offers it again first and
 unchanged if every chunk in it is still dirty at the same version; otherwise it
@@ -434,11 +418,6 @@ A chunk carried by two blocks in
 flight is committed once: the first block to commit owns its record, and the
 second adopts it ([RFC 6 §4.1](rfc-6-block-metadata.md#4.1%20What%20one%20commit%20records)).
 
-> [!important] Pending review — two blocks carrying one chunk
-> Cross-reference added: [RFC 6 §4.1](rfc-6-block-metadata.md#4.1%20What%20one%20commit%20records) now states what the second commit does with a
-> chunk the first already recorded.
-> *Added by the RFC 0–3 review, 2026-09-25.*
-
 Two refinements follow, and both are required:
 
 - **Within one pending block**, a repeated chunk **MAY** be carried once and
@@ -457,9 +436,10 @@ and [RFC 6 §7.2](rfc-6-block-metadata.md#7.2%20Adoption%20is%20conditional%20on
 
 ### 5.4 A block's name is derived here
 
-The engine assembles the block, so it computes the name ([RFC 2 §4](rfc-2-carver.md#4.%20Identity)): a hash, under
-a domain distinct from chunk hashing, of the key scope and the block's chunk
-hashes in order. The name is final before framing begins ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)) and does
+The engine assembles the block, so it computes the name ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)): a hash,
+under a domain distinct from chunk hashing, of the key scope, the encoding
+generation — 0 for a block written by offload — and the block's chunk hashes in
+order. The name is final before framing begins ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)) and does
 not vary between attempts to store one block, so a retry after an unknown outcome
 writes the same object ([RFC 3 §2.5](rfc-3-syncer.md#2.5%20An%20unknown%20outcome%20is%20not%20a%20success)).
 
@@ -467,8 +447,7 @@ writes the same object ([RFC 3 §2.5](rfc-3-syncer.md#2.5%20An%20unknown%20outco
 counts the block.** This is [RFC 6 §2.6](rfc-6-block-metadata.md#2.6%20The%20scope%20of%20a%20count)'s second option: two stores can never name
 one object, so each store's counts are complete for every key it can name, and a
 remote store can be shared between shares whose metadata is separate. The cost is
-dedup across such shares, which today's per-share metadata stores do not provide
-safely anyway. Overturned by a deployment that wants cross-share dedup *and*
+dedup across such shares, which separate stores could not count safely anyway. Overturned by a deployment that wants cross-share dedup *and*
 accepts one metadata store per remote namespace.
 
 ### 5.5 Assembly is sequential, and may change without migration
@@ -499,16 +478,15 @@ file, several small files whole, and the first chunks of another. A file smaller
 than the chunking minimum is exactly one chunk ([RFC 0 §2.1](rfc-0-data-lifecycle.md#2.1%20Entities)), so many small
 files are many small chunks, and they pack like any others.
 
-This matters because S3 is slow on small objects: every put pays a round trip and
-a per-request price whatever its size, and a key prefix accepts a few thousand
-writes per second ([RFC 4 Appendix C.3](rfc-4-remote-tier.md#C.3%20How%20the%20contract%20maps%20to%20S3)). One block per small file would turn a directory
-of a hundred thousand small files into a hundred thousand puts. restic packs blobs
-from many files into its pack files for the same reason.
+This matters because object stores are slow on small objects: every put pays a
+round trip and a per-request price whatever its size ([RFC 4 Appendix C.3](rfc-4-remote-tier.md#C.3%20How%20the%20contract%20maps%20to%20S3)). One
+block per small file would turn a directory of a hundred thousand small files
+into a hundred thousand puts.
 
 - **A pass covers several files** through the journal's `OffloadMany`
   ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)). Its chunk stream is each file's carried chunks, in offset
-  order, one file after another. The pass gathers files until their dirty bytes
-  reach one block target or the oldest reaches the offload age ([§4.2](#4.2%20Offload%20is%20scheduled%20here)).
+  order, one file after another. The pass gathers eligible files ([§4.2](#4.2%20Offload%20is%20scheduled%20here)) until
+  their dirty bytes reach the pass bound of `upload_workers` block targets.
 - **Blocks are cut from that stream** by P1 to P3 alone: whole chunks, at least
   the target, the last block of the pass allowed short.
 - **Only within one share.** A share is one flow ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)) and one key scope
@@ -572,14 +550,6 @@ returned before resolving. The journal refuses the fill if the file changed afte
 it — a write, a release, a truncate — so a write that landed meanwhile wins
 ([RFC 1 §3.4](rfc-1-journal.md#3.4%20Fill), [RFC 0](rfc-0-data-lifecycle.md) I4). A refused fill is not an error: the read is already answered.
 
-> [!important] Pending review — `Fill` takes a version
-> [RFC 1](rfc-1-journal.md)'s `Fill` had no version parameter although this section passed one. A late
-> fill after a write, offload and eviction — or after a truncate down and up — then
-> restored stale bytes and marked them durable.
-> *Added by the RFC 0–3 review, 2026-09-25.*
-
-
-
 ### 6.3 Filling is a decision
 
 [RFC 0 §6.2](rfc-0-data-lifecycle.md#6.2%20Fill) makes filling discretionary and gives the decision to the engine.
@@ -610,11 +580,6 @@ as speculative, which the fetcher never lets delay a demand ([RFC 3 §4.4](rfc-3
 the reader. A random access resets it. Its window **MUST** be bounded in bytes,
 and the bound is subtracted from the capacity a fill may use.
 
-> [!important] Pending review — pre-warm's capacity obligation lives here now
-> RFC 3 no longer carries it: only the engine sees journal capacity. The separate
-> flow is new.
-> *Added by the RFC 0–3 review, 2026-09-25.*
-
 **Pre-warm** is an explicit request over a whole share or subtree. It **MUST NOT**
 drive the journal towards refusing writes; the obligation is the engine's, since
 only the engine sees capacity ([RFC 3 §4.5](rfc-3-syncer.md#4.5%20Speculation%20is%20executed%20here%20and%20decided%20elsewhere) says why). Pre-warm runs on a flow of its
@@ -638,7 +603,7 @@ second is data loss and must be reported as such.
 
 `SEEK_DATA`, `SEEK_HOLE` and sparse-read replies are answered from block
 metadata's hole set, through the allocation interface the engine supplies to [RFC 7](rfc-7-namespace-metadata.md)
-([§9.3](#9.3%20Clone%20adopts%20refs%2C%20and%20offloads%20uncarved%20content%20first) there). They **MUST NOT** be answered from the journal, which cannot tell a
+([RFC 7 §9.3](rfc-7-namespace-metadata.md#9.3%20Residency%20is%20not%20an%20attribute)). They **MUST NOT** be answered from the journal, which cannot tell a
 hole from an evicted extent ([RFC 1 §3.7](rfc-1-journal.md#3.7%20State%20introspection)).
 
 ### 6.7 An absent object is re-resolved exactly once
@@ -658,13 +623,15 @@ retried until a deadline.
 
 A ranged read that fails verification, or runs past the end of the block, is a
 different case: the block is there, but the position recorded for the chunk is
-stale, because the block was rewritten under the same name with a different
-layout ([RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success)). The engine **MUST** read the block's header once, retry at
-the position the header gives, and on success rewrite the chunk's recorded
-position ([RFC 4 §3.4](rfc-4-remote-tier.md#3.4%20Every%20read%20is%20verified%20by%20the%20codec), [RFC 6 §2.2](rfc-6-block-metadata.md#2.2%20Chunk)). If the header does not list the chunk, or the
-retry fails too, the chunk is corrupt. A verification failure of a whole block, a
-transport error or a timeout is not evidence of either case, and **MUST NOT**
-trigger a re-resolution or a repair.
+stale, because two passes in flight wrote identical chunk lists under one name
+with different layouts ([RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success)). The store the engine composes repairs that
+inside its read: it reads the block's header, retries at the position the header
+gives, and yields the chunk with the range it was actually read from
+([RFC 4 §3.4](rfc-4-remote-tier.md#3.4%20Every%20read%20is%20verified%20by%20the%20codec)). When that range differs from the recorded one, the engine **MUST**
+rewrite the chunk's recorded position ([RFC 6 §2.2](rfc-6-block-metadata.md#2.2%20Chunk)), so the next read goes
+straight there. A chunk the repair cannot find is corrupt (`ErrCorrupt`), and a
+transport error or a timeout is not evidence of either case: neither **MUST**
+trigger a re-resolution.
 
 Relocation is safe only while this rule holds ([RFC 9 §4.3](rfc-9-gc.md#4.3%20A%20reader%20can%20hold%20the%20old%20location)). An engine that fails
 the first miss turns every relocation into a window of spurious read errors; one
@@ -701,8 +668,7 @@ little more than it needs, a packed small file is one ranged read ([§5.7](#5.7%
 and a scan moves each block in one request. Read-ahead and pre-warm always ask for
 whole blocks ([§6.4](#6.4%20Speculation%20is%20planned%20here%2C%20and%20yields%20to%20demand%20and%20to%20writes)).
 
-The quarter is taken from JuiceFS, which uses the same rule; it is not a
-measurement of this system. Overturned by a comparison of bytes fetched and read
+The quarter is borrowed from prior art; it is not a measurement of this system. Overturned by a comparison of bytes fetched and read
 latency, on a random-read and a scan workload, across a few thresholds.
 
 ## 7. Local space
@@ -710,7 +676,8 @@ latency, on a random-read and a scan workload, across a few thresholds.
 **Local space includes the upload spool.** The engine's `Store` encodes each
 upload into a spool file ([RFC 3 §3.4](rfc-3-syncer.md#3.4%20One%20put%20per%20block)). The engine places the spools in a directory
 on local storage it accounts for, and sets aside `upload_workers` times the
-largest encoded block from the capacity it divides among the journals. A spool
+largest encoded block — the block target plus one chunk, each at its chain's
+`MaxEncodedLen` ([RFC 5 §3.1](rfc-5-transforms.md#3.1%20Interfaces)) — from the capacity it divides among the journals. A spool
 therefore never competes with journal writes for space.
 
 ### 7.1 Eviction is chosen here, and needs no new record
@@ -732,18 +699,14 @@ The journal refuses a write it cannot reserve for, and does not evict for itself
 ([RFC 1 §7](rfc-1-journal.md#7.%20Capacity)). The engine answers the refusal, per [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model):
 
 1. evict ([§7.1](#7.1%20Eviction%20is%20chosen%20here%2C%20and%20needs%20no%20new%20record)), then retry;
-2. if nothing is evictable, repack ([§7.3](#7.3%20Repack%20is%20triggered%20here)), then retry;
-3. if neither frees space, refuse the write with a distinguishable error.
+2. if nothing is evictable because what is held is dirty, and the remote is
+   available, offload it at once ([§4.2](#4.2%20Offload%20is%20scheduled%20here)'s capacity trigger), evict what that
+   made durable, then retry;
+3. if still nothing frees space, repack ([§7.3](#7.3%20Repack%20is%20triggered%20here)), then retry;
+4. if none of these frees space, refuse the write with a distinguishable error.
 
 The retry is bounded by the caller's deadline. A wait that outlives it is a
 refusal the client did not get.
-
-> [!important] Pending review — pace writes before the limit
-> Measured on v0.33.0: once 24 GiB of writes crossed the 15.5 GB journal budget,
-> clients saw multi-second submission stalls (p99.9 430 ms, max 3.2 s) with no
-> slowdown before them. The refusal path above is correct; nothing paced writes
-> ahead of it.
-> *Added from the external staging benchmark of v0.33.0 (Hetzner AX42 pair, 1 GbE, Hetzner Object Storage and Cubbit DS3, September 2026), 2026-09-25.*
 
 ### 7.2.1 Writes are paced before the limit, not stopped at it
 
@@ -752,8 +715,8 @@ Between a **soft threshold** of dirty bytes and the limit, the engine delays eac
 write in proportion to how far past the threshold the journal is, scaled to the
 measured rate at which offload makes bytes durable, so writes slow to the drain rate
 instead of running at full speed into a wall. Above the soft threshold every file
-with dirty bytes is offload-eligible ([§4.2](#4.2%20Offload%20is%20scheduled%20here)). Linux's `balance_dirty_pages` does the
-same for the page cache, for the same reason.
+with dirty bytes is offload-eligible ([§4.2](#4.2%20Offload%20is%20scheduled%20here)). Without pacing, clients see no slowdown
+and then multi-second stalls once the limit is reached.
 
 The delay is bounded by the caller's deadline, like the retry above, and the
 engine **SHOULD** state the submission-latency objective the pacing is tuned
@@ -796,6 +759,10 @@ GC as parameters at composition; GC holds no schedule and no threshold of its ow
   default, enabled per remote namespace by the operator, because it spends a
   read and a put per block and the break-even depends on the backend's pricing.
 
+GC reads and puts relocated blocks through a syncer flow it opens on the
+namespace's store, so relocation shares the pool's memory bound, retries and
+health refusal ([RFC 3](rfc-3-syncer.md)); its deletes go to the remote store directly ([RFC 9](rfc-9-gc.md)).
+
 GC is correct at any cadence and any threshold, including two passes at once
 ([RFC 9 §7.3](rfc-9-gc.md#7.3%20When%20GC%20runs%20is%20the%20engine%27s)). So this is policy in the sense of [§3.2](#3.2%20Policy%20never%20makes%20an%20action%20safe): the engine **MUST NOT**
 serialise passes, delay them or suppress them as a way of keeping content safe,
@@ -826,8 +793,8 @@ carve and pack blocks the syncer will refuse.
 
 Sustained inability to offload **MUST** be a health condition of the share ([RFC 0](rfc-0-data-lifecycle.md)
 [§10.2](rfc-0-data-lifecycle.md#10.2%20No%20state%20requires%20intervention%20to%20leave)), and **MUST** be distinguishable from the remote being unreachable: an offload
-that fails on a metadata conflict with the remote healthy is the wedge the
-residency decision record describes, and it looks healthy to a probe.
+that fails on a metadata conflict with the remote healthy is a wedge that looks
+healthy to a probe.
 
 What the engine does with ill health is policy: it **MAY** slow offload attempts and
 suspend eviction. It **MUST NOT** stop attempting altogether without something
@@ -838,11 +805,13 @@ independent — a probe — that will observe recovery.
 | Condition | The engine |
 | --- | --- |
 | Remote unavailable | keeps accepting writes while capacity allows; keeps retrying offloads with backoff; fails reads of **Remote** extents ([§6.5](#6.5%20An%20unreachable%20remote%20fails%20the%20read%2C%20distinguishably)); reports degraded health |
-| Journal at capacity, remote available | evicts, then repacks, then accepts ([§7.2](#7.2%20A%20capacity%20refusal%20comes%20back%20here)) |
+| Journal at capacity, remote available | evicts; if everything is dirty, offloads then evicts; then repacks; then accepts ([§7.2](#7.2%20A%20capacity%20refusal%20comes%20back%20here)) |
 | Journal at capacity, remote unavailable | refuses the write; everything held is **Dirty** |
 | Metadata unwritable | offload fails and extents stay **Dirty**; reports the offload condition ([§8.1](#8.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included)) |
 | Crash | recovers each component independently, then reseeds ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)); does not reconcile the oracles by assuming they agree |
 | Local content corrupt | a carved extent the journal dropped resolves **Remote** and is refetched; an uncarved one resolves **Lost** and fails ([RFC 1 §9.3](rfc-1-journal.md#9.3%20Torn%20and%20corrupt%20records)) |
+| Material provider unavailable | as remote unavailable: reads of affected **Remote** extents fail transiently, offloads back off ([RFC 5 §2.7](rfc-5-transforms.md#2.7%20Failures)) |
+| Material destroyed | reads of the affected extents fail as **Lost** ([RFC 5 §2.7](rfc-5-transforms.md#2.7%20Failures)) |
 
 ### 8.3 The engine surfaces no serialization conflict
 
@@ -856,12 +825,6 @@ The per-file guard of [§4.3](#4.3%20Commits%20for%20one%20file%20are%20serialis
 be relied on for correctness: [RFC 6 §5.1](rfc-6-block-metadata.md#5.1%20No%20record%20is%20written%20by%20both%20paths) removes offload-against-writer conflicts
 structurally, and a conflict the guard missed is retried like any other.
 
-> [!important] Pending review — durability is observable, and benchmarks stop at it
-> Measured on v0.33.0: throughput acknowledged to the client ranked Cubbit 15% ahead
-> of Hetzner; throughput made durable at the store ranked it 30% behind. A benchmark
-> that stops at client acknowledgement measures the journal, not the system.
-> *Added from the external staging benchmark of v0.33.0 (Hetzner AX42 pair, 1 GbE, Hetzner Object Storage and Cubbit DS3, September 2026), 2026-09-25.*
-
 ### 8.4 How far behind durability is, is observable
 
 The engine **MUST** report, per share and summed: dirty bytes, the drain rate over a
@@ -869,7 +832,9 @@ recent window, and the time to drain at that rate; and **MUST** offer a way to w
 until every byte written before the call is durable. The journal's own counters
 ([RFC 1 §3.7](rfc-1-journal.md#3.7%20State%20introspection)) say how much is dirty; only the engine knows how fast it is
 leaving. A benchmark of the write path **MUST** stop its clock at that wait, not at
-the last client acknowledgement ([§13.5](#13.5%20Benchmarks)).
+the last client acknowledgement ([§13.5](#13.5%20Benchmarks)): a benchmark that stops at
+acknowledgement measures the journal, and can rank two stores in the opposite
+order from their durable throughput.
 
 ## 9. The facade
 
@@ -882,20 +847,47 @@ Adapters reach content through one surface, and never through a component:
 | `Write(file, off, bytes)` | [§4.1](#4.1%20The%20facade%20orders%20a%20write%3B%20adapters%20do%20not) |
 | `Read(file, off, len)` | [§6](#6.%20The%20read) |
 | `Commit(file)` | journal sync, nothing else ([§9.4](#9.4%20Commit%20is%20answered%20by%20the%20journal)) |
-| `Truncate(file, size)` | [RFC 6 §6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation) in one transaction, then journal `Truncate` |
-| `Deallocate(file, off, len)` | [§9.2](#9.2%20Deallocate%20records%20a%20hole%3B%20it%20does%20not%20write%20zeros) |
-| `Release(file)` | [RFC 6 §6.4](rfc-6-block-metadata.md#6.4%20Delete) refs, then journal `Delete` — the implementation of [RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees) |
+| `Truncate(file, size)` | [RFC 6 §6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation) in one transaction, then journal `Truncate`, under the file's guard ([§4.3](#4.3%20Commits%20for%20one%20file%20are%20serialised%20here)) |
+| `Deallocate(file, off, len)` | [§9.2](#9.2%20Deallocate%20records%20a%20hole%3B%20it%20does%20not%20write%20zeros), under the file's guard |
+| `Release(file)` | [RFC 6 §6.4](rfc-6-block-metadata.md#6.4%20Delete) refs, then journal `Delete`, under the file's guard — the implementation of [RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees) |
 | `Clone(src, dst, …)` | [§9.3](#9.3%20Clone%20adopts%20refs%2C%20and%20offloads%20uncarved%20content%20first) |
-| `Size`, `Allocation` | the interfaces of [§2.1](#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one), read-only |
-| `Stats`, `Health` | [§8](#8.%20Health%20and%20failure) |
+| `Size`, `Times`, `Allocation` | the interfaces of [§2.1](#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one), read-only |
+| `Stats`, `Health`, `WaitDurable` | [§8](#8.%20Health%20and%20failure) |
 
 The facade **MUST NOT** return a component — a journal, a remote store — to its
 caller. A caller holding one can do what the facade orders, out of order.
 
+Signatures are indicative; the obligations are normative.
+
+```go
+type Engine interface {
+    Write(ctx context.Context, id Identity, file FileID, off int64, p []byte) error
+    Read(ctx context.Context, id Identity, file FileID, off int64, p []byte) (int, error) // ErrLost, ErrUnavailable
+    Commit(ctx context.Context, file FileID) error
+    Truncate(ctx context.Context, file FileID, size int64) error
+    Deallocate(ctx context.Context, file FileID, off, n int64) error
+    Release(ctx context.Context, file FileID) error
+    Clone(ctx context.Context, src, dst FileID, srcOff, dstOff, n int64) error
+    Size(ctx context.Context, file FileID) (int64, error)
+    Times(ctx context.Context, file FileID) (mtime, ctime time.Time, err error)
+    Allocation(ctx context.Context, file FileID, off int64) (Span, error)
+    WaitDurable(ctx context.Context) error // every byte written before the call is durable (§8.4)
+    Stats() Stats
+    Health() Health
+    Close() error
+}
+
+var (
+    ErrLost        = errors.New("engine: content lost")        // §6.1, reported as data loss
+    ErrUnavailable = errors.New("engine: remote unavailable")  // §6.5, transient
+    ErrNoSpace     = errors.New("engine: journal full")        // §7.2
+)
+```
+
 ### 9.2 Deallocate records a hole; it does not write zeros
 
 Deallocation adds a hole record for the range, drops or narrows the
-refs over it and advances `epoch`, in one transaction ([RFC 6 §3.5](rfc-6-block-metadata.md#3.5%20Operations%20that%20make%20holes), [§6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation)), then has
+refs over it, advances the truncation stamp and records the removal, in one transaction ([RFC 6 §3.5](rfc-6-block-metadata.md#3.5%20Operations%20that%20make%20holes), [§6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation)), then has
 the journal stop holding the range.
 
 It **MUST NOT** stage zeros through the write path. Zeros staged as data consume
@@ -936,8 +928,8 @@ compensate for local storage that is not durable.
 
 The facade **MUST NOT** offer an operation that tells the journal an extent is
 remote, cold, or pinned. Residency is computed ([RFC 0 §4.2](rfc-0-data-lifecycle.md#4.2%20The%20residency%20function)). An operation that
-records it is a second oracle, and every such operation in the current facade
-exists only because the journal once was one ([§12](#12.%20Deviations)).
+records it is a second oracle.
+
 
 ## 10. Invariants
 
@@ -946,11 +938,11 @@ exists only because the journal once was one ([§12](#12.%20Deviations)).
 | E1 | The engine persists nothing, and no answer it gives outlives the request that asked. |
 | E2 | Every capability is a declared parameter, supplied at construction; none is negotiated at run time. |
 | E3 | No policy gate is the only thing preventing data loss. |
-| E4 | An offload reports exactly the extents whose commits succeeded, in offer order. |
+| E4 | An offload reports exactly the extents whose commits succeeded, block by block, in any order. |
 | E5 | A share with no remote tier reports nothing durable. |
-| E6 | Two offload passes of one file never overlap, and a commit carries the epoch captured at offer. |
+| E6 | Two offload passes of one file never overlap; truncate, deallocate and release never interleave with an offer; a commit carries the truncation stamp captured at offer. |
 | E7 | The dedup oracle never answers from a block that has not committed, and a chunk repeated across blocks in flight is carried in each. |
-| E8 | A block's name is derived from its scope and ordered chunk hashes, and is the same on every attempt. |
+| E8 | A block's name is derived from its scope, encoding generation and ordered chunk hashes, and is the same on every attempt. |
 | E9 | A read returns zeros only for a hole, and fails distinguishably for **Lost** and for an unreachable remote. |
 | E10 | A read's reply never depends on the fill. |
 | E11 | Only durability decides whether an extent may be evicted; locks, opens and snapshots never do. |
@@ -958,96 +950,49 @@ exists only because the journal once was one ([§12](#12.%20Deviations)).
 | E13 | No background work outlives a component it uses. |
 | E14 | A get that finds its object absent is re-resolved exactly once, and fails as **Lost** only if the second resolution misses. |
 | E15 | GC's cadence and relocation threshold are engine parameters, and no GC safety property depends on them. |
+| E16 | Journal content outside recorded existence is never offloaded: a failed existence commit deallocates the write, and reseed drops what a crash left. |
 
-E3, E4, E5, E7, E9 and E11 are the ones whose violation loses content or serves
-wrong content; E14 is the one relocation's safety rests on ([RFC 9 §4.3](rfc-9-gc.md#4.3%20A%20reader%20can%20hold%20the%20old%20location)). E10, E12 and E13 are the ones whose violation stops a share, or
+E3, E4, E5, E6, E7, E9, E11 and E16 are the ones whose violation loses content or
+serves wrong content; E14 is the one relocation's safety rests on
+([RFC 9 §4.3](rfc-9-gc.md#4.3%20A%20reader%20can%20hold%20the%20old%20location)). E10, E12 and E13 are the ones whose violation stops a share, or
 makes it look stopped. E1 and E2 are the ones whose violation hides the others.
 
 ## 11. Consequences for RFC 0
 
-1. **[§1.2](#1.2%20What%20it%20owns) and I6.** "A component MUST NOT import another component in this set"
-   cannot hold for the component whose job is composition. It holds for every
-   component the engine composes; the engine imports them and nothing imports the
-   engine ([§2.1](#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one)). I6 should say so, or it reads as forbidding the root.
-2. **[§8.1](#8.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included), the order of eviction.** "Record that the content is no longer local,
-   then release" reads as a metadata write about locality, which [§4.1](#4.1%20The%20facade%20orders%20a%20write%3B%20adapters%20do%20not) forbids
-   metadata to hold. Under [RFC 6 §3.2](rfc-6-block-metadata.md#3.2%20Every%20offset%20is%20in%20exactly%20one%20class) the record that makes release safe is the
-   offload commit, made before the offloaded bit was set, and eviction records nothing
-   ([§7.1](#7.1%20Eviction%20is%20chosen%20here%2C%20and%20needs%20no%20new%20record)). The ordering argument is unchanged; the record it names is a different
-   one.
-3. **[§6.2](#6.2%20The%20reply%20is%20served%20from%20the%20fetched%20bytes) and open question 2.** Fill policy is specified, as a proposal, in [§6.3](#6.3%20Filling%20is%20a%20decision).
-   The question's measurement stands.
+1. **[RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy) and I6.** "A component MUST NOT import another component in this
+   set" cannot hold for the component whose job is composition. It holds for
+   every component the engine composes; the engine imports them and nothing
+   imports the engine ([§2.1](#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one)). I6 should say so, or it reads as forbidding the root.
+2. **[RFC 0 §8.1](rfc-0-data-lifecycle.md#8.1%20Evict), the order of eviction.** "Record that the content is no longer
+   local, then release" reads as a metadata write about locality, which
+   [RFC 6 §1.1](rfc-6-block-metadata.md#1.1%20Non-goals) forbids. The record that makes release safe is the offload commit,
+   made before the offloaded bit was set, and eviction records nothing
+   ([§7.1](#7.1%20Eviction%20is%20chosen%20here%2C%20and%20needs%20no%20new%20record)): release only after the offload commit is durable.
+3. **[RFC 0 §6.2](rfc-0-data-lifecycle.md#6.2%20Fill) and open question 2.** Fill policy is specified, as a proposal, in
+   [§6.3](#6.3%20Filling%20is%20a%20decision). The question's measurement stands.
 
-## 12. Deviations
+## 12. Observability
 
-The current implementation was checked against this document after it was
-written. The design above does not follow from any of what is listed here.
-Rows already recorded by another RFC are cited there rather than restated, except
-where the engine is the site that must change.
+The engine exports what only it can see; each component exports its own
+([RFC 1 §3.9](rfc-1-journal.md#3.9%20Metrics), [RFC 3 §2.12](rfc-3-syncer.md#2.12%20What%20the%20syncer%20makes%20observable), [RFC 4 §4.12](rfc-4-remote-tier.md#4.12%20What%20a%20store%20makes%20observable), [RFC 6 §11.2](rfc-6-block-metadata.md#11.2%20Observability)). Every metric is
+labelled by share.
 
-### 12.1 Composition
-
-| Requirement | Current state | Evidence |
+| Answers | Metric | Type |
 | --- | --- | --- |
-| [§2.1](#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one) one composition root | Composition is split between the runtime, which opens the journal, builds the remote chain and the syncer, and `engine.New`, which receives them. The runtime names concrete component types throughout. | `runtime/shares/blockstore_config.go:251`–`:447`; `engine/engine.go:152` |
-| [§2.1](#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one) no setters on a serving engine | The remote block store, the committer and the metrics sink are wired by setters after construction, and the code documents that they may run on a serving share. | `engine/syncer.go:235`, `:259`; `engine/engine.go:354`; `engine/sync_drain.go:49`–`:59` |
-| [§2.2](#2.2%20Capabilities%20are%20parameters%2C%20never%20assertions) no type assertions | Capabilities are negotiated by assertion, each with a silent fallback, at fifteen sites: the remote block store (offload disabled), the metadata coordinator and synced-hash store, the committer (offload disabled), the chunk sealer (identity sealing), the metrics sink, four optional sink capabilities in the offload closure, the stale-claim enumerator (janitor becomes a no-op), and the covering and successor lookups ([RFC 6 §11](rfc-6-block-metadata.md#11.%20Deviations) records their cost). | `runtime/shares/blockstore_config.go:335`, `:355`, `:371`; `engine/syncer.go:244`, `:263`; `engine/engine.go:355`, `:360`; `engine/flush_closure.go:188`, `:230`, `:234`, `:314`; `engine/sync_lifecycle.go:116`; `engine/read_internal.go:217`, `:289`, `:354` |
-| [§2.4](#2.4%20Settings%20are%20validated%20once%2C%20and%20refused%20rather%20than%20replaced) settings refused | Invalid chunking settings are replaced by the default profile in three places, one with a warning and two silently. No record of the profile that produced a share's content was found by search. | `runtime/shares/journal_open.go:95`–`:99`; `engine/sync_drain.go:110`–`:113`; `carver/carver.go:91`–`:93` |
-| [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) reseed before release | There is no reseed. The offloaded bit is written into each record's header, the syncer's start path states that recovery re-marks only not-yet-carved records dirty, and eviction is enabled at start from remote health alone. | `journal/flush.go:244`–`:257`; `engine/sync_lifecycle.go:53`–`:55`; `engine/engine.go:247` |
-| [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) join before close | The syncer waits a bounded time for its loops, logs if they have not exited, and the engine then closes the journal and the remote under them. | `engine/sync_lifecycle.go:201`–`:203`; `engine/engine.go:332`–`:342` |
-| [§9.1](#9.1%20One%20facade%2C%20shaped%20like%20content) no component returned | The facade returns its journal and its remote store to callers. | `engine/engine.go:368`, `:422` |
+| dirty bytes, drain rate over a recent window, and time to drain ([§8.4](#8.4%20How%20far%20behind%20durability%20is%2C%20is%20observable)) | `dittofs_engine_dirty_bytes`, `dittofs_engine_drain_bytes_per_second`, `dittofs_engine_drain_seconds` | gauge |
+| offload passes, labelled `result`; a failure is also a health input ([§8.1](#8.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included)) | `dittofs_engine_offload_passes_total` | counter |
+| busy time of each stage — carve, assemble, upload, commit — over a window ([§13.5](#13.5%20Benchmarks)) | `dittofs_engine_stage_busy_ratio` | gauge |
+| reads, labelled `class` = `journal`, `hole`, `remote`, `lost` or `unavailable` | `dittofs_engine_reads_total` | counter |
+| fetches, labelled `shape` = `chunks` or `block` ([§6.8](#6.8%20A%20cold%20read%20asks%20for%20chunks%2C%20or%20for%20the%20block)), and bytes fetched against bytes read | `dittofs_engine_fetches_total`, `dittofs_engine_fetch_bytes_total` | counter |
+| fills, labelled `result` = `done`, `declined` or `refused` ([§6.3](#6.3%20Filling%20is%20a%20decision)) | `dittofs_engine_fills_total` | counter |
+| re-resolutions after an absent object, and positions rewritten after a repair ([§6.7](#6.7%20An%20absent%20object%20is%20re-resolved%20exactly%20once)) | `dittofs_engine_reresolves_total`, `dittofs_engine_position_rewrites_total` | counter |
+| evictions and bytes freed; write delays from pacing; refusals ([§7](#7.%20Local%20space)) | `dittofs_engine_evicted_bytes_total`, `dittofs_engine_pacing_seconds`, `dittofs_engine_write_refusals_total` | counter, histogram, counter |
+| journal content dropped at reseed as outside existence ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)) | `dittofs_engine_reseed_dropped_bytes_total` | counter |
 
-### 12.2 Durability and policy placement
-
-| Requirement | Current state | Evidence |
-| --- | --- | --- |
-| [§4.6](#4.6%20A%20share%20with%20no%20remote%20tier%20never%20reports%20durability) no durability without a remote | On a share with no remote tier the offload closure commits manifest rows through a local sink and returns the committed extents, and the journal marks them durable. What keeps them from being evicted is the engine's eviction gate: carve not wired, so eviction stays suspended. That is [§3.2](#3.2%20Policy%20never%20makes%20an%20action%20safe)'s forbidden shape — the gate is the only thing between those extents and **Lost**. | `engine/flush.go:238`–`:243`; `engine/flush_closure.go:167`–`:174`; `journal/flush.go:183`; `engine/sync_health.go:218`–`:220`; `engine/engine.go:212`–`:247` |
-| [§3.1](#3.1%20Policy%20is%20decided%20here%20and%20executed%20below), [§4.2](#4.2%20Offload%20is%20scheduled%20here) offload policy here | The eligibility thresholds — block size and maximum age — are journal configuration, applied inside the journal's `Offload` when the caller passes none, which the background dispatcher does. | `journal/flush.go:143`–`:152`; `journal/store.go:50`–`:51`, `:112`–`:113`; `engine/carve_dispatch.go:150` (the dispatcher passes no thresholds) |
-| [§9.4](#9.4%20Commit%20is%20answered%20by%20the%20journal) commit answered by the journal | A share's `commit_ack: block-store` makes CLOSE and COMMIT run an offload inline and wait for the put, and a store's `durable` setting can declare the journal not durable; acknowledgement is then `localDurable \|\| (Finalized && remoteDurable)`. Both settings, the inline path and the formula are to be deleted, not migrated. | `engine/flush.go:554`; `engine/engine.go:134`–`:147`, `:401`–`:416`; `pkg/block/blockstore.go:45`; `internal/adapter/common/write_payload.go:82`; `handlers/shares.go:88`–`:94` |
-| [§4.2](#4.2%20Offload%20is%20scheduled%20here), [§8.1](#8.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included) offload retried and never stopped | While the remote is unhealthy the dispatcher skips every pass, and an explicit offload returns "not finalized". Only the liveness probe can clear it. | `engine/carve_dispatch.go:45`; `engine/sync_drain.go:64`–`:70` |
-| [§3.1](#3.1%20Policy%20is%20decided%20here%20and%20executed%20below), [§7.1](#7.1%20Eviction%20is%20chosen%20here%2C%20and%20needs%20no%20new%20record), [§7.2](#7.2%20A%20capacity%20refusal%20comes%20back%20here) eviction and refusal here | The journal evicts to satisfy its own write: its capacity gate selects coldest-first segments, evicts, backpressures and finally refuses — none of it through the engine. Admission reads a counter without reserving (the code says so). | `journal/evict.go:166`, `:453`–`:539` |
-| [§4.3](#4.3%20Commits%20for%20one%20file%20are%20serialised%20here) the engine's guard, per file | The outcome holds: passes of one file do not overlap. But the guard is the journal's shard-scoped offload lock, held across the callback, and commits within a pass take a 256-stripe lock in the engine keyed by a hash of the file id. Both serialise unrelated files that collide, and the first puts the engine's decision inside the journal. | `journal/flush.go:98`–`:100`, `:118`–`:120`; `engine/flush.go:115`–`:135` |
-| [§4.4](#4.4%20The%20truncation%20epoch%20is%20captured%20at%20offer%20and%20checked%20at%20commit) epoch | No epoch is captured or checked; the shape record it lives in does not exist ([RFC 6 §11](rfc-6-block-metadata.md#11.%20Deviations)). | `engine/flush_closure.go` (no epoch in the closure) |
-| [§7.5](#7.5%20When%20GC%20runs%2C%20and%20what%20it%20relocates%2C%20is%20decided%20here) GC policy is the engine's | GC is scheduled by a process-wide ticker in the runtime, fifteen minutes by default, started from the server command; the relocation threshold is a server-wide runtime default applied to every remote. Neither is composed with the engine or configured per remote namespace. Passes are serialised by a process-local lock ([RFC 9 §11](rfc-9-gc.md#11.%20Deviations)). | `runtime/blockgc_scheduler.go:18`–`:21`; `cmd/dfs/commands/start.go:439`–`:440`; `runtime/runtime.go:1146`; `runtime/blockgc.go:479` |
-| [§8.1](#8.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included) offload in health | A failed pass increments a lifetime counter and logs a warning. Engine health is the local store's closed flag and the remote's probe; share health is the worst of engine and metadata. Offload failure reaches neither. | `engine/carve_dispatch.go:152`–`:153`; `engine/health.go:41`–`:79`; `runtime/shares/healthcheck.go:59`–`:95` |
-
-### 12.3 Assembly
-
-| Requirement | Current state | Evidence |
-| --- | --- | --- |
-| [§5.1](#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output) assembly in the engine | Block assembly — the pending batch, the target, emission — is inside the carver, which [RFC 2 §1.1](rfc-2-carver.md#1.1%20Non-goals) forbids. | `carver/carver.go:62`–`:84`, `:175`–`:182`, `:195`–`:217` |
-| [§5.2](#5.2%20The%20target%20counts%20carried%20bytes) target counts carried bytes | The batch counts every chunk it tiles, adopted ones included, and emits when that count reaches the target. | `carver/carver.go:176`, `:180` |
-| [§5.3](#5.3%20The%20dedup%20oracle%20never%20sees%20an%20uncommitted%20block) no binding guard | The oracle answers from the synced-hash marker ([RFC 6 §11](rfc-6-block-metadata.md#11.%20Deviations)) through an in-process adoption guard in the GC package, which a second process cannot see. | `engine/flush.go:148`–`:153` |
-| [§5.4](#5.4%20A%20block%27s%20name%20is%20derived%20here) derived name | The name is sixteen random bytes; a separate hash is taken over the framed block bytes. | `engine/flush.go:392`, `:436` |
-| [§5.1](#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output) one buffer | A carried chunk is copied into the carver's arena, the run is read through a separate 16 MiB buffer per run, and the framed block is built in a third buffer. | `carver/carver.go:223`–`:237`; `engine/flush_closure.go:112`; `engine/flush.go:397`–`:403` |
-
-### 12.4 The read
-
-| Requirement | Current state | Evidence |
-| --- | --- | --- |
-| [§6.1](#6.1%20Resolution%20is%20a%20join%2C%20computed%20per%20request) per missing extent | The journal reports two booleans for the whole window, not extents, so the engine fetches every covering chunk of the window when any byte is missing. | `journal/index.go:293`–`:296`; `engine/read_internal.go:56`–`:64`; `engine/fetch.go:491`–`:499` |
-| [§6.1](#6.1%20Resolution%20is%20a%20join%2C%20computed%20per%20request) hole vs uncarved | With no existence records, a missing extent no ref covers is served as zeros whatever its cause, and on a share with no remote tier a missing extent is never looked up at all. | `engine/read_internal.go:56` |
-| [§6.2](#6.2%20The%20reply%20is%20served%20from%20the%20fetched%20bytes) reply independent of fill | Every demanded fetch fills, and the read is answered by re-reading the journal afterwards. A fill failure fails the fetch, and a window still unfilled after two tries fails the read. | `engine/fetch.go:669`–`:674`; `engine/read_internal.go:117`–`:131` |
-| [§6.3](#6.3%20Filling%20is%20a%20decision) fill is a decision | There is no fill policy: every demanded and every read-ahead fetch fills. Read-ahead keeps 64 blocks ahead of a sequential reader. | `engine/fetch.go:460`, `:669`; `engine/types.go:56`; `engine/readahead.go:80`–`:89` |
-| [§6.4](#6.4%20Speculation%20is%20planned%20here%2C%20and%20yields%20to%20demand%20and%20to%20writes) pre-warm yields | Warm fetches every chunk of every file until done, cancelled, or the journal refuses on capacity, which ends the run. | `engine/warm.go:60`–`:63`, `:184`–`:186` |
-| [RFC 3 §2.1](rfc-3-syncer.md#2.1%20A%20worker%20pool%20is%20the%20only%20concurrency%20control) one bound per half | Each cold read and each warm run builds its own fetch group bounded at the configured parallelism; the read-ahead pool is a third. Total fetches in flight scale with concurrent readers. | `engine/fetch.go:31`–`:39`, `:540`; `engine/warm.go:175`; `engine/sync_queue.go:89`–`:92` |
-| [§6.7](#6.7%20An%20absent%20object%20is%20re-resolved%20exactly%20once) re-resolve once | Mostly met. An absent object is reported as `ErrChunkNotFound` by both backends and passed through the transform chain unchanged, and the fetch re-resolves the locator exactly once on it, excluding the deterministic pre-block-format case; a second miss fails as data loss. Not met when the second resolution names **no** location — a synced marker the sweep has cleared: the fetch reads that as "not uploaded yet" and succeeds with nothing, and the read then fails only because the journal still reports the window cold. Eviction persists that mark, so today the read fails with `ErrChunkNotFound` rather than returning zeros (verified by test); zeros would need a second fault that loses the journal's eviction record, since the window would then read as a hole. The rule is met by accident of the journal's mark, not by the fetch. | `engine/fetch.go:250`–`:266`, `:289`–`:291`, `:634`–`:645`; `remote/s3/store.go:487`; `remote/memory/store.go:93`; `middleware/middleware.go:119`–`:123`; `engine/read_internal.go:126`–`:131` |
-| [§6.6](#6.6%20Allocation%20answers%20from%20the%20hole%20set) allocation from the hole set | `SEEK` is answered from the journal's extents joined with the manifest rows. | `engine/dataextents.go:61`, `:84` |
-| E1 no dead state | An in-memory read cache is configured and started, but nothing on the read path consults it and its only loader always misses, so it is never populated. | `engine/cache.go:46`–`:51`, `:425`; `engine/engine.go:256`–`:275` |
-
-### 12.5 The facade
-
-| Requirement | Current state | Evidence |
-| --- | --- | --- |
-| [§4.1](#4.1%20The%20facade%20orders%20a%20write%3B%20adapters%20do%20not) the facade orders a write | The facade's write stages bytes only. Authorise and existence are called by each protocol handler around it, at five sites, and existence may be deferred in memory past the acknowledgement ([RFC 7 §12.1](rfc-7-namespace-metadata.md#12.1%20The%20records)). | `internal/adapter/common/write_payload.go:54`–`:69`; `nfs/v3/handlers/write.go:235`, `:266`; `PrepareWrite` also in `nfs/v4`, `smb/handlers/write.go`, `ioctl_copychunk.go`, `ioctl_sparse.go` |
-| [§9.2](#9.2%20Deallocate%20records%20a%20hole%3B%20it%20does%20not%20write%20zeros) deallocate records a hole | Deallocation writes zeros through the journal in 1 MiB pieces across the whole range. | `engine/readwrite.go:330`–`:344` |
-| [§9.1](#9.1%20One%20facade%2C%20shaped%20like%20content) truncate in one transaction | Truncate narrows a straddling row with a store write outside any transaction, then decrements and reaps in a second call, reprojects in a third, then truncates the journal. | `engine/readwrite.go:151`–`:152`, `:233`, `:239`, `:245` |
-| [§9.5](#9.5%20The%20facade%20writes%20no%20residency) no residency writes | The facade marks ranges remote-but-not-local, drops local content to force manifest reads, pins journal versions for snapshots, and rewinds the journal to a version. | `engine/flush.go:639`–`:765` |
-| [RFC 4 Appendix A](rfc-4-remote-tier.md#Appendix%20A%20%E2%80%94%20where%20the%20current%20code%20differs) | The fetch path, derived health, the read-ahead queue and the put live in this package. [RFC 4](rfc-4-remote-tier.md) records it; the move is this package's. | [RFC 4 Appendix A](rfc-4-remote-tier.md#Appendix%20A%20%E2%80%94%20where%20the%20current%20code%20differs) |
-
-This document does not schedule the migration. It records that the current state
-fails the requirements above, and that a discrepancy **MUST NOT** be closed by
-amending the requirement.
+A **Lost** read logs the file and extent at `Error`, once per extent. A share
+entering or leaving an offload health condition logs at `Warn`. A refused write
+logs at `Warn`, rate-limited. Content dropped at reseed logs the file and extent
+at `Warn`: it is the trace of a crash between two steps, and should be rare.
 
 ## 13. Conformance
 
@@ -1062,13 +1007,17 @@ runs against the engine as production composes it ([RFC 1 §11.5](rfc-1-journal.
 | --- | --- |
 | [§3.2](#3.2%20Policy%20never%20makes%20an%20action%20safe) no gate is safety | Disable suspension, pins and health gating; evict as eagerly as possible; run every other Group A check. Assert all pass. |
 | [§4.6](#4.6%20A%20share%20with%20no%20remote%20tier%20never%20reports%20durability) local-only | On a share with no remote, offload repeatedly and force eviction. Assert no offloaded bit is set and every read returns its bytes. |
-| [§4.5](#4.5%20The%20callback%20returns%20only%20what%20committed) committed prefix | Fail the second of three block commits. Assert the journal marks exactly the first block's extents. |
+| [§4.5](#4.5%20The%20callback%20returns%20only%20what%20committed) per-block reporting | Fail the second of three block commits. Assert the journal marks exactly the first and third blocks' extents. |
+| [§4.1](#4.1%20The%20facade%20orders%20a%20write%3B%20adapters%20do%20not) failed existence | Make the existence commit fail. Assert the write is not acknowledged and no offload ever carries its bytes. |
+| [§4.3](#4.3%20Commits%20for%20one%20file%20are%20serialised%20here) guard across truncate | Stall a truncate between its metadata and journal steps; trigger an offload of the file. Assert the offer waits, and no ref lies past `size` after both finish. |
+| [§4.4](#4.4%20The%20truncation%20stamp%20is%20captured%20at%20offer%20and%20checked%20at%20commit) stamp | Bypass the guard, truncate during a pass. Assert the pass's refs past the new size are dropped and its other refs commit. |
 | [§5.3](#5.3%20The%20dedup%20oracle%20never%20sees%20an%20uncommitted%20block) in-flight dedup | Carve a chunk into two blocks in flight; fail the first put after the second commits. Assert the second block carries the chunk's bytes and a read succeeds. |
 | [§5.3](#5.3%20The%20dedup%20oracle%20never%20sees%20an%20uncommitted%20block) retired adoption | Retire a chunk between the oracle's answer and the commit. Assert the commit fails, the run is re-offered carrying the chunk, and the read succeeds. |
 | [§6.1](#6.1%20Resolution%20is%20a%20join%2C%20computed%20per%20request) the join | Drive all four rows of [§6.1](#6.1%20Resolution%20is%20a%20join%2C%20computed%20per%20request), including an uncarved extent the journal lost. Assert **Lost** fails — a check of the other three passes a build that serves zeros. |
 | [§6.2](#6.2%20The%20reply%20is%20served%20from%20the%20fetched%20bytes) fill cannot fail a read | Make `Fill` fail. Assert the read returns the fetched bytes. |
-| [§6.7](#6.7%20An%20absent%20object%20is%20re-resolved%20exactly%20once) re-resolve once | Relocate a chunk between a reader's resolution and its get, then sweep the old block. Assert the read succeeds with one extra resolution. Then retire the chunk outright and assert the read fails as **Lost** — not zeros, and not after a deadline. |
 | [§6.2](#6.2%20The%20reply%20is%20served%20from%20the%20fetched%20bytes) fill loses to a write | Stall a fetch; write the extent; release the stall. Assert the written bytes survive. |
+| [§6.7](#6.7%20An%20absent%20object%20is%20re-resolved%20exactly%20once) re-resolve once | Relocate a chunk between a reader's resolution and its get, then sweep the old block. Assert the read succeeds with one extra resolution. Then retire the chunk outright and assert the read fails as **Lost** — not zeros, and not after a deadline. |
+| [§6.7](#6.7%20An%20absent%20object%20is%20re-resolved%20exactly%20once) stale position | Commit one name from two passes with different layouts, so the recorded position is stale. Assert the read succeeds and the recorded position is rewritten. |
 | [§9.2](#9.2%20Deallocate%20records%20a%20hole%3B%20it%20does%20not%20write%20zeros) deallocate | Deallocate a range larger than free journal capacity. Assert it succeeds, reads as zeros, and consumes no journal capacity. |
 
 ### 13.2 Group B — wedging
@@ -1076,7 +1025,7 @@ runs against the engine as production composes it ([RFC 1 §11.5](rfc-1-journal.
 | Requirement | Check |
 | --- | --- |
 | [§8.1](#8.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included) offload health | Make every offload commit conflict with the remote healthy. Assert share health reports an offload condition, distinct from remote-unreachable, before the journal fills. |
-| [§7.2](#7.2%20A%20capacity%20refusal%20comes%20back%20here) refusal loop | Fill to capacity with durable content. Assert a write succeeds after the engine evicts, with no external action. |
+| [§7.2](#7.2%20A%20capacity%20refusal%20comes%20back%20here) refusal loop | Fill to capacity with durable content. Assert a write succeeds after the engine evicts, with no external action. Repeat with dirty content and the remote available; assert the engine offloads, evicts and accepts. |
 | [§6.4](#6.4%20Speculation%20is%20planned%20here%2C%20and%20yields%20to%20demand%20and%20to%20writes) pre-warm yields | Pre-warm more than free capacity while writing. Assert no write is refused. |
 | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) join | Close with an offload parked in a stalled put. Assert no component is closed while the pass runs. |
 | [RFC 3 §2.1](rfc-3-syncer.md#2.1%20A%20worker%20pool%20is%20the%20only%20concurrency%20control) | Issue N concurrent cold reads. Assert fetches in flight never exceed the configured pool. |
@@ -1088,6 +1037,7 @@ runs against the engine as production composes it ([RFC 1 §11.5](rfc-1-journal.
 | [§2.2](#2.2%20Capabilities%20are%20parameters%2C%20never%20assertions) no assertions | Remove one method from each capability's provider. Assert the build fails, not the behaviour. |
 | [§2.4](#2.4%20Settings%20are%20validated%20once%2C%20and%20refused%20rather%20than%20replaced) settings | Configure `Min ≥ Target`. Assert construction fails. Change a share's profile. Assert it is reported as a migration. |
 | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) reseed | Restart with carved content held locally. Assert no release is requested before reseeding and every reseeded extent is evictable after. |
+| [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) reseed drops outside existence | Crash between a truncate's metadata step and its journal step. Assert reseed drops the journal content past `size` before any offload runs. |
 
 ### 13.4 What must not stand in
 
@@ -1098,46 +1048,41 @@ runs against the engine as production composes it ([RFC 1 §11.5](rfc-1-journal.
 - **A health check that reads the remote probe MUST NOT stand in for [§8.1](#8.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included).** The
   failure it exists for passes the probe.
 
-> [!important] Pending review — end-to-end benchmarks
-> New. Measured on v0.33.0: offload-to-durable throughput was about 28% of raw S3 on
-> both backends (about 30 MB/s against 108 MB/s raw on Hetzner; 21 against 74 on
-> Cubbit). The report attributed it to the upload window sitting at its floor; its
-> own raw figures (one 10 MB PUT alone at 49 MB/s) point instead at a stage before
-> the upload. E1 and the occupancy rule below exist to find out which.
-> *Added from the external staging benchmark of v0.33.0 (Hetzner AX42 pair, 1 GbE, Hetzner Object Storage and Cubbit DS3, September 2026), 2026-09-25.*
-
 ### 13.5 Benchmarks
 
 The component benchmarks ([RFC 1 §11.6](rfc-1-journal.md#11.6%20Benchmarks), [RFC 2 §9.1](rfc-2-carver.md#9.1%20Benchmarks%20and%20quality%20measures), [RFC 3 §7.4](rfc-3-syncer.md#7.4%20Benchmarks)) measure parts. These
-measure the pipeline, and are the ones that say whether the parts compose.
+measure the pipeline, and are the ones that say whether the parts compose. Run
+against a local emulator on every merge and against each real service nightly.
 
-| # | Measures | Setup | Reports |
+| # | Measures | Setup | Target |
 | --- | --- | --- | --- |
-| E1 | offload to durable | sustained writes of non-deduplicating data larger than the journal, against a real store | durable MiB/s as a **fraction of the sizing tool's raw figure** ([RFC 3 §2.11](rfc-3-syncer.md#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) for the same store and pool sizes |
-| E2 | small files | create, write and close 10^4 and 10^5 files of 64 KiB, into directories of 10^2 to 10^5 entries | files/s, derived from wall time and file count; create and overwrite reported separately |
-| E3 | pacing | E1 run below and above the soft threshold of [§7.2.1](#7.2.1%20Writes%20are%20paced%20before%20the%20limit%2C%20not%20stopped%20at%20it) | p50/p99/max submission latency against durable throughput |
-| E4 | cold reads | random 4 KiB and sequential reads of evicted content | p50/p99 latency and bytes fetched per byte read |
+| E1 | offload to durable | sustained writes of non-deduplicating data larger than the journal, against a real store | durable MiB/s ≥ 80% of the sizing tool's raw figure ([RFC 3 §2.11](rfc-3-syncer.md#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) for the same store and pool sizes |
+| E2 | small files | create, write and close 10^4 and 10^5 files of 64 KiB, into directories of 10^2 to 10^5 entries | files/s within 20% across directory sizes; puts per file ≤ 64 KiB / block target, rounded up |
+| E3 | pacing | E1 run below and above the soft threshold of [§7.2.1](#7.2.1%20Writes%20are%20paced%20before%20the%20limit%2C%20not%20stopped%20at%20it) | p99 submission latency ≤ 50 ms and max ≤ 500 ms, at durable throughput within 10% of E1 |
+| E4 | cold reads | random 4 KiB and sequential reads of evicted content | random: one request per read, p99 ≤ 2 store round trips; sequential: bytes fetched per byte read ≤ 1.1 |
 
-**Every stage reports its occupancy** — carver, assembler, upload pool, commit —
-as busy time over a window. A pool that is not full while dirty bytes wait means
-the limit is upstream of it, and E1 is only interpretable with that beside it.
+**Every stage reports its occupancy** ([§12](#12.%20Observability)). A pool that is not full while
+dirty bytes wait means the limit is upstream of it, and E1 is only interpretable
+with that beside it.
 
-Method, from the external benchmark of v0.33.0:
+Method:
 
 - **Three layers.** Measure the raw link, then raw object storage, then the full
   stack, on the same hosts at the same time, and report each layer as a fraction
   of the one below. A number without its layer below cannot be judged.
-- **Data that does not deduplicate.** fio reuses its buffers by default and made
-  2.9× of the bytes written deduplicate; use `--refill_buffers=1
-  --dedupe_percentage=0`, and report bytes stored against bytes written.
+- **Data that does not deduplicate.** A load generator that reuses its buffers
+  makes most of what it writes deduplicate; configure fresh random data, and
+  report bytes stored against bytes written.
 - **The clock stops at durability** ([§8.4](#8.4%20How%20far%20behind%20durability%20is%2C%20is%20observable)), and for small files per-file cost is
-  derived from files per second: fio's completion latency excludes open and
-  close, and under-reported per-file cost by 2.6×.
+  derived from files per second: a per-operation completion latency excludes
+  open and close.
 - **Repeat single-connection cells at least three times**, and report by regime
   rather than as a mean of percentage differences.
 - **Record the network distance** to the store: round-trip time and hop count.
-- **Run long enough to exhaust the local device's write cache** (the report's
-  NVMe halved its rate past about 100 GB) and report the rate after it.
+- **Run long enough to exhaust the local device's write cache**, and report the
+  rate after it.
+
+A regression of more than 10% is reported and does not block a merge.
 
 ## 14. Open questions
 
@@ -1148,33 +1093,21 @@ Method, from the external benchmark of v0.33.0:
    fixed reservation; they behave differently when a write burst arrives mid-warm,
    and neither has been run.
 3. **Randomised assembly** ([§5.5](#5.5%20Assembly%20is%20sequential%2C%20and%20may%20change%20without%20migration), [RFC 2 §11](rfc-2-carver.md#11.%20Open%20questions) question 4). Free to adopt and not a migration.
-   What an observer can recover from object sizes at DittoFS's block sizes has
-   not been measured, so neither has the value of adopting it.
-4. **Zero runs** ([RFC 6 §13.1](rfc-6-block-metadata.md#13.%20Open%20questions)). Recording an all-zero chunk as a hole removes the
-   hottest refcount in the system. The engine sees the chunks before assembly and
-   could do it, but it changes existence from the offload path, which [RFC 6 §5.1](rfc-6-block-metadata.md#5.1%20No%20record%20is%20written%20by%20both%20paths)
-   forbids. Where the recognition belongs is unsettled.
-5. **Copies on the offload path** ([§5.1](#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output), [RFC 2 §11](rfc-2-carver.md#11.%20Open%20questions) question 5). **Answered in design:** no
-   copy at carve time; the block is a plan and the upload re-reads the offered
-   bytes. What the second local read costs against the saved memory is measured
-   by [RFC 3 §7.4](rfc-3-syncer.md#7.4%20Benchmarks) B1 and [RFC 1 §11.6](rfc-1-journal.md#11.6%20Benchmarks) J1, and is unmeasured.
-6. **Key scope** ([§5.4](#5.4%20A%20block%27s%20name%20is%20derived%20here)). The proposal forgoes cross-share dedup. Whether any
+   What an observer can recover from object sizes at this system's block sizes
+   has not been measured, so neither has the value of adopting it.
+4. **Zero runs** ([RFC 6 §13](rfc-6-block-metadata.md#13.%20Open%20questions) question 1). Recording an all-zero chunk as a hole
+   removes the hottest refcount in the system. The engine sees the chunks before
+   assembly and could do it, but it changes existence from the offload path, which
+   [RFC 6 §5.1](rfc-6-block-metadata.md#5.1%20No%20record%20is%20written%20by%20both%20paths) forbids. Where the recognition belongs is unsettled.
+5. **Key scope** ([§5.4](#5.4%20A%20block%27s%20name%20is%20derived%20here)). The proposal forgoes cross-share dedup. Whether any
    deployment wants it enough to accept one metadata store per remote namespace
    is a product question, not a measurement.
-7. **Offload thresholds** ([§4.2](#4.2%20Offload%20is%20scheduled%20here)). The proposed age and byte bounds are the
+6. **Offload thresholds** ([§4.2](#4.2%20Offload%20is%20scheduled%20here)). The proposed age and byte bounds are the
    historical defaults, not measured ones.
-
----
-8. **When a cold read widens to the whole block.** **Answered** in [§6.8](#6.8%20A%20cold%20read%20asks%20for%20chunks%2C%20or%20for%20the%20block):
-   ranged chunks for a small non-sequential read, the whole block otherwise, as a
-   proposal whose quarter-block threshold is measured.
-9. **Packing small files across files.** **Answered** in [§5.7](#5.7%20A%20block%20packs%20chunks%2C%20whichever%20files%20they%20came%20from): packed,
-   within one share, to keep S3's per-request cost off small-file workloads.
-10. **Engine policy the code has and no document states.** Upload delay — not
-   uploading data young enough to be overwritten, as JuiceFS's `--upload-delay`
-   and rclone's `--vfs-write-back` do; the small-file threshold that offloads
-   synchronously; the janitor that requeues a claim older than `ClaimTimeout`;
-   and manual sync. Each is policy and belongs here; none is specified yet.
+7. **Engine policy not yet specified.** Upload delay — not uploading data young
+   enough to be overwritten; a small-file threshold that offloads synchronously;
+   requeueing a claim held too long; and manual sync. Each is policy and belongs
+   here.
 
 ## Appendix A — obligations this document discharges
 
@@ -1188,8 +1121,8 @@ caller. *Explicit* rows name RFC 8 or the engine; *caller* rows name the caller.
 | [RFC 0 §4.1](rfc-0-data-lifecycle.md#4.1%20The%20two%20oracles) | resolve what the journal's absence means | explicit | [§6.1](#6.1%20Resolution%20is%20a%20join%2C%20computed%20per%20request) |
 | [RFC 0 §4.2](rfc-0-data-lifecycle.md#4.2%20The%20residency%20function) | never persist or cache resolved residency | caller | [§6.1](#6.1%20Resolution%20is%20a%20join%2C%20computed%20per%20request), E1 |
 | [RFC 0 §5.2](rfc-0-data-lifecycle.md#5.2%20Offload) | initiate offload by policy | caller | [§4.2](#4.2%20Offload%20is%20scheduled%20here) |
-| [RFC 0 §6.2](rfc-0-data-lifecycle.md#6.2%20Fill), [§11](rfc-0-data-lifecycle.md#11.%20Open%20questions) q2 | specify a fill policy | explicit | [§6.3](#6.3%20Filling%20is%20a%20decision) — proposal; open ([§14.1](#14.%20Open%20questions)) |
-| [RFC 0 §8.1](rfc-0-data-lifecycle.md#8.1%20Evict) | evict in the safe order | caller | [§7.1](#7.1%20Eviction%20is%20chosen%20here%2C%20and%20needs%20no%20new%20record), [§11.2](#11.%20Consequences%20for%20RFC%200) |
+| [RFC 0 §6.2](rfc-0-data-lifecycle.md#6.2%20Fill), [§11](rfc-0-data-lifecycle.md#11.%20Open%20questions) q2 | specify a fill policy | explicit | [§6.3](#6.3%20Filling%20is%20a%20decision) — proposal; open ([§14](#14.%20Open%20questions) q1) |
+| [RFC 0 §8.1](rfc-0-data-lifecycle.md#8.1%20Evict) | evict in the safe order | caller | [§7.1](#7.1%20Eviction%20is%20chosen%20here%2C%20and%20needs%20no%20new%20record), [§11](#11.%20Consequences%20for%20RFC%200) item 2 |
 | [RFC 0 §8.2](rfc-0-data-lifecycle.md#8.2%20Reclaim) | drive reclaim | caller | [§7.3](#7.3%20Repack%20is%20triggered%20here) |
 | [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model) | one behaviour per failure condition | caller | [§8.2](#8.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here) |
 | [RFC 0 §10.2](rfc-0-data-lifecycle.md#10.2%20No%20state%20requires%20intervention%20to%20leave) | sustained offload failure is share health | caller | [§8.1](#8.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included) |
@@ -1197,52 +1130,86 @@ caller. *Explicit* rows name RFC 8 or the engine; *caller* rows name the caller.
 | [RFC 1 §2](rfc-1-journal.md#2.%20The%20model%20it%20presents), [§3.2](rfc-1-journal.md#3.2%20Read) | resolve hole, evicted, lost | explicit | [§6.1](#6.1%20Resolution%20is%20a%20join%2C%20computed%20per%20request) |
 | [RFC 1 §3.4](rfc-1-journal.md#3.4%20Fill) | fill only fetched bytes for that extent, never superseded | caller | [§6.2](#6.2%20The%20reply%20is%20served%20from%20the%20fetched%20bytes) |
 | [RFC 1 §3.5](rfc-1-journal.md#3.5%20Release) | eviction policy; durable record before release | explicit | [§7.1](#7.1%20Eviction%20is%20chosen%20here%2C%20and%20needs%20no%20new%20record) |
+| [RFC 1 §3.6](rfc-1-journal.md#3.6%20Truncate%2C%20deallocate%20and%20delete) | order removals against offload | caller | [§4.3](#4.3%20Commits%20for%20one%20file%20are%20serialised%20here), [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) |
 | [RFC 1 §3.7](rfc-1-journal.md#3.7%20State%20introspection) | combine `Extents` with metadata for `SEEK` | caller | [§6.6](#6.6%20Allocation%20answers%20from%20the%20hole%20set) |
 | [RFC 1 §3.8](rfc-1-journal.md#3.8%20Event%20reporting) | supply a recorder at construction | caller | [§2.1](#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one) |
 | [RFC 1 §7](rfc-1-journal.md#7.%20Capacity) | evict and retry on a refused reservation | explicit | [§7.2](#7.2%20A%20capacity%20refusal%20comes%20back%20here) |
 | [RFC 1 §8](rfc-1-journal.md#8.%20Reclamation%20mechanisms) | reclamation policy | explicit | [§7.3](#7.3%20Repack%20is%20triggered%20here) |
-| [RFC 1 §9.2](rfc-1-journal.md#9.2%20Offload%20state%20after%20recovery) | reseed offloaded bits from metadata before enabling eviction | explicit | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) |
+| [RFC 1 §9.1](rfc-1-journal.md#9.1%20Rebuilding), [§9.2](rfc-1-journal.md#9.2%20Offload%20state%20after%20recovery) | open with a version floor; reseed offloaded bits before eviction | explicit | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) |
 | [RFC 2 §2.1](rfc-2-carver.md#2.1%20One%20unbroken%20stretch%20per%20call) | one call per stretch; longer stretches are the caller's lever | caller | [§5.6](#5.6%20A%20run%20is%20what%20the%20journal%20offers%2C%20widened%20only%20to%20re-tile) |
-| [RFC 2 §2.2](rfc-2-carver.md#2.2%20The%20bytes%20handed%20to%20%60emit%60%20are%20borrowed) | copy borrowed bytes | caller | [§5.1](#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output) |
+| [RFC 2 §2.2](rfc-2-carver.md#2.2%20The%20bytes%20handed%20to%20%60emit%60%20are%20borrowed) | never keep borrowed bytes past `emit` | caller | [§5.1](#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output): no copy; the upload re-reads the offered bytes |
 | [RFC 2 §3.6](rfc-2-carver.md#3.6%20Changing%20any%20of%20this%20is%20a%20migration), [§3.7](rfc-2-carver.md#3.7%20Bad%20settings%20must%20be%20refused%2C%20not%20replaced) | record the profile; refuse bad settings; report changes as migrations | caller | [§2.4](#2.4%20Settings%20are%20validated%20once%2C%20and%20refused%20rather%20than%20replaced) |
 | [RFC 2 §4](rfc-2-carver.md#4.%20Identity) | compute a block's identity | explicit | [§5.4](#5.4%20A%20block%27s%20name%20is%20derived%20here) |
-| [RFC 2 §4.3](rfc-2-carver.md#4.3%20Key%20scope) | choose the key scope explicitly | caller | [§5.4](#5.4%20A%20block%27s%20name%20is%20derived%20here) — proposal; open ([§14.6](#14.%20Open%20questions)) |
+| [RFC 2 §4.3](rfc-2-carver.md#4.3%20Key%20scope) | choose the key scope explicitly | caller | [§5.4](#5.4%20A%20block%27s%20name%20is%20derived%20here) — proposal; open ([§14](#14.%20Open%20questions) q5) |
 | [RFC 2 §5](rfc-2-carver.md#5.%20Packing%3A%20three%20rules%2C%20not%20a%20component) | build blocks under P1–P3 | explicit | [§5.1](#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output), [§5.2](#5.2%20The%20target%20counts%20carried%20bytes) |
 | [RFC 2 §5](rfc-2-carver.md#5.%20Packing%3A%20three%20rules%2C%20not%20a%20component) | the oracle hazard | explicit | [§5.3](#5.3%20The%20dedup%20oracle%20never%20sees%20an%20uncommitted%20block) |
-| [RFC 2 §6](rfc-2-carver.md#6.%20Boundaries%20are%20public) | randomised assembly | explicit | [§5.5](#5.5%20Assembly%20is%20sequential%2C%20and%20may%20change%20without%20migration) — open ([§14.3](#14.%20Open%20questions)) |
+| [RFC 2 §6](rfc-2-carver.md#6.%20Boundaries%20are%20public) | randomised assembly | explicit | [§5.5](#5.5%20Assembly%20is%20sequential%2C%20and%20may%20change%20without%20migration) — open ([§14](#14.%20Open%20questions) q3) |
 | [RFC 2 §8](rfc-2-carver.md#8.%20Invariants) | invariants for assembly against the oracle | explicit | E7, E8 |
-| [RFC 2 §11](rfc-2-carver.md#11.%20Open%20questions) q5 | the block-sized buffer | explicit | [§5.1](#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output) — open ([§14.5](#14.%20Open%20questions)) |
-| [RFC 3 §1.1](rfc-3-syncer.md#1.1%20Non-goals), [§5](rfc-3-syncer.md#5.%20What%20belongs%20elsewhere) | what to box, when to offload, what to evict, read ahead, pre-warm | explicit | [§3.1](#3.1%20Policy%20is%20decided%20here%20and%20executed%20below), [§4.2](#4.2%20Offload%20is%20scheduled%20here), [§6.4](#6.4%20Speculation%20is%20planned%20here%2C%20and%20yields%20to%20demand%20and%20to%20writes), [§7.1](#7.1%20Eviction%20is%20chosen%20here%2C%20and%20needs%20no%20new%20record) |
+| [RFC 2 §11](rfc-2-carver.md#11.%20Open%20questions) q5 | the block-sized buffer | explicit | [§5.1](#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output) — decided: no buffer; a block is a plan |
+| [RFC 3 §1.1](rfc-3-syncer.md#1.1%20Non-goals), [§5](rfc-3-syncer.md#5.%20What%20belongs%20elsewhere) | when to offload, what to evict, read ahead, pre-warm | explicit | [§3.1](#3.1%20Policy%20is%20decided%20here%20and%20executed%20below), [§4.2](#4.2%20Offload%20is%20scheduled%20here), [§6.4](#6.4%20Speculation%20is%20planned%20here%2C%20and%20yields%20to%20demand%20and%20to%20writes), [§7.1](#7.1%20Eviction%20is%20chosen%20here%2C%20and%20needs%20no%20new%20record) |
 | [RFC 3 §4.1](rfc-3-syncer.md#4.1%20One%20fetch%2C%20two%20consumers), [§4.2](rfc-3-syncer.md#4.2%20The%20reply%20neither%20waits%20on%20the%20fill%20nor%20fails%20with%20it) | answer the read independently of the fill | explicit | [§6.2](#6.2%20The%20reply%20is%20served%20from%20the%20fetched%20bytes) |
 | [RFC 3 §4.5](rfc-3-syncer.md#4.5%20Speculation%20is%20executed%20here%20and%20decided%20elsewhere) | decide speculation; make pre-warm yield | explicit | [§6.4](#6.4%20Speculation%20is%20planned%20here%2C%20and%20yields%20to%20demand%20and%20to%20writes) — proposal |
 | [RFC 3 §5](rfc-3-syncer.md#5.%20What%20belongs%20elsewhere) | whether writes continue with the remote unavailable | explicit | [§8.2](#8.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here) |
 | [RFC 3 §5](rfc-3-syncer.md#5.%20What%20belongs%20elsewhere) | aggregate health without latching | caller | [§8.1](#8.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included) |
-| [RFC 3 §9](rfc-3-syncer.md#9.%20Open%20questions) q3 | how pre-warm yields | explicit | [§6.4](#6.4%20Speculation%20is%20planned%20here%2C%20and%20yields%20to%20demand%20and%20to%20writes) — proposal; open ([§14.2](#14.%20Open%20questions)) |
+| [RFC 3 §9](rfc-3-syncer.md#9.%20Open%20questions) q3 | how pre-warm yields | explicit | [§6.4](#6.4%20Speculation%20is%20planned%20here%2C%20and%20yields%20to%20demand%20and%20to%20writes) — proposal; open ([§14](#14.%20Open%20questions) q2) |
+| [RFC 4 §1.1](rfc-4-remote-tier.md#1.1%20Non-goals) | when and what to transfer | explicit | [§3.1](#3.1%20Policy%20is%20decided%20here%20and%20executed%20below) |
+| [RFC 4 §1.2](rfc-4-remote-tier.md#1.2%20A%20contract%2C%20not%20a%20component) | each consumer's narrow interface over the backend | caller | [§2.1](#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one), [§2.2](#2.2%20Capabilities%20are%20parameters%2C%20never%20assertions) |
+| [RFC 4 §3.4](rfc-4-remote-tier.md#3.4%20Every%20read%20is%20verified%20by%20the%20codec) | rewrite a repaired chunk position | caller | [§6.7](#6.7%20An%20absent%20object%20is%20re-resolved%20exactly%20once) |
+| [RFC 6 §2.4](rfc-6-block-metadata.md#2.4%20Shape%20and%20holes) | prune removal records | caller | [§4.4](#4.4%20The%20truncation%20stamp%20is%20captured%20at%20offer%20and%20checked%20at%20commit), [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) |
 | [RFC 6 §3.4](rfc-6-block-metadata.md#3.4%20Ordering%20against%20the%20journal) | order stage, existence, acknowledge | caller | [§4.1](#4.1%20The%20facade%20orders%20a%20write%3B%20adapters%20do%20not) |
 | [RFC 6 §4.3](rfc-6-block-metadata.md#4.3%20The%20commit%20is%20the%20report%27s%20return%20edge) | return only committed extents | caller | [§4.5](#4.5%20The%20callback%20returns%20only%20what%20committed) |
 | [RFC 6 §4.4](rfc-6-block-metadata.md#4.4%20Commits%20for%20one%20file%20apply%20in%20order) | serialise commits per file | explicit | [§4.3](#4.3%20Commits%20for%20one%20file%20are%20serialised%20here) |
-| [RFC 6 §6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation) | refuse a commit past a truncation; retry from the journal | caller | [§4.4](#4.4%20The%20truncation%20epoch%20is%20captured%20at%20offer%20and%20checked%20at%20commit) |
+| [RFC 6 §6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation) | carry the stamp; hold the guard across removals | caller | [§4.3](#4.3%20Commits%20for%20one%20file%20are%20serialised%20here), [§4.4](#4.4%20The%20truncation%20stamp%20is%20captured%20at%20offer%20and%20checked%20at%20commit) |
 | [RFC 6 §6.6](rfc-6-block-metadata.md#6.6%20Clone%20and%20server-side%20copy) | clone of uncarved content | caller | [§9.3](#9.3%20Clone%20adopts%20refs%2C%20and%20offloads%20uncarved%20content%20first) — proposal |
 | [RFC 6 §8.2](rfc-6-block-metadata.md#8.2%20Deduplication%20lookup) | treat the dedup answer as advisory | caller | [§5.3](#5.3%20The%20dedup%20oracle%20never%20sees%20an%20uncommitted%20block) |
-| [RFC 6 §13.1](rfc-6-block-metadata.md#13.%20Open%20questions) | recognise zero runs | explicit | open ([§14.4](#14.%20Open%20questions)) |
-| [RFC 7 §2.5](rfc-7-namespace-metadata.md#2.5%20Where%20%60size%60%20lives) | supply `Size(file)` at composition | explicit | [§2.1](#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one) |
-| [RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees) | supply release of an inode's refs | caller | [§2.1](#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one), [§9.1](#9.1%20One%20facade%2C%20shaped%20like%20content) |
+| [RFC 6 §8.4](rfc-6-block-metadata.md#8.4%20Reseed%3A%20a%20file%27s%20refs%20and%20its%20durable%20floor) | reseed only the files the journal holds | caller | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) |
+| [RFC 6 §13](rfc-6-block-metadata.md#13.%20Open%20questions) q1 | recognise zero runs | explicit | open ([§14](#14.%20Open%20questions) q4) |
+| [RFC 7 §2.5](rfc-7-namespace-metadata.md#2.5%20Where%20%60size%60%20lives) | supply `Size` and `Times` at composition | explicit | [§2.1](#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one) |
+| [RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees) | supply `Release` | caller | [§2.1](#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one), [§9.1](#9.1%20One%20facade%2C%20shaped%20like%20content) |
 | [RFC 7 §8.6](rfc-7-namespace-metadata.md#8.6%20Locks%20do%20not%20pin%20bytes) | locks never pin bytes | caller | [§7.4](#7.4%20Nothing%20but%20durability%20makes%20an%20extent%20unevictable) |
 | [RFC 7 §9.2](rfc-7-namespace-metadata.md#9.2%20Timestamps) | offload, evict, fill never advance `mtime` | caller | [§4.1](#4.1%20The%20facade%20orders%20a%20write%3B%20adapters%20do%20not) (only the write path writes `mtime`) |
 | [RFC 7 §9.3](rfc-7-namespace-metadata.md#9.3%20Residency%20is%20not%20an%20attribute) | allocation from the hole set | caller | [§2.1](#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one), [§6.6](#6.6%20Allocation%20answers%20from%20the%20hole%20set) |
 | [RFC 7 §14](rfc-7-namespace-metadata.md#14.%20Open%20questions) q7 | whether the recycle bin is engine policy | explicit | [§1.1](#1.1%20Non-goals) — decided: it is not |
-| [RFC 4 §1.1](rfc-4-remote-tier.md#1.1%20Non-goals) | when and what to transfer | explicit | [§3.1](#3.1%20Policy%20is%20decided%20here%20and%20executed%20below) |
-| [RFC 4 Appendix A](rfc-4-remote-tier.md#Appendix%20A%20%E2%80%94%20where%20the%20current%20code%20differs) | syncer obligations live in the engine package | explicit | [§1.1](#1.1%20Non-goals), [§12.5](#12.5%20The%20facade) |
 | [RFC 9 §4.3](rfc-9-gc.md#4.3%20A%20reader%20can%20hold%20the%20old%20location), [§9](rfc-9-gc.md#9.%20Consequences%20for%20other%20RFCs) | the read path re-resolves exactly once when an object is absent | explicit | [§6.7](#6.7%20An%20absent%20object%20is%20re-resolved%20exactly%20once), E14 |
 | [RFC 9 §4.4](rfc-9-gc.md#4.4%20When%20to%20relocate%20is%20policy), [§7.3](rfc-9-gc.md#7.3%20When%20GC%20runs%20is%20the%20engine%27s), [§9](rfc-9-gc.md#9.%20Consequences%20for%20other%20RFCs) | GC cadence, triggers and the relocation threshold are engine policy | explicit | [§7.5](#7.5%20When%20GC%20runs%2C%20and%20what%20it%20relocates%2C%20is%20decided%20here), E15 — proposal |
-| [RFC 4 §1.2](rfc-4-remote-tier.md#1.2%20A%20contract%2C%20not%20a%20component), [Appendix A](rfc-4-remote-tier.md#Appendix%20A%20%E2%80%94%20where%20the%20current%20code%20differs) | each consumer's narrow interface over the backend | caller | [§2.1](#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one), [§2.2](#2.2%20Capabilities%20are%20parameters%2C%20never%20assertions) |
-| block data flow [§3](#3.%20Policy) | orchestration: dedup oracle, manifest rows, scheduling | explicit | [§4](#4.%20The%20write%20and%20the%20offload), [§5](#5.%20Block%20assembly) |
-| block data flow [§5](#5.%20Block%20assembly) | only the construction site names concrete types | explicit | [§2.1](#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one) |
+| [block data flow §2](rfc-block-dataflow.md#2.%20The%20core%20idea) | orchestration: dedup oracle, chunk refs, scheduling | explicit | [§4](#4.%20The%20write%20and%20the%20offload), [§5](#5.%20Block%20assembly) |
+| [block data flow §5](rfc-block-dataflow.md#5.%20Why%20libraries%2C%20and%20why%20not%20separate%20repos%20yet) | only the construction site names concrete types | explicit | [§2.1](#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one) |
 
-The table holds 54 obligations: 29 that name RFC 8 or the engine, and 25 placed
-on a caller that can only be the engine. 45 are decided outright. Six are
-decided as proposals that name what would overturn them — fill policy, key scope,
-speculation and pre-warm's yield (two rows), clone, and GC cadence and
-relocation threshold — and three of those stay
-in [§14](#14.%20Open%20questions) because their parameters are unmeasured. Three are left open with no
-decision: randomised assembly, zero runs, and copies on the offload path.
+## Appendix B — where the current code differs
+
+Descriptive, for the refactor. None is a rule to build around, and a difference
+**MUST NOT** be closed by amending the requirement. Rows another RFC records are
+cited there, except where the engine is the site that must change.
+
+| Requirement | Code today |
+| --- | --- |
+| [§2.1](#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one) one composition root | composition is split between the runtime and the engine, and the runtime names concrete types |
+| [§2.1](#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one) no setters | the remote store, the committer and the metrics sink are wired by setters on a serving engine |
+| [§2.2](#2.2%20Capabilities%20are%20parameters%2C%20never%20assertions) no type assertions | about fifteen capabilities are negotiated by assertion, each with a silent fallback |
+| [§2.4](#2.4%20Settings%20are%20validated%20once%2C%20and%20refused%20rather%20than%20replaced) settings refused | invalid chunking settings are replaced by defaults; no record of a share's profile |
+| [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) reseed | no reseed and no floor; the offloaded bit is persisted in the record header |
+| [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) join before close | a bounded wait, then the journal and remote are closed under running loops |
+| [§3.1](#3.1%20Policy%20is%20decided%20here%20and%20executed%20below), [§4.2](#4.2%20Offload%20is%20scheduled%20here) offload policy here | offload thresholds are journal configuration |
+| [§4.1](#4.1%20The%20facade%20orders%20a%20write%3B%20adapters%20do%20not) the facade orders a write | adapters call authorise and existence around a stage-only write; existence may be deferred past the acknowledgement |
+| [§4.2](#4.2%20Offload%20is%20scheduled%20here), [§8.1](#8.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included) offload never stopped | passes are skipped while the remote is unhealthy, and only the probe clears it |
+| [§4.3](#4.3%20Commits%20for%20one%20file%20are%20serialised%20here) the guard, per file | a journal shard lock and a striped engine lock; removals do not take it |
+| [§4.4](#4.4%20The%20truncation%20stamp%20is%20captured%20at%20offer%20and%20checked%20at%20commit) stamp | none captured or checked |
+| [§4.6](#4.6%20A%20share%20with%20no%20remote%20tier%20never%20reports%20durability) no durability without a remote | a local sink reports extents durable, and an eviction gate is all that keeps them |
+| [§5.1](#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output) assembly in the engine, no copy | assembly is inside the carver, and a carried chunk is copied through three buffers |
+| [§5.2](#5.2%20The%20target%20counts%20carried%20bytes) target counts carried bytes | adopted chunks count towards the target |
+| [§5.3](#5.3%20The%20dedup%20oracle%20never%20sees%20an%20uncommitted%20block) no binding guard | an in-process adoption guard |
+| [§5.4](#5.4%20A%20block%27s%20name%20is%20derived%20here) derived name | random names |
+| [§6.1](#6.1%20Resolution%20is%20a%20join%2C%20computed%20per%20request) per missing extent, hole vs uncarved | the whole window is fetched when any byte is missing; an uncovered extent reads as zeros |
+| [§6.2](#6.2%20The%20reply%20is%20served%20from%20the%20fetched%20bytes), [§6.3](#6.3%20Filling%20is%20a%20decision) reply independent of fill; fill is a decision | every fetch fills and the read re-reads the journal |
+| [§6.4](#6.4%20Speculation%20is%20planned%20here%2C%20and%20yields%20to%20demand%20and%20to%20writes) pre-warm yields | pre-warm runs until the journal refuses on capacity |
+| [RFC 3 §2.1](rfc-3-syncer.md#2.1%20A%20worker%20pool%20is%20the%20only%20concurrency%20control) one bound per half | each cold read and warm run builds its own fetch group |
+| [§6.6](#6.6%20Allocation%20answers%20from%20the%20hole%20set) allocation from the hole set | answered from the journal joined with the refs |
+| [§6.7](#6.7%20An%20absent%20object%20is%20re-resolved%20exactly%20once) re-resolve once | met, except that a second resolution naming no location reads as "not uploaded yet" |
+| [§7.1](#7.1%20Eviction%20is%20chosen%20here%2C%20and%20needs%20no%20new%20record), [§7.2](#7.2%20A%20capacity%20refusal%20comes%20back%20here) eviction and refusal here | the journal evicts and refuses for itself |
+| [§7.5](#7.5%20When%20GC%20runs%2C%20and%20what%20it%20relocates%2C%20is%20decided%20here) GC policy | a process-wide ticker and a server-wide threshold, not per remote namespace |
+| [§8.1](#8.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included) offload in health | a failed pass increments a counter and reaches no health state |
+| [§9.1](#9.1%20One%20facade%2C%20shaped%20like%20content) no component returned; truncate in one transaction | the facade returns its journal and remote store; truncate spans several metadata calls |
+| [§9.2](#9.2%20Deallocate%20records%20a%20hole%3B%20it%20does%20not%20write%20zeros) deallocate records a hole | writes zeros through the journal |
+| [§9.4](#9.4%20Commit%20is%20answered%20by%20the%20journal) commit answered by the journal | a per-share setting makes commit wait for an inline offload; to be deleted |
+| [§9.5](#9.5%20The%20facade%20writes%20no%20residency) no residency writes | the facade marks ranges remote, drops local content and pins journal versions |
+| E1 no dead state | a read cache is started and never consulted |
