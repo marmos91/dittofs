@@ -31,7 +31,7 @@ order: each part builds on the ones before it.
 | [RFC 9](rfc-9-gc.md) | GC | sweep, relocation, remote deletion |
 | **Cluster** | | |
 | [RFC 10](rfc-10-journal-replication.md) | journal replication | *draft* — owner-driven replication, fencing, seal, catch-up, reads from replicas |
-| RFC 11 | ownership | *planned* — write tokens per file range, leases, handover, failover, forwarding |
+| [RFC 11](rfc-11-ownership.md) | ownership | *draft* — write tokens per file range, leases, handover, failover, forwarding |
 | **Security** | | |
 | RFC 12 | identity and authentication | *planned* — principals, authentication flavours, identity mapping, squashing |
 | RFC 13 | authorization | *planned* — one abstract ACL model, its protocol mappings, evaluation |
