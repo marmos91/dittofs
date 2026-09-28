@@ -167,7 +167,9 @@ Sweeping one block is two steps, in this order:
 1. **Retire** ([RFC 6 §7.1](rfc-6-block-metadata.md#7.1%20Conditional%20retirement)): in one transaction, if `live` is zero, delete the
    block record and every chunk record whose `block` names it, and write the
    pending-deletion record of [§3.2](#3.2%20A%20retirement%20not%20yet%20deleted%20is%20durably%20recorded); otherwise refuse.
-2. **Delete** the object through the remote tier ([RFC 4 §4.1](rfc-4-remote-tier.md#4.1%20Interface)).
+2. **Delete** the object through the remote store ([RFC 4 §4.1](rfc-4-remote-tier.md#4.1%20Interface)). Sweep
+   **SHOULD** collect retired blocks and delete them in batches ([RFC 4 §4.5](rfc-4-remote-tier.md#4.5%20Delete%20is%20batched%20and%20idempotent)),
+   since a request per block makes the request count the limit.
 
 The order is not a preference. Retiring first means a crash between the two
 leaves an object that no record names, which is a leak. Deleting first means a
@@ -183,7 +185,8 @@ or be subject to its health state ([RFC 4 §2](rfc-4-remote-tier.md#2.%20The%20d
 ### 3.2 A retirement not yet deleted is durably recorded
 
 The retirement transaction **MUST** write a pending-deletion record naming the
-block's key. The record is removed only after the delete returns success, and a
+block's key. The record is removed only after the delete returns success for
+that block's name; in a batch, each name's result is its own, and a
 restart **MUST** resume every pending deletion it finds.
 
 This is what removes enumeration from sweep's correctness. Without the record, a
@@ -280,7 +283,7 @@ finish.
 
 | Condition | Behaviour |
 | --- | --- |
-| Delete reports the object absent | Success. A delete is idempotent ([RFC 4 §4.5](rfc-4-remote-tier.md#4.5%20Delete%20is%20idempotent)), and a sweep resuming after a crash will see this. |
+| Delete reports the object absent | Success. A delete is idempotent ([RFC 4 §4.5](rfc-4-remote-tier.md#4.5%20Delete%20is%20batched%20and%20idempotent)), and a sweep resuming after a crash will see this. |
 | Delete refused or failed | The pending-deletion record stays, and the next pass retries it. |
 | Remote tier unavailable | Retirements continue, pending deletions accumulate, and nothing is lost. A backlog that does not drain **MUST** be reported as a health condition, not only logged ([RFC 0 §10.2](rfc-0-data-lifecycle.md#10.2%20No%20state%20requires%20intervention%20to%20leave)). |
 | Metadata unwritable | Nothing retires, so nothing is deleted. |
@@ -698,7 +701,7 @@ document.
 | 38 | [RFC 4 §2](rfc-4-remote-tier.md#2.%20The%20dividing%20line) | the tier deletes idempotently; RFC 9 decides | [§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object), [§3.6](#3.6%20Failures%20resolve%20on%20their%20own) |
 | 39 | [RFC 4 §1.2](rfc-4-remote-tier.md#1.2%20A%20contract%2C%20not%20a%20component) | RFC 9 does not restate transfer semantics | [§1.1](#1.1%20Non-goals), [§8](#8.%20What%20GC%20declares) |
 | 40 | [RFC 4 §4.6](rfc-4-remote-tier.md#4.6%20List%20is%20a%20complete%2C%20resumable%20walk) | no correctness depends on enumeration | [§3.2](#3.2%20A%20retirement%20not%20yet%20deleted%20is%20durably%20recorded), [§5.2](#5.2%20Collecting%20them%20is%20an%20audit) |
-| 41 | [RFC 4 §4.5](rfc-4-remote-tier.md#4.5%20Delete%20is%20idempotent) | a sweep re-running after a crash relies on idempotent delete | [§3.6](#3.6%20Failures%20resolve%20on%20their%20own) |
+| 41 | [RFC 4 §4.5](rfc-4-remote-tier.md#4.5%20Delete%20is%20batched%20and%20idempotent) | a sweep re-running after a crash relies on idempotent delete | [§3.6](#3.6%20Failures%20resolve%20on%20their%20own) |
 | 42 | [RFC 4 §1.2](rfc-4-remote-tier.md#1.2%20A%20contract%2C%20not%20a%20component) | compaction, orphan reclaim and reconcile are specified by RFC 9 | [§4](#4.%20Relocation), [§5](#5.%20Unrecorded%20objects); [§9](#9.%20Consequences%20for%20other%20RFCs) item 4 |
 | 43 | [RFC 4 Appendix A](rfc-4-remote-tier.md#Appendix%20A%20%E2%80%94%20where%20the%20current%20code%20differs) | GC declares its remote dependency | [§8](#8.%20What%20GC%20declares) |
 | 44 | [RFC 4 §2](rfc-4-remote-tier.md#2.%20The%20dividing%20line) | other consumers do not inherit the upload window | [§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object), [§7.1](#7.1%20GC%20bounds%20its%20own%20work) |
