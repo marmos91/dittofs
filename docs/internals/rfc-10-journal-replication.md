@@ -8,6 +8,7 @@ depends_on:
   - "[[rfc-1-journal]]"
   - "[[rfc-6-block-metadata]]"
   - "[[rfc-8-engine]]"
+  - "[[rfc-11-ownership]]"
 aliases:
   - RFC 10
 tags:
@@ -15,14 +16,11 @@ tags:
 ---
 # RFC 10 — journal replication
 
-**Status:** draft — first write-up of the 2026-09-28 design discussion, not yet
-reviewed. Every section is open to change; [§13](#13.%20Open%20questions) lists what is known to be
-undecided.
+**Status:** draft. [§16](#16.%20Open%20questions) lists what is known to be undecided.
 **Depends on:** [RFC 0](rfc-0-data-lifecycle.md) for the terms and invariants; [RFC 1](rfc-1-journal.md) for the journal operations
 this layer drives (`WriteAt`, `Apply`, `Settle`, `Export`, `SetEpoch`, `Discard`,
 `MarkDurable`); [RFC 6](rfc-6-block-metadata.md) for the commits it fences; [RFC 8](rfc-8-engine.md) for the engine that
-composes it. Ownership of files and ranges — who writes what — is RFC 11's; this
-document states only what it assumes of it ([§3](#3.%20What%20it%20assumes%20of%20ownership)).
+composes it; [RFC 11](rfc-11-ownership.md) for who owns what ([§3](#3.%20What%20it%20assumes%20of%20ownership)).
 **Audience:** anyone designing or changing how an acknowledged write survives the
 loss of the node that accepted it.
 
@@ -35,10 +33,9 @@ to be interpreted as in RFC 2119.
 
 A write is acknowledged once the journal holds it ([RFC 8 §4.1](rfc-8-engine.md#4.1%20The%20facade%20orders%20a%20write%3B%20adapters%20do%20not)), and until it is
 offloaded the journal of the node that accepted it is the only copy. On one node
-that is the design: the journal is on durable storage, and losing the device
-loses what it held since the last offload. With several nodes serving one share,
-losing a node must not lose acknowledged writes, and nodes other than the writer
-should be able to serve recently written bytes.
+that is the design. With several nodes serving one share, losing a node must not
+lose acknowledged writes, and nodes other than the writer should be able to serve
+recently written bytes.
 
 This layer makes both true:
 
@@ -57,7 +54,7 @@ moves operations between them, and fences the ones that must no longer count.
    file's recently written bytes from its own journal, under [§8](#8.%20Reads%20from%20replicas)'s rule.
 3. **No consensus among block services.** Consensus is needed only to decide who
    owns and who replicates, and it is obtained from the configuration store
-   ([§2.2](#2.2%20Roles)), which already runs it. No block service runs a consensus protocol.
+   ([§2.2](#2.2%20Roles)), which already runs it.
 4. **One code path.** A single node is a replica set of one ([§10](#10.%20A%20single%20node)); the engine
    **MUST** go through this layer in every deployment.
 
@@ -65,13 +62,13 @@ moves operations between them, and fences the ones that must no longer count.
 
 This layer **MUST NOT**:
 
-- decide who owns a file or range, or move ownership — RFC 11;
+- decide who owns a file or range, or move ownership — [RFC 11](rfc-11-ownership.md);
 - order writes from more than one writer to the same bytes — one writer per
   ownership unit is assumed ([§3](#3.%20What%20it%20assumes%20of%20ownership));
 - offload, carve, sync to the remote tier, or evict — the owner's engine does,
   exactly as on one node;
 - replicate metadata — the metadata store has its own durability;
-- erasure-code journal content ([§12](#12.%20Alternatives%20considered)).
+- erasure-code journal content ([Appendix B](#Appendix%20B%20%E2%80%94%20alternatives%20considered)).
 
 ## 2. Model
 
@@ -79,14 +76,18 @@ This layer **MUST NOT**:
 
 | Term | Means |
 | --- | --- |
-| **ownership unit** | the set of bytes one owner writes: a share, a subtree, a file or a byte range, as RFC 11 decides |
+| **ownership unit** | the set of bytes one owner writes: a share, a subtree, a file or a byte range ([RFC 11 §2](rfc-11-ownership.md#2.%20Ownership%20units)) |
 | **owner** | the one block service that assigns versions for a unit and accepts its writes |
 | **replica** | a block service whose journal holds a copy of the unit's un-offloaded operations |
-| **replica set** | the owner and its replicas; the owner is a member |
-| **configuration** | `{unit, epoch, owner, replicas, committed}`, held in the configuration store |
-| **epoch** | a number raised by every change of configuration; the high half of every version the owner assigns ([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions)) |
-| **committed point** | the newest version below which every operation of the unit is held by every member |
+| **member** | the owner or a replica; the **replica set** is the members |
 | **learner** | a block service receiving the unit's operations while it catches up, before it is a member |
+| **configuration** | `{unit, epoch, owner, members, learners, sealed}`, held in the configuration store and changed only by compare-and-swap |
+| **epoch** | the owner epoch: raised by every configuration change, and never lower for a file than any epoch it had before ([§6](#6.%20Fencing)). The owner applies it to each file through the journal's per-file epoch ([RFC 1 §3.10](rfc-1-journal.md#3.10%20Operations%20versioned%20elsewhere)), so every version it assigns outranks every version assigned under an earlier epoch ([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions)) |
+| **committed point** | per unit, the newest version at or below which every operation is held by every member. The owner computes it and sends it with every batch; it is never written to the configuration store |
+| **settled point** | per file on a member, the committed point it has settled to ([RFC 1 §3.10](rfc-1-journal.md#3.10%20Operations%20versioned%20elsewhere)) |
+| **owner lease** | the lease the owner renews in the configuration store; it is the write token of [RFC 11 §3.1](rfc-11-ownership.md#3.1%20A%20token%20is%20a%20lease%2C%20fenced%20by%20an%20epoch) — one lease, not two |
+| **read lease** | a lease the owner grants a replica to serve reads ([§8](#8.%20Reads%20from%20replicas)), no longer than a configured maximum |
+| **drift bound** | the configured bound on clock drift between any two nodes; every lease is reckoned with it |
 
 ### 2.2 Roles
 
@@ -95,7 +96,7 @@ all three — or be split across machines.
 
 | Role | Holds | Consensus |
 | --- | --- | --- |
-| protocol front-end | client sessions; forwards each operation to the owner of what it touches | none |
+| protocol front-end | client sessions; forwards each operation to the owner of what it touches ([RFC 11 §5](rfc-11-ownership.md#5.%20Routing)) | none |
 | metadata service | namespace and block metadata ([RFC 6](rfc-6-block-metadata.md), [RFC 7](rfc-7-namespace-metadata.md)); ownership and configurations | its store's own |
 | block service | a journal per share, the engine, carver and syncer; this layer | none |
 
@@ -107,35 +108,28 @@ every block service. Nothing in this layer depends on which store provides it.
 
 A replica's journal holds the unit's operations at the versions the owner
 assigned, applied through `Apply` ([RFC 1 §3.10](rfc-1-journal.md#3.10%20Operations%20versioned%20elsewhere)) in whatever order they arrive.
-Its segments are laid out in its own order; two members' journals are never
-byte-identical and need not be. What they agree on is, for every byte, the newest
-version applied — and highest-version-wins makes that independent of arrival order.
+Two members' journals are never byte-identical and need not be. What they agree
+on is, for every byte, the newest version applied — and highest-version-wins
+makes that independent of arrival order.
 
 ## 3. What it assumes of ownership
 
-RFC 11 is not written yet. This layer relies on it for exactly these, and on
-nothing else:
+[RFC 11](rfc-11-ownership.md) provides these; this layer relies on nothing else:
 
-1. **One owner per unit at a time**, recorded in its configuration.
-2. **Every configuration change is a compare-and-swap that raises the epoch.**
-   An owner whose configuration is no longer current can learn it only by
-   reading the store or by being refused ([§6](#6.%20Fencing)).
-3. **The owner's lease.** The owner renews a lease in the configuration store;
-   when it lapses, another member may take over ([§9](#9.%20Failover)). An owner **MUST** stop
-   serving and acknowledging when its lease runs out by its own clock, reckoned
-   pessimistically.
-4. **Ownership follows the writer.** A unit usually moves to the block service
-   writing it, by handover rather than failover: the old owner hands its un-offloaded
-   operations to the new one through `Export`, then the configuration moves ([§9.4](#9.4%20Handover)).
+1. **One owner per unit at a time**, recorded in its configuration
+   ([RFC 11 §2](rfc-11-ownership.md#2.%20Ownership%20units)).
+2. **Every configuration change is a compare-and-swap that raises the epoch, and a
+   file's epoch never decreases.** A unit's new epoch exceeds that of every unit
+   that previously held any of its files; a split or a move of files between
+   units is a handover whose compare-and-swap covers both units in one
+   transaction ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20A%20token%20is%20a%20lease%2C%20fenced%20by%20an%20epoch), [§4](rfc-11-ownership.md#4.%20Moving%20ownership)).
+3. **The owner lease** ([§2.1](#2.1%20Terms)). An owner **MUST** stop serving and acknowledging
+   when its lease runs out by its own clock, reckoned pessimistically with the
+   drift bound.
+4. **Ownership follows the writer**, by handover rather than failover ([§9.4](#9.4%20Handover),
+   [RFC 11 §3.3](rfc-11-ownership.md#3.3%20Ownership%20follows%20the%20writer)).
 5. **Commits are fenced.** Every existence and offload commit carries the owner
-   epoch and is refused when it is not current ([RFC 6 §4.1](rfc-6-block-metadata.md#4.1%20What%20one%20commit%20records)).
-
-Decisions already taken for RFC 11, recorded here so they are not lost: write
-tokens are held in the configuration store and revoked on conflict; a token
-starts wide and splits when another writer asks for an overlapping range; reads
-of cached content on non-owners are validated against the current ref's version,
-with read tokens a later step; the ownership unit is a concept whose granularity
-— share, subtree, file, range — is a policy, fixed per unit when it is created.
+   epoch and is refused when it is not current ([RFC 11 §8](rfc-11-ownership.md#8.%20Metadata%20consistency)).
 
 ## 4. The write path
 
@@ -143,22 +137,23 @@ The owner handles every write to the unit. For a write, deallocate, truncate or
 delete:
 
 1. **Assign.** The owner stages the operation in its own journal, which assigns
-   its version under the current epoch ([RFC 1 §3.1](rfc-1-journal.md#3.1%20Write)).
+   its version under the file's epoch ([RFC 1 §3.1](rfc-1-journal.md#3.1%20Write)).
 2. **Replicate.** The owner sends the operation, with its version and the
    configuration epoch, to **every** replica in the current configuration, in
    parallel.
-3. **Apply.** Each replica checks the epoch ([§6](#6.%20Fencing)), applies the operation with
+3. **Apply.** Each replica checks the operation against [§6](#6.%20Fencing), applies it with
    `Apply`, makes it durable, and answers.
-4. **Existence.** Once every member holds the operation durably, the owner records
-   existence ([RFC 6 §3.4](rfc-6-block-metadata.md#3.4%20Ordering%20against%20the%20journal)) in a commit fenced by its epoch.
+4. **Existence.** Once every member, the owner included, holds the operation
+   durably, the owner records existence ([RFC 6 §3.4](rfc-6-block-metadata.md#3.4%20Ordering%20against%20the%20journal)) in a commit fenced by
+   its epoch.
 5. **Acknowledge.** Only then is the client acknowledged.
 
-**Every member, not a quorum.** An operation is acknowledged only when every
-member of the current configuration holds it. That is what lets any single
-member take over with every acknowledged write already in hand ([§9](#9.%20Failover)), and what
-lets a replica serve reads ([§8](#8.%20Reads%20from%20replicas)). A member that cannot keep up is removed from the
-configuration ([§7](#7.%20Membership)); the owner **MUST NOT** acknowledge around it while it is
-still a member.
+**Every member, not a quorum.** An operation **MUST NOT** be acknowledged until
+every member of the current configuration holds it durably. That is what lets
+any single member take over with every acknowledged write already in hand ([§9](#9.%20Failover)),
+and what lets a replica serve reads ([§8](#8.%20Reads%20from%20replicas)). A member that cannot keep up is
+removed from the configuration ([§7](#7.%20Membership)); the owner **MUST NOT** acknowledge around it
+while it is still a member.
 
 **Order against existence.** Step 4 **MUST NOT** precede step 3 on every member.
 Recorded first, a crash of the owner leaves a range metadata says exists and no
@@ -166,10 +161,10 @@ surviving journal holds, which resolves **Lost** for a write never acknowledged 
 and stays Lost.
 
 **A client's flush** ([RFC 8 §9.4](rfc-8-engine.md#9.4%20Commit%20is%20answered%20by%20the%20journal)) is answered once every member has synced
-the file's operations. On one node that is the journal's `Sync`.
+the file's operations.
 
 **Batching.** The owner **SHOULD** batch operations to a replica and group their
-syncs, exactly as the journal groups its own ([RFC 1 §6.2](rfc-1-journal.md#6.2%20Sync%20policy)). The unit of
+syncs, as the journal groups its own ([RFC 1 §6.2](rfc-1-journal.md#6.2%20Sync%20policy)). The unit of
 acknowledgement stays the operation.
 
 ## 5. Offload and release
@@ -177,18 +172,17 @@ acknowledgement stays the operation.
 Only the owner offloads, as on one node, and its commits carry its epoch
 ([§3](#3.%20What%20it%20assumes%20of%20ownership)). Replicas never offload.
 
-**Settling.** The owner sends each replica its committed point with every batch.
-A replica settles the unit's files to it ([RFC 1 §3.10](rfc-1-journal.md#3.10%20Operations%20versioned%20elsewhere)), which drops removal
-markers below it. The owner's own content is settled as it assigns it.
+**Settling.** The owner sends each member its committed point with every batch.
+A member settles the unit's files to it ([RFC 1 §3.10](rfc-1-journal.md#3.10%20Operations%20versioned%20elsewhere)), which drops removal
+markers below it. A learner never settles: it cannot know that it holds
+everything below the point.
 
 **Replicas release by being told.** After an offload commit lands, the owner
 sends the members the extents it covered with the commit's `oldest` and `newest`.
 Each calls `MarkDurable` ([RFC 1 §9.2](rfc-1-journal.md#9.2%20Offload%20state%20after%20recovery)) and then evicts under its own capacity
-policy. The rule that protects the owner protects a replica: an extent is marked
-only where nothing newer is held there. A notice carries the epoch and is
-refused, like any operation, when it is stale. A replica **MAY** also derive the
-same marks from metadata directly, which is how it catches up on notices it
-missed.
+policy. An extent is marked only where nothing newer is held there. A notice is
+fenced like any message ([§6](#6.%20Fencing)). A replica **MAY** also derive the same marks from
+metadata directly, which is how it catches up on notices it missed.
 
 **Pressure.** A replica cannot offload to make room. When its journal nears
 capacity it **MUST** say so to the owner, and the owner **MUST** treat a member's
@@ -198,22 +192,32 @@ whose journal refuses an operation is lagging, and [§7](#7.%20Membership) appli
 ## 6. Fencing
 
 Every message this layer sends — an operation, a committed point, a durability
-notice, a seal — carries the configuration epoch it was sent under. **The receiver
-enforces it:**
+notice, a read-lease grant, a seal request — carries the configuration epoch it
+was sent under. **The receiver enforces it:**
 
-- a replica **MUST** refuse a message whose epoch is lower than the one it has
+- a receiver **MUST** refuse a message whose epoch is lower than the one it has
   installed for the unit;
-- a replica that receives a higher epoch than it knows **MUST** refuse the
-  message, read the configuration and install it before accepting anything more;
-- the metadata store refuses a commit whose owner epoch is not current
-  ([§3](#3.%20What%20it%20assumes%20of%20ownership)).
+- a receiver that sees a higher epoch than it knows **MUST** refuse the message,
+  read the configuration and install it before accepting anything more.
+  Installing **MUST** be durable before the receiver answers anything under the
+  new epoch, so a restart never accepts what it refused before;
+- a receiver that installs an epoch whose configuration does not list it as a
+  member or learner **MUST** stop serving the unit's reads and `Discard` its copy
+  of the unit's files ([RFC 1 §3.10](rfc-1-journal.md#3.10%20Operations%20versioned%20elsewhere)). It may rejoin only as a learner ([§7](#7.%20Membership));
+- a receiver **MUST** refuse any operation at or below its settled point for that
+  file. Every member held every operation below the committed point when the
+  owner sent it, so the owner counts such a refusal as the operation held. Without
+  this rule a late duplicate could reinstate content whose removal marker settling
+  has already dropped;
+- the metadata store refuses a commit whose owner epoch is not current ([§3](#3.%20What%20it%20assumes%20of%20ownership)).
 
 A check made only by the sender is not a fence. An owner that pauses past its
 lease, then resumes, still believes it owns the unit; what stops it is that every
 receiver has installed the new epoch before the new owner accepts a write ([§9](#9.%20Failover)).
 
-Versions carry the epoch in their high half ([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions)), so anything a
-superseded owner manages to write is older than everything its successor writes.
+A file's epoch never decreases ([§3](#3.%20What%20it%20assumes%20of%20ownership) item 2), so anything a superseded owner manages
+to write is older than everything its successor writes, including after the file
+has moved to another unit.
 
 ## 7. Membership
 
@@ -228,48 +232,54 @@ What a domain is — host, rack, zone — is configuration.
 
 **Removal.** A replica that does not answer within a configured bound, or whose
 lag exceeds one, is removed: the owner writes a configuration without it at the
-next epoch, installs the epoch on the remaining members, and continues. Waiting
-for a slow member instead stalls every write of the unit. Before a configuration
-that removes a replica accepts writes, that replica's read lease ([§8](#8.%20Reads%20from%20replicas)) **MUST**
-have expired.
+next epoch by compare-and-swap and installs the epoch on the remaining members.
+The owner stops granting the replica read leases before the compare-and-swap,
+and **MUST NOT** accept writes under the new configuration until the maximum read
+lease plus the drift bound has passed since it, so the removed replica has
+stopped serving reads it can no longer keep current.
 
 **Joining.** A new or returning block service joins as a learner:
 
-1. it `Discard`s whatever it holds of the unit's files ([RFC 1 §3.10](rfc-1-journal.md#3.10%20Operations%20versioned%20elsewhere)) — a returning
-   copy may hold operations its configuration never acknowledged;
-2. the owner streams it `Export` of every file of the unit, and meanwhile sends it
-   live operations as it would a member, without waiting for its answer;
-3. when it has applied everything up to the owner's committed point, the owner
-   adds it at the next epoch.
+1. it `Discard`s whatever it holds of the unit's files — a returning copy may hold
+   operations its configuration never acknowledged;
+2. the owner streams it `Export` of every file of the unit ([RFC 1 §3.10](rfc-1-journal.md#3.10%20Operations%20versioned%20elsewhere)), and
+   meanwhile sends it live operations as it would a member, without waiting for
+   its answer;
+3. to promote it, the owner stops assigning versions for the unit, waits until
+   the learner has confirmed, durably, **every version the owner assigned before
+   the new epoch**, writes the configuration adding it at the next epoch by
+   compare-and-swap, installs the epoch on every member, and resumes.
 
-A learner is never counted for acknowledgement and never serves reads.
+A learner is never counted for acknowledgement, never serves reads and never
+settles. Promotion on anything less than step 3's confirmation would admit a
+member lacking an acknowledged write, which then could take over and lose it.
 
 ## 8. Reads from replicas
 
-The owner serves reads of the unit from its journal, as on one node. A replica
-**MAY** serve a read from its own journal when both hold:
+The owner serves reads of the unit from its journal, but only content every
+member holds: a read overlapping an operation still being replicated waits for
+it. Otherwise a failover could remove content a client had already read.
 
-- **it holds a read lease** on the current configuration, granted by the owner
-  and shorter than the time a configuration change waits for it ([§7](#7.%20Membership));
+A replica **MAY** serve a read from its own journal when both hold:
+
+- **it holds a read lease** on the current configuration, unexpired by its own
+  clock reckoned with the drift bound. A read lease **MUST NOT** outlast the owner
+  lease it was granted under;
 - **the range is clean**: every version it holds there is at or below the latest
   committed point it has received, and it holds no operation above that point
   that touches the range.
 
 A range that is not clean is **dirty**: the replica asks the owner for the
-newest version of the range and serves its own bytes only if they carry it;
-otherwise it forwards the read to the owner. This is chain replication's
-apportioned-read rule (CRAQ) applied per range.
+newest version of the range that every member holds, and serves its own bytes
+only if they carry exactly it; otherwise it forwards the read to the owner.
 
 Why the lease: a replica removed from the configuration stops receiving
 operations, and without the lease it would go on answering reads with content
-that is no longer current. The lease is what makes removal safe for readers; it
-assumes clocks whose drift is bounded by configuration.
+that is no longer current. Removal and takeover wait out the maximum read lease
+([§7](#7.%20Membership), [§9.2](#9.2%20Takeover)) for that reason.
 
-A block service that is not a member never serves the unit's un-offloaded bytes
-from its journal. It forwards to a member, or reads offloaded content through
-metadata and the remote tier, filling its own journal ([RFC 0 §6.2](rfc-0-data-lifecycle.md#6.2%20Fill)); that
-content is validated against the current ref's version before it is served
-(RFC 11).
+A block service that is not a member serves the unit's bytes only under
+[RFC 11 §6](rfc-11-ownership.md#6.%20Reads%20on%20non-owners)'s rule, and never serves un-offloaded content it does not hold.
 
 ## 9. Failover
 
@@ -284,11 +294,14 @@ or others may hold beyond it, are operations never acknowledged.
 
 When the owner's lease lapses, a member takes over:
 
-1. **Claim.** It writes a configuration naming itself owner at the next epoch,
-   by compare-and-swap. Members it cannot reach are dropped from the new
-   configuration and must rejoin as learners ([§7](#7.%20Membership)). A member that restarted
-   uncleanly **MAY** claim only once it has reopened its journal, which is durable
-   and complete for everything it acknowledged.
+1. **Claim.** Once the owner lease has lapsed by its own clock plus the drift
+   bound, a member of the current configuration writes a configuration naming
+   itself owner at the next epoch. The compare-and-swap **MUST** be conditional
+   on the configuration it read being current and listing it as a member, so a
+   replica removed earlier can never claim. Members it cannot reach are dropped
+   and must rejoin as learners ([§7](#7.%20Membership)). A member that restarted uncleanly **MAY**
+   claim only once it has reopened its journal, which is durable and complete for
+   everything it acknowledged.
 2. **Install.** It installs the new epoch on every member it kept. From here the
    old owner can reach no member, and nothing it sends counts.
 3. **Seal.** It asks each kept member which ranges it holds operations for above
@@ -301,42 +314,215 @@ When the owner's lease lapses, a member takes over:
 4. **Trim.** It truncates each file's journal content to the file's size in
    metadata, under the new epoch, so no unacknowledged content beyond the end of
    a file is ever offloaded.
-5. **Record.** It records in the configuration store that the old epoch is
-   sealed, and only then accepts writes.
+5. **Wait.** It waits until the maximum read lease plus the drift bound has passed
+   since step 2 completed, so no replica still serves under a lease the old owner
+   granted.
+6. **Record.** It records the seal in the configuration by compare-and-swap at its
+   epoch. Only then does it serve or accept writes for the unit.
 
 A seal not recorded is a seal that did not happen: if the claimant fails before
-step 5, the next claimant repeats the procedure from its own state.
+step 6, the next claimant repeats the procedure from its own state.
 
 ### 9.3 After takeover
 
 The new owner offloads what it holds, which includes everything the old owner
 had not. Nothing was lost as long as one member of the old configuration
-survived. The old owner, if it returns, is not a member: it rejoins as a learner
-and discards what it held.
+survived. The old owner, if it returns, installs the new epoch on first contact,
+finds itself not a member, and discards what it held ([§6](#6.%20Fencing)).
 
 ### 9.4 Handover
 
 A planned move — ownership following the writer — does not wait for a lease:
 
-1. the new owner joins the unit's replica set as a learner, if it is not a member;
+1. the new owner becomes a member, joining as a learner and promoted under [§7](#7.%20Membership)
+   if it is not one;
 2. the old owner stops accepting writes for the unit and drains what is in flight;
 3. it writes the configuration naming the new owner at the next epoch, by
    compare-and-swap;
-4. the new owner installs the epoch and accepts writes.
+4. the new owner installs the epoch on every member and accepts writes.
 
 No seal is needed: the old owner acknowledged nothing it had not replicated to
-every member, and stopped before the move.
+every member, and stopped before the move. The old owner stays a member unless
+removed under [§7](#7.%20Membership). A handover that moves files between units is one
+compare-and-swap over both units ([§3](#3.%20What%20it%20assumes%20of%20ownership) item 2).
 
 ## 10. A single node
 
 On one node the unit's replica set is the node itself. Replication is a local
 call, the epoch never changes, the committed point is whatever the journal has
 synced, reads are always the owner's, and failover cannot happen. The engine
-**MUST** still compose this layer, not the journal directly: two code paths means
-every rule in this document is exercised by one of them and not the other, and the
-untested one is the one that ships to the deployment that needs it.
+**MUST** still compose this layer, not the journal directly: with two code paths,
+every rule in this document is exercised by one of them and not the other, and
+the untested one is the one that ships to the deployment that needs it.
 
-## 11. Prior art
+## 11. API surface
+
+Signatures are indicative; the obligations above are normative.
+
+```go
+// Replicated is what the engine calls in place of the journal (§10).
+type Replicated interface {
+	// Each returns once the operation is acknowledgeable (§4 steps 1–4).
+	WriteAt(ctx context.Context, file FileID, off int64, p []byte) (Version, error)
+	Deallocate(ctx context.Context, file FileID, off, n int64) (Version, error)
+	Truncate(ctx context.Context, file FileID, size int64) (Version, error)
+	Delete(ctx context.Context, file FileID) (Version, error)
+	// Sync returns once every member has synced the file's operations.
+	Sync(ctx context.Context, file FileID) error
+	// ReadAt serves under §8, or returns ErrForward naming the owner.
+	ReadAt(ctx context.Context, file FileID, p []byte, off int64) (int, error)
+	// Durable tells every member an offload commit covered these extents (§5).
+	Durable(ctx context.Context, file FileID, ext []Extent, oldest, newest Version) error
+}
+
+// Peer is one member or learner as the owner sees it. Every call carries the
+// unit and the epoch it was sent under, and the receiver fences it (§6).
+type Peer interface {
+	Apply(ctx context.Context, u UnitID, e Epoch, ops []Op) error // durable on return
+	Commit(ctx context.Context, u UnitID, e Epoch, committed Version) error
+	MarkDurable(ctx context.Context, u UnitID, e Epoch, file FileID, ext []Extent, oldest, newest Version) error
+	GrantRead(ctx context.Context, u UnitID, e Epoch, until time.Time) error
+	Install(ctx context.Context, u UnitID, e Epoch) error // durable on return
+	Uncertain(ctx context.Context, u UnitID, e Epoch, above Version) iter.Seq2[FileRange, error]
+	Newest(ctx context.Context, u UnitID, file FileID, r Range) (Version, error) // asked of the owner
+}
+
+// Configurations is the configuration store (§2.2), as RFC 11 exposes it.
+type Configurations interface {
+	Get(ctx context.Context, u UnitID) (Configuration, error)
+	CompareAndSwap(ctx context.Context, old, next Configuration) error // ErrStale
+}
+
+type Configuration struct {
+	Unit     UnitID
+	Epoch    Epoch
+	Owner    NodeID
+	Members  []NodeID // the owner included
+	Learners []NodeID
+	Sealed   Epoch // the newest epoch whose takeover recorded its seal (§9.2)
+}
+
+var (
+	ErrStaleEpoch      = errors.New("replication: stale epoch")
+	ErrNotMember       = errors.New("replication: not a member")
+	ErrSettled         = errors.New("replication: at or below the settled point") // counted as held
+	ErrUnderReplicated = errors.New("replication: below the replica floor")
+	ErrForward         = errors.New("replication: forward to the owner")
+)
+```
+
+## 12. Invariants
+
+| # | Invariant |
+| --- | --- |
+| R1 | An acknowledged operation is durably held by every member of every configuration from the one it was acknowledged under onward, until it is offloaded. |
+| R2 | Existence is recorded only after every member holds the operation durably, and the client is acknowledged only after existence. |
+| R3 | Every receiver refuses a message whose epoch is below the one it installed, and installs durably before answering under a new epoch. |
+| R4 | A file's epoch never decreases, across configuration changes and moves between units. |
+| R5 | A receiver refuses every operation at or below its settled point for that file. |
+| R6 | A learner is never counted for acknowledgement, never serves reads and never settles, and is promoted only after confirming every version assigned before the promoting epoch. |
+| R7 | A replica serves a read only under an unexpired read lease, and only from a clean range or with the newest version confirmed by the owner; the owner serves only content every member holds. |
+| R8 | Removal and takeover accept no write until the maximum read lease plus the drift bound has passed. |
+| R9 | A takeover claim is a compare-and-swap conditional on the claimant being a member of the current configuration, and the new owner serves nothing until its seal is recorded. |
+| R10 | A receiver that installs a configuration not listing it stops serving the unit and discards its copy. |
+| R11 | The engine reaches the journal only through this layer, on one node as on many. |
+
+R1–R6 and R9 are the ones whose violation loses an acknowledged write. R7, R8
+and R10 are the ones whose violation serves stale content.
+
+## 13. Observability
+
+Every metric is labelled by unit where it is per unit, and by share.
+
+| Answers | Metric | Type |
+| --- | --- | --- |
+| committed-point lag: versions and time between the newest assigned and the committed point | `dittofs_replication_committed_lag_seconds` | gauge |
+| time replication adds to an acknowledgement | `dittofs_replication_ack_seconds` | histogram |
+| members and learners per unit; below the floor raises a health condition | `dittofs_replication_members` | gauge |
+| refusals, labelled `reason` = `stale_epoch`, `settled`, `not_member` or `pressure` | `dittofs_replication_refusals_total` | counter |
+| configuration changes, labelled `kind` = `takeover`, `handover`, `remove` or `join` | `dittofs_replication_config_changes_total` | counter |
+| takeover time, lease lapse to writable | `dittofs_replication_takeover_seconds` | histogram |
+| seal duration, and the uncertain bytes it re-issued | `dittofs_replication_seal_seconds`, `dittofs_replication_seal_bytes_total` | histogram, counter |
+| learner catch-up time | `dittofs_replication_catchup_seconds` | histogram |
+| replica reads, labelled `result` = `clean`, `confirmed` or `forwarded` | `dittofs_replication_replica_reads_total` | counter |
+
+Logs: every configuration change at `Info`, with unit, old and new epoch and
+reason. An owner that stops on its own lease expiry logs at `Error`. Stale-epoch
+refusals log at `Warn`, rate-limited per sender.
+
+## 14. Test plan and benchmarks
+
+This layer is a distributed protocol, and no amount of review establishes one.
+Conformance rests on three kinds of check, and all three are required.
+
+**A model.** The configuration, fencing, takeover and seal of [§6](#6.%20Fencing)–[§9](#9.%20Failover) **MUST**
+be modelled in a model checker before they are implemented, with the invariants
+of [§12](#12.%20Invariants) as properties, and the model **MUST** be kept in step with this document.
+
+**Deterministic simulation.** The layer reaches the network, the journals' storage
+seam ([RFC 1 §1.3](rfc-1-journal.md#1.3%20It%20is%20testable%20on%20its%20own)), time and randomness only through interfaces. A simulator
+drives a cluster of instances in one process from a seed, injecting message loss,
+delay, reordering and duplication, partitions, process pauses, crashes that
+discard unsynced writes, and clock drift within the configured bound. A failing
+seed **MUST** reproduce the failure exactly.
+
+**Whole-system fault injection** against real processes, checking the histories
+clients observe for linearizability of acknowledged writes.
+
+Properties every one of them checks:
+
+| Property | Violated by |
+| --- | --- |
+| An acknowledged write is held by some journal of the current configuration, or durable remotely, at every moment (R1) | a quorum acknowledgement, a seal that drops content, a learner promoted early |
+| No journal serves, for a range, content older than the newest acknowledged write there, and no read returns content later removed by a seal (R7, R8) | a removed replica still serving, a dirty range served as clean, an owner serving unreplicated content |
+| Removed content is never served again (R5) | a late duplicate below a settled removal, a rejoining copy that did not discard |
+| Nothing a superseded owner sends after the epoch is installed takes effect anywhere (R3, R4) | a sender-side lease check standing in for receiver fencing, an epoch that fell on a move |
+| A removed replica never becomes owner (R9) | a claim not conditional on membership |
+| A unit with a member of the last configuration alive becomes writable again without operator action | a takeover that waits for a quorum |
+
+**Benchmarks**, on three block services on one local network, the reference box
+of [RFC 1 §12](rfc-1-journal.md#12.%20Test%20plan%20and%20performance%20targets) each:
+
+| Benchmark | Measures | Target |
+| --- | --- | --- |
+| Committed-point lag | p99 under sustained 4 KiB writes, three members | ≤ one sync interval + 2 ms |
+| Acknowledgement overhead | p50 and p99 write latency against a single node | ≤ one network round trip + one member sync |
+| Takeover time | lease lapse to writable, 64 MiB uncertain, 10³ files | ≤ read lease + drift bound + 1 s |
+| Seal duration | seconds per uncertain GiB | report; ≤ 1 s for 64 MiB |
+| Handover time | unit with 64 MiB un-offloaded | ≤ 2 s at 10 Gb/s |
+| Learner catch-up | MB/s of `Export` applied | ≥ 80% of the link |
+| Whole-cluster restart | time until 10⁴ units are writable | report ([§16](#16.%20Open%20questions) item 3) |
+
+## 15. Consequences for other RFCs
+
+| RFC | Change |
+| --- | --- |
+| [RFC 1 §3.10](rfc-1-journal.md#3.10%20Operations%20versioned%20elsewhere) | The epoch is per file; this layer raises it through the file's unit. The journal exposes a file's settled point, so a receiver can refuse at or below it ([§6](#6.%20Fencing)). |
+| [RFC 6 §4.1](rfc-6-block-metadata.md#4.1%20What%20one%20commit%20records) | Every existence and offload commit carries the owner epoch and is refused when it is stale. The owner epoch is not the truncation stamp, which stays the per-file shrink counter of [RFC 6 §6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation). |
+| [RFC 7](rfc-7-namespace-metadata.md) | An inode records its unit ([RFC 11 §2](rfc-11-ownership.md#2.%20Ownership%20units)); open state is a leased record ([RFC 11 §7](rfc-11-ownership.md#7.%20Protocol%20state)). |
+| [RFC 8 §4.1](rfc-8-engine.md#4.1%20The%20facade%20orders%20a%20write%3B%20adapters%20do%20not), [§9.4](rfc-8-engine.md#9.4%20Commit%20is%20answered%20by%20the%20journal) | The facade acknowledges a write after [§4](#4.%20The%20write%20path)'s step 5, and answers a commit once every member has synced. The engine composes this layer in every deployment ([§10](#10.%20A%20single%20node)). |
+| [RFC 11 §3](rfc-11-ownership.md#3.%20Write%20tokens) | Provides [§3](#3.%20What%20it%20assumes%20of%20ownership)'s assumptions; the write token is the owner lease. |
+
+## 16. Open questions
+
+1. **The seal's cost.** Asking every member for its uncertain ranges is
+   proportional to operations above the committed point; the bound on that — the
+   committed point's lag — is unmeasured. It also grows with the files in a unit,
+   so it bears on [RFC 11](rfc-11-ownership.md)'s default granularity.
+2. **Clock assumptions.** The read lease and the owner lease assume bounded
+   drift. The bound, and what happens when it is exceeded, are unspecified.
+3. **Whole-cluster restart.** Every lease has lapsed; every unit needs a takeover
+   before it serves. Whether that is acceptable at thousands of units is
+   unmeasured.
+4. **Journal capacity** is multiplied by the replica count for un-offloaded
+   content. Whether offload keeps that bounded under sustained writes is
+   unmeasured.
+
+Several owners of one file and protocol state are [RFC 11](rfc-11-ownership.md)'s ([RFC 11 §15](rfc-11-ownership.md#15.%20Open%20questions), [§7](rfc-11-ownership.md#7.%20Protocol%20state)).
+
+---
+
+## Appendix A — prior art
 
 Every system below that keeps consensus off the data path does it the same way:
 one writer orders each unit, a service that already runs consensus holds the
@@ -356,65 +542,14 @@ that pattern.
 | Assise (OSDI 2020) | a local log replicated before acknowledgement and published asynchronously — the same shape as journal plus offload |
 | FoundationDB (SIGMOD 2021), TigerBeetle | deterministic simulation as the primary test method |
 
-## 12. Alternatives considered
+## Appendix B — alternatives considered
 
 | Alternative | Why not |
 | --- | --- |
 | Every block service writes, and journals order operations differently | Two writers of one range leave replicas holding different bytes with no version comparable across them. Ordering needs one writer per unit or consensus per write. |
 | Consensus per write through the configuration store's timestamp service | Moves consensus from rare events to every write. Reads of recent data then need a quorum or a metadata lookup, several nodes offload overlapping content, and `size` becomes contended. It buys nothing over forwarding to the owner, which costs the same hop the replication already pays. |
 | Acknowledge at a quorum of the replica set | Hides a slow replica, but a replica can then miss acknowledged writes, so none can serve reads, and failover needs a read quorum and a durable truncation record. |
-| Replicas read another's writes only after offload | Metadata shows a new size at once; reading the unoffloaded range on another node must then wait for offload or fetch from the owner anyway. It also breaks close-to-open visibility unless close waits for offload. |
-| Erasure-coded journal content | Journal content is small, overwritten and short-lived: stripes need read-modify-write on partial writes, failover must reconstruct, and no replica holds whole data to serve reads. It saves capacity only on the un-offloaded working set. Erasure coding belongs at rest, where blocks are sealed. |
+| Replicas read another's writes only after offload | Metadata shows a new size at once; reading the un-offloaded range on another node must then wait for offload or fetch from the owner anyway. It also breaks close-to-open visibility unless close waits for offload. |
+| Erasure-coded journal content | Journal content is small, overwritten and short-lived: stripes need read-modify-write on partial writes, failover must reconstruct, and no replica holds whole data to serve reads. Erasure coding belongs at rest, where blocks are sealed. |
 | A shared journal on storage every node can reach, or a replicated log service | Either requires shared-access storage or another service to deploy and keep healthy. Replication among block services needs neither. |
 | Journal in a key-value store or an in-memory cache | Weaker durability or capacity, write amplification on large values, and the journal's semantics rebuilt on top. |
-
-## 13. Open questions
-
-1. **Ownership unit granularity** (RFC 11). This document works for any unit; the
-   cost of a seal grows with the files in a unit.
-2. **Several owners of one file.** With byte-range units, every range owner
-   writes the file's `size` ([RFC 6 §2.4](rfc-6-block-metadata.md#2.4%20Shape%20and%20holes)); truncate must revoke every range first.
-   Unspecified.
-3. **The seal's cost.** Asking every member for its uncertain ranges is
-   proportional to operations above the committed point; the bound on that — the
-   committed point's lag — is unmeasured.
-4. **Clock assumptions.** The read lease and the owner's lease assume bounded
-   drift. The bound and what happens when it is exceeded are unspecified.
-5. **Whole-cluster restart.** Every lease has lapsed; every unit needs a takeover
-   before it serves. Whether that is acceptable at thousands of units is
-   unmeasured.
-6. **Protocol state** — client locks, opens, delegations, the NFS write verifier —
-   belongs to the protocol RFCs, but the write verifier **MUST** change whenever a
-   unit's owner does, or clients never resend writes the old owner held unsynced.
-7. **Journal capacity** is multiplied by the replica count for un-offloaded
-   content. Whether offload keeps that bounded under sustained writes is
-   unmeasured.
-
-## 14. Conformance
-
-This layer is a distributed protocol, and no amount of review establishes one.
-Conformance rests on three kinds of check, and all three are required.
-
-**A model.** The configuration, fencing, takeover and seal of [§6](#6.%20Fencing)–[§9](#9.%20Failover) **MUST**
-be modelled in a model checker before they are implemented, with the invariants
-below as properties, and the model **MUST** be kept in step with this document.
-
-**Deterministic simulation.** The layer reaches the network, the journals' storage
-seam ([RFC 1 §1.3](rfc-1-journal.md#1.3%20It%20is%20testable%20on%20its%20own)), time and randomness only through interfaces. A simulator
-drives a cluster of instances in one process from a seed, injecting message loss,
-delay, reordering and duplication, partitions, process pauses, crashes that
-discard unsynced writes, and clock drift within the configured bound. A failing
-seed **MUST** reproduce the failure exactly.
-
-**Whole-system fault injection** against real processes, checking the histories
-clients observe for linearizability of acknowledged writes.
-
-Properties every one of them checks:
-
-| Property | Violated by |
-| --- | --- |
-| An acknowledged write is held by some journal of the current configuration, or durable remotely, at every moment | a quorum acknowledgement, a seal that drops content, a learner counted as a member |
-| No member's journal serves, for a range, content older than the newest acknowledged write there, while it holds a read lease | a removed replica still serving, a dirty range served as clean |
-| Removed content is never served again | a late operation below a removal marker, a rejoining copy that did not discard |
-| Nothing a superseded owner sends after the epoch is installed takes effect anywhere | a sender-side lease check standing in for receiver fencing |
-| A unit with a member of the last configuration alive becomes writable again without operator action | a takeover that waits for a quorum |
