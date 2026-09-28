@@ -99,7 +99,7 @@ half-completes ([§7.2](#7.2%20Fault%20transport)).
 | Connection pool size | derived from the pools at construction ([§4.10](#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)) | pool sizes |
 | Health | one probe call ([§4.7](#4.7%20Health%20is%20one%20probe%20call)) | syncer's derived state, and refusing work ([RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work)) |
 | Listing | walks every block once ([§4.6](#4.6%20List%20is%20a%20complete%2C%20resumable%20walk)) | GC decides what a listed block means ([RFC 9 §5](rfc-9-gc.md#5.%20Unrecorded%20objects)) |
-| Deletion | deletes, idempotently ([§4.5](#4.5%20Delete%20is%20idempotent)) | GC decides what to delete ([RFC 9](rfc-9-gc.md)) |
+| Deletion | deletes, idempotently ([§4.5](#4.5%20Delete%20is%20batched%20and%20idempotent)) | GC decides what to delete ([RFC 9](rfc-9-gc.md)) |
 
 ## 3. The block format
 
@@ -223,8 +223,10 @@ type Store interface {
 	// zero Range. The reader yields exactly that many bytes or fails.
 	Get(ctx context.Context, name Name, r Range) (io.ReadCloser, error)
 
-	// Delete removes a block. Deleting an absent block succeeds.
-	Delete(ctx context.Context, name Name) error
+	// Delete removes blocks, as many as the caller passes. It returns one
+	// error per name, in order; nil means that block is gone. Deleting an
+	// absent block succeeds.
+	Delete(ctx context.Context, names []Name) []error
 
 	// List yields every stored block once, in ascending name order, starting
 	// after the given name (the zero Name starts at the beginning).
@@ -314,11 +316,25 @@ is why a get takes one range and not a list. Where the service returns a checksu
 for what it sent, the store **SHOULD** check it. The codec's hash check ([§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec))
 remains the one that decides.
 
-### 4.5 Delete is idempotent
+### 4.5 Delete is batched and idempotent
 
-Deleting an absent block **MUST** succeed. GC retries a delete after an unknown
-outcome and re-runs a pass after a crash; a delete that failed because it had
-already happened would turn recovery into an error.
+`Delete` takes many names in one call, because sweep deletes blocks by the
+thousand and a request per block would make the request count, not the service,
+the limit: at the one second per request measured on one service ([Appendix B](#Appendix%20B%20%E2%80%94%20measurements)),
+a million blocks is a million seconds of requests one at a time and a thousand
+requests in batches of a thousand. A single delete is a batch of one.
+
+- **Each name succeeds or fails on its own.** A batch is not atomic, and the
+  store returns one result per name. The caller clears whatever records it keeps
+  for a name ([RFC 9 §3.2](rfc-9-gc.md#3.2%20A%20retirement%20not%20yet%20deleted%20is%20durably%20recorded)) only for names whose result is `nil`.
+- **Deleting an absent block succeeds.** GC retries a delete after an unknown
+  outcome and re-runs a pass after a crash; a delete that failed because it had
+  already happened would turn recovery into an error.
+- **A batch whose outcome is unknown fails every name in it** with
+  `ErrTransient`. The retry is safe, since each delete is idempotent.
+- **The store splits a batch** into as many service requests as its service's
+  limit requires ([Appendix C.1](#C.1%20Required%20service%20features)), and a service without a batch operation deletes
+  one name per request. The caller never needs to know the limit.
 
 ### 4.6 List is a complete, resumable walk
 
@@ -376,7 +392,9 @@ health.
 ### 4.9 No state across calls
 
 A store **MUST NOT** carry a retry loop, a circuit breaker, a health status, a
-concurrency limit of its own or a queue. Each call makes one attempt.
+concurrency limit of its own or a queue. Each request makes one attempt; only a
+batch delete makes more than one request per call ([§4.5](#4.5%20Delete%20is%20batched%20and%20idempotent)), and those run one
+after another.
 
 State below the syncer is invisible to it: a retry loop there multiplies with the
 syncer's budget, a health flag can latch unobserved, a queue holds requests the
@@ -464,7 +482,7 @@ S3-compatible object storage, the primary backend, is profiled in
 | R4 | The store never parses a block, and nothing above the codec observes a transform. |
 | R5 | A put is whole, checksummed, atomic, and `nil` only once durable. |
 | R6 | A get returns exactly the requested bytes or an error. |
-| R7 | Delete of an absent block succeeds. |
+| R7 | Delete is idempotent per name, and reports per name. |
 | R8 | A listing yields every block once, in order, resumably. |
 | R9 | Every failure wraps one error of the closed set. |
 | R10 | A store holds no state across calls and makes one attempt per call. |
@@ -491,7 +509,8 @@ in-memory store).
 | [§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly) | Get of each range inside the block returns exactly its bytes. A range starting past the end fails with `ErrInvalid`. | |
 | [§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly) | A transport that clamps a range ending past the end: the get fails with `ErrInvalid`, never returns fewer bytes. | T |
 | [§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly) | A transport that truncates a body: the get fails with `ErrTransient`. | T |
-| [§4.5](#4.5%20Delete%20is%20idempotent) | Delete twice, and delete a never-written name: all succeed. | |
+| [§4.5](#4.5%20Delete%20is%20batched%20and%20idempotent) | Delete a batch twice, including a never-written name: every result is `nil`. A batch of 2,500 (above the service's limit): every block gone. | |
+| [§4.5](#4.5%20Delete%20is%20batched%20and%20idempotent) | A transport that fails one key inside a batch: exactly that name's result is an error, the others `nil`. A batch whose response is dropped: every result is `ErrTransient`. | T |
 | [§4.6](#4.6%20List%20is%20a%20complete%2C%20resumable%20walk) | Write 2,500 blocks; list with pages of 1,000; stop after 1,200 and resume from the last name: every block seen exactly once, in order, with size and time. | |
 | [§4.6](#4.6%20List%20is%20a%20complete%2C%20resumable%20walk) | Put a key that is not a block name under the block namespace: the listing skips it and counts it. Cancel mid-listing: iteration ends with the context's error. | |
 | [§4.2](#4.2%20Names%20in%2C%20locations%20kept%20inside) | After the whole suite, list the store's raw namespace: nothing but blocks and check or health objects. | |
@@ -651,6 +670,7 @@ Docker. MinIO could not be pulled in this environment and was not measured.
 | Range `bytes=8-15` of a 10-byte object | **`206`, 2 bytes (clamped)** | **`206`, 2 bytes (clamped)** | — | `206`, 2 bytes |
 | Range on an absent key | `404 NoSuchKey` | `404 NoSuchKey` | — | `404 NoSuchKey` |
 | Delete of an absent key | `204` | success | — | `204` |
+| `DeleteObjects` of 3 keys plus one never written | all 4 reported deleted, the 3 keys gone | same | — | — |
 | 2,500 keys, pages of 1,000, resumed with `start-after` | each key once, ascending, `LastModified` present | same | — | same |
 | `HeadBucket` / 0-byte put, median of 20 | 50 ms / 122 ms | 1.2 s / 945 ms | — | 2.5 ms / 2.7 ms |
 
@@ -681,7 +701,7 @@ its capability check.
 | `PutObject`, single part | put, health | atomic replace; readers never see a partial object | from the service's documentation; it cannot be provoked |
 | Put integrity: an enforced `x-amz-checksum-crc32c` or `Content-MD5`, or else an ETag equal to the MD5 of the stored bytes | put | a corrupted body is rejected, or detected from the ETag | check step 1 |
 | `GetObject` with `Range` | get | `206` with the bytes asked for; `416` when the range starts past the end. A clamped overlong range is tolerated: the store checks lengths itself ([§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)) | check step 2 |
-| `DeleteObject` | delete | success on an absent key | check step 3 |
+| `DeleteObjects` (batch, up to 1,000 keys) with `Content-MD5` | delete | every key, absent ones included, listed as deleted; per-key errors reported per key | check step 3 |
 | `ListObjectsV2` with `prefix`, `max-keys`, `start-after` | list | ascending key order, every key once across pages, `LastModified` present | check step 4 |
 | `GetBucketVersioning` | open | versioning never enabled: no status in the reply. A `Suspended` bucket still keeps the versions written while it was on, and object lock requires versioning, so this one check covers both | check step 5 |
 | `GetBucketLifecycleConfiguration` | open | no rule that expires or transitions objects under the store's prefix: expiry deletes durable blocks, and a transition to an archive class makes gets fail | check step 5 |
@@ -747,7 +767,10 @@ namespace, with the production client configuration of [Appendix C.3](#C.3%20How
    stored bytes, not echoed. If that fails too, refuse.
 2. Put a 10-byte object; get bytes 2–5 and expect exactly 4 bytes; get from
    offset 20 and expect `416`.
-3. Delete a key that was never written, and expect success.
+3. Batch-delete two keys that exist and one that was never written, and expect
+   all three reported deleted and the two keys gone from a listing. A service that
+   rejects the batch operation is recorded, and the store deletes one key per
+   `DeleteObject` request instead.
 4. Put three keys and list with `max-keys=1` using `start-after`; expect each key
    once, in order, with `LastModified`.
 5. Read the bucket's versioning status and lifecycle rules, as [Appendix C.1](#C.1%20Required%20service%20features) states.
