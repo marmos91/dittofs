@@ -17,21 +17,24 @@
   </defs>
   <rect width="900" height="380" fill="#ffffff"/>
 
-  <text x="16" y="26" class="t">Four records, each keyed by one thing, none holding a list that grows with its file</text>
-  <text x="16" y="46" class="s">The write path writes only the left column. The flush commit writes the other three and reads only the epoch.</text>
+  <text x="16" y="26" class="t">Five records, each keyed by one thing, none holding a list that grows with its file</text>
+  <text x="16" y="46" class="s">The write path writes only the left column: shape and holes, which together are existence. The flush commit writes the other three and reads only the epoch.</text>
 
-  <rect x="16" y="76" width="190" height="112" rx="3" class="bn"/>
-  <text x="28" y="98" class="rl">Existence</text>
-  <text x="28" y="116" class="m">key: FileID</text>
-  <text x="28" y="140" class="m">size</text>
-  <text x="28" y="156" class="m">holes</text>
-  <text x="28" y="172" class="m">epoch</text>
+  <rect x="16" y="76" width="190" height="50" rx="3" class="bn"/>
+  <text x="28" y="94" class="rl">Shape</text>
+  <text x="72" y="94" class="m">key: FileID</text>
+  <text x="28" y="114" class="m">size, epoch</text>
+  <rect x="16" y="136" width="190" height="52" rx="3" class="bn"/>
+  <text x="28" y="154" class="rl">Hole</text>
+  <text x="64" y="154" class="m">key: (FileID, start)</text>
+  <text x="28" y="174" class="m">end</text>
 
   <rect x="246" y="76" width="190" height="112" rx="3" class="bx"/>
   <text x="258" y="98" class="rl">Ref</text>
   <text x="258" y="116" class="m">key: (FileID, offset)</text>
   <text x="258" y="140" class="m">hash</text>
   <text x="258" y="156" class="m">skip, length</text>
+  <text x="258" y="172" class="m">oldest, newest</text>
 
   <rect x="476" y="76" width="190" height="112" rx="3" class="bx"/>
   <text x="488" y="98" class="rl">Chunk</text>
@@ -48,6 +51,7 @@
   <line x1="436" y1="146" x2="474" y2="146" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a4r)"/>
   <line x1="666" y1="146" x2="704" y2="146" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a4r)"/>
 
+  <text x="16" y="212" class="s">one hole per unwritten range</text>
   <text x="246" y="212" class="s">many refs, any files</text>
   <text x="476" y="212" class="s">one per hash; refcount = refs naming it</text>
   <text x="706" y="212" class="s">live = chunks with refcount &gt; 0</text>
@@ -55,7 +59,7 @@
   <line x1="16" y1="236" x2="884" y2="236" stroke="#eef1f4"/>
 
   <text x="16" y="262" class="rl">What each question reads</text>
-  <text x="16" y="284" class="l">Does content exist at this offset? — Existence, then Ref. A hole and uncarved content are both "no ref"; only Existence tells them apart.</text>
+  <text x="16" y="284" class="l">Does content exist at this offset? — Hole and Ref. A hole and uncarved content are both "no ref"; only the hole records tell them apart.</text>
   <text x="16" y="302" class="l">Which chunk, which block? — Ref, then Chunk. Is it durable? — a Chunk record exists, so yes.</text>
   <text x="16" y="320" class="l">May this block be deleted? — Block.live, evaluated inside the transaction that deletes it.</text>
   <text x="16" y="352" class="why">Not here: whether the bytes are on local disk. That is the journal's question, and residency joins the two answers rather than storing one.</text>

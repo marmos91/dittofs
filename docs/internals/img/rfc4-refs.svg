@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 400" width="900" height="400" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <style>
+      .t  { font-size: 15px; font-weight: 600; fill: #1b1f24 }
+      .rl { font-size: 12px; font-weight: 600; fill: #1b1f24 }
+      .l  { font-size: 12px; fill: #3d444d }
+      .s  { font-size: 11px; fill: #5b6472 }
+      .m  { font-family: ui-monospace,SFMono-Regular,Menlo,monospace; font-size: 11px; fill: #1b1f24 }
+      .bx { fill: #dce9f7; stroke: #4a7fb5; stroke-width: 1.4 }
+      .bg { fill: #eaf4ec; stroke: #2f6f4f; stroke-width: 1.4 }
+      .bn { fill: #f4f6f8; stroke: #9aa4b2; stroke-width: 1.1; stroke-dasharray: 4 3 }
+      .un { fill: #f4f6f8; stroke: #c3cad3; stroke-width: 1 }
+    </style>
+    <marker id="a4f" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5b6472"/>
+    </marker>
+  </defs>
+  <rect width="900" height="400" fill="#ffffff"/>
+
+  <text x="16" y="26" class="t">A ref maps a range of a file onto a range of a chunk</text>
+  <text x="16" y="46" class="s">File f (10 MiB) after deallocating [5M, 6M) and truncating to 9 MiB; file g wrote the same bytes as A. 1 MiB = 60 px.</text>
+
+  <!-- file f: x = 120 + 60 * MiB -->
+  <text x="16" y="96" class="rl">file f</text>
+  <rect x="120" y="76" width="240" height="32" rx="2" class="bx"/>
+  <text x="128" y="96" class="m">(f,0) A skip 0 len 4M</text>
+  <rect x="360" y="76" width="60" height="32" rx="2" class="bx"/>
+  <text x="364" y="96" class="m">(f,4M)</text>
+  <rect x="420" y="76" width="60" height="32" rx="2" class="bn"/>
+  <text x="432" y="96" class="m">hole</text>
+  <rect x="480" y="76" width="60" height="32" rx="2" class="bx"/>
+  <text x="484" y="96" class="m">(f,6M)</text>
+  <rect x="540" y="76" width="120" height="32" rx="2" class="bx"/>
+  <text x="546" y="96" class="m">(f,7M) C len 2M</text>
+  <line x1="660" y1="68" x2="660" y2="116" stroke="#1b1f24" stroke-width="1.6"/>
+  <text x="666" y="96" class="m">size 9M</text>
+  <text x="120" y="126" class="s">0</text>
+  <text x="354" y="126" class="s">4M</text>
+  <text x="414" y="126" class="s">5M</text>
+  <text x="474" y="126" class="s">6M</text>
+  <text x="534" y="126" class="s">7M</text>
+
+  <!-- file g -->
+  <text x="16" y="166" class="rl">file g</text>
+  <rect x="120" y="146" width="240" height="32" rx="2" class="bx"/>
+  <text x="128" y="166" class="m">(g,0) A skip 0 len 4M</text>
+
+  <!-- chunks -->
+  <text x="16" y="276" class="rl">chunks</text>
+  <rect x="120" y="256" width="240" height="32" rx="2" class="bg"/>
+  <text x="128" y="276" class="m">A  4 MiB  refcount 2</text>
+  <rect x="400" y="256" width="180" height="32" rx="2" class="bg"/>
+  <text x="408" y="276" class="m">B  3 MiB  refcount 2</text>
+  <rect x="400" y="296" width="60" height="10" class="un"/>
+  <rect x="460" y="296" width="60" height="10" fill="#f8e3e3" stroke="#c3cad3"/>
+  <rect x="520" y="296" width="60" height="10" class="un"/>
+  <text x="400" y="322" class="s">used by (f,4M) · unused · used by (f,6M)</text>
+  <rect x="620" y="256" width="180" height="32" rx="2" class="bg"/>
+  <text x="628" y="276" class="m">C  3 MiB  refcount 1</text>
+  <rect x="620" y="296" width="120" height="10" class="un"/>
+  <rect x="740" y="296" width="60" height="10" fill="#f8e3e3" stroke="#c3cad3"/>
+  <text x="650" y="322" class="s">used · tail unused</text>
+
+  <!-- arrows: ref -> chunk (by hash) -->
+  <line x1="240" y1="108" x2="236" y2="252" stroke="#5b6472" stroke-width="1.2" marker-end="url(#a4f)"/>
+  <line x1="300" y1="178" x2="296" y2="252" stroke="#5b6472" stroke-width="1.2" marker-end="url(#a4f)"/>
+  <line x1="390" y1="108" x2="428" y2="252" stroke="#5b6472" stroke-width="1.2" marker-end="url(#a4f)"/>
+  <line x1="510" y1="108" x2="548" y2="252" stroke="#5b6472" stroke-width="1.2" marker-end="url(#a4f)"/>
+  <line x1="600" y1="108" x2="678" y2="252" stroke="#5b6472" stroke-width="1.2" marker-end="url(#a4f)"/>
+
+  <line x1="16" y1="344" x2="884" y2="344" stroke="#eef1f4"/>
+  <text x="16" y="366" class="l">Refs name a chunk by hash and select [skip, skip + length) of it. Splitting, narrowing and deduplication change refs and counts; no chunk bytes move.</text>
+  <text x="16" y="386" class="l">A chunk's refcount is the number of refs naming it: A is used by f and g, B twice by f.</text>
+</svg>

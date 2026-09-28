@@ -150,7 +150,7 @@ declares for the need:
 
     Size(file) → bytes
 
-The engine supplies [RFC 4](rfc-4-block-metadata.md)'s existence record ([RFC 4 §2.4](rfc-4-block-metadata.md#2.4%20Existence)) at composition time.
+The engine supplies [RFC 4](rfc-4-block-metadata.md)'s shape record ([RFC 4 §2.4](rfc-4-block-metadata.md#2.4%20Shape%20and%20holes)) at composition time.
 Per [RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy) this **MUST** be a declared interface; a backend that does not
 supply it **MUST** fail to build.
 
