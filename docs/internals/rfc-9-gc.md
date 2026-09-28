@@ -188,7 +188,7 @@ restart **MUST** resume every pending deletion it finds.
 
 This is what removes enumeration from sweep's correctness. Without the record, a
 crash between [§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object)'s steps leaves an object that can only be found by listing the
-bucket, and [RFC 4 §4.6](rfc-4-remote-tier.md#4.6%20List%20is%20a%20complete%2C%20resumable%20walk) forbids depending on a listing for correctness. With it,
+bucket, and nothing's correctness may depend on a listing ([RFC 4 §4.6](rfc-4-remote-tier.md#4.6%20List%20is%20a%20complete%2C%20resumable%20walk)). With it,
 the object is named by a record until the moment it is gone.
 
 The pending-deletion record is a record kind [RFC 6 §2](rfc-6-block-metadata.md#2.%20The%20records) does not list. [§9](#9.%20Consequences%20for%20other%20RFCs) states
@@ -307,14 +307,15 @@ block is swept by [§3](#3.%20Sweep) exactly like any other block that reached z
 
 Relocating block *B*:
 
-1. Read each chunk of *B* whose refcount is nonzero, through the remote tier's
-   verified read ([RFC 4 §3.4](rfc-4-remote-tier.md#3.4%20Every%20read%20is%20verified%20by%20the%20codec)). GC **MUST NOT** parse the object or verify it
-   itself.
+1. Read each chunk of *B* whose refcount is nonzero through the block codec,
+   which undoes the transforms and verifies each chunk ([RFC 4 §3.4](rfc-4-remote-tier.md#3.4%20Every%20read%20is%20verified%20by%20the%20codec)). GC
+   **MUST NOT** parse the block or verify it itself.
 2. Assemble the chunks into a block under [RFC 2 §5](rfc-2-carver.md#5.%20Packing%3A%20three%20rules%2C%20not%20a%20component): whole chunks only (P1), the
    target size (P2), and only the chunks whose bytes it carries (P3).
 3. Name the block by [RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block), which the assembler computes because it holds
    the hash list ([RFC 2 §4](rfc-2-carver.md#4.%20Identity)). The name **MUST NOT** be generated.
-4. Put it ([RFC 4 §4.1](rfc-4-remote-tier.md#4.1%20Interface)), under the fence of [§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete).
+4. Encode it through the codec under the store's current transform chain
+   ([RFC 5 §5.2](rfc-5-transforms.md#5.2%20Relocation%20re-encodes)), and put it ([RFC 4 §4.1](rfc-4-remote-tier.md#4.1%20Interface)) under the fence of [§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete).
 5. After the put is reported durable, apply [RFC 6 §7.3](rfc-6-block-metadata.md#7.3%20Relocation) in one transaction: point
    each moved chunk record at the new block, create its record, and decrement
    *B*'s `live` by the number moved.
@@ -322,7 +323,7 @@ Relocating block *B*:
 | Crash after | State | Outcome |
 | --- | --- | --- |
 | 1–3 | nothing written | no effect |
-| 4 | an object no record names | the re-run derives the same name and puts the same object ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)). If it never re-runs, [§5](#5.%20Unrecorded%20objects) may collect it |
+| 4 | an object no record names | the re-run derives the same name and puts the same chunks ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)), possibly as different bytes (a new encryption salt, a rotated key); the overwrite is harmless and stale positions are repaired ([RFC 4 §3.4](rfc-4-remote-tier.md#3.4%20Every%20read%20is%20verified%20by%20the%20codec)). If it never re-runs, [§5](#5.%20Unrecorded%20objects) may collect it |
 | 5 | chunks moved, *B*'s `live` at zero | *B* is an ordinary sweep candidate |
 
 A chunk whose refcount is zero is not moved. Its record stays pointing at *B*
@@ -335,8 +336,10 @@ one pass, not a loss.
 A reader that resolved a chunk to *B* before step 5 can issue its read after *B*
 is swept, and find the object absent. [RFC 6 §2.5](rfc-6-block-metadata.md#2.5%20Refs%20name%20hashes%2C%20never%20blocks) makes refs name hashes, so the
 chunk is still reachable, at the new block. The read path **MUST** re-resolve the
-chunk once when the remote tier reports an object absent, and **MUST** fail only
-if the second resolution also misses. That rule belongs to the read path ([RFC 8](rfc-8-engine.md)),
+chunk once when the remote store reports a block absent, and **MUST** fail only
+if the second resolution also misses. A relocation that rewrites a block under
+its old name, rather than moving chunks to a new one, instead leaves positions
+stale, and the read path repairs those from the block's header ([RFC 4 §3.4](rfc-4-remote-tier.md#3.4%20Every%20read%20is%20verified%20by%20the%20codec)). That rule belongs to the read path ([RFC 8](rfc-8-engine.md)),
 and relocation is safe only while it holds.
 
 ### 4.4 When to relocate is policy
@@ -515,7 +518,7 @@ This document requires four changes elsewhere, so that the set carries one answe
 2. **[RFC 6 §7.2](rfc-6-block-metadata.md#7.2%20Adoption%20is%20conditional%20on%20existence), [§7.3](rfc-6-block-metadata.md#7.3%20Relocation).** Adoption's failure on a missing record, and the
    isolation requirement of [§3.3](#3.3%20The%20race%20with%20adoption%20is%20closed%20by%20transactions%2C%20not%20by%20time), are stated in the write statement where the
    backend's isolation level needs it.
-3. **[RFC 8](rfc-8-engine.md).** The read path re-resolves once on an absent object ([§4.3](#4.3%20A%20reader%20can%20hold%20the%20old%20location)). The
+3. **[RFC 8](rfc-8-engine.md).** The read path re-resolves once on an absent block, and repairs a stale position from the block's header ([§4.3](#4.3%20A%20reader%20can%20hold%20the%20old%20location)). The
    engine owns GC's cadence and relocation threshold ([§7.3](#7.3%20When%20GC%20runs%20is%20the%20engine%27s)).
 4. **[RFC 4 §1.2](rfc-4-remote-tier.md#1.2%20A%20contract%2C%20not%20a%20component).** The compaction row becomes relocation, whose needs are verified
    read and put. Relocation deletes nothing, so delete leaves that row. Orphan
