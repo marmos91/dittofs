@@ -162,7 +162,6 @@ a chunk's offset in the encoded block, not in the journal ([RFC 6 §2.2](rfc-6-b
 compares the two. Above the codec, nothing **MUST** differ with transforms on or
 off, apart from these offsets and timing.
 
-![Plaintext hashed first, then compressed and encrypted into the stored body; the read path inverts each layer and the hash is checked against the original plaintext](img/rfc8-transform-chain.svg)
 
 ### 3.4 Every read is verified by the codec
 
@@ -174,6 +173,8 @@ against the name it was fetched under.
 No consumer reads block bytes except through the codec. Verification then happens
 in one place, and every consumer (the engine's fetch, relocation, snapshot
 verification) inherits it.
+
+![A ranged get at a stale position fails verification or runs past the end; the header is read once and the chunk fetched at the header's position; on success the recorded position is rewritten, otherwise the chunk is corrupt](img/rfc4r-stale-read.svg)
 
 **A stale offset is repaired, not reported.** Block metadata records where each
 chunk's body sits ([RFC 6 §2.2](rfc-6-block-metadata.md#2.2%20Chunk)). If the block was later rewritten with a
@@ -295,6 +296,8 @@ A store **MUST NOT** require a conditional put (put-if-absent): S3-compatible
 services differ on it ([Appendix B](#Appendix%20B%20%E2%80%94%20measurements)). Doing without it rests on two things: content-derived
 names, and the fence that stops a put from re-creating a block while GC is
 deleting it ([RFC 9 §3.4](rfc-9-gc.md#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete)). The second is GC's, and this contract relies on it.
+
+![A put: chunks are transformed one at a time into a spool file, the header is built from the body lengths, and header plus spool go to the store in one request with the profile's integrity check](img/rfc4r-put-path.svg)
 
 ### 4.4 Get: a whole block or one range, exactly
 

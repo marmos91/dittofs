@@ -842,7 +842,8 @@ spool.
 
 The spool is placed and budgeted, never left to find free space. It lives in a
 directory the engine owns, on local storage it accounts for, and its space —
-`upload_workers` times the largest block — is set aside from the local capacity
+`upload_workers` times the largest encoded block, from the chain's
+`MaxEncodedLen` ([RFC 5 §3.1](rfc-5-transforms.md#3.1%20Interfaces)) — is set aside from the local capacity
 the engine hands the journals ([RFC 8](rfc-8-engine.md)), so a spool write is never the one that
 finds the disk full. A spool write that still fails for lack of space is a
 **local** error: it is reported as one, and it does not make the store unhealthy,
