@@ -625,6 +625,7 @@ Apply(id FileID, op Op) error              // op: write, deallocate, truncate or
 Settle(id FileID, v Version) error
 Export(id FileID, from Version) iter.Seq2[Op, error]
 SetEpoch(e uint64) error
+Discard(id FileID) error
 ```
 
 `WriteAt` and its siblings assign versions. `Apply` takes an operation whose
@@ -658,6 +659,15 @@ block writes to the file for longer than a read does.
 durable before the first version under it is assigned. A version assigned under
 a later epoch outranks every version assigned under an earlier one, by this
 journal or any other; what raises it, and when, is the caller's.
+
+`Discard(id)` forgets `id` entirely: held extents whatever their offloaded bit,
+removal markers and applied versions, as if the journal had never held the file.
+It is recorded and durable on return, and recovery **MUST NOT** bring back anything
+it discarded. It is the one operation that ignores versions, because its purpose
+is to let a copy that can no longer be trusted be rebuilt from `Export` of another
+([RFC 10](rfc-10-journal-replication.md)): versioned operations cannot remove content newer than themselves.
+**Discarding dirty content destroys it unless another journal holds it**, which the
+journal cannot check; the caller **MUST** know that one does.
 
 ## 4. On-disk format
 

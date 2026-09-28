@@ -30,7 +30,7 @@ order: each part builds on the ones before it.
 | [RFC 8](rfc-8-engine.md) | engine | composition, policy, the facade adapters call |
 | [RFC 9](rfc-9-gc.md) | GC | sweep, relocation, remote deletion |
 | **Cluster** | | |
-| RFC 10 | journal replication | *planned* — owner-driven replication, fencing, seal, catch-up, reads from replicas |
+| [RFC 10](rfc-10-journal-replication.md) | journal replication | *draft* — owner-driven replication, fencing, seal, catch-up, reads from replicas |
 | RFC 11 | ownership | *planned* — write tokens per file range, leases, handover, failover, forwarding |
 | **Security** | | |
 | RFC 12 | identity and authentication | *planned* — principals, authentication flavours, identity mapping, squashing |
