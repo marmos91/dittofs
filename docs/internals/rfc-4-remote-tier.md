@@ -561,17 +561,15 @@ as in [RFC 1 §12](rfc-1-journal.md#12.%20Test%20plan%20and%20performance%20targ
 
 ## 8. Consequences for other RFCs
 
-These RFCs still describe the old split and need these changes before
-implementation:
+This revision made these changes to the RFCs around it:
 
 | RFC | Change |
 | --- | --- |
-| [RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface) | Done in this revision: the syncer's `Store` is the narrow view of [§4.1](#4.1%20Interface). |
-| [RFC 3 §3.2](rfc-3-syncer.md#3.2%20It%20holds%20a%20reference%2C%20not%20a%20copy), [RFC 3 §3.4](rfc-3-syncer.md#3.4%20One%20put%20per%20block), [RFC 8 §5.1](rfc-8-engine.md#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output), [RFC 8 §7](rfc-8-engine.md#7.%20Local%20space) | The uploader encodes the block into its spool file and puts header followed by spool ([§3.2](#3.2%20Layout)); the spool moves from the backend to the uploader, with the same budget. Memory stays at one chunk plus the header. |
-| [RFC 5](rfc-5-transforms.md) | Done in this revision: transforms are a generic, configured chain run by the codec; transform errors surface as codec errors, not through [§4.8](#4.8%20Errors%20are%20a%20closed%20set). |
-| [RFC 6 §2.2](rfc-6-block-metadata.md#2.2%20Chunk) | A chunk's `position` is the offset and length from the encoded block's header, and [§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec) may rewrite it. |
-| [RFC 8 §6.7](rfc-8-engine.md#6.7%20An%20absent%20object%20is%20re-resolved%20exactly%20once) | A range that fails verification or runs past the end repairs the offset from the block's header ([§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec)); re-resolving through block metadata is kept for an absent block only. |
-| [RFC 9 §5](rfc-9-gc.md#5.%20Unrecorded%20objects) | Lists through [§4.6](#4.6%20List%20is%20a%20complete%2C%20resumable%20walk); an interrupted collection pass resumes instead of restarting. |
+| [RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface), [§3.4](rfc-3-syncer.md#3.4%20One%20put%20per%20block) | The syncer's `Store` is the block codec over a remote store; the engine's `Store` encodes each upload into a spool and puts header followed by spool; `Health` replaces `Probe`. |
+| [RFC 5](rfc-5-transforms.md) | Transforms are a generic, configured chain run by the codec; transform errors surface as codec errors, not through [§4.8](#4.8%20Errors%20are%20a%20closed%20set). |
+| [RFC 6 §2.2](rfc-6-block-metadata.md#2.2%20Chunk) | A chunk's `position` comes from the encoded block's header, and a read may repair it ([§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec)). |
+| [RFC 8 §5.1](rfc-8-engine.md#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output), [§6.7](rfc-8-engine.md#6.7%20An%20absent%20object%20is%20re-resolved%20exactly%20once), [§7](rfc-8-engine.md#7.%20Local%20space) | Upload encodes into a spool the engine budgets; an absent block is re-resolved once, a stale position is repaired from the header. |
+| [RFC 9 §4.2](rfc-9-gc.md#4.2%20Read%20verified%2C%20name%20by%20content%2C%20put%2C%20then%20move), [§4.3](rfc-9-gc.md#4.3%20A%20reader%20can%20hold%20the%20old%20location) | Relocation reads and re-encodes through the codec under the current chain; listing is resumable ([§4.6](#4.6%20List%20is%20a%20complete%2C%20resumable%20walk)). |
 
 ## 9. Decisions and open questions
 

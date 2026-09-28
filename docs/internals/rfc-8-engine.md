@@ -125,7 +125,7 @@ The engine supplies, at construction:
 | Declared by | Need | Supplied from |
 | --- | --- | --- |
 | [RFC 1](rfc-1-journal.md) | an event recorder ([§3.8](rfc-1-journal.md#3.8%20Event%20reporting)) | the process's metrics |
-| [RFC 3](rfc-3-syncer.md) | a put, a verified read ([RFC 4 §1.2](rfc-4-remote-tier.md#1.2%20A%20contract%2C%20not%20a%20component)) | the remote tier, through the transform chain |
+| [RFC 3](rfc-3-syncer.md) | a `Store`: put, verified read, health ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)) | the block codec with the store's transform chain ([RFC 4 §3](rfc-4-remote-tier.md#3.%20The%20block%20format), [RFC 5](rfc-5-transforms.md)), over the remote block store |
 | [RFC 6](rfc-6-block-metadata.md) | nothing | — |
 | [RFC 7](rfc-7-namespace-metadata.md) | `Size(file)` ([§2.5](rfc-7-namespace-metadata.md#2.5%20Where%20%60size%60%20lives)), release of an inode's refs ([§4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)), allocation for `SEEK` ([§9.3](rfc-7-namespace-metadata.md#9.3%20Residency%20is%20not%20an%20attribute)) | block metadata's existence record and refs |
 | [RFC 9](rfc-9-gc.md) | its narrow views of metadata and the remote tier | block metadata; the remote tier |
@@ -139,7 +139,7 @@ construction, with an error naming it.
 The engine **MUST NOT** negotiate a capability by type assertion, and **MUST
 NOT** fall back to a degraded behaviour when one is missing. [RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy) gives the
 general reason. Here the consequences are specific: an assertion that fails on
-the remote tier disables offloading, one that fails on a sealer uploads plaintext,
+the remote tier disables offloading, one that fails on a transform chain uploads plaintext,
 one that fails on a lookup makes every cold read linear. Each yields a working
 share and no error.
 
@@ -384,7 +384,8 @@ its name plus that ordered list: a few hundred bytes, whatever its size.
 
 The upload's `src` ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)) walks the plan and reads each chunk from the
 journal's `offered` reader ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)), so the block's bytes are in memory
-only while a worker transfers them, one chunk at a time ([RFC 3 §3.2](rfc-3-syncer.md#3.2%20It%20holds%20a%20reference%2C%20not%20a%20copy)). A retry
+only while a worker encodes them into its spool file, one chunk at a time
+([RFC 3 §3.2](rfc-3-syncer.md#3.2%20It%20holds%20a%20reference%2C%20not%20a%20copy), [§3.4](rfc-3-syncer.md#3.4%20One%20put%20per%20block)). A retry
 walks the plan again. The upload therefore runs inside the `Offload` callback that
 offered the bytes: the reader is valid only there, which is also where durability
 is reported back.
@@ -655,16 +656,15 @@ one: a second miss is not a race with relocation, which moves a chunk once per
 commit, but content that is gone, and it **MUST** be reported as **Lost**, not
 retried until a deadline.
 
-> [!important] Pending review — re-resolve on a range mismatch too
-> New. A re-put under the same name may lay the object out differently ([RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success)),
-> so a range recorded before it can point at the wrong bytes although the data is
-> intact.
-> *Added by the RFC 0–3 review, 2026-09-25.*
-
-The retry applies to *absent* and to a **range mismatch** — a ranged read whose
-bytes fail verification ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)), since a re-put under the same name may have laid
-the object out differently. A verification failure of a whole object, a transport
-error or a timeout is not evidence the chunk moved, and **MUST NOT** trigger it.
+A ranged read that fails verification, or runs past the end of the block, is a
+different case: the block is there, but the position recorded for the chunk is
+stale, because the block was rewritten under the same name with a different
+layout ([RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success)). The engine **MUST** read the block's header once, retry at
+the position the header gives, and on success rewrite the chunk's recorded
+position ([RFC 4 §3.4](rfc-4-remote-tier.md#3.4%20Every%20read%20is%20verified%20by%20the%20codec), [RFC 6 §2.2](rfc-6-block-metadata.md#2.2%20Chunk)). If the header does not list the chunk, or the
+retry fails too, the chunk is corrupt. A verification failure of a whole block, a
+transport error or a timeout is not evidence of either case, and **MUST NOT**
+trigger a re-resolution or a repair.
 
 Relocation is safe only while this rule holds ([RFC 9 §4.3](rfc-9-gc.md#4.3%20A%20reader%20can%20hold%20the%20old%20location)). An engine that fails
 the first miss turns every relocation into a window of spurious read errors; one
@@ -707,15 +707,11 @@ latency, on a random-read and a scan workload, across a few thresholds.
 
 ## 7. Local space
 
-> [!important] Pending review — spool space is budgeted here
-> New. The S3 backend's spool ([RFC 3 §3.4](rfc-3-syncer.md#3.4%20One%20put%20per%20block)) was neither placed nor counted; a full
-> disk then failed every upload, and nothing cleared it.
-> *Added by the [RFC 0](rfc-0-data-lifecycle.md)–3 review, 2026-09-25.*
-
-**Local space includes the spool.** The engine gives each backend that spools a
-directory on local storage it accounts for, and sets aside `upload_workers` times
-the largest block from the capacity it divides among the journals
-([RFC 3 §3.4](rfc-3-syncer.md#3.4%20One%20put%20per%20block)). A spool therefore never competes with journal writes for space.
+**Local space includes the upload spool.** The engine's `Store` encodes each
+upload into a spool file ([RFC 3 §3.4](rfc-3-syncer.md#3.4%20One%20put%20per%20block)). The engine places the spools in a directory
+on local storage it accounts for, and sets aside `upload_workers` times the
+largest encoded block from the capacity it divides among the journals. A spool
+therefore never competes with journal writes for space.
 
 ### 7.1 Eviction is chosen here, and needs no new record
 

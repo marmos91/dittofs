@@ -288,17 +288,18 @@ A chunk is keyed by its BLAKE3-256 hash and by nothing else ([RFC 2 §4](rfc-2-c
 offsets use it. A record keyed by `(file, offset)` that also carries a refcount
 is a ref wearing a chunk's name, and the refcount on it counts nothing.
 
-> [!important] Pending review — `position` is the store's range
-> `position` now has a stated source: the `Range` the store returns from `Put` for
-> each chunk ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)). Before, nothing produced it — with compression, where a
-> record sits in the stored object is known only below the syncer.
-> *Added by the RFC 0–3 review, 2026-09-25.*
+`block` and `position` locate the chunk's bytes: the name of the block that
+carries it, and `position`, the offset and length of the chunk's body in the
+encoded block, as the block's header records them ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)). This is what a
+ranged read asks for. It is recorded from the encoder's output when the block is
+committed, never computed from local offsets, because transforms change body
+lengths.
 
-`block` and `position` locate the chunk's bytes: the remote key of the block that
-carries it, and `position`, the byte range of the chunk's record in the object as
-stored — the `Range` the store reported when the block was put ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)). This is
-what a ranged read asks for ([RFC 4 §3.4](rfc-4-remote-tier.md#3.4%20Every%20read%20is%20verified%20by%20the%20codec)). It is the stored range, after framing and
-transforms, so it is recorded from the store's report and never computed.
+`position` is the one field a read may rewrite. If the block was later rewritten
+under the same name with a different layout ([RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success)), a read at the recorded
+position fails verification; the engine then reads the block's header and
+records the position it gives ([RFC 4 §3.4](rfc-4-remote-tier.md#3.4%20Every%20read%20is%20verified%20by%20the%20codec)). The rewrite is conditional on the
+record still naming the same block, so it never races relocation.
 
 ### 2.3 Block
 
