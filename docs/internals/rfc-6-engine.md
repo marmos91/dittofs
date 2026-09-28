@@ -897,7 +897,7 @@ caller. A caller holding one can do what the facade orders, out of order.
 
 ### 9.2 Deallocate records a hole; it does not write zeros
 
-Deallocation makes the range a hole record, drops or narrows the
+Deallocation adds a hole record for the range, drops or narrows the
 refs over it and advances `epoch`, in one transaction ([RFC 4 §3.5](rfc-4-block-metadata.md#3.5%20Operations%20that%20make%20holes), [§6.2](rfc-4-block-metadata.md#6.2%20Truncation%20and%20deallocation)), then has
 the journal stop holding the range.
 
