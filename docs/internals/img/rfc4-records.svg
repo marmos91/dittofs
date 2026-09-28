@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 430" width="900" height="430" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 500" width="900" height="500" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
   <defs>
     <style>
       .t  { font-size: 15px; font-weight: 600; fill: #1b1f24 }
@@ -17,22 +17,25 @@
       <path d="M0,0 L10,5 L0,10 z" fill="#5b6472"/>
     </marker>
   </defs>
-  <rect width="900" height="430" fill="#ffffff"/>
+  <rect width="900" height="500" fill="#ffffff"/>
 
-  <text x="16" y="26" class="t">Three concepts, five records, each keyed by one thing</text>
+  <text x="16" y="26" class="t">Three concepts, six records, each keyed by one thing</text>
   <text x="16" y="46" class="s">No record holds a list that grows with its file. Arrows point from a record to the one it names.</text>
 
   <!-- Existence -->
-  <rect x="16" y="64" width="210" height="196" rx="6" class="grp"/>
+  <rect x="16" y="64" width="210" height="262" rx="6" class="grp"/>
   <text x="28" y="84" class="h">EXISTENCE</text>
   <text x="28" y="100" class="s">written by the write path</text>
   <rect x="28" y="112" width="186" height="54" rx="3" class="bn"/>
   <text x="38" y="130" class="rl">Shape</text><text x="86" y="130" class="m">FileID</text>
-  <text x="38" y="152" class="m">size, epoch</text>
+  <text x="38" y="152" class="m">size, stamp, mtime, ctime</text>
   <rect x="28" y="178" width="186" height="54" rx="3" class="bn"/>
   <text x="38" y="196" class="rl">Hole</text><text x="80" y="196" class="m">(FileID, start)</text>
   <text x="38" y="218" class="m">end</text>
-  <text x="28" y="250" class="s">one hole per unwritten range</text>
+  <rect x="28" y="244" width="186" height="54" rx="3" class="bn"/>
+  <text x="38" y="262" class="rl">Removal</text><text x="96" y="262" class="m">(FileID, stamp)</text>
+  <text x="38" y="284" class="m">start, end</text>
+  <text x="28" y="316" class="s">holes: unwritten ranges; removals: pruned</text>
 
   <!-- Content map -->
   <rect x="246" y="64" width="430" height="196" rx="6" class="grp"/>
@@ -56,17 +59,17 @@
   <text x="708" y="84" class="h">BLOCKS</text>
   <text x="708" y="100" class="s">created at offload, retired by sweep</text>
   <rect x="708" y="112" width="164" height="120" rx="3" class="bg"/>
-  <text x="718" y="130" class="rl">Block</text><text x="764" y="130" class="m">remote key</text>
-  <text x="718" y="156" class="m">live</text>
+  <text x="718" y="130" class="rl">Block</text><text x="764" y="130" class="m">name</text>
+  <text x="718" y="156" class="m">live, generation</text>
   <text x="718" y="196" class="s">exists only once durable</text>
   <text x="718" y="212" class="s">live = chunks with</text>
   <text x="718" y="226" class="s">refcount &gt; 0</text>
   <line x1="664" y1="158" x2="706" y2="158" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a4r)"/>
 
-  <line x1="16" y1="282" x2="884" y2="282" stroke="#eef1f4"/>
-  <text x="16" y="306" class="rl">What each question reads</text>
-  <text x="16" y="328" class="l">Does content exist at this offset? — Hole, then Ref. A hole and uncarved content are both "no ref"; only the hole records tell them apart.</text>
-  <text x="16" y="346" class="l">Which chunk, which block? — Ref, then Chunk. Is it durable? — a Chunk record exists, so yes.</text>
-  <text x="16" y="364" class="l">May this block be deleted? — Block.live, evaluated inside the transaction that deletes it.</text>
-  <text x="16" y="396" class="why">Not here: whether the bytes are on local disk. That is the journal's question, and residency joins the two answers rather than storing one.</text>
+  <line x1="16" y1="342" x2="884" y2="342" stroke="#eef1f4"/>
+  <text x="16" y="376" class="rl">What each question reads</text>
+  <text x="16" y="398" class="l">Does content exist at this offset? — Hole, then Ref. A hole and uncarved content are both "no ref"; only the hole records tell them apart.</text>
+  <text x="16" y="416" class="l">Which chunk, which block? — Ref, then Chunk. Is it durable? — a Chunk record exists, so yes.</text>
+  <text x="16" y="434" class="l">May this block be deleted? — Block.live, evaluated inside the transaction that deletes it.</text>
+  <text x="16" y="466" class="why">Not here: whether the bytes are on local disk. That is the journal's question, and residency joins the two answers rather than storing one.</text>
 </svg>

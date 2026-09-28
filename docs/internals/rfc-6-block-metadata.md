@@ -117,7 +117,7 @@ and the **blocks** the content lives in — in six kinds of record. Each record 
 keyed by exactly one thing, answers exactly one question, and none holds a list
 that grows with its file.
 
-![Three concepts in five records: existence (shape and holes, written by the write path), the content map (refs pointing at chunks by hash, written by the offload commit), and blocks (a live count per remote object, retired by sweep), with the direction each one points](img/rfc4-records.svg)
+![Three concepts in six records: existence (shape, holes and removals, written by the write path), the content map (refs pointing at chunks by hash, written by the offload commit), and blocks (a live count per remote object, retired by sweep), with the direction each one points](img/rfc4-records.svg)
 
 | Concept                                                             | Record    | Keyed by           | Holds                                      | Answers                                                |
 | ------------------------------------------------------------------- | --------- | ------------------ | ------------------------------------------ | ------------------------------------------------------ |
