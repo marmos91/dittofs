@@ -17,6 +17,19 @@ tags:
 Nothing here redefines them.
 **Audience:** anyone changing `pkg/block/journal`.
 
+> [!important] Pending review — content versions come from outside the journal
+> This revision separates a record's **content version** from its **sequence
+> number**, so that content versions can be issued by the caller or by another
+> journal holding the same file, and adds what that needs: versions of 128 bits
+> made of an epoch and a counter ([§5.3](#5.3%20Versions)), highest version wins at each byte
+> ([§3.1](#3.1%20Write)), versioned removals and `Deallocate` ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)), versioned release records
+> ([§3.5](#3.5%20Release)), `Apply`, `Settle` and `Export` ([§3.10](#3.10%20Operations%20versioned%20elsewhere)), `Sync` ([§3.1](#3.1%20Write)), held versions
+> on `ReadAt` ([§3.2](#3.2%20Read)), epoch records ([§4.3](#4.3%20Records)), a 64-byte catalog entry ([§4.5](#4.5%20Catalog%20layout)),
+> recovery precedence by version ([§9.1](#9.1%20Rebuilding)), and `MarkDurable` at any time ([§9.2](#9.2%20Offload%20state%20after%20recovery)).
+> Nothing here depends on how or why another journal holds a file; a journal whose
+> every version it assigned itself behaves as before.
+> *Added 2026-09-28.*
+
 The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT** and **MAY** are
 to be interpreted as in RFC 2119.
 
@@ -27,7 +40,7 @@ to be interpreted as in RFC 2119.
 The journal holds bytes on this machine, durably against
 process and machine failure, and it answers exactly one question about them:
 
-> **Do I hold these bytes, and at what offset?**
+> **Do I hold these bytes, at what offset, and which version of them?**
 
 It is the component the client's write is acknowledged against, and the component
 a read is served from when the bytes are here.
@@ -116,6 +129,12 @@ is not authoritative for that ([RFC 0 §4.1](rfc-0-data-lifecycle.md#4.1%20The%2
 > newer than the content reported durable ([§3.3](#3.3%20Offload), [§9.2](#9.2%20Offload%20state%20after%20recovery)). A report applied by
 > position alone can mark a newer write durable.
 
+Every held extent also carries the **content version** of its bytes ([§5.3](#5.3%20Versions)).
+Where the journal holds nothing, it may still remember the newest version it has
+applied there — a removal marker ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)) — so that an older operation arriving
+later cannot bring removed content back. At every byte of a file, **the newest
+version the journal has applied wins**, whatever order operations arrived in.
+
 Held extents are **disjoint and need not be adjacent**. A file is routinely
 described by several extents with unheld gaps between them, and
 an implementation **MUST NOT** assume a file's held content is contiguous, nor
@@ -145,23 +164,41 @@ Signatures are indicative; the obligations are normative.
 ### 3.1 Write
 
 ```go
-WriteAt(id FileID, off int64, p []byte) (n int, err error)
+WriteAt(id FileID, off int64, p []byte) (v Version, err error)
+Sync(ids ...FileID) error
 ```
 
 Stages `p` at `off` and makes it durable according to the configured policy
 ([§6.2](#6.2%20Sync%20policy)). On return with `err == nil`, the extent `(off, len(p))` is held, is
 **Dirty**, and **MUST** survive process death.
 
+`WriteAt` **assigns** the write's content version `v` and returns it. The version
+**MUST** be assigned inside the file's serialised append ([§4.2](#4.2%20Segments)), so that for one
+file, versions the journal assigns are appended in the order they were assigned.
+An assignment made before the append and applied after it lets a lower version
+land after a higher one, and an offload taken between them offers the higher
+without the lower — the ordering [RFC 6 §4.4](rfc-6-block-metadata.md#4.4%20Commits%20for%20one%20file%20apply%20in%20order) relies on no longer holds.
+
+`Sync` returns once every operation on the named files that returned before the
+call is durable, whatever the sync policy. It is the journal's part of a client's
+flush ([§6.2](#6.2%20Sync%20policy)).
+
 `WriteAt` **MUST** reserve capacity before accepting bytes ([§7](#7.%20Capacity)) and **MUST**
 fail rather than exceed the configured limit.
 
-A write overlapping a held extent supersedes it. The journal **MUST** serve the
+A write overlapping a held extent supersedes it wherever its version is newer,
+which for a version `WriteAt` assigns is everywhere. The journal **MUST** serve the
 newer bytes thereafter, and **MUST NOT** require the caller to invalidate first.
 
 ### 3.2 Read
 
 ```go
-ReadAt(id FileID, off int64, p []byte) (n int, missing []Extent, asOf Seq, err error)
+ReadAt(id FileID, off int64, p []byte) (n int, missing []Extent, held []Held, asOf Seq, err error)
+
+type Held struct {
+    Extent  Extent
+    Version Version // the content version of the bytes served for this extent
+}
 ```
 
 Fills `p` from held extents. Every sub-extent of `(off, len(p))` that the journal
@@ -177,6 +214,10 @@ absence.
 segment, record or block for convenience, because the caller pays a remote
 transfer per entry.
 
+`held` names, for each sub-extent it served, the content version of the bytes
+served. A caller that must know whether its copy is current compares it with the
+version it expects; the journal does not know what is current anywhere else.
+
 `asOf` is the file's change sequence at the moment of the read: the highest
 sequence number of any operation that has changed the file's extents ([§3.4](#3.4%20Fill), [§5.3](#5.3%20Versions)). A caller that fetches
 a `missing` extent passes it back to `Fill`.
@@ -191,7 +232,7 @@ OffloadMany(ids []FileID, limit int64, fn func(offers []Offer, report func(id Fi
 type Offer struct {
     ID      FileID
     Dirty   []Extent
-        Oldest  Version     // the oldest content version among the offered records
+    Oldest  Version     // the oldest content version among the offered records
     Newest  Version     // the newest
     Offered io.ReaderAt // the bytes as offered; see below
 }
@@ -199,6 +240,14 @@ type Offer struct {
 
 Offers held extents of `id` whose offloaded bit is unset, and marks exactly the
 extents reported durable through `report`.
+
+**Only settled content is offered.** Content the journal assigned is settled when
+it is assigned. Content applied with a version issued elsewhere is settled once
+the caller declares, through `Settle`, that nothing older can still arrive for the
+file ([§3.10](#3.10%20Operations%20versioned%20elsewhere)). An offer that included unsettled content could carry a version
+above one still to arrive for another offset of the same file, and the commit
+that later carries the older version would be refused as older than the ref
+([RFC 6 §4.4](rfc-6-block-metadata.md#4.4%20Commits%20for%20one%20file%20apply%20in%20order)).
 
 **`report` may be called any number of times while `fn` runs**, and each call marks
 its extents at once, under every rule below. It is how a pass makes extents
@@ -275,7 +324,7 @@ make that determination and the write atomic with respect to concurrent
 **A Fill older than the file is refused.** `asOf` is the sequence `ReadAt` returned
 when the caller found the extent missing ([RFC 8 §6.2](rfc-8-engine.md#6.2%20The%20reply%20is%20served%20from%20the%20fetched%20bytes)). The journal keeps, per file, the
 highest sequence number of any operation that changed its extents — `WriteAt`, `Release`,
-`Truncate`, `Delete` — and keeps it through all of them, deletion included. If it
+`Truncate`, `Deallocate`, `Delete`, and any `Apply` that took effect — and keeps it through all of them, deletion included. If it
 is newer than `asOf`, `Fill` **MUST** write nothing and return a distinct error.
 Without this, a fetch that began before a write can land after that write was
 offloaded and evicted, find the extent absent, and fill the old bytes with the offload
@@ -297,8 +346,8 @@ leaving content that exists nowhere.
 `v` is the content version of the ref the bytes were fetched from: its `newest`
 ([RFC 6 §2.1](rfc-6-block-metadata.md#2.1%20Ref)). The filled record carries it, so reseed and the stale rule treat
 filled content like any other ([§9.2](#9.2%20Offload%20state%20after%20recovery)). Its sequence number is new, like every
-append's, so an older superseded write still on disk cannot win over it at
-recovery.
+append's, so where it and a record still on disk carry the same version — the
+release record of the content it replaces — the fill wins at recovery ([§5.3](#5.3%20Versions)).
 
 #### Fill is not a write
 
@@ -310,7 +359,7 @@ recovery.
 | the content is           | new                       | already existing, retrieved                                      |
 | relative to held content | **newer** — supersedes it | **older** — must not touch it                                    |
 | on conflict              | the written bytes win     | the held bytes win                                               |
-| content version          | a new one, its own sequence number | the fetched ref's; never supersedes held content      |
+| content version          | a new one, assigned by the journal | the fetched ref's; never supersedes held content      |
 | offloaded bit afterwards     | unset — owes an offload      | set — already durable                                            |
 | residency transition     | `*` → `Dirty`             | `Remote` → `Resident`                                            |
 | caller obligation        | none beyond capacity      | the bytes **MUST** be what the remote tier holds for this extent |
@@ -344,26 +393,42 @@ resolving to zeros.
 `freed` is the local storage actually released, which **MAY** be less than the
 extent length ([§8.3](#8.3%20Accounting)).
 
-**A release is recorded.** `Release` appends a **release record** naming the
-file and extents, with a new sequence number ([§5.3](#5.3%20Versions)). Recovery applies it like
-any record: extents it covers are not held, whatever older record on disk still
-covers them. Without it, a superseded write whose successor was released and
-punched would be held again after a restart, and served.
+**A release is recorded.** `Release` appends one **release record** per released
+extent, naming the file, the extent and the content version released there, with a
+new sequence number ([§5.3](#5.3%20Versions)). Recovery applies it like any record: it covers
+records at or below that version, so the extent is not held whatever older record
+on disk still covers it. Without it, a superseded write whose successor was
+released and punched would be held again after a restart, and served.
+
+A release also leaves a removal marker at the released version ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)). An
+operation at or below that version that arrives afterwards is not applied there:
+the content it would restore was superseded before it was released.
 
 `Release` does not sync for it. The release record **MUST** be durable before
 any storage it frees is punched or its segment unlinked ([§6.1](#6.1%20Ordering%20rules)). If a crash
 loses the record, it loses the punch too, and the released record is still whole
 on disk: held again after recovery, current, and evictable once reseeded.
 
-### 3.6 Truncate and delete
+### 3.6 Truncate, deallocate and delete
 
 ```go
-Truncate(id FileID, size int64) error
-Delete(id FileID) error
+Truncate(id FileID, size int64) (Version, error)
+Deallocate(id FileID, e Extent) (Version, error)
+Delete(id FileID) (Version, error)
 ```
 
 `Truncate` stops holding every extent at or beyond `size` and narrows an extent
-straddling it. `Delete` stops holding every extent of `id`.
+straddling it. `Deallocate` stops holding `e`, whatever its offloaded bit, and is
+how a punched range stops being served ([RFC 8 §9.2](rfc-8-engine.md#9.2%20Deallocate%20records%20a%20hole%3B%20it%20does%20not%20write%20zeros)). `Delete` stops holding every
+extent of `id`.
+
+Each is versioned like a write: the journal assigns the version inside the file's
+serialised append, appends a record carrying it, and leaves a **removal marker** —
+the newest version applied over the removed range, holding no bytes. A write,
+fill or apply below the marker's version is not applied inside the range. Markers
+live in the placement index, cost an entry each, and are dropped by `Settle`
+([§3.10](#3.10%20Operations%20versioned%20elsewhere)); a journal whose versions it assigned itself settles them as it
+assigns and holds none.
 
 Both **MUST** be durable on return, and **MUST NOT** require the affected
 storage to be reclaimed first — reclamation is asynchronous ([§8](#8.%20Reclamation%20mechanisms)).
@@ -376,6 +441,7 @@ removed file.
 
 ```go
 Extents(id FileID) ([]Extent, error)      // held extents, offset order
+Epochs() []EpochStart                      // every epoch this journal assigned under, and its first version
 Stats() Stats                              // a consistent view
 ```
 
@@ -511,6 +577,8 @@ cannot miss an event. They reset on open.
 | `dittofs_journal_written_bytes_total` | counter | `Stats` | client bytes accepted by `WriteAt` |
 | `dittofs_journal_filled_bytes_total` | counter | `Stats` | remote bytes placed by `Fill`; with written, the cold-read share of local writes |
 | `dittofs_journal_fill_refused_total` | counter | `Stats` | fills refused as older than the file ([§3.4](#3.4%20Fill)) |
+| `dittofs_journal_applied_bytes_total` | counter | `Stats` | bytes taken by `Apply` ([§3.10](#3.10%20Operations%20versioned%20elsewhere)), labelled `outcome` = `applied` or `older` (ignored as older than what was already applied) |
+| `dittofs_journal_removal_markers` | gauge | `Stats` | removal markers not yet settled; growth is a caller that never settles ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)) |
 | `dittofs_journal_offload_offered_bytes_total` | counter | `Stats` | bytes offered at offload |
 | `dittofs_journal_offload_marked_bytes_total` | counter | `Stats` | bytes marked durable; its lag behind offered is offload falling behind |
 | `dittofs_journal_released_bytes_total` | counter | `Stats` | bytes released |
@@ -549,6 +617,47 @@ cannot miss an event. They reset on open.
 
 The sync is the only operation the journal alone can time, so it is the only
 histogram. Everything else is a count or a state.
+
+### 3.10 Operations versioned elsewhere
+
+```go
+Apply(id FileID, op Op) error              // op: write, deallocate, truncate or delete, with its version
+Settle(id FileID, v Version) error
+Export(id FileID, from Version) iter.Seq2[Op, error]
+SetEpoch(e uint64) error
+```
+
+`WriteAt` and its siblings assign versions. `Apply` takes an operation whose
+version was assigned elsewhere — by another journal holding the same file — and
+applies it by version: at each byte it takes effect only where it is newer than
+what the journal has applied there, held content and removal markers alike, and is
+otherwise ignored. An `Apply` of a version equal to what is held is a repetition
+and changes nothing. Applied operations are durable, reserve capacity, and are
+recorded exactly as the assigning operations are; the journal does not check where
+a version came from. The caller **MUST NOT** apply two different operations under
+one version of one file.
+
+Operations therefore **MAY** arrive in any order, and a journal that has applied a
+set of operations in any order holds exactly what one that applied them in version
+order holds. That is the property the rest of this section, and [§5.3](#5.3%20Versions)'s
+precedence, exist to keep.
+
+`Settle(id, v)` is the caller's statement that every operation on `id` at or
+below `v` has been applied. It lets the journal offer that content ([§3.3](#3.3%20Offload)) and
+drop removal markers at or below `v`. A journal cannot know this itself, and
+settling too early is the caller's error, not the journal's.
+
+`Export(id, from)` yields, in version order, operations that reproduce every held
+extent and removal marker of `id` at or above `from`, each at its own version.
+Applying them to another journal makes it hold the same content at the same
+versions for that range of versions. It reads a consistent view and **MUST NOT**
+block writes to the file for longer than a read does.
+
+`SetEpoch(e)` raises the epoch under which the journal assigns versions ([§5.3](#5.3%20Versions)).
+`e` **MUST** exceed the current epoch, and the epoch record ([§4.3](#4.3%20Records)) **MUST** be
+durable before the first version under it is assigned. A version assigned under
+a later epoch outranks every version assigned under an earlier one, by this
+journal or any other; what raises it, and when, is the caller's.
 
 ## 4. On-disk format
 
@@ -605,10 +714,11 @@ memory and is re-established at startup ([§9.2](#9.2%20Offload%20state%20after%
 Each record carries a header, and a write or fill record a payload. The header
 **MUST** identify:
 
-- the record's kind: write, fill, release, truncate or delete
-- the `FileID` it belongs to
+- the record's kind: write, fill, release, truncate, deallocate, delete or epoch
+- the `FileID` it belongs to, except for an epoch record
 - the file offset it begins at, and its length
-- its sequence number and, for a write or fill, its content version ([§5.3](#5.3%20Versions))
+- its sequence number and its content version ([§5.3](#5.3%20Versions)): for a release, the version
+  released; for an epoch record, the first version of the epoch
 - a checksum of the payload
 - a checksum of the header
 
@@ -622,9 +732,14 @@ a scan reads the length from it and steps over. With one checksum over both, a
 punched record would look corrupt, and in a scanned segment every record after it
 would be refused ([§9.3](#9.3%20Torn%20and%20corrupt%20records)).
 
+Every kind **MUST** exist in the first format version. An unrecognised record
+kind fails the open like an unrecognised format ([§4.1](#4.1%20Layout)), so a kind added later is a
+format change.
+
 A record whose payload checksum does not verify **MUST NOT** be used to serve a
-read. A record wholly covered by a newer release, truncate or delete record is
-not held, and recovery **MUST NOT** verify or report its payload.
+read. A record wholly covered by a release, truncate, deallocate or delete record
+that outranks it ([§5.3](#5.3%20Versions)) is not held, and recovery **MUST NOT** verify or report
+its payload.
 
 ### 4.4 The segment catalog
 
@@ -727,7 +842,7 @@ longer change.
 **A catalog describes records, not held extents.** It says what this segment
 contains and where; it says nothing about whether those records are still the
 live ones, because a record here may be superseded by a record in another
-segment. Recovery reads footers to learn the record population and then applies sequence-number precedence ([§5.3](#5.3%20Versions)) to decide what is held. An implementation **MUST NOT**
+segment. Recovery reads footers to learn the record population and then applies precedence ([§5.3](#5.3%20Versions)) to decide what is held. An implementation **MUST NOT**
 treat a footer as a statement about residency.
 
 **Reading a catalog skips per-record verification.** A catalog that verifies
@@ -765,21 +880,21 @@ All integers are little-endian and packed without padding.
 | 24 | 4 | CRC32C over trailer bytes `[0, 24)` |
 | 28 | 4 | reserved, zero |
 
-**Entry — 56 bytes, repeated `entryCount` times, ascending by `recordOffset`.**
+**Entry — 64 bytes, repeated `entryCount` times, ascending by `recordOffset`.**
 
 | Offset | Size | Field |
 | --- | --- | --- |
-| 0 | 16 | `FileID` |
+| 0 | 16 | `FileID`, zero for an epoch record |
 | 16 | 8 | file offset of the record's first byte |
 | 24 | 8 | `recordOffset` — the record's offset within this segment |
 | 32 | 4 | length |
 | 36 | 8 | sequence number |
-| 44 | 8 | content version, zero for a record that has none |
-| 52 | 1 | record kind ([§4.3](#4.3%20Records)) |
-| 53 | 3 | reserved, zero |
+| 44 | 16 | content version: epoch, then counter ([§5.3](#5.3%20Versions)) |
+| 60 | 1 | record kind ([§4.3](#4.3%20Records)) |
+| 61 | 3 | reserved, zero |
 
-At 56 bytes per record, a 256 MiB segment of 1 MiB records carries a 14 KiB
-footer, and one of 64 KiB records carries 224 KiB — under 0.1% either way.
+At 64 bytes per record, a 256 MiB segment of 1 MiB records carries a 16 KiB
+footer, and one of 64 KiB records carries 256 KiB — under 0.1% either way.
 An implementation **MAY** compress or dictionary-encode the `FileID` column,
 whose values repeat heavily; it **MUST NOT** do so in a way that prevents the
 whole footer being validated by the single CRC in the trailer.
@@ -787,7 +902,7 @@ whole footer being validated by the single CRC in the trailer.
 ![A sealed segment laid out as records, then catalog, then trailer, with recovery reading backwards from the last 32 bytes](img/rfc1-segment-anatomy.svg)
 
 **Reading.** Read the final 32 bytes; verify the trailer CRC; check the magic.
-Then read `entryCount × 56` bytes at `footerOffset` and verify the footer CRC.
+Then read `entryCount × 64` bytes at `footerOffset` and verify the footer CRC.
 Any failure — short file, bad magic, either CRC, an `entryCount` that does not
 fit between `footerOffset` and the trailer — **MUST** be treated as "no footer"
 and the segment scanned. **An unrecognised format version is also "no footer",
@@ -821,7 +936,7 @@ different things.
 
 **The relationship is one-way: the placement index is *built from* the other
 two, and neither is built from it at runtime.** At recovery the journal reads
-catalogs (or scans, [§9.1](#9.1%20Rebuilding)) to learn what records exist, applies sequence-number precedence ([§5.3](#5.3%20Versions)) to decide which are live, and the result is the placement
+catalogs (or scans, [§9.1](#9.1%20Rebuilding)) to learn what records exist, applies precedence ([§5.3](#5.3%20Versions)) to decide which are live, and the result is the placement
 index. A placement cache short-circuits that by storing the answer.
 
 Two consequences follow, and an implementation **MUST NOT** assume otherwise:
@@ -835,7 +950,9 @@ Two consequences follow, and an implementation **MUST NOT** assume otherwise:
 
 The rest of this section specifies the placement index. In memory, the journal
 maintains for each `FileID` an offset-ordered set of disjoint held extents, each
-mapped to a record location and carrying its content version and offloaded bit.
+mapped to a record location and carrying its content version and offloaded bit,
+together with the file's removal markers ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)), which carry a version and no
+location.
 
 Extents **MUST** be disjoint: a write superseding part of an existing extent
 **MUST** split or narrow it, never leave two extents covering one offset. A
@@ -905,14 +1022,16 @@ An entry costs about 40 bytes, so the index's footprint tracks how many extents
 exist and is independent of how much content they describe.
 
 Measured, for an entry carrying file offset, segment id, record offset, length,
-version and offloaded bit: the struct is **40 bytes**; a sorted slice costs 40 bytes
-per entry and a blocked, B-tree-shaped layout 43. In practice:
+a 64-bit version and offloaded bit: the struct is **40 bytes**; a sorted slice
+costs 40 bytes per entry and a blocked, B-tree-shaped layout 43. The 128-bit
+version of [§5.3](#5.3%20Versions) adds 8, so about 51 per entry in a B-tree — estimated from that
+measurement, not measured again:
 
 | Held as | Extents for 1 TiB | Index |
 | --- | --- | --- |
-| 1 MiB extents | ~1.0 million | ~43 MB |
-| 256 KiB extents | ~4.2 million | ~180 MB |
-| 64 KiB extents | ~16.8 million | **~690 MB** |
+| 1 MiB extents | ~1.0 million | ~51 MB |
+| 256 KiB extents | ~4.2 million | ~215 MB |
+| 64 KiB extents | ~16.8 million | **~820 MB** |
 
 The same terabyte, sixteen times the memory, decided entirely by write shape.
 
@@ -949,34 +1068,50 @@ diverge.
 
 | | Sequence number | Content version |
 | --- | --- | --- |
-| answers | which record wins where two cover the same offset | which bytes these are |
-| carried by | every record | write and fill records |
-| a write | a new one | its own sequence number |
+| answers | the order this journal appended records in | which bytes these are, and which is newer |
+| scope | this journal | the file, wherever it is held |
+| carried by | every record | every record ([§4.3](#4.3%20Records)) |
+| a write, truncate, deallocate or delete | a new one | a new one, assigned by the journal |
+| an applied operation ([§3.10](#3.10%20Operations%20versioned%20elsewhere)) | a new one | the one it arrived with |
 | a fill | a new one | the version of the ref it was fetched from ([§3.4](#3.4%20Fill)) |
+| a release | a new one | the version released ([§3.5](#3.5%20Release)) |
 | a repack copy | a new one | the original's, unchanged ([§8.2](#8.2%20Repack)) |
-| used by | recovery, `Fill`'s staleness check | `Offload` offers, reseed, the stale rule ([§9.2](#9.2%20Offload%20state%20after%20recovery)) |
+| used by | precedence among equal versions; `Fill`'s staleness check | precedence; `Offload` offers, reseed, the stale rule ([§9.2](#9.2%20Offload%20state%20after%20recovery)) |
 
 One number cannot do both. Repack needs a new number so a crash between copy and
 unlink resolves to the copy, and needs the old one so reseed still recognises the
-content its ref describes. A fill needs a new number so it wins over older records
-still on disk, and needs the ref's so reseed can mark it.
+content its ref describes. An applied operation needs the version it was assigned,
+which no local counter can produce.
+
+**A content version is 128 bits: an epoch, then a counter,** compared as one
+unsigned number. The journal assigns versions under its current epoch
+([§3.10](#3.10%20Operations%20versioned%20elsewhere)), taking the counter from one monotonically increasing counter per journal.
+Every version it assigns **MUST** exceed every version on disk and the floor
+supplied at open ([§9.1](#9.1%20Rebuilding)). A journal whose caller never raises the epoch assigns
+versions exactly as a single counter would.
+
+**Precedence.** Where two records cover the same byte, the one with the higher
+content version wins; where their versions are equal, the one with the higher
+sequence number wins. That is what lets a repack copy succeed its original, a
+release record cover the content it released, and a fill succeed the release
+record of the content it replaces, while an operation that arrives late with an
+older version still loses.
 
 Sequence numbers **MUST** be assigned from a single monotonically increasing
 counter per journal instance. They **MUST NOT** be per-file or per-segment:
-recovery compares records that reached different segments in an order the
-segment ids do not express, and a counter that restarts or is scoped narrower
-makes that comparison meaningless. Content versions are sequence numbers, so they
-share the space and a content version never exceeds its record's sequence number.
+records of equal version can reach different segments in an order the segment ids
+do not express, and a counter that restarts or is scoped narrower makes that
+comparison meaningless.
 
-A sequence number **MUST NOT** be reused. On recovery the next one issued **MUST**
-exceed every sequence number found on disk and the floor supplied at open
-([§9.1](#9.1%20Rebuilding)), which an implementation **MUST** establish by taking the maximum observed
-during reconstruction rather than by persisting a counter separately — a
-separately persisted counter is a second source of truth and can be stale exactly
-when it matters.
+Neither number **MUST** be reused. On recovery the next of each **MUST** exceed
+every one found on disk, and the next content version the floor too, which an
+implementation **MUST** establish by taking the maximum observed during
+reconstruction rather than by persisting a counter separately — a separately
+persisted counter is a second source of truth and can be stale exactly when it
+matters.
 
-Because precedence is decided by sequence number and not by position, **recovery MAY
-process segments in any order, including concurrently.** An implementation
+Because precedence is decided by the two numbers and not by position, **recovery
+MAY process segments in any order, including concurrently.** An implementation
 **MUST NOT** depend on ascending segment order for correctness.
 
 ### 5.4 Inspection
@@ -1013,14 +1148,16 @@ separate, explicit action.
 | A release record **MUST** be durable before any storage it frees is punched or unlinked. | Otherwise a crash can lose the record and keep the punch, and an older record the release covered is held again ([§3.5](#3.5%20Release)). |
 | A segment's records **MUST** be durable before the segment is unlinked by reclamation. | A reclaim pass **MUST** be content-preserving ([RFC 0 §8.2](rfc-0-data-lifecycle.md#8.2%20Reclaim)). |
 | Marking an offloaded bit **MUST NOT** precede the report that justifies it. | [RFC 0](rfc-0-data-lifecycle.md) invariant I5. |
+| An epoch record **MUST** be durable before any version under that epoch is assigned. | Otherwise a crash can forget the epoch while versions under it survive, and the next assignment falls below them ([§3.10](#3.10%20Operations%20versioned%20elsewhere)). |
 
 ### 6.2 Sync policy
 
 The journal **MUST** be on durable local storage: a synced record survives a
 process crash, a host crash and power loss. There is no setting that declares a
-journal not durable. A client's flush is acknowledged once the journal has synced
-the file's records, and on nothing else ([RFC 8 §9.4](rfc-8-engine.md#9.4%20Commit%20is%20answered%20by%20the%20journal)); a journal that could not keep
-them would turn every acknowledged flush into a claim nothing backs.
+journal not durable. The journal's part in a client's flush is `Sync` ([§3.1](#3.1%20Write)):
+what it has synced, it keeps. What else a flush waits for is its caller's
+([RFC 8 §9.4](rfc-8-engine.md#9.4%20Commit%20is%20answered%20by%20the%20journal)); a journal that could not keep what it synced would turn every
+acknowledged flush into a claim nothing backs.
 
 The policy governing when staged bytes reach stable storage before `WriteAt`
 returns is configurable. Whatever the setting:
@@ -1212,7 +1349,7 @@ drops it.
 
 **Ordering.** Copy the records; make the copies durable; repoint the placement
 index; only then unlink the source. A crash before the unlink leaves both copies
-on disk, and recovery selects the relocated one by sequence number — the source's records
+on disk, and recovery selects the relocated one by precedence ([§5.3](#5.3%20Versions)) — the source's records
 become dead weight that a later pass reclaims. A crash after the unlink is
 indistinguishable from a completed repack. At no point is an extent unreachable.
 
@@ -1270,7 +1407,9 @@ nearly every read, so the event is what makes it diagnosable.
 
 ### 9.1 Rebuilding
 
-On open, the journal **MUST** reconstruct its placement index. For two records covering the same offset, the higher sequence number wins.
+On open, the journal **MUST** reconstruct its placement index, including removal
+markers not yet settled ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)) and the current epoch. Where two records cover the same
+byte, precedence decides ([§5.3](#5.3%20Versions)).
 
 Recovery **MUST NOT** consult any component outside the journal, and **MUST NOT**
 require the process that wrote the segments to have exited cleanly.
@@ -1278,7 +1417,8 @@ require the process that wrote the segments to have exited cleanly.
 **A segment from another journal is not attached.** A segment whose header
 names a journal identity other than the one in `format` **MUST NOT** contribute
 to the index. It is reported and left alone ([§9.5](#9.5%20Unattachable%20files)). Its records would verify, and
-could win on sequence number over this journal's own.
+could win on precedence over this journal's own. Content from another journal
+enters only through `Apply` ([§3.10](#3.10%20Operations%20versioned%20elsewhere)), never by attaching its segments.
 
 A header that does not verify is damage, not evidence of a foreign segment. The
 segment is reported as damaged and its records are attached on their own
@@ -1291,8 +1431,8 @@ torn and which holds no record was being created at a crash; it is an orphan
 **The version floor.** The journal is opened with a floor supplied by its
 caller: the highest content version the caller has recorded as durable for this
 journal ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). This is a number, not a dependency, and recovery still
-consults nothing. The next sequence number issued **MUST** exceed both the floor and every one on
-disk ([§5.3](#5.3%20Versions)). The journal does not compare the floor with what it
+consults nothing. The next content version assigned **MUST** exceed both the floor
+and every one on disk ([§5.3](#5.3%20Versions)). The journal does not compare the floor with what it
 holds: released content can leave nothing on disk, so a healthy journal is
 routinely below its floor. A restored directory shows up at reseed instead, as
 stale extents ([§9.2](#9.2%20Offload%20state%20after%20recovery)). Without the floor such a journal would issue content versions the caller has
@@ -1415,6 +1555,10 @@ The engine reseeds through:
 MarkDurable(id FileID, extents []Extent, oldest, newest Version) error
 ```
 
+`MarkDurable` is not confined to recovery. The caller **MAY** call it for any file
+at any time — for content it learns is durable other than through its own offload,
+or to drop stale content — and every rule below applies whenever it does.
+
 naming for each extent the content versions recorded on the ref that covers it
 ([RFC 6 §4.4](rfc-6-block-metadata.md#4.4%20Commits%20for%20one%20file%20apply%20in%20order)). The journal marks an extent only where no held content in it is newer
 than `newest`. Marking by position alone loses data: a write that superseded
@@ -1425,11 +1569,14 @@ becomes evictable, and the next read fetches the old content in its place.
 **Held content older than `oldest` is stale.** Every extent an offload pass offered
 has a content version of at least the pass's `Oldest`, repack keeps content
 versions, and a fill carries its ref's. So in normal operation no held content is
-older than the `oldest` of the ref that covers it. Content that is came back from
-a restored segment or a restored directory. The journal **MUST** drop
-such an extent from the index, exactly as it drops a corrupt one ([§9.3](#9.3%20Torn%20and%20corrupt%20records)), and
-report it as stale. The next read resolves it as **Remote** and fetches the
-current content.
+older than the `oldest` of the ref that covers it. In a journal that assigned all
+its versions itself, content that is came back from a restored segment or a
+restored directory. Content applied from elsewhere ([§3.10](#3.10%20Operations%20versioned%20elsewhere)) can be stale with no
+fault at all — a copy that did not receive the operations that superseded it. The
+journal **MUST** drop such an extent from the index, exactly as it drops a corrupt
+one ([§9.3](#9.3%20Torn%20and%20corrupt%20records)), and report it as stale; the report names the file and extent and is
+not by itself evidence of a restored directory. The next read resolves it as
+**Remote** and fetches the current content.
 
 Restored content with a version between `oldest` and `newest` is not caught. It
 is marked durable, which is safe, and it can be served until it is evicted. That
@@ -1486,9 +1633,11 @@ Although the journal's *action* is the same, the two cases are not equally
 serious, and it **MUST** report them distinguishably. Corruption of an extent
 whose offloaded bit was set costs a refetch. Before reseed ([§9.2](#9.2%20Offload%20state%20after%20recovery)) no bit is set, so
 corruption found then **MUST** be reported as unclassified, not as data loss;
-the residency function decides it at the first read. Corruption of a dirty extent is
-destruction of the only copy, and **MUST** be surfaced as a data-loss event
-naming the affected file and extent, not as a cache miss.
+the residency function decides it at the first read. Corruption of a dirty extent
+destroys this journal's copy of content that is not yet durable remotely, and
+**MUST** be surfaced as a loss event naming the affected file and extent, not as a
+cache miss. Whether it is data loss depends on whether another journal holds the
+same content, which this one does not know; where none does, it is the only copy.
 
 #### Scope of the refusal
 
@@ -1760,6 +1909,11 @@ A check here fails by **serving or destroying the wrong bytes without an error**
 | [§9.3](#9.3%20Torn%20and%20corrupt%20records) corrupt, durable | After reseed, corrupt a record whose extent's offloaded bit is set; assert the read reports the extent `missing` and the event is reported as repairable. |
 | [§10.5](#10.5%20Protecting%20readers%20from%20reclamation) punch under read | Write a non-zero pattern, start a read of it, punch its storage mid-read; assert the read either returns the pattern or reports the extent missing with the sentinel in `p` untouched. |
 | [§10.5](#10.5%20Protecting%20readers%20from%20reclamation) repack under read | Same, with relocation instead of punching; assert the read sees the old or the new location, never neither. |
+| [§3.10](#3.10%20Operations%20versioned%20elsewhere) order does not matter | Generate a random set of writes, deallocates, truncates and a delete for one file with distinct versions; apply the same set to fresh journals in many random orders, with repetitions; assert every journal holds identical bytes at identical versions, before and after a simulated crash and reopen, and identical to a journal that applied them in version order. |
+| [§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete) no resurrection | Apply a write at v2, a deallocate at v3 over it, then a write at v1 over the same range; assert the range reads `missing`, and still does after reopen. Repeat with a release in place of the deallocate. |
+| [§3.3](#3.3%20Offload) unsettled not offered | Apply v2 at offset A and v4 at offset B, leave v3 unapplied, settle nothing; assert an offload offers neither. Settle to v4; assert both are offered. |
+| [§3.10](#3.10%20Operations%20versioned%20elsewhere) export reproduces | Export a file with held content and removal markers and apply the operations to a fresh journal; assert both read identically with identical versions from `ReadAt`. |
+| [§5.3](#5.3%20Versions) epoch outranks | Assign versions, raise the epoch, apply an operation from the old epoch with a larger counter; assert it loses to every version assigned after the raise. Crash between the epoch record and the first assignment; assert the next version still falls under the raised epoch. |
 | [§4.4](#4.4%20The%20segment%20catalog) footer is not authoritative | Corrupt a sealed segment's footer; assert recovery scans that segment and reaches the same index. Then write a verifying footer whose entry disagrees with its record's header; assert the read through that entry is refused as corruption. |
 
 #### Group B — wedging and unbounded resource use
@@ -1809,7 +1963,7 @@ A check here fails by **coming back up describing something other than what is o
 | [§9.2](#9.2%20Offload%20state%20after%20recovery) stale extent | Write A into one segment and offload it; write B over it into a later segment, offload and release it, and let reclamation unlink B's segment; restore A's segment from a copy taken before; reopen and `MarkDurable` at B's versions; assert A is dropped, reported as stale, and the read reports the extent missing. |
 | [§9.5](#9.5%20Unattachable%20files) unidentified directory | Open a directory holding segments and no `format` file, and separately one holding only unrelated files; assert both fail to open, nothing in either is modified or deleted, and an empty directory opens as a new journal. |
 | [§4.5](#4.5%20Catalog%20layout) unknown version | Write a trailer with a future format version; assert the segment is scanned and the open succeeds. |
-| [§5.3](#5.3%20Versions) sequence monotonicity | Reopen after a crash; assert the next sequence number issued exceeds every one on disk, and that recovery in shuffled segment order yields an identical index. |
+| [§5.3](#5.3%20Versions) monotonicity | Reopen after a crash; assert the next sequence number and the next assigned content version each exceed every one on disk, and that recovery in shuffled segment order yields an identical index. |
 | [§9.3](#9.3%20Torn%20and%20corrupt%20records) neighbours survive | With a catalog present, corrupt one record; assert every other record in that segment still reads. |
 
 #### Group D — observability
@@ -1919,7 +2073,7 @@ Beyond the named checks, the unit, model and fault tests **MUST** reach these.
 
 **Lifecycle**
 
-- truncate inside an extent, truncate to zero and write again, truncate down and back up ([§3.6](#3.6%20Truncate%20and%20delete));
+- truncate inside an extent, truncate to zero and write again, truncate down and back up, deallocate inside and across extents ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete));
 - `Fill` over an extent that is partly held, partly dirty and partly absent ([§3.4](#3.4%20Fill));
 - `Offload` where `fn` reports extents it was not offered, or reports none ([§3.3](#3.3%20Offload));
 - `Release` of an extent only part of which carries an offloaded bit ([§3.5](#3.5%20Release));

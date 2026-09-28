@@ -323,7 +323,7 @@ When the journal offers a run, the engine reads the file's `epoch` ([RFC 6 §6.2
 and carries it into every commit that pass makes. Block metadata drops the refs
 of a file whose epoch no longer matches and applies the rest of the commit
 ([RFC 6 §4.1](rfc-6-block-metadata.md#4.1%20What%20one%20commit%20records)). The engine re-offers that file alone from the journal, which has already
-truncated ([RFC 1 §3.6](rfc-1-journal.md#3.6%20Truncate%20and%20delete)); the other files the block carried are durable and reported.
+truncated ([RFC 1 §3.6](rfc-1-journal.md#3.6%20Truncate%2C%20deallocate%20and%20delete)); the other files the block carried are durable and reported.
 
 > [!important] Pending review — truncation is handled per file
 > Previously a mismatched epoch refused the whole commit and failed the pass. With
