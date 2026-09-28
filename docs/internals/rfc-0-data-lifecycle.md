@@ -186,7 +186,7 @@ blocks and many files.
 | --- | --- |
 | **write** | stage bytes in the journal and acknowledge the client |
 | **sync** | make durable in the journal |
-| **offload** | the journal's pass: offer dirty extents, accept durability reports. Not a client's flush (NFS `COMMIT`, SMB `FLUSH`, `fsync`), which only syncs the journal ([RFC 6 §9.4](rfc-6-engine.md#9.4%20Commit%20is%20answered%20by%20the%20journal)) |
+| **offload** | the journal's pass: offer dirty extents, accept durability reports. Not a client's flush (NFS `COMMIT`, SMB `FLUSH`, `fsync`), which only syncs the journal ([RFC 8 §9.4](rfc-8-engine.md#9.4%20Commit%20is%20answered%20by%20the%20journal)) |
 | **chunk** | place one content-defined boundary |
 | **box** | group chunks into one block |
 | **put** / **get** | make durable in the remote tier / retrieve from it |
@@ -373,7 +373,7 @@ extent, serving it without retaining it. Declining is appropriate when retaining
 would displace content more likely to be read again, including under local
 capacity pressure and during large sequential reads.
 
-Whether to fill is policy and belongs to the engine ([RFC 6](rfc-6-engine.md)). The mechanism and
+Whether to fill is policy and belongs to the engine ([RFC 8](rfc-8-engine.md)). The mechanism and
 its concurrency safety belong to the journal ([RFC 1](rfc-1-journal.md)).
 
 ## 7. Mutation and removal
@@ -435,7 +435,7 @@ Sweep deletes blocks from the remote tier. It is the only operation in this
 system that deletes content anywhere, and the only one after which content
 cannot be recovered.
 
-Safety rests on reference counting, specified in [RFC 4](rfc-4-block-metadata.md):
+Safety rests on reference counting, specified in [RFC 6](rfc-6-block-metadata.md):
 
 - a chunk carries the number of chunk refs naming it
 - a block carries the number of its chunks whose refcount is nonzero
@@ -446,7 +446,7 @@ A block **MUST NOT** be deleted while any chunk it contains is referenced.
 Reference counts are read at different instants from the state they describe. An
 implementation **MUST** ensure that content created or referenced after a sweep
 began cannot be deleted by that sweep, even when every individual observation
-was correct when made. [RFC 7](rfc-7-gc.md) specifies the protocol.
+was correct when made. [RFC 9](rfc-9-gc.md) specifies the protocol.
 
 ## 9. Invariants
 
@@ -602,7 +602,7 @@ reintroduces the failure this model exists to prevent.
    anyway. Whether it earns that on real workloads is unmeasured.
 2. **Fill policy** ([§6.2](#6.2%20Fill)) — this document specifies that filling is
    discretionary and names the conditions under which declining is appropriate.
-   It does not specify a policy. [RFC 6](rfc-6-engine.md) must, and the right one is unmeasured.
+   It does not specify a policy. [RFC 8](rfc-8-engine.md) must, and the right one is unmeasured.
 3. **Eviction granularity** ([§8.1](#8.1%20Evict)) — this document constrains eviction by
    durability, not by unit; the unit is [RFC 1](rfc-1-journal.md)'s to choose. The trade-off this
    question originally named — eviction precision against the number of open

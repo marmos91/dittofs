@@ -3,29 +3,46 @@ tags:
   - rfc-index
 aliases:
   - RFCs
-  - Storage RFCs
+  - DittoFS RFCs
 ---
 
-# Storage RFCs
+# DittoFS RFCs
 
-The specification of DittoFS's content path, from the bytes a client writes to the objects in
-the remote tier. [RFC 0](rfc-0-data-lifecycle.md) is the root: it defines the terms, the
-residency function and the invariants every other RFC inherits. Start there.
+The specification of DittoFS, from the bytes a client writes to the objects in the remote tier,
+and the layers around them. [RFC 0](rfc-0-data-lifecycle.md) is the root: it defines the terms,
+the residency function and the invariants every other RFC inherits. Start there, and read in
+order: each part builds on the ones before it.
 
 | RFC | Component | Owns |
 | --- | --- | --- |
+| **Foundations** | | |
 | [RFC 0](rfc-0-data-lifecycle.md) | data lifecycle | terms, data model, residency, invariants, failure model |
+| **Storage**, in write-path order | | |
 | [RFC 1](rfc-1-journal.md) | journal | local bytes: on-disk format, placement, crash safety, capacity |
 | [RFC 2](rfc-2-carver.md) | carver | bytes → chunks → blocks: boundaries, identity, packing |
 | [RFC 3](rfc-3-syncer.md) | syncer | transferring blocks to and from the remote tier |
-| [RFC 4](rfc-4-block-metadata.md) | block metadata | chunks, refs, blocks, refcounts, durability |
-| [RFC 5](rfc-5-namespace-metadata.md) | namespace metadata | files, directories, handles, permissions, locks |
-| [RFC 6](rfc-6-engine.md) | engine | composition, policy, the facade adapters call |
-| [RFC 7](rfc-7-gc.md) | GC | sweep, relocation, remote deletion |
-| [RFC 8](rfc-8-remote-tier.md) | remote tier | object format and backend contract |
-| [RFC 9](rfc-9-transforms.md) | transforms | compression, encryption, threat model |
+| [RFC 4](rfc-4-remote-tier.md) | remote tier | object format and backend contract |
+| [RFC 5](rfc-5-transforms.md) | transforms | compression, encryption, threat model |
+| [RFC 6](rfc-6-block-metadata.md) | block metadata | shape, holes, refs, chunks, blocks, refcounts |
+| [RFC 7](rfc-7-namespace-metadata.md) | namespace metadata | files, directories, handles, permissions, locks |
+| [RFC 8](rfc-8-engine.md) | engine | composition, policy, the facade adapters call |
+| [RFC 9](rfc-9-gc.md) | GC | sweep, relocation, remote deletion |
+| **Cluster** | | |
+| RFC 10 | journal replication | *planned* — owner-driven replication, fencing, seal, catch-up, reads from replicas |
+| RFC 11 | ownership | *planned* — write tokens per file range, leases, handover, failover, forwarding |
+| **Security** | | |
+| RFC 12 | identity and authentication | *planned* — principals, authentication flavours, identity mapping, squashing |
+| RFC 13 | authorization | *planned* — one abstract ACL model, its protocol mappings, evaluation |
+| **Protocols** | | |
+| RFC 14 | adapter model | *planned* — the protocol handler contract, auth context, error mapping, dispatch |
+| RFC 15 | NFS | *planned* — decisions the NFS standards leave open |
+| RFC 16 | SMB | *planned* — decisions the SMB standards leave open |
+| **Operations** | | |
+| RFC 17 | control plane | *planned* — runtime, share lifecycle, configuration, management API |
+| RFC 18 | resources and concurrency | *planned* — memory budgets, buffer pools, admission, backpressure |
+| RFC 19 | observability | *planned* — metric and label conventions, health derivation, events |
 
-[The block data-flow split](rfc-block-dataflow.md) is the earlier plan these RFCs grew out of.
+[The block data-flow split](rfc-block-dataflow.md) is the earlier plan the storage RFCs grew out of.
 
 ## Dependencies
 
@@ -35,13 +52,13 @@ An arrow reads "builds on". Every RFC builds on RFC 0; those edges are left out.
 graph LR
   R1[1 journal]
   R2[2 carver] --> R1
-  R3[3 syncer] --> R1 & R2 & R8
-  R4[4 block metadata] --> R2 & R3
-  R5[5 namespace metadata] --> R4
-  R6[6 engine] --> R1 & R2 & R3 & R4 & R5 & R7 & R8
-  R7[7 GC] --> R2 & R4 & R8
-  R8[8 remote tier] --> R3
-  R9[9 transforms] --> R2 & R8
+  R3[3 syncer] --> R1 & R2 & R4
+  R4[4 remote tier] --> R3
+  R5[5 transforms] --> R2 & R4
+  R6[6 block metadata] --> R2 & R3
+  R7[7 namespace metadata] --> R6
+  R8[8 engine] --> R1 & R2 & R3 & R6 & R7 & R9 & R4
+  R9[9 GC] --> R2 & R6 & R4
 ```
 
 ## Reading them in Obsidian

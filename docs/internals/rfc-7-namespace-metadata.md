@@ -1,20 +1,20 @@
 ---
-rfc: 5
-title: "RFC 5 — namespace metadata"
+rfc: 7
+title: "RFC 7 — namespace metadata"
 component: namespace metadata
 status: draft
 depends_on:
   - "[[rfc-0-data-lifecycle]]"
-  - "[[rfc-4-block-metadata]]"
+  - "[[rfc-6-block-metadata]]"
 aliases:
-  - RFC 5
+  - RFC 7
 tags:
   - rfc
 ---
-# RFC 5 — namespace metadata
+# RFC 7 — namespace metadata
 
 **Status:** draft.
-**Depends on:** [RFC 0](rfc-0-data-lifecycle.md), for the terms, the identifiers and the invariants. [RFC 4](rfc-4-block-metadata.md)
+**Depends on:** [RFC 0](rfc-0-data-lifecycle.md), for the terms, the identifiers and the invariants. [RFC 6](rfc-6-block-metadata.md)
 owns the records that describe a file's content; this document owns the records
 that describe the file. Nothing here redefines either.
 **Audience:** anyone changing a metadata backend's namespace records, the
@@ -25,7 +25,7 @@ The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT** and **MAY** are
 to be interpreted as in RFC 2119.
 
 This document specifies what namespace metadata is required to be. It was
-written from the model in RFC 0 and RFC 4, not from the current schema. Where
+written from the model in RFC 0 and RFC 6, not from the current schema. Where
 the current implementation does not satisfy a requirement, that is recorded
 once, in [§12](#12.%20Deviations), as a **deviation**. A deviation is a defect to be fixed or
 migrated, never a rule for an implementer to build around.
@@ -44,7 +44,7 @@ component that knows about paths, and it is the only component that decides
 whether an operation is allowed to happen at all.
 
 It is also the component that decides when an inode stops existing, which is
-what releases its content ([RFC 4 §6.4](rfc-4-block-metadata.md#6.4%20Delete)). Nothing else in the set may make that
+what releases its content ([RFC 6 §6.4](rfc-6-block-metadata.md#6.4%20Delete)). Nothing else in the set may make that
 decision, and nothing else may keep content alive behind this component's back
 ([§4.4](#4.4%20There%20is%20no%20third%20holder)).
 
@@ -54,7 +54,7 @@ Namespace metadata **MUST NOT**:
 
 - hold content bytes, or know where they are — local placement is [RFC 1](rfc-1-journal.md)'s,
   residency is computed and never stored ([RFC 0 §4.2](rfc-0-data-lifecycle.md#4.2%20The%20residency%20function));
-- hold chunks, refs, blocks or refcounts — those are [RFC 4](rfc-4-block-metadata.md)'s, and this component
+- hold chunks, refs, blocks or refcounts — those are [RFC 6](rfc-6-block-metadata.md)'s, and this component
   learns of them only through the interfaces it declares ([§2.5](#2.5%20Where%20%60size%60%20lives), [§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees));
 - decide what to offload, evict or sweep;
 - encode or decode a wire protocol. A handle is opaque at this boundary and
@@ -63,12 +63,12 @@ Namespace metadata **MUST NOT**:
 
 ### 1.2 Why it is a separate RFC from block metadata
 
-[RFC 4 §1.2](rfc-4-block-metadata.md#1.2%20Why%20it%20is%20a%20separate%20RFC%20from%20the%20namespace) gives the reason and the table: the two are usually one database,
+[RFC 6 §1.2](rfc-6-block-metadata.md#1.2%20Why%20it%20is%20a%20separate%20RFC%20from%20the%20namespace) gives the reason and the table: the two are usually one database,
 often one transaction, and they are specified apart because their write patterns
 differ in kind. This document does not restate it.
 
 The consequence that matters here is directional. Block metadata **MUST NOT** be
-told about names ([RFC 4 §6.5](rfc-4-block-metadata.md#6.5%20Who%20owns%20a%20ref)); it learns of a deletion only when this component
+told about names ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)); it learns of a deletion only when this component
 releases an inode. So every rule below about what keeps an inode alive is a rule
 about when content may be destroyed, one component removed.
 
@@ -109,7 +109,7 @@ listing does not have to read every inode it returns; it is a copy, and it
 
 **An entry is its own record.** An implementation **MUST NOT** store a
 directory's entries as one value, one document or one row holding the list. This
-is [RFC 4 §2.1](rfc-4-block-metadata.md#2.1%20Ref)'s rule with a different key, and it fails the same two ways: a
+is [RFC 6 §2.1](rfc-6-block-metadata.md#2.1%20Ref)'s rule with a different key, and it fails the same two ways: a
 directory of *N* entries costs O(*N*²) to fill, and the list becomes a key that
 every concurrent create, unlink and rename in that directory contends on.
 
@@ -123,7 +123,7 @@ the component that owns the mapping from a name to that identity, and it is the
 only one allowed to hold it.
 
 A path **MUST NOT** appear in a handle ([§6.1](#6.1%20A%20handle%20names%20an%20inode%2C%20never%20a%20path)), in a lock ([§8.2](#8.2%20A%20lock%20is%20held%20against%20an%20inode)), in a ref
-([RFC 4 §6.5](rfc-4-block-metadata.md#6.5%20Who%20owns%20a%20ref)) or in a journal key ([RFC 1](rfc-1-journal.md)). Each of those outlives a rename, and a
+([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)) or in a journal key ([RFC 1](rfc-1-journal.md)). Each of those outlives a rename, and a
 path does not.
 
 ### 2.4 Attributes, and who writes them
@@ -137,32 +137,32 @@ path does not.
 | `nlink` | link, unlink, rename over an existing entry | the entry change that caused it ([§4.1](#4.1%20%60nlink%60%20is%20exactly%20its%20entries)) |
 | `size` | a client write, truncate, deallocate | **not stored here** ([§2.5](#2.5%20Where%20%60size%60%20lives)) |
 
-The offload commit appears nowhere in that table, and **MUST NOT** ([RFC 4 §5.1](rfc-4-block-metadata.md#5.1%20No%20record%20is%20written%20by%20both%20paths)).
+The offload commit appears nowhere in that table, and **MUST NOT** ([RFC 6 §5.1](rfc-6-block-metadata.md#5.1%20No%20record%20is%20written%20by%20both%20paths)).
 Offloading changes where content is, not what it is, and an inode record it could
 write would be a record the client path and a background pass share — the shape
-that has already wedged this system once ([RFC 4 §5](rfc-4-block-metadata.md#5.%20Write%20sets)).
+that has already wedged this system once ([RFC 6 §5](rfc-6-block-metadata.md#5.%20Write%20sets)).
 
 ### 2.5 Where `size` lives
 
-[RFC 4 §13.7](rfc-4-block-metadata.md#13.%20Open%20questions) leaves this open. It is settled here: **`size` is not a namespace
+[RFC 6 §13.7](rfc-6-block-metadata.md#13.%20Open%20questions) leaves this open. It is settled here: **`size` is not a namespace
 record.** This component does not store it, and reads it through an interface it
 declares for the need:
 
     Size(file) → bytes
 
-The engine supplies [RFC 4](rfc-4-block-metadata.md)'s shape record ([RFC 4 §2.4](rfc-4-block-metadata.md#2.4%20Shape%20and%20holes)) at composition time.
+The engine supplies [RFC 6](rfc-6-block-metadata.md)'s shape record ([RFC 6 §2.4](rfc-6-block-metadata.md#2.4%20Shape%20and%20holes)) at composition time.
 Per [RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy) this **MUST** be a declared interface; a backend that does not
 supply it **MUST** fail to build.
 
 Three reasons, in order of how much they cost to get wrong:
 
 1. **`size` and the hole set move together.** A write past EOF grows `size` *and*
-   adds a hole for the gap it skipped ([RFC 4 §3.5](rfc-4-block-metadata.md#3.5%20Operations%20that%20make%20holes)). Split across two records,
+   adds a hole for the gap it skipped ([RFC 6 §3.5](rfc-6-block-metadata.md#3.5%20Operations%20that%20make%20holes)). Split across two records,
    the crash between them leaves a `size` covering a range no hole records and
    no journal holds — content claimed to exist that was never written, which
    resolves **Lost** and fails a read that should have returned zeros.
 2. **`size` carries the write path's durability.** It **MUST** be as durable as
-   the journal's record at acknowledgement ([RFC 4 §3.4](rfc-4-block-metadata.md#3.4%20Ordering%20against%20the%20journal)). An inode record holding
+   the journal's record at acknowledgement ([RFC 6 §3.4](rfc-6-block-metadata.md#3.4%20Ordering%20against%20the%20journal)). An inode record holding
    it inherits that schedule for `mode` and `uid` too, which need it far less and
    pay for it on every chmod.
 3. **Two copies drift and nothing notices.** `GETATTR` and a read would answer
@@ -259,7 +259,7 @@ An inode's `nlink` **MUST** equal the number of entries naming it, at every
 commit point, and **MUST** change in the same transaction as the entry that
 changes it.
 
-This is [RFC 4 §6.1](rfc-4-block-metadata.md#6.1%20A%20refcount%20is%20exactly%20its%20refs)'s rule for refcounts, one level up, and it fails the same two
+This is [RFC 6 §6.1](rfc-6-block-metadata.md#6.1%20A%20refcount%20is%20exactly%20its%20refs)'s rule for refcounts, one level up, and it fails the same two
 ways. Drifting high leaks an inode and everything it references. Drifting low
 releases an inode a name still resolves to, so the entry survives pointing at
 nothing.
@@ -267,7 +267,7 @@ nothing.
 A decrement that would take `nlink` below zero **MUST** fail the transaction and
 be reported as a consistency error naming the inode. It **MUST NOT** be clamped:
 the count was already too low before the decrement, so something else still
-names the inode ([RFC 4 §6.3](rfc-4-block-metadata.md#6.3%20Underflow%20is%20corruption%2C%20not%20a%20boundary)).
+names the inode ([RFC 6 §6.3](rfc-6-block-metadata.md#6.3%20Underflow%20is%20corruption%2C%20not%20a%20boundary)).
 
 Hard links to directories **MUST** be refused, which is what makes `parent`
 exact and what makes the rename loop check terminate ([§5.2](#5.2%20The%20loop%20check%20is%20inside%20the%20transaction)).
@@ -287,12 +287,12 @@ and the release condition is both:
 ### 4.3 Release is what block metadata sees
 
 Releasing an inode drops its refs and decrements the chunks they name
-([RFC 0 §7](rfc-0-data-lifecycle.md#7.%20Mutation%20and%20removal), [RFC 4 §6.4](rfc-4-block-metadata.md#6.4%20Delete)). This component **MUST** perform the release through an
+([RFC 0 §7](rfc-0-data-lifecycle.md#7.%20Mutation%20and%20removal), [RFC 6 §6.4](rfc-6-block-metadata.md#6.4%20Delete)). This component **MUST** perform the release through an
 interface it declares for the need — it does not reach into block metadata, and
-block metadata is never told the name that was removed ([RFC 4 §6.5](rfc-4-block-metadata.md#6.5%20Who%20owns%20a%20ref)).
+block metadata is never told the name that was removed ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)).
 
 Release **MAY** be deferred past the namespace removal, and **MUST** then be
-recorded durably so that a restart resumes it ([RFC 4 §6.4](rfc-4-block-metadata.md#6.4%20Delete)). An unlink that
+recorded durably so that a restart resumes it ([RFC 6 §6.4](rfc-6-block-metadata.md#6.4%20Delete)). An unlink that
 returns to the client before the release is durable, and is then forgotten,
 leaks every chunk of the file with nothing left to find them by.
 
@@ -302,14 +302,14 @@ leaks every chunk of the file with nothing left to find them by.
 implementation **MUST NOT** add a second mechanism — a hold list, a pin set, a
 protected-inode table, an extra root consulted by a sweep.
 
-This is [RFC 4 §6.5](rfc-4-block-metadata.md#6.5%20Who%20owns%20a%20ref) and M12 restated where the temptation actually arises. A
+This is [RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref) and M12 restated where the temptation actually arises. A
 snapshot holds counted refs; an open-but-unlinked file is an ordinary inode with
 zero entries. Both are already alive by the rules above, and neither needs a
 list.
 
 A second mechanism fails open. Every path that decides liveness has to remember
 to consult it; the path that forgets deletes content that was held, and an audit
-that recomputes counts ([RFC 4 §7.5](rfc-4-block-metadata.md#7.5%20Audit)) reports nothing wrong, because by the counts
+that recomputes counts ([RFC 6 §7.5](rfc-6-block-metadata.md#7.5%20Audit)) reports nothing wrong, because by the counts
 nothing *was* wrong.
 
 ## 5. Rename
@@ -344,14 +344,14 @@ concurrent rename has moved the destination under the source. The result is a
 cycle of directories that no path reaches, that `nlink` says are alive, and that
 nothing will ever release.
 
-This is the same failure as [RFC 4 §7.1](rfc-4-block-metadata.md#7.1%20Conditional%20retirement)'s blind delete — a condition read before
+This is the same failure as [RFC 6 §7.1](rfc-6-block-metadata.md#7.1%20Conditional%20retirement)'s blind delete — a condition read before
 the operation that changes it — and it needs the same remedy, not a lock taken
 around the read.
 
 ### 5.3 Rename moves an entry and nothing else
 
 A rename **MUST NOT** change a handle ([§6.1](#6.1%20A%20handle%20names%20an%20inode%2C%20never%20a%20path)), invalidate a lock ([§8.2](#8.2%20A%20lock%20is%20held%20against%20an%20inode)), touch a
-ref ([RFC 4 §6.5](rfc-4-block-metadata.md#6.5%20Who%20owns%20a%20ref)), or move a byte. Everything below this component keys on the
+ref ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)), or move a byte. Everything below this component keys on the
 inode, which did not change.
 
 An implementation that has to do work proportional to a file's size or its lock
@@ -608,10 +608,10 @@ Anything stored is a third answer that can disagree with both, and the first
 consumer of it will be something that decides whether to read.
 
 Reporting *allocation* to `SEEK_DATA` and `SEEK_HOLE` is this component's, and
-it **MUST** be answered from [RFC 4](rfc-4-block-metadata.md)'s hole set through a declared interface. It
+it **MUST** be answered from [RFC 6](rfc-6-block-metadata.md)'s hole set through a declared interface. It
 **MUST NOT** be answered from the journal, which cannot tell "never written"
 from "no longer held" ([RFC 0 §4.1](rfc-0-data-lifecycle.md#4.1%20The%20two%20oracles)), and **MUST NOT** be implemented by editing
-existence ([RFC 4 §3.5](rfc-4-block-metadata.md#3.5%20Operations%20that%20make%20holes)).
+existence ([RFC 6 §3.5](rfc-6-block-metadata.md#3.5%20Operations%20that%20make%20holes)).
 
 ## 10. Invariants
 
@@ -637,15 +637,15 @@ file. N5, N7 and N8 are the ones whose violation serves content to the wrong
 caller. N13 is the one whose violation stops the system under a load a single
 user can create.
 
-## 11. Consequences for RFC 0 and RFC 4
+## 11. Consequences for RFC 0 and RFC 6
 
-1. **[RFC 4 §13.7](rfc-4-block-metadata.md#13.%20Open%20questions) is answered.** `size` lives in existence and this component
-   reads it ([§2.5](#2.5%20Where%20%60size%60%20lives)). [RFC 4](rfc-4-block-metadata.md)'s open question should record the answer and its
+1. **[RFC 6 §13.7](rfc-6-block-metadata.md#13.%20Open%20questions) is answered.** `size` lives in existence and this component
+   reads it ([§2.5](#2.5%20Where%20%60size%60%20lives)). [RFC 6](rfc-6-block-metadata.md)'s open question should record the answer and its
    [§5.1](#5.1%20One%20transaction) table is unaffected — existence is still written by the write path only.
 2. **[RFC 0 §5.1](rfc-0-data-lifecycle.md#5.1%20Write), step 1.** "The namespace layer authorises the write and updates
    size and mtime" is two things with different owners. Authorisation is this
    component's and stays at step 1; `size` and `mtime` move to the existence
-   commit, as [RFC 4 §10](rfc-4-block-metadata.md#10.%20Consequences%20for%20RFC%200) already amends.
+   commit, as [RFC 6 §10](rfc-6-block-metadata.md#10.%20Consequences%20for%20RFC%200) already amends.
 3. **[RFC 0 §7](rfc-0-data-lifecycle.md#7.%20Mutation%20and%20removal), delete.** "The namespace entry and all the file's chunk refs are
    removed" happens in two steps with a condition between them: the entry goes,
    and the refs go when [§4.2](#4.2%20Open%20state%20is%20the%20second%20holder)'s release condition holds. [RFC 0](rfc-0-data-lifecycle.md)'s sentence reads
@@ -665,11 +665,11 @@ follows is everything else.
 
 | Requirement | Current state | Evidence |
 | --- | --- | --- |
-| [§2.4](#2.4%20Attributes%2C%20and%20who%20writes%20them) the offload commit writes no namespace record | `SetManifest` persists the file's attributes as well as its manifest, and the post-offload seam calls it with the attributes it happened to read. Every offload therefore rewrites `size`, `mtime`, `mode`, `uid` and `gid`. This is [RFC 4 §5.1](rfc-4-block-metadata.md#5.1%20No%20record%20is%20written%20by%20both%20paths)'s forbidden shared record, at the namespace row. The backends differ only in what else rides along: SQL rewrites all 21 inode columns plus the ref rows, while Badger writes the attribute blob and its manifest keys separately — the namespace record is rewritten either way. | `store/postgres/transaction.go:306`, `store/sqlite/transaction.go:190`, `store/badger/transaction.go:383`, all reaching `putFile`; `runtime/shares/coordinator.go:187`, `pkg/metadata/block_record_store.go:173` |
-| [RFC 0 §9.1](rfc-0-data-lifecycle.md#9.1%20Records%20and%20their%20reclamation) (I7) reclamation path | Not met on Badger, for the attribute blob rather than the chunk manifest. The blob embeds extended attributes, and while each value is capped at 64 KiB nothing caps their count, so ~16 max-size attributes put the record over the 1 MiB inline threshold. Past that it is rewritten in full by every attr-only write — chmod, utimes, rename, close — and accumulates in the store reclaimed by the mechanism the workload does not trigger: measured at +592 MiB of value log over 300 chmods. This is the same I7 failure as the chunk manifest ([RFC 4 §2.1](rfc-4-block-metadata.md#2.1%20Ref)), one key over and on a record written far more often: an attr-only write is frequent, and the manifest was deliberately moved out of its path. | `store/badger/encoding.go:372` (`putJSONField(buf, fEAs, ...)`), `pkg/metadata/xattr.go:57`, `:251` |
+| [§2.4](#2.4%20Attributes%2C%20and%20who%20writes%20them) the offload commit writes no namespace record | `SetManifest` persists the file's attributes as well as its manifest, and the post-offload seam calls it with the attributes it happened to read. Every offload therefore rewrites `size`, `mtime`, `mode`, `uid` and `gid`. This is [RFC 6 §5.1](rfc-6-block-metadata.md#5.1%20No%20record%20is%20written%20by%20both%20paths)'s forbidden shared record, at the namespace row. The backends differ only in what else rides along: SQL rewrites all 21 inode columns plus the ref rows, while Badger writes the attribute blob and its manifest keys separately — the namespace record is rewritten either way. | `store/postgres/transaction.go:306`, `store/sqlite/transaction.go:190`, `store/badger/transaction.go:383`, all reaching `putFile`; `runtime/shares/coordinator.go:187`, `pkg/metadata/block_record_store.go:173` |
+| [RFC 0 §9.1](rfc-0-data-lifecycle.md#9.1%20Records%20and%20their%20reclamation) (I7) reclamation path | Not met on Badger, for the attribute blob rather than the chunk manifest. The blob embeds extended attributes, and while each value is capped at 64 KiB nothing caps their count, so ~16 max-size attributes put the record over the 1 MiB inline threshold. Past that it is rewritten in full by every attr-only write — chmod, utimes, rename, close — and accumulates in the store reclaimed by the mechanism the workload does not trigger: measured at +592 MiB of value log over 300 chmods. This is the same I7 failure as the chunk manifest ([RFC 6 §2.1](rfc-6-block-metadata.md#2.1%20Ref)), one key over and on a record written far more often: an attr-only write is frequent, and the manifest was deliberately moved out of its path. | `store/badger/encoding.go:372` (`putJSONField(buf, fEAs, ...)`), `pkg/metadata/xattr.go:57`, `:251` |
 | [§2.5](#2.5%20Where%20%60size%60%20lives) `size` is stored once | Three sources reconciled at runtime: the `inodes.size` column, `PendingWritesTracker.MaxSize` overlaid on every read, and the journal's durable high-water mark, which clamps the published size on write. | `pkg/metadata/pending_writes.go:33`, `service.go:408`, `io.go:480` |
-| [§2.5](#2.5%20Where%20%60size%60%20lives), [RFC 4 §3.4](rfc-4-block-metadata.md#3.4%20Ordering%20against%20the%20journal) existence is never reconstructed from the journal | `reconcileMetadataSizeFromJournal` grows `inodes.size` from the journal's extent on share start. Grow-only, so it cannot recover what the journal lost — which is the only case the record exists for. | `runtime/shares/lifecycle.go:315`, called from `:125` |
-| [RFC 0 §9.2](rfc-0-data-lifecycle.md#9.2%20Conflicts%20and%20their%20retries) (I8) conflicts are retried, not surfaced | **Partly met on every backend, and the remaining gap is the constant.** The fixed attempt count is gone: all three SQL and Badger loops now share `txretry`, which retries with full-jitter exponential backoff until a time budget elapses. Badger keeps `maxTransactionRetries` only as a sanity ceiling. What is not met is the bound. `txretry.Deadline` returns `min(now+5s, ctx deadline)`, so the caller's deadline can only *tighten* the wait, never extend it: a caller willing to block for a minute still gets five seconds, and past that the conflict reaches it as an I/O error. [§9.2](#9.2%20Timestamps) requires the caller's deadline to be the bound precisely because a constant encodes a guess about how much contention is possible. The guess is already reachable: commits to one key serialize, so 256 appends to a single file cost about 5s at a CI runner's fsync, and the test pinning this invariant failed on exactly that — measuring the runner's speed rather than the backoff until it was resized. This is the shared transaction wrapper, so it binds every record both this RFC and [RFC 4](rfc-4-block-metadata.md) describe, not only namespace rows. | `store/internal/txretry/txretry.go:28`, `:38`; `store/badger/transaction.go:135`, `:236` |
+| [§2.5](#2.5%20Where%20%60size%60%20lives), [RFC 6 §3.4](rfc-6-block-metadata.md#3.4%20Ordering%20against%20the%20journal) existence is never reconstructed from the journal | `reconcileMetadataSizeFromJournal` grows `inodes.size` from the journal's extent on share start. Grow-only, so it cannot recover what the journal lost — which is the only case the record exists for. | `runtime/shares/lifecycle.go:315`, called from `:125` |
+| [RFC 0 §9.2](rfc-0-data-lifecycle.md#9.2%20Conflicts%20and%20their%20retries) (I8) conflicts are retried, not surfaced | **Partly met on every backend, and the remaining gap is the constant.** The fixed attempt count is gone: all three SQL and Badger loops now share `txretry`, which retries with full-jitter exponential backoff until a time budget elapses. Badger keeps `maxTransactionRetries` only as a sanity ceiling. What is not met is the bound. `txretry.Deadline` returns `min(now+5s, ctx deadline)`, so the caller's deadline can only *tighten* the wait, never extend it: a caller willing to block for a minute still gets five seconds, and past that the conflict reaches it as an I/O error. [§9.2](#9.2%20Timestamps) requires the caller's deadline to be the bound precisely because a constant encodes a guess about how much contention is possible. The guess is already reachable: commits to one key serialize, so 256 appends to a single file cost about 5s at a CI runner's fsync, and the test pinning this invariant failed on exactly that — measuring the runner's speed rather than the backoff until it was resized. This is the shared transaction wrapper, so it binds every record both this RFC and [RFC 6](rfc-6-block-metadata.md) describe, not only namespace rows. | `store/internal/txretry/txretry.go:28`, `:38`; `store/badger/transaction.go:135`, `:236` |
 | [§2.5](#2.5%20Where%20%60size%60%20lives), [RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy) declared interface | `metadata.Transaction` embeds `block.FileChunkStore`, `BlockRecordStore` and `SyncedHashStore`; `Store` embeds `block.EngineFileChunkStore`. There is one transaction type spanning both domains rather than a declared interface for the one thing this side needs. | `pkg/metadata/store.go:289`, `:291`, `:292`, `:464` |
 | [§9.3](#9.3%20Residency%20is%20not%20an%20attribute) residency is not an attribute | `object_id` — a block-derived Merkle root — is a column on the inode row with a partial unique index, and a dedup race surfaces as a namespace unique-constraint violation. | `store/sqlite/migrations/000001_initial_schema.up.sql:41`, `:63`; `runtime/shares/coordinator.go` (`mapObjectIDConflict`) |
 
@@ -731,13 +731,13 @@ needs its own design: when it runs, how it avoids racing a live rename, and
 coverage in every backend.
 
 [§12.1](#12.1%20The%20records)'s first row is the one the rest of the set is already waiting on — it is
-[RFC 4 §5](rfc-4-block-metadata.md#5.%20Write%20sets)'s shared record, still present on the namespace side.
+[RFC 6 §5](rfc-6-block-metadata.md#5.%20Write%20sets)'s shared record, still present on the namespace side.
 
 ## 13. Conformance
 
 Every check runs against every backend through `storetest`. A property that
 holds on one backend and not another is the category of defect this document was
-written after ([RFC 4 §12](rfc-4-block-metadata.md#12.%20Conformance)).
+written after ([RFC 6 §12](rfc-6-block-metadata.md#12.%20Conformance)).
 
 ### 13.1 Group A — wrong file, lost file, wrong caller
 
@@ -804,7 +804,7 @@ written after ([RFC 4 §12](rfc-4-block-metadata.md#12.%20Conformance)).
    is unmeasured.
 4. **Directory `mtime` as a hot record.** Every create, unlink and rename in a
    directory writes its inode for `mtime`. That is one record per directory
-   under a workload that creates files in parallel — [RFC 4 §5.3](rfc-4-block-metadata.md#5.3%20Hot%20records%20that%20are%20not%20per-file)'s problem with a
+   under a workload that creates files in parallel — [RFC 6 §5.3](rfc-6-block-metadata.md#5.3%20Hot%20records%20that%20are%20not%20per-file)'s problem with a
    different key. The current implementation coalesces it out of the transaction
    and loses up to two seconds of it ([§12.3](#12.3%20Rename)), which is a cost answer to a
    correctness question. What the uncoalesced cost actually is has not been
@@ -821,6 +821,6 @@ written after ([RFC 4 §12](rfc-4-block-metadata.md#12.%20Conformance)).
    `#recycle` feature that turns an unlink into a rename, stamping a deletion
    time, an original path and a deleting user on the inode. It is a namespace
    feature and this document does not specify it. Whether it belongs here, or is
-   policy above this component ([RFC 6](rfc-6-engine.md)), turns on whether anything below the
-   namespace has to know a file is in it — and nothing in [RFC 4](rfc-4-block-metadata.md) does, which
+   policy above this component ([RFC 8](rfc-8-engine.md)), turns on whether anything below the
+   namespace has to know a file is in it — and nothing in [RFC 6](rfc-6-block-metadata.md) does, which
    suggests it is policy.

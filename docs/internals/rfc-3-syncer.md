@@ -7,7 +7,7 @@ depends_on:
   - "[[rfc-0-data-lifecycle]]"
   - "[[rfc-1-journal]]"
   - "[[rfc-2-carver]]"
-  - "[[rfc-8-remote-tier]]"
+  - "[[rfc-4-remote-tier]]"
 aliases:
   - RFC 3
 tags:
@@ -16,7 +16,7 @@ tags:
 # RFC 3 — the syncer
 
 **Status:** draft.
-**Depends on:** [RFC 0](rfc-0-data-lifecycle.md), for the terms and the residency function. [RFC 8](rfc-8-remote-tier.md) specifies
+**Depends on:** [RFC 0](rfc-0-data-lifecycle.md), for the terms and the residency function. [RFC 4](rfc-4-remote-tier.md) specifies
 the remote tier this component calls. [RFC 1](rfc-1-journal.md) supplies and receives the bytes.
 [RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block) names the blocks.
 **Audience:** anyone changing the component that moves chunks between the journal
@@ -55,7 +55,7 @@ the unit of **storage**: one object, one name, written by one put, so it goes ou
 whole. A chunk is the unit of **verification**: each carries its own hash, so any
 chunk can be read and checked on its own. A fetch therefore asks for the chunks it
 needs — a range of the block — or for the whole block when most of it is wanted
-([RFC 6 §6.8](rfc-6-engine.md#6.8%20A%20cold%20read%20asks%20for%20chunks%2C%20or%20for%20the%20block)).
+([RFC 8 §6.8](rfc-8-engine.md#6.8%20A%20cold%20read%20asks%20for%20chunks%2C%20or%20for%20the%20block)).
 
 Every transition to **Resident** in this system originates in an outcome this
 component reports ([RFC 0 §4.3](rfc-0-data-lifecycle.md#4.3%20Reporting)). Every transition back from **Remote** to holding
@@ -66,11 +66,11 @@ local bytes originates in a fetch it performed.
 The syncer **MUST NOT**:
 
 - decide *what* to transfer, or *when*, or *why* — that is offload, eviction and
-  read-ahead policy ([RFC 0 §5.2](rfc-0-data-lifecycle.md#5.2%20Offload), [§8.1](rfc-0-data-lifecycle.md#8.1%20Evict), [RFC 6](rfc-6-engine.md));
+  read-ahead policy ([RFC 0 §5.2](rfc-0-data-lifecycle.md#5.2%20Offload), [§8.1](rfc-0-data-lifecycle.md#8.1%20Evict), [RFC 8](rfc-8-engine.md));
 - decide what to delete — that is sweep, which calls the remote tier directly
-  ([RFC 0 §8.3](rfc-0-data-lifecycle.md#8.3%20Sweep), [RFC 7](rfc-7-gc.md));
+  ([RFC 0 §8.3](rfc-0-data-lifecycle.md#8.3%20Sweep), [RFC 9](rfc-9-gc.md));
 - derive a block's name ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block));
-- know how an object is framed, transformed or verified ([RFC 8 §3](rfc-8-remote-tier.md#3.%20The%20stored%20object), [§4](rfc-8-remote-tier.md#4.%20The%20transform%20chain), [§6](rfc-8-remote-tier.md#6.%20Reads%20are%20verified%20at%20this%20boundary));
+- know how an object is framed, transformed or verified ([RFC 4 §3](rfc-4-remote-tier.md#3.%20The%20stored%20object), [§4](rfc-4-remote-tier.md#4.%20The%20transform%20chain), [§6](rfc-4-remote-tier.md#6.%20Reads%20are%20verified%20at%20this%20boundary));
 - persist anything;
 - know what a file, an [extent](rfc-0-data-lifecycle.md#2.1%20Entities) or a [segment](rfc-0-data-lifecycle.md#2.1%20Entities) is, or which files a block's
   [chunks](rfc-0-data-lifecycle.md#2.1%20Entities) came from. To the syncer a chunk is a hash and its bytes, the unit it
@@ -94,7 +94,7 @@ on different things — uploads on the uplink and on how fast blocks are boxed,
 fetches on latency and on how many readers are blocked.
 
 They are one component because they are one obligation seen from two sides:
-bounded movement of chunks, grouped into blocks, with the journal at one end and [RFC 8](rfc-8-remote-tier.md)'s contract
+bounded movement of chunks, grouped into blocks, with the journal at one end and [RFC 4](rfc-4-remote-tier.md)'s contract
 at the other. Splitting them would duplicate [§2](#2.%20What%20both%20halves%20obey) into two documents.
 
 ### 1.3 Interface
@@ -121,7 +121,7 @@ type ChunkRange struct {
 }
 
 // Store is what the syncer needs from a backend, declared here and named for
-// that need. The engine adapts the remote tier (RFC 8) to it.
+// that need. The engine adapts the remote tier (RFC 4) to it.
 type Store interface {
     // Put stores the block and returns one Range per chunk, in the order given.
     Put(ctx context.Context, name BlockName, chunks iter.Seq2[Chunk, error]) ([]Range, error)
@@ -169,7 +169,7 @@ the scheduler; a call on a closed flow **MUST** fail.
 **The syncer does not know what a flow stands for.** It knows stores, flows and
 blocks, and nothing about shares, files or tenants. Choosing what is fair against
 what is the engine's: it opens one flow per share, on that share's store, and
-closes it when the share is removed ([RFC 6](rfc-6-engine.md)). Fairness per tenant, or a separate
+closes it when the share is removed ([RFC 8](rfc-8-engine.md)). Fairness per tenant, or a separate
 flow for pre-warm so it cannot crowd out its own share's reads, would change
 which flows the engine opens and nothing here. The engine's share-level code sees
 a flow only through an interface the engine declares for its own need
@@ -182,19 +182,19 @@ from every flow on it ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)).
 ![Three flows, each bound to one store: two queue their transfers per flow, a deficit-round-robin scheduler with a per-flow cap feeds the uploader and fetcher pools, and the pools reach two stores; the third flow's store is unhealthy, its probe keeps running, and its calls are refused before they queue](img/rfc3-overview.svg)
 
 `name` is the block's name ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)). With `want` it is everything
-[RFC 8 §6.1](rfc-8-remote-tier.md#6.1%20The%20exported%20read%20takes%20the%20expected%20hash)'s verified read needs. The syncer passes both through and **MUST NOT**
+[RFC 4 §6.1](rfc-4-remote-tier.md#6.1%20The%20exported%20read%20takes%20the%20expected%20hash)'s verified read needs. The syncer passes both through and **MUST NOT**
 interpret them, except to sum the lengths of `want` for scheduling ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)).
 
 **Both directions stream, one chunk at a time.** The object format makes this
 possible: one record per chunk, each carrying its own plaintext hash and each
-readable on its own ([RFC 8 §3.3](rfc-8-remote-tier.md#3.3%20What%20the%20format%20must%20guarantee), F1, F2, F5), and every transform applies per
-chunk ([RFC 9](rfc-9-transforms.md)). A worker therefore never needs the whole block in memory, which
+readable on its own ([RFC 4 §3.3](rfc-4-remote-tier.md#3.3%20What%20the%20format%20must%20guarantee), F1, F2, F5), and every transform applies per
+chunk ([RFC 5](rfc-5-transforms.md)). A worker therefore never needs the whole block in memory, which
 is what sets the bound of [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound).
 
 **`Upload`** puts the block whose chunks `src` yields from the journal
 ([§3.2](#3.2%20It%20holds%20a%20reference%2C%20not%20a%20copy)). It hands that stream to the store's `Put`, which frames and transforms
 each chunk beneath the syncer; the syncer never sees a transformed byte
-([RFC 8 §4.4](rfc-8-remote-tier.md#4.4%20The%20syncer%20MUST%20NOT%20observe%20that%20a%20transform%20happened)). `size` is the block's plaintext length, which the engine knows from
+([RFC 4 §4.4](rfc-4-remote-tier.md#4.4%20The%20syncer%20MUST%20NOT%20observe%20that%20a%20transform%20happened)). `size` is the block's plaintext length, which the engine knows from
 its plan and the scheduler charges ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)).
 
 It waits in its flow's queue until a worker is free or `ctx` ends, which is the
@@ -203,7 +203,7 @@ flow's queue is full ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20
 `nil` error, only on the store's acknowledgement, which is durable because every
 store is ([§2.6](#2.6%20Durability%20is%20observed%2C%20never%20inferred)); every other ending, an unknown one included
 ([§2.5](#2.5%20An%20unknown%20outcome%20is%20not%20a%20success)), is an error. The ranges go into the block's commit, where later reads
-find them ([RFC 4 §2.2](rfc-4-block-metadata.md#2.2%20Chunk)).
+find them ([RFC 6 §2.2](rfc-6-block-metadata.md#2.2%20Chunk)).
 
 A retry calls `src` again for a fresh stream from the first chunk, so the bytes
 behind it **MUST** stay stable until `Upload` returns ([§3.3](#3.3%20The%20journal%20keeps%20referenced%20bytes%20stable)). It **MUST NOT**
@@ -214,16 +214,16 @@ reference back.
 ([§4.4](#4.4%20Speculation%20does%20not%20delay%20demand)): nobody is waiting yet. They are separate methods, not one method with
 a priority parameter, so each call site shows which it means. `Prefetch` always
 fetches the whole block: speculation is read-ahead or pre-warm, and both want
-whole blocks ([RFC 6 §6.8](rfc-6-engine.md#6.8%20A%20cold%20read%20asks%20for%20chunks%2C%20or%20for%20the%20block)).
+whole blocks ([RFC 8 §6.8](rfc-8-engine.md#6.8%20A%20cold%20read%20asks%20for%20chunks%2C%20or%20for%20the%20block)).
 
 **A fetch is a set of whole-chunk ranges of one block.** `want` names the chunks
 the caller needs, each by its hash and the `Range` the store reported when the
-block was put, which block metadata keeps ([RFC 4 §2.2](rfc-4-block-metadata.md#2.2%20Chunk)). An empty `want` asks for the
+block was put, which block metadata keeps ([RFC 6 §2.2](rfc-6-block-metadata.md#2.2%20Chunk)). An empty `want` asks for the
 whole block; each record is then verified against its own hash, and the ordered
 hashes against `name`, from which [RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block) derives it. The store merges ranges
 adjacent in the object into one ranged read — on S3, one `GET` with a
 `Range: bytes=first-last` header — so a packed small file, or a run of one file's
-chunks, costs one request ([RFC 6 §5.7](rfc-6-engine.md#5.7%20A%20block%20packs%20chunks%2C%20whichever%20files%20they%20came%20from)); ranges that are not adjacent cost
+chunks, costs one request ([RFC 8 §5.7](rfc-8-engine.md#5.7%20A%20block%20packs%20chunks%2C%20whichever%20files%20they%20came%20from)); ranges that are not adjacent cost
 one request each, or the engine asks for the whole block instead. A range is
 always a whole chunk: a range that splits one has no hash to check it against
 ([§4.1](#4.1%20One%20fetch%2C%20two%20consumers)).
@@ -231,12 +231,12 @@ always a whole chunk: a range that splits one has no hash to check it against
 A cold random read asks for only the chunks it covers, and each comes back as its
 own verified range: fetching a 20 MiB block to serve one 4 KiB read is read
 amplification with no correctness benefit. When to widen a request from chunks to
-the whole block is the engine's policy ([RFC 6 §6.8](rfc-6-engine.md#6.8%20A%20cold%20read%20asks%20for%20chunks%2C%20or%20for%20the%20block)): chunks for a read that is small
+the whole block is the engine's policy ([RFC 8 §6.8](rfc-8-engine.md#6.8%20A%20cold%20read%20asks%20for%20chunks%2C%20or%20for%20the%20block)): chunks for a read that is small
 and not sequential, the whole block for a scan or a read that needs most of it.
 
 A range whose bytes fail verification is reported as a **range mismatch**, distinct
-from a corrupt object, so the engine can re-resolve once ([RFC 6 §6.7](rfc-6-engine.md#6.7%20An%20absent%20object%20is%20re-resolved%20exactly%20once)): a re-put under
-the same name may lay the object out differently ([RFC 8 §5.5](rfc-8-remote-tier.md#5.5%20A%20put%20of%20an%20existing%20key%20succeeds%3B%20so%20does%20a%20delete%20of%20an%20absent%20one)), and a range recorded
+from a corrupt object, so the engine can re-resolve once ([RFC 8 §6.7](rfc-8-engine.md#6.7%20An%20absent%20object%20is%20re-resolved%20exactly%20once)): a re-put under
+the same name may lay the object out differently ([RFC 4 §5.5](rfc-4-remote-tier.md#5.5%20A%20put%20of%20an%20existing%20key%20succeeds%3B%20so%20does%20a%20delete%20of%20an%20absent%20one)), and a range recorded
 before it then points at the wrong bytes.
 
 Both return a stream of chunks, and:
@@ -402,9 +402,9 @@ alongside the first and taking whichever answers ("hedging", Dean and Barroso,
 requests; it is deferred until a measurement of cold-read latency asks for it.
 
 **The syncer is the only layer that retries.** A backend's client makes one
-attempt per call and returns its error ([RFC 8 §5.7](rfc-8-remote-tier.md#5.7%20A%20backend%20holds%20no%20state%20that%20spans%20operations); today's code differs,
-[RFC 8 §5.7.1](rfc-8-remote-tier.md#5.7.1%20Deviation%20%E2%80%94%20the%20SDK%20retries%20inside%20the%20store)). Retrying needs state across operations, and that state
-is the syncer's ([RFC 8 §2.1](rfc-8-remote-tier.md#2.1%20The%20rule%3A%20one%20operation%2C%20or%20many)); two layers
+attempt per call and returns its error ([RFC 4 §5.7](rfc-4-remote-tier.md#5.7%20A%20backend%20holds%20no%20state%20that%20spans%20operations); today's code differs,
+[RFC 4 §5.7.1](rfc-4-remote-tier.md#5.7.1%20Deviation%20%E2%80%94%20the%20SDK%20retries%20inside%20the%20store)). Retrying needs state across operations, and that state
+is the syncer's ([RFC 4 §2.1](rfc-4-remote-tier.md#2.1%20The%20rule%3A%20one%20operation%2C%20or%20many)); two layers
 that each retry multiply into a number of attempts nobody stated. A streamed body
 also cannot be rewound by a client that has already sent part of it: only the
 syncer, which can call `src` again ([§1.3](#1.3%20Interface)), can retry one.
@@ -428,9 +428,9 @@ indistinguishable from having written them once.
 The idempotence covers a retry of the same block: `Upload` retrying, or the engine
 re-offering the same plan. A later pass that groups the chunks differently derives
 a different name, and an object the earlier attempt may have written is then an
-orphan until garbage collection finds it ([RFC 7](rfc-7-gc.md)). The engine keeps the plan of
+orphan until garbage collection finds it ([RFC 9](rfc-9-gc.md)). The engine keeps the plan of
 any block whose outcome was unknown and offers it again, unchanged, before
-packing anything new ([RFC 6 §5.1](rfc-6-engine.md#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output)), so that is the exception rather than the routine.
+packing anything new ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output)), so that is the exception rather than the routine.
 
 ![A put whose response was lost leaves three indistinguishable remote states; a retry under the same content-derived name converges all three to one object](img/rfc3-unknown-outcome.svg)
 
@@ -438,7 +438,7 @@ packing anything new ([RFC 6 §5.1](rfc-6-engine.md#5.1%20Blocks%20are%20assembl
 
 ### 2.6 Durability is observed, never inferred
 
-The syncer **MUST** report durability only on the acknowledgement [RFC 8 §5.6](rfc-8-remote-tier.md#5.6%20What%20acknowledgement%20means%20is%20the%20backend%27s%20to%20declare)
+The syncer **MUST** report durability only on the acknowledgement [RFC 4 §5.6](rfc-4-remote-tier.md#5.6%20What%20acknowledgement%20means%20is%20the%20backend%27s%20to%20declare)
 defines for the backend in use. None of the following is evidence, and an
 implementation **MUST NOT** report durability on any of them:
 
@@ -453,7 +453,7 @@ implementation **MUST NOT** report durability on any of them:
 **Every store is durable.** A store holds the only copy of data the journal has
 released, so a store that can lose an acknowledged object is not one this design
 admits: there is no non-durable store, and no setting that declares one. What
-counts as the acknowledgement is fixed per backend ([RFC 8 §5.6](rfc-8-remote-tier.md#5.6%20What%20acknowledgement%20means%20is%20the%20backend%27s%20to%20declare)):
+counts as the acknowledgement is fixed per backend ([RFC 4 §5.6](rfc-4-remote-tier.md#5.6%20What%20acknowledgement%20means%20is%20the%20backend%27s%20to%20declare)):
 
 | Backend | Acknowledgement |
 | --- | --- |
@@ -464,17 +464,17 @@ counts as the acknowledgement is fixed per backend ([RFC 8 §5.6](rfc-8-remote-t
 ### 2.7 It reports; it does not persist
 
 The syncer **MUST NOT** persist durability, residency or health. It returns what
-it observed; [RFC 4](rfc-4-block-metadata.md) records it and [RFC 1](rfc-1-journal.md) is told ([RFC 0 §4.3](rfc-0-data-lifecycle.md#4.3%20Reporting)).
+it observed; [RFC 6](rfc-6-block-metadata.md) records it and [RFC 1](rfc-1-journal.md) is told ([RFC 0 §4.3](rfc-0-data-lifecycle.md#4.3%20Reporting)).
 
 A syncer that kept its own durable record of what it moved would be a third
-record beside block metadata ([RFC 4](rfc-4-block-metadata.md)) and the journal. After a crash it can
+record beside block metadata ([RFC 6](rfc-6-block-metadata.md)) and the journal. After a crash it can
 disagree with both, and nothing in the
 residency model resolves a three-way disagreement.
 
 ### 2.8 An unhealthy store refuses work
 
 A store's health belongs to the store. Every backend exposes a liveness probe —
-one round trip, no state ([RFC 8 §5.8](rfc-8-remote-tier.md#5.8%20The%20liveness%20probe%20is%20one%20operation)) — and the syncer calls it to decide
+one round trip, no state ([RFC 4 §5.8](rfc-4-remote-tier.md#5.8%20The%20liveness%20probe%20is%20one%20operation)) — and the syncer calls it to decide
 whether the store is **healthy** or **unhealthy**:
 
 - the syncer **MUST** probe every registered store at a configured interval, and
@@ -507,7 +507,7 @@ mid-flight.
 `Flow.Healthy` reports the current state of the flow's store. It reads memory and never calls the
 backend, so a caller can check it before doing work that would end in a refused
 upload — the engine skips carving and packing an offload for a store it would
-refuse ([RFC 6 §8.1](rfc-6-engine.md#8.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included)). The state is re-derived from the next probe, so it is not
+refuse ([RFC 8 §8.1](rfc-8-engine.md#8.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included)). The state is re-derived from the next probe, so it is not
 persisted ([§2.7](#2.7%20It%20reports%3B%20it%20does%20not%20persist)).
 
 Only the flows on that store are affected — with one flow per share, only that
@@ -642,7 +642,7 @@ is wrong for a workload an operator can name. A setting nobody can reason about
 is tuned by trial, and a wrong value shows up as a stall with no stated cause.
 
 Read-ahead depth, pre-warm pacing and when to offload are policy and belong to
-[RFC 6](rfc-6-engine.md), not here. Chunk and block sizes belong to [RFC 2](rfc-2-carver.md).
+[RFC 8](rfc-8-engine.md), not here. Chunk and block sizes belong to [RFC 2](rfc-2-carver.md).
 
 ### 2.11 Pool sizes are measured once, by a tool
 
@@ -655,10 +655,10 @@ failure — a pool that shrinks during a slowdown — looks like a slow network 
 outside.
 
 The tool measures **pure transfer**. It drives the store's own put, get and
-delete ([RFC 8 §5.1](rfc-8-remote-tier.md#5.1%20Operations)) with random bytes the size of the largest block, and passes
+delete ([RFC 4 §5.1](rfc-4-remote-tier.md#5.1%20Operations)) with random bytes the size of the largest block, and passes
 nothing through the transform chain. It is one implementation on top of the
 backend contract, not a method each backend provides: a speed test is many
-transfers, and the backend knows only one ([RFC 8 §2.1](rfc-8-remote-tier.md#2.1%20The%20rule%3A%20one%20operation%2C%20or%20many)).
+transfers, and the backend knows only one ([RFC 4 §2.1](rfc-4-remote-tier.md#2.1%20The%20rule%3A%20one%20operation%2C%20or%20many)).
 
 It **MUST**:
 
@@ -670,7 +670,7 @@ It **MUST**:
   take for each the smallest concurrency past which throughput stops rising by a
   stated margin;
 - **build the store with a client no smaller than its highest concurrency step**
-  ([RFC 8 §5.9](rfc-8-remote-tier.md#5.9%20A%20backend%27s%20client%20never%20queues%20below%20the%20pools)), so what it measures is the link and the service, never
+  ([RFC 4 §5.9](rfc-4-remote-tier.md#5.9%20A%20backend%27s%20client%20never%20queues%20below%20the%20pools)), so what it measures is the link and the service, never
   a queue inside the client;
 - **print the pool size, not the knee.** One flow holds at most three quarters
   of a pool ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)), so a flow alone reaches the knee only in a pool of
@@ -690,8 +690,8 @@ Its result describes this host, this link and this time of day. It says so, and
 nothing re-runs it automatically.
 
 It does not see CPU. Where compression and encryption cannot keep up with the
-printed pool size ([RFC 9](rfc-9-transforms.md)), the pool is larger than the process can use, and
-only memory is wasted; measuring the transforms' throughput is RFC 9's.
+printed pool size ([RFC 5](rfc-5-transforms.md)), the pool is larger than the process can use, and
+only memory is wasted; measuring the transforms' throughput is RFC 5's.
 
 ### 2.12 What the syncer makes observable
 
@@ -777,8 +777,8 @@ now. A client may overwrite an extent while its block waits for a worker
 hash is not the block's. So the engine describes a block as a plan — its name and,
 per chunk, a hash and where its bytes sit in the offered version — and `src` reads
 the plan through the journal's `offered` readers, which keeps returning the offered
-bytes until the offload callback returns ([RFC 6 §5.1](rfc-6-engine.md#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output)). A block may hold chunks of
-several files ([RFC 6 §5.7](rfc-6-engine.md#5.7%20A%20block%20packs%20chunks%2C%20whichever%20files%20they%20came%20from)), so one plan may read through several files'
+bytes until the offload callback returns ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output)). A block may hold chunks of
+several files ([RFC 8 §5.7](rfc-8-engine.md#5.7%20A%20block%20packs%20chunks%2C%20whichever%20files%20they%20came%20from)), so one plan may read through several files'
 readers. The syncer sees none of this: to it, `src` is a stream of chunks, and a
 block is the same thing whether its chunks came from one file or from a hundred.
 
@@ -794,7 +794,7 @@ pool size.
 The journal keeps offered bytes stable until the offload callback that offered them
 returns ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)): it **MUST NOT** release, overwrite, relocate or compact them
 before then. The engine runs the upload inside that callback
-([RFC 6 §5.1](rfc-6-engine.md#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output)), so no reference outlives it and `src` is never called after
+([RFC 8 §5.1](rfc-8-engine.md#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output)), so no reference outlives it and `src` is never called after
 `Upload` returns.
 
 This is the other half of [§3.2](#3.2%20It%20holds%20a%20reference%2C%20not%20a%20copy) and it is a requirement on [RFC 1](rfc-1-journal.md), not on this
@@ -803,7 +803,7 @@ extra steps and a race.
 
 ### 3.4 One put per block
 
-A block is transferred by a single put of the whole block ([RFC 8 §5.1](rfc-8-remote-tier.md#5.1%20Operations)). A put that
+A block is transferred by a single put of the whole block ([RFC 4 §5.1](rfc-4-remote-tier.md#5.1%20Operations)). A put that
 does not complete **MUST NOT** leave the block retrievable and **MUST NOT** be
 reported durable.
 
@@ -824,7 +824,7 @@ the uplink even with the pool full.
 **The put's length is the backend's problem, not the uploader's.** S3 needs an
 object's length before its first byte, and compression makes the framed length
 unknown until the last chunk is transformed. Framing and transforms happen below
-the syncer ([RFC 8 §4.4](rfc-8-remote-tier.md#4.4%20The%20syncer%20MUST%20NOT%20observe%20that%20a%20transform%20happened)), so the S3 backend resolves it: it streams
+the syncer ([RFC 4 §4.4](rfc-4-remote-tier.md#4.4%20The%20syncer%20MUST%20NOT%20observe%20that%20a%20transform%20happened)), so the S3 backend resolves it: it streams
 the framed records into a local spool file and puts the file, whose length is
 then known. The spool is on disk, so the memory bound of [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound) holds; it costs
 one local write and read per block, and disk of at most the pool size times the
@@ -837,8 +837,8 @@ The spool is placed and budgeted, never left to find free space. It lives in a
 directory the engine gives the backend at construction, on local storage the
 engine accounts for, and its space — `upload_workers` times the largest block — is
 set aside from the local capacity the engine hands the journals
-([RFC 6](rfc-6-engine.md)), so a spool write is never the one that finds the disk full. The backend
-computes the put's checksum as it writes the spool ([RFC 8 §5.10](rfc-8-remote-tier.md#5.10%20Transfer%20practice%20a%20backend%20owes%20its%20service)). A spool write
+([RFC 8](rfc-8-engine.md)), so a spool write is never the one that finds the disk full. The backend
+computes the put's checksum as it writes the spool ([RFC 4 §5.10](rfc-4-remote-tier.md#5.10%20Transfer%20practice%20a%20backend%20owes%20its%20service)). A spool write
 that still fails for lack of space is a **local** error: the backend reports it as
 one, and it does not make the store unhealthy, since the store is not at fault.
 
@@ -848,7 +848,7 @@ The bytes a put transfers **MUST NOT** change while it runs. [§3.3](#3.3%20The%
 for a journal reference; an implementation that transfers from anywhere else
 **MUST** supply it some other way. As a second line, `src` recomputes each
 chunk's hash as it reads and fails the transfer on a mismatch
-([RFC 6 §5.1](rfc-6-engine.md#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output)): a violation becomes a refused put, not a misnamed object.
+([RFC 8 §5.1](rfc-8-engine.md#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output)): a violation becomes a refused put, not a misnamed object.
 
 The name is a function of the content ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)), so content that changes mid
 transfer produces an object whose bytes do not match its name, and every later
@@ -862,7 +862,7 @@ A fetch of chunks held only remotely — some ranges of one block, or all of it 
 produces verified chunks, one at a time, and yields them to its caller. The caller
 is the engine, which uses them twice: to answer the read that caused the fetch,
 and, where its fill policy says so, to fill the journal so the next read is local
-([RFC 6 §6.2](rfc-6-engine.md#6.2%20The%20reply%20is%20served%20from%20the%20fetched%20bytes), [RFC 0 §2.3](rfc-0-data-lifecycle.md#2.3%20Operations)). The syncer imports no journal and fills nothing ([§1.4](#1.4%20It%20is%20testable%20on%20its%20own)).
+([RFC 8 §6.2](rfc-8-engine.md#6.2%20The%20reply%20is%20served%20from%20the%20fetched%20bytes), [RFC 0 §2.3](rfc-0-data-lifecycle.md#2.3%20Operations)). The syncer imports no journal and fills nothing ([§1.4](#1.4%20It%20is%20testable%20on%20its%20own)).
 
 Both uses **MUST** read the same bytes and **MUST NOT** modify them. Each chunk is
 verified before it is yielded, which is what makes one buffer safe for both. A
@@ -874,7 +874,7 @@ whole range has.
 ### 4.2 The reply neither waits on the fill nor fails with it
 
 Answering the read before, and regardless of, the fill is the engine's obligation
-([RFC 6 §6.2](rfc-6-engine.md#6.2%20The%20reply%20is%20served%20from%20the%20fetched%20bytes)), because the engine does both. What it needs from the syncer is that each
+([RFC 8 §6.2](rfc-8-engine.md#6.2%20The%20reply%20is%20served%20from%20the%20fetched%20bytes)), because the engine does both. What it needs from the syncer is that each
 chunk is yielded as soon as it is verified, and stays valid until the caller's
 next iteration ([§1.3](#1.3%20Interface)). A fill that copies the chunk into journal-owned space in
 that window, and drops its own failure, delays nothing and fails nothing.
@@ -938,7 +938,7 @@ guess. Sharing one pool is permitted; sharing one arrival order is not.
 
 The fetcher executes fetches. Which blocks are worth fetching before they are
 asked for is policy, and belongs with the component that sees the access pattern
-and the free capacity ([RFC 6](rfc-6-engine.md)). Two kinds exist and they differ in more than scale:
+and the free capacity ([RFC 8](rfc-8-engine.md)). Two kinds exist and they differ in more than scale:
 
 | | read-ahead | pre-warm |
 | --- | --- | --- |
@@ -953,7 +953,7 @@ fetch next and keeps no access history.
 
 Both are speculative under [§4.4](#4.4%20Speculation%20does%20not%20delay%20demand). Pre-warm carries one further obligation — it
 must not fill the journal until writes are refused ([RFC 0 §10.1](rfc-0-data-lifecycle.md#10.1%20Capacity%20is%20a%20bound%2C%20not%20a%20target)) — and that
-obligation is the engine's ([RFC 6 §6.4](rfc-6-engine.md#6.4%20Speculation%20is%20planned%20here%2C%20and%20yields%20to%20demand%20and%20to%20writes)), because only the engine sees journal capacity.
+obligation is the engine's ([RFC 8 §6.4](rfc-8-engine.md#6.4%20Speculation%20is%20planned%20here%2C%20and%20yields%20to%20demand%20and%20to%20writes)), because only the engine sees journal capacity.
 The syncer's part is that a `Prefetch` can be abandoned at any point without
 failing anything. An engine that runs pre-warm on a flow of its own ([§1.3](#1.3%20Interface)) also
 keeps it from holding its share's flow at its cap while that share's reads wait.
@@ -963,18 +963,18 @@ keeps it from holding its share's flow at its cap while that share's reads wait.
 | Concern | Owner |
 | --- | --- |
 | A block's name | [RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block) |
-| Framing, transforms, verification, the error set | [RFC 8 §3](rfc-8-remote-tier.md#3.%20The%20stored%20object), [§4](rfc-8-remote-tier.md#4.%20The%20transform%20chain), [§5.2](rfc-8-remote-tier.md#5.2%20Errors%20are%20a%20closed%20set), [§6](rfc-8-remote-tier.md#6.%20Reads%20are%20verified%20at%20this%20boundary) |
-| What a durable acknowledgement is, per backend | [RFC 8 §5.6](rfc-8-remote-tier.md#5.6%20What%20acknowledgement%20means%20is%20the%20backend%27s%20to%20declare) |
-| Recording durability and residency | [RFC 4](rfc-4-block-metadata.md) |
+| Framing, transforms, verification, the error set | [RFC 4 §3](rfc-4-remote-tier.md#3.%20The%20stored%20object), [§4](rfc-4-remote-tier.md#4.%20The%20transform%20chain), [§5.2](rfc-4-remote-tier.md#5.2%20Errors%20are%20a%20closed%20set), [§6](rfc-4-remote-tier.md#6.%20Reads%20are%20verified%20at%20this%20boundary) |
+| What a durable acknowledgement is, per backend | [RFC 4 §5.6](rfc-4-remote-tier.md#5.6%20What%20acknowledgement%20means%20is%20the%20backend%27s%20to%20declare) |
+| Recording durability and residency | [RFC 6](rfc-6-block-metadata.md) |
 | Keeping referenced bytes stable; filling fetched ones | [RFC 1](rfc-1-journal.md) |
-| Deleting a remote block | [RFC 7](rfc-7-gc.md), calling [RFC 8](rfc-8-remote-tier.md) directly |
-| What to box, when to offload, what to evict, what to read ahead or pre-warm | [RFC 6](rfc-6-engine.md) |
-| Whether the system keeps accepting writes when the remote is unavailable | RFC 6 |
-| A share's health, from its store's state and its own offload outcomes | [RFC 6 §8.1](rfc-6-engine.md#8.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included) |
+| Deleting a remote block | [RFC 9](rfc-9-gc.md), calling [RFC 4](rfc-4-remote-tier.md) directly |
+| What to box, when to offload, what to evict, what to read ahead or pre-warm | [RFC 8](rfc-8-engine.md) |
+| Whether the system keeps accepting writes when the remote is unavailable | RFC 8 |
+| A share's health, from its store's state and its own offload outcomes | [RFC 8 §8.1](rfc-8-engine.md#8.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included) |
 
 **Health is probed, never stored as a flag.** A store's health is what its probe
 last said ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)). A share's health is the engine's, computed from the store's
-state together with the outcomes of its own offloads ([RFC 6 §8.1](rfc-6-engine.md#8.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included)).
+state together with the outcomes of its own offloads ([RFC 8 §8.1](rfc-8-engine.md#8.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included)).
 
 Neither **MUST** be a "remote is down" flag that stops attempts until something
 clears it. Once attempts stop, none can succeed, so nothing ever sees the remote
@@ -1095,7 +1095,7 @@ B5 reports its result as a **fraction of the sizing tool's raw figure** for the
 same store, and exports the pools' occupancy beside it. The external benchmark of
 v0.33.0 measured about 28% of raw S3 through the whole stack; a syncer pool that
 is not full while that happens means the limit is upstream of the syncer, and
-[RFC 6 §13.5](rfc-6-engine.md#13.5%20Benchmarks) measures the pipeline end to end to find where.
+[RFC 8 §13.5](rfc-8-engine.md#13.5%20Benchmarks) measures the pipeline end to end to find where.
 
 ## 8. Test plan and performance targets
 
@@ -1118,7 +1118,7 @@ a check is built from. This section is the plan around it, in the shape
 
 There is no crash test here. The syncer persists nothing (S7), so a crash leaves
 nothing of its own to recover; what a crash does to transfers in flight is the
-engine's to test ([RFC 6 §2.5](rfc-6-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)).
+engine's to test ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)).
 
 ### 8.2 Edge cases
 
@@ -1169,7 +1169,7 @@ sees:
 
 | Change | What the syncer does |
 | --- | --- |
-| an object deleted | the `Get` fails as absent; the engine re-resolves once ([RFC 6 §6.7](rfc-6-engine.md#6.7%20An%20absent%20object%20is%20re-resolved%20exactly%20once)) |
+| an object deleted | the `Get` fails as absent; the engine re-resolves once ([RFC 8 §6.7](rfc-8-engine.md#6.7%20An%20absent%20object%20is%20re-resolved%20exactly%20once)) |
 | an object overwritten with other bytes | verification fails; reported as corrupt, or as a range mismatch where the ranges no longer line up |
 | the bucket removed, or credentials revoked | terminal failures; the probe fails and the store turns unhealthy |
 | the store slowed below the floor | transfers fail on the floor and are retried within the bound |
@@ -1232,7 +1232,7 @@ it stay valid.
    second thing to observe, and a failure mode where the window collapses and is
    indistinguishable from a slow network. Reopen only on a measurement showing a
    fixed pool, sized by the tool, leaves throughput on the table.
-3. **How pre-warm yields.** Moved to [RFC 6 §6.4](rfc-6-engine.md#6.4%20Speculation%20is%20planned%20here%2C%20and%20yields%20to%20demand%20and%20to%20writes), which now owns the obligation.
+3. **How pre-warm yields.** Moved to [RFC 8 §6.4](rfc-8-engine.md#6.4%20Speculation%20is%20planned%20here%2C%20and%20yields%20to%20demand%20and%20to%20writes), which now owns the obligation.
    What follows is kept for that discussion. The obligation is stated; the mechanism is not.
    A capacity reservation, a low-water mark, and cancellation on pressure are all
    plausible and they behave differently when a write burst arrives mid-warm.
@@ -1261,7 +1261,7 @@ it stay valid.
     cap per direction, as rclone's `--bwlimit` and JuiceFS's
     `--upload-limit` / `--download-limit`, which [§2.1](#2.1%20A%20worker%20pool%20is%20the%20only%20concurrency%20control) permits only with its
     interaction with the pool stated; spreading connections across the service's
-    addresses ([RFC 8 §5.10](rfc-8-remote-tier.md#5.10%20Transfer%20practice%20a%20backend%20owes%20its%20service)).
+    addresses ([RFC 4 §5.10](rfc-4-remote-tier.md#5.10%20Transfer%20practice%20a%20backend%20owes%20its%20service)).
 
 ## 10. Deviations
 
@@ -1275,8 +1275,8 @@ question to answer.
 | D3 | `fetch_workers` a setting, default 32 ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)) | deduced as max(8, 2 × CPUs) and cannot be set | `cmd/dfs/commands/start.go:366`; `pkg/config/init.go:163` |
 | D4 | one probe interval, one failure turns unhealthy ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) | 30 s healthy, 5 s unhealthy, three failures to turn unhealthy, and a separate demand-fetch timeout | `engine/types.go:108`–`:111`, `:130`–`:133` |
 | D5 | the syncer is the only layer that retries ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) | the S3 SDK retries up to `maxAttempts` with backoff to 30 s, 429 included, beneath the syncer's own retries | `remote/s3/store.go:162`–`:170` |
-| D6 | a backend's client limit derived from the pools ([RFC 8 §5.9](rfc-8-remote-tier.md#5.9%20A%20backend%27s%20client%20never%20queues%20below%20the%20pools)) | fixed at 256 connections | `remote/s3/store.go:49` |
-| D7 | the uploader reads a journal reference and streams ([§3.2](#3.2%20It%20holds%20a%20reference%2C%20not%20a%20copy), [§1.3](#1.3%20Interface)) | the carver copies journal bytes into a block buffer before an upload slot is free, and the put sends the whole sealed block from a second in-memory buffer; per-transfer memory is two block-sized buffers and is stated nowhere. The fix is decided: a block plan read through the journal's offered reader ([RFC 6 §5.1](rfc-6-engine.md#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output), [RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)) | `engine/flush_closure.go:112`–`:151`, `:425`; `engine/flush.go:397`–`:446` |
+| D6 | a backend's client limit derived from the pools ([RFC 4 §5.9](rfc-4-remote-tier.md#5.9%20A%20backend%27s%20client%20never%20queues%20below%20the%20pools)) | fixed at 256 connections | `remote/s3/store.go:49` |
+| D7 | the uploader reads a journal reference and streams ([§3.2](#3.2%20It%20holds%20a%20reference%2C%20not%20a%20copy), [§1.3](#1.3%20Interface)) | the carver copies journal bytes into a block buffer before an upload slot is free, and the put sends the whole sealed block from a second in-memory buffer; per-transfer memory is two block-sized buffers and is stated nowhere. The fix is decided: a block plan read through the journal's offered reader ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output), [RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)) | `engine/flush_closure.go:112`–`:151`, `:425`; `engine/flush.go:397`–`:446` |
 | D8 | a failed fill does not fail the read ([§4.2](#4.2%20The%20reply%20neither%20waits%20on%20the%20fill%20nor%20fails%20with%20it), S11) | the read is answered by re-reading the journal after the fill; a fill error fails the fetching caller and every joined one | `engine/fetch.go:669`–`:673`; `engine/read_internal.go:117`–`:131` |
 | D9 | a retry after an unknown outcome writes the same object ([§2.5](#2.5%20An%20unknown%20outcome%20is%20not%20a%20success)) | block names are 16 random bytes, so a retry writes a second object and the first is an orphan for GC; S5 still holds. Recorded as [RFC 2 §4.2.1](rfc-2-carver.md#4.2.1%20Deviation%20%E2%80%94%20a%20block%27s%20identity%20is%20generated%2C%20in%20two%20places) | `engine/flush.go:392`; `block/block_record.go:29`–`:35` |
 | D10 | one pool bounds fetches in flight ([§2.1](#2.1%20A%20worker%20pool%20is%20the%20only%20concurrency%20control), S1) | each demand read and each warm run builds its own fetch group of the configured size, beside the prefetch queue's own workers; fetches in flight, and their memory, grow with concurrent readers | `engine/fetch.go:31`–`:39`, `:540`–`:549`; `engine/warm.go:175`; `engine/sync_queue.go:89`–`:92` |
@@ -1288,7 +1288,7 @@ question to answer.
 | D16 | `Close` returns once every transfer has ended ([§1.3](#1.3%20Interface)) | each wait gives up after 30 s and returns anyway; demand fetches on reader goroutines are not tracked | `engine/sync_lifecycle.go:187`–`:203`; `engine/sync_queue.go:118`–`:123` |
 | D17 | the syncer decides nothing and persists nothing ([§1.1](#1.1%20Non-goals), [§2.7](#2.7%20It%20reports%3B%20it%20does%20not%20persist)) | the upload side decides when to carve and commits block records itself; the component this document describes does not exist as a boundary in code yet | `engine/carve_dispatch.go:37`–`:48`; `engine/flush.go:468` |
 | D18 | every store is durable; none is declared otherwise ([§2.6](#2.6%20Durability%20is%20observed%2C%20never%20inferred)) | a store's `durable` setting can declare a store not durable, the in-memory backend defaults to not durable, and the commit rule branches on it; the setting and the branch are to be removed | `runtime/shares/blockstore_config.go:856`–`:860`; `remote/memory/store.go:228`; `remote/s3/store.go:126`–`:134` |
-| D19 | a put carries an end-to-end checksum ([RFC 8 §5.10](rfc-8-remote-tier.md#5.10%20Transfer%20practice%20a%20backend%20owes%20its%20service)) | the S3 client disables the SDK's default request checksums and response validation | `remote/s3/store.go:185`–`:192` |
+| D19 | a put carries an end-to-end checksum ([RFC 4 §5.10](rfc-4-remote-tier.md#5.10%20Transfer%20practice%20a%20backend%20owes%20its%20service)) | the S3 client disables the SDK's default request checksums and response validation | `remote/s3/store.go:185`–`:192` |
 | D20 | fair scheduling across stores and flows ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) | no per-flow or per-store queue, round robin or cap exists; demand fetches run on the reader's goroutine and uploads share a per-share window | `engine/fetch.go`; `engine/upload_window.go` |
 
 Checked and satisfied: no multipart upload anywhere ([§3.4](#3.4%20One%20put%20per%20block)); an unknown outcome is
@@ -1309,7 +1309,7 @@ numbers below are starting points for the tool's own defaults and are unmeasured
 
 1. Build the store from the same configuration a share uses, through the same
    constructor the server calls, with its client sized to the highest step
-   ([RFC 8 §5.9](rfc-8-remote-tier.md#5.9%20A%20backend%27s%20client%20never%20queues%20below%20the%20pools)).
+   ([RFC 4 §5.9](rfc-4-remote-tier.md#5.9%20A%20backend%27s%20client%20never%20queues%20below%20the%20pools)).
 2. Generate one buffer of random bytes the size of the largest block, block
    target plus chunk `Max`. Random bytes do not compress, so a backend or proxy
    that compresses in transit cannot flatter the result.

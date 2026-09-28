@@ -275,7 +275,7 @@ nothing. Everything below is derived by its caller from what `Cut` hands back:
 each chunk's offset, length and hash through `emit`, and the error `Cut` returns.
 The caller **MUST** make every metric below observable; the engine exports them
 to Prometheus and to `dfsctl`'s stats output, labelled with the share
-([RFC 6](rfc-6-engine.md)). A metric is listed only if it says something about cutting;
+([RFC 8](rfc-8-engine.md)). A metric is listed only if it says something about cutting;
 whether a chunk was already stored is the engine's ([§1.1](#1.1%20Non-goals)).
 
 | Metric | Type | Answers |
@@ -473,7 +473,7 @@ Three consequences, and an implementation **MUST NOT** treat any as incidental:
 
 *Both rules live here because identity is a property of content. Neither says who
 computes it: a chunk's hash is taken by whoever cuts it, a block's by whoever
-assembles it ([RFC 6](rfc-6-engine.md), and [RFC 7](rfc-7-gc.md) when compaction repacks). Nothing in this document
+assembles it ([RFC 8](rfc-8-engine.md), and [RFC 9](rfc-9-gc.md) when compaction repacks). Nothing in this document
 holds state to do either.*
 
 ### 4.1 A chunk
@@ -557,7 +557,7 @@ that shares a remote store between shares, not after.
 
 ## 5. Packing: three rules, not a component
 
-*Blocks are built by whoever owns the dedup query, which is not the carver ([RFC 6](rfc-6-engine.md)).
+*Blocks are built by whoever owns the dedup query, which is not the carver ([RFC 8](rfc-8-engine.md)).
 The rules live here because they are properties of chunks.*
 
 | # | Rule |
@@ -591,7 +591,7 @@ chunk is already stored. If that oracle can see the block currently being built,
 it will call a chunk stored before it has been uploaded — so an identical chunk
 later in the same pass carries no bytes, and if the upload then fails the content
 exists nowhere while metadata records two references to it. That hazard is real
-and it belongs to **RFC 6**, because that is where the oracle gets asked.
+and it belongs to **RFC 8**, because that is where the oracle gets asked.
 
 ## 6. Boundaries are public
 
@@ -616,7 +616,7 @@ hidden **MUST** get it from another layer. Two mitigations exist, neither free:
   matter.
 - **Randomise how blocks are assembled.** This blurs the link between chunk sizes
   and stored object sizes. It costs nothing in dedup and is not a migration,
-  because assembly is policy ([§5](#5.%20Packing%3A%20three%20rules%2C%20not%20a%20component)). It is [RFC 6](rfc-6-engine.md)'s call.
+  because assembly is policy ([§5](#5.%20Packing%3A%20three%20rules%2C%20not%20a%20component)). It is [RFC 8](rfc-8-engine.md)'s call.
 
 How much this actually gives away, at DittoFS's block sizes, has not been
 measured ([§11](#11.%20Open%20questions)).
@@ -656,7 +656,7 @@ hash usable as an address; the rest cost wrong sizing or an unreadable file.
 Two properties are absent from this list because the shape of [§1.2](#1.2%20Two%20layers%3A%20the%20chunker%20and%20the%20carver) makes them
 unbreakable rather than merely required: a chunk cannot straddle a hole, and there
 is no leftover state to clear between calls. The invariants covering block
-assembly against a dedup oracle belong to [RFC 6](rfc-6-engine.md).
+assembly against a dedup oracle belong to [RFC 8](rfc-8-engine.md).
 
 ## 9. Conformance
 
@@ -751,7 +751,7 @@ nothing that grows over time, and nothing two calls share.
 
 The one thing a byte slice cannot test is whether the caller uses the output
 correctly — that a block holds whole chunks, that bytes are copied before `emit`
-returns. Those are checked at the consumer, in [RFC 6](rfc-6-engine.md).
+returns. Those are checked at the consumer, in [RFC 8](rfc-8-engine.md).
 
 ### 10.2 Edge cases
 
@@ -898,7 +898,7 @@ across commits.
    block assembly is cheap enough that it may be worth doing without waiting for
    the measurement.
 5. **Where the buffer cost lands now.** Per-chunk allocation is forbidden ([§2.2](#2.2%20The%20bytes%20handed%20to%20%60emit%60%20are%20borrowed))
-   and the block-sized buffer moved to [RFC 6](rfc-6-engine.md). Two profiles put large-buffer
+   and the block-sized buffer moved to [RFC 8](rfc-8-engine.md). Two profiles put large-buffer
    allocation and zeroing at 53% (amd64) and 9% (arm64) of carve cost — but on a
    workload whose dedup oracle was stubbed out, and whose absolute numbers did not
    reproduce an earlier baseline. The ordering is solid; the magnitude is not, and
