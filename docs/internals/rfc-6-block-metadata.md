@@ -796,7 +796,7 @@ commit still apply ([§4.1](#4.1%20What%20one%20commit%20records)). Without that
 a concurrent truncate to 5 MiB. The file then holds refs past its end, and a
 later truncate up turns them back into readable content where the user was
 promised zeros. The refused pass is retried from the journal, which has already
-truncated ([RFC 1 §3.6](rfc-1-journal.md#3.6%20Truncate%20and%20delete)).
+truncated ([RFC 1 §3.6](rfc-1-journal.md#3.6%20Truncate%2C%20deallocate%20and%20delete)).
 
 `epoch` is advanced only by these two operations. An append **MUST NOT** advance
 it. If it did, the check would conflict with every write, and [§5.1](#5.1%20No%20record%20is%20written%20by%20both%20paths) would be undone
