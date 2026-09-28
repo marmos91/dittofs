@@ -108,21 +108,53 @@ with namespace records. Splitting them onto separate servers is open ([§13](#13
 
 ## 2. The records
 
-Block metadata holds five kinds of record. Each is keyed by exactly one thing,
-and none holds a list that grows with its file.
+Block metadata holds three things — a file's **existence**, its **content map**,
+and the **blocks** the content lives in — in five kinds of record. Each record is
+keyed by exactly one thing, answers exactly one question, and none holds a list
+that grows with its file.
 
-![Five record kinds: per-file shape (size, truncation epoch) and one hole record per unwritten range, refs keyed by file and offset, chunks keyed by hash, blocks keyed by remote key, with the direction each one points](img/rfc4-records.svg)
+![Three concepts in five records: existence (shape and holes, written by the write path), the content map (refs pointing at chunks by hash, written by the flush commit), and blocks (a live count per remote object, retired by sweep), with the direction each one points](img/rfc4-records.svg)
 
-| Record | Keyed by | Holds | Written by |
-| --- | --- | --- | --- |
-| **Shape** | `FileID` | size, truncation epoch | the write path, truncate, deallocate ([§3](#3.%20Existence)) |
-| **Hole** | `(FileID, start)` | end | the write path, truncate, deallocate ([§3](#3.%20Existence)) |
-| **Ref** | `(FileID, offset)` | chunk hash, skip, length, content versions | flush commit ([§4](#4.%20The%20flush%20commit)) |
-| **Chunk** | chunk hash | block key, position in block, refcount | flush commit ([§4](#4.%20The%20flush%20commit)) |
-| **Block** | remote key | live-chunk count | flush commit, sweep ([§7](#7.%20What%20sweep%20needs%20from%20this%20component)) |
+| Concept | Record | Keyed by | Holds | Answers |
+| --- | --- | --- | --- | --- |
+| Existence ([§3](#3.%20Existence)) | **Shape** | `FileID` | size, truncation epoch | how long is the file, and did it shrink under a flush? |
+| | **Hole** | `(FileID, start)` | end | was this range never written? |
+| Content map ([§2.1](#2.1%20Ref)) | **Ref** | `(FileID, offset)` | chunk hash, skip, length, content versions | which bytes of which chunk are these? |
+| | **Chunk** | chunk hash | block key, position in block, refcount | where is this chunk, and who uses it? |
+| Blocks ([§7](#7.%20What%20sweep%20needs%20from%20this%20component)) | **Block** | remote key | live-chunk count | may this remote object be deleted? |
 
-A file's shape and its holes are together what this document calls its
-**existence**: what the file's size is and which parts of it were written.
+Who writes each record follows from the concept, with one exception:
+
+| | Shape, Hole | Ref | Chunk | Block |
+| --- | --- | --- | --- | --- |
+| Write path | writes | — | — | — |
+| Flush commit | reads `epoch` | writes | creates, counts | creates, counts |
+| Truncate, deallocate, clone, delete | writes | writes | counts | counts |
+| Relocation, retirement ([§7](#7.%20What%20sweep%20needs%20from%20this%20component)) | — | — | moves, deletes | creates, deletes |
+
+The exception is the flush commit, which writes three records. That is one
+transaction recording one event — a block became durable — and the three records
+are its three consequences: new content at these offsets, these chunks now
+exist, this object now holds them ([§4.1](#4.1%20What%20one%20commit%20records)). The write path and the flush commit
+share no record ([§5.1](#5.1%20No%20record%20is%20written%20by%20both%20paths)).
+
+**Why not fewer.** Each merge that would remove a record kind moves a cost
+somewhere this document forbids:
+
+| Merge | What breaks |
+| --- | --- |
+| Holes into Shape, as a list | the list grows with the file's sparseness, and every write into a hole rewrites it (I7) |
+| Holes into the ref keyspace, as refs with no chunk | the write path and the flush commit then write one keyspace, and a write into a hole races a commit over the same offsets ([§5.1](#5.1%20No%20record%20is%20written%20by%20both%20paths)) |
+| Chunk into Ref: refs name `(block, position)` | relocating a block rewrites every ref naming its chunks, across every file; deduplication needs a by-hash lookup, which is the chunk record again; the refcount has nowhere to live ([§2.5](#2.5%20Refs%20name%20hashes%2C%20never%20blocks)) |
+| Block into Chunk: `live` computed by scanning a block's chunks | retirement's condition becomes a predicate over a range, and closing the race with adoption then needs serialisable range reads that not every backend has ([§7.1](#7.1%20Conditional%20retirement), [§7.2](#7.2%20Adoption%20is%20conditional%20on%20existence)); sweep finds dead blocks only by scanning every chunk |
+| Shape into the namespace inode | `size` and the holes would move in two records, and every write would rewrite the inode `chmod` writes ([RFC 5 §2.5](rfc-5-namespace-metadata.md#2.5%20Where%20%60size%60%20lives)) |
+
+The block record is the one that holds nothing new: `live` is derivable from the
+chunk records. It is kept as a materialised count because it is the single key
+retirement and adoption conflict on, and the index sweep reads to find what to
+retire. A backend that could give both — serialisable range predicates and a
+cheap query for blocks with no live chunk — could derive it instead, and
+[§7.5](#7.5%20Audit)'s audit already recomputes it that way.
 
 ### 2.1 Ref
 
@@ -561,14 +593,8 @@ about, but no longer stands in for it.
 
 ### 5.1 No record is written by both paths
 
-The write path and the flush commit **MUST NOT** write a common record.
-
-| | Existence | Ref | Chunk | Block |
-| --- | --- | --- | --- | --- |
-| Write path | writes | — | — | — |
-| Flush commit | reads `epoch` | writes | writes | writes |
-| Truncate, deallocate | writes | writes | writes | writes |
-| Sweep | — | — | deletes | deletes |
+The write path and the flush commit **MUST NOT** write a common record. [§2](#2.%20The%20records)
+tabulates who writes what; the write path's column is existence alone.
 
 ![Which paths write which records, and the one shared per-file key the rule removes: a writer streaming appends and a flush committing chunks, retrying against each other on one record](img/rfc4-write-sets.svg)
 
