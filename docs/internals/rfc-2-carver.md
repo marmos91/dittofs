@@ -14,12 +14,7 @@ tags:
 # RFC 2 — the carver
 
 **Status:** draft.
-**Depends on:** [RFC 0](rfc-0-data-lifecycle.md), for the terms and the data model. [RFC 1](rfc-1-journal.md) supplies the bytes
-this component reads.
 **Audience:** anyone implementing or reviewing chunking or block naming.
-
-The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT** and **MAY** are
-to be interpreted as in RFC 2119.
 
 ---
 
@@ -162,23 +157,7 @@ Two things follow, and both make checks cheap:
 An implementation that picks up a dependency here — a metadata lookup, a store
 handle, a logger that does something, a clock — loses both, and **MUST NOT**.
 
-In practice the carver's checks are of four kinds, and none needs more than a
-byte slice:
-
-- **Golden vectors.** For a fixed seed and each supported profile, the list of
-  boundaries and hashes is committed with the tests. A chunk's hash is its
-  identity, and a change that moves a boundary re-names every chunk after it and
-  ends deduplication against everything already stored — so a changed vector
-  **MUST** fail the build, and changing one is a format migration, not a test
-  update.
-- **Properties, fuzzed.** Coverage-guided fuzzing drives random input
-  and random valid settings through `Cut`, and asserts the invariants of
-  [§8](#8.%20Invariants) on what `emit` saw.
-- **Differential.** Two implementations, or one before and after a change, over
-  the same random input, **MUST** emit identical chunks. This is how a faster
-  chunker is admitted.
-- **Allocation.** An allocation count over a whole `Cut` **MUST** report zero
-  ([§2.2](#2.2%20The%20bytes%20handed%20to%20%60emit%60%20are%20borrowed)).
+The kinds of test this allows are in [§10.1](#10.1%20Kinds%20of%20test).
 
 ## 2. What one call covers
 
@@ -375,9 +354,7 @@ Falling back to a default looks like robustness and is really a data-shape bug. 
 share asked for 64 KiB chunks and quietly given 1 MiB ones produces content that
 is valid, readable and correctly hashed — and that dedups against nothing the
 operator expected, at sixteen times the read amplification they planned for, with
-nothing anywhere reporting a problem. This is [RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)'s silent-fallback hazard
-wearing configuration as a disguise: the missing thing is the requested chunk
-size, and its absence **MUST** be loud.
+nothing anywhere reporting a problem ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)).
 
 ### 3.8 What happens on repetitive data
 
@@ -409,7 +386,9 @@ Three consequences, and an implementation **MUST NOT** treat any as incidental:
   repetitive files into single enormous chunks.
 - **Repetitive data does not dedup well, and cannot.** Whole-file-sized chunks
   only match other whole-file-sized chunks. This is inherent to any CDC scheme
-  with a bounded window, not a defect in this one.
+  with a bounded window, not a defect in this one. Zeros are the exception that
+  costs nothing: an all-zero chunk is recorded as a hole and never stored
+  ([RFC 0 §2.1](rfc-0-data-lifecycle.md#2.1%20Entities)). The carver emits it like any other chunk; the engine decides.
 - **Where the period is longer than the window, chunking becomes fixed-size at a
   multiple of that period.** The 4 KiB pattern cut at exactly 8 KiB every time
   under a 4 KiB minimum. Sizes on structured data are set by the data's period,
@@ -438,23 +417,27 @@ A block's identity — its **name** — is **derived** from what it holds. It **
 NOT** be generated, allocated, sequenced, drawn at random, or assigned by the
 remote tier. The name is 32 bytes:
 
-    name = BLAKE3-derive-key(context, len(scope) ‖ scope ‖ generation ‖ h₁ ‖ … ‖ hₙ)
+    name = BLAKE3-derive-key(context, len(scope) ‖ scope ‖ generation ‖ len(chain) ‖ chain ‖ h₁ ‖ … ‖ hₙ)
 
 - `context` is the fixed ASCII string `content-defined block name v1`. The
   key-derivation mode of BLAKE3 [2] separates this domain from a chunk's plain
   hash ([§4.1](#4.1%20A%20chunk)) by construction.
 - `len(scope)` is one byte, the length of `scope` (0–255); `scope` is the key
   scope of [§4.3](#4.3%20Key%20scope), empty for a single scope.
-- `generation` is the block's **encoding generation**: 8 bytes, unsigned,
+- `generation` is the block's **encoding generation**, a `uint64`: 8 bytes,
   little-endian.
+- `len(chain)` is one byte, the length of `chain`; `chain` is the block's
+  **chain ID** ([RFC 5](rfc-5-transforms.md)): it covers everything that decides an encoded body's
+  length — the transforms, their versions, their length-affecting settings, and
+  the IDs of the material in use.
 - `h₁ … hₙ` are the 32-byte hashes of the chunks the block holds, in block order.
 
 How a name becomes a remote key is [RFC 4](rfc-4-remote-tier.md)'s. An implementation **MUST** carry a
-golden test vector — a fixed scope, generation and chunk-hash list, and the name
-they give — and a changed vector **MUST** fail the build: a changed construction
-orphans every block already stored.
+golden test vector — a fixed scope, generation, chain ID and chunk-hash list, and
+the name they give — and a changed vector **MUST** fail the build: a changed
+construction orphans every block already stored.
 
-Four things follow, and none of them is optional:
+Five things follow, and none of them is optional:
 
 - **Order counts.** P2 and P3 make membership *and* order decide the object's
   bytes, so two blocks holding the same chunks in different order are different
@@ -464,20 +447,19 @@ Four things follow, and none of them is optional:
 - **The input is hashes, not bytes.** The assembler already holds the chunk hash
   list; re-reading the chunk bytes to name the block would be a second pass over
   the data for a value the first pass already determined.
+- **One name, one layout.** Because the chain ID covers everything that decides
+  a body's length, two blocks with one name have the same body lengths and so the
+  same recorded positions. Encoding is deterministic ([RFC 5](rfc-5-transforms.md)), so they are the
+  same bytes too, and a second put of a name writes an identical object.
 - **A re-encode never reuses a name.** A block first written by offload has
-  generation 0. A relocation that re-encodes chunks — retiring material or a
-  transform ([RFC 5 §5.3](rfc-5-transforms.md#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)) — writes the source block's generation plus one (the
-  highest source's, where chunks come from several), so its bytes never land under
-  a source's name. The generation is recorded in the block record ([RFC 6 §2.3](rfc-6-block-metadata.md#2.3%20Block)).
-  A relocation **MUST** refuse a target name equal to its source's.
+  generation 0. A relocation writes generation one above its source's — above the
+  highest source's, where it merges chunks from several — so its bytes never land
+  under a source's name, even when the chain ID is unchanged. The generation is
+  recorded in the block record ([RFC 6 §2.3](rfc-6-block-metadata.md#2.3%20Block)). A relocation **MUST** refuse a target
+  name equal to a source's.
 
-**What this removes.** Identity stops being *minted* anywhere. There is no
-generator to call, no uniqueness to defend, and no moment between allocating a
-name and using it. Two callers that assemble the same chunks in the same order,
-scope and generation arrive at the same name without coordinating, which is what
-makes relocation idempotent: one that crashes and re-runs derives the same name
-and rewrites the same object, rather than leaving one behind under a name nothing
-recorded. This is the argument of [§4.1](#4.1%20A%20chunk), one level up.
+Nothing mints a name, so there is no generator to call and no uniqueness to
+defend; why that makes a retried put safe is [RFC 3 §2.5](rfc-3-syncer.md#2.5%20An%20unknown%20outcome%20is%20not%20a%20success).
 
 ### 4.3 Key scope
 
@@ -510,7 +492,7 @@ The rules live here because they are properties of chunks.*
 | --- | --- |
 | P1 | A block holds whole chunks only. A chunk is never split to make a block come out an exact size. |
 | P2 | A block reaches at least the block target, and overshoots it by at most one chunk. The last block of a pass **MAY** fall short: the pass ends with what it has. |
-| P3 | A block holds only the chunks whose bytes it actually carries. |
+| P3 | A block holds only the chunks whose bytes it actually carries. An all-zero chunk is a hole, and no block carries it ([RFC 0 §2.1](rfc-0-data-lifecycle.md#2.1%20Entities)). |
 
 
 P1 is [RFC 0 §2.2](rfc-0-data-lifecycle.md#2.2%20How%20a%20file%20relates%20to%20its%20chunks). A chunk split across two blocks would have one hash naming
@@ -596,22 +578,13 @@ produces the same chunks. A failed pass costs work and never correctness.
 | C6 | A block holds only the chunks whose bytes it carries. |
 
 
-C1 and C2 are what make a hash usable as an address; the rest cost wrong sizing
-or an unreadable file.
-
-Two properties are absent from this list because the shape of [§1.2](#1.2%20Two%20layers%3A%20the%20chunker%20and%20the%20carver) makes them
-unbreakable rather than merely required: a chunk cannot straddle a hole, and there
-is no leftover state to clear between calls. The invariants covering block
-assembly against a dedup oracle belong to [RFC 8](rfc-8-engine.md).
+Two properties are missing because the shape of [§1.2](#1.2%20Two%20layers%3A%20the%20chunker%20and%20the%20carver) makes them unbreakable: a
+chunk cannot straddle a hole, and there is no state to clear between calls.
+Invariants of block assembly against the dedup oracle are [RFC 8](rfc-8-engine.md)'s.
 
 ## 9. Conformance
 
-Conformance is every **MUST** holding. The checks below are evidence for the ones
-that fail *quietly* — where nothing errors and nothing goes red by accident. A
-check is only validated by reverting the code and watching it fail on its own
-assertion.
-
-Every check here is a pure function of a byte slice and a set of settings ([§1.3](#1.3%20It%20is%20testable%20on%20its%20own%2C%20by%20construction)).
+The rules for checks are [the index's](rfc-index.md#Test%20tiers). Every check here is a pure function of a byte slice and a set of settings ([§1.3](#1.3%20It%20is%20testable%20on%20its%20own%2C%20by%20construction)).
 If a check needs a fixture, the implementation has picked up a dependency it is
 not allowed to have, and that is the finding.
 
@@ -627,7 +600,7 @@ need no reader and no hash at all.
 | chunker | [§3.8](#3.8%20What%20happens%20on%20repetitive%20data) repetitive input still terminates | Chunk 64 MiB of zeros and of a 64-byte repeating pattern; assert every chunk comes out exactly `Max` and the pass ends. Without `Max` the search never succeeds and the whole file becomes one chunk. |
 | chunker | B4 shift resistance | Insert one byte early in a large input; assert every boundary past the edited chunk is unchanged. |
 | carver | [§4](#4.%20Identity) hash covers the chunk | Cut identical content at two different `base` offsets; assert one hash. |
-| name | [§4.2](#4.2%20A%20block) golden name | Derive the name of the golden vector; assert the committed bytes. Change the order of two hashes, the scope, or the generation; assert each gives a different name. |
+| name | [§4.2](#4.2%20A%20block) golden name | Derive the name of the golden vector; assert the committed bytes. Change the order of two hashes, the scope, the generation or the chain ID; assert each gives a different name. |
 | carver | [§2.2](#2.2%20The%20bytes%20handed%20to%20%60emit%60%20are%20borrowed) borrowed bytes | Hold on to the slice passed to `emit` and assert it is seen to change. The check exists to prove the contract is real, so a caller that copies is not doing it out of superstition. |
 | carver | [§7](#7.%20Errors) no short chunk on error | Fail `emit` mid-stretch, and fail the reader mid-chunk; assert no delivered chunk is a truncated prefix of one the clean path would produce. |
 
@@ -659,8 +632,7 @@ boundaries costs more in storage than it saves in CPU.
 | K5 | size distribution | real files of several kinds — source trees, VM images, media | the chunk-size histogram against `Min`, `Target` and `Max` |
 
 K1 to K3 report bytes per second and allocations. They run on at least two CPU
-architectures, because the ratios differ between them ([Appendix A.2](#A.2%20Warm-up%20runs%20over%20the%20whole%20chunk%20instead%20of%20the%20last%2064%20bytes)), and a
-result is recorded with the machine and commit that produced it. K4 and K5 are
+architectures, because the ratios differ between them ([Appendix A.2](#A.2%20Warm-up%20runs%20over%20the%20whole%20chunk%20instead%20of%20the%20last%2064%20bytes)). K4 and K5 are
 not timed; they run on a fixed corpus so a change of profile can be compared
 against the last one, and they are what decide a profile — speed alone never
 does.
@@ -675,9 +647,7 @@ workload's, and inflates every throughput figure it touches.
 
 ## 10. Test plan and performance targets
 
-[§9](#9.%20Conformance) says what must be checked and how a check is validated, and [§1.3](#1.3%20It%20is%20testable%20on%20its%20own%2C%20by%20construction) why
-every check needs nothing but a byte slice. This section is the plan around it,
-in the shape [RFC 1 §12](rfc-1-journal.md#12.%20Test%20plan%20and%20performance%20targets) set.
+[§9](#9.%20Conformance) lists the checks; this section is the plan around them.
 
 ### 10.1 Kinds of test
 
@@ -686,10 +656,9 @@ in the shape [RFC 1 §12](rfc-1-journal.md#12.%20Test%20plan%20and%20performance
 | Golden vectors | that boundaries and hashes never move ([§3.6](#3.6%20Changing%20any%20of%20this%20is%20a%20migration)) | a fixed seed per supported profile, boundaries and hashes committed; a changed vector fails the build |
 | Properties | the invariants of [§8](#8.%20Invariants) | coverage-guided fuzzing over random input and random valid settings, asserting on what `emit` saw |
 | Differential | a faster or refactored implementation | two implementations over the same random input **MUST** emit identical chunks ([§1.3](#1.3%20It%20is%20testable%20on%20its%20own%2C%20by%20construction)) |
-| Conformance | every check in [§9](#9.%20Conformance) | pure functions of a byte slice and settings |
 | Reader and emit faults | [§7](#7.%20Errors) | a reader and an `emit` that fail at a chosen byte or chunk ([§10.3](#10.3%20Faults%20and%20determinism)) |
 | Architecture | B2: any machine | the golden vectors run on at least two CPU architectures; BLAKE3 takes different code paths on each |
-| Benchmark | [§9.1](#9.1%20Benchmarks%20and%20quality%20measures), K1–K5 | real time on the reference box, after merge ([tiers](rfc-index.md#Test%20tiers)); K4 and K5 are counts and also run per change |
+| Benchmark | [§9.1](#9.1%20Benchmarks%20and%20quality%20measures), K1–K5 | real time on the reference box, after merge ([tiers](rfc-index.md#Test%20tiers)); the counts of [§10.4](#10.4%20What%20CI%20checks%20instead%20of%20timing) run per change |
 
 There is no crash test, no soak and no concurrency test, and that is the design
 working rather than a gap: the carver holds nothing that a crash can tear,
@@ -784,9 +753,8 @@ BLAKE3's rate to about 2×, far below its target.
 ### 10.5 Performance targets
 
 Speed targets are stated against BLAKE3 alone over the same bytes on the same
-box, so they hold on any hardware. Results are recorded in absolute numbers
-([§10.6](#10.6%20Recording%20results)). Each target leaves room below what was measured, so a real
-regression trips it and noise does not.
+box, so they hold on any hardware. Each target leaves room below what was
+measured, so a real regression trips it and noise does not.
 
 The hash is the wall. With a 64-byte warm-up, BLAKE3 is about 97% of a carve pass
 ([Appendix A.2](#A.2%20Warm-up%20runs%20over%20the%20whole%20chunk%20instead%20of%20the%20last%2064%20bytes)), so the carver's target is to cost almost nothing on top of it, and the quality targets decide a profile, not speed
@@ -805,10 +773,9 @@ The hash is the wall. With a 64-byte warm-up, BLAKE3 is about 97% of a carve pas
 
 ### 10.6 Recording results
 
-Results are recorded as [RFC 1 §12.6](rfc-1-journal.md#12.6%20Recording%20results) requires, with two additions that
-matter here: the CPU's SIMD extensions BLAKE3 used (AVX-512, AVX2, NEON), and
-the toolchain version. The same carver on the same box differs by more across those than
-across commits.
+Results are recorded as [the index](rfc-index.md#Test%20tiers) requires, plus the CPU's SIMD extensions
+BLAKE3 used (AVX-512, AVX2, NEON) and the toolchain version: the same carver on
+the same box differs by more across those than across commits.
 
 ## 11. Open questions
 
@@ -827,19 +794,14 @@ across commits.
 
 ## Appendix A — deviations
 
-Where the current implementation departs from this document, one line each. A
-deviation is a defect to fix or migrate, never a rule to build around, and a
-mismatch **MUST NOT** be closed by amending the requirement.
+Where the current implementation departs from this document. A deviation is a
+defect to fix or migrate, never a rule to build around.
 
-- [§3.2](#3.2%20The%20three%20settings): the boundary masks are fixed and encode an 8 KiB target while the
-  default profile declares 4 MiB, so every chunk lands just above `Min` (A.1).
-  Fixing it is a migration.
-- [§3.4](#3.4%20How%20far%20back%20a%20decision%20looks): the fingerprint is warmed from the start of the chunk, not over the
-  last 64 bytes (A.2). Fixing it changes no output.
-- [§4.2](#4.2%20A%20block): a block's name is random, not derived; both offload and relocation
-  generate one. The cost it imposes elsewhere is recorded in [RFC 3 §2.5](rfc-3-syncer.md#2.5%20An%20unknown%20outcome%20is%20not%20a%20success).
-
-The measurements behind the first two follow.
+| Requirement | Current code | Fix |
+| --- | --- | --- |
+| [§3.2](#3.2%20The%20three%20settings) mask from `Target` | fixed masks encode an 8 KiB target while the default profile declares 4 MiB, so every chunk lands just above `Min` (A.1) | a migration |
+| [§3.4](#3.4%20How%20far%20back%20a%20decision%20looks) 64-byte warm-up | the fingerprint is warmed from the start of the chunk (A.2) | changes no output |
+| [§4.2](#4.2%20A%20block) derived name | a block's name is random; offload and relocation each generate one | a migration; its cost elsewhere is in [RFC 3 §2.5](rfc-3-syncer.md#2.5%20An%20unknown%20outcome%20is%20not%20a%20success) |
 
 ### A.1 The masks encode a different target than the profile declares
 
@@ -867,25 +829,13 @@ data:
 | 1 MiB / 4 MiB / 16 MiB | 248 | **1.029 MiB** | 1.000 MiB | 1.154 MiB | none |
 | 64 KiB / 256 KiB / 1 MiB | 2,765 | **94.8 KiB** | 64.0 KiB | 258.6 KiB | none |
 
-That is 0.24% from prediction. The second profile confirms the masks are the cause
-rather than the profile: moving `Min` and `Avg` together shifts the average by
-exactly the change in `Min`. Neither run produced a single chunk that reached
-`Avg`; for the default profile that would need 3 MiB of consecutive positions to
-all fail a 1-in-32,768 test.
-
-**How to read this.** In both rows the average sits about 30 KB above `Min`, and
-nowhere near `Target`. That 30 KB is the masks' own scale showing through — the
-small-region mask has 15 bits set, so a boundary turns up on average every
-2¹⁵ = 32,768 bytes once looking starts. Change `Min` and that gap stays the same
-size, which is what points at the masks rather than the profile. `Max` is not
-approached in either row.
+That is 0.24% from prediction. In both rows the average sits about 30 KB above
+`Min` — the small-region mask's own scale, 2¹⁵ bytes — whatever `Min` is, which
+points at the masks rather than the profile. No chunk reached `Target`, and `Max`
+was never approached. The FastCDC paper's own setup [1] uses a minimum of
+4–8 KB at normalisation level 2: `Min` close to `Target`.
 
 ![Chunk size on a log scale: the 8 KiB target the masks imply, the declared Min of 1 MiB, Target of 4 MiB and Max of 16 MiB, and the whole measured distribution as a narrow spike sitting on Min](img/rfc2-size-distribution.svg)
-
-
-
-For comparison, the FastCDC paper's own recommended setup [1] is normalisation
-level 2 with a minimum of 4–8 KB — `Min` close to `Target`, not 128 times it.
 
 **Two ways out, both migrations ([§3.6](#3.6%20Changing%20any%20of%20this%20is%20a%20migration)):**
 
@@ -915,22 +865,13 @@ chunks with the same hashes.
 | **Apple M1 Max** (dev) | boundary search + BLAKE3 | 820 MB/s | **1,917 MB/s** | **2.34×** |
 | | boundary search alone | 1,506 MB/s | 45,928 MB/s | 30.5× |
 
-**How to read this.** The row that matters is the first of each pair, because a
-real pass hashes what it cuts. The fix is worth about **1.4× on the server CPU**
-and more on arm64. The second row shows why the gap between them is so
-large: once the wasted warm-up is gone, boundary searching is nearly free, and
-BLAKE3 becomes **97%** of what the pass does (96% on arm64).
+The first row of each pair is what matters, because a real pass hashes what it
+cuts: the fix is worth about **1.4×** on the server CPU and more on arm64. After
+it, BLAKE3 is **97%** of the pass (96% on arm64), so there is no point optimising
+the chunker further. The machines differ because the EPYC's gear hash is about
+1.9× the M1's while its BLAKE3 is only about 1.3×; both ratios were measured.
 
-That last number is the useful one. After this fix there is no point optimising
-the chunker further — the hash is the wall.
-
-The gap between the two machines is not noise. The EPYC's gear hash is about
-1.9× faster than the M1's, while its BLAKE3 is only about 1.3× faster, so the
-wasted warm-up accounts for proportionally less of an amd64 pass. Neither ratio is
-predictable from the other; both were measured.
-
-Unlike A.1 this is **not** a migration. The output does not change, so it can be
-fixed whenever convenient.
+Unlike A.1 this is **not** a migration: the output does not change.
 
 ## Appendix B — prior art
 
