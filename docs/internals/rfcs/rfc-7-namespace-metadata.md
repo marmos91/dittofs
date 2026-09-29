@@ -399,6 +399,18 @@ A handle **MUST NOT** encode a path, a name, a parent, or an offset into a
 directory. All four change while the inode does not, so a handle carrying one is
 a handle that breaks on an operation that was supposed to be invisible to it.
 
+**A handle has one spelling.** Decoding a handle **MUST** accept exactly one
+byte form for each inode, or canonicalise before the handle is used, and handles
+**MUST** be compared by what they decode to. A parser that accepts several
+spellings of one identity turns byte comparison into a lie: two handles for one
+directory compare unequal, a lock keyed on the handle stops serialising, and a
+rename between them takes the wrong path.
+
+> [!important] Pending review — one spelling per handle
+> From an open issue: the handle parser accepted several spellings of one ID and
+> comparisons were byte equality, so rename took the wrong path and lock shards
+> stopped serialising. New Group A row in [§12.1](#12.1%20Group%20A%20%E2%80%94%20wrong%20file%2C%20lost%20file%2C%20wrong%20caller).
+
 ![A handle resolving straight to an inode across a rename, beside a path-derived handle that the same rename breaks](img/rfc5-handle-identity.svg)
 
 ### 6.2 A handle is stable across restart
@@ -570,6 +582,18 @@ spent restarting.
 
 The window **MUST** end on its own ([RFC 0 §10.2](rfc-0-data-lifecycle.md#10.2%20No%20state%20requires%20intervention%20to%20leave)). A server that will not leave a
 grace period until an operator acts has replaced one wedge with another.
+
+**An expired lease releases everything it held, everywhere.** When a client's
+lease expires or its state is revoked, every lock, open, deny mode and delegation
+it held **MUST** be released in every view that records it — including state
+shared across protocols — in the same step. State one protocol dropped and
+another still counts refuses conflicting requests against an owner that no longer
+exists, until a restart.
+
+> [!important] Pending review — lease expiry, and a freed name
+> From open issues: an expired lease left the shared lock manager holding the
+> delegation until restart; and a create right after an acknowledged unlink
+> occasionally got "exists" on a slow backend. Both have new Group A rows.
 
 ### 8.4 A deny mode is checked at open
 
@@ -755,6 +779,9 @@ the tiers and under the rules of the [index](rfc-index.md).
 | [§3.5](#3.5%20A%20cookie%20survives%20concurrent%20mutation) cookie | Delete an entry before the cursor mid-listing. Assert no untouched entry is skipped or repeated. Then evict every cached cookie and assert the listing resumes rather than restarting. |
 | [§6.5](#6.5%20A%20protocol%27s%20numeric%20file%20id%20is%20derived%2C%20and%20collisions%20are%20its%20problem) file id | Generate ids for a large share. Assert no two live inodes share one, or that the derivation refuses on collision. |
 | [§5.2](#5.2%20The%20loop%20check%20is%20inside%20the%20transaction) loop, sequential | Rename a directory under its own child with no concurrency at all. Assert refusal — the concurrent check above passes a build that has no check, because one of the two renames fails on the entry re-read. |
+| [§6.1](#6.1%20A%20handle%20names%20an%20inode%2C%20never%20a%20path) one spelling | For each handle, derive every other byte form the decoder's underlying parser accepts. Assert each is refused, or resolves to the same inode and compares equal, and that rename and locking through the alias behave as through the original. |
+| [§8.3](#8.3%20Lock%20state%20is%20volatile%2C%20and%20the%20grace%20period%20is%20what%20makes%20that%20safe) lease expiry | Grant a delegation through one adapter, let the lease expire, then open the file conflictingly through the other. Assert the open is granted without a restart. |
+| [§4.1](#4.1%20%60nlink%60%20is%20exactly%20its%20entries) name freed | Unlink a name and create it again as soon as the unlink is acknowledged, on every backend including a slow remote one. Assert the create never sees the name as taken and the parent's change attribute moved. |
 
 ### 12.2 Group B — cost
 

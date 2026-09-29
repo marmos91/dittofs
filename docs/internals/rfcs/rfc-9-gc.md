@@ -252,12 +252,27 @@ put.
 
 A sweep pass **SHOULD** cost O(blocks retired), not O(blocks recorded). An
 implementation meets this with **candidate records**: every transaction that
-moves a block's `live` from one to zero writes a candidate record for the block
-in the same transaction, sweep consumes candidates, and a retirement that refuses
+**leaves** a block's `live` at zero writes a candidate record for the block in
+the same transaction, sweep consumes candidates, and a retirement that refuses
 ([§3.3](#3.3%20The%20race%20with%20adoption%20is%20closed%20by%20transactions%2C%20not%20by%20time)) deletes the candidate. The list is a hint and never an authority:
 retirement re-reads `live` whatever it says. `live` crosses zero far less often
 than a refcount changes ([RFC 6 §5.3](rfc-6-block-metadata.md#5.3%20Hot%20records%20that%20are%20not%20per-file)), so the candidate write does not add a hot
 record.
+
+**A block can be born dead.** The commit that creates a block record can leave
+its `live` at zero: every chunk it carries was committed first by another block
+in flight and is adopted ([RFC 6 §4.1](rfc-6-block-metadata.md#4.1%20What%20one%20commit%20records), [RFC 8 §5.3](rfc-8-engine.md#5.3%20The%20dedup%20oracle%20never%20sees%20an%20uncommitted%20block)), or every ref it carried was
+dropped because its file was released or truncated during the pass. That block
+never moves from one to zero, so a rule written as "one to zero" never names it,
+and nothing else ever will: it holds no chunk record, so no refcount change can
+reach it. The creating commit is a transaction that leaves `live` at zero, and
+it **MUST** write the candidate.
+
+> [!important] Pending review — born-dead blocks
+> Added after a field leak where the same hash packed into several blocks in
+> flight left all but one block unreachable by sweep. The earlier wording ("moves
+> from one to zero") had the same hole. Check the rule and the Group B check in
+> [§11.2](#11.2%20Group%20B%20%E2%80%94%20leaks%20and%20stalls).
 
 An implementation **MAY** instead scan the block records. The scan is correct and
 proportional to the store, and on a large store it is the reason a pass does not
@@ -641,6 +656,7 @@ remote backend that can fail a delete after performing it ([RFC 4 §7.1](rfc-4-r
 | --- | --- |
 | [§3.2](#3.2%20A%20retirement%20not%20yet%20deleted%20is%20durably%20recorded) resume | Crash after retirement and before the delete, restart, disable listing. Assert the object is deleted. |
 | [§3.5](#3.5%20Finding%20candidates%20costs%20what%20is%20retirable) cost | Grow the store with no garbage, sweep. Assert records read per pass do not grow with the store. |
+| [§3.5](#3.5%20Finding%20candidates%20costs%20what%20is%20retirable) born dead | Through the real carver, not hand-built records: write content that repeats one chunk, so that two blocks in flight carry it and one adopts; separately, release a file while its pass is in flight. Delete everything and sweep with candidates only. Assert every block is deleted and remote bytes return to zero. |
 | [§3.6](#3.6%20Failures%20resolve%20on%20their%20own) no intervention | Fail every delete until the backlog is reported, then restore the remote. Assert the backlog drains and the health condition clears with no operator action. |
 | [§3.6](#3.6%20Failures%20resolve%20on%20their%20own) I8 | Drive retirements and adoptions at one shared chunk. Assert conflicts occur and that none reaches a caller as an error. |
 | [§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object) deletes direct | Saturate the syncer's pool with offloads. Assert deletes still complete. Mark the store unhealthy: assert relocation transfers are refused by the flow, and failed deletes stay pending. |
@@ -653,6 +669,11 @@ remote backend that can fail a delete after performing it ([RFC 4 §7.1](rfc-4-r
 
 - **A single-process rig MUST NOT stand in for [§2.1](#2.1%20The%20count%20is%20the%20only%20authority).** A guard held in memory
   passes every check run in the process that holds it.
+- **Hand-built block and chunk records MUST NOT be the only input to a sweep
+  check.** Synthetic records encode the author's model of what the carver
+  produces; a leak that exists only for repeated or all-zero content, or only
+  when two blocks race, passes every such check. At least one check per group
+  carves real content, including repeated and all-zero data.
 - **A crash-only rig MUST NOT stand in for [§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object).** The ordering defect needs a
   write that fails and a process that keeps running.
 - **A correctness check on surviving data MUST NOT stand in for [§3.3](#3.3%20The%20race%20with%20adoption%20is%20closed%20by%20transactions%2C%20not%20by%20time) or
@@ -718,4 +739,6 @@ amending the requirement.
 | D13 | No lock or lease is a safety input ([§7.3](#7.3%20GC%20is%20one%20service%20per%20namespace)) | the run lock and the per-remote lock are process-local; multi-server operation is unsafe |
 | D14 | Declared, not asserted ([§8](#8.%20API%20surface)) | GC imports the metadata layer, takes the remote store's full interface, and finds its dependencies by type assertion |
 | D15 | I8 ([§3.6](#3.6%20Failures%20resolve%20on%20their%20own)) | the `live` retry is bounded by an attempt count, with jitter derived from the attempt number |
+| D16 | Every block with `live` zero is found ([§3.5](#3.5%20Finding%20candidates%20costs%20what%20is%20retirable)) | the carver can pack one hash into several blocks in flight; the chunk locator is written last-wins and sweep decrements only the block it names, so the other blocks keep a nonzero count with no locator. Only an operator-run reconcile finds them. Leak |
+| D17 | Reclamation is reported ([§10](#10.%20Observability)) | a hash held by the in-memory adoption guard is skipped silently; a pass reports nothing swept and no reason, and a dry run counts the hash as freeable |
 | D16 | Audit recomputes counts ([§6](#6.%20Audit)) | the audit checks only that every ref has a chunk record |

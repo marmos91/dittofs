@@ -109,6 +109,28 @@ red by accident. Passing them is necessary, not sufficient.
   least one real service in the daily tier.
 - A harness that constructs a component differently from production is never the
   only path under test.
+- Records built by hand are never the only input to a component whose input
+  another component produces in production. A hand-built fixture encodes its
+  author's model of the producer; the leak that exists only for repeated or
+  all-zero content, or only when two producers race, passes every such check.
+  Fixtures include repeated and all-zero content.
+- A cache between the check and the thing checked is disabled or bypassed, and
+  the check asserts that the thing was reached: a "cold" read served from a
+  client's page cache proves nothing about the remote fetch it was written for.
+
+**A check that did not run is a failure.** Every tier knows how many checks it
+was meant to run and fails when it ran fewer: a filter that matches nothing, a
+package no job includes, a check gated on an environment variable nothing sets,
+or a skip because a service was absent all report green otherwise. A skip is
+reported with its reason, and a check skipped in every tier is deleted or moved
+to a tier that runs it.
+
+> [!important] Pending review — fixtures, caches and checks that never run
+> Added after an external audit found suites that had not run in CI for months
+> (an unset gate, a package missing from the derived list), a wrapper that
+> reported success for a filter matching no test, cold-read tests that passed only
+> when the client cache missed, and every GC test built from hand-made records —
+> which is why a leak on repeated content went unseen.
 
 **When tests run.**
 

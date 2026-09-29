@@ -540,6 +540,7 @@ Every condition below has exactly one specified behaviour.
 | --- | --- |
 | **Remote tier unavailable** | Writes continue into the journal while capacity allows. No extent becomes **Resident**, so no extent becomes evictable. Reads of **Remote** extents fail; they **MUST NOT** return zeros. |
 | **Journal at capacity, remote available** | Evict ([§8.1](#8.1%20Evict)); if nothing is evictable, reclaim ([§8.2](#8.2%20Reclaim)); if everything is **Dirty**, offload it and then evict it. The write is accepted once space is free, or refused at its deadline. |
+| **Remote tier slow** | The remote accepts transfers but drains slower than writes arrive, with no error to act on. Writes are paced to the measured drain rate ([RFC 8 §7.2.1](rfc-8-engine.md#7.2.1%20Writes%20are%20paced%20before%20the%20limit%2C%20not%20stopped%20at%20it)); each waits at most until its deadline ([§10.3](#10.3%20Every%20wait%20on%20a%20request%20ends%20at%20a%20deadline)) and is then refused. Progress is not a reason to keep waiting: a drain that frees a trickle never runs a writer out of time otherwise. |
 | **Journal at capacity, remote unavailable** | Refuse the write. Every local extent is **Dirty**, and I2 forbids evicting it, so refusal is the only behaviour that does not lose data. |
 | **Metadata unwritable** | Writes are still staged and acknowledged from the journal; the next stability point fails and is reported as failed ([§5.1](#5.1%20Write)). Truncate, deallocate and the other synchronous operations fail. Offload fails, so extents stay **Dirty** and the journal fills until writes are refused ([§10.1](#10.1%20Capacity%20is%20a%20bound%2C%20not%20a%20target)). Reads continue while metadata is readable. |
 | **Crash** | On restart the journal rebuilds its placement index from its segments; a torn tail is truncated to the last record that verifies. Metadata recovers by its backend's own durability, and the engine re-applies from the journal the existence of writes not yet committed, before serving ([§5.1](#5.1%20Write)). Otherwise the two recover independently and **MAY** disagree; [§10.2](#10.2%20No%20state%20requires%20intervention%20to%20leave) applies. |
@@ -568,6 +569,30 @@ Recovery after a crash is required to be *truthful*, not to make the two oracles
 agree. A chunk that metadata knows about and whose bytes did not survive is
 **Lost**, and reads of it fail. Reconciling the two by assuming agreement
 reintroduces the failure this model exists to prevent.
+
+### 10.3 Every wait on a request ends at a deadline
+
+Several rules in this set bound a wait by "the caller's deadline": a conflict
+retry ([§9.2](#9.2%20Conflicts%20and%20their%20retries)), a write paced or refused at capacity ([RFC 8 §7.2](rfc-8-engine.md#7.2%20A%20capacity%20refusal%20comes%20back%20here)), a
+cold read ([RFC 8 §6.5](rfc-8-engine.md#6.5%20An%20unreachable%20remote%20fails%20the%20read%2C%20distinguishably)). The bound is worth only what sets it, so:
+
+- every operation that reaches the engine on behalf of a client **MUST** carry a
+  deadline. The protocol front end sets it from the request; an operation that
+  arrives with none **MUST** be given a stated default at the engine's facade, so
+  "bounded by the caller's deadline" is never "unbounded";
+- every wait on that operation's path **MUST** end at the deadline: a queue, a
+  reservation, a retry, and a lock. A lock that cannot be abandoned **MUST** be
+  held only for work bounded independently of any remote call, and the bound
+  stated at the lock;
+- a wait **MUST NOT** restart its budget because something made progress. A
+  budget refreshed on progress is unbounded against a remote that drains a
+  trickle;
+- the refusal at the deadline **MUST** say why. A write refused for space reaches
+  the client as "no space", not as an I/O error, so the client can tell a full
+  store from a broken one.
+
+Background work — offload, sweep, repair — is not a client request and **MAY**
+wait longer, under its own stated bound.
 
 ## 11. Open questions
 

@@ -553,7 +553,8 @@ The journal refuses a write it cannot reserve for, and does not evict for itself
 3. if still nothing frees space, repack ([§7.3](#7.3%20Repack%20is%20triggered%20here)), then retry;
 4. otherwise refuse the write with a distinguishable error.
 
-The retry is bounded by the caller's deadline.
+The retry is bounded by the caller's deadline ([RFC 0 §10.3](rfc-0-data-lifecycle.md#10.3%20Every%20wait%20on%20a%20request%20ends%20at%20a%20deadline)). The refusal names
+its cause as space, so a protocol answers it as "no space" and not as an I/O error.
 
 ### 7.2.1 Writes are paced before the limit, not stopped at it
 
@@ -561,7 +562,8 @@ Between a **soft threshold** of dirty bytes and the limit, the engine delays eac
 write in proportion to how far past the threshold the journal is, scaled to the
 measured drain rate, so writes slow to the drain rate instead of running into a
 wall. Above the soft threshold every file with dirty bytes is offload-eligible.
-The delay is bounded by the caller's deadline. **Proposal:** a soft threshold at
+The delay is bounded by the caller's deadline, and is computed from
+the drain rate, not refreshed by it: a trickle of progress does not extend it. **Proposal:** a soft threshold at
 half the journal's capacity and a delay rising linearly to the drain rate at the
 limit. Overturned by a curve that keeps p99 submission latency lower at the same
 throughput.
@@ -826,6 +828,7 @@ change and each real service daily.
 | E3 | pacing | E1 below and above the soft threshold ([§7.2.1](#7.2.1%20Writes%20are%20paced%20before%20the%20limit%2C%20not%20stopped%20at%20it)) | p99 submission latency ≤ 50 ms, max ≤ 500 ms, durable throughput within 10% of E1 |
 | E4 | cold reads | random 4 KiB and sequential reads of evicted content | random: one request per read, p99 ≤ 2 store round trips; sequential: bytes fetched per byte read ≤ 1.1 |
 | E5 | group commit | 64 writers, `fsync` every 1 MiB | metadata transactions per stability point ≤ 1 per journal |
+| E6 | one large file | one file sequentially written to 20× the journal's capacity | durable MiB/s over the last tenth within 10% of the first tenth; extents made durable while the file is still being written, block by block ([§4.5](#4.5%20The%20callback%20returns%20only%20what%20committed)), never only at the end of a pass |
 
 Method: measure the raw link, raw object storage and the full stack on the same
 hosts at the same time, and report each as a fraction of the one below; use data
