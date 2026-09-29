@@ -17,7 +17,7 @@
     <marker id="a" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#5b6472"/></marker>
   </defs>
   <rect width="900" height="470" fill="#ffffff"/>
-  <text x="16" y="26" class="t">Compaction reads only live chunks, puts one new block, and leaves the sources to sweep.</text>
+  <text x="16" y="26" class="t">Compaction reads only live chunks, puts one new block, and its move retires the sources.</text>
 
   <!-- sources -->
   <text x="20" y="52" class="role">SOURCES · 12 MiB STORED, 1.7 MiB LIVE</text>
@@ -45,7 +45,7 @@
   <text x="20" y="152" class="role">COMPACTOR</text>
   <rect x="20" y="160" width="164" height="92" rx="5" class="vfs"/>
   <text x="32" y="180" class="h">1 · plan</text>
-  <text x="32" y="198" class="s">compaction index lists</text>
+  <text x="32" y="198" class="s">compaction index ranks</text>
   <text x="32" y="213" class="s">B1, B2, B3; LiveChunks</text>
   <text x="32" y="228" class="s">yields 7 records</text>
   <text x="32" y="243" class="s">nothing written</text>
@@ -62,7 +62,7 @@
   <text x="380" y="198" class="s">7 chunks into target T</text>
   <text x="380" y="213" class="s">mint T from a fresh nonce</text>
   <text x="380" y="228" class="s">record put intent I(T)</text>
-  <text x="380" y="243" class="s">under GC's epoch</text>
+  <text x="380" y="243" class="s">under its shard epoch</text>
 
   <rect x="542" y="160" width="164" height="92" rx="5" class="data"/>
   <text x="554" y="180" class="h">5 · one put</text>
@@ -76,7 +76,7 @@
   <text x="728" y="198" class="s">consume I(T)</text>
   <text x="728" y="213" class="s">repoint 7 chunk records</text>
   <text x="728" y="228" class="s">live: T = 7, B1–B3 = 0</text>
-  <text x="728" y="243" class="s">write zero keys</text>
+  <text x="728" y="243" class="s">B1–B3 retired here</text>
 
   <path d="M185,206 L192,206" class="arr"/>
   <path d="M359,206 L366,206" class="arr"/>
@@ -96,15 +96,15 @@
   <text x="200" y="334" class="s">refs unchanged</text>
 
   <rect x="716" y="288" width="164" height="70" rx="5" class="ext"/>
-  <text x="728" y="308" class="h">7 · sweep (§3)</text>
-  <text x="728" y="326" class="s">B1–B3 retired,</text>
-  <text x="728" y="341" class="s">not_before = now + 48 h</text>
+  <text x="728" y="308" class="h">7 · trash (§3.7)</text>
+  <text x="728" y="326" class="s">dead records keep B1–B3</text>
+  <text x="728" y="341" class="s">until not_before</text>
 
   <path d="M715,323 L682,323" class="arr"/>
   <rect x="518" y="288" width="164" height="70" rx="5" class="ext"/>
   <text x="530" y="308" class="h">deleter</text>
-  <text x="530" y="326" class="s">after not_before: batch</text>
-  <text x="530" y="341" class="s">delete, then prune</text>
+  <text x="530" y="326" class="s">verify CR empty, then</text>
+  <text x="530" y="341" class="s">batch delete, prune</text>
 
   <path d="M517,323 L484,323" class="arr"/>
   <rect x="340" y="288" width="144" height="70" rx="5" class="ext"/>
@@ -117,6 +117,6 @@
   <text x="42" y="396" class="l">live chunk: refcount &gt; 0, read and moved</text>
   <rect x="330" y="384" width="14" height="14" class="dead"/>
   <text x="352" y="396" class="l">dead chunk: refcount 0, never read</text>
-  <text x="20" y="428" class="s">The compactor deletes nothing and retires nothing. A crash before step 6 leaves an intent, and the abandoned target is collected (§5);</text>
-  <text x="20" y="446" class="s">a crash after it leaves B1–B3 at live 0, ordinary sweep candidates. A reader holding B2 re-resolves the chunk to T (§4.3).</text>
+  <text x="20" y="428" class="s">The compactor deletes nothing; its move retires the sources. A crash before step 6 leaves an intent, and the abandoned target is collected (§5);</text>
+  <text x="20" y="446" class="s">a crash after it leaves B1–B3 retired, like any block. A reader holding B2 re-resolves the chunk to T (§4.3).</text>
 </svg>

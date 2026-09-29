@@ -272,9 +272,13 @@ type Store interface {
 	Get(ctx context.Context, name Name, r Range) (io.ReadCloser, error)
 
 	// Delete removes blocks, as many as the caller passes. It returns one
-	// error per name, in order; nil means that block is gone. Deleting an
-	// absent block succeeds.
+	// error per name, in order; nil means that block is gone, as the reply
+	// stated for that name (§4.5). Deleting an absent block succeeds.
 	Delete(ctx context.Context, names []Name) []error
+
+	// DeleteVersions removes every stored version of each name, and any
+	// delete marker (§4.5). Used only after a versioning drift.
+	DeleteVersions(ctx context.Context, names []Name) []error
 
 	// List yields every stored block once, in ascending name order, starting
 	// after the given name (the zero Name starts at the beginning).
@@ -417,7 +421,7 @@ remains the one that decides.
 
 ### 4.5 Delete is batched and idempotent
 
-`Delete` takes many names in one call, because sweep deletes blocks by the
+`Delete` takes many names in one call, because GC deletes blocks by the
 thousand and a request per block would make the request count, not the service,
 the limit: at the one second per request measured on one service ([Appendix B](#Appendix%20B%20%E2%80%94%20measurements)),
 a million blocks is a million seconds of requests one at a time and a thousand
@@ -432,6 +436,12 @@ requests in batches of a thousand. A single delete is a batch of one.
 - **Each name succeeds or fails on its own.** A batch is not atomic, and the
   store returns one result per name. The caller clears whatever records it keeps
   for a name ([RFC 9 §3.2](rfc-9-gc.md#3.2%20A%20retirement%20not%20yet%20deleted%20is%20durably%20recorded)) only for names whose result is `nil`.
+- **A result is read from the reply, never inferred from its silence.** A store
+  whose service offers a quiet mode, which reports only failures, **MUST NOT**
+  use it: every requested name **MUST** appear in the reply exactly once, as
+  deleted or as an error, and a name missing from the reply, or reported twice,
+  is `ErrTransient`. A truncated or quiet reply would otherwise read as success
+  for every name, and GC would prune records whose objects remain.
 - **Deleting an absent block succeeds.** GC retries a delete after an unknown
   outcome and re-runs a pass after a crash; a delete that failed because it had
   already happened would turn recovery into an error.
@@ -440,6 +450,16 @@ requests in batches of a thousand. A single delete is a batch of one.
 - **The store splits a batch** into as many service requests as its service's
   limit requires ([Appendix C.1](#C.1%20Required%20service%20features)), and a service without a batch operation deletes
   one name per request. The caller never needs to know the limit.
+- **`DeleteVersions` removes every stored version of each name**, and any delete
+  marker, where the service keeps versions. GC calls it only after a `Recheck`
+  finds versioning drifted on, for the names deleted since the last good one
+  ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)); on a service that never versioned it is `Delete`.
+
+> [!important] Pending review — delete replies are read name by name
+> Quiet multi-delete is forbidden and a name missing from a reply is a failure;
+> `DeleteVersions` repairs a versioning drift; `Recheck` runs on GC's own
+> period, reads the claim, and can accept a suspended bucket once no old
+> version remains.
 
 ### 4.6 List is a complete, resumable walk
 
@@ -571,10 +591,18 @@ not fatal.
 
 **Settings that drift are re-read.** Some service settings can change after
 open without the store noticing: versioning, object lock, lifecycle rules.
-`Recheck` re-reads exactly those, and GC calls it at the start of every pass
-([RFC 9](rfc-9-gc.md)). On drift it returns the drifted setting; GC stops the pass and the
-syncer stops puts and deletes for the store until a later `Recheck` passes. Each
-profile names the settings its `Recheck` covers.
+`Recheck` re-reads exactly those, and the claim, and GC calls it on a short
+period of its own, independent of any other GC work
+([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)). On drift it returns the drifted setting; GC issues no delete and
+prunes nothing, and the syncer stops puts and deletes for the store, until a
+later `Recheck` passes. Each profile names the settings its `Recheck` covers.
+
+**A suspended setting can be recovered.** Versioning, once turned on, can on some
+services only be suspended, never removed, and a suspended store still keeps the
+versions written while it was on. `Recheck` **MUST** accept a suspended store
+once a listing of stored versions under the prefix finds only current ones — the
+state GC's version repair produces ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)) — so a store that drifted
+once is not refused for good.
 
 ### 4.12 What a store makes observable
 
@@ -885,9 +913,10 @@ its capability check.
 | `PutObject`, single part | put, put probe | atomic replace; readers never see a partial object | from the service's documentation; it cannot be provoked |
 | Put integrity: an enforced `x-amz-checksum-crc32c` or `Content-MD5`, or else an ETag equal to the MD5 of the stored bytes | put | a corrupted body is rejected, or detected from the ETag — at the maximum encoded block size, not only on small objects | check step 1 |
 | `GetObject` with `Range` | get | `206` with the bytes asked for; `416` when the range starts past the end. A clamped overlong range is tolerated: the store checks lengths itself ([§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)) | check step 2 |
-| `DeleteObjects` (batch, up to 1,000 keys) with `Content-MD5` | delete | every key, absent ones included, listed as deleted; per-key errors reported per key | check step 3 |
+| `DeleteObjects` (batch, up to 1,000 keys) with `Content-MD5`, `Quiet` false | delete | every key, absent ones included, listed as deleted; per-key errors reported per key; a key missing from the reply is a failure ([§4.5](#4.5%20Delete%20is%20batched%20and%20idempotent)) | check step 3 |
 | `ListObjectsV2` with `prefix`, `max-keys`, `start-after` | list | ascending key order, every key once across pages, `LastModified` present | check step 4 |
-| `GetBucketVersioning` | open, `Recheck` | versioning never enabled: no status in the reply. A `Suspended` bucket still keeps the versions written while it was on, and object lock requires versioning, so this one check covers both | check step 5 |
+| `GetBucketVersioning` | open, `Recheck` | versioning never enabled: no status in the reply. A `Suspended` bucket still keeps the versions written while it was on, and object lock requires versioning, so this one check covers both; `Recheck` accepts `Suspended` once `ListObjectVersions` under the prefix finds only current versions ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)) | check step 5 |
+| `DeleteObjects` with `VersionId`, `ListObjectVersions` | `DeleteVersions`, `Recheck` after drift | every version and delete marker of a name removed; listing reports every version under the prefix | only when versioning drifted; not checked at open |
 | `GetBucketLifecycleConfiguration` | open, `Recheck` | no rule that expires or transitions objects under the store's prefix: expiry deletes durable blocks, and a transition to an archive class makes gets fail. A rule counts as matching if its filter could match any object under the prefix — a shorter or empty prefix filter, or a tag or size filter the store's objects could meet | check step 5 |
 | `GetObject` / `PutObject` on the claim key | open | the claim is read ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)); absent is reported as absent | check step 6 |
 

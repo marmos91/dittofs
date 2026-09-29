@@ -556,7 +556,7 @@ and repack requests from `EvictionPolicy`.
 ### 6.1.1 The shared work scheduler
 
 Background work in the set — the engine's offload, removal batches and retries,
-and GC's sweep, deleter, compactor and audit ([RFC 9 §7.1](rfc-9-gc.md#7.1%20GC%20bounds%20its%20own%20work)) — is dispatched by
+and GC's deleter, compactor, audit and collection ([RFC 9 §7.1](rfc-9-gc.md#7.1%20GC%20bounds%20its%20own%20work)) — is dispatched by
 one **work scheduler**, specified here once. It is a library, not a component:
 each component runs its own instance, so no component imports another
 ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)) and a stalled GC never holds up offload.
@@ -587,7 +587,7 @@ type Limits struct {
 | Source | Durable state it rebuilds from |
 | --- | --- |
 | engine offload and removals | the journal's dirty files, the put intents and the removals not done ([§6.1](#6.1%20The%20work%20queue)) |
-| GC sweep, deleter, compactor, audit | the GC index keys and cursors of each namespace it holds the lease for ([RFC 9 §3.1](rfc-9-gc.md#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object)) |
+| GC deleter, compactor, audit, collection | the GC index keys and cursors of each lease shard it holds ([RFC 9 §3.1](rfc-9-gc.md#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object)) |
 
 The scheduler **MUST**:
 
@@ -790,11 +790,13 @@ namespace's partition, and nothing else.
   the chunk record, and the other adopts it ([RFC 6 §4.1](rfc-6-block-metadata.md#4.1%20What%20one%20commit%20records)). A chunk repeated
   *within* one block is the assembler's, and is carried once: both refs and the
   bytes commit in one transaction ([RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler)).
-- **D3 — its answer is advisory.** A chunk it reports may be retired before the
-  adopting commit applies; that commit then refuses the adopting refs
-  ([RFC 6 §7.2](rfc-6-block-metadata.md#7.2%20Adoption%20is%20conditional%20on%20existence)), and the pipeline **MUST** re-offer them with the chunk carried.
-  The engine **MUST NOT** hold a lock, a reservation or an in-process guard to
-  make the answer binding.
+- **D3 — its answer is advisory.** It answers a chunk whose block is `live` or
+  `retired`: adopting a retired block's chunk resurrects the block, which costs
+  a record write instead of an upload ([RFC 9 §3.3](rfc-9-gc.md#3.3%20Adoption%20resurrects%20a%20retired%20block)). A chunk it reports may
+  have its block deleted before the adopting commit applies; that commit then
+  refuses the adopting refs ([RFC 6 §7.2](rfc-6-block-metadata.md#7.2%20Adoption%20is%20conditional%20on%20existence)), and the pipeline **MUST** re-offer
+  them with the chunk carried. The engine **MUST NOT** hold a lock, a
+  reservation or an in-process guard to make the answer binding.
 - **D4 — nothing outlives the pass.** An answer **MAY** be memoised within one
   pass and **MUST NOT** be kept across passes.
 - **D5 — an error is not an answer.** A lookup that fails carries the chunk; it
@@ -813,7 +815,8 @@ against the production oracle and block metadata, and asserts the read.
 | --- | --- |
 | D1, D2 in flight | Carve one chunk into two blocks in flight; fail the first put after the second commits. Assert the second block carried the chunk and a read succeeds. |
 | D1 abandoned | Abandon an attempt whose block carried chunk X, after its put and before its commit. Assert a later lookup of X returns none, the next pass carries X, and a read succeeds. |
-| D3 retired | Retire a chunk between the oracle's answer and the adopting commit. Assert the adopting refs are refused, the rest of the block commits, the refs are re-offered carrying the chunk, and a read succeeds. |
+| D3 resurrected | Answer a chunk of a retired block. Assert the commit resurrects the block, uploads nothing for the chunk, and a read succeeds. |
+| D3 deleted | Delete a chunk's block between the oracle's answer and the adopting commit. Assert the adopting refs are refused, the rest of the block commits, the refs are re-offered carrying the chunk, and a read succeeds. |
 | relocated | Relocate a chunk between the oracle's answer and the adopting commit. Assert the adoption commits, and a read fetches the chunk from its new block. |
 | D2 within a block | Repeat one chunk three times in one run. Assert the block carries it once and holds three refs to it. |
 | D5 error | Fail every lookup. Assert every chunk is carried and nothing is adopted. |
@@ -824,6 +827,11 @@ against the production oracle and block metadata, and asserts the read.
 > Its rules gain "an error carries the chunk", "nothing outlives the pass" and
 > "one namespace", and it is checked against in-flight, abandoned, retired and
 > relocated chunks and a model-based interleaving test.
+
+> [!important] Pending review — the oracle answers retired chunks
+> A chunk of a retired block is adoptable and resurrects the block instead of
+> being carried again; only a deleted block's chunk is refused. Intents name
+> their owner unit.
 
 ### 6.6 A block's name is minted, and its intent recorded, before the put
 
@@ -854,7 +862,7 @@ against the production oracle and block metadata, and asserts the read.
 >    `N1 = H(domain ‖ ns-7 ‖ n1 ‖ C ‖ h1 ‖ h2 ‖ h4)`, where `C` is the chain ID,
 >    and `n1` is written into the block header so a whole-block read recomputes
 >    and checks `N1`.
-> 2. **Intent.** Record `Intent(N1) = {epoch 41}`.
+> 2. **Intent.** Record `Intent(N1) = {unit U, epoch 41}`.
 > 3. **Put.** The response is lost. The retry puts `N1` again, from the same plan
 >    and the same bytes, so however many copies land, they are one object.
 > 4. **Commit.** One transaction deletes `Intent(N1)`, creates block `N1`, the
@@ -863,7 +871,7 @@ against the production oracle and block metadata, and asserts the read.
 > Had the put kept failing past its bound, the attempt is abandoned and so is
 > `Intent(N1)`; the next pass draws `n2` and puts `N2 ≠ N1`, though the chunks are
 > the same. Had the process crashed after step 3, the restarted owner runs under
-> epoch 42 and mints `N3`; `Intent(N1)` is under a superseded epoch, and
+> epoch 42 and mints `N3`; `Intent(N1)` is under an epoch of *U* that has moved on, and
 > collection deletes `N1` through it ([RFC 9 §5](rfc-9-gc.md#5.%20Unrecorded%20objects)). In no case is `N1` put by
 > anyone but its one attempt, so a delete of `N1` that lands late can never reach
 > a committed block.
@@ -871,8 +879,8 @@ against the production oracle and block metadata, and asserts the read.
 **Why a fresh name per attempt.** A name nobody else can put needs no defence: not
 against a second writer, a late delete, or a service without conditional puts.
 The price is that two passes carrying the same chunks put two objects; the second
-to commit adopts every chunk and is born dead ([RFC 9 §3.5](rfc-9-gc.md#3.5%20Finding%20candidates%20costs%20what%20is%20retirable)), and the oracle keeps
-that rare.
+to commit adopts every chunk and is born dead, retired in its own commit and
+deleted without waiting out the trash ([RFC 9 §2.2](rfc-9-gc.md#2.2%20Retirement%20is%20decided%20where%20the%20count%20reaches%20zero)), and the oracle keeps that rare.
 
 > [!important] Pending review — naming, explained; block assembly moved to RFC 2
 > Block assembly is now RFC 2 §5's block assembler, which the pipeline drives;
@@ -1311,8 +1319,9 @@ source's refs ([RFC 6 §6.6](rfc-6-block-metadata.md#6.6%20Clone%20and%20server-
    the removal as a deallocate of that range (phase 1).
 3. In batches of at most K refs in source-offset order, drop the destination's
    refs below *v* in the batch's range, then write the source's refs re-versioned
-   at *v* and count their chunks; a batch fails if any chunk has been retired
-   ([RFC 6 §7.2](rfc-6-block-metadata.md#7.2%20Adoption%20is%20conditional%20on%20existence)). Source holes stay holes (phase 2).
+   at *v* and count their chunks, resurrecting a retired chunk's block; a batch
+   fails if any chunk's block has been deleted ([RFC 6 §7.2](rfc-6-block-metadata.md#7.2%20Adoption%20is%20conditional%20on%20existence)). Source holes stay
+   holes (phase 2).
 
 **Rules.**
 
@@ -1397,9 +1406,10 @@ content safe ([§3.2](#3.2%20Policy%20never%20makes%20an%20action%20safe)).
 
 ### 10.5 GC is not scheduled here
 
-GC is one service per remote namespace, holding its own lease, and it schedules
-itself: cadence, triggers, the trash retention and the compaction threshold are
-its own ([RFC 9](rfc-9-gc.md)). It runs its own instance of the shared work scheduler
+GC is one service per remote namespace, sharded by prefix across storage nodes,
+and it schedules itself: cadence, the trash retention and the space target are
+its own ([RFC 9](rfc-9-gc.md)). Retirement is not GC's to schedule at all: it happens
+inside the block metadata transactions the engine's removals and commits run. It runs its own instance of the shared work scheduler
 ([§6.1.1](#6.1.1%20The%20shared%20work%20scheduler)). Compaction is on by default. The engine neither composes nor schedules it; GC
 reaches block metadata and the remote store through its own views, and opens its
 own syncer flow for the compactor.

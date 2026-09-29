@@ -19,7 +19,7 @@
   </defs>
   <rect width="900" height="400" fill="#ffffff"/>
 
-  <text x="16" y="26" class="t">A sweep decided from a snapshot misses a late adoption; a conditional retirement cannot</text>
+  <text x="16" y="26" class="t">A sweep decided from a snapshot misses a late adoption; a transactional deleter cannot</text>
   <text x="16" y="46" class="s">One chunk h, carried by block B, referenced by nothing. Time runs left to right.</text>
 
   <text x="16" y="76" class="rl">Decide from a snapshot</text>
@@ -35,18 +35,18 @@
 
   <line x1="16" y1="216" x2="884" y2="216" stroke="#eef1f4"/>
 
-  <text x="16" y="242" class="rl">Decide inside the transaction</text>
+  <text x="16" y="242" class="rl">Decide inside the transaction (B is retired, h has no ref)</text>
   <text x="16" y="270" class="s">adopt first</text>
-  <rect x="120" y="254" width="250" height="26" rx="3" class="bx"/><text x="130" y="271" class="m">adopt h: refcount 0→1, live 0→1</text>
-  <rect x="390" y="254" width="220" height="26" rx="3" class="bg"/><text x="400" y="271" class="m">Retire(B): live ≠ 0, refuse</text>
-  <text x="630" y="271" class="ok">B survives with the new ref</text>
+  <rect x="120" y="254" width="250" height="26" rx="3" class="bx"/><text x="130" y="271" class="m">adopt h: B retired → live</text>
+  <rect x="390" y="254" width="220" height="26" rx="3" class="bg"/><text x="400" y="271" class="m">deleter: B not retired, skip</text>
+  <text x="630" y="271" class="ok">B resurrected, no upload</text>
 
   <text x="16" y="314" class="s">retire first</text>
-  <rect x="120" y="298" width="250" height="26" rx="3" class="bx"/><text x="130" y="315" class="m">Retire(B): live = 0, records gone</text>
-  <rect x="390" y="298" width="220" height="26" rx="3" class="bg"/><text x="400" y="315" class="m">adopt h: no record, fail</text>
+  <rect x="120" y="298" width="250" height="26" rx="3" class="bx"/><text x="130" y="315" class="m">deleter: CR empty, B → deleted</text>
+  <rect x="390" y="298" width="220" height="26" rx="3" class="bg"/><text x="400" y="315" class="m">adopt h: B deleted, refuse</text>
   <text x="630" y="315" class="ok">pass re-uploads h's bytes</text>
 
-  <text x="16" y="356" class="l">Both transactions write h's chunk record and B's block record, so the store serializes them.</text>
+  <text x="16" y="356" class="l">Both transactions write B's block record, so the store serializes them.</text>
   <text x="16" y="374" class="l">Neither order needs a clock, a lock held in memory, or a list of things to spare.</text>
-  <text x="16" y="394" class="s">The object is deleted only after its records are retired, so a delete never outruns the decision (§3.1).</text>
+  <text x="16" y="394" class="s">The object is deleted only after its record is deleted, so a delete never outruns the decision (§3.1).</text>
 </svg>

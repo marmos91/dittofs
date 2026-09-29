@@ -540,11 +540,19 @@ A block **MUST NOT** be deleted while any chunk it contains is referenced.
 Reference counts are read at different instants from the state they describe. An
 implementation **MUST** ensure that content created or referenced after a sweep
 began cannot be deleted by that sweep, even when every individual observation
-was correct when made. [RFC 9](rfc-9-gc.md) specifies the protocol, run by one GC service for
-the whole namespace. It needs no fence against writers: a name is never put twice
+was correct when made. [RFC 9](rfc-9-gc.md) specifies the protocol: a block is retired in
+the transaction that leaves its count at zero, a later reference to one of its
+chunks brings it back, and the irreversible step — deleting it — is taken in a
+transaction that first checks an index of the references themselves, so a count
+that drifted low cannot delete anything. It needs no fence against writers: a name is never put twice
 ([§5.2](#5.2%20Offload)), so a remote object may be deleted once no block record and no put
 intent names it. That state is final: no later put can reach the name, and a
 delete that lands late can reach no committed block.
+
+> [!important] Pending review — sweep is retirement plus a verified delete
+> No component scans for blocks at zero: the count's own transaction retires a
+> block, a reference can resurrect it, and the delete checks the references
+> first.
 
 ## 9. Invariants
 
