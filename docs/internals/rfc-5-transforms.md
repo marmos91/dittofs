@@ -15,10 +15,8 @@ tags:
 # RFC 5 — transforms
 
 **Audience:** anyone writing a transform, configuring a store's transforms, or
-deciding what a deployment that enables one is protected against.
-
-The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT** and **MAY** are
-to be interpreted as in RFC 2119.
+deciding what a deployment that enables one is protected against. Conventions
+and test tiers are in [the RFC index](rfc-index.md).
 
 This document specifies behaviour, not the current code. Where the code differs,
 [Appendix D](#Appendix%20D%20%E2%80%94%20where%20the%20current%20code%20differs) lists it for the refactor.
@@ -38,6 +36,8 @@ This document specifies behaviour, not the current code. Where the code differs,
   hash is taken and before the body is written. Nothing else sees it.
 - After the chain is undone, the codec checks the plaintext hash. That check, not
   any transform's own, decides whether a chunk is correct.
+- Encoding is deterministic, and the chain's identity, its **chain ID**, is part
+  of every block name, so one name is always one byte sequence.
 
 ## 1. Purpose
 
@@ -85,7 +85,18 @@ A transform **MUST** be:
   produce more than the `max` it is given, however large a body claims its output
   to be;
 - **stateless per call**: safe to call concurrently, with no memory between calls
-  other than read-only configuration and material.
+  other than read-only configuration and material;
+- **deterministic**: `Encode` of the same chunk, with the same settings and
+  material, returns the same body every time. Anything that would otherwise be
+  random, such as an encryption salt, is derived from the chunk's hash
+  ([Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted)). Together with the chain ID ([§2.8](#2.8%20The%20chain%20ID)), this makes a block's name
+  fix its bytes: a retried or concurrent put of a name writes the same object, and
+  a position recorded from either put stays right ([RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success));
+- **honest about length**: `LengthOf(n)` returns the exact body length for an
+  `n`-byte input and whether that is known without encoding. Encryption, parity
+  and the identity know it; compression does not. When every transform in the
+  chain knows it, a put is encoded once; otherwise it takes a measuring pass
+  ([RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success)).
 
 A transform **MAY** decline a chunk: compression declines one that would not
 shrink. A declined chunk passes to the next transform unchanged, and the body
@@ -123,8 +134,8 @@ ordering rule, priority or compatibility table.
 **Every order is correct.** Each transform is invertible and the plaintext hash
 is checked after the whole chain ([§2.6](#2.6%20The%20plaintext%20hash%20is%20the%20final%20check)), so any order reads back exactly what
 was written. An order can only be *ineffective*: compressing after encrypting
-saves nothing, padding before compressing gets squeezed out, parity before
-encryption cannot repair what a flipped ciphertext bit breaks. The system does
+saves nothing, and parity before encryption cannot repair what a flipped
+ciphertext bit breaks. The system does
 not refuse such an order. It makes it visible: the per-transform metrics of
 [§6](#6.%20Observability) show a compressor declining every chunk or a repair counter that never
 moves. The only chain refused is one that lists a transform twice.
@@ -134,9 +145,8 @@ The recommended order for the transforms this document describes:
 | Position | Transform | Why there |
 | --- | --- | --- |
 | 1 | compression | needs the plaintext's redundancy |
-| 2 | padding | hides the compressed size; must not be compressed away |
-| 3 | encryption | covers everything before it |
-| 4 | parity | protects the stored bytes, so it must see them last |
+| 2 | encryption | covers everything before it |
+| 3 | parity | protects the stored bytes, so it must see them last |
 
 ### 2.4 Every body records what was applied
 
@@ -219,19 +229,39 @@ knowing the plaintext already.
 
   | Error | Meaning | Reported by the codec as |
   | --- | --- | --- |
-  | `ErrMalformed` | the body is not something this transform wrote, fails its own integrity check, or names material the store never had | a verification failure of the chunk |
-  | `ErrTooLarge` | the output would exceed `max` | a verification failure of the chunk |
+  | `ErrMalformed` | the body is not something this transform wrote, fails its own integrity check, or names material the store never had | `ErrCorrupt`: a verification failure of the chunk |
+  | `ErrTooLarge` | the output would exceed `max` | `ErrCorrupt`: a verification failure of the chunk |
   | `ErrMaterialUnavailable` | material the store holds cannot be reached now | the remote being unavailable: retryable, never zeros, never an absent chunk ([RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model)) |
-  | `ErrMaterialDestroyed` | material the store once held is gone for good | the chunk is **Lost** ([RFC 0 §4.2](rfc-0-data-lifecycle.md#4.2%20The%20residency%20function)); not retried |
+  | `ErrMaterialDestroyed` | material the store once held is gone for good | `ErrCorrupt`, and the chunk is **Lost** ([RFC 0 §4.2](rfc-0-data-lifecycle.md#4.2%20The%20residency%20function)); not retried |
 
   The distinctions matter. A material ID planted by a bucket writer must not
   turn a corrupt body into a remote that looks unavailable forever, and a key
-  that is gone for good must not be retried forever as if it might return. The
-  syncer sees these through its own closed set ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)).
+  that is gone for good must not be retried forever as if it might return.
+  `ErrCorrupt` is the remote store's ([RFC 4 §4.8](rfc-4-remote-tier.md#4.8%20Errors%20are%20a%20closed%20set)); `ErrMaterialUnavailable` is the
+  one error the syncer adds to that set ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)).
 - **`Encode` errors** fail the put. A declined chunk is not an error.
 
 A transform's own error types **MUST NOT** cross the codec. Callers see only the
 codec's errors, so nothing above it can tell which transforms are configured.
+
+### 2.8 The chain ID
+
+A block's name includes a **chain ID** ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)): a hash of everything in
+the chain that decides a body's bytes or length. For each configured transform,
+in order, it covers:
+
+- the transform's ID and the format version it writes;
+- its **length-affecting settings**: a compression level is one; a setting that
+  changes only speed, such as a thread count, is not. Each transform declares
+  which of its settings count;
+- the IDs of the current material it uses, so a key rotation changes the ID.
+
+Two writers of the same chunks under the same chain derive the same name and
+write the same bytes. A change to any input — a new level, a rotated key, a
+reordered chain — derives a new name, so a stored block is never rewritten with
+a different layout, and a recorded position never goes stale
+([RFC 4 §3.4](rfc-4-remote-tier.md#3.4%20Every%20read%20is%20verified%20by%20the%20codec)). The chain ID is not needed to read: a body's envelope says how to
+decode it ([§2.4](#2.4%20Every%20body%20records%20what%20was%20applied)).
 
 ## 3. API surface
 
@@ -250,8 +280,17 @@ type Transform interface {
 	// MaxEncodedLen is the largest body Encode can produce from n bytes.
 	MaxEncodedLen(n int) int
 
-	// Encode transforms plain. Applied=false declines the chunk: plain passes on
-	// unchanged. hash is the plaintext hash, for transforms that bind to it.
+	// LengthOf is the exact body length for n bytes, and whether it is known
+	// without encoding. A declined chunk is never known in advance.
+	LengthOf(n int) (int, bool)
+
+	// LengthKey encodes, canonically, the format version and the settings
+	// that decide the body's length: this transform's part of the chain ID.
+	LengthKey() []byte
+
+	// Encode transforms plain, deterministically. Applied=false declines the
+	// chunk: plain passes on unchanged. hash is the plaintext hash, for
+	// transforms that bind to it or derive from it.
 	Encode(ctx context.Context, dst []byte, hash [32]byte, plain []byte) (Encoded, error)
 
 	// Decode inverts Encode. It never produces more than max bytes.
@@ -299,6 +338,12 @@ func NewChain(ctx context.Context, cfg []Config, m Materials) (*Chain, error)
 // MaxEncodedLen composes the transforms' bounds, in chain order, plus the envelope.
 func (c *Chain) MaxEncodedLen(n int) int
 
+// LengthOf composes the transforms' LengthOf; false if any one is false.
+func (c *Chain) LengthOf(n int) (int, bool)
+
+// ID is the chain ID (§2.8), from each transform's ID, LengthKey and current material.
+func (c *Chain) ID() [32]byte
+
 // Encode writes the envelope and returns the body with one Encoded per applied
 // transform, which the codec collects into the block's census (§5.3).
 func (c *Chain) Encode(ctx context.Context, dst []byte, hash [32]byte, plain []byte) ([]byte, []Encoded, error)
@@ -325,8 +370,8 @@ a step that legitimately enlarges the body is not refused by the next one. `dst`
 `ErrUnknownMaterial` from `Materials` is reported as `ErrMalformed`.
 
 `Chain.MaxEncodedLen` of the chunk maximum is what sizes everything downstream:
-the largest encoded block, and so the upload spool ([RFC 3 §3.4](rfc-3-syncer.md#3.4%20One%20put%20per%20block)) and the block
-header's bound ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)).
+the largest encoded block, and so the syncer's memory bound ([RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound)) and
+the block header's bound ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)).
 
 ### 3.2 Configuration
 
@@ -357,7 +402,8 @@ A transform is compiled in and registers itself at start. It **MUST**:
 
 1. take an ID from the range reserved for custom transforms (`0x8000`–`0xFFFF`;
    `0x0000`–`0x7FFF` is reserved for shipped ones) and never reuse it;
-2. declare an honest `MaxEncodedLen`: [§8.1](#8.1%20Transform%20conformance) checks it on every input;
+2. declare an honest `MaxEncodedLen` and `LengthOf`, encode deterministically, and
+   put in `LengthKey` every setting that changes its output: [§8.1](#8.1%20Transform%20conformance) checks all four;
 3. put a format version in its own header if its format can ever change, and
    decode every version it has written;
 4. bound `Decode` by `max` before allocating;
@@ -399,7 +445,7 @@ and material.
 - **Retirement is ordinary relocation.** GC lists the blocks whose census names
   what is being retired and relocates each ([RFC 9 §4.2](rfc-9-gc.md#4.2%20Read%20verified%2C%20name%20by%20content%2C%20put%2C%20then%20move)): its chunks are
   re-encoded under the current chain into a block whose encoding generation is
-  one above the source's, so the new block has a new name ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)); the
+  one above the highest of its sources', so the new block has a new name ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)); the
   chunks move and the source is swept. A relocation never writes its source's
   name. Retirement relocates a block even when it is fully live, the one
   exception to [RFC 9 §4.4](rfc-9-gc.md#4.4%20When%20to%20relocate%20is%20policy).
@@ -417,7 +463,7 @@ without writing any: the chain exports them around each call.
 | chunks encoded, labelled `applied` = `true` or `false` | `dittofs_transform_chunks_total` | counter |
 | bytes in and out, labelled `direction` = `encode` or `decode`; their ratio is what the transform costs or saves | `dittofs_transform_bytes_total` | counter |
 | time per call, by direction | `dittofs_transform_seconds` | histogram |
-| decode failures, labelled `error` = `malformed`, `material_unavailable`, `material_destroyed` or `too_large`, counted after the stale-position repair of [RFC 4 §3.4](rfc-4-remote-tier.md#3.4%20Every%20read%20is%20verified%20by%20the%20codec): a decode at a stale position that the repair resolves is not a failure. `malformed` and `material_destroyed` are alerts | `dittofs_transform_decode_failures_total` | counter |
+| decode failures, labelled `error` = `malformed`, `material_unavailable`, `material_destroyed` or `too_large`. `malformed` and `material_destroyed` are alerts | `dittofs_transform_decode_failures_total` | counter |
 | bodies written per transform ID, version and material ID, from block metadata ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)) | `dittofs_transform_census_blocks` | gauge |
 
 A chain that fails to build logs the transform and the reason at `Error` and
@@ -440,12 +486,12 @@ that never moves.
 | T6 | The plaintext hash is checked after the whole chain is undone, before any byte is returned. |
 | T7 | A material failure is never zeros and never an absent chunk: unavailable material is the remote being unavailable, destroyed material makes the chunk Lost. |
 | T8 | No transform error type crosses the codec. |
+| T9 | `Encode` is deterministic, and `LengthOf`, when it answers, is exact. |
+| T10 | The chain ID changes whenever a body's bytes or length could; nothing else changes it. |
 
 ## 8. Test plan and benchmarks
 
-The same rules as [RFC 1 §11](rfc-1-journal.md#11.%20Conformance): every **MUST** has a check, and a check is
-validated by reverting the code it guards and watching it fail on its own
-assertion.
+The set-wide test rules and tiers are in [the RFC index](rfc-index.md#Test%20tiers).
 
 ### 8.1 Transform conformance
 
@@ -461,7 +507,8 @@ alike. A new transform gets it by registering.
 | concurrency | Encode and decode from 64 goroutines under the race detector: same results as sequential. |
 | [§2.7](#2.7%20Failures) | Flip every byte of a body in turn: `Decode` returns an error of [§2.7](#2.7%20Failures) or bytes the codec's hash check rejects, and never panics. A transform that authenticates (encryption) **MUST** return `ErrMalformed` itself for every flip. |
 | [§2.7](#2.7%20Failures) | For an authenticating transform: decode chunk A's body with chunk B's hash, and a body naming material the store never had: both `ErrMalformed`. A body naming destroyed material: `ErrMaterialDestroyed`. |
-| [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | Encode the same chunk twice: two different salts and bodies, both decode. |
+| T9 | Encode every round-trip input twice, and from two chains built from the same configuration: identical bodies. Where `LengthOf` answers, the body's length equals it. |
+| [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | Two different chunks under one key get different salts; one chunk under two keys gets two different bodies. |
 | [§3.1](#3.1%20Interfaces) | A transform that enlarges its input (a test transform adding 50%) before another: a chunk of exactly the maximum round-trips. |
 
 ### 8.2 Chain tests
@@ -475,6 +522,7 @@ alike. A new transform gets it by registering.
 | [§2.4](#2.4%20Every%20body%20records%20what%20was%20applied) | Envelopes listing an unregistered ID, a duplicate ID, or more IDs than are registered: `ErrMalformed` before any decode runs. |
 | [§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material) | With `require: [aes-gcm]`, a body without it is `ErrMalformed`; without `require`, it decodes. |
 | [§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census) | Write blocks under two keys and two chains: the census each put returns, and the block records it reaches, list exactly the transform IDs, versions and material IDs used. Retire one key: every block naming it is relocated to a new name, fully live ones included, and the census then shows none. |
+| T10 | Build chains that differ in order, in a transform's version, in a length-affecting setting and in current material: four different IDs. Change only a setting that is not length-affecting: the same ID. |
 | T5 | Make a transform's factory fail: the store does not open, and no body is written. |
 | T6 | A fake transform that decodes to wrong bytes: every read through the codec fails. |
 | T7 | A decode that returns `ErrMaterialUnavailable` reaches the engine as the remote being unavailable, is retried, and never yields zeros or an absent chunk. One that returns `ErrMaterialDestroyed` is not retried and reports the chunk Lost. |
@@ -483,7 +531,7 @@ alike. A new transform gets it by registering.
 
 ### 8.3 Benchmarks and targets
 
-Run on the reference box of [RFC 1 §12](rfc-1-journal.md#12.%20Test%20plan%20and%20performance%20targets) on every merge, over three
+Run after merge ([the RFC index](rfc-index.md#Test%20tiers)), over three
 corpora: random bytes, a text and source tree, and a mixed VM image. Record the
 corpus, chunk size distribution and CPU with each result.
 
@@ -496,26 +544,14 @@ corpus, chunk size distribution and CPU with each result.
 | Compression ratio per corpus | bytes out / in | report; tracked against the previous run |
 | A put and a whole-block get with the default chain | MB/s | within 10% of the same without a chain, on the reference link, or the chain is what the link waits on and pool sizing must say so ([RFC 3 §2.11](rfc-3-syncer.md#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) |
 
-A regression of more than 10% is reported after merge and does not block one.
+## 9. Open questions
 
-## 9. Consequences for other RFCs
-
-| RFC | Change |
-| --- | --- |
-| [RFC 0 §1.1](rfc-0-data-lifecycle.md#1.1%20The%20component%20set) | Add a row for transforms: the chain and the registry. Unlike the remote store, a chain holds state that outlives a call (material), so it is a component. |
-| [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model) | Add a row: material unavailable is handled as the remote being unavailable ([§2.7](#2.7%20Failures)). |
-| [RFC 0 §4.2](rfc-0-data-lifecycle.md#4.2%20The%20residency%20function) | Add a case: a chunk whose block is durable but whose material is destroyed is **Lost**. |
-| [RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface) | `Put` returns the block's census beside its ranges; material errors map onto the syncer's closed set. |
-| [RFC 4 §3.3](rfc-4-remote-tier.md#3.3%20Transforms) | Points here for the chain; the envelope of [§2.4](#2.4%20Every%20body%20records%20what%20was%20applied) is how the chain "travels with the block". |
-| [RFC 6 §2.3](rfc-6-block-metadata.md#2.3%20Block) | A block record lists the transform IDs, versions and material IDs its bodies use, from the census the put returned ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)). |
-| [RFC 9 §4.2](rfc-9-gc.md#4.2%20Read%20verified%2C%20name%20by%20content%2C%20put%2C%20then%20move), [§4.4](rfc-9-gc.md#4.4%20When%20to%20relocate%20is%20policy) | Relocation re-encodes under the current chain into the next encoding generation; retirement is a second reason to relocate a block, even a fully live one. |
-
-## 10. Open questions
-
-1. **Hiding chunk hashes from the service** ([Appendix B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns)). A product decision.
+1. **Hiding chunk hashes from the service** ([Appendix B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns)): writing each index hash as an HMAC under a per-store secret, so a bucket reader holding a file cannot look it up. A product decision.
 2. **External key services that never release a key.** The key provider of
    [Appendix B.2](#B.2%20Keys) holds master keys in memory. A service that only unwraps remotely
    would cost a round trip per chunk; measure before supporting one.
+3. **Padding.** A transform that pads bodies to fixed sizes would hide compressed
+   sizes ([Appendix A](#Appendix%20A%20%E2%80%94%20compression)) at a cost in space; none is specified until a deployment asks.
 
 ---
 
@@ -539,8 +575,11 @@ allocate more than one chunk however it was crafted.
 
 **Bound.** `MaxEncodedLen(n) = n`: a chunk that would not shrink, header included, is declined.
 
-**Settings.** `level` (default 3 for zstd). Changing it affects the next write
-only.
+**Length.** Not known without compressing: `LengthOf` returns false, so a chain
+with compression takes a measuring pass on every put ([RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success)).
+
+**Settings.** `level` (default 3 for zstd). It changes the output, so it is in the
+chain ID ([§2.8](#2.8%20The%20chain%20ID)). Changing it affects the next write only.
 
 **Leaks.** Compression makes a body's size depend on its content. Combined with
 encryption, a chunk's stored size says how compressible it was. That matters
@@ -555,32 +594,42 @@ keys, of kind `key`.
 
 ### B.1 How a chunk is encrypted
 
-Each chunk gets its own key, derived from a master key and a random salt:
+Each chunk gets its own key, derived from the master key and a salt that is
+itself derived from the chunk's hash:
 
 ```
-salt     = 32 random bytes
+salt     = HMAC-SHA256(master key, plaintext hash)
 data key = HKDF-SHA256(master key, salt, "dittofs chunk v1")
 body     = AES-256-GCM(data key, nonce = 0, plaintext,
-                        AAD = transform ID ‖ version ‖ key ID ‖ salt ‖ plaintext hash)
+                        AAD = transform ID ‖ version ‖ key ID ‖ plaintext hash)
 ```
 
-![Encrypting one chunk: the master key and a random salt give a per-chunk data key through HKDF; AES-256-GCM with nonce zero seals the plaintext, authenticating the header fields and the plaintext hash](img/rfc5t-key-derivation.svg)
+![Encrypting one chunk: the master key and a salt derived from the chunk's hash give a per-chunk data key through HKDF; AES-256-GCM with nonce zero seals the plaintext, authenticating the header fields and the plaintext hash](img/rfc5t-key-derivation.svg)
 
 In plain terms:
 
-- **a fresh key per chunk.** Because a data key encrypts exactly one chunk, the
-  nonce can be fixed. There is nothing to count and no budget to run out of: the
-  master key is never used to encrypt data directly, only to derive keys, and 256
-  random bits of salt do not repeat.
+- **one key per plaintext, so a fixed nonce is safe.** The salt depends only on
+  the master key and the chunk's hash, so a data key only ever encrypts one
+  plaintext. Encrypting it again gives the same ciphertext, which leaks nothing;
+  what a fixed nonce must never do is seal two *different* plaintexts under one
+  key, and that cannot happen here. There is nothing to count and no budget to
+  run out of: the master key only derives keys, never encrypts data.
+- **deterministic, as [§2.1](#2.1%20A%20transform%20acts%20on%20one%20chunk) requires.** Identical chunks under one key encrypt
+  identically, which tells a bucket reader only that they are identical; the
+  hashes in the block header, and deduplication, already tell it that
+  ([Appendix B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns)). The salt is an HMAC, so no one without the master key can
+  compute it.
 - **everything is authenticated.** The header fields and the plaintext hash are
   all in the AAD, so changing any byte of the body, or presenting it as a
   different chunk, fails decryption.
-- **the master key never leaves the key provider's process memory**, and only the
-  salt and the key ID are stored.
+- **the master key never leaves the key provider's process memory**, and only
+  the key ID is stored. The salt is not stored: `Decode` derives it again from
+  the hash it is given.
 
-**Its header:** version (1 byte), key ID length (1 byte), key ID, salt (32
-bytes). Then the ciphertext and its 16-byte tag. `MaxEncodedLen(n) = n + 305`,
-the worst case with a 255-byte key ID: 1 + 1 + 255 + 32 + 16.
+**Its header:** version (1 byte), key ID length (1 byte), key ID. Then the
+ciphertext and its 16-byte tag. `MaxEncodedLen(n) = n + 273`, the worst case with
+a 255-byte key ID: 1 + 1 + 255 + 16. `LengthOf(n)` is exact: `n + 18` plus the
+current key ID's length. The key ID is in the chain ID ([§2.8](#2.8%20The%20chain%20ID)).
 
 ### B.2 Keys
 
@@ -636,17 +685,7 @@ What a bucket reader can still see, encryption on or off:
 - **repetition**: which content is written more than once;
 - **timing**: what is written and read, and when.
 
-**Proposal, for decision:** a store created with hash hiding writes each index
-hash as `HMAC-SHA256(store secret, hash)` instead of the hash, and includes the
-same secret in every block name ([RFC 2 §4.3](rfc-2-carver.md#4.3%20Key%20scope)). Repair and verification still
-work, since the system holds the secret and can compute both; a bucket reader holding
-a file can no longer look it up. It is a property of the store, chosen when the
-store is created and never changed, independent of whether the chain encrypts:
-tying it to the chain would change every name when encryption is toggled. The
-secret comes from the key provider and never rotates, since it is part of every
-name; a leaked secret is permanent, and the only remedy is renaming every block
-into a new store. Sizes, repetition and timing
-remain visible either way ([§10](#10.%20Open%20questions), question 1).
+Whether to hide the hashes is an open question ([§9](#9.%20Open%20questions), question 1).
 
 ### B.6 What it adds to observability
 
@@ -671,7 +710,8 @@ damaged.
 
 **Bound.** `MaxEncodedLen(n) = ceil(n / k) × (k + m) + header`: with `k = 4`,
 `m = 2`, a 16 MiB chunk encodes to about 24 MiB. The chain's bound grows with it,
-and so do the upload spool and the block size ([§3.1](#3.1%20Interfaces)).
+and so do the block size and the syncer's memory bound ([§3.1](#3.1%20Interfaces)). `LengthOf`
+is exact, so parity needs no measuring pass.
 
 **Position.** Last in the chain ([§2.3](#2.3%20The%20chain%20is%20ordered%20by%20configuration)), so it protects the bytes actually
 stored. Placed before encryption, a flipped ciphertext bit fails decryption before
@@ -705,7 +745,7 @@ Descriptive, for the refactor.
 | D7 | No transform error crosses the codec (T8) | encryption and compression errors reach callers as their own types |
 | D8 | The hash is checked once, in the codec (T6) | each consumer re-hashes; relocation does not |
 | D9 | A chain that cannot be built stops the store (T5) | the offload finds its encryptor by type assertion, and a missing one writes unencrypted bodies |
-| D10 | Chunk hashes can be hidden ([Appendix B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns)) | block headers carry plaintext hashes on every store |
 | D11 | A key failure is the remote being unavailable, and recovers ([Appendix B.4](#B.4%20Losing%20a%20key%20loses%20the%20data)) | a provider failure at start fails the share's whole block store, journal included; a retired key that fails to load is logged and skipped, with no health condition |
 | D12 | Material lost for good is told apart and makes a chunk Lost ([§2.7](#2.7%20Failures)) | no such outcome exists |
 | D13 | Retirement relocates through a census ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)) | no census is recorded |
+| D14 | Encoding is deterministic, and the chain ID is in the block name ([§2.1](#2.1%20A%20transform%20acts%20on%20one%20chunk), [§2.8](#2.8%20The%20chain%20ID)) | a random data key per chunk (D5), so two puts of one block write different bytes |

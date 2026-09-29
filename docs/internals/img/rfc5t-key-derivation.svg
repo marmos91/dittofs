@@ -16,10 +16,10 @@
   </defs>
   <rect width="900" height="330" fill="#ffffff"/>
 
-  <text x="16" y="26" class="t">Encrypting one chunk: a fresh key per chunk, derived, never stored.</text>
+  <text x="16" y="26" class="t">Encrypting one chunk: a key per chunk, derived from its hash, never stored.</text>
 
   <rect x="16"  y="56"  width="170" height="34" rx="3" class="sec"/><text x="28" y="77" class="l">master key (provider)</text>
-  <rect x="16"  y="104" width="170" height="34" rx="3" class="st"/><text x="28" y="125" class="l">salt: 32 random bytes</text>
+  <rect x="16"  y="102" width="170" height="38" rx="3" class="st"/><text x="28" y="118" class="s">salt = HMAC(master key,</text><text x="28" y="132" class="s">chunk hash)</text>
   <rect x="236" y="80"  width="130" height="34" rx="3" class="op"/><text x="248" y="101" class="h">HKDF-SHA256</text>
   <rect x="416" y="80"  width="140" height="34" rx="3" class="sec"/><text x="428" y="101" class="l">data key (1 chunk)</text>
   <path d="M186,73 L234,93" class="arr" marker-end="url(#a)"/>
@@ -28,18 +28,18 @@
 
   <rect x="416" y="160" width="140" height="34" rx="3" class="st"/><text x="428" y="181" class="l">chunk plaintext</text>
   <rect x="606" y="120" width="130" height="34" rx="3" class="op"/><text x="618" y="141" class="h">AES-256-GCM</text>
-  <text x="606" y="100" class="s">nonce 0: each key is</text>
-  <text x="606" y="112" class="s">used only once</text>
+  <text x="606" y="100" class="s">nonce 0: each key</text>
+  <text x="606" y="112" class="s">seals only one plaintext</text>
   <path d="M556,97 C590,97 590,128 604,132" class="arr" marker-end="url(#a)"/>
   <path d="M556,177 C590,177 590,142 604,140" class="arr" marker-end="url(#a)"/>
 
   <rect x="236" y="220" width="370" height="34" rx="3" class="st"/>
-  <text x="248" y="241" class="m">AAD: transform ID ‖ version ‖ key ID ‖ salt ‖ hash</text>
+  <text x="248" y="241" class="m">AAD: transform ID ‖ version ‖ key ID ‖ hash</text>
   <path d="M606,237 C650,237 671,200 671,154" class="arr" marker-end="url(#a)"/>
 
   <rect x="766" y="118" width="118" height="34" rx="3" class="out"/><text x="778" y="139" class="l">ciphertext + tag</text>
   <path d="M736,135 L764,135" class="arr" marker-end="url(#a)"/>
 
-  <text x="16" y="292" class="l">Stored in the body: version, key ID, salt, ciphertext, tag. Never stored: the master key, the data key.</text>
+  <text x="16" y="292" class="l">Stored in the body: version, key ID, ciphertext, tag. Never stored: the master key, the salt, the data key.</text>
   <text x="16" y="312" class="s">Changing any stored byte, or presenting the body as another chunk (another hash), fails the tag.</text>
 </svg>
