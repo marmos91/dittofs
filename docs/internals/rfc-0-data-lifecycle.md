@@ -16,17 +16,16 @@ tags:
 This is the root of the RFC set. It defines the terms, the data model, the
 residency function, the operations and the invariants that no single component
 can enforce alone. Every other RFC in the set inherits these and does not
-redefine them.
-
-The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT** and **MAY** are
-to be interpreted as in RFC 2119.
+redefine them. Conventions, including the RFC 2119 key words, are in
+[the RFC index](rfc-index.md#Conventions).
 
 ---
 
 ## 1. Scope
 
 DittoFS stores file content in two tiers. The **journal** is the local tier: it
-holds bytes on this machine. The **remote tier** holds them durably elsewhere.
+holds bytes on this machine, one journal per device, each serving the files of
+many shares. The **remote tier** holds them durably elsewhere.
 "Journal" names the component throughout this set; where a sentence contrasts
 the two sides, "remote tier" is its counterpart.
 
@@ -45,7 +44,9 @@ it owns no component's internals.
 
 ### 1.2 Component autonomy
 
-A component **MUST NOT** import another component in this set.
+A component **MUST NOT** import another component in this set. The engine is the
+one exception: it is the composition root, imports the components it composes,
+and is imported by none of them ([RFC 8](rfc-8-engine.md)).
 
 Where a component requires a capability it does not own, it **MUST** declare an
 interface for that capability in its own package, named for the need rather than
@@ -57,11 +58,10 @@ A capability **MUST NOT** be negotiated by type assertion on an interface the
 provider does not declare it satisfies. A capability that is absent **MUST**
 produce a build failure, not a silent fallback.
 
-> [!note]
-> The type-assertion prohibition is specific: an assertion that fails
-> yields a working program with silently degraded behaviour — an unindexed
-> lookup, a disabled guard — and no test observes it. A declared parameter
-> cannot fail this way.
+An assertion that fails yields a working program with silently degraded
+behaviour — an unindexed lookup, a disabled guard — that no test observes; a
+declared parameter cannot fail this way. The same holds for configuration: an
+invalid setting **MUST** be refused, never replaced by a default.
 
 Conformance is checked by a per-component import-graph test.
 
@@ -84,6 +84,10 @@ where a boundary may be *placed*; it does not bound chunk size absolutely. The
 final chunk of a file is emitted whole at whatever size remains, so a file
 smaller than the extent minimum is exactly one chunk. **Content MUST NOT be
 padded to a chunk size.**
+
+**A chunk whose bytes are all zero is a hole.** Where one is cut, the file
+records a hole instead of a ref ([RFC 6](rfc-6-block-metadata.md)); no all-zero chunk is ever stored or
+counted, and its extent resolves as **Absent**, which reads as zeros.
 
 **ChunkRef** — one file's use of one chunk at one offset. A file's content is
 fully described by its ordered list of chunk refs. Many refs MAY name one chunk.
@@ -113,11 +117,7 @@ terms and **MUST NOT** be introduced as though they were. An extent is a value,
 not a thing that is stored; where a component keeps state about one, it keeps it
 *against* the extent.
 
-A **block** and a **segment** are unrelated groupings. A block groups chunks for
-remote transfer; a segment groups records for local storage. They are formed by
-different processes, at different times, from different inputs. A chunk's block
-says nothing about which segment holds its bytes, and a segment's contents say
-nothing about any block.
+A **block** and a **segment** are unrelated groupings ([§2.2](#2.2%20How%20a%20file%20relates%20to%20its%20chunks)).
 
 ### 2.2 How a file relates to its chunks
 
@@ -200,39 +200,21 @@ the last copy.
 
 ## 3. Identity
 
-A file carries two identifiers.
-
-| Identifier | Type | Lifetime | Purpose |
-| --- | --- | --- | --- |
-| `ID` | UUID | for the life of the file | identity. Survives rename, relink, and rewriting of content. The journal keys content by this value. |
-| `ObjectID` | 32 bytes | changes with every content change | BLAKE3 Merkle root over the file's chunk hashes in offset order. Whole-file content identity. |
-
-`ID` **MUST** be stable across every namespace operation. `ObjectID` **MUST**
-change whenever the file's chunk list changes.
+A file's identity is its `ID`, a UUID unique across the store and stable for
+the life of the file: it survives rename, relink and every rewrite of content.
+The journal keys content by it.
 
 The journal's `FileID` **MUST** be a distinct type constructible only from a
-file `ID`, so that a value of another kind cannot reach it by conversion.
-
-`ObjectID` describes content that is complete and stable. It **MUST NOT** be
-read as a residency or durability signal.
+file `ID`, so that a value of another kind cannot reach it by conversion. It
+does not encode the file's share: one journal serves many shares, and the share
+is looked up, never derived from the identifier.
 
 ### 3.1 Deduplication
 
-Two mechanisms operate, at different granularities and for different reasons.
-
-**Chunk deduplication** is the mechanism that avoids storing or transferring
-duplicate bytes. A chunk whose hash is already known is referenced rather than
-stored again; its refcount increases. It catches partial overlap between files.
-
-**Whole-file deduplication** is an optimisation over the same result. Given a
-file's `ObjectID`, an implementation MAY determine that some existing file has
-exactly the same chunks in the same order, and reference them without carving,
-hashing or resolving chunks individually. Chunk deduplication reaches the same
-stored state; whole-file deduplication reaches it with less work.
-
-An implementation **MUST NOT** rely on whole-file deduplication for
-correctness. It is an accelerator, and a system that skips it is correct and
-slower.
+Deduplication is per chunk. A chunk whose hash is already known is referenced
+rather than stored or transferred again, and its refcount increases. It catches
+any overlap between files, whole or partial; there is no second, whole-file
+mechanism.
 
 ## 4. Residency
 
@@ -249,7 +231,9 @@ exactly one question.
 
 The journal **MUST NOT** record whether content exists or whether it was ever
 written, and **MUST NOT** be consulted about remote durability — it is not
-authoritative for it. It **MAY** record that it has been *told* an extent is
+authoritative for it. What it holds is still evidence: until a write's existence
+is committed to metadata ([§5.1](#5.1%20Write)), the bytes the journal holds are the only
+record that the write happened, and the engine treats them as such. It **MAY** record that it has been *told* an extent is
 durable, for the two internal purposes [RFC 1 §2](rfc-1-journal.md#2.%20The%20model%20it%20presents) permits: selecting offload
 candidates, and refusing an unsafe release. That record is never an answer.
 
@@ -263,15 +247,26 @@ oracle this section exists to remove.
 
 ### 4.2 The residency function
 
-An extent's residency is not stored. It is computed from the two answers:
+An extent's residency is not stored. It is computed from the two answers. For an
+offset, metadata answers one of three classes ([RFC 6](rfc-6-block-metadata.md)): a **hole**
+(or past the end of the file), **uncarved** (written, no chunk yet), or **carved**
+(a chunk covers it; a chunk is recorded only once its block is durable).
 
 | metadata | journal | residency | read behaviour |
 | --- | --- | --- | --- |
-| no chunk covers the offset | — | **Absent** | zeros |
-| chunk exists, block not durable | present | **Dirty** | serve locally |
-| chunk exists, block durable | present | **Resident** | serve locally |
-| chunk exists, block durable | absent | **Remote** | get, fill, serve |
-| chunk exists, block not durable | absent | **Lost** | fail |
+| hole | absent | **Absent** | zeros |
+| hole | present | **Dirty** | serve locally: a write whose existence is not yet committed ([§5.1](#5.1%20Write)) |
+| uncarved | present | **Dirty** | serve locally |
+| uncarved | absent | **Lost** | fail |
+| carved | present | **Resident** | serve locally |
+| carved | absent | **Remote** | get, fill, serve |
+
+Until a write's existence is committed, metadata still calls its range a hole.
+If the journal loses those bytes to local corruption before the next stability
+point, the range reads as **Absent** — the one way I1 can fail, accepted as the
+price of group-committing existence ([§5.1](#5.1%20Write)). A crash alone cannot cause it,
+because the journal's record survives a crash; the journal reports the
+corruption as a loss event ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)).
 
 ![The two oracles and the five states their answers imply, with journal silence shown as the ambiguity a single source cannot resolve](img/rfc0-residency-join.svg)
 
@@ -302,15 +297,16 @@ elapsed time. Durability is reported by the component that observed it, to the
 component that records it.
 
 The journal's offloaded bit is set in exactly two ways: by a durability report,
-from an offload ([§5.2](#5.2%20Offload)) or from reseeding after a restart, and by fill
-([§6.2](#6.2%20Fill)), whose bytes came from the remote tier and are therefore durable there
-by construction ([RFC 1 §3.4](rfc-1-journal.md#3.4%20Fill)).
+from an offload ([§5.2](#5.2%20Offload)) or from the engine's reseed, and by fill ([§6.2](#6.2%20Fill)),
+whose bytes came from the remote tier and are therefore durable there by
+construction ([RFC 1 §3.4](rfc-1-journal.md#3.4%20Fill)). The journal persists the bit, so it survives a
+restart ([RFC 1 §9.2](rfc-1-journal.md#9.2%20Offload%20state%20after%20recovery)).
 
 ## 5. The write path
 
 ### 5.1 Write
 
-1. The namespace layer authorises the write and updates size and mtime.
+1. The namespace layer authorises the write.
 2. The journal stages the bytes and appends a record.
 3. The client is acknowledged.
 
@@ -319,6 +315,15 @@ the journal under the configured durability policy. Content **MUST NOT** be
 chunked, hashed or transferred on this path.
 
 The resulting extent is **Dirty**.
+
+The write's **existence** — the file's size, its holes and its mtime — is not
+written to metadata per write. It becomes durable at the protocol's stability
+point (a commit, a flush, a stable write, or a close where the protocol requires
+one), group-committed across files. Until then the journal is the authority for
+it: reads see the write through the journal, and after a crash the engine
+re-applies existence from the journal before serving ([RFC 8](rfc-8-engine.md)). Truncate,
+deallocate, release and clone are not deferred this way; each is a synchronous
+metadata operation.
 
 ### 5.2 Offload
 
@@ -396,8 +401,10 @@ chunks themselves persist until their refcounts reach zero.
 boundary is narrowed. A narrowed ref **MUST NOT** continue to describe content
 past the new size.
 
-**Delete.** The namespace entry and all the file's chunk refs are removed, and
-each named chunk's refcount is decremented. Deletion **MUST NOT** remove content
+**Delete.** The namespace entry is removed. The file's chunk refs are removed,
+and each named chunk's refcount decremented, when the file is released: at once,
+or, if the file is still open, once the last open state is gone
+([RFC 7](rfc-7-namespace-metadata.md)). Deletion **MUST NOT** remove content
 from the remote tier; that is sweep ([§8.3](#8.3%20Sweep)), and it is asynchronous.
 
 ## 8. Reclamation
@@ -447,7 +454,8 @@ cannot be recovered.
 
 Safety rests on reference counting, specified in [RFC 6](rfc-6-block-metadata.md):
 
-- a chunk carries the number of chunk refs naming it
+- a chunk carries the number of chunk refs naming it, where a snapshot's frozen
+  ref set counts once per chunk it names, not once per ref
 - a block carries the number of its chunks whose refcount is nonzero
 - a block is sweepable only when that number is zero
 
@@ -456,7 +464,9 @@ A block **MUST NOT** be deleted while any chunk it contains is referenced.
 Reference counts are read at different instants from the state they describe. An
 implementation **MUST** ensure that content created or referenced after a sweep
 began cannot be deleted by that sweep, even when every individual observation
-was correct when made. [RFC 9](rfc-9-gc.md) specifies the protocol.
+was correct when made. [RFC 9](rfc-9-gc.md) specifies the protocol: a deletion fence that
+every put and every commit honours, run by one GC service for the whole
+namespace.
 
 ## 9. Invariants
 
@@ -469,16 +479,15 @@ These hold across components. No component can enforce any of them alone.
 | **I3** | A remote block is never deleted while any chunk it contains is referenced. |
 | **I4** | Fill never overwrites content the journal holds. |
 | **I5** | Remote durability is reported, never inferred. |
-| **I6** | No component imports another component in this set. |
+| **I6** | No component imports another component in this set, except the engine, which composes them ([§1.2](#1.2%20Component%20autonomy)). |
 | **I7** | Every stored record has a named reclamation path that holds at the record's maximum size. |
 | **I8** | A serialization conflict is retried within the caller's deadline, never surfaced as an I/O error. |
 
 An implementation is conformant when all eight hold under concurrent operation,
 across crash and restart, and in every condition in [§10](#10.%20Failure%20model).
 
-Each invariant **MUST** be tested at the component that consumes the data, not
-the one that produces it. A test placed beside a producer can pass while the
-value is discarded downstream.
+Each invariant **MUST** be tested at the component that consumes the data
+([test rules](rfc-index.md#Test%20tiers)).
 
 ### 9.1 Records and their reclamation
 
@@ -532,17 +541,15 @@ Every condition below has exactly one specified behaviour.
 | **Remote tier unavailable** | Writes continue into the journal while capacity allows. No extent becomes **Resident**, so no extent becomes evictable. Reads of **Remote** extents fail; they **MUST NOT** return zeros. |
 | **Journal at capacity, remote available** | Evict ([§8.1](#8.1%20Evict)); if nothing is evictable, reclaim ([§8.2](#8.2%20Reclaim)); if everything is **Dirty**, offload it and then evict it. The write is accepted once space is free, or refused at its deadline. |
 | **Journal at capacity, remote unavailable** | Refuse the write. Every local extent is **Dirty**, and I2 forbids evicting it, so refusal is the only behaviour that does not lose data. |
-| **Metadata unwritable** | A write fails at its namespace update ([§5.1](#5.1%20Write)) and is not acknowledged. Offload fails, so extents stay **Dirty** and the journal fills until [§10.1](#10.1%20Capacity%20is%20a%20bound%2C%20not%20a%20target) refuses writes. Reads continue while metadata is readable. |
-| **Crash** | On restart the journal rebuilds its placement index from its segments; a torn tail is truncated to the last record that verifies. Metadata recovers by its backend's own durability. The two recover independently and **MAY** disagree; [§10.2](#10.2%20No%20state%20requires%20intervention%20to%20leave) applies. |
+| **Metadata unwritable** | Writes are still staged and acknowledged from the journal; the next stability point fails and is reported as failed ([§5.1](#5.1%20Write)). Truncate, deallocate and the other synchronous operations fail. Offload fails, so extents stay **Dirty** and the journal fills until writes are refused ([§10.1](#10.1%20Capacity%20is%20a%20bound%2C%20not%20a%20target)). Reads continue while metadata is readable. |
+| **Crash** | On restart the journal rebuilds its placement index from its segments; a torn tail is truncated to the last record that verifies. Metadata recovers by its backend's own durability, and the engine re-applies from the journal the existence of writes not yet committed, before serving ([§5.1](#5.1%20Write)). Otherwise the two recover independently and **MAY** disagree; [§10.2](#10.2%20No%20state%20requires%20intervention%20to%20leave) applies. |
 | **Local content corrupt** | The journal drops only the extents backed by records that fail verification ([RFC 1 §9.3](rfc-1-journal.md#9.3%20Torn%20and%20corrupt%20records)). A dropped extent that was durable resolves as **Remote** and is fetched again; one that was **Dirty** resolves as **Lost**. The rest of the segment stays usable and reclaimable. |
 | **Material unavailable** | The material provider cannot supply a key ([RFC 5 §2.7](rfc-5-transforms.md#2.7%20Failures)). Behaves as **Remote tier unavailable**: offload cannot encode and reads of **Remote** extents cannot decode. Material lost for good is not this row: its blocks are not durable ([§4.2](#4.2%20The%20residency%20function)). |
 
 ### 10.1 Capacity is a bound, not a target
 
-The journal's capacity limit **MUST** be enforced by reservation taken before
-a write is accepted. An implementation that tests a counter without reserving
-against it permits any number of concurrent writers to pass a single test, and
-the limit bounds nothing.
+The journal's capacity limit is enforced by a reservation taken before a write
+is accepted ([RFC 1 §7](rfc-1-journal.md#7.%20Capacity)); a limit tested without reserving bounds nothing.
 
 Refusal at the limit is a specified outcome, not a failure of the design. The
 alternative — accepting content that cannot be made durable and cannot be
@@ -564,19 +571,15 @@ reintroduces the failure this model exists to prevent.
 
 ## 11. Open questions
 
-1. **Whole-file deduplication's cost** ([§3.1](#3.1%20Deduplication)) — it requires an index and a
-   Merkle computation per file to save work that chunk deduplication performs
-   anyway. Whether it earns that on real workloads is unmeasured.
-2. **Fill policy** ([§6.2](#6.2%20Fill)) — this document specifies that filling is
-   discretionary and names the conditions under which declining is appropriate.
-   It does not specify a policy. [RFC 8](rfc-8-engine.md) must, and the right one is unmeasured.
-3. **Eviction granularity** ([§8.1](#8.1%20Evict)) — this document constrains eviction by
-   durability, not by unit; the unit is [RFC 1](rfc-1-journal.md)'s to choose. The right segment size
-   is unmeasured, as is whether per-extent hole punching degrades at scale
-   ([RFC 1 §13](rfc-1-journal.md#13.%20Open%20questions)).
-4. **What a retried transaction may close over** ([§9.2](#9.2%20Conflicts%20and%20their%20retries)) — a retried closure
+1. **What a retried transaction may close over** ([§9.2](#9.2%20Conflicts%20and%20their%20retries)) — a retried closure
    re-runs against state that changed since it was first called. Whether it may
    close over values read before the transaction opened, or must re-read every
    row it modifies, is not settled. One that closes over pre-read state can
    re-propose the decision the conflict was raised to prevent, which delays a
    lost update rather than preventing it.
+2. **Fill policy** ([§6.2](#6.2%20Fill)) — filling is discretionary, and [RFC 8](rfc-8-engine.md) proposes a
+   policy. Which one is right on real workloads is unmeasured.
+3. **Eviction granularity** ([§8.1](#8.1%20Evict)) — this document constrains eviction by
+   durability, not by unit; the unit is [RFC 1](rfc-1-journal.md)'s to choose. The right segment size
+   is unmeasured, as is whether per-extent hole punching degrades at scale
+   ([RFC 1 §12](rfc-1-journal.md#12.%20Open%20questions)).
