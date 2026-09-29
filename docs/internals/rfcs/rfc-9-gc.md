@@ -53,8 +53,8 @@ GC **MUST NOT**:
 
 - recover local space. Eviction and reclamation are the journal's ([RFC 0 §8.1](rfc-0-data-lifecycle.md#8.1%20Evict),
   [RFC 0 §8.2](rfc-0-data-lifecycle.md#8.2%20Reclaim); [RFC 1](rfc-1-journal.md)). GC never reads, writes or unlinks a segment;
-- decide what is referenced. Refcounts are block metadata's ([RFC 6 §6](rfc-6-block-metadata.md#6.%20Reference%20counting)), and an
-  inode's release is the namespace's ([RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)). GC reads the count; it does not
+- decide what is referenced. Refcounts are block metadata's ([RFC 6 §6](rfc-6-block-metadata.md#6.%20Reference%20counting)), and a
+  file's release is the namespace's ([RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)). GC reads the count; it does not
   keep one of its own;
 - keep content alive by any means other than the count ([§2.1](#2.1%20The%20count%20is%20the%20only%20authority));
 - restate what a put, a read or a delete means. That is [RFC 4](rfc-4-remote-tier.md)'s ([RFC 4 §1.2](rfc-4-remote-tier.md#1.2%20A%20contract%2C%20not%20a%20component));
@@ -175,10 +175,6 @@ The record is the delete backlog and nothing else. No writer reads it and it
 gates no put or commit: a name it holds can never be put or committed again
 ([§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete)).
 
-> [!important] Pending review — pending deletion is only the backlog
-> It no longer fences writers and no longer advances a deletion generation; both
-> roles are gone with put intents (§3.4).
-
 ### 3.3 The race with adoption is closed by transactions, not by time
 
 Adoption is an offload commit referencing a chunk it did not carry ([RFC 6 §7.2](rfc-6-block-metadata.md#7.2%20Adoption%20is%20conditional%20on%20existence)).
@@ -242,12 +238,6 @@ on the key.
 A writer whose commit fails for want of its intent re-offers its content, as any
 failed commit does; the object it put is already scheduled for deletion.
 
-> [!important] Pending review — put intents replace the deletion fence
-> Content-derived names let a put re-create a name under its own delete, which a
-> fence of pre-put reads, pending-deletion checks and a generation array guarded.
-> Per-attempt names with an intent before the put make "no record, no intent"
-> final, so deletion needs no fence. The heading is kept for inbound links.
-
 ### 3.5 Finding candidates costs what is retirable
 
 A sweep pass **SHOULD** cost O(blocks retired), not O(blocks recorded). An
@@ -269,14 +259,6 @@ never moves from one to zero, so a rule written as "one to zero" never names it,
 and nothing else ever will: it holds no chunk record, so no refcount change can
 reach it. The creating commit is a transaction that leaves `live` at zero, and
 it **MUST** write the candidate.
-
-> [!important] Pending review — born-dead blocks
-> Added after a field leak where the same hash packed into several blocks in
-> flight left all but one block unreachable by sweep. The earlier wording ("moves
-> from one to zero") had the same hole. Check the rule and the Group B check in
-> [§11.2](#11.2%20Group%20B%20%E2%80%94%20leaks%20and%20stalls). Since names are minted per attempt, duplicate attempts over one
-> chunk list are born dead the same way; the candidate record is now in RFC 6's
-> record and write-set tables.
 
 An implementation **MAY** instead scan the block records. The scan is correct and
 proportional to the store, and on a large store it is the reason a pass does not
@@ -344,11 +326,6 @@ of the target size. Relocating sources *B₁…Bₙ*:
 | 4 | an intent and an object no record names | a re-run mints a new name; the orphan is found by its abandoned intent and deleted ([§5](#5.%20Unrecorded%20objects)) |
 | 5 | chunks moved, every source's `live` at zero | the sources are ordinary sweep candidates |
 
-> [!important] Pending review — relocation mints its target
-> The generation bump, the refusal of a source's name and the pre-put read are
-> gone. A crashed relocation no longer re-derives its target; its intent names
-> the orphan for collection.
-
 A chunk whose refcount is zero is not moved. Its record stays pointing at its
 source until the source retires. If it is adopted in between, the source's `live`
 becomes nonzero again, the source survives, and the next relocation moves it.
@@ -395,11 +372,6 @@ crosses zero, which the transaction doing so already writes. An implementation
 candidate record when it crosses the threshold, as [§3.5](#3.5%20Finding%20candidates%20costs%20what%20is%20retirable) does for `live` = 0.
 One that instead scans block records **MUST** state that the pass costs
 O(blocks recorded).
-
-> [!important] Pending review — relocation candidates are bounded
-> Candidate discovery for relocation had no cost rule, so a pass defaulted to a
-> scan of every block. Maintaining the dead-byte count where refcounts cross zero
-> mirrors sweep's candidates.
 
 The default threshold, and where dead bytes are counted, are open ([§12](#12.%20Open%20questions)).
 
@@ -482,13 +454,6 @@ neither intent nor record can never be committed, however long a stalled writer
 takes ([RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model)), and one whose commit is about to land is still named by its
 intent. The listing is only the backstop for what no intent names.
 
-> [!important] Pending review — collection from abandoned intents
-> The primary source of collection is now the store's own abandoned intents; a
-> listing is a rare backstop. "No intent and no record" is a final state, which
-> replaces the age reasoning and the fenced three-step delete. The optional age
-> filter is gone too: the remote contract reports a modification time but never
-> uses it to decide a delete.
-
 ## 6. Audit
 
 Counts are sweep's only authority ([§2.1](#2.1%20The%20count%20is%20the%20only%20authority)), so they are checked by
@@ -507,11 +472,6 @@ suspension until it commits.
 
 The audit decides nothing else, and its scratch state obeys [§7.2](#7.2%20Every%20record%20GC%20stores%20names%20its%20reclamation).
 
-> [!important] Pending review — audit in bounded reads, underflow recount
-> Follows RFC 6 §7.5: no whole-store consistent read, lowering guarded by the
-> chunk's change stamp. Underflows now schedule a targeted recount instead of
-> wedging the operation.
-
 ## 7. Bounds, records and scheduling
 
 ### 7.1 GC bounds its own work
@@ -526,18 +486,19 @@ The memory a pass holds **MUST NOT** grow with the size of the store. A pass tha
 needs a set of every referenced hash, in memory or on disk, has become a mark
 ([§2.4](#2.4%20Why%20not%20mark%20from%20a%20snapshot)).
 
-**Deferred work is throttled by run time, not by item count.** The batched drops
-GC runs — snapshot history drops ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)), intent abandonment, sweep's
-retirements — and the phase-2 drops of large releases are paced by a budget of
-transaction time per interval, and yield to client operations when it is spent.
-A budget in items lets one expensive item (a history range over a heavily
-rewritten file, a block whose chunks are all hot) stall the metadata store for as
-long as it takes; a filesystem that throttled deferred frees by count saw exactly
-that as latency spikes under deletion storms.
+**Deferred work runs one batch at a time per namespace.** The batched drops GC
+runs — snapshot history drops ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)), intent abandonment, sweep's retirements —
+and the phase-2 drops of large releases **MUST** keep at most one sub-transaction
+in flight per namespace. Each sub-transaction is already bounded by *K*
+([RFC 6 §5.2](rfc-6-block-metadata.md#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed)), so a deletion storm occupies at most one transaction's worth of the
+metadata store at a time, and space is reclaimed as fast as that allows. A
+user's quota is not what waits: usage drops when the file is released, not
+when its chunks are.
 
-> [!important] Pending review — throttle by run time
-> Large deletions now defer their work into batches; this bounds the latency
-> those batches can impose on client operations.
+> ponytail: one in-flight batch per namespace, no pacing. A batch whose chunks are
+> all hot can still hold contended keys for as long as it runs. Add a budget of
+> transaction time per interval, yielding to client operations, when the
+> deletion-storm check (§11.2) shows client latency moving past its bound.
 
 ### 7.2 Every record GC stores names its reclamation
 
@@ -551,11 +512,8 @@ I7 applies to GC's records as to any other ([RFC 0 §9.1](rfc-0-data-lifecycle.m
 | relocation candidate ([§4.4](#4.4%20When%20to%20relocate%20is%20policy)) | one per block past the dead-byte threshold | the relocation that empties the block, or its retirement |
 | GC lease ([§7.3](#7.3%20GC%20is%20one%20service%20per%20namespace)) | one per namespace | overwritten by each holder |
 | per-pass summary | one per namespace, overwritten | the next pass |
+| pass cursor | one per namespace per kind of walk (audit, candidate discovery, relocation scan): the last key done | overwritten as the walk advances; deleted when the walk completes. A restarted pass resumes from it instead of starting over |
 | audit scratch ([§6](#6.%20Audit)) | the stamps and counts of one walk's range of chunk hashes | the end of the walk, on success or failure |
-
-> [!important] Pending review — GC records
-> Deletion generations are gone; put intents and relocation candidates added;
-> audit scratch bounded per walk, not per consistent read.
 
 A record not in this table **MUST NOT** be added without a row. Where a pass
 leaves scratch state on disk, what removes it after a crash is part of the row,
@@ -575,11 +533,6 @@ configured count.
 ([RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)), which re-reads the service settings that can drift after
 open — versioning, lifecycle rules. On drift GC stops the pass, and the syncer
 refuses puts and deletes to that store until a later `Recheck` passes.
-
-> [!important] Pending review — Recheck starts each pass
-> A bucket setting changed after open (versioning turned on, a lifecycle rule
-> added) could make deletes unsafe or content vanish. GC now re-checks at the
-> start of every pass and stops on drift.
 
 The lease is for efficiency, not safety. A holder can pause past its lease while
 a successor runs, so GC **MUST** be correct with two passes over one namespace at
@@ -666,12 +619,6 @@ func (g *GC) Collect(ctx context.Context, domain []StoreID) (CollectReport, erro
 func (g *GC) Audit(ctx context.Context) (AuditReport, error)
 ```
 
-> [!important] Pending review — GC API after intents
-> `Fence` and the fence argument to `Relocate` are gone, as is `LiveChunks`'s
-> generation. Added `Intend`, `AbandonedIntents`, `Abandon`,
-> `RelocationCandidates` and `Recount`. `Transfers.Upload` now matches RFC 3's
-> signature: it takes the encoded size and returns `Stored`.
-
 ## 9. Invariants
 
 | # | Invariant |
@@ -683,12 +630,9 @@ func (g *GC) Audit(ctx context.Context) (AuditReport, error)
 | G5 | Relocation deletes nothing. It moves chunk records and counts, and sweep deletes. |
 | G6 | A block GC writes is named like any other: minted once from a fresh nonce, with its intent recorded before the put. |
 | G7 | Collection takes abandoned intents first; its listing backstop deletes only objects with neither intent nor record, only in a namespace whose every store was enumerated completely; correctness never depends on either. |
-| G10 | Deferred work — batched drops, abandonment, retirement — is throttled by run time per interval, not by item count. |
+| G10 | Deferred work — batched drops, abandonment, retirement — keeps at most one sub-transaction in flight per namespace. |
 | G8 | A conflict is retried under I8, and a failed delete never loses its pending record. |
 | G9 | Every record GC stores has a named reclamation path at its maximum size. |
-
-> [!important] Pending review — GC invariants after intents
-> G1, G3, G6 and G7 restated for put intents; G10 added.
 
 ## 10. Observability
 
@@ -708,14 +652,10 @@ lines.
 | audit mismatches, labelled `record` = `chunk` or `block` and `direction` = `high` or `low`. Any `low` is an alert | `dittofs_gc_audit_mismatches_total` | counter |
 | collection outcomes, labelled `source` = `intent` or `listing` and `result` = `deleted`, `skipped_young` or `refused` | `dittofs_gc_collection_total` | counter |
 | put intents older than one pass interval; one that only grows means abandonment stopped | `dittofs_gc_intents_stale` | gauge |
-| deferred work run time spent against its budget, by `op` | `dittofs_gc_deferred_budget_used_ratio` | gauge |
+| deferred work waiting, by `op` | `dittofs_gc_deferred_backlog` | gauge |
 | retirement and relocation conflicts retried | `dittofs_gc_conflicts_total` | counter |
 | whether this process holds the namespace's GC lease | `dittofs_gc_lease_held` | gauge |
 | pass duration, labelled `op` = `sweep`, `relocate`, `collect` or `audit` | `dittofs_gc_pass_seconds` | histogram |
-
-> [!important] Pending review — GC metrics after intents
-> Relocation's `deferred` and `fenced` results are gone; collection is labelled by
-> source; stale intents and the deferred-work budget are new.
 
 Logs: a low count logs the block at `Error`. A pending-deletion backlog that
 stops draining raises a health condition and logs once at `Warn` on entry and on
@@ -762,16 +702,10 @@ remote backend that can fail a delete after performing it ([RFC 4 §7.1](rfc-4-r
 | [§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object) deletes direct | Saturate the syncer's pool with offloads. Assert deletes still complete. Mark the store unhealthy: assert relocation transfers are refused by the flow, and failed deletes stay pending. |
 | [§4.4](#4.4%20When%20to%20relocate%20is%20policy) default | With default configuration, churn files until blocks cross the threshold. Assert they are relocated and swept with no configuration change. |
 | [§4.4](#4.4%20When%20to%20relocate%20is%20policy) candidate cost | Grow the store with no dead bytes, run relocation. Assert records read per pass do not grow with the store. |
-| [§7.1](#7.1%20GC%20bounds%20its%20own%20work) run-time throttle | Delete a snapshot of a heavily rewritten share and release a 10⁷-ref file while clients run. Assert client p99 latency stays within the budget's bound and the drops still finish. |
+| [§7.1](#7.1%20GC%20bounds%20its%20own%20work) deletion storm | Delete a snapshot of a heavily rewritten share and release a 10⁷-ref file while clients run. Assert client p99 latency stays within the budget's bound and the drops still finish. |
 | [§7.1](#7.1%20GC%20bounds%20its%20own%20work) bound | Stall the remote at full GC concurrency. Assert in-flight deletes and memory stay within the stated bound, and offload keeps its fair share during relocation. |
 | [§7.2](#7.2%20Every%20record%20GC%20stores%20names%20its%20reclamation) I7 | Run many passes with retirements, relocations and failed deletes. Assert each record kind stays within its table row. |
 | [§7.3](#7.3%20GC%20is%20one%20service%20per%20namespace) lease | Stop the lease holder mid-pass. Assert another instance takes the lease and drains the pending deletions. |
-
-> [!important] Pending review — GC tests after intents
-> Fence checks become intent checks (every order of intent, put, abandonment,
-> delete, commit), plus a late-delete check. Generation and pre-put relocation
-> checks are replaced by mint and crash checks. Group B adds intent-driven
-> collection, relocation-candidate cost and the run-time throttle.
 
 ### 11.3 What must not stand in
 
@@ -817,9 +751,6 @@ local emulator of the remote service and the reference metadata backend.
    abandoning intents a slow former owner is about to fail on anyway, is a
    cost question, not a safety one.
 
-> [!important] Pending review — open questions
-> The deletion-generation bucket count is gone with the array. The dead-byte
-> location is settled as a SHOULD; how fast to abandon intents is new.
 3. **Whether a low count should halt sweep** ([§6](#6.%20Audit)). Suspending only the named
    block is the rule. Whether one low count is evidence enough to distrust the
    rest of the store wants a decision once the audit has run on a real store.
@@ -856,8 +787,4 @@ amending the requirement.
 | D16 | Every block with `live` zero is found ([§3.5](#3.5%20Finding%20candidates%20costs%20what%20is%20retirable)) | the carver can pack one hash into several blocks in flight; the chunk locator is written last-wins and sweep decrements only the block it names, so the other blocks keep a nonzero count with no locator. Only an operator-run reconcile finds them. Leak |
 | D17 | Reclamation is reported ([§10](#10.%20Observability)) | a hash held by the in-memory adoption guard is skipped silently; a pass reports nothing swept and no reason, and a dry run counts the hash as freeable |
 | D18 | Audit recomputes counts in bounded reads ([§6](#6.%20Audit)) | the audit checks only that every ref has a chunk record |
-| D19 | Deferred work throttled by run time ([§7.1](#7.1%20GC%20bounds%20its%20own%20work)) | no throttle; a pass runs until done |
-
-> [!important] Pending review — deviations
-> D9 and D11 restated for intents and minted names; the duplicate D16 renumbered
-> D18; D19 added.
+| D19 | Deferred work, one batch in flight per namespace ([§7.1](#7.1%20GC%20bounds%20its%20own%20work)) | no bound; a pass runs until done |

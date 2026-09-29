@@ -10,6 +10,8 @@ depends_on:
   - "[[rfc-7-namespace-metadata]]"
   - "[[rfc-8-engine]]"
   - "[[rfc-10-journal-replication]]"
+  - "[[rfc-14-open-state]]"
+  - "[[rfc-15-topology]]"
 aliases:
   - RFC 11
 tags:
@@ -56,9 +58,11 @@ path another does not.
 This document **MUST NOT**:
 
 - replicate journal content or define failover of a unit's content — [RFC 10](rfc-10-journal-replication.md);
-- define client-visible locking (NFS `LOCK`, SMB byte-range locks, share modes).
-  Write tokens are internal and **MUST NOT** be exposed as, or stored with, client
-  locks ([§7](#7.%20Protocol%20state));
+- define client-visible open state and locking (opens, NFS `LOCK`, SMB
+  byte-range locks, deny modes, caching grants) — [RFC 14](rfc-14-open-state.md). Write tokens are
+  internal and **MUST NOT** be exposed as, or stored with, client state
+  ([§7](#7.%20Protocol%20state));
+- decide which nodes may hold which kind of ownership — [RFC 15](rfc-15-topology.md)'s roles;
 - let more than one block service write the same bytes at once
   ([RFC 10 Appendix B](rfc-10-journal-replication.md#Appendix%20B%20%E2%80%94%20alternatives%20considered)).
 
@@ -76,15 +80,37 @@ owner, epoch and replica set.
 
 **The configuration store MUST NOT hold per-file state.** It holds one
 configuration per share or subtree unit. Which unit a file belongs to is
-recorded with its inode ([RFC 7 §2.1](rfc-7-namespace-metadata.md#2.1%20Inode)), and a per-file unit's owner and epoch are
+recorded with its file ([RFC 7 §2.1](rfc-7-namespace-metadata.md#2.1%20File)), and a per-file unit's owner and epoch are
 recorded there too, with the enclosing unit's members. The configuration store
 therefore grows with shares and subtrees, never with files.
+
+### 2.1 Two owners per unit
+
+A unit has **two owners**, each with its own write token, lease and epoch
+([RFC 15 §3](rfc-15-topology.md#3.%20Two%20owners%20per%20file)):
+
+| Owner | Serialises | Fences |
+| --- | --- | --- |
+| **namespace owner** | namespace writes, open state ([RFC 14](rfc-14-open-state.md)), layouts, pending releases | namespace commits and open-state changes |
+| **data owner** | journal appends, existence, offload, removals, clone | every commit of [§8](#8.%20Metadata%20consistency) |
+
+Everything this document says about a unit's owner, token, lease and epoch
+applies to each of the two separately: acquired, moved and failed over
+independently, fenced independently. On a node that runs both roles one node
+holds both, and the two epochs still advance separately. Unqualified, "owner" in
+this document means the **data owner**, whose epoch fences content — the subject
+of every section below except [§7](#7.%20Protocol%20state).
+
+> [!important] Pending review — two owners per unit
+> Roles (RFC 15) split one owner into a namespace owner and a data owner, each
+> with its own token, lease and epoch. The fence records of §8 carry the data
+> owner's epoch; namespace commits and open state carry the namespace owner's.
 
 Every commit that must be fenced checks the unit's epoch the same way whatever
 the policy, so a policy **MAY** change later by moving files between units —
 which moves ownership, not data.
 
-**A unit belongs to the inode, not the path.** A file's unit is fixed when the
+**A unit belongs to the file, not the path.** A file's unit is fixed when the
 file is created and recorded with it. Rename **MUST NOT** change it, and hard
 links do not split it. A subtree policy that wants a renamed file to follow its
 new parent does so by an explicit move ([§4](#4.%20Moving%20ownership)), never as a side effect of rename,
@@ -162,9 +188,9 @@ file, so the front-end routes each operation:
 
 - it looks up the unit of what the operation touches, and the unit's owner in a
   cache of configurations read from the configuration store;
-- it forwards the operation to that block service through the engine's facade
-  ([RFC 8 §9](rfc-8-engine.md#9.%20The%20facade)), which **MUST** therefore be callable across a network — streamed
-  bodies, no callbacks across it, and every operation safe to retry;
+- it forwards the operation to that owner under [RFC 15 §4](rfc-15-topology.md#4.%20Where%20each%20call%20runs)'s routing, whose
+  calls **MUST** therefore be callable across a network ([RFC 15 §4.1](rfc-15-topology.md#4.1%20Every%20call%20is%20safe%20to%20route)) —
+  streamed bodies, no callbacks across it, and every operation safe to retry;
 - a block service that is no longer the owner refuses the operation by epoch; the
   front-end re-reads the configuration and retries.
 
@@ -194,7 +220,7 @@ journal, or by filling it from metadata and the remote tier ([RFC 0 §6.2](rfc-0
 only if it knows the owner holds no un-offloaded content there newer than the
 version it would serve. **Otherwise it MUST forward the read** to the owner or a
 member. Metadata alone cannot tell it: the owner acknowledges a write before
-offloading it, so the current ref ([RFC 6 §2.1](rfc-6-block-metadata.md#2.1%20Ref)) can be older than an
+offloading it, so the current ref ([RFC 6 §2.1](rfc-6-block-metadata.md#2.1%20ChunkRef)) can be older than an
 acknowledged write. It learns it from the owner, by asking the newest version of
 the range and serving only bytes that carry it. A cached copy older than that
 version is dropped ([RFC 1 §9.2](rfc-1-journal.md#9.2%20Offload%20state%20after%20recovery)) and filled again.
@@ -204,30 +230,22 @@ is current. Read tokens would remove the round trip ([§14](#14.%20Open%20questi
 
 ## 7. Protocol state
 
-Client-visible state is the protocol RFCs', but these rules follow from
-ownership and bind them:
+Client-visible state is [RFC 14](rfc-14-open-state.md)'s: held by the **namespace owner**, fenced by
+its epoch, moved with it, and recovered through grace ([RFC 14 §8](rfc-14-open-state.md#8.%20What%20is%20durable),
+[RFC 14 §9](rfc-14-open-state.md#9.%20Open%20state%20and%20the%20life%20of%20a%20file)). Three rules follow from ownership and bind it:
 
-1. **Open state that keeps an inode alive** ([RFC 7 §4.2](rfc-7-namespace-metadata.md#4.2%20Open%20state%20is%20the%20second%20holder)) **MUST** be a durable
-   record in the metadata store naming its holder and carrying a lease. Opens
-   reach the unit's owner like any operation ([§5.1](#5.1%20Front-ends%20forward%20to%20the%20owner)), so the owner **MAY** write
-   the record lazily, in the transaction of the unlink that drops `nlink` to zero
-   while the file is open ([RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)). Held only in one process past that
-   point, another block service can release an unlinked inode a client still has
-   open, drop its refs, and let sweep delete the content (I3).
-2. **A grace period extends open-state leases.** While a protocol's grace period
-   runs, the leases of the open state it lets clients reclaim **MUST NOT** expire,
-   so an inode a client is about to reclaim is not released under it.
-3. **A new owner releases nothing before grace ends.** Opens held lazily by the
-   previous owner are gone with it, so after a takeover or a move, until the
-   grace period ends, the new owner **MUST** treat every file of the unit as
-   possibly open: an unlink that drops `nlink` to zero writes the pending-release
-   record, and the release waits for grace and honours the opens clients
-   reclaimed.
-4. **The NFS write verifier MUST change whenever a unit's owner changes**, or
-   clients never resend writes they sent unstable to the old owner.
-5. **Client locks are not write tokens.** They have their own semantics, grace
-   period and recovery, and **MUST NOT** share records with tokens, though they
-   **MAY** be served by the same metadata service.
+1. **A namespace owner change is a loss of volatile open state.** The new
+   namespace owner runs grace for the unit and releases nothing before it ends
+   ([RFC 14 §9.2](rfc-14-open-state.md#9.2%20A%20new%20owner%20releases%20nothing%20before%20grace%20ends)).
+2. **The NFS write verifier MUST change whenever a unit's data owner changes**,
+   or clients never resend writes they sent unstable to the old one.
+3. **Client state is not a write token.** It has its own semantics, grace and
+   recovery, and **MUST NOT** share records with tokens, though both **MAY** be
+   served by the same metadata store.
+
+> [!important] Pending review — protocol state moved to RFC 14
+> The durable open record, grace extension and "nothing released before grace"
+> rules now live in RFC 14 §8–§9; this section keeps what ownership adds.
 
 ## 8. Metadata consistency
 
@@ -269,7 +287,7 @@ commit **MUST** conflict with every concurrent write that would change it.
 > check a write-write or tracked-read conflict on both, without one hot record
 > per unit. Intents carry the epoch so abandoned ones are recognisable.
 
-- **Release is fenced like a write.** It deletes the file's shape and records a
+- **Release is fenced like a write.** It deletes the file's FileData and records a
   removal of the whole file ([RFC 6](rfc-6-block-metadata.md)); a superseded owner's release would destroy
   a file its successor is writing.
 - **Removal records are pruned only by the file's owner**, under its epoch, once
@@ -278,7 +296,7 @@ commit **MUST** conflict with every concurrent write that would change it.
   offer's commit bring removed content back.
 - The owner epoch is separate from the removal versions a commit also checks
   ([RFC 6](rfc-6-block-metadata.md)).
-- A file's `size` ([RFC 6 §2.4](rfc-6-block-metadata.md#2.4%20Shape%20and%20holes)) is written only by the owner of its unit.
+- A file's `size` ([RFC 6 §2.4](rfc-6-block-metadata.md#2.4%20FileData%20and%20holes)) is written only by the data owner of its unit.
 
 *Backend notes (non-normative).* On the backend that tracks point reads, a
 conflict-tracked read is a get inside an update transaction with conflict
@@ -306,39 +324,39 @@ Signatures are indicative; the obligations above are normative.
 ```go
 // Ownership is what block services and front-ends ask of the configuration store.
 type Ownership interface {
-	// Unit returns the unit a file belongs to, recorded with its inode (§2).
-	Unit(ctx context.Context, file FileID) (UnitID, error)
+	// Unit returns the unit a file belongs to, recorded with its file (§2).
+	Unit(ctx context.Context, file FileID) (OwnershipUnitID, error)
 	// Config returns a unit's configuration (RFC 10 §2.1).
-	Config(ctx context.Context, u UnitID) (Configuration, error)
-	// Acquire grants the caller the unit's write token (§3.2).
+	Config(ctx context.Context, u OwnershipUnitID) (Configuration, error)
+	// Acquire grants the caller one of the unit's two write tokens (§2.1, §3.2).
 	// ErrHeld names the holder to forward to.
-	Acquire(ctx context.Context, u UnitID) (Token, error)
+	Acquire(ctx context.Context, u OwnershipUnitID, kind OwnerKind) (Token, error)
 	// Renew extends the token's lease, which is the owner lease.
 	Renew(ctx context.Context, t Token) (time.Time, error)
 	// Move hands files from one unit to another: one compare-and-swap over both
 	// units, each set to one more than the higher of their epochs (§3.1).
-	Move(ctx context.Context, from, to UnitID, files iter.Seq[FileID]) error
+	Move(ctx context.Context, from, to OwnershipUnitID, files iter.Seq[FileID]) error
 }
 
+// OwnerKind is which of a unit's two owners a token makes its holder (§2.1).
+type OwnerKind uint8
+
+const (
+	NamespaceOwner OwnerKind = iota + 1
+	DataOwner
+)
+
 type Token struct {
-	Unit    UnitID
+	Unit    OwnershipUnitID
+	Kind    OwnerKind
 	Epoch   Epoch
 	Expires time.Time
 }
 
-// Router is a front-end's routing cache (§5.1).
+// Router is a front-end's routing cache (§5.1, RFC 15 §6).
 type Router interface {
-	Route(ctx context.Context, file FileID) (NodeID, Epoch, error)
-	Invalidate(u UnitID) // after a refusal by epoch
-}
-
-// OpenState is the leased open record of §7.
-type OpenState interface {
-	Open(ctx context.Context, file FileID, holder HolderID) (Lease, error)
-	Renew(ctx context.Context, l Lease) error
-	Close(ctx context.Context, l Lease) error
-	// Grace extends every lease reclaimable during a protocol grace period.
-	Grace(ctx context.Context, until time.Time) error
+	Route(ctx context.Context, file FileID, kind OwnerKind) (NodeID, Epoch, error)
+	Invalidate(u OwnershipUnitID) // after a refusal by epoch
 }
 
 var ErrHeld = errors.New("ownership: token held elsewhere")
@@ -354,12 +372,13 @@ var ErrHeld = errors.New("ownership: token held elsewhere")
 | O4 | A file's unit is fixed at create and changes only by an explicit move. |
 | O5 | A block service that is not a member serves a range only when it knows the owner holds no newer un-offloaded content there; otherwise it forwards. |
 | O6 | A stale route costs a refusal and a retry, never a wrong write; every facade operation is safe to retry. |
-| O7 | Open state that keeps an inode alive is a durable leased record by the time an unlink would release the inode; a grace period extends its lease; after an owner change nothing is released before grace ends. |
+| O7 | A namespace owner change starts grace for the unit, and nothing is released before it ends ([RFC 14](rfc-14-open-state.md) L7, L8). |
 | O8 | The write verifier changes whenever a unit's owner changes. |
 | O9 | Write tokens and client locks share no records. |
 | O10 | Every fenced commit — existence, offload, truncate, deallocate, release, clone and removal pruning — conflicts with a concurrent epoch change under the store's isolation level, through the file's fence records and never through one record per unit. |
 | O11 | The configuration store holds no per-file state. |
 | O12 | Removal records are pruned only by the file's owner, under its epoch. |
+| O13 | Each unit has a namespace owner and a data owner, each with its own token, lease and epoch, acquired and fenced independently. |
 
 ## 12. Observability
 
@@ -373,7 +392,7 @@ var ErrHeld = errors.New("ownership: token held elsewhere")
 | units owned by this block service, labelled by policy | `dittofs_ownership_units` | gauge |
 | configurations in the configuration store; it follows shares and subtrees, not files | `dittofs_ownership_configurations` | gauge |
 | moves of one unit back to an owner it left within the last minute; a steady rate is ping-pong | `dittofs_ownership_bounces_total` | counter |
-| open-state leases held, and those extended by grace | `dittofs_ownership_open_leases` | gauge |
+| tokens held by this node, labelled `kind` = `namespace` or `data` | `dittofs_ownership_tokens` | gauge |
 
 Logs: a move at `Info` with unit, old and new owner, epoch and reason. A block
 service that stops on its own lease expiry logs at `Error`.
@@ -390,7 +409,8 @@ Properties:
 | A file's epoch never falls across a move between units (O2) | a new unit numbered from its own history, or two compare-and-swaps where one is needed |
 | A write forwarded on a stale route is refused, then applied once at the owner (O6) | a front-end trusting its cache, or a non-idempotent retry |
 | A non-member never serves content older than an acknowledged write (O5) | a check against the ref alone, a skipped check on fill |
-| An open file's content survives its unlink on another block service, through a grace period, and through an owner change (O7) | open state held in one process, a lease that lapses during grace, a new owner releasing on unlink before grace ends |
+| An open file's content survives its unlink on another block service, through a grace period, and through a namespace owner change (O7, RFC 14 §9) | open state held in one process, a lease that lapses during grace, a new owner releasing on unlink before grace ends |
+| A namespace owner move leaves the data owner and its epoch untouched, and the reverse (O13) | one token or one epoch standing for both owners |
 | A release, a truncate or a removal pruning by a superseded owner is refused (O10, O12) | a release checked against existence only, pruning by whoever holds the record |
 | An epoch change concurrent with an existence commit, an offload commit and a removal of one file is detected on each backend's isolation level (O10) | an epoch check by range scan, a blind write to a fence record, a unit-wide fence record |
 | The configuration store's record count follows units, not files (O11) | a per-file token or a file-to-unit map kept as configuration |
@@ -419,8 +439,8 @@ Properties:
    split on demand when another writer asks for an overlap. It needs several
    owners of one file to write `size` and existence, and truncate and delete to
    gather every range first. Not specified, and not enabled.
-5. **Where client lock and delegation state lives** — in the metadata service, or
-   with the owner — belongs to the protocol RFCs; [§7](#7.%20Protocol%20state)'s rules bind it.
+5. *Closed:* client lock and delegation state lives with the namespace owner
+   ([RFC 14 §3](rfc-14-open-state.md#3.%20One%20table%20per%20file%2C%20at%20one%20owner)).
 6. **Whether the metadata service itself is split** into shards with no
    transaction spanning them, and what that does to existence, release and the
    two-unit compare-and-swap of [§3.1](#3.1%20A%20token%20is%20a%20lease%2C%20fenced%20by%20an%20epoch).

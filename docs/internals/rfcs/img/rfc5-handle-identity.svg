@@ -21,19 +21,19 @@
   </defs>
   <rect width="900" height="400" fill="#ffffff"/>
 
-  <text x="16" y="26" class="t">A handle names an inode, so a rename is invisible to it</text>
+  <text x="16" y="26" class="t">A handle names a file, so a rename is invisible to it</text>
   <text x="16" y="46" class="s">Both handles are opaque to the client. Only one of them survives an operation the client was never told about.</text>
 
   <rect x="16" y="76" width="420" height="180" rx="3" class="bn"/>
-  <text x="32" y="100" class="rl">Handle over the inode</text>
+  <text x="32" y="100" class="rl">Handle over the file</text>
 
   <rect x="32" y="116" width="180" height="52" rx="3" class="bx"/>
-  <text x="44" y="136" class="m">share | 7f3a… | gen 3</text>
+  <text x="44" y="136" class="m">share | 7f3a…</text>
   <text x="44" y="154" class="s">no name, no parent</text>
 
   <rect x="264" y="116" width="156" height="52" rx="3" class="bg"/>
-  <text x="276" y="136" class="rl">inode 7f3a…</text>
-  <text x="276" y="154" class="s">gen 3</text>
+  <text x="276" y="136" class="rl">file 7f3a…</text>
+  <text x="276" y="154" class="s">in share S</text>
 
   <line x1="214" y1="142" x2="260" y2="142" stroke="#5b6472" stroke-width="1.4" marker-end="url(#h5r)"/>
 
@@ -49,7 +49,7 @@
   <text x="492" y="154" class="s">the name is the key</text>
 
   <rect x="712" y="116" width="156" height="52" rx="3" class="bg"/>
-  <text x="724" y="136" class="rl">inode 7f3a…</text>
+  <text x="724" y="136" class="rl">file 7f3a…</text>
 
   <line x1="662" y1="142" x2="708" y2="142" stroke="#b04a4a" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#h5x)"/>
 
@@ -59,8 +59,8 @@
 
   <line x1="16" y1="286" x2="884" y2="286" stroke="#eef1f4"/>
 
-  <text x="16" y="312" class="rl">What the generation is for</text>
-  <text x="16" y="334" class="l">The inode is released and its FileID is later reused. The old handle's generation no longer matches, so it resolves to stale.</text>
-  <text x="16" y="352" class="l">Without it, the same handle resolves to a different file, and the client reads someone else's content through a handle it never reopened.</text>
+  <text x="16" y="312" class="rl">Why no generation is needed</text>
+  <text x="16" y="334" class="l">A FileID is never reissued, and every record is scoped by its share. A released file's handle finds nothing, so it resolves to stale.</text>
+  <text x="16" y="352" class="l">A restore into a new share gets a new share ID and new keys, so it can never answer a handle to the original.</text>
   <text x="16" y="380" class="why">Stale and missing are different answers: missing tells a client to create, stale tells it to look the name up again.</text>
 </svg>

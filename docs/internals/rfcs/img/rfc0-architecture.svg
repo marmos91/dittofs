@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 520" width="900" height="520" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <style>
+      .t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:12px;font-weight:700;fill:#1b1f24}
+      .l{font-size:12px;fill:#3d444d}.s{font-size:11px;fill:#5b6472}
+      .m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;fill:#1b1f24}
+      .ada{fill:#eceff2;stroke:#9aa4b2;stroke-width:1.2}
+      .vfs{fill:#dce9f7;stroke:#4a7fb5;stroke-width:1.6}
+      .meta{fill:#f3e8d4;stroke:#b08a3e;stroke-width:1.4}
+      .data{fill:#d7ecd9;stroke:#4c8a58;stroke-width:1.4}
+      .ext{fill:#f9fafb;stroke:#c3cad3;stroke-width:1}
+      .role{font-size:11px;font-weight:700;fill:#5b6472;letter-spacing:.04em}
+      .arr{stroke:#5b6472;stroke-width:1.3;fill:none;marker-end:url(#a)}
+      .brk{stroke:#9aa4b2;stroke-width:1.2;fill:none}
+    </style>
+    <marker id="a" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#5b6472"/></marker>
+  </defs>
+  <rect width="900" height="520" fill="#ffffff"/>
+  <text x="16" y="26" class="t">One binary, three roles. Adapters speak wire; everything else speaks the service.</text>
+
+  <!-- role brackets -->
+  <path d="M96,52 L88,52 L88,202 L96,202" class="brk"/>
+  <text x="16" y="131" class="role">PROTOCOL</text>
+  <path d="M96,226 L88,226 L88,326 L96,326" class="brk"/>
+  <text x="16" y="266" class="role" style="fill:#b08a3e">METADATA</text>
+  <text x="16" y="281" class="role" style="fill:#4c8a58">DATA</text>
+  <path d="M96,350 L88,350 L88,496 L96,496" class="brk"/>
+  <text x="16" y="427" class="role">STORAGE</text>
+
+  <!-- adapters -->
+  <rect x="110" y="52" width="230" height="52" rx="5" class="ada"/>
+  <text x="124" y="74" class="h">NFS adapter</text>
+  <text x="124" y="93" class="s">v3, v4.x: wire, COMPOUND, replay</text>
+  <rect x="360" y="52" width="230" height="52" rx="5" class="ada"/>
+  <text x="374" y="74" class="h">SMB adapter</text>
+  <text x="374" y="93" class="s">2/3: wire, compounding, SDs</text>
+  <rect x="610" y="52" width="270" height="52" rx="5" class="ada"/>
+  <text x="624" y="74" class="h">pNFS endpoints</text>
+  <text x="624" y="93" class="s">metadata server, data servers</text>
+
+  <path d="M225,106 L225,140" class="arr"/>
+  <path d="M475,106 L475,140" class="arr"/>
+  <path d="M745,106 L745,140" class="arr"/>
+
+  <!-- vfs -->
+  <rect x="110" y="142" width="770" height="60" rx="5" class="vfs"/>
+  <text x="124" y="165" class="h">filesystem service — vfs.Service (RFC 17)</text>
+  <text x="124" y="183" class="s">open, read, write, commit, lookup, readdir, attributes, locks, grants, watches, statfs</text>
+  <text x="124" y="197" class="s">orders every operation: authorise → open state → quota → content · routes each call to its owner (RFC 15)</text>
+
+  <path d="M200,204 L200,224" class="arr"/>
+  <path d="M400,204 L400,224" class="arr"/>
+  <path d="M620,204 L620,224" class="arr"/>
+
+  <!-- middle row -->
+  <rect x="110" y="226" width="270" height="100" rx="5" class="meta"/>
+  <text x="124" y="249" class="h">metadata store (RFC 16)</text>
+  <text x="124" y="270" class="l">namespace: File, Entry, ACL (RFC 7)</text>
+  <text x="124" y="288" class="l">content map: refs, chunks, blocks (RFC 6)</text>
+  <text x="124" y="306" class="l">identity, shares, snapshots, settings</text>
+
+  <rect x="395" y="226" width="180" height="100" rx="5" class="meta"/>
+  <text x="409" y="249" class="h">open state (RFC 14)</text>
+  <text x="409" y="270" class="l">clients, opens, locks</text>
+  <text x="409" y="288" class="l">caching grants, watches</text>
+  <text x="409" y="306" class="s">held by the namespace owner</text>
+
+  <rect x="590" y="226" width="290" height="100" rx="5" class="data"/>
+  <text x="604" y="249" class="h">engine: content data path (RFC 8)</text>
+  <text x="604" y="270" class="l">journal (RFC 1, 10) · carver (RFC 2)</text>
+  <text x="604" y="288" class="l">syncer (RFC 3) · GC (RFC 9)</text>
+  <text x="604" y="306" class="s">held by the data owner</text>
+
+  <path d="M235,328 L235,348" class="arr"/>
+  <path d="M475,328 L475,348" class="arr"/>
+  <path d="M645,328 L645,348" class="arr"/>
+  <path d="M810,328 L810,348" class="arr"/>
+  
+  <!-- storage -->
+  <rect x="110" y="350" width="450" height="60" rx="5" class="ext"/>
+  <text x="124" y="373" class="h">transactional KV</text>
+  <text x="124" y="394" class="s">embedded or replicated; one database for everything above</text>
+
+  <rect x="575" y="350" width="140" height="60" rx="5" class="ext"/>
+  <text x="589" y="373" class="h">journal devices</text>
+  <text x="589" y="394" class="s">local, per node</text>
+
+  <rect x="730" y="350" width="150" height="60" rx="5" class="ext"/>
+  <text x="744" y="373" class="h">remote tier</text>
+  <text x="744" y="394" class="s">objects (RFC 4, 5)</text>
+
+  <text x="110" y="446" class="l">Default deployment: all three roles in one process, every arrow a local call.</text>
+  <text x="110" y="466" class="l">Split deployment: protocol+data nodes and metadata nodes over one replicated KV; the same interfaces cross the network.</text>
+  <text x="110" y="486" class="s">Adapters hold only vfs.Service. Nothing below the service imports an adapter; callbacks go up through interfaces adapters implement.</text>
+</svg>

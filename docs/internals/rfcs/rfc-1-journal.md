@@ -106,11 +106,6 @@ settles it, so the caller can still learn of a removal its metadata has not yet
 recorded ([§3.10](#3.10%20Settle%20and%20Since)). At every byte of a file, **the newest version the journal
 has applied wins**.
 
-> [!important] Pending review — removal markers serve the caller, not replication
-> Markers now exist so `Since` can report removals metadata has not recorded,
-> and live until `Settle`. Their use against out-of-order operations moved to
-> [RFC 10](rfc-10-journal-replication.md) with `Apply`.
-
 Held extents are **disjoint and need not be adjacent**: an implementation **MUST
 NOT** assume a file's held content is contiguous, nor that it begins at offset
 zero.
@@ -271,12 +266,6 @@ re-tile a ref the run partly replaces ([RFC 8 §5.6](rfc-8-engine.md#5.6%20A%20r
 bytes that a concurrent write or release can change under the carver. A report
 naming a neighbour changes nothing: it is already marked.
 
-> [!important] Pending review — durable neighbours; settled-only rule moved
-> Offload offers durable neighbours on request (`widen`), frozen and counted in
-> `Oldest`, so the engine's widening reads stable bytes. The rule that only
-> settled content is offered exists only with `Apply`, and moved to
-> [RFC 10](rfc-10-journal-replication.md#2.5%20The%20journal%20extension).
-
 **`report` marks durability block by block.** One offer is usually committed as
 several blocks, and their commits land at different times. The engine calls
 `report` once per committed block, naming that block's extents, and each call
@@ -382,7 +371,7 @@ from the remote tier for that exact extent of that exact file; anything else
 becomes content the journal will release while it exists nowhere.
 
 `v` is the content version of the ref the bytes were fetched from: its `newest`
-([RFC 6 §2.1](rfc-6-block-metadata.md#2.1%20Ref)). The filled record carries it, so reseed and the stale rule treat
+([RFC 6 §2.1](rfc-6-block-metadata.md#2.1%20ChunkRef)). The filled record carries it, so reseed and the stale rule treat
 filled content like any other ([§9.2](#9.2%20Offload%20state%20after%20recovery)). Its sequence number is new, like every
 append's, so where it and a record still on disk carry the same version — the
 release record of the content it replaces — the fill wins at recovery ([§5.3](#5.3%20Versions)).
@@ -434,11 +423,6 @@ too, and the released record is still whole on disk: held again after recovery,
 as it was before the release. A release record draws on the reserved headroom of
 [§7](#7.%20Capacity), so a full journal can always release.
 
-> [!important] Pending review — Release reports only storage returned
-> `freed` and `UsedBytes` now reflect only storage actually punched or unlinked,
-> by a synchronous group-sync-and-punch or a completion. Release markers moved to
-> [RFC 10](rfc-10-journal-replication.md#2.5%20The%20journal%20extension); release records use reserved headroom.
-
 ### 3.6 Truncate, deallocate and delete
 
 ```go
@@ -476,11 +460,6 @@ Each **MUST** be durable on return, and **MUST NOT** require the affected
 storage to be reclaimed first — reclamation is asynchronous ([§8](#8.%20Reclamation%20mechanisms)). Their
 records draw on the reserved headroom of [§7](#7.%20Capacity), and are never refused by the
 journal's own limit.
-
-> [!important] Pending review — removal markers live until settled
-> Markers now cover truncate, deallocate and delete only, live until `Settle`,
-> and are rebuilt from removal records at recovery. The rule is stated as
-> "below", once: content at the marker's version is held.
 
 None **MUST** be gated on the offloaded bit. Discarding content the user removed
 is not data loss, and an un-offloaded delete that a crash reverts would resurrect a
@@ -554,11 +533,6 @@ order in which the counters are updated:
 Any other relation between two fields **MAY** be momentarily off by one
 in-flight operation.
 
-> [!important] Pending review — Stats guarantees named inequalities only
-> "Mutually consistent" is replaced by three inequalities, each maintained by
-> update order, so `Stats` stays lock-free. `OldestDirty` added: the upload
-> backlog's age, which the engine alerts on.
-
 ### 3.8 Loss events
 
 A **loss event** is an extent the journal stopped holding without being asked:
@@ -600,10 +574,6 @@ times `WriteAt` and counts read hits and misses itself. The counters live in
 
 `RemovalMarkers` growing is a caller that never settles ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)).
 
-> [!important] Pending review — metrics follow the API
-> `applied_bytes` left with `Apply` ([RFC 10](rfc-10-journal-replication.md#2.5%20The%20journal%20extension)); `sync_reappended_bytes` and
-> `headroom_draws` added for the sync-failure and headroom rules.
-
 ### 3.10 Settle and Since
 
 ```go
@@ -633,13 +603,6 @@ records ([§9.1](#9.1%20Rebuilding)), and the caller settles again ([§3.6](#3.6
 is the caller's error, not the journal's: a marker dropped before its removal is
 recorded is one a crash may leave metadata never learning of, until recovery
 rebuilds it.
-
-> [!important] Pending review — the replication API moved to RFC 10
-> `Apply`, `SetEpoch`, `Discard`, `Epochs` and `Settled`, their epoch, settle and
-> discard record kinds, release markers and the rule that only settled content is
-> offered are deferred to [RFC 10](rfc-10-journal-replication.md#2.5%20The%20journal%20extension), as a later format version. What stays:
-> `Settle`, now in memory only, and `Export`, renamed `Since`, which also yields
-> removal markers so recovery can re-apply them.
 
 ## 4. On-disk format
 
@@ -696,10 +659,6 @@ segment, the journal **MUST** close every descriptor it caches for it
 ([§8.4](#8.4%20Open%20descriptors)); on platforms where an open file cannot be unlinked, segments **MUST** be
 opened with sharing that permits deletion.
 
-> [!important] Pending review — directory sync and unlink
-> Segment and `format` creation now sync the directory before any `Sync` over
-> their records returns; an unlink is made durable before a removal record that
-> depended on it is dropped; cached descriptors close before an unlink.
 Sealing writes a **seal marker** after the last record, and the marker **MUST**
 be durable before a successor naming the segment is created. Bytes after a seal
 marker belong to the footer, never to records. A segment named as another's
@@ -748,12 +707,6 @@ A record whose payload checksum does not verify **MUST NOT** be used to serve a
 read. A record wholly covered by a release, truncate, deallocate or delete
 record that outranks it ([§5.3](#5.3%20Versions)) is not held, and recovery **MUST NOT** verify or report
 its payload.
-
-> [!important] Pending review — record kinds and the synced-through offset
-> Discard, settle and epoch kinds moved to RFC 10's later format version, and
-> "every kind in the first version" became "a later kind is a new format
-> version". Each header now carries the synced-through offset, which tells a
-> torn tail from corruption ([§9.3](#9.3%20Torn%20and%20corrupt%20records)).
 
 ### 4.4 The segment catalog
 
@@ -996,11 +949,6 @@ release record cover the content it released, and a fill succeed the release
 record of the content it replaces, while an operation that arrives late with an
 older version still loses.
 
-> [!important] Pending review — the epoch half is reserved
-> The version stays 128 bits, but its epoch half **MUST** be zero in this format
-> version; raising it, applied operations and the discard exception belong to
-> RFC 10's later format version.
-
 Sequence numbers **MUST** come from one monotonically increasing counter per
 journal, never per file or per segment.
 
@@ -1093,12 +1041,6 @@ A later successful sync of the same segment **MUST NOT** satisfy a `Sync` for a
 write made before the failure. The journal keeps syncing the stream: a failure
 fails its window, not every later write.
 
-> [!important] Pending review — a failed sync, directory syncs, full sync
-> "MUST NOT permanently disable syncing" is replaced by §6.3: a failed sync's
-> window is re-appended or failed, never covered by a later success. §6.1 adds
-> the directory-sync and unlink rules; the full-sync note covers the Apple
-> filesystem.
-
 ## 7. Capacity
 
 The journal has a configured maximum local footprint, shared by its shares. Each
@@ -1133,11 +1075,6 @@ headroom of [§8.2](#8.2%20Repack) is part of this reserve.
 
 The journal **MUST NOT** evict to satisfy its own reservation. Eviction requires
 knowing what is durable remotely, which the journal is not authoritative for.
-
-> [!important] Pending review — headroom for records without bytes
-> Removal, release, durable and seal records and footers now draw on reserved
-> headroom and are never refused with `ErrNoSpace`; only filesystem `ENOSPC`
-> can fail them.
 
 **Getting out of a refusal is the engine's loop** ([RFC 8 §7.2](rfc-8-engine.md#7.2%20A%20capacity%20refusal%20comes%20back%20here)). The engine paces
 writes before the limit, so a refusal is rare ([RFC 8 §7.2.1](rfc-8-engine.md#7.2.1%20Writes%20are%20paced%20before%20the%20limit%2C%20not%20stopped%20at%20it)); on one, it releases
@@ -1251,11 +1188,6 @@ it wins: the copy is skipped, not appended over the newer state.
 > content; each costs a header. Upgrade to tracking which older records a removal
 > actually covers when removal records show up in footprint or in scan time.
 
-> [!important] Pending review — repack carries markers and races writes
-> A removal record now also stays live while its marker is unsettled. A copy is
-> appended under the file's serialised append, only if its source is still held,
-> so repack never reinstates superseded content.
-
 **Ordering.** Copy the records; make the copies durable; repoint the placement
 index; only then unlink the source. A crash before the unlink leaves both copies
 on disk, and recovery selects the copy by precedence ([§5.3](#5.3%20Versions)) — the source's records
@@ -1363,11 +1295,6 @@ at most eight segments' tails. An idle segment below the threshold stays open:
 sealing it would cost a footer and a new segment every 30 s for a trickle of
 writes, and scanning it costs little.
 
-> [!important] Pending review — markers rebuilt; idle seal threshold
-> Recovery rebuilds removal markers from removal records, all unsettled; settled
-> points and epochs are gone with RFC 10's kinds. The idle seal now applies only
-> past an uncatalogued-bytes threshold, not to every 30 s pause.
-
 
 ### 9.2 Offload state after recovery
 
@@ -1425,11 +1352,6 @@ record was written, so it cannot be a torn tail: it is corruption, and **MUST**
 be reported as such, with the rest of the tail treated as the scan rules below
 say. Without this, damage to synced records near the end of the newest segment
 would be truncated silently, along with every acknowledged write after it.
-
-> [!important] Pending review — torn tail vs corruption
-> Records now carry the synced-through offset, so a bad record below a later
-> verifying record's synced point is reported as corruption instead of being
-> truncated as a torn tail.
 
 Everything else is corruption, including an unverifiable record or a missing
 seal marker in a segment named as another's predecessor ([§4.2](#4.2%20Segments)): it was sealed
@@ -1560,11 +1482,6 @@ crash, so everything that turns journal content into a durable claim elsewhere
 syncs first: an offer **MUST** sync the records it captures before handing them to
 `fn` ([§3.3](#3.3%20Offload)), and the engine **MUST** `Sync` a file before committing its
 existence ([RFC 8 §9.4](rfc-8-engine.md#9.4%20Commit%20is%20answered%20by%20the%20journal)).
-
-> [!important] Pending review — publish after written, not durable
-> An extent is published once its record is written. Offers sync what they
-> capture, and existence commits `Sync` first, so nothing unsynced reaches
-> metadata or the remote tier.
 
 ### 10.5 Protecting readers from reclamation
 
@@ -1757,13 +1674,6 @@ A check here fails by **coming back up describing something other than what is o
 | [§5.3](#5.3%20Versions) monotonicity | Reopen after a crash; assert the next sequence number and the next assigned content version each exceed every one on disk, and that recovery in shuffled segment order yields an identical index. |
 | [§9.3](#9.3%20Torn%20and%20corrupt%20records) neighbours survive | With a catalog present, corrupt one record; assert every other record in that segment still reads. |
 
-> [!important] Pending review — checks follow the narrowed API
-> Checks for `Apply` order, `Export`, epochs, discard and settled-only offers
-> moved to [RFC 10 §14](rfc-10-journal-replication.md#14.%20Test%20plan%20and%20benchmarks). New checks cover `Since` after a crash, markers rebuilt
-> and carried by repack, frozen neighbours, the repack copy race, a failed sync's
-> window, directory sync, headroom at the limit, `freed`, synced damage near the
-> tail, and `Stats` inequalities.
-
 #### Group D — observability
 
 A check here fails by **leaving an operator unable to tell which of two opposite situations they are in**.
@@ -1950,7 +1860,3 @@ Sync and unlink, per platform ([§4.2](#4.2%20Segments), [§6.2](#6.2%20Sync%20p
   create or an unlink.
 - **Windows**: segments are opened with `FILE_SHARE_DELETE`, so one can be
   deleted while a reader still holds it; `FlushFileBuffers` is the sync.
-
-> [!important] Pending review — platform sync and unlink notes
-> Added the full-sync call on macOS, directory syncs on Linux, and share-delete
-> opens on Windows, backing §4.2 and §6.2.

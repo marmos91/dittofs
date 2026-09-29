@@ -44,13 +44,15 @@ it owns no component's internals.
 
 ### 1.2 Component autonomy
 
-A component **MUST NOT** import another component in this set. The engine is the
-one exception: it is the composition root, imports the components it composes,
-and is imported by none of them ([RFC 8](rfc-8-engine.md)).
+A component **MUST NOT** import another component in this set. The composition
+root is the one exception: it builds the components a node's roles need
+([RFC 15](rfc-15-topology.md)), imports them, and is imported by none of them
+([RFC 8 §2.1](rfc-8-engine.md#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one)).
 
 Where a component requires a capability it does not own, it **MUST** declare an
 interface for that capability in its own package, named for the need rather than
-for the provider. The engine supplies an implementation at composition time.
+for the provider. The composition root supplies an implementation at composition
+time.
 Each component **MUST** build and pass its tests with every such interface
 stubbed.
 
@@ -64,6 +66,26 @@ declared parameter cannot fail this way. The same holds for configuration: an
 invalid setting **MUST** be refused, never replaced by a default.
 
 Conformance is checked by a per-component import-graph test.
+
+### 1.3 The layers
+
+![Adapters call one filesystem service; below it sit the metadata store, open state and the content engine, over a transactional KV, journal devices and the remote tier; roles protocol, metadata and data mark which node composes what](img/rfc0-architecture.svg)
+
+Four layers, each calling only the one below:
+
+| Layer | What it does | Specified in |
+| --- | --- | --- |
+| **Adapters** | speak one wire protocol each: framing, compounds, replay, error codes | RFC 20–22 (planned) |
+| **Filesystem service** (`vfs.Service`) | the one protocol-neutral API adapters call; orders every client operation across the parts below and routes it to its owner | [RFC 17](rfc-17-vfs.md) |
+| **Metadata store**, **open state**, **engine** | the store holds every fact about files, content, identity and configuration ([RFC 6](rfc-6-block-metadata.md), [RFC 7](rfc-7-namespace-metadata.md), [RFC 16](rfc-16-metadata-store.md)); open state holds opens, locks and caching grants ([RFC 14](rfc-14-open-state.md)); the engine is the content data path — journal, carver, syncer, GC ([RFC 8](rfc-8-engine.md)) | as named |
+| **Storage** | a transactional KV (embedded on one node, replicated in a cluster), journal devices, the remote tier | [RFC 16](rfc-16-metadata-store.md), [RFC 1](rfc-1-journal.md), [RFC 4](rfc-4-remote-tier.md) |
+
+One binary serves every deployment. Which layers a node composes is set by its
+**roles** ([RFC 15](rfc-15-topology.md)): `protocol` (adapters and the filesystem service),
+`metadata` (namespace ownership and open state) and `data` (the engine and its
+journals). The default is all three in one process, where every arrow in the
+picture is a local call; a split deployment runs nodes with fewer roles over one
+replicated KV, and the same interfaces cross the network.
 
 ## 2. Terminology
 
@@ -367,10 +389,6 @@ the same bytes; a new attempt never reuses an earlier one's name. An attempt tha
 fails leaves an intent and possibly an object, and GC collects both
 ([RFC 9 §5](rfc-9-gc.md#5.%20Unrecorded%20objects)).
 
-> [!important] Pending review — names minted per attempt
-> Block names now carry a per-attempt nonce and are preceded by a durable put
-> intent. This replaces the deletion fence; see [§8.3](#8.3%20Sweep) and I9.
-
 ## 6. The read path
 
 ### 6.1 Resolution
@@ -437,11 +455,6 @@ when it is committed and when it is superseded ([RFC 6 §6.5](rfc-6-block-metada
 journal version: versions are per journal, and a share's files may live in
 several.
 
-> [!important] Pending review — batched removals and history refs
-> Removals are a durable intent plus bounded batches that mask what they have not
-> yet dropped. Snapshot content is kept by counted history refs, not ref sets,
-> and ordered against cuts by a per-share cut number, not by journal versions.
-
 ## 8. Reclamation
 
 Three operations recover space. They differ in what they may destroy, and
@@ -505,10 +518,6 @@ the whole namespace. It needs no fence against writers: a name is never put twic
 intent names it. That state is final: no later put can reach the name, and a
 delete that lands late can reach no committed block.
 
-> [!important] Pending review — no deletion fence
-> Replaced by names minted per attempt and put intents: deletion is gated on a
-> final state (no record, no intent), not on a fence every writer checks.
-
 ## 9. Invariants
 
 These hold across components. No component can enforce any of them alone.
@@ -520,15 +529,11 @@ These hold across components. No component can enforce any of them alone.
 | **I3** | A remote block is never deleted while any chunk it contains is referenced. |
 | **I4** | Fill never overwrites content the journal holds. |
 | **I5** | Remote durability is reported, never inferred. |
-| **I6** | No component imports another component in this set, except the engine, which composes them ([§1.2](#1.2%20Component%20autonomy)). |
+| **I6** | No component imports another component in this set, except the composition root, which composes them ([§1.2](#1.2%20Component%20autonomy)). Adapters import only the filesystem service ([RFC 17](rfc-17-vfs.md)). |
 | **I7** | Every stored record has a named reclamation path that holds at the record's maximum size. |
 | **I8** | A serialization conflict is retried within the caller's deadline, never surfaced as an I/O error. |
 | **I9** | A block name is minted by one put attempt and put by no other; a remote object is deleted only when no block record and no put intent names it. |
 | **I10** | A removal masks every ref it has not yet dropped from the moment it is recorded, and a ref stays counted until the transaction that deletes it. |
-
-> [!important] Pending review — I9 and I10
-> I9 replaces the deletion fence's guarantee ([§8.3](#8.3%20Sweep)); I10 states what a
-> batched removal guarantees while it is partly applied ([§7](#7.%20Mutation%20and%20removal)).
 
 An implementation is conformant when all ten hold under concurrent operation,
 across crash and restart, and in every condition in [§10](#10.%20Failure%20model).
@@ -568,10 +573,6 @@ but not range scans, another validates no reads at all and detects only
 write-write conflicts and explicit locks. A scan over a key range is therefore
 never such a read, and a check that must hold under any supported store is made
 on point records written by both sides ([RFC 11 §8](rfc-11-ownership.md#8.%20Metadata%20consistency)).
-
-> [!important] Pending review — gating reads
-> Added because the two metadata backends differ in which reads they validate;
-> the rule is the one both satisfy.
 
 ### 9.3 Where each invariant is tested and observed
 
@@ -630,10 +631,6 @@ fails its transaction. It **MUST NOT** wedge the file or the share: the failure
 schedules a targeted recount of the chunks it names, and the operation retries
 once the recount has corrected them.
 
-> [!important] Pending review — underflow schedules a recount
-> An underflow previously failed the transaction with no stated exit, which this
-> section forbids. The recount is the audit's, bounded to the named chunks.
-
 Recovery after a crash is required to be *truthful*, not to make the two oracles
 agree. A chunk that metadata knows about and whose bytes did not survive is
 **Lost**, and reads of it fail. Reconciling the two by assuming agreement
@@ -647,8 +644,8 @@ cold read ([RFC 8 §6.5](rfc-8-engine.md#6.5%20An%20unreachable%20remote%20fails
 
 - every operation that reaches the engine on behalf of a client **MUST** carry a
   deadline. The protocol front end sets it from the request; an operation that
-  arrives with none **MUST** be given a stated default at the engine's facade, so
-  "bounded by the caller's deadline" is never "unbounded";
+  arrives with none **MUST** be given a stated default at the filesystem service
+  ([RFC 17](rfc-17-vfs.md)), so "bounded by the caller's deadline" is never "unbounded";
 - every wait on that operation's path **MUST** end at the deadline: a queue, a
   reservation, a retry, and a lock. A lock that cannot be abandoned **MUST** be
   held only for work bounded independently of any remote call, and the bound

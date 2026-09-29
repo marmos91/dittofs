@@ -24,29 +24,33 @@ order: each part builds on the ones before it.
 | [RFC 4](rfc-4-remote-tier.md) | remote tier | object format and backend contract |
 | [RFC 5](rfc-5-transforms.md) | transforms | compression, encryption, threat model |
 | **Metadata** | | |
-| [RFC 6](rfc-6-block-metadata.md) | block metadata | shape, holes, refs, chunks, blocks, refcounts |
-| [RFC 7](rfc-7-namespace-metadata.md) | namespace metadata | files, directories, handles, permissions, locks |
+| [RFC 6](rfc-6-block-metadata.md) | block metadata | FileData, holes, refs, chunks, blocks, refcounts |
+| [RFC 16](rfc-16-metadata-store.md) | metadata store | *draft* — the entity model and its Go package, the rules that keep it honest, interfaces by consumer and how they are assembled, control-plane and identity entities, the KV contract, key layout, codecs, counters, store format; testing, benchmarks and observability of the store |
+| [RFC 7](rfc-7-namespace-metadata.md) | namespace metadata | files, directories, handles, permissions, what keeps a file alive |
+| [RFC 14](rfc-14-open-state.md) | open state and locks | *draft* — client leases, opens and deny modes, byte-range locks, caching grants (delegations, oplocks, leases), grace and reclaim, conflicts across protocols |
 | **Composition** | | |
-| [RFC 8](rfc-8-engine.md) | engine | composition, policy, the facade adapters call |
+| [RFC 17](rfc-17-vfs.md) | filesystem service (VFS) | *draft* — the one protocol-neutral API adapters call: operations, callbacks, errors, what stays in adapters |
+| [RFC 8](rfc-8-engine.md) | engine | the content data path: composition of journal, carver, syncer and block metadata, and its policy |
 | [RFC 9](rfc-9-gc.md) | GC | sweep, relocation, remote deletion |
 | **Cluster** | | |
 | [RFC 10](rfc-10-journal-replication.md) | journal replication | *draft* — owner-driven replication, fencing, seal, catch-up, reads from replicas |
 | [RFC 11](rfc-11-ownership.md) | ownership | *draft* — ownership units (a share by default), leases, handover, failover, forwarding |
+| [RFC 15](rfc-15-topology.md) | topology and roles | *draft* — one binary, roles chosen at deployment (metadata, data, both by default), what each role composes, namespace and data ownership, routing calls to the role and owner that serve them, split and collocated deployments, pNFS metadata and data servers |
 | **Data management** | | |
 | [RFC 12](rfc-12-snapshots.md) | snapshots, backups and share migration | *draft* — snapshots (a per-share cut number plus counted history refs; read-only, writable clones, scheduled with retention), metadata backup, restore to a new share, moving a share between installations on one bucket |
 | **Configuration** | | |
 | [RFC 13](rfc-13-configuration.md) | configuration | *draft* — what is a setting and what is fixed, scopes, which settings bind content, validation, change, secrets |
 | **Security** | | |
-| RFC 14 | identity and authentication | *planned* — principals, authentication flavours, identity mapping, squashing |
-| RFC 15 | authorization | *planned* — one abstract ACL model, its protocol mappings, evaluation |
+| RFC 18 | identity and authentication | *planned* — principals, authentication flavours, identity mapping, squashing |
+| RFC 19 | authorization | *planned* — one abstract ACL model, its protocol mappings, evaluation |
 | **Protocols** | | |
-| RFC 16 | adapter model | *planned* — the protocol handler contract, auth context, error mapping, dispatch |
-| RFC 17 | NFS | *planned* — decisions the NFS standards leave open |
-| RFC 18 | SMB | *planned* — decisions the SMB standards leave open |
+| RFC 20 | adapter model | *planned* — the protocol handler contract, auth context, error mapping, dispatch |
+| RFC 21 | NFS | *planned* — decisions the NFS standards leave open |
+| RFC 22 | SMB | *planned* — decisions the SMB standards leave open |
 | **Operations** | | |
-| RFC 19 | control plane | *planned* — runtime, share lifecycle, management API; applies RFC 13's configuration |
-| RFC 20 | resources and concurrency | *planned* — memory budgets, buffer pools, admission, backpressure |
-| RFC 21 | observability | *planned* — metric and label conventions, health derivation, events |
+| RFC 23 | control plane | *planned* — runtime, share lifecycle, management API; applies RFC 13's configuration |
+| RFC 24 | resources and concurrency | *planned* — memory budgets, buffer pools, admission, backpressure |
+| RFC 25 | observability | *planned* — metric and label conventions, health derivation, events |
 
 [The block data-flow split](rfc-block-dataflow.md) is the earlier plan the storage RFCs grew out of.
 
@@ -127,13 +131,6 @@ or a skip because a service was absent all report green otherwise. A skip is
 reported with its reason, and a check skipped in every tier is deleted or moved
 to a tier that runs it.
 
-> [!important] Pending review — fixtures, caches and checks that never run
-> Added after an external audit found suites that had not run in CI for months
-> (an unset gate, a package missing from the derived list), a wrapper that
-> reported success for a filter matching no test, cold-read tests that passed only
-> when the client cache missed, and every GC test built from hand-made records —
-> which is why a leak on repeated content went unseen.
-
 **When tests run.**
 
 | Tier | Runs | Contains |
@@ -147,10 +144,6 @@ to a tier that runs it.
 batches, crashes between any two, and reads through every partly applied one: a
 removal must mask what it has not yet dropped, and a count must never fall below
 its refs. A model that applies each removal in one step cannot see either.
-
-> [!important] Pending review — batching in the model test
-> Removals, clones, restores and snapshot deletions are now applied in bounded
-> batches, so the model must exercise the states between batches.
 
 No timed check runs per change: a shared runner's device changes between runs,
 so a timing gate either fails on noise or is set so wide it misses the

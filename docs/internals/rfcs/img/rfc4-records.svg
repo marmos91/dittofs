@@ -27,7 +27,7 @@
   <text x="28" y="84" class="h">EXISTENCE</text>
   <text x="28" y="100" class="s">written by existence commits</text>
   <rect x="28" y="112" width="186" height="54" rx="3" class="bn"/>
-  <text x="38" y="130" class="rl">Shape</text><text x="86" y="130" class="m">FileID</text>
+  <text x="38" y="130" class="rl">FileData</text><text x="112" y="130" class="m">FileID</text>
   <text x="38" y="152" class="m">size, applied, m/ctime</text>
   <rect x="28" y="178" width="186" height="54" rx="3" class="bn"/>
   <text x="38" y="196" class="rl">Hole</text><text x="80" y="196" class="m">(FileID, start)</text>
@@ -42,8 +42,8 @@
   <text x="258" y="84" class="h">CONTENT MAP</text>
   <text x="258" y="100" class="s">written by the offload commit</text>
   <rect x="258" y="112" width="190" height="120" rx="3" class="bx"/>
-  <text x="268" y="130" class="rl">Ref</text><text x="296" y="130" class="m">(FileID, offset)</text>
-  <text x="268" y="156" class="m">hash</text>
+  <text x="268" y="130" class="rl">ChunkRef</text><text x="330" y="130" class="m">(FileID, offset)</text>
+  <text x="268" y="156" class="m">chunk (hash)</text>
   <text x="268" y="172" class="m">skip, length</text>
   <text x="268" y="188" class="m">oldest, newest</text>
   <rect x="474" y="112" width="190" height="120" rx="3" class="bx"/>
@@ -69,7 +69,7 @@
   <line x1="16" y1="342" x2="884" y2="342" stroke="#eef1f4"/>
   <text x="16" y="376" class="rl">What each question reads</text>
   <text x="16" y="398" class="l">Does content exist at this offset? — Hole, then Ref. A hole and uncarved content are both "no ref"; only the hole records tell them apart.</text>
-  <text x="16" y="416" class="l">Which chunk, which block? — Ref, then Chunk. Is it durable? — a Chunk record exists, so yes.</text>
+  <text x="16" y="416" class="l">Which chunk, which block? — ChunkRef, then Chunk. Is it durable? — a Chunk record exists, so yes.</text>
   <text x="16" y="434" class="l">May this block be deleted? — Block.live, evaluated inside the transaction that deletes it.</text>
   <text x="16" y="466" class="why">Not here: whether the bytes are on local disk. That is the journal's question, and residency joins the two answers rather than storing one.</text>
 </svg>

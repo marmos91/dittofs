@@ -70,7 +70,7 @@ This layer **MUST NOT**:
 | Term | Means |
 | --- | --- |
 | **ownership unit** | the set of files one owner writes: a share by default, or a subtree ([RFC 11 §2](rfc-11-ownership.md#2.%20Ownership%20units)) |
-| **owner** | the one block service that assigns versions for a unit and accepts its writes |
+| **owner** | the unit's **data owner** ([RFC 11 §2.1](rfc-11-ownership.md#2.1%20Two%20owners%20per%20unit)): the one block service that assigns versions for a unit and accepts its writes. The namespace owner ([RFC 15 §3](rfc-15-topology.md#3.%20Two%20owners%20per%20file)) plays no part in replication; "owner" in this RFC always means the data owner |
 | **replica** | a block service whose journal holds a copy of the unit's un-offloaded operations |
 | **member** | the owner or a replica; the **replica set** is the members |
 | **learner** | a block service receiving the unit's operations while it catches up, before it is a member |
@@ -233,13 +233,6 @@ every version recorded durable. A discard
 record is live while it still covers a record of its file in another segment.
 `Stats` gains `applied_bytes`, labelled `outcome` = `applied` or `older`.
 
-> [!important] Pending review — the deferred journal API lands here
-> `Apply`, `SetEpoch`, `Epochs`, `Discard`, the persisted settled point
-> (`SettleApplied`, `Settled`), release markers, settled-only offers and the
-> epoch, settle and discard record kinds moved from RFC 1 into this later
-> journal format version. Epoch and settle records now live only while the file
-> holds extents or unsettled markers; markers need both settle points.
-
 ## 3. What it assumes of ownership
 
 [RFC 11](rfc-11-ownership.md) provides these; this layer relies on nothing else:
@@ -265,11 +258,6 @@ record is live while it still covers a record of its file in another segment.
    of a unit through one record **MUST NOT** be used. This layer relies on one
    more property of it: a fenced commit covers only operations durable on the
    unit's replica set ([§4](#4.%20The%20write%20path)).
-
-> [!important] Pending review — per-file fences
-> The owner epoch is checked through two per-file fence records rather than one
-> per unit, so it conflicts on both metadata backends' isolation levels without
-> serialising a unit on one key. The new owner writes them lazily, per file.
 
 ## 4. The write path
 
@@ -324,11 +312,6 @@ marker is dropped once both have passed it. Until the recorded point passes a
 removal, every member keeps its marker, so a member that takes over can still
 hand the removal to metadata through `Since` ([§9.2](#9.2%20Takeover) step 4). A learner never
 settles: it cannot know that it holds everything below the point.
-
-> [!important] Pending review — two settle points
-> RFC 1's `Settle` now means "metadata recorded the removal", so members also
-> receive a recorded point. Markers survive until both points pass them, which
-> keeps a removal visible to a new owner until metadata holds it.
 
 **Replicas release by being told.** After an offload commit lands, the owner
 sends the members the extents it covered with the commit's `oldest` and `newest`.
@@ -485,11 +468,6 @@ When the owner's lease lapses, a member takes over:
    `SettleApplied`, and with `Settle` once step 4's commits have landed, and
    sends that point to every member as the committed and recorded point. Only
    then does it serve or accept writes for the unit.
-
-> [!important] Pending review — takeover uses Since and per-file fences
-> Step 4 now reads the journal through `Since`, so removals metadata never
-> recorded are re-applied too, and writes each file's fence records at the new
-> epoch before its commits. Step 6 names both settle calls.
 
 Every kept member holds, at every byte, either content at or below the old
 committed point or the new owner's re-issue, so settling to the sealed point is
@@ -688,11 +666,6 @@ runs its own, moved here from RFC 1 with the API they test ([§2.5](#2.5%20The%2
 | discard is final | Apply content, `Discard` the file, crash and reopen; assert nothing of it is held and a `Fill` begun before the discard is refused. Repeat with a discard during an offer. |
 | epoch and settle records retire | Write, offload, release and settle every extent of a file; repack every segment; assert its epoch and settle records are gone, and that the file's next write after `SetEpoch` falls under the raised epoch. |
 | format upgrade | Open a journal of RFC 1's version, write, then `Apply`; assert the journal reopens under the extension's version and an RFC 1 binary refuses it. |
-
-> [!important] Pending review — extension and fence checks
-> Checks for the deferred journal API moved here from RFC 1, with new ones for
-> the two settle points, record retirement and the format upgrade. R13 and R14
-> add per-file fences and marker survival.
 
 **Benchmarks**, on three block services on one local network, each the reference
 box ([Test tiers](rfc-index.md#Test%20tiers)):

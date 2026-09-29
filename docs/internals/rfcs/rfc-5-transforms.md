@@ -40,11 +40,6 @@ This document specifies behaviour, not the current code. Where the code differs,
   **chain ID**, is part of every block name, so one name is always one byte
   sequence.
 
-> [!important] Pending review — fixed order, per-attempt determinism
-> The chain order is now fixed in code rather than configured (§2.3), and
-> determinism is required only within one put attempt, because block names now
-> carry a per-attempt nonce (§2.1, §2.8).
-
 ## 1. Purpose
 
 Data leaving the machine may need to be smaller, secret, or both, and what "both"
@@ -108,11 +103,6 @@ A transform **MUST** be:
   chain knows it, a put is encoded once; otherwise it takes a measuring pass
   ([RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success)).
 
-> [!important] Pending review — determinism scoped to one attempt
-> Block names now include a per-attempt nonce, so a name no longer fixes bytes
-> across writers. Determinism is required within one attempt (measuring pass,
-> put, retry); cross-build stability is kept by fixtures, not by naming.
-
 A transform **MAY** decline a chunk: compression declines one that would not
 shrink. A declined chunk passes to the next transform unchanged, and the body
 records that the transform was not applied ([§2.4](#2.4%20Every%20body%20records%20what%20was%20applied)).
@@ -173,11 +163,6 @@ The envelope ([§2.4](#2.4%20Every%20body%20records%20what%20was%20applied)) and
 lets a transform be skipped per chunk, and what lets an algorithm be replaced by
 another in the same stage ([§5.4](#5.4%20Changing%20an%20algorithm%20is%20adding%20a%20transform)).
 
-> [!important] Pending review — fixed chain order
-> Replaces "the chain is ordered by configuration". Any order other than
-> compress → encrypt → redundancy was only ever ineffective, so the order is now
-> fixed and refused otherwise; the ordering rules and permutation tests go.
-
 ### 2.4 Every body records what was applied
 
 Each body starts with a short **envelope**: its own version, then, in order, the
@@ -205,10 +190,6 @@ The envelope carries its own version because a ranged read of one chunk's body
 version from it. A new envelope layout is a new envelope version; a reader keeps
 decoding every version it may still meet, and rejects a version it does not know
 with `ErrMalformed`. Version 1 is the layout above.
-
-> [!important] Pending review — envelope version byte
-> The envelope now carries a 1-byte version (cost 2 + 2n). The earlier text
-> relied on the block header's version, which a ranged read never fetches.
 
 ![A body: the versioned envelope listing the applied transforms, then encryption's output with its header wrapping compression's output, with the chunk's bytes innermost](img/rfc5t-body.svg)
 
@@ -261,11 +242,6 @@ for keyed boundaries ([RFC 2 §6](rfc-2-carver.md#6.%20Boundaries%20are%20public
 which seals the chunk hashes in block headers ([Appendix B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns)). Both carry
 fingerprints like any material, are carried in a namespace export with them, and
 are checked against them at import.
-
-> [!important] Pending review — fingerprints, planted IDs, chunking key
-> Material now carries a content fingerprint the provider checks; a read refuses
-> a material ID its block record does not list before any provider call; the
-> chunking key and header key are material kinds held by the same provider.
 
 **Material says what it is for.** A kind is specific to what consumes it — a key
 for one cipher is not a key for another, whatever their lengths — so a transform
@@ -363,12 +339,6 @@ configuration:
 
 A golden test vector pins each derivation, as for the block name: a changed
 vector fails the build.
-
-> [!important] Pending review — chain ID under per-attempt names
-> Names now include a per-attempt nonce, so the chain ID no longer makes two
-> writers agree on bytes; it stays in the name to tie one name to one layout.
-> Material is named by (ID, fingerprint); the versioning table gains the
-> envelope version byte and the derivation labels.
 
 ## 3. API surface
 
@@ -512,11 +482,6 @@ per-body length check before allocating — uses `MaxDecodeLen`, the maximum ove
 every registered transform, never the current chain's bound. Removing parity
 from a chain must not make the parity bodies still stored unreadable.
 
-> [!important] Pending review — API for fixed stages, fingerprints, read bounds
-> Adds `Stage`, material fingerprints, `Materials.Remove` with its fence, a
-> census argument to `Decode`, and `MaxDecodeLen`: read-side memory bounds come
-> from every registered transform, not the current chain.
-
 ### 3.2 Configuration
 
 A chain is part of a remote block store's configuration, which the control plane
@@ -558,11 +523,6 @@ A transform is compiled in and registers itself at start. It **MUST**:
    later build **MUST** decode every fixture body, and **MUST** encode each
    fixture input to exactly its recorded body; an encoder whose output differs
    is a new format version of the transform, never a silent change.
-
-> [!important] Pending review — stage, labels, encoder fixtures
-> A custom transform declares its stage and labels every derivation. Fixtures
-> now pin encoding as well as decoding, so an encoder change within one format
-> version fails the build.
 
 Custom transforms are compiled in. Loading them at run time would put foreign
 code in the data path with nothing to check it before it writes; revisit if an
@@ -609,12 +569,6 @@ and material.
   check that the census is empty. An encode that starts after the fence finds the
   material not current and cannot take it. Removed material is destroyed: the
   provider keeps its ID and reports it `ErrMaterialDestroyed` ([§2.7](#2.7%20Failures)).
-
-> [!important] Pending review — relocation names, material removal fence
-> Relocation mints a fresh name instead of bumping an encoding generation.
-> Material removal now joins in-flight encodes before checking the census, under
-> one fence, so a put racing the removal cannot commit a block under destroyed
-> material.
 
 ### 5.4 Changing an algorithm is adding a transform
 
@@ -676,10 +630,6 @@ never moves.
 | T12 | A read asks the material provider only for material its block record's census lists, and the provider never serves material whose fingerprint no longer matches. |
 | T13 | Material is destroyed only after it is current in no open chain, no encode in flight holds it, and the census is empty, checked under one fence. |
 
-> [!important] Pending review — invariants T9, T11–T13
-> T9 narrows determinism to one attempt plus fixtures; T11–T13 are new: fixed
-> stage order, census-checked and fingerprinted material, fenced removal.
-
 ## 8. Test plan and benchmarks
 
 The set-wide test rules and tiers are in [the RFC index](rfc-index.md#Test%20tiers).
@@ -727,12 +677,6 @@ alike. A new transform gets it by registering.
 | [§5.2](#5.2%20Relocation%20re-encodes) | Relocate a block written under an old chain: every body in the new block carries the current envelope. |
 | [Appendix B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns) | With encryption on, write a known file: no chunk's plaintext hash appears anywhere in the stored block, and every read still verifies. With encryption off, the header lists plaintext hashes. |
 
-> [!important] Pending review — test plan
-> The permutation test is gone (order is fixed). Added: stage-order refusal,
-> envelope version, encoder fixtures, GCM-SIV input-change safety, fingerprint
-> refusal, planted material ID, removal racing an encode, read-side bound, sealed
-> header hashes.
-
 ### 8.3 Benchmarks and targets
 
 Run after merge ([the RFC index](rfc-index.md#Test%20tiers)), over three
@@ -753,9 +697,6 @@ corpus, chunk size distribution and CPU with each result.
 1. **Hiding chunk hashes from the service** — closed. When encryption is on,
    header hashes are sealed under the namespace's header key ([Appendix B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns)).
 
-> [!important] Pending review — open question 1 closed
-> Sealed header hashes are now required when encryption is on. The item keeps its
-> number because other RFCs cite it.
 2. **External key services that never release a key.** The key provider of
    [Appendix B.2](#B.2%20Keys) holds master keys in memory. A service that only unwraps remotely
    would cost a round trip per chunk; measure before supporting one.
@@ -799,10 +740,6 @@ traffic. Encryption **MUST NOT** be described as protecting a share with
 compression on against writers of mixed trust: one whose writers do not all
 trust each other with each other's data **SHOULD** turn compression off, or
 accept that sizes leak content to a writer who can also see the bucket.
-
-> [!important] Pending review — compression leak on mixed-trust shares
-> States the leak as a limit on encryption's claim for mixed-trust shares, not
-> only as advice to turn compression off.
 
 ## Appendix B — encryption
 
@@ -870,14 +807,6 @@ with a 255-byte key ID: 1 + 1 + 255 + 16. `LengthOf(n)` is exact: `n + 18` plus
 the current data key ID's length. The data key's (ID, fingerprint) is in the
 chain ID ([§2.8](#2.8%20The%20chain%20ID)).
 
-> [!important] Pending review — AES-GCM-SIV replaces nonce-0 AES-GCM
-> The previous text sealed with AES-256-GCM under a fixed zero nonce, claiming a
-> per-hash key only ever encrypts one plaintext. That is false: the encrypted
-> input is the compression output, which changes for one hash on a level change,
-> a decline turned compress, a library upgrade or a relocation — and two inputs
-> under one GCM key and nonce leak their XOR and the authentication key, making
-> forgery possible. GCM-SIV keeps determinism without that failure.
-
 ### B.2 Keys
 
 Keys are layered, as envelope encryption:
@@ -921,11 +850,6 @@ There are two rotations, and they cost different things:
 
 The header key and the chunking key never rotate: changing either re-cuts or
 re-seals everything, which is a migration ([RFC 2 §3.6](rfc-2-carver.md#3.6%20Changing%20any%20of%20this%20is%20a%20migration)).
-
-> [!important] Pending review — envelope keys and two rotations
-> Master keys now wrap per-namespace data keys (plus a header key and a
-> chunking key). Master rotation re-wraps and touches no data; data-key rotation
-> is new material retired by relocation through the census.
 
 ### B.4 Losing a key loses the data
 
@@ -975,11 +899,6 @@ What a bucket reader can still see:
 - **timing**: what is written and read, and when;
 - with encryption off, **the plaintext chunk hashes**, and so which known files
   are stored.
-
-> [!important] Pending review — sealed header hashes
-> Closes open question 1: with encryption on, headers carry keyed hashes under
-> the namespace's header key, so a bucket reader cannot look up a known file.
-> Block metadata keeps plaintext hashes.
 
 ### B.6 What it adds to observability
 
@@ -1048,8 +967,3 @@ Descriptive, for the refactor.
 | D16 | Header hashes are sealed when encryption is on ([Appendix B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns)) | not yet checked against the code; to verify during the refactor |
 | D17 | Read-side bounds come from every registered transform ([§3.1](#3.1%20Interfaces)) | not yet checked against the code; to verify during the refactor |
 | D18 | Material removal is fenced against in-flight encodes ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)) | not yet checked against the code; to verify during the refactor |
-
-> [!important] Pending review — deviations for D3–D18
-> D3, D5 and D14 restated for the fixed order, AES-GCM-SIV with envelope keys and
-> per-attempt determinism; D15–D18 added for fingerprints and planted IDs, sealed
-> header hashes, read-side bounds and the removal fence.
