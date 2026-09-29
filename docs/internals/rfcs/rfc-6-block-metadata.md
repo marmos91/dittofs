@@ -1580,3 +1580,89 @@ One line per requirement.
 > [!important] Pending review — deviations
 > Rows added or restated for minted names and intents, gating reads, batched
 > removals, underflow recount, history, clone and the audit stamp.
+
+## Appendix B — data model
+
+A reference view of every record this document stores, as an ordered key-value
+store holds them: the keyspace, each key's encoding, each value's fields, and
+what points at what. It restates the records of [§2](#2.%20The%20records); where the two
+differ, §2 and the section it cites decide. The byte layout is illustrative —
+any encoding that keeps the orderings below works — and names no backend.
+
+Conventions: integers are big-endian, so byte order is numeric order and a
+prefix scan returns records in the order the queries need. `‖` is concatenation.
+Tags are one byte. A `FileID` is 16 bytes, a chunk hash 32, a block name 32, a
+`ShareID` 16.
+
+### B.1 Keyspace
+
+```
+F ‖ FileID ─┬─ 0x01                       Shape
+            ├─ 0x02 ‖ start:u64           Hole
+            ├─ 0x03 ‖ version:u128        Removal
+            ├─ 0x04 ‖ offset:u64          Ref
+            ├─ 0x05 ‖ died:u64 ‖ offset   History
+            ├─ 0x06                       Fence F_x
+            └─ 0x07                       Fence F_o
+S ‖ ShareID ─┬─ 0x01                      Cut
+             └─ 0x02 ‖ k:u64              LiveCut
+C ‖ hash                                  Chunk
+B ‖ name                                  Block
+I ‖ name                                  Put intent
+D ‖ name                                  Pending deletion
+K ‖ name                                  Candidate
+```
+
+One file's records share a prefix, and sit next to its namespace records
+([§1.2](#1.2%20Why%20it%20is%20a%20separate%20RFC%20from%20the%20namespace)), so every per-file operation reads and writes one contiguous range:
+the covering lookup is a scan of `F‖FileID‖0x04` from the offset down
+([§8.1](#8.1%20Covering%20lookup)); a removal's batches scan refs in offset order from their cursor;
+a snapshot deletion scans `0x05` by `died`. Chunk, block and the three sweep
+prefixes are keyed by hash-like values, so they spread evenly and no key is
+sequential.
+
+### B.2 Records
+
+| Record | Key | Value fields | Written by |
+| --- | --- | --- | --- |
+| **Shape** | `F‖FileID‖01` | `size` u64 · `applied` version (u128) · `mtime`, `ctime` (i64 ns) | existence commit, removal phase 1 |
+| **Hole** | `F‖FileID‖02‖start` | `end` u64 | existence commit, removal phase 1 and 2 |
+| **Removal** | `F‖FileID‖03‖version` | `start`, `end` u64 · `kind` (truncate, deallocate, release, clone) · `cursor` u64 · `done` bool | removal phase 1 creates; phase 2 advances; owner prunes |
+| **Ref** | `F‖FileID‖04‖offset` | `hash` (32 B, or zero ref) · `skip`, `length` u64 · `oldest`, `newest` versions · `born` u64 | offload commit, removal phase 2, clone |
+| **History** | `F‖FileID‖05‖died‖offset` | the Ref's fields as they were | a transaction superseding a ref a live snapshot sees |
+| **Fence F_x / F_o** | `F‖FileID‖06` / `07` | `epoch` u64 | new owner; removals and releases |
+| **Cut** | `S‖ShareID‖01` | `k` u64 · `klatest` u64 | snapshot cut, snapshot deletion (behind the cut gate) |
+| **LiveCut** | `S‖ShareID‖02‖k` | — | snapshot cut creates, deletion removes |
+| **Chunk** | `C‖hash` | `block` name · `position` u64 · `length` u32 · `refcount` u64 · `stamp` u64 | offload commit creates; every ref change counts and stamps; relocation moves; retirement deletes |
+| **Block** | `B‖name` | `live` u32 · `encodings` list of (transform ID, version, material ID, fingerprint) | offload commit, relocation create; retirement deletes |
+| **Put intent** | `I‖name` | `epoch` u64 | writer before a put; commit or abandonment deletes |
+| **Pending deletion** | `D‖name` | — | retirement, collection; removed after the remote delete |
+| **Candidate** | `K‖name` | — | any transaction leaving a block's `live` at zero; retirement deletes |
+
+### B.3 What points at what
+
+```mermaid
+erDiagram
+    SHAPE ||--o{ HOLE : "file has"
+    SHAPE ||--o{ REMOVAL : "file has"
+    SHAPE ||--o{ REF : "file has"
+    SHAPE ||--o{ HISTORY : "file keeps for snapshots"
+    REF }o--|| CHUNK : "names by hash"
+    HISTORY }o--|| CHUNK : "names by hash"
+    CHUNK }o--|| BLOCK : "lives in, by name"
+    BLOCK |o--o| CANDIDATE : "may be flagged"
+    INTENT |o--o| BLOCK : "becomes, at commit"
+    PENDING_DELETION |o--o| BLOCK : "follows retirement"
+    CUT ||--o{ LIVECUT : "share holds"
+```
+
+Refs and history name chunks by hash, never blocks, so relocation rewrites one
+chunk record ([§2.5](#2.5%20Refs%20name%20hashes%2C%20never%20blocks)). A chunk's `refcount` counts the refs and history refs that
+name it ([§6.1](#6.1%20A%20refcount%20is%20exactly%20its%20refs)); a block's `live` counts the chunk records that name it
+with a nonzero refcount ([§2.3](#2.3%20Block)). A block name exists as a put intent, then a
+block record, then a pending deletion, never as two at once and never again
+after ([§7.6](#7.6%20Put%20intents)).
+
+> [!important] Pending review — data model appendix
+> New. A single reference view of the records for review; an interactive version
+> of the same view is published separately.
