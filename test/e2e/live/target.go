@@ -22,6 +22,8 @@
 //	DITTOFS_E2E_LIVE_S3_PREFIX       the block store's key prefix; it must hold this share's objects only
 //	DITTOFS_E2E_LIVE_S3_ACCESS_KEY
 //	DITTOFS_E2E_LIVE_S3_SECRET_KEY
+//	DITTOFS_E2E_LIVE_S3_PROVIDER     rclone's name for the S3 provider, e.g. Cubbit (default: Other)
+//	DITTOFS_E2E_LIVE_RCLONE          the operators' rclone, for `rclone size` (default: rclone on PATH)
 //	DITTOFS_E2E_LIVE_DFSCTL          the server's own dfsctl (default: built from this checkout)
 //	DITTOFS_E2E_LIVE_RESULT          optional: write a JSON summary of the run to this file
 //
@@ -30,7 +32,9 @@
 package live
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -69,6 +73,8 @@ type Target struct {
 	S3Prefix      string
 	S3AccessKey   string
 	S3SecretKey   string
+	S3Provider    string
+	Rclone        string
 	Dfsctl        string
 	ResultFile    string
 }
@@ -95,6 +101,8 @@ func FromEnv(t *testing.T) *Target {
 		S3Prefix:      get("S3_PREFIX"),
 		S3AccessKey:   get("S3_ACCESS_KEY"),
 		S3SecretKey:   get("S3_SECRET_KEY"),
+		S3Provider:    get("S3_PROVIDER"),
+		Rclone:        get("RCLONE"),
 		Dfsctl:        get("DFSCTL"),
 		ResultFile:    get("RESULT"),
 		SMBPort:       12445,
@@ -113,6 +121,9 @@ func FromEnv(t *testing.T) *Target {
 	}
 	if tg.S3Region == "" {
 		tg.S3Region = "us-east-1"
+	}
+	if tg.S3Provider == "" {
+		tg.S3Provider = "Other"
 	}
 	var missing []string
 	for k, v := range map[string]string{
@@ -161,14 +172,15 @@ func (tg *Target) Bucket(t *testing.T) *framework.LocalstackHelper {
 	return &framework.LocalstackHelper{T: t, Endpoint: tg.S3Endpoint, Client: client}
 }
 
-// Objects is what `rclone size` reports for the share's prefix, plus the keys.
+// Objects counts what is under the share's prefix: objects and bytes (the numbers
+// `rclone size` reports), and, from an S3 listing, the keys.
 type Objects struct {
 	Count int
 	Bytes int64
 	Keys  map[string]int64
 }
 
-// Objects lists everything under the share's prefix.
+// Objects lists everything under the share's prefix through the S3 API.
 func (tg *Target) Objects(t *testing.T, b *framework.LocalstackHelper) Objects {
 	t.Helper()
 	o := Objects{Keys: map[string]int64{}}
@@ -178,6 +190,59 @@ func (tg *Target) Objects(t *testing.T, b *framework.LocalstackHelper) Objects {
 		o.Bytes += obj.Size
 	}
 	return o
+}
+
+// rcloneRemote names the rclone remote for the target's bucket. It is defined in the
+// environment of each rclone call (RCLONE_CONFIG_DITTOFSLIVE_*), like an rclone.conf
+// section with type, provider, env_auth, endpoint and keys, so the credentials reach
+// neither a command line nor a file.
+const rcloneRemote = "dittofslive"
+
+// rclone runs the target's rclone and returns its standard output.
+func (tg *Target) rclone(t *testing.T, args ...string) []byte {
+	t.Helper()
+	bin := tg.Rclone
+	if bin == "" {
+		p, err := exec.LookPath("rclone")
+		if err != nil {
+			t.Fatalf("rclone not found: set DITTOFS_E2E_LIVE_RCLONE")
+		}
+		bin = p
+	}
+	cfg := "RCLONE_CONFIG_" + strings.ToUpper(rcloneRemote) + "_"
+	cmd := exec.Command(bin, args...)
+	cmd.Env = append(os.Environ(),
+		cfg+"TYPE=s3", cfg+"PROVIDER="+tg.S3Provider, cfg+"ENV_AUTH=false", cfg+"ENDPOINT="+tg.S3Endpoint,
+		cfg+"ACCESS_KEY_ID="+tg.S3AccessKey, cfg+"SECRET_ACCESS_KEY="+tg.S3SecretKey)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("%s %s: %v: %s", bin, strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+	}
+	return out
+}
+
+// RcloneVersion is the first line of `rclone version`, e.g. "rclone v1.75.1".
+func (tg *Target) RcloneVersion(t *testing.T) string {
+	t.Helper()
+	line, _, _ := strings.Cut(string(tg.rclone(t, "version")), "\n")
+	return strings.TrimSpace(line)
+}
+
+// RcloneSize is `rclone size` of the share's prefix, the operators' own check, run
+// with their binary when DITTOFS_E2E_LIVE_RCLONE names it. Keys is nil.
+func (tg *Target) RcloneSize(t *testing.T) Objects {
+	t.Helper()
+	var size struct {
+		Count int   `json:"count"`
+		Bytes int64 `json:"bytes"`
+	}
+	out := tg.rclone(t, "size", "--json", rcloneRemote+":"+tg.S3Bucket+"/"+tg.S3Prefix)
+	if err := json.Unmarshal(out, &size); err != nil {
+		t.Fatalf("rclone size output %q: %v", out, err)
+	}
+	return Objects{Count: size.Count, Bytes: size.Bytes}
 }
 
 // MountSMB mounts the share with the Linux kernel SMB client and unmounts it when

@@ -28,32 +28,34 @@ if [[ "$IMPL" == go ]]; then
     REPO="$(cd "$HERE/../../.." && pwd)"
     owner="$(stat -c %U "$REPO")"
     # /tmp/dtc is the path dtc shares with its container: the result comes back
-    # through it, and the server's own dfsctl goes in (the client that matches the
-    # server, as the shell canary uses; the test would otherwise build this checkout's).
+    # through it, and two binaries go in. The server's own dfsctl (the client that
+    # matches the server; the test would otherwise build this checkout's), and the
+    # operators' rclone that setup copied, for `rclone size` at each checkpoint.
+    [[ -x "$STATE/bin/rclone" ]] || { echo "CANARY FAIL impl=go: $STATE/bin/rclone missing (run setup-canary.sh with CANARY_RCLONE_BIN)" >"$STATE/status.txt"; exit 1; }
     [[ -d /tmp/dtc ]] || install -d -o "$owner" -g "$owner" /tmp/dtc
-    result="/tmp/dtc/live-canary-$$.json" dfsctl="/tmp/dtc/live-canary-$$.dfsctl"
-    rm -f "$result"; install -m 0755 "$STATE/bin/dfsctl" "$dfsctl"
+    result="/tmp/dtc/live-canary-$$.json" dfsctl="/tmp/dtc/live-canary-$$.dfsctl" rclone="/tmp/dtc/live-canary-$$.rclone"
+    rm -f "$result"; install -m 0755 "$STATE/bin/dfsctl" "$dfsctl"; install -m 0755 "$STATE/bin/rclone" "$rclone"
     set -a
     # shellcheck disable=SC1090  # the env file setup-canary.sh writes
     . "$ENV_FILE"
     set +a
-    export DITTOFS_E2E_LIVE_RESULT="$result" DITTOFS_E2E_LIVE_DFSCTL="$dfsctl"
+    export DITTOFS_E2E_LIVE_RESULT="$result" DITTOFS_E2E_LIVE_DFSCTL="$dfsctl" DITTOFS_E2E_LIVE_RCLONE="$rclone"
     # Root-only: a failing dfsctl call's error, in the test output, carries its args.
-    (umask 077; : >"$log")
+    (umask 077; echo "# rclone: $STATE/bin/rclone, sha256 $(sha256sum "$STATE/bin/rclone" | cut -c1-16)" >"$log")
     # setpriv keeps the environment (sudo would reset it): the secrets stay out of argv.
     (cd "$REPO" && setpriv --reuid="$owner" --regid="$owner" --init-groups env HOME="$(getent passwd "$owner" | cut -d: -f6)" \
         "$REPO/test/harness/bin/dtc" shell -c 'go test -tags=e2e -count=1 -v -run "^TestLiveCanary_SMB$" ./test/e2e/live/') \
-        </dev/null >"$log" 2>&1
+        </dev/null >>"$log" 2>&1
     rc=$?
     if [[ -s "$result" ]]; then
         jq -c . "$result" | tee -a "$STATE/history.jsonl" >"$STATE/last.json"
-        jq -r '"CANARY \(.status) run=\(.run) impl=go files=\(.files) bytes=\(.bytes) rclone_size(before/written/deleted/gc)=\([.rclone_size.before, .rclone_size.written, .rclone_size.deleted, .rclone_size.gc] | map(.objects // "-") | join("/")) objects seconds=\(.seconds.total | floor)" + (if .status == "FAIL" then " failed_step=\(.step)" else "" end)' \
+        jq -r '"CANARY \(.status) run=\(.run) impl=go \(.rclone // "rclone ?") files=\(.files) bytes=\(.bytes) rclone_size(before/written/deleted/gc)=\([.rclone_size.before, .rclone_size.written, .rclone_size.deleted, .rclone_size.gc] | map(.objects // "-") | join("/")) objects seconds=\(.seconds.total | floor)" + (if .status == "FAIL" then " failed_step=\(.step)" else "" end)' \
             "$result" >"$STATE/status.txt"
     else
         echo "CANARY FAIL impl=go: the test wrote no result (build or setup failure; see $log)" >"$STATE/status.txt"
         ((rc == 0)) && rc=1
     fi
-    rm -f "$result" "$dfsctl"
+    rm -f "$result" "$dfsctl" "$rclone"
     find "$STATE/logs" -name 'canary-*.log' -mtime +14 -delete 2>/dev/null
     exit "$rc"
 fi

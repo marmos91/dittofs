@@ -10,8 +10,9 @@
 #                                  GC and evict), with fresh random passwords
 #   - root-only       /etc/dittofs-canary/canary.env (CANARY_* for canary.sh and
 #                     DITTOFS_E2E_LIVE_* for test/e2e/live) and CANARY_STATE/bin/dfsctl
-# Credentials are read from an rclone remote (CANARY_RCLONE_REMOTE in rclone.conf) or
-# from S3_ENDPOINT/S3_ACCESS_KEY/S3_SECRET_KEY, and are never printed.
+# Credentials are read from an rclone remote (CANARY_RCLONE_REMOTE in rclone.conf; its
+# provider too) or from S3_ENDPOINT/S3_ACCESS_KEY/S3_SECRET_KEY (and S3_PROVIDER), and
+# are never printed. CANARY_RCLONE_BIN names the operators' rclone binary to measure with.
 #
 #   DFSCTL=/path/to/dfsctl CANARY_BUCKET=my-bucket CANARY_RCLONE_REMOTE=myremote \
 #     CANARY_METADATA_DIR=/srv/data/canary-metadata test/harness/canary/setup-canary.sh
@@ -39,7 +40,11 @@ if [[ -n "${CANARY_RCLONE_REMOTE:-}" ]]; then
     conf="${CANARY_RCLONE_CONF:-$HOME/.config/rclone/rclone.conf}"
     get() { awk -v s="[$CANARY_RCLONE_REMOTE]" -v k="$1" '$0==s {f=1; next} /^\[/ {f=0} f && $1==k {sub(/^[^=]*=[ \t]*/, ""); print; exit}' "$conf"; }
     S3_ENDPOINT="$(get endpoint)"; S3_ACCESS_KEY="$(get access_key_id)"; S3_SECRET_KEY="$(get secret_access_key)"
+    S3_PROVIDER="$(get provider)"
 fi
+# rclone's provider name (Cubbit, AWS, ...), so the canary's `rclone size` runs with the
+# same remote settings as the operators' own.
+S3_PROVIDER="${S3_PROVIDER:-Other}"
 [[ -n "${S3_ENDPOINT:-}" && -n "${S3_ACCESS_KEY:-}" && -n "${S3_SECRET_KEY:-}" ]] ||
     { echo "no S3 endpoint/credentials (CANARY_RCLONE_REMOTE or S3_ENDPOINT/S3_ACCESS_KEY/S3_SECRET_KEY)" >&2; exit 2; }
 
@@ -107,7 +112,7 @@ CANARY_OPS_PASS=$OPS_PASS
 CANARY_S3_BUCKET=$BUCKET
 CANARY_S3_PREFIX=$PREFIX
 RCLONE_CONFIG_CANARYS3_TYPE=s3
-RCLONE_CONFIG_CANARYS3_PROVIDER=Other
+RCLONE_CONFIG_CANARYS3_PROVIDER=$S3_PROVIDER
 RCLONE_CONFIG_CANARYS3_ENDPOINT=$S3_ENDPOINT
 RCLONE_CONFIG_CANARYS3_ACCESS_KEY_ID=$S3_ACCESS_KEY
 RCLONE_CONFIG_CANARYS3_SECRET_ACCESS_KEY=$S3_SECRET_KEY
@@ -125,6 +130,7 @@ DITTOFS_E2E_LIVE_S3_BUCKET=$BUCKET
 DITTOFS_E2E_LIVE_S3_PREFIX=$PREFIX
 DITTOFS_E2E_LIVE_S3_ACCESS_KEY=$S3_ACCESS_KEY
 DITTOFS_E2E_LIVE_S3_SECRET_KEY=$S3_SECRET_KEY
+DITTOFS_E2E_LIVE_S3_PROVIDER=$S3_PROVIDER
 EOF
 sudo install -m 0600 -o root -g root "$tmp" "$ENV_FILE"; rm -f "$tmp"
 sudo install -d -m 0755 "$STATE" "$STATE/bin"

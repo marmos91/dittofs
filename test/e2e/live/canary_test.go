@@ -4,6 +4,7 @@ package live
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -28,7 +29,9 @@ type canaryResult struct {
 	Files           int                     `json:"files"`
 	Bytes           int64                   `json:"bytes"`
 	UploadedObjects int                     `json:"uploaded_objects"`
+	Rclone          string                  `json:"rclone"`
 	RcloneSize      map[string]objectsCount `json:"rclone_size"`
+	S3List          map[string]objectsCount `json:"s3_list"`
 	Seconds         map[string]float64      `json:"seconds"`
 }
 
@@ -44,8 +47,9 @@ type objectsCount struct {
 //	evict the server's caches and read again from the remote -> delete ->
 //	GC with grace 0 -> the objects are gone
 //
-// It counts the share's prefix (objects and bytes, what `rclone size` reports) at
-// four checkpoints. Before writing it must be 0; a failed earlier run's leftovers
+// It runs `rclone size` on the share's prefix (objects and bytes; the operators'
+// rclone, DITTOFS_E2E_LIVE_RCLONE) at four checkpoints, each cross-checked by an S3
+// listing through the framework's helper. Before writing it must be 0; a failed earlier run's leftovers
 // are removed and GC'd first. After the upload it holds the new objects. After the
 // delete it is unchanged, because a delete alone does not remove remote objects.
 // After GC it must be 0 again. The files are random: repeated content stays up to
@@ -58,7 +62,8 @@ func TestLiveCanary_SMB(t *testing.T) {
 
 	started := time.Now()
 	run := "run-" + started.UTC().Format("20060102T150405Z")
-	res := &canaryResult{Run: run, Share: tg.Share, RcloneSize: map[string]objectsCount{}, Seconds: map[string]float64{}}
+	res := &canaryResult{Run: run, Share: tg.Share, RcloneSize: map[string]objectsCount{}, S3List: map[string]objectsCount{},
+		Seconds: map[string]float64{}}
 	if tg.ResultFile != "" {
 		t.Cleanup(func() {
 			res.Time = time.Now().UTC().Format(time.RFC3339)
@@ -84,11 +89,18 @@ func TestLiveCanary_SMB(t *testing.T) {
 			t.FailNow()
 		}
 	}
+	// checkpoint records `rclone size` of the prefix, which the checks use, and an S3
+	// listing of it: two clients, so a disagreement shows in the log and the result.
 	checkpoint := func(t *testing.T, name string) Objects {
 		t.Helper()
-		o := tg.Objects(t, bucket)
+		o := tg.RcloneSize(t)
 		res.RcloneSize[name] = objectsCount{Objects: o.Count, Bytes: o.Bytes}
-		t.Logf("%s/%s [%s]: %d object(s), %d bytes", tg.S3Bucket, tg.S3Prefix, name, o.Count, o.Bytes)
+		t.Logf("rclone size %s/%s [%s]: %d object(s), %d bytes", tg.S3Bucket, tg.S3Prefix, name, o.Count, o.Bytes)
+		l := tg.Objects(t, bucket)
+		res.S3List[name] = objectsCount{Objects: l.Count, Bytes: l.Bytes}
+		if l.Count != o.Count || l.Bytes != o.Bytes {
+			t.Logf("note: the S3 listing [%s] found %d object(s), %d bytes", name, l.Count, l.Bytes)
+		}
 		return o
 	}
 	gcGrace0 := func(t *testing.T) {
@@ -104,6 +116,8 @@ func TestLiveCanary_SMB(t *testing.T) {
 	step("preflight", func(t *testing.T) {
 		_, err := admin.Run("share", "show", tg.Share)
 		require.NoError(t, err, "share %s", tg.Share)
+		res.Rclone = tg.RcloneVersion(t)
+		t.Logf("%s (%s), provider %s", res.Rclone, cmp.Or(tg.Rclone, "rclone on PATH"), tg.S3Provider)
 	})
 
 	step("leftovers", func(t *testing.T) {

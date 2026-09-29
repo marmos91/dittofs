@@ -407,7 +407,10 @@ bytes, the operators' usual check) at four checkpoints:
 - **after GC:** must be 0 objects and 0 bytes.
 
 `setup-canary.sh` copies the host's `rclone` (`CANARY_RCLONE_BIN`, else the one on PATH)
-next to `dfsctl`, so the canary measures with the same binary the operators use.
+next to `dfsctl`, and takes the S3 provider from the operators' rclone remote, so both
+implementations measure with the same binary and remote settings the operators use. The
+Go test also lists the prefix through the S3 API at each checkpoint and logs a note if
+the two clients disagree (`s3_list` in the result); its checks use the rclone numbers.
 
 It ends with `CANARY PASS …` (exit 0) or `CANARY FAIL step=<step> …` (exit 1)
 (`failed_step=<step>` for `go`), and appends a JSON record to `history.jsonl`. A failed pass leaves its run directory behind,
@@ -448,7 +451,9 @@ Setup also copies the server's own `dfsctl` to `/srv/dittofs-canary/bin/`, and b
 implementations use it, so client and server always match. The canary image mounts it
 (which is why it is Ubuntu 26.04: it has to match the host's glibc); for `go`,
 `run-canary.sh` copies it into `/tmp/dtc`, the path `dtc` shares with its container,
-and names it in `DITTOFS_E2E_LIVE_DFSCTL`. The Go pass gets its variables through the
+and names it in `DITTOFS_E2E_LIVE_DFSCTL`; likewise the rclone copy, in
+`DITTOFS_E2E_LIVE_RCLONE` (the log's first line records its checksum), and the status
+line names its version. The Go pass gets its variables through the
 environment, never on a command line, and its log is root-only (0600), because a
 failing `dfsctl` call's error, in the test output, repeats its arguments, token
 included. Re-running setup rotates both passwords.
@@ -473,7 +478,8 @@ missing when the target is only partly set), and the rest reuses the e2e helpers
 |---|---|---|
 | `tg.Admin(t)` | logs in as the target's admin account | `helpers.LoginWithCredentials` (the body of `LoginAsAdmin`, with the credentials as arguments), `helpers.WithDfsctlBinary` for the server's own `dfsctl` |
 | `tg.Bucket(t)` | an S3 client on the real bucket | `framework.LocalstackHelper` (the same listing code the Localstack tests use) |
-| `tg.Objects(t, b)` | objects and bytes under the share's prefix (what `rclone size` reports), plus the keys | `ListS3PrefixWithSizes` |
+| `tg.RcloneSize(t)` | `rclone size` of the share's prefix, with the operators' rclone; credentials in the call's environment (`RCLONE_CONFIG_DITTOFSLIVE_*`) | `DITTOFS_E2E_LIVE_RCLONE` |
+| `tg.Objects(t, b)` | objects and bytes under the share's prefix through the S3 API, plus the keys | `ListS3PrefixWithSizes` |
 | `tg.MountSMB(t)` | mounts the share with `mount.cifs` (SMB 3.1.1, `cache=none`, a credentials file), unmounts at cleanup | Linux, root |
 | `live.WaitUploaded(t, admin, share, timeout)` | waits for `unsynced_bytes` and `pending_uploads` to reach 0 | `helpers.GetBlockStats` |
 
@@ -489,6 +495,8 @@ GC and evict go through the existing `helpers.TriggerBlockGC` and `helpers.Evict
 | `DITTOFS_E2E_LIVE_S3_ENDPOINT`, `_S3_REGION` | the share's block store (region default `us-east-1`) |
 | `DITTOFS_E2E_LIVE_S3_BUCKET`, `_S3_PREFIX` | the store's bucket and key prefix; the prefix must hold this share's objects only |
 | `DITTOFS_E2E_LIVE_S3_ACCESS_KEY`, `_S3_SECRET_KEY` | credentials for that bucket |
+| `DITTOFS_E2E_LIVE_S3_PROVIDER` | rclone's provider name, e.g. `Cubbit` (default `Other`) |
+| `DITTOFS_E2E_LIVE_RCLONE` | the operators' rclone binary (default: `rclone` on PATH) |
 | `DITTOFS_E2E_LIVE_DFSCTL` | the server's own `dfsctl` (default: built from this checkout) |
 | `DITTOFS_E2E_LIVE_RESULT` | optional: write the run's JSON summary to this file |
 
