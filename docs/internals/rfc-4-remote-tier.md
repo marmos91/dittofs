@@ -124,7 +124,7 @@ Three requirements on the layout:
   chunks a block may hold ([RFC 2 §5](rfc-2-carver.md#5.%20Packing%3A%20three%20rules%2C%20not%20a%20component)) times the size of one index entry. A reader
   rejects a larger declared length before allocating for it.
 - The name **MUST** be known before encoding starts, because it is written into
-  the header. [RFC 8 §5.4](rfc-8-engine.md#5.4%20A%20block%27s%20name%20is%20derived%20here) derives it from the chunk hashes, which exist before
+  the header. [RFC 8 §5.4](rfc-8-engine.md#5.4%20A%20block%27s%20name%20is%20derived%20here%2C%20and%20checked%20before%20the%20put) derives it from the chunk hashes, which exist before
   any byte is encoded.
 
 The header comes first, so every body's length is known before the first byte is
@@ -308,6 +308,16 @@ blocks as its own ([RFC 9 §5.3](rfc-9-gc.md#5.3%20It%20runs%20only%20where%20th
   check, and it rewrites identical bytes: positions recorded from either put stay
   right.
 
+  > decision: an overwrite *intends* identical bytes, but bytes corrupted in
+  > transit are caught before storage only by a service that checks the put's
+  > checksum. On a service that only reports a digest after storing, a corrupt
+  > overwrite of a block already committed stays until the syncer's retry
+  > rewrites it; a crash before that retry leaves it corrupt, and reads report
+  > the chunk corrupt. The window needs two passes to race past the pre-put
+  > check and a transit error on the losing put. Withdraw this exemption, by
+  > refusing digest-only services or making a service-checked put mandatory,
+  > if a digest-only service is ever observed corrupting a put.
+
 A store **MUST NOT** require a conditional put (put-if-absent): services that
 claim the same protocol differ on it ([Appendix B](#Appendix%20B%20%E2%80%94%20measurements)). Doing without it rests on
 content-derived names, on the pre-put check above, and on GC's deletion fence,
@@ -394,7 +404,7 @@ whichever service it was not written against.
 
 | Error | Meaning | What the caller does |
 | --- | --- | --- |
-| `ErrNotFound` | this block is absent; the store itself is fine | fails the read; the engine re-resolves the chunk ([RFC 8 §6.7](rfc-8-engine.md#6.7%20An%20absent%20object%20is%20re-resolved%20exactly%20once)) |
+| `ErrNotFound` | this block is absent; the store itself is fine | fails the read; the engine re-resolves the chunk ([RFC 8 §6.7](rfc-8-engine.md#6.7%20An%20absent%20object%20is%20re-resolved%20while%20its%20location%20moves)) |
 | `ErrInvalid` | the request was wrong: a range past the end, or an operation the service does not support | fails the call; not retried |
 | `ErrDenied` | the store refused, or does not exist: credentials, permissions, a missing bucket | fails the call; the syncer's health rules decide what follows ([RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work)) |
 | `ErrTransient` | retrying may help: network, timeout, a server error, throttling, a short body | the syncer retries within its bound ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
@@ -747,7 +757,7 @@ Several stores may share a bucket under different prefixes, never one prefix
 
 `404 NoSuchBucket` is `ErrDenied`, not `ErrNotFound`: a missing bucket is the
 store's failure, and reading it as a missing block would make every read
-re-resolve its chunk ([RFC 8 §6.7](rfc-8-engine.md#6.7%20An%20absent%20object%20is%20re-resolved%20exactly%20once)) and then report it absent, while the
+re-resolve its chunk ([RFC 8 §6.7](rfc-8-engine.md#6.7%20An%20absent%20object%20is%20re-resolved%20while%20its%20location%20moves)) and then report it absent, while the
 store's health never counted the outage.
 
 S3 throttles above a few thousand requests per second per key prefix and answers
