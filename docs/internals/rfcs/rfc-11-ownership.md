@@ -137,13 +137,18 @@ policy is open ([§14](#14.%20Open%20questions)).
 ## 4. Moving ownership
 
 A move is a handover ([RFC 10 §9.4](rfc-10-journal-replication.md#9.4%20Handover)): the new owner catches up through `Export`
-([RFC 1 §3.10](rfc-1-journal.md#3.10%20Operations%20versioned%20elsewhere)) on the un-offloaded operations of the unit's files the old
+([RFC 10 §2.5](rfc-10-journal-replication.md#2.5%20The%20journal%20extension)), which yields each operation with its bytes, and applies them
+with `Apply`, on the un-offloaded operations of the unit's files the old
 owner's journal holds, the old owner stops and drains, the configuration moves at
 the next epoch, and the new owner settles those files to the drained point before
 it serves. Shipping the dirty operations, rather than offloading them first,
 keeps a move a local-network transfer instead of a remote-tier round trip.
 Moving files from one unit to another is the same handover, with one
 compare-and-swap over both units ([§3.1](#3.1%20A%20token%20is%20a%20lease%2C%20fenced%20by%20an%20epoch)).
+
+> [!important] Pending review — handover catches up through Export
+> `Since` yields only versions and extents, not bytes; a new owner needs the
+> operations with their bytes, which RFC 10's `Export` gives and `Apply` replays.
 
 A lost owner is not moved but failed over ([RFC 10 §9](rfc-10-journal-replication.md#9.%20Failover)), once its lease lapses.
 
@@ -233,7 +238,36 @@ the pruning of removal records. A group commit across files checks each file's
 unit epoch. The check **MUST** conflict with any concurrent change of the epoch
 whatever the store's isolation level: a read the store tracks for conflicts, or
 an explicit lock on the key. A plain read under snapshot isolation is not a
-fence.
+fence, and neither is a scan over a key range: a read whose result gates a
+commit **MUST** conflict with every concurrent write that would change it.
+
+**The epoch is held in two fence records per file**, one per commit path, as
+[RFC 6 §5.4](rfc-6-block-metadata.md#5.4%20Reads%20that%20gate%20a%20commit) specifies them:
+
+| Record | Read by | Written by |
+| --- | --- | --- |
+| `F_x(file)` | existence commits, with conflict tracking | a new owner; removals and releases |
+| `F_o(file)` | offload commits and removal pruning | a new owner; removals and releases |
+
+- A new owner **MUST** write both, at its epoch, before its first operation on
+  the file under that epoch. An epoch change therefore conflicts with every
+  commit on either path.
+- A removal or release reads and writes both, so it conflicts with an offload
+  commit and with an existence commit of the same file in both directions,
+  without a range lock the store does not offer.
+- A check that forces every commit of a unit through one record **MUST NOT** be
+  used: it serialises every file of the unit on one key.
+- A fenced commit covers only operations durable on the unit's replica set
+  ([RFC 10 §6](rfc-10-journal-replication.md#6.%20Fencing)).
+- A **put intent** ([RFC 6 §7.6](rfc-6-block-metadata.md#7.6%20Put%20intents)) carries the owner epoch it was
+  written under. An intent whose epoch is superseded names an attempt that can no
+  longer commit, and GC **MAY** remove it ([RFC 9 §5](rfc-9-gc.md#5.%20Unrecorded%20objects)).
+
+> [!important] Pending review — per-file fence records
+> The two metadata backends differ: one tracks point reads but not range scans,
+> the other validates no reads at all. Two point records per file make the epoch
+> check a write-write or tracked-read conflict on both, without one hot record
+> per unit. Intents carry the epoch so abandoned ones are recognisable.
 
 - **Release is fenced like a write.** It deletes the file's shape and records a
   removal of the whole file ([RFC 6](rfc-6-block-metadata.md)); a superseded owner's release would destroy
@@ -245,6 +279,15 @@ fence.
 - The owner epoch is separate from the removal versions a commit also checks
   ([RFC 6](rfc-6-block-metadata.md)).
 - A file's `size` ([RFC 6 §2.4](rfc-6-block-metadata.md#2.4%20Shape%20and%20holes)) is written only by the owner of its unit.
+
+*Backend notes (non-normative).* On the backend that tracks point reads, a
+conflict-tracked read is a get inside an update transaction with conflict
+detection on; a blind write detects nothing, so a guarded write also gets the
+key. On the snapshot-isolation backend it is an explicit key lock (optimistic,
+or pessimistic for contended keys), taken on several files in file-identity
+order. Transaction size limits set the batch size of removals
+([RFC 6 §6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation)), and no transaction spans an upload, which would hold back the
+store's garbage-collection safe point.
 
 ## 9. Failure
 
@@ -314,7 +357,7 @@ var ErrHeld = errors.New("ownership: token held elsewhere")
 | O7 | Open state that keeps an inode alive is a durable leased record by the time an unlink would release the inode; a grace period extends its lease; after an owner change nothing is released before grace ends. |
 | O8 | The write verifier changes whenever a unit's owner changes. |
 | O9 | Write tokens and client locks share no records. |
-| O10 | Every fenced commit — existence, offload, truncate, deallocate, release, clone and removal pruning — conflicts with a concurrent epoch change under the store's isolation level. |
+| O10 | Every fenced commit — existence, offload, truncate, deallocate, release, clone and removal pruning — conflicts with a concurrent epoch change under the store's isolation level, through the file's fence records and never through one record per unit. |
 | O11 | The configuration store holds no per-file state. |
 | O12 | Removal records are pruned only by the file's owner, under its epoch. |
 
@@ -349,6 +392,7 @@ Properties:
 | A non-member never serves content older than an acknowledged write (O5) | a check against the ref alone, a skipped check on fill |
 | An open file's content survives its unlink on another block service, through a grace period, and through an owner change (O7) | open state held in one process, a lease that lapses during grace, a new owner releasing on unlink before grace ends |
 | A release, a truncate or a removal pruning by a superseded owner is refused (O10, O12) | a release checked against existence only, pruning by whoever holds the record |
+| An epoch change concurrent with an existence commit, an offload commit and a removal of one file is detected on each backend's isolation level (O10) | an epoch check by range scan, a blind write to a fence record, a unit-wide fence record |
 | The configuration store's record count follows units, not files (O11) | a per-file token or a file-to-unit map kept as configuration |
 | A unit's writes resume after a move or a failover without operator action | a move that waits on a holder that is gone |
 

@@ -25,7 +25,10 @@ tags:
   out, so both are tested with a byte slice and a closure.
 - Boundaries are chosen by content, so an edit re-cuts only the chunks around it.
 - A chunk's name is the hash of its bytes; a block's name is derived from its
-  chunks' hashes ([§4](#4.%20Identity)). Nothing is minted.
+  chunks' hashes and a nonce drawn once per put attempt ([§4](#4.%20Identity)). A name is
+  never minted twice.
+- A stretch that ends at a limit rather than at a hole or the end of the file
+  leaves its tail uncut, so the next offer starts on a real boundary ([§2.4](#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut)).
 - Blocks are built by the engine under three rules ([§5](#5.%20Packing%3A%20three%20rules%2C%20not%20a%20component)).
 - The settings are public, so this layer does not hide which files you have
   ([§6](#6.%20Boundaries%20are%20public)).
@@ -86,8 +89,8 @@ Two things are specified here, and keeping them apart is what keeps both simple.
 | | chunker | carver |
 | --- | --- | --- |
 | Answers | where does this buffer's next chunk end? | what chunks are in this stretch, and what are they called? |
-| Given | settings, a byte slice, and whether it is the last | settings, a reader, the file offset it starts at |
-| Returns | one position, or "not yet — give me more" | one callback per chunk: offset, length, hash, bytes |
+| Given | settings, a byte slice of at least `Max` bytes, or a shorter last one | settings, a reader, the file offset it starts at, whether the stretch's end is real |
+| Returns | one position | one callback per chunk: offset, length, hash, bytes; and how many bytes it consumed |
 | Knows about | bytes and settings, nothing else | a reader, a hash function, a file offset |
 | Keeps between calls | nothing at all | nothing at all |
 | Allocates | never | never: the caller supplies the buffer |
@@ -99,21 +102,30 @@ Indicative shapes — the obligations are normative, the signatures are not:
     NextBoundary(p Params, buf []byte, final bool) (end int)
 
     // carver: runs the chunker across one stretch of bytes, in the caller's buffer
-    Cut(r io.Reader, base int64, p Params, buf []byte, emit func(Chunk, []byte) error) error
+    Cut(r io.Reader, base int64, p Params, buf []byte, realEnd bool,
+        emit func(Chunk, []byte) error) (consumed int64, err error)
 
     Chunk = { Offset int64; Length int32; Hash [32]byte }
 
-`NextBoundary` gets a buffer and returns where the first chunk in it ends. If it
-has not seen enough bytes to be sure, it returns zero and asks for more; `final`
-tells it no more are coming, so whatever is left is the last chunk. It looks at
-nothing but its arguments.
+`NextBoundary` gets a buffer and returns where the first chunk in it ends. It is
+called only with at least `Max` bytes, or with `final` set, so a whole chunk is
+always in view and there is no "not yet" answer: with `Max` bytes a boundary is
+found or `Max` itself is the end, and with `final` whatever is left is the last
+chunk. It looks at nothing but its arguments.
 
 `Cut` reads until the reader is empty. It refills `buf`, asks `NextBoundary`
 where each chunk ends, hashes that chunk, and calls `emit`. `buf` **MUST** hold at
 least `Max` bytes, so a whole chunk fits, and `Cut` **MUST** refuse a shorter one;
 its size is the caller's to choose ([RFC 8](rfc-8-engine.md)). `base` says where in
 the file the reader's first byte sits, so offsets come out as file offsets and the
-carver needs to know nothing else about the file.
+carver needs to know nothing else about the file. `realEnd` and `consumed` are
+[§2.4](#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut)'s.
+
+> [!important] Pending review — no "not yet", and a stretch end that is not real
+> `NextBoundary` no longer returns zero for "give me more": `Cut` calls it only
+> with `Max` bytes or `final`, which removes the second position a carver had to
+> track. `Cut` now takes whether the stretch end is real and returns how much it
+> consumed ([§2.4](#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut)).
 
 **Neither does the other's job**, and an implementation **MUST NOT** let them
 drift together:
@@ -172,8 +184,9 @@ the point. A chunk cannot straddle a hole, because no single call ever sees two
 stretches. There is no leftover state to clear between stretches, because there is
 no state between calls at all.
 
-The last chunk of a stretch comes out at whatever length is left, and **MAY** be
-shorter than the minimum. Content **MUST NOT** be padded to reach a chunk size.
+When the stretch's end is real ([§2.4](#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut)), its last chunk comes out at whatever
+length is left, and **MAY** be shorter than the minimum. Content **MUST NOT** be
+padded to reach a chunk size.
 
 > *A real cost, worth stating:* a badly fragmented file gives one short chunk per
 > stretch, and short chunks only dedup against identical fragments. Nothing can be
@@ -204,7 +217,8 @@ The carver keeps nothing between calls ([§1.2](#1.2%20Two%20layers%3A%20the%20c
 nothing. Everything below is derived by its caller from what `Cut` hands back:
 each chunk's offset, length and hash through `emit`, and the error `Cut` returns.
 The caller **MUST** make every metric below observable; the engine exports them,
-labelled with the share ([RFC 8](rfc-8-engine.md)). A metric is listed only if it says something about cutting;
+labelled with the namespace ([RFC 8](rfc-8-engine.md)), since the namespace, not
+the share, is what fixes the settings and the chunking key ([§6](#6.%20Boundaries%20are%20public)). A metric is listed only if it says something about cutting;
 whether a chunk was already stored is the engine's ([§1.1](#1.1%20Non-goals)).
 
 | Metric | Type | Answers |
@@ -213,13 +227,59 @@ whether a chunk was already stored is the engine's ([§1.1](#1.1%20Non-goals)).
 | `carver_chunks_total` | counter | chunks emitted; with bytes, the average chunk size, which [§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it) says is `Target` |
 | `carver_chunk_size_bytes` | histogram | the chunk-size distribution, with buckets at `Min`, `Target` and `Max`. A spike on `Min` means the boundary test does not follow `Target` ([§3.3](#3.3%20Why%20a%20large%20minimum%20smothers%20the%20search)) |
 | `carver_max_chunks_total` | counter | chunks cut at `Max` because no boundary was found: repetitive content ([§3.8](#3.8%20What%20happens%20on%20repetitive%20data)). A high share on data that is not repetitive means the boundary function is broken |
-| `carver_short_chunks_total` | counter | last-in-stretch chunks below `Min` ([§2.1](#2.1%20One%20unbroken%20stretch%20per%20call)); against chunks, how fragmented the offered stretches are |
+| `carver_short_chunks_total` | counter | chunks below `Min` ending at a real stretch end ([§2.1](#2.1%20One%20unbroken%20stretch%20per%20call)); against chunks, how fragmented the offered stretches are |
+| `carver_held_bytes_total` | counter | bytes left uncut at an artificial end ([§2.4](#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut)); against bytes, how much each offer re-reads |
 | `carver_stretches_total` | counter | `Cut` calls; bytes per stretch is the caller's lever on dedup ([§2.1](#2.1%20One%20unbroken%20stretch%20per%20call)) |
 | `carver_errors_total` | counter | calls that ended in an error, labelled `source` = `reader` or `emit` ([§7](#7.%20Errors)) |
 | `carver_duration_seconds` | histogram | time per `Cut` call; with bytes, carve throughput |
 
 The size histogram is the one that matters most: a wrong average costs sizing
 and dedup, never correctness, so nothing downstream notices it.
+
+> [!important] Pending review — metrics by namespace
+> Metrics are labelled by namespace, not share: settings and the chunking key
+> belong to the namespace. `carver_held_bytes_total` is new, for [§2.4](#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut).
+
+### 2.4 An artificial end leaves the tail uncut
+
+A stretch ends for one of two kinds of reason, and the caller **MUST** tell `Cut`
+which (`realEnd`):
+
+- **Real**: the bytes stop there for good — a hole, the file's settled end, or a
+  neighbour already durable. The last chunk is cut at whatever length is left
+  ([§2.1](#2.1%20One%20unbroken%20stretch%20per%20call)).
+- **Artificial**: the caller stopped reading — the offer's byte limit, or its age
+  ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)). The bytes carry on past the end; the caller just has not offered them.
+
+On an artificial end, `Cut` **MUST NOT** emit any byte after the last boundary
+the chunker found without `final`. It never calls `NextBoundary` with `final`
+set, returns in `consumed` how many bytes it cut, and the tail stays **Dirty** to
+be re-offered from that boundary. A tail is always shorter than `Max`, since `Max`
+bytes always yield a boundary.
+
+Why: a tail cut at a limit is a chunk whose end was chosen by the limit, not the
+content. The next offer would then start there, and every chunk after it would
+be cut from a start no earlier cut shares ([§3.5](#3.5%20What%20%22deterministic%22%20covers)) — short chunks and re-stored
+bytes on every streaming write. Held back, the next offer starts on a content
+boundary and cuts exactly as one long stretch would have.
+
+Two exceptions keep a tail from waiting forever:
+
+- **Age.** The caller **MAY** declare an artificial end real once the held tail's
+  oldest byte has reached the offload pass's maximum age ([RFC 8 §4.2](rfc-8-engine.md#4.2%20Offload%20is%20scheduled%20here)). That is
+  the only forced final cut, so a stream that stops writing is fully offloaded
+  within that age.
+- **Widening back.** Where the chunk before the stretch is a ref shorter than
+  `Min` that ends exactly where the stretch starts — a forced cut from an earlier
+  pass — the caller **MAY** start the stretch at that ref's start instead, so
+  the short chunk is re-cut into a full one. This widens backwards only; it is the
+  same permission [RFC 8 §5.6](rfc-8-engine.md#5.6%20A%20run%20is%20what%20the%20journal%20offers%2C%20widened%20only%20to%20re-tile) gives for re-tiling.
+
+> [!important] Pending review — the stretch-end rule
+> New. An offer cut at a limit used to emit its tail as a chunk, so a streaming
+> file was re-cut from a limit-chosen start on every pass. The tail now stays
+> Dirty; a forced cut happens only past the pass age ceiling, and a short chunk
+> left by one may be widened back over.
 
 ## 3. The boundary function
 
@@ -266,11 +326,22 @@ choosing separately. Three settings are three ways to misconfigure a share for n
 measured gain.
 
 **Why 256 KiB.** `Target` trades metadata against what an edit and a cold read
-cost ([Appendix C](#Appendix%20C%20%E2%80%94%20choosing%20the%20target)). At 256 KiB a 4 KiB cold read fetches about 0.3 MiB, and small
-edits re-store four times less than at 1 MiB, for about 3,700 chunk records per
-GiB — some 8×10⁹ at 2 PB. Blocks pack chunks to their own target ([§5](#5.%20Packing%3A%20three%20rules%2C%20not%20a%20component)), so the
-number and size of remote objects do not depend on `Target`. A share **MAY**
-choose another `Target`; the choice is fixed for its content ([§3.6](#3.6%20Changing%20any%20of%20this%20is%20a%20migration)).
+cost ([Appendix C](#Appendix%20C%20%E2%80%94%20choosing%20the%20target)). At 256 KiB a 4 KiB cold read fetches about 0.3 MiB, and
+whole-file re-chunking re-stores about four times less after small edits than at
+1 MiB; whether the engine's offload path keeps that ratio is Appendix C's
+measurement plan. On random input the average is `Target`, so 4,096 chunk records
+per GiB — about 8.6×10⁹ at 2 PB. Blocks pack chunks to their own target
+([§5](#5.%20Packing%3A%20three%20rules%2C%20not%20a%20component)), so the number and size of remote objects do not depend on `Target`. A
+share **MAY** choose another `Target`; the choice is fixed for its content
+([§3.6](#3.6%20Changing%20any%20of%20this%20is%20a%20migration)).
+
+**The ceiling under random overwrite.** Every chunk is at least `Min` except one
+ending at a real stretch end ([§2.4](#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut)). So a file whose edits are re-cut with
+widening ([RFC 8 §5.6](rfc-8-engine.md#5.6%20A%20run%20is%20what%20the%20journal%20offers%2C%20widened%20only%20to%20re-tile)) holds at most 1 GiB / `Min` chunks per GiB — 16,384 at the
+default, four times the random-input average — plus one per hole. Without
+widening, each isolated overwrite of `w` bytes between durable neighbours is its
+own short chunk, and the ceiling is 1 GiB / `w`: 262,144 per GiB for 4 KiB pages.
+That second figure is why the engine widens.
 
 
 An implementation **MUST** hit `Target` as the average chunk size, within a stated
@@ -289,6 +360,20 @@ design that decision is a bit mask, and the number of bits set in it fixes the
 average chunk size. A hard-coded mask therefore pins the average whatever `Target`
 is set to. An implementation **MUST** compute the mask from `Target`, and
 **SHOULD** assert the two agree when it starts up.
+
+**The mean includes the skip.** No boundary is tested in the first `Min` bytes,
+so a chunk's length is `Min` plus the search that follows. The mask **MUST** be
+sized so that this whole mean — skip included — is `Target`, which puts the
+search's own expected length near `Target − Min`, not `Target`. A mask sized to
+`Target` alone lands the average too high by up to `Min`, less what normalisation
+takes back: the 256 KiB row of [Appendix C](#Appendix%20C%20%E2%80%94%20choosing%20the%20target) averaged about 285 KiB, partly for
+that reason.
+
+> [!important] Pending review — target arithmetic
+> The "about 3,700 per GiB" figure came from one non-random corpus and is
+> replaced by the random-input value (4,096) and a stated ceiling under random
+> overwrite. The mask is now sized so the mean including the `Min` skip is
+> `Target`.
 
 ### 3.3 Why a large minimum smothers the search
 
@@ -334,14 +419,15 @@ any version.
 The one thing it does **not** cover is where a stretch begins. The first `Min`
 bytes of any stretch are never tested, so the same bytes starting at a different
 point cut differently. Cutting converges when the same stretch is offered again.
-A stretch whose start moves — an offer cut at a limit ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)), or a
-retry after a partial report — cuts its first chunks differently until its
-boundaries rejoin the earlier ones (B4). Those chunks are stored again under new
+An offer cut at a limit does not move the next start, because its tail is held
+back ([§2.4](#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut)). A stretch whose start does move — after a forced cut at the age
+ceiling, or a retry after a partial report — cuts its first chunks differently
+until its boundaries rejoin the earlier ones (B4). Those chunks are stored again under new
 hashes: a cost in space and transfer, never in correctness.
 
 The boundary function **MUST NOT** depend on anything beyond the bytes and the
 settings — not a file identity, an offset, a clock, or a random seed. The
-namespace's chunking key, when a share encrypts, is part of the settings
+namespace's chunking key, when the namespace encrypts, is part of the settings
 ([§6](#6.%20Boundaries%20are%20public)): same bytes, same `Target` and same key give the same boundaries.
 
 ### 3.6 Changing any of this is a migration
@@ -380,11 +466,16 @@ fixed-width records, zero-filled regions of sparse files, and VM images full of
 identical pages. It has a specific and severe failure mode, and it follows
 directly from the 64-byte window of [§3.4](#3.4%20How%20far%20back%20a%20decision%20looks).
 
-**If the data repeats with a period of 64 bytes or less, the search can never
-succeed.** The fingerprint depends only on the last 64 bytes, so at every tested
-position it takes the *same* value. If that one value does not match the mask, it
-never matches — not in this chunk, not anywhere in the file. There is no
-randomness left to save it.
+**If the data repeats with a period of 64 bytes or less, the search usually
+never succeeds.** The fingerprint depends only on the last 64 bytes, so with a
+period `p` it takes at most `p` distinct values, one per phase of the pattern. If
+none of those `p` values matches the mask, none ever will — not in this chunk,
+not anywhere in the file. There is no randomness left to save it. For all zeros
+`p` is 1, and the unkeyed table is fixed, so whether its one fingerprint matches
+is known in advance; it does not at any supported `Target` ([§9](#9.%20Conformance) asserts it),
+so every chunk is exactly `Max`; for a longer period, or under a keyed table
+([§6](#6.%20Boundaries%20are%20public)), one of the `p` values may match, and then boundaries fall at a fixed
+multiple of the period.
 
 Measured over 64 MiB under the former profile (4 MiB `Target`, 16 MiB `Max`); at
 any `Target` the degenerate rows cut every chunk at `Max`:
@@ -398,6 +489,11 @@ any `Target` the degenerate rows cut every chunk at `Max`:
 | 4 KiB repeating pattern | 64 | 1.00 MiB | yes, at a fixed period |
 
 Three consequences, and an implementation **MUST NOT** treat any as incidental:
+
+> [!important] Pending review — period wording
+> "Takes the same value" was wrong for a period above 1: a period `p` gives at
+> most `p` fingerprints. The exactly-`Max` guarantee is now claimed for zeros
+> under the unkeyed table only; the other degenerate rows are measurements.
 
 - **`Max` is load-bearing.** On three of these five inputs it is the only reason
   chunking terminates at all. Removing it, or setting it very high, turns
@@ -431,29 +527,43 @@ buffer that merely contains it.
 
 ### 4.2 A block
 
-A block's identity — its **name** — is **derived** from what it holds. It **MUST
-NOT** be generated, allocated, sequenced, drawn at random, or assigned by the
-remote tier. The name is 32 bytes:
+A block's **name** is 32 bytes, derived from what the block holds and from a
+nonce drawn for one put attempt:
 
-    name = BLAKE3-derive-key(context, len(scope) ‖ scope ‖ generation ‖ len(chain) ‖ chain ‖ h₁ ‖ … ‖ hₙ)
+    name = BLAKE3-derive-key(context, len(scope) ‖ scope ‖ nonce ‖ len(chain) ‖ chain ‖ h₁ ‖ … ‖ hₙ)
 
-- `context` is the fixed ASCII string `content-defined block name v1`. The
+- `context` is the fixed ASCII string `content-defined block name v2`. The
   key-derivation mode of BLAKE3 [2] separates this domain from a chunk's plain
   hash ([§4.1](#4.1%20A%20chunk)) by construction.
-- `len(scope)` is one byte, the length of `scope` (0–255); `scope` is the key
-  scope of [§4.3](#4.3%20Key%20scope), empty for a single scope.
-- `generation` is the block's **encoding generation**, a `uint64`: 8 bytes,
-  little-endian.
+- `len(scope) ‖ scope` is the scope's **canonical encoding**: one byte giving
+  the length (0–255), then the scope's bytes exactly as configured, with no
+  normalisation. `scope` is the key scope of [§4.3](#4.3%20Key%20scope), empty for a single scope.
+- `nonce` is 16 bytes (128 bits) from a cryptographic random source, drawn fresh
+  for each **put attempt**, and written into the block header ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)) so
+  a whole-block read can still recompute the name and check it.
 - `len(chain)` is one byte, the length of `chain`; `chain` is the block's
   **chain ID** ([RFC 5](rfc-5-transforms.md)): it covers everything that decides an encoded body's
   length — the transforms, their versions, their length-affecting settings, and
   the IDs of the material in use.
-- `h₁ … hₙ` are the 32-byte hashes of the chunks the block holds, in block order.
+- `h₁ … hₙ` are the 32-byte chunk hashes as the block header records them, in
+  block order: the plaintext hashes ([§4.1](#4.1%20A%20chunk)), or their sealed form when the
+  namespace encrypts ([RFC 5](rfc-5-transforms.md)). A name over plaintext hashes would let anyone
+  holding a candidate file and the header's nonce confirm the file from the key
+  alone, which is what sealing exists to prevent.
+
+A **put attempt** is one decision to store one planned block: its chunks, their
+order and its encoding plan. A name **MUST NOT** be minted twice. Every retry
+within an attempt reuses its name and its plan and writes the same bytes, and no
+other put of that name is ever issued. A new attempt at the same chunks — after
+the first was abandoned, or by a second writer — mints a new name. Before the
+first put of a name the writer durably records a **put intent** for it; the
+commit that records the block consumes the intent ([RFC 6](rfc-6-block-metadata.md), [RFC 9](rfc-9-gc.md)).
 
 How a name becomes a remote key is [RFC 4](rfc-4-remote-tier.md)'s. An implementation **MUST** carry a
-golden test vector — a fixed scope, generation, chain ID and chunk-hash list, and
-the name they give — and a changed vector **MUST** fail the build: a changed
-construction orphans every block already stored.
+golden test vector — a fixed non-empty scope, nonce, chain ID and chunk-hash
+list, and the name they give — and a changed vector **MUST** fail the build: a
+changed construction orphans every block already stored. The vector covers the
+scope's canonical encoding, so two encodings of one scope cannot both verify.
 
 Five things follow, and none of them is optional:
 
@@ -465,19 +575,27 @@ Five things follow, and none of them is optional:
 - **The input is hashes, not bytes.** The assembler already holds the chunk hash
   list; re-reading the chunk bytes to name the block would be a second pass over
   the data for a value the first pass already determined.
-- **One name, one layout.** Because the chain ID covers everything that decides
-  a body's length, two blocks with one name have the same body lengths and so the
-  same recorded positions. Encoding is deterministic ([RFC 5](rfc-5-transforms.md)), so they are the
-  same bytes too, and a second put of a name writes an identical object.
-- **A re-encode never reuses a name.** A block first written by offload has
-  generation 0. A relocation writes generation one above its source's — above the
-  highest source's, where it merges chunks from several — so its bytes never land
-  under a source's name, even when the chain ID is unchanged. The generation is
-  recorded in the block record ([RFC 6 §2.3](rfc-6-block-metadata.md#2.3%20Block)). A relocation **MUST** refuse a target
-  name equal to a source's.
+- **One name, one byte sequence.** Only one attempt ever puts a name, and it
+  puts the same bytes each time: encoding needs to be deterministic only within
+  one attempt — its measuring pass and its retries ([RFC 5](rfc-5-transforms.md)) — not across
+  attempts or builds.
+- **A re-encode never reuses a name.** A relocation is a new attempt, so it
+  mints a new target name, and a relocation re-run after a crash mints again; the
+  orphaned target of the first run is found by its intent ([RFC 9](rfc-9-gc.md)). No
+  generation counter is needed.
 
-Nothing mints a name, so there is no generator to call and no uniqueness to
-defend; why that makes a retried put safe is [RFC 3 §2.5](rfc-3-syncer.md#2.5%20An%20unknown%20outcome%20is%20not%20a%20success).
+Two writers carrying the same chunks produce two objects; the dedup oracle
+([RFC 8](rfc-8-engine.md)) keeps that rare, and the second is born dead and swept. That one
+extra put is the price of never having to defend a name against a second writer,
+a late delete or a service without conditional puts; why a retried put is safe is
+[RFC 3 §2.5](rfc-3-syncer.md#2.5%20An%20unknown%20outcome%20is%20not%20a%20success).
+
+> [!important] Pending review — names minted per attempt
+> The name now includes a 128-bit nonce drawn per put attempt and stored in the
+> header; the encoding generation is gone, the scope's byte encoding is fixed and
+> in the golden vector, and the hashes are the header's (sealed when encrypted).
+> Replaces the deletion fence: a name is never put by two attempts, so no delete
+> can race a re-put.
 
 ### 4.3 Key scope
 
@@ -485,17 +603,22 @@ A name **MAY** include a scope that partitions the name space. The scope decides
 whether two shares holding identical content resolve to one object or to two.
 
 The scope **MUST** be chosen explicitly rather than inherited from how names happen
-to be built, and **MUST NOT** vary between attempts to store one block, or the
-idempotency [§4.2](#4.2%20A%20block) buys is lost.
+to be built, and **MUST NOT** change within a put attempt, or the attempt's
+retries would write under two names.
+
+Names are minted per attempt ([§4.2](#4.2%20A%20block)), so two puts never share an object by
+name. What the scope decides is which chunks the dedup oracle may match — a chunk
+stored by one share is found by another only within one scope — and the name
+carries it so that a block cannot verify under another scope's name.
 
 The two settings differ in kind, not in degree:
 
 | | One scope | Scope per share |
 | --- | --- | --- |
-| Identical content in two shares | one object | one object per share |
+| Identical content in two shares | chunks stored once, by chunk dedup | chunks stored once per share |
 | Storage cost | paid once | paid per share |
 | Sweep | counts references across shares | independent per share |
-| What one share can infer | that another holds the same block, from a dedup hit | nothing |
+| What one share can infer | that another holds the same chunk, from a dedup hit | nothing |
 
 The scope is encoded in every name ever written, so changing it later orphans
 every existing object at once ([§4.2](#4.2%20A%20block)). It is settled before the first deployment
@@ -509,14 +632,28 @@ The rules live here because they are properties of chunks.*
 | # | Rule |
 | --- | --- |
 | P1 | A block holds whole chunks only. A chunk is never split to make a block come out an exact size. |
-| P2 | A block reaches at least the block target, and overshoots it by at most one chunk. The last block of a pass **MAY** fall short: the pass ends with what it has. |
+| P2 | A block ends when it reaches the block target, overshooting by at most one chunk, or when it reaches P4's count cap, whichever comes first. The last block of a pass **MAY** fall short, within the bound below. |
 | P3 | A block holds only the chunks whose bytes it actually carries. An all-zero chunk is a hole, and no block carries it ([RFC 0 §2.1](rfc-0-data-lifecycle.md#2.1%20Entities)). |
+| P4 | A block holds at most `N` chunks, where `N` is a constant of the block format version: 1,024 in this one. It bounds the header ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)), which short chunks next to holes would otherwise grow without limit. |
+
+**The short last block.** A pass's last block below the block target **MAY**
+be held open for chunks from the next offer, but no longer than the pass's
+maximum age measured from its oldest chunk ([RFC 8 §4.2](rfc-8-engine.md#4.2%20Offload%20is%20scheduled%20here)); once that age is reached it is put as it is. So at most
+one short block is put per pass, and none waits past the age ceiling. Each short
+block costs one object and one header, and nothing else.
+
+> [!important] Pending review — chunk-count cap and the short last block
+> P4 is new: a block ends at the byte target or at 1,024 chunks, so the header
+> has a fixed bound. The short last block of a pass is bounded by the pass age
+> ceiling instead of being put unconditionally.
 
 
 P1 is [RFC 0 §2.2](rfc-0-data-lifecycle.md#2.2%20How%20a%20file%20relates%20to%20its%20chunks). A chunk split across two blocks would have one hash naming
 content in two places, so the hash would stop being a locator and a refcount would
 stop having a single answer. P2 follows from P1: if a block has to end on a chunk
-boundary, the most it can overshoot by is the chunk that crossed the line.
+boundary, the most it can overshoot by is the chunk that crossed the line. At the
+default settings the cap is never the limit on full-size chunks — a 1,024-chunk
+block of `Min`-sized chunks is 64 MiB — so it bites only on runs of short chunks.
 
 P3 is worth spelling out, because the tempting mistake is to let already-stored
 chunks ride along so that a block's chunk list covers an unbroken range. It must
@@ -554,29 +691,59 @@ answer about their content.
 **How much this gives away: everything, for any file of more than a few chunks.**
 A chunk's length alone carries about as many bits as the spread of chunk sizes —
 some eighteen at a 256 KiB `Target` — so a run of three or four lengths already
-singles a file out. And lengths are not the widest channel: each block's header
-lists its chunks' plaintext hashes, offsets and lengths ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)), so a bucket
-reader holding a candidate file chunks it and looks the hashes up
-([RFC 5 Appendix B.5](rfc-5-transforms.md#B.5%20What%20a%20bucket%20reader%20still%20learns)).
+singles a file out. And lengths are not the widest channel: an unencrypted
+block's header lists its chunks' plaintext hashes, offsets and lengths
+([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)), so a bucket reader holding a candidate file chunks it and looks the
+hashes up ([RFC 5 Appendix B.5](rfc-5-transforms.md#B.5%20What%20a%20bucket%20reader%20still%20learns)).
 
 **Without encryption, boundaries stay public**, and an implementation **MUST NOT**
 claim otherwise.
 
-**With encryption, boundaries are keyed.** A share that encrypts cuts with a gear
-table derived from a **chunking key** of its namespace, so an observer without it
-cannot predict where a candidate file's boundaries fall:
+**With encryption, boundaries are keyed.** When a namespace encrypts, its header
+hashes are sealed ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout), [RFC 5](rfc-5-transforms.md)) and its shares cut with a gear table
+derived from a **chunking key**, so an observer without it can neither look a
+candidate file's hashes up nor predict where its boundaries fall:
 
-- the chunking key is derived once per namespace and **MUST NOT** rotate with the
-  data keys. Changing it re-cuts everything ([§3.6](#3.6%20Changing%20any%20of%20this%20is%20a%20migration)); rotating data keys
-  ([RFC 5 Appendix B.3](rfc-5-transforms.md#B.3%20Rotation)) re-encrypts and cuts nothing;
+- **Scope.** Keyed boundaries follow the namespace's encryption setting at
+  creation: a namespace created encrypting derives a chunking key then, and one
+  created without it never has one. Like every setting of [§3.6](#3.6%20Changing%20any%20of%20this%20is%20a%20migration), it is fixed for
+  the namespace's content.
+- **Construction.** The key is material of kind `chunking-key`, one per
+  namespace for its life, held by the material provider like every key
+  ([RFC 5 §2.5](rfc-5-transforms.md#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material)). The gear table is expanded from it under the label
+  `dittofs chunking key v1`, distinct from every other derivation. Like all
+  material it carries a **fingerprint** stored with its ID, so a later open that
+  finds a different key under that ID, or an import naming another, is refused
+  instead of silently re-cutting; an export carries the key's ID and
+  fingerprint, never the key ([RFC 12 §4.4](rfc-12-snapshots.md#4.4%20Key%20scope%20and%20material)).
+- it **MUST NOT** rotate with the data keys. Changing it re-cuts everything
+  ([§3.6](#3.6%20Changing%20any%20of%20this%20is%20a%20migration)); rotating data keys ([RFC 5 Appendix B.3](rfc-5-transforms.md#B.3%20Rotation)) re-encrypts and cuts nothing;
 - it costs no deduplication: chunks are compared within one namespace only
   ([§4.3](#4.3%20Key%20scope)), and every share of the namespace cuts under the same key;
-- it hides nothing alone. The header's hashes and lengths still identify a file,
-  so it is worth adopting only with sealed headers ([RFC 5 §9](rfc-5-transforms.md#9.%20Open%20questions), question 1).
-  Together they reduce the channel to block sizes and repetition;
-- keyed chunking is an active research target, and recent work [5] recovers
-  keys of deployed schemes from chosen content. It **MUST NOT** be described as
-  hiding which files a namespace holds from someone who can also write to it.
+- with sealed hashes, the channel left is block sizes, chunk lengths within a
+  body and repetition.
+
+**What the key protects against: passive observers only.** Recent work [5]
+recovers the keys of deployed keyed-chunking schemes, gear-table ones included,
+from the chunk lengths of content the attacker chose. So the claim is scoped to
+an observer who can read the bucket but cannot write to the namespace. It **MUST
+NOT** be described as hiding which files a namespace holds from someone who can
+also write to it.
+
+> ponytail: a keyed gear table keeps the boundary search at K1's rate but falls to
+> chosen-content attacks [5]. Upgrade to a keyed PRF evaluated at each candidate
+> position that passes the gear test, so the boundary decision no longer exposes
+> a table that chosen content can map out, if a
+> deployment must hide content from writers of its own namespace; it costs a PRF
+> call per candidate and re-cuts every namespace that adopts it.
+
+> [!important] Pending review — keyed chunking scope and construction
+> Keyed boundaries now follow the encryption setting at namespace creation, the
+> key is a fingerprinted `chunking-key` material kind expanded under
+> `dittofs chunking key v1` (replacing the separate commitment), and headers are sealed when
+> encrypting (closing the old "only with sealed headers" condition). The claim is
+> scoped to passive observers, citing [5]; the stronger construction is noted as
+> the upgrade path.
 
 Randomising how blocks are assembled is not a mitigation: it changes object sizes
 but not the chunk lengths each header lists.
@@ -605,9 +772,14 @@ produces the same chunks. A failed pass costs work and never correctness.
 | C1 | A chunk's hash depends on its bytes and nothing else. |
 | C2 | The same bytes and settings give the same boundaries, in any process or version. |
 | C3 | The average chunk size is the configured `Target`. |
-| C4 | Every chunk is between `Min` and `Max`, except the last one in a stretch. |
-| C5 | A block holds whole chunks and overshoots its target by at most one; only the last block of a pass may fall short. |
+| C4 | Every chunk is between `Min` and `Max`, except the last one before a real stretch end. |
+| C5 | A block holds whole chunks, at most `N` of them, and overshoots its target by at most one; only the last block of a pass may fall short, and not past the pass age ceiling. |
 | C6 | A block holds only the chunks whose bytes it carries. |
+| C7 | On an artificial stretch end, no byte after the last content-chosen boundary is emitted. |
+| C8 | A block name is minted once, for one put attempt, and never put by another. |
+
+> [!important] Pending review — invariants
+> C4 and C5 follow the stretch-end rule and P4; C7 and C8 are new.
 
 
 Two properties are missing because the shape of [§1.2](#1.2%20Two%20layers%3A%20the%20chunker%20and%20the%20carver) makes them unbreakable: a
@@ -620,23 +792,30 @@ The rules for checks are [the index's](rfc-index.md#Test%20tiers). Every check h
 If a check needs a fixture, the implementation has picked up a dependency it is
 not allowed to have, and that is the finding.
 
-Each check names its layer, because that is where the defect is. Six of the ten
-need no reader and no hash at all.
+Each check names its layer, because that is where the defect is. The chunker
+rows need no reader and no hash at all.
 
 | Layer | Requirement | Check |
 | --- | --- | --- |
-| chunker | [§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it) target is real | Cut incompressible data; assert the average is within tolerance of `Target`. A mask that does not follow `Target` fails it. |
+| chunker | [§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it) target is real | Cut incompressible data; assert the average, `Min` skip included, is within tolerance of `Target`. A mask that does not follow `Target`, or is sized without the skip, fails it. |
 | chunker | [§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it) mask comes from target | Build at several targets; assert the mask's bit count tracks the target, and that one hard-coded mask cannot satisfy two of them. |
 | chunker | [§3.7](#3.7%20Bad%20settings%20must%20be%20refused%2C%20not%20replaced) bad settings refused | Build with a `Target` that is not a power of two, one below the floor and one above the ceiling; assert each errors and nothing usable comes back. |
 | chunker | [§6](#6.%20Boundaries%20are%20public) keyed boundaries | Cut the same input under two chunking keys and under none; assert the boundaries differ between all three, the average stays within tolerance of `Target` under each, and the same key reproduces the same boundaries. |
 | chunker | [§3.4](#3.4%20How%20far%20back%20a%20decision%20looks) warm-up equivalence | Assert boundaries are identical whether the fingerprint is warmed from the chunk start or over the last 64 bytes, across several profiles. |
-| chunker | [§3.8](#3.8%20What%20happens%20on%20repetitive%20data) repetitive input still terminates | Chunk 64 MiB of zeros and of a 64-byte repeating pattern; assert every chunk comes out exactly `Max` and the pass ends. Without `Max` the search never succeeds and the whole file becomes one chunk. |
+| chunker | [§3.8](#3.8%20What%20happens%20on%20repetitive%20data) repetitive input still terminates | Chunk 64 MiB of zeros under the unkeyed table at every supported `Target`; assert every chunk is exactly `Max`. Chunk a 64-byte repeating pattern, keyed and unkeyed; assert the pass ends and no chunk exceeds `Max`. Without `Max` the search can fail forever and the whole file becomes one chunk. |
 | chunker | B4 shift resistance | Insert one byte early in a large input; assert every boundary past the edited chunk is unchanged. |
 | carver | [§4](#4.%20Identity) hash covers the chunk | Cut identical content at two different `base` offsets; assert one hash. |
-| name | [§4.2](#4.2%20A%20block) golden name | Derive the name of the golden vector; assert the committed bytes. Change the order of two hashes, the scope, the generation or the chain ID; assert each gives a different name. |
+| carver | [§2.4](#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut) artificial end | Cut random input as one stretch with a real end, and again as a series of offers ending at arbitrary limits, each re-offered from the previous `consumed`; assert both emit identical chunks, and no call emits a byte past its last content-chosen boundary. |
+| name | [§4.2](#4.2%20A%20block) golden name | Derive the name of the golden vector; assert the committed bytes. Change the order of two hashes, the scope, the nonce or the chain ID; assert each gives a different name. Encode the scope with a different length byte; assert the name changes. |
 | carver | [§2.2](#2.2%20The%20bytes%20handed%20to%20%60emit%60%20are%20borrowed) borrowed bytes | Hold on to the slice passed to `emit` and assert it is seen to change. The check exists to prove the contract is real, so a caller that copies is not doing it out of superstition. |
 | carver | [§7](#7.%20Errors) no short chunk on error | Fail `emit` mid-stretch, and fail the reader mid-chunk; assert no delivered chunk is a truncated prefix of one the clean path would produce. |
 
+
+> [!important] Pending review — conformance rows
+> The target row includes the `Min` skip; the repetitive row claims exactly `Max`
+> for zeros under the unkeyed table only; the artificial-end row is new; the
+> golden-name row swaps the generation for the nonce and pins the scope encoding.
+> P4 and minting once per attempt are checked at their consumer, [RFC 8](rfc-8-engine.md).
 
 A check that needs both layers to be wrong at once is in the wrong place. If a
 boundary defect only shows up through `Cut`, the chunker's own checks are too
@@ -660,7 +839,7 @@ boundaries costs more in storage than it saves in CPU.
 | --- | --- | --- | --- |
 | K1 | chunker speed | `NextBoundary` over 64 MiB of seeded random bytes, per profile | MiB/s; zero allocations |
 | K2 | carver speed | `Cut` over the same input, hashing included, against BLAKE3 alone over the same bytes | MiB/s for each; the difference is the carver's own cost, since hashing dominates |
-| K3 | the worst case | `Cut` over all-zero and short-period input, where every chunk reaches `Max` ([§3.8](#3.8%20What%20happens%20on%20repetitive%20data)) | MiB/s; it must stay within a small factor of K2 |
+| K3 | the worst case | `Cut` over all-zero and short-period input, where chunks run to `Max` ([§3.8](#3.8%20What%20happens%20on%20repetitive%20data)) | MiB/s; it must stay within a small factor of K2 |
 | K4 | edit stability | a corpus file, then the same file with bytes inserted near the start | the fraction of chunk hashes the two versions share; content-defined chunking exists to keep this near one |
 | K5 | size distribution | real files of several kinds — source trees, VM images, media | the chunk-size histogram against `Min`, `Target` and `Max` |
 
@@ -712,14 +891,19 @@ The unit, property and fault tests **MUST** reach these.
 - a stretch whose length is an exact multiple of `Max`, of repetitive content, so
   the last chunk is exactly `Max` rather than short;
 - `base` at zero, at an odd offset, and near the largest file offset: offsets are
-  file offsets and **MUST NOT** overflow.
+  file offsets and **MUST NOT** overflow;
+- an artificial end on a stretch shorter than `Max` with no boundary in it, which
+  emits nothing and consumes zero; and one landing exactly on a boundary, which
+  holds nothing back ([§2.4](#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut)).
 
 **The buffer edge**
 
 - a boundary landing exactly where the carver's buffer is refilled, one byte
   before it and one byte after it;
 - a chunk exactly as long as the buffer;
-- the chunker returning "not yet" at the very end of the buffer, then `final`.
+- a buffer holding exactly `Max` bytes with no boundary in it, and a `final`
+  buffer shorter than `Min`: `NextBoundary` is never called with fewer than `Max`
+  bytes and `final` unset.
 
 These are where a carver that manages its own positions drifts and tiles a byte
 into two chunks ([§1.2](#1.2%20Two%20layers%3A%20the%20chunker%20and%20the%20carver)).
@@ -736,8 +920,9 @@ into two chunks ([§1.2](#1.2%20Two%20layers%3A%20the%20chunker%20and%20the%20ca
 **Content**
 
 - random data, where boundaries come from the fingerprint;
-- zeros and a repeating pattern of period 64 or less, where only `Max` ends a
-  chunk ([§3.8](#3.8%20What%20happens%20on%20repetitive%20data)), and a period just above 64, where boundaries return;
+- zeros, where only `Max` ends a chunk, and a repeating pattern of period 64 or
+  less, where at most `p` fingerprints exist ([§3.8](#3.8%20What%20happens%20on%20repetitive%20data)); and a period just above 64, where
+  boundaries return;
 - random data with a repetitive region in the middle, crossing in and out of it;
 - the same bytes at two `base` offsets, which **MUST** produce one set of hashes.
 
@@ -818,7 +1003,8 @@ None. The three this document carried are settled:
    default 256 KiB. Measured in [Appendix C](#Appendix%20C%20%E2%80%94%20choosing%20the%20target).
 2. **Whether `Min` survives:** as a derived bound, `Target / 4`, not a setting.
 3. **How much [§6](#6.%20Boundaries%20are%20public) gives away:** everything, and mostly through the headers;
-   encrypting shares key their boundaries, which pays off once headers are sealed.
+   an encrypting namespace seals its header hashes and keys its boundaries,
+   against passive observers only.
 
 ---
 
@@ -831,7 +1017,9 @@ defect to fix or migrate, never a rule to build around.
 | --- | --- | --- |
 | [§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it) mask from `Target` | fixed masks encode an 8 KiB target while the default profile declares 4 MiB, so every chunk lands just above `Min` (A.1) | a migration |
 | [§3.4](#3.4%20How%20far%20back%20a%20decision%20looks) 64-byte warm-up | the fingerprint is warmed from the start of the chunk (A.2) | changes no output |
-| [§4.2](#4.2%20A%20block) derived name | a block's name is random; offload and relocation each generate one | a migration; its cost elsewhere is in [RFC 3 §2.5](rfc-3-syncer.md#2.5%20An%20unknown%20outcome%20is%20not%20a%20success) |
+| [§4.2](#4.2%20A%20block) derived name | a block's name is random and covers no chunk hash, so a whole-block read cannot recompute it; no put intent is recorded before a put | a migration; its cost elsewhere is in [RFC 3 §2.5](rfc-3-syncer.md#2.5%20An%20unknown%20outcome%20is%20not%20a%20success) |
+| [§1.2](#1.2%20Two%20layers%3A%20the%20chunker%20and%20the%20carver) no "not yet" | the chunker returns zero to ask for more bytes when it holds fewer than `Min` and `final` is unset | changes no output |
+| [§2.4](#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut) artificial end | not verified against the code; to check before the refactor | — |
 
 ### A.1 The masks encode a different target than the profile declares
 
@@ -906,9 +1094,17 @@ Unlike A.1 this is **not** a migration: the output does not change.
 
 ## Appendix C — choosing the target
 
-Measured with a FastCDC whose masks derive from `Target` (normalisation level 2,
-64-byte warm-up, `Max = 4 × Target`), over a 220 MB tar of one compiler
-toolchain. Three workloads against it: the next patch release of the same
+> [!important] Pending review — what this table measures
+> The table below re-chunks each whole file from its start. That is not the
+> engine's cost: the engine cuts only the offered stretches, widened as
+> [§2.4](#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut) and [RFC 8 §5.6](rfc-8-engine.md#5.6%20A%20run%20is%20what%20the%20journal%20offers%2C%20widened%20only%20to%20re-tile) permit. The table stays as the whole-file baseline; the
+> default of 256 KiB stands until the plan at the end of this appendix measures
+> the real path. Its masks were also sized to `Target` without the `Min` skip, so
+> its averages run above `Target` ([§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)).
+
+**Whole-file re-chunking baseline.** Measured with a FastCDC whose masks derive
+from `Target` (normalisation level 2, 64-byte warm-up, `Max = 4 × Target`), over
+a 220 MB tar of one compiler toolchain. Three workloads against it: the next patch release of the same
 toolchain (a backup of a changed tree), 256 random 4 KiB pages overwritten in
 place (a VM image), and 64 random 100-byte insertions (edited files). The last
 three columns are bytes stored again on top of the original.
@@ -949,11 +1145,24 @@ second group, which is where 256 KiB leans.
 | Windows Server deduplication | variable | about 64 KiB | 32–128 KiB |
 | ZFS deduplication | fixed, per record | 128 KiB | — |
 
-The average landed on `Target` at every profile, and no chunk of random input
-reached `Max`. A toolchain release rebuilds its binaries, so most of it is new
-at any `Target`; the release column says more about the corpus than about
-chunking. One corpus on one machine: K5 ([§9.1](#9.1%20Benchmarks%20and%20quality%20measures)) repeats this on source trees,
-VM images and media before the default is frozen.
+The chunk counts put the corpus average 5–14% above `Target` at every profile,
+part of it the `Min` skip the masks did not account for, and no chunk of random
+input reached `Max`. A
+toolchain release rebuilds its binaries, so most of it is new at any `Target`;
+the release column says more about the corpus than about chunking. One corpus
+on one machine.
+
+**Measurement plan: the real offload path.** Before the default is frozen, each
+`Target` is measured through the engine, not over whole files:
+
+| Step | What |
+| --- | --- |
+| Input | the three workloads above, plus a streaming append and 4 KiB random overwrites of a VM image, on the K5 corpus ([§9.1](#9.1%20Benchmarks%20and%20quality%20measures)): source trees, VM images, media |
+| Path | the workload written through the journal and offloaded by the engine: offers bounded by the pass limit and age, artificial ends held back ([§2.4](#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut)), widening as [RFC 8 §5.6](rfc-8-engine.md#5.6%20A%20run%20is%20what%20the%20journal%20offers%2C%20widened%20only%20to%20re-tile) permits |
+| Report | bytes stored against bytes written; chunk records per GiB of live data, against the ceiling of [§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it); the chunk-size histogram; the cold-read fetch size; blocks per pass and short blocks |
+| Decides | the default `Target`, if a different one is better on the real path by more than the whole-file baseline's margins |
+
+The chunker is measured with the mask of [§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it), so its mean includes the skip.
 
 ## Appendix B — prior art
 
@@ -965,5 +1174,5 @@ VM images and media before the default is frozen.
    System*, SOSP 2001.
 4. The restic backup program's chunker, which borrows chunk bytes into a callback
    and randomised block assembly without a migration.
-5. *Breaking and Fixing Content-Defined Chunking*, 2025: attacks on keyed
-   chunking in deployed backup tools.
+5. *Breaking and Fixing Content-Defined Chunking*, IACR ePrint 2025/558: attacks
+   on keyed chunking in deployed backup tools.
