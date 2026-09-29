@@ -410,7 +410,14 @@ changed_pkgs() {
     git -C "$REPO" rev-parse --verify -q "$base" >/dev/null || die "base ref $base not found (git fetch?)"
     { git -C "$REPO" diff --name-only "$base"...HEAD -- '*.go'; git -C "$REPO" diff --name-only HEAD -- '*.go'; } |
         { grep -v '^k8s/dittofs-operator/' || true; } | xargs -n1 dirname 2>/dev/null | sort -u |
-        while read -r d; do [[ -d "$REPO/$d" ]] && echo "./$d"; done
+        while read -r d; do
+            # Only packages with Go files in the default build: test/e2e is all
+            # -tags=e2e, and `go test` on it fails ("build constraints exclude all Go files").
+            if [[ -d "$REPO/$d" ]] &&
+                [[ -n "$(cd "$REPO" && go list -e -f '{{if or .GoFiles .TestGoFiles .XTestGoFiles}}y{{end}}' "./$d" 2>/dev/null)" ]]; then
+                echo "./$d"
+            fi
+        done
 }
 
 # Import paths whose test set changes under -tags=integration (the CI derivation).
