@@ -197,6 +197,20 @@ open: a namespace whose recorded `Target` or key scope differs from its record
 does not open ([RFC 8 §2.4](rfc-8-engine.md#2.4%20Settings%20are%20validated%20once%2C%20and%20refused%20rather%20than%20replaced)). Reading never consults configuration for how
 content was written ([RFC 5 §2.5](rfc-5-transforms.md#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material)).
 
+### 5.4 A format version is written only once every reader reads it
+
+The block format version a namespace writes ([RFC 4 §3.5](rfc-4-remote-tier.md#3.5%20Format%20changes%20are%20migrations)) is a **namespace
+setting**, next write, defaulting to the newest version every node of the
+installation reads. The control plane **MUST** refuse to advance it past the
+oldest version any node that may read the namespace supports, and a node
+**MUST** refuse to join while a namespace it would serve writes a version it
+cannot read. A newer binary alone therefore never writes blocks an older one,
+still serving, would refuse.
+
+> [!important] Pending review — the format version to write
+> Without it, the first upgraded node writes blocks every node not yet upgraded
+> refuses as malformed. Advancing it is the explicit last step of an upgrade.
+
 ## 6. Validation
 
 **Refused, never replaced** ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)). A value out of range, of the wrong
@@ -234,6 +248,25 @@ and the component resolves it when it is built.
 - **Material is a secret with a lifecycle.** Encryption keys are resolved through
   the material provider, which also tracks which keys exist, are current or are
   destroyed ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)). A secret provider need not.
+- **Material configuration is master keys plus wrapped namespace keys.** A remote
+  store's configuration references its **master keys**, which the provider holds
+  and never releases. Each namespace's keys — its current and retired **data
+  keys**, its **header key** and its **chunking key** — are stored only wrapped
+  under a master key, and the namespace's record holds each one's (material ID,
+  fingerprint), never the key. The provider refuses an ID whose fingerprint
+  changed. Rotating a master key re-wraps the namespace keys and changes no
+  record; rotating a data key is new material plus relocation
+  ([RFC 5 §5.3](rfc-5-transforms.md#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)).
+- **A namespace's header key and chunking key** are derived at its creation when
+  its chain encrypts ([RFC 2 §6](rfc-2-carver.md#6.%20Boundaries%20are%20public)) and live as long as the namespace. An
+  export names them, and every data key in its census, the same way
+  ([RFC 12 §4.4](rfc-12-snapshots.md#4.4%20Key%20scope%20and%20material)).
+
+> [!important] Pending review — namespace keys by reference
+> The chunking key and the key that seals block-header hashes are namespace
+> secrets held by reference, with a fingerprint so a swapped key is refused.
+> Material configuration is now stated as master keys plus per-namespace wrapped
+> keys, matching RFC 5's key layers.
 - The only secret on a host is the bootstrap credential for the configuration
   store ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)).
 
@@ -264,6 +297,8 @@ Conventions and tiers are the index's ([Test tiers](rfc-index.md#Test%20tiers)).
 | [§7](#7.%20Secrets) no secret out | Configure every secret-bearing record; read every API, export and log produced by a full test run. Assert no secret value appears. |
 | [§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap) no host override | Set a record field in the host's environment. Assert it is refused at start, not applied. |
 | [§2.3](#2.3%20A%20record%20is%20versioned) schema | Present a record with a newer schema version. Assert refused. |
+| [§5.4](#5.4%20A%20format%20version%20is%20written%20only%20once%20every%20reader%20reads%20it) format version | Run two nodes, one reading one format version fewer. Advance the namespace's version to write; assert refused. Upgrade the second node; assert accepted, and every block either node writes afterwards reads on both. |
+| [§7](#7.%20Secrets) namespace keys | Replace a namespace's chunking key under the same ID. Assert the provider refuses it by fingerprint and the namespace does not open. |
 
 ## 10. Edits this document asks of other RFCs
 
@@ -326,9 +361,15 @@ default this document suggests where the owning RFC states none.
 | journal maximum footprint | [RFC 1 §7](rfc-1-journal.md#7.%20Capacity) | node, per journal | live | proposed: 80% of the device |
 | per-share journal limit | [RFC 1 §7](rfc-1-journal.md#7.%20Capacity) | share | live | proposed: the journal's maximum |
 | segment size | [RFC 1 §4.2](rfc-1-journal.md#4.2%20Segments) | fixed | — | open in RFC 1 |
+| headroom for records without bytes (count of removal and durable records reserved) | [RFC 1 §7](rfc-1-journal.md#7.%20Capacity) | node, per journal | restart | a proposal ([RFC 1 open question 7](rfc-1-journal.md#12.%20Open%20questions)) |
+| idle-seal threshold | [RFC 1 §9.1](rfc-1-journal.md#9.1%20Rebuilding) | node, per journal | restart | proposed: 16 MiB ([RFC 1 open question 7](rfc-1-journal.md#12.%20Open%20questions)) |
 | `Target` | [RFC 2 §3.2](rfc-2-carver.md#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it) | namespace | bound | 256 KiB |
 | key scope | [RFC 2 §4.3](rfc-2-carver.md#4.3%20Key%20scope) | namespace | bound | required |
-| chunking key | [RFC 2 §6](rfc-2-carver.md#6.%20Boundaries%20are%20public) | namespace | bound | derived at creation when the chain encrypts |
+| chunking key | [RFC 2 §6](rfc-2-carver.md#6.%20Boundaries%20are%20public) | namespace | bound | derived at creation when the chain encrypts; a secret, by reference ([§7](#7.%20Secrets)) |
+| header key | [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys) | namespace | bound | derived at creation when the chain encrypts; wrapped, by (ID, fingerprint) ([§7](#7.%20Secrets)) |
+| data key, current | [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys) | namespace | next write | created with the namespace when the chain encrypts; wrapped, by (ID, fingerprint) ([§7](#7.%20Secrets)) |
+| master keys | [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys) | remote store | live | required when the chain encrypts; references only ([§7](#7.%20Secrets)) |
+| block format version to write | [§5.4](#5.4%20A%20format%20version%20is%20written%20only%20once%20every%20reader%20reads%20it) | namespace | next write | the newest version every node reads |
 | `upload_workers`, `fetch_workers` | [RFC 3 §2.10](rfc-3-syncer.md#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed) | installation | restart | 32 each, or the sizing tool's |
 | endpoint, credential reference | [RFC 4 §4.1](rfc-4-remote-tier.md#4.1%20Interface) | remote store | live, under [§5.2](#5.2%20Reaching%20the%20same%20content%20another%20way%20is%20not%20a%20change) | required |
 | bucket, prefix | [RFC 4 Appendix C](rfc-4-remote-tier.md#Appendix%20C%20%E2%80%94%20the%20S3-compatible%20block%20store) | remote store | bound | required |
@@ -342,6 +383,12 @@ default this document suggests where the owning RFC states none.
 | deletes in flight | [RFC 9 §8](rfc-9-gc.md#8.%20API%20surface) | node | restart | open in RFC 9 |
 | replica count and floor, failure domain | [RFC 10 §7](rfc-10-journal-replication.md#7.%20Membership) | installation | live | open in RFC 10 |
 | ownership unit | [RFC 11 §2](rfc-11-ownership.md#2.%20Ownership%20units) | share | bound | the share |
-| share's namespace | [RFC 12 §2.1](rfc-12-snapshots.md) | share | bound | the share's own |
+| share's namespace | [RFC 12 §2.1](rfc-12-snapshots.md#2.1%20A%20namespace%20is%20the%20unit%20that%20moves) | share | bound | the share's own |
+| oldest unoffloaded extent alert | [RFC 8 §8.4](rfc-8-engine.md#8.4%20How%20far%20behind%20durability%20is%2C%20is%20observable) | share | live | proposed: 1 h |
 | snapshot policy, backup location and retention | [RFC 12 §6.2](rfc-12-snapshots.md#6.2%20Configuration) | share | live | none |
 | snapshot freeze bound | [RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20a%20drained%2C%20frozen%20instant) | share | live | 256 MiB, 30 s |
+
+> [!important] Pending review — journal headroom, idle seal and namespace keys
+> Added the journal's headroom for records without bytes and its idle-seal
+> threshold, both still proposals in RFC 1, and split material into master keys,
+> the current data key and the header key.

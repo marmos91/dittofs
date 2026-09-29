@@ -360,6 +360,17 @@ its boundaries rejoin the earlier ones. Those few chunks are stored again under
 new hashes and the earlier ones are left to sweep: a cost in space and transfer,
 never in correctness.
 
+A block's name is not a function of its content alone: each put attempt mints a
+fresh name, and records a **put intent** for it before the put
+([RFC 6 §7.6](rfc-6-block-metadata.md#7.6%20Put%20intents)). A retry within one attempt reuses its name and writes
+the same bytes; a new attempt never reuses an earlier one's name. An attempt that
+fails leaves an intent and possibly an object, and GC collects both
+([RFC 9 §5](rfc-9-gc.md#5.%20Unrecorded%20objects)).
+
+> [!important] Pending review — names minted per attempt
+> Block names now carry a per-attempt nonce and are preceded by a durable put
+> intent. This replaces the deletion fence; see [§8.3](#8.3%20Sweep) and I9.
+
 ## 6. The read path
 
 ### 6.1 Resolution
@@ -406,6 +417,30 @@ and each named chunk's refcount decremented, when the file is released: at once,
 or, if the file is still open, once the last open state is gone
 ([RFC 7](rfc-7-namespace-metadata.md)). Deletion **MUST NOT** remove content
 from the remote tier; that is sweep ([§8.3](#8.3%20Sweep)), and it is asynchronous.
+
+**Removals are batched.** A truncate, deallocate, release or clone can name more
+refs than one metadata transaction may write. Each is recorded first as a durable
+removal, in one small transaction that writes no refs; its refs are then dropped
+in bounded batches that resume after a crash
+([RFC 6 §6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation)). From the first transaction on, the removal
+**masks** the refs it has not yet dropped: no read resolves through them, and the
+range reads as the removal left it. A masked ref stays counted until the batch
+that deletes it, so a partly applied removal can leak for a while but never
+under-count (I10).
+
+**Snapshots keep superseded refs.** An overwrite, removal or release that replaces
+a ref a snapshot can still see moves it into the file's history in the same
+transaction, instead of dropping it ([RFC 12 §2.2](rfc-12-snapshots.md#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree)). A history ref is counted
+like a live one; the chunk's count does not change when a ref moves. Which
+snapshots see a ref is decided by the share's cut number, recorded on the ref
+when it is committed and when it is superseded ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)), never by a
+journal version: versions are per journal, and a share's files may live in
+several.
+
+> [!important] Pending review — batched removals and history refs
+> Removals are a durable intent plus bounded batches that mask what they have not
+> yet dropped. Snapshot content is kept by counted history refs, not ref sets,
+> and ordered against cuts by a per-share cut number, not by journal versions.
 
 ## 8. Reclamation
 
@@ -454,8 +489,8 @@ cannot be recovered.
 
 Safety rests on reference counting, specified in [RFC 6](rfc-6-block-metadata.md):
 
-- a chunk carries the number of chunk refs naming it, where a snapshot's frozen
-  ref set counts once per chunk it names, not once per ref
+- a chunk carries the number of refs naming it: a file's live refs plus the
+  history refs its snapshots still see ([§7](#7.%20Mutation%20and%20removal))
 - a block carries the number of its chunks whose refcount is nonzero
 - a block is sweepable only when that number is zero
 
@@ -464,9 +499,15 @@ A block **MUST NOT** be deleted while any chunk it contains is referenced.
 Reference counts are read at different instants from the state they describe. An
 implementation **MUST** ensure that content created or referenced after a sweep
 began cannot be deleted by that sweep, even when every individual observation
-was correct when made. [RFC 9](rfc-9-gc.md) specifies the protocol: a deletion fence that
-every put and every commit honours, run by one GC service for the whole
-namespace.
+was correct when made. [RFC 9](rfc-9-gc.md) specifies the protocol, run by one GC service for
+the whole namespace. It needs no fence against writers: a name is never put twice
+([§5.2](#5.2%20Offload)), so a remote object may be deleted once no block record and no put
+intent names it. That state is final: no later put can reach the name, and a
+delete that lands late can reach no committed block.
+
+> [!important] Pending review — no deletion fence
+> Replaced by names minted per attempt and put intents: deletion is gated on a
+> final state (no record, no intent), not on a fence every writer checks.
 
 ## 9. Invariants
 
@@ -482,8 +523,14 @@ These hold across components. No component can enforce any of them alone.
 | **I6** | No component imports another component in this set, except the engine, which composes them ([§1.2](#1.2%20Component%20autonomy)). |
 | **I7** | Every stored record has a named reclamation path that holds at the record's maximum size. |
 | **I8** | A serialization conflict is retried within the caller's deadline, never surfaced as an I/O error. |
+| **I9** | A block name is minted by one put attempt and put by no other; a remote object is deleted only when no block record and no put intent names it. |
+| **I10** | A removal masks every ref it has not yet dropped from the moment it is recorded, and a ref stays counted until the transaction that deletes it. |
 
-An implementation is conformant when all eight hold under concurrent operation,
+> [!important] Pending review — I9 and I10
+> I9 replaces the deletion fence's guarantee ([§8.3](#8.3%20Sweep)); I10 states what a
+> batched removal guarantees while it is partly applied ([§7](#7.%20Mutation%20and%20removal)).
+
+An implementation is conformant when all ten hold under concurrent operation,
 across crash and restart, and in every condition in [§10](#10.%20Failure%20model).
 
 Each invariant **MUST** be tested at the component that consumes the data
@@ -515,6 +562,17 @@ makes every loser of one conflict collide again on the next attempt.
 Conformance drives concurrent writers at one deliberately shared key and asserts
 two things together: conflicts **occur**, and **none** reaches the caller.
 
+**A read that gates a commit MUST conflict with every concurrent write that would
+change its result.** Stores differ in what they detect: one tracks point reads
+but not range scans, another validates no reads at all and detects only
+write-write conflicts and explicit locks. A scan over a key range is therefore
+never such a read, and a check that must hold under any supported store is made
+on point records written by both sides ([RFC 11 §8](rfc-11-ownership.md#8.%20Metadata%20consistency)).
+
+> [!important] Pending review — gating reads
+> Added because the two metadata backends differ in which reads they validate;
+> the rule is the one both satisfy.
+
 ### 9.3 Where each invariant is tested and observed
 
 An invariant spans components, so its test lives with the component that
@@ -525,12 +583,14 @@ it break.
 | --- | --- | --- |
 | **I1** | [RFC 8](rfc-8-engine.md): reads of **Lost** and **Remote** extents | RFC 8: reads failed as **Lost**, reads failed because the remote tier is unavailable |
 | **I2** | [RFC 1](rfc-1-journal.md): `Release` refuses unmarked extents; RFC 8: eviction choice | RFC 1: dirty bytes against held bytes |
-| **I3** | [RFC 9](rfc-9-gc.md): sweep against concurrent reference | RFC 9: blocks swept, deletions refused; [RFC 6](rfc-6-block-metadata.md): count audit mismatches |
+| **I3** | [RFC 9](rfc-9-gc.md): sweep against concurrent reference, including history refs a snapshot still sees | RFC 9: blocks swept, deletions refused; [RFC 6](rfc-6-block-metadata.md): count audit mismatches |
 | **I4** | RFC 1: `Fill` against a concurrent write | RFC 1: fills refused as older than the file |
 | **I5** | RFC 1: marking follows reports only; RFC 8: reports follow durable commits | RFC 1: bytes offered against bytes marked durable |
 | **I6** | every RFC: its own import test | the build |
 | **I7** | RFC 6, RFC 7, RFC 9: each stored record at its maximum size | the owning RFC: store size under rewrite |
 | **I8** | RFC 6, RFC 7: concurrent writers on one key | the owning RFC: conflicts retried, and conflicts surfaced (which must stay zero) |
+| **I9** | RFC 9: deletion racing a put and a delayed delete landing after a retry; [RFC 8](rfc-8-engine.md): a crashed attempt's intent is collected | RFC 9: intents abandoned and collected, objects collected by listing (which should stay near zero) |
+| **I10** | RFC 6: the model test crashes a removal between batches and reads through it; RFC 8: reads during a partly applied truncate | RFC 6: removals not yet done, and their age |
 
 ## 10. Failure model
 
@@ -543,7 +603,7 @@ Every condition below has exactly one specified behaviour.
 | **Remote tier slow** | The remote accepts transfers but drains slower than writes arrive, with no error to act on. Writes are paced to the measured drain rate ([RFC 8 §7.2.1](rfc-8-engine.md#7.2.1%20Writes%20are%20paced%20before%20the%20limit%2C%20not%20stopped%20at%20it)); each waits at most until its deadline ([§10.3](#10.3%20Every%20wait%20on%20a%20request%20ends%20at%20a%20deadline)) and is then refused. Progress is not a reason to keep waiting: a drain that frees a trickle never runs a writer out of time otherwise. |
 | **Journal at capacity, remote unavailable** | Refuse the write. Every local extent is **Dirty**, and I2 forbids evicting it, so refusal is the only behaviour that does not lose data. |
 | **Metadata unwritable** | Writes are still staged and acknowledged from the journal; the next stability point fails and is reported as failed ([§5.1](#5.1%20Write)). Truncate, deallocate and the other synchronous operations fail. Offload fails, so extents stay **Dirty** and the journal fills until writes are refused ([§10.1](#10.1%20Capacity%20is%20a%20bound%2C%20not%20a%20target)). Reads continue while metadata is readable. |
-| **Crash** | On restart the journal rebuilds its placement index from its segments; a torn tail is truncated to the last record that verifies. Metadata recovers by its backend's own durability, and the engine re-applies from the journal the existence of writes not yet committed, before serving ([§5.1](#5.1%20Write)). Otherwise the two recover independently and **MAY** disagree; [§10.2](#10.2%20No%20state%20requires%20intervention%20to%20leave) applies. |
+| **Crash** | On restart the journal rebuilds its placement index from its segments; a torn tail is truncated to the last record that verifies. Metadata recovers by its backend's own durability, and the engine re-applies from the journal the existence of writes not yet committed, before serving ([§5.1](#5.1%20Write)). A removal recorded but not done masks until its batches resume, and an unfinished clone resumes before its destination is served ([§7](#7.%20Mutation%20and%20removal)). A put whose attempt died leaves an intent, collected once its owner epoch is superseded ([§5.2](#5.2%20Offload)). Otherwise the two recover independently and **MAY** disagree; [§10.2](#10.2%20No%20state%20requires%20intervention%20to%20leave) applies. |
 | **Local content corrupt** | The journal drops only the extents backed by records that fail verification ([RFC 1 §9.3](rfc-1-journal.md#9.3%20Torn%20and%20corrupt%20records)). A dropped extent that was durable resolves as **Remote** and is fetched again; one that was **Dirty** resolves as **Lost**. The rest of the segment stays usable and reclaimable. |
 | **Material unavailable** | The material provider cannot supply a key ([RFC 5 §2.7](rfc-5-transforms.md#2.7%20Failures)). Behaves as **Remote tier unavailable**: offload cannot encode and reads of **Remote** extents cannot decode. Material lost for good is not this row: its blocks are not durable ([§4.2](#4.2%20The%20residency%20function)). |
 
@@ -564,6 +624,15 @@ normal operation from which it cannot return without operator action.
 
 In particular: sustained inability to offload **MUST** be reported as a health
 condition of the share, and **MUST NOT** be represented only as log output.
+
+A count found about to go below zero is corruption ([RFC 6 §6.3](rfc-6-block-metadata.md#6.3%20Underflow%20is%20corruption%2C%20not%20a%20boundary)), and it
+fails its transaction. It **MUST NOT** wedge the file or the share: the failure
+schedules a targeted recount of the chunks it names, and the operation retries
+once the recount has corrected them.
+
+> [!important] Pending review — underflow schedules a recount
+> An underflow previously failed the transaction with no stated exit, which this
+> section forbids. The recount is the audit's, bounded to the named chunks.
 
 Recovery after a crash is required to be *truthful*, not to make the two oracles
 agree. A chunk that metadata knows about and whose bytes did not survive is

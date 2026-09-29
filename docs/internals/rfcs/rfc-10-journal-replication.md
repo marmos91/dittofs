@@ -75,9 +75,10 @@ This layer **MUST NOT**:
 | **member** | the owner or a replica; the **replica set** is the members |
 | **learner** | a block service receiving the unit's operations while it catches up, before it is a member |
 | **configuration** | `{unit, epoch, owner, members, learners, sealed}`, held in the configuration store and changed only by compare-and-swap |
-| **epoch** | the owner epoch: raised by every configuration change, and never lower for a file than any epoch it had before ([§6](#6.%20Fencing)). The owner applies it to each file through the journal's per-file epoch ([RFC 1 §3.10](rfc-1-journal.md#3.10%20Operations%20versioned%20elsewhere)), so every version it assigns outranks every version assigned under an earlier epoch ([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions)) |
+| **epoch** | the owner epoch: raised by every configuration change, and never lower for a file than any epoch it had before ([§6](#6.%20Fencing)). The owner applies it to each file through the journal's per-file epoch ([§2.5](#2.5%20The%20journal%20extension)), so every version it assigns outranks every version assigned under an earlier epoch ([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions)) |
 | **committed point** | per unit, the newest version at or below which every operation is held by every member. The owner computes it and sends it with every batch; it is never written to the configuration store |
-| **settled point** | per file on a member, the committed point it has settled to ([RFC 1 §3.10](rfc-1-journal.md#3.10%20Operations%20versioned%20elsewhere)) |
+| **recorded point** | per unit, the newest version at or below which every removal's metadata commit has landed; never above the committed point. The owner sends it with the committed point |
+| **settled point** | per file on a member, the committed point it has settled to with `SettleApplied` ([§2.5](#2.5%20The%20journal%20extension)) |
 | **owner lease** | the lease the owner renews in the configuration store; it is the write token of [RFC 11 §3.1](rfc-11-ownership.md#3.1%20A%20token%20is%20a%20lease%2C%20fenced%20by%20an%20epoch) — one lease, not two |
 | **read lease** | a lease the owner grants a replica to serve reads ([§8](#8.%20Reads%20from%20replicas)), no longer than a configured maximum |
 | **drift bound** | the configured bound on clock drift between any two nodes; every lease is reckoned with it |
@@ -100,7 +101,7 @@ every block service. Nothing in this layer depends on which store provides it.
 ### 2.3 What a replica holds
 
 A replica's journal holds the unit's operations at the versions the owner
-assigned, applied through `Apply` ([RFC 1 §3.10](rfc-1-journal.md#3.10%20Operations%20versioned%20elsewhere)) in whatever order they arrive.
+assigned, applied through `Apply` ([§2.5](#2.5%20The%20journal%20extension)) in whatever order they arrive.
 Two members' journals are never byte-identical and need not be. What they agree
 on is, for every byte, the newest version applied — and highest-version-wins
 makes that independent of arrival order.
@@ -111,14 +112,16 @@ A block service keeps one journal per device ([RFC 1](rfc-1-journal.md)). That j
 of every share, and every unit, the service owns or replicates. Nothing in this
 layer is per journal; every rule acts per unit or per file:
 
-- epochs, settled points, `Apply`, `Settle`, `Export` and `Discard` act per file
-  ([RFC 1 §3.10](rfc-1-journal.md#3.10%20Operations%20versioned%20elsewhere)), so installing, settling or discarding one unit **MUST NOT**
+- epochs, settled points, `Apply`, `Settle`, `SettleApplied`, `Export` and
+  `Discard` act per file ([§2.5](#2.5%20The%20journal%20extension)), so installing, settling or discarding one unit **MUST NOT**
   touch another unit's files in the same journal;
 - a receiver's installed epoch is per unit, kept durably by this layer, not by
   the journal;
 - the owner raises a file's journal epoch (`SetEpoch`) to its unit's epoch before
   assigning the file's first version under that epoch, and not before, so a new
-  epoch costs nothing for files it never writes;
+  epoch costs nothing for files it never writes. It writes the file's two
+  metadata fence records at that epoch at the same point, before the file's
+  first operation under it ([§3](#3.%20What%20it%20assumes%20of%20ownership) item 5);
 - every per-unit procedure — joining, sealing, settling, re-applying existence —
   covers only the unit's files the journal holds content for, never every file of
   the unit: a unit that is a whole share can hold millions of files;
@@ -130,6 +133,112 @@ layer is per journal; every rule acts per unit or per file:
 
 Losing a device loses the service's membership in every unit whose files that
 journal held; each unit's owner removes it under [§7](#7.%20Membership) independently.
+
+### 2.5 The journal extension
+
+The journal of [RFC 1](rfc-1-journal.md) assigns every version itself. Replication needs a journal
+that also takes versions assigned elsewhere, raises a file's epoch, and forgets a
+file on command. That is a **later journal format version**, added as
+[RFC 1 §4.3](rfc-1-journal.md#4.3%20Records) prescribes for new record kinds: a binary that knows it opens a journal
+of RFC 1's version and upgrades it on its first extension record; a binary that
+does not refuses the newer journal. Nothing below applies to a journal of
+RFC 1's version.
+
+```go
+Apply(id FileID, op Op) error                         // op: write, deallocate, truncate or delete, with its version
+SettleApplied(id FileID, v Version) error              // every operation at or below v has been applied; durable
+Settled(id FileID) Version                             // the file's settled point
+Export(id FileID, from Version) iter.Seq2[Op, error]  // Since, with each write's bytes
+SetEpoch(id FileID, e uint64) error
+Epochs(id FileID) []EpochStart                         // each epoch the file's versions were assigned under, and its first version
+Discard(id FileID) error
+```
+
+It adds three record kinds — **epoch**, **settle** and **discard** — and lifts
+RFC 1's rule that a version's epoch half is zero ([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions)).
+
+**`Apply`.** `WriteAt` and its siblings assign versions. `Apply` takes an
+operation whose version was assigned by another journal holding the same file and
+applies it by version: at each byte it takes effect only where it is newer than
+what the journal has applied there, held content and removal markers alike, and
+is otherwise ignored. An `Apply` of a version equal to what is held is a
+repetition and changes nothing. Applied operations are durable, reserve capacity,
+draw on the headroom for records without bytes ([RFC 1 §7](rfc-1-journal.md#7.%20Capacity)), advance the file's
+change sequence ([RFC 1 §3.4](rfc-1-journal.md#3.4%20Fill)), and are recorded exactly as the assigning
+operations are; the journal does not check where a version came from. The caller
+**MUST NOT** apply two different operations under one version of one file.
+Operations therefore **MAY** arrive in any order: a journal that applied a set of
+them in any order holds exactly what one that applied them in version order holds.
+
+**Release markers.** In this format version a `Release` also leaves a removal
+marker at the released version, so an operation at or below it that arrives
+afterwards is not applied there: the content it would restore was superseded
+before it was released.
+
+**`SettleApplied` and the settled point.** `SettleApplied(id, v)` is the caller's
+statement that every operation on `id` at or below `v` has been applied. It
+appends a **settle record** and is durable on return, so recovery restores the
+settled point. `Settled` reports it, so a receiver can refuse an operation at or
+below it ([§6](#6.%20Fencing)). Two rules depend on it:
+
+- **Only settled content is offered.** An offer ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)) includes only content
+  at or below the file's settled point. Versions arriving through `Apply` can
+  arrive out of order, and an offer ahead of them would commit a newer ref that
+  makes the older operation's commit be refused ([RFC 6 §4.4](rfc-6-block-metadata.md#4.4%20Commits%20for%20one%20file%20apply%20in%20order)). A journal whose
+  versions are all its own settles each as it assigns it.
+- **A marker is dropped only when both points pass it.** RFC 1's `Settle`
+  ([RFC 1 §3.10](rfc-1-journal.md#3.10%20Settle%20and%20Since)) still says metadata recorded the removal; the marker is dropped
+  only once `SettleApplied` has also passed its version, since until then an
+  older operation can still arrive. Release markers need only the settled point.
+
+> **Example.** An owner assigns v5 to a write at 1 MiB, then v7 to a write at 0.
+> A replica receives v7 first. Were v7 offered now, its commit would move the
+> file's refs to version 7, and v5's commit, arriving later, would be refused as
+> older: v5 could never become durable. The replica offers v7 only after
+> `SettleApplied(id, 7)`.
+
+**`SetEpoch`.** It raises the epoch under which the journal assigns versions for
+`id` ([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions)). The epoch is per file: it is the owner epoch, applied to a file
+through the file's unit ([RFC 11](rfc-11-ownership.md)). `e` **MUST** exceed the file's current epoch,
+and the **epoch record** **MUST** be durable before the first version under it is
+assigned; otherwise a crash can forget the epoch while versions under it survive,
+and the next assignment falls below them. A version assigned under a later epoch
+outranks every version assigned under an earlier one, by this journal or any
+other.
+
+**`Export`** is RFC 1's `Since` with each write's bytes: it yields, in version
+order, operations that reproduce every held extent and removal marker of `id` at
+or above `from`, each at its own version. Applying them to another journal makes
+it hold the same content at the same versions for that range of versions.
+
+**`Discard`** forgets `id` entirely: held extents whatever their offloaded bit,
+removal markers, and the settled point and epochs, as if the journal had never
+held the file. It appends a **discard record**, which covers every record of the
+file with a lower sequence number whatever its version — the one exception to
+precedence — advances the file's change sequence and, like a delete, drops the
+file's entry by raising the floor sequence ([RFC 1 §3.4](rfc-1-journal.md#3.4%20Fill)); it is durable on return,
+and recovery **MUST NOT** bring back anything it discarded. It is the one
+operation that ignores versions, so that a copy no longer trusted can be rebuilt
+from another's `Export`. **Discarding dirty content destroys it unless another
+journal holds it**; the caller **MUST** know that one does. `Discard` during an
+offer behaves as a removal does ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)).
+
+**Retention.** A file's newest epoch and settle records are live, and carried
+forward by repack ([RFC 1 §8.2](rfc-1-journal.md#8.2%20Repack)), only while the file has a held extent or an
+unsettled removal marker; once it has neither, they are dropped with the rest of
+its records. A journal that has forgotten a file's epoch treats it as having
+none, so the owner's `SetEpoch` before the file's next assignment ([§2.4](#2.4%20One%20journal%20carries%20many%20units))
+re-establishes it, and the version floor ([RFC 1 §9.1](rfc-1-journal.md#9.1%20Rebuilding)) keeps the counter above
+every version recorded durable. A discard
+record is live while it still covers a record of its file in another segment.
+`Stats` gains `applied_bytes`, labelled `outcome` = `applied` or `older`.
+
+> [!important] Pending review — the deferred journal API lands here
+> `Apply`, `SetEpoch`, `Epochs`, `Discard`, the persisted settled point
+> (`SettleApplied`, `Settled`), release markers, settled-only offers and the
+> epoch, settle and discard record kinds moved from RFC 1 into this later
+> journal format version. Epoch and settle records now live only while the file
+> holds extents or unsettled markers; markers need both settle points.
 
 ## 3. What it assumes of ownership
 
@@ -147,8 +256,20 @@ journal held; each unit's owner removes it under [§7](#7.%20Membership) indepen
    drift bound.
 4. **Ownership follows the writer**, by handover rather than failover ([§9.4](#9.4%20Handover),
    [RFC 11 §3.3](rfc-11-ownership.md#3.3%20Ownership%20follows%20the%20writer)).
-5. **Commits are fenced.** Every metadata commit that acts for a unit carries the
-   owner epoch and is refused when it is not current ([RFC 11 §8](rfc-11-ownership.md#8.%20Metadata%20consistency)).
+5. **Commits are fenced, per file.** Every metadata commit that acts for a unit is
+   refused when the owner epoch is not current for the file it touches. The epoch
+   lives in two fence records per file, one per commit path — `F_x` for existence
+   commits, `F_o` for offload commits and removal pruning — and a new owner writes
+   both at its epoch before its first operation on the file; removals and
+   releases read and write both ([RFC 11 §8](rfc-11-ownership.md#8.%20Metadata%20consistency)). A check that forces every commit
+   of a unit through one record **MUST NOT** be used. This layer relies on one
+   more property of it: a fenced commit covers only operations durable on the
+   unit's replica set ([§4](#4.%20The%20write%20path)).
+
+> [!important] Pending review — per-file fences
+> The owner epoch is checked through two per-file fence records rather than one
+> per unit, so it conflicts on both metadata backends' isolation levels without
+> serialising a unit on one key. The new owner writes them lazily, per file.
 
 ## 4. The write path
 
@@ -174,7 +295,8 @@ while it is still a member.
 
 **Metadata follows the members.** Until a write's existence is committed, the
 journal is its authority ([RFC 6 §3.4](rfc-6-block-metadata.md#3.4%20Ordering%20against%20the%20journal)), on every member. The owner group-commits
-existence at the protocol's stability point, fenced by its epoch, and **MUST**
+existence at the protocol's stability point, each file's commit fenced by its
+`F_x` record ([§3](#3.%20What%20it%20assumes%20of%20ownership) item 5), and **MUST**
 include only operations every member holds durably. A truncate, deallocate,
 release or clone is a synchronous metadata operation: its journal operation
 **MUST** likewise be held durably by every member before its metadata commit, and
@@ -195,10 +317,18 @@ acknowledgement stays the operation.
 Only the owner offloads, as on one node, and its commits carry its epoch
 ([§3](#3.%20What%20it%20assumes%20of%20ownership)). Replicas never offload.
 
-**Settling.** The owner sends each member its committed point with every batch.
-A member settles the unit's files it holds to it ([RFC 1 §3.10](rfc-1-journal.md#3.10%20Operations%20versioned%20elsewhere)), which drops removal
-markers below it. A learner never settles: it cannot know that it holds
-everything below the point.
+**Settling.** The owner sends each member its committed point and recorded point
+with every batch. A member calls `SettleApplied` on the unit's files it holds at
+the committed point, and `Settle` at the recorded point ([§2.5](#2.5%20The%20journal%20extension)); a removal
+marker is dropped once both have passed it. Until the recorded point passes a
+removal, every member keeps its marker, so a member that takes over can still
+hand the removal to metadata through `Since` ([§9.2](#9.2%20Takeover) step 4). A learner never
+settles: it cannot know that it holds everything below the point.
+
+> [!important] Pending review — two settle points
+> RFC 1's `Settle` now means "metadata recorded the removal", so members also
+> receive a recorded point. Markers survive until both points pass them, which
+> keeps a removal visible to a new owner until metadata holds it.
 
 **Replicas release by being told.** After an offload commit lands, the owner
 sends the members the extents it covered with the commit's `oldest` and `newest`.
@@ -230,13 +360,14 @@ was sent under. **The receiver enforces it:**
   new epoch, so a restart never accepts what it refused before;
 - a receiver that installs an epoch whose configuration does not list it as a
   member or learner **MUST** stop serving the unit's reads and `Discard` its copy
-  of the unit's files, and only those ([RFC 1 §3.10](rfc-1-journal.md#3.10%20Operations%20versioned%20elsewhere)). It may rejoin only as a learner ([§7](#7.%20Membership));
+  of the unit's files, and only those ([§2.5](#2.5%20The%20journal%20extension)). It may rejoin only as a learner ([§7](#7.%20Membership));
 - a receiver **MUST** refuse any operation at or below its settled point for that
   file. Every member held every operation below the committed point when the
   owner sent it, so the owner counts such a refusal as the operation held. Without
   this rule a late duplicate could reinstate content whose removal marker settling
   has already dropped;
-- the metadata store refuses a commit whose owner epoch is not current ([§3](#3.%20What%20it%20assumes%20of%20ownership)).
+- the metadata store refuses a commit whose owner epoch is not current for the
+  file, read from that file's fence records ([§3](#3.%20What%20it%20assumes%20of%20ownership) item 5).
 
 A check made only by the sender is not a fence. An owner that pauses past its
 lease, then resumes, still believes it owns the unit; what stops it is that every
@@ -270,7 +401,7 @@ stopped serving reads it can no longer keep current.
 1. it `Discard`s whatever it holds of the unit's files — a returning copy may hold
    operations its configuration never acknowledged;
 2. the owner streams it `Export` of every file of the unit it holds un-offloaded
-   content for ([RFC 1 §3.10](rfc-1-journal.md#3.10%20Operations%20versioned%20elsewhere)), and
+   content for ([§2.5](#2.5%20The%20journal%20extension)), and
    meanwhile sends it live operations as it would a member, without waiting for
    its answer;
 3. to promote it, the owner stops assigning versions for the unit, waits until
@@ -340,17 +471,25 @@ When the owner's lease lapses, a member takes over:
    replicates it like any operation. The new epoch outranks every old one, so
    every member converges on the new owner's view of the uncertain ranges.
 4. **Existence.** It re-applies existence for the unit's files it holds from its
-   journal, in commits fenced by the new epoch ([RFC 6 §3.4](rfc-6-block-metadata.md#3.4%20Ordering%20against%20the%20journal)), so metadata covers
-   every operation it now holds. Metadata can lag acknowledged writes ([§4](#4.%20The%20write%20path)), so
+   journal — `Since(id, applied)` for each, which yields held content and the
+   unsettled removal markers ([RFC 1 §3.10](rfc-1-journal.md#3.10%20Settle%20and%20Since)) — in commits fenced by the new
+   epoch on each file's fence records ([RFC 6 §3.4](rfc-6-block-metadata.md#3.4%20Ordering%20against%20the%20journal), [§3](#3.%20What%20it%20assumes%20of%20ownership) item 5), writing
+   those records first, so metadata covers every operation it now holds. Metadata can lag acknowledged writes ([§4](#4.%20The%20write%20path)), so
    it is the journal that decides, not the recorded size.
 5. **Wait.** It waits until the maximum read lease plus the drift bound has passed
    since step 2 completed, so no replica still serves under a lease the old owner
    granted.
 6. **Record and settle.** It records the seal in the configuration by
    compare-and-swap at its epoch, then settles the unit's files it holds to the
-   **sealed point** — the newest version it assigned in steps 3 and 4 — and
-   sends that point to every member as the committed point. Only then does it
-   serve or accept writes for the unit.
+   **sealed point** — the newest version it assigned in steps 3 and 4 — with
+   `SettleApplied`, and with `Settle` once step 4's commits have landed, and
+   sends that point to every member as the committed and recorded point. Only
+   then does it serve or accept writes for the unit.
+
+> [!important] Pending review — takeover uses Since and per-file fences
+> Step 4 now reads the journal through `Since`, so removals metadata never
+> recorded are re-applied too, and writes each file's fence records at the new
+> epoch before its commits. Step 6 names both settle calls.
 
 Every kept member holds, at every byte, either content at or below the old
 committed point or the new owner's re-issue, so settling to the sealed point is
@@ -380,7 +519,9 @@ A planned move — ownership following the writer — does not wait for a lease:
 3. it writes the configuration naming the new owner at the next epoch, by
    compare-and-swap;
 4. the new owner installs the epoch on every member, settles the unit's files it
-   holds to the drained point, and only then accepts writes.
+   holds to the drained point with `SettleApplied`, and only then accepts writes;
+   it writes each file's fence records at its epoch before its first operation on
+   that file ([§3](#3.%20What%20it%20assumes%20of%20ownership) item 5).
 
 No seal is needed: the old owner acknowledged nothing it had not replicated to
 every member, and stopped before the move. The old owner stays a member unless
@@ -395,6 +536,12 @@ synced, reads are always the owner's, and failover cannot happen. The engine
 **MUST** still compose this layer, not the journal directly: with two code paths,
 every rule in this document is exercised by one of them and not the other, and
 the untested one is the one that ships to the deployment that needs it.
+
+The journal itself stays at RFC 1's format version on a single node: nothing
+here calls `Apply`, `SetEpoch` or `Discard` while the epoch never changes and the
+unit has no other member, so no extension record is written ([§2.5](#2.5%20The%20journal%20extension)). A node's
+journal moves to the extension's format version on its first extension record,
+and cannot be opened by an older binary afterwards.
 
 ## 11. API surface
 
@@ -468,6 +615,8 @@ var (
 | R10 | A receiver that installs a configuration not listing it stops serving the unit and discards its copy. |
 | R11 | The engine reaches the journal only through this layer, on one node as on many. |
 | R12 | Units sharing a journal are independent: every install, settle, discard, refusal and removal acts on one unit's files only. |
+| R13 | Every metadata commit for a file reads that file's fence record for its path with conflict tracking, and a new owner writes both of the file's fence records at its epoch before its first operation on the file. |
+| R14 | A removal marker survives on every member until both the committed and the recorded point pass it. |
 
 ## 13. Observability
 
@@ -479,6 +628,8 @@ Every metric is labelled by unit where it is per unit, and by share.
 | time replication adds to an acknowledgement | `dittofs_replication_ack_seconds` | histogram |
 | members and learners per unit; below the floor raises a health condition | `dittofs_replication_members` | gauge |
 | refusals, labelled `reason` = `stale_epoch`, `settled`, `not_member` or `pressure` | `dittofs_replication_refusals_total` | counter |
+| bytes taken by `Apply`, labelled `outcome` = `applied` or `older` ([§2.5](#2.5%20The%20journal%20extension)) | `dittofs_journal_applied_bytes_total` | counter |
+| recorded-point lag behind the committed point: removals whose markers every member still keeps | `dittofs_replication_recorded_lag_seconds` | gauge |
 | configuration changes, labelled `kind` = `takeover`, `handover`, `remove` or `join` | `dittofs_replication_config_changes_total` | counter |
 | takeover time, lease lapse to writable | `dittofs_replication_takeover_seconds` | histogram |
 | seal duration, and the uncertain bytes it re-issued | `dittofs_replication_seal_seconds`, `dittofs_replication_seal_bytes_total` | histogram, counter |
@@ -520,6 +671,28 @@ Properties every one of them checks:
 | A unit with a member of the last configuration alive becomes writable again without operator action | a takeover that waits for a quorum |
 | A new owner serves and offloads only settled content (R9) | serving before settling, trimming to a metadata size that lags acknowledged writes |
 | One unit's install, discard, lag or pressure never changes or refuses another unit's files in the same journal (R12) | a discard by journal rather than by file, one share's backlog refusing another's writes within its fair limit |
+| A superseded owner's existence, offload or removal commit is refused on both metadata backends' isolation levels (R13) | an epoch check by range scan or blind write, a unit-wide fence record, a new owner that skips a file's fence records |
+| A removal whose metadata commit a crashed owner never made is committed by the new owner (R14) | a marker dropped at the committed point, a takeover that re-applies existence from held extents only |
+
+**Journal extension checks**, run against the journal alone as [RFC 1 §11](rfc-1-journal.md#11.%20Conformance)
+runs its own, moved here from RFC 1 with the API they test ([§2.5](#2.5%20The%20journal%20extension)):
+
+| Checks | How |
+| --- | --- |
+| order does not matter | Generate a random set of writes, deallocates, truncates and a delete for one file with distinct versions; apply the same set to fresh journals in many random orders, with repetitions; assert every journal holds identical bytes at identical versions, before and after a crash and reopen, and identical to one that applied them in version order. |
+| no resurrection | Apply a write at v2, a deallocate at v3 over it, then a write at v1 over the same range; assert the range reads `missing`, and still does after reopen. Repeat with a release in place of the deallocate. |
+| unsettled not offered | Apply v2 at offset A and v4 at offset B, leave v3 unapplied; assert an offload offers neither. `SettleApplied` to v4; assert both are offered. |
+| markers need both points | Truncate at v3 over v2 content; `Settle` to v3 only; assert the marker stays. `SettleApplied` to v3; assert it is dropped. Crash and reopen; apply a write at v2; assert it is refused as at or below the settled point. |
+| export reproduces | Export a file with held content and removal markers and apply it to a fresh journal; assert both read identically with identical versions. |
+| epoch outranks | Assign versions, raise the epoch, apply an operation from the old epoch with a larger counter; assert it loses. Crash between the epoch record and the first assignment; assert the next version still falls under the raised epoch. |
+| discard is final | Apply content, `Discard` the file, crash and reopen; assert nothing of it is held and a `Fill` begun before the discard is refused. Repeat with a discard during an offer. |
+| epoch and settle records retire | Write, offload, release and settle every extent of a file; repack every segment; assert its epoch and settle records are gone, and that the file's next write after `SetEpoch` falls under the raised epoch. |
+| format upgrade | Open a journal of RFC 1's version, write, then `Apply`; assert the journal reopens under the extension's version and an RFC 1 binary refuses it. |
+
+> [!important] Pending review — extension and fence checks
+> Checks for the deferred journal API moved here from RFC 1, with new ones for
+> the two settle points, record retirement and the format upgrade. R13 and R14
+> add per-file fences and marker survival.
 
 **Benchmarks**, on three block services on one local network, each the reference
 box ([Test tiers](rfc-index.md#Test%20tiers)):

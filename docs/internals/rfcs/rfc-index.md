@@ -33,7 +33,7 @@ order: each part builds on the ones before it.
 | [RFC 10](rfc-10-journal-replication.md) | journal replication | *draft* — owner-driven replication, fencing, seal, catch-up, reads from replicas |
 | [RFC 11](rfc-11-ownership.md) | ownership | *draft* — ownership units (a share by default), leases, handover, failover, forwarding |
 | **Data management** | | |
-| [RFC 12](rfc-12-snapshots.md) | snapshots, backups and share migration | *draft* — snapshots (read-only, writable clones, scheduled with retention), metadata backup, restore to a new share, moving a share between installations on one bucket |
+| [RFC 12](rfc-12-snapshots.md) | snapshots, backups and share migration | *draft* — snapshots (a per-share cut number plus counted history refs; read-only, writable clones, scheduled with retention), metadata backup, restore to a new share, moving a share between installations on one bucket |
 | **Configuration** | | |
 | [RFC 13](rfc-13-configuration.md) | configuration | *draft* — what is a setting and what is fixed, scopes, which settings bind content, validation, change, secrets |
 | **Security** | | |
@@ -141,6 +141,16 @@ to a tier that runs it.
 | **Per change** | on every proposed change | unit, conformance, property and fuzz seeds, model-based tests at a fixed budget, and each RFC's counted checks; minutes, no timing, no external service |
 | **After merge** | after each merge to the integration branch | benchmarks on the reference box, recorded; a result more than 10% worse than the last is reported, not blocking |
 | **Daily** | once a day on the integration branch | benchmarks that need space or hours, soaks, longer fuzz and model runs, and tests against real backends |
+
+**The model test covers batching and masking.** The metadata model test
+([RFC 6 §11.1](rfc-6-block-metadata.md#11.1%20Group%20A%20%E2%80%94%20wrong%20content%2C%20lost%20content)) drives removals, clones and snapshot deletions that span many
+batches, crashes between any two, and reads through every partly applied one: a
+removal must mask what it has not yet dropped, and a count must never fall below
+its refs. A model that applies each removal in one step cannot see either.
+
+> [!important] Pending review — batching in the model test
+> Removals, clones, restores and snapshot deletions are now applied in bounded
+> batches, so the model must exercise the states between batches.
 
 No timed check runs per change: a shared runner's device changes between runs,
 so a timing gate either fails on noise or is set so wide it misses the
