@@ -2,7 +2,7 @@
 rfc: 1
 title: "RFC 1 — the journal"
 component: journal
-status: draft
+status: reviewed
 depends_on:
   - "[[rfc-0-data-lifecycle]]"
 aliases:
@@ -12,7 +12,7 @@ tags:
 ---
 # RFC 1 — the journal
 
-**Status:** draft.
+**Status:** reviewed.
 **Audience:** anyone implementing or reviewing the journal.
 
 ---
@@ -116,6 +116,12 @@ eviction, and an extent whose bytes were lost are the same observation to the
 journal — it does not hold them — and it **MUST** report all three identically.
 Resolving which is which is [RFC 0 §6.1](rfc-0-data-lifecycle.md#6.1%20Resolution), and it belongs to the engine.
 
+A gap is a gap in the file, not in storage. The journal never writes into space
+freed inside a segment: every record is appended at the end of its stream
+([§4.2](#4.2%20Segments)), and freed space goes back to the filesystem by punching ([§8.1](#8.1%20Releasing%20storage)) or by
+repack ([§8.2](#8.2%20Repack)). A write that fills a gap in a file lands wherever its stream
+stands, like any other write.
+
 ![The same held extents mapped to records scattered across three segments in append order, interleaved with another file](img/rfc1-placement.svg)
 
 Nothing relates an extent's position in the file to its position in storage.
@@ -148,7 +154,7 @@ WriteAt(id FileID, off int64, p []byte) (v Version, err error)
 Sync(ids ...FileID) error
 ```
 
-Stages `p` at `off` and makes it durable according to the configured policy
+Stages `p` at `off` and makes it durable within the sync bound
 ([§6.2](#6.2%20Sync%20policy)). On return with `err == nil`, the extent `(off, len(p))` is held, is
 **Dirty**, and **MUST** survive process death.
 
@@ -159,7 +165,7 @@ Otherwise a lower version can land after a higher one and an offload between the
 offers the higher without the lower, breaking [RFC 6 §4.4](rfc-6-block-metadata.md#4.4%20Commits%20for%20one%20file%20apply%20in%20order).
 
 `Sync` returns once every operation on the named files that returned before the
-call is durable, whatever the sync policy. It is the journal's part of a client's
+call is durable. It is the journal's part of a client's
 flush ([§6.2](#6.2%20Sync%20policy)).
 
 `WriteAt` **MUST** reserve capacity before accepting bytes ([§7](#7.%20Capacity)) and **MUST**
@@ -219,19 +225,75 @@ type Offer struct {
 Offers held extents of `id` whose offloaded bit is unset, and marks exactly the
 extents reported durable through `report`.
 
-**Only settled content is offered.** Content the journal assigned is settled when
-it is assigned. Content applied with a version issued elsewhere is settled once
-the caller declares, through `Settle`, that nothing older can still arrive for the
-file ([§3.10](#3.10%20Operations%20versioned%20elsewhere)). An offer that included unsettled content could carry a version
-above one still to arrive for another offset of the same file, and the commit
-that later carries the older version would be refused as older than the ref
-([RFC 6 §4.4](rfc-6-block-metadata.md#4.4%20Commits%20for%20one%20file%20apply%20in%20order)).
+**Offload is how dirty content becomes evictable.** The journal uploads nothing.
+It hands the engine a frozen view of a file's dirty content, the **offer**; the
+engine carves, uploads and commits it; and as each block's commit lands, the
+engine tells the journal which extents are now durable. Those extents get their
+offloaded bit, and only then can `Release` evict them ([§3.5](#3.5%20Release)). Offload makes
+content evictable; `Release` evicts it. The name is the lifecycle step this call
+serves ([RFC 0 §5.2](rfc-0-data-lifecycle.md#5.2%20Offload)).
 
-**`report` may be called any number of times while `fn` runs**, and each call marks
-its extents at once, under every rule below. It is how a pass makes extents
-evictable block by block, as each block's commit lands, rather than all at its
-end. Once `fn` returns, `report` **MUST** fail. The error `fn` returns reports that
-the rest of the offer failed; it takes back nothing already reported.
+**What an offer is.** A snapshot of one file's dirty content, taken when the call
+starts:
+
+- `Dirty`: the extents offered;
+- `Oldest`, `Newest`: the range of their content versions;
+- `Offered`: a reader that returns exactly those bytes for as long as `fn` runs.
+
+Frozen means a client write during the pass changes what `ReadAt` serves, but
+not what `Offered` returns. The carver hashes the bytes, and the uploader reads
+them again later to send them ([RFC 3 §3.2](rfc-3-syncer.md#3.2%20It%20holds%20a%20reference%2C%20not%20a%20copy)); both must see the same bytes, or the
+uploaded block would not match its hashes.
+
+> **Example.** The offer covers `[0, 4)` MiB at v10. While its block uploads, a
+> client writes `[1, 2)` MiB at v11.
+>
+> - `ReadAt` on `[1, 2)` returns v11. `Offered` on `[1, 2)` still returns v10: the
+>   v10 record stays in its segment until `fn` returns.
+> - The block commits, and the engine reports `[0, 4)`. The journal marks
+>   `[0, 1)` and `[2, 4)`. `[1, 2)` stays dirty: the remote holds v10, the journal
+>   holds v11, and marking it would let eviction drop v11, the only copy.
+> - The next pass offers `[1, 2)` at v11.
+
+**Only settled content is offered.** *Settled* means that nothing older can still
+arrive for the file. On a single node every version comes from `WriteAt` and its
+siblings, so content is settled the moment it is written and this rule costs
+nothing. It matters only when versions are assigned by another journal and arrive
+through `Apply` ([§3.10](#3.10%20Operations%20versioned%20elsewhere), [RFC 10](rfc-10-journal-replication.md)), because those can arrive out of order.
+The caller declares the settled point with `Settle`.
+
+> **Example.** A primary assigns v5 to a write at 1 MiB, then v7 to a write at 0.
+> A replica receives v7 first. Were v7 offered now, its commit would move the
+> file's refs to version 7, and v5's commit, arriving later, would be refused as
+> older ([RFC 6 §4.4](rfc-6-block-metadata.md#4.4%20Commits%20for%20one%20file%20apply%20in%20order)): v5 could never become durable. The replica offers v7 only
+> after `Settle(id, 7)`, the caller's statement that everything at or below 7 has
+> been applied.
+
+**`report` marks durability block by block.** One offer is usually committed as
+several blocks, and their commits land at different times. The engine calls
+`report` once per committed block, naming that block's extents, and each call
+marks them at once, so they become evictable without waiting for the rest of the
+pass.
+
+> **Example.** A pass offers 64 MiB, carved into 16 blocks of 4 MiB. Block 3
+> commits first: `report([8, 12) MiB)` makes those 4 MiB evictable at once. Block
+> 9's upload then fails and `fn` returns an error. Everything reported so far
+> stays marked; the rest stays dirty and a later call offers it again.
+
+- `report` **MAY** be called any number of times while `fn` runs.
+- Once `fn` returns, `report` **MUST** fail: the offer is over, and its records
+  may have moved or been superseded.
+- The error `fn` returns covers only what was not reported; it takes back nothing.
+
+**A `report` costs what it reports.** Marking *k* extents **MUST** cost
+O(*k* log *n*), where *n* is the number of extents the file holds, and **MUST NOT**
+scan the file's other extents to decide anything about the reported ones.
+
+> **Example.** A 160 GB file written in 1 MiB writes holds about 150,000 extents.
+> Reporting one 4 MiB block touches four of them, and must find those four through
+> the index. A `report` that walks all 150,000 does it once per block — about
+> 40,000 times over the file — inside the lock the file's writes and reads also
+> need. Writes to that file slow as it grows, and stall in the end.
 
 **`limit` bounds the dirty bytes one call offers.** The journal offers extents in
 offset order until the next would pass the limit, and offers an extent larger than
@@ -263,19 +325,14 @@ be rejected as an error, not silently accepted.
 Offered extents **MUST** remain readable and **MUST NOT** be moved for the
 duration of the call.
 
-`offered` reads the bytes **as offered**, at file offsets, for the duration of
-`fn`. A write that supersedes an offered extent while `fn` runs changes what
-`ReadAt` on the journal returns, and **MUST NOT** change what `offered` returns:
-the superseded record stays in its segment until `fn` returns, and `offered`
-reads it there. Reading `offered` outside an offered extent, or after `fn`
-returns, **MUST** fail rather than return other bytes. This is what lets the
-uploader read a block's bytes at transfer time instead of copying them at carve
-time ([RFC 3 §3.2](rfc-3-syncer.md#3.2%20It%20holds%20a%20reference%2C%20not%20a%20copy)): the carver and the uploader read the same version, whatever
-a client writes meanwhile. A concurrent write to an offered extent is permitted; the
-newer bytes supersede, and the extent's offloaded bit **MUST** remain unset for the
-superseding write even if `fn` reports the offset durable: the report is about
-the old bytes, and marking it would make the new ones evictable while only the
-old ones exist remotely.
+`Offered` reads at file offsets, and only inside the offered extents for the
+duration of `fn`; a read outside them, or after `fn` returns, **MUST** fail rather
+than return other bytes. A write that supersedes an offered extent while `fn` runs
+is permitted and changes what `ReadAt` returns; it **MUST NOT** change what
+`Offered` returns, so the superseded record **MUST** stay in its segment until `fn`
+returns. The superseding write's offloaded bit **MUST** remain unset even if `fn`
+reports its offset durable: the report is about the offered bytes, not the newer
+ones.
 
 **A removal does not interrupt an offer.** A `Truncate`, `Deallocate`, `Delete` or
 `Discard` while `fn` runs takes effect at once for `ReadAt`, and **MUST NOT**
@@ -897,7 +954,7 @@ separate, explicit action.
 
 | Rule | Why |
 | --- | --- |
-| A record **MUST** be written before `WriteAt` returns, and synced before it returns or within the policy's time bound ([§6.2](#6.2%20Sync%20policy)). `Sync` returns only once synced. | The acknowledgement is a promise, of exactly the durability the policy states. |
+| A record **MUST** be written before `WriteAt` returns, and synced by a `Sync` or within the sync bound ([§6.2](#6.2%20Sync%20policy)). `Sync` returns only once synced. | The acknowledgement is a promise, of exactly the durability the policy states. |
 | `Release` **MUST NOT** precede the durable offload commit the offloaded bit reflects. | Otherwise a crash can leave content whose only copy is gone ([RFC 0 §8.1](rfc-0-data-lifecycle.md#8.1%20Evict)). |
 | A release record **MUST** be durable before any storage it frees is punched or unlinked. | Otherwise a crash can lose the record and keep the punch, and an older record the release covered is held again ([§3.5](#3.5%20Release)). |
 | A segment's records **MUST** be durable before the segment is unlinked by reclamation. | A reclaim pass **MUST** be content-preserving ([RFC 0 §8.2](rfc-0-data-lifecycle.md#8.2%20Reclaim)). |
@@ -911,14 +968,22 @@ process crash, a host crash and power loss. There is no setting that declares a
 journal not durable. The journal's part in a client's flush is `Sync` ([§3.1](#3.1%20Write));
 what else a flush waits for is its caller's ([RFC 8 §9.4](rfc-8-engine.md#9.4%20Commit%20is%20answered%20by%20the%20journal)).
 
-The policy governing when a staged record reaches stable storage is
-configurable: before `WriteAt` returns, or within a bounded window after it. A
-record written but not yet synced survives process death, since the operating
-system holds it, and not host loss. Whatever the setting:
+There is one policy. `WriteAt` writes its record before it returns, and the
+record is synced by the first of two events: a `Sync` naming its file, or a fixed
+time bound after the write. A record written but not yet synced survives process
+death, since the operating system holds it, but not host loss. A client that asks
+for a stable write gets one because the engine calls `Sync` before replying
+([RFC 8 §9.4](rfc-8-engine.md#9.4%20Commit%20is%20answered%20by%20the%20journal)); that is cheap, because one sync covers every writer waiting on the
+stream (group commit).
 
-- the journal **MUST** be able to state the bound it is honouring;
-- a configuration that allows a window **MUST** bound that window in time, not
-  only in bytes;
+**Proposal:** a bound of 1 s. Overturned by a measurement showing that the
+timer's syncs cost throughput a longer bound would recover, or that host loss
+within the bound is unacceptable to a deployment.
+
+Whatever the bound :
+
+- the journal **MUST** be able to state it;
+- it is a bound in time, not only in bytes;
 - a failure to sync **MUST** be reported to the caller, and **MUST NOT** be
   recorded as success and retried silently.
 
@@ -938,13 +1003,27 @@ An implementation that reads a counter and then decides **MUST NOT** be
 considered conformant: any number of concurrent callers can pass one such test,
 and the maximum then bounds nothing.
 
-When a reservation cannot be satisfied, `WriteAt` **MUST** fail with a
-distinguishable error that says which limit refused it. It **MUST NOT** block indefinitely, and **MUST NOT**
-accept the bytes and exceed the maximum.
+**A refusal is immediate, and named.** When a reservation cannot be satisfied,
+the call **MUST** fail at once with `ErrNoSpace`, carrying which limit refused
+it — the share's or the journal's — and how many bytes were missing. It **MUST
+NOT** accept the bytes and exceed the maximum, and it **MUST NOT** wait: space is
+freed only by the engine's own calls (`Release`, repack), so a journal that waited
+for space would be waiting on its caller. A refusal performs no I/O.
 
 The journal **MUST NOT** evict to satisfy its own reservation. Eviction requires
-knowing what is durable remotely, which the journal is not authoritative for;
-the engine evicts and retries ([RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model)).
+knowing what is durable remotely, which the journal is not authoritative for.
+
+**Getting out of a refusal is the engine's loop** ([RFC 8 §7.2](rfc-8-engine.md#7.2%20A%20capacity%20refusal%20comes%20back%20here)). The engine paces
+writes before the limit, so a refusal is rare ([RFC 8 §7.2.1](rfc-8-engine.md#7.2.1%20Writes%20are%20paced%20before%20the%20limit%2C%20not%20stopped%20at%20it)); on one, it releases
+content already durable, offloads dirty content so it can be released next, and
+retries within the caller's deadline ([RFC 0 §10.3](rfc-0-data-lifecycle.md#10.3%20Every%20wait%20on%20a%20request%20ends%20at%20a%20deadline)). Remote GC frees nothing
+here. For the loop to be fast, the journal owes it three things:
+
+- a refusal that costs no I/O, above;
+- `Stats` that report each share's `HeldBytes`, `DirtyBytes` and `UsedBytes` from
+  counters ([§3.7](#3.7%20State%20introspection)), so the engine sees pressure before it is refused;
+- `Release` and repack that return the storage they freed ([§3.5](#3.5%20Release)), so the
+  engine knows when a retry can succeed without polling.
 
 ## 8. Reclamation mechanisms
 
@@ -1062,7 +1141,19 @@ sum of file lengths, or punching frees nothing the limit can see.
 
 Every file the journal creates **MUST** be accounted, including each segment's
 catalog ([§4.4](#4.4%20The%20segment%20catalog)). Storage that is not accounted is storage no limit bounds and
-no reclamation targets. `Stats` reports it ([§3.7](#3.7%20State%20introspection)).
+no reclamation targets. `Stats` reports it ([§3.7](#3.7%20State%20introspection)). Every such file **MUST** also be
+bounded by live state, not by history: a side log that grows with every change
+and is compacted only at open grows without bound for as long as the process
+runs, and is compacted by a restart nobody scheduled.
+
+**Retiring a segment is idempotent.** A segment's bytes **MUST** leave the
+accounted footprint exactly once, in the step that removes the segment from the
+set of segments the journal owns, and only if that step found it there. Two
+reclamation paths that can each select a segment — eviction and repack, say —
+will sooner or later both retire the same one: a retire that finds the file
+already gone, or the segment already out of the set, **MUST** subtract nothing.
+A claim taken on a segment **MUST NOT** be released after the segment is retired,
+since a released claim on a retired segment is an invitation to retire it again.
 
 ### 8.4 Open descriptors
 
@@ -1389,6 +1480,7 @@ Beyond the named checks, the unit, model and fault tests **MUST** reach these.
 - a reservation equal to exactly the remaining space, and one a byte over, against the share's limit and against the journal's ([§7](#7.%20Capacity));
 - `ENOSPC` from the filesystem while the journal is below its own maximum, which **MUST** stay distinguishable from its own refusal;
 - a sync that fails and then succeeds, on the same stream ([§6.2](#6.2%20Sync%20policy));
+- one segment selected by eviction and by repack at once, retired by one and then by the other; accounted footprint **MUST** fall by the segment's size exactly once and never go below zero ([§8.3](#8.3%20Accounting));
 
 **Opening**: an empty directory, one holding only a `format` file, and one from an older format.
 
@@ -1426,6 +1518,7 @@ A check here fails by **serving or destroying the wrong bytes without an error**
 | [§10.5](#10.5%20Protecting%20readers%20from%20reclamation) repack under read | Same, with a repack copy instead of punching; assert the read sees the old or the new location, never neither. |
 | [§3.10](#3.10%20Operations%20versioned%20elsewhere) order does not matter | Generate a random set of writes, deallocates, truncates and a delete for one file with distinct versions; apply the same set to fresh journals in many random orders, with repetitions; assert every journal holds identical bytes at identical versions, before and after a simulated crash and reopen, and identical to a journal that applied them in version order. |
 | [§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete) no resurrection | Apply a write at v2, a deallocate at v3 over it, then a write at v1 over the same range; assert the range reads `missing`, and still does after reopen. Repeat with a release in place of the deallocate. |
+| [§8.2](#8.2%20Repack) removal outlives its segment | Write a file, overwrite it, delete it, then reclaim until the segment holding the delete is the only one selected; crash and reopen. Assert the file does not exist. A reclaim gate that counts only content records treats a segment holding just a removal as empty. |
 | [§3.3](#3.3%20Offload) removal during offload | Truncate an offered extent while `fn` runs, then read `offered`; assert it returns the offered bytes, `ReadAt` reports the extent missing, and a report naming it marks nothing. Repeat with delete and discard. |
 | [§3.3](#3.3%20Offload) unsettled not offered | Apply v2 at offset A and v4 at offset B, leave v3 unapplied, settle nothing; assert an offload offers neither. Settle to v4; assert both are offered. |
 | [§3.10](#3.10%20Operations%20versioned%20elsewhere) export reproduces | Export a file with held content and removal markers and apply the operations to a fresh journal; assert both read identically with identical versions from `ReadAt`. |
@@ -1441,6 +1534,7 @@ A check here fails by **reaching a state it cannot leave**, or by consuming with
 | Requirement | Check |
 | --- | --- |
 | [§7](#7.%20Capacity) reservation | Drive concurrent writers at the limit; assert the footprint never exceeds it. |
+| [§7](#7.%20Capacity) named refusal | Fill a share to its limit. Assert the next `WriteAt` fails with `ErrNoSpace` naming the share's limit and the missing bytes, issues no I/O through the storage seam, and returns without waiting; release that many durable bytes and assert the retry succeeds. Repeat against the journal's maximum. |
 | [§7](#7.%20Capacity) share limit | Fill one share to its limit; assert its next write is refused naming the share's limit while another share still writes, and that per-share accounting is the same after reopen. |
 | [§8.2](#8.2%20Repack) repack at capacity | Fill to capacity, then repack; assert it can run and that the journal recovers space without an external write succeeding first. |
 | [§8.4](#8.4%20Open%20descriptors) descriptors | Create more segments than the descriptor bound; assert reads still succeed and open descriptors stay bounded. |
@@ -1517,7 +1611,7 @@ sync pattern. The targets are proposed, to be confirmed once J1 has run.
 
 | # | Measures | Setup | Proposed target |
 | --- | --- | --- | --- |
-| J1 | write path | `WriteAt` sequential and random, 4 KiB to 1 MiB, under each sync policy ([§6.2](#6.2%20Sync%20policy)), 16 writers | sequential ≥ 256 KiB: ≥ 95% of the filesystem; random 4 KiB: ≥ 90% of its IOPS with an `fsync` per write; `WriteAt` excluding sync and copy: p99 ≤ 20 µs |
+| J1 | write path | `WriteAt` sequential and random, 4 KiB to 1 MiB, with and without a `Sync` after each write ([§6.2](#6.2%20Sync%20policy)), 16 writers | sequential ≥ 256 KiB: ≥ 95% of the filesystem; random 4 KiB: ≥ 90% of its IOPS with an `fsync` per write; `WriteAt` excluding sync and copy: p99 ≤ 20 µs |
 | J2 | write scaling | 1, 4, 16 and 64 files written concurrently | rises to within 5% of the filesystem, then stays there to 64 |
 | J3 | read path | `ReadAt` over held extents, index at 10^3 to 10^6 extents ([§5.1](#5.1%20What%20it%20must%20answer)) | point lookup ≤ 1 µs at 10^6; warm 1 MiB `ReadAt` ≥ 2 GB/s single stream |
 | J4 | offload offer | `Offload` over files of many small extents and of few large ones, `fn` returning at once | ≤ 1 µs per offered extent; index insertion at 10^6 ≤ 2 µs |
@@ -1530,7 +1624,7 @@ Method: run J1 and J5 long enough to exhaust the device's write cache and report
 the rate after it; state each row's queue depth; repeat J1 with more data than
 the journal holds, reporting submission and completion latency apart; report
 create and overwrite separately. Each result also records the device's raw
-figures, the filesystem and mount options, and the sync policy, besides what
+figures, the filesystem and mount options, and the sync bound, besides what
 [the index](rfc-index.md#Test%20tiers) requires.
 
 ### 11.7 Corruption, crashes and edits from outside
@@ -1587,8 +1681,8 @@ directory is trusted with its content.
 No timed check runs per change ([tiers](rfc-index.md#Test%20tiers)). The regressions that matter here — a
 lost group commit, an index that stopped being `O(log n)` — are counted instead:
 
-- **syncs per write**: 16 concurrent writers on one append stream, under the
-  sync-per-write policy ([§6.2](#6.2%20Sync%20policy)); the storage seam counts syncs and holds each
+- **syncs per write**: 16 concurrent writers on one append stream,
+  every writer calling `Sync` after each write ([§6.2](#6.2%20Sync%20policy)); the storage seam counts syncs and holds each
   one until all 16 are waiting, so scheduling cannot decide the result. They
   **MUST** issue at most one sync per four writes;
 - **index cost**: the placement index counts comparisons per lookup and per
@@ -1597,6 +1691,9 @@ lost group commit, an index that stopped being `O(log n)` — are counted instea
   in allocations per call, and an increase fails the check;
 - **index memory**: bytes per entry at 10^6 extents **MUST** stay at or below 56,
   the estimate of [§5.2](#5.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes) plus a tenth.
+- **report cost**: a pass that offloads a file of 10^3 and of 10^6 extents, written
+  sequentially so none merge, reports block by block; comparisons per reported
+  extent **MUST** at most double between the two ([§3.3](#3.3%20Offload)).
 
 ## 12. Open questions
 
@@ -1618,6 +1715,12 @@ lost group commit, an index that stopped being `O(log n)` — are counted instea
    reaching it beyond reporting. Also unmeasured is **insertion** cost — the
    benchmark covered memory and lookup, and it is insertion, not lookup, where a
    sorted slice actually fails.
+6. **The scope of one sync.** A sync covers one append stream ([§6.2](#6.2%20Sync%20policy)), and
+   more streams spread writers across more syncs: a create-heavy load split over
+   many streams shares fewer syncs, and measured slower as streams were added.
+   Whether one leader may sync several streams at once, or streams should be
+   fewer than writers' natural sharding suggests, is unmeasured against the
+   contention more streams remove.
 
 ---
 

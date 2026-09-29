@@ -471,7 +471,12 @@ sweep into a guess.
 **The first block to commit a chunk owns its record.** A later commit that carries
 the same chunk adopts it: it adds its refs and their counts, and leaves `block`
 and `position` as they are. The copy the later block carries is dead weight, not
-counted in its `live`.
+counted in its `live`. A block all of whose chunks were adopted, or whose refs
+were all dropped, commits with `live` at zero; its creating commit **MUST** make
+it a sweep candidate ([RFC 9 §3.5](rfc-9-gc.md#3.5%20Finding%20candidates%20costs%20what%20is%20retirable)), since no later refcount change can reach it.
+
+> [!important] Pending review — a block born with `live` zero
+> Added with RFC 9 §3.5's born-dead rule; see there.
 
 **A commit is idempotent per block name.** A block record may already exist: two
 passes in flight carried identical chunk lists, or the writer's pre-put check
@@ -561,7 +566,14 @@ committed) records, and **MUST** read no more than O(log *n*) records per ref it
 replaces, where *n* is the number of refs in the file. An existence commit
 **MUST** write O(holes changed) records per file it covers. No per-commit cost may
 grow with the size of the file: a commit that is O(file) makes a file of *N*
-chunks O(*N*²) to write.
+chunks O(*N*²) to write. A record that packs many refs into one value counts as
+the refs it holds: loading and re-encoding a file's whole ref list to change its
+tail is an O(file) read, however few records it writes.
+
+> [!important] Pending review — packed ref records count as their refs
+> Added after a field report where a 160 GB sequential write decayed as every
+> block commit loaded, merged and re-encoded the file's whole ref list. Its write
+> count was small; its reads were not. Check the rule and the new Group B row.
 
 ### 5.3 Hot records that are not per-file
 
@@ -1019,6 +1031,7 @@ the tiers and under the rules of the [index](rfc-index.md).
 | Requirement | Check |
 | --- | --- |
 | [§5.2](#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed) amplification | Write a file of *N* chunks for several *N*. Assert records **written** per commit are constant in *N*. A correctness assertion on the refs passes a quadratic implementation. |
+| [§5.2](#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed) read side | Same files, appended sequentially so every commit extends the tail. Assert records **read and decoded** per commit grow at most logarithmically in *N*, counting a record that packs many refs as the refs it decodes. A commit that loads the file's whole ref list writes one record and passes the check above. |
 | [§3.3](#3.3%20Holes%2C%20not%20written%20extents) out-of-order writes | Write a file of *N* MiB as shuffled 1 MiB writes, for several *N*. Assert no hole records remain and records written per write are constant in *N*. |
 | [§5.1](#5.1%20No%20record%20is%20written%20by%20both%20paths) write sets | Stream appends to one file while its offload commits. Assert no commit retries because of the writer. A single-writer rig cannot fail this. |
 | [§8.1](#8.1%20Covering%20lookup) lookup | Assert records **read** per covering lookup grow at most logarithmically in *N*, counting index iterator steps as well as row loads. |
