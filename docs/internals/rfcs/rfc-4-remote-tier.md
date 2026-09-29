@@ -102,7 +102,7 @@ half-completes ([§7.2](#7.2%20Fault%20transport)).
 ### 3.1 Who writes it
 
 The **block codec** encodes and decodes blocks. The engine uses it when it
-assembles a block ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output)), and GC uses it, through the syncer, when it relocates chunks
+assembles a block ([RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler), [RFC 8 §6.3](rfc-8-engine.md#6.3%20The%20offload%20pipeline)), and GC uses it, through the syncer, when it relocates chunks
 ([RFC 9 §4.2](rfc-9-gc.md#4.2%20Read%20verified%2C%20mint%2C%20put%2C%20then%20move)). The store receives the encoded bytes and returns them unchanged.
 
 ### 3.2 Layout
@@ -114,7 +114,7 @@ A block is a **header** followed by the **chunk bodies**, in order.
 | Format marker and version | first bytes | a reader built for another version, or handed something that is not a block, fails loudly instead of misparsing |
 | Header length | first bytes | a reader fetches the whole header in one ranged request, rarely two |
 | Block name, nonce, chain ID | header | a block served under the wrong key is detected instead of used. The name is the block's identity in block metadata too ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)), so it links the stored bytes back to their record; the nonce and chain ID are the name's inputs besides the hashes and the key scope, so a whole-block read can recompute it. |
-| Chunk index | header | at most `N` entries ([RFC 2 §5](rfc-2-carver.md#5.%20Packing%3A%20three%20rules%2C%20not%20a%20component), P4), one per chunk: its hash, and the offset and length of its body. The hash is the plaintext hash, or its sealed form — keyed under a namespace secret — when the namespace encrypts ([RFC 5](rfc-5-transforms.md)). One chunk can then be read with one ranged request, without reading the others. |
+| Chunk index | header | at most `N` entries ([RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler), P4), one per chunk: its hash, and the offset and length of its body. The hash is the plaintext hash, or its sealed form — keyed under a namespace secret — when the namespace encrypts ([RFC 5](rfc-5-transforms.md)). One chunk can then be read with one ranged request, without reading the others. |
 | Chunk bodies | after the header | each chunk's bytes, transformed if a chain is configured ([§3.3](#3.3%20Transforms)) |
 
 Four requirements on the layout:
@@ -134,7 +134,7 @@ Four requirements on the layout:
   version ([RFC 5 §2.4](rfc-5-transforms.md#2.4%20Every%20body%20records%20what%20was%20applied)), so a ranged get of one body, which never sees the block
   header, still learns how to decode it.
 - The name **MUST** be known before encoding starts, because it is written into
-  the header. [RFC 8 §5.4](rfc-8-engine.md#5.4%20A%20block%27s%20name%20is%20minted%20here%2C%20and%20its%20intent%20recorded%20before%20the%20put) mints it from the attempt's nonce and the chunk
+  the header. [RFC 8 §6.6](rfc-8-engine.md#6.6%20A%20block's%20name%20is%20minted%2C%20and%20its%20intent%20recorded%2C%20before%20the%20put) mints it from the attempt's nonce and the chunk
   hashes, which exist before any byte is encoded.
 
 When the namespace encrypts, no plaintext chunk hash appears anywhere in a block:
@@ -492,7 +492,7 @@ whichever service it was not written against.
 
 | Error | Meaning | What the caller does |
 | --- | --- | --- |
-| `ErrNotFound` | this block is absent; the store itself is fine | fails the read; the engine re-resolves the chunk ([RFC 8 §6.7](rfc-8-engine.md#6.7%20An%20absent%20object%20is%20re-resolved%20while%20its%20location%20moves)) |
+| `ErrNotFound` | this block is absent; the store itself is fine | fails the read; the engine re-resolves the chunk ([RFC 8 §7.7](rfc-8-engine.md#7.7%20An%20absent%20object%20is%20re-resolved%20while%20its%20location%20moves)) |
 | `ErrInvalid` | the request was wrong: a range past the end, or an operation the service does not support | fails the call; not retried |
 | `ErrDenied` | the store refused, or does not exist: credentials, permissions, a missing bucket | fails the call; the syncer's health rules decide what follows ([RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work)) |
 | `ErrTransient` | retrying may help: network, timeout, a server error, a short body | the syncer retries within its bound ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
@@ -944,7 +944,7 @@ Several stores may share a bucket under different prefixes, never one prefix
 
 `404 NoSuchBucket` is `ErrDenied`, not `ErrNotFound`: a missing bucket is the
 store's failure, and reading it as a missing block would make every read
-re-resolve its chunk ([RFC 8 §6.7](rfc-8-engine.md#6.7%20An%20absent%20object%20is%20re-resolved%20while%20its%20location%20moves)) and then report it absent, while the
+re-resolve its chunk ([RFC 8 §7.7](rfc-8-engine.md#7.7%20An%20absent%20object%20is%20re-resolved%20while%20its%20location%20moves)) and then report it absent, while the
 store's health never counted the outage.
 
 S3 throttles above a few thousand requests per second per key prefix and answers

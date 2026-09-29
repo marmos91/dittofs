@@ -262,7 +262,7 @@ offer also carries, in `Neighbours`, held extents whose offloaded bit is set and
 that are contiguous with an offered dirty extent, up to `widen` bytes on each
 side. They are frozen in `Offered` exactly like the dirty bytes, and counted in
 `Oldest` and `Newest`. They are what the engine reads when it widens a run to
-re-tile a ref the run partly replaces ([RFC 8 §5.6](rfc-8-engine.md#5.6%20A%20run%20is%20what%20the%20journal%20offers%2C%20widened%20only%20to%20re-tile)); without them it would read
+re-tile a ref the run partly replaces ([RFC 8 §6.7](rfc-8-engine.md#6.7%20A%20run%20is%20what%20the%20journal%20offers%2C%20widened%20only%20to%20re-tile)); without them it would read
 bytes that a concurrent write or release can change under the carver. A report
 naming a neighbour changes nothing: it is already marked.
 
@@ -296,7 +296,7 @@ scan the file's other extents to decide anything about the reported ones.
 offset order until the next would pass the limit, and offers an extent larger than
 what remains as a prefix ending at the limit; the rest is offered by a later call.
 Without a bound, one pass over a large dirty file pins all of it until the last
-block uploads. The engine chooses the limit ([RFC 8 §4.2](rfc-8-engine.md#4.2%20Offload%20is%20scheduled%20here)). A prefix ends at the limit,
+block uploads. The engine chooses the limit ([RFC 8 §6.2](rfc-8-engine.md#6.2%20When%20a%20file%20is%20offered)). A prefix ends at the limit,
 not at a boundary the content chose, so each limited pass adds one chunk boundary
 the chunker did not pick ([RFC 2 §2.1](rfc-2-carver.md#2.1%20One%20unbroken%20stretch%20per%20call)).
 
@@ -306,7 +306,7 @@ names them again when it reseeds ([§9.2](#9.2%20Offload%20state%20after%20recov
 need.
 
 `OffloadMany` is the same offer over several files in one callback, so the engine
-can pack chunks of several files into one block ([RFC 8 §5.7](rfc-8-engine.md#5.7%20A%20block%20packs%20chunks%2C%20whichever%20files%20they%20came%20from)). Every rule of this section
+can pack chunks of several files into one block ([RFC 2 §5.3](rfc-2-carver.md#5.3%20A%20block%20packs%20chunks%2C%20whichever%20files%20they%20came%20from)). Every rule of this section
 holds per file within it, and `limit` bounds the total across the files.
 `Offload(id, …)` is `OffloadMany` with one file, and an implementation **SHOULD**
 build it that way.
@@ -353,7 +353,7 @@ make that determination and the write atomic with respect to concurrent
 `WriteAt` on the same file.
 
 **A Fill older than the file is refused.** `asOf` is the sequence `ReadAt` returned
-when the caller found the extent missing ([RFC 8 §6.2](rfc-8-engine.md#6.2%20The%20reply%20is%20served%20from%20the%20fetched%20bytes)). The journal keeps, per file, the
+when the caller found the extent missing ([RFC 8 §7.2](rfc-8-engine.md#7.2%20The%20reply%20streams%2C%20one%20verified%20chunk%20at%20a%20time)). The journal keeps, per file, the
 highest sequence number of any operation that changed its extents — `WriteAt`, `Release`,
 `Truncate`, `Deallocate` and `Delete`. If it
 is newer than `asOf`, `Fill` **MUST** write nothing and return a distinct error.
@@ -433,7 +433,7 @@ Delete(id FileID) (Version, error)
 
 `Truncate` stops holding every extent at or beyond `size` and narrows an extent
 straddling it. `Deallocate` stops holding `e`, whatever its offloaded bit, and is
-how a punched range stops being served ([RFC 8 §9.2](rfc-8-engine.md#9.2%20Deallocate%20records%20a%20hole%3B%20it%20does%20not%20write%20zeros)). `Delete` stops holding every
+how a punched range stops being served ([RFC 8 §8.2](rfc-8-engine.md#8.2%20Deallocate%20records%20a%20hole%3B%20it%20does%20not%20write%20zeros)). `Delete` stops holding every
 extent of `id`.
 
 Each is versioned like a write: the journal assigns the version inside the file's
@@ -471,6 +471,7 @@ removed file.
 Extents(id FileID) ([]Extent, error)      // held extents, offset order
 Files() iter.Seq[FileID]                   // files of this share with a held extent or an unsettled removal marker
 Stats() Stats                              // journal-wide, with a per-share breakdown
+DirtyFiles() iter.Seq2[FileID, time.Time]  // files with an unset offloaded bit, each with its oldest dirty byte's write time
 ```
 
 `Extents` reports what the journal holds, and is not an answer about what
@@ -478,6 +479,17 @@ exists: a caller implementing `SEEK_HOLE`/`SEEK_DATA` **MUST** combine it with
 metadata, or it will report evicted content as a hole. `Files` and `Since`
 ([§3.10](#3.10%20Settle%20and%20Since)) together are what the engine re-applies uncommitted existence from
 after a crash ([RFC 0 §5.1](rfc-0-data-lifecycle.md#5.1%20Write)).
+
+`DirtyFiles` is what the engine's age tick reads ([RFC 8 §6.1](rfc-8-engine.md#6.1%20The%20work%20queue)), so it
+**MUST** be cheap: the journal keeps a per-journal list of dirty files keyed by
+their oldest dirty byte's write time, updated when a write sets a file's first
+unset offloaded bit and when `Offload` or a removal clears its last, and
+rebuilt at recovery. It **MUST NOT** walk the placement index or read a record,
+and costs O(dirty files), not O(extents).
+
+> [!important] Pending review — a cheap list of dirty files by age
+> The offload age tick asks the journal for its dirty files and their oldest
+> dirty byte; the journal maintains that list rather than deriving it by a walk.
 
 `Stats` **MUST** be served from maintained counters: it **MUST NOT** walk the
 placement index or the segment set, or block a write. A statistic that only a
@@ -515,7 +527,7 @@ storage no repack has recovered. `PunchSupported` and `FilesystemBlockSize` tell
 release that frees nothing because it spanned no whole block from one that failed.
 `OldestDirty` says how long content has waited to reach the remote tier: a
 backlog that grows old is content one device failure away from loss, whatever
-its size ([RFC 8 §11](rfc-8-engine.md#11.%20Observability)). The journal keeps it without a walk, from the
+its size ([RFC 8 §14](rfc-8-engine.md#14.%20Observability)). The journal keeps it without a walk, from the
 dirty extents ordered by write time.
 
 `Stats` **MUST** be safe to call concurrently with every other operation. It is
@@ -603,6 +615,40 @@ records ([§9.1](#9.1%20Rebuilding)), and the caller settles again ([§3.6](#3.6
 is the caller's error, not the journal's: a marker dropped before its removal is
 recorded is one a crash may leave metadata never learning of, until recovery
 rebuilds it.
+
+### 3.11 Snapshot pins
+
+```go
+Pin(share ShareID, cut SnapshotCut, marks map[FileID]Version) error // durable before it returns
+Unpin(share ShareID, cut SnapshotCut) error
+Pinned(share ShareID) (bytes int64)
+```
+
+A snapshot cut is taken without draining the journal ([RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)); the
+dirty content at the cut stays here, pinned to it. `Pin` records a **pin mark**
+per file for the cut: the version its existence has committed up to. Every
+write record stores the share's current cut with its version ([§4.3](#4.3%20Records)), so an
+offload commit can copy it as the ref's `born` ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)).
+
+- **A pinned version is kept until it is offloaded under the cut.** Content at
+  or below a pin mark whose offloaded bit is unset **MUST NOT** be released,
+  compacted away or dropped when an overwrite, a truncate, a deallocate or a
+  release supersedes it: it stays readable to `Offload` ([§3.3](#3.3%20Offload)), which offers it
+  flagged as superseded, until its commit returns ([§5.3](#5.3%20Versions) precedence still
+  governs every other read).
+- **Pins are durable.** A pin mark is a journal record, synced before `Pin`
+  returns; recovery rebuilds pins with the index ([§9.1](#9.1%20Rebuilding)), so a restart resumes them.
+- **Pinned bytes count against capacity** ([§7](#7.%20Capacity)) and are reported by `Pinned`,
+  from a maintained counter, for the cut's `pin_bound` refusal.
+- **A pin is released** for a version when that version's offload commits, and
+  for the whole cut by `Unpin` when the snapshot is deleted. Released pinned
+  content that nothing else holds is reclaimable like any superseded record
+  ([§8](#8.%20Reclamation%20mechanisms)).
+
+> [!important] Pending review — journal pins for snapshots
+> Replaces draining at a snapshot cut: the journal keeps superseded pinned
+> versions until they are offloaded under the cut, durably and counted against
+> capacity.
 
 ## 4. On-disk format
 
@@ -996,14 +1042,14 @@ separate, explicit action.
 The journal **MUST** be on durable local storage: a synced record survives a
 process crash, a host crash and power loss. There is no setting that declares a
 journal not durable. The journal's part in a client's flush is `Sync` ([§3.1](#3.1%20Write));
-what else a flush waits for is its caller's ([RFC 8 §9.4](rfc-8-engine.md#9.4%20Commit%20is%20answered%20by%20the%20journal)).
+what else a flush waits for is its caller's ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)).
 
 There is one policy. `WriteAt` writes its record before it returns, and the
 record is synced by the first of two events: a `Sync` naming its file, or a fixed
 time bound after the write. A record written but not yet synced survives process
 death, since the operating system holds it, but not host loss. A client that asks
 for a stable write gets one because the engine calls `Sync` before replying
-([RFC 8 §9.4](rfc-8-engine.md#9.4%20Commit%20is%20answered%20by%20the%20journal)); that is cheap, because one sync covers every writer waiting on the
+([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)); that is cheap, because one sync covers every writer waiting on the
 stream (group commit).
 
 **Proposal:** a bound of 1 s. Overturned by a measurement showing that the
@@ -1076,8 +1122,8 @@ headroom of [§8.2](#8.2%20Repack) is part of this reserve.
 The journal **MUST NOT** evict to satisfy its own reservation. Eviction requires
 knowing what is durable remotely, which the journal is not authoritative for.
 
-**Getting out of a refusal is the engine's loop** ([RFC 8 §7.2](rfc-8-engine.md#7.2%20A%20capacity%20refusal%20comes%20back%20here)). The engine paces
-writes before the limit, so a refusal is rare ([RFC 8 §7.2.1](rfc-8-engine.md#7.2.1%20Writes%20are%20paced%20before%20the%20limit%2C%20not%20stopped%20at%20it)); on one, it releases
+**Getting out of a refusal is the engine's loop** ([RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)). The engine paces
+writes before the limit, so a refusal is rare ([RFC 8 §10.2.1](rfc-8-engine.md#10.2.1%20Writes%20are%20paced%20before%20the%20limit%2C%20not%20stopped%20at%20it)); on one, it releases
 content already durable, offloads dirty content so it can be released next, and
 retries within the caller's deadline ([RFC 0 §10.3](rfc-0-data-lifecycle.md#10.3%20Every%20wait%20on%20a%20request%20ends%20at%20a%20deadline)). Remote GC frees nothing
 here. For the loop to be fast, the journal owes it three things:
@@ -1481,7 +1527,7 @@ sync on every read of freshly written bytes, which is what the sync bound
 crash, so everything that turns journal content into a durable claim elsewhere
 syncs first: an offer **MUST** sync the records it captures before handing them to
 `fn` ([§3.3](#3.3%20Offload)), and the engine **MUST** `Sync` a file before committing its
-existence ([RFC 8 §9.4](rfc-8-engine.md#9.4%20Commit%20is%20answered%20by%20the%20journal)).
+existence ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)).
 
 ### 10.5 Protecting readers from reclamation
 

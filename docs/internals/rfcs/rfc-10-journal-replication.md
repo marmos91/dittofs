@@ -24,7 +24,7 @@ loss of the node that accepted it.
 
 ## 1. Purpose
 
-A write is acknowledged once the journal holds it ([RFC 8 §4.1](rfc-8-engine.md#4.1%20The%20facade%20orders%20a%20write%3B%20adapters%20do%20not)), and until it is
+A write is acknowledged once the journal holds it ([RFC 8 §4.1](rfc-8-engine.md#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)), and until it is
 offloaded the journal of the node that accepted it is the only copy. On one node
 that is the design. With several nodes serving one share, losing a node must not
 lose acknowledged writes, and nodes other than the writer should be able to serve
@@ -70,7 +70,7 @@ This layer **MUST NOT**:
 | Term | Means |
 | --- | --- |
 | **ownership unit** | the set of files one owner writes: a share by default, or a subtree ([RFC 11 §2](rfc-11-ownership.md#2.%20Ownership%20units)) |
-| **owner** | the unit's **data owner** ([RFC 11 §2.1](rfc-11-ownership.md#2.1%20Two%20owners%20per%20unit)): the one block service that assigns versions for a unit and accepts its writes. The namespace owner ([RFC 15 §3](rfc-15-topology.md#3.%20Two%20owners%20per%20file)) plays no part in replication; "owner" in this RFC always means the data owner |
+| **owner** | the unit's one owner ([RFC 11 §2.1](rfc-11-ownership.md#2.1%20One%20owner%20per%20unit)): the one block service that assigns versions for a unit and accepts its writes. It also holds the unit's namespace writes and open state, which this layer does not replicate. A range unit ([RFC 11 §2.3](rfc-11-ownership.md#2.3%20Range%20units)) is a unit here like any other, with its own owner and replica set |
 | **replica** | a block service whose journal holds a copy of the unit's un-offloaded operations |
 | **member** | the owner or a replica; the **replica set** is the members |
 | **learner** | a block service receiving the unit's operations while it catches up, before it is a member |
@@ -85,14 +85,18 @@ This layer **MUST NOT**:
 
 ### 2.2 Roles
 
-A deployment has three roles. They **MAY** run in one process — a single node is
-all three — or be split across machines.
+This layer names three parts of a deployment. They **MAY** run in one process —
+a single node is all three — or be split across machines; which node runs which
+is [RFC 15](rfc-15-topology.md)'s roles.
 
-| Role | Holds | Consensus |
+| Part | Holds | Consensus |
 | --- | --- | --- |
-| protocol front-end | client sessions; forwards each operation to the owner of what it touches ([RFC 11 §5](rfc-11-ownership.md#5.%20Routing)) | none |
-| metadata service | namespace and block metadata ([RFC 6](rfc-6-block-metadata.md), [RFC 7](rfc-7-namespace-metadata.md)); ownership and configurations | its store's own |
-| block service | a journal per device ([§2.4](#2.4%20One%20journal%20carries%20many%20units)), the engines of its shares, carver and syncer; this layer | none |
+| protocol front-end — the `protocol` role | client sessions; forwards each operation to the owner of what it touches ([RFC 11 §5](rfc-11-ownership.md#5.%20Routing)) | none |
+| metadata service — the metadata store | namespace and block metadata ([RFC 6](rfc-6-block-metadata.md), [RFC 7](rfc-7-namespace-metadata.md)); ownership and configurations | its store's own |
+| block service — the `storage` role | a journal per device ([§2.4](#2.4%20One%20journal%20carries%20many%20units)), the engines of its shares, carver and syncer; this layer; and, for the units it owns, their namespace writes and open state | none |
+
+> [!important] Pending review — one owner per unit
+> "Owner" is the unit's one owner again, not one of two per unit; the block service is RFC 15's `storage` role.
 
 The **configuration store** is the metadata service's store. It **MUST** provide
 linearizable compare-and-swap on a configuration, and **MUST** be reachable from
@@ -242,11 +246,12 @@ record is live while it still covers a record of its file in another segment.
 2. **Every configuration change is a compare-and-swap that raises the epoch, and a
    file's epoch never decreases.** A unit's new epoch exceeds that of every unit
    that previously held any of its files; a split or a move of files between
-   units is a handover whose compare-and-swap covers both units in one
-   transaction ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20A%20token%20is%20a%20lease%2C%20fenced%20by%20an%20epoch), [§4](rfc-11-ownership.md#4.%20Moving%20ownership)).
+   units is a handover run in batches, each of which raises the receiving unit's
+   epoch above the giving unit's in the transaction that moves its files
+   ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20A%20token%20is%20a%20lease%2C%20fenced%20by%20an%20epoch), [§4](rfc-11-ownership.md#4.%20Moving%20ownership)).
 3. **The owner lease** ([§2.1](#2.1%20Terms)). An owner **MUST** stop serving and acknowledging
-   when its lease runs out by its own clock, reckoned pessimistically with the
-   drift bound.
+   — open state included — when its lease runs out by its own clock, reckoned
+   pessimistically with the drift bound.
 4. **Ownership follows the writer**, by handover rather than failover ([§9.4](#9.4%20Handover),
    [RFC 11 §3.3](rfc-11-ownership.md#3.3%20Ownership%20follows%20the%20writer)).
 5. **Commits are fenced, per file.** Every metadata commit that acts for a unit is
@@ -265,7 +270,9 @@ The owner handles every operation on the unit. For a write, deallocate, truncate
 or delete:
 
 1. **Assign.** The owner stages the operation in its own journal, which assigns
-   its version under the file's epoch ([RFC 1 §3.1](rfc-1-journal.md#3.1%20Write)).
+   its version under the file's epoch ([RFC 1 §3.1](rfc-1-journal.md#3.1%20Write)). The operation carries the
+   request ID of the routed call that caused it ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)), so a new
+   owner that holds it answers a retry of that call instead of applying it again.
 2. **Replicate.** The owner sends the operation, with its version and the
    configuration epoch, to **every** replica in the current configuration, in
    parallel.
@@ -293,7 +300,7 @@ Recorded first, a crash of the owner leaves metadata describing an operation no
 surviving journal holds: a range that resolves **Lost** for a write never
 acknowledged, or a removal a new owner's journal contradicts.
 
-**A client's flush** ([RFC 8 §9.4](rfc-8-engine.md#9.4%20Commit%20is%20answered%20by%20the%20journal)) is the stability point: it is answered once
+**A client's flush** ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)) is the stability point: it is answered once
 every member has synced the file's operations and their existence is committed.
 
 **Batching.** The owner **SHOULD** batch operations to a replica and group their
@@ -323,7 +330,7 @@ metadata directly, which is how it catches up on notices it missed.
 **Pressure.** A replica cannot offload to make room, and its journal is shared
 with every other unit it holds ([§2.4](#2.4%20One%20journal%20carries%20many%20units)). When the journal nears capacity, the
 replica **MUST** tell the owner of each unit holding un-offloaded content in it,
-and each owner **MUST** treat that as its own pressure ([RFC 8 §7.2](rfc-8-engine.md#7.2%20A%20capacity%20refusal%20comes%20back%20here)): offload
+and each owner **MUST** treat that as its own pressure ([RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)): offload
 sooner, then refuse writes. The journal's per-share fair limits keep one unit's
 backlog from refusing another's operations. A replica whose journal refuses an
 operation within its share's limit is lagging for that unit, and [§7](#7.%20Membership) applies to
@@ -467,7 +474,9 @@ When the owner's lease lapses, a member takes over:
    **sealed point** — the newest version it assigned in steps 3 and 4 — with
    `SettleApplied`, and with `Settle` once step 4's commits have landed, and
    sends that point to every member as the committed and recorded point. Only
-   then does it serve or accept writes for the unit.
+   then does it serve or accept writes for the unit, and it starts the unit's
+   grace period for open state, which the old owner's loss took with it
+   ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20ownership%20unit)).
 
 Every kept member holds, at every byte, either content at or below the old
 committed point or the new owner's re-issue, so settling to the sealed point is
@@ -491,20 +500,25 @@ A planned move — ownership following the writer — does not wait for a lease:
 
 1. the new owner becomes a member, joining as a learner and promoted under [§7](#7.%20Membership)
    if it is not one;
-2. the old owner stops accepting writes for the unit, drains what is in flight,
-   and sends every member the committed point covering it — the **drained
-   point**;
+2. the old owner stops accepting writes and granting open state for the unit,
+   drains what is in flight, and sends every member the committed point covering
+   it — the **drained point**;
 3. it writes the configuration naming the new owner at the next epoch, by
-   compare-and-swap;
+   compare-and-swap, and sends the new owner the unit's open-state table and the
+   recent entries of its dedup table ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope));
 4. the new owner installs the epoch on every member, settles the unit's files it
-   holds to the drained point with `SettleApplied`, and only then accepts writes;
+   holds to the drained point with `SettleApplied`, installs the open-state
+   table, and only then accepts writes and serves open state, with no grace
+   period ([RFC 14 §10](rfc-14-open-state.md#10.%20Ownership));
    it writes each file's fence records at its epoch before its first operation on
    that file ([§3](#3.%20What%20it%20assumes%20of%20ownership) item 5).
 
 No seal is needed: the old owner acknowledged nothing it had not replicated to
 every member, and stopped before the move. The old owner stays a member unless
-removed under [§7](#7.%20Membership). A handover that moves files between units is one
-compare-and-swap over both units ([§3](#3.%20What%20it%20assumes%20of%20ownership) item 2).
+removed under [§7](#7.%20Membership). If the old owner is lost after step 3 and before the
+new owner holds the table, the new owner runs grace as after a failover. A
+handover that moves files between units runs in batches ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20ownership)),
+each raising the receiving unit's epoch above the giving unit's ([§3](#3.%20What%20it%20assumes%20of%20ownership) item 2).
 
 ## 10. A single node
 
@@ -693,7 +707,7 @@ box ([Test tiers](rfc-index.md#Test%20tiers)):
    content, on journals shared by many units. Whether offload keeps that bounded
    under sustained writes is unmeasured.
 
-Per-range units and protocol state are [RFC 11](rfc-11-ownership.md)'s.
+Range units, their creation and merging, and protocol state are [RFC 11](rfc-11-ownership.md)'s.
 
 ---
 

@@ -560,7 +560,7 @@ and material.
   re-encoded under the current chain into a block under a freshly minted name
   ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)); the chunks move and the source is swept. Retirement
   relocates a block even when it is fully live, the one exception to
-  [RFC 9 §4.4](rfc-9-gc.md#4.4%20When%20to%20relocate%20is%20policy).
+  [RFC 9 §4.4](rfc-9-gc.md#4.4%20When%20to%20compact%20is%20policy).
 - **Removal waits for an empty census, and for encodes in flight.** A census
   says only what committed blocks use; a put already encoding under the
   material commits a block the census does not yet show. So removal, under one

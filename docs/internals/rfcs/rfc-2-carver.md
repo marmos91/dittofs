@@ -29,7 +29,8 @@ tags:
   never minted twice.
 - A stretch that ends at a limit rather than at a hole or the end of the file
   leaves its tail uncut, so the next offer starts on a real boundary ([§2.4](#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut)).
-- Blocks are built by the engine under three rules ([§5](#5.%20Packing%3A%20three%20rules%2C%20not%20a%20component)).
+- Blocks are packed by the block assembler, a pure fold over the carver's
+  output that the engine's offload pipeline drives ([§5](#5.%20The%20block%20assembler)).
 - The settings are public, so this layer does not hide which files you have
   ([§6](#6.%20Boundaries%20are%20public)).
 
@@ -56,7 +57,9 @@ uploaded.
 
 That is all of it. Chunks are not the product — blocks are, and a block is a whole
 number of chunks ([RFC 0 §2.1](rfc-0-data-lifecycle.md#2.1%20Entities)). But building blocks is a fold over what the carver
-hands back ([§5](#5.%20Packing%3A%20three%20rules%2C%20not%20a%20component)), not something the carver does.
+hands back, done by the **block assembler** ([§5](#5.%20The%20block%20assembler)), not something the carver does.
+The assembler is specified here, beside the carver, because its rules are
+properties of chunks; it is a separate layer with its own checks.
 
 Why cut this way at all? Because a boundary chosen by content stays put when the
 file changes elsewhere. Edit the middle of a file and only the chunks around the
@@ -256,14 +259,14 @@ boundary and cuts exactly as one long stretch would have.
 Two exceptions keep a tail from waiting forever:
 
 - **Age.** The caller **MAY** declare an artificial end real once the held tail's
-  oldest byte has reached the offload pass's maximum age ([RFC 8 §4.2](rfc-8-engine.md#4.2%20Offload%20is%20scheduled%20here)). That is
+  oldest byte has reached the offload pass's maximum age ([RFC 8 §6.2](rfc-8-engine.md#6.2%20When%20a%20file%20is%20offered)). That is
   the only forced final cut, so a stream that stops writing is fully offloaded
   within that age.
 - **Widening back.** Where the chunk before the stretch is a ref shorter than
   `Min` that ends exactly where the stretch starts — a forced cut from an earlier
   pass — the caller **MAY** start the stretch at that ref's start instead, so
   the short chunk is re-cut into a full one. This widens backwards only; it is the
-  same permission [RFC 8 §5.6](rfc-8-engine.md#5.6%20A%20run%20is%20what%20the%20journal%20offers%2C%20widened%20only%20to%20re-tile) gives for re-tiling.
+  same permission [RFC 8 §6.7](rfc-8-engine.md#6.7%20A%20run%20is%20what%20the%20journal%20offers%2C%20widened%20only%20to%20re-tile) gives for re-tiling.
 
 ## 3. The boundary function
 
@@ -315,13 +318,13 @@ whole-file re-chunking re-stores about four times less after small edits than at
 1 MiB; whether the engine's offload path keeps that ratio is Appendix C's
 measurement plan. On random input the average is `Target`, so 4,096 chunk records
 per GiB — about 8.6×10⁹ at 2 PB. Blocks pack chunks to their own target
-([§5](#5.%20Packing%3A%20three%20rules%2C%20not%20a%20component)), so the number and size of remote objects do not depend on `Target`. A
+([§5](#5.%20The%20block%20assembler)), so the number and size of remote objects do not depend on `Target`. A
 share **MAY** choose another `Target`; the choice is fixed for its content
 ([§3.6](#3.6%20Changing%20any%20of%20this%20is%20a%20migration)).
 
 **The ceiling under random overwrite.** Every chunk is at least `Min` except one
 ending at a real stretch end ([§2.4](#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut)). So a file whose edits are re-cut with
-widening ([RFC 8 §5.6](rfc-8-engine.md#5.6%20A%20run%20is%20what%20the%20journal%20offers%2C%20widened%20only%20to%20re-tile)) holds at most 1 GiB / `Min` chunks per GiB — 16,384 at the
+widening ([RFC 8 §6.7](rfc-8-engine.md#6.7%20A%20run%20is%20what%20the%20journal%20offers%2C%20widened%20only%20to%20re-tile)) holds at most 1 GiB / `Min` chunks per GiB — 16,384 at the
 default, four times the random-input average — plus one per hole. Without
 widening, each isolated overwrite of `w` bytes between durable neighbours is its
 own short chunk, and the ceiling is 1 GiB / `w`: 262,144 per GiB for 4 KiB pages.
@@ -485,7 +488,7 @@ Three consequences, and an implementation **MUST NOT** treat any as incidental:
 
 *Both rules live here because identity is a property of content. Neither says who
 computes it: a chunk's hash is taken by whoever cuts it, a block's by whoever
-assembles it ([RFC 8](rfc-8-engine.md), and [RFC 9](rfc-9-gc.md) when it relocates). Nothing in this document
+assembles it (the block assembler, [§5](#5.%20The%20block%20assembler), driven by [RFC 8](rfc-8-engine.md), and [RFC 9](rfc-9-gc.md) when it relocates). Nothing in this document
 holds state to do either.*
 
 ### 4.1 A chunk
@@ -510,7 +513,7 @@ nonce drawn for one put attempt:
   hash ([§4.1](#4.1%20A%20chunk)) by construction.
 - `len(scope) ‖ scope` is the scope's **canonical encoding**: one byte giving
   the length (0–255), then the scope's bytes exactly as configured, with no
-  normalisation. `scope` is the key scope of [§4.3](#4.3%20Key%20scope), empty for a single scope.
+  normalisation. `scope` is the key scope of [§4.3](#4.3%20Key%20scope): the namespace ID.
 - `nonce` is 16 bytes (128 bits) from a cryptographic random source, drawn fresh
   for each **put attempt**, and written into the block header ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)) so
   a whole-block read can still recompute the name and check it.
@@ -558,56 +561,94 @@ Five things follow, and none of them is optional:
   generation counter is needed.
 
 Two writers carrying the same chunks produce two objects; the dedup oracle
-([RFC 8](rfc-8-engine.md)) keeps that rare, and the second is born dead and swept. That one
+([RFC 8 §6.5](rfc-8-engine.md#6.5%20The%20dedup%20oracle)) keeps that rare, and the second is born dead and swept. That one
 extra put is the price of never having to defend a name against a second writer,
 a late delete or a service without conditional puts; why a retried put is safe is
 [RFC 3 §2.5](rfc-3-syncer.md#2.5%20An%20unknown%20outcome%20is%20not%20a%20success).
 
 ### 4.3 Key scope
 
-A name **MAY** include a scope that partitions the name space. The scope decides
-whether two shares holding identical content resolve to one object or to two.
+A name includes a **scope** that partitions the name space. The scope is the
+**namespace ID** of the share whose content the block carries: every
+content-addressed record is partitioned by namespace ([RFC 6 §2.6](rfc-6-block-metadata.md#2.6%20The%20scope%20of%20a%20count)), and the
+name carries the same partition so that a block cannot verify under another
+namespace's name.
 
-The scope **MUST** be chosen explicitly rather than inherited from how names happen
-to be built, and **MUST NOT** change within a put attempt, or the attempt's
-retries would write under two names.
+The scope **MUST NOT** change within a put attempt, or the attempt's retries would
+write under two names.
 
 Names are minted per attempt ([§4.2](#4.2%20A%20block)), so two puts never share an object by
-name. What the scope decides is which chunks the dedup oracle may match — a chunk
-stored by one share is found by another only within one scope — and the name
-carries it so that a block cannot verify under another scope's name.
+name. What the scope decides is which chunks the dedup oracle may match: a chunk
+stored by one share is found by another only within one namespace.
 
-The two settings differ in kind, not in degree:
-
-| | One scope | Scope per share |
+| | Two shares in one namespace | Shares in two namespaces |
 | --- | --- | --- |
-| Identical content in two shares | chunks stored once, by chunk dedup | chunks stored once per share |
-| Storage cost | paid once | paid per share |
-| Sweep | counts references across shares | independent per share |
-| What one share can infer | that another holds the same chunk, from a dedup hit | nothing |
+| Identical content | chunks stored once, by chunk dedup | chunks stored once per namespace |
+| Sweep | counts references across the namespace's shares | independent per namespace |
+| What one share can infer about the other | that it holds the same chunk, from a dedup hit | nothing |
 
-The scope is encoded in every name ever written, so changing it later orphans
-every existing object at once ([§4.2](#4.2%20A%20block)). It is settled before the first deployment
-that shares a remote store between shares, not after.
+The scope is encoded in every name ever written, so changing how it is derived
+orphans every existing object at once ([§4.2](#4.2%20A%20block)).
 
-## 5. Packing: three rules, not a component
+> [!important] Pending review — the key scope is the namespace ID
+> Replaces "one scope or a scope per share" with the namespace ID, matching the
+> namespace-partitioned keys of RFC 6 §2.6.
 
-*Blocks are built by whoever owns the dedup query, which is not the carver ([RFC 8](rfc-8-engine.md)).
-The rules live here because they are properties of chunks.*
+## 5. The block assembler
+
+*Blocks are packed by the block assembler, a pure fold over the chunks the carver
+emits. The engine's offload pipeline drives it, because the pipeline owns the
+dedup query ([RFC 8 §6.3](rfc-8-engine.md#6.3%20The%20offload%20pipeline)); its rules live here because they are
+properties of chunks.*
+
+> [!important] Pending review — block assembly is a module, specified here
+> Moved from RFC 8: the assembler's input, output, packing rules, target by
+> carried bytes, cross-file packing and short last block, with its own
+> invariants and checks. The dedup oracle stays in RFC 8 §6.5.
+
+### 5.1 What it takes and what it returns
+
+**Input**, per pass: the chunks the carver emits for each run of the offer, in
+file order and then file after file — each chunk's file, offset, length and hash,
+and whether it is all zeros; a dedup lookup, passed in as a function
+([RFC 8 §6.5](rfc-8-engine.md#6.5%20The%20dedup%20oracle)); the block target, the format's chunk-count cap `N`, and
+the age of the oldest byte of each chunk.
+
+**Output**, per chunk, one of three dispositions, and a sequence of block plans:
+
+| The chunk | Disposition | In a block |
+| --- | --- | --- |
+| all zeros | a **zero ref**: no chunk, reported as a hole ([RFC 6 §3.5](rfc-6-block-metadata.md#3.5%20Operations%20that%20make%20holes)) | no |
+| the dedup lookup finds it | **adopted**: a ref to the stored chunk | no |
+| otherwise | **carried** | yes, in the pending plan |
+
+A **block plan** lists, for each carried chunk in block order, its hash and where
+its bytes sit in the offer. The pipeline mints the plan's name, records its
+intent and puts it ([RFC 8 §6.6](rfc-8-engine.md#6.6%20A%20block%27s%20name%20is%20minted%2C%20and%20its%20intent%20recorded%2C%20before%20the%20put)).
+
+```go
+type Assembler interface {
+	// Add folds one chunk in; it returns the plans the chunk closed, if any.
+	Add(c ChunkInfo, lookup func(ChunkHash) (Chunk, bool, error)) ([]BlockPlan, Disposition, error)
+	// Finish closes the pass; held is true when the short last plan is held back (§5.4).
+	Finish(now time.Time) (last *BlockPlan, held bool)
+}
+```
+
+The assembler does no I/O but the lookup it is handed, keeps nothing between
+passes, and **MUST NOT** survive its pass. A lookup error carries the chunk
+([RFC 8 §6.5](rfc-8-engine.md#6.5%20The%20dedup%20oracle)).
+
+### 5.2 Packing rules
 
 | # | Rule |
 | --- | --- |
 | P1 | A block holds whole chunks only. A chunk is never split to make a block come out an exact size. |
-| P2 | A block ends when it reaches the block target, overshooting by at most one chunk, or when it reaches P4's count cap, whichever comes first. The last block of a pass **MAY** fall short, within the bound below. |
+| P2 | A block ends when it reaches the block target, overshooting by at most one chunk, or when it reaches P4's count cap, whichever comes first. The last block of a pass **MAY** fall short, within [§5.4](#5.4%20The%20short%20last%20block)'s bound. |
 | P3 | A block holds only the chunks whose bytes it actually carries. An all-zero chunk is a hole, and no block carries it ([RFC 0 §2.1](rfc-0-data-lifecycle.md#2.1%20Entities)). |
 | P4 | A block holds at most `N` chunks, where `N` is a constant of the block format version: 1,024 in this one. It bounds the header ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)), which short chunks next to holes would otherwise grow without limit. |
-
-**The short last block.** A pass's last block below the block target **MAY**
-be held open for chunks from the next offer, but no longer than the pass's
-maximum age measured from its oldest chunk ([RFC 8 §4.2](rfc-8-engine.md#4.2%20Offload%20is%20scheduled%20here)); once that age is reached it is put as it is. So at most
-one short block is put per pass, and none waits past the age ceiling. Each short
-block costs one object and one header, and nothing else.
-
+| P5 | The target counts **carried** bytes. Adopted chunks and zero refs contribute nothing, or a mostly-deduplicated file yields blocks of a few kilobytes. |
+| P6 | A chunk repeated within one pending block is carried once and referenced each time: its refs and its bytes commit in one transaction. A chunk repeated across blocks is carried in each ([RFC 8 §6.5](rfc-8-engine.md#6.5%20The%20dedup%20oracle)). |
 
 P1 is [RFC 0 §2.2](rfc-0-data-lifecycle.md#2.2%20How%20a%20file%20relates%20to%20its%20chunks). A chunk split across two blocks would have one hash naming
 content in two places, so the hash would stop being a locator and a refcount would
@@ -630,12 +671,83 @@ sequence `Cut` produced.
 > exactly that separation to swap sequential assembly for a randomised one with
 > no migration.
 
-**Where the dangerous rule went.** Block assembly asks a dedup oracle whether a
-chunk is already stored. If that oracle can see the block currently being built,
-it will call a chunk stored before it has been uploaded — so an identical chunk
-later in the same pass carries no bytes, and if the upload then fails the content
-exists nowhere while metadata records two references to it. That hazard is real
-and it belongs to **RFC 8**, because that is where the oracle gets asked.
+**Where the dangerous rule went.** Assembly asks a dedup oracle whether a chunk is
+already stored. If that oracle could see the block currently being built, it would
+call a chunk stored before it has been uploaded — so an identical chunk later in
+the same pass carries no bytes, and if the upload then fails the content exists
+nowhere while metadata records two references to it. That hazard belongs to the
+oracle, and [RFC 8 §6.5](rfc-8-engine.md#6.5%20The%20dedup%20oracle) specifies it; P6 is the one place the assembler
+reuses a chunk without asking, and it is safe because both refs commit with the
+bytes.
+
+### 5.3 A block packs chunks, whichever files they came from
+
+A block is a sequence of chunks, and nothing in its definition is per file. A pass
+covers several files through the journal's `OffloadMany` ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)), and the
+assembler cuts blocks from the stream of their chunks — each file's chunks in
+offset order, one file after another — by P1 to P5 alone. One block may hold the
+tail of a large file, several small files whole, and the head of another. Object
+stores are slow on small objects; one block per small file would turn a hundred
+thousand small files into a hundred thousand puts.
+
+- **Only within one share**: a block never mixes two flows or two namespaces.
+- **A file's chunks within a block are contiguous**, so a packed small file is
+  one ranged read ([RFC 8 §7.8](rfc-8-engine.md#7.8%20A%20cold%20read%20asks%20for%20chunks%2C%20or%20for%20the%20block)).
+- **One commit per block** records the refs of every file in it
+  ([RFC 6 §4.1](rfc-6-block-metadata.md#4.1%20What%20one%20commit%20records)).
+
+Packing costs no read amplification, because a cold read asks for its chunks by
+range. It costs relocation work when short-lived small files leave blocks mostly
+dead ([RFC 9 §4.1](rfc-9-gc.md#4.1%20A%20block%20that%20is%20mostly%20dead%20pins%20its%20dead%20bytes)).
+
+### 5.4 The short last block
+
+A pass's last block may fall short of the target. The assembler **MAY** hold it
+back: it is not put, none of its extents are reported, and they stay **Dirty** and
+are carved again by the next pass. It **MUST** be put, however short, once its
+oldest chunk's bytes reach the offload maximum age ([RFC 8 §6.2](rfc-8-engine.md#6.2%20When%20a%20file%20is%20offered)). So at
+most one short block is put per pass, and none waits past the age ceiling.
+Holding back keeps the assembler per pass: nothing of the held block survives the
+pass but the dirty extents themselves.
+
+### 5.5 A pending block is a plan, not a buffer
+
+The carver's bytes are borrowed for the length of `emit` ([§2.2](#2.2%20The%20bytes%20handed%20to%20%60emit%60%20are%20borrowed)), and the
+assembler **MUST NOT** copy them. A plan records, per carried chunk, its hash and
+where its bytes sit in the offered version: a few hundred bytes per block,
+whatever its size. The put reads the bytes from the offer when it streams the
+block ([RFC 8 §6.3](rfc-8-engine.md#6.3%20The%20offload%20pipeline)).
+
+### 5.6 Assembly is sequential, and may change without migration
+
+**Proposal:** chunks are assembled into blocks in file-offset order, which keeps a
+sequential read's chunks in few blocks. Randomised assembly ([§6](#6.%20Boundaries%20are%20public)) blurs
+the chunk-size fingerprint and, because refs name hashes, not blocks, can be
+adopted later with no migration.
+
+### 5.7 Invariants and checks
+
+| # | Invariant |
+| --- | --- |
+| A1 | A block holds whole chunks, at most `N` of them, and overshoots its target, counted in carried bytes, by at most one chunk. |
+| A2 | A block holds only the chunks whose bytes it carries; zero chunks and adopted chunks are never in one. |
+| A3 | At most one short block is put per pass, and none waits past the age ceiling. |
+| A4 | A plan holds hashes and positions, never chunk bytes. |
+| A5 | A file's chunks within a block are contiguous and in offset order. |
+| A6 | A chunk is reused without a lookup only within one block. |
+
+Each check is a pure function of a chunk stream, a stub lookup and settings.
+
+| Requirement | Check |
+| --- | --- |
+| P1, P2, P4 | Fold random chunk streams, and a run of 5,000 chunks of 1 KiB between holes. Assert every block ends on a chunk, overshoots the target by at most one chunk, and holds at most `N` chunks. |
+| P3 zero chunks | Fold a stream with all-zero chunks. Assert none is in a plan and each is a zero ref. |
+| P5 carried bytes | Fold a stream in which the lookup finds 90 % of the chunks. Assert every block but the last reaches the target in carried bytes. |
+| P6 repeats | Repeat one chunk three times in one block's span, and once more past the block's end. Assert the first block carries it once with three refs, and the second block carries it again. |
+| [§5.3](#5.3%20A%20block%20packs%20chunks%2C%20whichever%20files%20they%20came%20from) packing | Fold 10³ files of 64 KiB. Assert ⌈total / target⌉ plans, each file's chunks contiguous in one plan or split only at a block end. |
+| [§5.4](#5.4%20The%20short%20last%20block) short last block | Finish a pass short of the target with its oldest chunk young, then old. Assert it is held, then put. |
+| [§5.5](#5.5%20A%20pending%20block%20is%20a%20plan%2C%20not%20a%20buffer) no bytes | Fold 1 GiB of chunks. Assert the assembler's memory is independent of chunk size, and the slices `emit` handed over are not retained. |
+| lookup error | Make the lookup fail. Assert every chunk is carried. |
 
 ## 6. Boundaries are public
 
@@ -726,15 +838,15 @@ produces the same chunks. A failed pass costs work and never correctness.
 | C2 | The same bytes and settings give the same boundaries, in any process or version. |
 | C3 | The average chunk size is the configured `Target`. |
 | C4 | Every chunk is between `Min` and `Max`, except the last one before a real stretch end. |
-| C5 | A block holds whole chunks, at most `N` of them, and overshoots its target by at most one; only the last block of a pass may fall short, and not past the pass age ceiling. |
-| C6 | A block holds only the chunks whose bytes it carries. |
+| C5 | *Moved: the block assembler's invariants are [§5.7](#5.7%20Invariants%20and%20checks)'s A1 and A3.* |
+| C6 | *Moved: [§5.7](#5.7%20Invariants%20and%20checks)'s A2.* |
 | C7 | On an artificial stretch end, no byte after the last content-chosen boundary is emitted. |
 | C8 | A block name is minted once, for one put attempt, and never put by another. |
 
 
 Two properties are missing because the shape of [§1.2](#1.2%20Two%20layers%3A%20the%20chunker%20and%20the%20carver) makes them unbreakable: a
 chunk cannot straddle a hole, and there is no state to clear between calls.
-Invariants of block assembly against the dedup oracle are [RFC 8](rfc-8-engine.md)'s.
+Invariants of block assembly are [§5.7](#5.7%20Invariants%20and%20checks)'s; those of the dedup oracle are [RFC 8 §6.5](rfc-8-engine.md#6.5%20The%20dedup%20oracle)'s.
 
 ## 9. Conformance
 
@@ -964,6 +1076,7 @@ defect to fix or migrate, never a rule to build around.
 | [§4.2](#4.2%20A%20block) derived name | a block's name is random and covers no chunk hash, so a whole-block read cannot recompute it; no put intent is recorded before a put | a migration; its cost elsewhere is in [RFC 3 §2.5](rfc-3-syncer.md#2.5%20An%20unknown%20outcome%20is%20not%20a%20success) |
 | [§1.2](#1.2%20Two%20layers%3A%20the%20chunker%20and%20the%20carver) no "not yet" | the chunker returns zero to ask for more bytes when it holds fewer than `Min` and `final` is unset | changes no output |
 | [§2.4](#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut) artificial end | not verified against the code; to check before the refactor | — |
+| [§5](#5.%20The%20block%20assembler) the block assembler | assembly lives in the carver; chunks are copied through three buffers; adopted chunks count toward the target | a separate module driven by the engine's pipeline; changes no stored format |
 
 ### A.1 The masks encode a different target than the profile declares
 
@@ -1053,7 +1166,7 @@ three columns are bytes stored again on top of the original.
 | 4 MiB | T/4 | 244 | 4.64 MiB | 220 MiB | 214 MiB | 175 MiB |
 
 "Cold read fetches" is the chunk a random byte falls in, on average (Σs²/Σs): a
-random 4 KiB read of evicted content costs one whole chunk ([RFC 8 §6.8](rfc-8-engine.md#6.8%20A%20cold%20read%20asks%20for%20chunks%2C%20or%20for%20the%20block)).
+random 4 KiB read of evicted content costs one whole chunk ([RFC 8 §7.8](rfc-8-engine.md#7.8%20A%20cold%20read%20asks%20for%20chunks%2C%20or%20for%20the%20block)).
 
 `Min` barely matters. At 256 KiB, going from no minimum to `T/2` moved the
 three workloads by under 1% and the chunk count by 10%:
@@ -1094,7 +1207,7 @@ on one machine.
 | Step | What |
 | --- | --- |
 | Input | the three workloads above, plus a streaming append and 4 KiB random overwrites of a VM image, on the K5 corpus ([§9.1](#9.1%20Benchmarks%20and%20quality%20measures)): source trees, VM images, media |
-| Path | the workload written through the journal and offloaded by the engine: offers bounded by the pass limit and age, artificial ends held back ([§2.4](#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut)), widening as [RFC 8 §5.6](rfc-8-engine.md#5.6%20A%20run%20is%20what%20the%20journal%20offers%2C%20widened%20only%20to%20re-tile) permits |
+| Path | the workload written through the journal and offloaded by the engine: offers bounded by the pass limit and age, artificial ends held back ([§2.4](#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut)), widening as [RFC 8 §6.7](rfc-8-engine.md#6.7%20A%20run%20is%20what%20the%20journal%20offers%2C%20widened%20only%20to%20re-tile) permits |
 | Report | bytes stored against bytes written; chunk records per GiB of live data, against the ceiling of [§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it); the chunk-size histogram; the cold-read fetch size; blocks per pass and short blocks |
 | Decides | the default `Target`, if a different one is better on the real path by more than the whole-file baseline's margins |
 

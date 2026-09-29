@@ -27,21 +27,21 @@ order: each part builds on the ones before it.
 | [RFC 6](rfc-6-block-metadata.md) | block metadata | FileData, holes, refs, chunks, blocks, refcounts |
 | [RFC 16](rfc-16-metadata-store.md) | metadata store | *draft* — the entity model and its Go package, the rules that keep it honest, interfaces by consumer and how they are assembled, control-plane and identity entities, the KV contract, key layout, codecs, counters, store format; testing, benchmarks and observability of the store |
 | [RFC 7](rfc-7-namespace-metadata.md) | namespace metadata | files, directories, handles, permissions, what keeps a file alive |
-| [RFC 14](rfc-14-open-state.md) | open state and locks | *draft* — client leases, opens and deny modes, byte-range locks, caching grants (delegations, oplocks, leases), grace and reclaim, conflicts across protocols |
+| [RFC 14](rfc-14-open-state.md) | open state and locks | *draft* — client leases, opens and deny modes, byte-range locks, caching grants (delegations, oplocks, leases), pNFS layouts, grace and per-unit reclaim, conflicts across protocols |
 | **Composition** | | |
-| [RFC 17](rfc-17-vfs.md) | filesystem service (VFS) | *draft* — the one protocol-neutral API adapters call: operations, callbacks, errors, what stays in adapters |
-| [RFC 8](rfc-8-engine.md) | engine | the content data path: composition of journal, carver, syncer and block metadata, and its policy |
-| [RFC 9](rfc-9-gc.md) | GC | sweep, relocation, remote deletion |
+| [RFC 17](rfc-17-vfs.md) | filesystem service (VFS) | *draft* — the one protocol-neutral API adapters call: operations, callbacks, errors, what stays in adapters; orchestration at one owner, quota enforcement by in-memory reservation, soft-quota and access-audit event hooks |
+| [RFC 8](rfc-8-engine.md) | engine | the content data path: the facade over journal, carver, syncer and block metadata, and its policy |
+| [RFC 9](rfc-9-gc.md) | GC | sweep, trash, compaction, remote deletion, index rebuild |
 | **Cluster** | | |
 | [RFC 10](rfc-10-journal-replication.md) | journal replication | *draft* — owner-driven replication, fencing, seal, catch-up, reads from replicas |
-| [RFC 11](rfc-11-ownership.md) | ownership | *draft* — ownership units (a share by default), leases, handover, failover, forwarding |
-| [RFC 15](rfc-15-topology.md) | topology and roles | *draft* — one binary, roles chosen at deployment (metadata, data, both by default), what each role composes, namespace and data ownership, routing calls to the role and owner that serve them, split and collocated deployments, pNFS metadata and data servers |
+| [RFC 11](rfc-11-ownership.md) | ownership | *draft* — ownership units (a share by default, automatic per-child units, byte-range units), leases, handover, failover, forwarding |
+| [RFC 15](rfc-15-topology.md) | topology and roles | *draft* — one binary, two roles chosen at deployment (`protocol` and `storage`, both by default), the composition root: what each role composes, one owner per unit, striping by range units, the route envelope, routing calls to the owner that serves them, split and collocated deployments, pNFS metadata and data servers |
 | **Data management** | | |
 | [RFC 12](rfc-12-snapshots.md) | snapshots, backups and share migration | *draft* — snapshots (a per-share cut number plus counted history refs; read-only, writable clones, scheduled with retention), metadata backup, restore to a new share, moving a share between installations on one bucket |
 | **Configuration** | | |
 | [RFC 13](rfc-13-configuration.md) | configuration | *draft* — what is a setting and what is fixed, scopes, which settings bind content, validation, change, secrets |
 | **Security** | | |
-| RFC 18 | identity and authentication | *planned* — principals, authentication flavours, identity mapping, squashing |
+| RFC 18 | identity and authentication | *planned, next* — principals, authentication flavours, identity mapping, squashing |
 | RFC 19 | authorization | *planned* — one abstract ACL model, its protocol mappings, evaluation |
 | **Protocols** | | |
 | RFC 20 | adapter model | *planned* — the protocol handler contract, auth context, error mapping, dispatch |
@@ -50,7 +50,7 @@ order: each part builds on the ones before it.
 | **Operations** | | |
 | RFC 23 | control plane | *planned* — runtime, share lifecycle, management API; applies RFC 13's configuration |
 | RFC 24 | resources and concurrency | *planned* — memory budgets, buffer pools, admission, backpressure |
-| RFC 25 | observability | *planned* — metric and label conventions, health derivation, events |
+| RFC 25 | observability | *planned* — metric and label conventions, health derivation, and the event streams: delivery, retention and export of the access-audit and quota events [RFC 17](rfc-17-vfs.md) emits |
 
 [The block data-flow split](rfc-block-dataflow.md) is the earlier plan the storage RFCs grew out of.
 
