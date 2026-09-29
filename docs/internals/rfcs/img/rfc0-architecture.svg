@@ -16,16 +16,15 @@
     <marker id="a" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#5b6472"/></marker>
   </defs>
   <rect width="900" height="520" fill="#ffffff"/>
-  <text x="16" y="26" class="t">One binary, three roles. Adapters speak wire; everything else speaks the service.</text>
+  <text x="16" y="26" class="t">One binary, two roles. Adapters speak wire; everything else speaks the service.</text>
 
   <!-- role brackets -->
   <path d="M96,52 L88,52 L88,202 L96,202" class="brk"/>
   <text x="16" y="131" class="role">PROTOCOL</text>
   <path d="M96,226 L88,226 L88,326 L96,326" class="brk"/>
-  <text x="16" y="266" class="role" style="fill:#b08a3e">METADATA</text>
-  <text x="16" y="281" class="role" style="fill:#4c8a58">DATA</text>
+  <text x="16" y="274" class="role" style="fill:#4c8a58">STORAGE</text>
   <path d="M96,350 L88,350 L88,496 L96,496" class="brk"/>
-  <text x="16" y="427" class="role">STORAGE</text>
+  <text x="16" y="427" class="role">BACKING</text>
 
   <!-- adapters -->
   <rect x="110" y="52" width="230" height="52" rx="5" class="ada"/>
@@ -63,13 +62,14 @@
   <text x="409" y="249" class="h">open state (RFC 14)</text>
   <text x="409" y="270" class="l">clients, opens, locks</text>
   <text x="409" y="288" class="l">caching grants, watches</text>
-  <text x="409" y="306" class="s">held by the namespace owner</text>
+  <text x="409" y="306" class="s">held by the unit's owner</text>
 
   <rect x="590" y="226" width="290" height="100" rx="5" class="data"/>
-  <text x="604" y="249" class="h">engine: content data path (RFC 8)</text>
-  <text x="604" y="270" class="l">journal (RFC 1, 10) · carver (RFC 2)</text>
-  <text x="604" y="288" class="l">syncer (RFC 3) · GC (RFC 9)</text>
-  <text x="604" y="306" class="s">held by the data owner</text>
+  <text x="604" y="249" class="h">content subsystem (storage role)</text>
+  <text x="604" y="268" class="l">engine (RFC 8) · journal (RFC 1, 10)</text>
+  <text x="604" y="285" class="l">carver (RFC 2) · syncer (RFC 3)</text>
+  <text x="604" y="302" class="l">GC (RFC 9)</text>
+  <text x="604" y="318" class="s">held by the unit's owner</text>
 
   <path d="M235,328 L235,348" class="arr"/>
   <path d="M475,328 L475,348" class="arr"/>
@@ -89,7 +89,7 @@
   <text x="744" y="373" class="h">remote tier</text>
   <text x="744" y="394" class="s">objects (RFC 4, 5)</text>
 
-  <text x="110" y="446" class="l">Default deployment: all three roles in one process, every arrow a local call.</text>
-  <text x="110" y="466" class="l">Split deployment: protocol+data nodes and metadata nodes over one replicated KV; the same interfaces cross the network.</text>
+  <text x="110" y="446" class="l">Default deployment: both roles in one process, every arrow a local call. Each unit has one owner.</text>
+  <text x="110" y="466" class="l">Split deployment: protocol nodes forward to storage nodes over one replicated KV; the same interfaces cross the network.</text>
   <text x="110" y="486" class="s">Adapters hold only vfs.Service. Nothing below the service imports an adapter; callbacks go up through interfaces adapters implement.</text>
 </svg>

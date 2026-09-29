@@ -92,8 +92,8 @@ only these, come from the host — a file or the environment:
 | the local devices the node may use, and their paths | a path means something only on its host ([§3](#3.%20Scopes)) |
 | listen addresses | a port conflict is a host's problem |
 | log destination and level | needed before the control plane answers, to say why it did not |
-| the node's **roles** — `protocol`, `metadata`, `data`, all three by default ([RFC 15](rfc-15-topology.md)) | they decide what the node composes, including whether it reaches the control plane's store as a writer; fixed for the life of the process |
-| the wrapping key's location, for `Secret` records ([§7](#7.%20Secrets)) | a key kept in the store it protects protects nothing |
+| the node's **roles** — `protocol`, `storage`, both by default ([RFC 15](rfc-15-topology.md)) | they decide what the node composes, including whether it reaches the control plane's store as a writer; fixed for the life of the process |
+| the location of the wrapping key of each role the node runs, and no other, for `Secret` records ([§7](#7.%20Secrets)) | a key kept in the store it protects protects nothing, and a key for a role the node does not run is a key it can leak |
 
 A bootstrap fact **MUST NOT** also be a record field, and a record field
 **MUST NOT** be overridable from the host. An override from the host is a
@@ -246,7 +246,25 @@ The default secret provider is the configuration store itself: a `Secret`
 record ([RFC 16](rfc-16-metadata-store.md)) in the same KV, its value **envelope-encrypted** under a
 wrapping key held outside that KV — a host file or an external key service,
 named by the bootstrap ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)). A copy of the store alone reveals no
-secret. A password is stored only as a slow hash; an NT hash exists only while
+secret.
+
+**Wrapping keys are per role.** Each secret kind is sealed under the wrapping
+key of the role that uses it, and a node's bootstrap names only the keys of its
+own roles:
+
+| Wrapping key | Seals | Needed by |
+| --- | --- | --- |
+| `protocol` | password hashes, NT hashes, keytabs, identity-provider bind credentials | the `protocol` role: authentication |
+| `storage` | remote-tier credentials, references to master keys | the `storage` role: the remote tier and the material provider |
+
+So a compromised protocol-only node, which must read the KV, holds sealed
+remote-tier credentials it cannot open. A deployment **MAY** split a role's key
+further by secret kind; it **MUST NOT** merge the two roles' keys unless every
+node runs both roles, which is the single-node default.
+
+> [!important] Pending review — wrapping keys per role
+> One wrapping key per role (`protocol`, `storage`), named in the bootstrap only
+> on nodes running that role; `Secret.KeyID` records which ([RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities)). A password is stored only as a slow hash; an NT hash exists only while
 NTLM is enabled. An external provider (a vault, a KMS) **MAY** replace the
 default, behind the same reference.
 
@@ -274,8 +292,9 @@ default, behind the same reference.
   export names them, and every data key in its census, the same way
   ([RFC 12 §4.4](rfc-12-snapshots.md#4.4%20Key%20scope%20and%20material)).
 
-- The only secret on a host is the bootstrap credential for the configuration
-  store ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)).
+- The only secrets on a host are the bootstrap credential for the configuration
+  store and the wrapping keys of its own roles, or references to them in an
+  external key service ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)).
 
 ## 8. Observability
 
@@ -301,6 +320,7 @@ Conventions and tiers are the index's ([Test tiers](rfc-index.md#Test%20tiers)).
 | [§6](#6.%20Validation) refused | For every setting, feed one value out of range and one of the wrong type, through the API and directly to the component. Assert both refuse, with the field named; assert no component runs a default in its place. |
 | [§6](#6.%20Validation) one validator | Assert the API and the component return the same error for every invalid record in the fixture set. |
 | [§6](#6.%20Validation) unknown field | Misspell one field of each record. Assert refused. |
+| [§7](#7.%20Secrets) role keys | Start a protocol-only node. Assert its bootstrap names no `storage` wrapping key and that unsealing a remote-tier credential from it fails. |
 | [§7](#7.%20Secrets) no secret out | Configure every secret-bearing record; read every API, export and log produced by a full test run. Assert no secret value appears. |
 | [§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap) no host override | Set a record field in the host's environment. Assert it is refused at start, not applied. |
 | [§2.3](#2.3%20A%20record%20is%20versioned) schema | Present a record with a newer schema version. Assert refused. |
@@ -318,11 +338,12 @@ Proposed, for review with this document; none is applied yet.
 3. **RFC 4 §4.2 and Appendix C:** bucket and prefix are bound; endpoint and
    credential change under [§5.2](#5.2%20Reaching%20the%20same%20content%20another%20way%20is%20not%20a%20change).
 4. **RFC 12 §6.2:** the YAML example becomes the control-plane records it
-   describes; the freeze bound moves from installation to share scope.
+   describes: `snapshots.pin_bound` per share, `migration.freeze_timeout` per installation (Appendix B).
 5. **RFC 7 §3.3:** case sensitivity is bound, so a change is refused rather than
    left undefined.
-6. **RFC 9 §8:** GC's `Config` splits into namespace fields (interval, relocation
-   threshold, lease) and the one per-process field (deletes in flight).
+6. **RFC 9 §8:** GC's `Config` splits into namespace fields (interval, lease,
+   trash retention, compaction threshold and rate, audit period and rate) and the
+   per-process fields (deletes in flight, names per delete call).
 
 ## 11. Open questions
 
@@ -384,13 +405,26 @@ default this document suggests where the owning RFC states none.
 | block target | [§11](#11.%20Open%20questions) | remote store | next write | proposed: 4 MiB |
 | transform chain, `require` | [RFC 5 §3.2](rfc-5-transforms.md#3.2%20Configuration) | remote store | next write | empty |
 | material provider | [RFC 5 §2.5](rfc-5-transforms.md#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material) | remote store | live | required when the chain encrypts |
-| case sensitivity | [RFC 7 §3.3](rfc-7-namespace-metadata.md#3.3%20Case) | share | bound | sensitive |
+| case sensitivity: the share's fold rule, by ID from the store format record ([RFC 16 §4.6](rfc-16-metadata-store.md#4.6%20Store%20format)) | [RFC 7 §3.3](rfc-7-namespace-metadata.md#3.3%20Case) | share | bound | sensitive (identity rule) |
 | `atime` policy | [RFC 7 §9.2](rfc-7-namespace-metadata.md#9.2%20Timestamps) | share | live | proposed: relative |
-| GC interval, relocation threshold, lease | [RFC 9 §8](rfc-9-gc.md#8.%20API%20surface) | namespace | live | open in RFC 9 |
+| GC interval, lease | [RFC 9 §8](rfc-9-gc.md#8.%20API%20surface) | namespace | live | open in RFC 9 |
+| `gc.trash_retention`: time a retired block's object waits before its delete | [RFC 9 §3.7](rfc-9-gc.md#3.7%20Trash) | namespace | live | 48 h |
+| `gc.compaction.dead_ratio`: dead-byte ratio that makes a block a compaction candidate; 0 turns compaction off | [RFC 9 §4.4](rfc-9-gc.md#4.4%20When%20to%20compact%20is%20policy) | namespace | live | open in RFC 9 |
+| `gc.compaction.rate`: compactor encoded bytes per second | [RFC 9 §4.4](rfc-9-gc.md#4.4%20When%20to%20compact%20is%20policy) | namespace | live | open in RFC 9 |
+| `gc.audit.period`: time within which the audit covers every chunk | [RFC 9 §6.1](rfc-9-gc.md#6.1%20Coverage) | namespace | live | 7 days |
+| `gc.audit.rate`: refs audited per second | [RFC 9 §6.1](rfc-9-gc.md#6.1%20Coverage) | namespace | live | open in RFC 9 |
 | deletes in flight | [RFC 9 §8](rfc-9-gc.md#8.%20API%20surface) | node | restart | open in RFC 9 |
+| `gc.delete_batch`: names per delete call | [RFC 9 §3.1](rfc-9-gc.md#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object) | node | live | 1,000 |
 | replica count and floor, failure domain | [RFC 10 §7](rfc-10-journal-replication.md#7.%20Membership) | installation | live | open in RFC 10 |
 | ownership unit | [RFC 11 §2](rfc-11-ownership.md#2.%20Ownership%20units) | share | bound | the share |
 | share's namespace | [RFC 12 §2.1](rfc-12-snapshots.md#2.1%20A%20namespace%20is%20the%20unit%20that%20moves) | share | bound | the share's own |
-| oldest unoffloaded extent alert | [RFC 8 §8.4](rfc-8-engine.md#8.4%20How%20far%20behind%20durability%20is%2C%20is%20observable) | share | live | proposed: 1 h |
+| oldest unoffloaded extent alert | [RFC 8 §11.4](rfc-8-engine.md#11.4%20How%20far%20behind%20durability%20is%2C%20is%20observable) | share | live | proposed: 1 h |
 | snapshot policy, backup location and retention | [RFC 12 §6.2](rfc-12-snapshots.md#6.2%20Configuration) | share | live | none |
-| snapshot freeze bound | [RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20a%20drained%2C%20frozen%20instant) | share | live | 256 MiB, 30 s |
+| `snapshots.pin_bound`: pinned journal bytes per share before a cut is refused | [RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate) | share | live | 64 GiB |
+| `migration.freeze_timeout`: bound on a move's freeze and drain | [RFC 12 §4.2](rfc-12-snapshots.md#4.2%20The%20move%2C%20step%20by%20step) | installation | live | 30 s |
+| group-commit bound `G`, files per existence batch | [RFC 8 §5.2](rfc-8-engine.md#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict) | node, per journal | live | proposed: 256 |
+| offload retry backoff caps, normal and under capacity pressure | [RFC 8 §6.3](rfc-8-engine.md#6.3%20The%20offload%20pipeline) | node | live | proposed: 1 s to 60 s; 5 s under pressure |
+| speculation budget, bytes in flight per share | [RFC 8 §7.4](rfc-8-engine.md#7.4%20The%20speculator) | share | live | open in RFC 8 |
+| read-ahead cap, window ahead of one reader | [RFC 8 §7.4](rfc-8-engine.md#7.4%20The%20speculator) | share | live | open in RFC 8 |
+| quota reservation slack `S`, per principal or project per owner | [RFC 17 §5.6](rfc-17-vfs.md#5.6%20Quota) | installation | live | open in RFC 17 |
+| audit policy: which operations emit an access event | [RFC 17 §3.3](rfc-17-vfs.md#3.3%20Event%20hooks) | share | live | none: no access events |

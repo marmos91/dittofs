@@ -45,9 +45,8 @@ it owns no component's internals.
 ### 1.2 Component autonomy
 
 A component **MUST NOT** import another component in this set. The composition
-root is the one exception: it builds the components a node's roles need
-([RFC 15](rfc-15-topology.md)), imports them, and is imported by none of them
-([RFC 8 §2.1](rfc-8-engine.md#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one)).
+root is the one exception: it builds the components a node's roles need,
+imports them, and is imported by none of them ([RFC 15](rfc-15-topology.md)).
 
 Where a component requires a capability it does not own, it **MUST** declare an
 interface for that capability in its own package, named for the need rather than
@@ -69,7 +68,7 @@ Conformance is checked by a per-component import-graph test.
 
 ### 1.3 The layers
 
-![Adapters call one filesystem service; below it sit the metadata store, open state and the content engine, over a transactional KV, journal devices and the remote tier; roles protocol, metadata and data mark which node composes what](img/rfc0-architecture.svg)
+![Adapters call one filesystem service; below it sit the metadata store, open state and the content subsystem, over a transactional KV, journal devices and the remote tier; roles protocol and storage mark which node composes what](img/rfc0-architecture.svg)
 
 Four layers, each calling only the one below:
 
@@ -77,15 +76,33 @@ Four layers, each calling only the one below:
 | --- | --- | --- |
 | **Adapters** | speak one wire protocol each: framing, compounds, replay, error codes | RFC 20–22 (planned) |
 | **Filesystem service** (`vfs.Service`) | the one protocol-neutral API adapters call; orders every client operation across the parts below and routes it to its owner | [RFC 17](rfc-17-vfs.md) |
-| **Metadata store**, **open state**, **engine** | the store holds every fact about files, content, identity and configuration ([RFC 6](rfc-6-block-metadata.md), [RFC 7](rfc-7-namespace-metadata.md), [RFC 16](rfc-16-metadata-store.md)); open state holds opens, locks and caching grants ([RFC 14](rfc-14-open-state.md)); the engine is the content data path — journal, carver, syncer, GC ([RFC 8](rfc-8-engine.md)) | as named |
-| **Storage** | a transactional KV (embedded on one node, replicated in a cluster), journal devices, the remote tier | [RFC 16](rfc-16-metadata-store.md), [RFC 1](rfc-1-journal.md), [RFC 4](rfc-4-remote-tier.md) |
+| **Metadata store**, **open state**, **content subsystem** | the store holds every fact about files, content, identity and configuration ([RFC 6](rfc-6-block-metadata.md), [RFC 7](rfc-7-namespace-metadata.md), [RFC 16](rfc-16-metadata-store.md)); open state holds opens, locks and caching grants ([RFC 14](rfc-14-open-state.md)); the content subsystem is the content data path, made of the engine ([RFC 8](rfc-8-engine.md)), the journal, carver, syncer and GC ([RFC 1](rfc-1-journal.md)–[3](rfc-3-syncer.md), [RFC 9](rfc-9-gc.md)) | as named |
+| **Persistence** | a transactional KV (embedded on one node, replicated in a cluster), journal devices, the remote tier | [RFC 16](rfc-16-metadata-store.md), [RFC 1](rfc-1-journal.md), [RFC 4](rfc-4-remote-tier.md) |
 
 One binary serves every deployment. Which layers a node composes is set by its
-**roles** ([RFC 15](rfc-15-topology.md)): `protocol` (adapters and the filesystem service),
-`metadata` (namespace ownership and open state) and `data` (the engine and its
-journals). The default is all three in one process, where every arrow in the
-picture is a local call; a split deployment runs nodes with fewer roles over one
-replicated KV, and the same interfaces cross the network.
+**roles** ([RFC 15](rfc-15-topology.md)):
+
+- `protocol` — adapters and the filesystem service. It holds no state of its
+  own and forwards each call to the owner that serves it.
+- `storage` — the metadata store's view, open state and the content subsystem
+  with its journals. A node with this role can own ownership units.
+
+The default is both roles in one process, where every arrow in the picture is a
+local call; a split deployment runs protocol nodes in front of storage nodes
+over one replicated KV, and the same interfaces cross the network.
+
+**Each ownership unit has one owner** ([RFC 11](rfc-11-ownership.md)), with one epoch and one
+lease. That owner holds the unit's namespace records, its open state and its
+content, so the conflict check for an I/O and the I/O itself run in one place,
+and no operation on one file is split across two owners. A file's byte ranges
+**MAY** be split into range units, each with its own owner, so a large file can be
+striped across nodes; each range unit still has exactly one owner.
+
+> [!important] Pending review — two roles, one owner per unit
+> The two owner-capable roles merged into `storage`, and a unit's two owners
+> into one. Splitting them again remains
+> a recorded upgrade path in RFC 11, not a design point. The engine box became
+> the content subsystem.
 
 ## 2. Terminology
 
@@ -124,7 +141,7 @@ content it was committed from ([RFC 6 §4.4](rfc-6-block-metadata.md#4.4%20Commi
 addressed by one remote key and written by one put. A get retrieves chunks of a
 block, or the whole block. A block targets a configured size and MAY exceed it by
 at most one chunk; the last block of an offload pass MAY fall short
-([RFC 2 §5](rfc-2-carver.md#5.%20Packing%3A%20three%20rules%2C%20not%20a%20component), P2), because **a block boundary is always a chunk
+([RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler), P2), because **a block boundary is always a chunk
 boundary**. A chunk **MUST NOT** span two blocks ([§2.2](#2.2%20How%20a%20file%20relates%20to%20its%20chunks)).
 
 **Segment** — a local append-only file of records, capped at a configured size,
@@ -204,7 +221,7 @@ blocks and many files.
 | --- | --- |
 | **write** | stage bytes in the journal and acknowledge the client |
 | **sync** | make durable in the journal |
-| **offload** | the journal's pass: offer dirty extents, accept durability reports. Not a client's flush (NFS `COMMIT`, SMB `FLUSH`, `fsync`), which only syncs the journal ([RFC 8 §9.4](rfc-8-engine.md#9.4%20Commit%20is%20answered%20by%20the%20journal)) |
+| **offload** | the journal's pass: offer dirty extents, accept durability reports. Not a client's flush (NFS `COMMIT`, SMB `FLUSH`, `fsync`), which only syncs the journal ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)) |
 | **chunk** | place one content-defined boundary |
 | **box** | group chunks into one block |
 | **put** / **get** | make durable in the remote tier / retrieve from it |
@@ -446,14 +463,25 @@ range reads as the removal left it. A masked ref stays counted until the batch
 that deletes it, so a partly applied removal can leak for a while but never
 under-count (I10).
 
-**Snapshots keep superseded refs.** An overwrite, removal or release that replaces
+**Snapshots keep superseded records.** A snapshot is a versioned view, not a
+copy: taking one writes one cut record, and nothing is drained or copied
+([RFC 12](rfc-12-snapshots.md)). Refs, and the namespace records — files, entries, ACLs,
+extended attributes, stream links — carry the cut they were born after and the
+cut they died after. An overwrite, removal or release that replaces
 a ref a snapshot can still see moves it into the file's history in the same
-transaction, instead of dropping it ([RFC 12 §2.2](rfc-12-snapshots.md#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree)). A history ref is counted
+transaction, instead of dropping it; a namespace record is superseded the same
+way. Content still dirty in the journal at the cut is pinned to that cut: the
+journal keeps the superseded version until it is offloaded under the cut. A history ref is counted
 like a live one; the chunk's count does not change when a ref moves. Which
 snapshots see a ref is decided by the share's cut number, recorded on the ref
 when it is committed and when it is superseded ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)), never by a
 journal version: versions are per journal, and a share's files may live in
-several.
+several. Deleting a snapshot drops the history that no neighbouring cut still
+sees.
+
+> [!important] Pending review — snapshots are versioned records
+> Snapshots no longer drain the journal or copy namespace records at the cut;
+> every record carries its cuts, as refs already did.
 
 ## 8. Reclamation
 
@@ -473,7 +501,7 @@ definition of the operation, not a check applied to it.
 
 Eviction **MUST NOT** modify the remote tier.
 
-Eviction writes nothing to metadata ([RFC 8 §7.1](rfc-8-engine.md#7.1%20Eviction%20is%20chosen%20here%2C%20and%20needs%20no%20new%20record)): residency is computed, so
+Eviction writes nothing to metadata ([RFC 8 §10.1](rfc-8-engine.md#10.1%20Eviction%20is%20chosen%20here%2C%20and%20needs%20no%20new%20record)): residency is computed, so
 once the journal stops holding durable content, it resolves as **Remote**. Its
 one ordering rule is that local bytes **MUST** be released only after the offload
 commit that made them durable is itself durable. A release that precedes it can
@@ -601,7 +629,7 @@ Every condition below has exactly one specified behaviour.
 | --- | --- |
 | **Remote tier unavailable** | Writes continue into the journal while capacity allows. No extent becomes **Resident**, so no extent becomes evictable. Reads of **Remote** extents fail; they **MUST NOT** return zeros. |
 | **Journal at capacity, remote available** | Evict ([§8.1](#8.1%20Evict)); if nothing is evictable, reclaim ([§8.2](#8.2%20Reclaim)); if everything is **Dirty**, offload it and then evict it. The write is accepted once space is free, or refused at its deadline. |
-| **Remote tier slow** | The remote accepts transfers but drains slower than writes arrive, with no error to act on. Writes are paced to the measured drain rate ([RFC 8 §7.2.1](rfc-8-engine.md#7.2.1%20Writes%20are%20paced%20before%20the%20limit%2C%20not%20stopped%20at%20it)); each waits at most until its deadline ([§10.3](#10.3%20Every%20wait%20on%20a%20request%20ends%20at%20a%20deadline)) and is then refused. Progress is not a reason to keep waiting: a drain that frees a trickle never runs a writer out of time otherwise. |
+| **Remote tier slow** | The remote accepts transfers but drains slower than writes arrive, with no error to act on. Writes are paced to the measured drain rate ([RFC 8 §10.2.1](rfc-8-engine.md#10.2.1%20Writes%20are%20paced%20before%20the%20limit%2C%20not%20stopped%20at%20it)); each waits at most until its deadline ([§10.3](#10.3%20Every%20wait%20on%20a%20request%20ends%20at%20a%20deadline)) and is then refused. Progress is not a reason to keep waiting: a drain that frees a trickle never runs a writer out of time otherwise. |
 | **Journal at capacity, remote unavailable** | Refuse the write. Every local extent is **Dirty**, and I2 forbids evicting it, so refusal is the only behaviour that does not lose data. |
 | **Metadata unwritable** | Writes are still staged and acknowledged from the journal; the next stability point fails and is reported as failed ([§5.1](#5.1%20Write)). Truncate, deallocate and the other synchronous operations fail. Offload fails, so extents stay **Dirty** and the journal fills until writes are refused ([§10.1](#10.1%20Capacity%20is%20a%20bound%2C%20not%20a%20target)). Reads continue while metadata is readable. |
 | **Crash** | On restart the journal rebuilds its placement index from its segments; a torn tail is truncated to the last record that verifies. Metadata recovers by its backend's own durability, and the engine re-applies from the journal the existence of writes not yet committed, before serving ([§5.1](#5.1%20Write)). A removal recorded but not done masks until its batches resume, and an unfinished clone resumes before its destination is served ([§7](#7.%20Mutation%20and%20removal)). A put whose attempt died leaves an intent, collected once its owner epoch is superseded ([§5.2](#5.2%20Offload)). Otherwise the two recover independently and **MAY** disagree; [§10.2](#10.2%20No%20state%20requires%20intervention%20to%20leave) applies. |
@@ -639,8 +667,8 @@ reintroduces the failure this model exists to prevent.
 ### 10.3 Every wait on a request ends at a deadline
 
 Several rules in this set bound a wait by "the caller's deadline": a conflict
-retry ([§9.2](#9.2%20Conflicts%20and%20their%20retries)), a write paced or refused at capacity ([RFC 8 §7.2](rfc-8-engine.md#7.2%20A%20capacity%20refusal%20comes%20back%20here)), a
-cold read ([RFC 8 §6.5](rfc-8-engine.md#6.5%20An%20unreachable%20remote%20fails%20the%20read%2C%20distinguishably)). The bound is worth only what sets it, so:
+retry ([§9.2](#9.2%20Conflicts%20and%20their%20retries)), a write paced or refused at capacity ([RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)), a
+cold read ([RFC 8 §7.5](rfc-8-engine.md#7.5%20An%20unreachable%20remote%20fails%20the%20read%2C%20distinguishably)). The bound is worth only what sets it, so:
 
 - every operation that reaches the engine on behalf of a client **MUST** carry a
   deadline. The protocol front end sets it from the request; an operation that

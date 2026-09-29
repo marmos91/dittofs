@@ -47,10 +47,10 @@ and answer from them without distortion.
 
 The engine is its caller on the content path: write, offload, read, truncate,
 clone. Two other components hold narrow views, wired by whoever composes them
-([RFC 8 §2.1](rfc-8-engine.md#2.1%20The%20engine%20is%20the%20composition%20root%2C%20and%20the%20only%20one)): the namespace reads `size`, write-time attributes and allocation
-([RFC 7 §2.5](rfc-7-namespace-metadata.md#2.5%20Where%20%60size%60%20lives)), and GC retires blocks, relocates and audits ([§7](#7.%20What%20sweep%20needs%20from%20this%20component)). Releasing a
+([RFC 15](rfc-15-topology.md)): the filesystem service reads `size` and write-time attributes as fields of
+`File`, joined with the engine's overlay ([RFC 7 §2.5](rfc-7-namespace-metadata.md#2.5%20Where%20%60size%60%20lives)), and GC retires blocks, relocates and audits ([§7](#7.%20What%20sweep%20needs%20from%20this%20component)). Releasing a
 file reaches this component only through the engine's `Release`, which drops the
-refs and the journal's copy together ([RFC 8 §9.1](rfc-8-engine.md#9.1%20One%20content%20facade%2C%20called%20by%20the%20filesystem%20service), [RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)).
+refs and the journal's copy together ([RFC 8 §12.1](rfc-8-engine.md#12.1%20One%20content%20facade%2C%20called%20by%20the%20filesystem%20service), [RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)).
 
 ### 1.1 Non-goals
 
@@ -97,7 +97,7 @@ against content. Every record in this document is one of two kinds:
 
 | | Per-file | Content-addressed |
 | --- | --- | --- |
-| Records | FileData, Hole, Removal, ChunkRef (live and history), fences | Chunk, Block, put intent, pending deletion, candidate |
+| Records | FileData, Hole, Removal, ChunkRef (live and history), fences | Chunk, Block, put intent, GC index keys |
 | Keyed by | `FileID` | chunk hash or block name |
 | Written by | the write path, removals, and the offload commit for the refs it adds | the offload commit, relocation and GC |
 | Reached by a client operation | yes | never directly |
@@ -127,7 +127,7 @@ its file.
 Callers see three **entities** from this document, in the `metadata` package
 ([RFC 16 §2](rfc-16-metadata-store.md#2.%20Entities)): `ChunkRef`, `Chunk` and `Block`. The rest — FileData (fields of
 RFC 7's `File`), Hole, Removal, the fences, Cut and LiveCut, put intents,
-pending deletions, candidates and the chunk change stamp — are **bookkeeping
+the GC index keys and the chunk change stamp — are **bookkeeping
 records**: they exist for this document's guarantees, stay behind its
 interfaces ([§10.1](#10.1%20Interface)), and are not entities. Holes reach a caller only as the answer
 to `Allocation`.
@@ -137,7 +137,7 @@ type (
 	ChunkHash      [32]byte // content hash of a chunk's plaintext (RFC 2 §4)
 	BlockName      [32]byte // one remote object, minted per put attempt (§7.6)
 	JournalVersion [16]byte // orders content writes inside one journal (RFC 1 §5.3)
-	SnapshotCut    uint64   // numbers a share's snapshots in order (§6.5)
+	SnapshotCut    uint64   // numbers a share's snapshots in order (§6.5); defined here only
 )
 
 // ChunkRef: these bytes of this file are that range of that chunk (§2.1).
@@ -170,7 +170,7 @@ type Block struct {
 }
 
 // Pure methods: no I/O, no store. Each states one rule of this document once,
-// following RFC 16 §2.9's convention.
+// following [RFC 16 §2.4](rfc-16-metadata-store.md#2.4%20Methods%20on%20entities)'s convention.
 func (c ChunkRef) End() int64                   // Offset + Length
 func (c ChunkRef) IsLive() bool                 // Died == 0
 func (c ChunkRef) VisibleAt(k SnapshotCut) bool // Born < k ≤ Died, or live and Born < k (§6.5)
@@ -184,32 +184,32 @@ ref is a `ChunkRef` with `Died` set.
 
 | Concept | Record | Keyed by | Holds | Answers |
 | --- | --- | --- | --- | --- |
-| Existence ([§3](#3.%20Existence)) | **FileData** | `FileID` — fields of RFC 7's `File` value | size, `applied` version, write-time `Modify` and `Change` | how long is the file, when was it written, and up to which journal version is that recorded? |
+| Existence ([§3](#3.%20Existence)) | **FileData** | `FileID` — fields of RFC 7's `File` value | size, `applied` version, `Version`, `Charged`, write-time `Modify` and `Change` | how long is the file, when was it written, what is it charged, and up to which journal version is that recorded? |
 | | **Hole** | `(FileID, start)` | end | was this range never written? |
 | | **Removal** | `(FileID, version)` | removed range, kind, cursor, done | what did a truncate, deallocate, release or clone remove, at which version, and how far has dropping its refs got? |
 | Content map ([§2.1](#2.1%20ChunkRef)) | **ChunkRef** | `(FileID, offset)` | chunk hash, skip, length, content versions, `born` | which bytes of which chunk are these? |
 | | **History** | `(FileID, died, offset)` | a `ChunkRef` as it was, with `Died` set to the cut its superseding transaction read | which bytes did a snapshot see here? |
-| | **Chunk** | chunk hash | block name, position in block, refcount, change stamp | where is this chunk, and who uses it? |
-| Blocks ([§7](#7.%20What%20sweep%20needs%20from%20this%20component)) | **Block** | block name | live-chunk count, encodings | may this remote object be deleted, and how was it written? |
-| Ownership ([§5.4](#5.4%20Reads%20that%20gate%20a%20commit)) | **Fence** `F_x`, `F_o` | `FileID` | owner epoch | is the writer on this path still the file's owner? |
+| | **Chunk** | `(namespace, chunk hash)` | block name, position in block, refcount, change stamp | where is this chunk, and who uses it? |
+| Blocks ([§7](#7.%20What%20sweep%20needs%20from%20this%20component)) | **Block** | `(namespace, block name)` | GC state and `not_before`, live-chunk count, dead bytes, size, encodings | may this remote object be deleted, when, and how was it written? |
+| Ownership ([§5.4](#5.4%20Reads%20that%20gate%20a%20commit)) | **Fence** `F_x`, `F_o` | `FileID` | the epoch of the file's unit owner | is the writer on this path, or the namespace transaction guarding it, still the file's owner? |
 | Snapshots ([§6.5](#6.5%20Who%20owns%20a%20ref)) | **Cut** | `ShareID` | latest cut number `k`, newest live cut `klatest` | which cut does a commit fall after, and must a superseded ref move to history? |
 | | **LiveCut** | `(ShareID, k)` | — | which cuts do live snapshots hold? |
-| Sweep ([§7](#7.%20What%20sweep%20needs%20from%20this%20component)) | **Put intent** | block name | owner epoch of the attempt | which minted names may still be put and committed? |
-| | **Pending deletion** | block name | — | which names await their remote delete? |
-| | **Candidate** | block name | — | which blocks may have `live` at zero ([RFC 9 §3.5](rfc-9-gc.md#3.5%20Finding%20candidates%20costs%20what%20is%20retirable))? |
+| Sweep ([§7](#7.%20What%20sweep%20needs%20from%20this%20component)) | **Put intent** | `(namespace, block name)` | owner epoch of the attempt | which minted names may still be put and committed? |
+| | **GC index keys** | `(namespace, block name)`, the retired one by `not_before` first | — | which blocks have `live` at zero, are in the trash, await their delete, or are past the compaction threshold ([RFC 9 §7.2](rfc-9-gc.md#7.2%20Every%20record%20GC%20stores%20names%20its%20reclamation))? Derived from the block records and rebuildable ([RFC 9 §7.4](rfc-9-gc.md#7.4%20The%20index%20can%20be%20dropped%20and%20rebuilt)) |
 
 Who writes each record:
 
-| | FileData, Hole | Removal | ChunkRef, History | Chunk | Block | `F_x` | `F_o` | Cut, LiveCut | Put intent | Pending deletion | Candidate |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Existence commit | writes | — | — | — | — | reads | — | — | — | — | — |
-| Writer before a put ([§7.6](#7.6%20Put%20intents)) | — | — | — | — | — | — | — | — | creates | — | — |
-| Offload commit | — | reads | writes | creates, counts | creates, counts | — | reads | reads `Cut` | deletes | — | writes |
-| Removal, phase 1 ([§6.2](#6.2%20Truncation%20and%20deallocation)) | writes | writes | — | — | — | writes | writes | — | — | — | — |
-| Removal, phase 2 | — | advances | writes | counts | counts | — | reads | reads `Cut` | — | — | writes |
-| New owner ([§5.4](#5.4%20Reads%20that%20gate%20a%20commit)) | — | — | — | — | — | writes | writes | — | — | — | — |
-| Snapshot cut or deletion ([§6.5](#6.5%20Who%20owns%20a%20ref)) | — | — | drops History | counts | counts | — | — | writes | — | — | writes |
-| Retirement, relocation, abandonment, delete ([§7](#7.%20What%20sweep%20needs%20from%20this%20component)) | — | — | — | moves, deletes | creates, deletes | — | — | — | creates, deletes | writes, deletes | deletes |
+| | FileData, Hole | Removal | ChunkRef, History | Chunk | Block | `F_x` | `F_o` | Cut, LiveCut | Put intent | GC index keys |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Existence commit | writes | — | — | — | — | reads | — | — | — | — |
+| Writer before a put ([§7.6](#7.6%20Put%20intents)) | — | — | — | — | — | — | — | — | creates | — |
+| Offload commit | — | reads | writes | creates, counts | creates, counts | — | reads | reads `Cut` | deletes | writes |
+| Removal, phase 1 ([§6.2](#6.2%20Truncation%20and%20deallocation)) | writes | writes | — | — | — | writes | writes | — | — | — |
+| Removal, phase 2 | — | advances | writes | counts | counts | — | reads | reads `Cut` | — | writes |
+| New owner ([§5.4](#5.4%20Reads%20that%20gate%20a%20commit)) | — | — | — | — | — | writes | writes | — | — | — |
+| Namespace transaction ([RFC 7](rfc-7-namespace-metadata.md)) | — | — | — | — | — | guards | — | — | — | — |
+| Snapshot cut or deletion ([§6.5](#6.5%20Who%20owns%20a%20ref)) | — | — | drops History | counts | counts | — | — | writes | — | writes |
+| Retirement, relocation, abandonment, delete ([§7](#7.%20What%20sweep%20needs%20from%20this%20component)) | — | — | — | moves, deletes | creates, changes state, prunes | — | — | — | creates, deletes | writes, deletes |
 
 The offload commit writes three records in one transaction because it records one
 event — a block became durable — and those are its three consequences ([§4.1](#4.1%20What%20one%20commit%20records)).
@@ -302,11 +302,20 @@ across chunks.
 
 ### 2.3 Block
 
-    Block(name) = { live, encodings }
+    Block(name) = { state, not_before, live, dead, size, encodings }
+
+`state` is `live`, `retired` or `deleted`: GC's state machine for the block,
+kept on the record itself ([RFC 9 §3.1](rfc-9-gc.md#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object)). `not_before` is set at retirement and
+is the earliest time the deleter may delete the object ([RFC 9 §3.7](rfc-9-gc.md#3.7%20Trash)). `dead` is
+the bytes of the chunks this block carries that are dead here — whose refcount
+is zero, or whose record names another block — maintained in every transaction that moves one of its refcounts across
+zero; with `size`, the block's encoded bytes, it gives the compactor's dead-byte
+ratio ([RFC 9 §4.4](rfc-9-gc.md#4.4%20When%20to%20compact%20is%20policy)). Each transaction that changes these writes or deletes the
+block's GC index keys ([RFC 9 §7.2](rfc-9-gc.md#7.2%20Every%20record%20GC%20stores%20names%20its%20reclamation)).
 
 `live` is the number of chunk records that name this block and whose refcount is
 nonzero. A chunk this block carries whose record names another block is dead
-weight here and is not counted ([§4.1](#4.1%20What%20one%20commit%20records)). A block is sweepable when, and only when,
+weight here and is not counted ([§4.1](#4.1%20What%20one%20commit%20records)). A `live` block is sweepable when, and only when,
 `live` is zero ([RFC 0 §8.3](rfc-0-data-lifecycle.md#8.3%20Sweep)).
 
 The name is minted per put attempt from a fresh nonce ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block),
@@ -329,13 +338,14 @@ tiering, or moving between buckets — `Block` gains a `Store` field then.
 
 ### 2.4 FileData and holes
 
-    FileData(file)         = { size, applied, Modify, Change }   // fields of RFC 7's File value
+    FileData(file)         = { size, applied, Version, Charged, Modify, Change }   // fields of RFC 7's File value
     Hole(file, start)      = { end }
     Removal(file, version) = { start, end, kind, cursor, done }
 
 **FileData is not a record of its own.** It names the fields of the one `File`
-value ([RFC 7 §2.1](rfc-7-namespace-metadata.md#2.1%20File)) that only the write path sets: `size`, `applied`, and the
-write-time `Modify` and `Change`. They are persisted in the File's one key
+value ([RFC 7 §2.1](rfc-7-namespace-metadata.md#2.1%20File)) that only the write path sets: `size`, `applied`, the
+write-time `Modify` and `Change`, and, with every other writer of the File,
+`Version` and `Charged`. They are persisted in the File's one key
 ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)); what makes them this document's is who may write them, not where
 they sit. Every rule below that says "FileData" means those fields.
 
@@ -345,6 +355,17 @@ or was deallocated. A file's holes never overlap or touch — adjacent holes mer
 
 `Modify` and `Change` are the times of the last write, set here so that a write
 touches one record ([RFC 7 §2.5](rfc-7-namespace-metadata.md#2.5%20Where%20%60size%60%20lives)).
+
+**An existence commit advances `Version`** ([RFC 7 §2.1](rfc-7-namespace-metadata.md#2.1%20File)), as any content
+change must, so a client's change attribute moves with size and mtime; the
+engine's overlay reports `Version` beside size and times for bytes not yet
+committed ([RFC 8](rfc-8-engine.md)). It also sets `Charged`, the file's logical bytes
+excluding holes, and writes the change as a usage delta
+([RFC 16 §4.4](rfc-16-metadata-store.md#4.4%20Counters%20that%20many%20writers%20change)); a removal's phase 1 lowers it the same way.
+
+> [!important] Pending review — Version and Charged in FileData
+> Existence commits advance `File.Version` and maintain `File.Charged`; the
+> overlay that reports uncommitted size and times reports `Version` too.
 
 `applied` is the newest journal version whose existence change this FileData
 records. A commit of pending existence advances it, which makes the commit
@@ -377,15 +398,21 @@ longer exists.
 A refcount is only as good as the set of refs it counts. If a ref exists that the
 count does not include, the count is low, and sweep deletes referenced content.
 
-The records of [§2](#2.%20The%20records) **MUST** therefore be held in one store per remote key
-namespace ([RFC 2 §4.3](rfc-2-carver.md#4.3%20Key%20scope)). A deployment **MUST** do one of two things:
+The records of [§2](#2.%20The%20records) **MUST** therefore be counted in **one keyspace partition per
+remote key namespace** ([RFC 2 §4.3](rfc-2-carver.md#4.3%20Key%20scope)). One database holds every share and
+every namespace ([RFC 16](rfc-16-metadata-store.md)), so the partition is in the key: every
+content-addressed record — chunk, block, put intent, GC index key — is keyed by `(namespace, …)` ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)),
+and a share's refs are counted only in the partition of its namespace. The
+namespace ID is the key scope that key derivation mixes in ([RFC 8](rfc-8-engine.md)), so two
+namespaces can never name one object, and no chunk record, count, adoption or
+GC pass spans two namespaces. A deduplication lookup ([§8.2](#8.2%20Deduplication%20lookup)) reads only its
+own namespace's partition.
 
-- **One store per namespace.** Every share whose blocks can share a remote key
-  records its refs in the store that counts them.
-- **One namespace per store.** Key derivation includes the store's identity, so
-  two stores can never name one object.
+Two partitions that can name one key, each keeping its own count, are forbidden.
 
-Two stores that can name one key, each keeping its own count, are forbidden.
+> [!important] Pending review — one keyspace partition per namespace
+> Content-addressed keys carry the namespace (`C‖ns‖hash`, …); the key scope is
+> the namespace ID, no longer "the store's identity".
 
 **The absence of a record here MUST NOT be taken as evidence that a remote object
 is unreferenced.** It shows only that this store does not reference it. How an
@@ -481,10 +508,10 @@ offered below v4 is in flight, the owner prunes the removal.
 **t7 — delete.** The namespace releases the file through the engine's `Release`
 ([RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)). Phase 1 deletes the FileData record and writes `Removal(f, 5) = [0, ∞)`,
 kind release; phase 2 drops the three refs. K1's and K2's `live` reach 0, and the
-sub-transaction that takes each to zero writes its candidate. Sweep's `Retire(K1)`
-checks `live == 0` and, in one transaction, deletes Block(K1), Chunk(A),
-Chunk(B) and the candidate and records the pending deletion of K1; only then does
-it delete the object ([§7.1](#7.1%20Conditional%20retirement)). No intent names K1 and no record can again,
+sub-transaction that takes each to zero writes its zero index key. Sweep's `Retire(K1)`
+checks `live == 0` and, in one transaction, deletes Chunk(A) and Chunk(B) and
+moves Block(K1) to `retired` with `not_before` 48 h ahead; only after that does the
+deleter move it to `deleted`, delete the object and prune the record ([§7.1](#7.1%20Conditional%20retirement)). No intent names K1 and no record can again,
 so the delete needs no fence ([§7.6](#7.6%20Put%20intents)). With phase 2 done and no pass in
 flight, `Removal(f, 5)` is pruned.
 
@@ -539,7 +566,7 @@ at every write:
 3. The write is acknowledged. Until its existence is committed, **the journal is
    the authority for it**: the engine answers reads, `size`, times and allocation
    by applying the journal's uncommitted operations of the file over these
-   records ([RFC 8 §4.1](rfc-8-engine.md#4.1%20The%20facade%20orders%20a%20write%3B%20adapters%20do%20not)).
+   records ([RFC 8 §4.1](rfc-8-engine.md#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)).
 4. At the stability point, existence is committed — `size` grown, holes shrunk,
    times set, `applied` advanced to the newest version covered — **group-committed
    across files**: one transaction per journal for every file with pending
@@ -573,7 +600,7 @@ The rules:
   refs whose `newest` is below its version, so a re-run, a resumed phase 2 or a
   replay after a crash never removes content written after it.
 - **An offer covers only committed existence**: the engine commits a file's
-  pending existence before capturing an offer of it ([RFC 8 §4.3](rfc-8-engine.md#4.3%20The%20offload%20guard%20is%20narrow)), so no ref
+  pending existence before capturing an offer of it ([RFC 8 §6.4](rfc-8-engine.md#6.4%20The%20offload%20guard%20is%20narrow)), so no ref
   ever lies outside recorded existence.
 
 ### 3.5 Operations that make holes
@@ -592,7 +619,7 @@ range becomes uncarved and journal-absent — **Lost**. Reporting allocation to
 `SEEK_DATA` is RFC 7's, and **MUST NOT** be done by editing existence.
 
 **All-zero chunks are not stored.** The engine commits a zero ref for a chunk whose
-bytes are all zeros ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output)): it names no chunk, carries versions like any
+bytes are all zeros ([RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler)): it names no chunk, carries versions like any
 ref, is ordered and dropped by the same rules, and is reported to `SEEK_HOLE` as a
 hole. No zero chunk is stored or counted, so the commonest chunk of any deployment
 is never a hot refcount ([§5.3](#5.3%20Hot%20records%20that%20are%20not%20per-file)). A zero ref is written by the offload commit,
@@ -623,8 +650,8 @@ sweep into a guess.
 the same chunk adopts it: it adds its refs and their counts, and leaves `block`
 and `position` as they are. The copy the later block carries is dead weight, not
 counted in its `live`. A block all of whose chunks were adopted, or whose refs
-were all dropped, commits with `live` at zero; its creating commit **MUST** make
-it a sweep candidate ([RFC 9 §3.5](rfc-9-gc.md#3.5%20Finding%20candidates%20costs%20what%20is%20retirable)), since no later refcount change can reach it.
+were all dropped, commits with `live` at zero; its creating commit **MUST** write
+its zero index key ([RFC 9 §3.5](rfc-9-gc.md#3.5%20Finding%20candidates%20costs%20what%20is%20retirable)), since no later refcount change can reach it.
 
 **A block record is created once.** The intent is consumed by the commit, and a
 name is never minted twice ([§7.6](#7.6%20Put%20intents)), so a commit never finds its block record
@@ -662,8 +689,8 @@ A commit **MUST NOT** run before the syncer has reported the block durable
 ([RFC 3 §2.6](rfc-3-syncer.md#2.6%20Durability%20is%20observed%2C%20never%20inferred)). Chunk and block records are
 therefore records of durable content, and no record says "this chunk exists but
 its block might not". Recording refs before the put would let a crash leave refs
-to a block never written. A share with no remote tier never commits: its content
-stays uncarved and **Dirty** for its lifetime ([RFC 0 §8.1](rfc-0-data-lifecycle.md#8.1%20Evict)).
+to a block never written. Every share **MUST** have a remote store, so every
+share's content reaches a commit ([RFC 8 §2.1](rfc-8-engine.md#2.1%20Content%20composition)).
 
 ### 4.3 The commit is the report's return edge
 
@@ -677,7 +704,7 @@ hold ([RFC 1 §9.2](rfc-1-journal.md#9.2%20Offload%20state%20after%20recovery)).
 A commit **MUST NOT** replace refs written by a commit of content offered later.
 
 Two passes of one file can be in flight at once — the engine's guard is held
-only while capturing an offer and while committing ([RFC 8 §4.3](rfc-8-engine.md#4.3%20The%20offload%20guard%20is%20narrow)) — and they can
+only while capturing an offer and while committing ([RFC 8 §6.4](rfc-8-engine.md#6.4%20The%20offload%20guard%20is%20narrow)) — and they can
 commit in either order. If an older pass's refs overwrote a newer pass's, the
 journal, having marked the newer bytes durable, may release them, and a later read
 fetches the older content. For each ref it would replace, a commit compares the
@@ -750,7 +777,7 @@ configured. A sub-transaction's cost is O(K), whatever the file's size.
 - **A popular block's `live`.** Moves only when a refcount crosses zero.
 - **Usage accounting.** A per-share, per-principal or per-project counter is
   shared by many files. It is not kept as one record read and rewritten per
-  transaction: the write path writes a delta record, and the share's owner folds
+  transaction: the write path writes a delta record, and the unit's owner folds
   deltas into the totals ([RFC 16 §4.4](rfc-16-metadata-store.md#4.4%20Counters%20that%20many%20writers%20change)). The offload commit **MUST NOT** touch
   usage. Refcounts are not usage and stay transactional: a chunk's count moves
   in the same transaction as the refs that change it ([§6.1](#6.1%20A%20refcount%20is%20exactly%20its%20refs)).
@@ -764,7 +791,12 @@ so the remedy needs a way to key it apart; that is open ([§12](#12.%20Open%20qu
 ### 5.4 Reads that gate a commit
 
 **A read whose result decides whether a commit may apply MUST conflict with
-every concurrent write that would change that result.** A scan over a key range
+every concurrent write that would change that result.** Such a read is a
+`Txn.Guard` ([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)), and a guard is **shared**: it conflicts with a
+write of its key, never with another guard of it. So the many transactions that
+gate on one key — every create in one directory, every namespace transaction on
+one file — run concurrently, and only the write that changes the key serialises
+against them. A scan over a key range
 is not such a read: the backends this set targets detect conflicts on point keys
 at most, not on ranges, and one of them validates no reads at all. A rule that
 needs "nothing in this range changed" **MUST** be restated as a point key that
@@ -775,6 +807,7 @@ The gating reads in this document, and the key each conflicts on:
 | Rule | Read | Written by, so the read conflicts |
 | --- | --- | --- |
 | owner epoch, existence path | `F_x(file)` | a new owner; removals and releases |
+| owner epoch, namespace transactions ([RFC 7](rfc-7-namespace-metadata.md)) | `F_x(file)` for each file it changes, and the parent's for a create, link or rename-into | a new owner; removals and releases |
 | owner epoch, offload path and pruning | `F_o(file)` | a new owner; removals and releases |
 | removals an offload commit honours ([§4.1](#4.1%20What%20one%20commit%20records)) | the removals scan, covered by `F_o(file)` | every removal writes `F_o` |
 | put intent ([§7.6](#7.6%20Put%20intents)) | `Intent(name)` | the commit and an abandonment both delete it |
@@ -782,11 +815,18 @@ The gating reads in this document, and the key each conflicts on:
 | audit lowering a count ([§7.5](#7.5%20Audit)) | `Chunk(hash)` stamp | every ref change writes it |
 
 `Cut(share)` is not in this table: it is ordered against commits by the cut gate
-of [§6.5](#6.5%20Who%20owns%20a%20ref), and read plainly.
+of [§6.5](#6.5%20Who%20owns%20a%20ref), and read plainly. The structural guards of the namespace — create,
+link and rename-into guard the parent's record, the rename loop check guards
+every ancestor it reads, rmdir writes the directory's record — are [RFC 7](rfc-7-namespace-metadata.md)'s,
+under the same primitive.
 
-**Owner fences are per file and per path.** A file carries two fence records,
-`F_x(file)` for the existence path and `F_o(file)` for the offload path, each
-holding the owner epoch. A new owner writes both, before its first operation on
+**Owner fences are per file and per path.** A unit has one owner and one epoch
+([RFC 11](rfc-11-ownership.md)), serving both the namespace and the content of its files. A file
+carries two fence records, `F_x(file)` for the existence path and `F_o(file)`
+for the offload path, each holding that one epoch. Every namespace transaction
+guards `F_x` of the files it changes, so a former owner paused past its lease
+can commit no create, unlink, rename, ACL change or pending release once its
+successor has written the fences. A new owner writes both, before its first operation on
 the file under the new epoch ([RFC 11 §8](rfc-11-ownership.md#8.%20Metadata%20consistency)). An existence commit reads `F_x` with
 conflict tracking; an offload commit and removal pruning read `F_o`; a removal
 or release reads and writes both, so a removal and an offload commit conflict
@@ -795,7 +835,16 @@ ownership unit through one record **MUST NOT** be used: it serialises every
 file of the unit on one key. A fenced commit covers only operations durable on
 the unit's replica set ([RFC 10](rfc-10-journal-replication.md)).
 
-The engine's per-file guard ([RFC 8 §4.3](rfc-8-engine.md#4.3%20The%20offload%20guard%20is%20narrow)) keeps a process's own commits from
+**A range unit has its own fences.** When a file's byte range is its own
+ownership unit ([RFC 11 §2.3](rfc-11-ownership.md#2.3%20Range%20units)), the range carries its own pair of fence
+records, keyed by file and range start, holding the range owner's epoch. A
+commit for bytes in the range — existence or offload — is fenced by the range's
+records, never by the file's. Existence is committed per range: each range owner
+writes only its own range record, and a file's `size` is the maximum of the base
+unit's committed end and every range record's committed end, so no two owners
+write one record.
+
+The engine's per-file guard ([RFC 8 §6.4](rfc-8-engine.md#6.4%20The%20offload%20guard%20is%20narrow)) keeps a process's own commits from
 conflicting; it is an optimisation, and no rule here depends on it.
 
 **Backend notes (non-normative).** On a backend that tracks point reads in an
@@ -803,12 +852,18 @@ update transaction, a conflict-tracked read is a plain get there; a blind write
 detects nothing, so a guarded write also gets its key first. On a backend with
 snapshot isolation that validates no reads, a conflict-tracked read is a key lock
 (optimistic or pessimistic; pessimistic suits a contended key), and a
-transaction locking several files takes them in file-identity order. Per-
+transaction locking several files takes them in file-identity order. A guard
+there is a shared lock, and a write the exclusive one. Per-
 transaction entry and size limits give K ([§5.2](#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed)). A long read transaction holds
 back the store's version garbage collection, so no transaction spans an upload.
 The key layout that keeps one file's records together ([§1.2](#1.2%20Why%20it%20is%20a%20separate%20RFC%20from%20the%20namespace)) is
-[RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed): per-file records under `F‖ShareID‖FileID`, chunks, blocks, intents,
-pending deletions and candidates under their own global prefixes.
+[RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed): per-file records under `F‖ShareID‖FileID`, chunks, blocks, intents
+and GC index keys under their own prefixes, each scoped by
+namespace ([§2.6](#2.6%20The%20scope%20of%20a%20count)).
+
+> [!important] Pending review — shared guards and the one owner's fence
+> Gating reads are shared `Guard`s; namespace transactions guard the file's
+> `F_x`, which now carries the single owner epoch of the unit.
 
 ## 6. Reference counting
 
@@ -820,8 +875,8 @@ change in the same transaction as the refs that change it — never in a second
 transaction a crash can separate from the first. Moving a ref to history does not
 change the count. A block's `live` **MUST** move in the same transaction as every
 refcount crossing between zero and nonzero, for a chunk that block carries, and
-the transaction that leaves `live` at zero **MUST** write the block's candidate
-record ([RFC 9 §3.5](rfc-9-gc.md#3.5%20Finding%20candidates%20costs%20what%20is%20retirable)).
+the transaction that leaves `live` at zero **MUST** write the block's zero
+index key, and one that moves it off zero **MUST** delete it ([RFC 9 §3.5](rfc-9-gc.md#3.5%20Finding%20candidates%20costs%20what%20is%20retirable)).
 
 A removal's refs stay counted while it masks them ([§6.2](#6.2%20Truncation%20and%20deallocation)): a ref is uncounted
 in the sub-transaction that deletes it, never before.
@@ -833,7 +888,7 @@ this system that destroys the last copy of content ([RFC 0 §8.3](rfc-0-data-lif
 ### 6.2 Truncation and deallocation
 
 Truncate down, deallocate, release ([§6.4](#6.4%20Delete)) and a clone's destination ([§6.6](#6.6%20Clone%20and%20server-side%20copy))
-are **removals**. Under the file's guard ([RFC 8 §4.3](rfc-8-engine.md#4.3%20The%20offload%20guard%20is%20narrow)), the journal removes the
+are **removals**. Under the file's guard ([RFC 8 §6.4](rfc-8-engine.md#6.4%20The%20offload%20guard%20is%20narrow)), the journal removes the
 range first and assigns the removal its version *v* ([RFC 1 §3.6](rfc-1-journal.md#3.6%20Truncate%2C%20deallocate%20and%20delete)). The metadata
 change then runs in two phases.
 
@@ -945,17 +1000,23 @@ and writes nothing per file when it is taken:
   `Cut(share) = { k, klatest }`: `k` is the number of the share's latest cut,
   starting at 0 and raised by one each time a snapshot is taken, and `klatest`
   is the newest cut a live snapshot still holds (0 when none does). Each live
-  snapshot also has a `LiveCut(share, k)` record. The cut is taken on a drained,
-  frozen share ([RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20a%20drained%2C%20frozen%20instant)). `Cut(share)` is written only by the cut and by a
-  snapshot deletion.
-- **Every ref carries `born`**, the value of `k` its committing transaction read.
+  snapshot also has a `LiveCut(share, k)` record. The cut is one transaction behind the share's cut gate ([RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)) **without draining** the journal: it commits pending
+  existence for the share's files — a stability point, no offload — so the
+  `File` versions at the cut hold every acknowledged write's size, and the dirty
+  content itself stays in the journal, pinned to the cut until offloaded
+  ([RFC 8](rfc-8-engine.md)). `Cut(share)` is written only by the cut and by a snapshot deletion.
+- **Every ref carries `born`**, the value of `k` when its bytes were written:
+  the journal keeps it with the write's version ([RFC 8](rfc-8-engine.md)) and the offload
+  commit copies it, so content written before cut *k* and offloaded after it
+  still has `born < k`. A transaction that writes refs from no journal write —
+  a clone, a restore — uses the `k` it read.
   The share's **cut gate** orders every such transaction against every change
   to `Cut(share)`: each transaction that writes a ref — a client operation, an
   offload commit, a removal batch — is admitted through the gate, and a change
   to `Cut(share)` closes the gate, waits for every admitted transaction to
   finish, commits, and reopens it. So each ref-writing transaction either
   finished before the change or began after it, and a plain read of `Cut(share)`
-  gives it the right value: `born < k` means exactly "committed before cut *k*".
+  gives it the right value: `born < k` means exactly "written before cut *k*".
   The gate is held in memory by each owner of the share's units
   ([RFC 11 §2](rfc-11-ownership.md#2.%20Ownership%20units)); it orders commits, it does not guard a count. A narrowed or
   split ref keeps its `born`.
@@ -966,12 +1027,20 @@ and writes nothing per file when it is taken:
   the superseding transaction read. The chunk's count does not change: a history
   ref counts like a live one ([§6.1](#6.1%20A%20refcount%20is%20exactly%20its%20refs)). A narrowed ref moves its removed part.
   When `born ≥ klatest` no live snapshot can see the ref, and it is dropped as
-  before.
-- **Snapshot *k* sees exactly the refs with `born < k ≤ died`**, where a live ref
-  has `died = ∞`. The namespace records a snapshot reads — entries, files, FileData
-  and hole records — are captured per record on first change after the cut
-  ([RFC 12 §2.4](rfc-12-snapshots.md#2.4%20Capture%20is%20copy%20on%20first%20write)); refs are never captured, because history keeps them.
-- **Deleting snapshot *k*** drops the history refs no other live snapshot sees.
+  before. A pinned pre-cut version that commits after a newer ref already replaced its range is recorded straight into history, with `born` the cut its existence committed under — the one the journal stored with its version — and `died` = the newer ref's `born`, rather than refused as older ([M10](#9.%20Invariants) governs live refs).
+- **Namespace records are versioned the same way.** `File` (FileData
+  included), `Entry`, `ACL`, `Xattr`, stream links and holes carry `born`. A
+  transaction that supersedes or deletes one a live cut can see
+  (`born < klatest`) moves its old value, in the same transaction, to history
+  under `F‖id‖H‖died‖…` ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)), `died` being the `k` it read. So a
+  snapshot sees ACLs, xattrs and streams as they were at its cut, and a cut
+  costs one record whatever the tree's size. Directory-time deltas carry `born`
+  and fold by [RFC 16 §4.4](rfc-16-metadata-store.md#4.4%20Counters%20that%20many%20writers%20change)'s rule.
+- **Snapshot *k* sees exactly the records with `born < k ≤ died`**, refs and
+  namespace records alike, where a live record has `died = ∞`. Nothing is
+  captured and no tree is walked: history keeps what a cut sees.
+- **Deleting snapshot *k*** drops the history records — refs and namespace
+  records by one rule — no other live snapshot sees.
   Let *kp* < *k* < *kn* be its nearest live neighbours. A history ref visible to
   *k* has `born < k ≤ died`; the live cuts it is visible to form a run of
   consecutive live cuts containing *k*, so it is visible to another one exactly
@@ -985,10 +1054,9 @@ and writes nothing per file when it is taken:
   `LiveCut(share, k)` and recomputes `klatest` in `Cut(share)` — so no ref-writing
   transaction still running can move a ref to history for *k* alone after the
   drop has passed it — then sub-transactions of K history refs, found by
-  `died` in `[k, kn)`, drop each ref that meets the condition and decrement its
-  chunk.
-- **Freezing a share pauses its phase-2 executors**, so no removal drops a ref
-  between the drain and the cut.
+  `died` in `[k, kn)`, drop each record that meets the condition and, for a
+  ref, decrement its chunk.
+
 
 For example, a share takes cuts 1, 2 and 3, all live, so `klatest` is 3.
 
@@ -1002,6 +1070,11 @@ For example, a share takes cuts 1, 2 and 3, all live, so `klatest` is 3.
 
 After the deletion the live cuts are 1 and 3, and r1 and r3 are each still seen
 by one of them.
+
+> [!important] Pending review — versioned records, no drain
+> Namespace records carry `born`/`died` like refs and share one drop rule; a
+> ref's `born` is the cut at write time, so the cut pins dirty content instead
+> of draining it.
 
 A share with no live snapshot writes no history. `Cut(share)` changes only at a
 cut and at a snapshot deletion, each behind the cut gate, so reading it needs no
@@ -1057,8 +1130,7 @@ Re-versioning makes the cloned refs outrank anything a destination pass in fligh
 carries, and the removal drops what that pass would have committed there.
 
 **Uncarved content cannot be cloned by reference**, because no chunk covers it
-yet. Step 1 offloads it; a share with no remote tier copies the bytes through the
-destination's write path instead. A clone **MUST NOT** record the destination
+yet. Step 1 offloads it. A clone **MUST NOT** record the destination
 range as existing unless its bytes are staged or its refs written.
 
 ## 7. What sweep needs from this component
@@ -1068,20 +1140,31 @@ and cannot be made safe without them.
 
 ### 7.1 Conditional retirement
 
-    Retire(block) — if live == 0: delete the block record, every chunk record
-                    that names it and the block's candidate, and write the block's
-                    pending deletion; else delete the candidate and refuse
+    Retire(block) — if state == live and live == 0: delete every chunk record
+                    that names it, set state = retired and not_before = now +
+                    trash retention, and swap its zero index key for its
+                    retired index key; else refuse
 
 A chunk record that names another block is not this block's to delete ([§4.1](#4.1%20What%20one%20commit%20records)).
 This **MUST** be one transaction, and the condition **MUST** be evaluated inside
 it: a sweep that reads `live`, decides, and deletes in a separate step deletes a
 block a commit re-adopted in between.
 
-The pending-deletion record makes the remote delete resumable ([RFC 9 §3.2](rfc-9-gc.md#3.2%20A%20retirement%20not%20yet%20deleted%20is%20durably%20recorded)).
-Retiring the records before deleting the object means a crash between the two
-leaves an unreferenced object recorded for deletion; the reverse order leaves
+Retirement may run for up to K records written per transaction, several blocks
+at once, each block's condition evaluated on its own. The block record stays, in
+state `retired` and then `deleted`, until the object's delete succeeds, which
+makes the delete resumable ([RFC 9 §3.2](rfc-9-gc.md#3.2%20A%20retirement%20not%20yet%20deleted%20is%20durably%20recorded)); the state change is the only record of
+it. A `retired` block can be restored to `live` from its object's header until
+the deleter marks it `deleted` ([RFC 9 §3.7](rfc-9-gc.md#3.7%20Trash)). Retiring the records before deleting
+the object means a crash between the two leaves an unreferenced object recorded
+for deletion; the reverse order leaves
 records naming an object that no longer exists, which is **Lost** for content
 that was durable.
+
+> [!important] Pending review — retirement is a state change
+> Retirement keeps the block record as `retired` with `not_before`, and the
+> pending-deletion and candidate records become derived GC index keys; the
+> audit gains coverage, two-walk lowering and a Lost search of the trash.
 
 ### 7.2 Adoption is conditional on existence
 
@@ -1112,7 +1195,7 @@ After the new block is durable, one transaction:
 - creates the new block record, with its encodings;
 - counts, inside the transaction, the moved chunks whose refcount is nonzero,
   adds that to the new block's `live` and subtracts each source's share from it,
-  writing the candidate of any block it leaves at zero.
+  writing the zero index key of any block it leaves at zero.
 
 Refs are untouched ([§2.5](#2.5%20Refs%20name%20hashes%2C%20never%20blocks)). A source whose `live` reaches zero is retirable. A
 chunk adopted by a racing commit is counted in whichever block its record names
@@ -1158,8 +1241,15 @@ refused or holds back the store's version reclamation for its whole length.
   transaction that creates, deletes, moves or narrows a ref naming the chunk
   changes the stamp ([§2.2](#2.2%20Chunk)), so an unchanged stamp proves no ref naming it
   changed under the walk. A changed stamp means re-walk that chunk.
+- **A lowering also needs two agreeing walks**: two consecutive walks computed
+  the same lower value ([RFC 9 §6.2](rfc-9-gc.md#6.2%20Corrections)).
 - **`live` is corrected per block, in one transaction** that reads the block's
   chunk records and sets `live` from them.
+- **Every chunk is covered within a stated period**, and the audit reports its
+  coverage ([RFC 9 §6.1](rfc-9-gc.md#6.1%20Coverage)).
+- **A ref whose hash has no chunk record MUST be reported as Lost**, and the
+  report **MUST** start a search of the `retired` blocks, restoring any whose
+  header carries the hash ([RFC 9 §6.3](rfc-9-gc.md#6.3%20A%20ref%20with%20no%20chunk%20record%20is%20Lost%2C%20and%20trash%20is%20searched)).
 
 A targeted recount ([§6.3](#6.3%20Underflow%20is%20corruption%2C%20not%20a%20boundary)) is this audit restricted to one chunk or block.
 
@@ -1189,14 +1279,17 @@ no fence and no delay, and a delete that lands late — after a retry, after a
 crash — can reach no committed block.
 
 **Abandoning an intent.** An intent whose epoch is superseded — its writer lost
-ownership or crashed — **MAY** be removed in a transaction that reads and deletes
+ownership or crashed — **MAY** be removed, and so **MAY** an intent a live owner
+recorded for an attempt it has itself given up
+([RFC 8 §6.3](rfc-8-engine.md#6.3%20The%20offload%20pipeline), O4): the owner knows no put of that attempt will be
+committed, because a retry mints a new name. Either removal runs in a transaction that reads and deletes
 the intent key, which conflicts with a commit consuming it ([§5.4](#5.4%20Reads%20that%20gate%20a%20commit)); the same
-transaction writes the name's pending deletion, and the object is then deleted
+transaction writes the name's block record in state `deleted`, and the object is then deleted
 ([RFC 9 §5](rfc-9-gc.md#5.%20Unrecorded%20objects)). A put still in flight that lands after the delete leaves an object
 with neither intent nor record: it can never be committed, and a listing
 backstop collects it.
 
-The pending-deletion record is only the delete backlog: it makes a remote delete
+A `deleted` block record is only the delete backlog: it makes a remote delete
 resumable after a crash ([RFC 9 §3.2](rfc-9-gc.md#3.2%20A%20retirement%20not%20yet%20deleted%20is%20durably%20recorded)). No writer reads it; it gates nothing.
 
 Two writers carrying the same chunks mint two names and put two objects; the
@@ -1229,16 +1322,17 @@ history refs with `born` < *k* ≤ `died` ([§6.5](#6.5%20Who%20owns%20a%20ref))
 
 Returns the chunk record for `hash`, if any. By [§4.2](#4.2%20Only%20after%20durability) a record implies a durable
 block, so this is the complete answer to "may this chunk be referenced rather than
-uploaded" ([RFC 2 §5](rfc-2-carver.md#5.%20Packing%3A%20three%20rules%2C%20not%20a%20component)). It **MUST NOT** consult anything that knows about a block
+uploaded" ([RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler)). It **MUST NOT** consult anything that knows about a block
 not yet committed. The answer is advisory: [§7.2](#7.2%20Adoption%20is%20conditional%20on%20existence) makes a stale one safe, and it
 **MUST NOT** be treated as a reservation.
 
 ### 8.3 A file's refs and the version floor
 
-    Refs(file)           → refs in offset order
+    Inspect.Refs(file)   → refs in offset order
     VersionFloor(shares) → version
 
-`Refs` lets the engine check the journal's offloaded bits against the refs after
+`Refs` is [RFC 16 §3.1](rfc-16-metadata-store.md#3.1%20Lookups%20by%20ID%2C%20listings%2C%20and%20who%20may%20use%20them)'s `Inspect.Refs`, its one home; the engine's restart
+check holds `Inspect` for it. It lets the engine check the journal's offloaded bits against the refs after
 a restart ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)), for the files the journal holds and no others. It
 **MUST** cost O(log *n* + results) for that file.
 
@@ -1266,14 +1360,14 @@ supersedes, so an offload commit writes up to two more records per ref.
 | M3 | A chunk or block record exists only for content reported durable. |
 | M4 | A chunk's refcount equals the live and history refs naming it, and `live` equals the referenced chunk records naming the block, at every commit point. A masked ref stays counted until the transaction that deletes it. |
 | M5 | A count that would go negative fails the transaction and schedules a targeted recount; it never clamps and never wedges. |
-| M6 | A block is retired only by a conditional operation that evaluates `live` inside its own transaction and records its pending deletion; retirement deletes only chunk records naming that block. Every transaction that leaves `live` at zero writes the block's candidate. |
+| M6 | A block is retired only by a conditional operation that evaluates `live` inside its own transaction and moves the block record to `retired`; retirement deletes only chunk records naming that block, and the object is deleted only once the record is `deleted`. Every transaction that leaves `live` at zero writes the block's zero index key. |
 | M7 | Adoption of a chunk fails if its record is gone, and never recreates it. |
 | M8 | No record is written by both an existence commit and an offload commit. |
 | M9 | A transaction's cost is bounded by what it changed, not by the file: an operation over many refs runs as an O(1) intent and batches of at most K refs. |
 | M10 | A commit never replaces a ref with strictly older content, never applies a ref below an overlapping removal's version, and never applies under a stale owner epoch read from its path's fence record. |
 | M11 | Block metadata records nothing about local placement. |
 | M12 | Every holder of content — a file, a snapshot through history, a staged restore or clone — holds counted refs. Nothing keeps content alive outside the count. |
-| M13 | No two stores that can name one remote key keep separate counts, and the absence of a record is never evidence that an object is unreferenced. |
+| M13 | Content records are counted in one keyspace partition per remote key namespace; no two partitions that can name one remote key keep separate counts, and the absence of a record is never evidence that an object is unreferenced. |
 | M14 | Refs name hashes, never blocks. |
 | M15 | A restore or clone is an adoption, and never copies a count or a location. |
 | M16 | A name is minted once, put only by its attempt, and committed only by the transaction that consumes its put intent. An object is deleted only when neither a block record nor an intent names it. |
@@ -1286,10 +1380,11 @@ supersedes, so an offload commit writes up to two more records per ref.
 ### 10.1 Interface
 
 Signatures are indicative; the obligations are normative. Each caller holds only
-the view it declares: the engine `Existence` and `Content`, the namespace `Size`,
-`Times` and `Allocation`, GC `Blocks` ([RFC 9 §8](rfc-9-gc.md#8.%20API%20surface)). The entities are §2's; reads by
-ID without authorisation for internal tools — `Refs`, `Chunk`, `Block` — are
-RFC 16's `Inspect` view ([RFC 16 §3.1](rfc-16-metadata-store.md#3.1%20Lookups%20by%20ID%2C%20listings%2C%20and%20who%20may%20use%20them)), not these. Every listing is an iterator
+the view it declares: the engine `Existence` and `Content`, GC `Blocks`
+([RFC 9 §8](rfc-9-gc.md#8.%20API%20surface)). No view here answers a file's size or times: the one read path
+is `Files.Get` joined with the engine's overlay ([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)). The entities
+are §2's; reads by ID without authorisation for internal tools — `Refs`,
+`Chunk`, `Block` — are RFC 16's `Inspect` view ([RFC 16 §3.1](rfc-16-metadata-store.md#3.1%20Lookups%20by%20ID%2C%20listings%2C%20and%20who%20may%20use%20them)), not these. Every listing is an iterator
 that resumes from a cursor the caller holds.
 
 ```go
@@ -1317,8 +1412,6 @@ type Existence interface {
     // Remove applies phase 1 of a truncate, deallocate or release at the journal's
     // version (§6.2, §6.4). Phase 2 runs through Content.Resume.
     Remove(ctx context.Context, file FileID, epoch uint64, r Removal, pending PendingExistence) error
-    Size(ctx context.Context, file FileID) (int64, error)
-    Times(ctx context.Context, file FileID) (mtime, ctime time.Time, err error)
     Allocation(ctx context.Context, file FileID, off int64) (Span, error) // SEEK_DATA / SEEK_HOLE
     Applied(ctx context.Context, file FileID) (JournalVersion, error)             // §3.4 recovery
 }
@@ -1334,30 +1427,35 @@ type Content interface {
     SnapshotCovering(ctx context.Context, file FileID, cut SnapshotCut, off, n int64) iter.Seq2[Span, error] // §6.5
     Durable(ctx context.Context, hash ChunkHash) (ChunkAt, bool, error)                // §8.2
     Clone(ctx context.Context, src, dst FileID, epoch uint64, srcOff, dstOff, n int64, v JournalVersion) error // §6.6
-    Cut(ctx context.Context, share ShareID) (SnapshotCut, error)                    // §6.5, share frozen
+    Cut(ctx context.Context, share ShareID) (SnapshotCut, error)                    // §6.5, behind the cut gate
     DropCut(ctx context.Context, share ShareID, k SnapshotCut) error                // §6.5, batched
-    Refs(ctx context.Context, file FileID, from int64) iter.Seq2[ChunkRef, error] // §8.3, resumes at from
     VersionFloor(ctx context.Context, shares []ShareID) (JournalVersion, error)          // §8.3
 }
 
-// Blocks is RFC 9 §8's view, satisfied here.
+// Blocks is RFC 9 §8's view, satisfied here, one per namespace: every call
+// reads and writes only that namespace's partition (§2.6).
 type Blocks interface {
-    Candidates(ctx context.Context) iter.Seq2[BlockName, error]                   // live may be zero
-    Retire(ctx context.Context, b BlockName) error                                // §7.1
+    Zero(ctx context.Context) iter.Seq2[BlockName, error]                         // live may be zero
+    Retire(ctx context.Context, bs []BlockName, notBefore time.Time) []error      // §7.1
+    Due(ctx context.Context, now time.Time) iter.Seq2[BlockName, error]           // RFC 9 §3.1
+    MarkDeleted(ctx context.Context, bs []BlockName, now time.Time) ([]BlockName, error) // RFC 9 §3.1
+    Deleting(ctx context.Context) iter.Seq2[BlockName, error]                     // RFC 9 §3.2
+    Prune(ctx context.Context, bs []BlockName) error                              // RFC 9 §3.1
+    Restore(ctx context.Context, b BlockName, chunks []ChunkLoc) error            // RFC 9 §3.7
     Intend(ctx context.Context, name BlockName, epoch uint64) error               // §7.6, relocation target
     // AbandonedIntents yields intents whose epoch is superseded (§7.6).
     AbandonedIntents(ctx context.Context) iter.Seq2[BlockName, error]
-    // Abandon deletes a superseded intent and writes the name's pending deletion,
+    // Abandon deletes a superseded intent and writes the name's record as deleted,
     // conflicting with a commit that consumes it (§7.6).
     Abandon(ctx context.Context, name BlockName) error
-    PendingDeletions(ctx context.Context) iter.Seq2[BlockName, error]             // RFC 9 §3.2
-    Deleted(ctx context.Context, names []BlockName) error                         // RFC 9 §3.2
     LiveChunks(ctx context.Context, b BlockName) iter.Seq2[ChunkLoc, error]
+    CompactionCandidates(ctx context.Context) iter.Seq2[BlockName, error]         // RFC 9 §4.4
     Relocate(ctx context.Context, src []BlockName, dst NewBlock) error            // §7.3
     Audit(ctx context.Context) iter.Seq2[Mismatch, error]                         // §7.5
     Recount(ctx context.Context, hash ChunkHash) error                                 // §6.3
     Unrecorded(ctx context.Context, name BlockName) error                         // RFC 9 §5, backstop
     Census(ctx context.Context) iter.Seq2[EncodingCount, error]                   // RFC 5 §5.3
+    RebuildIndex(ctx context.Context, check bool) iter.Seq2[Mismatch, error]      // RFC 9 §7.4
 }
 
 var (
@@ -1368,6 +1466,10 @@ var (
     ErrInconsistent = errors.New("blockmeta: count underflow")         // §6.3
 )
 ```
+
+> [!important] Pending review — one read path, one Refs
+> `Existence.Size/Times` and `Content.Refs` are removed: size and times come from
+> `Files.Get` plus the engine overlay, and refs from `Inspect.Refs`.
 
 A serialisation conflict is retried inside the call under the caller's deadline
 and never returned ([RFC 0 §9.2](rfc-0-data-lifecycle.md#9.2%20Conflicts%20and%20their%20retries)).
@@ -1410,7 +1512,7 @@ the tiers and under the rules of the [index](rfc-index.md).
 | [§3.5](#3.5%20Operations%20that%20make%20holes) allocate | Allocate a range with nothing staged. Assert it reads zeros, not a failure. |
 | [§3.5](#3.5%20Operations%20that%20make%20holes) zero chunks | Write and offload an all-zero region. Assert zero refs, no chunk record, no refcount change, `SEEK_HOLE` reports a hole, and reads return zeros with no fetch. |
 | [§4.4](#4.4%20Commits%20for%20one%20file%20apply%20in%20order) commit order | Commit B, then A over the same offsets with a lower `newest`. Assert B's refs survive. Commit again with a `newest` inside B's range. Assert nothing changes and the extent is reported durable. |
-| [§4.1](#4.1%20What%20one%20commit%20records) two writers, one chunk list | Through the real carver, put the same chunks from two files in two attempts. Assert two names, the second block born with `live` zero and a candidate, and both files' refs applied. |
+| [§4.1](#4.1%20What%20one%20commit%20records) two writers, one chunk list | Through the real carver, put the same chunks from two files in two attempts. Assert two names, the second block born with `live` zero and a zero index key, and both files' refs applied. |
 | [§4.1](#4.1%20What%20one%20commit%20records) owner epoch | Commit with an epoch below `F_o`. Assert `ErrStaleEpoch` and no record changed; repeat for an existence commit against `F_x` and a removal against both. |
 | [§4.1](#4.1%20What%20one%20commit%20records) partial adoption failure | Retire an adopted chunk before the commit. Assert the carried chunks and their refs apply and only the adopting refs fail. |
 | [§5.4](#5.4%20Reads%20that%20gate%20a%20commit) gating reads | For each row of §5.4's table, run the gated commit and the conflicting write concurrently on each backend. Assert one fails or retries. Then replace the gating read with a range scan or a plain snapshot read. Assert the check fails, so the rig sees the defect. |
@@ -1498,7 +1600,7 @@ One line per requirement.
 | [§6.2](#6.2%20Truncation%20and%20deallocation) versioned, batched removals | none; removals run in one transaction or several unrelated ones |
 | [§6.3](#6.3%20Underflow%20is%20corruption%2C%20not%20a%20boundary) underflow fails and recounts | clamped at zero |
 | [§6.5](#6.5%20Who%20owns%20a%20ref) the count is the authority, snapshots through history | a mark phase with hold lists for snapshots and open files |
-| [§6.6](#6.6%20Clone%20and%20server-side%20copy) clone | the refcount increment is missing; local-only clone copies bytes; one transaction |
+| [§6.6](#6.6%20Clone%20and%20server-side%20copy) clone | the refcount increment is missing; one transaction |
 | [§7.1](#7.1%20Conditional%20retirement) conditional retirement | read, decide, delete the object, then the record |
 | [§7.2](#7.2%20Adoption%20is%20conditional%20on%20existence) no grace period | a grace window and an in-process adoption guard |
 | [§7.4](#7.4%20Restore) restore adopts | restore writes the copy's records, counts and locations included |
@@ -1520,27 +1622,27 @@ The key layout — prefixes, encodings, and where these records sit beside
 RFC 7's — is [RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed), the one place it is defined. What this document
 requires of it: one file's per-file records form one contiguous range under
 `F‖ShareID‖FileID`; live refs scan in offset order (the covering lookup reads
-from an offset down, [§8.1](#8.1%20Covering%20lookup)); history refs scan by `died`; chunk, block and
-the three sweep records are keyed by hash-like values, so they spread evenly
-and no key is sequential.
+from an offset down, [§8.1](#8.1%20Covering%20lookup)); history records scan by `died`; chunk, block, put
+intent and GC index records are keyed by namespace, then by hash-like values, so
+within a namespace they spread evenly and no key is sequential.
 
 ### B.2 Records
 
 | Record | Value fields | Written by |
 | --- | --- | --- |
-| **FileData** (fields of `File`) | `size` u64 · `applied` version (u128) · `Modify`, `Change` (i64 ns) | existence commit, removal phase 1 |
+| **FileData** (fields of `File`) | `size` u64 · `applied` version (u128) · `Version` u64 · `Charged` u64 · `Modify`, `Change` (i64 ns) · the `File`'s `born` u64 | existence commit, removal phase 1 |
 | **Hole** | `end` u64 | existence commit, removal phase 1 and 2 |
 | **Removal** | `start`, `end` u64 · `kind` (truncate, deallocate, release, clone) · `cursor` u64 · `done` bool | removal phase 1 creates; phase 2 advances; owner prunes |
 | **ChunkRef** (live) | `hash` (32 B, or zero ref) · `skip`, `length` u64 · `oldest`, `newest` versions · `born` u64 (`SnapshotCut`) | offload commit, removal phase 2, clone |
 | **ChunkRef** (history) | the ref's fields as they were, `died` set | a transaction superseding a ref a live snapshot sees |
-| **Fence F_x / F_o** | `epoch` u64 | new owner; removals and releases |
+| **Namespace history** (RFC 7's records) | the record's value as it was, `died` in the key | a transaction superseding a record a live snapshot sees ([§6.5](#6.5%20Who%20owns%20a%20ref)) |
+| **Fence F_x / F_o** | `epoch` u64, the unit owner's one epoch | new owner; removals and releases; guarded by namespace transactions |
 | **Cut** | `k` u64 · `klatest` u64 | snapshot cut, snapshot deletion (behind the cut gate) |
 | **LiveCut** | — | snapshot cut creates, deletion removes |
 | **Chunk** | `block` name · `position` u64 · `length` u32 · `refcount` u64 · `stamp` u64 | offload commit creates; every ref change counts and stamps; relocation moves; retirement deletes |
-| **Block** | `live` u32 · `encodings` list of (transform ID, version, material ID, fingerprint) | offload commit, relocation create; retirement deletes |
+| **Block** | `state` (live, retired, deleted) · `not_before` (i64 ns) · `live` u32 · `dead` u64 · `size` u64 · `encodings` list of (transform ID, version, material ID, fingerprint) | offload commit, relocation create; abandonment and the listing backstop create as `deleted`; retirement, restore and the deleter change state; pruning deletes |
 | **Put intent** | `epoch` u64 | writer before a put; commit or abandonment deletes |
-| **Pending deletion** | — | retirement, collection; removed after the remote delete |
-| **Candidate** | — | any transaction leaving a block's `live` at zero; retirement deletes |
+| **GC index keys** (zero, retired, deleted, compaction) | — | every transaction that changes a block's state, `live` or dead-byte ratio across its threshold; derived, rebuildable ([RFC 9 §7.4](rfc-9-gc.md#7.4%20The%20index%20can%20be%20dropped%20and%20rebuilt)) |
 
 ### B.3 What points at what
 
@@ -1553,9 +1655,8 @@ erDiagram
     CHUNKREF_LIVE }o--|| CHUNK : "names by hash"
     CHUNKREF_HISTORY }o--|| CHUNK : "names by hash"
     CHUNK }o--|| BLOCK : "lives in, by name"
-    BLOCK |o--o| CANDIDATE : "may be flagged"
+    BLOCK ||--o{ GC_INDEX_KEY : "indexed by state"
     INTENT |o--o| BLOCK : "becomes, at commit"
-    PENDING_DELETION |o--o| BLOCK : "follows retirement"
     CUT ||--o{ LIVECUT : "share holds"
 ```
 
@@ -1563,5 +1664,5 @@ Refs and history name chunks by hash, never blocks, so relocation rewrites one
 chunk record ([§2.5](#2.5%20Refs%20name%20hashes%2C%20never%20blocks)). A chunk's `refcount` counts the refs and history refs that
 name it ([§6.1](#6.1%20A%20refcount%20is%20exactly%20its%20refs)); a block's `live` counts the chunk records that name it
 with a nonzero refcount ([§2.3](#2.3%20Block)). A block name exists as a put intent, then a
-block record, then a pending deletion, never as two at once and never again
-after ([§7.6](#7.6%20Put%20intents)).
+block record — `live`, `retired`, `deleted` — never as two at once and never again
+after it is pruned ([§7.6](#7.6%20Put%20intents)).
