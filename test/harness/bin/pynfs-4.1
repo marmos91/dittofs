@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# pynfs NFSv4.1 conformance client (mirrors the Nix flake wrapper), from the pinned
+# checkout and Python venv in tools/ (see SETUP.md). testserver.py builds sys.path
+# from the current directory, so run it from its own tree.
+set -euo pipefail
+T="$(cd "$(dirname "${BASH_SOURCE[0]}")/../tools" && pwd)"
+cd "$T/pynfs/nfs4.1"
+exec "$T/pynfs-venv/bin/python3" "$T/pynfs/nfs4.1/testserver.py" "$@"

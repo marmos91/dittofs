@@ -117,3 +117,8 @@ rig-*/
 
 # Local port/credential overrides for the root compose stack.
 docker-compose.override.yml
+
+# Local test harness (test/harness): run logs, service state, the macOS pynfs checkout
+test/harness/logs/
+test/harness/state/
+test/harness/tools/

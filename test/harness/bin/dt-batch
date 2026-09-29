@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# dt-batch - run a set of suite/profile combinations one after another, and write one
+# verdict line per run to logs/batch-<set>-<ts>.summary. Every run goes through dt,
+# which holds the suite lock and tears its server down.
+#
+#   dt-batch matrix [SUITE...]   every profile and variant test/conformance/suites.json
+#                                defines, for pjdfstest, pynfs, wpts and smbtorture (or
+#                                just the SUITEs named)
+#   dt-batch extras              what CI's default selection never runs: the pynfs
+#                                4.0 delegation groups (over a non-loopback address,
+#                                so callbacks can be granted) and 4.1 destroy_session.
+#                                Ungraded: the known-failure lists only cover `all`
+#   dt-batch container           one run per tier, through dtc (the Linux dev
+#                                container), to compare with a baseline
+#   --dry-run                    print the dt commands, run nothing
+#
+# DT_RUNNER=test/harness/bin/dtc runs any set inside the Linux dev container
+# (`container` implies it). nfs-kerberos is not in the matrix: it needs a Linux VM
+# with rpcsec_gss_krb5.
+set -uo pipefail
+HARNESS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO="${DITTOFS_REPO:-$(git -C "$HARNESS" rev-parse --show-toplevel)}"
+DRY=false
+args=()
+for a in "$@"; do [[ "$a" == --dry-run ]] && DRY=true || args+=("$a"); done
+set -- ${args[@]+"${args[@]}"}
+SET="${1:-}"; shift || true
+[[ "$SET" == container ]] && DT_RUNNER="${DT_RUNNER:-$HARNESS/bin/dtc}"
+DT="${DT_RUNNER:-$HARNESS/bin/dt}"
+SUM="$HARNESS/logs/batch-$SET-$(date +%Y%m%d-%H%M%S).summary"
+mkdir -p "$HARNESS/logs"
+
+run() {
+    local label="$1"; shift
+    if $DRY; then printf '%-42s %s %s\n' "$label" "$(basename "$DT")" "$*"; return; fi
+    local start=$SECONDS rc=0 out verdict
+    out="$("$DT" "$@" </dev/null 2>&1)" || rc=$?
+    verdict="$(sed -E 's/\x1b\[[0-9;]*m//g' <<<"$out" |
+        grep -E 'CONFORMANCE\].*: (pass|fail)|New failures|Of those|passed in|failed \(exit|left [0-9]+ NFS' | tail -3 | tr '\n' ' ')"
+    printf '%s\trc=%s\t%ss\t%s\n' "$label" "$rc" "$((SECONDS - start))" "$verdict" >>"$SUM"
+}
+
+# matrix_runs SUITE: one "label|dt args" line per profile x variant in suites.json.
+matrix_runs() {
+    local suite="$1" p v
+    local manifest="$REPO/test/conformance/suites.json"
+    [[ -f "$manifest" ]] || { echo "no $manifest" >&2; return 1; }
+    while read -r p; do
+        case "$suite" in
+            pjdfstest)
+                while read -r v; do
+                    [[ "$v" == 4 ]] && v=4.0
+                    echo "pjdfstest v$v / $p|posix --nfs $v --profile $p"
+                done < <(jq -r '.suites.pjdfstest.variant.values[]' "$manifest") ;;
+            pynfs)
+                while read -r v; do echo "pynfs $v / $p|pynfs --minor $v --profile $p"; done \
+                    < <(jq -r '.suites.pynfs.variant.values[]' "$manifest") ;;
+            wpts|smbtorture) echo "$suite / $p|smb $suite --profile $p" ;;
+            *) echo "unknown suite: $suite (pjdfstest|pynfs|wpts|smbtorture)" >&2; return 1 ;;
+        esac
+    done < <(jq -r --arg s "$suite" '.suites[$s].profiles[]' "$manifest")
+}
+
+$DRY || echo "# batch ($SET) started $(date '+%F %T') via $(basename "$DT")" >"$SUM"
+case "$SET" in
+    matrix)
+        # Timing-insensitive suites first; the emulated SMB suites last.
+        suites=("$@"); ((${#suites[@]})) || suites=(pjdfstest pynfs wpts smbtorture)
+        for s in "${suites[@]}"; do
+            while IFS='|' read -r label cmd; do
+                # shellcheck disable=SC2086  # cmd is a fixed dt argument list
+                run "$label" $cmd
+            done < <(matrix_runs "$s") || exit 2
+        done ;;
+    extras)
+        run "pynfs 4.0 delegations / memory / LAN" pynfs --minor 4.0 --profile memory --lan --tests "delegations writedelegations"
+        run "pynfs 4.1 destroy_session / memory"   pynfs --minor 4.1 --profile memory --tests "destroy_session"
+        ;;
+    container)
+        # CI's pull-request profiles first; the emulated SMB suites last.
+        run "pynfs 4.0 / memory"                   pynfs --minor 4.0 --profile memory
+        run "pynfs 4.1 / memory"                   pynfs --minor 4.1 --profile memory
+        run "pynfs 4.0 delegations / memory / LAN" pynfs --minor 4.0 --profile memory --lan --tests "delegations writedelegations"
+        run "pjdfstest v3 / memory"                posix --nfs 3 --profile memory
+        run "pjdfstest v4.1 / postgres-s3"         posix --nfs 4.1 --profile postgres-s3
+        run "e2e (full suite)"                     e2e
+        run "wpts / memory"                        smb wpts --profile memory
+        run "smbtorture / memory"                  smb smbtorture --profile memory
+        ;;
+    *) echo "usage: dt-batch matrix [SUITE...] | extras | container [--dry-run]" >&2; exit 2 ;;
+esac
+$DRY && exit 0
+echo "# batch ($SET) finished $(date '+%F %T')" >>"$SUM"
+cat "$SUM"

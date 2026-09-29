@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# dtc - run the DittoFS harness inside the Linux dev container.
+#
+#   dtc <dt command> [args]      e.g. dtc unit, dtc e2e, dtc posix --nfs 4.1, dtc smb wpts
+#   dtc shell                    interactive shell in the same container
+#   dtc shell -c 'CMD'           one command, e.g. dtc shell -c 'go test -run TestX ./pkg/y'
+#   dtc build                    (re)build the image
+#   dtc clean                    drop the image and dtc's cache volumes
+#
+# The Mac only needs Docker Desktop and git. The container is privileged on Docker
+# Desktop's Linux kernel (Linux NFS/CIFS clients, root without sudo), gets the host's
+# Docker socket (for the suites and services that start containers), and sees the
+# repo and the harness at the SAME paths as the Mac, so any bind mount it asks Docker
+# for resolves on the host too. Go caches live in Docker volumes, not in ~/go.
+set -euo pipefail  # runs under macOS /bin/bash 3.2 too: guard empty arrays with ${a[@]+"${a[@]}"}
+
+HARNESS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# The checkout this harness lives in, unless DITTOFS_REPO points at another one.
+REPO="${DITTOFS_REPO:-$(git -C "$HARNESS" rev-parse --show-toplevel 2>/dev/null || (cd "$HARNESS/../.." && pwd))}"
+REPO="$(cd "$REPO" && pwd)"
+IMAGE=dittofs-harness-dev:go1.26
+DOCKERFILE="$HARNESS/docker/dev.Dockerfile"
+
+die() { echo "[dtc] $*" >&2; exit 2; }
+docker info >/dev/null 2>&1 || die "Docker is not running. Start Docker Desktop."
+
+if [[ "${1:-}" == clean ]]; then
+    [[ -z "$(docker ps -q --filter name=^dtc-)" ]] || die "a dtc container is running; stop it first"
+    docker image rm "$IMAGE" >/dev/null 2>&1 || true
+    docker volume rm dtc-gomod dtc-gobuild dtc-lint >/dev/null 2>&1 || true
+    echo "[dtc] removed $IMAGE and the dtc-gomod/dtc-gobuild/dtc-lint volumes" >&2
+    exit 0
+fi
+
+# Rebuild when the Dockerfile changed since the image was built.
+want="$(shasum -a 256 "$DOCKERFILE" 2>/dev/null | cut -c1-16 || sha256sum "$DOCKERFILE" | cut -c1-16)"
+have="$(docker image inspect -f '{{index .Config.Labels "dt.dockerfile"}}' "$IMAGE" 2>/dev/null || true)"
+if [[ "${1:-}" == build || "$want" != "$have" ]]; then
+    echo "[dtc] building $IMAGE (dockerfile $want)" >&2
+    docker build -q --label "dt.dockerfile=$want" -t "$IMAGE" -f "$DOCKERFILE" "$HARNESS/docker" >/dev/null
+    [[ "${1:-}" == build ]] && exit 0
+fi
+
+tty=(-i)
+[[ -t 0 && -t 1 ]] && tty=(-it)
+name="dtc-$$-$RANDOM"
+
+# Pass the harness's own knobs through, and, for `dt hook`, the variables git sets
+# for a hook (paths are the same inside). Not GIT_EXEC_PATH: that is the Mac's git.
+envs=(-e DITTOFS_REPO="$REPO" -e DT_CONTAINER_NAME="$name" -e DT_HOST_UID="$(id -u)")
+# The Mac's timezone, so log names and timestamps line up with logs written on the Mac.
+tz="${TZ:-$(readlink /etc/localtime 2>/dev/null | sed -n 's|.*/zoneinfo/||p')}"
+[[ -n "$tz" ]] && envs+=(-e TZ="$tz")
+while IFS='=' read -r k _; do
+    [[ "$k" =~ ^(DT_|DITTOFS_E2E_|DITTOFS_SKIP_|DITTOFS_PREPUSH_|E2E_)
+        || "$k" =~ ^GIT_(DIR|WORK_TREE|INDEX_FILE|PREFIX|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|QUARANTINE_PATH|AUTHOR_[A-Z]+|COMMITTER_[A-Z]+)$ ]] &&
+        [[ "$k" != DT_CONTAINER_NAME && "$k" != DT_HOST_UID ]] && envs+=(-e "$k")
+done < <(env)
+
+# /tmp/dtc is shared with the Mac at the same path: the e2e suite's TMPDIR, whose
+# subdirectories the tests bind-mount into containers they start via the host daemon.
+mkdir -p /tmp/dtc
+mounts=(-v "$REPO:$REPO" -v /var/run/docker.sock:/var/run/docker.sock
+    -v /tmp/dtc:/tmp/dtc
+    -v dtc-gomod:/go/pkg/mod -v dtc-gobuild:/root/.cache/go-build -v dtc-lint:/root/.cache/golangci-lint)
+# The harness itself, when it is not inside that checkout (DITTOFS_REPO elsewhere).
+[[ "$HARNESS/" == "$REPO/"* ]] || mounts+=(-v "$HARNESS:$HARNESS")
+# A worktree's .git file points into the main checkout's .git/worktrees.
+if [[ -f "$REPO/.git" ]]; then
+    common="$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+    [[ -n "$common" && -d "$common" ]] && mounts+=(-v "$common:$common")
+fi
+
+cmd=("$@")
+
+# Docker Desktop resolves host.docker.internal to the Mac itself; a plain Linux engine
+# does not define it, and there the host gateway is the machine.
+hostflag=()
+docker info --format '{{.OperatingSystem}}' 2>/dev/null | grep -q 'Docker Desktop' ||
+    hostflag=(--add-host=host.docker.internal:host-gateway)
+
+exec docker run --rm "${tty[@]}" --privileged --init --name "$name" --hostname "$name" \
+    ${hostflag[@]+"${hostflag[@]}"} "${mounts[@]}" "${envs[@]}" -w "$REPO" \
+    --entrypoint "$HARNESS/docker/dtc-entry.sh" "$IMAGE" ${cmd[@]+"${cmd[@]}"}

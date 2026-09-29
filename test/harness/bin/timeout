@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# GNU timeout for macOS: test/posix/setup-posix.sh calls `timeout`, which macOS lacks.
+# `brew install coreutils` provides it as gtimeout; only this name is exposed, so no
+# other GNU tool shadows a macOS one.
+command -v gtimeout >/dev/null 2>&1 || { echo "timeout: install GNU coreutils (brew install coreutils)" >&2; exit 127; }
+exec gtimeout "$@"

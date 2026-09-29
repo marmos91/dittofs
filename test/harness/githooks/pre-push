@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Harness hook chain for pre-push:
+#   1. unit tests of the changed packages: `dt unit --changed`, the same
+#      `go test -short -race` the repo's .githooks/pre-push runs, but with CI's
+#      -timeout=25m. The repo hook uses -timeout=60s, and with several heavy
+#      packages changed (SMB/NFSv4 handlers, block engine, journal, shares) the
+#      parallel run blows that budget even though each package alone fits
+#      (measured 2026-09-28: 5 of 7 packages timed out at 60s). Set
+#      DT_PREPUSH_REPO_HOOK=1 to run the repo hook verbatim instead.
+#   2. integration tests (-tags=integration, Postgres + PyKMIP) of the changed
+#      packages that have any: `dt integration --changed`.
+#
+# The base is origin/develop, or DT_BASE / DITTOFS_PREPUSH_BASE.
+# Skips: git push --no-verify (everything), DITTOFS_SKIP_PREPUSH=1 (step 1),
+#        DT_SKIP_PREPUSH_INTEGRATION=1 (step 2). Step 2 also skips, with a warning,
+#        when Docker is not running, rather than blocking the push.
+set -euo pipefail
+REPO="$(git rev-parse --show-toplevel)"
+HARNESS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# dt hooks install --container: run this hook in the dtc Linux container instead,
+# so the Mac needs no Go toolchain. dtc re-enters it there through `dt hook`.
+if [ "${DT_IN_CONTAINER:-}" != 1 ] && [ "$(git config --get dt.hooksmode || true)" = container ]; then
+    DITTOFS_REPO="$REPO" exec "$HARNESS/bin/dtc" hook pre-push "$@"
+fi
+DT="$HARNESS/bin/dt"
+# Test the checkout being pushed (a worktree, say), not the harness's default one.
+export DITTOFS_REPO="$REPO"
+export DT_BASE="${DT_BASE:-${DITTOFS_PREPUSH_BASE:-origin/develop}}"
+
+# git feeds the pushed refs on stdin.
+refs="$(cat)"
+
+if [ -z "${DITTOFS_SKIP_PREPUSH:-}" ]; then
+    if [ -n "${DT_PREPUSH_REPO_HOOK:-}" ]; then
+        printf '%s\n' "$refs" | DITTOFS_PREPUSH_BASE="$DT_BASE" "$REPO/.githooks/pre-push" "$@"
+    elif ! "$DT" unit --changed; then
+        echo "" >&2
+        echo "pre-push: unit tests failed on changed packages. 'DITTOFS_SKIP_PREPUSH=1 git push' skips this step." >&2
+        exit 1
+    fi
+fi
+
+if [ -n "${DT_SKIP_PREPUSH_INTEGRATION:-}" ]; then
+    exit 0
+fi
+if ! docker info >/dev/null 2>&1; then
+    echo "pre-push: Docker is not running; skipping integration tests (start it: open -a Docker)" >&2
+    exit 0
+fi
+if ! "$DT" integration --changed; then
+    echo "" >&2
+    echo "pre-push: integration tests failed. 'DT_SKIP_PREPUSH_INTEGRATION=1 git push' skips this step." >&2
+    exit 1
+fi

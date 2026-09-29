@@ -1,0 +1,1077 @@
+#!/usr/bin/env bash
+# dt - DittoFS local test harness.
+#
+# Runs every test tier of the DittoFS checkout from one place, on macOS or in the
+# Linux dev container (dtc), with the same commands and service versions CI uses.
+# It lives in test/harness/; its logs/, state/ and tools/ are gitignored.
+#
+#   dt help                 list commands
+#   dt doctor               check toolchain, Docker, images, ports
+#   dt services up|down|status [localstack|pg|pg-it|kmip]
+#   dt unit [--full] [--changed] [--cover] [--fresh] [PKG...]   (--fresh: -count=1, no test cache)
+#   dt integration [--changed] [PKG...]
+#   dt pynfs [--profile P] [--minor 4.0|4.1] [--tests "CODES"] [--lan]
+#   dt stack up|down|status|mount|umount|logs [--memory]
+#   dt e2e [--test P] [--race] [--nightly] [--nfs-version V] [--local-only|--with-remote]   (sudo; your terminal)
+#   dt e2e --list           e2e tests runnable on this OS, by package
+#   dt e2e-linux [--test P] [--nightly] [--require-nlm] ...   e2e in a privileged Linux container (no sudo)
+#   dt smb wpts|smbtorture [--profile P]
+#   dt posix [--profile P] [--nfs 3|4.0|4.1] [TEST...]   pjdfstest via a Linux NFS client
+#   dt quick                vet + lint + unit tests of changed packages
+#   dt teardown             stop a host dfs left by a suite, clear /tmp/dittofs-*
+#   dt cleanup [--volumes]  stop ALL harness containers (Localstack, 2x Postgres, PyKMIP, stack, SMB, e2e-linux)
+#   dt hooks install [--container]|uninstall|status   (--container: hooks run via dtc)
+#
+# In the Linux dev container (harness/bin/dtc) every command is the same: dtc unit,
+# dtc e2e, dtc posix ... The Mac then needs only Docker Desktop and git.
+#
+# Environment: DITTOFS_REPO overrides the checkout path.
+
+set -euo pipefail
+
+# macOS /bin/bash is 3.2; this script (and the repo's graders) need bash >= 4.
+# A git hook or GUI launch may not have Homebrew on PATH, so re-exec explicitly.
+if ((BASH_VERSINFO[0] < 4)) && [[ -x /opt/homebrew/bin/bash ]]; then
+    exec /opt/homebrew/bin/bash "$0" "$@"
+fi
+
+HARNESS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# The checkout this harness lives in, unless DITTOFS_REPO points at another one
+# (a worktree, say).
+REPO="${DITTOFS_REPO:-$(git -C "$HARNESS" rev-parse --show-toplevel 2>/dev/null || (cd "$HARNESS/../.." && pwd))}"
+LOGS="$HARNESS/logs"
+STATE="$HARNESS/state"
+LOCK="$STATE/suite.lock"
+mkdir -p "$LOGS" "$STATE"
+
+# Container mode: dt running inside the dtc dev container (harness/bin/dtc). The
+# image sets DT_IN_CONTAINER=1 and has every tool; root, Linux kernel clients.
+IN_CONTAINER=false
+[[ "${DT_IN_CONTAINER:-}" == 1 ]] && IN_CONTAINER=true
+# Where a lock is taken: a pid is only meaningful in the namespace that took it.
+WHERE="mac"
+$IN_CONTAINER && WHERE="container:${DT_CONTAINER_NAME:-$(hostname)}"
+
+if $IN_CONTAINER; then
+    # Last, not first: harness/bin also holds the Mac's tool shims (pynfs-4.0/4.1 point
+    # at the Mac's Python venv, timeout at Homebrew's gtimeout). First on PATH they
+    # shadowed the image's own tools, and every pynfs run died in 10 s.
+    export PATH="$PATH:$HARNESS/bin"
+else
+    # harness/bin first: pynfs-4.0/4.1 and a GNU `timeout`; ~/go/bin for the Go tools.
+    export PATH="$HARNESS/bin:$HOME/go/bin:/opt/homebrew/bin:$PATH"
+fi
+
+# --- service definitions (mirroring CI) --------------------------------------
+LOCALSTACK_NAME=dittofs-localstack          # the name run-e2e.sh reuses
+LOCALSTACK_IMAGE=localstack/localstack:4.13.1
+PG_NAME=dittofs-postgres-test               # conformance/posix profiles: dittofs/dittofs@5432
+PG_IMAGE=postgres:16-alpine
+PGIT_NAME=dittofs-harness-pg-it             # integration tests: postgres/postgres@15432
+PGIT_IMAGE=postgres:16
+PGIT_PORT=15432
+KMIP_NAME=dittofs-pykmip
+IT_DSN="host=localhost port=${PGIT_PORT} dbname=dittofs_test user=postgres password=postgres sslmode=disable"
+
+# Ports a host-side dfs, the compose stack and the SMB conformance stack all bind.
+HOST_PORTS=(8080 12049 12445)
+
+# --- output helpers ------------------------------------------------------------
+if [[ -t 1 ]]; then C_G=$'\033[0;32m' C_Y=$'\033[1;33m' C_R=$'\033[0;31m' C_B=$'\033[0;36m' C_0=$'\033[0m'
+else C_G='' C_Y='' C_R='' C_B='' C_0=''; fi
+info() { echo "${C_G}[dt]${C_0} $*"; }
+warn() { echo "${C_Y}[dt]${C_0} $*" >&2; }
+err()  { echo "${C_R}[dt]${C_0} $*" >&2; }
+step() { echo "${C_B}[dt]${C_0} $*"; }
+die()  { err "$*"; exit 2; }
+
+ts() { date +%Y%m%d-%H%M%S; }
+
+in_repo() { cd "$REPO" || die "checkout not found: $REPO"; }
+
+# run_logged NAME CMD... : tee output to logs/NAME-<ts>.log, keep the command's status.
+run_logged() {
+    local name="$1"; shift
+    local log
+    log="$LOGS/${name}-$(ts).log"
+    step "log: $log"
+    local start=$SECONDS rc=0
+    { echo "# $(date '+%F %T') $*"; echo "# repo: $REPO @ $(git -C "$REPO" rev-parse --short HEAD)"; } >"$log"
+    "$@" 2>&1 | tee -a "$log" || rc=${PIPESTATUS[0]}
+    echo "# exit=$rc elapsed=$((SECONDS - start))s" >>"$log"
+    cache_note "$log"
+    if [[ $rc -eq 0 ]]; then info "$name passed in $((SECONDS - start))s"
+    else err "$name failed (exit $rc) after $((SECONDS - start))s; see $log"; fi
+    return "$rc"
+}
+
+# cache_note LOG: say how many package results go test replayed from its cache.
+# A cached "ok" is a past result for identical code and env; it did not run now.
+cache_note() {
+    local ok cached
+    ok="$(grep -cE '^ok[[:space:]]' "$1" || true)"
+    cached="$(grep -cE '^ok[[:space:]].*\(cached\)' "$1" || true)"
+    if ((cached > 0)); then
+        echo "# cached=$cached of ok=$ok" >>"$1"
+        warn "$cached of $ok passing packages were replayed from go's test cache, not run now (use -count=1 / --fresh)"
+    fi
+}
+
+# --- exclusivity -----------------------------------------------------------------
+# Protocol suites and the compose stack bind the same host ports and /tmp state, so
+# only one may run at a time (the repo's own rule: never run two suites together).
+# acquire_lock WHAT [LOCKDIR]: LOCKDIR defaults to the host-suite lock. A suite that
+# binds no host port and no /tmp/dittofs-* state (e2e-linux runs in its own container
+# network and TMPDIR) passes its own lock, so it can run beside a host suite.
+# Locks live in harness/state, which the Mac and every dtc container share, so a lock
+# records where it was taken ($WHERE): a pid can only be checked in the namespace that
+# owns it. A lock from the Mac is checked with kill -0 on the Mac; one from a dtc
+# container by whether that container still runs. A lock from elsewhere that cannot
+# be checked is treated as held, never as stale.
+lock_alive() { # lock_alive LOCKDIR: 0 when the holder is (or may be) still running
+    local lock="$1" pid where
+    pid="$(cat "$lock/pid" 2>/dev/null || echo 0)"
+    where="$(cat "$lock/where" 2>/dev/null || echo mac)"
+    [[ "$pid" == 0 ]] && return 1
+    if [[ "$where" == "$WHERE" ]]; then
+        kill -0 "$pid" 2>/dev/null
+    elif [[ "$where" == container:* ]]; then
+        [[ -n "$(docker ps -q --filter "name=^${where#container:}$" 2>/dev/null)" ]]
+    else
+        return 0
+    fi
+}
+
+acquire_lock() {
+    local what="$1" lock="${2:-$LOCK}"
+    if ! mkdir "$lock" 2>/dev/null; then
+        local pid owner where
+        pid="$(cat "$lock/pid" 2>/dev/null || echo 0)"
+        owner="$(cat "$lock/owner" 2>/dev/null || echo '?')"
+        where="$(cat "$lock/where" 2>/dev/null || echo mac)"
+        if ! lock_alive "$lock"; then
+            warn "removing stale lock held by '$owner' ($where, pid $pid gone)"
+            rm -rf "$lock"; mkdir "$lock"
+        else
+            die "another suite holds the lock $lock: '$owner' ($where, pid $pid). Wait, or 'rm -rf $lock' if it is stale."
+        fi
+    fi
+    echo "$what" >"$lock/owner"; echo "$$" >"$lock/pid"; echo "$WHERE" >"$lock/where"
+    # shellcheck disable=SC2064  # expand now: the lock path is fixed for this process
+    trap "rm -rf '$lock'" EXIT
+}
+
+# In the container, localhost:4566/5432/15432/5696 are the entry script's forwarders
+# to the Docker host, so "busy" there says nothing about a conflict: the services'
+# own state (docker) is the check. Host-suite ports are the container's own.
+port_busy() { lsof -w -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; }
+svc_port_taken() { ! $IN_CONTAINER && port_busy "$1"; }
+# A port published on the Docker host (the Mac): from the container, only a connect
+# to host.docker.internal can tell. On the Mac, lsof sees Docker's published ports.
+dockerhost_port_busy() {
+    if $IN_CONTAINER; then nc -z -w 1 host.docker.internal "$1" >/dev/null 2>&1; else port_busy "$1"; fi
+}
+owner_of() { stat -f %Su "$1" 2>/dev/null || stat -c %U "$1" 2>/dev/null; }  # BSD, then GNU
+
+# Stop a host dfs provisioned by setup-posix.sh --no-mount, without root.
+# run-pynfs.sh's own non-root fallback calls `dfs stop --force`, which reads the
+# default PID file, while setup-posix.sh records the PID in /tmp/dittofs-server.pid,
+# so on a machine without passwordless sudo that fallback leaves the server running.
+host_teardown() {
+    local pidf=/tmp/dittofs-server.pid pid
+    if [[ -f "$pidf" ]]; then
+        pid="$(cat "$pidf")"
+        if kill -0 "$pid" 2>/dev/null; then
+            kill -TERM "$pid" 2>/dev/null || true
+            for _ in 1 2 3 4 5; do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+            kill -KILL "$pid" 2>/dev/null || true
+            info "stopped host dfs (pid $pid)"
+        fi
+    fi
+    [[ -f /tmp/dittofs-posix-server.log ]] && cp /tmp/dittofs-posix-server.log "$LOGS/dfs-server-$(ts).log"
+    local p
+    for p in /tmp/dittofs-posix-* /tmp/dittofs-admin-password "$pidf" /tmp/dittofs-posix-server.log; do
+        [[ -e "$p" ]] || continue
+        if [[ -O "$p" ]]; then rm -rf "$p"
+        else warn "$p is owned by $(owner_of "$p"); clear it with: sudo $REPO/test/posix/teardown-posix.sh"; fi
+    done
+}
+
+# require_host_ports_free [docker]: the suite's ports must be free where it binds them.
+# A host dfs (pynfs, posix, e2e) binds in dt's own network namespace: the Mac, or the
+# dtc container. The compose stack and the SMB conformance stack publish on the Docker
+# host: pass "docker". On the Mac the two are the same place.
+require_host_ports_free() {
+    local where="${1:-self}" busy=() p
+    for p in "${HOST_PORTS[@]}"; do
+        if [[ "$where" == docker ]]; then dockerhost_port_busy "$p" && busy+=("$p")
+        else port_busy "$p" && busy+=("$p"); fi
+    done
+    if ((${#busy[@]})); then
+        if [[ "$where" == docker ]] && $IN_CONTAINER; then
+            err "ports in use on the Docker host (the Mac): ${busy[*]} (compose stack, SMB stack, or a dfs on the Mac)."
+            docker ps --format '{{.Names}}  {{.Ports}}' | grep -E ':(8080|12049|12445)->' >&2 || true
+        else
+            err "ports in use: ${busy[*]} (compose stack or another dfs is running)."
+            lsof -w -nP -iTCP -sTCP:LISTEN | awk 'NR==1 || /:(8080|12049|12445) /' >&2 || true
+        fi
+        die "stop it first: 'dt stack down', or 'sudo $REPO/test/posix/teardown-posix.sh'."
+    fi
+}
+
+docker_ok() { docker info >/dev/null 2>&1 || die "Docker is not running. Start it: open -a Docker"; }
+
+# --- services --------------------------------------------------------------------
+container_running() { [[ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" == true ]]; }
+
+wait_for() { # wait_for DESC TRIES CMD...
+    local desc="$1" tries="$2"; shift 2
+    for ((i = 1; i <= tries; i++)); do "$@" >/dev/null 2>&1 && return 0; sleep 2; done
+    die "$desc did not become ready"
+}
+
+svc_localstack_up() {
+    if container_running "$LOCALSTACK_NAME"; then info "localstack already running"; return; fi
+    docker rm -f "$LOCALSTACK_NAME" >/dev/null 2>&1 || true
+    svc_port_taken 4566 && die "port 4566 is taken by something else"
+    docker run -d --name "$LOCALSTACK_NAME" -p 127.0.0.1:4566:4566 \
+        -e SERVICES=s3 -e EAGER_SERVICE_LOADING=1 -e GATEWAY_LISTEN=0.0.0.0:4566 \
+        -e DISABLE_CORS_CHECKS=1 -e DISABLE_CUSTOM_CORS_S3=1 -e DEBUG=0 -e LOCALSTACK_HOST=localhost:4566 \
+        "$LOCALSTACK_IMAGE" >/dev/null
+    wait_for "localstack" 60 sh -c 'curl -s http://127.0.0.1:4566/_localstack/health | grep -q "\"s3\": \"\(available\|running\)\""'
+    info "localstack S3 on http://127.0.0.1:4566"
+}
+
+svc_pg_up() {
+    if container_running "$PG_NAME"; then info "postgres (conformance) already running"; return; fi
+    docker rm -f "$PG_NAME" >/dev/null 2>&1 || true
+    svc_port_taken 5432 && die "port 5432 is taken by something else"
+    docker run -d --name "$PG_NAME" -p 127.0.0.1:5432:5432 --shm-size=256mb \
+        -e POSTGRES_USER=dittofs -e POSTGRES_PASSWORD=dittofs -e POSTGRES_DB=dittofs_test \
+        -e POSTGRES_INITDB_ARGS=--data-checksums "$PG_IMAGE" >/dev/null
+    wait_for "postgres (conformance)" 30 docker exec "$PG_NAME" pg_isready -U dittofs -d dittofs_test
+    # Same tuning the conformance workflow applies.
+    docker exec "$PG_NAME" psql -q -U dittofs -d dittofs_test \
+        -c "ALTER SYSTEM SET synchronous_commit = 'off';" \
+        -c "ALTER SYSTEM SET checkpoint_timeout = '30min';" \
+        -c "ALTER SYSTEM SET work_mem = '64MB';" -c "SELECT pg_reload_conf();" >/dev/null
+    info "postgres (conformance) on 127.0.0.1:5432 dittofs/dittofs db dittofs_test"
+}
+
+svc_pgit_up() {
+    if container_running "$PGIT_NAME"; then info "postgres (integration) already running"; return; fi
+    docker rm -f "$PGIT_NAME" >/dev/null 2>&1 || true
+    svc_port_taken "$PGIT_PORT" && die "port $PGIT_PORT is taken by something else"
+    docker run -d --name "$PGIT_NAME" -p "127.0.0.1:${PGIT_PORT}:5432" \
+        -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=dittofs_test \
+        "$PGIT_IMAGE" >/dev/null
+    wait_for "postgres (integration)" 30 docker exec "$PGIT_NAME" pg_isready -U postgres
+    info "postgres (integration) on 127.0.0.1:${PGIT_PORT} postgres/postgres db dittofs_test"
+}
+
+# The same steps as test/kmip/start-pykmip.sh (certs, pinned PyKMIP, readiness wait,
+# key provisioning, env file), except the port is published on 127.0.0.1 only: the
+# repo script publishes 5696 on every interface, which exposes a key server on
+# whatever network the laptop is on. Image and version are read from the repo
+# script so an upstream bump is picked up.
+svc_kmip_up() {
+    if container_running "$KMIP_NAME" && [[ -s "$STATE/kmip.env" ]]; then info "pykmip already running"; return; fi
+    svc_port_taken 5696 && ! container_running "$KMIP_NAME" && die "port 5696 is taken by something else"
+    local kdir="$REPO/test/kmip" image version certs
+    image="$(sed -n 's/^IMAGE=//p' "$kdir/start-pykmip.sh")"
+    version="$(sed -n 's/^PYKMIP_VERSION=//p' "$kdir/start-pykmip.sh")"
+    [[ -n "$image" && -n "$version" ]] || die "could not read IMAGE/PYKMIP_VERSION from $kdir/start-pykmip.sh"
+    certs="$("$kdir/gen-certs.sh" "$STATE/kmip-certs")"
+    certs="$(cd "$certs" && pwd)"
+    docker rm -f "$KMIP_NAME" >/dev/null 2>&1 || true
+    docker image inspect "$image" >/dev/null 2>&1 || docker pull -q "$image" >/dev/null
+    docker run -d --name "$KMIP_NAME" -p 127.0.0.1:5696:5696 \
+        -v "$certs:/certs:ro" -v "$kdir:/work:ro" "$image" \
+        sh -c "pip install --no-cache-dir pykmip==$version && mkdir -p /etc/pykmip/policies && exec pykmip-server -f /work/server.conf" \
+        >/dev/null
+    wait_for "pykmip" 60 docker exec "$KMIP_NAME" python -c \
+        'import socket,sys; s=socket.socket(); sys.exit(s.connect_ex(("127.0.0.1",5696)))'
+    {
+        echo "DITTOFS_TEST_KMIP=1"
+        echo "DITTOFS_TEST_KMIP_ENDPOINT=127.0.0.1:5696"
+        echo "DITTOFS_TEST_KMIP_CERT=$certs/client-cert.pem"
+        echo "DITTOFS_TEST_KMIP_KEY=$certs/client-key.pem"
+        echo "DITTOFS_TEST_KMIP_CA=$certs/ca-cert.pem"
+        docker exec "$KMIP_NAME" python /work/provision.py
+    } >"$STATE/kmip.env"
+    info "pykmip $version on 127.0.0.1:5696 only (env: $STATE/kmip.env)"
+}
+
+svc_status() {
+    printf '%-24s %-10s %s\n' SERVICE STATE PORTS
+    for n in "$LOCALSTACK_NAME" "$PG_NAME" "$PGIT_NAME" "$KMIP_NAME"; do
+        local s p
+        s="$(docker inspect -f '{{.State.Status}}' "$n" 2>/dev/null || echo absent)"
+        p="$(docker port "$n" 2>/dev/null | tr '\n' ' ' || true)"
+        printf '%-24s %-10s %s\n' "$n" "$s" "$p"
+    done
+}
+
+cmd_services() {
+    local action="${1:-status}"; shift || true
+    local which=("$@"); ((${#which[@]})) || which=(localstack pg pg-it kmip)
+    docker_ok
+    case "$action" in
+        up)
+            for s in "${which[@]}"; do
+                case "$s" in
+                    localstack) svc_localstack_up ;; pg) svc_pg_up ;; pg-it) svc_pgit_up ;; kmip) svc_kmip_up ;;
+                    *) die "unknown service: $s (localstack|pg|pg-it|kmip)" ;;
+                esac
+            done ;;
+        down)
+            for s in "${which[@]}"; do
+                case "$s" in
+                    localstack) docker rm -f "$LOCALSTACK_NAME" >/dev/null 2>&1 || true ;;
+                    pg) docker rm -f "$PG_NAME" >/dev/null 2>&1 || true ;;
+                    pg-it) docker rm -f "$PGIT_NAME" >/dev/null 2>&1 || true ;;
+                    kmip) docker rm -f "$KMIP_NAME" >/dev/null 2>&1 || true; rm -f "$STATE/kmip.env" ;;
+                    *) die "unknown service: $s" ;;
+                esac
+                info "stopped $s"
+            done ;;
+        status) svc_status ;;
+        *) die "usage: dt services up|down|status [localstack|pg|pg-it|kmip]" ;;
+    esac
+}
+
+# --- package selection -------------------------------------------------------------
+# Packages with .go changes vs the push base (default origin/develop), as ./dir paths.
+# No changes is not an error: grep -v selecting nothing must not fail the pipeline, or
+# `want="$(changed_pkgs)"` would end dt silently under set -e and pipefail.
+changed_pkgs() {
+    local base="${DT_BASE:-origin/develop}"
+    git -C "$REPO" rev-parse --verify -q "$base" >/dev/null || die "base ref $base not found (git fetch?)"
+    { git -C "$REPO" diff --name-only "$base"...HEAD -- '*.go'; git -C "$REPO" diff --name-only HEAD -- '*.go'; } |
+        { grep -v '^k8s/dittofs-operator/' || true; } | xargs -n1 dirname 2>/dev/null | sort -u |
+        while read -r d; do [[ -d "$REPO/$d" ]] && echo "./$d"; done
+}
+
+# Import paths whose test set changes under -tags=integration (the CI derivation).
+integration_pkgs() {
+    in_repo
+    comm -13 \
+        <(go list -f '{{.ImportPath}} {{.TestGoFiles}} {{.XTestGoFiles}}' ./... | sort) \
+        <(go list -tags=integration -f '{{.ImportPath}} {{.TestGoFiles}} {{.XTestGoFiles}}' ./... | sort) |
+        awk '{print $1}' | sort -u
+}
+
+# --- test tiers ----------------------------------------------------------------------
+cmd_unit() {
+    local short=-short cover=() pkgs=() fresh=()
+    while (($#)); do
+        case "$1" in
+            --full) short=""; shift ;;
+            --fresh) fresh=(-count=1); shift ;;
+            --cover) cover=(-coverprofile="$LOGS/unit-coverage.txt" -covermode=atomic); shift ;;
+            --changed) mapfile -t pkgs < <(changed_pkgs); shift
+                ((${#pkgs[@]})) || { info "no changed Go packages"; return 0; } ;;
+            *) pkgs+=("$1"); shift ;;
+        esac
+    done
+    ((${#pkgs[@]})) || pkgs=(./pkg/... ./internal/... ./cmd/...)
+    in_repo
+    # shellcheck disable=SC2086  # $short is intentionally empty or one flag
+    run_logged unit go test -race $short "${fresh[@]}" -timeout=25m "${cover[@]}" "${pkgs[@]}"
+}
+
+cmd_integration() {
+    local changed=false pkgs=()
+    while (($#)); do
+        case "$1" in --changed) changed=true; shift ;; *) pkgs+=("$1"); shift ;; esac
+    done
+    local want=""
+    if $changed; then
+        want="$(changed_pkgs)"
+        [[ -n "$want" ]] || { info "no changed Go packages"; return 0; }
+    fi
+    if ((${#pkgs[@]} == 0)); then
+        mapfile -t pkgs < <(integration_pkgs)
+        ((${#pkgs[@]})) || die "derived no integration-tagged packages (the CI job treats this as an error)"
+        if $changed; then
+            local mod sel=()
+            mod="$(cd "$REPO" && go list -m)"
+            want="$(sed "s|^\./|$mod/|" <<<"$want")"
+            for p in "${pkgs[@]}"; do grep -qxF "$p" <<<"$want" && sel+=("$p"); done
+            ((${#sel[@]})) || { info "no changed package has integration tests"; return 0; }
+            pkgs=("${sel[@]}")
+        fi
+    fi
+    docker_ok
+    svc_pgit_up; svc_kmip_up
+    info "integration packages: ${#pkgs[@]}"
+    in_repo
+    set -a; # shellcheck disable=SC1091
+    source "$STATE/kmip.env"; set +a
+    export DITTOFS_TEST_POSTGRES_DSN="$IT_DSN"
+    # The Postgres metadata-store suite treats the DSN only as an on/off gate and
+    # takes its host/port/db from these (postgres_conformance_test.go).
+    export DITTOFS_TEST_PG_HOST=localhost DITTOFS_TEST_PG_PORT="$PGIT_PORT" DITTOFS_TEST_PG_DBNAME=dittofs_test
+    local rc=0
+    run_logged integration go test -tags=integration -count=1 -timeout=20m -p 1 "${pkgs[@]}" || rc=$?
+    # Harness extra, not in CI: the KMIP interop tests carry no integration tag, so
+    # CI's derived package list never includes them and they skip in the unit job.
+    if ! $changed || grep -q 'pkg/block/middleware/encryption/keyprovider' <<<"$want"; then
+        run_logged kmip-interop go test -count=1 -run 'KMIP|Kmip' ./pkg/block/middleware/encryption/keyprovider/ || rc=$?
+    fi
+    return "$rc"
+}
+
+cmd_pynfs() {
+    local profile=memory minor=4.0 tests=() lan=false server=()
+    while (($#)); do
+        case "$1" in
+            --profile) profile="$2"; shift 2 ;;
+            --minor|--minor-version) minor="$2"; shift 2 ;;
+            --tests) tests=(--tests "$2"); shift 2 ;;
+            # Reach the server via this Mac's LAN address, not localhost: DittoFS
+            # refuses loopback NFSv4.0 callback addresses (validateCallbackHost), so
+            # over localhost no delegation is ever granted and the delegation tests
+            # can only warn. Implies a direct run-pynfs.sh run (ungraded).
+            --lan) lan=true; shift ;;
+            *) die "unknown pynfs option: $1" ;;
+        esac
+    done
+    if $lan; then
+        local ip
+        # In the container, its own bridge address: dfs and pynfs both run there.
+        if $IN_CONTAINER; then ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+        else ip="$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || true)"; fi
+        [[ -n "$ip" ]] || die "--lan: no non-loopback IPv4 address found"
+        server=(--server "$ip:12049")
+        info "pynfs will reach the server at $ip:12049 (callbacks dialable)"
+    fi
+    command -v "pynfs-$minor" >/dev/null || die "pynfs-$minor not on PATH (see LOCAL-DEV-SETUP.md)"
+    acquire_lock "pynfs $minor $profile"
+    require_host_ports_free
+    case "$profile" in postgres|postgres-s3) svc_pg_up ;; esac
+    case "$profile" in *-s3) svc_localstack_up ;; esac
+    in_repo
+    local rc=0
+    if ((${#tests[@]})) || $lan; then
+        # A subset (or --lan) runs the suite script directly: the conformance runner
+        # grades whole suites and always targets localhost.
+        run_logged "pynfs-$minor-$profile$($lan && echo -lan)" test/nfs-conformance/pynfs/run-pynfs.sh \
+            --profile "$profile" --minor-version "$minor" "${server[@]}" "${tests[@]}" || rc=$?
+    else
+        run_logged "pynfs-$minor-$profile" test/conformance/run.sh --suite pynfs --profile "$profile" --variant "$minor" || rc=$?
+    fi
+    host_teardown
+    return "$rc"
+}
+
+cmd_smb() {
+    local suite="${1:-}"; shift || true
+    [[ "$suite" == wpts || "$suite" == smbtorture ]] || die "usage: dt smb wpts|smbtorture [--profile P]"
+    local profile=memory
+    while (($#)); do case "$1" in --profile) profile="$2"; shift 2 ;; *) die "unknown smb option: $1" ;; esac; done
+    docker_ok
+    acquire_lock "smb $suite $profile"
+    require_host_ports_free docker  # the conformance compose publishes 12445 and 8080
+    [[ "$(uname -m)" == arm64 || "$(uname -m)" == aarch64 ]] && warn "arm64: the SMB conformance images are amd64 and run emulated; timing-sensitive cases may flake"
+    in_repo
+    smb_stack_down  # a stack left by an earlier run would make run.sh refuse to start
+    local rc=0
+    run_logged "smb-$suite-$profile" test/conformance/run.sh --suite "$suite" --profile "$profile" || rc=$?
+    smb_stack_down
+    return "$rc"
+}
+
+# The SMB conformance cleanup runs `docker compose down -v` without the profiles the
+# run started with. Compose ignores services in inactive profiles, so after an *-s3
+# (or postgres) run the profile's container survives, and every later run is refused
+# with "another instance of this stack is live". CI never sees it: each job gets a
+# fresh machine. Tear down this checkout's stack with every profile active.
+smb_stack_down() {
+    local dir="$REPO/test/smb-conformance" proj
+    proj="$(docker ps -a --format '{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null |
+        awk -F'|' -v d="$dir" '$1 ~ /^smb-conformance/ && $2 == d {print $1; exit}')"
+    [[ -n "$proj" ]] || return 0
+    (cd "$dir" && docker compose -p "$proj" --profile '*' down -v >/dev/null 2>&1) &&
+        info "removed leftover SMB conformance stack $proj"
+}
+
+# POSIX (pjdfstest) the macOS way: dfs on the host (setup-posix.sh --no-mount, no
+# root), pjdfstest in a privileged Linux container that mounts the export with the
+# Linux kernel NFS client, as CI does, then the repo's run-posix.sh grades it.
+PJDFS_IMAGE=dittofs-harness-pjdfstest:03eb257
+
+cmd_posix() {
+    local profile=memory ver=3 extra=()
+    while (($#)); do
+        case "$1" in
+            --profile) profile="$2"; shift 2 ;;
+            --nfs|--nfs-version) ver="$2"; shift 2 ;;
+            *) extra+=("$1"); shift ;;
+        esac
+    done
+    docker_ok
+    if ! $IN_CONTAINER && ! docker image inspect "$PJDFS_IMAGE" >/dev/null 2>&1; then
+        step "building $PJDFS_IMAGE (pjdfstest at the flake.lock revision)"
+        docker build -q -t "$PJDFS_IMAGE" -f "$HARNESS/docker/pjdfstest.Dockerfile" "$HARNESS/docker" >/dev/null
+    fi
+    acquire_lock "posix v$ver $profile"
+    require_host_ports_free
+    case "$profile" in postgres|postgres-s3) svc_pg_up ;; esac
+    case "$profile" in *-s3) svc_localstack_up ;; esac
+    in_repo
+    local rc=0 since="$STATE/.posix-run-start"
+    touch "$since"
+    if $IN_CONTAINER && ((${#extra[@]} == 0)); then
+        # Linux, root, kernel NFS client: exactly CI's command (setup mounts, grade, teardown).
+        local variant="$ver"; [[ "$ver" == 4.0 ]] && variant=4
+        run_logged "posix-v$ver-$profile" test/conformance/run.sh --suite pjdfstest --profile "$profile" --variant "$variant" || rc=$?
+    elif $IN_CONTAINER; then
+        # A subset: the conformance runner grades whole suites, so run its steps directly.
+        run_logged "posix-setup-$profile" test/posix/setup-posix.sh "$profile" --nfs-version "$ver" || {
+            test/posix/teardown-posix.sh >/dev/null 2>&1 || true; host_teardown; return 1; }
+        run_logged "posix-v$ver-$profile" test/posix/run-posix.sh --nfs-version "$ver" --grade "${extra[@]}" || rc=$?
+        test/posix/teardown-posix.sh >/dev/null 2>&1 || true
+    else
+        run_logged "posix-setup-$profile" test/posix/setup-posix.sh "$profile" --nfs-version "$ver" --no-mount || {
+            host_teardown; return 1; }
+        run_logged "posix-v$ver-$profile" docker run --rm --privileged \
+            -v "$REPO:/repo" -v "$HARNESS/docker/pjdfstest-entry.sh:/entry.sh:ro" \
+            "$PJDFS_IMAGE" /entry.sh "$ver" --grade "${extra[@]}" || rc=$?
+    fi
+    # run-posix.sh overwrites these on every run; keep a copy per run. Only files this
+    # run wrote: the conformance runner (the container's full run) grades from its own
+    # results tree, so test/posix/results can still hold an older run's files.
+    local stamp f; stamp="$(ts)"
+    for f in summary.txt prove.log; do
+        [[ "$REPO/test/posix/results/$f" -nt "$since" ]] && cp "$REPO/test/posix/results/$f" "$LOGS/posix-v$ver-$profile-$stamp-$f"
+    done
+    rm -f "$since"
+    host_teardown
+    return "$rc"
+}
+
+# e2e_pkgs_matching REGEX [OS]: ./-relative e2e packages with a top-level Test func
+# (e2e-tagged, runnable on OS, default darwin) whose name matches REGEX, as `go test
+# -run` would.
+e2e_pkgs_matching() {
+    local re="$1" os="${2:-darwin}" d
+    for d in "$REPO"/test/e2e "$REPO"/test/e2e/*/; do
+        d="${d%/}"
+        compgen -G "$d/*_test.go" >/dev/null || continue
+        if grep -lE "^//go:build e2e(\$| && $os)" "$d"/*_test.go 2>/dev/null |
+            xargs grep -hoE '^func Test[A-Za-z0-9_]+\(' 2>/dev/null | sed -E 's/^func (Test[A-Za-z0-9_]+)\(/\1/' |
+            grep -v '^TestMain$' | grep -qE -- "$re"; then
+            echo "./${d#"$REPO"/}"
+        fi
+    done
+}
+
+# e2e tests runnable on this OS, one per line, grouped by package.
+e2e_list() {
+    local d
+    for d in "$REPO"/test/e2e "$REPO"/test/e2e/*/; do
+        d="${d%/}"
+        compgen -G "$d/*_test.go" >/dev/null || continue
+        grep -lE "^//go:build e2e(\$| && ${E2E_OS:-darwin})" "$d"/*_test.go 2>/dev/null |
+            xargs grep -hoE '^func Test[A-Za-z0-9_]+\(' 2>/dev/null | sed -E 's/^func (Test[A-Za-z0-9_]+)\(/\1/' |
+            grep -v '^TestMain$' | sort -u | sed "s|^|./${d#"$REPO"/}  |"
+    done
+}
+
+# e2e, run the way CI's e2e-tests.yml runs it, not through test/e2e/run-e2e.sh:
+#   - from the repo root: the suite's package path is ./test/e2e/..., and
+#     run-e2e.sh never cds (the documented `cd test/e2e && ./run-e2e.sh` fails with
+#     "lstat ./test/e2e/: no such file or directory");
+#   - inside .github/scripts/run-e2e.sh, which writes output to a file, never a pipe
+#     (a process the suite leaks can hold a pipe open and hang the caller), bounds
+#     the run with a wall clock, and grades exit status plus log;
+#   - against the harness Postgres and Localstack via POSTGRES_* / LOCALSTACK_ENDPOINT,
+#     as CI does with its services. Without them the suite starts its own containers,
+#     with Localstack 3.0 as the fallback.
+# It needs root to mount. Run dt as yourself: only the suite goes through sudo. Root
+# gets its own build cache and reads the module cache offline, so no root-owned files
+# land in ~/go or ~/Library/Caches/go-build.
+#
+# In the dtc container (Linux, root) there is no sudo step and no ACL dance: the suite
+# runs directly, as in e2e-linux, and `dt e2e-linux` is the same command.
+E2E_OS=darwin
+$IN_CONTAINER && E2E_OS=linux
+
+cmd_e2e() {
+    in_repo
+    $IN_CONTAINER || ((EUID != 0)) || die "run 'dt e2e' as yourself; it calls sudo for the suite only"
+    local goargs=() envs=() orig=("$@") filter="" pkgs=(./test/e2e/...)
+    while (($#)); do
+        case "$1" in
+            --test|--run) filter="$2"; goargs+=(-run "$2"); shift 2 ;;
+            --race) goargs+=(-race); shift ;;
+            --nfs-version) envs+=("DITTOFS_E2E_NFS_VERSION=$2"); shift 2 ;;
+            --local-only) envs+=(DITTOFS_E2E_LOCAL_ONLY=1); shift ;;
+            --with-remote) envs+=(DITTOFS_E2E_WITH_REMOTE=1); shift ;;
+            # The dedup "nightly tier" (DEDUP-03 VM fleet, ObjectID population, NFSv4
+            # dedup race) skips unless this is set, and CI's e2e job never sets it.
+            --nightly) envs+=(DITTOFS_E2E_NIGHTLY=1); shift ;;
+            --require-nlm) $IN_CONTAINER || die "--require-nlm: macOS has no NLM client; use dtc e2e"
+                envs+=(DITTOFS_E2E_REQUIRE_NLM=1); shift ;;  # as CI does
+            --list) e2e_list; return 0 ;;
+            --verbose|--s3) shift ;;  # always -v, and Localstack is always provided, as in CI
+            --minio) die "--minio: the pinned MinIO image can no longer be pulled (see TEST-HARNESS.md)" ;;
+            *) die "unknown e2e option: $1 (--test P, --race, --nfs-version V, --local-only, --with-remote, --nightly, --require-nlm, --list)" ;;
+        esac
+    done
+    # With a filter, hand go test only the packages that hold a matching top-level
+    # test. Otherwise every other e2e package prints "testing: warning: no tests to
+    # run", and a wrong name costs a build and a sudo prompt before anyone notices.
+    if [[ -n "$filter" ]]; then
+        mapfile -t pkgs < <(e2e_pkgs_matching "${filter%%/*}" "$E2E_OS")
+        ((${#pkgs[@]})) || die "no e2e test matches '$filter' (list them: dt e2e --list)"
+    fi
+    if $IN_CONTAINER; then e2e_container; return; fi  # reads goargs/envs/pkgs from here
+    if ! sudo -n true 2>/dev/null && [[ ! -t 0 ]]; then
+        warn "e2e needs sudo and there is no terminal to ask for the password. Run it in your own terminal:"
+        echo "    ${DITTOFS_REPO:+DITTOFS_REPO=$DITTOFS_REPO }$HARNESS/bin/dt e2e $(printf "%q " "${orig[@]}")"
+        return 1
+    fi
+    acquire_lock "e2e"
+    require_host_ports_free
+    docker_ok; svc_pg_up; svc_localstack_up
+    # Ask for the password now: the suite's output goes to a file, so a prompt
+    # printed later would be easy to miss.
+    sudo -v || die "sudo authentication failed"
+    local log
+    log="$LOGS/e2e-$(ts).log"
+    # Root's t.TempDir() directories are 0700 and root-owned. Docker Desktop's file
+    # sharing runs as you, so it cannot see into them, and a bind mount of one fails
+    # with "bind source path does not exist" (the Kerberos tests' KDC keytab dir).
+    # On Linux the daemon is root and never hits this. Give root a TMPDIR you own
+    # with an inheritable ACL entry for you: everything root creates below it stays
+    # reachable by Docker. Kept short because of macOS's 104-byte socket path limit.
+    local e2e_tmp=/tmp/dte me
+    me="$(id -un)"
+    mkdir -p "$e2e_tmp"
+    # shellcheck disable=SC2010  # ls -le is the only way to read a macOS ACL; the path is fixed
+    if ! ls -led "$e2e_tmp" | grep -q "user:$me allow"; then
+        chmod +a "$me allow list,search,add_file,add_subdirectory,delete_child,readattr,writeattr,readextattr,writeextattr,readsecurity,file_inherit,directory_inherit" "$e2e_tmp"
+    fi
+    local root_env=(env "PATH=$PATH" "GOMODCACHE=$(go env GOMODCACHE)" "GOCACHE=/tmp/dt-e2e-root-gocache"
+        "GOPROXY=off" "GOFLAGS=-mod=readonly" "TMPDIR=$e2e_tmp"
+        POSTGRES_HOST=localhost POSTGRES_PORT=5432 POSTGRES_DATABASE=dittofs_test
+        POSTGRES_USER=dittofs POSTGRES_PASSWORD=dittofs LOCALSTACK_ENDPOINT=http://localhost:4566
+        "${envs[@]}")
+    step "log: $log (written at the end; the suite's output goes to a file, as in CI)"
+    step "go test -tags=e2e -count=1 -v -timeout 30m ${goargs[*]} ${pkgs[*]}"
+    local start=$SECONDS rc=0
+    E2E_LOG="$log" E2E_WALL="${E2E_WALL:-45m}" .github/scripts/run-e2e.sh \
+        sudo "${root_env[@]}" go test -tags=e2e -count=1 -v -timeout 30m "${goargs[@]}" "${pkgs[@]}" || rc=$?
+    e2e_finish "$log" "$rc" "$start" "$e2e_tmp"
+}
+
+# e2e_finish LOG RC START TMPDIR: grade, clean the suite's TMPDIR, report.
+e2e_finish() {
+    local log="$1" rc="$2" start="$3" e2e_tmp="$4" left
+    # The CI wrapper grades on `ok` lines, and a -run filter that matches nothing
+    # still prints `ok ... [no tests to run]`, so a typo'd or stale test name
+    # "passes" having run nothing.
+    if ((rc == 0)) && ! grep -qE '^=== RUN' "$log"; then
+        err "no test matched ${goargs[*]:-the suite}; nothing ran (e.g. dt e2e --test TestCrossProtocolInterop)"
+        rc=3
+    fi
+    # The matrix tests leave their (empty) mount-point dirs and a dfsctl build dir
+    # behind. On the Mac the inherited ACL lets you remove root's entries without sudo.
+    left="$(find "$e2e_tmp" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l | tr -d ' ')" || left=0
+    if ((left > 0)); then
+        rm -rf "${e2e_tmp:?}"/* 2>/dev/null || true
+        echo "# cleaned $left leftover entries from $e2e_tmp" >>"$log"
+    fi
+    echo "# repo: $REPO @ $(git -C "$REPO" rev-parse --short HEAD); $WHERE; exit=$rc elapsed=$((SECONDS - start))s" >>"$log"
+    if ((rc == 0)); then info "e2e passed in $((SECONDS - start))s"
+    else err "e2e failed (exit $rc) after $((SECONDS - start))s; see $log"; fi
+    return "$rc"
+}
+
+# dt e2e inside the dtc container: what e2e-linux does, without a second container.
+#   - TMPDIR is under /tmp/dtc, which dtc bind-mounts from the Mac at the same path, so
+#     bind mounts the tests ask Docker for (the KDC keytab dir) resolve on the host;
+#   - no GOTMPDIR: `go test` hands it to the test binary as TMPDIR, so t.TempDir()
+#     landed in a container-only dir and every KDC bind mount failed ("bind source path
+#     does not exist: /host_mnt/private/tmp/dtc-gowork/...");
+#   - testcontainers reach their mapped ports through host.docker.internal;
+#   - Postgres and Localstack are the harness services, on localhost through the
+#     entry script's forwarders, as CI has them on localhost.
+DTC_SHARED_TMP=/tmp/dtc
+e2e_container() {
+    local e2e_tmp="$DTC_SHARED_TMP/e2e" log start=$SECONDS rc=0
+    grep -qs " $DTC_SHARED_TMP " /proc/self/mountinfo ||
+        warn "$DTC_SHARED_TMP is not bind-mounted from the Docker host (run through dtc): tests that bind-mount a temp dir into a container will fail"
+    acquire_lock "e2e"
+    require_host_ports_free
+    docker_ok; svc_pg_up; svc_localstack_up
+    mkdir -p "$e2e_tmp"
+    rpcbind -w 2>/dev/null || rpcbind 2>/dev/null || pgrep -x rpcbind >/dev/null ||
+        warn "rpcbind did not start; the NLM cases will skip"
+    log="$LOGS/e2e-$(ts).log"
+    step "log: $log (written at the end; the suite's output goes to a file, as in CI)"
+    step "[$WHERE] go test -tags=e2e -count=1 -v -timeout 30m ${goargs[*]} ${pkgs[*]}"
+    E2E_LOG="$log" E2E_WALL="${E2E_WALL:-45m}" .github/scripts/run-e2e.sh \
+        env TMPDIR="$e2e_tmp" TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal \
+        POSTGRES_HOST=localhost POSTGRES_PORT=5432 POSTGRES_DATABASE=dittofs_test \
+        POSTGRES_USER=dittofs POSTGRES_PASSWORD=dittofs LOCALSTACK_ENDPOINT=http://localhost:4566 \
+        "${envs[@]}" go test -tags=e2e -count=1 -v -timeout 30m "${goargs[@]}" "${pkgs[@]}" || rc=$?
+    # The suite leaves NFS mounts behind on Linux (hard mounts whose dfs has already
+    # stopped: 9 in the first full run), and any stat under TMPDIR then blocks forever.
+    # Here they share dt's mount namespace, so drop them (force + lazy) before cleaning.
+    # (e2e-linux never saw it: its container, and the mounts, ended with the suite.)
+    local m n=0
+    while read -r m; do umount -f -l "$m" 2>/dev/null && n=$((n + 1)); done < <(
+        awk -v p="$e2e_tmp/" '$3 ~ /^(nfs|nfs4|cifs|smb3)$/ && index($2, p) == 1 {print $2}' /proc/mounts)
+    if ((n > 0)); then
+        warn "the suite left $n NFS/SMB mount(s) under $e2e_tmp; force-unmounted"
+        echo "# the suite left $n NFS/SMB mount(s) under $e2e_tmp (force-unmounted by dt)" >>"$log"
+    fi
+    e2e_finish "$log" "$rc" "$start" "$e2e_tmp"
+}
+
+# e2e on Linux, from macOS, without sudo: a privileged container (Docker Desktop's
+# Linux kernel has nfs/nfs4/cifs/smb3) runs the same CI command, with the Linux NFS
+# and CIFS clients CI uses. That covers what macOS skips or cannot do: the NFSv4
+# cases, multi-user SMB (mount.cifs), the `e2e && linux` files and, via rpcbind in
+# the container, the NLM cases. It still cannot do NFS Kerberos (the kernel lacks
+# rpcsec_gss_krb5) or dm-flakey.
+#   - repo, logs and TMPDIR are bind-mounted at the SAME path, so bind mounts the
+#     tests ask Docker for (the KDC keytab dir) resolve on the host too;
+#   - the Docker socket is passed in for testcontainers, which reach their mapped
+#     ports through host.docker.internal;
+#   - Localstack/Postgres are the harness services, reached via host.docker.internal;
+#   - your module cache is mounted read-only and used offline; the build cache is a
+#     named volume.
+E2E_LINUX_IMAGE=dittofs-harness-e2e-linux:go1.26
+
+cmd_e2e_linux() {
+    if $IN_CONTAINER; then cmd_e2e "$@"; return; fi  # already Linux: the same run
+    in_repo
+    local goargs=() envs=() filter="" pkgs=(./test/e2e/...)
+    while (($#)); do
+        case "$1" in
+            --test|--run) filter="$2"; goargs+=(-run "$2"); shift 2 ;;
+            --race) goargs+=(-race); shift ;;
+            --nfs-version) envs+=("DITTOFS_E2E_NFS_VERSION=$2"); shift 2 ;;
+            --local-only) envs+=(DITTOFS_E2E_LOCAL_ONLY=1); shift ;;
+            --with-remote) envs+=(DITTOFS_E2E_WITH_REMOTE=1); shift ;;
+            --nightly) envs+=(DITTOFS_E2E_NIGHTLY=1); shift ;;
+            --require-nlm) envs+=(DITTOFS_E2E_REQUIRE_NLM=1); shift ;;  # as CI does
+            --list)
+                local d
+                for d in "$REPO"/test/e2e "$REPO"/test/e2e/*/; do
+                    d="${d%/}"; compgen -G "$d/*_test.go" >/dev/null || continue
+                    grep -lE '^//go:build e2e($| && linux)' "$d"/*_test.go 2>/dev/null |
+                        xargs grep -hoE '^func Test[A-Za-z0-9_]+\(' 2>/dev/null | sed -E 's/^func (Test[A-Za-z0-9_]+)\(/\1/' |
+                        grep -v '^TestMain$' | sort -u | sed "s|^|./${d#"$REPO"/}  |"
+                done
+                return 0 ;;
+            *) die "unknown e2e-linux option: $1 (--test P, --race, --nightly, --require-nlm, --nfs-version V, --local-only, --with-remote, --list)" ;;
+        esac
+    done
+    if [[ -n "$filter" ]]; then
+        mapfile -t pkgs < <(e2e_pkgs_matching "${filter%%/*}" linux)
+        ((${#pkgs[@]})) || die "no e2e test matches '$filter' (list them: dt e2e-linux --list)"
+    fi
+    docker_ok
+    if ! docker image inspect "$E2E_LINUX_IMAGE" >/dev/null 2>&1; then
+        step "building $E2E_LINUX_IMAGE"
+        docker build -q -t "$E2E_LINUX_IMAGE" -f "$HARNESS/docker/e2e-linux.Dockerfile" "$HARNESS/docker" >/dev/null
+    fi
+    acquire_lock "e2e-linux" "$STATE/e2e-linux.lock"
+    svc_pg_up; svc_localstack_up
+    local tmp=/tmp/dte-linux log start=$SECONDS rc=0
+    mkdir -p "$tmp"
+    log="$LOGS/e2e-linux-$(ts).log"
+    local envflags=() e
+    for e in "${envs[@]}"; do envflags+=(-e "$e"); done
+    step "log: $log (written at the end, as in CI)"
+    step "[linux container] go test -tags=e2e -count=1 -v -timeout 30m ${goargs[*]} ${pkgs[*]}"
+    docker run --rm --privileged --name dt-e2e-linux \
+        -v "$REPO:$REPO" -w "$REPO" \
+        -v "$LOGS:$LOGS" -v "$tmp:$tmp" \
+        -v "$(go env GOMODCACHE):/go/pkg/mod:ro" -v dt-e2e-linux-gocache:/root/.cache/go-build \
+        -v /var/run/docker.sock:/var/run/docker.sock \
+        -v "$HARNESS/docker/e2e-linux-entry.sh:/entry.sh:ro" \
+        -e TMPDIR="$tmp" -e E2E_LOG="$log" -e E2E_WALL="${E2E_WALL:-45m}" \
+        -e GOFLAGS=-mod=readonly -e GOPROXY=off -e GOTOOLCHAIN=local \
+        -e TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal \
+        -e POSTGRES_HOST=host.docker.internal -e POSTGRES_PORT=5432 -e POSTGRES_DATABASE=dittofs_test \
+        -e POSTGRES_USER=dittofs -e POSTGRES_PASSWORD=dittofs \
+        -e LOCALSTACK_ENDPOINT=http://host.docker.internal:4566 \
+        "${envflags[@]}" \
+        "$E2E_LINUX_IMAGE" /entry.sh "${goargs[@]}" "${pkgs[@]}" || rc=$?
+    if ((rc == 0)) && ! grep -qE '^=== RUN' "$log"; then
+        err "no test matched ${goargs[*]:-the suite}; nothing ran"; rc=3
+    fi
+    rm -rf "${tmp:?}"/* 2>/dev/null || true
+    echo "# repo: $REPO @ $(git rev-parse --short HEAD); linux container; exit=$rc elapsed=$((SECONDS - start))s" >>"$log"
+    if ((rc == 0)); then info "e2e-linux passed in $((SECONDS - start))s"
+    else err "e2e-linux failed (exit $rc) after $((SECONDS - start))s; see $log"; fi
+    return "$rc"
+}
+
+# --- compose stack (dfs + Localstack S3, NFS + SMB) ------------------------------------
+STACK_ADMIN_PW=dittofs-compose-dev-password
+STACK_USER=dev
+STACK_USER_PW=dittofs-dev-password-123
+NFS_MNT="$HOME/mnt/dittofs-nfs"
+SMB_MNT="$HOME/mnt/dittofs-smb"
+# The stack publishes on the Docker host: the Mac's localhost, host.docker.internal
+# from the dtc container.
+STACK_HOST=127.0.0.1
+$IN_CONTAINER && STACK_HOST=host.docker.internal
+
+stack_compose() { (cd "$REPO" && docker compose "$@"); }
+
+cmd_stack() {
+    local action="${1:-status}"; shift || true
+    local profile=s3-backend
+    [[ "${1:-}" == --memory ]] && profile=default
+    if $IN_CONTAINER && [[ "$action" == mount || "$action" == umount ]]; then
+        # A mount made here lives and dies with this throwaway container, where no
+        # Mac program can see it. It needs no Go, only the Mac's own clients.
+        info "mounts belong on the Mac: run '$HARNESS/bin/dt stack $action' there"
+        info "(inside 'dtc shell' you can also mount -t nfs|cifs from $STACK_HOST, for this container only)"
+        return 0
+    fi
+    docker_ok
+    case "$action" in
+        up)
+            if ! stack_compose ps --status running --services 2>/dev/null | grep -qx dittofs; then
+                require_host_ports_free docker
+            fi
+            info "starting compose stack (profile: $profile)"
+            if [[ "$profile" == default ]]; then stack_compose up -d --build
+            else COMPOSE_PROFILES="$profile" stack_compose up -d --build; fi
+            wait_for "bootstrap" 90 sh -c "cd '$REPO' && docker compose ps -a bootstrap --format '{{.State}} {{.ExitCode}}' | grep -q 'exited 0'"
+            stack_compose logs bootstrap 2>/dev/null | tail -3
+            stack_dev_user
+            info "stack up: API http://127.0.0.1:8080  NFS 127.0.0.1:12049  SMB 127.0.0.1:12445  (admin / $STACK_ADMIN_PW)"
+            ;;
+        down)
+            $IN_CONTAINER || cmd_stack umount || true
+            stack_compose --profile s3-backend --profile postgres-backend down "${@:2}"
+            info "stack down (add '-v' to also drop its volumes: dt stack down -- -v)"
+            ;;
+        status) stack_compose --profile s3-backend --profile postgres-backend ps -a ;;
+        logs) stack_compose logs --tail=200 dittofs ;;
+        mount)
+            mkdir -p "$NFS_MNT" "$SMB_MNT"
+            if mount | grep -q " on $NFS_MNT "; then info "NFS already mounted at $NFS_MNT"
+            else
+                mount -t nfs -o vers=3,tcp,port=12049,mountport=12049,nolocks,noresvport 127.0.0.1:/export "$NFS_MNT" \
+                    && info "NFSv3 mounted at $NFS_MNT"
+            fi
+            if mount | grep -q " on $SMB_MNT "; then info "SMB already mounted at $SMB_MNT"
+            else
+                mount_smbfs -N "//${STACK_USER}:${STACK_USER_PW}@127.0.0.1:12445/export" "$SMB_MNT" \
+                    && info "SMB mounted at $SMB_MNT (user $STACK_USER)"
+            fi
+            ;;
+        umount)
+            for m in "$NFS_MNT" "$SMB_MNT"; do
+                mount | grep -q " on $m " && { umount "$m" || diskutil unmount force "$m"; } && info "unmounted $m"
+            done; true ;;
+        *) die "usage: dt stack up|down|status|mount|umount|logs [--memory]" ;;
+    esac
+}
+
+# An SMB login needs a real user with a password; the bootstrap only creates the share.
+stack_dev_user() {
+    local cfgdir="$STATE/dfsctl"; mkdir -p "$cfgdir"
+    # Per-OS binary in harness state: the Mac and the dtc container share the checkout,
+    # and a Linux build in $REPO/dfsctl would shadow the Mac one (and vice versa).
+    local bin
+    bin="$STATE/bin/$(uname -s)-$(uname -m)/dfsctl"
+    [[ -x "$bin" ]] || { mkdir -p "$(dirname "$bin")"; (cd "$REPO" && go build -o "$bin" ./cmd/dfsctl); }
+    local ctl=("$bin")
+    export XDG_CONFIG_HOME="$cfgdir"
+    "${ctl[@]}" login --server "http://$STACK_HOST:8080" --username admin --password "$STACK_ADMIN_PW" >/dev/null
+    if ! "${ctl[@]}" user get "$STACK_USER" >/dev/null 2>&1; then
+        # Your Mac uid (dtc passes it in; the container runs as root), so files made
+        # through the Mac's mounts are yours.
+        local uid="${DT_HOST_UID:-$(id -u)}"
+        "${ctl[@]}" user create --username "$STACK_USER" --password "$STACK_USER_PW" --uid "$uid" >/dev/null
+        info "created SMB user '$STACK_USER' (uid $uid)"
+    fi
+    "${ctl[@]}" share permission grant /export --user "$STACK_USER" --level read-write >/dev/null 2>&1 || true
+}
+
+# --- cleanup -------------------------------------------------------------------------------
+# Stop everything the harness can leave running: the shared services (Localstack, both
+# Postgres, PyKMIP), a host dfs from a suite, the compose stack (and its mounts), a
+# leftover SMB conformance stack, the Linux e2e container, and the temp dirs. Refuses
+# while a suite holds a lock, because those services are in use; --force overrides.
+# --volumes also drops the compose stack's data volumes and the Linux e2e build cache.
+cmd_cleanup() {
+    local force=false volumes=false
+    while (($#)); do
+        case "$1" in
+            --force) force=true; shift ;;
+            --volumes) volumes=true; shift ;;
+            *) die "usage: dt cleanup [--force] [--volumes]" ;;
+        esac
+    done
+    local l
+    for l in "$STATE"/*.lock; do  # suite.lock ($LOCK), e2e-linux and any long-running repro lock
+        if [[ -d "$l" ]] && ! $force && lock_alive "$l"; then
+            die "a suite is running ($(cat "$l/owner" 2>/dev/null), $(cat "$l/where" 2>/dev/null || echo mac), pid $(cat "$l/pid" 2>/dev/null)); it uses these services. Wait for it, or: dt cleanup --force"
+        fi
+    done
+    docker_ok
+    host_teardown
+    if docker ps -a --format '{{.Label "com.docker.compose.project"}}' | grep -qx dittofs; then
+        $IN_CONTAINER || cmd_stack umount || true
+        if $volumes; then stack_compose --profile s3-backend --profile postgres-backend down -v >/dev/null 2>&1
+        else stack_compose --profile s3-backend --profile postgres-backend down >/dev/null 2>&1; fi
+        info "stopped the compose stack$($volumes && echo ' and dropped its volumes')"
+    fi
+    smb_stack_down
+    if docker inspect dt-e2e-linux >/dev/null 2>&1; then docker rm -f dt-e2e-linux >/dev/null && info "removed the Linux e2e container"; fi
+    cmd_services down
+    $volumes && docker volume rm dt-e2e-linux-gocache >/dev/null 2>&1 && info "dropped the Linux e2e build cache" || true
+    rm -rf /tmp/dte/* /tmp/dte-linux/* "$DTC_SHARED_TMP"/e2e/* 2>/dev/null || true
+    rm -rf "$LOCK" "$STATE"/*.lock 2>/dev/null || true
+    local left
+    # dtc-* are dtc sessions (a shell, or a suite that would hold a lock): listed, not stopped.
+    left="$(docker ps --format '{{.Names}}' | grep -E '^(dittofs-|dt-|dtc-|smb-conformance-)' |
+        grep -vxF "${DT_CONTAINER_NAME:-none}" || true)"
+    if [[ -n "$left" ]]; then warn "still running: $(tr '\n' ' ' <<<"$left")"; else info "no harness containers running"; fi
+}
+
+# --- fast local loop ---------------------------------------------------------------------
+cmd_quick() {
+    in_repo
+    run_logged vet go vet ./...
+    run_logged lint golangci-lint run ./...
+    cmd_unit --changed
+}
+
+# --- git hooks ----------------------------------------------------------------------------
+# install --container: the hooks run inside the dtc Linux container (the Mac needs no
+# Go, lint or bash 5). The mode is the repo's git config dt.hooksmode, read by every
+# harness hook; `dt hook NAME` is how dtc re-enters a hook inside the container.
+cmd_hooks() {
+    local action="${1:-status}" mode=host
+    [[ "${2:-}" == --container ]] && mode=container
+    case "$action" in
+        install)
+            git -C "$REPO" config core.hooksPath "$HARNESS/githooks"
+            git -C "$REPO" config dt.hooksmode "$mode"
+            info "core.hooksPath -> $HARNESS/githooks (chains the repo's .githooks, then harness extras)"
+            info "hooks run $([[ $mode == container ]] && echo 'in the dtc Linux container' || echo 'on this machine')" ;;
+        uninstall)
+            git -C "$REPO" config core.hooksPath .githooks
+            git -C "$REPO" config --unset dt.hooksmode 2>/dev/null || true
+            info "core.hooksPath -> .githooks (repo hooks only)" ;;
+        status)
+            echo "core.hooksPath = $(git -C "$REPO" config --get core.hooksPath || echo '(unset)')"
+            echo "dt.hooksmode   = $(git -C "$REPO" config --get dt.hooksmode || echo 'host (unset)')" ;;
+        *) die "usage: dt hooks install [--container]|uninstall|status" ;;
+    esac
+}
+
+cmd_hook() {
+    local name="${1:-}"; shift || true
+    case "$name" in pre-commit|commit-msg|pre-push) ;; *) die "usage: dt hook pre-commit|commit-msg|pre-push [ARGS]" ;; esac
+    exec "$HARNESS/githooks/$name" "$@"
+}
+
+# --- doctor --------------------------------------------------------------------------------
+cmd_doctor() {
+    local bad=0
+    check() { if "${@:2}" >/dev/null 2>&1; then printf '  ok   %s\n' "$1"; else printf '  FAIL %s\n' "$1"; bad=1; fi; }
+    if $IN_CONTAINER; then echo "mode: $WHERE (Linux $(uname -r), $(uname -m), uid $(id -u))"
+    else echo "mode: mac (dt on this Mac; 'dtc doctor' checks the Linux container)"; fi
+    echo "toolchain:"
+    printf '  go             %s\n' "$(go version 2>/dev/null | awk '{print $3}')"
+    printf '  golangci-lint  %s\n' "$(golangci-lint version 2>/dev/null | awk '{print $4}')"
+    printf '  bash           %s\n' "$(bash -c 'echo $BASH_VERSION')"
+    check "go is 1.26.x" sh -c 'go version | grep -q "go1\.26\."'
+    check "golangci-lint is v2.12.2 (CI pin)" sh -c 'golangci-lint version | grep -q "version 2\.12\.2"'
+    check "bash >= 4 first on PATH (repo graders need it)" bash -c '((BASH_VERSINFO[0] >= 4))'
+    check "GNU timeout on PATH" timeout --version
+    # Run them, not just find them: a wrapper can resolve and still point at a
+    # Python that is not there (the Mac's shims seen from the container did).
+    check "pynfs-4.0 / pynfs-4.1 run ($(command -v pynfs-4.0 || echo missing))" sh -c 'pynfs-4.0 --help && pynfs-4.1 --help'
+    if $IN_CONTAINER; then
+        check "jq, xmlstarlet, envsubst, shellcheck, fio" sh -c 'command -v jq && command -v xmlstarlet && command -v envsubst && command -v shellcheck && command -v fio'
+        check "pjdfstest" sh -c 'command -v pjdfstest'
+        check "kernel NFS and CIFS clients" sh -c 'grep -qw nfs /proc/filesystems || modprobe nfs; grep -qw cifs /proc/filesystems || modprobe cifs'
+        check "$DTC_SHARED_TMP shared with the Docker host (e2e bind mounts)" grep -qs " $DTC_SHARED_TMP " /proc/self/mountinfo
+        check "Docker host reachable (host.docker.internal)" getent hosts host.docker.internal
+    else
+        check "jq, xmlstarlet, envsubst, shellcheck, fio" sh -c 'command -v jq && command -v xmlstarlet && command -v envsubst && command -v shellcheck && command -v fio'
+    fi
+    echo "docker:"
+    check "engine reachable" docker info
+    printf '  resources      %s\n' "$(docker info --format 'cpus={{.NCPU}} mem={{.MemTotal}}' 2>/dev/null)"
+    for img in "$LOCALSTACK_IMAGE" localstack/localstack:3.0 "$PG_IMAGE" "$PGIT_IMAGE" python:3.11-slim curlimages/curl:8.11.1; do
+        check "image $img" docker image inspect "$img"
+    done
+    echo "repo:"
+    check "checkout at $REPO" git -C "$REPO" rev-parse --git-dir
+    printf '  head           %s\n' "$(git -C "$REPO" log -1 --format='%h %ad %s' --date=short 2>/dev/null | cut -c1-80)"
+    printf '  hooksPath      %s (mode %s)\n' "$(git -C "$REPO" config --get core.hooksPath || echo unset)" \
+        "$(git -C "$REPO" config --get dt.hooksmode || echo host)"
+    if $IN_CONTAINER; then
+        # 4566/5432/15432/5696 here are the entry script's forwarders; the services
+        # themselves publish on the Docker host.
+        echo "ports (this container, LISTEN):"
+        for p in 8080 12049 12445; do
+            if port_busy "$p"; then printf '  %-6s in use by %s\n' "$p" "$(lsof -w -nP -iTCP:"$p" -sTCP:LISTEN | awk 'NR==2{print $1}')"
+            else printf '  %-6s free\n' "$p"; fi
+        done
+        echo "ports (Docker host):"
+        for p in 8080 12049 12445 4566 5432 "$PGIT_PORT" 5696; do
+            if dockerhost_port_busy "$p"; then printf '  %-6s in use\n' "$p"; else printf '  %-6s free\n' "$p"; fi
+        done
+    else
+        echo "ports (LISTEN):"
+        for p in 8080 12049 12445 4566 5432 "$PGIT_PORT" 5696; do
+            if port_busy "$p"; then printf '  %-6s in use by %s\n' "$p" "$(lsof -w -nP -iTCP:"$p" -sTCP:LISTEN | awk 'NR==2{print $1}')"
+            else printf '  %-6s free\n' "$p"; fi
+        done
+    fi
+    echo "state:"
+    for p in /tmp/dittofs-posix-* /tmp/dittofs-server.pid /tmp/dittofs-test; do
+        [[ -e "$p" ]] && printf '  leftover %s (owner %s)\n' "$p" "$(owner_of "$p")"
+    done
+    local l
+    for l in "$STATE"/*.lock; do
+        [[ -d "$l" ]] && printf '  lock %s held by: %s (%s)\n' "$(basename "$l")" "$(cat "$l/owner" 2>/dev/null)" "$(cat "$l/where" 2>/dev/null || echo mac)"
+    done
+    return "$bad"
+}
+
+usage() { awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "${BASH_SOURCE[0]}"; }
+
+main() {
+    local cmd="${1:-help}"; shift || true
+    case "$cmd" in
+        doctor) cmd_doctor ;;
+        services|svc) cmd_services "$@" ;;
+        unit) cmd_unit "$@" ;;
+        integration|it) cmd_integration "$@" ;;
+        pynfs) cmd_pynfs "$@" ;;
+        smb) cmd_smb "$@" ;;
+        e2e) cmd_e2e "$@" ;;
+        e2e-linux) cmd_e2e_linux "$@" ;;
+        posix) cmd_posix "$@" ;;
+        stack) cmd_stack "$@" ;;
+        quick) cmd_quick ;;
+        teardown) host_teardown ;;
+        cleanup) cmd_cleanup "$@" ;;
+        hooks) cmd_hooks "$@" ;;
+        hook) cmd_hook "$@" ;;
+        changed) changed_pkgs ;;
+        help|-h|--help) usage ;;
+        *) err "unknown command: $cmd"; usage; exit 2 ;;
+    esac
+}
+
+main "$@"; exit $?  # exit on the same line: an edit to this file while it runs cannot be re-read
