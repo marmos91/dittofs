@@ -1,51 +1,30 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 380" width="900" height="380" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
-  <defs>
-    <style>
-      .t  { font-size: 15px; font-weight: 600; fill: #1b1f24 }
-      .h  { font-size: 12px; font-weight: 600; fill: #1b1f24 }
-      .l  { font-size: 12px; fill: #3d444d }
-      .s  { font-size: 11px; fill: #5b6472 }
-      .m  { font-family: ui-monospace,SFMono-Regular,Menlo,monospace; font-size: 11px; fill: #1b1f24 }
-      .io   { fill: #f4f6f8; stroke: #9aa4b2; stroke-width: 1.1 }
-      .step { fill: #dce9f7; stroke: #4a7fb5; stroke-width: 1.4 }
-      .skip { fill: #ffffff; stroke: #9aa4b2; stroke-width: 1.2; stroke-dasharray: 5 4 }
-      .chk  { fill: #eaf4ec; stroke: #2f6f4f; stroke-width: 1.3 }
-      .arr  { stroke: #5b6472; stroke-width: 1.3; fill: none }
-    </style>
-    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#5b6472"/></marker>
-  </defs>
-  <rect width="900" height="380" fill="#ffffff"/>
-
-  <text x="16" y="26" class="t">The chain: configured order on write, the envelope's order on read.</text>
-  <text x="16" y="46" class="s">Example chain: transform A, B, C. B declines this chunk (compression on incompressible data, say).</text>
-
-  <text x="16" y="92" class="h">write</text>
-  <rect x="70"  y="72" width="92"  height="34" rx="3" class="io"/><text x="86" y="93" class="l">chunk</text>
-  <rect x="190" y="72" width="100" height="34" rx="3" class="chk"/><text x="202" y="93" class="l">hash taken</text>
-  <rect x="318" y="72" width="80"  height="34" rx="3" class="step"/><text x="352" y="93" class="h">A</text>
-  <rect x="426" y="72" width="80"  height="34" rx="3" class="skip"/><text x="438" y="93" class="l">B declines</text>
-  <rect x="534" y="72" width="80"  height="34" rx="3" class="step"/><text x="568" y="93" class="h">C</text>
-  <rect x="642" y="72" width="238" height="34" rx="3" class="io"/><text x="654" y="93" class="m">envelope [A, C] ‖ C(A(chunk))</text>
-  <path d="M162,89 L188,89" class="arr" marker-end="url(#a)"/>
-  <path d="M290,89 L316,89" class="arr" marker-end="url(#a)"/>
-  <path d="M398,89 L424,89" class="arr" marker-end="url(#a)"/>
-  <path d="M506,89 L532,89" class="arr" marker-end="url(#a)"/>
-  <path d="M614,89 L640,89" class="arr" marker-end="url(#a)"/>
-
-  <text x="16" y="182" class="h">read</text>
-  <rect x="70"  y="162" width="238" height="34" rx="3" class="io"/><text x="82" y="183" class="m">envelope [A, C] ‖ body</text>
-  <rect x="336" y="162" width="94"  height="34" rx="3" class="step"/><text x="352" y="183" class="l">undo C</text>
-  <rect x="458" y="162" width="94"  height="34" rx="3" class="step"/><text x="474" y="183" class="l">undo A</text>
-  <rect x="580" y="162" width="130" height="34" rx="3" class="chk"/><text x="592" y="183" class="l">hash checked</text>
-  <rect x="738" y="162" width="92"  height="34" rx="3" class="io"/><text x="754" y="183" class="l">chunk</text>
-  <path d="M308,179 L334,179" class="arr" marker-end="url(#a)"/>
-  <path d="M430,179 L456,179" class="arr" marker-end="url(#a)"/>
-  <path d="M552,179 L578,179" class="arr" marker-end="url(#a)"/>
-  <path d="M710,179 L736,179" class="arr" marker-end="url(#a)"/>
-
-  <text x="16" y="248" class="l">Reading follows the envelope, not the configuration: a body written before B was added, or after C was</text>
-  <text x="16" y="266" class="l">removed, reads the same way. Material a transform needs (keys, dictionaries) comes from the store.</text>
-  <text x="16" y="298" class="l">Any order reads back correctly, because every step is invertible and the plaintext hash decides at the end.</text>
-  <text x="16" y="316" class="l">A poor order is only ineffective, and shows in each transform's metrics.</text>
-  <text x="16" y="352" class="s">The syncer and the remote store see only the finished body; the chain runs inside the block codec.</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 330" width="900" height="330" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+<defs><style>
+.t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:12px;font-weight:600;fill:#1b1f24}.l{font-size:12px;fill:#3d444d}.s{font-size:11px;fill:#5b6472}
+.m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;fill:#1b1f24}
+.env{fill:#f4f6f8;stroke:#9aa4b2;stroke-width:1.2}.c{fill:#dce9f7;stroke:#4a7fb5;stroke-width:1.3}.a{fill:#eaf4ec;stroke:#2f6f4f;stroke-width:1.3}
+.p{fill:#ffffff;stroke:#1b1f24;stroke-width:1.1}.k{fill:#fbefd9;stroke:#a8741f;stroke-width:1.3}.r{fill:#f8e3e6;stroke:#a33a4d;stroke-width:1.3}
+.ar{stroke:#3d444d;stroke-width:1.3;fill:none;marker-end:url(#h)}.dash{stroke:#9aa4b2;stroke-width:1.1;stroke-dasharray:4 3;fill:none}
+</style><marker id="h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#3d444d"/></marker></defs>
+<rect width="900" height="330" fill="#ffffff"/>
+<text x="16" y="26" class="t">The chain runs in one fixed order; the envelope records what ran.</text>
+<text x="16" y="46" class="s">Stages are fixed by code: compress, then encrypt, then redundancy. A stage may decline a chunk; a chain or envelope out of order is refused.</text>
+<text x="16" y="84" class="h">Write</text>
+<rect x="16" y="96" width="112" height="44" rx="3" class="p"/><text x="28" y="116" class="h">chunk</text><text x="28" y="131" class="s">hashed first</text>
+<path d="M128 118H158" class="ar"/>
+<rect x="160" y="96" width="140" height="44" rx="3" class="a"/><text x="172" y="116" class="h">1 compress</text><text x="172" y="131" class="s">declines if no gain</text>
+<path d="M300 118H330" class="ar"/>
+<rect x="332" y="96" width="140" height="44" rx="3" class="k"/><text x="344" y="116" class="h">2 encrypt</text><text x="344" y="131" class="s">GCM-SIV</text>
+<path d="M472 118H502" class="ar"/>
+<rect x="504" y="96" width="140" height="44" rx="3" class="c"/><text x="516" y="116" class="h">3 redundancy</text><text x="516" y="131" class="s">optional</text>
+<path d="M644 118H674" class="ar"/>
+<rect x="676" y="96" width="208" height="44" rx="3" class="env"/><text x="688" y="116" class="h">body</text><text x="688" y="131" class="m">envelope: v1 ‖ applied IDs</text>
+<text x="16" y="184" class="h">Read</text>
+<rect x="676" y="196" width="208" height="44" rx="3" class="env"/><text x="688" y="216" class="h">body</text><text x="688" y="231" class="s">envelope says what to undo</text>
+<path d="M676 218H646" class="ar"/>
+<rect x="332" y="196" width="312" height="44" rx="3" class="p"/><text x="344" y="216" class="h">undo the listed stages, in reverse</text><text x="344" y="231" class="s">registry lookup by ID; configuration not consulted</text>
+<path d="M332 218H302" class="ar"/>
+<rect x="16" y="196" width="284" height="44" rx="3" class="r"/><text x="28" y="216" class="h">check the plaintext hash</text><text x="28" y="231" class="s">this check, not any stage's own, decides</text>
+<text x="16" y="276" class="l">Adding an algorithm registers a new transform ID in an existing stage; stored bodies keep their envelopes and stay readable.</text>
+<text x="16" y="296" class="l">A stage that declined is absent from the envelope. An envelope listing stages out of order, twice, or unknown is malformed.</text>
 </svg>

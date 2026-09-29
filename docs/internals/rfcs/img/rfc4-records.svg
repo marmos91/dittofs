@@ -60,7 +60,7 @@
   <text x="708" y="100" class="s">created at offload, retired by sweep</text>
   <rect x="708" y="112" width="164" height="120" rx="3" class="bg"/>
   <text x="718" y="130" class="rl">Block</text><text x="764" y="130" class="m">name</text>
-  <text x="718" y="156" class="m">live, generation</text>
+  <text x="718" y="156" class="m">live, encodings</text>
   <text x="718" y="196" class="s">exists only once durable</text>
   <text x="718" y="212" class="s">live = chunks with</text>
   <text x="718" y="226" class="s">refcount &gt; 0</text>

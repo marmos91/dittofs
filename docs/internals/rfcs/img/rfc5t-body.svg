@@ -1,41 +1,23 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 300" width="900" height="300" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
-  <defs>
-    <style>
-      .t  { font-size: 15px; font-weight: 600; fill: #1b1f24 }
-      .h  { font-size: 12px; font-weight: 600; fill: #1b1f24 }
-      .l  { font-size: 12px; fill: #3d444d }
-      .s  { font-size: 11px; fill: #5b6472 }
-      .m  { font-family: ui-monospace,SFMono-Regular,Menlo,monospace; font-size: 11px; fill: #1b1f24 }
-      .env { fill: #f4f6f8; stroke: #9aa4b2; stroke-width: 1.2 }
-      .c   { fill: #dce9f7; stroke: #4a7fb5; stroke-width: 1.3 }
-      .a   { fill: #eaf4ec; stroke: #2f6f4f; stroke-width: 1.3 }
-      .p   { fill: #ffffff; stroke: #1b1f24; stroke-width: 1.1 }
-    </style>
-  </defs>
-  <rect width="900" height="300" fill="#ffffff"/>
-
-  <text x="16" y="26" class="t">One body, for a chunk that went through A then C.</text>
-  <text x="16" y="46" class="s">Each transform owns only what is inside its own box; the chain owns the envelope.</text>
-
-  <rect x="16"  y="70" width="150" height="60" rx="3" class="env"/>
-  <text x="28" y="92" class="h">envelope</text>
-  <text x="28" y="112" class="m">2 ‖ A ‖ C</text>
-
-  <rect x="166" y="70" width="718" height="60" rx="3" class="c"/>
-  <text x="178" y="92" class="h">C's output</text>
-  <rect x="266" y="78" width="120" height="44" rx="3" class="c"/>
-  <text x="276" y="97" class="m">C header</text>
-  <text x="276" y="113" class="s">version, material</text>
-  <rect x="396" y="78" width="480" height="44" rx="3" class="a"/>
-  <text x="406" y="97" class="h">A's output, as C transformed it</text>
-  <rect x="610" y="84" width="96" height="32" rx="3" class="a"/>
-  <text x="620" y="104" class="m">A header</text>
-  <rect x="712" y="84" width="156" height="32" rx="3" class="p"/>
-  <text x="722" y="104" class="l">the chunk, as A left it</text>
-
-  <text x="16" y="170" class="l">The envelope says which transforms ran, in order, so no transform needs a marker and no input can pass</text>
-  <text x="16" y="188" class="l">for a transform's output. A declined transform is absent from it. Its size is 1 + 2 bytes per transform.</text>
-  <text x="16" y="220" class="l">A transform's own header carries only what its Decode needs: its format version and the IDs of any</text>
-  <text x="16" y="238" class="l">material it used. The census reads those IDs from Encode's result, never by parsing the header.</text>
-  <text x="16" y="272" class="s">The envelope is outside every transform: a transform that adds redundancy cannot repair it.</text>
+<defs><style>
+.t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:12px;font-weight:600;fill:#1b1f24}.l{font-size:12px;fill:#3d444d}.s{font-size:11px;fill:#5b6472}
+.m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;fill:#1b1f24}
+.env{fill:#f4f6f8;stroke:#9aa4b2;stroke-width:1.2}.c{fill:#dce9f7;stroke:#4a7fb5;stroke-width:1.3}.a{fill:#eaf4ec;stroke:#2f6f4f;stroke-width:1.3}
+.p{fill:#ffffff;stroke:#1b1f24;stroke-width:1.1}.k{fill:#fbefd9;stroke:#a8741f;stroke-width:1.3}.r{fill:#f8e3e6;stroke:#a33a4d;stroke-width:1.3}
+.ar{stroke:#3d444d;stroke-width:1.3;fill:none;marker-end:url(#h)}.dash{stroke:#9aa4b2;stroke-width:1.1;stroke-dasharray:4 3;fill:none}
+</style><marker id="h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#3d444d"/></marker></defs>
+<rect width="900" height="300" fill="#ffffff"/>
+<text x="16" y="26" class="t">One body, for a chunk that was compressed, then encrypted.</text>
+<text x="16" y="46" class="s">Each transform owns only what is inside its own box; the chain owns the envelope.</text>
+<rect x="16" y="70" width="180" height="60" rx="3" class="env"/><text x="28" y="92" class="h">envelope</text><text x="28" y="112" class="m">v1 ‖ 2 ‖ zstd ‖ gcm-siv</text>
+<rect x="196" y="70" width="688" height="60" rx="3" class="k"/><text x="208" y="92" class="h">encrypt's output</text>
+<rect x="306" y="78" width="130" height="44" rx="3" class="k"/><text x="316" y="97" class="m">header</text><text x="316" y="113" class="s">version, key ID</text>
+<rect x="446" y="78" width="430" height="44" rx="3" class="a"/><text x="456" y="97" class="h">compress's output, sealed</text>
+<rect x="640" y="84" width="96" height="32" rx="3" class="a"/><text x="650" y="104" class="m">header</text>
+<rect x="742" y="84" width="126" height="32" rx="3" class="p"/><text x="752" y="104" class="l">the chunk</text>
+<text x="16" y="170" class="l">The envelope carries its own format version, so a ranged read of one chunk — which never sees the block header — still</text>
+<text x="16" y="188" class="l">knows how to parse it. It costs 2 + 2 bytes per applied transform.</text>
+<text x="16" y="220" class="l">A transform's own header carries only what its Decode needs: its format version and the IDs of the material it used.</text>
+<text x="16" y="238" class="l">The read checks each material ID against the block record's census before asking the provider.</text>
+<text x="16" y="272" class="s">The envelope is outside every transform: a transform that adds redundancy cannot repair it.</text>
 </svg>
