@@ -6,12 +6,13 @@ a Compose stack for hands-on work, and git hooks. It drives the repo's own scrip
 (`test/conformance/run.sh`, `test/posix/setup-posix.sh`, `test/kmip/start-pykmip.sh`, ...)
 rather than reimplementing them.
 
-It runs two ways:
-- **In a Linux dev container, `dtc`.** This is the recommended way on macOS. The Mac
-  needs only Docker Desktop and git, the NFS and SMB clients are the Linux kernel's (as
-  in CI), and nothing is installed on the host.
-- **Natively on macOS, `dt`.** This needs the toolchain in [SETUP.md](SETUP.md), and it
-  exercises the macOS NFS and SMB clients.
+It runs on macOS and Linux, on amd64 and arm64, in two ways:
+- **In a Linux dev container, `dtc`.** The host needs only Docker and git: Docker
+  Desktop (macOS, Windows or Linux) or a Linux Docker Engine. The NFS and SMB clients
+  are the Linux kernel's, as in CI, and nothing is installed on the host. This is the
+  recommended way.
+- **Natively, `dt`,** on macOS or Linux. This needs the toolchain in
+  [SETUP.md](SETUP.md). On macOS it exercises the macOS NFS and SMB clients.
 
 Setup for both is in [SETUP.md](SETUP.md).
 
@@ -45,7 +46,7 @@ dtc pynfs --minor 4.1 --profile postgres-s3
 dtc posix --nfs 4.1              # pjdfstest, CI's own command
 dtc e2e [--test P] [--nightly] [--require-nlm]
 dtc smb wpts|smbtorture --profile memory
-dtc stack up                     # dfs + Localstack S3 in Compose; then `dt stack mount` on the Mac
+dtc stack up                     # dfs + Localstack S3 in Compose; then `dt stack mount` on the host
 dtc services up|down|status      # Localstack, 2x Postgres, PyKMIP
 dtc cleanup [--volumes]          # stop everything the harness runs; refuses while a suite runs
 dtc shell                        # interactive; dtc shell -c 'go test -run X ./pkg/y'
@@ -59,7 +60,7 @@ commands are the same with `dt`.
 
 ## Container mode: `dtc`
 
-`dtc` runs `dt` in a privileged Linux container on Docker Desktop's kernel. The image
+`dtc` runs `dt` in a privileged Linux container on the Docker host's kernel. The image
 (`docker/dev.Dockerfile`, tag `dittofs-harness-dev:go1.26`) pins what CI uses:
 - Go 1.26.8 (`go.mod`) and golangci-lint v2.12.2 (`lint.yml`);
 - pjdfstest `03eb257` and pynfs `cd47018` (`flake.lock`);
@@ -68,6 +69,9 @@ commands are the same with `dt`.
   CLI.
 
 The image rebuilds itself when `dev.Dockerfile` changes: a label carries the file's hash.
+It builds for the host's architecture. Nothing in it is architecture-specific.
+`DTC_PLATFORM=linux/amd64` (or `linux/arm64`) builds and runs the other architecture's
+image under emulation.
 
 How it is wired:
 - **Same paths as the host.** The checkout and `/tmp/dtc` are bind-mounted at their host
@@ -78,10 +82,30 @@ How it is wired:
 - **Sibling containers, not nested ones.** The host's Docker socket is passed in. The
   services, the Compose stack, the SMB conformance stack and testcontainers are
   ordinary containers on the host's daemon.
-- **Services on localhost, as in CI.** The entry script forwards `localhost:4566`,
-  `5432`, `15432` and `5696` to `host.docker.internal`, where the services publish. So
-  the repo's scripts, which hard-code `localhost`, work unchanged. The testcontainers
-  host is `host.docker.internal`.
+- **Networking by engine.** The services publish on the Docker host's `127.0.0.1`, and
+  the repo's scripts hard-code `localhost`.
+  - *Docker Desktop:* the container is on the bridge network. The entry script forwards
+    `localhost:4566`, `5432`, `15432` and `5696` to `host.docker.internal`, and the
+    testcontainers host is `host.docker.internal`.
+  - *A Linux Docker Engine* (and, not verified, VM runtimes such as colima or OrbStack): a port
+    published on `127.0.0.1` is reachable only from the host's own network namespace, so
+    the container shares it (`--network host`). The services are then on `localhost`
+    directly.
+
+  `DT_DOCKER_NET=host|bridge` overrides the choice. The containers `dt` starts itself
+  (the pjdfstest and e2e-linux runners) follow the same rule.
+- **Ownership on Linux.** A Linux engine keeps uid 0 on files a container writes into a
+  bind mount, which would leave root-owned logs, results and git index entries in your
+  checkout. When a run ends, `docker/fix-owner.sh` hands every root-owned file under
+  the checkout, and its git dir, back to your uid and gid. Docker Desktop maps
+  ownership itself, so it is skipped there.
+- **Engine limits.**
+  - A remote daemon (`DOCKER_HOST=tcp://...` or `ssh://...`) is refused: the bind
+    mounts need the daemon to see this file system.
+  - Rootless Docker cannot mount NFS or CIFS inside the container, so pjdfstest, e2e and
+    the stack mounts need rootful Docker. dtc warns about this.
+  - On SELinux hosts the container runs with `--security-opt label=disable`, so the
+    checkout is not relabeled.
 - **Host-side dfs inside the container.** pynfs, pjdfstest and e2e start their `dfs` in
   the container's network and PID namespaces. So `setup-posix.sh`'s
   `pkill -f "dfs start"` cannot kill a `dfs` running on the host, and a leaked `dfs` dies
@@ -104,7 +128,9 @@ How it is wired:
 - **`harness/bin` is last on PATH** in the container. Otherwise the macOS pynfs and
   `timeout` shims would shadow the image's own tools.
 
-Limits of Docker Desktop's kernel (7.0.12-linuxkit, probed):
+The kernel is the Docker host's. Docker Desktop's (7.0.12-linuxkit, probed) has these
+limits. A Linux host's own kernel usually ships the two missing modules, but that path
+is not verified.
 
 | Kernel support | Present | Effect |
 |---|---|---|
@@ -112,9 +138,8 @@ Limits of Docker Desktop's kernel (7.0.12-linuxkit, probed):
 | `rpcsec_gss_krb5` | no | NFS Kerberos (`sec=krb5`) needs a real Linux VM |
 | `dm_flakey` | no | `test/crash` needs a real Linux VM |
 
-The SMB conformance images are `linux/amd64`. On an arm64 Mac they run emulated, and
-timing-sensitive cases may flake, so an x86_64 Linux host is the authoritative place for
-them.
+The SMB conformance images are `linux/amd64`. On arm64 hosts they run emulated, and
+timing-sensitive cases may flake, so an x86_64 host is the authoritative place for them.
 
 ## Shared services
 
@@ -190,8 +215,9 @@ out:
 **Delegations need a non-loopback address.** DittoFS refuses loopback NFSv4.0 callback
 addresses (`validateCallbackHost`). Over localhost no delegation is ever granted, and the
 delegation tests can only warn. `dt pynfs --lan` points pynfs at a non-loopback address
-instead: the Mac's LAN IP natively, or the container's bridge IP in dtc. The callback is
-then dialable:
+instead, so the callback is dialable:
+- macOS: the LAN IP of `en0`/`en1`;
+- Linux, and dtc: the source address of the default route.
 
 ```bash
 dt pynfs --minor 4.0 --lan --tests "delegations writedelegations"   # ungraded
@@ -214,8 +240,9 @@ sharing, not DittoFS alone. The harness does it the CI way:
   (`dtc posix chmod`), it runs `setup-posix.sh`, `run-posix.sh --grade` and
   `teardown-posix.sh` directly.
 - **Natively:** `setup-posix.sh --no-mount` starts a host `dfs`. Then a privileged Linux
-  container (`docker/pjdfstest.Dockerfile`) mounts `host.docker.internal:/export` with
-  the kernel client and runs `run-posix.sh --grade`.
+  container (`docker/pjdfstest.Dockerfile`) mounts the export with the kernel client
+  and runs `run-posix.sh --grade`. It uses `host.docker.internal:/export` on Docker
+  Desktop, and `127.0.0.1:/export` sharing the host's network on a Linux engine.
 
 ```bash
 dt posix                                 # NFSv3, memory profile, full suite
@@ -281,12 +308,18 @@ In dtc the suite runs as root in the container, and `dt e2e-linux` is the same c
 - rpcbind is started for the NLM cases.
 - NFS mounts the suite leaves behind are force-unmounted before cleanup, and reported.
 
-Natively on macOS the suite needs root. Run `dt` as yourself in your own terminal: it
-asks for the sudo password once, and only the test command runs as root. Root gets a
-separate build cache, an offline read-only module cache, and `TMPDIR=/tmp/dte`, which
-you own with an inheritable ACL entry. Docker Desktop's file sharing runs as you and
-cannot see root's `0700` temp dirs. On macOS only the NFSv3 and SMB cases run:
-`framework/helpers.go` skips NFSv4 on darwin, and the `e2e && linux` files are excluded.
+Natively the suite needs root. Run `dt` as yourself in your own terminal: it asks for
+the sudo password once, and only the test command runs as root. From a root shell on
+Linux (a CI VM, say) it runs directly. Root gets a separate build cache, an offline
+read-only module cache, and `TMPDIR=/tmp/dte`.
+- **On macOS** you own `/tmp/dte`, with an inheritable ACL entry, because Docker
+  Desktop's file sharing runs as you and cannot see root's `0700` temp dirs. Only the
+  NFSv3 and SMB cases run: `framework/helpers.go` skips NFSv4 on darwin, and the
+  `e2e && linux` files are excluded.
+- **On Linux** the `e2e && linux` files are included, and `--require-nlm` is accepted.
+  Leftover mounts and root-owned temp entries are removed through `sudo -n` after the
+  run.
+
 `--minio` is refused because its pinned image can no longer be pulled.
 
 `dt e2e --list` lists the tests runnable on the current OS, by package.
@@ -302,7 +335,7 @@ The repo's `docker-compose.yml` with the `s3-backend` profile:
 
 ```bash
 dtc stack up           # or dt stack up
-dt stack mount         # on the Mac: NFSv3 -> ~/mnt/dittofs-nfs, SMB -> ~/mnt/dittofs-smb (no sudo)
+dt stack mount         # on the host: NFSv3 -> ~/mnt/dittofs-nfs, SMB -> ~/mnt/dittofs-smb
 dt stack umount
 dtc stack down         # keeps volumes; 'dt stack down -- -v' drops them
 dt stack up --memory   # default profile: memory block store, no S3
@@ -315,9 +348,15 @@ dt stack up --memory   # default profile: memory block store, no S3
 | SMB | 127.0.0.1:12445, user `dev` / `dittofs-dev-password-123` |
 | dfsctl | `XDG_CONFIG_HOME=test/harness/state/dfsctl test/harness/state/bin/<os-arch>/dfsctl ...` |
 
+`dt stack mount` mounts without sudo on macOS (`mount_smbfs`, user-owned mount points).
+On Linux it runs `sudo mount -t nfs` (`nolock`) and `sudo mount -t cifs` (SMB 3.0, with
+uid and gid mapped to you), so it needs `nfs-common` and `cifs-utils`.
+
 ### Repros: `repro/`
 
-Standalone scripts that run their own `dfs` on separate ports (no root):
+Standalone scripts that run their own `dfs` on separate ports. They mount on the host
+through `repro/lib.sh`: without root on macOS, as root or through sudo on Linux (or
+inside `dtc shell`).
 - **`cold-read-tamper.sh`.** Against `dt stack`, it writes 16 MiB over NFS, flips 64
   bytes in one of the file's `blocks/` objects in S3, evicts, and reads back through the
   same mount and after a remount. The control read matches. The tampered read fails
@@ -373,7 +412,7 @@ The base is `origin/develop`, or `DT_BASE` / `DITTOFS_PREPUSH_BASE`.
 
 **Container hooks.** `dt hooks install --container` also sets `git config dt.hooksmode
 container`. Each hook then re-enters itself through `dtc hook NAME` inside the Linux
-container, so a Mac without Go can commit and push with the same checks. Git's hook
+container, so a host without Go can commit and push with the same checks. Git's hook
 variables are passed in, and the pushed refs arrive on stdin. Container start adds about
 1 s per hook.
 
@@ -454,3 +493,28 @@ Every test that fails on macOS because of its clients passes in dtc. Most macOS 
 run there too: the NFSv4 ACL, NFSv4.1 EOS, SMB Kerberos and smbclient tests. NFS
 Kerberos is the exception, since it skips on macOS and fails in dtc for lack of
 `rpcsec_gss_krb5`.
+
+### Portability checks (2026-09-29)
+
+Each mode was run on an Apple Silicon Mac with Docker Desktop:
+- the host-network mode a Linux engine uses (`DT_DOCKER_NET=host`);
+- native Linux, with the dev image acting as the host (`DT_IN_CONTAINER` unset,
+  sharing the VM's network);
+- `linux/amd64`, under emulation.
+
+| Mode | Checked | Result |
+|---|---|---|
+| macOS native `dt` | doctor, pynfs subset, pjdfstest runner, stack NFS-write / SMB-read round trip | pass, round trip identical |
+| dtc, bridge network (Docker Desktop) | doctor, pynfs subset, pjdfstest, e2e smoke | pass |
+| dtc, host network (Linux engine) | doctor, integration, pynfs delegations over the host address, pjdfstest, e2e interop + SMB Kerberos (testcontainers on localhost), stack (mounted from the host) | pass |
+| native Linux `dt` | doctor (Linux checks), unit, pynfs subset, pjdfstest through the host-network runner, stack with `mount -t nfs` and `mount -t cifs`, e2e as root, e2e-linux runner | pass, round trip identical, runner log owned by the caller |
+| `linux/amd64` | `dev.Dockerfile`, `pjdfstest.Dockerfile`, `e2e-linux.Dockerfile` build; dtc doctor; `go test` of two packages | pass (x86_64, Go 1.26.8 linux/amd64, every tool present) |
+| `fix-owner.sh` | on a Linux file system: no-op unless enabled; root-owned files, dirs, symlinks and a git index handed back; other users' files untouched | pass |
+
+In every mode the pynfs subset (COMP1-5) gave 4 passed and 1 failed. The failure is
+COMP3, a compound with an invalid UTF-8 tag: DittoFS returns `NFS4_OK` where pynfs
+expects `NFS4ERR_INVAL`. COMP3 belongs to the `utf8` group, which CI's `all` selection
+does not run.
+
+A real Linux host has not been used yet. The dev image stood in for one, on Docker
+Desktop's kernel.

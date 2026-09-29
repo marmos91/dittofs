@@ -3,11 +3,12 @@
 # DittoFS's BLAKE3 check, and if not, which cache serves it?
 #
 # Mirrors step 4 of test/e2e/blocks_flip_test.go against the dt stack (compose,
-# Localstack S3, NFSv3 mount at ~/mnt/dittofs-nfs), without root:
+# Localstack S3, NFSv3 mount at ~/mnt/dittofs-nfs), on the host that mounts it (no
+# root on macOS; `dt stack mount` uses sudo on Linux):
 #   1. write a 16 MiB random file over NFS, wait until it is uploaded
 #   2. flip 64 bytes in the middle of its new blocks/ object in S3 (length kept)
 #   3. `dfsctl store block evict`, then read it back through the SAME mount
-#   4. evict again, unmount + remount (drops the macOS NFS client cache), read again
+#   4. evict again, unmount + remount (drops the NFS client's cache), read again
 # Expected with fail-closed verification: step 4 errors (EIO); step 3 errors too
 # unless the client's page cache answered it without asking the server.
 #
@@ -15,8 +16,12 @@
 set -euo pipefail
 HARNESS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO="${DITTOFS_REPO:-$(git -C "$HARNESS" rev-parse --show-toplevel)}"
+# shellcheck source=lib.sh
+source "$HARNESS/repro/lib.sh"
 export XDG_CONFIG_HOME="$HARNESS/state/dfsctl"
-CTL="$REPO/dfsctl"
+# The dfsctl `dt stack up` builds for this OS and architecture.
+CTL="$HARNESS/state/bin/$(uname -s)-$(uname -m)/dfsctl"
+[[ -x "$CTL" ]] || { mkdir -p "$(dirname "$CTL")"; (cd "$REPO" && go build -o "$CTL" ./cmd/dfsctl); }
 MNT="$HOME/mnt/dittofs-nfs"
 NAME="coldtamper-$$.bin"
 TMP="$(mktemp -d)"
@@ -31,19 +36,19 @@ readfile() { # prints "sha256:<16 hex> bytes=<n>" or "ERROR:<message> after <n> 
     # Copy first and trust cp's status; dd reports how far the read got.
     local out n
     if out="$(cp "$MNT/$NAME" "$TMP/read" 2>&1)"; then
-        echo "sha256:$(shasum -a 256 "$TMP/read" | cut -c1-16) bytes=$(wc -c <"$TMP/read" | tr -d ' ')"
+        echo "sha256:$(sha16 "$TMP/read") bytes=$(wc -c <"$TMP/read" | tr -d ' ')"
     else
-        n="$(dd if="$MNT/$NAME" of=/dev/null bs=1m 2>&1 | awk '/bytes/{print $1; exit}')"
+        n="$(dd if="$MNT/$NAME" of=/dev/null bs=1048576 2>&1 | awk '/bytes/{print $1; exit}')"
         echo "ERROR:${out##*: } after ${n:-?} bytes"
     fi
     rm -f "$TMP/read"
 }
 
-mount | grep -q " on $MNT " || { echo "NFS not mounted at $MNT (dt stack up && dt stack mount)" >&2; exit 2; }
+is_mounted "$MNT" || { echo "NFS not mounted at $MNT (dt stack up && dt stack mount)" >&2; exit 2; }
 
 keys >"$TMP/before"
 head -c 16777216 /dev/urandom >"$TMP/payload"
-want="sha256:$(shasum -a 256 "$TMP/payload" | cut -c1-16) bytes=$(wc -c <"$TMP/payload" | tr -d ' ')"
+want="sha256:$(sha16 "$TMP/payload") bytes=$(wc -c <"$TMP/payload" | tr -d ' ')"
 cp "$TMP/payload" "$MNT/$NAME"
 echo "1. wrote $NAME over NFS ($want)"
 
@@ -73,7 +78,7 @@ r3="$(readfile)"
 echo "   read via SAME mount:        $r3"
 
 "$CTL" store block evict --share /export >/dev/null
-umount "$MNT"
+nfs_umount "$MNT"
 "$HARNESS/bin/dt" stack mount >/dev/null
 r4="$(readfile)"
 echo "4. evicted + REMOUNTED; read: $r4"

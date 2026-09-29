@@ -16,7 +16,9 @@ esac
 mkdir -p "$MNT"
 echo "[pjdfstest] mount -t nfs -o $OPTS $HOST:/export $MNT"
 timeout 60 mount -t nfs -o "$OPTS" "$HOST:/export" "$MNT"
-trap 'umount -f "$MNT" 2>/dev/null || umount -l "$MNT" 2>/dev/null || true' EXIT
+# Unmount, then hand the results run-posix.sh wrote back to the caller (a no-op
+# unless DT_FIX_OWNER=1, i.e. on a Linux engine).
+trap 'umount -f "$MNT" 2>/dev/null || umount -l "$MNT" 2>/dev/null || true; /fix-owner.sh /repo/test/posix/results 2>/dev/null || true' EXIT
 rc=0
 DITTOFS_MOUNT="$MNT" /repo/test/posix/run-posix.sh --nfs-version "$VER" "$@" || rc=$?
 exit "$rc"

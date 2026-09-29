@@ -1,8 +1,20 @@
 #!/usr/bin/env bash
-# pynfs NFSv4.1 conformance client (mirrors the Nix flake wrapper), from the pinned
-# checkout and Python venv in tools/ (see SETUP.md). testserver.py builds sys.path
-# from the current directory, so run it from its own tree.
+# pynfs NFSv4.1 conformance client (mirrors the Nix flake wrapper). From the pinned
+# checkout and Python venv in tools/ when they are set up (SETUP.md); otherwise the
+# next pynfs-4.1 on PATH that is not this shim (the dev image's, Nix's, a system one).
+# testserver.py builds sys.path from the current directory, so run it from its tree.
 set -euo pipefail
-T="$(cd "$(dirname "${BASH_SOURCE[0]}")/../tools" && pwd)"
-cd "$T/pynfs/nfs4.1"
-exec "$T/pynfs-venv/bin/python3" "$T/pynfs/nfs4.1/testserver.py" "$@"
+self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+T="$self/../tools"
+if [[ -x "$T/pynfs-venv/bin/python3" && -f "$T/pynfs/nfs4.1/testserver.py" ]]; then
+    cd "$T/pynfs/nfs4.1"
+    exec "$T/pynfs-venv/bin/python3" "$T/pynfs/nfs4.1/testserver.py" "$@"
+fi
+IFS=: read -r -a dirs <<<"$PATH"
+for d in "${dirs[@]}"; do
+    [[ -n "$d" && -x "$d/pynfs-4.1" ]] || continue
+    [[ "$(cd "$d" 2>/dev/null && pwd -P)" == "$self" ]] && continue
+    exec "$d/pynfs-4.1" "$@"
+done
+echo "pynfs-4.1: not set up (see test/harness/SETUP.md, 'pynfs, pinned'), and no other pynfs-4.1 on PATH" >&2
+exit 127

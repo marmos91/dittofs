@@ -1,11 +1,11 @@
-# DittoFS dev/test image: the whole harness in Linux, so a contributor's Mac only
-# needs Docker Desktop and git. `harness/bin/dtc` runs `dt` in a privileged container
-# of this image on Docker Desktop's Linux kernel, the same way CI runs on Linux:
-# kernel NFS/CIFS clients, root without sudo, GNU userland, bash 5.
+# DittoFS dev/test image: the whole harness in Linux, so a contributor's machine only
+# needs Docker and git (macOS or Linux, amd64 or arm64). `bin/dtc` runs `dt` in a
+# privileged container of this image on the Docker host's Linux kernel, the same way
+# CI runs on Linux: kernel NFS/CIFS clients, root without sudo, GNU userland, bash 5.
 #
 # Pins follow the repo: Go from go.mod/CI (1.26.x), golangci-lint from lint.yml,
-# pjdfstest and pynfs from flake.lock. Kernel limits of Docker Desktop still apply:
-# no NFS Kerberos (rpcsec_gss_krb5) and no dm-flakey.
+# pjdfstest and pynfs from flake.lock. The kernel is the Docker host's; Docker
+# Desktop's has no NFS Kerberos (rpcsec_gss_krb5) and no dm-flakey.
 
 # pjdfstest at the flake.lock revision, in the layout run-posix.sh looks for.
 FROM debian:bookworm-slim AS pjdfstest

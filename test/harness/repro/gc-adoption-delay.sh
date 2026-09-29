@@ -14,6 +14,8 @@
 set -euo pipefail
 HARNESS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO="${DITTOFS_REPO:-$(git -C "$HARNESS" rev-parse --show-toplevel)}"
+# shellcheck source=lib.sh
+source "$HARNESS/repro/lib.sh"
 ST="$HARNESS/state/gcdelay"
 LOCKD="$HARNESS/state/gcdelay.lock"
 MNT="$HOME/mnt/dittofs-gcdelay"
@@ -26,14 +28,14 @@ SUITE_LOCK="$HARNESS/state/suite.lock"
 export XDG_CONFIG_HOME="$ST/dfsctl"
 
 mkdir "$LOCKD" 2>/dev/null || { echo "another gc-adoption-delay run holds $LOCKD" >&2; exit 2; }
-echo "gc-adoption-delay" >"$LOCKD/owner"; echo "$$" >"$LOCKD/pid"
+echo "gc-adoption-delay" >"$LOCKD/owner"; echo "$$" >"$LOCKD/pid"; dt_where >"$LOCKD/where"
 # Also hold the host-suite lock: test/posix/setup-posix.sh (used by dt pynfs/posix)
 # runs `pkill -f "dfs start"`, which would kill this experiment's server. The first
 # run of this experiment was invalidated exactly that way.
 if ! mkdir "$SUITE_LOCK" 2>/dev/null; then rm -rf "$LOCKD"; echo "a dt suite is running ($SUITE_LOCK)" >&2; exit 2; fi
-echo "gc-adoption-delay" >"$SUITE_LOCK/owner"; echo "$$" >"$SUITE_LOCK/pid"
+echo "gc-adoption-delay" >"$SUITE_LOCK/owner"; echo "$$" >"$SUITE_LOCK/pid"; dt_where >"$SUITE_LOCK/where"
 cleanup() {
-    mount | grep -q " on $MNT " && { umount "$MNT" 2>/dev/null || diskutil unmount force "$MNT" >/dev/null 2>&1 || true; }
+    is_mounted "$MNT" && { nfs_umount "$MNT" || true; }
     [[ -n "${PID:-}" ]] && kill "$PID" 2>/dev/null && wait "$PID" 2>/dev/null || true
     rm -rf "$LOCKD" "$SUITE_LOCK"
 }
@@ -65,7 +67,7 @@ curl -s -o /dev/null -X PUT "http://127.0.0.1:4566/$BUCKET"
 # A fresh dfs also enables SMB on 12445 (the dt SMB suites' port); only NFS is used here.
 "${CTL[@]}" adapter disable smb >/dev/null 2>&1 || true
 for _ in $(seq 1 30); do nc -z 127.0.0.1 "$NFSPORT" 2>/dev/null && break; sleep 1; done
-mount -t nfs -o vers=3,tcp,port=$NFSPORT,mountport=$NFSPORT,nolocks,noresvport 127.0.0.1:/gc "$MNT"
+nfs3_mount 127.0.0.1:/gc "$MNT" "$NFSPORT"
 
 t0=$(date +%s)
 ts() { printf '%s (+%3d min)' "$(date '+%H:%M:%S')" "$(( ($(date +%s) - t0) / 60 ))"; }

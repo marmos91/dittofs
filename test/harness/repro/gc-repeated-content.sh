@@ -14,6 +14,8 @@
 set -euo pipefail
 HARNESS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO="${DITTOFS_REPO:-$(git -C "$HARNESS" rev-parse --show-toplevel)}"
+# shellcheck source=lib.sh
+source "$HARNESS/repro/lib.sh"
 ST="$HARNESS/state/gcrepro"
 MNT="$HOME/mnt/dittofs-gc"
 API=http://127.0.0.1:18080
@@ -24,7 +26,7 @@ export XDG_CONFIG_HOME="$ST/dfsctl"
 CTL=("$ST/bin/dfsctl")
 
 cleanup() {
-    mount | grep -q " on $MNT " && { umount "$MNT" 2>/dev/null || diskutil unmount force "$MNT" >/dev/null 2>&1 || true; }
+    is_mounted "$MNT" && { nfs_umount "$MNT" || true; }
     [[ -n "${PID:-}" ]] && kill "$PID" 2>/dev/null && wait "$PID" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -63,7 +65,7 @@ curl -s -o /dev/null -X PUT "http://127.0.0.1:4566/$BUCKET"
 # only uses NFS, so free it.
 "${CTL[@]}" adapter disable smb >/dev/null 2>&1 || true
 for _ in $(seq 1 30); do nc -z 127.0.0.1 "$NFSPORT" 2>/dev/null && break; sleep 1; done
-mount -t nfs -o vers=3,tcp,port=$NFSPORT,mountport=$NFSPORT,nolocks,noresvport 127.0.0.1:/gc "$MNT"
+nfs3_mount 127.0.0.1:/gc "$MNT" "$NFSPORT"
 echo "server up: $API, NFS :$NFSPORT, bucket $BUCKET, mount $MNT"
 
 phase() { # phase NAME FILEPATH

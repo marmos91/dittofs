@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
-# GNU timeout for macOS: test/posix/setup-posix.sh calls `timeout`, which macOS lacks.
-# `brew install coreutils` provides it as gtimeout; only this name is exposed, so no
-# other GNU tool shadows a macOS one.
-command -v gtimeout >/dev/null 2>&1 || { echo "timeout: install GNU coreutils (brew install coreutils)" >&2; exit 127; }
-exec gtimeout "$@"
+# GNU timeout. test/posix/setup-posix.sh calls `timeout`, which macOS lacks; Homebrew's
+# coreutils provides it as gtimeout. Elsewhere (Linux), the next `timeout` on PATH that
+# is not this shim. Only this one name is exposed, so no other GNU tool shadows a
+# macOS one.
+command -v gtimeout >/dev/null 2>&1 && exec gtimeout "$@"
+self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+IFS=: read -r -a dirs <<<"$PATH"
+for d in "${dirs[@]}"; do
+    [[ -n "$d" && -x "$d/timeout" ]] || continue
+    [[ "$(cd "$d" 2>/dev/null && pwd -P)" == "$self" ]] && continue
+    # shellcheck disable=SC2093  # exec replaces the shim; the lines below run only if none is found
+    exec "$d/timeout" "$@"
+done
+echo "timeout: GNU timeout not found (macOS: brew install coreutils)" >&2
+exit 127

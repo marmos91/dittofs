@@ -23,16 +23,18 @@
 #   dt hooks install [--container]|uninstall|status   (--container: hooks run via dtc)
 #
 # In the Linux dev container (harness/bin/dtc) every command is the same: dtc unit,
-# dtc e2e, dtc posix ... The Mac then needs only Docker Desktop and git.
+# dtc e2e, dtc posix ... The host then needs only Docker and git.
 #
 # Environment: DITTOFS_REPO overrides the checkout path.
 
 set -euo pipefail
 
 # macOS /bin/bash is 3.2; this script (and the repo's graders) need bash >= 4.
-# A git hook or GUI launch may not have Homebrew on PATH, so re-exec explicitly.
-if ((BASH_VERSINFO[0] < 4)) && [[ -x /opt/homebrew/bin/bash ]]; then
-    exec /opt/homebrew/bin/bash "$0" "$@"
+# A git hook or GUI launch may not have Homebrew on PATH, so re-exec explicitly
+# (Apple Silicon and Intel Homebrew prefixes). Linux has bash >= 4.
+if ((BASH_VERSINFO[0] < 4)); then
+    for b in /opt/homebrew/bin/bash /usr/local/bin/bash; do [[ -x "$b" ]] && exec "$b" "$0" "$@"; done
+    echo "dt needs bash >= 4 (macOS: brew install bash)" >&2; exit 2
 fi
 
 HARNESS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -44,22 +46,32 @@ STATE="$HARNESS/state"
 LOCK="$STATE/suite.lock"
 mkdir -p "$LOGS" "$STATE"
 
-# Container mode: dt running inside the dtc dev container (harness/bin/dtc). The
-# image sets DT_IN_CONTAINER=1 and has every tool; root, Linux kernel clients.
+OS="$(uname -s)"   # Darwin or Linux, natively; always Linux in the dev container
+
+# Container mode: dt running inside the dtc dev container (bin/dtc). The image sets
+# DT_IN_CONTAINER=1 and has every tool; root, Linux kernel clients.
 IN_CONTAINER=false
 [[ "${DT_IN_CONTAINER:-}" == 1 ]] && IN_CONTAINER=true
+# HOSTNET: dt shares the host's network namespace, so published ports are on localhost
+# and port checks see the host. True natively, and in a dtc container started with
+# --network host (a Linux Docker Engine; dtc sets DT_HOSTNET=1). False in a dtc
+# container on Docker Desktop's bridge network, which reaches the host through
+# host.docker.internal.
+HOSTNET=true
+$IN_CONTAINER && [[ "${DT_HOSTNET:-}" != 1 ]] && HOSTNET=false
 # Where a lock is taken: a pid is only meaningful in the namespace that took it.
-WHERE="mac"
+WHERE="host"
 $IN_CONTAINER && WHERE="container:${DT_CONTAINER_NAME:-$(hostname)}"
 
-if $IN_CONTAINER; then
-    # Last, not first: harness/bin also holds the Mac's tool shims (pynfs-4.0/4.1 point
-    # at the Mac's Python venv, timeout at Homebrew's gtimeout). First on PATH they
-    # shadowed the image's own tools, and every pynfs run died in 10 s.
-    export PATH="$PATH:$HARNESS/bin"
+if [[ "$OS" == Darwin ]] && ! $IN_CONTAINER; then
+    # harness/bin first: macOS lacks `timeout`, and pynfs-4.0/4.1 come from tools/.
+    # ~/go/bin for the Go tools; the Homebrew prefixes for bash 5 and GNU tools.
+    export PATH="$HARNESS/bin:$HOME/go/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 else
-    # harness/bin first: pynfs-4.0/4.1 and a GNU `timeout`; ~/go/bin for the Go tools.
-    export PATH="$HARNESS/bin:$HOME/go/bin:/opt/homebrew/bin:$PATH"
+    # Last, not first, on Linux and in the container: harness/bin's shims must not
+    # shadow the system's (or the image's) own `timeout` and pynfs. First on PATH in
+    # the container, they made every pynfs run die in 10 s.
+    export PATH="$PATH:$HOME/go/bin:$HARNESS/bin"
 fi
 
 # --- service definitions (mirroring CI) --------------------------------------
@@ -123,15 +135,16 @@ cache_note() {
 # acquire_lock WHAT [LOCKDIR]: LOCKDIR defaults to the host-suite lock. A suite that
 # binds no host port and no /tmp/dittofs-* state (e2e-linux runs in its own container
 # network and TMPDIR) passes its own lock, so it can run beside a host suite.
-# Locks live in harness/state, which the Mac and every dtc container share, so a lock
+# Locks live in harness/state, which the host and every dtc container share, so a lock
 # records where it was taken ($WHERE): a pid can only be checked in the namespace that
-# owns it. A lock from the Mac is checked with kill -0 on the Mac; one from a dtc
+# owns it. A lock from the host is checked with kill -0 on the host; one from a dtc
 # container by whether that container still runs. A lock from elsewhere that cannot
 # be checked is treated as held, never as stale.
 lock_alive() { # lock_alive LOCKDIR: 0 when the holder is (or may be) still running
     local lock="$1" pid where
     pid="$(cat "$lock/pid" 2>/dev/null || echo 0)"
-    where="$(cat "$lock/where" 2>/dev/null || echo mac)"
+    where="$(cat "$lock/where" 2>/dev/null || echo host)"
+    [[ "$where" == mac ]] && where=host   # written by an earlier version
     [[ "$pid" == 0 ]] && return 1
     if [[ "$where" == "$WHERE" ]]; then
         kill -0 "$pid" 2>/dev/null
@@ -148,7 +161,7 @@ acquire_lock() {
         local pid owner where
         pid="$(cat "$lock/pid" 2>/dev/null || echo 0)"
         owner="$(cat "$lock/owner" 2>/dev/null || echo '?')"
-        where="$(cat "$lock/where" 2>/dev/null || echo mac)"
+        where="$(cat "$lock/where" 2>/dev/null || echo host)"
         if ! lock_alive "$lock"; then
             warn "removing stale lock held by '$owner' ($where, pid $pid gone)"
             rm -rf "$lock"; mkdir "$lock"
@@ -161,15 +174,29 @@ acquire_lock() {
     trap "rm -rf '$lock'" EXIT
 }
 
-# In the container, localhost:4566/5432/15432/5696 are the entry script's forwarders
-# to the Docker host, so "busy" there says nothing about a conflict: the services'
-# own state (docker) is the check. Host-suite ports are the container's own.
-port_busy() { lsof -w -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; }
-svc_port_taken() { ! $IN_CONTAINER && port_busy "$1"; }
-# A port published on the Docker host (the Mac): from the container, only a connect
-# to host.docker.internal can tell. On the Mac, lsof sees Docker's published ports.
+# Listening TCP ports: lsof where it exists (macOS, most Linux), else ss (iproute2).
+port_busy() {
+    if command -v lsof >/dev/null 2>&1; then lsof -w -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1
+    else ss -Hltn "sport = :$1" 2>/dev/null | grep -q .; fi
+}
+port_owner() { # the command listening on PORT, for messages
+    if command -v lsof >/dev/null 2>&1; then lsof -w -nP -iTCP:"$1" -sTCP:LISTEN 2>/dev/null | awk 'NR==2{print $1}'
+    else ss -Hltnp "sport = :$1" 2>/dev/null | sed -n 's/.*users:(("\([^"]*\)".*/\1/p' | head -1; fi
+}
+listeners() { # listeners PORT...: the listening sockets on those ports, for messages
+    local re; re="$(IFS='|'; echo "$*")"
+    if command -v lsof >/dev/null 2>&1; then lsof -w -nP -iTCP -sTCP:LISTEN | awk -v re=":($re) " 'NR==1 || $0 ~ re'
+    else ss -ltnp | awk -v re=":($re)$" 'NR==1 || $4 ~ re'; fi
+}
+# In a bridge-network dtc container, localhost:4566/5432/15432/5696 are the entry
+# script's forwarders to the Docker host, so "busy" there says nothing about a
+# conflict: the services' own state (docker) is the check.
+svc_port_taken() { $HOSTNET && port_busy "$1"; }
+# A port published on the Docker host: from a bridge-network container, only a
+# connect to host.docker.internal can tell. Sharing the host's network, the local
+# check sees Docker's published ports.
 dockerhost_port_busy() {
-    if $IN_CONTAINER; then nc -z -w 1 host.docker.internal "$1" >/dev/null 2>&1; else port_busy "$1"; fi
+    if $HOSTNET; then port_busy "$1"; else nc -z -w 1 host.docker.internal "$1" >/dev/null 2>&1; fi
 }
 owner_of() { stat -f %Su "$1" 2>/dev/null || stat -c %U "$1" 2>/dev/null; }  # BSD, then GNU
 
@@ -198,9 +225,9 @@ host_teardown() {
 }
 
 # require_host_ports_free [docker]: the suite's ports must be free where it binds them.
-# A host dfs (pynfs, posix, e2e) binds in dt's own network namespace: the Mac, or the
+# A host dfs (pynfs, posix, e2e) binds in dt's own network namespace: the host, or the
 # dtc container. The compose stack and the SMB conformance stack publish on the Docker
-# host: pass "docker". On the Mac the two are the same place.
+# host: pass "docker". Natively the two are the same place.
 require_host_ports_free() {
     local where="${1:-self}" busy=() p
     for p in "${HOST_PORTS[@]}"; do
@@ -208,18 +235,45 @@ require_host_ports_free() {
         else port_busy "$p" && busy+=("$p"); fi
     done
     if ((${#busy[@]})); then
-        if [[ "$where" == docker ]] && $IN_CONTAINER; then
-            err "ports in use on the Docker host (the Mac): ${busy[*]} (compose stack, SMB stack, or a dfs on the Mac)."
+        if [[ "$where" == docker ]] && ! $HOSTNET; then
+            err "ports in use on the Docker host: ${busy[*]} (compose stack, SMB stack, or a dfs on the host)."
             docker ps --format '{{.Names}}  {{.Ports}}' | grep -E ':(8080|12049|12445)->' >&2 || true
         else
             err "ports in use: ${busy[*]} (compose stack or another dfs is running)."
-            lsof -w -nP -iTCP -sTCP:LISTEN | awk 'NR==1 || /:(8080|12049|12445) /' >&2 || true
+            listeners "${busy[@]}" >&2 || true
         fi
         die "stop it first: 'dt stack down', or 'sudo $REPO/test/posix/teardown-posix.sh'."
     fi
 }
 
-docker_ok() { docker info >/dev/null 2>&1 || die "Docker is not running. Start it: open -a Docker"; }
+docker_ok() {
+    docker info >/dev/null 2>&1 && return 0
+    if [[ "$OS" == Darwin ]]; then die "Docker is not running. Start Docker Desktop (open -a Docker)."
+    else die "Docker is not reachable. Start the daemon (sudo systemctl start docker), or check DOCKER_HOST / 'docker context ls'."; fi
+}
+
+# Containers dt starts itself (the pjdfstest runner, the e2e-linux runner) reach the
+# host's dfs and the published services through host.docker.internal on Docker
+# Desktop. A Linux Docker Engine publishes 127.0.0.1-bound ports only on the host's
+# loopback, which a bridge-network container cannot reach, so there they share the
+# host's network instead. DT_DOCKER_NET=host|bridge overrides the choice.
+SIBLING_NET=""
+sibling_net() {
+    if [[ -z "$SIBLING_NET" ]]; then
+        SIBLING_NET="${DT_DOCKER_NET:-}"
+        if [[ -z "$SIBLING_NET" ]]; then
+            if docker info --format '{{.OperatingSystem}}' 2>/dev/null | grep -q 'Docker Desktop'; then SIBLING_NET=bridge
+            else SIBLING_NET=host; fi
+        fi
+    fi
+    echo "$SIBLING_NET"
+}
+# Ownership fix for files a root container writes into the checkout: Docker Desktop
+# maps them to you; a Linux Docker Engine leaves them root-owned on the host.
+owner_env() {
+    [[ "$(sibling_net)" == host && "$OS" == Linux ]] || return 0
+    printf '%s\n' -e DT_FIX_OWNER=1 -e "DT_HOST_UID=$(id -u)" -e "DT_HOST_GID=$(id -g)"
+}
 
 # --- services --------------------------------------------------------------------
 container_running() { [[ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" == true ]]; }
@@ -429,7 +483,7 @@ cmd_pynfs() {
             --profile) profile="$2"; shift 2 ;;
             --minor|--minor-version) minor="$2"; shift 2 ;;
             --tests) tests=(--tests "$2"); shift 2 ;;
-            # Reach the server via this Mac's LAN address, not localhost: DittoFS
+            # Reach the server via a non-loopback address, not localhost: DittoFS
             # refuses loopback NFSv4.0 callback addresses (validateCallbackHost), so
             # over localhost no delegation is ever granted and the delegation tests
             # can only warn. Implies a direct run-pynfs.sh run (ungraded).
@@ -440,8 +494,13 @@ cmd_pynfs() {
     if $lan; then
         local ip
         # In the container, its own bridge address: dfs and pynfs both run there.
-        if $IN_CONTAINER; then ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
-        else ip="$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || true)"; fi
+        if [[ "$OS" == Darwin ]] && ! $IN_CONTAINER; then
+            ip="$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || true)"
+        else
+            # Linux: the source address of the default route, else the first address.
+            ip="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p')"
+            [[ -n "$ip" ]] || ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+        fi
         [[ -n "$ip" ]] || die "--lan: no non-loopback IPv4 address found"
         server=(--server "$ip:12049")
         info "pynfs will reach the server at $ip:12049 (callbacks dialable)"
@@ -535,8 +594,14 @@ cmd_posix() {
     else
         run_logged "posix-setup-$profile" test/posix/setup-posix.sh "$profile" --nfs-version "$ver" --no-mount || {
             host_teardown; return 1; }
-        run_logged "posix-v$ver-$profile" docker run --rm --privileged \
+        # The runner reaches the host's dfs through host.docker.internal on Docker
+        # Desktop, and on 127.0.0.1 sharing the host's network on a Linux engine.
+        local net=() owner=()
+        [[ "$(sibling_net)" == host ]] && net=(--network host -e DFS_HOST=127.0.0.1)
+        mapfile -t owner < <(owner_env)
+        run_logged "posix-v$ver-$profile" docker run --rm --privileged "${net[@]}" "${owner[@]}" \
             -v "$REPO:/repo" -v "$HARNESS/docker/pjdfstest-entry.sh:/entry.sh:ro" \
+            -v "$HARNESS/docker/fix-owner.sh:/fix-owner.sh:ro" \
             "$PJDFS_IMAGE" /entry.sh "$ver" --grade "${extra[@]}" || rc=$?
     fi
     # run-posix.sh overwrites these on every run; keep a copy per run. Only files this
@@ -595,12 +660,19 @@ e2e_list() {
 #
 # In the dtc container (Linux, root) there is no sudo step and no ACL dance: the suite
 # runs directly, as in e2e-linux, and `dt e2e-linux` is the same command.
-E2E_OS=darwin
-$IN_CONTAINER && E2E_OS=linux
+E2E_OS="$(tr '[:upper:]' '[:lower:]' <<<"$OS")"   # darwin or linux: the e2e build tags that apply
 
 cmd_e2e() {
     in_repo
-    $IN_CONTAINER || ((EUID != 0)) || die "run 'dt e2e' as yourself; it calls sudo for the suite only"
+    # The suite needs root to mount. Natively dt runs as you and sudo covers only the
+    # test command. A root shell on Linux (a CI VM) runs it directly. On macOS root
+    # is refused: Docker Desktop's file sharing runs as you and needs your TMPDIR ACL.
+    local sudo_cmd=(sudo)
+    if $IN_CONTAINER; then sudo_cmd=()
+    elif ((EUID == 0)); then
+        [[ "$OS" == Darwin ]] && die "run 'dt e2e' as yourself; it calls sudo for the suite only"
+        sudo_cmd=()
+    fi
     local goargs=() envs=() orig=("$@") filter="" pkgs=(./test/e2e/...)
     while (($#)); do
         case "$1" in
@@ -612,7 +684,7 @@ cmd_e2e() {
             # The dedup "nightly tier" (DEDUP-03 VM fleet, ObjectID population, NFSv4
             # dedup race) skips unless this is set, and CI's e2e job never sets it.
             --nightly) envs+=(DITTOFS_E2E_NIGHTLY=1); shift ;;
-            --require-nlm) $IN_CONTAINER || die "--require-nlm: macOS has no NLM client; use dtc e2e"
+            --require-nlm) [[ "$E2E_OS" == linux ]] || die "--require-nlm: macOS has no NLM client; use dtc e2e"
                 envs+=(DITTOFS_E2E_REQUIRE_NLM=1); shift ;;  # as CI does
             --list) e2e_list; return 0 ;;
             --verbose|--s3) shift ;;  # always -v, and Localstack is always provided, as in CI
@@ -628,7 +700,7 @@ cmd_e2e() {
         ((${#pkgs[@]})) || die "no e2e test matches '$filter' (list them: dt e2e --list)"
     fi
     if $IN_CONTAINER; then e2e_container; return; fi  # reads goargs/envs/pkgs from here
-    if ! sudo -n true 2>/dev/null && [[ ! -t 0 ]]; then
+    if ((${#sudo_cmd[@]})) && ! sudo -n true 2>/dev/null && [[ ! -t 0 ]]; then
         warn "e2e needs sudo and there is no terminal to ask for the password. Run it in your own terminal:"
         echo "    ${DITTOFS_REPO:+DITTOFS_REPO=$DITTOFS_REPO }$HARNESS/bin/dt e2e $(printf "%q " "${orig[@]}")"
         return 1
@@ -638,20 +710,20 @@ cmd_e2e() {
     docker_ok; svc_pg_up; svc_localstack_up
     # Ask for the password now: the suite's output goes to a file, so a prompt
     # printed later would be easy to miss.
-    sudo -v || die "sudo authentication failed"
+    if ((${#sudo_cmd[@]})); then sudo -v || die "sudo authentication failed"; fi
     local log
     log="$LOGS/e2e-$(ts).log"
     # Root's t.TempDir() directories are 0700 and root-owned. Docker Desktop's file
     # sharing runs as you, so it cannot see into them, and a bind mount of one fails
     # with "bind source path does not exist" (the Kerberos tests' KDC keytab dir).
-    # On Linux the daemon is root and never hits this. Give root a TMPDIR you own
-    # with an inheritable ACL entry for you: everything root creates below it stays
-    # reachable by Docker. Kept short because of macOS's 104-byte socket path limit.
+    # On macOS, give root a TMPDIR you own with an inheritable ACL entry for you:
+    # everything root creates below it stays reachable by Docker. Kept short because
+    # of macOS's 104-byte socket path limit. A Linux daemon runs as root: no ACL.
     local e2e_tmp=/tmp/dte me
     me="$(id -un)"
     mkdir -p "$e2e_tmp"
     # shellcheck disable=SC2010  # ls -le is the only way to read a macOS ACL; the path is fixed
-    if ! ls -led "$e2e_tmp" | grep -q "user:$me allow"; then
+    if [[ "$OS" == Darwin ]] && ! ls -led "$e2e_tmp" | grep -q "user:$me allow"; then
         chmod +a "$me allow list,search,add_file,add_subdirectory,delete_child,readattr,writeattr,readextattr,writeextattr,readsecurity,file_inherit,directory_inherit" "$e2e_tmp"
     fi
     local root_env=(env "PATH=$PATH" "GOMODCACHE=$(go env GOMODCACHE)" "GOCACHE=/tmp/dt-e2e-root-gocache"
@@ -663,13 +735,37 @@ cmd_e2e() {
     step "go test -tags=e2e -count=1 -v -timeout 30m ${goargs[*]} ${pkgs[*]}"
     local start=$SECONDS rc=0
     E2E_LOG="$log" E2E_WALL="${E2E_WALL:-45m}" .github/scripts/run-e2e.sh \
-        sudo "${root_env[@]}" go test -tags=e2e -count=1 -v -timeout 30m "${goargs[@]}" "${pkgs[@]}" || rc=$?
-    e2e_finish "$log" "$rc" "$start" "$e2e_tmp"
+        "${sudo_cmd[@]}" "${root_env[@]}" go test -tags=e2e -count=1 -v -timeout 30m "${goargs[@]}" "${pkgs[@]}" || rc=$?
+    # sudo -n: credentials from `sudo -v` may have expired over a long run; then the
+    # cleanup only warns.
+    local nsudo=(); ((${#sudo_cmd[@]})) && nsudo=(sudo -n)
+    drop_leftover_mounts "$e2e_tmp" "$log" "${nsudo[@]}"
+    e2e_finish "$log" "$rc" "$start" "$e2e_tmp" "${nsudo[@]}"
 }
 
-# e2e_finish LOG RC START TMPDIR: grade, clean the suite's TMPDIR, report.
+# drop_leftover_mounts DIR LOG [sudo -n]: the suite leaves NFS mounts behind (hard
+# mounts whose dfs has already stopped: 9 in a full Linux run), and any stat under
+# its TMPDIR then blocks forever. Force-unmount them before cleaning up.
+drop_leftover_mounts() {
+    local dir="$1" log="$2" real m n=0; shift 2
+    real="$(cd "$dir" 2>/dev/null && pwd -P || echo "$dir")"   # macOS: /tmp is /private/tmp
+    while read -r m; do
+        if [[ "$OS" == Darwin ]]; then
+            "$@" umount -f "$m" 2>/dev/null || "$@" diskutil unmount force "$m" >/dev/null 2>&1 || continue
+        else
+            "$@" umount -f -l "$m" 2>/dev/null || continue
+        fi
+        n=$((n + 1))
+    done < <(mount | awk -v a="$dir/" -v b="$real/" 'index($3, a) == 1 || index($3, b) == 1 {print $3}')
+    if ((n > 0)); then
+        warn "the suite left $n mount(s) under $dir; force-unmounted"
+        echo "# the suite left $n mount(s) under $dir (force-unmounted by dt)" >>"$log"
+    fi
+}
+
+# e2e_finish LOG RC START TMPDIR [sudo -n]: grade, clean the suite's TMPDIR, report.
 e2e_finish() {
-    local log="$1" rc="$2" start="$3" e2e_tmp="$4" left
+    local log="$1" rc="$2" start="$3" e2e_tmp="$4" left; shift 4
     # The CI wrapper grades on `ok` lines, and a -run filter that matches nothing
     # still prints `ok ... [no tests to run]`, so a typo'd or stale test name
     # "passes" having run nothing.
@@ -677,11 +773,11 @@ e2e_finish() {
         err "no test matched ${goargs[*]:-the suite}; nothing ran (e.g. dt e2e --test TestCrossProtocolInterop)"
         rc=3
     fi
-    # The matrix tests leave their (empty) mount-point dirs and a dfsctl build dir
-    # behind. On the Mac the inherited ACL lets you remove root's entries without sudo.
+    # The matrix tests leave their mount-point dirs and a dfsctl build dir behind. On
+    # macOS the inherited ACL lets you remove root's entries; on Linux they need sudo.
     left="$(find "$e2e_tmp" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l | tr -d ' ')" || left=0
     if ((left > 0)); then
-        rm -rf "${e2e_tmp:?}"/* 2>/dev/null || true
+        rm -rf "${e2e_tmp:?}"/* 2>/dev/null || { (($#)) && "$@" rm -rf "${e2e_tmp:?}"/* 2>/dev/null; } || true
         echo "# cleaned $left leftover entries from $e2e_tmp" >>"$log"
     fi
     echo "# repo: $REPO @ $(git -C "$REPO" rev-parse --short HEAD); $WHERE; exit=$rc elapsed=$((SECONDS - start))s" >>"$log"
@@ -691,14 +787,15 @@ e2e_finish() {
 }
 
 # dt e2e inside the dtc container: what e2e-linux does, without a second container.
-#   - TMPDIR is under /tmp/dtc, which dtc bind-mounts from the Mac at the same path, so
+#   - TMPDIR is under /tmp/dtc, which dtc bind-mounts from the host at the same path, so
 #     bind mounts the tests ask Docker for (the KDC keytab dir) resolve on the host;
 #   - no GOTMPDIR: `go test` hands it to the test binary as TMPDIR, so t.TempDir()
 #     landed in a container-only dir and every KDC bind mount failed ("bind source path
 #     does not exist: /host_mnt/private/tmp/dtc-gowork/...");
-#   - testcontainers reach their mapped ports through host.docker.internal;
-#   - Postgres and Localstack are the harness services, on localhost through the
-#     entry script's forwarders, as CI has them on localhost.
+#   - on Docker Desktop's bridge network, testcontainers reach their mapped ports
+#     through host.docker.internal; sharing the host's network, on localhost;
+#   - Postgres and Localstack are the harness services on localhost (through the
+#     entry script's forwarders on a bridge network), as CI has them.
 DTC_SHARED_TMP=/tmp/dtc
 e2e_container() {
     local e2e_tmp="$DTC_SHARED_TMP/e2e" log start=$SECONDS rc=0
@@ -713,22 +810,15 @@ e2e_container() {
     log="$LOGS/e2e-$(ts).log"
     step "log: $log (written at the end; the suite's output goes to a file, as in CI)"
     step "[$WHERE] go test -tags=e2e -count=1 -v -timeout 30m ${goargs[*]} ${pkgs[*]}"
+    local tc=(); $HOSTNET || tc=(TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal)
     E2E_LOG="$log" E2E_WALL="${E2E_WALL:-45m}" .github/scripts/run-e2e.sh \
-        env TMPDIR="$e2e_tmp" TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal \
+        env TMPDIR="$e2e_tmp" "${tc[@]}" \
         POSTGRES_HOST=localhost POSTGRES_PORT=5432 POSTGRES_DATABASE=dittofs_test \
         POSTGRES_USER=dittofs POSTGRES_PASSWORD=dittofs LOCALSTACK_ENDPOINT=http://localhost:4566 \
         "${envs[@]}" go test -tags=e2e -count=1 -v -timeout 30m "${goargs[@]}" "${pkgs[@]}" || rc=$?
-    # The suite leaves NFS mounts behind on Linux (hard mounts whose dfs has already
-    # stopped: 9 in the first full run), and any stat under TMPDIR then blocks forever.
-    # Here they share dt's mount namespace, so drop them (force + lazy) before cleaning.
-    # (e2e-linux never saw it: its container, and the mounts, ended with the suite.)
-    local m n=0
-    while read -r m; do umount -f -l "$m" 2>/dev/null && n=$((n + 1)); done < <(
-        awk -v p="$e2e_tmp/" '$3 ~ /^(nfs|nfs4|cifs|smb3)$/ && index($2, p) == 1 {print $2}' /proc/mounts)
-    if ((n > 0)); then
-        warn "the suite left $n NFS/SMB mount(s) under $e2e_tmp; force-unmounted"
-        echo "# the suite left $n NFS/SMB mount(s) under $e2e_tmp (force-unmounted by dt)" >>"$log"
-    fi
+    # They share dt's mount namespace here. (e2e-linux never saw them: its container,
+    # and the mounts, ended with the suite.)
+    drop_leftover_mounts "$e2e_tmp" "$log"
     e2e_finish "$log" "$rc" "$start" "$e2e_tmp"
 }
 
@@ -788,27 +878,38 @@ cmd_e2e_linux() {
     log="$LOGS/e2e-linux-$(ts).log"
     local envflags=() e
     for e in "${envs[@]}"; do envflags+=(-e "$e"); done
+    # Docker Desktop: bridge network, the host through host.docker.internal. A Linux
+    # engine: the host's network, services on localhost.
+    local net=() svc=host.docker.internal
+    if [[ "$(sibling_net)" == host ]]; then net=(--network host); svc=localhost
+    else net=(-e TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal); fi
+    # Your module cache, read-only and offline, when this host has Go; else a volume.
+    local modcache=(-v dt-e2e-linux-gomod:/go/pkg/mod) goenv=()
+    if command -v go >/dev/null 2>&1; then
+        modcache=(-v "$(go env GOMODCACHE):/go/pkg/mod:ro"); goenv=(-e GOFLAGS=-mod=readonly -e GOPROXY=off)
+    fi
+    local owner=(); mapfile -t owner < <(owner_env)
     step "log: $log (written at the end, as in CI)"
     step "[linux container] go test -tags=e2e -count=1 -v -timeout 30m ${goargs[*]} ${pkgs[*]}"
-    docker run --rm --privileged --name dt-e2e-linux \
+    docker run --rm --privileged --name dt-e2e-linux "${net[@]}" "${owner[@]}" \
         -v "$REPO:$REPO" -w "$REPO" \
         -v "$LOGS:$LOGS" -v "$tmp:$tmp" \
-        -v "$(go env GOMODCACHE):/go/pkg/mod:ro" -v dt-e2e-linux-gocache:/root/.cache/go-build \
+        "${modcache[@]}" -v dt-e2e-linux-gocache:/root/.cache/go-build \
         -v /var/run/docker.sock:/var/run/docker.sock \
         -v "$HARNESS/docker/e2e-linux-entry.sh:/entry.sh:ro" \
+        -v "$HARNESS/docker/fix-owner.sh:/fix-owner.sh:ro" \
         -e TMPDIR="$tmp" -e E2E_LOG="$log" -e E2E_WALL="${E2E_WALL:-45m}" \
-        -e GOFLAGS=-mod=readonly -e GOPROXY=off -e GOTOOLCHAIN=local \
-        -e TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal \
-        -e POSTGRES_HOST=host.docker.internal -e POSTGRES_PORT=5432 -e POSTGRES_DATABASE=dittofs_test \
+        "${goenv[@]}" -e GOTOOLCHAIN=local \
+        -e POSTGRES_HOST="$svc" -e POSTGRES_PORT=5432 -e POSTGRES_DATABASE=dittofs_test \
         -e POSTGRES_USER=dittofs -e POSTGRES_PASSWORD=dittofs \
-        -e LOCALSTACK_ENDPOINT=http://host.docker.internal:4566 \
+        -e LOCALSTACK_ENDPOINT="http://$svc:4566" \
         "${envflags[@]}" \
         "$E2E_LINUX_IMAGE" /entry.sh "${goargs[@]}" "${pkgs[@]}" || rc=$?
     if ((rc == 0)) && ! grep -qE '^=== RUN' "$log"; then
         err "no test matched ${goargs[*]:-the suite}; nothing ran"; rc=3
     fi
     rm -rf "${tmp:?}"/* 2>/dev/null || true
-    echo "# repo: $REPO @ $(git rev-parse --short HEAD); linux container; exit=$rc elapsed=$((SECONDS - start))s" >>"$log"
+    echo "# repo: $REPO @ $(git -C "$REPO" rev-parse --short HEAD); linux container; exit=$rc elapsed=$((SECONDS - start))s" >>"$log"
     if ((rc == 0)); then info "e2e-linux passed in $((SECONDS - start))s"
     else err "e2e-linux failed (exit $rc) after $((SECONDS - start))s; see $log"; fi
     return "$rc"
@@ -820,10 +921,12 @@ STACK_USER=dev
 STACK_USER_PW=dittofs-dev-password-123
 NFS_MNT="$HOME/mnt/dittofs-nfs"
 SMB_MNT="$HOME/mnt/dittofs-smb"
-# The stack publishes on the Docker host: the Mac's localhost, host.docker.internal
-# from the dtc container.
+# The stack publishes on the Docker host: localhost natively (and in a host-network
+# dtc container), host.docker.internal from a bridge-network dtc container.
 STACK_HOST=127.0.0.1
-$IN_CONTAINER && STACK_HOST=host.docker.internal
+$HOSTNET || STACK_HOST=host.docker.internal
+# Linux needs root to mount; macOS mounts user-owned mount points without it.
+as_root() { if ((EUID == 0)); then "$@"; else sudo "$@"; fi; }
 
 stack_compose() { (cd "$REPO" && docker compose "$@"); }
 
@@ -832,9 +935,10 @@ cmd_stack() {
     local profile=s3-backend
     [[ "${1:-}" == --memory ]] && profile=default
     if $IN_CONTAINER && [[ "$action" == mount || "$action" == umount ]]; then
-        # A mount made here lives and dies with this throwaway container, where no
-        # Mac program can see it. It needs no Go, only the Mac's own clients.
-        info "mounts belong on the Mac: run '$HARNESS/bin/dt stack $action' there"
+        # A mount made here lives and dies with this throwaway container (its own
+        # mount namespace), where no host program can see it. It needs no Go, only
+        # the host's own NFS and SMB clients.
+        info "mounts belong on the host: run '$HARNESS/bin/dt stack $action' there"
         info "(inside 'dtc shell' you can also mount -t nfs|cifs from $STACK_HOST, for this container only)"
         return 0
     fi
@@ -862,19 +966,28 @@ cmd_stack() {
         mount)
             mkdir -p "$NFS_MNT" "$SMB_MNT"
             if mount | grep -q " on $NFS_MNT "; then info "NFS already mounted at $NFS_MNT"
-            else
+            elif [[ "$OS" == Darwin ]]; then
                 mount -t nfs -o vers=3,tcp,port=12049,mountport=12049,nolocks,noresvport 127.0.0.1:/export "$NFS_MNT" \
+                    && info "NFSv3 mounted at $NFS_MNT"
+            else
+                as_root mount -t nfs -o vers=3,tcp,port=12049,mountport=12049,nolock 127.0.0.1:/export "$NFS_MNT" \
                     && info "NFSv3 mounted at $NFS_MNT"
             fi
             if mount | grep -q " on $SMB_MNT "; then info "SMB already mounted at $SMB_MNT"
-            else
+            elif [[ "$OS" == Darwin ]]; then
                 mount_smbfs -N "//${STACK_USER}:${STACK_USER_PW}@127.0.0.1:12445/export" "$SMB_MNT" \
                     && info "SMB mounted at $SMB_MNT (user $STACK_USER)"
+            else
+                # The files show as yours: uid/gid map the mount to the calling user.
+                as_root mount -t cifs -o "username=$STACK_USER,password=$STACK_USER_PW,port=12445,vers=3.0,uid=$(id -u),gid=$(id -g)" \
+                    //127.0.0.1/export "$SMB_MNT" && info "SMB mounted at $SMB_MNT (user $STACK_USER)"
             fi
             ;;
         umount)
             for m in "$NFS_MNT" "$SMB_MNT"; do
-                mount | grep -q " on $m " && { umount "$m" || diskutil unmount force "$m"; } && info "unmounted $m"
+                mount | grep -q " on $m " || continue
+                if [[ "$OS" == Darwin ]]; then { umount "$m" || diskutil unmount force "$m"; } && info "unmounted $m"
+                else { as_root umount "$m" || as_root umount -f -l "$m"; } && info "unmounted $m"; fi
             done; true ;;
         *) die "usage: dt stack up|down|status|mount|umount|logs [--memory]" ;;
     esac
@@ -883,8 +996,8 @@ cmd_stack() {
 # An SMB login needs a real user with a password; the bootstrap only creates the share.
 stack_dev_user() {
     local cfgdir="$STATE/dfsctl"; mkdir -p "$cfgdir"
-    # Per-OS binary in harness state: the Mac and the dtc container share the checkout,
-    # and a Linux build in $REPO/dfsctl would shadow the Mac one (and vice versa).
+    # Per-OS binary in harness state: the host and the dtc container share the checkout,
+    # and a Linux build in $REPO/dfsctl would shadow a macOS one (and vice versa).
     local bin
     bin="$STATE/bin/$(uname -s)-$(uname -m)/dfsctl"
     [[ -x "$bin" ]] || { mkdir -p "$(dirname "$bin")"; (cd "$REPO" && go build -o "$bin" ./cmd/dfsctl); }
@@ -892,8 +1005,8 @@ stack_dev_user() {
     export XDG_CONFIG_HOME="$cfgdir"
     "${ctl[@]}" login --server "http://$STACK_HOST:8080" --username admin --password "$STACK_ADMIN_PW" >/dev/null
     if ! "${ctl[@]}" user get "$STACK_USER" >/dev/null 2>&1; then
-        # Your Mac uid (dtc passes it in; the container runs as root), so files made
-        # through the Mac's mounts are yours.
+        # Your host uid (dtc passes it in; the container runs as root), so files made
+        # through the host's mounts are yours.
         local uid="${DT_HOST_UID:-$(id -u)}"
         "${ctl[@]}" user create --username "$STACK_USER" --password "$STACK_USER_PW" --uid "$uid" >/dev/null
         info "created SMB user '$STACK_USER' (uid $uid)"
@@ -919,7 +1032,7 @@ cmd_cleanup() {
     local l
     for l in "$STATE"/*.lock; do  # suite.lock ($LOCK), e2e-linux and any long-running repro lock
         if [[ -d "$l" ]] && ! $force && lock_alive "$l"; then
-            die "a suite is running ($(cat "$l/owner" 2>/dev/null), $(cat "$l/where" 2>/dev/null || echo mac), pid $(cat "$l/pid" 2>/dev/null)); it uses these services. Wait for it, or: dt cleanup --force"
+            die "a suite is running ($(cat "$l/owner" 2>/dev/null), $(cat "$l/where" 2>/dev/null || echo host), pid $(cat "$l/pid" 2>/dev/null)); it uses these services. Wait for it, or: dt cleanup --force"
         fi
     done
     docker_ok
@@ -933,7 +1046,7 @@ cmd_cleanup() {
     smb_stack_down
     if docker inspect dt-e2e-linux >/dev/null 2>&1; then docker rm -f dt-e2e-linux >/dev/null && info "removed the Linux e2e container"; fi
     cmd_services down
-    $volumes && docker volume rm dt-e2e-linux-gocache >/dev/null 2>&1 && info "dropped the Linux e2e build cache" || true
+    $volumes && docker volume rm dt-e2e-linux-gocache dt-e2e-linux-gomod >/dev/null 2>&1 && info "dropped the Linux e2e caches" || true
     rm -rf /tmp/dte/* /tmp/dte-linux/* "$DTC_SHARED_TMP"/e2e/* 2>/dev/null || true
     rm -rf "$LOCK" "$STATE"/*.lock 2>/dev/null || true
     local left
@@ -952,7 +1065,7 @@ cmd_quick() {
 }
 
 # --- git hooks ----------------------------------------------------------------------------
-# install --container: the hooks run inside the dtc Linux container (the Mac needs no
+# install --container: the hooks run inside the dtc Linux container (the host needs no
 # Go, lint or bash 5). The mode is the repo's git config dt.hooksmode, read by every
 # harness hook; `dt hook NAME` is how dtc re-enters a hook inside the container.
 cmd_hooks() {
@@ -985,8 +1098,9 @@ cmd_hook() {
 cmd_doctor() {
     local bad=0
     check() { if "${@:2}" >/dev/null 2>&1; then printf '  ok   %s\n' "$1"; else printf '  FAIL %s\n' "$1"; bad=1; fi; }
-    if $IN_CONTAINER; then echo "mode: $WHERE (Linux $(uname -r), $(uname -m), uid $(id -u))"
-    else echo "mode: mac (dt on this Mac; 'dtc doctor' checks the Linux container)"; fi
+    local netmode=bridge; $HOSTNET && netmode=host
+    if $IN_CONTAINER; then echo "mode: $WHERE (Linux $(uname -r), $(uname -m), uid $(id -u), $netmode network)"
+    else echo "mode: host ($OS $(uname -r), $(uname -m)); 'dtc doctor' checks the Linux dev container"; fi
     echo "toolchain:"
     printf '  go             %s\n' "$(go version 2>/dev/null | awk '{print $3}')"
     printf '  golangci-lint  %s\n' "$(golangci-lint version 2>/dev/null | awk '{print $4}')"
@@ -996,20 +1110,26 @@ cmd_doctor() {
     check "bash >= 4 first on PATH (repo graders need it)" bash -c '((BASH_VERSINFO[0] >= 4))'
     check "GNU timeout on PATH" timeout --version
     # Run them, not just find them: a wrapper can resolve and still point at a
-    # Python that is not there (the Mac's shims seen from the container did).
+    # Python that is not there (the macOS shims seen from the container did).
     check "pynfs-4.0 / pynfs-4.1 run ($(command -v pynfs-4.0 || echo missing))" sh -c 'pynfs-4.0 --help && pynfs-4.1 --help'
+    check "jq, xmlstarlet, envsubst, shellcheck, fio" sh -c 'command -v jq && command -v xmlstarlet && command -v envsubst && command -v shellcheck && command -v fio'
+    check "a port probe (lsof or ss)" sh -c 'command -v lsof || command -v ss'
     if $IN_CONTAINER; then
-        check "jq, xmlstarlet, envsubst, shellcheck, fio" sh -c 'command -v jq && command -v xmlstarlet && command -v envsubst && command -v shellcheck && command -v fio'
         check "pjdfstest" sh -c 'command -v pjdfstest'
         check "kernel NFS and CIFS clients" sh -c 'grep -qw nfs /proc/filesystems || modprobe nfs; grep -qw cifs /proc/filesystems || modprobe cifs'
         check "$DTC_SHARED_TMP shared with the Docker host (e2e bind mounts)" grep -qs " $DTC_SHARED_TMP " /proc/self/mountinfo
-        check "Docker host reachable (host.docker.internal)" getent hosts host.docker.internal
-    else
-        check "jq, xmlstarlet, envsubst, shellcheck, fio" sh -c 'command -v jq && command -v xmlstarlet && command -v envsubst && command -v shellcheck && command -v fio'
+        $HOSTNET || check "Docker host reachable (host.docker.internal)" getent hosts host.docker.internal
+    elif [[ "$OS" == Linux ]]; then
+        # Native Linux: dt stack mount and dt e2e use the host's own clients.
+        check "NFS and CIFS mount helpers (nfs-common, cifs-utils)" sh -c 'command -v mount.nfs && command -v mount.cifs'
+        check "sudo (dt e2e and dt stack mount need root)" sh -c 'command -v sudo || [ "$(id -u)" = 0 ]'
+        check "rpcbind (the e2e NLM cases)" sh -c 'command -v rpcbind'
     fi
     echo "docker:"
     check "engine reachable" docker info
-    printf '  resources      %s\n' "$(docker info --format 'cpus={{.NCPU}} mem={{.MemTotal}}' 2>/dev/null)"
+    printf '  resources      %s\n' "$(docker info --format 'cpus={{.NCPU}} mem={{.MemTotal}} arch={{.Architecture}}' 2>/dev/null)"
+    printf '  engine         %s (containers dt starts use the %s network)\n' \
+        "$(docker info --format '{{.OperatingSystem}}' 2>/dev/null)" "$(sibling_net)"
     for img in "$LOCALSTACK_IMAGE" localstack/localstack:3.0 "$PG_IMAGE" "$PGIT_IMAGE" python:3.11-slim curlimages/curl:8.11.1; do
         check "image $img" docker image inspect "$img"
     done
@@ -1018,12 +1138,12 @@ cmd_doctor() {
     printf '  head           %s\n' "$(git -C "$REPO" log -1 --format='%h %ad %s' --date=short 2>/dev/null | cut -c1-80)"
     printf '  hooksPath      %s (mode %s)\n' "$(git -C "$REPO" config --get core.hooksPath || echo unset)" \
         "$(git -C "$REPO" config --get dt.hooksmode || echo host)"
-    if $IN_CONTAINER; then
+    if ! $HOSTNET; then
         # 4566/5432/15432/5696 here are the entry script's forwarders; the services
         # themselves publish on the Docker host.
         echo "ports (this container, LISTEN):"
         for p in 8080 12049 12445; do
-            if port_busy "$p"; then printf '  %-6s in use by %s\n' "$p" "$(lsof -w -nP -iTCP:"$p" -sTCP:LISTEN | awk 'NR==2{print $1}')"
+            if port_busy "$p"; then printf '  %-6s in use by %s\n' "$p" "$(port_owner "$p")"
             else printf '  %-6s free\n' "$p"; fi
         done
         echo "ports (Docker host):"
@@ -1033,7 +1153,7 @@ cmd_doctor() {
     else
         echo "ports (LISTEN):"
         for p in 8080 12049 12445 4566 5432 "$PGIT_PORT" 5696; do
-            if port_busy "$p"; then printf '  %-6s in use by %s\n' "$p" "$(lsof -w -nP -iTCP:"$p" -sTCP:LISTEN | awk 'NR==2{print $1}')"
+            if port_busy "$p"; then printf '  %-6s in use by %s\n' "$p" "$(port_owner "$p")"
             else printf '  %-6s free\n' "$p"; fi
         done
     fi
@@ -1043,7 +1163,7 @@ cmd_doctor() {
     done
     local l
     for l in "$STATE"/*.lock; do
-        [[ -d "$l" ]] && printf '  lock %s held by: %s (%s)\n' "$(basename "$l")" "$(cat "$l/owner" 2>/dev/null)" "$(cat "$l/where" 2>/dev/null || echo mac)"
+        [[ -d "$l" ]] && printf '  lock %s held by: %s (%s)\n' "$(basename "$l")" "$(cat "$l/owner" 2>/dev/null)" "$(cat "$l/where" 2>/dev/null || echo host)"
     done
     return "$bad"
 }

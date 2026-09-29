@@ -5,7 +5,7 @@ set -euo pipefail
 REPO="$(git rev-parse --show-toplevel)"
 HARNESS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # dt hooks install --container: run this hook in the dtc Linux container instead,
-# so the Mac needs no Go toolchain. dtc re-enters it there through `dt hook`.
+# so the host needs no Go toolchain. dtc re-enters it there through `dt hook`.
 if [ "${DT_IN_CONTAINER:-}" != 1 ] && [ "$(git config --get dt.hooksmode || true)" = container ]; then
     DITTOFS_REPO="$REPO" exec "$HARNESS/bin/dtc" hook pre-commit "$@"
 fi
