@@ -34,17 +34,19 @@ order: each part builds on the ones before it.
 | [RFC 11](rfc-11-ownership.md) | ownership | *draft* — ownership units (a share by default), leases, handover, failover, forwarding |
 | **Data management** | | |
 | [RFC 12](rfc-12-snapshots.md) | snapshots, backups and share migration | *draft* — snapshots (read-only, writable clones, scheduled with retention), metadata backup, restore to a new share, moving a share between installations on one bucket |
+| **Configuration** | | |
+| [RFC 13](rfc-13-configuration.md) | configuration | *draft* — what is a setting and what is fixed, scopes, which settings bind content, validation, change, secrets |
 | **Security** | | |
-| RFC 13 | identity and authentication | *planned* — principals, authentication flavours, identity mapping, squashing |
-| RFC 14 | authorization | *planned* — one abstract ACL model, its protocol mappings, evaluation |
+| RFC 14 | identity and authentication | *planned* — principals, authentication flavours, identity mapping, squashing |
+| RFC 15 | authorization | *planned* — one abstract ACL model, its protocol mappings, evaluation |
 | **Protocols** | | |
-| RFC 15 | adapter model | *planned* — the protocol handler contract, auth context, error mapping, dispatch |
-| RFC 16 | NFS | *planned* — decisions the NFS standards leave open |
-| RFC 17 | SMB | *planned* — decisions the SMB standards leave open |
+| RFC 16 | adapter model | *planned* — the protocol handler contract, auth context, error mapping, dispatch |
+| RFC 17 | NFS | *planned* — decisions the NFS standards leave open |
+| RFC 18 | SMB | *planned* — decisions the SMB standards leave open |
 | **Operations** | | |
-| RFC 18 | control plane | *planned* — runtime, share lifecycle, configuration, management API |
-| RFC 19 | resources and concurrency | *planned* — memory budgets, buffer pools, admission, backpressure |
-| RFC 20 | observability | *planned* — metric and label conventions, health derivation, events |
+| RFC 19 | control plane | *planned* — runtime, share lifecycle, management API; applies RFC 13's configuration |
+| RFC 20 | resources and concurrency | *planned* — memory budgets, buffer pools, admission, backpressure |
+| RFC 21 | observability | *planned* — metric and label conventions, health derivation, events |
 
 [The block data-flow split](rfc-block-dataflow.md) is the earlier plan the storage RFCs grew out of.
 
