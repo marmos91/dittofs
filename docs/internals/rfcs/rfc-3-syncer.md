@@ -2,7 +2,7 @@
 rfc: 3
 title: "RFC 3 — the syncer"
 component: syncer
-status: draft
+status: reviewed
 depends_on:
   - "[[rfc-0-data-lifecycle]]"
   - "[[rfc-1-journal]]"
@@ -481,7 +481,19 @@ whether the store is **healthy** or **unhealthy**:
 - the syncer **MUST** probe every registered store at a fixed interval, and
   **SHOULD** probe at once when a transfer to it fails with `ErrTransient` or
   `ErrDenied`;
-- a failed probe makes the store unhealthy; a successful one makes it healthy;
+- **a successful put stands in for the probe.** A store that completed an upload
+  within the last interval has just proved what the probe proves — reachable,
+  credentials accepted, namespace writable ([RFC 4 §4.7](rfc-4-remote-tier.md#4.7%20Health%20is%20one%20probe%20call)) — so the syncer
+  **MUST NOT** probe it that interval. A fetch does not count: it proves nothing
+  about writing;
+- stores that share an endpoint, credential and bucket **SHOULD** share one
+  probe. A permission that differs by prefix is not seen by the shared probe, and
+  is caught by the failure window below, as a throttled put is;
+- two consecutive failed probes make the store unhealthy; a successful one makes
+  it healthy. After a failed probe the syncer probes again at once rather than
+  waiting an interval, so one spurious failure costs a round trip, not an
+  interval of refused work, and a dead store is still detected within about one
+  interval;
 - a store also turns unhealthy when every transfer to it over a stated window
   ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)) failed with `ErrTransient` or `ErrDenied`, although its probe passed —
   a store that answers the probe but throttles puts, or refuses them after a
@@ -640,7 +652,7 @@ setting:
 | DRR quantum | the largest encoded block ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)) | [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) needs it to be at least that, and nothing is gained above it |
 | per-store and per-flow cap | three quarters of the pool, rounded down, at least one worker; with a pool of more than one, at most the pool less one | leaves a quarter for every other flow while letting a flow alone use most of the pool |
 | per-flow queue length | four times the pool | a waiting transfer holds a reference, not bytes ([§3.2](#3.2%20It%20holds%20a%20reference%2C%20not%20a%20copy)), so the length bounds bookkeeping, not memory |
-| probe interval | 5 s, healthy or not | one interval; one failed probe is unhealthy, one success healthy ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) |
+| probe interval | 5 s, healthy or not; skipped while uploads succeed | about one interval: two consecutive failed probes, the second at once, are unhealthy; one success is healthy ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) |
 | failure window | 30 s | a store whose every transfer failed for this long, with its probe passing, turns unhealthy ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) |
 | throughput floor | 64 KiB/s over 30 s, and 10 s to the first byte | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) |
 | detach bound | 5 s without taking the next chunk | a joined caller that falls behind is detached ([§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch)) |
@@ -974,6 +986,9 @@ half-complete. A backend that always succeeds asserts nothing about any of them.
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) termination | Present a permanently unavailable backend; assert every transfer returns within its bound. |
 | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) refusal contained | Fail one store's probe under load; assert calls to it fail at once without a backend call, and transfers to a second store still start. |
 | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) recovery | Fail a store's probe, then restore the backend; assert it turns healthy and accepts calls without any other action. |
+| [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) one spurious failure | Fail one probe and pass the next. Assert the store never turns unhealthy and no call is refused; fail two in a row and assert it turns unhealthy before the next interval. |
+| [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) traffic stands in | Keep uploads succeeding for ten intervals; assert no probe is sent. Stop uploads; assert probing resumes within one interval. Keep only fetches succeeding; assert probing continues. |
+| [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) shared probe | Register 100 stores on one endpoint, credential and bucket; assert one probe per interval, and that denying one store's prefix turns only that store unhealthy, through the failure window. |
 | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) logging | Keep a store unhealthy under heavy load for several intervals; assert exactly one unhealthy line, one healthy line and one line per interval at info or above, and that a refused call's error names the store. |
 | [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) no starvation | Saturate flow A with uploads to a store whose puts take seconds; issue one fetch on flow B; assert it starts within one round and flow A never holds more than its cap. |
 | [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) fair by bytes | Run two flows, one uploading maximum-size blocks and one small blocks; assert bytes transferred per flow stay within one quantum of each other. |
@@ -1134,20 +1149,24 @@ tool's raw figures; for B1–B4, the fake's simulated latency and per-byte time.
 
 ## 9. Open questions
 
-1. **A joint cap for the two pools.** Whether the halves contend enough on a
-   shared link to need one cap rather than two is unmeasured.
-2. **Probe flapping** ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)). One failed probe makes a store unhealthy and one
-   success makes it healthy. Whether a store that fails intermittently needs a run
-   of failures before turning unhealthy depends on how often real probes fail
-   spuriously, which is unmeasured.
-3. **The fixed values** ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)). The per-flow cap, queue length, probe interval
-   and the two pool defaults are reasoned, not measured. The cap trades a flow
-   alone on the system (wants it high) against the wait of a second flow's first
-   transfer when the first flow's store is slow (wants it low).
-4. **Considered and deferred.** Each waits for a measurement that asks for it:
-   hedged cold reads ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)); a bandwidth cap per direction, which [§2.1](#2.1%20A%20worker%20pool%20is%20the%20only%20concurrency%20control)
-   permits only with its interaction with the pool stated; spreading connections
-   across the service's addresses.
+None. Settled:
+
+1. **No joint cap for the two pools.** Uploads and fetches already share the
+   store's connection pool ([RFC 4 §4.10](rfc-4-remote-tier.md#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)), which bounds what they put on the link
+   together, and fair queuing ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) keeps one from starving the other. A
+   third bound would be a third setting with nothing measured to size it.
+   Overturned by a cold-read benchmark ([§8.5](#8.5%20Performance%20targets)) whose latency under full upload
+   load misses its target while the store's pool is not full.
+2. **Probe flapping:** two consecutive failures, the second probed at once
+   ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)). A healthy store with traffic is not probed at all.
+3. **The fixed values** ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)) are proposals, each overturned by the benchmark in
+   [§8.5](#8.5%20Performance%20targets) that measures it. None is a setting, so changing one is a release, not a
+   migration.
+
+**Deferred**, each until a measurement asks for it: hedged cold reads
+([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)); a bandwidth cap per direction, which [§2.1](#2.1%20A%20worker%20pool%20is%20the%20only%20concurrency%20control) permits only with its
+interaction with the pool stated; spreading connections across the service's
+addresses.
 
 ## 10. Deviations
 
@@ -1161,7 +1180,7 @@ integrity) are listed once, in [RFC 4 Appendix A](rfc-4-remote-tier.md#Appendix%
 | D1 | one syncer per process ([§1.3](#1.3%20Interface)) | one syncer per share |
 | D2 | two process-wide pool settings ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)) | an upload window per store, adaptive by default |
 | D3 | `fetch_workers` is a setting ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)) | derived from the CPU count and not settable |
-| D4 | one probe interval, one failure turns unhealthy ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) | two intervals, three failures, and a separate demand timeout |
+| D4 | two consecutive failures, the second at once, turn unhealthy; probes skipped while uploads succeed ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) | two intervals, three failures, and a separate demand timeout; probes run whatever the traffic |
 | D7 | the uploader streams a journal reference ([§3.2](#3.2%20It%20holds%20a%20reference%2C%20not%20a%20copy)) | the block is copied into memory before a slot is free, and again for the put |
 | D8 | a failed fill does not fail the read ([§4.2](#4.2%20The%20reply%20neither%20waits%20on%20the%20fill%20nor%20fails%20with%20it)) | a fill error fails the fetching caller and every joined one |
 | D9 | a retry after an unknown outcome writes the same name ([§2.5](#2.5%20An%20unknown%20outcome%20is%20not%20a%20success)) | block names are random, so a retry leaves an orphan |

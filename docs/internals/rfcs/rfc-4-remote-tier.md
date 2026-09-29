@@ -2,7 +2,7 @@
 rfc: 4
 title: "RFC 4 — the remote block store: block format and store contract"
 component: remote tier
-status: draft
+status: reviewed
 depends_on:
   - "[[rfc-0-data-lifecycle]]"
   - "[[rfc-2-carver]]"
@@ -626,20 +626,28 @@ Settled in this revision, with the evidence in [Appendix B](#Appendix%20B%20%E2%
    supported** ([Appendix C.1](#C.1%20Required%20service%20features)). Each stops sweep from freeing space or deletes
    durable blocks behind the store's back.
 
-Still open:
+Settled with them:
 
-1. **What "durable" means per service.** [§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success) requires that `nil` means durable,
-   but no check can provoke a durability failure. Each supported service's
-   documentation must be read and cited in [Appendix B](#Appendix%20B%20%E2%80%94%20measurements): replication before
-   acknowledgement, and in which failure domains.
-2. **Request latency on slow services.** One service measured took about a second
-   per request from the test host, 8 to 20 times another ([Appendix B](#Appendix%20B%20%E2%80%94%20measurements)). Whether
-   that is the service, the region or the path decides how many workers such a
-   store needs ([RFC 3 §2.11](rfc-3-syncer.md#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)), so it is measured from a host near the service
-   before sizing.
-3. **Probe cost at scale.** One put per store per probe interval is negligible for
-   a few stores. With hundreds of stores on one service, a shared probe per
-   endpoint and credential may be wanted. Measure before adding it.
+5. **Request latency does not change the design.** A slow service needs more
+   workers, and the sizing tool measures that on the host that will run it
+   ([RFC 3 §2.11](rfc-3-syncer.md#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)). The figure in [Appendix B](#Appendix%20B%20%E2%80%94%20measurements) is one host's path, recorded, not a
+   property of the service.
+6. **Probe cost is removed where it would matter.** One put per store every 5 s
+   is 17,280 puts a day; at 10⁴ stores that is 2,000 puts a second of pure
+   probing. A successful upload stands in for the probe, and stores sharing an
+   endpoint, credential and bucket share one ([RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work)), so a busy installation
+   sends almost none and an idle one sends one per bucket.
+
+7. **What "durable" means is cited per service**, since no check can provoke a
+   durability failure ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success)). [Appendix C.1](#C.1%20Required%20service%20features) records, per measured service, when a
+   put is acknowledged and across which failure domains. A storage class that
+   keeps data in one failure domain is allowed: the capability check reports the
+   class's failure domain at open and through health, and a deployment that
+   configures such a class accepts what it promises.
+
+Nothing is left open.
+
+---
 
 ## Appendix A — where the current code differs
 
@@ -723,6 +731,17 @@ For the two bucket-setting calls, "no configuration" (`404` with the service's
 not-found code) passes, `501 NotImplemented` passes (a service without the
 feature cannot have it enabled), and `403` refuses: the credential must be
 allowed to read both settings, or the check cannot tell.
+
+**When a put is durable, per service.** Cited from each service's own
+statement, not measured ([§8](#8.%20Decisions%20and%20open%20questions), item 7):
+
+| Service | A `200` on put means | Failure domains |
+| --- | --- | --- |
+| Cubbit DS3 | every shard of the object's erasure code (N+K per site, across the redundancy class's sites) is stored | the sites of the bucket's redundancy class |
+| Scaleway, Standard Multi-AZ | stored under the service's multi-zone redundancy | three availability zones, in regions that offer it |
+| Scaleway, One Zone | stored under the service's single-zone redundancy | one availability zone: allowed, reported at open |
+
+A service is added to this table before it is supported.
 
 Not required: conditional put, multipart upload ([RFC 3 §3.4](rfc-3-syncer.md#3.4%20One%20put%20per%20block) rules it out), trailing checksums,
 `HeadObject`, `HeadBucket`, `CopyObject`, bucket creation.
