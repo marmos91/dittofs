@@ -135,7 +135,7 @@ different architecture, not a transform.
 
 The chain runs inside the block codec, which the engine owns ([RFC 4 §3.1](rfc-4-remote-tier.md#3.1%20Who%20writes%20it)).
 
-![Write path: the chunk is hashed first, then each configured transform runs in order, a transform that declines is skipped and left out of the envelope; the envelope lists the ones applied. Read path: the envelope says which to undo, in reverse, and the plaintext hash decides](img/rfc5t-chain.svg)
+![The chain in its fixed order: the chunk is hashed first, then compress, encrypt and redundancy run in that order, each able to decline; the envelope records which ran. Reading undoes the listed stages in reverse and the plaintext hash decides](img/rfc5t-chain.svg)
 
 - The hash is taken over plaintext **before** the chain, so identity never
   depends on a transform's settings, material or library version ([RFC 4 §3.3](rfc-4-remote-tier.md#3.3%20Transforms)).
@@ -210,7 +210,7 @@ with `ErrMalformed`. Version 1 is the layout above.
 > The envelope now carries a 1-byte version (cost 2 + 2n). The earlier text
 > relied on the block header's version, which a ranged read never fetches.
 
-![A body: the envelope listing the applied transforms, then each transform's own header nested around the next one's output, with the chunk's bytes innermost](img/rfc5t-body.svg)
+![A body: the versioned envelope listing the applied transforms, then encryption's output with its header wrapping compression's output, with the chunk's bytes innermost](img/rfc5t-body.svg)
 
 A reader **MUST** reject with `ErrMalformed`, before decoding anything, an
 envelope with an unknown version, or one that lists an unregistered ID, the same
@@ -827,7 +827,7 @@ body      = AES-256-GCM-SIV(chunk key, nonce = 0, input,
 `input` is what reaches the encrypt stage: the compressed chunk, or the chunk
 itself when compression declined or is off.
 
-![Encrypting one chunk: the data key and a salt derived from the chunk's hash give a per-chunk key through HKDF; an AEAD seals the input, authenticating the header fields and the plaintext hash](img/rfc5t-key-derivation.svg)
+![Encrypting one chunk: the master key unwraps per-namespace data, header and chunking keys; the data key seals the chunk with AES-256-GCM-SIV, the header key seals the chunk hashes in block headers, the chunking key keys boundaries](img/rfc5t-key-derivation.svg)
 
 **Every derivation has its own versioned label.** Nothing derived from a key is
 derived under a label another derivation uses:
