@@ -14,14 +14,8 @@ tags:
 ---
 # RFC 4 — the remote block store: block format and store contract
 
-**Status:** draft.
-**Depends on:** [RFC 0](rfc-0-data-lifecycle.md) for the terms, [RFC 2](rfc-2-carver.md) for block names, [RFC 3](rfc-3-syncer.md) for the
-syncer that calls this contract.
 **Audience:** anyone implementing a remote block store, or reading or writing
-blocks.
-
-The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT** and **MAY** are
-to be interpreted as in RFC 2119.
+blocks. Conventions and test tiers are in [the RFC index](rfc-index.md).
 
 This document specifies behaviour, not the current code. Where the code differs,
 [Appendix A](#Appendix%20A%20%E2%80%94%20where%20the%20current%20code%20differs) lists it for the refactor.
@@ -118,7 +112,7 @@ A block is a **header** followed by the **chunk bodies**, in order.
 | --- | --- | --- |
 | Format marker and version | first bytes | a reader built for another version, or handed something that is not a block, fails loudly instead of misparsing |
 | Header length | first bytes | a reader fetches the whole header in one ranged request, rarely two |
-| Block name | header | a block served under the wrong key is detected instead of used. The name is the block's identity in block metadata too ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)), so it links the stored bytes back to their record. |
+| Block name, encoding generation, chain ID | header | a block served under the wrong key is detected instead of used. The name is the block's identity in block metadata too ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)), so it links the stored bytes back to their record; the generation and chain ID are the name's inputs besides the hashes and the key scope, so a whole-block read can recompute it. |
 | Chunk index | header | for each chunk: its plaintext hash, and the offset and length of its body. One chunk can then be read with one ranged request, without reading the others. |
 | Chunk bodies | after the header | each chunk's bytes, transformed if a chain is configured ([§3.3](#3.3%20Transforms)) |
 
@@ -133,9 +127,9 @@ Three requirements on the layout:
   the header. [RFC 8 §5.4](rfc-8-engine.md#5.4%20A%20block%27s%20name%20is%20derived%20here) derives it from the chunk hashes, which exist before
   any byte is encoded.
 
-The header comes first but is written last: the encoder writes the bodies to the
-uploader's spool file, then builds the header from their lengths, and the put
-sends header followed by spool ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success)). Only the header is held in memory.
+The header comes first, so every body's length is known before the first byte is
+sent: from each transform's declared length, or from a measuring pass when the
+chain cannot declare it ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success)). Only the header and one chunk are held in memory.
 
 The byte-level encoding is left to the codec: field widths, integer encoding and
 field order are not part of this contract. Changing them is a migration ([§3.5](#3.5%20Format%20changes%20are%20migrations)).
@@ -169,7 +163,7 @@ on or off, apart from these offsets and timing.
 The codec **MUST** check every chunk it returns against the plaintext hash the
 caller expects, after undoing every transform, and **MUST** return an error rather
 than unverified bytes. A whole-block read also recomputes the block's name from
-the header's chunk hashes, with its key scope and encoding generation
+the header's chunk hashes, encoding generation and chain ID, with its key scope
 ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)), and checks it against the name it was fetched under. Comparing
 the header's name field alone would accept a header whose index was altered.
 
@@ -177,19 +171,11 @@ No consumer reads block bytes except through the codec. Verification then happen
 in one place, and every consumer (the engine's fetch, relocation, snapshot
 verification) inherits it.
 
-![A ranged get at a stale position fails verification or runs past the end; the header is read once and the chunk fetched at the header's position; on success the recorded position is rewritten, otherwise the chunk is corrupt](img/rfc4r-stale-read.svg)
-
-**A stale offset is repaired, not reported.** Block metadata records where each
-chunk's body sits ([RFC 6 §2.2](rfc-6-block-metadata.md#2.2%20Chunk)). If the block was later re-put with a
-different layout ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success)), a ranged read at the recorded offset fails
-verification or runs past the end (`ErrInvalid`). On either, the engine's `Store`
-([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)) **MUST** read the block's header once, retry the chunk at the
-offset the header gives, and yield it with the range it was actually read from.
-The engine then rewrites the chunk's recorded offset so the next read goes
-straight there ([RFC 8 §6.7](rfc-8-engine.md#6.7%20An%20absent%20object%20is%20re-resolved%20exactly%20once)). If the retry also fails, or the header does not
-list the chunk, the chunk is corrupt. A verification failure resolved by this
-repair is not a failure: it is counted as a repair, never as corruption
-([§4.12](#4.12%20What%20a%20store%20makes%20observable)).
+**A recorded position never goes stale.** One name is only ever stored as one
+byte sequence ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success)), so the position block metadata records for a chunk
+([RFC 6 §2.2](rfc-6-block-metadata.md#2.2%20Chunk)) stays right for the life of the block. A ranged read that fails
+verification, or runs past the end, is corrupt: the codec does not re-read the
+header to look for the chunk elsewhere.
 
 ### 3.5 Format changes are migrations
 
@@ -205,9 +191,13 @@ the change.
 Signatures are indicative; the obligations in [§4.2](#4.2%20Names%20in%2C%20locations%20kept%20inside)–[§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) are normative.
 
 ```go
-// Name is a block's name (RFC 2 §4.2): derived from its chunk hashes, key scope
-// and encoding generation.
+// Name is a block's name (RFC 2 §4.2): derived from its chunk hashes, key scope,
+// encoding generation and chain ID.
 type Name [32]byte
+
+// Checksum names the checksum a put carries up front, as the capability check
+// chose it (§4.11), or None when the store verifies the service's digest instead.
+type Checksum uint8
 
 // Range is a byte range in an encoded block. The zero Range means the whole block.
 type Range struct{ Off, Len int64 }
@@ -220,9 +210,12 @@ type Info struct {
 }
 
 type Store interface {
-	// Put stores one whole encoded block. It returns nil only once the block
-	// is durable. A put under an existing name replaces the block atomically.
-	Put(ctx context.Context, name Name, body io.ReaderAt, size int64) error
+	// Checksum says which checksum Put needs before the first byte, if any.
+	Checksum() Checksum
+
+	// Put streams one whole encoded block of exactly size bytes, with sum when
+	// Checksum is not None. It returns nil only once the block is durable.
+	Put(ctx context.Context, name Name, body io.Reader, size int64, sum []byte) error
 
 	// Get returns exactly the bytes of r, or of the whole block when r is the
 	// zero Range. The reader yields exactly that many bytes or fails.
@@ -277,47 +270,51 @@ blocks as its own ([RFC 9 §5.3](rfc-9-gc.md#5.3%20It%20runs%20only%20where%20th
 
 - **A put stores a whole block.** There is no partial or appending put, and a put
   that does not complete **MUST NOT** leave the block readable ([RFC 3 §3.4](rfc-3-syncer.md#3.4%20One%20put%20per%20block)).
-- **The body has a known length and can be re-read.** The caller hands over an
-  `io.ReaderAt` and its size: the encoded block, the header in memory followed by
-  the bodies in the uploader's spool file ([§3.2](#3.2%20Layout), [RFC 3 §3.4](rfc-3-syncer.md#3.4%20One%20put%20per%20block)). The store
-  needs no spool of its own and can compute a checksum before sending.
+- **The body is a stream of known length.** The caller hands over a reader and
+  the block's exact size, header first, then each chunk encoded as it is read
+  ([§3.2](#3.2%20Layout)). No one holds the whole block: not the caller, not the store, and
+  not a file on disk. The store reads the stream once; a retry is the syncer's,
+  which streams the block again from the journal ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)).
+- **The size, and a checksum when needed, come before the first byte.** Each
+  transform declares the exact length it will produce for an input, when it can
+  know it without encoding ([RFC 5 §3.1](rfc-5-transforms.md#3.1%20Interfaces)). When every transform in the chain can,
+  and the store needs no up-front checksum, the lengths come from those
+  declarations and the block is encoded once, while it is sent. Otherwise the
+  engine runs a **measuring pass** first: it encodes each chunk, keeps only its
+  length and folds it into the checksum, and discards the bytes; then it encodes
+  again while sending. The two passes produce the same bytes, because encoding is
+  deterministic ([RFC 5 §2.1](rfc-5-transforms.md#2.1%20A%20transform%20acts%20on%20one%20chunk)). The checksum covers the header, which is built only
+  once every length is known: a checksum that can be combined from parts
+  (CRC32C) is taken per body and joined to the header's, and one that cannot
+  (MD5) needs a second measuring pass when the lengths also had to be measured.
 - **A put is verified in transit.** Either the service checks the body against a
   checksum the store sends and refuses a mismatch, or the service reports a digest
-  of what it stored and the store compares it with its own. Either way a mismatch
-  returns `ErrCorrupt`, and the retry overwrites whatever was stored. Without
-  this, bytes corrupted in transit are found only at a later read, possibly after
-  the journal released its copy. Which mechanism a service supports is the
-  backend profile's to find out ([§5](#5.%20Backend%20profiles)); a service offering neither is refused.
+  of what it stored and the store compares it with the one it computed while
+  streaming. Either way a mismatch returns `ErrCorrupt`, and the syncer's retry
+  puts the same bytes again. Without this, bytes corrupted in transit are found
+  only at a later read, possibly after the journal released its copy. Which
+  mechanism a service supports is the backend profile's to find out ([§5](#5.%20Backend%20profiles)); a
+  service offering neither is refused.
 - **Success means durable.** Every store is durable: `nil` from `Put` means the
   block survives the loss of this machine. A service that acknowledges before
   that point is not admitted, and there is no setting that marks a store as
   non-durable.
-- **A put under an existing name replaces the block atomically.** Readers see the
-  old block or the new one, never a mix. This arises only from a retry of the
-  same put, or from two passes in flight carrying identical chunk lists: a
-  relocation that re-encodes writes a new encoding generation, and so a new name
-  ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block), [RFC 9 §4.2](rfc-9-gc.md#4.2%20Read%20verified%2C%20name%20by%20content%2C%20put%2C%20then%20move)). Because the name is derived from the chunk
-  hashes, both puts hold the same chunks in the same order; only the bytes can
-  differ (a salted encryption, a different chain), and [§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec) repairs offsets
-  the change made stale. A put is therefore idempotent in content, and a retry
-  after an unknown outcome is safe ([RFC 3 §2.5](rfc-3-syncer.md#2.5%20An%20unknown%20outcome%20is%20not%20a%20success)).
-
-> **decision:** on a service whose put integrity is only the returned digest
-> (the store compares it after the service has stored the body), an overwrite
-> whose body was corrupted in transit replaces a good block with a bad one
-> before the mismatch is seen. The store returns `ErrCorrupt` and the retry
-> overwrites it again, but a crash before that retry leaves the block corrupt
-> under a durable name. The ceiling is the window between the corrupted put and
-> its retry, on overwrites only. Withdraw digest-only services if corrupted
-> overwrites are ever observed, or if blocks must be overwritten routinely.
+- **One name is one byte sequence.** The name covers everything that decides a
+  body's length ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)), and encoding is deterministic, so every put of a
+  name writes the same bytes. The writer checks block metadata for the name
+  before putting and skips the put when the block is already recorded
+  ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output)). A put under an existing name therefore arises only from a retry
+  after an unknown outcome ([RFC 3 §2.5](rfc-3-syncer.md#2.5%20An%20unknown%20outcome%20is%20not%20a%20success)), or from two passes that both missed that
+  check, and it rewrites identical bytes: positions recorded from either put stay
+  right.
 
 A store **MUST NOT** require a conditional put (put-if-absent): services that
 claim the same protocol differ on it ([Appendix B](#Appendix%20B%20%E2%80%94%20measurements)). Doing without it rests on
-content-derived names, and on GC keeping a put from re-creating a block while it
-deletes it. How GC does that is its own, still-open question
+content-derived names, on the pre-put check above, and on GC's deletion fence,
+which keeps a put from re-creating a block while GC deletes it
 ([RFC 9 §3.4](rfc-9-gc.md#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete)).
 
-![A put: chunks are transformed one at a time into a spool file, the header is built from the body lengths, and header plus spool go to the store in one request with the profile's integrity check](img/rfc4r-put-path.svg)
+![A put streams: body lengths come from each transform's declared length, or from a measuring pass that encodes and discards; the header goes first, then each chunk encoded as it is sent, in one request with the profile's integrity check](img/rfc4r-put-path.svg)
 
 ### 4.4 Get: a whole block or one range, exactly
 
@@ -397,16 +394,17 @@ whichever service it was not written against.
 
 | Error | Meaning | What the caller does |
 | --- | --- | --- |
-| `ErrNotFound` | this block is absent; the store itself is fine | fails the read; the engine re-resolves the chunk once ([RFC 8 §6.7](rfc-8-engine.md#6.7%20An%20absent%20object%20is%20re-resolved%20exactly%20once)) |
-| `ErrInvalid` | the request was wrong: a range past the end, or an operation the service does not support | fails the call; not retried. A ranged get at a recorded offset is repaired once from the header ([§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec)) |
+| `ErrNotFound` | this block is absent; the store itself is fine | fails the read; the engine re-resolves the chunk ([RFC 8 §6.7](rfc-8-engine.md#6.7%20An%20absent%20object%20is%20re-resolved%20exactly%20once)) |
+| `ErrInvalid` | the request was wrong: a range past the end, or an operation the service does not support | fails the call; not retried |
 | `ErrDenied` | the store refused, or does not exist: credentials, permissions, a missing bucket | fails the call; the syncer's health rules decide what follows ([RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work)) |
 | `ErrTransient` | retrying may help: network, timeout, a server error, throttling, a short body | the syncer retries within its bound ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
-| `ErrCorrupt` | a checksum mismatch in transit | retried like a transient error; repeated on a get, it is reported as corruption |
+| `ErrCorrupt` | a put's checksum or digest mismatched in transit, or the codec's verification of a chunk failed ([§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec)) | a put is retried; a chunk that failed verification is corrupt and is not retried |
 
 A local failure (the context cancelled, the body's reader failing) is returned
 as itself. It is not the service's fault and does not count against the store's
-health. The engine's `Store` maps this set, and the codec's, onto the syncer's
-own closed set ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)).
+health. A mismatching checksum the service returns with a get is
+`ErrTransient`: the codec's hash check is the one that decides ([§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)). The
+syncer uses this set as it is, plus one error for material ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)).
 
 ### 4.9 No state across calls
 
@@ -464,8 +462,8 @@ not fatal.
 Every store exports the same metrics, labelled by store. A backend adds none of
 its own, so a dashboard works for every backend. The codec's metrics are
 exported by the codec, whichever store it reads from. Each event has one owner:
-a verification is counted here, once, after the repair of [§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec), and neither
-the syncer nor the transforms count it again ([RFC 3 §2.12](rfc-3-syncer.md#2.12%20What%20the%20syncer%20makes%20observable),
+a verification is counted here, once, and neither the syncer nor the transforms
+count it again ([RFC 3 §2.12](rfc-3-syncer.md#2.12%20What%20the%20syncer%20makes%20observable),
 [RFC 5 §6](rfc-5-transforms.md#6.%20Observability)).
 
 | Answers | Metric | Type |
@@ -477,8 +475,8 @@ the syncer nor the transforms count it again ([RFC 3 §2.12](rfc-3-syncer.md#2.1
 | entries under the block namespace that are not blocks ([§4.6](#4.6%20List%20is%20a%20complete%2C%20resumable%20walk)) | `dittofs_remote_list_foreign_total` | counter |
 | the last capability check, per feature: 1 if present ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)) | `dittofs_remote_capability` | gauge |
 | chunks the codec returned verified | `dittofs_codec_chunks_verified_total` | counter |
-| stale offsets repaired from the header ([§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec)); a steady rate means blocks are being re-put with new layouts | `dittofs_codec_offsets_repaired_total` | counter |
-| chunks that failed verification **after** the repair, labelled `kind` = `hash`, `name`, `version`, `malformed`. Any of these is an alert | `dittofs_codec_verify_failures_total` | counter |
+| blocks encoded with a measuring pass ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success)); against blocks encoded, how often a put encodes twice | `dittofs_codec_measuring_passes_total` | counter |
+| chunks that failed verification, labelled `kind` = `hash`, `name`, `version`, `malformed`. Any of these is an alert | `dittofs_codec_verify_failures_total` | counter |
 | encode and decode time per block, by direction | `dittofs_codec_seconds` | histogram |
 
 Logs: a refused open logs every missing feature at `Error`, once. `ErrCorrupt`,
@@ -502,7 +500,7 @@ S3-compatible object storage, the primary backend, is profiled in
 | R2 | Every chunk returned by the codec was verified against its plaintext hash. |
 | R3 | Decode inverts encode exactly; identity is over plaintext; the chain is recorded in the block. |
 | R4 | The store never parses a block, and nothing above the codec observes a transform. |
-| R5 | A put is whole, checksummed, atomic, and `nil` only once durable. |
+| R5 | A put is whole, streamed at a length known before its first byte, checksummed, and `nil` only once durable. |
 | R6 | A get returns exactly the requested bytes or an error. |
 | R7 | Delete is idempotent per name, and reports per name. |
 | R8 | A listing yields every block once, in order, resumably. |
@@ -510,12 +508,11 @@ S3-compatible object storage, the primary backend, is profiled in
 | R10 | A store holds no state across calls and makes one attempt per call. |
 | R11 | A store's client limits are derived from the worker pools. |
 | R12 | A store does not open against a service missing a required feature. |
+| R13 | Every put of one name writes the same bytes, so a recorded position never goes stale. |
 
 ## 7. Test plan and benchmarks
 
-The same rules as [RFC 1 §11](rfc-1-journal.md#11.%20Conformance): every **MUST** has a check, and a check is
-validated by reverting the code it guards and watching it fail on its own
-assertion.
+The set-wide test rules and tiers are in [the RFC index](rfc-index.md#Test%20tiers).
 
 ### 7.1 Conformance suite
 
@@ -526,7 +523,7 @@ in-memory store).
 | Section | Check | T |
 | --- | --- | --- |
 | [§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success) | Put, then get whole: bytes equal. | |
-| [§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success) | While readers loop on a get, overwrite the block repeatedly with two bodies of different lengths: every get returns one body or the other, never a mix. | |
+| [§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success) | A put cut off part-way through its stream: a get afterwards returns `ErrNotFound`, never a partial block. A stream shorter or longer than its declared size fails the put. | T |
 | [§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success) | A put of a new name through a transport that flips one byte fails with `ErrCorrupt`. Where the service checks the put, a get afterwards returns `ErrNotFound`; where the store compares the digest, the corrupt block exists until the retry, and a retry without the fault makes a get return the original bytes. | T |
 | [§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly) | Get of each range inside the block returns exactly its bytes. A range starting past the end fails with `ErrInvalid`. | |
 | [§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly) | A transport that clamps a range ending past the end: the get fails with `ErrInvalid`, never returns fewer bytes. | T |
@@ -570,7 +567,8 @@ with those faults, so these profiles are the negative tests.
 | [§3.2](#3.2%20Layout) | A block fetched under a different name fails the name check. An unknown version fails with a version error, not a parse error. |
 | [§3.2](#3.2%20Layout) | Fuzz the decoder: no panic, and no allocation larger than the fixed header maximum before the header is validated. |
 | [§3.3](#3.3%20Transforms) | Run the engine's read and write tests with and without transforms: no difference observable apart from offsets and timing. |
-| [§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec) | Record offsets, rewrite the block with a different layout, read every chunk: all succeed, each repair is counted once, and a second read makes no repair. |
+| [§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec) | A ranged read at a wrong offset or length fails with `ErrCorrupt`, and nothing re-reads the header. |
+| [§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success) | Encode the same block twice, once from declared lengths and once after a measuring pass, under every transform configuration: the bytes, the header and the checksum are identical, and the declared size equals the bytes streamed. |
 | [§3.5](#3.5%20Format%20changes%20are%20migrations) | A stored fixture of every released version decodes. |
 
 ### 7.4 Services
@@ -578,7 +576,7 @@ with those faults, so these profiles are the negative tests.
 | Service | Expected | When |
 | --- | --- | --- |
 | In-memory store | passes the rows of [§7.1](#7.1%20Conformance%20suite) not marked T | every change |
-| Local S3 emulator, current version, under the fault transport | passes [§7.1](#7.1%20Conformance%20suite) and the capability check | every change |
+| A local emulator of the remote service, current version, under the fault transport | passes [§7.1](#7.1%20Conformance%20suite) and the capability check | every change |
 | Each supported production service ([Appendix B](#Appendix%20B%20%E2%80%94%20measurements)) | passes the capability check and [§7.1](#7.1%20Conformance%20suite) | nightly, in a disposable namespace |
 
 A new service is supported once it passes the nightly row. Its results go into
@@ -586,9 +584,9 @@ A new service is supported once it passes the nightly row. Its results go into
 
 ### 7.5 Benchmarks and targets
 
-Run on the reference box of [RFC 1 §12](rfc-1-journal.md#12.%20Test%20plan%20and%20performance%20targets), against the local emulator on every
-merge and against a real service nightly. Record the service, region,
-block size and pool sizes with every result.
+Run against the local emulator after merge and against a real service daily
+([the RFC index](rfc-index.md#Test%20tiers)). Record the service, region, block size and pool sizes
+with every result.
 
 | Benchmark | Measures | Target |
 | --- | --- | --- |
@@ -596,26 +594,12 @@ block size and pool sizes with every result.
 | Put of one full block, 1 to N workers | MB/s at each step | at the service's saturation point, within 10% of the same curve measured with raw client calls; the pool-sizing tool uses this curve ([RFC 3 §2.11](rfc-3-syncer.md#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) |
 | Ranged get of one chunk (4 KiB to 1 MiB) | requests, p50 and p99 latency | one request per chunk, and within 10% of a raw client call of the same size |
 | Whole-block get | MB/s | within 10% of a raw client call |
+| Put of one block with and without a measuring pass | MB/s | report; the gap is what the second encode costs |
 | Steady load at a fixed pool size for 10 minutes | connections opened | no more than the pool size, plus one per connection the service closed (counted from the transport's close events) |
 | Health probe | requests | exactly one |
 | List of 100,000 blocks | requests, peak memory | one per page of 1,000, and at most one page held |
 
-A regression of more than 10% is reported after merge and does not block one,
-as in [RFC 1 §12](rfc-1-journal.md#12.%20Test%20plan%20and%20performance%20targets).
-
-## 8. Consequences for other RFCs
-
-This revision made these changes to the RFCs around it:
-
-| RFC | Change |
-| --- | --- |
-| [RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface), [§3.4](rfc-3-syncer.md#3.4%20One%20put%20per%20block) | The syncer's `Store` is the block codec over a remote store: it encodes each upload into a spool and puts header followed by spool, repairs a stale offset inside `Get` and yields the range read, and maps errors onto a closed set. |
-| [RFC 5](rfc-5-transforms.md) | Transforms are a generic, configured chain run by the codec; transform errors surface as codec errors, not through [§4.8](#4.8%20Errors%20are%20a%20closed%20set). |
-| [RFC 6 §2.2](rfc-6-block-metadata.md#2.2%20Chunk) | A chunk's `position` comes from the encoded block's header, and a read may repair it ([§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec)). |
-| [RFC 8 §5.1](rfc-8-engine.md#5.1%20Blocks%20are%20assembled%20here%2C%20as%20a%20fold%20over%20the%20carver%27s%20output), [§6.7](rfc-8-engine.md#6.7%20An%20absent%20object%20is%20re-resolved%20exactly%20once), [§7](rfc-8-engine.md#7.%20Local%20space) | Upload encodes into a spool the engine budgets; an absent block is re-resolved once; a chunk yielded at a different range has its recorded position rewritten. |
-| [RFC 9 §4.2](rfc-9-gc.md#4.2%20Read%20verified%2C%20name%20by%20content%2C%20put%2C%20then%20move), [§4.3](rfc-9-gc.md#4.3%20A%20reader%20can%20hold%20the%20old%20location) | Relocation reads and re-encodes through the codec under the current chain, on a syncer flow, into a new name; deletes are batched and go to the store directly; listing is resumable ([§4.6](#4.6%20List%20is%20a%20complete%2C%20resumable%20walk)). |
-
-## 9. Decisions and open questions
+## 8. Decisions and open questions
 
 Settled in this revision, with the evidence in [Appendix B](#Appendix%20B%20%E2%80%94%20measurements):
 
@@ -730,7 +714,7 @@ not-found code) passes, `501 NotImplemented` passes (a service without the
 feature cannot have it enabled), and `403` refuses: the credential must be
 allowed to read both settings, or the check cannot tell.
 
-Not required: conditional put, multipart upload ([RFC 3 §3.4](rfc-3-syncer.md#3.4%20One%20put%20per%20block) rules it out),
+Not required: conditional put, multipart upload ([RFC 3 §3.4](rfc-3-syncer.md#3.4%20One%20put%20per%20block) rules it out), trailing checksums,
 `HeadObject`, `HeadBucket`, `CopyObject`, bucket creation.
 
 ### C.2 Layout in the bucket
@@ -753,7 +737,7 @@ Several stores may share a bucket under different prefixes, never one prefix
 | one attempt per call ([§4.9](#4.9%20No%20state%20across%20calls)) | SDK retries off (maximum attempts 1) |
 | client configuration | the SDK's automatic request checksums off (`WhenRequired`), so the store sends exactly the integrity header its profile chose and nothing else. The capability check runs with this same configuration |
 | connection pool ([§4.10](#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)) | `http.Transport`: `MaxConnsPerHost`, `MaxIdleConnsPerHost` and `MaxIdleConns` all set to the derived limit |
-| put integrity ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success)) | send the checksum header chosen by the check. If the service enforces none, compare the returned ETag with the MD5 of the body and return `ErrCorrupt` on a mismatch; the retry overwrites the corrupt object |
+| put integrity ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success)) | send the checksum header chosen by the check, computed by the measuring pass. If the service enforces none, `Checksum` is `None`: compute the MD5 while streaming, compare the returned ETag with it, and return `ErrCorrupt` on a mismatch; the retry puts the same bytes again |
 | exact get ([§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)) | compare `Content-Range` and the body's length with the request |
 | `ErrNotFound` | `404 NoSuchKey` |
 | `ErrInvalid` | `416`; a received length that differs from the request; `400` codes not listed elsewhere; `501` |
@@ -769,9 +753,6 @@ store's health never counted the outage.
 S3 throttles above a few thousand requests per second per key prefix and answers
 `503 SlowDown`. That limit is the service's, not the client's: the store reports
 it as `ErrTransient` and the syncer backs off.
-
-Where step 1 of the check chose the ETag, the overwrite ceiling of [§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success)
-applies to this store.
 
 ### C.4 The capability check
 
