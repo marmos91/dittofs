@@ -49,7 +49,7 @@ if [[ "$IMPL" == go ]]; then
     rc=$?
     if [[ -s "$result" ]]; then
         jq -c . "$result" | tee -a "$STATE/history.jsonl" >"$STATE/last.json"
-        jq -r '"CANARY \(.status) run=\(.run) impl=go \(.rclone // "rclone ?") files=\(.files) bytes=\(.bytes) rclone_size(before/written/deleted/gc)=\([.rclone_size.before, .rclone_size.written, .rclone_size.deleted, .rclone_size.gc] | map(.objects // "-") | join("/")) objects seconds=\(.seconds.total | floor)" + (if .status == "FAIL" then " failed_step=\(.step)" else "" end)' \
+        jq -r '"CANARY \(.status) run=\(.run) impl=go \(.rclone // "rclone ?") files=\(.files) bytes=\(.bytes) rclone_size(before/written/deleted/gc)=\([.rclone_size.before, .rclone_size.written, .rclone_size.deleted, .rclone_size.gc] | map(.objects // "-") | join("/")) objects \([.rclone_size.before, .rclone_size.written, .rclone_size.deleted, .rclone_size.gc] | map(.blocks // "-") | join("/")) blocks seconds=\(.seconds.total | floor)" + (if .status == "FAIL" then " failed_step=\(.step)" else "" end)' \
             "$result" >"$STATE/status.txt"
     else
         echo "CANARY FAIL impl=go: the test wrote no result (build or setup failure; see $log)" >"$STATE/status.txt"

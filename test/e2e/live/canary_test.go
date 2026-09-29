@@ -30,14 +30,31 @@ type canaryResult struct {
 	Bytes           int64                   `json:"bytes"`
 	UploadedObjects int                     `json:"uploaded_objects"`
 	Rclone          string                  `json:"rclone"`
-	RcloneSize      map[string]objectsCount `json:"rclone_size"`
+	RcloneSize      map[string]rcloneCount  `json:"rclone_size"`
 	S3List          map[string]objectsCount `json:"s3_list"`
+	ServerBlocks    map[string]serverBlocks `json:"server_blocks"`
 	Seconds         map[string]float64      `json:"seconds"`
 }
 
 type objectsCount struct {
 	Objects int   `json:"objects"`
 	Bytes   int64 `json:"bytes"`
+}
+
+// rcloneCount is `rclone size` of the whole prefix (objects, bytes) and of its
+// blocks/ directory (blocks, block_bytes).
+type rcloneCount struct {
+	Objects    int   `json:"objects"`
+	Bytes      int64 `json:"bytes"`
+	Blocks     int   `json:"blocks"`
+	BlockBytes int64 `json:"block_bytes"`
+}
+
+// serverBlocks is the server's own count for the share (dfsctl store block stats).
+type serverBlocks struct {
+	Remote int `json:"blocks_remote"`
+	Local  int `json:"blocks_local"`
+	Total  int `json:"blocks_total"`
 }
 
 // TestLiveCanary_SMB checks the data path of a live share end to end, through the
@@ -47,9 +64,10 @@ type objectsCount struct {
 //	evict the server's caches and read again from the remote -> delete ->
 //	GC with grace 0 -> the objects are gone
 //
-// It runs `rclone size` on the share's prefix (objects and bytes; the operators'
-// rclone, DITTOFS_E2E_LIVE_RCLONE) at four checkpoints, each cross-checked by an S3
-// listing through the framework's helper. Before writing it must be 0; a failed earlier run's leftovers
+// It runs `rclone size` on the share's prefix and on its blocks/ directory (objects,
+// blocks and bytes; the operators' rclone, DITTOFS_E2E_LIVE_RCLONE) at four
+// checkpoints, each cross-checked by an S3 listing through the framework's helper and
+// logged next to the server's own block counts. Before writing it must be 0; a failed earlier run's leftovers
 // are removed and GC'd first. After the upload it holds the new objects. After the
 // delete it is unchanged, because a delete alone does not remove remote objects.
 // After GC it must be 0 again. The files are random: repeated content stays up to
@@ -62,8 +80,8 @@ func TestLiveCanary_SMB(t *testing.T) {
 
 	started := time.Now()
 	run := "run-" + started.UTC().Format("20060102T150405Z")
-	res := &canaryResult{Run: run, Share: tg.Share, RcloneSize: map[string]objectsCount{}, S3List: map[string]objectsCount{},
-		Seconds: map[string]float64{}}
+	res := &canaryResult{Run: run, Share: tg.Share, RcloneSize: map[string]rcloneCount{}, S3List: map[string]objectsCount{},
+		ServerBlocks: map[string]serverBlocks{}, Seconds: map[string]float64{}}
 	if tg.ResultFile != "" {
 		t.Cleanup(func() {
 			res.Time = time.Now().UTC().Format(time.RFC3339)
@@ -89,13 +107,21 @@ func TestLiveCanary_SMB(t *testing.T) {
 			t.FailNow()
 		}
 	}
-	// checkpoint records `rclone size` of the prefix, which the checks use, and an S3
-	// listing of it: two clients, so a disagreement shows in the log and the result.
+	// checkpoint records `rclone size` of the prefix, which the checks use, and of its
+	// blocks/ directory; an S3 listing of the prefix (two clients, so a disagreement
+	// shows in the log and the result); and the server's block counts for the share.
 	checkpoint := func(t *testing.T, name string) Objects {
 		t.Helper()
-		o := tg.RcloneSize(t)
-		res.RcloneSize[name] = objectsCount{Objects: o.Count, Bytes: o.Bytes}
-		t.Logf("rclone size %s/%s [%s]: %d object(s), %d bytes", tg.S3Bucket, tg.S3Prefix, name, o.Count, o.Bytes)
+		o, b := tg.RcloneSize(t, ""), tg.RcloneSize(t, BlocksDir)
+		res.RcloneSize[name] = rcloneCount{Objects: o.Count, Bytes: o.Bytes, Blocks: b.Count, BlockBytes: b.Bytes}
+		t.Logf("rclone size %s/%s [%s]: %d object(s), %d bytes; %s: %d block(s), %d bytes",
+			tg.S3Bucket, tg.S3Prefix, name, o.Count, o.Bytes, BlocksDir, b.Count, b.Bytes)
+		if b.Count != o.Count {
+			t.Logf("note: %d object(s) outside %s, where the S3 block store writes nothing", o.Count-b.Count, BlocksDir)
+		}
+		st := helpers.GetBlockStats(t, admin, tg.Share).Totals
+		res.ServerBlocks[name] = serverBlocks{Remote: st.BlocksRemote, Local: st.BlocksLocal, Total: st.BlocksTotal}
+		t.Logf("server [%s]: blocks_remote=%d blocks_local=%d blocks_total=%d", name, st.BlocksRemote, st.BlocksLocal, st.BlocksTotal)
 		l := tg.Objects(t, bucket)
 		res.S3List[name] = objectsCount{Objects: l.Count, Bytes: l.Bytes}
 		if l.Count != o.Count || l.Bytes != o.Bytes {

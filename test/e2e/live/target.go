@@ -57,6 +57,10 @@ import (
 
 const envPrefix = "DITTOFS_E2E_LIVE_"
 
+// BlocksDir is where the S3 block store keeps its objects under its prefix
+// (blocks/<blockID>). It writes nothing else there.
+const BlocksDir = "blocks/"
+
 // Target is a live deployment under test, read from DITTOFS_E2E_LIVE_*.
 type Target struct {
 	APIURL        string
@@ -230,15 +234,16 @@ func (tg *Target) RcloneVersion(t *testing.T) string {
 	return strings.TrimSpace(line)
 }
 
-// RcloneSize is `rclone size` of the share's prefix, the operators' own check, run
-// with their binary when DITTOFS_E2E_LIVE_RCLONE names it. Keys is nil.
-func (tg *Target) RcloneSize(t *testing.T) Objects {
+// RcloneSize is `rclone size` of sub under the share's prefix ("" for all of it,
+// BlocksDir for the block objects), the operators' own check, run with their binary
+// when DITTOFS_E2E_LIVE_RCLONE names it. Keys is nil.
+func (tg *Target) RcloneSize(t *testing.T, sub string) Objects {
 	t.Helper()
 	var size struct {
 		Count int   `json:"count"`
 		Bytes int64 `json:"bytes"`
 	}
-	out := tg.rclone(t, "size", "--json", rcloneRemote+":"+tg.S3Bucket+"/"+tg.S3Prefix)
+	out := tg.rclone(t, "size", "--json", rcloneRemote+":"+tg.S3Bucket+"/"+tg.S3Prefix+sub)
 	if err := json.Unmarshal(out, &size); err != nil {
 		t.Fatalf("rclone size output %q: %v", out, err)
 	}

@@ -37,7 +37,7 @@ WORK="$(mktemp -d)"
 RUN="run-$(date -u +%Y%m%dT%H%M%SZ)-$$"
 export XDG_CONFIG_HOME="$WORK/dfsctl"
 T0=$SECONDS STEP=start
-declare -A T S_COUNT S_BYTES
+declare -A T S_COUNT S_BYTES S_BLOCKS S_BBYTES SRV
 
 log() { printf '%s %-12s %s\n' "$(date '+%F %T')" "$STEP" "$*"; }
 step() { T[$STEP]=$((SECONDS - ${T_START:-$T0})); STEP="$1"; T_START=$SECONDS; log "begin"; }
@@ -46,13 +46,14 @@ result() { # result STATUS MESSAGE
     T[$STEP]=$((SECONDS - ${T_START:-$T0}))
     for k in "${!T[@]}"; do timings+="\"$k\":${T[$k]},"; done
     mkdir -p "$OUT" 2>/dev/null
-    local sizes="" c
+    local sizes="" srv="" c
     for c in before written deleted gc; do
-        [[ -n "${S_COUNT[$c]:-}" ]] && sizes+="\"$c\":{\"objects\":${S_COUNT[$c]},\"bytes\":${S_BYTES[$c]}},"
+        [[ -n "${S_COUNT[$c]:-}" ]] && sizes+="\"$c\":{\"objects\":${S_COUNT[$c]},\"bytes\":${S_BYTES[$c]},\"blocks\":${S_BLOCKS[$c]},\"block_bytes\":${S_BBYTES[$c]}},"
+        [[ -n "${SRV[$c]:-}" ]] && srv+="\"$c\":${SRV[$c]},"
     done
-    printf '{"time":"%s","run":"%s","status":"%s","step":"%s","message":%s,"share":"%s","files":%s,"bytes":%s,"uploaded_objects":%s,"chunks_swept":%s,"rclone_size":{%s},"seconds":{%s"total":%s}}\n' \
+    printf '{"time":"%s","run":"%s","status":"%s","step":"%s","message":%s,"share":"%s","files":%s,"bytes":%s,"uploaded_objects":%s,"chunks_swept":%s,"rclone_size":{%s},"server_blocks":{%s},"seconds":{%s"total":%s}}\n' \
         "$(date -u +%FT%TZ)" "$RUN" "$status" "$STEP" "$(jq -Rn --arg m "$msg" '$m')" "$SHARE" \
-        "${NFILES:-0}" "${NBYTES:-0}" "${NNEW:-0}" "${SWEPT:-null}" "${sizes%,}" "$timings" "$((SECONDS - T0))" |
+        "${NFILES:-0}" "${NBYTES:-0}" "${NNEW:-0}" "${SWEPT:-null}" "${sizes%,}" "${srv%,}" "$timings" "$((SECONDS - T0))" |
         tee -a "$OUT/history.jsonl" >"$OUT/last.json" 2>/dev/null || true
 }
 fail() {
@@ -70,14 +71,20 @@ trap cleanup EXIT
 sha() { sha256sum "$1" | cut -c1-64; }
 s3keys() { "$RCLONE" lsf -R --files-only "canarys3:$BUCKET/$PREFIX" 2>/dev/null | sort; }
 s3sizes() { "$RCLONE" lsl "canarys3:$BUCKET/$PREFIX" 2>/dev/null | awk '{print $NF, $1}' | sort; }
-# checkpoint NAME: `rclone size` of the canary's prefix, recorded and logged.
+# checkpoint NAME: `rclone size` of the canary's prefix and of its blocks/ directory
+# (the S3 block store writes nothing else there), and the server's block counts for the
+# share, recorded and logged. rclone runs here, not in $(...) of a helper, so fail exits.
 checkpoint() {
-    local j c b
-    j="$("$RCLONE" size --json "canarys3:$BUCKET/$PREFIX" 2>"$WORK/size.err")" ||
+    local j jb c b bc bb s
+    j="$("$RCLONE" size --json "canarys3:$BUCKET/$PREFIX" 2>"$WORK/size.err")" &&
+        jb="$("$RCLONE" size --json "canarys3:$BUCKET/${PREFIX}blocks/" 2>"$WORK/size.err")" ||
         fail "rclone size failed: $(tr '\n' ' ' <"$WORK/size.err")"
-    c="$(jq -r .count <<<"$j")" b="$(jq -r .bytes <<<"$j")"
-    S_COUNT[$1]="$c" S_BYTES[$1]="$b"
-    log "rclone size canarys3:$BUCKET/$PREFIX [$1]: $c object(s), $b bytes ($(numfmt --to=iec-i --suffix=B "$b"))"
+    c="$(jq -r .count <<<"$j")" b="$(jq -r .bytes <<<"$j")" bc="$(jq -r .count <<<"$jb")" bb="$(jq -r .bytes <<<"$jb")"
+    S_COUNT[$1]="$c" S_BYTES[$1]="$b" S_BLOCKS[$1]="$bc" S_BBYTES[$1]="$bb"
+    log "rclone size canarys3:$BUCKET/$PREFIX [$1]: $c object(s), $b bytes ($(numfmt --to=iec-i --suffix=B "$b")); blocks/: $bc block(s), $bb bytes"
+    ((bc == c)) || log "note: $((c - bc)) object(s) outside blocks/, where the S3 block store writes nothing"
+    s="$("$DFSCTL" store block stats --share "$SHARE" -o json 2>/dev/null | jq -c '.totals | {blocks_remote, blocks_local, blocks_total}')"
+    if [[ -n "$s" ]]; then SRV[$1]="$s"; log "server [$1]: $(jq -r 'to_entries | map("\(.key)=\(.value)") | join(" ")' <<<"$s")"; fi
 }
 stat_of() { "$DFSCTL" store block stats --share "$SHARE" -o json 2>/dev/null | jq -r ".totals.$1 // empty"; }
 
@@ -203,4 +210,4 @@ checkpoint gc
 
 step finish
 result PASS "ok"
-echo "CANARY PASS run=$RUN files=$NFILES bytes=$NBYTES rclone_size(before/written/deleted/gc)=${S_COUNT[before]}/${S_COUNT[written]}/${S_COUNT[deleted]}/${S_COUNT[gc]} objects ${S_BYTES[before]}/${S_BYTES[written]}/${S_BYTES[deleted]}/${S_BYTES[gc]} bytes chunks_swept=$SWEPT seconds=$((SECONDS - T0))"
+echo "CANARY PASS run=$RUN files=$NFILES bytes=$NBYTES rclone_size(before/written/deleted/gc)=${S_COUNT[before]}/${S_COUNT[written]}/${S_COUNT[deleted]}/${S_COUNT[gc]} objects ${S_BLOCKS[before]}/${S_BLOCKS[written]}/${S_BLOCKS[deleted]}/${S_BLOCKS[gc]} blocks ${S_BYTES[before]}/${S_BYTES[written]}/${S_BYTES[deleted]}/${S_BYTES[gc]} bytes chunks_swept=$SWEPT seconds=$((SECONDS - T0))"

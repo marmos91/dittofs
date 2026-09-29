@@ -398,7 +398,12 @@ One pass:
    that none of the run's objects remain in the bucket.
 
 Along the way it measures the canary's prefix with `rclone size` (object count and
-bytes, the operators' usual check) at four checkpoints:
+bytes, the operators' usual check) at four checkpoints. Each checkpoint also runs
+`rclone size` on the prefix's `blocks/` directory, where the S3 block store keeps its
+objects (`blocks/<id>`, nothing else), so objects and blocks should match; a pass logs a
+note when they don't. Next to them it records the server's own view of the share
+(`blocks_remote`, `blocks_local`, `blocks_total` from `dfsctl store block stats`), in the
+result as `server_blocks`. The checkpoints and what they must show:
 - **before writing:** must be 0 (if a failed earlier pass left objects, it runs GC once
   first);
 - **after the upload:** must match the new objects and hold at least the bytes written;
@@ -478,7 +483,7 @@ missing when the target is only partly set), and the rest reuses the e2e helpers
 |---|---|---|
 | `tg.Admin(t)` | logs in as the target's admin account | `helpers.LoginWithCredentials` (the body of `LoginAsAdmin`, with the credentials as arguments), `helpers.WithDfsctlBinary` for the server's own `dfsctl` |
 | `tg.Bucket(t)` | an S3 client on the real bucket | `framework.LocalstackHelper` (the same listing code the Localstack tests use) |
-| `tg.RcloneSize(t)` | `rclone size` of the share's prefix, with the operators' rclone; credentials in the call's environment (`RCLONE_CONFIG_DITTOFSLIVE_*`) | `DITTOFS_E2E_LIVE_RCLONE` |
+| `tg.RcloneSize(t, sub)` | `rclone size` of `sub` under the share's prefix (`""`, or `live.BlocksDir` for the block objects), with the operators' rclone; credentials in the call's environment (`RCLONE_CONFIG_DITTOFSLIVE_*`) | `DITTOFS_E2E_LIVE_RCLONE` |
 | `tg.Objects(t, b)` | objects and bytes under the share's prefix through the S3 API, plus the keys | `ListS3PrefixWithSizes` |
 | `tg.MountSMB(t)` | mounts the share with `mount.cifs` (SMB 3.1.1, `cache=none`, a credentials file), unmounts at cleanup | Linux, root |
 | `live.WaitUploaded(t, admin, share, timeout)` | waits for `unsynced_bytes` and `pending_uploads` to reach 0 | `helpers.GetBlockStats` |
