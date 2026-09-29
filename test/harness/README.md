@@ -25,7 +25,7 @@ test/harness/
 ├── bin/timeout        # GNU timeout for macOS (setup-posix.sh needs it)
 ├── githooks/          # hook chain: the repo's .githooks, then harness extras
 ├── docker/            # dev image (dtc), pjdfstest and e2e-linux images, entry scripts
-├── canary/            # repeating round trip against a running server (cron)
+├── canary/            # repeating round trip against a running server (cron), its metrics and Grafana graph
 ├── repro/             # standalone reproductions
 ├── logs/              # one log per run (gitignored)
 ├── state/             # locks, KMIP certs, dfsctl login (gitignored)
@@ -469,6 +469,43 @@ per pass, kept 14 days. A lock skips a pass while the previous one is still runn
 
 GC's `objects_swept` counts reclaimed chunks. A block object is deleted when its last live
 chunk goes, so a pass typically reports about 54 chunks swept for about 15 objects gone.
+
+### Metrics and the Grafana graph: `canary/monitoring/`
+
+After every pass `run-canary.sh` writes the pass as Prometheus metrics (`metrics.jq`)
+to `/srv/dittofs-canary/metrics/dittofs_canary.prom` (`CANARY_METRICS_DIR`), whole and
+then renamed into place. Every metric is a gauge labelled `share` and `impl`:
+
+- per `checkpoint` (before, written, deleted, gc): `dittofs_canary_rclone_objects`,
+  `_rclone_bytes`, `_rclone_blocks`, `_rclone_block_bytes`, `_server_blocks_remote`,
+  `_server_blocks_local`, `_server_blocks_total`, and `_s3_list_objects` (Go only);
+- `dittofs_canary_pass_ok` (1 or 0), `_last_pass_timestamp_seconds`,
+  `_pass_duration_seconds`, `_step_duration_seconds{step}`, `_written_bytes`.
+
+A pass that left no result (a build failure, say) still writes `pass_ok 0` and its
+time, without counts. node_exporter's textfile collector serves the file, and adds
+`node_textfile_mtime_seconds`, so a canary that stopped running shows as a stale file.
+
+To wire it into a Prometheus and Grafana stack (as on ditto, where both run in Docker
+with host networking):
+
+1. add the service in `monitoring/node-exporter.compose.yml` to the stack's
+   `docker-compose.yml`, then `docker compose up -d node-exporter` (127.0.0.1:9100);
+2. add the job in `monitoring/prometheus-scrape.yml` to `prometheus.yml`, then
+   `docker kill -s HUP prometheus`;
+3. copy `monitoring/grafana-dashboards.yml` to
+   `<stack>/grafana/provisioning/dashboards/dittofs-canary.yml` and
+   `monitoring/grafana-dashboard.json` to
+   `<stack>/grafana/provisioning/dashboards/dittofs/dittofs-canary.json`, then restart
+   Grafana once (it reads providers at startup; later JSON changes it picks up within a
+   minute).
+
+The dashboard, "DittoFS canary" in the folder "DittoFS", is one graph: rclone objects,
+rclone `blocks/` and the server's `blocks_remote`, per checkpoint, one step per pass.
+`before` and `gc` must stay at 0; written and deleted sit at the pass's objects (14 or
+15 for 54 MiB) and chunks (53 or 54). The checkpoints of one pass are seconds apart and
+Prometheus scrapes every 15 s, so the graph shows each pass's values, not the rise
+and fall within it.
 
 ### Live e2e tests: `test/e2e/live`
 

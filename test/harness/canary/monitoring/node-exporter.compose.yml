@@ -1,0 +1,20 @@
+# node_exporter for the canary's metrics (its textfile collector reads the directory
+# run-canary.sh writes, CANARY_STATE/metrics), plus the host's own metrics. Add the
+# service to the monitoring stack's docker-compose.yml, then:
+#   docker compose up -d node-exporter
+# Localhost only, like the stack's Prometheus; host network, so Prometheus scrapes
+# 127.0.0.1:9100.
+services:
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: node-exporter
+    network_mode: host
+    pid: host
+    command:
+      - '--web.listen-address=127.0.0.1:9100'
+      - '--path.rootfs=/host'
+      - '--collector.textfile.directory=/textfile'
+    volumes:
+      - /:/host:ro,rslave
+      - /srv/dittofs-canary/metrics:/textfile:ro
+    restart: unless-stopped

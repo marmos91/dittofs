@@ -1,0 +1,17 @@
+# Grafana dashboard provider for the DittoFS canary dashboard. Install into the
+# stack's provisioning directory (mounted at /etc/grafana/provisioning):
+#   <stack>/grafana/provisioning/dashboards/dittofs-canary.yml        this file
+#   <stack>/grafana/provisioning/dashboards/dittofs/dittofs-canary.json  grafana-dashboard.json
+# Grafana reads providers at startup (restart it once); after that it rescans the
+# JSON every updateIntervalSeconds.
+apiVersion: 1
+
+providers:
+  - name: dittofs-canary
+    folder: DittoFS
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 60
+    options:
+      path: /etc/grafana/provisioning/dashboards/dittofs

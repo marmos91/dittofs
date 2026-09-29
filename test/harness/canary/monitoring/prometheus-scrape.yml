@@ -1,0 +1,7 @@
+# Scrape job for node-exporter.compose.yml. Add it under scrape_configs in the stack's
+# prometheus.yml, then reload Prometheus (SIGHUP; no --web.enable-lifecycle needed):
+#   docker kill -s HUP prometheus
+scrape_configs:
+  - job_name: 'node'
+    static_configs:
+      - targets: ['127.0.0.1:9100']

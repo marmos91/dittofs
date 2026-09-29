@@ -1,0 +1,87 @@
+{
+  "uid": "dittofs-canary",
+  "title": "DittoFS canary",
+  "description": "The canary's last pass, per checkpoint: rclone size of its S3 prefix (objects) and of the prefix's blocks/ directory (blocks), and the server's blocks_remote for the share. Source: test/harness/canary/monitoring/grafana-dashboard.json.",
+  "tags": ["dittofs", "canary"],
+  "editable": true,
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "1m",
+  "time": { "from": "now-24h", "to": "now" },
+  "timezone": "browser",
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Data source",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Canary objects and blocks per checkpoint",
+      "description": "One step per pass (every 15 minutes). before and gc must stay at 0: a line above 0 there is objects left behind. written and deleted: rclone objects and blocks/ (equal: the S3 block store writes only blocks/<id>), and the server's blocks_remote, which counts ~1 MiB chunks packed into those objects, so it is higher. The server's count drops to 0 at deleted while the objects remain until GC.",
+      "gridPos": { "h": 18, "w": 24, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "max by (checkpoint) (dittofs_canary_rclone_objects)",
+          "legendFormat": "rclone objects [{{checkpoint}}]"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "max by (checkpoint) (dittofs_canary_rclone_blocks)",
+          "legendFormat": "rclone blocks/ [{{checkpoint}}]"
+        },
+        {
+          "refId": "C",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "max by (checkpoint) (dittofs_canary_server_blocks_remote)",
+          "legendFormat": "server blocks_remote [{{checkpoint}}]"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byFrameRefID", "options": "B" },
+            "properties": [
+              { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [10, 10] } }
+            ]
+          },
+          {
+            "matcher": { "id": "byFrameRefID", "options": "C" },
+            "properties": [
+              { "id": "custom.lineStyle", "value": { "fill": "dot", "dash": [0, 10] } }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    }
+  ]
+}
