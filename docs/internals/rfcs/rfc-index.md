@@ -31,7 +31,7 @@ order: each part builds on the ones before it.
 | **Composition** | | |
 | [RFC 17](rfc-17-vfs.md) | filesystem service (VFS) | *draft* — the one protocol-neutral API adapters call: operations, callbacks, errors, what stays in adapters; orchestration at one owner, quota enforcement by in-memory reservation, soft-quota and access-audit event hooks |
 | [RFC 8](rfc-8-engine.md) | engine | the content data path: the facade over journal, carver, syncer and block metadata, and its policy |
-| [RFC 9](rfc-9-gc.md) | GC | sweep, trash, compaction, remote deletion, index rebuild |
+| [RFC 9](rfc-9-gc.md) | GC | retirement and resurrection, trash, verified remote deletion, compaction policy, audit against the reverse ref index |
 | **Cluster** | | |
 | [RFC 10](rfc-10-journal-replication.md) | journal replication | *draft* — owner-driven replication, fencing, seal, catch-up, reads from replicas |
 | [RFC 11](rfc-11-ownership.md) | ownership | *draft* — ownership units (a share by default, automatic per-child units, byte-range units), leases, handover, failover, forwarding |

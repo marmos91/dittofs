@@ -555,10 +555,20 @@ and material.
   put, beside the chunk ranges ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)), and the block's commit records
   them in the block record ([RFC 6 §2.3](rfc-6-block-metadata.md#2.3%20Block)). A block's census never changes, since
   a block is never re-encoded in place.
+- **It counts every block record until it is pruned**, `retired` and `deleted`
+  ones included. A retired block can be resurrected by an adoption and read
+  again ([RFC 9 §3.3](rfc-9-gc.md#3.3%20Adoption%20resurrects%20a%20retired%20block)), so its material is still needed; a `deleted` one cannot,
+  but is counted until its prune so the census never depends on timing. To empty
+  a census, compaction moves the live blocks, and the retention of their retired
+  sources is waited out or those sources are recounted and moved too.
+
+> [!important] Pending review — the census counts retired blocks
+> Because a retired block can come back to life, material is in use until every
+> block that names it is pruned, not only until it retires.
 - **Retirement is ordinary relocation.** GC lists the blocks whose census names
   what is being retired and relocates each ([RFC 9 §4.2](rfc-9-gc.md#4.2%20Read%20verified%2C%20mint%2C%20put%2C%20then%20move)): its chunks are
   re-encoded under the current chain into a block under a freshly minted name
-  ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)); the chunks move and the source is swept. Retirement
+  ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)); the chunks move and the move retires the source. Retirement
   relocates a block even when it is fully live, the one exception to
   [RFC 9 §4.4](rfc-9-gc.md#4.4%20When%20to%20compact%20is%20policy).
 - **Removal waits for an empty census, and for encodes in flight.** A census

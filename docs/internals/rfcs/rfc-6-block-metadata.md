@@ -127,7 +127,7 @@ its file.
 Callers see three **entities** from this document, in the `metadata` package
 ([RFC 16 §2](rfc-16-metadata-store.md#2.%20Entities)): `ChunkRef`, `Chunk` and `Block`. The rest — FileData (fields of
 RFC 7's `File`), Hole, Removal, the fences, Cut and LiveCut, put intents,
-the GC index keys and the chunk change stamp — are **bookkeeping
+the reverse ref index, the GC index keys and the chunk change stamp — are **bookkeeping
 records**: they exist for this document's guarantees, stay behind its
 interfaces ([§10.1](#10.1%20Interface)), and are not entities. Holes reach a caller only as the answer
 to `Allocation`.
@@ -164,9 +164,17 @@ type Chunk struct {
 
 // Block: one remote object (§2.3).
 type Block struct {
-	Name      BlockName
-	Live      int64      // chunks still referenced
-	Encodings []Encoding // how it was written (RFC 5 §5.3)
+	Name       BlockName
+	Live       int64      // chunk records naming it with a nonzero refcount
+	Carried    []Carried  // every chunk it carries, in order; written once (§2.3)
+	Generation uint8      // 0 from offload; one above its highest source from compaction
+	Encodings  []Encoding // how it was written (RFC 5 §5.3)
+}
+
+// Carried: one chunk a block carries, and its body's encoded length there.
+type Carried struct {
+	Hash   ChunkHash
+	Length int64
 }
 
 // Pure methods: no I/O, no store. Each states one rule of this document once,
@@ -174,13 +182,13 @@ type Block struct {
 func (c ChunkRef) End() int64                   // Offset + Length
 func (c ChunkRef) IsLive() bool                 // Died == 0
 func (c ChunkRef) VisibleAt(k SnapshotCut) bool // Born < k ≤ Died, or live and Born < k (§6.5)
-func (b Block) Retirable() bool                 // Live == 0 (§7.1)
+func (b Block) Retired() bool                   // Live == 0; its state is retired or later (§7.1)
 ```
 
 "Ref" in the rest of this document is shorthand for `ChunkRef`, and a history
 ref is a `ChunkRef` with `Died` set.
 
-![Three concepts in six records: existence (FileData, holes and removals, written by the write path and removals), the content map (refs pointing at chunks by hash, written by the offload commit), and blocks (a live count per remote object, retired by sweep), with the direction each one points](img/rfc4-records.svg)
+![Three concepts in six records: existence (FileData, holes and removals, written by the write path and removals), the content map (refs pointing at chunks by hash, written by the offload commit), and blocks (a live count per remote object, retired when it reaches zero), with the direction each one points](img/rfc4-records.svg)
 
 | Concept | Record | Keyed by | Holds | Answers |
 | --- | --- | --- | --- | --- |
@@ -189,13 +197,14 @@ ref is a `ChunkRef` with `Died` set.
 | | **Removal** | `(FileID, version)` | removed range, kind, cursor, done | what did a truncate, deallocate, release or clone remove, at which version, and how far has dropping its refs got? |
 | Content map ([§2.1](#2.1%20ChunkRef)) | **ChunkRef** | `(FileID, offset)` | chunk hash, skip, length, content versions, `born` | which bytes of which chunk are these? |
 | | **History** | `(FileID, died, offset)` | a `ChunkRef` as it was, with `Died` set to the cut its superseding transaction read | which bytes did a snapshot see here? |
-| | **Chunk** | `(namespace, chunk hash)` | block name, position in block, refcount, change stamp | where is this chunk, and who uses it? |
-| Blocks ([§7](#7.%20What%20sweep%20needs%20from%20this%20component)) | **Block** | `(namespace, block name)` | GC state and `not_before`, live-chunk count, dead bytes, size, encodings | may this remote object be deleted, when, and how was it written? |
+| | **Chunk** | `(namespace, chunk hash)` | block name, position in block, refcount, change stamp | where is this chunk, and how many refs name it? |
+| | **Reverse ref** | `(namespace, chunk hash, share, file, offset, died)` | — | which refs name this chunk? Authoritative; the refcount is its cache ([§6.1](#6.1%20A%20refcount%20is%20exactly%20its%20refs)) |
+| Blocks ([§7](#7.%20What%20sweep%20needs%20from%20this%20component)) | **Block** | `(namespace, block name)` | GC state and `not_before`, live-chunk count, dead bytes and when they last grew, generation, size, encodings, carried chunk list | may this remote object be deleted, when, what does it carry, and how was it written? |
 | Ownership ([§5.4](#5.4%20Reads%20that%20gate%20a%20commit)) | **Fence** `F_x`, `F_o` | `FileID` | the epoch of the file's unit owner | is the writer on this path, or the namespace transaction guarding it, still the file's owner? |
 | Snapshots ([§6.5](#6.5%20Who%20owns%20a%20ref)) | **Cut** | `ShareID` | latest cut number `k`, newest live cut `klatest` | which cut does a commit fall after, and must a superseded ref move to history? |
 | | **LiveCut** | `(ShareID, k)` | — | which cuts do live snapshots hold? |
-| Sweep ([§7](#7.%20What%20sweep%20needs%20from%20this%20component)) | **Put intent** | `(namespace, block name)` | owner epoch of the attempt | which minted names may still be put and committed? |
-| | **GC index keys** | `(namespace, block name)`, the retired one by `not_before` first | — | which blocks have `live` at zero, are in the trash, await their delete, or are past the compaction threshold ([RFC 9 §7.2](rfc-9-gc.md#7.2%20Every%20record%20GC%20stores%20names%20its%20reclamation))? Derived from the block records and rebuildable ([RFC 9 §7.4](rfc-9-gc.md#7.4%20The%20index%20can%20be%20dropped%20and%20rebuilt)) |
+| Sweep ([§7](#7.%20What%20sweep%20needs%20from%20this%20component)) | **Put intent** | `(namespace, block name)` | owner domain, owner and epoch of the attempt | which minted names may still be put and committed? |
+| | **GC index keys** | `(namespace, block name)`, the retired one by `not_before` first, the compaction one by dead-ratio bucket first | — | which blocks are in the trash, await their delete, or are compaction candidates ([RFC 9 §7.2](rfc-9-gc.md#7.2%20Every%20record%20GC%20stores%20names%20its%20reclamation))? Derived from the block records and rebuildable ([RFC 9 §7.4](rfc-9-gc.md#7.4%20The%20index%20can%20be%20dropped%20and%20rebuilt)) |
 
 Who writes each record:
 
@@ -209,15 +218,27 @@ Who writes each record:
 | New owner ([§5.4](#5.4%20Reads%20that%20gate%20a%20commit)) | — | — | — | — | — | writes | writes | — | — | — |
 | Namespace transaction ([RFC 7](rfc-7-namespace-metadata.md)) | — | — | — | — | — | guards | — | — | — | — |
 | Snapshot cut or deletion ([§6.5](#6.5%20Who%20owns%20a%20ref)) | — | — | drops History | counts | counts | — | — | writes | — | writes |
-| Retirement, relocation, abandonment, delete ([§7](#7.%20What%20sweep%20needs%20from%20this%20component)) | — | — | — | moves, deletes | creates, changes state, prunes | — | — | — | creates, deletes | writes, deletes |
+| Relocation, abandonment, the deleter, prune ([§7](#7.%20What%20sweep%20needs%20from%20this%20component)) | — | — | — | moves, prunes | creates, changes state, prunes | — | — | — | creates, deletes | writes, deletes |
+
+Reverse ref keys are written and deleted by exactly the transactions that write
+ChunkRef and History records, and by nothing else. Retirement and resurrection
+are not rows of their own: they are part of whichever transaction moves a
+block's `live` across zero.
 
 The offload commit writes three records in one transaction because it records one
 event — a block became durable — and those are its three consequences ([§4.1](#4.1%20What%20one%20commit%20records)).
 Each merge that would remove a record kind moves a cost somewhere this document
 forbids: a list that grows with the file (I7), a keyspace the write path and the
 offload share ([§5.1](#5.1%20No%20record%20is%20written%20by%20both%20paths)), or a location rewritten in every ref on relocation ([§2.5](#2.5%20Refs%20name%20hashes%2C%20never%20blocks)).
-The block's `live` is derivable from chunk records; it is kept materialised
-because it is the one key retirement and adoption conflict on ([§7.1](#7.1%20Conditional%20retirement)).
+The block's `live` is derivable from chunk records, and a chunk's refcount from
+its reverse keys; both are kept materialised because they are what a
+transaction tests in O(1), and the block record is the one key resurrection and
+the deleter conflict on ([§7.1](#7.1%20Conditional%20retirement)).
+
+> [!important] Pending review — reverse ref index and carried list
+> A reverse ref key per ref makes "who references this chunk" a prefix read and
+> is the authority the counts cache; the block record carries its chunk list, so
+> no GC step scans chunk records or reads a remote header.
 
 ### 2.1 ChunkRef
 
@@ -297,26 +318,43 @@ ranged read that fails verification is corrupt.
 `stamp` is replaced with a fresh value by every transaction that creates,
 deletes, moves or narrows a ref naming this chunk, whether or not the refcount
 changes. It lets the audit tell that the record changed under its walk
-([§7.5](#7.5%20Audit)). A random 64-bit value suffices; it **MUST NOT** be a counter shared
+([§7.5](#7.5%20Audit)), and every transaction that adds a ref writes the record, which is what
+the deleter's check guards on ([§7.1](#7.1%20Conditional%20retirement)). A random 64-bit value suffices; it **MUST NOT** be a counter shared
 across chunks.
+
+A chunk record outlives its block's retirement: it keeps naming a `retired` or
+`deleted` block until that block is pruned or a carrying commit repoints it
+([§7.2](#7.2%20Adoption%20is%20conditional%20on%20existence)).
 
 ### 2.3 Block
 
-    Block(name) = { state, not_before, live, dead, size, encodings }
+    Block(name) = { state, not_before, live, dead, dead_at, generation, size, encodings, carried }
 
 `state` is `live`, `retired` or `deleted`: GC's state machine for the block,
-kept on the record itself ([RFC 9 §3.1](rfc-9-gc.md#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object)). `not_before` is set at retirement and
-is the earliest time the deleter may delete the object ([RFC 9 §3.7](rfc-9-gc.md#3.7%20Trash)). `dead` is
-the bytes of the chunks this block carries that are dead here — whose refcount
-is zero, or whose record names another block — maintained in every transaction that moves one of its refcounts across
-zero; with `size`, the block's encoded bytes, it gives the compactor's dead-byte
-ratio ([RFC 9 §4.4](rfc-9-gc.md#4.4%20When%20to%20compact%20is%20policy)). Each transaction that changes these writes or deletes the
+kept on the record itself ([RFC 9 §3.1](rfc-9-gc.md#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object)). `not_before` is set at retirement, in
+store time, and is the earliest time the deleter may delete the object
+([RFC 9 §3.7](rfc-9-gc.md#3.7%20Trash)). `dead` is the bytes of the chunks this block carries that are dead
+here — whose refcount is zero, or whose record names another block — maintained
+in every transaction that moves one of its refcounts across zero, and `dead_at`
+is the store time `dead` last grew; with `size`, the block's encoded bytes, they
+give the compactor's score ([RFC 9 §4.4](rfc-9-gc.md#4.4%20When%20to%20compact%20is%20policy)). `generation` is 0 for a block an
+offload wrote, and one above its highest source, capped at 2, for a compaction
+target ([RFC 9 §4.5](rfc-9-gc.md#4.5%20Where%20survivors%20are%20placed)). Each transaction that changes these writes or deletes the
 block's GC index keys ([RFC 9 §7.2](rfc-9-gc.md#7.2%20Every%20record%20GC%20stores%20names%20its%20reclamation)).
+
+`carried` lists every chunk the block carries — hash and encoded body length —
+in the block's order, whether the block owns the chunk's record or carries a dead
+copy. It is written once by the commit or relocation that creates the record and
+never changes. It is bounded by the format's chunk-count cap `N`
+([RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler)): 36 bytes an entry, at most 36 KiB at `N` = 1,024. The deleter's
+check, pruning, the compactor's plan and the audit's block walk read chunk
+records by point reads of these hashes, and never scan chunk records or read the
+remote header.
 
 `live` is the number of chunk records that name this block and whose refcount is
 nonzero. A chunk this block carries whose record names another block is dead
-weight here and is not counted ([§4.1](#4.1%20What%20one%20commit%20records)). A `live` block is sweepable when, and only when,
-`live` is zero ([RFC 0 §8.3](rfc-0-data-lifecycle.md#8.3%20Sweep)).
+weight here and is not counted ([§4.1](#4.1%20What%20one%20commit%20records)). A block is `retired` when, and only when,
+`live` is zero ([§7.1](#7.1%20Conditional%20retirement), [RFC 0 §8.3](rfc-0-data-lifecycle.md#8.3%20Sweep)).
 
 The name is minted per put attempt from a fresh nonce ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block),
 [§7.6](#7.6%20Put%20intents)), so nothing about a later name needs deriving from this record: a block
@@ -507,11 +545,13 @@ offered below v4 is in flight, the owner prunes the removal.
 
 **t7 — delete.** The namespace releases the file through the engine's `Release`
 ([RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)). Phase 1 deletes the FileData record and writes `Removal(f, 5) = [0, ∞)`,
-kind release; phase 2 drops the three refs. K1's and K2's `live` reach 0, and the
-sub-transaction that takes each to zero writes its zero index key. Sweep's `Retire(K1)`
-checks `live == 0` and, in one transaction, deletes Chunk(A) and Chunk(B) and
-moves Block(K1) to `retired` with `not_before` 48 h ahead; only after that does the
-deleter move it to `deleted`, delete the object and prune the record ([§7.1](#7.1%20Conditional%20retirement)). No intent names K1 and no record can again,
+kind release; phase 2 drops the three refs and their reverse keys. K1's and K2's
+`live` reach 0, and the sub-transaction that takes each to zero retires it:
+Block(K1) moves to `retired` with `not_before` 48 h ahead, and Chunk(A) and
+Chunk(B) stay, still naming K1, so a write of the same content within 48 h
+resurrects K1 instead of uploading. After `not_before` the deleter finds no
+reverse key under A or B, moves K1 to `deleted`, deletes the object, and prunes
+Block(K1) with Chunk(A) and Chunk(B) ([§7.1](#7.1%20Conditional%20retirement)). No intent names K1 and no record can again,
 so the delete needs no fence ([§7.6](#7.6%20Put%20intents)). With phase 2 done and no pass in
 flight, `Removal(f, 5)` is pruned.
 
@@ -650,8 +690,10 @@ sweep into a guess.
 the same chunk adopts it: it adds its refs and their counts, and leaves `block`
 and `position` as they are. The copy the later block carries is dead weight, not
 counted in its `live`. A block all of whose chunks were adopted, or whose refs
-were all dropped, commits with `live` at zero; its creating commit **MUST** write
-its zero index key ([RFC 9 §3.5](rfc-9-gc.md#3.5%20Finding%20candidates%20costs%20what%20is%20retirable)), since no later refcount change can reach it.
+were all dropped, commits with `live` at zero; its creating commit **MUST**
+retire it ([§7.1](#7.1%20Conditional%20retirement)), since no later refcount change can reach it. A commit
+that carries a chunk whose record names a `retired` or `deleted` block repoints
+the record to itself ([§7.2](#7.2%20Adoption%20is%20conditional%20on%20existence)).
 
 **A block record is created once.** The intent is consumed by the commit, and a
 name is never minted twice ([§7.6](#7.6%20Put%20intents)), so a commit never finds its block record
@@ -678,7 +720,7 @@ A dropped ref leaves the rest of the commit to apply. The block is durable eithe
 way; a chunk it carries only for dropped refs is dead weight.
 
 **An adoption that fails SHOULD NOT fail the whole commit.** If a chunk the pass
-adopted was retired ([§7.2](#7.2%20Adoption%20is%20conditional%20on%20existence)), the commit **SHOULD** apply the block record, the
+adopted is gone — its block `deleted` ([§7.2](#7.2%20Adoption%20is%20conditional%20on%20existence)) — the commit **SHOULD** apply the block record, the
 chunks it carries and their refs, and fail only the adopting refs, which are
 re-offered; failing the whole commit leaves the put block with no record and
 all its carried content re-uploaded.
@@ -811,7 +853,8 @@ The gating reads in this document, and the key each conflicts on:
 | owner epoch, offload path and pruning | `F_o(file)` | a new owner; removals and releases |
 | removals an offload commit honours ([§4.1](#4.1%20What%20one%20commit%20records)) | the removals scan, covered by `F_o(file)` | every removal writes `F_o` |
 | put intent ([§7.6](#7.6%20Put%20intents)) | `Intent(name)` | the commit and an abandonment both delete it |
-| conditional retirement, adoption ([§7.1](#7.1%20Conditional%20retirement), [§7.2](#7.2%20Adoption%20is%20conditional%20on%20existence)) | `Block(name)`, `Chunk(hash)` | both transactions write the record they read |
+| the deleter's move, resurrection by adoption ([§7.1](#7.1%20Conditional%20retirement), [§7.2](#7.2%20Adoption%20is%20conditional%20on%20existence)) | `Block(name)` | both transactions write it |
+| the deleter's check that no ref names a chunk ([§7.1](#7.1%20Conditional%20retirement)) | `Chunk(hash)`, guarded; the reverse prefix itself is not tracked | every transaction adding a ref writes `Chunk(hash)` |
 | audit lowering a count ([§7.5](#7.5%20Audit)) | `Chunk(hash)` stamp | every ref change writes it |
 
 `Cut(share)` is not in this table: it is ordered against commits by the cut gate
@@ -874,16 +917,29 @@ number of history refs naming it ([§6.5](#6.5%20Who%20owns%20a%20ref)), at ever
 change in the same transaction as the refs that change it — never in a second
 transaction a crash can separate from the first. Moving a ref to history does not
 change the count. A block's `live` **MUST** move in the same transaction as every
-refcount crossing between zero and nonzero, for a chunk that block carries, and
-the transaction that leaves `live` at zero **MUST** write the block's zero
-index key, and one that moves it off zero **MUST** delete it ([RFC 9 §3.5](rfc-9-gc.md#3.5%20Finding%20candidates%20costs%20what%20is%20retirable)).
+refcount crossing between zero and nonzero, for a chunk whose record names that
+block; the transaction that leaves `live` at zero **MUST** retire the block, and
+one that moves it off zero from `retired` **MUST** resurrect it ([§7.1](#7.1%20Conditional%20retirement),
+[RFC 9 §3.1](rfc-9-gc.md#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object)).
+
+**The reverse ref index is the authority; the counts are its cache.** Every
+transaction that creates, deletes or moves a live or history ref **MUST** write
+or delete, in the same transaction, its reverse key
+`CR‖ns‖hash‖share‖file‖offset‖died` (`died` zero for a live ref; [RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)).
+A chunk's refcount is, by definition, the number of its reverse keys, and is kept
+equal to it by that same transaction; it is materialised because a transaction
+tests it in O(1) to retire or resurrect a block. Where the two disagree, the
+index is right: the deleter checks it before every delete, and the audit and a
+targeted recount correct the count from it ([RFC 9 §2.1](rfc-9-gc.md#2.1%20References%20are%20the%20only%20authority)).
 
 A removal's refs stay counted while it masks them ([§6.2](#6.2%20Truncation%20and%20deallocation)): a ref is uncounted
 in the sub-transaction that deletes it, never before.
 
-A refcount that drifts high leaks a chunk forever. One that drifts low lets sweep
-delete a chunk that is still referenced — I3's violation, and the only failure in
-this system that destroys the last copy of content ([RFC 0 §8.3](rfc-0-data-lifecycle.md#8.3%20Sweep)).
+A refcount that drifts high leaks a chunk until the audit lowers it. One that
+drifts low retires a block that is still referenced; the deleter's check of the
+reverse index refuses to delete it, and the trash holds it while the audit
+finds the cause. A low count is still an I3 hazard ([RFC 0 §8.3](rfc-0-data-lifecycle.md#8.3%20Sweep)) and is reported
+as one.
 
 ### 6.2 Truncation and deallocation
 
@@ -964,11 +1020,16 @@ something else still references the chunk.
 
 An underflow **MUST NOT** wedge the operation that met it ([RFC 0 §10.2](rfc-0-data-lifecycle.md#10.2%20No%20state%20requires%20intervention%20to%20leave)). It
 schedules a **targeted recount** of the named chunk or block — the audit of
-[§7.5](#7.5%20Audit) restricted to that record — and suspends retirement of the blocks the
-record touches until the recount commits. The failed batch is retried once the
+[§7.5](#7.5%20Audit) restricted to that record, counting its reverse ref prefix. Nothing is
+suspended meanwhile: the deleter's check refuses any block a low count would
+expose ([§7.1](#7.1%20Conditional%20retirement)). The failed batch is retried once the
 recount has corrected the count; a phase 2 that keeps underflowing on the same
 record after a recount is reported as a health condition, and the rest of the
 store proceeds.
+
+**Dropping a ref whose chunk record is absent** drops the ref and its reverse
+key, changes no count, and is counted as Lost-dropped ([RFC 9 §6.3](rfc-9-gc.md#6.3%20A%20ref%20with%20no%20live%20chunk%20record%20is%20found%20by%20one%20read)). The
+content was already lost; failing the drop would only wedge the removal.
 
 ### 6.4 Delete
 
@@ -1092,7 +1153,7 @@ files may live in the journals of several nodes.
 > files show it in a profile.
 
 Nothing else keeps content alive: a hold list or pin set consulted beside the
-count fails open ([RFC 9 §2.1](rfc-9-gc.md#2.1%20The%20count%20is%20the%20only%20authority)). Any future holder of content holds refs and is
+count fails open ([RFC 9 §2.1](rfc-9-gc.md#2.1%20References%20are%20the%20only%20authority)). Any future holder of content holds refs and is
 counted.
 
 ### 6.6 Clone and server-side copy
@@ -1112,7 +1173,8 @@ destination range and an adoption**, run as the batched pattern of [§6.2](#6.2%
 3. **Phase 2**, sub-transactions of at most K refs in source-offset order: drop
    the destination's refs below *v* in the batch's range, then write the cloned
    refs **re-versioned** with `oldest = newest = v`, and increment their chunks —
-   failing the batch if any chunk has been retired ([§7.2](#7.2%20Adoption%20is%20conditional%20on%20existence)). The cursor
+   resurrecting a retired chunk's block, and failing the batch if any chunk's
+   block has been deleted ([§7.2](#7.2%20Adoption%20is%20conditional%20on%20existence)). The cursor
    advances; the last batch sets `done`.
 
 Until the clone's removal is done, the destination range **MUST NOT** be served:
@@ -1140,40 +1202,65 @@ and cannot be made safe without them.
 
 ### 7.1 Conditional retirement
 
-    Retire(block) — if state == live and live == 0: delete every chunk record
-                    that names it, set state = retired and not_before = now +
-                    trash retention, and swap its zero index key for its
-                    retired index key; else refuse
+    Retire(block) — in the transaction that leaves live == 0: set state =
+                    retired and not_before = store time + trash retention (or
+                    store time if no chunk record names the block), delete its
+                    compaction index key, write its retired index key
+    Delete(block) — the deleter's: if state == retired and not_before has
+                    passed and, for every carried hash whose chunk record names
+                    the block, the reverse ref prefix CR‖ns‖hash is empty: set
+                    state = deleted; else refuse
 
-A chunk record that names another block is not this block's to delete ([§4.1](#4.1%20What%20one%20commit%20records)).
-This **MUST** be one transaction, and the condition **MUST** be evaluated inside
-it: a sweep that reads `live`, decides, and deletes in a separate step deletes a
-block a commit re-adopted in between.
+Retirement is not a separate operation: it is part of every transaction that
+leaves a block's `live` at zero — a ref drop, a relocation, an audit lowering,
+or the commit that creates a block with `live` = 0 ([RFC 9 §2.2](rfc-9-gc.md#2.2%20Retirement%20is%20decided%20where%20the%20count%20reaches%20zero)). That
+transaction already writes the block record, so the condition is evaluated inside
+it by construction. Retirement deletes no chunk record: each still names the
+block, which is what lets an adoption resurrect it ([§7.2](#7.2%20Adoption%20is%20conditional%20on%20existence)). A block is therefore
+`retired` exactly when its `live` is zero.
 
-Retirement may run for up to K records written per transaction, several blocks
-at once, each block's condition evaluated on its own. The block record stays, in
-state `retired` and then `deleted`, until the object's delete succeeds, which
-makes the delete resumable ([RFC 9 §3.2](rfc-9-gc.md#3.2%20A%20retirement%20not%20yet%20deleted%20is%20durably%20recorded)); the state change is the only record of
-it. A `retired` block can be restored to `live` from its object's header until
-the deleter marks it `deleted` ([RFC 9 §3.7](rfc-9-gc.md#3.7%20Trash)). Retiring the records before deleting
-the object means a crash between the two leaves an unreferenced object recorded
-for deletion; the reverse order leaves
+The move to `deleted` is the irreversible step, and it **MUST** be one
+transaction that evaluates its conditions inside it: it guards each chunk record
+it checks, and every transaction that adds a ref writes that chunk record, so a
+ref committed concurrently conflicts with it ([RFC 9 §3.5](rfc-9-gc.md#3.5%20The%20deleter%20verifies%20before%20it%20deletes)). Several blocks
+**MAY** move in one transaction of up to K records written, each block's
+condition evaluated on its own. A block found referenced is not deleted: the
+transaction raises the offending counts instead, which resurrects it.
+
+The block record stays, in state `retired` and then `deleted`, until the
+object's delete succeeds, which makes the delete resumable
+([RFC 9 §3.2](rfc-9-gc.md#3.2%20A%20retirement%20not%20yet%20deleted%20is%20durably%20recorded)). Recording before deleting the object means a crash between the
+two leaves an unreferenced object recorded for deletion; the reverse order leaves
 records naming an object that no longer exists, which is **Lost** for content
-that was durable.
+that was durable. Pruning removes the block record together with every chunk
+record in its carried list that still names it.
 
-> [!important] Pending review — retirement is a state change
-> Retirement keeps the block record as `retired` with `not_before`, and the
-> pending-deletion and candidate records become derived GC index keys; the
-> audit gains coverage, two-walk lowering and a Lost search of the trash.
+> [!important] Pending review — retirement in the count's transaction, verified delete
+> Retirement moves into the transaction that leaves `live` at zero and keeps the
+> chunk records; the irreversible move to `deleted` checks the reverse ref index
+> first. Adoption of a retired chunk resurrects its block.
 
 ### 7.2 Adoption is conditional on existence
 
-An offload commit that references a chunk it did not carry **MUST** fail if that
-chunk's record no longer exists when the commit applies, and **MUST NOT**
-recreate it. With [§7.1](#7.1%20Conditional%20retirement) this closes the race without a clock: an adoption before
-retirement makes `live` nonzero and retirement refuses; an adoption after it
-fails, and the pass retries carrying the chunk. An implementation **MUST NOT**
-substitute a grace period for either operation ([RFC 0 §4.3](rfc-0-data-lifecycle.md#4.3%20Reporting)).
+An offload commit, clone or restore that references a chunk it did not carry
+reads the chunk record and the block it names, and acts on that block's state:
+
+- `live`: counts as usual;
+- `retired`: counts, and **resurrects** the block in the same transaction — its
+  `live` 0 → 1, state `live`, retired index key deleted, `not_before` cleared;
+- `deleted`, or no chunk record: the adopting ref **MUST** fail, and the
+  transaction **MUST NOT** recreate the record; the pass re-offers the chunk
+  carrying its bytes.
+
+A commit that **carries** a chunk whose record names a `retired` or `deleted`
+block repoints the record to its own block, as a first owner does, and leaves
+the old block as it is.
+
+With [§7.1](#7.1%20Conditional%20retirement) this closes the race without a clock: an adoption and the
+deleter's move both write the block record, so an adoption before the move
+resurrects the block and the move refuses, and an adoption after it fails and
+the pass carries the chunk. An implementation **MUST NOT** substitute a grace
+period for either operation ([RFC 0 §4.3](rfc-0-data-lifecycle.md#4.3%20Reporting)).
 
 ### 7.3 Relocation
 
@@ -1195,9 +1282,10 @@ After the new block is durable, one transaction:
 - creates the new block record, with its encodings;
 - counts, inside the transaction, the moved chunks whose refcount is nonzero,
   adds that to the new block's `live` and subtracts each source's share from it,
-  writing the zero index key of any block it leaves at zero.
+  retiring any source it leaves at zero ([§7.1](#7.1%20Conditional%20retirement)).
 
-Refs are untouched ([§2.5](#2.5%20Refs%20name%20hashes%2C%20never%20blocks)). A source whose `live` reaches zero is retirable. A
+Refs are untouched ([§2.5](#2.5%20Refs%20name%20hashes%2C%20never%20blocks)). The target's carried list is the moved chunks; a
+source's list does not change. A
 chunk adopted by a racing commit is counted in whichever block its record names
 when the adoption applies; both transactions read and write that record, so they
 cannot interleave.
@@ -1208,7 +1296,8 @@ Restoring block metadata from a copy — a snapshot, a backup — is a batch of
 adoptions, not a write of old records:
 
 - every chunk a restored ref names **MUST** exist when the restore applies ([§7.2](#7.2%20Adoption%20is%20conditional%20on%20existence));
-  a restore that would write a ref to a retired chunk **MUST** fail;
+  a ref to a chunk of a `retired` block resurrects it, and one whose chunk
+  record is gone or names a `deleted` block **MUST** fail;
 - chunk and block records **MUST** be taken from the live store, never from the
   copy, whose locations may predate a relocation and whose counts describe a
   store that no longer exists;
@@ -1224,34 +1313,28 @@ snapshot's live and history refs held its chunks.
 
 ### 7.5 Audit
 
-Refcounts are sweep's only authority, so there **MUST** be a way to check them. An
-audit recomputes each chunk's refcount from the live and history refs naming it,
-and each block's `live` from its chunks, and reports every mismatch. It needs no
-consistent read of the whole store: a store-sized read transaction is either
-refused or holds back the store's version reclamation for its whole length.
+The counts are a cache of the reverse ref index ([§6.1](#6.1%20A%20refcount%20is%20exactly%20its%20refs)), so there **MUST** be a
+way to check them against it. [RFC 9 §6](rfc-9-gc.md#6.%20Audit)'s audit, run by GC, merges the chunk
+records with the reverse index in hash order and walks the block records; this
+section states only what it requires of block metadata:
 
-- **The walk is bounded reads.** The audit reads refs and history in bounded
-  batches. Before it reads any ref, it notes the `stamp` of every chunk it will
-  count in this walk ([§2.2](#2.2%20Chunk)); a store too large for one walk is audited as
-  several walks over disjoint ranges of chunk hashes.
-- **A correction MAY raise a count at any time.** Raising a count that was right
-  only leaks.
-- **A correction MAY lower a count only in a transaction that finds the chunk
-  record's `stamp` unchanged since before the walk began counting it.** Every
-  transaction that creates, deletes, moves or narrows a ref naming the chunk
-  changes the stamp ([§2.2](#2.2%20Chunk)), so an unchanged stamp proves no ref naming it
-  changed under the walk. A changed stamp means re-walk that chunk.
-- **A lowering also needs two agreeing walks**: two consecutive walks computed
-  the same lower value ([RFC 9 §6.2](rfc-9-gc.md#6.2%20Corrections)).
-- **`live` is corrected per block, in one transaction** that reads the block's
-  chunk records and sets `live` from them.
-- **Every chunk is covered within a stated period**, and the audit reports its
-  coverage ([RFC 9 §6.1](rfc-9-gc.md#6.1%20Coverage)).
-- **A ref whose hash has no chunk record MUST be reported as Lost**, and the
-  report **MUST** start a search of the `retired` blocks, restoring any whose
-  header carries the hash ([RFC 9 §6.3](rfc-9-gc.md#6.3%20A%20ref%20with%20no%20chunk%20record%20is%20Lost%2C%20and%20trash%20is%20searched)).
+- **Bounded reads.** No consistent read of the whole store: a store-sized read
+  transaction is either refused or holds back the store's version reclamation
+  for its whole length.
+- **A correction writes max(current, computed)**, in a transaction that re-reads
+  the record, and maintains `live`, `dead`, the index keys and the block's state
+  as any count change does ([§6.1](#6.1%20A%20refcount%20is%20exactly%20its%20refs)).
+- **A lowering needs an unchanged `stamp`.** Every transaction that creates,
+  deletes, moves or narrows a ref naming the chunk changes the stamp ([§2.2](#2.2%20Chunk)),
+  so an unchanged stamp proves no ref naming it changed under the walk. A
+  lowering also needs two agreeing walks, recorded durably ([RFC 9 §6.2](rfc-9-gc.md#6.2%20Corrections)).
+- **Every record is covered within a stated period** ([RFC 9 §6.1](rfc-9-gc.md#6.1%20Coverage)).
+- **A ref whose chunk record is absent, or names a block that is `deleted` or
+  absent, MUST be reported as Lost**; one whose record names a `retired` block
+  raises the count, which resurrects the block ([RFC 9 §6.3](rfc-9-gc.md#6.3%20A%20ref%20with%20no%20live%20chunk%20record%20is%20found%20by%20one%20read)).
 
-A targeted recount ([§6.3](#6.3%20Underflow%20is%20corruption%2C%20not%20a%20boundary)) is this audit restricted to one chunk or block.
+A targeted recount ([§6.3](#6.3%20Underflow%20is%20corruption%2C%20not%20a%20boundary)) counts one hash's reverse index prefix, O(refs of that
+hash), and applies the same max rule.
 
 ### 7.6 Put intents
 
@@ -1263,9 +1346,11 @@ A retry within the attempt reuses its name and plan and writes the same bytes; n
 other put of the name is ever issued.
 
 **Before any put** — an offload's or a relocation's — the writer durably records a
-**put intent** for the name, carrying the owner epoch it runs under:
+**put intent** for the name, naming the owner whose epoch it runs under:
 
-    Intent(name) = { epoch }
+    Intent(name) = { domain, owner, epoch }   // domain: an ownership unit or a GC lease shard
+
+One transaction **MAY** record every intent of a pass.
 
 The commit that creates the block record **MUST** delete the intent in the same
 transaction and **MUST** fail if the intent is absent ([§4.1](#4.1%20What%20one%20commit%20records)). A name's state
@@ -1278,16 +1363,19 @@ That state is final: nothing can put or commit that name again. So a delete need
 no fence and no delay, and a delete that lands late — after a retry, after a
 crash — can reach no committed block.
 
-**Abandoning an intent.** An intent whose epoch is superseded — its writer lost
-ownership or crashed — **MAY** be removed, and so **MAY** an intent a live owner
+**Abandoning an intent.** An intent is superseded when its owner's durable epoch
+— the unit record's, or the GC lease shard's — is greater than the intent's, or
+the owner no longer exists; the abandoning transaction guards that epoch record.
+A superseded intent **MAY** be removed, and so **MAY** an intent a live owner
 recorded for an attempt it has itself given up
 ([RFC 8 §6.3](rfc-8-engine.md#6.3%20The%20offload%20pipeline), O4): the owner knows no put of that attempt will be
 committed, because a retry mints a new name. Either removal runs in a transaction that reads and deletes
 the intent key, which conflicts with a commit consuming it ([§5.4](#5.4%20Reads%20that%20gate%20a%20commit)); the same
-transaction writes the name's block record in state `deleted`, and the object is then deleted
-([RFC 9 §5](rfc-9-gc.md#5.%20Unrecorded%20objects)). A put still in flight that lands after the delete leaves an object
-with neither intent nor record: it can never be committed, and a listing
-backstop collects it.
+transaction writes the name's block record in state `retired`, with an empty
+carried list and `not_before` past the longest put deadline, so a put still in
+flight lands before the delete ([RFC 9 §3.4](rfc-9-gc.md#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete)). A put that outlives even that leaves
+an object with neither intent nor record: it can never be committed, and a
+listing backstop collects it.
 
 A `deleted` block record is only the delete backlog: it makes a remote delete
 resumable after a crash ([RFC 9 §3.2](rfc-9-gc.md#3.2%20A%20retirement%20not%20yet%20deleted%20is%20durably%20recorded)). No writer reads it; it gates nothing.
@@ -1358,10 +1446,10 @@ supersedes, so an offload commit writes up to two more records per ref.
 | M1 | Existence is committed at the stability point, never for bytes the journal does not hold durably, and a hole is distinguishable from uncarved content. |
 | M2 | Existence is derived from the journal only at recovery, and only above `applied`. |
 | M3 | A chunk or block record exists only for content reported durable. |
-| M4 | A chunk's refcount equals the live and history refs naming it, and `live` equals the referenced chunk records naming the block, at every commit point. A masked ref stays counted until the transaction that deletes it. |
+| M4 | A chunk's refcount equals its reverse ref keys, which equal the live and history refs naming it, and `live` equals the referenced chunk records naming the block, at every commit point. A masked ref stays counted until the transaction that deletes it. |
 | M5 | A count that would go negative fails the transaction and schedules a targeted recount; it never clamps and never wedges. |
-| M6 | A block is retired only by a conditional operation that evaluates `live` inside its own transaction and moves the block record to `retired`; retirement deletes only chunk records naming that block, and the object is deleted only once the record is `deleted`. Every transaction that leaves `live` at zero writes the block's zero index key. |
-| M7 | Adoption of a chunk fails if its record is gone, and never recreates it. |
+| M6 | A block is `retired` exactly when its `live` is zero, by the transaction that took it there, and is resurrected by any transaction that raises it while `retired`. It moves to `deleted` only in a transaction that finds no reverse ref key for any chunk whose record names it, and its object is deleted only once the record is `deleted`. |
+| M7 | Adoption of a chunk resurrects its block if `retired`, fails if its record is gone or its block `deleted`, and never recreates a record. |
 | M8 | No record is written by both an existence commit and an offload commit. |
 | M9 | A transaction's cost is bounded by what it changed, not by the file: an operation over many refs runs as an O(1) intent and batches of at most K refs. |
 | M10 | A commit never replaces a ref with strictly older content, never applies a ref below an overlapping removal's version, and never applies under a stale owner epoch read from its path's fence record. |
@@ -1370,7 +1458,7 @@ supersedes, so an offload commit writes up to two more records per ref.
 | M13 | Content records are counted in one keyspace partition per remote key namespace; no two partitions that can name one remote key keep separate counts, and the absence of a record is never evidence that an object is unreferenced. |
 | M14 | Refs name hashes, never blocks. |
 | M15 | A restore or clone is an adoption, and never copies a count or a location. |
-| M16 | A name is minted once, put only by its attempt, and committed only by the transaction that consumes its put intent. An object is deleted only when neither a block record nor an intent names it. |
+| M16 | A name is minted once, put only by its attempt, and committed only by the transaction that consumes its put intent, which names its owner's domain and epoch. An object is deleted only when neither a live block record nor an intent names it. |
 | M17 | No zero chunk is stored or counted. |
 | M18 | A removal drops only refs whose `newest` is below its version, masks what it has not yet dropped, and `applied` never moves backwards. |
 | M19 | Every read that gates a commit conflicts with every concurrent write that would change it; no gate depends on a range scan or on an in-process guard. |
@@ -1433,34 +1521,38 @@ type Content interface {
 }
 
 // Blocks is RFC 9 §8's view, satisfied here, one per namespace: every call
-// reads and writes only that namespace's partition (§2.6).
+// reads and writes only that namespace's partition (§2.6). Retirement and
+// resurrection are not calls: they happen inside count changes (§7.1).
 type Blocks interface {
-    Zero(ctx context.Context) iter.Seq2[BlockName, error]                         // live may be zero
-    Retire(ctx context.Context, bs []BlockName, notBefore time.Time) []error      // §7.1
-    Due(ctx context.Context, now time.Time) iter.Seq2[BlockName, error]           // RFC 9 §3.1
-    MarkDeleted(ctx context.Context, bs []BlockName, now time.Time) ([]BlockName, error) // RFC 9 §3.1
-    Deleting(ctx context.Context) iter.Seq2[BlockName, error]                     // RFC 9 §3.2
-    Prune(ctx context.Context, bs []BlockName) error                              // RFC 9 §3.1
-    Restore(ctx context.Context, b BlockName, chunks []ChunkLoc) error            // RFC 9 §3.7
-    Intend(ctx context.Context, name BlockName, epoch uint64) error               // §7.6, relocation target
-    // AbandonedIntents yields intents whose epoch is superseded (§7.6).
-    AbandonedIntents(ctx context.Context) iter.Seq2[BlockName, error]
-    // Abandon deletes a superseded intent and writes the name's record as deleted,
-    // conflicting with a commit that consumes it (§7.6).
-    Abandon(ctx context.Context, name BlockName) error
+    Due(ctx context.Context, shard Shard) iter.Seq2[BlockName, error]          // RFC 9 §3.1
+    MarkDeleted(ctx context.Context, bs []BlockName) []error                   // §7.1, verified
+    Deleting(ctx context.Context, shard Shard) iter.Seq2[Deleting, error]      // RFC 9 §3.2
+    Deleted(ctx context.Context, bs []BlockName) error                         // RFC 9 §3.1 step 4
+    Prune(ctx context.Context, bs []BlockName, before time.Time) error         // RFC 9 §3.1 step 5
+    Intend(ctx context.Context, intents []Intent) error                        // §7.6, relocation targets
+    // AbandonedIntents yields intents whose owner's epoch moved on or whose
+    // owner is gone (§7.6).
+    AbandonedIntents(ctx context.Context, shard Shard) iter.Seq2[BlockName, error]
+    // Abandon deletes an intent and writes the name's record retired, due after
+    // the put bound, conflicting with a commit that consumes it (§7.6).
+    Abandon(ctx context.Context, names []BlockName) error
+    Unrecorded(ctx context.Context, names []BlockName) []error                 // RFC 9 §5, backstop
+    Names(ctx context.Context, after BlockName) iter.Seq2[NameState, error]    // RFC 9 §5.2 merge-join
     LiveChunks(ctx context.Context, b BlockName) iter.Seq2[ChunkLoc, error]
-    CompactionCandidates(ctx context.Context) iter.Seq2[BlockName, error]         // RFC 9 §4.4
-    Relocate(ctx context.Context, src []BlockName, dst NewBlock) error            // §7.3
-    Audit(ctx context.Context) iter.Seq2[Mismatch, error]                         // §7.5
-    Recount(ctx context.Context, hash ChunkHash) error                                 // §6.3
-    Unrecorded(ctx context.Context, name BlockName) error                         // RFC 9 §5, backstop
-    Census(ctx context.Context) iter.Seq2[EncodingCount, error]                   // RFC 5 §5.3
-    RebuildIndex(ctx context.Context, check bool) iter.Seq2[Mismatch, error]      // RFC 9 §7.4
+    Holders(ctx context.Context, h ChunkHash) iter.Seq2[Holder, error]         // reverse index prefix
+    CompactionCandidates(ctx context.Context, shard Shard) iter.Seq2[Candidate, error] // RFC 9 §4.4
+    Relocate(ctx context.Context, src []BlockName, dst NewBlock) error         // §7.3
+    Audit(ctx context.Context, shard Shard) iter.Seq2[Mismatch, error]         // §7.5
+    Recount(ctx context.Context, hash ChunkHash) error                         // §6.3
+    Census(ctx context.Context) iter.Seq2[EncodingCount, error]                // RFC 5 §5.3
+    RebuildIndex(ctx context.Context, check bool) iter.Seq2[Mismatch, error]   // RFC 9 §7.4
+    RebuildReverse(ctx context.Context, share ShareID, check bool) iter.Seq2[Mismatch, error] // RFC 9 §7.4
+    Hold(ctx context.Context, reason string, on bool) error                    // RFC 9 §6.4
 }
 
 var (
-    ErrLive         = errors.New("blockmeta: block still live")        // Retire refused
-    ErrChunkRetired = errors.New("blockmeta: adopted chunk retired")   // §7.2
+    ErrReferenced   = errors.New("blockmeta: retired block referenced") // MarkDeleted refused, block resurrected
+    ErrChunkDeleted = errors.New("blockmeta: adopted chunk deleted")   // §7.2
     ErrNoIntent     = errors.New("blockmeta: put intent absent")       // §7.6
     ErrStaleEpoch   = errors.New("blockmeta: owner epoch not current") // §4.1
     ErrInconsistent = errors.New("blockmeta: count underflow")         // §6.3
@@ -1483,9 +1575,9 @@ and never returned ([RFC 0 §9.2](rfc-0-data-lifecycle.md#9.2%20Conflicts%20and%
 | existence commits and the files each covered | `dittofs_blockmeta_existence_commits_total`, `dittofs_blockmeta_existence_files_per_commit` | counter, histogram |
 | time per commit, lookup and existence commit, by `op` | `dittofs_blockmeta_op_seconds` | histogram |
 | put intents held, and abandoned intents removed | `dittofs_blockmeta_intents`, `dittofs_blockmeta_intents_abandoned_total` | gauge, counter |
-| retirements, labelled `result` = `ok` or `live` | `dittofs_blockmeta_retire_total` | counter |
+| retirements and resurrections made inside count changes, labelled `op` | `dittofs_blockmeta_retire_total` | counter |
 | underflows ([§6.3](#6.3%20Underflow%20is%20corruption%2C%20not%20a%20boundary)); any nonzero value is an alert | `dittofs_blockmeta_underflow_total` | counter |
-| audit mismatches, labelled `kind` = `refcount` or `live` and `direction` = `high` or `low`; and lowerings deferred because the stamp changed | `dittofs_blockmeta_audit_mismatches_total`, `dittofs_blockmeta_audit_stamp_changed_total` | counter, counter |
+| lowerings deferred because the stamp changed (the mismatches themselves are GC's metric, [RFC 9 §10](rfc-9-gc.md#10.%20Observability)) | `dittofs_blockmeta_audit_stamp_changed_total` | counter |
 | conflicts retried, by `op` | `dittofs_blockmeta_conflict_retries_total` | counter |
 | removal records held, and those not done; a value that only grows means pruning or phase 2 stopped | `dittofs_blockmeta_removals`, `dittofs_blockmeta_removals_pending` | gauge, gauge |
 | phase-2 sub-transactions, by `kind`, and refs per sub-transaction | `dittofs_blockmeta_batches_total`, `dittofs_blockmeta_batch_refs` | counter, histogram |
@@ -1512,11 +1604,11 @@ the tiers and under the rules of the [index](rfc-index.md).
 | [§3.5](#3.5%20Operations%20that%20make%20holes) allocate | Allocate a range with nothing staged. Assert it reads zeros, not a failure. |
 | [§3.5](#3.5%20Operations%20that%20make%20holes) zero chunks | Write and offload an all-zero region. Assert zero refs, no chunk record, no refcount change, `SEEK_HOLE` reports a hole, and reads return zeros with no fetch. |
 | [§4.4](#4.4%20Commits%20for%20one%20file%20apply%20in%20order) commit order | Commit B, then A over the same offsets with a lower `newest`. Assert B's refs survive. Commit again with a `newest` inside B's range. Assert nothing changes and the extent is reported durable. |
-| [§4.1](#4.1%20What%20one%20commit%20records) two writers, one chunk list | Through the real carver, put the same chunks from two files in two attempts. Assert two names, the second block born with `live` zero and a zero index key, and both files' refs applied. |
+| [§4.1](#4.1%20What%20one%20commit%20records) two writers, one chunk list | Through the real carver, put the same chunks from two files in two attempts. Assert two names, the second block born with `live` zero and `retired`, due at once, and both files' refs applied. |
 | [§4.1](#4.1%20What%20one%20commit%20records) owner epoch | Commit with an epoch below `F_o`. Assert `ErrStaleEpoch` and no record changed; repeat for an existence commit against `F_x` and a removal against both. |
-| [§4.1](#4.1%20What%20one%20commit%20records) partial adoption failure | Retire an adopted chunk before the commit. Assert the carried chunks and their refs apply and only the adopting refs fail. |
+| [§4.1](#4.1%20What%20one%20commit%20records) partial adoption failure | Delete an adopted chunk's block before the commit. Assert the carried chunks and their refs apply and only the adopting refs fail. |
 | [§5.4](#5.4%20Reads%20that%20gate%20a%20commit) gating reads | For each row of §5.4's table, run the gated commit and the conflicting write concurrently on each backend. Assert one fails or retries. Then replace the gating read with a range scan or a plain snapshot read. Assert the check fails, so the rig sees the defect. |
-| [§6.1](#6.1%20A%20refcount%20is%20exactly%20its%20refs) refcount | Over random interleavings of commit, truncate, deallocate, clone, snapshot, snapshot deletion and delete, with phase 2 batches interleaved, assert after every transaction that each refcount equals its live plus history refs. |
+| [§6.1](#6.1%20A%20refcount%20is%20exactly%20its%20refs) refcount | Over random interleavings of commit, truncate, deallocate, clone, snapshot, snapshot deletion and delete, with phase 2 batches interleaved, assert after every transaction that each refcount equals its reverse keys and its live plus history refs, and that a block is `retired` exactly when its `live` is zero. |
 | [§6.2](#6.2%20Truncation%20and%20deallocation) versioned removal | Offer at versions ≤ 3, truncate at 4, commit. Assert refs past the new size are dropped, others apply, and no ref lies past `size`. Then offer, deallocate a range the pass did not carve, commit. Assert every ref applies. |
 | [§6.2](#6.2%20Truncation%20and%20deallocation) batching and masking | With K forced to 2, truncate a file of 100 refs. Between every sub-transaction, read the removed range and assert it reads as existence says, never the removed content; write into the range and assert the write survives phase 2. Crash at every sub-transaction; assert restart resumes from the cursor and counts end exact. |
 | [§3.4](#3.4%20Ordering%20against%20the%20journal), [§6.2](#6.2%20Truncation%20and%20deallocation) removal idempotence | Crash between the journal step and phase 1, and again after phase 1. Assert recovery, a group commit and the removal's own call each reach phase 1 and only the first has effect, and `applied` never moves backwards. |
@@ -1525,12 +1617,13 @@ the tiers and under the rules of the [index](rfc-index.md).
 | [§6.4](#6.4%20Delete) release | Release a file with a pass in flight, then commit the pass. Assert the pass's refs are dropped, and that a restart resumes phase 2. |
 | [§6.5](#6.5%20Who%20owns%20a%20ref) snapshot through history | Snapshot a file, overwrite and truncate it, delete it. Assert every overwritten ref moved to history with its count unchanged, the snapshot reads its cut content, and the chunks' blocks are not retirable. Take snapshots 1, 2 and 3, delete 2. Assert exactly the history refs with 1 ≤ `born` < 2 ≤ `died` < 3 were dropped. Put the share's files in two journals whose versions interleave and assert every snapshot still reads its cut. |
 | [§6.6](#6.6%20Clone%20and%20server-side%20copy) clone | Clone over a destination range with a pass in flight. Assert the pass's refs there are dropped and the cloned refs, versioned at the clone's version, survive. Clone content the journal holds newer than its ref, drop the source's journal extent. Assert the destination reads the newer bytes. Crash mid-clone; assert the destination is not served until resumed. Clone a range onto an overlapping range of the same file; assert the source bytes are copied. |
-| [§7.1](#7.1%20Conditional%20retirement), [§7.2](#7.2%20Adoption%20is%20conditional%20on%20existence) sweep race | Interleave `Retire` and an adopting commit in every order. Assert that either the block survives with the new ref, or the commit fails, and never a ref to a retired chunk. |
-| [§7.1](#7.1%20Conditional%20retirement) retire only its own | Commit a chunk in K1, commit the same chunk carried in K2, retire K2. Assert the chunk record survives, naming K1. |
+| [§7.1](#7.1%20Conditional%20retirement), [§7.2](#7.2%20Adoption%20is%20conditional%20on%20existence) resurrection race | Interleave `MarkDeleted` and an adopting commit on a retired block in every order. Assert that either the block is resurrected with the new ref and not deleted, or the adoption fails, and never a ref to a chunk of a `deleted` block. |
+| [§7.1](#7.1%20Conditional%20retirement) verified delete | Decrement a refcount without dropping its ref, then run `MarkDeleted`. Assert `ErrReferenced`, the block `live`, the count raised. |
+| [§7.1](#7.1%20Conditional%20retirement) prune only its own | Commit a chunk in K1, commit the same chunk carried in K2, retire and prune K2. Assert the chunk record survives, naming K1. |
 | [§7.3](#7.3%20Relocation) relocation | Relocate two blocks into one. Assert no ref changed, every read resolves, the target name is fresh with its intent consumed, and the sources are retirable. Crash after the put; assert the re-run mints a new name and the first target's intent is found as abandoned. |
-| [§7.4](#7.4%20Restore) restore after retire | Take an uncounted copy, retire one of its chunks, restore. Assert the restore fails and every staged ref is dropped. |
+| [§7.4](#7.4%20Restore) restore after delete | Take an uncounted copy, retire one of its chunks' blocks, restore: assert the block is resurrected. Delete another's block, restore: assert the restore fails and every staged ref is dropped. |
 | [§7.5](#7.5%20Audit) audit under load | Corrupt a chunk's refcount low and another high while commits run. Assert the audit raises the low one, lowers the high one only when its stamp is unchanged, and never lowers a count a concurrent commit changed. |
-| [§7.6](#7.6%20Put%20intents) put intents | Commit a name with no intent; assert `ErrNoIntent`. Abandon an intent while its put is in flight, then commit; assert the commit fails and the object is deleted. Land the put after the delete; assert no record names it and the listing backstop collects it. |
+| [§7.6](#7.6%20Put%20intents) put intents | Commit a name with no intent; assert `ErrNoIntent`. Abandon an intent while its put is in flight, then commit; assert the commit fails and the object is deleted after the put bound. Record intents under a unit at epoch 41 and a GC shard at epoch 50; assert neither is judged by the other's epoch. |
 | [§2.6](#2.6%20The%20scope%20of%20a%20count) two stores | Point two stores at one remote namespace. Assert the configuration is refused, or that keys differ. |
 | [§8.3](#8.3%20A%20file%27s%20refs%20and%20the%20version%20floor) floor | Commit refs up to version 7 and existence up to 9. Assert `VersionFloor` returns 9. |
 
@@ -1601,10 +1694,12 @@ One line per requirement.
 | [§6.3](#6.3%20Underflow%20is%20corruption%2C%20not%20a%20boundary) underflow fails and recounts | clamped at zero |
 | [§6.5](#6.5%20Who%20owns%20a%20ref) the count is the authority, snapshots through history | a mark phase with hold lists for snapshots and open files |
 | [§6.6](#6.6%20Clone%20and%20server-side%20copy) clone | the refcount increment is missing; one transaction |
-| [§7.1](#7.1%20Conditional%20retirement) conditional retirement | read, decide, delete the object, then the record |
+| [§6.1](#6.1%20A%20refcount%20is%20exactly%20its%20refs) reverse ref index | none |
+| [§2.3](#2.3%20Block) carried list | none; a block's chunks are found only from its remote header |
+| [§7.1](#7.1%20Conditional%20retirement) conditional retirement | read, decide, delete the object, then the record; no check of the refs before the delete |
 | [§7.2](#7.2%20Adoption%20is%20conditional%20on%20existence) no grace period | a grace window and an in-process adoption guard |
 | [§7.4](#7.4%20Restore) restore adopts | restore writes the copy's records, counts and locations included |
-| [§7.5](#7.5%20Audit) audit | checks only that every ref has a chunk row; no change stamp |
+| [§7.5](#7.5%20Audit) audit | checks only that every ref has a chunk row; no change stamp, no reverse index to merge |
 | [§7.6](#7.6%20Put%20intents) deletion only when neither record nor intent names the object | unrecorded objects are deleted by age |
 | [§8.1](#8.1%20Covering%20lookup) declared, O(log n) | reached by type assertion with a scan fallback |
 | [§8.3](#8.3%20A%20file%27s%20refs%20and%20the%20version%20floor) refs check and floor | neither exists |
@@ -1639,10 +1734,11 @@ within a namespace they spread evenly and no key is sequential.
 | **Fence F_x / F_o** | `epoch` u64, the unit owner's one epoch | new owner; removals and releases; guarded by namespace transactions |
 | **Cut** | `k` u64 · `klatest` u64 | snapshot cut, snapshot deletion (behind the cut gate) |
 | **LiveCut** | — | snapshot cut creates, deletion removes |
-| **Chunk** | `block` name · `position` u64 · `length` u32 · `refcount` u64 · `stamp` u64 | offload commit creates; every ref change counts and stamps; relocation moves; retirement deletes |
-| **Block** | `state` (live, retired, deleted) · `not_before` (i64 ns) · `live` u32 · `dead` u64 · `size` u64 · `encodings` list of (transform ID, version, material ID, fingerprint) | offload commit, relocation create; abandonment and the listing backstop create as `deleted`; retirement, restore and the deleter change state; pruning deletes |
-| **Put intent** | `epoch` u64 | writer before a put; commit or abandonment deletes |
-| **GC index keys** (zero, retired, deleted, compaction) | — | every transaction that changes a block's state, `live` or dead-byte ratio across its threshold; derived, rebuildable ([RFC 9 §7.4](rfc-9-gc.md#7.4%20The%20index%20can%20be%20dropped%20and%20rebuilt)) |
+| **Chunk** | `block` name · `position` u64 · `length` u32 · `refcount` u64 · `stamp` u64 | offload commit creates; every ref change counts and stamps; relocation and a carrying commit repoint; prune of its block deletes |
+| **Reverse ref** | — (the key is `hash‖share‖file‖offset‖died`) | every transaction that writes or deletes a ChunkRef or History record, in the same transaction |
+| **Block** | `state` (live, retired, deleted) · `not_before` (i64 ns, store time) · `live` u32 · `dead` u64 · `dead_at` (i64 ns) · `generation` u8 · `size` u64 · `encodings` list of (transform ID, version, material ID, fingerprint) · `carried` list of (hash 32 B, length u32), at most `N` | offload commit, relocation create; abandonment and the listing backstop create as `retired`; every count change across zero retires or resurrects; the deleter moves to `deleted`; pruning deletes |
+| **Put intent** | `domain` u8 · `owner` (unit ID or shard) · `epoch` u64 | writer before a put; commit or abandonment deletes |
+| **GC index keys** (retired, deleted, compaction) | the deleted key's value: store time the delete succeeded | every transaction that changes a block's state or compaction bucket; derived, rebuildable ([RFC 9 §7.4](rfc-9-gc.md#7.4%20The%20index%20can%20be%20dropped%20and%20rebuilt)) |
 
 ### B.3 What points at what
 
@@ -1654,7 +1750,9 @@ erDiagram
     FILE ||--o{ CHUNKREF_HISTORY : "keeps for snapshots"
     CHUNKREF_LIVE }o--|| CHUNK : "names by hash"
     CHUNKREF_HISTORY }o--|| CHUNK : "names by hash"
+    CHUNK ||--o{ REVERSE_REF : "indexed by, one per ref"
     CHUNK }o--|| BLOCK : "lives in, by name"
+    BLOCK ||--o{ CHUNK : "carries, by its list"
     BLOCK ||--o{ GC_INDEX_KEY : "indexed by state"
     INTENT |o--o| BLOCK : "becomes, at commit"
     CUT ||--o{ LIVECUT : "share holds"
@@ -1663,6 +1761,7 @@ erDiagram
 Refs and history name chunks by hash, never blocks, so relocation rewrites one
 chunk record ([§2.5](#2.5%20Refs%20name%20hashes%2C%20never%20blocks)). A chunk's `refcount` counts the refs and history refs that
 name it ([§6.1](#6.1%20A%20refcount%20is%20exactly%20its%20refs)); a block's `live` counts the chunk records that name it
-with a nonzero refcount ([§2.3](#2.3%20Block)). A block name exists as a put intent, then a
-block record — `live`, `retired`, `deleted` — never as two at once and never again
-after it is pruned ([§7.6](#7.6%20Put%20intents)).
+with a nonzero refcount ([§2.3](#2.3%20Block)); a reverse ref key mirrors each ref under its
+chunk's hash, so the refs of one chunk are one prefix ([§6.1](#6.1%20A%20refcount%20is%20exactly%20its%20refs)). A block name exists
+as a put intent, then a block record — `live`, `retired`, `deleted` — never as two
+at once and never again after it is pruned ([§7.6](#7.6%20Put%20intents)).

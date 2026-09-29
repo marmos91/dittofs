@@ -57,7 +57,7 @@ Operators need to recover a share as it was, to survive losing the metadata
 store, and to move a share between installations without copying data. This
 document composes those from what the set has: counted history refs
 ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)), clone by adoption ([RFC 6 §6.6](rfc-6-block-metadata.md#6.6%20Clone%20and%20server-side%20copy)), restore by adoption
-([RFC 6 §7.4](rfc-6-block-metadata.md#7.4%20Restore)), and GC as a service of one namespace ([RFC 9 §7.3](rfc-9-gc.md#7.3%20GC%20is%20one%20service%20per%20namespace)).
+([RFC 6 §7.4](rfc-6-block-metadata.md#7.4%20Restore)), and GC as a service of one namespace ([RFC 9 §7.3](rfc-9-gc.md#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20sharded%20by%20prefix)).
 
 ### 1.1 Non-goals
 
@@ -133,7 +133,7 @@ rename, an ACL or xattr change, a fold of directory deltas — **MUST**, in the
 same transaction, move the old value to history with `died` set to the cut
 number that transaction read ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)). A history ref counts like a live
 one: a chunk's refcount is its live refs plus its history refs
-([RFC 9 §2.1](rfc-9-gc.md#2.1%20The%20count%20is%20the%20only%20authority)). A record with `born ≥ klatest` no live snapshot can see, and is
+([RFC 9 §2.1](rfc-9-gc.md#2.1%20References%20are%20the%20only%20authority)). A record with `born ≥ klatest` no live snapshot can see, and is
 replaced or dropped as before.
 
 **What a snapshot sees.** Snapshot *k* sees, for each ref and each versioned
@@ -162,7 +162,7 @@ Journal versions do not appear here. Each journal numbers its own files
 version orders a share; the cut number, one record every commit reads, does.
 
 Nothing else — no manifest, hold list or extra GC root — keeps a snapshot's
-blocks alive ([RFC 9 §2.1](rfc-9-gc.md#2.1%20The%20count%20is%20the%20only%20authority), [RFC 7 §4.4](rfc-7-namespace-metadata.md#4.4%20There%20is%20no%20third%20holder)). A pin keeps journal bytes, never
+blocks alive ([RFC 9 §2.1](rfc-9-gc.md#2.1%20References%20are%20the%20only%20authority), [RFC 7 §4.4](rfc-7-namespace-metadata.md#4.4%20There%20is%20no%20third%20holder)). A pin keeps journal bytes, never
 a block.
 
 > ponytail: a snapshot read scans a record's or a file's history at each key or
@@ -383,7 +383,7 @@ without the installation that wrote it.
 
 Until a complete backup expires, its snapshot cannot be deleted ([§2.8](#2.8%20Deleting)), so
 the refs the snapshot sees keep every block the backup names counted. The backup
-adds no second liveness mechanism ([RFC 9 §2.1](rfc-9-gc.md#2.1%20The%20count%20is%20the%20only%20authority)).
+adds no second liveness mechanism ([RFC 9 §2.1](rfc-9-gc.md#2.1%20References%20are%20the%20only%20authority)).
 
 Expiry marks the backup `expired` in its location, then releases the hold, then
 removes the export. An expired backup **MUST NOT** be restored; the reverse order
@@ -427,14 +427,20 @@ object ([RFC 4 §4.7](rfc-4-remote-tier.md#4.7%20Health%20is%20one%20probe%20cal
 of the store's capability check ([RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)). Installations that share only the bucket check
 each other through it:
 
-- a GC pass **MUST** read the claim at its start and before each batch of deletes,
-  and **MUST** stop if the claim does not name its installation as `owned`;
+- GC **MUST** read the claim at every `Recheck` and before each batch of deletes,
+  and **MUST** issue no delete while the claim does not name its installation as
+  `owned` ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period));
 - an installation **MUST NOT** open a namespace for writing whose claim names
   another installation as `owned`;
 - an import **MUST** take ownership only from a claim that is `released` with the
   digest of the export being imported, or, for a recovery import ([§3.3](#3.3%20Restore)), on
   the operator's explicit statement that the previous owner is gone. It then writes
   the claim `owned`, at the next epoch.
+
+> [!important] Pending review — claim checked with every Recheck and delete batch
+> GC now reads the claim on its own `Recheck` period as well as before each
+> delete batch; a move carries retired blocks with their chunk records, so
+> resurrection works at B.
 
 > decision: the claim is a check, not a lock: the remote contract has no
 > conditional put, so two installations that both believe they own a namespace
@@ -457,7 +463,7 @@ Until replication exists, a migration is a move. From owner A to installation B:
    move is committed to, held operations are failed as unavailable, and clients
    reconnect to B.
 3. **Stop A's writers and GC** for the namespace, and join them: offload loops,
-   relocation, sweep, collection ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). Release A's GC lease.
+   relocation, the deleter, collection ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). Release A's GC lease.
 4. **Export** the namespace, kind `move`: every share, snapshot, live and
    history ref, live and history namespace record, removal, chunk and block
    record in every GC state, and every put intent ([RFC 9 §3.2](rfc-9-gc.md#3.2%20A%20retirement%20not%20yet%20deleted%20is%20durably%20recorded)). A's records are current and
@@ -478,14 +484,17 @@ and FileIDs ([§4.5](#4.5%20Versions%20and%20FileIDs%20on%20import)), so clients
 
 No namespace is ever served by two GC services:
 
-- **Sweep** retires only blocks its own store records at `live` zero
-  ([RFC 9 §2.3](rfc-9-gc.md#2.3%20The%20absence%20of%20a%20record%20proves%20nothing)). A's GC is joined before the export and A records nothing after
-  step 7; B counts every ref, since every share and snapshot moved.
+- **The deleter** acts only on blocks its own store records, and only after
+  checking its own reverse ref index ([RFC 9 §2.3](rfc-9-gc.md#2.3%20The%20absence%20of%20a%20record%20proves%20nothing), [RFC 9 §3.5](rfc-9-gc.md#3.5%20The%20deleter%20verifies%20before%20it%20deletes)). A's GC is
+  joined before the export and A records nothing after step 7; B counts every
+  ref and writes its reverse keys, since every share and snapshot moved.
 - **Retired and deleted blocks, and intents,** move too. B rebuilds the GC index
   from the block records ([RFC 9 §7.4](rfc-9-gc.md#7.4%20The%20index%20can%20be%20dropped%20and%20rebuilt)) and resumes them as its own trash and
-  delete backlog, keeping each `not_before` ([RFC 9 §3.2](rfc-9-gc.md#3.2%20A%20retirement%20not%20yet%20deleted%20is%20durably%20recorded)). A's intents carry A's
-  epochs, which the import supersedes ([§4.5](#4.5%20Versions%20and%20FileIDs%20on%20import)), so B collects each with its
-  object, if any ([RFC 9 §5](rfc-9-gc.md#5.%20Unrecorded%20objects)).
+  delete backlog, keeping each `not_before` ([RFC 9 §3.2](rfc-9-gc.md#3.2%20A%20retirement%20not%20yet%20deleted%20is%20durably%20recorded)); a retired block's
+  chunk records move with it, so an adoption at B still resurrects it. A's
+  intents name owners that at B either do not exist or run at an epoch the
+  import raised ([§4.5](#4.5%20Versions%20and%20FileIDs%20on%20import)), so each is superseded ([RFC 9 §3.4](rfc-9-gc.md#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete)) and B collects
+  it with its object, if any ([RFC 9 §5](rfc-9-gc.md#5.%20Unrecorded%20objects)).
 - **Collection** ([RFC 9 §5.3](rfc-9-gc.md#5.3%20It%20runs%20only%20where%20the%20namespace%20is%20proven)) runs only where claim and configuration agree;
   objects A put and never committed are B's to collect.
 - A **stale process of A** that puts after the release only leaks: its commit
@@ -748,7 +757,7 @@ emulator; GC runs as in production, not stubbed.
 | S5 | Clone, then write to both and delete the source, then the snapshot. Each share reads its own bytes; the audit reports no mismatch. |
 | S6 | Delete a backed-up snapshot: `ErrHeld`. Crash expiry after each step: a restore never succeeds from an expired backup, and never reads a swept block. |
 | S7 | Two installations on one bucket, each owning one namespace, both running GC, relocation and collection for a day-tier run. Neither deletes an object the other's records name. Configure both to own one namespace: GC stops on the claim check. |
-| S8 | Move a namespace while A's GC has zero-index blocks, retired blocks in the trash and deleted blocks awaiting their delete. After the drop, no delete is issued by A; B resumes them, and deletes no retired block before its `not_before`. |
+| S8 | Move a namespace while A's GC has retired blocks in the trash, deleted blocks awaiting their delete, and intents in flight. After the drop, no delete is issued by A; B resumes them, and deletes no retired block before its `not_before`. |
 | S9 | Corrupt one byte in each frame position, truncate the stream at every frame boundary, kill the importer at each step. Nothing publishes; staging is empty after restart. |
 | S10 | Import with one material ID removed from B's provider, and with a different scope: refused before any record is staged. |
 | S11 | Import a file whose refs carry a high epoch into an installation whose counter is low; write to it. The write is committed and read back. Revert the epoch raise: the check fails on the read. |

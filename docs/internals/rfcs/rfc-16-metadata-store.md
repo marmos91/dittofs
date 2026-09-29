@@ -496,6 +496,9 @@ type Txn interface {
 	// transactions guarding one key do not conflict with each other, only
 	// with a transaction that writes it. A gating read uses it (RFC 6 §5.4).
 	Guard(key []byte) error
+	// Now is store time for this transaction: from the backend's timestamp
+	// oracle or hybrid logical clock, never a node's wall clock alone.
+	Now() time.Time
 }
 ```
 
@@ -511,6 +514,13 @@ shared (read) lock on the key, and a write takes the exclusive lock.
 > [!important] Pending review — shared Guard
 > `KV.Guard` is specified shared: guards conflict with writes, never with each
 > other. KV conformance gains the check (§6.1).
+
+**`Now` is store time.** Every time a record stores to be compared later — GC's
+`not_before`, a delete's completion, a `Recheck` — is taken from `Now` and
+compared with `Now` in a later transaction ([RFC 9 §1.2](rfc-9-gc.md#1.2%20Words%20this%20document%20uses)). It **MUST** be
+monotonic across transactions that commit in order, and within a stated bound of
+real time; a backend with a timestamp oracle returns the transaction's
+timestamp, and one without returns a hybrid logical clock kept in the store.
 
 Two backends with identical semantics differ only here, and one conformance
 suite over `KV` plus one over the entity layer covers both.
@@ -547,11 +557,12 @@ Every key starts with a kind byte. The layout encodes the boundary
 | | `S‖id‖qx‖principal-or-project` | when usage first exceeded the soft limit; deleted when it falls back under ([RFC 17 §5.6](rfc-17-vfs.md#5.6%20Quota)) |
 | | `S‖id‖vf‖version‖FileID‖offset` | version-floor index ([RFC 6 §8.3](rfc-6-block-metadata.md#8.3%20A%20file%27s%20refs%20and%20the%20version%20floor)) |
 | | `S‖id‖fnc` | numeric file-id allocator: the next unreserved number, reserved in ranges by unit owners, so the protocol's numeric id is injective ([RFC 7 §6.5](rfc-7-namespace-metadata.md#6.5%20A%20protocol%27s%20numeric%20file%20id%20is%20derived%2C%20and%20collisions%20are%20its%20problem)); the number itself is a File field |
-| **Per namespace** — content-addressed, one partition per remote key namespace ([RFC 6 §2.6](rfc-6-block-metadata.md#2.6%20The%20scope%20of%20a%20count)) | `C‖ns‖hash`, `B‖ns‖name` | Chunk, Block (with its GC state: `live`, `retired`, `deleted`) |
-| | `I‖ns‖name` | put intent ([RFC 9 §7.2](rfc-9-gc.md#7.2%20Every%20record%20GC%20stores%20names%20its%20reclamation)) |
-| | `BZ‖ns‖name`, `BR‖ns‖not_before‖name`, `BD‖ns‖name`, `BC‖ns‖name` | GC index: blocks at `live` = 0, retired (in the trash, ordered by `not_before`), deleted (awaiting the object's delete), past the compaction threshold. Derived from block records; droppable and rebuildable ([RFC 9 §7.4](rfc-9-gc.md#7.4%20The%20index%20can%20be%20dropped%20and%20rebuilt)) |
-| | `NS‖ns‖gc‖lease`, `NS‖ns‖gc‖summary` | GC lease, last pass summary ([RFC 9 §7.3](rfc-9-gc.md#7.3%20GC%20is%20one%20service%20per%20namespace)) |
-| | `NS‖ns‖gc‖cursor‖walk`, `NS‖ns‖gc‖scratch‖walk‖hash` | pass cursor per kind of walk (audit, index rebuild, compaction scan), audit scratch, so a restarted pass resumes; derived, like the summary |
+| **Per namespace** — content-addressed, one partition per remote key namespace ([RFC 6 §2.6](rfc-6-block-metadata.md#2.6%20The%20scope%20of%20a%20count)) | `C‖ns‖hash`, `B‖ns‖name` | Chunk, Block (with its GC state: `live`, `retired`, `deleted`, and its carried chunk list) |
+| | `CR‖ns‖hash‖ShareID‖FileID‖offset‖died` | reverse ref index: one empty-valued key per live (`died` zero) or history ref, written in the ref's transaction; authoritative for "which refs name this chunk", and the refcount is its cache ([RFC 6 §6.1](rfc-6-block-metadata.md#6.1%20A%20refcount%20is%20exactly%20its%20refs)) |
+| | `I‖ns‖name` | put intent: owner domain, owner, epoch ([RFC 9 §7.2](rfc-9-gc.md#7.2%20Every%20record%20GC%20stores%20names%20its%20reclamation)) |
+| | `BR‖ns‖not_before‖name`, `BD‖ns‖name`, `BC‖ns‖bucket‖name` | GC index: retired blocks by `not_before`, deleted blocks awaiting prune (value: when the delete succeeded), compaction candidates by dead-ratio bucket. Derived from block records; repairable and rebuildable ([RFC 9 §7.4](rfc-9-gc.md#7.4%20The%20index%20can%20be%20dropped%20and%20rebuilt)) |
+| | `NS‖ns‖gc‖lease‖shard`, `NS‖ns‖gc‖recheck`, `NS‖ns‖gc‖hold`, `NS‖ns‖gc‖suspect‖hash` | GC lease per prefix shard with its epoch, last `Recheck` result, the deleter's hold, audit lowering state ([RFC 9 §7.3](rfc-9-gc.md#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20sharded%20by%20prefix)) |
+| | `NS‖ns‖gc‖cursor‖walk‖shard` | walk cursor per kind of walk (audit, block walk, index rebuild) and shard, so a restarted walk resumes; derived |
 | **Server-wide** | `U‖principal`, `G‖principal` | User, Group, keyed by `PrincipalID` |
 | | `M‖group‖member`, `MR‖member‖group` | Membership, both directions |
 | | `NX‖kind‖name` | name index: user, group and share names → ID, unique |
@@ -572,14 +583,14 @@ fences.
 
 > [!important] Pending review — key table
 > Content keys gain the namespace; rows added for history (`H‖`), durable
-> locks, the numeric-id allocator, the version-floor index, relocation
-> candidates, GC lease, summary and scratch, and client units. The reserved
+> locks, the numeric-id allocator, the version-floor index, compaction
+> candidates, the GC lease and cursors, and client units. The reserved
 > reverse-name row and snapshot captures are gone.
 
-> [!important] Pending review — GC index keys
-> Pending-deletion (`D‖`), candidate (`K‖`) and relocation-candidate (`RC‖`)
-> keys are replaced by the block record's own state and four derived index
-> prefixes (`BZ‖`, `BR‖`, `BD‖`, `BC‖`) that an operator can drop and rebuild.
+> [!important] Pending review — reverse ref index and GC keys
+> Adds the reverse ref index `CR‖` (about 1.1 TB raw at 2 PB) and store time on
+> `Txn`; the zero index, pass summary and audit scratch are gone; the GC lease is
+> sharded and gains `Recheck`, hold and lowering-state rows.
 
 Consequences:
 
@@ -899,29 +910,34 @@ rewritten per day.
 | ChunkRef, live | 42 + 89 = 131 | chunk | 8.6×10⁹ | 1.13 TB |
 | version-floor index entry | 59 + 0 ≈ 60 | ref | 8.6×10⁹ | 0.52 TB |
 | Chunk | 49 + 61 = 110 | chunk | 8.6×10⁹ | 0.95 TB |
-| Block | 49 + ~46 ≈ 95 | block | 3.4×10⁷ | < 0.01 TB |
+| reverse ref key (`CR`) | 105 + 0 ≈ 105 | ref | 8.6×10⁹ | 0.90 TB |
+| Block, with its carried list (256 chunks of a 64 MiB block × 36 B) | 49 + ~9,250 ≈ 9,300 | block | 3.4×10⁷ | 0.32 TB |
 | File (attributes and write-path fields) | 33 + 160 ≈ 200 | file | 10⁸ – 10⁹ | 0.02 – 0.2 TB |
 | Entry | 58 + 42 = 100 | file | 10⁸ – 10⁹ | 0.01 – 0.1 TB |
 | fences `F_x`, `F_o` | 2 × (35 + 9) ≈ 90 | file | 10⁸ – 10⁹ | 0.01 – 0.09 TB |
-| history ref + its chunk (snapshots) | 131 + 110 = 241 | superseded chunk | 30 × 1% × 8.6×10⁹ = 2.6×10⁹ | 0.62 TB |
+| history ref + its chunk + its reverse key (snapshots) | 131 + 110 + 105 = 346 | superseded chunk | 30 × 1% × 8.6×10⁹ = 2.6×10⁹ | 0.90 TB |
 | File history (snapshots) | ≈ 200 | changed file | 30% of files | 0.006 – 0.06 TB |
 
 | Totals | Keys | Bytes | Three replicas |
 | --- | --- | --- | --- |
-| without snapshots, 10⁸ files | 2.6×10¹⁰ | 2.6 TB | 7.9 TB |
-| without snapshots, 10⁹ files | 3.0×10¹⁰ | 3.0 TB | 9.0 TB |
-| with snapshots, 10⁸ files | 3.1×10¹⁰ | 3.3 TB | 9.8 TB |
-| with snapshots, 10⁹ files | 3.5×10¹⁰ | 3.7 TB | 11 TB |
+| without snapshots, 10⁸ files | 3.5×10¹⁰ | 3.8 TB | 11.4 TB |
+| without snapshots, 10⁹ files | 3.9×10¹⁰ | 4.2 TB | 12.6 TB |
+| with snapshots, 10⁸ files | 4.2×10¹⁰ | 4.8 TB | 14.4 TB |
+| with snapshots, 10⁹ files | 4.6×10¹⁰ | 5.2 TB | 15.6 TB |
 
-Content records (ref, index entry, chunk: 301 bytes and three keys per chunk)
-are about 87% of the total at 10⁹ files, and they scale as 1/`Target`. So
-`Target` is the lever, not the file layout:
+Content records (ref, version-floor entry, chunk, reverse key: 406 bytes and four
+keys per chunk) are about 83% of the total at 10⁹ files, and they scale as
+1/`Target`. The reverse index costs about 0.9 TB, a quarter of the total, and is
+what makes a recount O(refs of a hash) and lets the deleter check the refs before
+every delete ([RFC 9 §3.5](rfc-9-gc.md#3.5%20The%20deleter%20verifies%20before%20it%20deletes)). The carried lists add about 0.3 TB at a 64 MiB
+block target and scale as 1/`Target` too. `Target` is the lever, not the file
+layout:
 
 | `Target` | Chunks at 2 PiB | Content records | Cold 4 KiB read fetches |
 | --- | --- | --- | --- |
-| 256 KiB (default) | 8.6×10⁹ | 2.6 TB | ≈ 0.3 MiB |
-| 1 MiB | 2.1×10⁹ | 0.65 TB | ≈ 1.2 MiB |
-| 4 MiB | 5.4×10⁸ | 0.16 TB | ≈ 5 MiB |
+| 256 KiB (default) | 8.6×10⁹ | 3.5 TB | ≈ 0.3 MiB |
+| 1 MiB | 2.1×10⁹ | 0.87 TB | ≈ 1.2 MiB |
+| 4 MiB | 5.4×10⁸ | 0.22 TB | ≈ 5 MiB |
 
 **Recommendation (non-normative).** A share of large, mostly sequential files —
 media, checkpoints, backups, a mean file of 1 GiB or more — is better served by a
@@ -931,8 +947,9 @@ cold fetch per small random read and coarser deduplication ([RFC 2](rfc-2-carver
 creation. Deduplication lowers the chunk rows, never the ref rows.
 
 > [!important] Pending review — metadata sizing
-> About 3×10¹⁰ keys and 3–4 TB raw at 2 PB with the default `Target`; a 1 MiB
-> `Target` is recommended for large-file shares. Not yet measured on a backend.
+> About 4×10¹⁰ keys and 4–5 TB raw at 2 PB with the default `Target`, the
+> reverse ref index included; a 1 MiB `Target` is recommended for large-file
+> shares. Not yet measured on a backend.
 
 ## 8. Observability
 

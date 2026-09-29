@@ -341,9 +341,9 @@ Proposed, for review with this document; none is applied yet.
    describes: `snapshots.pin_bound` per share, `migration.freeze_timeout` per installation (Appendix B).
 5. **RFC 7 §3.3:** case sensitivity is bound, so a change is refused rather than
    left undefined.
-6. **RFC 9 §8:** GC's `Config` splits into namespace fields (interval, lease,
-   trash retention, compaction threshold and rate, audit period and rate) and the
-   per-process fields (deletes in flight, names per delete call).
+6. **RFC 9 §8:** GC's `Config` holds four namespace fields (interval, trash
+   retention, space-amplification target, audit period); everything else it
+   once held is a constant or derived.
 
 ## 11. Open questions
 
@@ -380,6 +380,11 @@ Descriptive, for the refactor.
 
 ## Appendix B — the settings
 
+> [!important] Pending review — GC settings trimmed
+> GC keeps four settings: interval, trash retention, space-amplification target
+> and audit period. The dead ratio, compaction and audit rates, delete batch
+> and deletes in flight become derived values or the scheduler's constants.
+
 Every setting the storage RFCs name, with its scope and class. "Proposed" marks a
 default this document suggests where the owning RFC states none.
 
@@ -407,14 +412,10 @@ default this document suggests where the owning RFC states none.
 | material provider | [RFC 5 §2.5](rfc-5-transforms.md#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material) | remote store | live | required when the chain encrypts |
 | case sensitivity: the share's fold rule, by ID from the store format record ([RFC 16 §4.6](rfc-16-metadata-store.md#4.6%20Store%20format)) | [RFC 7 §3.3](rfc-7-namespace-metadata.md#3.3%20Case) | share | bound | sensitive (identity rule) |
 | `atime` policy | [RFC 7 §9.2](rfc-7-namespace-metadata.md#9.2%20Timestamps) | share | live | proposed: relative |
-| GC interval, lease | [RFC 9 §8](rfc-9-gc.md#8.%20API%20surface) | namespace | live | open in RFC 9 |
-| `gc.trash_retention`: time a retired block's object waits before its delete | [RFC 9 §3.7](rfc-9-gc.md#3.7%20Trash) | namespace | live | 48 h |
-| `gc.compaction.dead_ratio`: dead-byte ratio that makes a block a compaction candidate; 0 turns compaction off | [RFC 9 §4.4](rfc-9-gc.md#4.4%20When%20to%20compact%20is%20policy) | namespace | live | open in RFC 9 |
-| `gc.compaction.rate`: compactor encoded bytes per second | [RFC 9 §4.4](rfc-9-gc.md#4.4%20When%20to%20compact%20is%20policy) | namespace | live | open in RFC 9 |
-| `gc.audit.period`: time within which the audit covers every chunk | [RFC 9 §6.1](rfc-9-gc.md#6.1%20Coverage) | namespace | live | 7 days |
-| `gc.audit.rate`: refs audited per second | [RFC 9 §6.1](rfc-9-gc.md#6.1%20Coverage) | namespace | live | open in RFC 9 |
-| deletes in flight | [RFC 9 §8](rfc-9-gc.md#8.%20API%20surface) | node | restart | open in RFC 9 |
-| `gc.delete_batch`: names per delete call | [RFC 9 §3.1](rfc-9-gc.md#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object) | node | live | 1,000 |
+| `gc.interval`: between compaction and collection passes | [RFC 9 §8](rfc-9-gc.md#8.%20API%20surface) | namespace | live | open in RFC 9 |
+| `gc.trash_retention`: time a retired block with recoverable chunks waits before its delete | [RFC 9 §3.7](rfc-9-gc.md#3.7%20Trash) | namespace | live | 48 h |
+| `gc.space_amp_target`: stored over referenced bytes the compactor holds the namespace under; 0 turns compaction off | [RFC 9 §4.4](rfc-9-gc.md#4.4%20When%20to%20compact%20is%20policy) | namespace | live | proposed: 1.25 |
+| `gc.audit.period`: time within which the audit covers every chunk and block record; its rate is derived from it | [RFC 9 §6.1](rfc-9-gc.md#6.1%20Coverage) | namespace | live | 7 days |
 | replica count and floor, failure domain | [RFC 10 §7](rfc-10-journal-replication.md#7.%20Membership) | installation | live | open in RFC 10 |
 | ownership unit | [RFC 11 §2](rfc-11-ownership.md#2.%20Ownership%20units) | share | bound | the share |
 | share's namespace | [RFC 12 §2.1](rfc-12-snapshots.md#2.1%20A%20namespace%20is%20the%20unit%20that%20moves) | share | bound | the share's own |
