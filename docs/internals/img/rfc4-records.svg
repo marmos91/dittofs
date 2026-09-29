@@ -25,17 +25,17 @@
   <!-- Existence -->
   <rect x="16" y="64" width="210" height="262" rx="6" class="grp"/>
   <text x="28" y="84" class="h">EXISTENCE</text>
-  <text x="28" y="100" class="s">written by the write path</text>
+  <text x="28" y="100" class="s">written by existence commits</text>
   <rect x="28" y="112" width="186" height="54" rx="3" class="bn"/>
   <text x="38" y="130" class="rl">Shape</text><text x="86" y="130" class="m">FileID</text>
-  <text x="38" y="152" class="m">size, stamp, mtime, ctime</text>
+  <text x="38" y="152" class="m">size, applied, m/ctime</text>
   <rect x="28" y="178" width="186" height="54" rx="3" class="bn"/>
   <text x="38" y="196" class="rl">Hole</text><text x="80" y="196" class="m">(FileID, start)</text>
   <text x="38" y="218" class="m">end</text>
   <rect x="28" y="244" width="186" height="54" rx="3" class="bn"/>
-  <text x="38" y="262" class="rl">Removal</text><text x="96" y="262" class="m">(FileID, stamp)</text>
+  <text x="38" y="262" class="rl">Removal</text><text x="96" y="262" class="m">(FileID, version)</text>
   <text x="38" y="284" class="m">start, end</text>
-  <text x="28" y="316" class="s">holes: unwritten ranges; removals: pruned</text>
+  <text x="28" y="316" class="s">removals: keyed by journal version</text>
 
   <!-- Content map -->
   <rect x="246" y="64" width="430" height="196" rx="6" class="grp"/>

@@ -14,19 +14,15 @@ tags:
 # RFC 7 — namespace metadata
 
 **Status:** draft.
-**Depends on:** [RFC 0](rfc-0-data-lifecycle.md), for the terms, the identifiers and the invariants. [RFC 6](rfc-6-block-metadata.md)
-owns the records that describe a file's content; this document owns the records
-that describe the file. Nothing here redefines either.
 **Audience:** anyone changing a metadata backend's namespace records, the
 handle format, the permission path, or lock state — and anyone writing a
 protocol adapter that consumes them.
 
-The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT** and **MAY** are
-to be interpreted as in RFC 2119.
-
-This document specifies behaviour, not the current code. Where the code differs,
-[Appendix A](#Appendix%20A%20%E2%80%94%20where%20the%20current%20code%20differs) lists it for the refactor. A difference is a defect to be fixed or
-migrated, never a rule for an implementer to build around.
+[RFC 6](rfc-6-block-metadata.md) owns the records that describe a file's content; this document owns the
+records that describe the file. Conventions, RFC 2119 keywords and test tiers are
+set once in the [index](rfc-index.md). This document specifies behaviour, not the
+current code; [Appendix A](#Appendix%20A%20%E2%80%94%20where%20the%20current%20code%20differs) lists where the code differs, as defects to
+fix, never rules to build around.
 
 ---
 
@@ -67,8 +63,8 @@ differ in kind. This document does not restate it.
 
 The consequence that matters here is directional. Block metadata **MUST NOT** be
 told about names ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)); it learns of a deletion only when this component
-releases an inode. So every rule below about what keeps an inode alive is a rule
-about when content may be destroyed, one component removed.
+releases an inode. So every rule below about what keeps an inode alive is also a
+rule about when content may be destroyed.
 
 ## 2. The records
 
@@ -78,13 +74,13 @@ Namespace metadata holds three kinds of record.
 | --- | --- | --- | --- |
 | **Inode** | `FileID` | type, generation, mode, owner, group, times, `nlink`, parent (directories only) | attribute operations, link and unlink ([§4](#4.%20What%20keeps%20an%20inode%20alive)) |
 | **Entry** | `(parent FileID, name)` | child `FileID`, child type | create, link, unlink, rename ([§3](#3.%20Names), [§5](#5.%20Rename)) |
-| **Pending release** | `FileID` | — | the unlink that leaves an open inode with no entry ([§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees)) |
+| **Pending release** | `FileID` | the open holders and their lease | the unlink that leaves an open inode with no entry ([§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees)) |
 
 ![A directory's entries as separate records pointing at inodes, two entries naming one inode, and the operations that write each side](img/rfc5-entries-and-inodes.svg)
 
 ### 2.1 Inode
 
-    Inode(id) = { type, generation, mode, uid, gid, atime, ctime, nlink, mtime?, parent? }
+    Inode(id) = { type, generation, mode, uid, gid, atime, ctime, nlink, mtime?, parent?, unit? }
 
 `id` is [RFC 0 §3](rfc-0-data-lifecycle.md#3.%20Identity)'s `ID`: a UUID, stable for the life of the file, unchanged by
 rename, relink or rewriting the contents.
@@ -106,6 +102,10 @@ records in step for no gain.
 `parent` exists only for directories, and only because `..` has to resolve
 without a search. It is exact, because a directory has exactly one entry naming
 it ([§4.1](#4.1%20%60nlink%60%20is%20exactly%20its%20entries)).
+
+`unit` is the inode's ownership unit ([RFC 11 §2](rfc-11-ownership.md#2.%20Ownership%20units)), fixed at create and unchanged by
+rename. The default unit is the share, which the handle already names, so `unit`
+is stored only when a finer unit is configured.
 
 ### 2.2 Entry
 
@@ -158,7 +158,9 @@ reads it through an interface it declares for the need:
     Size(file)  → bytes
     Times(file) → mtime, ctime
 
-The engine supplies [RFC 6](rfc-6-block-metadata.md)'s shape record ([RFC 6 §2.4](rfc-6-block-metadata.md#2.4%20Shape%20and%20holes)) at composition time.
+The engine supplies it at composition time, answering from [RFC 6](rfc-6-block-metadata.md)'s shape record
+([RFC 6 §2.4](rfc-6-block-metadata.md#2.4%20Shape%20and%20holes)) with the journal's not-yet-committed writes applied over it
+([RFC 6 §3.4](rfc-6-block-metadata.md#3.4%20Ordering%20against%20the%20journal)).
 Per [RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy) this **MUST** be a declared interface; a backend that does not
 supply it **MUST** fail to build.
 
@@ -169,10 +171,10 @@ Three reasons, in order of how much they cost to get wrong:
    the crash between them leaves a `size` covering a range no hole records and
    no journal holds — content claimed to exist that was never written, which
    resolves **Lost** and fails a read that should have returned zeros.
-2. **`size` carries the write path's durability.** It **MUST** be as durable as
-   the journal's record at acknowledgement ([RFC 6 §3.4](rfc-6-block-metadata.md#3.4%20Ordering%20against%20the%20journal)). An inode record holding
-   it inherits that schedule for `mode` and `uid` too, which need it far less and
-   pay for it on every chmod.
+2. **`size` carries the write path's durability.** It is group-committed at each
+   stability point, and answered from the journal until then
+   ([RFC 6 §3.4](rfc-6-block-metadata.md#3.4%20Ordering%20against%20the%20journal)). An inode record holding it would inherit that schedule, and
+   every write would contend with every chmod.
 3. **Two copies drift and nothing notices.** `GETATTR` and a read would answer
    from different records, and the disagreement is silent in both directions.
 
@@ -293,6 +295,12 @@ and the release condition is both:
 
 > An inode is released when `nlink` is zero **and** no open state references it.
 
+**Open state is recorded lazily.** It is held in memory by the file's owner
+([RFC 11 §7](rfc-11-ownership.md#7.%20Protocol%20state)) and becomes a durable record only when it keeps content alive: when
+an unlink removes the last entry of an open inode ([§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees)). Opens and closes of
+linked files write nothing. An open of an inode that already has a pending
+release adds its holder to that record.
+
 ### 4.3 Release is what block metadata sees
 
 Releasing an inode drops its refs and decrements the chunks they name
@@ -303,12 +311,13 @@ that drops the refs and leaves the journal holding the file is half a release.
 Block metadata is never told the name that was removed ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)).
 
 **An unlink that leaves an open inode with no entry writes a pending-release
-record** in the same transaction that removes the entry. The last close releases
-the inode and deletes the record. After a restart, open state is gone, so the
-store processes pending-release records once the grace period ends ([§8.3](#8.3%20Lock%20state%20is%20volatile%2C%20and%20the%20grace%20period%20is%20what%20makes%20that%20safe)),
-releasing every inode no reclaimed open references. A pending-release record is
-not a holder: it keeps nothing alive, it only remembers a release that open state
-deferred.
+record** in the same transaction that removes the entry, naming the open holders
+and a lease. The last close releases the inode and deletes the record. After a
+restart, or a change of owner, in-memory open state is gone; the record's lease is
+extended by the grace period ([§8.3](#8.3%20Lock%20state%20is%20volatile%2C%20and%20the%20grace%20period%20is%20what%20makes%20that%20safe)), and when it ends the inode is released unless
+a reclaimed open references it. Only the file's owner releases it. A
+pending-release record is not a holder: it keeps nothing alive, it only remembers
+a release that open state deferred.
 
 Release **MAY** otherwise be deferred past the namespace removal, and **MUST**
 then be recorded the same way, so that a restart resumes it. An unlink that
@@ -636,7 +645,7 @@ existence ([RFC 6 §3.5](rfc-6-block-metadata.md#3.5%20Operations%20that%20make%
 | --- | --- |
 | N1 | An inode's `nlink` equals the number of entries naming it, changes in the transaction that changes them, and fails the transaction rather than going negative. |
 | N2 | An inode is released when, and only when, `nlink` is zero and no open state references it. Nothing else keeps an inode alive. |
-| N3 | Release goes through the engine's `Release`, and a deferred one — including an open, unlinked inode — is recorded in the transaction that removed its last entry, so a restart resumes it. |
+| N3 | Release goes through the engine's `Release`, and a deferred one — including an open, unlinked inode — is recorded in the transaction that removed its last entry, with its holders' lease, so a restart or a new owner resumes it. Open state of a linked inode is never written. |
 | N4 | A rename applies wholly or not at all, and its loop check is evaluated inside its transaction. |
 | N5 | A handle names an inode, its generation and a share, is stable across restart, and resolves to stale — never to another inode and never to "not found" — when its inode is gone. Generations never repeat for one `FileID`. |
 | N6 | No name, path or parent appears in a handle, a lock, a ref or a journal key. |
@@ -649,27 +658,9 @@ existence ([RFC 6 §3.5](rfc-6-block-metadata.md#3.5%20Operations%20that%20make%
 | N13 | An entry is its own record, and no operation's cost grows with the size of its directory beyond the results it returns. |
 | N14 | Residency is not an attribute. |
 
-N1, N2, N3 and N4 are the ones whose violation loses content or serves the wrong
-file. N5, N7 and N8 are the ones whose violation serves content to the wrong
-caller. N13 is the one whose violation stops the system under a load a single
-user can create.
+## 11. API surface and observability
 
-## 11. Consequences for RFC 0 and RFC 6
-
-1. **[RFC 6 §2.4](rfc-6-block-metadata.md#2.4%20Shape%20and%20holes)'s shape record** carries a file's `mtime` and write `ctime`
-   beside `size` ([§2.5](#2.5%20Where%20%60size%60%20lives)). Existence is still written by the write path only.
-2. **[RFC 0 §5.1](rfc-0-data-lifecycle.md#5.1%20Write), step 1.** "The namespace layer authorises the write and updates
-   size and mtime" is two things with different owners. Authorisation is this
-   component's and stays at step 1; `size` and `mtime` move to the existence
-   commit, as [RFC 6 §10](rfc-6-block-metadata.md#10.%20Consequences%20for%20RFC%200) already amends.
-3. **[RFC 0 §7](rfc-0-data-lifecycle.md#7.%20Mutation%20and%20removal), delete.** "The namespace entry and all the file's chunk refs are
-   removed" happens in two steps with a condition between them: the entry goes,
-   and the refs go when [§4.2](#4.2%20Open%20state%20is%20the%20second%20holder)'s release condition holds. [RFC 0](rfc-0-data-lifecycle.md)'s sentence reads
-   as though open files do not exist.
-
-## 12. API surface and observability
-
-### 12.1 Interface
+### 11.1 Interface
 
 Signatures are indicative; the obligations are normative. Every call takes the
 resolved identity ([§7.4](#7.4%20The%20identity%20arrives%20resolved)) and is authorised inside this component ([§7.1](#7.1%20One%20chokepoint)).
@@ -719,7 +710,7 @@ var (
 A serialisation conflict is retried inside the call under the caller's deadline
 and never returned ([RFC 0 §9.2](rfc-0-data-lifecycle.md#9.2%20Conflicts%20and%20their%20retries)).
 
-### 12.2 Observability
+### 11.2 Observability
 
 | Answers | Metric | Type |
 | --- | --- | --- |
@@ -737,14 +728,12 @@ An `nlink` underflow logs the inode at `Error`. A revoked delegation logs the
 client at `Warn`. Entering and leaving grace log at `Info`. A stale handle is
 routine for clients and logs at `Debug`.
 
-## 13. Conformance
+## 12. Conformance
 
-[RFC 1 §11](rfc-1-journal.md#11.%20Conformance) applies unchanged. Every check runs against every backend through the
-shared conformance suite. A property that
-holds on one backend and not another is the category of defect this document was
-written after ([RFC 6 §12](rfc-6-block-metadata.md#12.%20Conformance)).
+Every check runs against every backend through one shared conformance suite, in
+the tiers and under the rules of the [index](rfc-index.md).
 
-### 13.1 Group A — wrong file, lost file, wrong caller
+### 12.1 Group A — wrong file, lost file, wrong caller
 
 | Requirement | Check |
 | --- | --- |
@@ -759,6 +748,7 @@ written after ([RFC 6 §12](rfc-6-block-metadata.md#12.%20Conformance)).
 | [§7.5](#7.5%20A%20cached%20decision%20is%20keyed%20by%20everything%20it%20read) cache key | Two identities differing only in a field the key omits. Assert the second is not served the first's decision. A test that adds no field to the identity cannot fail. |
 | [§8.3](#8.3%20Lock%20state%20is%20volatile%2C%20and%20the%20grace%20period%20is%20what%20makes%20that%20safe) grace | Grant a lock, restart, have a different client request the conflicting lock immediately. Assert refusal for the lease period. Then request a lock on an inode nobody held. Assert it is refused too, and that a reclaim is granted. |
 | [§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees) pending release | Open a file, unlink it, crash. Assert the refs are still counted until grace ends, and released after it unless the open was reclaimed. |
+| [§4.2](#4.2%20Open%20state%20is%20the%20second%20holder) lazy open state | Open and close a linked file 10^4 times. Assert no namespace record was written. |
 | [§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees) release through the engine | Unlink a file the journal still holds dirty. Assert the refs are dropped and the journal holds nothing of it. |
 | [§2.1](#2.1%20Inode) generation outlives release | Release an inode, restart, create an inode with the same `FileID`. Assert the old handle is stale. |
 | [§2.5](#2.5%20Where%20%60size%60%20lives) `ctime` | `chmod` a file, then write it; then write it and `chmod` it. Assert `GETATTR`'s `ctime` is the later change both times. |
@@ -766,7 +756,7 @@ written after ([RFC 6 §12](rfc-6-block-metadata.md#12.%20Conformance)).
 | [§6.5](#6.5%20A%20protocol%27s%20numeric%20file%20id%20is%20derived%2C%20and%20collisions%20are%20its%20problem) file id | Generate ids for a large share. Assert no two live inodes share one, or that the derivation refuses on collision. |
 | [§5.2](#5.2%20The%20loop%20check%20is%20inside%20the%20transaction) loop, sequential | Rename a directory under its own child with no concurrency at all. Assert refusal — the concurrent check above passes a build that has no check, because one of the two renames fails on the entry re-read. |
 
-### 13.2 Group B — cost
+### 12.2 Group B — cost
 
 | Requirement | Check |
 | --- | --- |
@@ -776,7 +766,7 @@ written after ([RFC 6 §12](rfc-6-block-metadata.md#12.%20Conformance)).
 | [§6.4](#6.4%20Resolution%20does%20not%20touch%20the%20namespace) resolution | Assert handle resolution reads no entry record, at any path depth. |
 | [§2.5](#2.5%20Where%20%60size%60%20lives) declared interface | Build a backend with no `Size`. Assert it **MUST** fail to compile. |
 
-### 13.3 What must not stand in
+### 12.3 What must not stand in
 
 - **A single-client rig MUST NOT stand in for [§3.5](#3.5%20A%20cookie%20survives%20concurrent%20mutation) or [§8.3](#8.3%20Lock%20state%20is%20volatile%2C%20and%20the%20grace%20period%20is%20what%20makes%20that%20safe).** Both failures need
   two clients on one object at once.
@@ -788,40 +778,32 @@ written after ([RFC 6 §12](rfc-6-block-metadata.md#12.%20Conformance)).
   re-read that is already there for a different reason.
 - **A correctness assertion MUST NOT stand in for [§2.2](#2.2%20Entry).** A quadratic directory
   returns the right listing.
-- **An in-memory backend MUST NOT be the only backend for Group B.** Its costs are
-  not any durable backend's.
 - **A test that never revokes MUST NOT stand in for [§8.5](#8.5%20A%20delegation%20MUST%20be%20revocable%20within%20a%20bounded%20time).** A recall that is
   always answered never exercises the deadline, which is the whole requirement.
 
-### 13.4 Benchmarks and targets
-
-Run on the reference box of [RFC 1 §12](rfc-1-journal.md#12.%20Test%20plan%20and%20performance%20targets), against every durable backend, on every
-merge. A benchmark reports; the Group B checks are what fail a build.
+### 12.4 Benchmarks and targets
 
 | Benchmark | Measures | Target |
 | --- | --- | --- |
 | Lookup in directories of 10^2 to 10^7 entries | p99 latency | ≤ 100 µs at 10^7, within 2× of the 10^2 figure |
 | Create into directories of 10^2 to 10^7 entries, 64 clients | creates/s, records written per create | records written constant; creates/s within 20% across sizes |
 | List a page of 1,000 entries | p99 latency | ≤ 5 ms at any directory size |
-| `GETATTR`, the inode joined with existence | p99 latency | ≤ 1.3× a read of the inode record alone; the input to [§14](#14.%20Open%20questions) question 1 |
+| `GETATTR`, the inode joined with existence | p99 latency | ≤ 1.3× a read of the inode record alone; the input to [§13](#13.%20Open%20questions) question 1 |
 | Handle resolution at path depth 1 and 64 | p99 latency | ≤ 50 µs, independent of depth |
 | Rename across directories of 10^6 entries | p99 latency | ≤ 5 ms |
 | Grace refusal and reclaim of 10^4 locks after restart | time to leave grace | one lease period, not more |
 
-A regression of more than 10% is reported and does not block a merge.
-
-## 14. Open questions
+## 13. Open questions
 
 1. **Whether the `size` cut is affordable.** [§2.5](#2.5%20Where%20%60size%60%20lives) keeps `size` and a file's
    write times off the inode, so `GETATTR` is a join, and `GETATTR` is the hottest
    namespace operation on both protocols. What the join costs on each backend is
-   unmeasured ([§13.4](#13.4%20Benchmarks%20and%20targets)), and it is the one number that could send [§2.5](#2.5%20Where%20%60size%60%20lives) back to
+   unmeasured ([§12.4](#12.4%20Benchmarks%20and%20targets)), and it is the one number that could send [§2.5](#2.5%20Where%20%60size%60%20lives) back to
    "one record serves both".
 2. **Where lock state lives under more than one server.** [§8.3](#8.3%20Lock%20state%20is%20volatile%2C%20and%20the%20grace%20period%20is%20what%20makes%20that%20safe) makes lock state
-   volatile and per-process, which is correct for a single node and is all this
-   system is ([RFC 0](rfc-0-data-lifecycle.md)). A second node makes it wrong in a way a grace period does
-   not fix, and the answer belongs in RFC 0's failure model, not in a second
-   lock table added beside the first.
+   volatile and held by the file's owner. Whether it moves with ownership
+   ([RFC 11 §7](rfc-11-ownership.md#7.%20Protocol%20state)) or lives in the metadata store is open, and belongs with the
+   protocol rules, not in a second lock table added beside the first.
 3. **What a case-insensitive share should cost.** [§3.3](#3.3%20Case) requires preserving case
    and comparing without it, which means a folded index or a folded key column.
    Which one, and what it costs on writes, is unmeasured.
@@ -854,13 +836,12 @@ stored path, cursor-paged listing.
 | --- | --- |
 | [§2.4](#2.4%20Attributes%2C%20and%20who%20writes%20them) the offload commit writes no namespace record | every offload rewrites the inode's attributes with the refs |
 | [RFC 0 §9.1](rfc-0-data-lifecycle.md#9.1%20Records%20and%20their%20reclamation) (I7) | on one backend the inode's attribute value embeds extended attributes with no cap on their count, and can outgrow what the store reclaims |
-| [§2.5](#2.5%20Where%20%60size%60%20lives) `size` stored once, write times on the shape | `size` has three sources reconciled at run time; write times are on the inode |
-| [§2.5](#2.5%20Where%20%60size%60%20lives) existence never reconstructed | `size` is grown from the journal at share start |
+| [§2.5](#2.5%20Where%20%60size%60%20lives) `size` stored once, write times on the shape | `size` has three sources reconciled at run time and is grown from the journal at every share start; write times are on the inode |
 | [RFC 0 §9.2](rfc-0-data-lifecycle.md#9.2%20Conflicts%20and%20their%20retries) (I8) conflicts retried under the caller's deadline | retried under a fixed budget, after which a conflict reaches the client as an I/O error |
 | [§2.5](#2.5%20Where%20%60size%60%20lives) declared interface | one transaction type spans namespace and content records |
 | [§9.3](#9.3%20Residency%20is%20not%20an%20attribute) residency is not an attribute | a content-derived identity is an inode column with a unique index |
 | [§4.1](#4.1%20%60nlink%60%20is%20exactly%20its%20entries) one `nlink` | a second, silently dropped copy on the attribute struct |
-| [§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees) release through the engine, recorded | adapters release refs best-effort outside the transaction; no pending-release record and no reaper |
+| [§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees) release through the engine, recorded | adapters release refs best-effort outside the transaction; no pending-release record |
 | [§4.4](#4.4%20There%20is%20no%20third%20holder) no third holder | open-but-unlinked files are protected by a hold list read by GC |
 | [§5.1](#5.1%20One%20transaction) one transaction | parent directories' timestamps are coalesced outside the transaction and can be lost |
 | [§5.2](#5.2%20The%20loop%20check%20is%20inside%20the%20transaction) loop check | inside the transaction, but not serialisable on one backend's isolation level |
