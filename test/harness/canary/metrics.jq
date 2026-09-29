@@ -27,7 +27,7 @@ def checkpoints: ["before", "written", "deleted", "gc"];
     ["s3_list_objects", "s3_list", "objects", "S3 listing of the canary's prefix (the Go test's cross-check): objects, at each checkpoint of the last pass."],
     ["server_blocks_remote", "server_blocks", "blocks_remote", "The server's blocks_remote for the share (dfsctl store block stats), at each checkpoint of the last pass."],
     ["server_blocks_local", "server_blocks", "blocks_local", "The server's blocks_local for the share, at each checkpoint of the last pass."],
-    ["server_blocks_total", "server_blocks", "blocks_total", "The server's blocks_total for the share, at each checkpoint of the last pass."]
+    ["server_blocks_all", "server_blocks", "blocks_total", "The server's blocks_total for the share (not a counter, so not _total), at each checkpoint of the last pass."]
     | . as [$name, $group, $key, $help]
     | metric($name; $help),
       (checkpoints[] as $c | $r[$group][$c][$key]? // empty

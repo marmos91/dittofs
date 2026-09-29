@@ -478,7 +478,7 @@ then renamed into place. Every metric is a gauge labelled `share` and `impl`:
 
 - per `checkpoint` (before, written, deleted, gc): `dittofs_canary_rclone_objects`,
   `_rclone_bytes`, `_rclone_blocks`, `_rclone_block_bytes`, `_server_blocks_remote`,
-  `_server_blocks_local`, `_server_blocks_total`, and `_s3_list_objects` (Go only);
+  `_server_blocks_local`, `_server_blocks_all` (the server's `blocks_total`), and `_s3_list_objects` (Go only);
 - `dittofs_canary_pass_ok` (1 or 0), `_last_pass_timestamp_seconds`,
   `_pass_duration_seconds`, `_step_duration_seconds{step}`, `_written_bytes`.
 
