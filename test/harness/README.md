@@ -25,6 +25,7 @@ test/harness/
 ├── bin/timeout        # GNU timeout for macOS (setup-posix.sh needs it)
 ├── githooks/          # hook chain: the repo's .githooks, then harness extras
 ├── docker/            # dev image (dtc), pjdfstest and e2e-linux images, entry scripts
+├── canary/            # repeating round trip against a running server (cron)
 ├── repro/             # standalone reproductions
 ├── logs/              # one log per run (gitignored)
 ├── state/             # locks, KMIP certs, dfsctl login (gitignored)
@@ -372,6 +373,66 @@ inside `dtc shell`).
   auto-GC after the hour: a delay, not a leak. `gc-status` shows only manual runs;
   auto-GC runs appear in the server log.
 
+## Canary: a repeating round trip against a running server
+
+`canary/` checks a live DittoFS deployment end to end, through the Linux kernel SMB
+client (CIFS), and is meant for cron. One pass (`canary.sh`, in a fresh privileged
+container with host networking):
+
+1. mounts the share with `mount.cifs` (SMB 3.1.1, `cache=none`, so reads reach the server);
+2. writes random files (1, 4, 16 and 33 MiB), reads them back, and checks their content,
+   sizes and the directory listing;
+3. waits until the server has uploaded them (`unsynced_bytes` and `pending_uploads` at 0),
+   then checks that new objects appeared under the canary's prefix in the bucket, holding
+   at least the bytes written;
+4. evicts the server's caches (`dfsctl store block evict`) and reads everything again,
+   now served from the remote;
+5. deletes the files, runs `dfsctl store block gc <share> --grace-period 0`, and checks
+   that none of the run's objects remain in the bucket.
+
+It ends with `CANARY PASS …` (exit 0) or `CANARY FAIL step=<step> …` (exit 1), and
+appends a JSON record to `history.jsonl`. A failed pass leaves its run directory behind,
+so the next pass removes it before starting.
+
+The data is random on purpose. With repeated content (zeros, say), a block stays for up
+to an hour after its file is deleted, because the dedup adoption guard is not overridden
+by grace 0 (a delay, not a leak). A canary on such data would fail for that known reason.
+
+**Isolation.** GC with grace 0 reaps without the usual safety margin, so the canary runs on
+its own share (`/canary`), metadata store (`canary-md`) and block store (`s3-canary`).
+That block store sits under its own key prefix (`dittofs-canary/`) in an existing bucket,
+because the S3 store builds keys as `prefix + blocks/<id>`. GC works per block-store
+config, so it cannot touch the objects of any other share, even in the same bucket.
+
+**Setup** (once; idempotent). Run it as the user whose `dfsctl` is logged in as an admin,
+and who runs the server:
+
+```bash
+DFSCTL=/path/to/dfsctl CANARY_BUCKET=<bucket> CANARY_RCLONE_REMOTE=<rclone remote> \
+  CANARY_METADATA_DIR=<dir the dfs process can write> test/harness/canary/setup-canary.sh
+sudo test/harness/canary/run-canary.sh                                    # one pass
+sed "s|@CHECKOUT@|$PWD|" test/harness/canary/dittofs-canary.cron | sudo tee /etc/cron.d/dittofs-canary   # every 15 min
+```
+
+Setup creates the stores, the share, and two users: `canary` (SMB, read-write on the
+share) and `canary-ops` (admin: GC and evict are admin operations). DittoFS makes an
+account that an admin created or reset set its own password before it may do anything
+else, so each user gets a temporary password and then sets its final one itself. The S3
+credentials come from an rclone remote, or from `S3_ENDPOINT`, `S3_ACCESS_KEY` and
+`S3_SECRET_KEY`, and are never printed. Everything secret goes to
+`/etc/dittofs-canary/canary.env` (root, 0600).
+
+Setup also copies the server's own `dfsctl` to `/srv/dittofs-canary/bin/`. The container
+mounts it, so client and server always match. That is also why the image is Ubuntu 26.04:
+it has to match the host's glibc. Re-running setup rotates both passwords.
+
+**Outputs** (`/srv/dittofs-canary`): `status.txt` holds the last verdict line,
+`last.json` and `history.jsonl` the per-step timings, and `logs/canary-<ts>.log` one log
+per pass, kept 14 days. A lock skips a pass while the previous one is still running.
+
+GC's `objects_swept` counts reclaimed chunks. A block object is deleted when its last live
+chunk goes, so a pass typically reports about 54 chunks swept for about 15 objects gone.
+
 ## Batches: `dt-batch`
 
 `dt-batch SET` runs dt commands one after another and writes one verdict line per run to
@@ -516,5 +577,15 @@ COMP3, a compound with an invalid UTF-8 tag: DittoFS returns `NFS4_OK` where pyn
 expects `NFS4ERR_INVAL`. COMP3 belongs to the `utf8` group, which CI's `all` selection
 does not run.
 
-A real Linux host has not been used yet. The dev image stood in for one, on Docker
-Desktop's kernel.
+**First real Linux host (2026-09-29, a shared test host: Ubuntu 26.04.1, kernel 7.0.0-34, x86_64,
+Docker Engine 29.8.1).**
+- dtc picked host networking. The dev image built natively in 71 s.
+- `dtc doctor` passes. Fresh-host images are reported as info, not failures.
+- `dtc e2e --test TestCrossProtocolInterop` passed 6/6 in 60 s, image pulls included,
+  and the log came back owned by the caller, not root.
+- Two bugs showed up only there, and both are fixed:
+  - port checks used `lsof`, which misses listeners in another PID namespace, so a shared
+    host's running dfs looked absent. Linux now uses `ss`;
+  - `dt e2e` refused to run because a dfs held 8080, 12049 and 12445, although the suite
+    only ever binds free ports it picks. e2e no longer checks fixed ports.
+- The canary above passes against the host's running dfs, with an S3 remote behind it.

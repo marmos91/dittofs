@@ -1,0 +1,6 @@
+# DittoFS canary: a write/read/upload/cold-read/delete/GC round trip against the
+# running server every 15 minutes (see test/harness/README.md, "Canary").
+# Install from the checkout root, filling in its path:
+#   sed "s|@CHECKOUT@|$PWD|" test/harness/canary/dittofs-canary.cron | sudo tee /etc/cron.d/dittofs-canary
+# Verdict: /srv/dittofs-canary/status.txt; history: /srv/dittofs-canary/history.jsonl
+*/15 * * * * root @CHECKOUT@/test/harness/canary/run-canary.sh >/dev/null 2>&1

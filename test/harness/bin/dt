@@ -174,19 +174,26 @@ acquire_lock() {
     trap "rm -rf '$lock'" EXIT
 }
 
-# Listening TCP ports: lsof where it exists (macOS, most Linux), else ss (iproute2).
+# Listening TCP ports. On Linux, ss (iproute2): it asks the kernel for every socket in
+# the network namespace. lsof finds sockets through processes' file descriptors, so it
+# misses a listener in another PID namespace (a host dfs, seen from a host-network dtc
+# container) or, without root, another user's: it reported a shared host's ports free.
+# macOS has no ss; its lsof sees Docker's published ports.
+use_ss() { [[ "$OS" == Linux ]] && command -v ss >/dev/null 2>&1; }
 port_busy() {
-    if command -v lsof >/dev/null 2>&1; then lsof -w -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1
-    else ss -Hltn "sport = :$1" 2>/dev/null | grep -q .; fi
+    if use_ss; then ss -Hltn "sport = :$1" 2>/dev/null | grep -q .
+    else lsof -w -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; fi
 }
-port_owner() { # the command listening on PORT, for messages
-    if command -v lsof >/dev/null 2>&1; then lsof -w -nP -iTCP:"$1" -sTCP:LISTEN 2>/dev/null | awk 'NR==2{print $1}'
-    else ss -Hltnp "sport = :$1" 2>/dev/null | sed -n 's/.*users:(("\([^"]*\)".*/\1/p' | head -1; fi
+port_owner() { # the command listening on PORT, for messages ("?" when not visible)
+    local o
+    if use_ss; then o="$(ss -Hltnp "sport = :$1" 2>/dev/null | sed -n 's/.*users:(("\([^"]*\)".*/\1/p' | head -1)"
+    else o="$(lsof -w -nP -iTCP:"$1" -sTCP:LISTEN 2>/dev/null | awk 'NR==2{print $1}')"; fi
+    echo "${o:-?}"
 }
 listeners() { # listeners PORT...: the listening sockets on those ports, for messages
     local re; re="$(IFS='|'; echo "$*")"
-    if command -v lsof >/dev/null 2>&1; then lsof -w -nP -iTCP -sTCP:LISTEN | awk -v re=":($re) " 'NR==1 || $0 ~ re'
-    else ss -ltnp | awk -v re=":($re)$" 'NR==1 || $4 ~ re'; fi
+    if use_ss; then ss -ltnp | awk -v re=":($re)$" 'NR==1 || $4 ~ re'
+    else lsof -w -nP -iTCP -sTCP:LISTEN | awk -v re=":($re) " 'NR==1 || $0 ~ re'; fi
 }
 # In a bridge-network dtc container, localhost:4566/5432/15432/5696 are the entry
 # script's forwarders to the Docker host, so "busy" there says nothing about a
@@ -705,8 +712,10 @@ cmd_e2e() {
         echo "    ${DITTOFS_REPO:+DITTOFS_REPO=$DITTOFS_REPO }$HARNESS/bin/dt e2e $(printf "%q " "${orig[@]}")"
         return 1
     fi
+    # No fixed-port check: the suite starts every server on a free port it picks
+    # (framework FindFreePort), so a dfs already on 8080/12049/12445 (a developer's,
+    # or a shared host's) does not conflict. The lock still keeps suites apart.
     acquire_lock "e2e"
-    require_host_ports_free
     docker_ok; svc_pg_up; svc_localstack_up
     # Ask for the password now: the suite's output goes to a file, so a prompt
     # printed later would be easy to miss.
@@ -801,8 +810,7 @@ e2e_container() {
     local e2e_tmp="$DTC_SHARED_TMP/e2e" log start=$SECONDS rc=0
     grep -qs " $DTC_SHARED_TMP " /proc/self/mountinfo ||
         warn "$DTC_SHARED_TMP is not bind-mounted from the Docker host (run through dtc): tests that bind-mount a temp dir into a container will fail"
-    acquire_lock "e2e"
-    require_host_ports_free
+    acquire_lock "e2e"   # no fixed-port check, as for native e2e: the suite picks free ports
     docker_ok; svc_pg_up; svc_localstack_up
     mkdir -p "$e2e_tmp"
     rpcbind -w 2>/dev/null || rpcbind 2>/dev/null || pgrep -x rpcbind >/dev/null ||
@@ -1113,7 +1121,8 @@ cmd_doctor() {
     # Python that is not there (the macOS shims seen from the container did).
     check "pynfs-4.0 / pynfs-4.1 run ($(command -v pynfs-4.0 || echo missing))" sh -c 'pynfs-4.0 --help && pynfs-4.1 --help'
     check "jq, xmlstarlet, envsubst, shellcheck, fio" sh -c 'command -v jq && command -v xmlstarlet && command -v envsubst && command -v shellcheck && command -v fio'
-    check "a port probe (lsof or ss)" sh -c 'command -v lsof || command -v ss'
+    if [[ "$OS" == Linux ]]; then check "a port probe (ss, iproute2)" sh -c 'command -v ss'
+    else check "a port probe (lsof)" sh -c 'command -v lsof'; fi
     if $IN_CONTAINER; then
         check "pjdfstest" sh -c 'command -v pjdfstest'
         check "kernel NFS and CIFS clients" sh -c 'grep -qw nfs /proc/filesystems || modprobe nfs; grep -qw cifs /proc/filesystems || modprobe cifs'
@@ -1130,9 +1139,13 @@ cmd_doctor() {
     printf '  resources      %s\n' "$(docker info --format 'cpus={{.NCPU}} mem={{.MemTotal}} arch={{.Architecture}}' 2>/dev/null)"
     printf '  engine         %s (containers dt starts use the %s network)\n' \
         "$(docker info --format '{{.OperatingSystem}}' 2>/dev/null)" "$(sibling_net)"
+    # Informational: a fresh host has none of these, and dt pulls each on first use.
+    local img missing=()
     for img in "$LOCALSTACK_IMAGE" localstack/localstack:3.0 "$PG_IMAGE" "$PGIT_IMAGE" python:3.11-slim curlimages/curl:8.11.1; do
-        check "image $img" docker image inspect "$img"
+        docker image inspect "$img" >/dev/null 2>&1 || missing+=("$img")
     done
+    if ((${#missing[@]})); then printf '  info images not pulled yet (pulled on first use): %s\n' "${missing[*]}"
+    else printf '  ok   service images present\n'; fi
     echo "repo:"
     check "checkout at $REPO" git -C "$REPO" rev-parse --git-dir
     printf '  head           %s\n' "$(git -C "$REPO" log -1 --format='%h %ad %s' --date=short 2>/dev/null | cut -c1-80)"
