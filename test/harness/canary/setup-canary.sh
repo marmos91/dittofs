@@ -116,4 +116,11 @@ sudo install -m 0600 -o root -g root "$tmp" "$ENV_FILE"; rm -f "$tmp"
 sudo install -d -m 0755 "$STATE" "$STATE/bin"
 sudo install -m 0755 "$DFSCTL" "$STATE/bin/dfsctl"
 say "wrote $ENV_FILE (root, 0600) and $STATE/bin/dfsctl (a copy of $DFSCTL)"
+# The rclone the canary measures the bucket with: CANARY_RCLONE_BIN (the operators'
+# own binary, so the numbers match theirs), else the one on PATH, else the image's.
+RCLONE_BIN="${CANARY_RCLONE_BIN:-$(command -v rclone || true)}"
+if [[ -x "$RCLONE_BIN" ]]; then
+    sudo install -m 0755 "$RCLONE_BIN" "$STATE/bin/rclone"
+    say "copied $RCLONE_BIN ($("$RCLONE_BIN" version 2>/dev/null | head -1)) to $STATE/bin/rclone"
+fi
 say "run one pass: sudo $(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run-canary.sh"

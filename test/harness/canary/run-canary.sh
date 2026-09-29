@@ -28,7 +28,7 @@ fi
 log="$STATE/logs/canary-$(date +%Y%m%d-%H%M%S).log"
 docker run --rm --privileged --network host --name "dittofs-canary-$$" --env-file "$ENV_FILE" \
     -v /etc/localtime:/etc/localtime:ro \
-    -v "$HERE/canary.sh:/canary/canary.sh:ro" -v "$STATE/bin/dfsctl:/canary/bin/dfsctl:ro" \
+    -v "$HERE/canary.sh:/canary/canary.sh:ro" -v "$STATE/bin:/canary/bin:ro" \
     -v "$STATE:/out" "$IMAGE" /canary/canary.sh >"$log" 2>&1
 rc=$?
 tail -1 "$log" >"$STATE/status.txt"

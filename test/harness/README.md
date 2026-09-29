@@ -390,6 +390,18 @@ container with host networking):
 5. deletes the files, runs `dfsctl store block gc <share> --grace-period 0`, and checks
    that none of the run's objects remain in the bucket.
 
+Along the way it measures the canary's prefix with `rclone size` (object count and
+bytes, the operators' usual check) at four checkpoints:
+- **before writing:** must be 0 (if a failed earlier pass left objects, it runs GC once
+  first);
+- **after the upload:** must match the new objects and hold at least the bytes written;
+- **after the delete:** expected unchanged, since a delete alone does not remove remote
+  objects;
+- **after GC:** must be 0 objects and 0 bytes.
+
+`setup-canary.sh` copies the host's `rclone` (`CANARY_RCLONE_BIN`, else the one on PATH)
+next to `dfsctl`, so the canary measures with the same binary the operators use.
+
 It ends with `CANARY PASS …` (exit 0) or `CANARY FAIL step=<step> …` (exit 1), and
 appends a JSON record to `history.jsonl`. A failed pass leaves its run directory behind,
 so the next pass removes it before starting.
