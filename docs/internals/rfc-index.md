@@ -18,7 +18,7 @@ order: each part builds on the ones before it.
 | **Foundations** | | |
 | [RFC 0](rfc-0-data-lifecycle.md) | data lifecycle | terms, data model, residency, invariants, failure model |
 | **Content**, in write-path order | | |
-| [RFC 1](rfc-1-journal.md) | journal | local bytes: on-disk format, placement, crash safety, capacity |
+| [RFC 1](rfc-1-journal.md) | journal | local bytes, one journal per device: on-disk format, placement, crash safety, capacity |
 | [RFC 2](rfc-2-carver.md) | carver | bytes → chunks → blocks: boundaries, identity, packing |
 | [RFC 3](rfc-3-syncer.md) | syncer | transferring blocks to and from the remote tier |
 | [RFC 4](rfc-4-remote-tier.md) | remote tier | object format and backend contract |
@@ -31,7 +31,7 @@ order: each part builds on the ones before it.
 | [RFC 9](rfc-9-gc.md) | GC | sweep, relocation, remote deletion |
 | **Cluster** | | |
 | [RFC 10](rfc-10-journal-replication.md) | journal replication | *draft* — owner-driven replication, fencing, seal, catch-up, reads from replicas |
-| [RFC 11](rfc-11-ownership.md) | ownership | *draft* — write tokens per file range, leases, handover, failover, forwarding |
+| [RFC 11](rfc-11-ownership.md) | ownership | *draft* — ownership units (a share by default), leases, handover, failover, forwarding |
 | **Security** | | |
 | RFC 12 | identity and authentication | *planned* — principals, authentication flavours, identity mapping, squashing |
 | RFC 13 | authorization | *planned* — one abstract ACL model, its protocol mappings, evaluation |
@@ -63,10 +63,52 @@ graph LR
   R9[9 GC] --> R2 & R6 & R4
 ```
 
+## Conventions
+
+The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT** and **MAY** in
+every RFC of this set are to be interpreted as in RFC 2119.
+
+- Each RFC's frontmatter carries its status and what it builds on
+  (`depends_on`); the body does not repeat them.
+- Normative text names no product, package, file or function. Products appear
+  only in appendices labelled as a profile, an example, prior art, a measurement
+  or where the current code differs.
+- Signatures are indicative; the obligations around them are normative.
+- `ponytail:` notes mark a deliberately simple design and name what would justify
+  replacing it; `decision:` notes mark a deliberately narrow rule and name what
+  would overturn it.
+
 ## Test tiers
 
-Every RFC's test plan runs in three tiers, so a change is checked fast and the
-heavy work still runs every day.
+Every RFC's test plan follows the rules here; an RFC states only what is
+specific to its component.
+
+**What conformance is.** An implementation conforms when every **MUST** in its
+RFC holds. Each RFC's named checks are not that definition: they are evidence
+for the requirements that fail *silently*, where nothing errors and no test goes
+red by accident. Passing them is necessary, not sufficient.
+
+**How a check is validated.**
+
+- Test at the consumer of a value, not its producer: a test beside the producer
+  passes while the value is dropped downstream.
+- Revert the code and watch the check fail on its own assertion. A check that has
+  never failed is unverified; a build error is not a failure.
+- Where the defect and the correct behaviour look alike at the point they happen
+  (zeros instead of a fetch, a bit set too early), assert on the observation
+  that tells them apart.
+
+**What must not stand in.**
+
+- A substitute that cannot exhibit a failure is not evidence of its absence: a
+  sink whose writes always succeed, or an in-memory backend, is never the only
+  backend under test for a check about durability, cost or crashes.
+- The remote tier under test is a local emulator of the remote service, and at
+  least one real service in the daily tier.
+- A harness that constructs a component differently from production is never the
+  only path under test.
+
+**When tests run.**
 
 | Tier | Runs | Contains |
 | --- | --- | --- |
@@ -78,6 +120,15 @@ No timed check runs per change: a shared runner's device changes between runs,
 so a timing gate either fails on noise or is set so wide it misses the
 regressions that matter. Each RFC states the regressions it catches by counting
 instead.
+
+**Recording results.** Every benchmark result is recorded in absolute numbers,
+with the commit, the box (CPU, memory, device and the device's own raw figures
+for the run), the operating system and filesystem with its mount options, and
+each row's concurrency. One named **reference box** carries the series over
+time, so a change between two commits reads as a change in the code and not in
+the hardware; results from other boxes are compared only with themselves. A
+target is stated against something measured on the same box (the filesystem,
+the hash, the link), so it holds on any hardware.
 
 ## Reading them in Obsidian
 
