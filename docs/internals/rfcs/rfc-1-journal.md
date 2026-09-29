@@ -620,6 +620,15 @@ An implementation **MUST NOT** require any other file to reconstruct its state
 A segment is append-only, capped at a configured size, and **sealed** when the
 cap is reached. A sealed segment **MUST NOT** be appended to again.
 
+**A file spans segments; a record does not.** Nothing ties a file to one
+segment: its extents land wherever its stream stood, and the placement index
+maps each to its segment ([§5](#5.%20The%20placement%20index)). A write that does not fit in what remains of
+the current segment is split at the cap into records, one per segment, each
+carrying its own file offset and the write's version, so each verifies and
+recovers on its own. `WriteAt` returns only once every piece is durable within
+the sync bound ([§6.1](#6.1%20Ordering%20rules)). A crash between the pieces leaves the write partly held,
+which is what a torn write is to a client that was not answered.
+
 At most a bounded number of segments per file-stream are open for append at one
 time; every other segment is sealed. Writes to one `FileID` **MUST** be
 serialised; writes to different `FileID`s **MAY** proceed concurrently, and the
@@ -1480,6 +1489,7 @@ Beyond the named checks, the unit, model and fault tests **MUST** reach these.
 - a reservation equal to exactly the remaining space, and one a byte over, against the share's limit and against the journal's ([§7](#7.%20Capacity));
 - `ENOSPC` from the filesystem while the journal is below its own maximum, which **MUST** stay distinguishable from its own refusal;
 - a sync that fails and then succeeds, on the same stream ([§6.2](#6.2%20Sync%20policy));
+- a write larger than what remains of its segment, and one larger than a whole segment: assert each is split into records at the caps, reads back whole, and that a crash between the pieces leaves it partly held and never misplaced ([§4.2](#4.2%20Segments));
 - one segment selected by eviction and by repack at once, retired by one and then by the other; accounted footprint **MUST** fall by the segment's size exactly once and never go below zero ([§8.3](#8.3%20Accounting));
 
 **Opening**: an empty directory, one holding only a `format` file, and one from an older format.
