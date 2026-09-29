@@ -179,7 +179,7 @@ belong to neither, so the syncer still depends on no component's code:
 
 | Error | The syncer | Counts toward health ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) |
 | --- | --- | --- |
-| `ErrNotFound` | fails the call; the engine re-resolves ([RFC 8 §6.7](rfc-8-engine.md#6.7%20An%20absent%20object%20is%20re-resolved%20exactly%20once)) | no |
+| `ErrNotFound` | fails the call; the engine re-resolves ([RFC 8 §6.7](rfc-8-engine.md#6.7%20An%20absent%20object%20is%20re-resolved%20while%20its%20location%20moves)) | no |
 | `ErrInvalid` | fails the call, not retried | no |
 | `ErrDenied` | fails the call, not retried | yes |
 | `ErrTransient` | retries within its bound ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) | yes |
@@ -1018,7 +1018,7 @@ instead is in [§8.4](#8.4%20What%20CI%20checks%20instead%20of%20timing). B5 nee
 
 B5 reports a fraction of the sizing tool's raw figure, with the pools' occupancy
 beside it: a low fraction with a pool that is not full means the limit is
-upstream of the syncer ([RFC 8 §13.5](rfc-8-engine.md#13.5%20Benchmarks)).
+upstream of the syncer ([RFC 8 §12.4](rfc-8-engine.md#12.4%20Benchmarks)).
 
 ## 8. Test plan and performance targets
 
@@ -1089,7 +1089,7 @@ sees:
 
 | Change | What the syncer does |
 | --- | --- |
-| a block deleted | `ErrNotFound`; the engine re-resolves ([RFC 8 §6.7](rfc-8-engine.md#6.7%20An%20absent%20object%20is%20re-resolved%20exactly%20once)) |
+| a block deleted | `ErrNotFound`; the engine re-resolves ([RFC 8 §6.7](rfc-8-engine.md#6.7%20An%20absent%20object%20is%20re-resolved%20while%20its%20location%20moves)) |
 | a block overwritten with other bytes | `ErrCorrupt` |
 | the bucket removed, or credentials revoked | terminal failures; the probe fails and the store turns unhealthy |
 | the store slowed below the floor | transfers fail on the floor and are retried within the bound |
