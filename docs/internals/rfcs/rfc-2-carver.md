@@ -2,7 +2,7 @@
 rfc: 2
 title: "RFC 2 — the carver"
 component: carver
-status: draft
+status: reviewed
 depends_on:
   - "[[rfc-0-data-lifecycle]]"
   - "[[rfc-1-journal]]"
@@ -13,7 +13,7 @@ tags:
 ---
 # RFC 2 — the carver
 
-**Status:** draft.
+**Status:** reviewed.
 **Audience:** anyone implementing or reviewing chunking or block naming.
 
 ---
@@ -210,7 +210,7 @@ whether a chunk was already stored is the engine's ([§1.1](#1.1%20Non-goals)).
 | Metric | Type | Answers |
 | --- | --- | --- |
 | `carver_bytes_total` | counter | bytes cut |
-| `carver_chunks_total` | counter | chunks emitted; with bytes, the average chunk size, which [§3.2](#3.2%20The%20three%20settings) says is `Target` |
+| `carver_chunks_total` | counter | chunks emitted; with bytes, the average chunk size, which [§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it) says is `Target` |
 | `carver_chunk_size_bytes` | histogram | the chunk-size distribution, with buckets at `Min`, `Target` and `Max`. A spike on `Min` means the boundary test does not follow `Target` ([§3.3](#3.3%20Why%20a%20large%20minimum%20smothers%20the%20search)) |
 | `carver_max_chunks_total` | counter | chunks cut at `Max` because no boundary was found: repetitive content ([§3.8](#3.8%20What%20happens%20on%20repetitive%20data)). A high share on data that is not repetitive means the boundary function is broken |
 | `carver_short_chunks_total` | counter | last-in-stretch chunks below `Min` ([§2.1](#2.1%20One%20unbroken%20stretch%20per%20call)); against chunks, how fragmented the offered stretches are |
@@ -224,7 +224,8 @@ and dedup, never correctness, so nothing downstream notices it.
 ## 3. The boundary function
 
 *This section is the chunker's contract: what a boundary function has to
-guarantee, what its three settings mean, and what makes a setting invalid.*
+guarantee, its one setting and the bounds derived from it, and what makes a
+setting invalid.*
 
 ### 3.1 What it must guarantee
 
@@ -247,15 +248,29 @@ FastCDC [1] with gear hashing is the chosen instantiation, and BLAKE3-256 [2] th
 chunk hash ([RFC 0 §2.1](rfc-0-data-lifecycle.md#2.1%20Entities), [§3](rfc-0-data-lifecycle.md#3.%20Identity)). A replacement **MUST** have all five properties. Any
 replacement re-cuts every file ever written, so it is a migration ([§3.6](#3.6%20Changing%20any%20of%20this%20is%20a%20migration)).
 
-### 3.2 The three settings
+### 3.2 One setting, and the bounds derived from it
 
-Each **MUST** mean what its name says:
+A share configures one thing, `Target`, a power of two. The two bounds follow
+from it and are not configured:
 
-| Setting | What it **MUST** mean |
-| --- | --- |
-| `Target` | the average chunk size actually produced, on data with no structure to exploit |
-| `Min` | no chunk smaller than this, except the last one in a stretch |
-| `Max` | no chunk larger than this, ever |
+| Quantity | Value | What it **MUST** mean |
+| --- | --- | --- |
+| `Target` | configured; default **256 KiB** | the average chunk size actually produced, on data with no structure to exploit |
+| `Min` | `Target / 4` | no chunk smaller than this, except the last one in a stretch |
+| `Max` | `4 × Target` | no chunk larger than this, ever |
+
+**Why one setting.** Measured, `Min` moves deduplication by under 1% anywhere
+from zero to `Target / 2`; it only trims the few very small chunks, which bound
+per-chunk overhead ([Appendix C](#Appendix%20C%20%E2%80%94%20choosing%20the%20target)). `Max` must exist ([§3.8](#3.8%20What%20happens%20on%20repetitive%20data)) but has no value worth
+choosing separately. Three settings are three ways to misconfigure a share for no
+measured gain.
+
+**Why 256 KiB.** `Target` trades metadata against what an edit and a cold read
+cost ([Appendix C](#Appendix%20C%20%E2%80%94%20choosing%20the%20target)). At 256 KiB a 4 KiB cold read fetches about 0.3 MiB, and small
+edits re-store four times less than at 1 MiB, for about 3,700 chunk records per
+GiB — some 8×10⁹ at 2 PB. Blocks pack chunks to their own target ([§5](#5.%20Packing%3A%20three%20rules%2C%20not%20a%20component)), so the
+number and size of remote objects do not depend on `Target`. A share **MAY**
+choose another `Target`; the choice is fixed for its content ([§3.6](#3.6%20Changing%20any%20of%20this%20is%20a%20migration)).
 
 
 An implementation **MUST** hit `Target` as the average chunk size, within a stated
@@ -263,10 +278,11 @@ tolerance, on data with no structure to exploit. It **MUST NOT** ship a boundary
 function whose average lands somewhere else, and **MUST NOT** settle such a
 mismatch by writing the real number into the specification.
 
-`Min` and `Max` are the edges of a distribution centred on `Target`, so they
-**MUST** satisfy `Min < Target ≤ Max`. Setting `Min` at or above
-`Target` is not cautious, it is invalid — the minimum then smothers the search and
-`Target` stops describing anything ([§3.3](#3.3%20Why%20a%20large%20minimum%20smothers%20the%20search)).
+`Min` and `Max` are the edges of a distribution centred on `Target`, so the
+derivation keeps `Min < Target ≤ Max` by construction. A `Min` at or above
+`Target` would not be cautious but broken — the minimum smothers the search and
+`Target` stops describing anything ([§3.3](#3.3%20Why%20a%20large%20minimum%20smothers%20the%20search)) — which is what the current code does
+([Appendix A.1](#A.1%20The%20masks%20encode%20a%20different%20target%20than%20the%20profile%20declares)).
 
 **Whatever decides a boundary MUST be derived from `Target`.** In a gear-hash
 design that decision is a bit mask, and the number of bits set in it fixes the
@@ -324,9 +340,9 @@ boundaries rejoin the earlier ones (B4). Those chunks are stored again under new
 hashes: a cost in space and transfer, never in correctness.
 
 The boundary function **MUST NOT** depend on anything beyond the bytes and the
-settings — not a file identity, an offset, a clock, or a random seed. A
-per-deployment secret is the one exception anyone should consider, and it is not
-free ([§6](#6.%20Boundaries%20are%20public)).
+settings — not a file identity, an offset, a clock, or a random seed. The
+namespace's chunking key, when a share encrypts, is part of the settings
+([§6](#6.%20Boundaries%20are%20public)): same bytes, same `Target` and same key give the same boundaries.
 
 ### 3.6 Changing any of this is a migration
 
@@ -346,9 +362,10 @@ quietly applying it.
 An implementation **MUST** reject invalid settings when it starts up, with an
 error, and **MUST NOT** quietly fall back to a default profile.
 
-Invalid means: `Min` below the floor where chunking stops being worthwhile;
-`Min < Target ≤ Max` broken, including `Min ≥ Target` ([§3.3](#3.3%20Why%20a%20large%20minimum%20smothers%20the%20search)); or `Max` above the
-configured ceiling.
+Invalid means: a `Target` that is not a power of two; one whose `Min` falls below
+the floor where chunking stops being worthwhile (64 KiB `Target`, so a 16 KiB
+`Min`); or one whose `Max` rises above the ceiling (16 MiB `Max`, so a 4 MiB
+`Target`). Nothing else can be invalid, because nothing else is configured.
 
 Falling back to a default looks like robustness and is really a data-shape bug. A
 share asked for 64 KiB chunks and quietly given 1 MiB ones produces content that
@@ -369,7 +386,8 @@ position it takes the *same* value. If that one value does not match the mask, i
 never matches — not in this chunk, not anywhere in the file. There is no
 randomness left to save it.
 
-Measured over 64 MiB at the default profile:
+Measured over 64 MiB under the former profile (4 MiB `Target`, 16 MiB `Max`); at
+any `Target` the degenerate rows cut every chunk at `Max`:
 
 | Input | Chunks | Average size | Boundaries found |
 | --- | --- | --- | --- |
@@ -533,21 +551,35 @@ tier can test whether a particular file is stored. The same channel sits under
 dedup across shares: the fact that two shares resolve to one object is itself an
 answer about their content.
 
-An implementation **MUST NOT** claim otherwise, and a deployment that needs this
-hidden **MUST** get it from another layer. Two mitigations exist, neither free:
+**How much this gives away: everything, for any file of more than a few chunks.**
+A chunk's length alone carries about as many bits as the spread of chunk sizes —
+some eighteen at a 256 KiB `Target` — so a run of three or four lengths already
+singles a file out. And lengths are not the widest channel: each block's header
+lists its chunks' plaintext hashes, offsets and lengths ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)), so a bucket
+reader holding a candidate file chunks it and looks the hashes up
+([RFC 5 Appendix B.5](rfc-5-transforms.md#B.5%20What%20a%20bucket%20reader%20still%20learns)).
 
-- **Put a per-deployment secret in the boundary function.** Boundaries become
-  unpredictable. Chunks also stop being comparable between deployments, so
-  cross-deployment dedup ends, and adopting it re-cuts everything ([§3.6](#3.6%20Changing%20any%20of%20this%20is%20a%20migration)). Keyed
-  chunking is an active research target and recent work [5] has broken deployed
-  schemes, so it **MUST NOT** be adopted on the assumption that a key settles the
-  matter.
-- **Randomise how blocks are assembled.** This blurs the link between chunk sizes
-  and stored object sizes. It costs nothing in dedup and is not a migration,
-  because assembly is policy ([§5](#5.%20Packing%3A%20three%20rules%2C%20not%20a%20component)). It is [RFC 8](rfc-8-engine.md)'s call.
+**Without encryption, boundaries stay public**, and an implementation **MUST NOT**
+claim otherwise.
 
-How much this actually gives away, at the block sizes used, has not been
-measured ([§11](#11.%20Open%20questions)).
+**With encryption, boundaries are keyed.** A share that encrypts cuts with a gear
+table derived from a **chunking key** of its namespace, so an observer without it
+cannot predict where a candidate file's boundaries fall:
+
+- the chunking key is derived once per namespace and **MUST NOT** rotate with the
+  data keys. Changing it re-cuts everything ([§3.6](#3.6%20Changing%20any%20of%20this%20is%20a%20migration)); rotating data keys
+  ([RFC 5 Appendix B.3](rfc-5-transforms.md#B.3%20Rotation)) re-encrypts and cuts nothing;
+- it costs no deduplication: chunks are compared within one namespace only
+  ([§4.3](#4.3%20Key%20scope)), and every share of the namespace cuts under the same key;
+- it hides nothing alone. The header's hashes and lengths still identify a file,
+  so it is worth adopting only with sealed headers ([RFC 5 §9](rfc-5-transforms.md#9.%20Open%20questions), question 1).
+  Together they reduce the channel to block sizes and repetition;
+- keyed chunking is an active research target, and recent work [5] recovers
+  keys of deployed schemes from chosen content. It **MUST NOT** be described as
+  hiding which files a namespace holds from someone who can also write to it.
+
+Randomising how blocks are assembled is not a mitigation: it changes object sizes
+but not the chunk lengths each header lists.
 
 ## 7. Errors
 
@@ -593,9 +625,10 @@ need no reader and no hash at all.
 
 | Layer | Requirement | Check |
 | --- | --- | --- |
-| chunker | [§3.2](#3.2%20The%20three%20settings) target is real | Cut incompressible data; assert the average is within tolerance of `Target`. A mask that does not follow `Target` fails it. |
-| chunker | [§3.2](#3.2%20The%20three%20settings) mask comes from target | Build at several targets; assert the mask's bit count tracks the target, and that one hard-coded mask cannot satisfy two of them. |
-| chunker | [§3.7](#3.7%20Bad%20settings%20must%20be%20refused%2C%20not%20replaced) bad settings refused | Build with `Min` below the floor, with `Min ≥ Target`, and with `Max` above the ceiling; assert each errors and nothing usable comes back. |
+| chunker | [§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it) target is real | Cut incompressible data; assert the average is within tolerance of `Target`. A mask that does not follow `Target` fails it. |
+| chunker | [§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it) mask comes from target | Build at several targets; assert the mask's bit count tracks the target, and that one hard-coded mask cannot satisfy two of them. |
+| chunker | [§3.7](#3.7%20Bad%20settings%20must%20be%20refused%2C%20not%20replaced) bad settings refused | Build with a `Target` that is not a power of two, one below the floor and one above the ceiling; assert each errors and nothing usable comes back. |
+| chunker | [§6](#6.%20Boundaries%20are%20public) keyed boundaries | Cut the same input under two chunking keys and under none; assert the boundaries differ between all three, the average stays within tolerance of `Target` under each, and the same key reproduces the same boundaries. |
 | chunker | [§3.4](#3.4%20How%20far%20back%20a%20decision%20looks) warm-up equivalence | Assert boundaries are identical whether the fingerprint is warmed from the chunk start or over the last 64 bytes, across several profiles. |
 | chunker | [§3.8](#3.8%20What%20happens%20on%20repetitive%20data) repetitive input still terminates | Chunk 64 MiB of zeros and of a 64-byte repeating pattern; assert every chunk comes out exactly `Max` and the pass ends. Without `Max` the search never succeeds and the whole file becomes one chunk. |
 | chunker | B4 shift resistance | Insert one byte early in a large input; assert every boundary past the edited chunk is unchanged. |
@@ -779,16 +812,13 @@ the same box differs by more across those than across commits.
 
 ## 11. Open questions
 
-1. **Which way out of Appendix A.1.** Both exits re-cut everything already
-   written, so the choice gets more expensive the longer shares run on the current
-   profile. What is unmeasured is the right `Target` for large-file workloads:
-   smaller chunks cut read amplification and raise index and refcount counts.
-2. **Whether `Min` survives** ([§3.2](#3.2%20The%20three%20settings)). `Max` must stay ([§3.8](#3.8%20What%20happens%20on%20repetitive%20data)). Once the mask
-   derives from `Target`, `Min` would only bound per-chunk overhead; that decision
-   waits for a target-derived mask to exist.
-3. **How much [§6](#6.%20Boundaries%20are%20public) gives away.** That boundaries are public is certain. What an
-   observer can recover from object sizes is not. Randomised block assembly is
-   cheap enough that it may be worth doing without waiting for the measurement.
+None. The three this document carried are settled:
+
+1. **Which way out of Appendix A.1:** the masks are computed from `Target` ([§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)),
+   default 256 KiB. Measured in [Appendix C](#Appendix%20C%20%E2%80%94%20choosing%20the%20target).
+2. **Whether `Min` survives:** as a derived bound, `Target / 4`, not a setting.
+3. **How much [§6](#6.%20Boundaries%20are%20public) gives away:** everything, and mostly through the headers;
+   encrypting shares key their boundaries, which pays off once headers are sealed.
 
 ---
 
@@ -799,7 +829,7 @@ defect to fix or migrate, never a rule to build around.
 
 | Requirement | Current code | Fix |
 | --- | --- | --- |
-| [§3.2](#3.2%20The%20three%20settings) mask from `Target` | fixed masks encode an 8 KiB target while the default profile declares 4 MiB, so every chunk lands just above `Min` (A.1) | a migration |
+| [§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it) mask from `Target` | fixed masks encode an 8 KiB target while the default profile declares 4 MiB, so every chunk lands just above `Min` (A.1) | a migration |
 | [§3.4](#3.4%20How%20far%20back%20a%20decision%20looks) 64-byte warm-up | the fingerprint is warmed from the start of the chunk (A.2) | changes no output |
 | [§4.2](#4.2%20A%20block) derived name | a block's name is random; offload and relocation each generate one | a migration; its cost elsewhere is in [RFC 3 §2.5](rfc-3-syncer.md#2.5%20An%20unknown%20outcome%20is%20not%20a%20success) |
 
@@ -840,12 +870,13 @@ was never approached. The FastCDC paper's own setup [1] uses a minimum of
 **Two ways out, both migrations ([§3.6](#3.6%20Changing%20any%20of%20this%20is%20a%20migration)):**
 
 1. **Compute the masks from `Target`**, and demote `Min` and `Max` to guard rails.
-   This is what [§3.2](#3.2%20The%20three%20settings) requires. It re-cuts all existing content.
+   This is what [§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it) requires. It re-cuts all existing content.
 2. **Redeclare the profile** to the 8 KiB target the masks actually implement.
    Easier to reason about, still re-cuts content unless `Min` comes down to match,
    and leaves a design where the masks can never be retuned.
 
-This document does not choose between them. See [§11](#11.%20Open%20questions), question 1.
+This document takes the first ([§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)). No deployment's content is worth keeping
+cut the old way, so the re-cut is paid now, while it is free.
 
 ### A.2 Warm-up runs over the whole chunk instead of the last 64 bytes
 
@@ -872,6 +903,57 @@ the chunker further. The machines differ because the EPYC's gear hash is about
 1.9× the M1's while its BLAKE3 is only about 1.3×; both ratios were measured.
 
 Unlike A.1 this is **not** a migration: the output does not change.
+
+## Appendix C — choosing the target
+
+Measured with a FastCDC whose masks derive from `Target` (normalisation level 2,
+64-byte warm-up, `Max = 4 × Target`), over a 220 MB tar of one compiler
+toolchain. Three workloads against it: the next patch release of the same
+toolchain (a backup of a changed tree), 256 random 4 KiB pages overwritten in
+place (a VM image), and 64 random 100-byte insertions (edited files). The last
+three columns are bytes stored again on top of the original.
+
+| `Target` | `Min` | chunks per GiB | 4 KiB cold read fetches | next release | 256 pages | 64 inserts |
+| --- | --- | --- | --- | --- | --- | --- |
+| 64 KiB | T/4 | 14,340 | 0.08 MiB | 163 MiB | 24 MiB | 4.8 MiB |
+| **256 KiB** | T/4 | 3,684 | 0.30 MiB | 194 MiB | 70 MiB | 19 MiB |
+| 1 MiB | T/4 | 904 | 1.26 MiB | 211 MiB | 165 MiB | 78 MiB |
+| 4 MiB | T/4 | 244 | 4.64 MiB | 220 MiB | 214 MiB | 175 MiB |
+
+"Cold read fetches" is the chunk a random byte falls in, on average (Σs²/Σs): a
+random 4 KiB read of evicted content costs one whole chunk ([RFC 8 §6.8](rfc-8-engine.md#6.8%20A%20cold%20read%20asks%20for%20chunks%2C%20or%20for%20the%20block)).
+
+`Min` barely matters. At 256 KiB, going from no minimum to `T/2` moved the
+three workloads by under 1% and the chunk count by 10%:
+
+| `Min` | chunks per GiB | next release | 256 pages | 64 inserts |
+| --- | --- | --- | --- | --- |
+| none | 3,864 | 193.6 MiB | 69.5 MiB | 19.0 MiB |
+| T/8 | 3,764 | 193.6 MiB | 69.5 MiB | 19.0 MiB |
+| T/4 | 3,684 | 193.9 MiB | 69.6 MiB | 19.2 MiB |
+| T/2 | 3,496 | 194.1 MiB | 70.0 MiB | 19.2 MiB |
+
+**What others ship.** Backup tools, which dedup across snapshots and read
+sequentially, sit at 1–4 MiB; systems that serve random reads or dedup live
+volumes sit at 4–128 KiB. A filesystem serving cold random reads belongs with the
+second group, which is where 256 KiB leans.
+
+| System | Chunking | Average | Bounds |
+| --- | --- | --- | --- |
+| JuiceFS | fixed, no dedup | 4 MiB blocks | — |
+| Duplicacy | variable | 4 MiB | ¼× and 4× the average — the same ratios as [§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it) |
+| Kopia | variable (buzhash) | 4 MiB | 2–8 MiB |
+| Borg | variable (buzhash) | 2 MiB | 512 KiB–8 MiB |
+| restic | variable (Rabin) | 1 MiB | 512 KiB–8 MiB |
+| casync | variable | 64 KiB | 16–256 KiB |
+| Windows Server deduplication | variable | about 64 KiB | 32–128 KiB |
+| ZFS deduplication | fixed, per record | 128 KiB | — |
+
+The average landed on `Target` at every profile, and no chunk of random input
+reached `Max`. A toolchain release rebuilds its binaries, so most of it is new
+at any `Target`; the release column says more about the corpus than about
+chunking. One corpus on one machine: K5 ([§9.1](#9.1%20Benchmarks%20and%20quality%20measures)) repeats this on source trees,
+VM images and media before the default is frozen.
 
 ## Appendix B — prior art
 

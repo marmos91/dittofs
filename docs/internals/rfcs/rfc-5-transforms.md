@@ -364,7 +364,7 @@ var (
 
 `Chain.Decode` uses the registry, not the configured list ([§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material)), so a chain
 decodes what an older configuration wrote. It gives each step the chunk maximum
-([RFC 2 §3.2](rfc-2-carver.md#3.2%20The%20three%20settings)) passed through the `MaxEncodedLen` of the steps applied before it, so
+([RFC 2 §3.2](rfc-2-carver.md#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)) passed through the `MaxEncodedLen` of the steps applied before it, so
 a step that legitimately enlarges the body is not refused by the next one. `dst`
 **MUST NOT** overlap the input; the result may be `dst` resliced or a new slice.
 `ErrUnknownMaterial` from `Materials` is reported as `ErrMalformed`.
