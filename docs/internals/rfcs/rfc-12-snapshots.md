@@ -11,6 +11,7 @@ depends_on:
   - "[[rfc-5-transforms]]"
   - "[[rfc-6-block-metadata]]"
   - "[[rfc-7-namespace-metadata]]"
+  - "[[rfc-16-metadata-store]]"
   - "[[rfc-8-engine]]"
   - "[[rfc-9-gc]]"
   - "[[rfc-11-ownership]]"
@@ -47,10 +48,6 @@ This document specifies behaviour, not the current code.
   installation. **Migration** moves it to another installation on the same bucket:
   drain, freeze, release, import, claim. No block is copied.
 
-> [!important] Pending review — snapshots by cut and history
-> Ref sets and holder counts are gone. A snapshot is a cut number; a ref it can
-> still see is moved to history when the share replaces it, and stays counted.
-
 ## 1. Purpose
 
 Operators need to recover a share as it was, to survive losing the metadata
@@ -80,7 +77,8 @@ This document **MUST NOT** be read as specifying:
 | **namespace** | one remote-store prefix ([RFC 4 §4.2](rfc-4-remote-tier.md#4.2%20Names%20in%2C%20locations%20kept%20inside)) with one key scope ([RFC 2 §4.3](rfc-2-carver.md#4.3%20Key%20scope)): the counting domain of [RFC 9 §2.3](rfc-9-gc.md#2.3%20The%20absence%20of%20a%20record%20proves%20nothing) and the unit GC serves. It holds one or more shares |
 | **installation** | one control plane with its metadata store, serving some namespaces |
 | **owner** | the one installation that may put, sweep, relocate or collect in a namespace |
-| **cut** | the instant a snapshot describes ([§2.3](#2.3%20The%20cut%20is%20a%20drained%2C%20frozen%20instant)); its **cut number** *k* is the share's count of cuts, raised by one at each cut |
+| **cut** | the instant a snapshot describes ([§2.3](#2.3%20The%20cut%20is%20a%20drained%2C%20frozen%20instant)); its **cut number** *k* is the share's count of cuts, raised by one at each cut. Its type is `SnapshotCut` ([RFC 16](rfc-16-metadata-store.md)) |
+| **snapshot** | the user-visible record of one cut: share, `SnapshotCut`, name, creation time, expiry — the `Snapshot` entity of [RFC 16](rfc-16-metadata-store.md), kept under the share's key prefix |
 | **klatest** | the cut number of the share's newest live snapshot, 0 when there is none, recorded with the share |
 | **born**, **died** | the share's cut number when a ref was committed, and when it was superseded ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)) |
 | **history ref** | a ref the share replaced while a snapshot could still see it, kept as `History(file, died, offset)` and counted ([§2.2](#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree)) |
@@ -103,8 +101,8 @@ other and move together.
 
 A snapshot has two parts:
 
-- **the tree**: a copy of the share's inodes and entries at the cut
-  ([RFC 7 §2.1](rfc-7-namespace-metadata.md#2.1%20Inode)), and each regular file's shape and holes, keyed by the snapshot.
+- **the tree**: a copy of the share's files and entries at the cut
+  ([RFC 7 §2.1](rfc-7-namespace-metadata.md#2.1%20File)), and each regular file's FileData and holes, keyed by the snapshot.
   It holds no remote content and is not counted;
 - **the content**: the snapshot's cut number *k*. The share's record `Cut(share)`
   holds its latest cut number, and every transaction that writes a ref reads it
@@ -137,16 +135,6 @@ decremented its chunk.
 Journal versions do not appear here. Each journal numbers its own files
 ([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions)), and a share's files may sit in several nodes' journals, so no
 version orders a share; the cut number, one record every ref commit reads, does.
-
-> [!important] Pending review — cut numbers, not cut versions
-> Snapshots compared refs' journal `newest` against a cut version, assuming
-> versions are monotone per share. They are per journal, and a share can span
-> several journals, so the comparison was unsound. A per-share cut number read
-> by every ref-writing commit orders refs against cuts instead.
-
-> [!important] Pending review — history refs replace ref sets
-> A snapshot no longer freezes one ref set per file. It costs nothing to take and
-> one history ref per ref replaced afterwards; its lookup and deletion follow.
 
 Nothing else — no manifest, hold list or extra GC root — keeps a snapshot's
 blocks alive ([RFC 9 §2.1](rfc-9-gc.md#2.1%20The%20count%20is%20the%20only%20authority), [RFC 7 §4.4](rfc-7-namespace-metadata.md#4.4%20There%20is%20no%20third%20holder)).
@@ -196,25 +184,23 @@ within it **MUST** abort the snapshot and thaw, never cut over dirty content. A 
 
 A removal whose phase 1 committed before the cut but whose batches are not done
 ([RFC 6 §6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation)) masks for a snapshot as it does for the share: the snapshot's
-captured shape and holes already record the removal, and its later batches move
+captured FileData and holes already record the removal, and its later batches move
 the refs they drop to history with `died` ≥ *k*, which the snapshot would see
 but its captured existence excludes. A removal whose phase 1 commits after the
 cut masks nothing for the snapshot, which reads the refs it has not yet dropped,
 or their history.
 
-> [!important] Pending review — the freeze pauses removal batches
-> So the cut falls between batches, never inside one, and a partly applied
-> removal is seen by the snapshot exactly as by the share.
-
 ### 2.4 Capture is copy on first write
 
 Copying the tree costs time proportional to the share, so it is not done inside
-the freeze. After the thaw a walker copies inodes, entries, shapes and holes into
+the freeze. After the thaw a walker copies files, entries, FileData records and holes into
 the snapshot, and **every transaction that changes one of those records not yet
-captured MUST first capture that record's state, in the same transaction**. It
+captured MUST first capture that record's state, in the same transaction**.
+Captured records live under the share's snapshot prefix, keyed by the cut
+([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)), so deleting a snapshot's tree is one prefix drop. It
 captures only the records it changes, never a whole file: an attribute change
-captures the inode, a rename the entries it touches, an existence commit or a
-removal the shape and the holes, a release ([RFC 6 §6.4](rfc-6-block-metadata.md#6.4%20Delete)) the shape. Nothing
+captures the file, a rename the entries it touches, an existence commit or a
+removal the FileData record and the holes, a release ([RFC 6 §6.4](rfc-6-block-metadata.md#6.4%20Delete)) the FileData record. Nothing
 changed a record between the cut and its first later transaction, so what is
 captured is exactly the cut.
 
@@ -227,24 +213,20 @@ A record captured by a write carries a marker the walker skips. Markers are
 removed when the snapshot completes or fails ([RFC 0 §9.1](rfc-0-data-lifecycle.md#9.1%20Records%20and%20their%20reclamation)). A restart resumes
 the walker; when it finishes, the snapshot becomes `complete` in one transaction.
 
-> [!important] Pending review — capture per namespace record
-> Copy on first write now covers only namespace, shape and hole records, one
-> record at a time. Content is kept by history refs, with no per-file capture.
-
 ### 2.5 Browsing a snapshot
 
 A complete snapshot is reachable read-only under a virtual directory at the
 share's root, configurable and hidden from listings. What protocols rely on:
 
-- a handle into a snapshot names the share, the snapshot and the inode
-  ([RFC 7 §6.1](rfc-7-namespace-metadata.md#6.1%20A%20handle%20names%20an%20inode%2C%20never%20a%20path)), so it never resolves to a live inode; once the snapshot is
+- a handle into a snapshot names the share, the snapshot and the file
+  ([RFC 7 §6.1](rfc-7-namespace-metadata.md#6.1%20A%20handle%20names%20a%20file%2C%20never%20a%20path)), so it never resolves to a live file; once the snapshot is
   deleted it resolves stale ([RFC 7 §6.3](rfc-7-namespace-metadata.md#6.3%20Staleness%20is%20reported%2C%20never%20guessed));
 - a read resolves by the covering lookup ([RFC 6 §8.1](rfc-6-block-metadata.md#8.1%20Covering%20lookup)) at the cut: the file's
-  refs with `born < k ≤ died`, live and history, against the captured shape and
+  refs with `born < k ≤ died`, live and history, against the captured FileData and
   holes, which take precedence over any ref, and fetches from the remote tier;
-- permissions are evaluated against the captured inode, as it was at the cut;
+- permissions are evaluated against the captured file, as it was at the cut;
 - every mutating operation fails with the read-only error;
-- a snapshot inode's numeric file id differs from the live inode's
+- a snapshot file's numeric file id differs from the live file's
   ([RFC 7 §6.5](rfc-7-namespace-metadata.md#6.5%20A%20protocol%27s%20numeric%20file%20id%20is%20derived%2C%20and%20collisions%20are%20its%20problem)), so tools do not take the two for one file.
 
 > ponytail: snapshot reads bypass the journal; add a fill keyed by the snapshot
@@ -253,8 +235,8 @@ share's root, configurable and hidden from listings. What protocols rely on:
 ### 2.6 A writable clone is a new share in the same namespace
 
 A clone creates a new share from a complete snapshot, in the snapshot's
-namespace, as one staged import ([§5.2](#5.2%20Import%20is%20staged%20and%20published%20atomically)): the tree is copied with **new FileIDs**
-and generations, mapped so that hard links stay links, and the refs the
+namespace, as one staged import ([§5.2](#5.2%20Import%20is%20staged%20and%20published%20atomically)): the tree is copied with **new FileIDs**,
+mapped so that hard links stay links, and the refs the
 snapshot sees become the new file's refs, raising each chunk's refcount. That is
 [RFC 6 §7.4](rfc-6-block-metadata.md#7.4%20Restore)'s restore, conditional on each chunk existing ([RFC 6 §7.2](rfc-6-block-metadata.md#7.2%20Adoption%20is%20conditional%20on%20existence)), written in
 bounded batches ([RFC 6 §6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation)), and it cannot fail while the snapshot holds
@@ -311,10 +293,6 @@ For example, with live cuts 5, 9 and 14, deleting 9 drops the history refs with
 `5 ≤ born < 9 ≤ died < 14`. A ref with `born` 3 and `died` 12 stays: snapshot 5
 sees it. A ref with `born` 6 and `died` 14 stays: snapshot 14 sees it.
 
-> [!important] Pending review — deletion drops history
-> Replaces dropping ref sets and holder counts. A snapshot's deletion is bounded
-> by what was replaced while it was the newest to see it, not by its size.
-
 Deleting
 a share with snapshots **MUST** be refused unless the request deletes or detaches
 them; a detached snapshot belongs to the namespace, stays restorable, and is
@@ -327,7 +305,7 @@ deleted only explicitly.
 A backup writes an export of kind `backup` ([§5](#5.%20The%20export%20format)) to a configured **backup
 location**: a directory or an object-store prefix outside every block namespace
 ([RFC 4 §4.2](rfc-4-remote-tier.md#4.2%20Names%20in%2C%20locations%20kept%20inside)), never inside the metadata store it protects. It carries the
-snapshot's tree, shapes and holes, and per file the refs the snapshot sees,
+snapshot's tree, FileData records and holes, and per file the refs the snapshot sees,
 written as plain refs at their versions; the chunk and block records of every
 chunk they name, as **location hints** only ([§3.3](#3.3%20Restore)); the material in those
 blocks' census, each as (material ID, fingerprint) ([RFC 5 §5.3](rfc-5-transforms.md#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)); the
@@ -400,10 +378,6 @@ each other through it:
 > configuration error that breaks the order. Make it a lock if the contract gains
 > a conditional write.
 
-> [!important] Pending review — the claim is a control object
-> The remote contract gains control objects, read and written by fixed role, so
-> the claim no longer relies on a location outside the contract.
-
 ### 4.2 The move, step by step
 
 Until replication exists, a migration is a move. From owner A to installation B:
@@ -425,10 +399,6 @@ Until replication exists, a migration is a move. From owner A to installation B:
 7. **Drop at A**: delete the namespace's records from A's metadata store
    **without releasing them**. No refcount is decremented, no candidate or pending
    deletion is written, nothing is swept. A deletes nothing in the remote store.
-
-> [!important] Pending review — the move exports intents
-> Step 4 no longer fences B's writers against A's pending deletions: names are
-> never put twice, so B only needs the delete backlog and A's intents to collect.
 
 Before step 5, A **MAY** abort: restart GC and thaw. After it, A **MUST NOT**
 re-claim, thaw or write the namespace unless the operator states that B has not
@@ -478,11 +448,6 @@ each as (material ID, fingerprint) and never carries it. B **MUST** hold the sam
 key it cannot verify A's block headers, and without the chunking key its new
 writes chunk differently from every block A wrote.
 
-> [!important] Pending review — fingerprints and namespace keys in the export
-> Material IDs alone do not prove B holds the same key; a fingerprint does. The
-> data, header and chunking keys are carried by reference and checked the same
-> way. The claim is the control object of role `claim`.
-
 ### 4.5 Versions and FileIDs on import
 
 **Versions.** A version B's journal assigns to an imported file **MUST** exceed
@@ -499,10 +464,17 @@ clone or restore has no snapshots and starts at cut number 0.
 **FileIDs.** A FileID is unique across a store and keys content in every journal
 ([RFC 0 §3](rfc-0-data-lifecycle.md#3.%20Identity)):
 
-- a **move** keeps FileIDs, generations and the share's identity, and **MUST** be
-  refused if any imported FileID already exists at B;
+- a **move** keeps FileIDs and the share's identity, and **MUST** be refused if
+  any imported FileID already exists at B;
 - a **clone** or **restore** assigns new FileIDs and a new share identity, since
   the same snapshot may be restored many times.
+
+**Handles cannot alias across shares.** Every per-file key carries its share's
+identity ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)), and a handle names the share and the file
+([RFC 7 §6.1](rfc-7-namespace-metadata.md#6.1%20A%20handle%20names%20a%20file%2C%20never%20a%20path)). A clone or restore gets a new share identity, so no handle to the
+source can resolve into it, and no per-file generation is needed to tell them
+apart. An in-place rollback revives the same files, and their old handles
+rightly resolve again.
 
 ### 4.6 After replication
 
@@ -543,6 +515,13 @@ trailer  = end marker ‖ digest over the header and every section digest
 Records are the logical records of [RFC 6](rfc-6-block-metadata.md) and [RFC 7](rfc-7-namespace-metadata.md), never a backend's dump,
 so an export moves between metadata backends.
 
+**What an export holds.** Everything under the share's prefix and the per-file
+prefixes of that share ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)), plus the server-wide records its
+files and grants name — the users and groups whose principals appear in
+ownership, ACLs and quotas. **`Secret` records are never exported**: a user
+arrives at B without credentials and is given new ones there. Nothing else
+server-wide is copied.
+
 ### 5.2 Import is staged and published atomically
 
 An export is larger than one transaction. An import therefore writes into a
@@ -563,10 +542,6 @@ count as it is written, or sweep could retire the chunk before the publish. A
 failed or interrupted clone or restore drops its staged refs by the batching
 pattern of [RFC 6 §6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation), decrementing each chunk. A move's or recovery's
 namespace has no GC running until it publishes, and its counts are recomputed.
-
-> [!important] Pending review — staged refs are counted
-> Staging used to be invisible to counting. A clone's refs must count from the
-> moment they are written; a failure unwinds them like any batched removal.
 
 ## 6. API surface
 
@@ -660,10 +635,6 @@ shares:
 | S15 | Deleting a snapshot drops exactly the history refs no other live snapshot sees: those with `kp ≤ born < k ≤ died < kn`. |
 | S17 | Snapshot *k* reads exactly the refs committed before cut *k* and not superseded before it, whatever journals the share's files live in. |
 | S16 | A move exports put intents and pending deletions and fences no writer; a delete at either installation reaches no committed block. |
-
-> [!important] Pending review — S14 to S17
-> New with history refs and minted names. S9 now allows counted staged refs. S14,
-> S15 and S17 are stated in cut numbers, not journal versions.
 
 ## 8. Test plan and benchmarks
 

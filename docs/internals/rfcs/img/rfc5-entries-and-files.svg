@@ -17,11 +17,11 @@
   </defs>
   <rect width="900" height="400" fill="#ffffff"/>
 
-  <text x="16" y="26" class="t">One entry is one name; the inode is named by entries and does not name itself</text>
+  <text x="16" y="26" class="t">One entry is one name; the file is named by entries and does not name itself</text>
   <text x="16" y="46" class="s">Each entry is its own record. A directory is never one record holding a list, however few names it has today.</text>
 
   <text x="16" y="82" class="rl">Entries — key (parent, name)</text>
-  <text x="516" y="82" class="rl">Inodes — key FileID</text>
+  <text x="516" y="82" class="rl">Files — key FileID</text>
 
   <rect x="16" y="96" width="232" height="34" rx="3" class="bx"/>
   <text x="28" y="118" class="m">(dir-A, "report.txt")</text>
@@ -33,12 +33,12 @@
   <text x="28" y="210" class="m">(dir-A, "notes.md")</text>
 
   <rect x="516" y="96" width="256" height="80" rx="3" class="bg"/>
-  <text x="528" y="118" class="rl">inode 7f3a…</text>
+  <text x="528" y="118" class="rl">file 7f3a…</text>
   <text x="528" y="138" class="m">mode, uid, gid, times</text>
   <text x="528" y="156" class="m">nlink = 2</text>
 
   <rect x="516" y="188" width="256" height="62" rx="3" class="bg"/>
-  <text x="528" y="210" class="rl">inode c104…</text>
+  <text x="528" y="210" class="rl">file c104…</text>
   <text x="528" y="230" class="m">nlink = 1</text>
 
   <line x1="250" y1="113" x2="512" y2="124" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a5r)"/>
@@ -46,7 +46,7 @@
   <line x1="250" y1="205" x2="512" y2="212" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a5r)"/>
 
   <text x="290" y="106" class="s">two names,</text>
-  <text x="290" y="120" class="s">one inode</text>
+  <text x="290" y="120" class="s">one file</text>
 
   <text x="784" y="122" class="s">size is not</text>
   <text x="784" y="136" class="s">here — it is</text>
@@ -55,8 +55,8 @@
   <line x1="16" y1="274" x2="884" y2="274" stroke="#eef1f4"/>
 
   <text x="16" y="300" class="rl">Which side each operation writes</text>
-  <text x="16" y="322" class="l">Rename — one entry removed, one installed. The inode is untouched, so the handle, the locks and the refs are untouched too.</text>
-  <text x="16" y="340" class="l">Link, unlink — one entry, and nlink in the same transaction. Unlink of the last name does not release an inode that is still open.</text>
-  <text x="16" y="358" class="l">chmod, chown — the inode only. No entry moves, and no name is read to find it.</text>
+  <text x="16" y="322" class="l">Rename — one entry removed, one installed. The file is untouched, so the handle, the locks and the refs are untouched too.</text>
+  <text x="16" y="340" class="l">Link, unlink — one entry, and nlink in the same transaction. Unlink of the last name does not release a file that is still open.</text>
+  <text x="16" y="358" class="l">chmod, chown — the file only. No entry moves, and no name is read to find it.</text>
   <text x="16" y="386" class="why">Not here: size, mtime on write, holes. Those move with existence, in one transaction, because a write past EOF changes all three at once.</text>
 </svg>

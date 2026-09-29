@@ -58,7 +58,7 @@ plane owes the components that read it.
 
 This document **MUST NOT** be read as specifying:
 
-- the management API, its authentication or its resources: [RFC 19](rfc-index.md);
+- the management API, its authentication or its resources: [RFC 23](rfc-index.md);
 - what each setting means inside its component: that stays in the component's
   RFC, which this document cites;
 - how the configuration store replicates: it is a store that runs consensus
@@ -74,6 +74,12 @@ component has a configuration source of its own. Two sources for one setting are
 two answers to one question, and the one that wins is whichever the code
 happened to read last.
 
+The configuration store is the metadata store's KV ([RFC 16](rfc-16-metadata-store.md)): each setting is a
+`Setting` record at its scope, beside users, shares and the file metadata, so
+one database is run, backed up and replicated for all of it. The store's format
+record, read before anything else at open, covers these records as it covers
+every other ([RFC 16 §4.6](rfc-16-metadata-store.md#4.6%20Store%20format)).
+
 ### 2.2 A host holds only its bootstrap
 
 A process needs a few facts before it can reach the control plane. These, and
@@ -86,6 +92,8 @@ only these, come from the host — a file or the environment:
 | the local devices the node may use, and their paths | a path means something only on its host ([§3](#3.%20Scopes)) |
 | listen addresses | a port conflict is a host's problem |
 | log destination and level | needed before the control plane answers, to say why it did not |
+| the node's **roles** — `protocol`, `metadata`, `data`, all three by default ([RFC 15](rfc-15-topology.md)) | they decide what the node composes, including whether it reaches the control plane's store as a writer; fixed for the life of the process |
+| the wrapping key's location, for `Secret` records ([§7](#7.%20Secrets)) | a key kept in the store it protects protects nothing |
 
 A bootstrap fact **MUST NOT** also be a record field, and a record field
 **MUST NOT** be overridable from the host. An override from the host is a
@@ -207,10 +215,6 @@ oldest version any node that may read the namespace supports, and a node
 cannot read. A newer binary alone therefore never writes blocks an older one,
 still serving, would refuse.
 
-> [!important] Pending review — the format version to write
-> Without it, the first upgraded node writes blocks every node not yet upgraded
-> refuses as malformed. Advancing it is the explicit last step of an upgrade.
-
 ## 6. Validation
 
 **Refused, never replaced** ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)). A value out of range, of the wrong
@@ -238,6 +242,14 @@ Configuration **MUST NOT** hold a secret value: not a credential, not a key, not
 a passphrase. It holds a **reference** — a secret's name in a secret provider —
 and the component resolves it when it is built.
 
+The default secret provider is the configuration store itself: a `Secret`
+record ([RFC 16](rfc-16-metadata-store.md)) in the same KV, its value **envelope-encrypted** under a
+wrapping key held outside that KV — a host file or an external key service,
+named by the bootstrap ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)). A copy of the store alone reveals no
+secret. A password is stored only as a slow hash; an NT hash exists only while
+NTLM is enabled. An external provider (a vault, a KMS) **MAY** replace the
+default, behind the same reference.
+
 - **Read never returns a secret.** No API, export, log line or metric carries
   one. An export that must travel with its secrets, a backup that must be
   restorable ([RFC 12 §4.4](rfc-12-snapshots.md#4.4%20Key%20scope%20and%20material)), carries references, and says which secrets the
@@ -262,11 +274,6 @@ and the component resolves it when it is built.
   export names them, and every data key in its census, the same way
   ([RFC 12 §4.4](rfc-12-snapshots.md#4.4%20Key%20scope%20and%20material)).
 
-> [!important] Pending review — namespace keys by reference
-> The chunking key and the key that seals block-header hashes are namespace
-> secrets held by reference, with a fingerprint so a swapped key is refused.
-> Material configuration is now stated as master keys plus per-namespace wrapped
-> keys, matching RFC 5's key layers.
 - The only secret on a host is the bootstrap credential for the configuration
   store ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)).
 
@@ -324,7 +331,7 @@ Proposed, for review with this document; none is applied yet.
    next-write, default 4 MiB, the size current services handle best in one put
    ([RFC 4 Appendix B](rfc-4-remote-tier.md#Appendix%20B%20%E2%80%94%20measurements)). Settled by the block-size benchmark against each service.
 2. **Leases and durations.** Owner, read and open-state leases, the drift bound
-   and the facade's default deadline ([RFC 0 §10.3](rfc-0-data-lifecycle.md#10.3%20Every%20wait%20on%20a%20request%20ends%20at%20a%20deadline)) have no value. Fixed or
+   and the filesystem service's default deadline ([RFC 17](rfc-17-vfs.md)) ([RFC 0 §10.3](rfc-0-data-lifecycle.md#10.3%20Every%20wait%20on%20a%20request%20ends%20at%20a%20deadline)) have no value. Fixed or
    settings, and which values, belongs to the RFC that owns each; this document
    only requires that none ship undefined.
 3. **Live propagation bound.** How quickly a live change must reach every node,
@@ -387,8 +394,3 @@ default this document suggests where the owning RFC states none.
 | oldest unoffloaded extent alert | [RFC 8 §8.4](rfc-8-engine.md#8.4%20How%20far%20behind%20durability%20is%2C%20is%20observable) | share | live | proposed: 1 h |
 | snapshot policy, backup location and retention | [RFC 12 §6.2](rfc-12-snapshots.md#6.2%20Configuration) | share | live | none |
 | snapshot freeze bound | [RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20a%20drained%2C%20frozen%20instant) | share | live | 256 MiB, 30 s |
-
-> [!important] Pending review — journal headroom, idle seal and namespace keys
-> Added the journal's headroom for records without bytes and its idle-seal
-> threshold, both still proposals in RFC 1, and split material into master keys,
-> the current data key and the header key.

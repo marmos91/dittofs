@@ -211,9 +211,6 @@ put for the failure window turns put-unhealthy like one that refuses them.
 `ErrThrottled` is the store asking to be sent less; counting it as failure would
 turn a busy store into a refused one.
 
-> [!important] Pending review — error set: throttling and corrupt puts
-> Throttling is now `ErrThrottled` (wrapping `ErrTransient`, a request to RFC 4 §4.8): backpressure on the flow, never counted toward health. `ErrCorrupt` on a put now counts toward put health. Health counts per direction.
-
 **There is one syncer per process.** An installation may configure several
 block stores, and each is registered once. Work reaches the syncer through a
 **flow**: a handle bound to one store and to one queue in the fairness scheduler
@@ -434,9 +431,6 @@ by GC's own budget and spilled to local disk above it ([RFC 9 §4.2](rfc-9-gc.md
 syncer's bound covers the fetch and the put; the staging between them is counted
 by GC, and **MUST** be, or this bound says nothing about the process.
 
-> [!important] Pending review — memory bound
-> Per worker now counts the plaintext chunk, its encoding and a header cap derived from the chunk-count cap `N` (P4); the codec refuses a longer header before allocating. The read side uses RFC 5's `MaxDecodeLen`, the maximum over every registered transform. Detached buffers and relocation staging are stated terms.
-
 The limit belongs to the syncer, not to each store: memory runs out for the whole
 process, and only a limit set where all the transfers happen adds up to a number
 the process can hold.
@@ -533,9 +527,6 @@ latency asks for it.
 be rewound by a client that has already sent part of it; only the syncer, which
 can call `src` again ([§1.3](#1.3%20Interface)), can retry one.
 
-> [!important] Pending review — retry budget, throttling, aggregate floor
-> Added a process-wide retry budget with full jitter; throttling holds the flow instead of counting as failure; the throughput floor is judged on the store's aggregate per direction; first byte is defined per direction; `src` time is the caller's; a fetch retry resumes after the last delivered chunk.
-
 ### 2.5 An unknown outcome is not a success
 
 A transfer can end with its outcome genuinely unknown: the request was sent, the
@@ -568,9 +559,6 @@ makes itself. What an unknown outcome costs is at most one orphan per attempt,
 found by its intent, never a listing's guess.
 
 ![A put whose response was lost leaves three indistinguishable remote states; a retry within the same attempt, under the same name and bytes, converges all three to one object](img/rfc3-unknown-outcome.svg)
-
-> [!important] Pending review — unknown outcomes under minted names
-> Names are minted per put attempt, no longer derived from content. A retry within `Upload` reuses the name and bytes; a re-offer or restart mints a new name, and the old object is an orphan found through its put intent. The claim that content-derived names make every retry idempotent is gone, with the key-derivation figure; the unknown-outcome figure's caption was narrowed and its closing text still needs redrawing.
 
 ### 2.6 Durability is observed, never inferred
 
@@ -709,9 +697,6 @@ error, so the caller can tell an unhealthy store from a failed transfer without
 logging its own diagnosis. A caller **SHOULD** log such an error at debug at
 most: the syncer's lines are the record of the outage.
 
-> [!important] Pending review — health per direction, recovery on own evidence
-> Put and get health are separate, each with its own probe, window and refusal; a write failure never refuses reads. Throttling is not failure. A direction made unhealthy by the failure window recovers only on a successful transfer or its own-namespace probe of that direction, not the shared probe, which stops the flapping. "Nothing cancels a put mid-flight" was an absolute that the floor and `ctx` already contradicted, and is gone. Needs RFC 4 §4.7 to offer a probe per direction.
-
 ### 2.9 Workers are shared fairly across flows
 
 One pool serves every flow ([§1.3](#1.3%20Interface)), so the order in which waiting transfers
@@ -799,9 +784,6 @@ between a deployment sits ([§2.12](#2.12%20What%20the%20syncer%20makes%20observ
 wait as long as demand keeps the pool busy: relocation is deferrable, and a
 reader is not.
 
-> [!important] Pending review — scheduling by class
-> Replaces "within a flow, demand goes before speculation" with three classes across all flows — demand, background (offload, relocation), speculation — and fair queuing only within a class. Adds the fair-share rule across stores, one waiter bound per half shared by all flows, eviction of the youngest queued speculation by a demand at a full queue, and a stated upload queue-wait bound.
-
 ![One DRR round with a 20 MiB quantum: a flow of 16 MiB blocks sends one and carries 4 MiB over, a flow of 4 MiB blocks sends five, a flow with one 20 MiB block sends it; below, the cap skipping a flow that already holds six of eight workers on a slow store](img/rfc3-drr-round.svg)
 
 All flows have equal weight. Weighting one flow over another is DRR's
@@ -849,9 +831,6 @@ setting:
 | retry bound | the syncer's own per transfer, stated by the implementation | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) |
 | retry budget | a process-wide bucket holding the larger pool's size in tokens; a retry takes one, a successful first attempt returns 0.1 | retries stay near a tenth of traffic when a store fails everything ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
 | retry backoff | full jitter: uniform in [0, min(5 s, 100 ms × 2^attempt)] | transfers that failed together do not retry together ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
-
-> [!important] Pending review — fixed values
-> Added the waiter bound, class order, header cap, first-byte bound per direction, retry budget and backoff; the floor, probe and failure window rows now read per direction and on the aggregate.
 
 Each fixed value becomes a setting only when a measurement shows the fixed value
 is wrong for a workload an operator can name. A setting nobody can reason about
@@ -941,9 +920,6 @@ one. The syncer
 
 `workers_busy` against throughput tells a slow store from a starved syncer,
 which the logs cannot ([§7.4](#7.4%20Benchmarks)).
-
-> [!important] Pending review — metrics
-> Added the `class` label, the waiter gauge, eviction and waiter refusals, retry-budget exhaustion, throttled time, aggregate throughput and re-homed fetches; health metrics are per direction through `half`.
 
 Verification is not counted here. Each event has one owner: the block codec
 counts chunks verified and chunks that failed ([RFC 4 §4.12](rfc-4-remote-tier.md#4.12%20What%20a%20store%20makes%20observable)); the remote store
@@ -1112,9 +1088,6 @@ Joining requires each of the following:
 
 ![One block of six chunks fetched once: the first reader leaves after four chunks and the fetch goes on, a second reader joins after two and receives the remaining four, a third needs the first chunk after it has gone past and starts a new fetch](img/rfc3-joined-fetch.svg)
 
-> [!important] Pending review — joining: re-home, flow close, detach buffers
-> A demand joining a queued fetch moves it to the demanding flow; closing a flow detaches the other flows' joiners instead of failing them; a detached caller keeps its current buffer and the fetch takes a fresh one, counted in the memory bound.
-
 ### 4.4 Speculation does not delay demand
 
 A fetch is **demanded** when a reader is blocked on it and **speculative**
@@ -1192,9 +1165,6 @@ keeps it from holding its share's flow at its cap while that share's reads wait.
 | S20 | Waiters per half — queued transfers and joined callers — never exceed the waiter bound, whatever the number of flows. |
 | S21 | Retries across the process never exceed what the retry budget holds. |
 
-> [!important] Pending review — invariants
-> S2, S5, S13–S15, S17–S19 restated for per-direction health, classes, fair share and the memory terms; S20 (waiter bound) and S21 (retry budget) added.
-
 ## 7. Conformance
 
 The set-wide rules are in [the RFC index](rfc-index.md#Test%20tiers). The checks below are for the
@@ -1249,9 +1219,6 @@ half-complete. A backend that always succeeds asserts nothing about any of them.
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) fetch resume | Fail a whole-block fetch transiently after three chunks; assert the retry requests only the rest and no chunk is yielded twice. |
 | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) per direction | Fail every put probe and put; assert fetches from the store still run. Fail every get; assert uploads still run. |
 | [§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch) re-home and close | Join a queued speculative fetch with a demand from another flow; assert it moves to the demanding flow in the demand class. Close the flow that owns a running joined fetch; assert the other flows' callers are detached, not failed. Detach a caller holding its chunk; assert its bytes are unchanged until its next iteration while the fetch continues. |
-
-> [!important] Pending review — conformance
-> Rows added or restated for minted-name retries, the memory terms, per-direction health and recovery, the aggregate floor, throttling, the retry budget, classes, eviction, the waiter bound, fair share, fetch resume, re-homing and detach buffers.
 
 ### 7.3 What must not stand in
 
@@ -1462,6 +1429,3 @@ integrity) are listed once, in [RFC 4 Appendix A](rfc-4-remote-tier.md#Appendix%
 | D22 | GC relocates through a background syncer flow ([§1.3](#1.3%20Interface)) | relocation calls the remote store directly |
 | D23 | one process-wide retry budget with full jitter; throttling holds the flow and is not failure ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) | retries live in the remote client, with no shared budget; throttling is an ordinary error |
 | D24 | a throughput floor judged on the store's aggregate ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) | per-request timeouts; no throughput floor |
-
-> [!important] Pending review — deviations
-> D4, D9, D20 and D22 restated; D23 and D24 added for the retry budget and the aggregate floor.

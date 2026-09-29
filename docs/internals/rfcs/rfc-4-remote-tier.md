@@ -143,13 +143,6 @@ the index holds the sealed hashes, and the name is derived from them
 header is sealed, so a bucket reader can no longer confirm a known file by
 looking its hashes up.
 
-> [!important] Pending review — header layout
-> The header carries the attempt's nonce instead of an encoding generation, the
-> index is capped at `N` entries, body lengths are bounded by RFC 5's
-> `MaxDecodeLen(Max)` before allocating, the envelope's version byte makes a
-> ranged body self-describing, and index hashes are sealed when the namespace
-> encrypts.
-
 The header comes first, so every body's length is known before the first byte is
 sent: from each transform's declared length, or from a measuring pass when the
 chain cannot declare it ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success)). Only the header and one chunk are held in memory.
@@ -224,11 +217,6 @@ version to write is recorded with the namespace ([RFC 13](rfc-13-configuration.m
 after every binary that may read the namespace supports it; a binary that finds
 a write version it does not know refuses to write, and still reads what it can.
 So a rolling upgrade never leaves an older node facing blocks it cannot parse.
-
-> [!important] Pending review — codec errors and write version
-> A recorded range the store rejects is now reported as corrupt (malformed), and
-> the format version to write is a namespace setting advanced only once readers
-> support it.
 
 ## 4. The store contract
 
@@ -327,13 +315,6 @@ A backend is opened by its own constructor, which takes its settings, the pool
 sizes ([§4.10](#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)) and a context, and runs the capability check ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)) before it
 returns.
 
-> [!important] Pending review — interface additions
-> `Recheck` (bucket settings re-read per GC pass) and the control-object pair
-> (`PutControl`/`GetControl`, for the namespace claim and health) are new, as are
-> `Direction` on `Health` and `ErrThrottled`; the
-> name comment drops the encoding generation for the nonce, and `ModTime` no
-> longer feeds an age filter.
-
 ### 4.2 Names in, locations kept inside
 
 Callers name blocks; they never see where a block lives. The store maps a name to
@@ -410,12 +391,6 @@ object only once neither a block record nor a put intent names it — a final
 state, since the name is never minted again — so no put can re-create a block
 underneath its delete ([RFC 9](rfc-9-gc.md)).
 
-> [!important] Pending review — names per attempt, intents instead of the fence
-> The pre-put existence check ("recorded, skip the put") and GC's deletion fence
-> are gone: a name belongs to one put attempt, recorded as an intent before the
-> put. The digest-only decision marker narrows to a delayed duplicate of the
-> same attempt's put.
-
 ![A put streams: body lengths come from each transform's declared length, or from a measuring pass that encodes and discards; the header goes first, then each chunk encoded as it is sent, in one request with the profile's integrity check](img/rfc4r-put-path.svg)
 
 ### 4.4 Get: a whole block or one range, exactly
@@ -434,11 +409,6 @@ A get returns exactly the bytes asked for, or an error. There is no third outcom
 The store cannot tell a caller's mistake from a record that outlived its block;
 the codec can, and reports a recorded range the store rejects as corrupt
 ([§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec)).
-
-> [!important] Pending review — range errors
-> A clamp (the service's range differs from the request) is `ErrInvalid`; a short
-> body under a matching range is `ErrTransient`; the codec turns `ErrInvalid` on a
-> recorded range into a malformed `ErrCorrupt`.
 
 The caller merges ranges that are adjacent in the block into one request, which
 is why a get takes one range and not a list. Where the service returns a checksum
@@ -470,10 +440,6 @@ requests in batches of a thousand. A single delete is a batch of one.
 - **The store splits a batch** into as many service requests as its service's
   limit requires ([Appendix C.1](#C.1%20Required%20service%20features)), and a service without a batch operation deletes
   one name per request. The caller never needs to know the limit.
-
-> [!important] Pending review — the late delete
-> With names minted per attempt, a delayed delete can only hit an object no
-> record can name; stated here in place of GC's deletion fence.
 
 ### 4.6 List is a complete, resumable walk
 
@@ -515,11 +481,6 @@ The store returns the probe's outcome and nothing else. It keeps no health
 status. The syncer probes each direction on an interval, derives each
 direction's health from recent outcomes, and refuses work only in an unhealthy
 direction ([RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work)): a store that cannot be written can still be read.
-
-> [!important] Pending review — health per direction, errors for throttling
-> `Health` takes a direction and probes the store's own namespace, matching RFC 3
-> §2.8's per-direction health. Throttling is now `ErrThrottled`, which wraps
-> `ErrTransient` and is backpressure, not a health failure (§4.8).
 
 ### 4.8 Errors are a closed set
 
@@ -615,12 +576,6 @@ open without the store noticing: versioning, object lock, lifecycle rules.
 syncer stops puts and deletes for the store until a later `Recheck` passes. Each
 profile names the settings its `Recheck` covers.
 
-> [!important] Pending review — capability check and re-check
-> The check now runs at the maximum block size, pins the checksum mode, reads the
-> namespace claim, and tolerates a bounded re-list on lagging listings. Bucket
-> settings are re-read at the start of every GC pass, stopping puts and deletes
-> on drift.
-
 ### 4.12 What a store makes observable
 
 Every store exports the same metrics, labelled by store. A backend adds none of
@@ -672,10 +627,6 @@ Roles are a closed set in code. A new role is a new constant and a new location,
 not a caller-chosen key, so control objects cannot become a second, unlisted
 block store.
 
-> [!important] Pending review — control objects
-> New section: the namespace claim and the health object now have a contract of
-> their own, instead of living outside it.
-
 ## 5. Backend profiles
 
 Each backend has a profile: the service features it requires, how it maps the
@@ -705,9 +656,6 @@ S3-compatible object storage, the primary backend, is profiled in
 | R15 | No block is written in a format version a reader of its namespace does not support. |
 | R16 | Control objects are reached by fixed role only and are never listed as blocks. |
 | R17 | A drifted service setting stops puts and deletes until a re-check passes. |
-
-> [!important] Pending review — invariants
-> R1 and R13 follow the header and naming changes; R14–R17 are new.
 
 ## 7. Test plan and benchmarks
 
@@ -743,10 +691,6 @@ in-memory store).
 | [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | Open, then turn on versioning or add a lifecycle rule whose filter could match the prefix: `Recheck` fails naming it; turn it off: `Recheck` passes. | T |
 | [§4.7](#4.7%20Health%20is%20one%20probe%20call) | The put probe fails while the namespace is read-only, and succeeds on the next call once write access returns; the get probe succeeds throughout. Revoke access to the store's own prefix only: both probes of that direction fail although a neighbouring prefix stays accessible. | |
 | [§4.8](#4.8%20Errors%20are%20a%20closed%20set) | Answer every request with the service's throttling reply: each call fails with `ErrThrottled`, and `errors.Is(err, ErrTransient)` holds. | |
-
-> [!important] Pending review — conformance rows
-> New rows for control objects, the check at maximum block size, bounded re-list
-> and `Recheck`; the truncation row names the matching `Content-Range`.
 
 The in-memory store **MUST NOT** be the only store these run against. It cannot
 lose an acknowledged write, half-complete or delay.
@@ -785,11 +729,6 @@ with those faults, so these profiles are the negative tests.
 | [§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec) | A ranged read at a wrong offset or length fails with `ErrCorrupt`, and nothing re-reads the header. |
 | [§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success) | Encode the same block twice, once from declared lengths and once after a measuring pass, under every transform configuration: the bytes, the header and the checksum are identical, and the declared size equals the bytes streamed. |
 | [§3.5](#3.5%20Format%20changes%20are%20migrations) | A stored fixture of every released version decodes. |
-
-> [!important] Pending review — codec tests
-> New rows for the header bounds (read side at `MaxDecodeLen`), the ranged
-> envelope version, the census passed to decode, sealed hashes, the
-> malformed-range mapping and the write-version rule.
 
 ### 7.4 Services
 
@@ -933,10 +872,6 @@ confirmed by the capability check before the service is supported:
 | Google Cloud Storage (XML API) | has no batch delete, so the store deletes one key per request ([§4.5](#4.5%20Delete%20is%20batched%20and%20idempotent)) |
 | MinIO | not measured: it could not be pulled in the measurement environment |
 
-> [!important] Pending review — service notes
-> Four services noted from documentation only; each still has to pass the
-> capability check before it is supported.
-
 ## Appendix C — the S3-compatible block store
 
 S3-compatible object storage is the primary backend. This appendix is its
@@ -1047,12 +982,6 @@ namespace, with the production client configuration of [Appendix C.3](#C.3%20How
 5. Read the bucket's versioning status and lifecycle rules, as [Appendix C.1](#C.1%20Required%20service%20features) states.
 6. Read the namespace claim at `<prefix>control/claim` and hand it to the opener.
 7. Delete what the check wrote.
-
-> [!important] Pending review — S3 profile
-> Integrity is proved at the maximum block size, the checksum mode is pinned,
-> listings get a bounded re-list, the claim is read at open, lifecycle matching
-> counts any filter that could reach the prefix, and both bucket settings are
-> re-read by `Recheck`. Control objects move to `<prefix>control/`.
 
 Against the services of [Appendix B](#Appendix%20B%20%E2%80%94%20measurements), step 1 chooses CRC32C on Scaleway and LocalStack
 4.13.1, `Content-MD5` on LocalStack 3.0, and the ETag on Cubbit DS3.

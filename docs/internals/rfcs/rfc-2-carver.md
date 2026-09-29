@@ -121,12 +121,6 @@ the file the reader's first byte sits, so offsets come out as file offsets and t
 carver needs to know nothing else about the file. `realEnd` and `consumed` are
 [§2.4](#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut)'s.
 
-> [!important] Pending review — no "not yet", and a stretch end that is not real
-> `NextBoundary` no longer returns zero for "give me more": `Cut` calls it only
-> with `Max` bytes or `final`, which removes the second position a carver had to
-> track. `Cut` now takes whether the stretch end is real and returns how much it
-> consumed ([§2.4](#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut)).
-
 **Neither does the other's job**, and an implementation **MUST NOT** let them
 drift together:
 
@@ -236,10 +230,6 @@ whether a chunk was already stored is the engine's ([§1.1](#1.1%20Non-goals)).
 The size histogram is the one that matters most: a wrong average costs sizing
 and dedup, never correctness, so nothing downstream notices it.
 
-> [!important] Pending review — metrics by namespace
-> Metrics are labelled by namespace, not share: settings and the chunking key
-> belong to the namespace. `carver_held_bytes_total` is new, for [§2.4](#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut).
-
 ### 2.4 An artificial end leaves the tail uncut
 
 A stretch ends for one of two kinds of reason, and the caller **MUST** tell `Cut`
@@ -274,12 +264,6 @@ Two exceptions keep a tail from waiting forever:
   pass — the caller **MAY** start the stretch at that ref's start instead, so
   the short chunk is re-cut into a full one. This widens backwards only; it is the
   same permission [RFC 8 §5.6](rfc-8-engine.md#5.6%20A%20run%20is%20what%20the%20journal%20offers%2C%20widened%20only%20to%20re-tile) gives for re-tiling.
-
-> [!important] Pending review — the stretch-end rule
-> New. An offer cut at a limit used to emit its tail as a chunk, so a streaming
-> file was re-cut from a limit-chosen start on every pass. The tail now stays
-> Dirty; a forced cut happens only past the pass age ceiling, and a short chunk
-> left by one may be widened back over.
 
 ## 3. The boundary function
 
@@ -368,12 +352,6 @@ search's own expected length near `Target − Min`, not `Target`. A mask sized t
 `Target` alone lands the average too high by up to `Min`, less what normalisation
 takes back: the 256 KiB row of [Appendix C](#Appendix%20C%20%E2%80%94%20choosing%20the%20target) averaged about 285 KiB, partly for
 that reason.
-
-> [!important] Pending review — target arithmetic
-> The "about 3,700 per GiB" figure came from one non-random corpus and is
-> replaced by the random-input value (4,096) and a stated ceiling under random
-> overwrite. The mask is now sized so the mean including the `Min` skip is
-> `Target`.
 
 ### 3.3 Why a large minimum smothers the search
 
@@ -490,11 +468,6 @@ any `Target` the degenerate rows cut every chunk at `Max`:
 
 Three consequences, and an implementation **MUST NOT** treat any as incidental:
 
-> [!important] Pending review — period wording
-> "Takes the same value" was wrong for a period above 1: a period `p` gives at
-> most `p` fingerprints. The exactly-`Max` guarantee is now claimed for zeros
-> under the unkeyed table only; the other degenerate rows are measurements.
-
 - **`Max` is load-bearing.** On three of these five inputs it is the only reason
   chunking terminates at all. Removing it, or setting it very high, turns
   repetitive files into single enormous chunks.
@@ -590,13 +563,6 @@ extra put is the price of never having to defend a name against a second writer,
 a late delete or a service without conditional puts; why a retried put is safe is
 [RFC 3 §2.5](rfc-3-syncer.md#2.5%20An%20unknown%20outcome%20is%20not%20a%20success).
 
-> [!important] Pending review — names minted per attempt
-> The name now includes a 128-bit nonce drawn per put attempt and stored in the
-> header; the encoding generation is gone, the scope's byte encoding is fixed and
-> in the golden vector, and the hashes are the header's (sealed when encrypted).
-> Replaces the deletion fence: a name is never put by two attempts, so no delete
-> can race a re-put.
-
 ### 4.3 Key scope
 
 A name **MAY** include a scope that partitions the name space. The scope decides
@@ -641,11 +607,6 @@ be held open for chunks from the next offer, but no longer than the pass's
 maximum age measured from its oldest chunk ([RFC 8 §4.2](rfc-8-engine.md#4.2%20Offload%20is%20scheduled%20here)); once that age is reached it is put as it is. So at most
 one short block is put per pass, and none waits past the age ceiling. Each short
 block costs one object and one header, and nothing else.
-
-> [!important] Pending review — chunk-count cap and the short last block
-> P4 is new: a block ends at the byte target or at 1,024 chunks, so the header
-> has a fixed bound. The short last block of a pass is bounded by the pass age
-> ceiling instead of being put unconditionally.
 
 
 P1 is [RFC 0 §2.2](rfc-0-data-lifecycle.md#2.2%20How%20a%20file%20relates%20to%20its%20chunks). A chunk split across two blocks would have one hash naming
@@ -737,14 +698,6 @@ also write to it.
 > deployment must hide content from writers of its own namespace; it costs a PRF
 > call per candidate and re-cuts every namespace that adopts it.
 
-> [!important] Pending review — keyed chunking scope and construction
-> Keyed boundaries now follow the encryption setting at namespace creation, the
-> key is a fingerprinted `chunking-key` material kind expanded under
-> `dittofs chunking key v1` (replacing the separate commitment), and headers are sealed when
-> encrypting (closing the old "only with sealed headers" condition). The claim is
-> scoped to passive observers, citing [5]; the stronger construction is noted as
-> the upgrade path.
-
 Randomising how blocks are assembled is not a mitigation: it changes object sizes
 but not the chunk lengths each header lists.
 
@@ -778,9 +731,6 @@ produces the same chunks. A failed pass costs work and never correctness.
 | C7 | On an artificial stretch end, no byte after the last content-chosen boundary is emitted. |
 | C8 | A block name is minted once, for one put attempt, and never put by another. |
 
-> [!important] Pending review — invariants
-> C4 and C5 follow the stretch-end rule and P4; C7 and C8 are new.
-
 
 Two properties are missing because the shape of [§1.2](#1.2%20Two%20layers%3A%20the%20chunker%20and%20the%20carver) makes them unbreakable: a
 chunk cannot straddle a hole, and there is no state to clear between calls.
@@ -810,12 +760,6 @@ rows need no reader and no hash at all.
 | carver | [§2.2](#2.2%20The%20bytes%20handed%20to%20%60emit%60%20are%20borrowed) borrowed bytes | Hold on to the slice passed to `emit` and assert it is seen to change. The check exists to prove the contract is real, so a caller that copies is not doing it out of superstition. |
 | carver | [§7](#7.%20Errors) no short chunk on error | Fail `emit` mid-stretch, and fail the reader mid-chunk; assert no delivered chunk is a truncated prefix of one the clean path would produce. |
 
-
-> [!important] Pending review — conformance rows
-> The target row includes the `Min` skip; the repetitive row claims exactly `Max`
-> for zeros under the unkeyed table only; the artificial-end row is new; the
-> golden-name row swaps the generation for the nonce and pins the scope encoding.
-> P4 and minting once per attempt are checked at their consumer, [RFC 8](rfc-8-engine.md).
 
 A check that needs both layers to be wrong at once is in the wrong place. If a
 boundary defect only shows up through `Cut`, the chunker's own checks are too
@@ -1093,14 +1037,6 @@ the chunker further. The machines differ because the EPYC's gear hash is about
 Unlike A.1 this is **not** a migration: the output does not change.
 
 ## Appendix C — choosing the target
-
-> [!important] Pending review — what this table measures
-> The table below re-chunks each whole file from its start. That is not the
-> engine's cost: the engine cuts only the offered stretches, widened as
-> [§2.4](#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut) and [RFC 8 §5.6](rfc-8-engine.md#5.6%20A%20run%20is%20what%20the%20journal%20offers%2C%20widened%20only%20to%20re-tile) permit. The table stays as the whole-file baseline; the
-> default of 256 KiB stands until the plan at the end of this appendix measures
-> the real path. Its masks were also sized to `Target` without the `Min` skip, so
-> its averages run above `Target` ([§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)).
 
 **Whole-file re-chunking baseline.** Measured with a FastCDC whose masks derive
 from `Target` (normalisation level 2, 64-byte warm-up, `Max = 4 × Target`), over
