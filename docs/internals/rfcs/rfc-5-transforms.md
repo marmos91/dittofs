@@ -108,6 +108,14 @@ into several bodies stored in different places (erasure coding across failure
 domains). The last belongs to the store layer, as a store that spreads shards
 over several backends, not to the chain.
 
+Nor does encryption meant to be computed on, such as homomorphic encryption. Its
+point is to let a party without the key compute on ciphertext, and no such party
+exists here: the remote store only keeps bytes, and every computation on content
+happens in the process that holds the keys. Its schemes are also randomised by
+construction and expand data by orders of magnitude, against determinism and a
+bounded `MaxEncodedLen`. A design in which the store computes on content is a
+different architecture, not a transform.
+
 ### 2.2 Where it runs
 
 The chain runs inside the block codec, which the engine owns ([RFC 4 §3.1](rfc-4-remote-tier.md#3.1%20Who%20writes%20it)).
@@ -170,6 +178,11 @@ A transform **MAY** still write a header of its own inside its output: its
 format version, and the IDs of the material it used. The envelope costs 1 + 2n
 bytes per chunk.
 
+The envelope has no version of its own: its layout is part of the block format,
+whose version the block header carries ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)). A new envelope layout is a new
+block format version, and a reader picks the layout from the block it is
+reading ([RFC 4 §3.5](rfc-4-remote-tier.md#3.5%20Format%20changes%20are%20migrations)).
+
 ![A body: the envelope listing the applied transforms, then each transform's own header nested around the next one's output, with the chunk's bytes innermost](img/rfc5t-body.svg)
 
 A reader **MUST** reject with `ErrMalformed`, before decoding anything, an
@@ -194,6 +207,12 @@ declares) and ID. Removing a transform from the chain therefore stops it for new
 writes but keeps its material, and bodies written under it stay readable.
 Removing material is a separate act, allowed only once the census shows nothing
 uses it ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)).
+
+**Material says what it is for.** A kind is specific to what consumes it — a key
+for one cipher is not a key for another, whatever their lengths — so a transform
+declares the kinds it accepts and **MUST** refuse, at construction, material of
+any other kind. Handing one cipher's key to another is then a failure to start,
+not a body written under a key used for two purposes.
 
 Because reading does not consult the chain, a store accepts a body without a
 transform its chain now applies: an old plaintext body after encryption was
@@ -247,8 +266,9 @@ codec's errors, so nothing above it can tell which transforms are configured.
 ### 2.8 The chain ID
 
 A block's name includes a **chain ID** ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)): a hash of everything in
-the chain that decides a body's bytes or length. For each configured transform,
-in order, it covers:
+the chain that decides a body's bytes or length, taken under its own versioned
+domain, `transform chain id v1`, as the block name is ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)). For each
+configured transform, in order, it covers:
 
 - the transform's ID and the format version it writes;
 - its **length-affecting settings**: a compression level is one; a setting that
@@ -262,6 +282,20 @@ reordered chain — derives a new name, so a stored block is never rewritten wit
 a different layout, and a recorded position never goes stale
 ([RFC 4 §3.4](rfc-4-remote-tier.md#3.4%20Every%20read%20is%20verified%20by%20the%20codec)). The chain ID is not needed to read: a body's envelope says how to
 decode it ([§2.4](#2.4%20Every%20body%20records%20what%20was%20applied)).
+
+**Every layer carries its own version, so each can change alone.** A change is
+made at one of four points, and each is read from the stored bytes, not from
+configuration:
+
+| What changes | Where its version is | What a change costs |
+| --- | --- | --- |
+| the block layout, envelope included | the block header's format marker and version ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)) | readers keep every stored version ([RFC 4 §3.5](rfc-4-remote-tier.md#3.5%20Format%20changes%20are%20migrations)); relocation rewrites old blocks when they are to go |
+| one transform's output format | that transform's header ([§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material)) | the transform decodes every version it wrote |
+| the algorithm | a new transform, with a new ID ([§5.4](#5.4%20Changing%20an%20algorithm%20is%20adding%20a%20transform)) | configuration, then retirement by census |
+| how the chain ID or the block name is derived | the domain strings `transform chain id v1` and `content-defined block name v1` | new names for new blocks only; a stored block keeps its name, which is recorded, never recomputed to find it |
+
+A golden test vector pins each derivation, as for the block name: a changed
+vector fails the build.
 
 ## 3. API surface
 
@@ -375,22 +409,18 @@ the block header's bound ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)).
 
 ### 3.2 Configuration
 
-A chain is configured on a remote block store, and every share on that store
-inherits it:
+A chain is part of a remote block store's configuration, which the control plane
+holds ([RFC 13](rfc-13-configuration.md)); every share on that store inherits it. The engine reads the
+record and builds the chain from it when it opens the store ([RFC 8 §2.4](rfc-8-engine.md#2.4%20Settings%20are%20validated%20once%2C%20and%20refused%20rather%20than%20replaced)). No
+file on the host describes it. The record holds:
 
-```yaml
-blockstores:
-  remote:
-    main:
-      type: s3
-      materials:
-        provider: file
-        file: /etc/dittofs/materials.yaml
-      transforms:
-        - name: zstd
-        - name: aes-gcm
-      require: [aes-gcm]   # optional (§2.5)
-```
+| Field | Meaning |
+| --- | --- |
+| `transforms` | the ordered list of transforms, each a registered name and its settings ([§2.3](#2.3%20The%20chain%20is%20ordered%20by%20configuration)) |
+| `materials` | the material provider and how to reach it; a reference to secret material, never the material itself ([RFC 13](rfc-13-configuration.md)) |
+| `require` | transforms every body must carry ([§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material)); optional |
+
+A change to the record governs the next write only ([§5.1](#5.1%20Configuration%20governs%20the%20next%20write)).
 
 A share that needs a different chain, or different material, uses a different
 store. Deduplication then never spans two keys, which matters because a chunk
@@ -452,6 +482,27 @@ and material.
 - **Removal waits for an empty census.** Once no block names the material or
   transform, it may be removed. Removed material is destroyed: the provider keeps
   its ID and reports it `ErrMaterialDestroyed` ([§2.7](#2.7%20Failures)).
+
+### 5.4 Changing an algorithm is adding a transform
+
+A transform ID names an algorithm and its body format, not a library. So:
+
+- **A new algorithm is a new transform.** Moving from AES-256-GCM to another AEAD
+  — XChaCha20-Poly1305, AES-GCM-SIV, or one standardised later — registers a
+  transform with a new ID and its own material kind. The move is then [§5.1](#5.1%20Configuration%20governs%20the%20next%20write)
+  and [§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census): put it in the chain, and old bodies stay readable through their
+  envelopes until relocation retires the old transform.
+- **A new library for the same algorithm is not a change.** Replacing the
+  library that implements AES-256-GCM keeps the ID, provided it produces
+  identical bodies. The transform's fixtures ([§4](#4.%20Writing%20a%20custom%20transform), item 6) decide, and a library
+  that fails them is a new format version or a new transform, never a silent
+  swap.
+- **Post-quantum.** The chain's symmetric primitives — a 256-bit cipher key, and
+  HMAC and HKDF over SHA-256 — keep a security margin against quantum search
+  that is the recommended posture, and need no change. The quantum exposure is
+  in how master keys reach the process: a key service's transport and key
+  wrapping, which are the material provider's ([Appendix B.2](#B.2%20Keys)). A provider that
+  moves to a post-quantum key encapsulation changes nothing in stored bodies.
 
 ## 6. Observability
 
