@@ -3,4 +3,6 @@
 # Install from the checkout root, filling in its path:
 #   sed "s|@CHECKOUT@|$PWD|" test/harness/canary/dittofs-canary.cron | sudo tee /etc/cron.d/dittofs-canary
 # Verdict: /srv/dittofs-canary/status.txt; history: /srv/dittofs-canary/history.jsonl
+# The pass is the Go test (test/e2e/live) by default; put CANARY_IMPL=shell before the
+# command for canary.sh instead.
 */15 * * * * root @CHECKOUT@/test/harness/canary/run-canary.sh >/dev/null 2>&1

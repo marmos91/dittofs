@@ -8,7 +8,8 @@
 #   - share           /canary     (on those two, so GC on it touches nothing else)
 #   - users           canary (SMB, read-write on the share) and canary-ops (admin, for
 #                                  GC and evict), with fresh random passwords
-#   - root-only       /etc/dittofs-canary/canary.env and CANARY_STATE/bin/dfsctl
+#   - root-only       /etc/dittofs-canary/canary.env (CANARY_* for canary.sh and
+#                     DITTOFS_E2E_LIVE_* for test/e2e/live) and CANARY_STATE/bin/dfsctl
 # Credentials are read from an rclone remote (CANARY_RCLONE_REMOTE in rclone.conf) or
 # from S3_ENDPOINT/S3_ACCESS_KEY/S3_SECRET_KEY, and are never printed.
 #
@@ -111,6 +112,19 @@ RCLONE_CONFIG_CANARYS3_ENDPOINT=$S3_ENDPOINT
 RCLONE_CONFIG_CANARYS3_ACCESS_KEY_ID=$S3_ACCESS_KEY
 RCLONE_CONFIG_CANARYS3_SECRET_ACCESS_KEY=$S3_SECRET_KEY
 RCLONE_CONFIG_CANARYS3_FORCE_PATH_STYLE=true
+DITTOFS_E2E_LIVE_API=$API
+DITTOFS_E2E_LIVE_ADMIN_USER=$OPS_USER
+DITTOFS_E2E_LIVE_ADMIN_PASSWORD=$OPS_PASS
+DITTOFS_E2E_LIVE_SHARE=$SHARE
+DITTOFS_E2E_LIVE_SMB_HOST=127.0.0.1
+DITTOFS_E2E_LIVE_SMB_PORT=${smb_port:-12445}
+DITTOFS_E2E_LIVE_SMB_USER=$SMB_USER
+DITTOFS_E2E_LIVE_SMB_PASSWORD=$SMB_PASS
+DITTOFS_E2E_LIVE_S3_ENDPOINT=$S3_ENDPOINT
+DITTOFS_E2E_LIVE_S3_BUCKET=$BUCKET
+DITTOFS_E2E_LIVE_S3_PREFIX=$PREFIX
+DITTOFS_E2E_LIVE_S3_ACCESS_KEY=$S3_ACCESS_KEY
+DITTOFS_E2E_LIVE_S3_SECRET_KEY=$S3_SECRET_KEY
 EOF
 sudo install -m 0600 -o root -g root "$tmp" "$ENV_FILE"; rm -f "$tmp"
 sudo install -d -m 0755 "$STATE" "$STATE/bin"

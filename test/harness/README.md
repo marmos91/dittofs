@@ -376,8 +376,15 @@ inside `dtc shell`).
 ## Canary: a repeating round trip against a running server
 
 `canary/` checks a live DittoFS deployment end to end, through the Linux kernel SMB
-client (CIFS), and is meant for cron. One pass (`canary.sh`, in a fresh privileged
-container with host networking):
+client (CIFS), and is meant for cron. A pass comes in two implementations of the same
+steps, chosen by `CANARY_IMPL` in `run-canary.sh`:
+
+- `go` (the default): `TestLiveCanary_SMB` in `test/e2e/live`, an ordinary e2e test run
+  in the Linux dev container (`dtc`) as the checkout's owner. See "Live e2e tests" below.
+- `shell`: `canary.sh`, in a fresh privileged container (the canary image) with host
+  networking.
+
+One pass:
 
 1. mounts the share with `mount.cifs` (SMB 3.1.1, `cache=none`, so reads reach the server);
 2. writes random files (1, 4, 16 and 33 MiB), reads them back, and checks their content,
@@ -402,8 +409,8 @@ bytes, the operators' usual check) at four checkpoints:
 `setup-canary.sh` copies the host's `rclone` (`CANARY_RCLONE_BIN`, else the one on PATH)
 next to `dfsctl`, so the canary measures with the same binary the operators use.
 
-It ends with `CANARY PASS …` (exit 0) or `CANARY FAIL step=<step> …` (exit 1), and
-appends a JSON record to `history.jsonl`. A failed pass leaves its run directory behind,
+It ends with `CANARY PASS …` (exit 0) or `CANARY FAIL step=<step> …` (exit 1)
+(`failed_step=<step>` for `go`), and appends a JSON record to `history.jsonl`. A failed pass leaves its run directory behind,
 so the next pass removes it before starting.
 
 The data is random on purpose. With repeated content (zeros, say), a block stays for up
@@ -434,9 +441,17 @@ credentials come from an rclone remote, or from `S3_ENDPOINT`, `S3_ACCESS_KEY` a
 `S3_SECRET_KEY`, and are never printed. Everything secret goes to
 `/etc/dittofs-canary/canary.env` (root, 0600).
 
-Setup also copies the server's own `dfsctl` to `/srv/dittofs-canary/bin/`. The container
-mounts it, so client and server always match. That is also why the image is Ubuntu 26.04:
-it has to match the host's glibc. Re-running setup rotates both passwords.
+The env file holds each value twice: as `CANARY_*` (and an `RCLONE_CONFIG_CANARYS3_*`
+remote) for `canary.sh`, and as `DITTOFS_E2E_LIVE_*` for the Go test.
+
+Setup also copies the server's own `dfsctl` to `/srv/dittofs-canary/bin/`, and both
+implementations use it, so client and server always match. The canary image mounts it
+(which is why it is Ubuntu 26.04: it has to match the host's glibc); for `go`,
+`run-canary.sh` copies it into `/tmp/dtc`, the path `dtc` shares with its container,
+and names it in `DITTOFS_E2E_LIVE_DFSCTL`. The Go pass gets its variables through the
+environment, never on a command line, and its log is root-only (0600), because a
+failing `dfsctl` call's error, in the test output, repeats its arguments, token
+included. Re-running setup rotates both passwords.
 
 **Outputs** (`/srv/dittofs-canary`): `status.txt` holds the last verdict line,
 `last.json` and `history.jsonl` the per-step timings, and `logs/canary-<ts>.log` one log
@@ -444,6 +459,50 @@ per pass, kept 14 days. A lock skips a pass while the previous one is still runn
 
 GC's `objects_swept` counts reclaimed chunks. A block object is deleted when its last live
 chunk goes, so a pass typically reports about 54 chunks swept for about 15 objects gone.
+
+### Live e2e tests: `test/e2e/live`
+
+The rest of `test/e2e` starts a server per test and owns it: `StartServerProcess`, the
+`admin`/`adminpassword` account, a `dfsctl` built from the checkout, Localstack or a
+local store behind it. `test/e2e/live` is the second set of helpers and variables, for a
+deployment the test did not start. `live.FromEnv(t)` reads the target from
+`DITTOFS_E2E_LIVE_*` (skips when `DITTOFS_E2E_LIVE_API` is unset, fails naming what is
+missing when the target is only partly set), and the rest reuses the e2e helpers:
+
+| Helper | What it does | Built on |
+|---|---|---|
+| `tg.Admin(t)` | logs in as the target's admin account | `helpers.LoginWithCredentials` (the body of `LoginAsAdmin`, with the credentials as arguments), `helpers.WithDfsctlBinary` for the server's own `dfsctl` |
+| `tg.Bucket(t)` | an S3 client on the real bucket | `framework.LocalstackHelper` (the same listing code the Localstack tests use) |
+| `tg.Objects(t, b)` | objects and bytes under the share's prefix (what `rclone size` reports), plus the keys | `ListS3PrefixWithSizes` |
+| `tg.MountSMB(t)` | mounts the share with `mount.cifs` (SMB 3.1.1, `cache=none`, a credentials file), unmounts at cleanup | Linux, root |
+| `live.WaitUploaded(t, admin, share, timeout)` | waits for `unsynced_bytes` and `pending_uploads` to reach 0 | `helpers.GetBlockStats` |
+
+GC and evict go through the existing `helpers.TriggerBlockGC` and `helpers.EvictBlocks`.
+
+| Variable | Meaning |
+|---|---|
+| `DITTOFS_E2E_LIVE_API` | control-plane URL, e.g. `http://127.0.0.1:8080` |
+| `DITTOFS_E2E_LIVE_ADMIN_USER`, `_ADMIN_PASSWORD` | an admin account (GC and evict are admin operations) |
+| `DITTOFS_E2E_LIVE_SHARE` | the share under test, e.g. `/canary` |
+| `DITTOFS_E2E_LIVE_SMB_HOST`, `_SMB_PORT` | default: the API URL's host, and 12445 |
+| `DITTOFS_E2E_LIVE_SMB_USER`, `_SMB_PASSWORD` | an account with read-write on the share |
+| `DITTOFS_E2E_LIVE_S3_ENDPOINT`, `_S3_REGION` | the share's block store (region default `us-east-1`) |
+| `DITTOFS_E2E_LIVE_S3_BUCKET`, `_S3_PREFIX` | the store's bucket and key prefix; the prefix must hold this share's objects only |
+| `DITTOFS_E2E_LIVE_S3_ACCESS_KEY`, `_S3_SECRET_KEY` | credentials for that bucket |
+| `DITTOFS_E2E_LIVE_DFSCTL` | the server's own `dfsctl` (default: built from this checkout) |
+| `DITTOFS_E2E_LIVE_RESULT` | optional: write the run's JSON summary to this file |
+
+`dtc` passes every `DITTOFS_E2E_*` variable into its container by name, so a live test
+runs as any e2e test does. Against the canary, from a root shell on the server:
+
+```bash
+set -a; . /etc/dittofs-canary/canary.env; set +a
+setpriv --reuid=<checkout owner> --regid=<checkout owner> --init-groups env HOME=<their home> \
+  test/harness/bin/dtc shell -c 'go test -tags=e2e -count=1 -v -run TestLiveCanary_SMB ./test/e2e/live/'
+```
+
+Everywhere else (no target set), the package's tests skip, so `dt e2e` and CI are
+unaffected.
 
 ## Batches: `dt-batch`
 

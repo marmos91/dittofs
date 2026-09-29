@@ -208,8 +208,30 @@ func UniqueTestName(prefix string) string {
 // This uses the admin password from environment or prompts for it.
 func LoginAsAdmin(t *testing.T, serverURL string) *CLIRunner {
 	t.Helper()
+	return LoginWithCredentials(t, serverURL, "admin", getAdminPassword(t))
+}
+
+// RunnerOption configures a CLIRunner created by LoginWithCredentials.
+type RunnerOption func(*CLIRunner)
+
+// WithDfsctlBinary makes the runner use the given dfsctl instead of one built from
+// this checkout. It is for servers the test did not build (a live deployment),
+// where the client that matches the server is that server's own dfsctl.
+func WithDfsctlBinary(path string) RunnerOption {
+	return func(r *CLIRunner) { r.binary = path }
+}
+
+// LoginWithCredentials logs in to serverURL as username and returns a CLIRunner
+// with the token. LoginAsAdmin is this call with the test server's admin account;
+// tests against a live deployment (test/e2e/live) call it with that deployment's
+// accounts.
+func LoginWithCredentials(t *testing.T, serverURL, username, password string, opts ...RunnerOption) *CLIRunner {
+	t.Helper()
 
 	runner := NewCLIRunner(serverURL, "")
+	for _, opt := range opts {
+		opt(runner)
+	}
 
 	// Isolate credential storage to a per-test temp dir so dfsctl login never
 	// reads or writes the developer's real ~/.config/dfsctl/config.json. The
@@ -220,16 +242,21 @@ func LoginAsAdmin(t *testing.T, serverURL string) *CLIRunner {
 	// LoginAsUser) inherits the same isolation.
 	runner.xdgConfigHome = t.TempDir()
 
-	// Try to login as admin
 	// The login command doesn't support --output json, so we use RunRaw
 	output, err := runner.RunRaw(
 		"login",
 		"--server", serverURL,
-		"--username", "admin",
-		"--password", getAdminPassword(t),
+		"--username", username,
+		"--password", password,
 	)
 	if err != nil {
-		t.Fatalf("Failed to login as admin: %v\nOutput: %s", err, string(output))
+		// The error repeats the command line, password included: mask it, since for
+		// a live deployment it is a real one.
+		msg := err.Error()
+		if password != "" {
+			msg = strings.ReplaceAll(msg, password, "****")
+		}
+		t.Fatalf("Failed to login as %s: %s\nOutput: %s", username, msg, string(output))
 	}
 
 	// Extract token from the credentials file in the runner's isolated dir.
