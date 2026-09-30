@@ -184,7 +184,8 @@ func (h *Handler) handleOpenRootCreate(
 		MetadataHandle: rootHandle,
 		OplockLevel:    grantedOplock,
 		// The share-mode gates read this; left out, every share-root open is
-		// recorded as deny-all and blocks renames in the root.
+		// recorded as deny-all, and a holder that is not stat-only, such as a
+		// client listing the root, blocks renames in the root.
 		ShareAccess: req.ShareAccess,
 	}
 	if leaseResponse != nil && leaseResponse.LeaseState != lock.LeaseStateNone {
