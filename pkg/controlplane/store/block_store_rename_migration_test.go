@@ -3,6 +3,7 @@ package store
 import (
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -253,6 +254,7 @@ func TestMigration_RefusesAJournalRootThatDoesNotMatch(t *testing.T) {
 			if !errors.Is(err, ErrJournalRootMismatch) {
 				t.Fatalf("New = %v, want ErrJournalRootMismatch", err)
 			}
+			assertSplitSchemaUntouched(t, cfg, "/legacy", "remote-bs-id")
 		})
 	}
 }
@@ -260,6 +262,59 @@ func TestMigration_RefusesAJournalRootThatDoesNotMatch(t *testing.T) {
 // A share that only ever had a local store has nothing to carry into the new
 // model. Dropping the column would leave it bound to nothing and silently
 // absent after the next restart, so the upgrade refuses and names it.
+// assertSplitSchemaUntouched checks that a refused upgrade left the split-store
+// shares table as it found it: the remote column still under its old name and
+// still holding share's binding, and no new column beside it.
+func assertSplitSchemaUntouched(t *testing.T, cfg *Config, share, wantRemote string) {
+	t.Helper()
+	db := rawOpen(t, cfg)
+	defer closeRaw(t, db)
+	if !hasColumn(db, &models.Share{}, "remote_block_store_id") {
+		t.Error("remote_block_store_id renamed by a refused upgrade")
+	}
+	if hasColumn(db, &models.Share{}, "block_store_id") {
+		t.Error("block_store_id created by a refused upgrade")
+	}
+	var got string
+	if err := db.Raw("SELECT remote_block_store_id FROM shares WHERE name = ?", share).Scan(&got).Error; err != nil {
+		t.Fatalf("read remote_block_store_id: %v", err)
+	}
+	if got != wantRemote {
+		t.Errorf("remote_block_store_id = %q, want %q", got, wantRemote)
+	}
+}
+
+// An upgrade that renamed and was then rolled back leaves both columns: the
+// renamed one with the bindings, the recreated one empty. The local-only
+// check must not read the empty one and blame the shares for it.
+func TestMigration_RefusesBothBlockStoreColumnsBeforeTheLocalOnlyCheck(t *testing.T) {
+	for _, d := range migrationDialects() {
+		t.Run(d.name, func(t *testing.T) {
+			cfg := d.newEmpty(t)
+			makeSplitStoreSchema(t, cfg, func(s *GORMStore) {
+				insertMetadataStore(t, s, "meta-id")
+				insertRemoteStore(t, s, "remote-bs-id")
+				insertLocalStore(t, s, "local-bs-id", "/srv/blocks")
+				insertSplitShare(t, s, "/bound", nil, "local-bs-id")
+				if err := s.DB().Exec(`ALTER TABLE shares ADD COLUMN block_store_id VARCHAR(36)`).Error; err != nil {
+					t.Fatalf("add block_store_id: %v", err)
+				}
+				if err := s.DB().Exec(`UPDATE shares SET block_store_id = ?`, "remote-bs-id").Error; err != nil {
+					t.Fatalf("seed block_store_id: %v", err)
+				}
+			})
+
+			_, err := openWithRoot(t, cfg, "/srv/blocks")
+			if err == nil || errors.Is(err, ErrLocalOnlyShareUnbound) {
+				t.Fatalf("New = %v, want the both-columns refusal", err)
+			}
+			if !strings.Contains(err.Error(), "both remote_block_store_id and block_store_id") {
+				t.Errorf("error must name both columns; got: %v", err)
+			}
+		})
+	}
+}
+
 // A refused upgrade must leave the schema as the previous release wrote it.
 // The operator's way out is to start that release and give the share a block
 // store; if the renames had already run, it would find remote_block_store_id
@@ -280,21 +335,7 @@ func TestMigration_RefusalLeavesTheOldColumnsInPlace(t *testing.T) {
 				t.Fatalf("New = %v, want ErrLocalOnlyShareUnbound", err)
 			}
 
-			db := rawOpen(t, cfg)
-			defer closeRaw(t, db)
-			if !hasColumn(db, &models.Share{}, "remote_block_store_id") {
-				t.Error("remote_block_store_id renamed by a refused upgrade")
-			}
-			if hasColumn(db, &models.Share{}, "block_store_id") {
-				t.Error("block_store_id created by a refused upgrade")
-			}
-			var got string
-			if err := db.Raw("SELECT remote_block_store_id FROM shares WHERE name = ?", "/bound").Scan(&got).Error; err != nil {
-				t.Fatalf("read remote_block_store_id: %v", err)
-			}
-			if got != "remote-bs-id" {
-				t.Errorf("remote_block_store_id = %q, want %q", got, "remote-bs-id")
-			}
+			assertSplitSchemaUntouched(t, cfg, "/bound", "remote-bs-id")
 		})
 	}
 }

@@ -32,7 +32,8 @@ var ErrLocalOnlyShareUnbound = errors.New("share has no block store after upgrad
 //
 // It runs before the remote_block_store_id rename, so it reads whichever
 // column the table has: the old name on an upgrade that has not renamed yet,
-// the new one on a database a partial earlier upgrade already renamed.
+// the new one on a database a partial earlier upgrade already renamed. A table
+// holding both is refused before this runs.
 func checkLocalOnlyShares(db *gorm.DB) error {
 	column := "block_store_id"
 	if hasColumn(db, &models.Share{}, "remote_block_store_id") {

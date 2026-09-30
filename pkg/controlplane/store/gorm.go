@@ -340,6 +340,22 @@ func New(config *Config) (*GORMStore, error) {
 		return nil, err
 	}
 
+	// Pre-migration: refuse a table that already holds both the old and the
+	// new spelling of a renamed column. That is what an earlier upgrade that
+	// renamed and then was rolled back leaves: the older release recreated
+	// its column empty beside the renamed one. Which one is authoritative is
+	// not recoverable from the schema, and choosing wrong silently changes
+	// every share's size ceiling or store binding. It runs before the refusals
+	// below, which would otherwise read the recreated, empty column.
+	if hasColumn(db, &models.Share{}, "local_store_size") && hasColumn(db, &models.Share{}, "journal_size") {
+		return nil, fmt.Errorf("shares table has both local_store_size and journal_size; " +
+			"copy the intended values into journal_size, drop local_store_size, and restart")
+	}
+	if hasColumn(db, &models.Share{}, "remote_block_store_id") && hasColumn(db, &models.Share{}, "block_store_id") {
+		return nil, fmt.Errorf("shares table has both remote_block_store_id and block_store_id; " +
+			"copy the intended values into block_store_id, drop the old column, and restart")
+	}
+
 	// Pre-migration: refuse an upgrade that would lose where a share's data is,
 	// before any of it happens.
 	//
@@ -399,14 +415,6 @@ func New(config *Config) (*GORMStore, error) {
 	// operator's configured ceiling in the old column with a fresh empty one
 	// beside it, reading back as "never set".
 	if hasColumn(db, &models.Share{}, "local_store_size") {
-		if hasColumn(db, &models.Share{}, "journal_size") {
-			// Both columns present means an earlier upgrade added the new one
-			// without moving the values across. Which one is authoritative is
-			// not recoverable from the schema, and choosing wrong silently
-			// changes every share's size ceiling.
-			return nil, fmt.Errorf("shares table has both local_store_size and journal_size; " +
-				"copy the intended values into journal_size, drop local_store_size, and restart")
-		}
 		if err := db.Migrator().RenameColumn(&models.Share{}, "local_store_size", "journal_size"); err != nil {
 			return nil, fmt.Errorf("failed to rename local_store_size column: %w", err)
 		}
@@ -416,10 +424,6 @@ func New(config *Config) (*GORMStore, error) {
 	// precede AutoMigrate for the same reason as journal_size — otherwise the
 	// new column arrives empty and every share loses its store reference.
 	if hasColumn(db, &models.Share{}, "remote_block_store_id") {
-		if hasColumn(db, &models.Share{}, "block_store_id") {
-			return nil, fmt.Errorf("shares table has both remote_block_store_id and block_store_id; " +
-				"copy the intended values into block_store_id, drop the old column, and restart")
-		}
 		if err := db.Migrator().RenameColumn(&models.Share{}, "remote_block_store_id", "block_store_id"); err != nil {
 			return nil, fmt.Errorf("failed to rename remote_block_store_id column: %w", err)
 		}
