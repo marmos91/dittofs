@@ -254,7 +254,10 @@ live snapshot sees; only then can their counts reach zero. A catalog backup is a
 export of one snapshot's metadata ([RFC 12 §3.1](rfc-12-snapshots.md#3.1%20A%20backup%20is%20an%20export%20of%20one%20snapshot%27s%20metadata)), held by a use record on that
 snapshot until it expires ([RFC 12 §3.2](rfc-12-snapshots.md#3.2%20A%20backup%20holds%20its%20snapshot)): the use record refuses the
 snapshot's deletion, so the refs it sees keep every block the backup names
-counted, and GC needs no second liveness mechanism for it.
+counted, and GC needs no second liveness mechanism for it. A copying backup
+holds the snapshot the same way only while it copies ([RFC 12 §3.4.3](rfc-12-snapshots.md#3.4.3%20Writing%20one%2C%20step%20by%20step)); once
+complete it holds no block of the namespace, because the blocks it names are
+copies in its own block folder, which this GC never lists or deletes.
 
 **Tracing is not the delete authority.** A mark reads the live set at one instant
 and deletes at a later one; a ref committed in between names a chunk the mark did
@@ -544,6 +547,15 @@ seek of a short prefix for each chunk the block still owns: for a 4 MiB block of
 | A conflict on a transition | Retried under I8: bounded by a deadline, not an attempt count, with randomised backoff ([RFC 0 §9.2](rfc-0-data-lifecycle.md#9.2%20Conflicts%20and%20their%20retries)). The retry re-reads the record; it **MUST NOT** re-propose a decision taken on the pre-conflict state. |
 | The local clock differs from store time by more than the clock bound | The deleter stops and raises a health condition until it is back within the bound ([§3.7](#3.7%20Trash)). |
 | Crash anywhere | Every step is either inside a transaction or recorded by a block state and its index key, so a restart resumes and does not re-decide. |
+
+**Absent is success only because the record and the delete name one store.** A
+block record lives under its namespace, a namespace has exactly one remote store
+([RFC 13 §3](rfc-13-configuration.md#3.%20Scopes)), and the deleter deletes only through that store. So an object reported
+absent is absent from the only place the record could name. A deployment where
+one metadata store serves several remote stores **MUST** give each its own
+namespace, and a GC pass **MUST** act only on its own namespace's records: a pass
+that deletes a record's object through another store is told "absent", drops the
+record, and leaks the real object for good.
 
 A failure in one block **MUST NOT** stop the deleter for others. No failure in
 this table requires an operator to clear it.
@@ -1369,6 +1381,7 @@ The emulator of [RFC 4 §7.1](rfc-4-remote-tier.md#7.1%20Conformance%20suite) in
 | a multi-object delete that fails some names and omits others | the successes are recorded, the rest stay `deleted` and are retried until they succeed |
 | throttling on every delete for a period | the scheduler backs off with jitter, no name is lost, the backlog drains after |
 | a delete that succeeds but whose reply is lost | the retry reports absent, which is success; the record is pruned once |
+| two namespaces on two remote stores sharing one metadata store, each holding the same content, one file deleted in each in turn | each pass deletes only through its own store; the other store's objects, records and chunk records are untouched; each namespace uploaded its own copy (the dedup oracle never answers across namespaces) |
 | a listing that lags recent puts and deletes | the backstop retires nothing a record or intent names; a lagged object is collected on a later pass |
 | versioning, object lock or a lifecycle rule that drifts mid-drain | no delete is issued until a `Recheck` passes; versions are purged; nothing is pruned early |
 | a ranged read returning the wrong bytes during compaction | verification fails, the chunk is reported corrupt, the rest of the group moves |
@@ -1470,6 +1483,7 @@ amending the requirement.
 | D12 | Ranged reads of live chunks through a flow, verified by the codec ([§4.2](#4.2%20Read%20verified%2C%20mint%2C%20put%2C%20then%20move)) | relocation fetches whole objects directly, verifies them and parses the format itself |
 | D13 | No lock or lease is a safety input ([§7.3](#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)) | the run lock and the per-remote lock are process-local; multi-server operation is unsafe |
 | D14 | Declared, not asserted ([§8](#8.%20API%20surface)) | GC imports the metadata layer, takes the remote store's full interface, and finds its dependencies by type assertion |
+| D15 | One namespace, one store ([§3.6](#3.6%20Failures%20resolve%20on%20their%20own)) | durable markers and block records carry no remote, so shares on several remotes behind one metadata store see each other's records: a pass for the wrong remote deletes an absent object as success and drops the record, and the durability check answers for content another remote holds. An interim one-byte probe of the pass's own remote avoids the leak; the fix is namespace-scoped records |
 | D15 | I8 ([§3.6](#3.6%20Failures%20resolve%20on%20their%20own)) | the `live` retry is bounded by an attempt count, with jitter derived from the attempt number |
 | D16 | Every block at `live` zero retires ([§2.2](#2.2%20Retirement%20is%20decided%20where%20the%20count%20reaches%20zero)) | the carver can pack one hash into several blocks in flight; the chunk locator is written last-wins and sweep decrements only the block it names, so the other blocks keep a nonzero count with no locator. Only an operator-run reconcile finds them. Leak |
 | D17 | Reclamation is reported ([§10](#10.%20Observability)) | a hash held by the in-memory adoption guard is skipped silently; a pass reports nothing swept and no reason |

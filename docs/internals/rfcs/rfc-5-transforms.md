@@ -574,7 +574,15 @@ and material.
   fence against new encodes, **MUST** first make sure the material is current in
   no open chain, then wait for every encode in flight that took it, and only then
   check that the census is empty. An encode that starts after the fence finds the
-  material not current and cannot take it. Removed material is destroyed: the
+  material not current and cannot take it.
+- **Copying backups hold material too.** A copying backup copies sealed blocks,
+  never re-sealed, into a block folder at its location, and each retained
+  backup's manifest keeps the census of every folder block it lists
+  ([RFC 12 §3.4.2](rfc-12-snapshots.md#3.4.2%20What%20is%20copied)). The namespace's folder record keeps their union
+  ([RFC 12 §3.4.1](rfc-12-snapshots.md#3.4.1%20Layout%20at%20the%20location)). So removal **MUST** also find the material in no folder
+  record's census of the namespace. Retirement cannot relocate a folder block;
+  a copy stops reusing one that carries retiring material, and the material
+  leaves the folder as the backups that list such blocks expire. Removed material is destroyed: the
   provider keeps its ID and reports it `ErrMaterialDestroyed` ([§2.7](#2.7%20Failures)).
 
 ### 5.4 Changing an algorithm is adding a transform

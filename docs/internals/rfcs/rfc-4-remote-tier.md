@@ -375,7 +375,11 @@ blocks as its own ([RFC 9 §5.3](rfc-9-gc.md#5.3%20It%20runs%20only%20where%20th
   from the attempt's own retry after an unknown outcome
   ([RFC 3 §2.5](rfc-3-syncer.md#2.5%20An%20unknown%20outcome%20is%20not%20a%20success)), and rewrites identical bytes. There is no whole-block "already
   recorded, skip the put": dedup happens per chunk, before a block is planned
-  ([RFC 8](rfc-8-engine.md)).
+  ([RFC 8](rfc-8-engine.md)). The rule holds per store namespace, since two stores never share
+  one ([§4.2](#4.2%20Names%20in%2C%20locations%20kept%20inside)). A backup's block folder is a store namespace of its own, whose
+  names are put only by copies of one block, byte for byte as its source
+  namespace stored it ([RFC 12 §3.4.1](rfc-12-snapshots.md#3.4.1%20Layout%20at%20the%20location)): one name is still one byte sequence
+  there, though no attempt minted it in that namespace.
 
   > decision: a retry *intends* identical bytes, but bytes corrupted in transit
   > are caught before storage only by a service that checks the put's checksum.
@@ -673,7 +677,7 @@ S3-compatible object storage, the primary backend, is profiled in
 | R10 | A store holds no state across calls and makes one attempt per call. |
 | R11 | A store's client limits are derived from the worker pools. |
 | R12 | A store does not open against a service missing a required feature. |
-| R13 | A name is put only by the attempt that minted it, always with the same bytes, so a recorded position never goes stale. |
+| R13 | Within one store namespace, a name is put only by the attempt that minted it, always with the same bytes, so a recorded position never goes stale. In a backup's block folder, a name is put only by copies of the one block its source namespace stored under it. |
 | R14 | An encrypted namespace's blocks carry no plaintext chunk hash. |
 | R15 | No block is written in a format version a reader of its namespace does not support. |
 | R16 | Control objects are reached by fixed role only and are never listed as blocks. |

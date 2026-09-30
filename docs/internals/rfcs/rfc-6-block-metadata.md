@@ -241,7 +241,7 @@ the deleter conflict on ([§7.1](#7.1%20Conditional%20retirement)).
 A ref says: *these bytes of this file are that range of that chunk.* It is
 [RFC 0](rfc-0-data-lifecycle.md)'s **chunk ref**:
 
-    ChunkRef(file, offset) = { chunk, skip, length, oldest, newest, born, died }
+    ChunkRef(file, offset) = { chunk, gen, skip, length, oldest, newest, born, died }
 
 - `file` is the file that owns the ref, never a name ([§6.5](#6.5%20Who%20owns%20a%20ref)). A ref a
   snapshot still sees after the file superseded it moves to History, keyed by
@@ -249,6 +249,9 @@ A ref says: *these bytes of this file are that range of that chunk.* It is
 - `offset` is where in the file the ref's bytes begin.
 - `chunk` is the `ChunkHash` naming the chunk, never a block ([§2.5](#2.5%20Refs%20name%20hashes%2C%20never%20blocks)). A **zero ref** names no chunk:
   its bytes are all zeros, and it reads as zeros without a fetch ([§3.5](#3.5%20Operations%20that%20make%20holes)).
+- `gen` is the generation of the share's namespace the chunk is counted in
+  ([§2.6](#2.6%20The%20scope%20of%20a%20count)). A share has one generation outside a re-home and two during one
+  ([RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)).
 - `skip` and `length` select `[skip, skip + length)` of the chunk's bytes.
 - `oldest` and `newest` bound the journal content versions of what the ref
   describes (below).
@@ -432,7 +435,10 @@ The records of [§2](#2.%20The%20records) **MUST** therefore be counted in **one
 remote key namespace** ([RFC 2 §4.3](rfc-2-carver.md#4.3%20Key%20scope)). One database holds every share and
 every namespace ([RFC 16](rfc-16-metadata-store.md)), so the partition is in the key: every
 content-addressed record — chunk, block, put intent, GC index key — is keyed by `(namespace, …)` ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)),
-and a share's refs are counted only in the partition of its namespace. The
+and a share's refs are counted only in the partition of its namespace. While a
+share is re-homed it has two ([RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)): each ref's `gen` names the
+one its chunk is counted in, and a read, an adoption or a drop of the ref
+resolves the chunk in that namespace only. The
 namespace ID is the key scope that key derivation mixes in ([RFC 8](rfc-8-engine.md)), so two
 namespaces can never name one object, and no chunk record, count, adoption or
 GC pass spans two namespaces. A deduplication lookup ([§8.2](#8.2%20Deduplication%20lookup)) reads only its
@@ -1070,7 +1076,10 @@ and writes nothing per file when it is taken:
   gives it the right value: `born < k` means exactly "written before cut *k*".
   The gate is held in memory by the primary of each of the share's shards
   ([RFC 11 §2](rfc-11-ownership.md#2.%20Shards)); it orders commits, it does not guard a count. A narrowed or
-  split ref keeps its `born`.
+  split ref keeps its `born`. One ref writer is exempt: a re-home's switch
+  ([RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)) rewrites a ref's `gen` with the same `born` and `died`,
+  which changes the namespace that counts the chunk and nothing a snapshot reads,
+  so it passes no gate.
 - **A superseded ref a snapshot can see moves to history.** A ref's `died` is its
   successor's `born`; for a removal it is the cut the removal's phase 1 read
   ([§6.2](#6.2%20Truncation%20and%20deallocation)), whichever later batch drops the ref. Any transaction that drops
@@ -1078,10 +1087,14 @@ and writes nothing per file when it is taken:
   a release — **MUST**, when some live cut *c* has `born < c ≤ died`, move it in
   the same transaction to `History(file, died, offset)`, and otherwise drop it.
   The chunk's count does not change on a move: a history ref counts like a live
-  one ([§6.1](#6.1%20A%20refcount%20is%20exactly%20its%20refs)). A narrowed ref moves its removed part. In the common case
-  `died` is the current `k` and the test is `born < klatest`; when `died` is older
+  one ([§6.1](#6.1%20A%20refcount%20is%20exactly%20its%20refs)). A narrowed ref moves its removed part. A live cut here is
+  one that covers the ref's shard: a share cut covers every shard, a subtree cut
+  only its covered set ([RFC 12 §2.10](rfc-12-snapshots.md#2.10%20Subtree%20snapshots)). In the common case `died` is the
+  current `k` and the test is `born < max(klatest, SubCut(share, shard).klatest)`,
+  the second term being the newest live subtree cut covering the shard; when `died` is older
   — a held version offloaded late, a removal batch — the transaction reads the
-  `LiveCut` records in `(born, died]` with conflict tracking, so it conflicts
+  `LiveCut` records in `(born, died]` with conflict tracking, keeping those whose
+  covered set holds the ref's shard, so it conflicts
   with a deletion's first transaction, which deletes the `LiveCut` it read, and a
   snapshot deleted meanwhile leaves nothing behind that no walk visits. A held version that commits after a newer ref
   already replaced its range is recorded straight into history, with `born` its
@@ -1193,6 +1206,12 @@ could remove them.
 
 Re-versioning makes the cloned refs outrank anything a destination pass in flight
 carries, and the removal drops what that pass would have committed there.
+
+**A clone by reference stays within a namespace.** A cloned ref adopts its chunk
+in the namespace the source ref's `gen` names, and only when the destination's
+share lists that namespace, so the cloned ref carries the generation it has
+there. Between namespaces the clone copies the bytes
+([RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)).
 
 **Uncarved content cannot be cloned by reference**, because no chunk covers it
 yet. Step 1 offloads it. A clone **MUST NOT** record the destination

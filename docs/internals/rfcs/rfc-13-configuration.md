@@ -235,10 +235,13 @@ deduplicates nothing against what is stored ([RFC 2 §3.6](rfc-2-carver.md#3.6%2
 
 So the control plane **MUST** refuse a change to a bound setting while the
 namespace or store holds content, and a share's binding to its namespace
-**MUST NOT** change while the share holds content. What an operator wants from
-such a change is a migration — copy into a new namespace, or move between
-installations ([RFC 12 §4](rfc-12-snapshots.md#4.%20Moving%20a%20namespace%20between%20installations)) — which leaves the old content where it
-can still be read until the move completes.
+**MUST NOT** change while the share holds content, except by a re-home
+([RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)), the one sanctioned change of that binding: it copies the
+share's content into a new namespace while the share serves, and rebinds it only
+once no ref names the old one. What an operator wants from such a change is a
+migration — a re-home into a new namespace, or a move between installations
+([RFC 12 §4](rfc-12-snapshots.md#4.%20Moving%20a%20namespace%20between%20installations)) — which leaves the old content where it can still be read
+until the move completes.
 
 ### 5.2 Reaching the same content another way is not a change
 
@@ -489,6 +492,10 @@ default this document suggests where the owning RFC states none.
 | share's namespace | [RFC 12 §2.1](rfc-12-snapshots.md#2.1%20A%20namespace%20is%20the%20unit%20that%20moves) | share | bound | the share's own |
 | oldest unoffloaded extent alert | [RFC 8 §11.4](rfc-8-engine.md#11.4%20How%20far%20behind%20durability%20is%2C%20is%20observable) | share | live | proposed: 1 h |
 | snapshot policy, backup location and retention | [RFC 12 §6.2](rfc-12-snapshots.md#6.2%20Configuration) | share | live | none |
+| policy `backup.kind`: `catalog` or `copy`, a copying backup | [RFC 12 §3.4](rfc-12-snapshots.md#3.4%20Copying%20backups) | share | live | `catalog` |
+| policy `backup.verify_every`: period between verifications of a copying backup; 0 never verifies on a period | [RFC 12 §3.4.3](rfc-12-snapshots.md#3.4.3%20Writing%20one%2C%20step%20by%20step) | share | live | 0 |
+| `backups.copy_rate`: copying backups' transfer rate | [RFC 12 §3.4.6](rfc-12-snapshots.md#3.4.6%20Cost%20and%20pacing) | installation | live | proposed: 200 MiB/s |
+| `rehome.rate`: a re-home's copy rate; 0 pauses it | [RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace) | installation; per share while its re-home runs | live | proposed: 100 MiB/s |
 | `snapshots.hold_bound`: held journal bytes per share before a cut is refused | [RFC 12 §2.4](rfc-12-snapshots.md#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history) | share | live | 64 GiB |
 | `snapshots.hold_journal_fraction`: held share of one journal's capacity, summed over every share it carries, before a cut is refused | [RFC 12 §2.4](rfc-12-snapshots.md#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history) | installation | live | 0.25 |
 | `snapshots.reserve`: history bytes per share before a new cut is refused | [RFC 12 §2.9](rfc-12-snapshots.md#2.9%20Space%20is%20reported%2C%20not%20charged) | share | live | none |
