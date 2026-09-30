@@ -260,6 +260,45 @@ func TestMigration_RefusesAJournalRootThatDoesNotMatch(t *testing.T) {
 // A share that only ever had a local store has nothing to carry into the new
 // model. Dropping the column would leave it bound to nothing and silently
 // absent after the next restart, so the upgrade refuses and names it.
+// A refused upgrade must leave the schema as the previous release wrote it.
+// The operator's way out is to start that release and give the share a block
+// store; if the renames had already run, it would find remote_block_store_id
+// gone, recreate it empty, and serve every other share with no remote store.
+func TestMigration_RefusalLeavesTheOldColumnsInPlace(t *testing.T) {
+	for _, d := range migrationDialects() {
+		t.Run(d.name, func(t *testing.T) {
+			cfg := d.newEmpty(t)
+			makeSplitStoreSchema(t, cfg, func(s *GORMStore) {
+				insertMetadataStore(t, s, "meta-id")
+				insertRemoteStore(t, s, "remote-bs-id")
+				insertLocalStore(t, s, "local-bs-id", "/srv/blocks")
+				insertSplitShare(t, s, "/bound", "remote-bs-id", "local-bs-id")
+				insertSplitShare(t, s, "/localonly", nil, "local-bs-id")
+			})
+
+			if _, err := openWithRoot(t, cfg, "/srv/blocks"); !errors.Is(err, ErrLocalOnlyShareUnbound) {
+				t.Fatalf("New = %v, want ErrLocalOnlyShareUnbound", err)
+			}
+
+			db := rawOpen(t, cfg)
+			defer closeRaw(t, db)
+			if !hasColumn(db, &models.Share{}, "remote_block_store_id") {
+				t.Error("remote_block_store_id renamed by a refused upgrade")
+			}
+			if hasColumn(db, &models.Share{}, "block_store_id") {
+				t.Error("block_store_id created by a refused upgrade")
+			}
+			var got string
+			if err := db.Raw("SELECT remote_block_store_id FROM shares WHERE name = ?", "/bound").Scan(&got).Error; err != nil {
+				t.Fatalf("read remote_block_store_id: %v", err)
+			}
+			if got != "remote-bs-id" {
+				t.Errorf("remote_block_store_id = %q, want %q", got, "remote-bs-id")
+			}
+		})
+	}
+}
+
 func TestMigration_RefusesALocalOnlyShare(t *testing.T) {
 	// Both shapes an unbound column can take: NULL is what the old pointer
 	// field actually wrote, the empty string is what a row rewritten by a
