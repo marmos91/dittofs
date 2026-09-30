@@ -103,7 +103,7 @@ behaviour beyond pure methods (§2.4), and each renders as JSON for debugging
 | `FileID`, `ShareID`, `Principal`, `PrincipalID` | identity | §2.2 |
 | `User`, `Group`, `Membership` | principals with names | §2.3 |
 | `Share`, `ShareGrant`, `Snapshot` | a share, who may reach it, its snapshots | §2.3 |
-| `Node`, `Shard` | cluster membership and shard placement ([RFC 11](rfc-11-ownership.md)) | §2.3 |
+| `Node`, `Shard`, `SlotTable` | cluster membership and shard placement ([RFC 11](rfc-11-ownership.md)) | §2.3 |
 | `Setting`, `Secret` | configuration values and sealed credentials ([RFC 13](rfc-13-configuration.md)) | §2.3 |
 
 Holes, removals, fences, cuts, put intents, the GC index keys and
@@ -211,7 +211,8 @@ type Snapshot struct {
 // Node is one server process in a cluster; Shard is one shard and
 // its current primary (RFC 11). Every fenced commit guards its primary's Node
 // record (RFC 11 §8), so the record changes only when the node acquires a lease
-// or a takeover marks it lapsed; renewals write NodeLease instead.
+// or a takeover marks it lapsed; renewals write NodeLease and the node's journal
+// generations instead.
 type Node struct {
 	ID      NodeID
 	Address string
@@ -221,7 +222,8 @@ type Node struct {
 }
 
 // NodeLease is the node lease's expiry, one per node, not per shard
-// (RFC 11 §3.1). Renewals write only this record.
+// (RFC 11 §3.1). Renewals write only this record and the node's journal
+// generations (RFC 10 §2.2).
 type NodeLease struct {
 	Epoch    uint64    // the node epoch it extends
 	Expires  time.Time // in store time
@@ -596,13 +598,14 @@ Every key starts with a kind byte. The layout encodes the boundary
 | | `M‖group‖member`, `MR‖member‖group` | Membership, both directions |
 | | `NX‖kind‖name` | name index: user, group and share names → ID, unique |
 | | `PX‖scheme‖id` | protocol-ID index: UID, GID, SID → `PrincipalID`; the only place a protocol spelling is stored (§2.2) |
-| | `N‖node`, `N‖node‖exp` | Node: its node epoch and whether a takeover marked it lapsed, guarded by every fenced commit; NodeLease: the lease's expiry, the only record a renewal writes ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)) |
+| | `N‖node`, `N‖node‖exp` | Node: its node epoch and whether a takeover marked it lapsed, guarded by every fenced commit; NodeLease: the lease's expiry, which a renewal writes with its journals' generations and nothing else ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)) |
 | | `SH‖shard` | Shard, with its primary as (node, node epoch, journal identity, incarnation) and its replicas ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)) |
 | | `SH‖shard‖xh‖opID` | cross-shard hold record: a participant's hold for one prepared operation, with its deadline; every commit of the operation guards it, and a release deletes it before the participant grants what it refused ([RFC 11 §8.1](rfc-11-ownership.md#8.1%20Operations%20across%20shards)) |
 | | `SH‖shard‖hw` | each replica's acknowledged committed-point mark, persisted by the primary on a period; never lowered, raises no epoch ([RFC 10 §7.2](rfc-10-journal-replication.md#7.2%20Removal)) |
-| | `J‖journal` | a journal's generation, keyed by journal identity; raised at every open, and by a primary that finds itself rolled back ([RFC 10 §2.2](rfc-10-journal-replication.md#2.2%20One%20journal%20carries%20many%20shards)) |
+| | `J‖journal` | a journal's generation, keyed by journal identity; raised at every open, lease acquisition and lease renewal, and by a primary that finds itself rolled back ([RFC 10 §2.2](rfc-10-journal-replication.md#2.2%20One%20journal%20carries%20many%20shards)) |
 | | `RS‖partition` | repair scheduler lease per partition of the shard-ID hash, with its epoch ([RFC 10 §7.4](rfc-10-journal-replication.md#7.4%20Repair)) |
 | | `MV‖giving‖receiving` | move record: the cursor of a move of files from the giving shard to the receiving one, one per pair, so a crashed move resumes and several moves out of one shard run at once ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)) |
+| | `SLOT` | slot table: the fixed slot count and each slot's ordered nodes, primary first, weighted by node capacity; one per installation, changed only by compare-and-swap ([RFC 11 §2.2](rfc-11-ownership.md#2.2%20Automatic%20per-child%20shards)) |
 | | `CFG‖scope‖key` | Setting |
 | | `SEC‖id` | Secret (§2.3): envelope-encrypted, never dumped or exported |
 | | `CL‖clientID`, `CL‖clientID‖sh‖shard` | durable Client record: only what reclaim needs, and the shards the client held state in (`Client.Shards`), checked on reclaim ([RFC 14](rfc-14-open-state.md)) |

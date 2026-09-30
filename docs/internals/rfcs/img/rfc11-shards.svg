@@ -37,13 +37,13 @@
 <text x="70" y="192" class="s">marked per-child; stays in S</text>
 <rect x="70" y="210" width="12" height="12" rx="2" class="a"/>
 <text x="88" y="220" class="m" xml:space="preserve">u1/</text>
-<text x="88" y="236" class="s">shard U1 · hash → C</text>
+<text x="88" y="236" class="s">shard U1 · slot → C</text>
 <rect x="70" y="250" width="12" height="12" rx="2" class="a"/>
 <text x="88" y="260" class="m" xml:space="preserve">u2/</text>
-<text x="88" y="276" class="s">shard U2 · hash → A</text>
+<text x="88" y="276" class="s">shard U2 · slot → A</text>
 <rect x="70" y="290" width="12" height="12" rx="2" class="a"/>
 <text x="88" y="300" class="m" xml:space="preserve">u3/</text>
-<text x="88" y="316" class="s">shard U3 · hash → D</text>
+<text x="88" y="316" class="s">shard U3 · slot → D</text>
 <path d="M40 98V300" class="line"/>
 <path d="M58 186V304" class="line"/>
 <rect x="290" y="100" width="130" height="180" rx="5" class="ext"/>
@@ -108,5 +108,5 @@
 <text x="488" y="468" class="s">a file's shard is set at create and changes</text>
 <text x="488" y="484" class="s">only by a move, never by rename</text>
 <text x="16" y="530" class="l">Any client may write anywhere; each write is ordered by the one primary of its file's shard.</text>
-<text x="16" y="548" class="s">Per-child shards are placed by consistent hash of the shard ID; the compare-and-swap, not the hash, decides.</text>
+<text x="16" y="548" class="s">Per-child shards hash into slots that the slot table assigns to nodes; the compare-and-swap, not the table, decides.</text>
 </svg>

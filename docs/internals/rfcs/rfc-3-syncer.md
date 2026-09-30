@@ -291,8 +291,8 @@ request ([RFC 2 §5.3](rfc-2-carver.md#5.3%20A%20block%20packs%20chunks%2C%20whi
 the engine asks for the whole block instead. A range is always a whole chunk: a
 range that splits one has no hash to check it against ([§4.1](#4.1%20One%20fetch%2C%20two%20consumers)).
 
-A cold random read asks for only the chunks it covers: fetching a 20 MiB block to
-serve one 4 KiB read is read amplification with no correctness benefit. When to
+A cold random read asks for only the chunks it covers: fetching a whole 4 MiB block
+to serve one 4 KiB read is read amplification with no correctness benefit. When to
 widen a request to the whole block is the engine's policy ([RFC 8 §7.8](rfc-8-engine.md#7.8%20A%20cold%20read%20asks%20for%20chunks%2C%20or%20for%20the%20block)).
 
 Both return a stream of chunks, and:
@@ -786,7 +786,7 @@ between a deployment sits ([§2.12](#2.12%20What%20the%20syncer%20makes%20observ
 wait as long as demand keeps the pool busy: relocation is deferrable, and a
 reader is not.
 
-![One DRR round with a 20 MiB quantum: a flow of 16 MiB blocks sends one and carries 4 MiB over, a flow of 4 MiB blocks sends five, a flow with one 20 MiB block sends it; below, the cap skipping a flow that already holds six of eight workers on a slow store](img/rfc3-drr-round.svg)
+![One DRR round with a 5 MiB quantum: a flow of 4 MiB blocks sends one and carries 1 MiB over, a flow of 1 MiB blocks sends five, a flow with one 5 MiB block sends it; below, the cap skipping a flow that already holds six of eight workers on a slow store](img/rfc3-drr-round.svg)
 
 All flows have equal weight. Weighting one flow over another is DRR's
 per-flow quantum and needs no other change; it is left out until an operator
@@ -798,13 +798,17 @@ The syncer exposes exactly two settings, both process-wide:
 
 | Setting | Sizes | Default |
 | --- | --- | --- |
-| `upload_workers` | the uploader's pool | 32 |
-| `fetch_workers` | the fetcher's pool | 32 |
+| `upload_workers` | the uploader's pool | 128 |
+| `fetch_workers` | the fetcher's pool | 128 |
 
 Neither default follows the CPU count. A transfer spends its time waiting on the
 network, so the count that keeps a link busy follows latency and bandwidth: by
-Little's law, workers ≈ throughput × time per transfer ÷ block size. At a 200 ms
-transfer of a 16 MiB block, 32 workers sustain about 2.5 GiB/s, beyond most links.
+Little's law, workers ≈ throughput × time per transfer ÷ block size. A request
+for a block of the 4 MiB default target ([RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)) is bound by latency,
+not bandwidth, so it still takes about 200 ms: each worker moves about 20 MiB/s,
+and about 2.5 GiB/s, beyond most links, needs 128 workers. Smaller blocks
+need more workers for the same throughput, and more pool memory with them, but
+no more per worker: a worker holds a chunk, not a block ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)).
 Deriving it from cores would also scale memory with cores, and give a small VM
 on a fast link too few.
 
@@ -979,8 +983,8 @@ reported durable.
 Where a backend's client splits a put into parts beneath the syncer, durability
 is the completion of the whole and **MUST NOT** be inferred from the parts.
 
-The uploader **MUST NOT** use multipart uploads. A block is tens of MiB at most
-([RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler)), and the pool already fills the link across blocks, so multipart would
+The uploader **MUST NOT** use multipart uploads. A block is its target plus one chunk,
+about 5 MiB by default ([RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler)), and the pool already fills the link across blocks, so multipart would
 only add a capability every backend must advertise and abandoned parts that are
 billed and invisible to a listing. Revisit if a measurement shows one put of a
 maximum-size block cannot saturate the uplink even with the pool full.

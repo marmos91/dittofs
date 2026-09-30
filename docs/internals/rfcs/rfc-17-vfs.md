@@ -312,6 +312,10 @@ once. `ErrDelay` means "retry shortly": a recall is in progress (§3.2).
 conflicts with, state that may still be reclaimed (§5.1). A routing refusal — wrong primary, stale epoch — **MUST NOT** reach an
 adapter: the service re-routes and retries within the caller's deadline ([RFC 15 §6](rfc-15-topology.md#6.%20Learning%20primaries)).
 
+An operation that arrives with no deadline is given one of 30 s from its
+arrival at the service, fixed rather than a setting ([RFC 13](rfc-13-configuration.md)), so every wait below
+it ends ([RFC 0 §10.3](rfc-0-data-lifecycle.md#10.3%20Every%20wait%20on%20a%20request%20ends%20at%20a%20deadline)).
+
 ### 4.4 Handles are opaque
 
 The service mints handles through the metadata store

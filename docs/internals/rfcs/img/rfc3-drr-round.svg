@@ -23,7 +23,7 @@
   <rect width="900" height="430" fill="#ffffff"/>
 
   <text x="16" y="26" class="t">Deficit round robin: each flow earns a quantum of bytes per turn, and spends it on whole transfers.</text>
-  <text x="16" y="46" class="s">Quantum = 20 MiB, the largest block. One round, three flows with work waiting.</text>
+  <text x="16" y="46" class="s">Quantum = 5 MiB, the largest block. One round, three flows with work waiting.</text>
   <text x="16" y="84" class="rl">flow</text>
   <text x="150" y="84" class="rl">queued blocks</text>
   <text x="470" y="84" class="rl">sent this round</text>
@@ -34,8 +34,8 @@
   <rect x="214" y="106" width="62" height="20" rx="2" class="bn"/>
   <rect x="278" y="106" width="62" height="20" rx="2" class="bn"/>
   <rect x="470" y="106" width="62" height="20" rx="2" class="bg"/>
-  <text x="473" y="120" class="s">16</text>
-  <text x="730" y="121" class="m">4 MiB</text>
+  <text x="473" y="120" class="s">4</text>
+  <text x="730" y="121" class="m">1 MiB</text>
   <text x="16" y="173" class="m">flow B</text>
   <text x="16" y="187" class="s">small files</text>
   <rect x="150" y="162" width="14" height="20" rx="2" class="bn"/>
@@ -54,10 +54,10 @@
   <text x="16" y="243" class="s">one large</text>
   <rect x="150" y="218" width="78" height="20" rx="2" class="bn"/>
   <rect x="470" y="218" width="78" height="20" rx="2" class="bg"/>
-  <text x="473" y="232" class="s">20</text>
+  <text x="473" y="232" class="s">5</text>
   <text x="730" y="233" class="m">0 MiB</text>
   <text x="790" y="233" class="s">queue empty → reset</text>
-  <text x="470" y="264" class="s">A: 20 earned, one 16 MiB block fits, 4 carried over; next round it has 24 and sends one more.</text>
+  <text x="470" y="264" class="s">A: 5 earned, one 4 MiB block fits, 1 carried over; next round it has 6 and sends one more.</text>
   <line x1="16" y1="278" x2="884" y2="278" stroke="#eef1f4"/>
   <text x="16" y="302" class="rl">The cap</text>
   <text x="96" y="302" class="l">Pool of 8 workers, cap 6. Flow A already holds 6 in flight on a slow store: its turn is skipped even with deficit left,</text>
