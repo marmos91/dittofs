@@ -118,10 +118,6 @@ to be checked.
 > contending on one owner node, or when separately scaled pNFS metadata and
 > data servers are committed to.
 
-> [!important] Pending review — one owner per unit
-> The split into two owners per unit is withdrawn: one token, lease and epoch per
-> unit, as before roles. The split is recorded as a `ponytail:` upgrade path.
-
 ### 2.2 Automatic per-child units
 
 A directory **MAY** be marked so that every child directory created in it is a
@@ -141,10 +137,6 @@ created directly in the marked directory stay in its unit.
   units by batched moves; children created meanwhile are born in their own.
 - **Cost.** The configuration store holds one configuration per child of a
   marked directory, so it grows with the directories marked, never with files.
-
-> [!important] Pending review — automatic per-child units
-> New policy: children of a marked directory become units placed by consistent
-> hash, so a share of many home directories spreads without hand-picked subtrees.
 
 ### 2.3 Range units
 
@@ -176,10 +168,6 @@ its open state, and every range not split off.
 > giving range owners an epoch-fenced copy of the file's I/O conflict state when
 > those clients need striped bandwidth.
 
-> [!important] Pending review — range units
-> New: a file's byte ranges can be units of their own, each with its own owner,
-> epoch, fences and existence commits; size is the maximum over ranges.
-
 ## 3. Write tokens
 
 ### 3.1 A token is a lease, fenced by an epoch
@@ -201,10 +189,6 @@ clock, and a new owner **MUST NOT** serve before the old lease has lapsed by the
 claimant's clock plus the drift bound ([RFC 10 §9.2](rfc-10-journal-replication.md#9.2%20Takeover)). Store commits are
 fenced by epoch at the receiver; open-state grants are replies to clients that
 no receiver can refuse, so for them the lease is the only fence.
-
-> [!important] Pending review — owners self-fence
-> An owner stops serving open state before its lease lapses, less the drift
-> bound; a paused former owner otherwise grants locks nothing can refuse.
 
 A token alone protects nothing. A holder can pause past its lease and then act;
 a check it makes before sending is already stale. What makes the token safe is
@@ -261,10 +245,6 @@ batches, each one transaction that:
 Every file is in exactly one unit between batches, so a crash leaves nothing to
 repair: the move resumes from its cursor. The giving unit's epoch does not change,
 and its files outside the batch keep their fence records.
-
-> [!important] Pending review — batched moves and open-state handoff
-> Moving files between units is batched with a cursor, not one compare-and-swap;
-> a planned move hands the open-state table over and skips grace.
 
 A lost owner is not moved but failed over ([RFC 10 §9](rfc-10-journal-replication.md#9.%20Failover)), once its lease lapses.
 
@@ -390,10 +370,6 @@ commit **MUST** conflict with every concurrent write that would change it.
   pending release — guards the fence records of every file it changes, and a
   create writes the new file's fence records at its unit's epoch. A paused former
   owner's namespace commits are then refused like its content commits.
-
-> [!important] Pending review — namespace transactions fenced
-> With one owner, the per-file fence records carry the one epoch, and every
-> namespace transaction guards them too.
 
 *Backend notes (non-normative).* On the backend that tracks point reads, a
 conflict-tracked read is a get inside an update transaction with conflict

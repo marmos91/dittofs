@@ -58,12 +58,6 @@ This document has one section per operation — write ([§4](#4.%20Write)), comm
 ([§5](#5.%20Commit%3A%20the%20stability%20point)), offload ([§6](#6.%20Offload)), read ([§7](#7.%20Read)), truncate and deallocate
 ([§8](#8.%20Truncate%2C%20deallocate%20and%20release)), clone ([§9](#9.%20Clone)) — each stating its rules first, then explaining them.
 
-> [!important] Pending review — one section per operation
-> The engine is reorganised around its operations, each rules-first with its
-> diagram. The four modules are specified where their operation is, each with
-> its own inputs, outputs, invariants and checks. Block assembly moved to RFC 2
-> §5 as the block assembler.
-
 ---
 
 ## 1. Purpose
@@ -172,12 +166,6 @@ absent one **MUST** fail the build or construction with an error naming it
 ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)). A production constructor that accepts `nil` for a capability "so
 tests can omit it" has made a silent fallback a production path; fixtures supply
 stubs of the whole interface.
-
-> [!important] Pending review — content composition, and no share without a remote store
-> The composition root moves to RFC 15; this section keeps only what the root
-> builds for content. A share without a remote block store is refused at
-> composition, and every no-remote path is deleted. The key scope is the
-> namespace ID.
 
 ### 2.2 Capabilities are parameters, never assertions
 
@@ -408,11 +396,6 @@ client must resend its unstable writes ([RFC 14 §10](rfc-14-open-state.md#10.%2
 **MUST** return one verifier for every call under one epoch in one process, and
 **MUST NOT** derive it from the clock alone.
 
-> [!important] Pending review — the write verifier comes from the engine
-> `Write` and `Commit` return a verifier derived from the owner epoch and a
-> per-process instance ID, so it changes exactly when an unstable write can
-> have been lost.
-
 ## 5. Commit: the stability point
 
 ### 5.1 Commit is answered by the journal
@@ -472,11 +455,6 @@ pending `fsync` behind it.
 > ends alone and retries; the other 63 files were delayed by at most
 > log₂ 64 = 6 extra transactions, and file 17 by one retry more. A store that
 > names the key costs two transactions.
-
-> [!important] Pending review — bounded group commit
-> A group commit is bounded and retries only the conflicting files, split and
-> resubmitted, so a `chmod` storm no longer stalls every `fsync` of a journal.
-> Benchmark E7 measures it.
 
 ## 6. Offload
 
@@ -548,11 +526,6 @@ and repack requests from `EvictionPolicy`.
 | rebuild | Crash with 10⁵ dirty files, passes in flight and removals between batches; restart. Assert every dirty file is offered, every removal resumes, and nothing else is needed to reach both. |
 | fairness | Two shares on one journal, one with 10⁵ small dirty files, the other with one. Assert the other share's file is offered within one age tick. |
 
-> [!important] Pending review — offload is driven by a work queue
-> Replaces callbacks and per-share loops with one in-process queue per journal.
-> It is not durable: the journal, the intents and the records are, and the
-> queue is rebuilt from them, with the age tick as the backstop for a lost event.
-
 ### 6.1.1 The shared work scheduler
 
 Background work in the set — the engine's offload, removal batches and retries,
@@ -605,11 +578,6 @@ The scheduler **MUST**:
 
 It **MUST NOT** hold state a restart needs: every item is a hint about durable
 state its source already holds, and a lost item costs latency only.
-
-> [!important] Pending review — one shared work scheduler
-> The engine's work queue and GC's queues share one scheduler, specified here;
-> each source owns its durability, and the scheduler owns batching, retries,
-> concurrency, fairness and rate limits.
 
 ### 6.2 When a file is offered
 
@@ -718,12 +686,6 @@ fault-injecting stub, and again as production composes it.
 | O2 long outage | Make the remote unavailable for 24 simulated hours. Assert retries continue at the cap, the share reports the condition, and offload resumes within one backoff of recovery with no intervention. |
 | soak | Run for hours with random faults at every step, and partitions to the store and to metadata. Assert every stabilised byte reads back throughout; once the faults stop, the oldest unoffloaded age falls below the maximum age; and no abandoned attempt's intent outlives its bound. |
 
-> [!important] Pending review — the offload pipeline is an explicit state machine
-> Capture, carve, assemble, intent, put, commit, mark durable: each step has a
-> deadline, a retry with backoff and a stated outcome on failure, and every path
-> ends reported durable or Dirty and re-queued. Adds the pipeline abandoning its
-> own intents, poison-file isolation and reliability checks.
-
 **Snapshot pins.** The journal stores the share's current cut with each write's
 version, and the commit step copies it into every ref it writes as `born`
 ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)). A version pinned to a cut and superseded before its offload — by
@@ -823,16 +785,6 @@ against the production oracle and block metadata, and asserts the read.
 | D6 scope | Store chunk X under namespace A; offload it under namespace B. Assert B carries it. |
 | model | Generate random interleavings of passes, failures, retirements and relocations against a reference model. Assert after each step that every committed ref names a chunk whose record points to a committed, durable block. |
 
-> [!important] Pending review — the dedup oracle is a module with adversarial checks
-> Its rules gain "an error carries the chunk", "nothing outlives the pass" and
-> "one namespace", and it is checked against in-flight, abandoned, retired and
-> relocated chunks and a model-based interleaving test.
-
-> [!important] Pending review — the oracle answers retired chunks
-> A chunk of a retired block is adoptable and resurrects the block instead of
-> being carried again; only a deleted block's chunk is refused. Intents name
-> their owner unit.
-
 ### 6.6 A block's name is minted, and its intent recorded, before the put
 
 ![Minting a block name: the name hashes the domain, the namespace scope, a fresh nonce, the chain ID and the chunk hashes in order; a retry within the attempt reuses it, a re-offer mints a new one](img/rfc8-block-name.svg)
@@ -881,11 +833,6 @@ against a second writer, a late delete, or a service without conditional puts.
 The price is that two passes carrying the same chunks put two objects; the second
 to commit adopts every chunk and is born dead, retired in its own commit and
 deleted without waiting out the trash ([RFC 9 §2.2](rfc-9-gc.md#2.2%20Retirement%20is%20decided%20where%20the%20count%20reaches%20zero)), and the oracle keeps that rare.
-
-> [!important] Pending review — naming, explained; block assembly moved to RFC 2
-> Block assembly is now RFC 2 §5's block assembler, which the pipeline drives;
-> this section keeps minting and the intent, with a worked example and a
-> diagram. The key scope is the namespace ID.
 
 ### 6.7 A run is what the journal offers, widened only to re-tile
 
@@ -976,10 +923,6 @@ Anything else that lands between the two steps makes the read concurrent with
 that operation, and either result is one it may return: a write that lands after
 step 1 is not in the reply; a truncate is seen by step 2 as past end of file.
 
-> [!important] Pending review — why the journal is asked first
-> States the order as a rule and gives the reason: only journal-first is safe
-> against an offload and a release between the two steps.
-
 ### 7.2 The reply streams, one verified chunk at a time
 
 **Rules.**
@@ -1012,10 +955,6 @@ engine passes `Fill` exactly the verified bytes it fetched, with the `asOf`
 version of step 1. The journal refuses the fill if the file changed after it, so a
 write that landed meanwhile wins ([RFC 1 §3.4](rfc-1-journal.md#3.4%20Fill)). A refused fill is not an error,
 and a fill never delays or fails the reply.
-
-> [!important] Pending review — reads stream per verified chunk
-> The reply is written chunk by chunk as each verifies, never an unverified
-> byte, so time to first byte is one chunk's fetch.
 
 ### 7.3 Filling is a decision
 
@@ -1131,10 +1070,6 @@ churns less.
 | read-ahead | Replay a sequential read, a random read and a strided read. Assert the window opens only for the sequential one, and a random read cancels queued hints. |
 | pre-warm resume | Restart during a pre-warm; re-issue it. Assert it skips files already held and completes. |
 
-> [!important] Pending review — speculation is its own module
-> Read-ahead and pre-warm move out of `FillPolicy` into the speculator, a
-> planner with its own budget, rules and checks, explained with examples.
-
 ### 7.5 An unreachable remote fails the read, distinguishably
 
 A **Remote** extent whose fetch cannot complete — the remote is unreachable, or
@@ -1183,11 +1118,6 @@ A verification failure is different: a name is put only by its one attempt, whos
 retries write the same bytes, so a recorded position always holds the right bytes
 while its object exists ([RFC 6 §2.2](rfc-6-block-metadata.md#2.2%20Chunk)). Bytes that do not verify are corrupt,
 and asking again cannot fix them.
-
-> [!important] Pending review — re-resolution re-runs the covering lookup
-> Re-resolution now repeats the covering lookup, not only the chunk lookup, so a
-> removal that lands mid-read answers as a hole or past end of file instead of
-> **Lost**. Explained with an example.
 
 ### 7.8 A cold read asks for chunks, or for the block
 
@@ -1296,11 +1226,6 @@ it costs at most one chunk's re-upload per edge, and loses nothing.
 an older pass is in flight (F3 forbids it); a ref recording a version older than
 its content (every ref records the offer's `Newest`); and a stale owner's commit
 (the fence refuses it).
-
-> [!important] Pending review — "transfers survive removals" checked
-> The argument is stated from four facts and both commit orders. One correction:
-> the commit drops a ref that straddles the removal's edge whole, and the part
-> outside is re-offered; E16 now says so.
 
 ## 9. Clone
 
@@ -1546,11 +1471,6 @@ var (
 )
 ```
 
-> [!important] Pending review — one read path for attributes, and a routed facade
-> `Size` and `Times` become `Overlay` (size, times, version), the only source
-> the filesystem service joins with the File record. The node-local calls move
-> to `Local`, and the facade names the work queue as what runs offload.
-
 ### 12.2 A retried call is recognised, not re-applied
 
 A mutation repeated after a lost reply is **not** safe to apply twice: if write A's
@@ -1564,10 +1484,6 @@ stale by the epoch check, which makes the caller re-route it.
 
 A replica's `Apply` recognises a repetition by its version instead
 ([RFC 10 §2.5](rfc-10-journal-replication.md#2.5%20The%20journal%20extension)); that is the journal's retry rule, not the facade's.
-
-> [!important] Pending review — retries deduplicated by request ID
-> Replaces "every operation is safe to retry", which was false for a retry after
-> an intervening write, with RFC 15's route envelope and the owner's dedup table.
 
 ### 12.3 The facade writes no residency
 

@@ -562,9 +562,6 @@ and material.
   a census, compaction moves the live blocks, and the retention of their retired
   sources is waited out or those sources are recounted and moved too.
 
-> [!important] Pending review — the census counts retired blocks
-> Because a retired block can come back to life, material is in use until every
-> block that names it is pruned, not only until it retires.
 - **Retirement is ordinary relocation.** GC lists the blocks whose census names
   what is being retired and relocates each ([RFC 9 §4.2](rfc-9-gc.md#4.2%20Read%20verified%2C%20mint%2C%20put%2C%20then%20move)): its chunks are
   re-encoded under the current chain into a block under a freshly minted name

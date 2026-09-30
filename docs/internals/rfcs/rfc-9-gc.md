@@ -82,12 +82,6 @@ directly, and no pass looks for dead blocks:
 
 ![The block state machine: live, retired with not_before, deleted and pruned; resurrection from retired back to live by adoption, audit or a refused verification; entry at retired for blocks with no recoverable chunks, abandoned intents and listed orphans](img/rfc9-states.svg)
 
-> [!important] Pending review — retirement moves into the count's transaction
-> Sweep as a component, the zero index and its batches are gone: the
-> transaction that takes `live` to zero retires the block. Chunk records are kept
-> until prune, so an adoption resurrects a retired block instead of uploading
-> again, and a Lost search is one read.
-
 ### 1.1 Non-goals
 
 GC **MUST NOT**:
@@ -199,11 +193,6 @@ nothing wrong because by the counts nothing was.
 > cannot outlast. From the others it takes a trash that postpones deletes
 > ([§3.7](#3.7%20Trash)), a periodic full audit ([§6](#6.%20Audit)), and a listing backstop for leaks
 > ([§5](#5.%20Unrecorded%20objects)) — none of which permits a delete.
-
-> [!important] Pending review — the reverse ref index is the authority
-> Liveness is decided by the refs, stated twice in one transaction: the reverse
-> ref index, which is authoritative, and the counts, which are its cache. The
-> deleter checks the index before every delete.
 
 ### 2.2 Retirement is decided where the count reaches zero
 
@@ -603,11 +592,6 @@ retention period: about churn × retention. At 1% of stored bytes retired per da
 each day of retention costs about 1% of stored bytes in extra remote space and one
 block record per retired block. The default 48 h costs about 2%.
 
-> [!important] Pending review — verify before delete; trash as resurrection
-> The deleter checks the reverse ref index before every delete and resurrects a
-> block it finds referenced. Restore is a recount, not a header read; blocks with
-> no chunk record skip the trash; times are store time.
-
 ## 4. Compactor
 
 ![Compaction: three mostly dead source blocks, ranged reads of their live chunks only, one put of a new block, one transaction that moves the chunk records and retires the sources into the trash](img/rfc9-compaction.svg)
@@ -795,11 +779,6 @@ what a move records.
 | Snapshot or restore | Refs name hashes, so a snapshot's refs survive the move. A restore takes locations from the live store, never from its copy ([RFC 6 §7.4](rfc-6-block-metadata.md#7.4%20Restore)). |
 | A second compaction of the same sources | Each mints its own target and puts it. A chunk record the first already moved names another block, and the second leaves it alone; its target's `live` counts only what it moved, and a target that moved nothing is born dead ([§2.2](#2.2%20Retirement%20is%20decided%20where%20the%20count%20reaches%20zero)). |
 
-> [!important] Pending review — compaction policy
-> A fixed per-block dead ratio is replaced by a namespace space-amplification
-> target, cost-benefit ranking with age, generational placement, and small-block
-> merging; the compaction index is bucketed so it does not depend on a setting.
-
 ## 5. Unrecorded objects
 
 ### 5.1 How they arise
@@ -891,17 +870,16 @@ two together over a range of hashes in bounded reads: for each hash, the number
 of `CR` keys is the computed refcount, compared with the stored one. It needs no
 consistent read of the whole store, no scratch rows, and memory bounded by one
 hash's keys. A second walk, over `B‖ns‖`, reads each block's carried list and the
-chunk records it names, and computes `live`, `dead` and the index keys.
-
-> [!important] Pending review — audit as a merge of the index with the chunks
-> The audit is one sequential merge of the reverse ref index with the chunk
-> records, plus a block walk; corrections take the maximum, lowering has its own
-> durable path, and a store-wide trip holds the deleter.
+chunk records it names, and computes `live`, `dead` and the index keys. A third
+walk, the **forward walk**, streams each share's refs and history refs in file
+order and point-reads the `CR` key each one implies; it catches the one defect the
+merge cannot see, a ref written without its reverse key, which would otherwise let
+the deleter's verification pass over a referenced chunk.
 
 ### 6.1 Coverage
 
-The audit **MUST** cover every chunk record and every block record at least once
-per `gc.audit.period` (default 7 days). Its rate is derived, not set: records
+The audit **MUST** cover every chunk record, every block record and every ref at
+least once per `gc.audit.period` (default 7 days). Its rate is derived, not set: records
 remaining over time remaining in the period, and a derived rate above the
 scheduler's cap for the source **MUST** raise a health condition. It **MUST**
 report the time since each hash range was last covered, and a range not covered
@@ -918,6 +896,8 @@ Each walk checks:
 | a history `CR` key visible to no live cut of its share | the share's `LiveCut` keys, read once per share per walk | an orphan history ref: a leak, reported |
 | each block's `live` and `dead` against its chunk records | the block walk | corrected like a count |
 | index keys against the block records | the block walk | an index mismatch, repaired in place ([§7.4](#7.4%20The%20index%20can%20be%20dropped%20and%20rebuilt)) |
+| a ref or history ref with no `CR` key | the forward walk, one point read per ref | a **reverse-index defect**: the key is written in a transaction that re-reads the ref, the chunk's count is recounted, a block retired or `deleted` meanwhile is resurrected or reported **Lost**, and the defect is reported at `Error` |
+| a `CR` key with no ref or history ref behind it | the forward walk's share range, merged with the `CR` keys of that share | a stale reverse key: deleted in a transaction that re-reads both, then the count is recounted |
 
 ### 6.2 Corrections
 
@@ -1153,11 +1133,6 @@ A lifecycle rule that expires objects destroys content on the service's
 schedule, which no check can prevent; the short period bounds how long puts
 continue into such a store once it drifts.
 
-> [!important] Pending review — sharded lease, per-domain concurrency, Recheck period
-> The lease is sharded by prefix with a monotonic epoch per shard; concurrency is
-> bounded per conflict domain with a node transaction budget; `Recheck` runs on
-> its own period, includes the claim, and gates every delete batch and prune.
-
 ## 8. API surface
 
 Signatures are indicative; the obligations above are normative. GC declares an
@@ -1323,10 +1298,6 @@ The set's test rules apply ([Test tiers](rfc-index.md#Test%20tiers)). Every chec
 runs against every metadata backend, and every Group A check runs against a
 remote backend that can fail a delete after performing it ([RFC 4 §7.1](rfc-4-remote-tier.md#7.1%20Conformance%20suite)).
 
-> [!important] Pending review — test groups merged
-> The model-based driver with crash hooks now carries the ordering and crash
-> rows; Group A keeps only adversarial interleavings that assert they happened.
-
 ### 11.1 Group A — adversarial interleavings
 
 Each row **MUST** assert that the interleaving it names happened, by a hook in
@@ -1443,11 +1414,10 @@ where a row names the scale tier.
 1. **The default space-amplification target** ([§4.4](#4.4%20When%20to%20compact%20is%20policy)). 1.25 is proposed; what
    settles it is the amplification of a churning workload under each target
    against the bytes each rewrites.
-2. **A forward check of the reverse index.** The audit measures counts against
-   the reverse index but never walks the forward refs against it, because the two
-   are written in one transaction. A defect that writes one without the other is
-   caught only by the trash and by reads ([§6.3](#6.3%20A%20ref%20with%20no%20live%20chunk%20record%20is%20found%20by%20one%20read)). Whether a sampled forward walk
-   is worth its cost wants the first such defect.
+2. **The forward walk's cost** ([§6](#6.%20Audit)). It adds one point read per ref per period —
+   about 10¹⁰ reads a week at 2 PB, some 17,000 per second. Sampling it, or
+   checking only files changed since the last walk, is the upgrade if a profile
+   shows it; until then it covers every ref.
 3. **The trip threshold** ([§6.4](#6.4%20A%20store-wide%20trip%20holds%20the%20deleter)). 16 low counts per period is proposed; it wants a
    decision once the audit has run on a real store.
 4. **The counting domain under one key scope** ([§2.3](#2.3%20The%20absence%20of%20a%20record%20proves%20nothing)). With one scope for several

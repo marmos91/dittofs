@@ -487,10 +487,6 @@ unset offloaded bit and when `Offload` or a removal clears its last, and
 rebuilt at recovery. It **MUST NOT** walk the placement index or read a record,
 and costs O(dirty files), not O(extents).
 
-> [!important] Pending review — a cheap list of dirty files by age
-> The offload age tick asks the journal for its dirty files and their oldest
-> dirty byte; the journal maintains that list rather than deriving it by a walk.
-
 `Stats` **MUST** be served from maintained counters: it **MUST NOT** walk the
 placement index or the segment set, or block a write. A statistic that only a
 walk can produce is omitted.
@@ -644,11 +640,6 @@ offload commit can copy it as the ref's `born` ([RFC 6 §6.5](rfc-6-block-metada
   for the whole cut by `Unpin` when the snapshot is deleted. Released pinned
   content that nothing else holds is reclaimable like any superseded record
   ([§8](#8.%20Reclamation%20mechanisms)).
-
-> [!important] Pending review — journal pins for snapshots
-> Replaces draining at a snapshot cut: the journal keeps superseded pinned
-> versions until they are offloaded under the cut, durably and counted against
-> capacity.
 
 ## 4. On-disk format
 

@@ -230,10 +230,6 @@ grace period until an operator acts has replaced one wedge with another. It
 finished reclaiming — sent `RECLAIM_COMPLETE`, or for SMB reconnected its durable
 opens — or has expired: nothing is left that a new request could take first.
 
-> [!important] Pending review — grace gates I/O and ends early
-> Grace refuses conflicting I/O with `ErrGrace`, and ends as soon as every client
-> recorded in the unit has finished reclaiming.
-
 ### 4.3 An expired lease releases everything it held, everywhere
 
 When a client's lease expires or its state is revoked, every open, deny mode,
@@ -270,10 +266,6 @@ A reclaim is accepted only in a unit the client's record names ([§2.1](#2.1%20C
 receiver can refuse by epoch, so an owner **MUST** stop serving open state at its
 lease expiry less the drift bound, and a new owner starts grace only after the
 old lease has lapsed plus the drift bound ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20A%20token%20is%20a%20lease%2C%20fenced%20by%20an%20epoch)).
-
-> [!important] Pending review — per-unit reclaim signal
-> Per-unit grace now tells each affected client to reclaim, accepts reclaims
-> only in units its record names, and relies on owners fencing themselves.
 
 ## 5. Caching grants
 
@@ -327,10 +319,6 @@ it does not answer. SMB writes carry an open, not a lease, so revoking an SMB
 lease **MUST** also invalidate the opens it covered; otherwise the holder's
 stale buffered writes arrive through them after the second client's.
 
-> [!important] Pending review — recalls never block
-> Conflicting requests get `ErrDelay` instead of waiting; a client with a revoked
-> recall gets no more grants; revoking an SMB lease invalidates its opens.
-
 ### 5.4 How a grant is obtained, and where it pays
 
 No application asks for a grant: the operating system's client does, on every
@@ -364,10 +352,6 @@ An anonymous open — NFSv3 I/O, and NFSv4 I/O under the anonymous stateid — w
 never granted, so nothing was checked for it. Its reads and writes **MUST** be
 checked against the deny modes held, per operation, and refused with
 `ErrShareViolation` when one forbids them.
-
-> [!important] Pending review — anonymous opens checked per I/O
-> The at-open rule covers granted opens only; NFSv3 and anonymous-stateid I/O is
-> checked against deny modes on every operation.
 
 An open that conflicts is refused. It **MUST NOT** be downgraded silently to
 weaker access than the client asked for — a client that asked for write and got
@@ -463,10 +447,6 @@ or layout named.
 
 When a unit's owner changes, the NFS write verifier **MUST** change, or clients
 never resend writes they sent unstable to the old one ([RFC 11 §7](rfc-11-ownership.md#7.%20Protocol%20state)).
-
-> [!important] Pending review — planned moves keep open state
-> A planned move hands the open-state table over and skips grace; layouts are
-> bound to owner epochs and recalled on any owner change.
 
 ## 11. Interface
 

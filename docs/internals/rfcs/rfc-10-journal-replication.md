@@ -46,7 +46,7 @@ moves operations between them, and fences the ones that must no longer count.
 2. **Reads from replicas.** A member of a file's replica set **MAY** serve that
    file's recently written bytes from its own journal, under [§8](#8.%20Reads%20from%20replicas)'s rule.
 3. **No consensus among block services.** Consensus is needed only to decide who
-   owns and who replicates, and it is obtained from the configuration store
+   owns and who replicates, and it is obtained {==from the configuration==}{>>you|2026-09-30|NOTE: More the metadata layer<<} store
    ([§2.2](#2.2%20Roles)), which already runs it.
 4. **One code path.** A single node is a replica set of one ([§10](#10.%20A%20single%20node)); the engine
    **MUST** go through this layer in every deployment.
@@ -65,25 +65,25 @@ This layer **MUST NOT**:
 
 ## 2. Model
 
-### 2.1 Terms
+{==### 2.1 Terms==}{>>you|2026-09-30|NOTE: I think the terms may be improved and simplified. I also think a diagram would help understanding this better<<}
 
-| Term | Means |
-| --- | --- |
-| **ownership unit** | the set of files one owner writes: a share by default, or a subtree ([RFC 11 §2](rfc-11-ownership.md#2.%20Ownership%20units)) |
-| **owner** | the unit's one owner ([RFC 11 §2.1](rfc-11-ownership.md#2.1%20One%20owner%20per%20unit)): the one block service that assigns versions for a unit and accepts its writes. It also holds the unit's namespace writes and open state, which this layer does not replicate. A range unit ([RFC 11 §2.3](rfc-11-ownership.md#2.3%20Range%20units)) is a unit here like any other, with its own owner and replica set |
-| **replica** | a block service whose journal holds a copy of the unit's un-offloaded operations |
-| **member** | the owner or a replica; the **replica set** is the members |
-| **learner** | a block service receiving the unit's operations while it catches up, before it is a member |
-| **configuration** | `{unit, epoch, owner, members, learners, sealed}`, held in the configuration store and changed only by compare-and-swap |
-| **epoch** | the owner epoch: raised by every configuration change, and never lower for a file than any epoch it had before ([§6](#6.%20Fencing)). The owner applies it to each file through the journal's per-file epoch ([§2.5](#2.5%20The%20journal%20extension)), so every version it assigns outranks every version assigned under an earlier epoch ([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions)) |
-| **committed point** | per unit, the newest version at or below which every operation is held by every member. The owner computes it and sends it with every batch; it is never written to the configuration store |
-| **recorded point** | per unit, the newest version at or below which every removal's metadata commit has landed; never above the committed point. The owner sends it with the committed point |
-| **settled point** | per file on a member, the committed point it has settled to with `SettleApplied` ([§2.5](#2.5%20The%20journal%20extension)) |
-| **owner lease** | the lease the owner renews in the configuration store; it is the write token of [RFC 11 §3.1](rfc-11-ownership.md#3.1%20A%20token%20is%20a%20lease%2C%20fenced%20by%20an%20epoch) — one lease, not two |
-| **read lease** | a lease the owner grants a replica to serve reads ([§8](#8.%20Reads%20from%20replicas)), no longer than a configured maximum |
-| **drift bound** | the configured bound on clock drift between any two nodes; every lease is reckoned with it |
+| Term                                                        | Means                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **ownership unit**                                          | the set of files one owner writes: a share by default, or a subtree ([RFC 11 §2](rfc-11-ownership.md#2.%20Ownership%20units))                                                                                                                                                                                                                                                                                                                                              |
+| **owner**                                                   | the unit's one owner ([RFC 11 §2.1](rfc-11-ownership.md#2.1%20One%20owner%20per%20unit)): the one block service that assigns versions for a unit and accepts its writes. It also holds the unit's namespace writes and open state, which this layer does not replicate. A range unit ([RFC 11 §2.3](rfc-11-ownership.md#2.3%20Range%20units)) is a unit here like any other, with its own owner and replica set                                                            |
+| **replica**                                                 | {==a block service whose journal holds a copy of the unit's un-offloaded operations==}{>>you\|2026-09-30\|NOTE: How is this different from a unit?<<}                                                                                                                                                                                                                                                                                                                      |
+| {==**member**==}{>>you\|2026-09-30\|NOTE: Don't get this<<} | the owner or a replica; the **replica set** is the members                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| **learner**                                                 | a block service receiving the unit's operations while it catches up, before it is a member                                                                                                                                                                                                                                                                                                                                                                                 |
+| **configuration**                                           | `{unit, epoch, owner, members, learners, sealed}`, held in the configuration store and changed only by compare-and-swap                                                                                                                                                                                                                                                                                                                                                    |
+| **epoch**                                                   | the owner epoch: raised by every configuration change, and never lower for a file than any epoch it had before ([§6](#6.%20Fencing)). The ow{==ner applies it to each file through the journal's per-file epoch ([§2.5](#2.5%20The%20journal%20extension)), so every version it assigns outranks every version assigned under an earlier epoch ([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions))==}{>>you\|2026-09-30\|NOTE: An example maybe? To understand this better?<<} |
+| **committed point**                                         | per unit, the newest version at or below which every operation is held by every member. The owner computes it and sends it with every batch; it is never written to the configuration store                                                                                                                                                                                                                                                                                |
+| **recorded point**                                          | per unit, the newest version at or below which every removal's metadata commit has landed; never above the committed point. The owner sends it with the committed point                                                                                                                                                                                                                                                                                                    |
+| **settled point**                                           | {==per file on a member, the committed point it has settled to with `SettleApplied` ([§2.5](#2.5%20The%20journal%20extension))==}{>>you\|2026-09-30\|NOTE: I don't see how these are different. We need to specify this better<<}                                                                                                                                                                                                                                          |
+| **owner lease**                                             | the lease the owner renews in the configuration store; it is the write token of [RFC 11 §3.1](rfc-11-ownership.md#3.1%20A%20token%20is%20a%20lease%2C%20fenced%20by%20an%20epoch) — one lease, not two                                                                                                                                                                                                                                                                     |
+| **read lease**                                              | a lease the owner grants a replica to serve reads ([§8](#8.%20Reads%20from%20replicas)), no longer than a configured maximum                                                                                                                                                                                                                                                                                                                                               |
+| **drift bound**                                             | the configured bound on clock drift between any two nodes; every lease is reckoned with it                                                                                                                                                                                                                                                                                                                                                                                 |
 
-### 2.2 Roles
+{==### 2.2 Roles==}{>>you|2026-09-30|NOTE: These roles maybe should be specified in RFC 0 or in a dedicated RFC. Not introduced here. Do you agree?<<}
 
 This layer names three parts of a deployment. They **MAY** run in one process —
 a single node is all three — or be split across machines; which node runs which
@@ -95,20 +95,13 @@ is [RFC 15](rfc-15-topology.md)'s roles.
 | metadata service — the metadata store | namespace and block metadata ([RFC 6](rfc-6-block-metadata.md), [RFC 7](rfc-7-namespace-metadata.md)); ownership and configurations | its store's own |
 | block service — the `storage` role | a journal per device ([§2.4](#2.4%20One%20journal%20carries%20many%20units)), the engines of its shares, carver and syncer; this layer; and, for the units it owns, their namespace writes and open state | none |
 
-> [!important] Pending review — one owner per unit
-> "Owner" is the unit's one owner again, not one of two per unit; the block service is RFC 15's `storage` role.
-
 The **configuration store** is the metadata service's store. It **MUST** provide
 linearizable compare-and-swap on a configuration, and **MUST** be reachable from
 every block service. Nothing in this layer depends on which store provides it.
 
 ### 2.3 What a replica holds
 
-A replica's journal holds the unit's operations at the versions the owner
-assigned, applied through `Apply` ([§2.5](#2.5%20The%20journal%20extension)) in whatever order they arrive.
-Two members' journals are never byte-identical and need not be. What they agree
-on is, for every byte, the newest version applied — and highest-version-wins
-makes that independent of arrival order.
+{==A replica's journal holds the unit's operations at the versions the owner\nassigned, applied through `Apply` ([§2.5](#2.5%20The%20journal%20extension)) in whatever order they arrive.\nTwo members' journals are never byte-identical and need not be. What they agree\non is, for every byte, the newest version applied — and highest-version-wins\nmakes that independent of arrival order.==}{>>you|2026-09-30|NOTE: They don't hold the bytes in the same order, but given a ref a fileid and a offset (or something similar) they must return the same bytes to the reader. Do we agree on this?<<}
 
 ### 2.4 One journal carries many units
 
@@ -669,17 +662,17 @@ Properties every one of them checks:
 **Journal extension checks**, run against the journal alone as [RFC 1 §11](rfc-1-journal.md#11.%20Conformance)
 runs its own, moved here from RFC 1 with the API they test ([§2.5](#2.5%20The%20journal%20extension)):
 
-| Checks | How |
-| --- | --- |
-| order does not matter | Generate a random set of writes, deallocates, truncates and a delete for one file with distinct versions; apply the same set to fresh journals in many random orders, with repetitions; assert every journal holds identical bytes at identical versions, before and after a crash and reopen, and identical to one that applied them in version order. |
-| no resurrection | Apply a write at v2, a deallocate at v3 over it, then a write at v1 over the same range; assert the range reads `missing`, and still does after reopen. Repeat with a release in place of the deallocate. |
-| unsettled not offered | Apply v2 at offset A and v4 at offset B, leave v3 unapplied; assert an offload offers neither. `SettleApplied` to v4; assert both are offered. |
-| markers need both points | Truncate at v3 over v2 content; `Settle` to v3 only; assert the marker stays. `SettleApplied` to v3; assert it is dropped. Crash and reopen; apply a write at v2; assert it is refused as at or below the settled point. |
-| export reproduces | Export a file with held content and removal markers and apply it to a fresh journal; assert both read identically with identical versions. |
-| epoch outranks | Assign versions, raise the epoch, apply an operation from the old epoch with a larger counter; assert it loses. Crash between the epoch record and the first assignment; assert the next version still falls under the raised epoch. |
-| discard is final | Apply content, `Discard` the file, crash and reopen; assert nothing of it is held and a `Fill` begun before the discard is refused. Repeat with a discard during an offer. |
-| epoch and settle records retire | Write, offload, release and settle every extent of a file; repack every segment; assert its epoch and settle records are gone, and that the file's next write after `SetEpoch` falls under the raised epoch. |
-| format upgrade | Open a journal of RFC 1's version, write, then `Apply`; assert the journal reopens under the extension's version and an RFC 1 binary refuses it. |
+| Checks                          | How                                                                                                                                                                                                                                                                                                                                                     |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| order does not matter           | Generate a random set of writes, deallocates, truncates and a delete for one file with distinct versions; apply the same set to fresh journals in many random orders, with repetitions; assert every journal holds identical bytes at identical versions, before and after a crash and reopen, and identical to one that applied them in version order. |
+| no resurrection                 | Apply a write at v2, a deallocate at v3 over it, then a write at v1 over the same range; assert the range reads `missing`, and still does after reopen. Repeat with a release in place of the deallocate.                                                                                                                                               |
+| unsettled not offered           | Apply v2 at offset A and v4 at offset B, leave v3 unapplied; assert an offload offers neither. `SettleApplied` to v4; assert both are offered.                                                                                                                                                                                                          |
+| markers need both points        | Truncate at v3 over v2 content; `Settle` to v3 only; assert the marker stays. `SettleApplied` to v3; assert it is dropped. Crash and reopen; apply a write at v2; assert it is refused as at or below the settled point.                                                                                                                                |
+| export reproduces               | Export a file with held content and removal markers and apply it to a fresh journal; assert both read identically with identical versions.                                                                                                                                                                                                              |
+| epoch outranks                  | Assign versions, raise the epoch, apply an operation from the old epoch with a larger counter; assert it loses. Crash between the epoch record and the first assignment; assert the next version still falls under the raised epoch.                                                                                                                    |
+| discard is final                | Apply content, `Discard` the file, crash and reopen; assert nothing of it is held and a `Fill` begun before the discard is refused. Repeat with a discard during an offer.                                                                                                                                                                              |
+| epoch and settle records retire | Write, offload, release and settle every extent of a file; repack every segment; assert its epoch and settle records are gone, and that the file's next write after `SetEpoch` falls under the raised epoch.                                                                                                                                            |
+| format upgrade                  | Open a journal of RFC 1's version, write, then `Apply`; assert the journal reopens under the extension's version and an RFC 1 binary refuses it.                                                                                                                                                                                                        |
 
 **Benchmarks**, on three block services on one local network, each the reference
 box ([Test tiers](rfc-index.md#Test%20tiers)):
