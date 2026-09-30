@@ -56,7 +56,7 @@ defined once for every RFC in the [RFC 0 glossary](rfc-0-data-lifecycle.md#Gloss
 | **front-end** | the `protocol` role of a node: it holds client sessions and forwards each operation to the primary ([§5.1](#5.1%20Front-ends%20forward%20to%20the%20primary)) |
 | **handover** | a planned change of a shard's primary, with no lease wait and no grace period ([RFC 10 §9.4](rfc-10-journal-replication.md#9.4%20Handover)) |
 | **move** | a change of the shard some files belong to, run in batches ([§4](#4.%20Moving%20files%20and%20primaries)) |
-| **re-placement delay** | how long a shard stays on the replica that took it over before it is moved to the node placement prefers ([§2.2](#2.2%20Automatic%20per-child%20shards)) |
+| **re-placement delay** | how long a shard stays on the replica that took it over before it is moved to the node its slot names ([§2.2](#2.2%20Automatic%20per-child%20shards)) |
 
 *Learner*, *node lease*, *drift bound* and *committed point* are [RFC 10 §2.1](rfc-10-journal-replication.md#2.1%20Terms)'s.
 A primary is always a node, never a user. Where this document says *owner* it
@@ -93,7 +93,12 @@ This document **MUST NOT**:
   ([RFC 10 Appendix B](rfc-10-journal-replication.md#Appendix%20B%20%E2%80%94%20alternatives%20considered));
 - split one file across shards, or give one file its own shard —
   [Appendix C](#Appendix%20C%20%E2%80%94%20later%3A%20per-file%20and%20range%20shards) sketches both for later;
-- split one directory's entries across shards.
+- split one directory's entries across shards;
+- split the metadata store into partitions with no transaction spanning them.
+  The store is **one logical store with transactions across any keys**; a
+  backend scales it horizontally underneath, and existence, release, batched
+  moves and cross-shard operations each commit one transaction over records of
+  several shards ([§4](#4.%20Moving%20files%20and%20primaries), [§8.1](#8.1%20Operations%20across%20shards), [Appendix B](#Appendix%20B%20%E2%80%94%20alternatives%20considered)).
 
 > ponytail: one directory's entries live in one shard, so a single directory
 > takes creates and lookups-with-open-state at one node's rate. Upgrade to a
@@ -110,7 +115,7 @@ its primary, epoch and replicas.
 | --- | --- | --- |
 | per share | the share's single shard | the default |
 | subtree | inherited from its parent at create; directories chosen by an operator start a new shard | a share one node cannot carry, split by hand |
-| per child | each child directory created in a marked directory starts its own shard, placed by consistent hash ([§2.2](#2.2%20Automatic%20per-child%20shards)) | a share of many independent trees, such as home directories |
+| per child | each child directory created in a marked directory starts its own shard, placed by slot ([§2.2](#2.2%20Automatic%20per-child%20shards)) | a share of many independent trees, such as home directories |
 
 ![A share split into shards](img/rfc11-shards.svg)
 
@@ -153,20 +158,31 @@ A directory **MAY** be marked so that every child directory **created** in it
 starts a new shard. Files created directly in the marked directory stay in its
 shard, and a directory renamed into it keeps its own.
 
-- **Placement.** A per-child shard's primary and replicas are proposed by a
-  consistent hash of its shard ID over the **placement set**: the storage nodes
-  that joined and were not decommissioned, less any absent for longer than the
-  re-placement delay. A node that merely misses a lease renewal stays in it. The
-  proposal is written into the shard record by the same compare-and-swap as any
-  other, so fencing never depends on the hash.
+- **Placement.** A per-child shard's ID hashes into one of a fixed number of
+  **slots** — 4096 by default, fixed when the installation is created and never
+  changed after. The **slot table**, a record in the metadata store
+  ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)), assigns each slot an ordered list of nodes from the
+  **placement set** — the storage nodes that joined and were not decommissioned,
+  less any absent for longer than the re-placement delay — the first as primary,
+  the rest as replicas. Each node receives slots in proportion to its
+  **capacity**, a node setting ([RFC 13 §3](rfc-13-configuration.md#3.%20Scopes)). A node that merely misses a lease
+  renewal stays in the placement set, and the table is changed only by
+  compare-and-swap. The slot's nodes are a proposal: they are written into the
+  shard record by the same compare-and-swap as any other change, so fencing
+  never depends on the table.
 - **Failover now, re-placement later.** When a primary's node lease lapses, a
   replica takes the shard over at once ([RFC 10 §9.2](rfc-10-journal-replication.md#9.2%20Takeover)). Only after the
   **re-placement delay** — configured, 10 minutes by default — is the shard handed
-  over ([§4](#4.%20Moving%20files%20and%20primaries)) to the node the hash prefers, and only once the dwell time has
+  over ([§4](#4.%20Moving%20files%20and%20primaries)) to the node its slot names, and only once the dwell time has
   passed since its last planned change of primary ([§3.3](#3.3%20The%20primary%20follows%20the%20writer)). A node that returns
   within the delay therefore costs one failover and nothing more.
-- **Rebalance.** When the placement set changes, only the shards whose hash
-  winner changed are handed over, at a configured rate and under the same dwell.
+- **Rebalance.** When the placement set or a node's capacity changes, the slot
+  table is recomputed to move as few slots as the new weights allow, and written
+  by one compare-and-swap. Only the shards of slots whose nodes changed are
+  handed over ([§4](#4.%20Moving%20files%20and%20primaries)), each under the ordinary handover rules, at a configured
+  rate, under the same dwell, and — for a node that left — after the
+  re-placement delay. A shard's slot never changes, so a rebalance moves primaries
+  and replicas, never files.
 - **Marking an existing directory** moves each existing child tree into a new
   shard by a batched move ([§4](#4.%20Moving%20files%20and%20primaries)). Before walking a child tree, the move writes
   the new shard onto that tree's root, so files created in it during the walk are
@@ -175,7 +191,9 @@ shard, and a directory renamed into it keeps its own.
   hard-linked into two trees moves once. Each (giving, receiving) pair has its own
   move record, so child trees move in parallel. A move costs about three store
   writes per file.
-- **Cost.** One shard record per child of a marked directory.
+- **Cost.** One shard record per child of a marked directory, and one slot
+  table per installation, whose size is fixed by the slot count, not by nodes or
+  shards. A rebalance touches the shards of the moved slots only.
 
 **Nothing hot is per share.** With 10^5 per-child shards in one share:
 
@@ -195,9 +213,18 @@ epoch) — and its **node lease** for that node epoch is live. There is one leas
 per storage node, held in its node record and renewed once for every shard it is
 primary of, never per shard ([RFC 10 §3](rfc-10-journal-replication.md#3.%20What%20it%20assumes%20of%20shard%20placement)).
 
+| Installation setting ([RFC 13 §3](rfc-13-configuration.md#3.%20Scopes)) | Default | Used by |
+| --- | --- | --- |
+| node lease | 10 s | the expiry each renewal sets; a takeover waits it out plus the drift bound, so a lost primary's shards stall for at most about 10.5 s |
+| renewal period | 3 s | how often a node renews; one failed renewal is retried before the self-fence, which falls 5 s — half the lease — after the node last reached the store |
+| drift bound | 500 ms | the self-fence margin before expiry, the clock check (a node whose clock is off the store's by more than 250 ms fences), and the wait a successor adds |
+
 - **Renew fails on an expired lease**, and on a node record a takeover has
-  marked lapsed. Renewals write only the lease's expiry record, never the node
-  record, so the commits that guard the node record ([§8](#8.%20Metadata%20consistency)) never contend with
+  marked lapsed. Renewals write only the lease's expiry record and, in the same
+  transaction, each of the node's journal generations, swapped from `g` to `g + 1`
+  after the node has written `g + 1` to the journal's `format` and synced it; a
+  journal whose swap loses is amnesiac and serves nothing more ([RFC 10 §2.2](rfc-10-journal-replication.md#2.2%20One%20journal%20carries%20many%20shards)).
+  They never write the node record, so the commits that guard the node record ([§8](#8.%20Metadata%20consistency)) never contend with
   them. A node whose lease has lapsed acquires a new one at a higher node epoch,
   no sooner than the old expiry plus the drift bound in store time, and is then
   primary of nothing: the records still name its old node epoch. It regains a
@@ -232,8 +259,8 @@ takeover marks that record lapsed in the transaction that claims the shard
 ([§8](#8.%20Metadata%20consistency)). A commit a paused primary has in flight when its successor claims the
 shard therefore conflicts and aborts, and one it starts later reads the mark and
 is refused — before the successor has written a single fence record. The guard is
-on the node record, not on the lease's expiry record, so renewals never conflict
-with commits.
+on the node record, not on the lease's expiry record or the journal generations
+a renewal writes, so renewals never conflict with commits.
 
 ### 3.2 The primary stays until another node needs it
 
@@ -277,7 +304,7 @@ shard's last one. A failover is not gated and does not restart the dwell, and
 neither is the handover away from a primary the front-ends cannot reach
 ([§5.1](#5.1%20Front-ends%20forward%20to%20the%20primary)): both answer a primary that is lost to its clients, which no dwell may
 keep in place. Without the one dwell, a follow-the-writer move and a
-re-placement back to the hash's node could alternate, shipping the tail each time.
+re-placement back to the slot's node could alternate, shipping the tail each time.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
@@ -589,7 +616,7 @@ it, which bounds how long it keeps a gate from closing.
 
 | Failure | Outcome |
 | --- | --- |
-| a storage node is lost | its shards fail over to replicas as soon as its lease lapses ([RFC 10 §9](rfc-10-journal-replication.md#9.%20Failover)); after the re-placement delay they are handed to the nodes placement prefers ([§2.2](#2.2%20Automatic%20per-child%20shards)); front-ends re-route on the first refusal |
+| a storage node is lost | its shards fail over to replicas as soon as its lease lapses ([RFC 10 §9](rfc-10-journal-replication.md#9.%20Failover)); after the re-placement delay they are handed to the nodes their slots name ([§2.2](#2.2%20Automatic%20per-child%20shards)); front-ends re-route on the first refusal |
 | a node pauses past its lease | on resuming, everything it sends is refused: by replicas by epoch, by the store by its node record or fence ([§8](#8.%20Metadata%20consistency)); its renewal fails and it is primary of nothing ([§3.1](#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)) |
 | the store stalls for longer than a lease | every node's lease lapses; each acquires a new one and takes its own shards over, with grace — the price of one lease per node |
 | a front-end is lost | another front-end takes over its client addresses ([RFC 15 §5.3](rfc-15-topology.md#5.3%20Client%20addressing)); clients reconnect and lose no open state, which primaries hold |
@@ -614,7 +641,7 @@ Thirty clients mount through A, B and C.
 | 0 | primary of S(e5); journals writes from its own 10 clients | front-ends forward their 20 clients' writes to A | S: e5, A; B, C | all 30 write |
 | 1 | orders and journals all 30 streams; network or disk at 100% | replicate A's operations as replicas | existence commits at e5 | throughput flat at one node's |
 | 2 | operator marks `/data/users` per-child | — | mark on `/data/users` | — |
-| 3 | moves each `/data/users/u*` tree into its own shard, in batches (as (d)) | — | shards U1…U30 placed by hash: U1 → B, U2 → C, U3 → A, … | brief waits on files in a frozen batch |
+| 3 | moves each `/data/users/u*` tree into its own shard, in batches (as (d)) | — | shards U1…U30 placed by their slots: U1 → B, U2 → C, U3 → A, … | brief waits on files in a frozen batch |
 | 4 | primary of S and U3, U6, … | B primary of U1, U4, …; C of U2, U5, … | — | each client's writes go to one of three primaries; throughput ≈ 3 nodes' |
 
 Nothing a client does changes: every node still forwards what it is not primary
@@ -639,7 +666,7 @@ un-offloaded tail.
 
 **(c) A node crashes: failover now, re-placement later** —
 `S-shard-crash-replace`. Per-child shard U7, primary A, replicas B and C; the
-hash prefers A. Re-placement delay 10 min.
+the slot U7 hashes into names A first. Re-placement delay 10 min.
 
 | t | node A | nodes B, C | metadata store | client sees |
 | --- | --- | --- | --- | --- |
@@ -647,12 +674,12 @@ hash prefers A. Re-placement delay 10 min.
 | 0 + lease + drift | — | B has the highest committed point: takes U7 over ([RFC 10 §9.2](rfc-10-journal-replication.md#9.2%20Takeover)) | U7: e10, B; C | writes resume at B; grace for U7's open state |
 | 4 min | restarts; acquires a lease at a new node epoch and is primary of nothing; rejoins U7 as a learner ([RFC 10 §7.3](rfc-10-journal-replication.md#7.3%20Joining)) | B covers A's tail | U7: e11, B; C, A (learner) | — |
 | 6 min | tail covered | B clears the learner flag | U7: e12, B; C, A | — |
-| 10 min | — | the re-placement delay has passed since the failover, the dwell since U7's last planned change long ago, and the hash still prefers A: B hands U7 over ([§4](#4.%20Moving%20files%20and%20primaries)) | U7: e13, A; B, C | a brief drain; no grace |
+| 10 min | — | the re-placement delay has passed since the failover, the dwell since U7's last planned change long ago, and U7's slot still names A: B hands U7 over ([§4](#4.%20Moving%20files%20and%20primaries)) | U7: e13, A; B, C | a brief drain; no grace |
 
-Had A stayed down past 10 min, it would have left the placement set, the hash
-would have picked another winner, and U7 would have been handed there, after that
-node joined as a replica. A node that flaps within the delay never re-hashes
-anything.
+Had A stayed down past 10 min, it would have left the placement set, the slot
+table would have given A's slots to other nodes by capacity, and U7 would have
+been handed to its slot's new first node, after that node joined as a replica. A
+node that flaps within the delay never changes the slot table.
 
 **(d) Moving a batch of files between shards** — `S-shard-batch-move`. Files
 `f1`–`f3` move from G(e7) — primary A, replicas B, C — to R — primary B,
@@ -738,10 +765,13 @@ type Shards interface {
 	// primary released it cleanly (§3.2). ErrHeld names the live primary;
 	// ErrNeedsTakeover means the record names a lapsed one (RFC 10 §9.2).
 	Claim(ctx context.Context, s ShardID) (Claim, error)
-	// Renew extends the caller's node lease — writing its expiry record, never
-	// the node record — and returns the expiry and the store's time. It fails with
-	// ErrLeaseExpired once the lease has lapsed or a takeover marked it (§3.1).
-	Renew(ctx context.Context, node NodeID, nodeEpoch uint64) (expires, storeNow time.Time, err error)
+	// Renew extends the caller's node lease — writing its expiry record and
+	// swapping each of its journal generations, never the node record — and
+	// returns the expiry, the store's time and the journals whose swap lost.
+	// gens holds, per journal, the g + 1 already synced to its format file
+	// (RFC 10 §2.2). It fails with ErrLeaseExpired once the lease has lapsed or a
+	// takeover marked it (§3.1).
+	Renew(ctx context.Context, node NodeID, nodeEpoch uint64, gens map[JournalID]uint64) (expires, storeNow time.Time, lost []JournalID, err error)
 	// Move moves files from one shard to another in batches, resuming from the
 	// move record of the pair (§4).
 	Move(ctx context.Context, from, to ShardID, files iter.Seq[FileID]) error
@@ -791,6 +821,7 @@ var (
 | O14 | During a batch move, the giving primary acknowledges no write to the batch's files from freeze until it refuses them after the commit; the receiving primary re-versions what it accepts under its own epoch, accepts ships only for an open batch, and discards its entries of a batch that did not commit; `Discard` names one shard. |
 | O15 | An operation across shards commits in one transaction, only after every other primary involved has checked and held its files and committed a hold record, only while each is still at the (shard, epoch) and node epoch it answered with, and only while every participant's hold record, which the commit guards, still exists; a participant grants nothing its hold refused until the deletion of its hold record has committed. |
 | O16 | No shard's primary changes by a planned move sooner than the dwell time after its previous planned change. |
+| O17 | A per-child shard's slot is fixed by its ID and the slot count, which never changes after installation creation; the slot table changes only by compare-and-swap, a rebalance hands over only the shards of slots whose nodes changed, and no shard record depends on the table for fencing. |
 
 ## 13. Observability
 
@@ -807,6 +838,8 @@ var (
 | self-fences, labelled `reason` = `lease` or `clock` | `dittofs_shard_self_fences_total` | counter |
 | cross-shard operations, labelled `result` = `committed`, `refused` or `timed_out` | `dittofs_shard_cross_ops_total` | counter |
 | shards away from their placed node, waiting out the re-placement delay | `dittofs_shard_displaced` | gauge |
+| slots per node, and the node's share of capacity, so a skew is visible | `dittofs_shard_slots`, `dittofs_shard_capacity_share` | gauge |
+| slots whose nodes a rebalance changed, and slots whose shards are still being handed over | `dittofs_shard_slot_moves_total`, `dittofs_shard_slots_pending` | counter, gauge |
 
 Forwarding and refusals by epoch are counted once, in [RFC 15 §10](rfc-15-topology.md#10.%20Observability).
 
@@ -834,7 +867,9 @@ re-placement waited out the delay; a prepare was refused, timed out, and its lat
 commit refused by the participant's deleted hold record; a commit in flight
 aborted by a concurrent release; a commit was refused by the node-record guard,
 aborted in flight by it, and refused by fence; a ship was refused as not open; a
-re-placement waited out the dwell;
+re-placement waited out the dwell; a slot-table compare-and-swap lost to a
+concurrent one and was recomputed; a rebalance handed over a slot's shards at the
+rate limit;
 `Renew` returned `ErrLeaseExpired`; `Claim` returned `ErrNeedsTakeover`.
 
 **Scenario catalogue.**
@@ -860,7 +895,9 @@ re-placement waited out the dwell;
 | `S-shard-mark-existing` | marking a directory per-child while files are created and hard-linked inside it |
 | `S-shard-zombie-renew` | a node paused past its lease renews: refused; it serves no shard it held |
 | `S-shard-plain-claim-lapsed` | a non-replica tries to claim a shard whose primary lapsed: `ErrNeedsTakeover` |
-| `S-shard-flapping-node` | a node misses renewals repeatedly within the delay: failovers, no re-hash storm |
+| `S-shard-flapping-node` | a node misses renewals repeatedly within the delay: failovers, no slot-table change |
+| `S-shard-slot-rebalance` | a node joins with twice the others' capacity: it gains about twice their slots, only those slots' shards are handed over, at the configured rate and under the dwell; no file changes shard |
+| `S-shard-slot-cas-race` | two nodes recompute the slot table at once: one compare-and-swap wins, the other recomputes from it, and no slot's shards are handed over twice |
 | `S-shard-unreachable-primary` | front-ends cannot reach a primary that reaches the store: handover after the delay |
 | `S-shard-hop-loop` | two front-ends with crossed stale caches: refused at the hop limit, then routed |
 | `S-shard-cross-timeout` | a coordinator dies after prepare: holds end at their deadline, each deleting its hold record; a late commit is refused |
@@ -880,6 +917,7 @@ re-placement waited out the dwell;
 | A deny mode at another primary is honoured by a cross-shard rename (O15) | a coordinator that commits without preparing; a commit that does not guard every participant's hold record; a release that grants before the deletion of its hold record commits; a commit decided by a check of `Now` against the deadline; a hold outliving its participant's lease or failover |
 | Moved content is never resurrected (O14) | a ship accepted outside its open batch; an aborted batch's copy left on R; `Discard` across shards |
 | No shard's primary moves twice within the dwell time (O16) | follow-the-writer from a single sample; a re-placement not gated by the dwell |
+| Placement changes move only the shards of slots whose nodes changed, in proportion to capacity (O17) | a placement recomputed per shard; a slot count that follows the node count; a slot table written without compare-and-swap |
 | The store's shard-record count follows directories, not files (O11) | a per-file record or a file-to-shard map kept as shard records |
 | A shard's writes resume after a handover, move or failover without operator action | a move that waits on a primary that is gone |
 
@@ -901,12 +939,6 @@ re-placement waited out the dwell;
    proposals, to be tuned from measured workloads.
 2. **Read grants** ([§6](#6.%20Reads%20on%20other%20nodes)): a shared grant per range, revoked before a write is
    accepted over it, if the per-read round trip shows in measurement.
-3. **Per-child placement.** Whether the consistent hash weighs nodes by capacity,
-   and whether shards hash into a fixed number of slots so that rebalancing moves
-   slots rather than shards.
-4. **Whether the metadata store is split into partitions** with no transaction
-   spanning them, and what that does to existence, release, cross-shard operations
-   and batched moves ([§4](#4.%20Moving%20files%20and%20primaries), [§8.1](#8.1%20Operations%20across%20shards)).
 
 ---
 
@@ -914,10 +946,10 @@ re-placement waited out the dwell;
 
 | System | Takes from it |
 | --- | --- |
-| RADOS placement-group primary (Ceph) | the closest relative: a primary orders writes, replicas hold copies, an epoch fences a superseded primary |
-| CephFS subtree pins and distributed pins | the policy ladder: one metadata server per share, subtrees by hand, children spread by consistent hash (`ceph.dir.pin.distributed`); an automatic balancer that is off by default because it thrashed — why [§3.3](#3.3%20The%20primary%20follows%20the%20writer) needs hysteresis |
+| RADOS placement-group primary (Ceph) | the closest relative: a primary orders writes, replicas hold copies, an epoch fences a superseded primary; and a fixed number of placement groups per pool, mapped to devices weighted by capacity, so a change moves whole groups — the model of [§2.2](#2.2%20Automatic%20per-child%20shards)'s slots |
+| CephFS subtree pins and distributed pins | the policy ladder: one metadata server per share, subtrees by hand, children spread by hash (`ceph.dir.pin.distributed`); an automatic balancer that is off by default because it thrashed — why [§3.3](#3.3%20The%20primary%20follows%20the%20writer) needs hysteresis |
 | Lustre DNE | remote directories placed by hand, and striped directories that hash one directory's names across servers — the upgrade [§1.2](#1.2%20Non-goals) defers |
-| WEKA | a fixed number of hashed buckets, each with a leader that moves on failure — the slot idea of [§15](#15.%20Open%20questions) item 3 |
+| WEKA | a fixed number of hashed buckets, each with a leader that moves on failure — [§2.2](#2.2%20Automatic%20per-child%20shards)'s slots, whose whole-slot handovers bound what a node change moves |
 | HDFS router-based federation | stateless routers that proxy to the owning namespace; a cross-namespace rename it refuses, which [§8.1](#8.1%20Operations%20across%20shards) does not |
 | 3FS, JuiceFS, VAST | the contrast: stateless servers over a transactional store or shared media need no primary, because they acknowledge nothing the store does not hold |
 | Frangipani, GPFS | tokens held by the node using them and revoked on demand; a peer recovers a failed node's state only after fencing it |
@@ -935,6 +967,8 @@ Alternatives to one writer per shard are in [RFC 10 Appendix B](rfc-10-journal-r
 | Two primaries per shard, one for the namespace and one for data | separate scaling, at the price of five cross-primary handoffs and a check-then-I/O race; kept as the upgrade of [§2.1](#2.1%20One%20primary%20per%20shard) |
 | Cross-shard rename and link refused with `EXDEV` | simplest, but a share is one filesystem to its clients, and applications that rename across directories would break wherever a split happened to fall |
 | A two-phase commit across primaries with a durable coordinator log | unnecessary: one store transaction commits the change; the prepare holds open state, bounded by a deadline and by a hold record the commit guards |
+| Consistent hash of each shard ID directly over the nodes | no single record says where shards belong, so a rebalance must evaluate every shard to find the ones that move, and weighting by capacity needs virtual nodes whose count changes as nodes join; a fixed slot count makes placement one small table, changed by one compare-and-swap, and a rebalance a list of whole slots |
+| A metadata store split into partitions with no transaction spanning them | existence, release, batched moves and cross-shard operations each commit records of several shards, or of a shard and the node records it guards, in one transaction; without it each needs a cross-partition protocol of its own. A backend that scales horizontally while keeping transactions across keys gives the capacity without the protocol |
 | Placement hashed over nodes holding a live lease | one missed renewal would re-hash every shard the node held, and its return would move them all back |
 | Follow-the-writer on any write from a new node | two writers taking turns ping-pong the shard, shipping its tail every time |
 

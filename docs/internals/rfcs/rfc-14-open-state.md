@@ -195,6 +195,11 @@ for a whole lease period is treated as gone. Without that, a laptop that sleeps
 holding a lock blocks every other client forever. SMB's durable-handle timeout
 plays the same part for SMB clients.
 
+The lease period is the protocol's, fixed, not a setting ([RFC 13](rfc-13-configuration.md)): NFSv4 clients
+are given a 90 s lease, advertised in the `lease_time` attribute; an SMB durable
+handle is kept for the timeout its create request negotiates, within the bounds
+the protocol sets (MS-SMB2 3.3.5.9.10).
+
 "Lease" names two unrelated things in this set: the client lease, here, and the
 **node lease** of [RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch), which, with the shard record, decides which node may serve a shard. SMB
 also calls a caching grant a "lease" ([§5](#5.%20Caching%20grants)). The three share no records.
@@ -598,8 +603,8 @@ with the client and file.
 
 ## 15. Open questions
 
-1. **Lease period and recall deadline values**, per protocol, and whether they
-   are settings ([RFC 13](rfc-13-configuration.md)).
+1. **Recall deadline values**, per protocol, and whether they are settings
+   ([RFC 13](rfc-13-configuration.md)). The lease period is decided ([§4.1](#4.1%20A%20client%20lease)).
 2. **Persistent opens** for continuously available shares: which shares allow
    them, and the cost of a synchronous write per open, grant change and close.
 3. **Byte-range lock splitting** across protocols with different range

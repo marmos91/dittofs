@@ -19,8 +19,8 @@ tags:
 ---
 # RFC 13 — configuration
 
-**Status:** draft. [§11](#11.%20Open%20questions) lists what is undecided, and [§10](#10.%20Edits%20this%20document%20asks%20of%20other%20RFCs)
-the edits it asks of RFCs already reviewed.
+**Status:** draft. [§11](#11.%20Open%20questions) has no open questions left; [§10](#10.%20Edits%20this%20document%20asks%20of%20other%20RFCs)
+lists the edits it asks of RFCs already reviewed.
 **Audience:** anyone adding a setting, implementing the control plane's records,
 or deciding what an operator may change and when. Conventions and test tiers are
 in [the RFC index](rfc-index.md).
@@ -216,6 +216,14 @@ What changing a setting does is a property of the setting, declared with it:
 | **next write** | for content written from then on; stored content keeps what it was written with and stays readable | transform chain and its settings ([RFC 5 §5.1](rfc-5-transforms.md#5.1%20Configuration%20governs%20the%20next%20write)), storage class, block target |
 | **bound** | never, once content exists | key scope, chunking key, `Target`, bucket, prefix, case sensitivity |
 
+**A live change reaches every node within 5 s.** Nodes watch the settings
+records in the metadata store rather than poll them, and a node **MUST** run a
+live change within 5 s of its commit. While a change spreads, nodes **MAY** run
+different generations of one record; each reports the generation it runs
+([§8](#8.%20Observability)). A setting whose nodes **MUST** agree at every instant — a node
+lease, the drift bound — is therefore not live: it belongs to the **restart**
+class, where the change is taken up by a planned restart of every node.
+
 ### 5.1 A bound setting refuses change
 
 A **bound** setting decides where stored content is or what its identity is, so
@@ -308,8 +316,26 @@ remote-tier credentials it cannot open. A deployment **MAY** split a role's key
 further by secret kind; it **MUST NOT** merge the two roles' keys unless every
 node runs both roles, which is the single-node default.
 
-NTLM is enabled. An external provider (a vault, a KMS) **MAY** replace the
-default, behind the same reference.
+**One interface, two providers.** Every secret is resolved through one
+interface. The built-in provider above — sealed `Secret` records under the role
+wrapping keys — ships now; an external key-management provider comes later,
+behind the same interface and the same references, so adding it changes no
+record. Signatures are indicative:
+
+```go
+// SecretProvider resolves a secret reference to its value. It never lists
+// values and never returns one through any other path.
+type SecretProvider interface {
+	// Resolve returns the current value of ref, unsealed with the wrapping key
+	// of role. It fails if this node does not hold that role's key.
+	Resolve(ctx context.Context, role Role, ref SecretRef) ([]byte, error)
+	// Seal stores value under ref, sealed with role's wrapping key, and
+	// returns the reference to record in configuration.
+	Seal(ctx context.Context, role Role, ref SecretRef, value []byte) (SecretRef, error)
+	// Delete destroys the secret; a later Resolve of ref fails.
+	Delete(ctx context.Context, ref SecretRef) error
+}
+```
 
 - **Read never returns a secret.** No API, export, log line or metric carries
   one. An export that must travel with its secrets, a backup that must be
@@ -348,8 +374,9 @@ default, behind the same reference.
 | changes refused because a setting is bound | `dittofs_config_bound_refusals_total` | counter |
 | the provisioning file hash each node applied, and applies refused by reason | `dittofs_config_provisioning_applied`, `dittofs_config_provisioning_refused_total` | gauge, counter |
 
-A node whose generation for a record stays behind the store's for longer than one
-propagation interval is a health condition of that node, not only a gauge.
+A node whose generation for a live record stays behind the store's for longer
+than the 5 s propagation bound ([§5](#5.%20Binding%20classes)) is a health condition of that node, not
+only a gauge.
 
 ## 9. Test plan
 
@@ -395,18 +422,7 @@ Proposed, for review with this document; none is applied yet.
 
 ## 11. Open questions
 
-1. **Block target** ([Appendix B](#Appendix%20B%20%E2%80%94%20the%20settings)). Used by RFC 0, 2, 3 and 8, with no value
-   anywhere; the block header's bound depends on it. Proposed: a store setting,
-   next-write, default 4 MiB, the size current services handle best in one put
-   ([RFC 4 Appendix B](rfc-4-remote-tier.md#Appendix%20B%20%E2%80%94%20measurements)). Settled by the block-size benchmark against each service.
-2. **Leases and durations.** Node and open-state leases, the drift bound
-   and the filesystem service's default deadline ([RFC 17](rfc-17-vfs.md)) ([RFC 0 §10.3](rfc-0-data-lifecycle.md#10.3%20Every%20wait%20on%20a%20request%20ends%20at%20a%20deadline)) have no value. Fixed or
-   settings, and which values, belongs to the RFC that owns each; this document
-   only requires that none ship undefined.
-3. **Live propagation bound.** How quickly a live change must reach every node,
-   and whether a node may run two generations of one record during the change.
-4. **Secret provider.** Which providers ship beside the material provider, and
-   whether they are one interface.
+None.
 
 ---
 
@@ -446,11 +462,11 @@ default this document suggests where the owning RFC states none.
 | data key, current | [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys) | namespace | next write | created with the namespace when the chain encrypts; wrapped, by (ID, fingerprint) ([§7](#7.%20Secrets)) |
 | master keys | [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys) | remote store | live | required when the chain encrypts; references only ([§7](#7.%20Secrets)) |
 | block format version to write | [§5.4](#5.4%20A%20format%20version%20is%20written%20only%20once%20every%20reader%20reads%20it) | namespace | next write | the newest version every node reads |
-| `upload_workers`, `fetch_workers` | [RFC 3 §2.10](rfc-3-syncer.md#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed) | installation | restart | 32 each, or the sizing tool's |
+| `upload_workers`, `fetch_workers` | [RFC 3 §2.10](rfc-3-syncer.md#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed) | installation | restart | 128 each, or the sizing tool's |
 | endpoint, credential reference | [RFC 4 §4.1](rfc-4-remote-tier.md#4.1%20Interface) | remote store | live, under [§5.2](#5.2%20Reaching%20the%20same%20content%20another%20way%20is%20not%20a%20change) | required |
 | bucket, prefix | [RFC 4 Appendix C](rfc-4-remote-tier.md#Appendix%20C%20%E2%80%94%20the%20S3-compatible%20block%20store) | remote store | bound | required |
 | storage class | [RFC 4 §8](rfc-4-remote-tier.md#8.%20Decisions%20and%20open%20questions) | remote store | next write | the service's default |
-| block target | [§11](#11.%20Open%20questions) | remote store | next write | proposed: 4 MiB |
+| block target | [RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler) | remote store | next write | 4 MiB; confirm by the block-size benchmark against each service before release ([RFC 4 Appendix B](rfc-4-remote-tier.md#Appendix%20B%20%E2%80%94%20measurements)) |
 | transform chain, `require` | [RFC 5 §3.2](rfc-5-transforms.md#3.2%20Configuration) | remote store | next write | empty |
 | material provider | [RFC 5 §2.5](rfc-5-transforms.md#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material) | remote store | live | required when the chain encrypts |
 | case sensitivity: the share's fold rule, by ID from the store format record ([RFC 16 §4.6](rfc-16-metadata-store.md#4.6%20Store%20format)) | [RFC 7 §3.3](rfc-7-namespace-metadata.md#3.3%20Case) | share | bound | sensitive (identity rule) |
@@ -459,7 +475,16 @@ default this document suggests where the owning RFC states none.
 | `gc.trash_retention`: time a retired block with recoverable chunks waits before its delete | [RFC 9 §3.7](rfc-9-gc.md#3.7%20Trash) | namespace | live | 48 h |
 | `gc.space_amp_target`: stored over referenced bytes the compactor holds the namespace under; 0 turns compaction off | [RFC 9 §4.4](rfc-9-gc.md#4.4%20When%20to%20compact%20is%20policy) | namespace | live | proposed: 1.25 |
 | `gc.audit.period`: time within which the audit covers every chunk and block record; its rate is derived from it | [RFC 9 §6.1](rfc-9-gc.md#6.1%20Coverage) | namespace | live | 7 days |
-| replica count and floor, failure domain | [RFC 10 §7.1](rfc-10-journal-replication.md#7.1%20Count%2C%20floor%20and%20placement) | installation | live | open in RFC 10 |
+| replica count | [RFC 10 §7.1](rfc-10-journal-replication.md#7.1%20Count%2C%20floor%20and%20placement) | installation default; per shard, in its shard record | live | 3 |
+| replica floor | [RFC 10 §7.1](rfc-10-journal-replication.md#7.1%20Count%2C%20floor%20and%20placement) | installation default; per shard, in its shard record | live | 2 |
+| failure domain | [RFC 10 §7.1](rfc-10-journal-replication.md#7.1%20Count%2C%20floor%20and%20placement) | installation | live | open in RFC 10 |
+| node lease duration | [RFC 10 §3](rfc-10-journal-replication.md#3.%20What%20it%20assumes%20of%20shard%20placement) | installation | restart ([§5](#5.%20Binding%20classes)) | 10 s; confirm by the takeover-time benchmark ([RFC 10 §15](rfc-10-journal-replication.md#15.%20Test%20plan%20and%20benchmarks)) |
+| node lease renewal interval | [RFC 10 §3](rfc-10-journal-replication.md#3.%20What%20it%20assumes%20of%20shard%20placement) | installation | restart | 3 s; confirm by the takeover-time benchmark ([RFC 10 §15](rfc-10-journal-replication.md#15.%20Test%20plan%20and%20benchmarks)) |
+| drift bound | [RFC 10 §3](rfc-10-journal-replication.md#3.%20What%20it%20assumes%20of%20shard%20placement) | installation | restart | 500 ms; confirm by the takeover-time benchmark ([RFC 10 §15](rfc-10-journal-replication.md#15.%20Test%20plan%20and%20benchmarks)) |
+| open-state lease: NFSv4 lease period, SMB durable-handle timeout | [RFC 14 §4.1](rfc-14-open-state.md#4.1%20A%20client%20lease) | fixed | — | NFSv4 90 s; SMB per the protocol |
+| default request deadline, for an operation that arrives with none | [RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values) | fixed | — | 30 s |
+| per-child shard slot count | [RFC 11 §2.2](rfc-11-ownership.md#2.2%20Automatic%20per-child%20shards) | installation, fixed at its creation | bound | 4096 |
+| capacity weight | [RFC 11 §2.2](rfc-11-ownership.md#2.2%20Automatic%20per-child%20shards) | node | live | proposed: 1, every node equal |
 | shard | [RFC 11 §2](rfc-11-ownership.md#2.%20Shards) | share | bound | the whole share |
 | share's namespace | [RFC 12 §2.1](rfc-12-snapshots.md#2.1%20A%20namespace%20is%20the%20unit%20that%20moves) | share | bound | the share's own |
 | oldest unoffloaded extent alert | [RFC 8 §11.4](rfc-8-engine.md#11.4%20How%20far%20behind%20durability%20is%2C%20is%20observable) | share | live | proposed: 1 h |
