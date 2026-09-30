@@ -299,7 +299,7 @@ type Store interface {
 	GetControl(ctx context.Context, role Role) ([]byte, error)
 
 	// Close releases the client. Stores are shared across shares; only the
-	// owner that opened one closes it.
+	// holder that opened one closes it.
 	Close() error
 }
 
@@ -573,7 +573,7 @@ how to test them: they are specific to each backend and live in its profile
 - the client's checksum mode is pinned explicitly in the profile, never left to
   a client library's default, which can change between releases;
 - the namespace claim ([§4.13](#4.13%20Control%20objects)) is read, and handed to the opener, which applies
-  [RFC 12 §4.1](rfc-12-snapshots.md#4.1%20One%20owner%20per%20namespace%2C%20proven%20by%20a%20claim)'s ownership rule; a claim that exists but cannot be read fails the
+  [RFC 12 §4.1](rfc-12-snapshots.md#4.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)'s claim rule; a claim that exists but cannot be read fails the
   open, while an absent one is reported as absent;
 - where a service's listings lag its writes, a check that lists what it just
   wrote **MAY** re-list a bounded number of times, over a bounded time the
@@ -602,7 +602,7 @@ once is not refused for good.
 
 Every store exports the same metrics, labelled by store. A backend adds none of
 its own, so a dashboard works for every backend. The codec's metrics are
-exported by the codec, whichever store it reads from. Each event has one owner:
+exported by the codec, whichever store it reads from. Each event is counted in one place:
 a verification is counted here, once, and neither the syncer nor the transforms
 count it again ([RFC 3 §2.12](rfc-3-syncer.md#2.12%20What%20the%20syncer%20makes%20observable),
 [RFC 5 §6](rfc-5-transforms.md#6.%20Observability)).
@@ -632,7 +632,7 @@ already logs what it does about it.
 ### 4.13 Control objects
 
 A few small objects are not blocks but belong to the store's namespace: the
-namespace claim ([RFC 12 §4.1](rfc-12-snapshots.md#4.1%20One%20owner%20per%20namespace%2C%20proven%20by%20a%20claim)) and the health probe's object ([§4.7](#4.7%20Health%20is%20one%20probe%20call)). They
+namespace claim ([RFC 12 §4.1](rfc-12-snapshots.md#4.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)) and the health probe's object ([§4.7](#4.7%20Health%20is%20one%20probe%20call)). They
 go through `PutControl` and `GetControl`, by a fixed **role**:
 
 - a role maps to one fixed location in the profile, outside the block
@@ -643,7 +643,7 @@ go through `PutControl` and `GetControl`, by a fixed **role**:
 - a control object is small, bounded by a constant of the profile, and read
   into memory, not streamed;
 - no conditional put and no locking: the claim is a check, not a lock
-  ([RFC 12 §4.1](rfc-12-snapshots.md#4.1%20One%20owner%20per%20namespace%2C%20proven%20by%20a%20claim)).
+  ([RFC 12 §4.1](rfc-12-snapshots.md#4.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)).
 
 Roles are a closed set in code. A new role is a new constant and a new location,
 not a caller-chosen key, so control objects cannot become a second, unlisted
@@ -925,7 +925,7 @@ statement, not measured ([§8](#8.%20Decisions%20and%20open%20questions), item 7
 
 | Service | A `200` on put means | Failure domains |
 | --- | --- | --- |
-| Cubbit DS3 | every shard of the object's erasure code (N+K per site, across the redundancy class's sites) is stored | the sites of the bucket's redundancy class |
+| Cubbit DS3 | every fragment of the object's erasure code (N+K per site, across the redundancy class's sites) is stored | the sites of the bucket's redundancy class |
 | Scaleway, Standard Multi-AZ | stored under the service's multi-zone redundancy | three availability zones, in regions that offer it |
 | Scaleway, One Zone | stored under the service's single-zone redundancy | one availability zone: allowed, reported at open |
 
@@ -944,7 +944,7 @@ Not required: conditional put, multipart upload ([RFC 3 §3.4](rfc-3-syncer.md#3
 | capability-check objects | `<prefix>check/<random>/…` |
 
 Block names are uniformly distributed hashes, so keys spread across the service's
-partitions without a sharding scheme; nothing is placed between `blocks/` and
+partitions without a partitioning scheme; nothing is placed between `blocks/` and
 the name ([§4.2](#4.2%20Names%20in%2C%20locations%20kept%20inside)). A listing walks `<prefix>blocks/` only.
 Several stores may share a bucket under different prefixes, never one prefix
 ([§4.2](#4.2%20Names%20in%2C%20locations%20kept%20inside)).

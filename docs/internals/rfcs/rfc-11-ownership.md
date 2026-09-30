@@ -1,7 +1,7 @@
 ---
 rfc: 11
-title: "RFC 11 — ownership"
-component: ownership
+title: "RFC 11 — shards"
+component: shards
 status: draft
 depends_on:
   - "[[rfc-0-data-lifecycle]]"
@@ -12,515 +12,797 @@ depends_on:
   - "[[rfc-10-journal-replication]]"
   - "[[rfc-14-open-state]]"
   - "[[rfc-15-topology]]"
+  - "[[rfc-16-metadata-store]]"
 aliases:
   - RFC 11
 tags:
   - rfc
 ---
-# RFC 11 — ownership
+# RFC 11 — shards
 
-**Status:** draft. [§14](#14.%20Open%20questions) lists what is known to be undecided.
-**Audience:** anyone designing how several block services serve one share.
+**Status:** draft. [§15](#15.%20Open%20questions) lists what is known to be undecided.
+**Audience:** anyone designing how several nodes serve one share.
 
 ---
 
 ## 1. Purpose
 
-On one node every write to a share goes through one engine and one journal, and
-the order of writes is the order that journal appends them. With several block
-services serving one share, something must decide which of them orders the
-writes to any given bytes. This document answers:
+A **node** is one DittoFS server process, whatever roles it runs ([RFC 15 §2](rfc-15-topology.md#2.%20Roles)).
+Only nodes with the `storage` role hold journals, so only they can be a primary
+or a replica. There are no metadata-only DittoFS nodes: the metadata store is
+either embedded in a storage node or an external replicated store
+([RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20binary%2C%20roles%20chosen%20at%20deployment)).
 
-> **Which block service may write these bytes now, how does a request reach it,
-> and how does anyone else read them?**
+On one node, every write to a share goes through one engine and one journal, and
+the order of writes is the order that journal appends them. A write is
+acknowledged once the journal holds it, and until it is offloaded the journals
+of its replica set are the only copies ([RFC 10 §1](rfc-10-journal-replication.md#1.%20Purpose)). So with several nodes serving one share, one node
+must order the writes to any given bytes, and every other node must know which
+one. Designs that run stateless servers over a shared transactional store have
+no such node, because they acknowledge nothing that the store does not already
+hold. This design has one, and this document says how it is chosen, found and
+replaced:
+
+> **Which node may write these bytes now, how does a request reach it, and how
+> does anyone else read them?**
+
+**Terms.** *Share*, *node*, *shard*, *primary*, *replica* and *epoch* are
+defined once for every RFC in the [RFC 0 glossary](rfc-0-data-lifecycle.md#Glossary). This document adds:
+
+| Term | Means |
+| --- | --- |
+| **shard record** | a shard's entry in the metadata store: its primary as (node, node epoch), its epoch, its replicas, replica count and floor ([RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities)). It changes only by compare-and-swap |
+| **fence records** | two records per file, `F_x` and `F_o`, each holding the (shard, epoch) the file's commits must carry ([§8](#8.%20Metadata%20consistency)) |
+| **front-end** | the `protocol` role of a node: it holds client sessions and forwards each operation to the primary ([§5.1](#5.1%20Front-ends%20forward%20to%20the%20primary)) |
+| **handover** | a planned change of a shard's primary, with no lease wait and no grace period ([RFC 10 §9.4](rfc-10-journal-replication.md#9.4%20Handover)) |
+| **move** | a change of the shard some files belong to, run in batches ([§4](#4.%20Moving%20files%20and%20primaries)) |
+| **re-placement delay** | how long a shard stays on the replica that took it over before it is moved to the node placement prefers ([§2.2](#2.2%20Automatic%20per-child%20shards)) |
+
+*Learner*, *node lease*, *drift bound* and *committed point* are [RFC 10 §2.1](rfc-10-journal-replication.md#2.1%20Terms)'s.
+A primary is always a node, never a user. Where this document says *owner* it
+means a file's owner — its uid or SID — and nothing else.
 
 ### 1.1 What scaling is being designed for
 
 A deployment in the target range holds petabytes across tens of thousands of
-shares and hundreds of thousands of users. Three shapes of multi-node system
-were considered:
+shares and hundreds of thousands of users. Three shapes of multi-node system were
+considered:
 
 | | A. active-passive | B. shares spread across nodes | C. many nodes per share |
 | --- | --- | --- | --- |
 | Gives | survival of node loss | aggregate throughput across shares | throughput of one share beyond one node |
-| Owner of a share | one node, a standby takes over | one node per share | per unit, finer than a share |
-| Limit | one node's throughput in total | one node per share | none in principle |
+| Primary of a share | one node; a replica takes over | one node per share | one per shard, finer than a share |
+| Limit | one node's throughput in total | one node per share | one node per shard |
 
-The ownership unit is a policy ([§2](#2.%20Ownership%20units)), and its default is **a share**, which
-gives B; B with failover gives A. Subtree units and automatic per-child units
-give C for a share one node cannot carry, range units give it for one file, and
-per-file units are enabled only where measurement shows contention a coarser
-unit cannot absorb. One node is any of them with one block
-service. The same mechanism serves all of them, so no deployment runs a code
-path another does not.
+A share is **one shard by default**, which gives B, and B with failover gives A.
+Subtree and per-child shards give C for a share one node cannot carry
+([§2](#2.%20Shards)). One node is any of them with one storage node. The same mechanism
+serves all of them, so no deployment runs a code path another does not.
 
 ### 1.2 Non-goals
 
 This document **MUST NOT**:
 
-- replicate journal content or define failover of a unit's content — [RFC 10](rfc-10-journal-replication.md);
-- define client-visible open state and locking (opens, NFS `LOCK`, SMB
-  byte-range locks, deny modes, caching grants) — [RFC 14](rfc-14-open-state.md). Write tokens are
+- replicate journal content or define how a shard's content survives failover —
+  [RFC 10](rfc-10-journal-replication.md);
+- define client-visible open state and locking — [RFC 14](rfc-14-open-state.md). Shard records are
   internal and **MUST NOT** be exposed as, or stored with, client state
   ([§7](#7.%20Protocol%20state));
-- decide which nodes may own units — [RFC 15](rfc-15-topology.md)'s roles;
-- let more than one block service write the same bytes at once
-  ([RFC 10 Appendix B](rfc-10-journal-replication.md#Appendix%20B%20%E2%80%94%20alternatives%20considered)).
+- decide which nodes may be primaries — [RFC 15](rfc-15-topology.md)'s roles;
+- let more than one node write the same bytes at once
+  ([RFC 10 Appendix B](rfc-10-journal-replication.md#Appendix%20B%20%E2%80%94%20alternatives%20considered));
+- split one file across shards, or give one file its own shard —
+  [Appendix C](#Appendix%20C%20%E2%80%94%20later%3A%20per-file%20and%20range%20shards) sketches both for later;
+- split one directory's entries across shards.
 
-## 2. Ownership units
+> ponytail: one directory's entries live in one shard, so a single directory
+> takes creates and lookups-with-open-state at one node's rate. Upgrade to a
+> policy that hashes one directory's names across several shards when a
+> measured workload — a flat ingest directory of 10^7 files — is capped by it.
 
-An **ownership unit** is a set of files, or of byte ranges of one file, with one
-owner at a time. Every file belongs to one unit, and the unit's configuration
-([RFC 10 §2.1](rfc-10-journal-replication.md#2.1%20Terms)) names its owner, epoch and replica set.
+## 2. Shards
 
-| Policy | A file's unit is | When |
+A **shard** is a set of files with one primary at a time. Every file belongs to
+one shard, recorded with the file ([RFC 7 §2.1](rfc-7-namespace-metadata.md#2.1%20File)), and the shard record names
+its primary, epoch and replicas.
+
+| Policy | A file's shard is | When |
 | --- | --- | --- |
-| per share | the share's single unit | the default |
-| per subtree | inherited from its parent at create; chosen directories start a new unit | a share one node cannot carry, split by hand |
-| per child | each child directory of a marked directory is its own unit, placed by consistent hash ([§2.2](#2.2%20Automatic%20per-child%20units)) | a share of many independent trees, such as home directories |
-| per file | its own, split from its enclosing unit | only under measured contention |
-| per range | the file's unit, with byte ranges split off as range units ([§2.3](#2.3%20Range%20units)) | one file whose bandwidth one node cannot carry |
+| per share | the share's single shard | the default |
+| subtree | inherited from its parent at create; directories chosen by an operator start a new shard | a share one node cannot carry, split by hand |
+| per child | each child directory created in a marked directory starts its own shard, placed by consistent hash ([§2.2](#2.2%20Automatic%20per-child%20shards)) | a share of many independent trees, such as home directories |
 
-**The configuration store MUST NOT hold per-file state.** It holds one
-configuration per share, subtree or per-child unit. Which unit a file belongs to
-is recorded with its file ([RFC 7 §2.1](rfc-7-namespace-metadata.md#2.1%20File)), and a per-file or range unit's owner,
-epoch and lease are recorded there too. The configuration store therefore grows
-with shares and directories, never with files.
+![A share split into shards](img/rfc11-shards.svg)
 
-Every commit that must be fenced checks the unit's epoch the same way whatever
-the policy, so a policy **MAY** change later by moving files between units —
-which moves ownership, not data.
+**Shard records MUST NOT be per file.** The metadata store holds one shard record
+per share, per chosen subtree and per child of a marked directory. Shard records
+therefore grow with shares and directories, never with files.
 
-**A unit belongs to the file, not the path.** A file's unit is recorded with it
-when it is created, and changes only by an explicit move ([§4](#4.%20Moving%20ownership)). Rename **MUST
-NOT** change it, and hard links do not split it. A subtree policy that wants a
-renamed file to follow its new parent does so by a move, never as a side effect
-of rename, because a unit change silently changes which journal holds the
-file's un-offloaded content.
+**A shard belongs to the file, not the path.** A file's shard is set when it is
+created and changes only by a move ([§4](#4.%20Moving%20files%20and%20primaries)). Rename **MUST NOT** change it,
+and hard links do not split it. A change of shard changes which journals hold the
+file's un-offloaded content, so it is never a side effect of rename; a policy that
+wants a renamed tree to follow its new parent does so by a move.
 
-### 2.1 One owner per unit
+### 2.1 One primary per shard
 
-A unit has **one owner**, with one write token, one lease and one epoch. The
-owner serialises everything that acts on the unit's files: namespace writes,
-open state ([RFC 14](rfc-14-open-state.md)), layouts, journal appends, existence, offload, removals,
-releases and clone. Its epoch fences every one of them ([§8](#8.%20Metadata%20consistency)).
+A shard has **one primary**. The primary serialises everything that acts on the
+shard's files: namespace writes, open state ([RFC 14](rfc-14-open-state.md)), layouts, journal
+appends, existence, offload, removals, releases and clone. Its epoch fences every
+one of them ([§8](#8.%20Metadata%20consistency)). Because one primary holds both the open-state table and
+the journal, a conflict check and the I/O it admits run in one process under one
+epoch: no check goes stale between them, and no I/O pays a round trip to be
+checked.
 
-Because one owner holds both the open-state table and the journal, the conflict
-check on an I/O and the I/O itself run in one process under one epoch: no
-check can go stale between them, and no I/O pays a round trip to another owner
-to be checked.
+**Many writers, one shard.** One primary does not mean one client. Any number of
+clients write to a share at once, each through whichever node it is connected to.
+Every write to a shard is forwarded to its primary ([§5.1](#5.1%20Front-ends%20forward%20to%20the%20primary)), which orders and
+journals them all. What one primary caps is throughput: a shard gets at most one
+node's worth. A share that needs more is split into subtree or per-child shards,
+each with its own primary on its own node. [§10](#10.%20Worked%20examples) (a) walks through both.
 
-> ponytail: one owner per unit caps a unit's metadata operations and its data
-> bandwidth at one node together. The upgrade is two owners per unit — a
-> namespace owner and a data owner, each with its own token, lease and epoch,
-> and handoffs for release, truncate, the size overlay, `LAYOUTCOMMIT` and the
-> I/O conflict check. Take it when measurement shows metadata and data work
-> contending on one owner node, or when separately scaled pNFS metadata and
-> data servers are committed to.
+> ponytail: one primary per shard caps a shard's metadata operations and its data
+> bandwidth at one node together. The upgrade is two primaries per shard — one for
+> the namespace, one for data — each with its own epoch, and handoffs for release,
+> truncate, the size overlay, `LAYOUTCOMMIT` and the I/O conflict check. Take it
+> when measurement shows metadata and data work contending on one primary.
 
-### 2.2 Automatic per-child units
+### 2.2 Automatic per-child shards
 
-A directory **MAY** be marked so that every child directory created in it is a
-new unit, as if each had been chosen by hand under the subtree policy. Files
-created directly in the marked directory stay in its unit.
+A directory **MAY** be marked so that every child directory **created** in it
+starts a new shard. Files created directly in the marked directory stay in its
+shard, and a directory renamed into it keeps its own.
 
-- **Placement.** A per-child unit's owner and replica set are chosen by a
-  consistent hash of its unit ID over the live nodes that may own units
-  ([RFC 15 §2](rfc-15-topology.md#2.%20Roles)). The choice is written into the unit's configuration by the
-  same compare-and-swap as any other, so fencing does not depend on the hash:
-  the hash only proposes an owner.
-- **Rebalance.** When nodes join or leave, only the units whose hash winner
-  changed are moved, each by a handover ([§4](#4.%20Moving%20ownership)), at a bounded rate.
-  A failed-over unit is served by a member of its replica set first
-  ([RFC 10 §9](rfc-10-journal-replication.md#9.%20Failover)) and moved to its hash winner afterwards.
-- **Marking an existing directory** moves its existing child trees into new
-  units by batched moves; children created meanwhile are born in their own.
-- **Cost.** The configuration store holds one configuration per child of a
-  marked directory, so it grows with the directories marked, never with files.
+- **Placement.** A per-child shard's primary and replicas are proposed by a
+  consistent hash of its shard ID over the **placement set**: the storage nodes
+  that joined and were not decommissioned, less any absent for longer than the
+  re-placement delay. A node that merely misses a lease renewal stays in it. The
+  proposal is written into the shard record by the same compare-and-swap as any
+  other, so fencing never depends on the hash.
+- **Failover now, re-placement later.** When a primary's node lease lapses, a
+  replica takes the shard over at once ([RFC 10 §9.2](rfc-10-journal-replication.md#9.2%20Takeover)). Only after the
+  **re-placement delay** — configured, 10 minutes by default — is the shard handed
+  over ([§4](#4.%20Moving%20files%20and%20primaries)) to the node the hash prefers. A node that returns within the
+  delay therefore costs one failover and nothing more.
+- **Rebalance.** When the placement set changes, only the shards whose hash
+  winner changed are handed over, at a configured rate.
+- **Marking an existing directory** moves each existing child tree into a new
+  shard by a batched move ([§4](#4.%20Moving%20files%20and%20primaries)). Before walking a child tree, the move writes
+  the new shard onto that tree's root, so files created in it during the walk are
+  born in the new shard. The walk stops at nested shard boundaries, and a batch
+  skips any file whose recorded shard is no longer the giving one, so a file
+  hard-linked into two trees moves once. Each (giving, receiving) pair has its own
+  move record, so child trees move in parallel. A move costs about three store
+  writes per file.
+- **Cost.** One shard record per child of a marked directory.
 
-### 2.3 Range units
+**Nothing hot is per share.** With 10^5 per-child shards in one share:
 
-A file's byte ranges **MAY** be split off into **range units**, so that several
-nodes write one file and a pNFS layout names several data servers for it
-([RFC 15 §5.1](rfc-15-topology.md#5.1%20pNFS)). A range unit is a unit like any other, with one owner,
-one epoch, one lease, its own replica set and its operations in its owner's
-journal. The file's own unit — its **base unit** — keeps its namespace record,
-its open state, and every range not split off.
+- usage is counted per shard, as deltas each primary folds, and summed for the
+  share when read ([RFC 16 §4.4](rfc-16-metadata-store.md#4.4%20Counters%20that%20many%20writers%20change));
+- a path walk crosses the share's root, but lookups and listings that need no
+  primary-held state are served from the store by any node
+  ([RFC 15 §4](rfc-15-topology.md#4.%20Where%20each%20call%20runs)). The root's own primary sees only the root's namespace writes,
+  which are as few as its entries.
 
-| Concern | Rule |
-| --- | --- |
-| Record | A range unit covers one contiguous byte range. Its owner, epoch, lease, members and committed end are held in a per-range record with the file, like a per-file unit's; a file has a bounded number of them. |
-| Fencing | Each range unit has its own pair of fence records ([§8](#8.%20Metadata%20consistency)), keyed by file and range start. A commit for bytes in a range is fenced by that range's records, never by the base unit's. |
-| Existence | Each range owner commits existence for its own range, fenced by its range's `F_x`, and writes only its range record: never the file's shared record. |
-| Size | A file's size is the maximum of its base unit's committed end and every range record's committed end. The change attribute and write times are derived the same way — the sum of the ranges' versions, the latest of their times — so no two owners write one record. |
-| Namespace and open state | Stay with the base unit's owner. Non-layout I/O to a range goes through the base owner, which checks it against the open-state table and forwards it, counting it in flight until the range owner answers. |
-| Create | The base owner, by policy or at a layout request, splits `[a, b)` off: one transaction writes the range record at an epoch above the base unit's and the range's fence records, and hands the range's un-offloaded content over as a move does ([§4](#4.%20Moving%20ownership)). The owner is placed as a per-child unit is. |
-| Merge | The reverse: the range owner stops and drains, hands its un-offloaded content to the base owner, and one transaction deletes the range record and raises the base unit's epoch above the range's for the file. |
-| Truncate, delete, clone | Run at the base owner, after merging back every range unit they reach. |
-| Failure | A range owner fails over like any owner ([RFC 10 §9](rfc-10-journal-replication.md#9.%20Failover)); layouts naming it are recalled or revoked ([RFC 15 §5.1](rfc-15-topology.md#5.1%20pNFS)). |
+## 3. The primary
 
-> ponytail: truncate, delete and clone merge a striped file's ranges back before
-> running, so they cost a handover per range. Upgrade to per-range truncation
-> when striped files are truncated or cloned often enough to show in measurement.
+### 3.1 The primary is fenced by an epoch
 
-> ponytail: non-layout I/O to a striped file funnels through the base owner,
-> capping NFSv3 and SMB clients at one node's bandwidth for that file. Upgrade by
-> giving range owners an epoch-fenced copy of the file's I/O conflict state when
-> those clients need striped bandwidth.
+A node is primary of a shard while the shard record names it — as (node, node
+epoch) — and its **node lease** for that node epoch is live. There is one lease
+per storage node, held in its node record and renewed once for every shard it is
+primary of, never per shard ([RFC 10 §3](rfc-10-journal-replication.md#3.%20What%20it%20assumes%20of%20shard%20placement)).
 
-## 3. Write tokens
+- **Renew fails on an expired lease.** A node whose lease has lapsed acquires a
+  new one at a higher node epoch, and is then primary of nothing: the records
+  still name its old node epoch. It regains a shard only by taking it over
+  ([RFC 10 §9.2](rfc-10-journal-replication.md#9.2%20Takeover)), which raises the shard's epoch and runs grace.
+- **A change of primary is a compare-and-swap** on the shard record that raises
+  the shard's epoch.
+- **An epoch never decreases for a file.** A shard's epoch **MUST** exceed that of
+  every shard that previously held any of its files. A shard that receives files
+  is therefore raised above every epoch they leave, before the first batch of a
+  move ([§4](#4.%20Moving%20files%20and%20primaries)); a new shard starts one above its parent's. A file created in a
+  shard starts at the shard's epoch.
 
-### 3.1 A token is a lease, fenced by an epoch
+**A primary fences itself.** It **MUST** stop acknowledging writes, serving open
+state, serving reads and answering version queries ([§6](#6.%20Reads%20on%20other%20nodes)) once its node lease
+is within the drift bound of expiry by its own clock, or once it has not reached
+the store for half its lease. Each renewal returns the store's time, and a node
+whose clock differs from it by more than half the drift bound fences itself as if
+its lease had lapsed. A successor **MUST NOT** serve before the old lease has
+lapsed plus the drift bound, in store time ([RFC 10 §9.2](rfc-10-journal-replication.md#9.2%20Takeover)).
 
-The right to write a unit is a **write token**: a lease recorded with the unit's
-configuration ([RFC 10 §2.2](rfc-10-journal-replication.md#2.2%20Roles)). It is the owner lease of [RFC 10 §2.1](rfc-10-journal-replication.md#2.1%20Terms) — one lease,
-not two. Acquiring or moving one is a compare-and-swap that raises the epoch.
+The lease alone protects nothing. A primary can pause past its lease and then
+act; a check it makes before sending is already stale. What makes it safe is that
+every receiver refuses a stale epoch — replicas ([RFC 10 §6](rfc-10-journal-replication.md#6.%20Fencing)) and the
+metadata store ([§8](#8.%20Metadata%20consistency)). The shard record decides who **should** write; the
+epoch decides whose writes **count**. Open-state grants are replies to clients
+that no receiver can refuse, so for them the self-fence is the only fence.
 
-**An epoch never decreases for a file.** A unit's new epoch **MUST** exceed that of
-every unit that previously held any of its files. Every change that moves files
-between units — a new subtree or per-child unit, a per-file or range unit split
-off or merged back, a move — therefore sets the unit that receives them to one
-more than the highest epoch of every unit they leave, in the transaction that
-moves them. A file created in a unit starts at the unit's epoch.
+### 3.2 The primary stays until another node needs it
 
-**An owner self-fences.** It **MUST** stop acknowledging writes and serving open
-state for a unit once its lease is within the drift bound of expiry by its own
-clock, and a new owner **MUST NOT** serve before the old lease has lapsed by the
-claimant's clock plus the drift bound ([RFC 10 §9.2](rfc-10-journal-replication.md#9.2%20Takeover)). Store commits are
-fenced by epoch at the receiver; open-state grants are replies to clients that
-no receiver can refuse, so for them the lease is the only fence.
+- A shard that has never had a primary, or whose last primary released it
+  cleanly after offloading everything, is **claimed** by the first storage node
+  that needs it, with one compare-and-swap.
+- A shard whose record names a primary with a lapsed lease is **not** claimed
+  that way. It is taken over by a replica that is not a learner
+  ([RFC 10 §9.2](rfc-10-journal-replication.md#9.2%20Takeover)); a plain claim by any other node would leave the replicas
+  outside the record, and they would discard every acknowledged write.
+- Nothing is exchanged per write or per file while the primary stays; its node
+  renews one lease for every shard it holds.
+- Any other node that receives a write forwards it to the primary
+  ([§5.1](#5.1%20Front-ends%20forward%20to%20the%20primary)), or, under [§3.3](#3.3%20The%20primary%20follows%20the%20writer), asks for the primary to move.
 
-A token alone protects nothing. A holder can pause past its lease and then act;
-a check it makes before sending is already stale. What makes the token safe is
-that every receiver refuses a stale epoch — replicas ([RFC 10 §6](rfc-10-journal-replication.md#6.%20Fencing)) and the
-metadata store ([§8](#8.%20Metadata%20consistency)). The token decides who **should** write; the epoch decides
-whose writes **count**.
+A single writer therefore pays one metadata-store transaction per shard it
+claims, not per file or per write.
 
-### 3.2 A token is held until another writer needs it
+### 3.3 The primary follows the writer
 
-- The first writer to a unit with no live owner acquires its token, with one
-  compare-and-swap.
-- Nothing is exchanged per write, or per file, while the holder is the only
-  writer; it renews the lease.
-- Another block service that wants to write forwards to the holder ([§5.1](#5.1%20Front-ends%20forward%20to%20the%20owner)), or,
-  under [§3.3](#3.3%20Ownership%20follows%20the%20writer), asks for the unit to move.
+Forwarding is the default. A shard's primary is handed over to another node
+([§4](#4.%20Moving%20files%20and%20primaries)) only when all of these hold:
 
-A single writer therefore pays one configuration-store transaction per unit it
-acquires, not per file or per write.
+1. **One node sends most of the writes.** Over the last **window**, at least
+   **share** of the shard's written bytes arrived forwarded from one node.
+2. **The dwell time has passed** since the shard's last change of primary, for
+   any reason.
+3. **The new node is a replica that is not a learner**, or becomes one first
+   ([RFC 10 §9.4](rfc-10-journal-replication.md#9.4%20Handover)).
 
-### 3.3 Ownership follows the writer
+Only the primary decides, from the forwarded writes it counts itself; front-ends
+never request a move. A handover whose un-offloaded tail does not shrink while it
+is shipped — the writer is outrunning the copy — is abandoned, and the dwell time
+restarts. Two nodes writing one shard by turns therefore never pull it back and
+forth faster than once per dwell time, and two writing at once never meet
+condition 1.
 
-A write arriving at a block service that does not own the unit is either
-forwarded to the owner ([§5](#5.%20Routing)) or moves the unit to where it arrived. A unit
-**SHOULD** move when its owner has not written it recently and the requester is
-now its only writer, and **SHOULD NOT** move back and forth between two writers
-of one unit; forwarding is the answer to concurrent writers. Moving a whole share
-ships all its un-offloaded content, so the bar for a move is high. The exact
-policy is open ([§14](#14.%20Open%20questions)).
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `shard.follow_writer` | on | off: the primary never moves on its own; only an operator or rebalance moves it |
+| `shard.follow_writer.window` | 5 min | how far back condition 1 looks |
+| `shard.follow_writer.share` | 0.9 | the fraction of written bytes one node must have sent |
+| `shard.dwell` | 30 min | how long after any change of a shard's primary before follow-the-writer may move it again |
+| `shard.replace_delay` | 10 min | the re-placement delay ([§2.2](#2.2%20Automatic%20per-child%20shards)) |
 
-## 4. Moving ownership
+## 4. Moving files and primaries
 
-A move is a handover ([RFC 10 §9.4](rfc-10-journal-replication.md#9.4%20Handover)): the new owner catches up through `Export`
-([RFC 10 §2.5](rfc-10-journal-replication.md#2.5%20The%20journal%20extension)), which yields each operation with its bytes, and applies them
-with `Apply`, on the un-offloaded operations of the unit's files the old
-owner's journal holds, the old owner stops and drains, the configuration moves at
-the next epoch, and the new owner settles those files to the drained point before
-it serves. Shipping the dirty operations, rather than offloading them first,
-keeps a move a local-network transfer instead of a remote-tier round trip.
+Two things move, and both are handovers: the primary of a whole shard, and a
+batch of files from one shard to another.
 
-A planned move also hands over the unit's volatile open-state table, under the
-new epoch, so the new owner runs no grace period ([RFC 14 §10](rfc-14-open-state.md#10.%20Ownership)). A move
-whose old owner is lost before the handover completes becomes a failover.
+**A shard's primary moves** by [RFC 10 §9.4](rfc-10-journal-replication.md#9.4%20Handover): the new primary is first a replica
+that is not a learner; the old one stops writes, grants and reads, drains, and
+names the new one at the next epoch; it hands over the open-state table and the
+dedup table; the new primary re-applies existence and serves with no grace period.
+A handover whose old primary is lost before it completes becomes a failover.
 
-**Moving files from one unit to another is batched.** A subtree can hold more
-files than one transaction may write, so a move of files between units runs in
-batches, each one transaction that:
+**Files move between shards in batches.** A subtree can hold more files than one
+transaction may write. A move from giving shard G to receiving shard R keeps its
+cursor in a **move record** of its own, keyed by the pair (G, R), so advancing it
+changes neither shard record and several moves out of G run at once.
 
-1. reads both units' configurations with conflict tracking, and raises the
-   receiving unit's epoch above the giving unit's if it is not already;
-2. rewrites each file's recorded unit and writes its fence records at the
-   receiving unit's epoch, after its un-offloaded content has been handed over;
-3. advances the move's cursor, held in the giving unit's configuration.
+Before the first batch, if R's epoch is not above G's, R's primary raises it to
+one above G's by an ordinary change of R's record and installs it on R's replicas
+([RFC 10 §6](rfc-10-journal-replication.md#6.%20Fencing)). Then each batch runs these steps:
 
-Every file is in exactly one unit between batches, so a crash leaves nothing to
-repair: the move resumes from its cursor. The giving unit's epoch does not change,
-and its files outside the batch keep their fence records.
+1. **Freeze.** G's primary stops acknowledging writes, granting open state and
+   serving reads for the batch's files, recalls their layouts, and drains what is
+   in flight for them. Calls for them wait; nothing else in G pauses.
+2. **Ship.** G's primary sends R's primary each file's un-offloaded operations
+   (`Export`, [RFC 10 §2.3](rfc-10-journal-replication.md#2.3%20The%20journal%20extension)) — held superseded versions and their snapshot
+   hold marks included ([RFC 12 §2.4](rfc-12-snapshots.md#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history)) — with the files' open-state
+   entries and dedup entries. R's primary applies them and replicates them to R's replicas. The
+   operations keep G's versions and are applied as a copy, exempt from the
+   committed-point refusal as a learner's tail is ([RFC 10 §7.3](rfc-10-journal-replication.md#7.3%20Joining)).
+3. **Commit.** Once the shipped operations are durable on R's primary and every
+   one of R's replicas, R's primary commits one transaction that:
+   - reads both shard records with conflict tracking, and commits only if G's
+     epoch is still the one the batch was frozen under and R's is still the one
+     R installed, above it;
+   - for each file whose recorded shard is still G, rewrites it to R and writes
+     its fence records as (R, R's epoch);
+   - advances the move record's cursor.
 
-A lost owner is not moved but failed over ([RFC 10 §9](rfc-10-journal-replication.md#9.%20Failover)), once its lease lapses.
+   If either epoch has changed, nothing commits; the batch is frozen and shipped
+   again under the new epochs.
+4. **Serve.** R's primary installs the open-state entries and adds R to each
+   client record they name ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)), and serves the files. G's primary
+   refuses any later call for them with a routing error, because their recorded
+   shard is no longer G, and front-ends re-route.
+5. **Discard.** G's primary tells each node of G's replica set that is **not** in
+   R's replica set — itself included — to `Discard` the files. A node in both keeps
+   its copy, which is now R's: one journal carries many shards
+   ([RFC 10 §2.2](rfc-10-journal-replication.md#2.2%20One%20journal%20carries%20many%20shards)) and `Discard` forgets a file across all of them.
+
+![Moving a batch of files between shards](img/rfc11-move.svg)
+
+Every file is in exactly one shard between batches, so a crash leaves nothing to
+repair: the move resumes from its cursor. If G fails over mid-move, its new
+primary reads the move record and resumes from step 1. A takeover of either shard
+writes fence records only for files recorded in its own shard, and drops shipped
+content for files still recorded elsewhere.
+
+**Snapshots.** A share's cut is one transaction over all its shards, behind each
+shard's cut gate ([RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)). While a snapshot record of the share in state
+`cutting` exists, the primary of a new shard — a per-child shard just created
+([§2.2](#2.2%20Automatic%20per-child%20shards)) — and a primary that starts serving a shard, or files moved into
+one, after a takeover, a handover or a move **MUST** start the shard's gate
+closed, so no transaction it admits commits after the cut under the old cut
+number. The holds the moved files carry keep their held versions until offloaded
+under R.
 
 ## 5. Routing
 
-### 5.1 Front-ends forward to the owner
+### 5.1 Front-ends forward to the primary
 
-Protocol front-ends — the `protocol` role ([RFC 15 §2](rfc-15-topology.md#2.%20Roles)) — hold client sessions. File protocols carry
-operations on many files over one connection and cannot redirect a client per
-file, so the front-end routes each operation:
+File protocols carry operations on many files over one connection and cannot
+redirect a client per file, so the front-end routes each operation:
 
-- it looks up the unit of what the operation touches, and the unit's owner in a
-  cache of configurations read from the configuration store;
-- it forwards the operation to that owner under [RFC 15 §4](rfc-15-topology.md#4.%20Where%20each%20call%20runs)'s routing, whose
-  calls **MUST** therefore be callable across a network ([RFC 15 §4.1](rfc-15-topology.md#4.1%20Every%20call%20is%20safe%20to%20route)) —
-  streamed bodies, no callbacks across it, and every call carrying the route
-  envelope ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)): a request ID, so a retry is answered once, and
-  the owner epoch it expects;
-- a block service that is no longer the owner refuses the operation by epoch; the
-  front-end re-reads the configuration and retries.
+- it looks up the shard of what the operation touches, and the shard's primary,
+  in a cache of shard records read from the metadata store ([RFC 15 §6](rfc-15-topology.md#6.%20Learning%20primaries));
+- it forwards the operation to that primary. Every routed call is callable across
+  a network ([RFC 15 §4.1](rfc-15-topology.md#4.1%20Every%20call%20is%20safe%20to%20route)) and carries the route envelope
+  ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)): a request ID, so a retry is answered once; the shard and
+  epoch the sender expects; and a **hop count**;
+- the receiver refuses the call if the epoch is not its current one, or if the
+  file's recorded shard is not the one named; the front-end re-reads the shard
+  record and retries, a bounded number of times;
+- only the front-end forwards. A node that receives a call it is not primary
+  for refuses it, naming the primary it knows, and **MUST NOT** forward a call
+  whose hop count is not zero, so a call never cycles between stale caches.
+
+![Routing and a stale route](img/rfc11-routing.svg)
 
 The routing cache **MAY** be stale. A stale entry costs a refusal and a retry,
-never a wrong write, because the epoch check is at the receiver.
+never a wrong write, because the check is at the receiver.
 
-On one node the front-end, the owner and the facade are the same process, and
-routing is a function call.
+**Retries are answered once.** The primary keeps a dedup table of recent
+mutations keyed by (shard, request ID) — not by epoch, so a retry that straddles
+an epoch raise is still recognised — holding each result for at least the
+sender's retry window. The table travels with every handover and with the files
+of every batch.
+
+**A primary the front-ends cannot reach** while it still reaches the store would
+keep its lease forever. Front-ends report failed forwards to the store, which
+records a health condition on the node. If it persists for the re-placement
+delay, each of the node's shards is handed over to a replica the front-ends can
+reach; a primary that does not complete a handover within a bound is refused its
+next renewal, which turns the handover into a failover.
+
+On one node the front-end and the primary are one process, and routing is a
+function call.
 
 ### 5.2 Clients that can route themselves
 
 A protocol that lets the server direct a client's I/O per file — parallel NFS
-layouts — **MAY** point the client at the owner directly, or at each range
-unit's owner ([§2.3](#2.3%20Range%20units)), so its reads and writes skip the front-end hop. A
-layout is then another holder of the routing decision: it is bound to the epoch
-of every unit it names, and **MUST** be recalled or revoked when any of them
-changes owner ([RFC 15 §5.1](rfc-15-topology.md#5.1%20pNFS)). Clients without such a protocol use the
-front-end path; nothing in this document depends on layouts.
+layouts — **MAY** point the client at the primary directly, so its reads and
+writes skip the front-end hop. A layout is another holder of the routing
+decision: it records the (shard, epoch) it was granted under, the primary as data
+server checks it on every `READ`, `WRITE` and `COMMIT`, and it **MUST** be recalled
+or revoked when the shard's primary changes or its file moves
+([RFC 15 §5.1](rfc-15-topology.md#5.1%20pNFS)). The flex-files layout's own fence — the metadata server
+changing a synthetic uid — is not a substitute: it fences every client at once
+and is not tied to an epoch. Clients without layouts use the front-end path;
+nothing in this document depends on layouts.
 
-## 6. Reads on non-owners
+## 6. Reads on other nodes
 
 | Served by | When |
 | --- | --- |
-| the owner, or a member of the unit's replica set | always, under [RFC 10 §8](rfc-10-journal-replication.md#8.%20Reads%20from%20replicas) |
-| any other block service | only for a range it knows holds no un-offloaded content at the owner newer than what it serves |
+| the primary | content the whole replica set holds ([RFC 10 §8](rfc-10-journal-replication.md#8.%20Reads)) |
+| any other storage node, replicas included | only bytes carrying the version the primary names for the range |
+| a learner | never |
 
-A block service that is not a member **MAY** serve a range — from its own
-journal, or by filling it from metadata and the remote tier ([RFC 0 §6.2](rfc-0-data-lifecycle.md#6.2%20Fill)) —
-only if it knows the owner holds no un-offloaded content there newer than the
-version it would serve. **Otherwise it MUST forward the read** to the owner or a
-member. Metadata alone cannot tell it: the owner acknowledges a write before
-offloading it, so the current ref ([RFC 6 §2.1](rfc-6-block-metadata.md#2.1%20ChunkRef)) can be older than an
-acknowledged write. It learns it from the owner, by asking the newest version of
-the range and serving only bytes that carry it. A cached copy older than that
-version is dropped ([RFC 1 §9.2](rfc-1-journal.md#9.2%20Offload%20state%20after%20recovery)) and filled again.
+A node other than the primary **MAY** serve a range, from its own journal or by
+filling it from metadata and the remote tier ([RFC 0 §6.2](rfc-0-data-lifecycle.md#6.2%20Fill)), only after asking
+the primary for the newest version of that range the whole replica set holds, and
+only bytes that carry exactly it. **Otherwise it MUST forward the read.** Metadata
+alone cannot tell it: the primary acknowledges a write before offloading it, so
+the current ref ([RFC 6 §2.1](rfc-6-block-metadata.md#2.1%20ChunkRef)) can be older than an acknowledged write, and a
+replica's copy can be older than one the primary holds. A cached copy older than
+the named version is dropped ([RFC 1 §9.2](rfc-1-journal.md#9.2%20Offload%20state%20after%20recovery)) and filled again. The question costs
+one round trip and no bytes.
 
-The check costs one round trip to the owner per read, but no bytes when the copy
-is current. Read tokens would remove the round trip ([§14](#14.%20Open%20questions)).
+**Attributes follow the same line.** A file's size and times after an
+acknowledged but unflushed write live only at its primary. A `GETATTR`, or any
+call whose answer must reflect every acknowledged write, goes to the file's
+primary ([RFC 15 §4](rfc-15-topology.md#4.%20Where%20each%20call%20runs)). A directory listing with attributes (`READDIRPLUS`,
+SMB query-directory) **MAY** take the attributes of children in other shards from
+the store, which reflects every flushed write ([RFC 10 §4](rfc-10-journal-replication.md#4.%20The%20write%20path)) and so keeps
+close-to-open consistency; it **MUST NOT** present them as fresher than that.
 
 ## 7. Protocol state
 
-Client-visible state is [RFC 14](rfc-14-open-state.md)'s: held by the owner of the file's unit (its
-base unit, for a file with range units), fenced by its epoch, moved with it,
-and recovered through grace ([RFC 14 §8](rfc-14-open-state.md#8.%20What%20is%20durable), [RFC 14 §9](rfc-14-open-state.md#9.%20Open%20state%20and%20the%20life%20of%20a%20file)). Four rules follow
-from ownership and bind it:
+Client-visible state is [RFC 14](rfc-14-open-state.md)'s: held by the primary of the file's shard,
+fenced by its epoch, moved with it, and recovered through grace
+([RFC 14 §8](rfc-14-open-state.md#8.%20What%20is%20durable), [RFC 14 §9](rfc-14-open-state.md#9.%20Open%20state%20and%20the%20life%20of%20a%20file)). Four rules follow from this document and bind it:
 
-1. **A failover is a loss of volatile open state.** The new owner runs grace for
-   the unit and releases nothing before it ends ([RFC 14 §9.2](rfc-14-open-state.md#9.2%20A%20new%20owner%20releases%20nothing%20before%20grace%20ends)).
-2. **A planned move is not.** The old owner hands its table to the new one under
-   the new epoch ([§4](#4.%20Moving%20ownership)), and no grace runs.
-3. **The NFS write verifier MUST change whenever a unit's owner changes**,
-   or clients never resend writes they sent unstable to the old one. It is
-   derived from the owner epoch and the owner's process instance.
-4. **Client state is not a write token.** It has its own semantics, grace and
-   recovery, and **MUST NOT** share records with tokens, though both **MAY** be
-   served by the same metadata store.
+1. **A failover loses volatile open state.** The new primary runs grace for the
+   shard and releases nothing before it ends
+   ([RFC 14 §9.2](rfc-14-open-state.md#9.2%20A%20new%20primary%20releases%20nothing%20before%20grace%20ends)).
+2. **A handover and a batch move do not.** The old primary hands the files' state
+   to the new one ([§4](#4.%20Moving%20files%20and%20primaries)), and no grace runs.
+3. **The NFS write verifier MUST change whenever the node serving a shard as
+   primary changes, and SHOULD NOT change otherwise.** It is derived from the
+   primary's node, node epoch and process instance, not from the shard epoch, so
+   the raise before a move does not make every client resend its unstable writes.
+4. **Client state is not a shard record.** It has its own semantics, grace and
+   recovery, and **MUST NOT** share records with shard records, though both **MAY**
+   be served by one metadata store.
 
 ## 8. Metadata consistency
 
-Every metadata commit that acts for a unit carries the unit's owner epoch and is
-refused, for that file, when the epoch is not current: existence
-([RFC 6 §3.4](rfc-6-block-metadata.md#3.4%20Ordering%20against%20the%20journal)), offload ([RFC 6 §4.1](rfc-6-block-metadata.md#4.1%20What%20one%20commit%20records)), truncate, deallocate, release, clone, and
-the pruning of removal records. A group commit across files checks each file's
-unit epoch. The check **MUST** conflict with any concurrent change of the epoch
-whatever the store's isolation level: a read the store tracks for conflicts, or
-an explicit lock on the key. A plain read under snapshot isolation is not a
-fence, and neither is a scan over a key range: a read whose result gates a
-commit **MUST** conflict with every concurrent write that would change it.
+**Every fenced commit carries (shard, epoch, lease expiry)** and is refused, for
+each file it touches, unless:
 
-**The epoch is held in two fence records per file**, one per commit path, as
-[RFC 6 §5.4](rfc-6-block-metadata.md#5.4%20Reads%20that%20gate%20a%20commit) specifies them:
+- the file's fence record holds exactly that (shard, epoch) — *current* means
+  equal, not merely not above, and a fence from another shard never matches
+  whatever its number; and
+- the store's time at the transaction's **commit timestamp** is before the lease
+  expiry ([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)). A backend whose `Now` is the transaction's start
+  time **MUST** re-check it inside the commit path.
+
+The fence record refuses a paused primary's commit once a successor has written
+it; the expiry refuses it before then, since a successor serves only after the old
+lease has lapsed ([§3.1](#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)).
+
+Fenced commits are existence ([RFC 6 §3.4](rfc-6-block-metadata.md#3.4%20Ordering%20against%20the%20journal)), offload ([RFC 6 §4.1](rfc-6-block-metadata.md#4.1%20What%20one%20commit%20records)),
+truncate, deallocate, clone, release, the pruning of removal records, and every
+namespace transaction — create, link, unlink, rename, set-attribute, ACL and
+xattr changes, the pending release. A group commit across files checks each file.
+
+**The check MUST conflict with any concurrent change of the fence**, whatever the
+store's isolation level: a read the store tracks for conflicts, or an explicit
+lock on the key. A plain read under snapshot isolation is not a fence, and neither
+is a scan over a key range.
+
+**Two fence records per file**, one per commit path ([RFC 6 §5.4](rfc-6-block-metadata.md#5.4%20Reads%20that%20gate%20a%20commit)):
 
 | Record | Read by | Written by |
 | --- | --- | --- |
-| `F_x(file)` | existence commits, with conflict tracking | a new owner; removals and releases |
-| `F_o(file)` | offload commits and removal pruning | a new owner; removals and releases |
+| `F_x(file)` | existence commits and namespace transactions, with conflict tracking | a new primary; a move; removals and releases |
+| `F_o(file)` | offload commits and removal pruning | a new primary; a move; removals and releases |
 
-- A new owner **MUST** write both, at its epoch, before its first operation on
-  the file under that epoch. An epoch change therefore conflicts with every
-  commit on either path.
+- A new primary **MUST** write both, as (its shard, its epoch), before its first
+  operation on the file under that epoch, and only for files recorded in its
+  shard. A create writes the new file's fence records.
 - A removal or release reads and writes both, so it conflicts with an offload
-  commit and with an existence commit of the same file in both directions,
-  without a range lock the store does not offer.
-- A check that forces every commit of a unit through one record **MUST NOT** be
-  used: it serialises every file of the unit on one key.
-- A fenced commit covers only operations durable on the unit's replica set
-  ([RFC 10 §6](rfc-10-journal-replication.md#6.%20Fencing)).
-- A **put intent** ([RFC 6 §7.6](rfc-6-block-metadata.md#7.6%20Put%20intents)) carries the owner epoch it was
-  written under. An intent whose epoch is superseded names an attempt that can no
-  longer commit, and GC **MAY** remove it ([RFC 9 §5](rfc-9-gc.md#5.%20Unrecorded%20objects)).
-
-- **Release is fenced like a write.** It deletes the file's FileData and records a
-  removal of the whole file ([RFC 6](rfc-6-block-metadata.md)); a superseded owner's release would destroy
-  a file its successor is writing.
-- **Removal records are pruned only by the file's owner**, under its epoch, once
-  they fall below the file's durable floor ([RFC 6](rfc-6-block-metadata.md)). Only the owner knows which
-  of its offers are still in flight, and a removal pruned under one lets that
-  offer's commit bring removed content back.
-- The owner epoch is separate from the removal versions a commit also checks
-  ([RFC 6](rfc-6-block-metadata.md)).
-- A file's `size` ([RFC 6 §2.4](rfc-6-block-metadata.md#2.4%20FileData%20and%20holes)) is written only by the owner of its unit, and a
-  range unit's committed end only by that range's owner ([§2.3](#2.3%20Range%20units)).
-- **Namespace transactions are fenced too.** Every namespace transaction on a
-  file — create, link, unlink, rename, set-attribute, ACL and xattr changes, the
-  pending release — guards the fence records of every file it changes, and a
-  create writes the new file's fence records at its unit's epoch. A paused former
-  owner's namespace commits are then refused like its content commits.
+  commit and with an existence commit of the same file in both directions.
+- A fence that forces every commit of a shard through one record **MUST NOT** be
+  used: it serialises every file of the shard on one key.
+- A fenced commit covers only operations durable on the whole replica set
+  ([RFC 10 §4](rfc-10-journal-replication.md#4.%20The%20write%20path)).
+- **Release is fenced like a write.** It deletes the file's content record and
+  records a removal of the whole file ([RFC 6 §6.4](rfc-6-block-metadata.md#6.4%20Delete)); a superseded primary's
+  release would destroy a file its successor is writing.
+- **Removal records are pruned only by the file's primary**, under its epoch.
+  Only the primary knows which of its offload offers are still in flight.
+- A **put intent** ([RFC 6 §7.6](rfc-6-block-metadata.md#7.6%20Put%20intents)) carries the (shard, epoch) it was written
+  under; one whose epoch is superseded can no longer commit, and GC **MAY** remove
+  it ([RFC 9 §5](rfc-9-gc.md#5.%20Unrecorded%20objects)).
 
 *Backend notes (non-normative).* On the backend that tracks point reads, a
 conflict-tracked read is a get inside an update transaction with conflict
-detection on; a blind write detects nothing, so a guarded write also gets the
-key. On the snapshot-isolation backend it is an explicit key lock (optimistic,
-or pessimistic for contended keys), taken on several files in file-identity
-order. Transaction size limits set the batch size of removals
-([RFC 6 §6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation)), and no transaction spans an upload, which would hold back the
-store's garbage-collection safe point.
+detection on; a blind write detects nothing, so a guarded write also gets the key.
+On the snapshot-isolation backend it is an explicit key lock, taken on several
+files in file-identity order. Transaction size limits set the batch size of moves
+and removals, and no transaction spans an upload.
+
+### 8.1 Operations across shards
+
+A rename, link or unlink can touch files in several shards: the source
+directory, the target directory, the file itself — whose shard need not be its
+directory's ([§2](#2.%20Shards)) — and a target it replaces. Each check such an operation
+needs lives at a different primary: a deny mode that forbids delete, a delegation
+to recall, a directory watch. So:
+
+1. **One primary runs it**: the source directory's, or, for a link, the target
+   directory's. It is the **coordinator**.
+2. **Prepare.** The coordinator asks the primary of every other shard involved
+   to check the operation against its open state — deny modes, conflicting
+   opens — to recall the caching grants it breaks, and to **hold** the files:
+   refuse new opens and grants that would conflict, until an outcome arrives or a
+   deadline passes. Each answers yes with its (shard, epoch) and the hold's
+   deadline, or no with a reason.
+3. **Commit.** On every yes, the coordinator commits **one** metadata transaction
+   that guards the fence records of every file and directory it changes, at the
+   (shard, epoch) each primary answered with, and that is refused if the store's
+   commit time is past the earliest hold deadline, which is in store time. A directory rename runs the
+   loop check inside this transaction ([RFC 7 §5.2](rfc-7-namespace-metadata.md#5.2%20The%20loop%20check%20is%20inside%20the%20transaction)).
+4. **Release.** The coordinator sends the outcome, and each primary drops its
+   hold. A file whose last entry was removed gets a pending release, which its
+   own primary decides ([RFC 15 §4.2](rfc-15-topology.md#4.2%20Calls%20that%20touch%20two%20primaries)).
+
+On any no, the coordinator sends abort and returns the protocol's
+sharing-violation or file-open error. A participant releases its hold on its own
+once the deadline has passed plus the drift bound by its clock, so a lost
+coordinator blocks nobody for longer than that; the commit's deadline check makes
+a late commit fail rather than override a grant made after the hold ended.
+
+![A rename across shards](img/rfc11-cross-shard.svg)
 
 ## 9. Failure
 
 | Failure | Outcome |
 | --- | --- |
-| a block service is lost | its units fail over to members of their replica sets ([RFC 10 §9](rfc-10-journal-replication.md#9.%20Failover)) once its leases lapse; front-ends re-route on the first refusal |
-| a block service pauses past its lease | on resuming, everything it sends is refused by epoch ([RFC 10 §6](rfc-10-journal-replication.md#6.%20Fencing)) |
-| a front-end is lost | another front-end takes over its client addresses ([RFC 15 §5.3](rfc-15-topology.md#5.3%20Client%20addressing)); its clients reconnect there and lose no open state, which the owners hold; no acknowledged write is lost, because the owner's replica set holds it |
-| an owner is lost | its units fail over; its clients reclaim their state in those units in grace ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20ownership%20unit)); layouts naming it are revoked |
-| the configuration store is unreachable from a block service | the block service can neither renew its leases nor commit; it stops acknowledging when its leases run out, and its units fail over wherever the store is reachable |
-| a partition separates block services but not the store | nothing changes for ownership, which is decided in the store; replication across the partition fails and [RFC 10 §7](rfc-10-journal-replication.md#7.%20Membership) removes the unreachable members |
+| a storage node is lost | its shards fail over to replicas as soon as its lease lapses ([RFC 10 §9](rfc-10-journal-replication.md#9.%20Failover)); after the re-placement delay they are handed to the nodes placement prefers ([§2.2](#2.2%20Automatic%20per-child%20shards)); front-ends re-route on the first refusal |
+| a node pauses past its lease | on resuming, everything it sends is refused: by replicas by epoch, by the store by time or fence ([§8](#8.%20Metadata%20consistency)); its renewal fails and it is primary of nothing ([§3.1](#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)) |
+| a front-end is lost | another front-end takes over its client addresses ([RFC 15 §5.3](rfc-15-topology.md#5.3%20Client%20addressing)); clients reconnect and lose no open state, which primaries hold |
+| a primary is lost | its shards fail over; clients reclaim their state in them in grace ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)); layouts naming it are revoked |
+| the store is unreachable from a node | it can neither renew nor commit; it fences itself after half its lease, and its shards fail over wherever the store is reachable |
+| a partition separates nodes but not the store | who is primary does not change, since the store decides it; replication across the partition fails and [RFC 10 §7.2](rfc-10-journal-replication.md#7.2%20Removal) removes the unreachable replicas |
+| front-ends cannot reach a primary that reaches the store | a health condition; handover after the re-placement delay ([§5.1](#5.1%20Front-ends%20forward%20to%20the%20primary)) |
+| a coordinator is lost mid-prepare | holds end at their deadline; nothing was committed ([§8.1](#8.1%20Operations%20across%20shards)) |
 
-## 10. API surface
+## 10. Worked examples
+
+Notation: nodes A–E; `S(e5)` is shard S at epoch 5; `f`, `g` are files. Each
+example is a scenario in the simulator's catalogue ([§14](#14.%20Test%20plan%20and%20benchmarks)), named by the ID that
+replays it exactly.
+
+**(a) Many clients writing one share, and a per-child split** —
+`S-shard-many-writers`. Share `/data` is one shard S, primary A, replicas B and C.
+Thirty clients mount through A, B and C.
+
+| t | node A | nodes B, C | metadata store | client sees |
+| --- | --- | --- | --- | --- |
+| 0 | primary of S(e5); journals writes from its own 10 clients | front-ends forward their 20 clients' writes to A | S: e5, A; B, C | all 30 write |
+| 1 | orders and journals all 30 streams; network or disk at 100% | replicate A's operations as replicas | existence commits at e5 | throughput flat at one node's |
+| 2 | operator marks `/data/users` per-child | — | mark on `/data/users` | — |
+| 3 | moves each `/data/users/u*` tree into its own shard, in batches (as (d)) | — | shards U1…U30 placed by hash: U1 → B, U2 → C, U3 → A, … | brief waits on files in a frozen batch |
+| 4 | primary of S and U3, U6, … | B primary of U1, U4, …; C of U2, U5, … | — | each client's writes go to one of three primaries; throughput ≈ 3 nodes' |
+
+Nothing a client does changes: every node still forwards what it is not primary
+for. What changed is that there are now thirty primaries' worth of ordering to go
+around.
+
+**(b) The primary follows the writer, and does not ping-pong** —
+`S-shard-follow-writer`. Shard P, primary A, replicas B and C; window 5 min,
+share 0.9, dwell 30 min.
+
+| t | node A | node B | metadata store | client sees |
+| --- | --- | --- | --- | --- |
+| 0:00 | primary of P(e3); a batch job on B's client writes P | forwards every write to A | P: e3, A; B, C | writes pay one hop |
+| 0:05 | counts 97% of P's bytes from B over 5 min; dwell has passed; hands over (§4) | becomes primary | P: e4, B; A, C | writes pause for the drain, then no hop |
+| 0:10 | a client on A starts writing P; forwards to B | counts A's share at 60% | — | A's client pays one hop |
+| 0:20 | — | A's share reaches 95%, but only 15 min since the last move: stays | — | — |
+| 0:35 | — | dwell passed, A still at 95%: hands over | P: e5, A; B, C | — |
+| 0:36 | both clients now write at once | 50% / 50%: no node reaches 0.9 | — | P stays at A; B's client forwards |
+
+Without the dwell, t 0:20 would have moved P back at once, and every move ships P's
+un-offloaded tail.
+
+**(c) A node crashes: failover now, re-placement later** —
+`S-shard-crash-replace`. Per-child shard U7, primary A, replicas B and C; the
+hash prefers A. Re-placement delay 10 min.
+
+| t | node A | nodes B, C | metadata store | client sees |
+| --- | --- | --- | --- | --- |
+| 0 | crashes | — | U7: e9, A; B, C | writes to U7 stall |
+| 0 + lease + drift | — | B has the highest committed point: takes U7 over ([RFC 10 §9.2](rfc-10-journal-replication.md#9.2%20Takeover)) | U7: e10, B; C | writes resume at B; grace for U7's open state |
+| 4 min | restarts; renews at a new node epoch and is primary of nothing; rejoins U7 as a learner ([RFC 10 §7.3](rfc-10-journal-replication.md#7.3%20Joining)) | B covers A's tail | U7: e11, B; C, A (learner) | — |
+| 6 min | tail covered | B clears the learner flag | U7: e12, B; C, A | — |
+| 10 min | — | the re-placement delay has passed since the failover, and the hash still prefers A: B hands U7 over ([§4](#4.%20Moving%20files%20and%20primaries)) | U7: e13, A; B, C | a brief drain; no grace |
+
+Had A stayed down past 10 min, it would have left the placement set, the hash
+would have picked another winner, and U7 would have been handed there, after that
+node joined as a replica. A node that flaps within the delay never re-hashes
+anything.
+
+**(d) Moving a batch of files between shards** — `S-shard-batch-move`. Files
+`f1`–`f3` move from G(e7) — primary A, replicas B, C — to R — primary B,
+replicas C, D.
+
+| t | node A (G's primary) | node B (R's primary) | metadata store | client sees |
+| --- | --- | --- | --- | --- |
+| 0 | — | raises R to e8, installs it on C and D | R: e8, B; C, D; move record (G, R) cursor 0 | — |
+| 1 | freezes `f1`–`f3`: holds new writes, recalls a layout on `f2`, drains | — | — | writes to `f1`–`f3` wait |
+| 2 | exports their un-offloaded operations, open-state and dedup entries to B | applies them as a copy; replicates to C, D; all durable | — | — |
+| 3 | — | — | one txn: G still e7, R still e8 > 7; `f1`–`f3` → R; fences (R, e8); cursor 3 | — |
+| 4 | refuses `f1`–`f3` with a routing error | installs open state; serves | — | waiting writes retry at B, applied once |
+| 5 | `Discard`s `f1`–`f3` itself; C, in both sets, keeps its copy | — | — | — |
+
+Had G failed over to C at e8 after t3, C's takeover would find `f1`'s fence
+holding (R, e8): same number, other shard, so C's re-applied existence for `f1` is
+refused and C drops that content.
+
+**(e) A rename across shards, refused then allowed** —
+`S-shard-cross-rename`. `d1` is in S1 (primary A), `d2` in S3 (primary C), and
+`f`, once renamed into `d1` from another tree, is still in S2 (primary B). A
+Windows client has `d1/f` open without delete sharing.
+
+| t | node A (coordinator) | node B (f's primary) | metadata store | client sees |
+| --- | --- | --- | --- | --- |
+| 0 | an NFS rename `d1/f` → `d2/g` arrives; prepare to B and C | the open denies delete: answers no | — | — |
+| 1 | aborts; C drops its hold | — | nothing committed | NFS client: file open error |
+| 2 | the Windows client closes `f`; the rename is retried; prepare again | no conflicting open: holds `f`, answers yes (S2, e4), deadline T | — | — |
+| 3 | C recalls a directory delegation on `d2`, answers yes (S3, e2) | — | — | — |
+| 4 | commits one txn: fences `d1` (S1, e6), `d2` (S3, e2), `f` (S2, e4); store time < T | — | entries moved; `f` still in S2 | rename done |
+| 5 | sends the outcome | drops its hold | — | — |
+
+**(f) A paused old primary** — `S-shard-paused-primary`. Shard S, primary A at
+node epoch 3, lease expiry E; replicas B and C.
+
+| t | node A | node B | metadata store | client sees |
+| --- | --- | --- | --- | --- |
+| 0 | S(e5); begins commits for `f` and `g`, then freezes | — | S: e5, (A, 3); fences `f`, `g` (S, e5) | — |
+| 1 | — | after E + drift in store time, takes S over | S: e6, (B, 5); C | writes resume at B |
+| 2 | — | writes `f`, writing its fences first | fence `f` (S, e6); `g` untouched | — |
+| 3 | resumes; its commit for `g` arrives | — | refused: commit time past E, though fence `g` is still (S, e5) | `g` intact |
+| 4 | its commit for `f` arrives | — | refused: (S, e5) ≠ (S, e6) | `f` has B's write |
+| 5 | renewal fails; acquires a new lease at node epoch 4 | — | record names (B, 5): A is primary of nothing | — |
+
+## 11. API surface
 
 Signatures are indicative; the obligations above are normative.
 
 ```go
-// Ownership is what block services and front-ends ask of the configuration store.
-type Ownership interface {
-	// Unit returns the unit a file belongs to, recorded with its file (§2).
-	Unit(ctx context.Context, file FileID) (OwnershipUnitID, error)
-	// Config returns a unit's configuration (RFC 10 §2.1).
-	Config(ctx context.Context, u OwnershipUnitID) (Configuration, error)
-	// Acquire grants the caller the unit's write token (§2.1, §3.2).
-	// ErrHeld names the holder to forward to.
-	Acquire(ctx context.Context, u OwnershipUnitID) (Token, error)
-	// Renew extends the token's lease, which is the owner lease.
-	Renew(ctx context.Context, t Token) (time.Time, error)
-	// Move hands files from one unit to another in batches, resuming from the
-	// cursor the giving unit's configuration holds (§4).
-	Move(ctx context.Context, from, to OwnershipUnitID, files iter.Seq[FileID]) error
-	// SplitRange and MergeRange create and remove a range unit (§2.3).
-	SplitRange(ctx context.Context, file FileID, r ByteRange) (OwnershipUnitID, error)
-	MergeRange(ctx context.Context, file FileID, u OwnershipUnitID) error
+// Shards is what storage nodes and front-ends ask of the metadata store.
+type Shards interface {
+	// ShardOf returns the shard a file belongs to, recorded with it (§2).
+	ShardOf(ctx context.Context, file FileID) (ShardID, error)
+	// Record returns a shard's record (§1, RFC 16 §2.3).
+	Record(ctx context.Context, s ShardID) (metadata.Shard, error)
+	// Claim names the caller primary of a shard that has none, or whose last
+	// primary released it cleanly (§3.2). ErrHeld names the live primary;
+	// ErrNeedsTakeover means the record names a lapsed one (RFC 10 §9.2).
+	Claim(ctx context.Context, s ShardID) (Claim, error)
+	// Renew extends the caller's node lease and returns the expiry and the
+	// store's time. It fails with ErrLeaseExpired once the lease has lapsed (§3.1).
+	Renew(ctx context.Context, node NodeID, nodeEpoch uint64) (expires, storeNow time.Time, err error)
+	// Move moves files from one shard to another in batches, resuming from the
+	// move record of the pair (§4).
+	Move(ctx context.Context, from, to ShardID, files iter.Seq[FileID]) error
 }
 
-type Token struct {
-	Unit    OwnershipUnitID
-	Epoch   Epoch
-	Expires time.Time
+// Claim is what a primary carries on every fenced call (§8).
+type Claim struct {
+	Shard     ShardID
+	Epoch     uint64
+	NodeEpoch uint64
 }
 
 // Router is a front-end's routing cache (§5.1, RFC 15 §6).
 type Router interface {
-	// Route returns the owner of the unit holding off in file: a range unit's
-	// owner for a data operation inside one, the base unit's otherwise.
-	Route(ctx context.Context, file FileID, off int64) (NodeID, Epoch, error)
-	Invalidate(u OwnershipUnitID) // after a refusal by epoch
+	Route(ctx context.Context, file FileID) (NodeID, Claim, error)
+	Invalidate(s ShardID) // after a refusal
 }
 
-var ErrHeld = errors.New("ownership: token held elsewhere")
+var (
+	ErrHeld          = errors.New("shard: primary is live elsewhere")
+	ErrNeedsTakeover = errors.New("shard: primary lapsed; take over through a replica")
+	ErrLeaseExpired  = errors.New("shard: node lease lapsed; acquire a new one")
+	ErrWrongShard    = errors.New("shard: file is not in the shard named")
+)
 ```
 
-## 11. Invariants
+## 12. Invariants
 
 | # | Invariant |
 | --- | --- |
-| O1 | At most one block service's writes to any byte take effect under any epoch, because every receiver refuses a stale one. |
-| O2 | A file's owner epoch never decreases: every configuration change raises it, and every move of files between units raises every unit it touches above all of their previous epochs, in one transaction. |
-| O3 | The write token is the owner lease: one lease per unit. |
-| O4 | A file's unit is recorded at create and changes only by an explicit, batched move. |
-| O5 | A block service that is not a member serves a range only when it knows the owner holds no newer un-offloaded content there; otherwise it forwards. |
-| O6 | A stale route costs a refusal and a retry, never a wrong write; a retried call is answered from the owner's dedup table, never applied twice. |
-| O7 | A failover starts grace for the unit, and nothing is released before it ends ([RFC 14](rfc-14-open-state.md) L7, L8); a planned move hands the open-state table over and starts none. |
-| O8 | The write verifier changes whenever a unit's owner changes. |
-| O9 | Write tokens and client locks share no records. |
-| O10 | Every fenced commit — existence, offload, truncate, deallocate, release, clone and removal pruning — conflicts with a concurrent epoch change under the store's isolation level, through the file's fence records and never through one record per unit. |
-| O11 | The configuration store holds no per-file state. |
-| O12 | Removal records are pruned only by the file's owner, under its epoch. |
-| O13 | Each unit, range units included, has one owner, one token, one lease and one epoch; that epoch fences its namespace, open-state and content commits alike. |
-| O14 | An owner stops acknowledging writes and serving open state before its lease expires by its own clock, less the drift bound. |
-| O15 | A range unit's commits are fenced by its own fence records; a file's size is the maximum of its ranges' committed ends, and no two owners write one record. |
+| O1 | At most one node's writes to any byte take effect under any epoch, because every receiver refuses a stale one. |
+| O2 | A file's epoch never decreases: every change of a shard's primary or replica set raises the shard's epoch, and a batch commits only at a receiving epoch above the one the batch was frozen under, installed on every receiving replica first. |
+| O3 | A shard record names its primary as (node, node epoch); a node whose lease lapsed is primary of nothing until it takes a shard over. |
+| O4 | A file's shard is set at create and changes only by a batched move; every file is in exactly one shard between batches. |
+| O5 | A node other than the primary, a replica included, serves only bytes carrying the version the primary names; a learner serves none. |
+| O6 | A stale route costs a refusal and a retry, never a wrong write; a retry is answered from the dedup table, keyed by (shard, request ID) and handed over with every handover and batch. |
+| O7 | A failover starts grace for the shard and releases nothing before it ends; a handover or batch move hands open state over and starts none. |
+| O8 | The write verifier changes whenever the node serving a shard as primary changes. |
+| O9 | Shard records and client state share no records. |
+| O10 | Every fenced commit is refused unless each file's fence record equals the (shard, epoch) it carries and the store's commit time is before the lease expiry it carries; no fence is one record per shard. |
+| O11 | Shard records are never per file. |
+| O12 | Removal records are pruned only by the file's primary, under its epoch. |
+| O13 | A primary acknowledges no write, grants no open state, serves no read and answers no version query once its lease is within the drift bound of expiry, or its clock differs from the store's by more than half the drift bound. |
+| O14 | During a batch move, the giving primary acknowledges no write to the batch's files from freeze until it refuses them after the commit; `Discard` reaches only nodes outside the receiving replica set. |
+| O15 | An operation across shards commits in one transaction, only after every other primary involved has checked and held its files, and only before the earliest hold's deadline. |
+| O16 | No shard's primary changes by follow-the-writer sooner than the dwell time after its previous change. |
 
-## 12. Observability
+## 13. Observability
 
 | Answers | Metric | Type |
 | --- | --- | --- |
-| token acquisitions, labelled `result` = `granted` or `held` | `dittofs_ownership_acquisitions_total` | counter |
-| moves, labelled `reason` = `follow_writer`, `policy` or `failover` | `dittofs_ownership_moves_total` | counter |
-| handover time, drain to new owner writable | `dittofs_ownership_handover_seconds` | histogram |
-| non-member reads, labelled `result` = `served`, `refilled` or `forwarded` | `dittofs_ownership_nonmember_reads_total` | counter |
-| units owned by this block service, labelled by policy | `dittofs_ownership_units` | gauge |
-| configurations in the configuration store; it follows shares and subtrees, not files | `dittofs_ownership_configurations` | gauge |
-| moves of one unit back to an owner it left within the last minute; a steady rate is ping-pong | `dittofs_ownership_bounces_total` | counter |
-| tokens held by this node | `dittofs_ownership_tokens` | gauge |
-| range units, by state `split` or `merging` | `dittofs_ownership_range_units` | gauge |
+| claims, labelled `result` = `granted`, `held` or `takeover` | `dittofs_shard_claims_total` | counter |
+| changes of primary, labelled `reason` = `follow_writer`, `rebalance`, `replace`, `operator` or `failover` | `dittofs_shard_primary_changes_total` | counter |
+| handover time, freeze to new primary serving | `dittofs_shard_handover_seconds` | histogram |
+| batches moved, and files in them | `dittofs_shard_move_batches_total`, `dittofs_shard_moved_files_total` | counter |
+| reads on a node other than the primary, labelled `result` = `served`, `refilled` or `forwarded` | `dittofs_shard_other_node_reads_total` | counter |
+| shards this node is primary of, and replica of | `dittofs_shard_primaries`, `dittofs_shard_replicas` | gauge |
+| shard records in the store; they follow shares and directories, not files | `dittofs_shard_records` | gauge |
+| follow-the-writer moves back to a primary the shard left within the dwell time; nonzero is a bug | `dittofs_shard_bounces_total` | counter |
+| self-fences, labelled `reason` = `lease` or `clock` | `dittofs_shard_self_fences_total` | counter |
+| cross-shard operations, labelled `result` = `committed`, `refused` or `timed_out` | `dittofs_shard_cross_ops_total` | counter |
+| shards away from their placed node, waiting out the re-placement delay | `dittofs_shard_displaced` | gauge |
 
 Forwarding and refusals by epoch are counted once, in [RFC 15 §10](rfc-15-topology.md#10.%20Observability).
 
-Logs: a move at `Info` with unit, old and new owner, epoch and reason. A block
-service that stops on its own lease expiry logs at `Error`.
+Logs: a change of primary and a move batch at `Info`, with shard, old and new
+primary, epoch and reason. A node that fences itself on its lease or its clock
+logs at `Error`.
 
-## 13. Test plan and benchmarks
+## 14. Test plan and benchmarks
 
-Tokens, moves and routing are modelled with [RFC 10](rfc-10-journal-replication.md)'s configuration protocol in
-one model ([RFC 10 §14](rfc-10-journal-replication.md#14.%20Test%20plan%20and%20benchmarks)), and exercised by the same deterministic simulation.
-Properties:
+Claims, moves, cross-shard operations and routing are modelled together with
+[RFC 10](rfc-10-journal-replication.md)'s shard-record protocol in one model checked before implementation
+([RFC 10 §15](rfc-10-journal-replication.md#15.%20Test%20plan%20and%20benchmarks)), and exercised by the same deterministic simulator: one
+process, every network, clock, store and journal reached through an interface,
+everything driven from a seed. **A failing seed MUST reproduce its failure
+exactly**, and every scenario below replays from its seed.
+
+**Coverage.** Every run reports the branches it reached, and seed search **MUST**
+reach each of these "sometimes" assertions or fail: a batch was re-frozen after an
+epoch changed; a batch skipped a file recorded in another shard; `Discard` was
+withheld from a node in both replica sets; a stale route was refused by epoch, and
+by recorded shard; a call was refused at the hop limit; a retry was answered from
+a dedup entry that crossed a handover; a follow-the-writer move was suppressed by
+the dwell time, and a handover abandoned for a tail that did not shrink; a
+re-placement waited out the delay; a prepare was refused, timed out, and its late
+commit refused by the deadline; a commit was refused by store time, and by fence;
+`Renew` returned `ErrLeaseExpired`; `Claim` returned `ErrNeedsTakeover`.
+
+**Scenario catalogue.**
+
+| ID | Scenario |
+| --- | --- |
+| `S-shard-many-writers` | [§10](#10.%20Worked%20examples) (a) |
+| `S-shard-follow-writer` | [§10](#10.%20Worked%20examples) (b) |
+| `S-shard-crash-replace` | [§10](#10.%20Worked%20examples) (c) |
+| `S-shard-batch-move` | [§10](#10.%20Worked%20examples) (d) |
+| `S-shard-cross-rename` | [§10](#10.%20Worked%20examples) (e) |
+| `S-shard-paused-primary` | [§10](#10.%20Worked%20examples) (f) |
+| `S-shard-move-stale-route` | a write routed to the giving primary after a batch commits is refused and applied once at the receiver |
+| `S-shard-move-giving-failover` | the giving shard fails over between freeze and commit; the batch re-freezes under the new epoch |
+| `S-shard-move-receiving-crash` | the receiving primary is lost right after a batch commits; a receiving replica takes over with every moved write |
+| `S-shard-move-crash-every-batch` | a move of 10^6 files crashed after every batch resumes, each file in one shard |
+| `S-shard-mark-existing` | marking a directory per-child while files are created and hard-linked inside it |
+| `S-shard-zombie-renew` | a node paused past its lease renews: refused; it serves no shard it held |
+| `S-shard-plain-claim-lapsed` | a non-replica tries to claim a shard whose primary lapsed: `ErrNeedsTakeover` |
+| `S-shard-flapping-node` | a node misses renewals repeatedly within the delay: failovers, no re-hash storm |
+| `S-shard-unreachable-primary` | front-ends cannot reach a primary that reaches the store: handover after the delay |
+| `S-shard-hop-loop` | two front-ends with crossed stale caches: refused at the hop limit, then routed |
+| `S-shard-cross-timeout` | a coordinator dies after prepare: holds end at their deadline; a late commit is refused |
+| `S-shard-cross-dir-loop` | two cross-shard directory renames that together would make a cycle: one commits |
+| `S-shard-readdirplus-foreign` | a listing shows children in other shards at their flushed size, never older |
+
+**Properties** every run asserts:
 
 | Property | Violated by |
 | --- | --- |
-| At most one block service's writes to any byte take effect under any epoch (O1) | a sender-side token check standing in for receiver fencing |
-| A file's epoch never falls across a move between units (O2) | a new unit numbered from its own history, or two compare-and-swaps where one is needed |
-| A write forwarded on a stale route is refused, then applied once at the owner (O6) | a front-end trusting its cache, or a non-idempotent retry |
-| A non-member never serves content older than an acknowledged write (O5) | a check against the ref alone, a skipped check on fill |
-| An open file's content survives its unlink on another block service, through a grace period, and through a failover (O7, RFC 14 §9) | open state held in one process, a lease that lapses during grace, a new owner releasing on unlink before grace ends |
-| A paused former owner's create, unlink, rename and pending release are refused after takeover (O13) | a namespace transaction that guards no fence record |
-| A paused former owner grants no open state after the new owner starts serving (O14) | a lease checked only when renewing, a new owner that waits the lease without the drift bound |
-| Writes to two range units of one file commit independently, and `size` is their maximum after any crash (O15) | a range owner writing the file's shared record, a size taken from the last committer |
-| A move of 10^6 files crashed after every batch resumes and ends with each file in one unit (O4) | a move as one transaction, a cursor outside the giving unit's configuration |
-| A release, a truncate or a removal pruning by a superseded owner is refused (O10, O12) | a release checked against existence only, pruning by whoever holds the record |
-| An epoch change concurrent with an existence commit, an offload commit and a removal of one file is detected on each backend's isolation level (O10) | an epoch check by range scan, a blind write to a fence record, a unit-wide fence record |
-| The configuration store's record count follows units, not files (O11) | a per-file token or a file-to-unit map kept as configuration |
-| A unit's writes resume after a move or a failover without operator action | a move that waits on a holder that is gone |
+| At most one node's writes to any byte take effect under any epoch (O1) | a sender-side check standing in for receiver fencing |
+| A file's epoch never falls across a move (O2) | a new shard numbered from its own history; a batch committed at an epoch R's replicas have not installed; a batch committed after G's epoch changed |
+| A moved file's acknowledged writes survive the loss of any one receiving node (O14) | a batch committed with content on the receiving primary alone; `Discard` sent to a node in both replica sets; a write acknowledged by G after freeze |
+| A commit from another shard with the same epoch number is refused (O10) | a fence holding only the epoch |
+| A paused former primary's writes, commits, grants and reads are refused or withheld (O3, O10, O13) | `Renew` succeeding on an expired lease; an expiry checked at start time; a self-fence that omits reads |
+| A deny mode at another primary is honoured by a cross-shard rename (O15) | a coordinator that commits without preparing; a hold with no deadline check at commit |
+| No shard's primary moves twice within the dwell time (O16) | follow-the-writer from a single sample |
+| The store's shard-record count follows directories, not files (O11) | a per-file record or a file-to-shard map kept as shard records |
+| A shard's writes resume after a handover, move or failover without operator action | a move that waits on a primary that is gone |
 
-**Benchmarks**, on three block services on one local network:
+**Benchmarks**, on three storage nodes on one local network:
 
 | Benchmark | Measures | Target |
 | --- | --- | --- |
-| Token acquisitions | configuration-store transactions per file written, one writer, unit already owned | 0 |
-| Handover time | a unit with 64 MiB un-offloaded | ≤ 2 s at 10 Gb/s |
-| Forwarding overhead | p50 latency a front-end hop adds | ≤ one network round trip + 100 µs |
+| Claims per file | store transactions per file written, one writer, shard already claimed | 0 |
+| Handover | a shard with 64 MiB un-offloaded | ≤ 2 s at 10 Gb/s |
+| Forwarding overhead | p50 latency one front-end hop adds | ≤ one network round trip + 100 µs |
 | Stale route | operations after a move | each refused at most once, then applied once |
-| Non-member read | p50 latency of a current cached read against the owner's | report |
-| Two alternating writers | moves per minute of one unit | report, against the move policy ([§14](#14.%20Open%20questions) item 1) |
+| Batch move | files per second moved, 10^6 small files | report |
+| One share, many writers | throughput of 30 writers, one shard vs 30 per-child shards | per-child ≥ 2.5× one shard |
+| Two alternating writers | changes of primary per hour | ≤ 60 / dwell minutes |
 
-## 14. Open questions
+## 15. Open questions
 
-1. **When to move a unit.** The move policy that avoids ping-pong between two
-   writers is unspecified.
-2. **When contention justifies a per-file unit**, measured how, and when it is
-   merged back.
-3. **Read tokens** ([§6](#6.%20Reads%20on%20non-owners)): a shared token per range, revoked before a write is
-   accepted over it, if the per-read round trip shows up in measurement.
-4. **Range unit size and count.** The stripe size, the bound on range units per
-   file, and whether a range is split at a layout request or only by policy.
-5. *Closed:* client lock and delegation state lives with the unit's owner
-   ([RFC 14 §3](rfc-14-open-state.md#3.%20One%20table%20per%20file%2C%20at%20one%20owner)).
-6. **Whether the metadata service itself is split** into shards with no
-   transaction spanning them, and what that does to existence, release and the
-   batched moves of [§4](#4.%20Moving%20ownership).
-7. **Per-child placement weights.** Whether the consistent hash weighs nodes by
-   capacity, and the rate bound on rebalancing moves.
+1. **Follow-the-writer defaults.** The window, share and dwell in [§3.3](#3.3%20The%20primary%20follows%20the%20writer) are
+   proposals, to be tuned from measured workloads.
+2. **Read grants** ([§6](#6.%20Reads%20on%20other%20nodes)): a shared grant per range, revoked before a write is
+   accepted over it, if the per-read round trip shows in measurement.
+3. **Per-child placement.** Whether the consistent hash weighs nodes by capacity,
+   and whether shards hash into a fixed number of slots so that rebalancing moves
+   slots rather than shards.
+4. **Whether the metadata store is split into partitions** with no transaction
+   spanning them, and what that does to existence, release, cross-shard operations
+   and batched moves ([§4](#4.%20Moving%20files%20and%20primaries), [§8.1](#8.1%20Operations%20across%20shards)).
+5. **The hold deadline** of a cross-shard prepare, and whether a participant
+   extends it while the coordinator is still reachable.
 
 ---
 
@@ -528,21 +810,53 @@ Properties:
 
 | System | Takes from it |
 | --- | --- |
-| Frangipani (SOSP 1997), GPFS (FAST 2002) | tokens held by the node using them and revoked on demand; byte-range tokens that split; a peer recovers a failed node's state only after fencing it |
-| xFS (SOSP 1995) | a small reassignable map from file to managing node |
-| Distributed metadata servers with subtree ownership, and client capabilities | ownership per subtree, with pinning favoured over automatic balancing in practice; revocable client grants for caching and buffering |
-| Parallel NFS | the client routed to the data's owner by a layout the server recalls |
-| Shared-everything designs over a fabric | the contrast: stateless front-ends reaching shared persistent media need no owner routing, at the price of storage every node can address |
+| RADOS placement-group primary (Ceph) | the closest relative: a primary orders writes, replicas hold copies, an epoch fences a superseded primary |
+| CephFS subtree pins and distributed pins | the policy ladder: one metadata server per share, subtrees by hand, children spread by consistent hash (`ceph.dir.pin.distributed`); an automatic balancer that is off by default because it thrashed — why [§3.3](#3.3%20The%20primary%20follows%20the%20writer) needs hysteresis |
+| Lustre DNE | remote directories placed by hand, and striped directories that hash one directory's names across servers — the upgrade [§1.2](#1.2%20Non-goals) defers |
+| WEKA | a fixed number of hashed buckets, each with a leader that moves on failure — the slot idea of [§15](#15.%20Open%20questions) item 3 |
+| HDFS router-based federation | stateless routers that proxy to the owning namespace; a cross-namespace rename it refuses, which [§8.1](#8.1%20Operations%20across%20shards) does not |
+| 3FS, JuiceFS, VAST | the contrast: stateless servers over a transactional store or shared media need no primary, because they acknowledge nothing the store does not hold |
+| Frangipani, GPFS | tokens held by the node using them and revoked on demand; a peer recovers a failed node's state only after fencing it |
+| Parallel NFS, flex-files layouts | the client routed to the data's server by a layout the server recalls; the synthetic-uid fence [§5.2](#5.2%20Clients%20that%20can%20route%20themselves) does not rely on |
 | Fencing tokens (Kleppmann, 2016) | a lock is safe only if the resource rejects the stale holder |
 
 ## Appendix B — alternatives considered
 
-Alternatives to one writer per unit — several writers ordered by a timestamp, or
-reads that see a write only after offload — are in [RFC 10 Appendix B](rfc-10-journal-replication.md#Appendix%20B%20%E2%80%94%20alternatives%20considered).
+Alternatives to one writer per shard are in [RFC 10 Appendix B](rfc-10-journal-replication.md#Appendix%20B%20%E2%80%94%20alternatives%20considered).
 
 | Alternative | Why not |
 | --- | --- |
-| A separate lock service beside the metadata store | a second source of truth for who may write; tokens in the store are fenced by the same transactions that use them |
-| Tokens held in memory by a token manager | faster, but needs its own recovery; with units as coarse as a share, acquisitions are too rare for the store's latency to matter |
-| Two owners per unit, one for the namespace and one for data | separate scaling of metadata and data servers, at the price of five cross-owner handoffs and a check-then-I/O race between them; kept as the upgrade path of [§2.1](#2.1%20One%20owner%20per%20unit) |
-| Per-file units by default | a unit per file and a token transaction per file per writing session, at billions of files; kept as an option under measured contention ([§2](#2.%20Ownership%20units)) |
+| A separate lock service beside the metadata store | a second source of truth for who may write; shard records in the store are fenced by the same transactions that use them |
+| Leases held in memory by a lease manager | faster, but needs its own recovery; with shards as coarse as a share, claims are too rare for the store's latency to matter |
+| Two primaries per shard, one for the namespace and one for data | separate scaling, at the price of five cross-primary handoffs and a check-then-I/O race; kept as the upgrade of [§2.1](#2.1%20One%20primary%20per%20shard) |
+| Cross-shard rename and link refused with `EXDEV` | simplest, but a share is one filesystem to its clients, and applications that rename across directories would break wherever a split happened to fall |
+| A two-phase commit across primaries with a durable coordinator log | unnecessary: one store transaction commits the change; the prepare only holds volatile open state, which a deadline bounds |
+| Placement hashed over nodes holding a live lease | one missed renewal would re-hash every shard the node held, and its return would move them all back |
+| Follow-the-writer on any write from a new node | two writers taking turns ping-pong the shard, shipping its tail every time |
+
+## Appendix C — later: per-file and range shards
+
+Deferred. Nothing above depends on them, and no store record, fence or invariant
+for them exists until this appendix is promoted.
+
+> ponytail: a file's writes are ordered by one primary, so one file's
+> contention and bandwidth are capped at one node. Add per-file and range shards
+> when one file's measured load exceeds one node — pNFS striping of a large file
+> across data servers is the expected first case.
+
+- **Per-file shard.** A file split from its enclosing shard into its own, recorded
+  with the file, so shard records still do not grow per file. For a file whose
+  contention — many writers, a hot lock — no coarser shard absorbs.
+- **Range shard.** A contiguous byte range of one file split off with its own
+  primary, epoch, replicas and fence records keyed by (file, range start). The
+  file's own shard — its **base shard** — keeps its namespace record, open state
+  and every range not split off. A pNFS layout then names one data server per
+  range.
+
+What the sketch already knows it must solve: size, change attribute and charged
+bytes derived across ranges without two primaries writing one record, and folded
+monotonically into the base when a range merges back; a commit that finds no
+range fence record after a merge is refused; layouts at range primaries must be
+dropped when the base shard's epoch changes; I/O from clients without layouts
+funnels through the base primary; and one journal must not hold a file under two
+shards without per-(file, shard) settle state.

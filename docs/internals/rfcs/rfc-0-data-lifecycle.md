@@ -19,6 +19,41 @@ can enforce alone. Every other RFC in the set inherits these and does not
 redefine them. Conventions, including the RFC 2119 key words, are in
 [the RFC index](rfc-index.md#Conventions).
 
+## Glossary
+
+The words the whole set shares, one line each. The linked section is the
+definition; every other RFC uses the word in this sense and does not redefine it.
+
+| Term | Means | Defined in |
+| --- | --- | --- |
+| **node** | one DittoFS server process, with one or both roles; only a `storage` node can be a primary or a replica | [RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20binary%2C%20roles%20chosen%20at%20deployment) |
+| **role** | what a node runs: `protocol` (adapters and the filesystem service, no state of its own) or `storage` (the metadata store's view, open state, the content subsystem and journals) | [RFC 15 §2](rfc-15-topology.md#2.%20Roles) |
+| **installation** | all the nodes that share one metadata store and control plane; the widest scope a setting has | [RFC 13 §3](rfc-13-configuration.md#3.%20Scopes) |
+| **share** | one exported file tree, with its own settings, snapshots and journal limits | [RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities) |
+| **namespace** | one prefix, like a folder, inside a bucket of the remote tier; chunks are deduplicated and counted within one namespace, never across two | [RFC 6 §2.6](rfc-6-block-metadata.md#2.6%20The%20scope%20of%20a%20count) |
+| **remote tier** / **remote store** | the durable object storage behind the journals / one configured backend of it | [RFC 4](rfc-4-remote-tier.md) |
+| **journal** | the local tier: one per device on a storage node, holding recent writes until they are offloaded | [RFC 1](rfc-1-journal.md) |
+| **offload** | the pass that copies a journal's dirty extents to the remote tier and records them in metadata | [§5.2](#5.2%20Offload) |
+| **shard** | a set of files with one primary at a time; a share is one shard by default | [RFC 11 §2](rfc-11-ownership.md#2.%20Shards) |
+| **primary** | the one storage node that orders and accepts a shard's writes, as its shard record names — as (node, node epoch) | [RFC 11 §3](rfc-11-ownership.md#3.%20The%20primary) |
+| **replica** | a storage node other than the primary whose journal holds a copy of every write to the shard | [RFC 10 §2.1](rfc-10-journal-replication.md#2.1%20Terms) |
+| **learner** | a replica that has not yet been given the shard's older content: it counts for new writes but cannot take over | [RFC 10 §7.3](rfc-10-journal-replication.md#7.3%20Joining) |
+| **replica set** | a shard's primary and its replicas; an acknowledged write is in all of their journals until offloaded | [RFC 10 §2.1](rfc-10-journal-replication.md#2.1%20Terms) |
+| **shard record** | the metadata-store record naming a shard's primary as (node, node epoch), replicas, epoch, replica count and floor; it changes only by compare-and-swap | [RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities) |
+| **node lease** | the one lease each storage node renews in the metadata store; a node whose lease has lapsed serves nothing | [RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch) |
+| **epoch** | a number in the shard record, raised by every change to it; a message carrying an older one is refused, and a commit is refused unless the file's fence records hold exactly its (shard, epoch) | [RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch) |
+| **committed point** | per shard, the newest version at or below which the whole replica set holds every operation | [RFC 10 §2.1](rfc-10-journal-replication.md#2.1%20Terms) |
+| **file** | a namespace entry with an identity, attributes and an ordered list of chunk refs | [§2.1](#2.1%20Entities) |
+| **chunk** | a run of bytes named by the hash of its content, shared by every file that holds it | [§2.1](#2.1%20Entities) |
+| **block** | the object the remote tier stores: a whole number of chunks, written by one put | [§2.1](#2.1%20Entities) |
+| **ref** | one file's use of one chunk at one offset; a chunk's refcount is the number of its refs | [§2.1](#2.1%20Entities), [RFC 6 §6.1](rfc-6-block-metadata.md#6.1%20A%20refcount%20is%20exactly%20its%20refs) |
+| **cut** / **snapshot** | a number marking one instant of a share / the share as it was at one cut, read-only | [RFC 12 §2.2](rfc-12-snapshots.md#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree) |
+| **metadata store** | the transactional store holding every fact about files, content, identity and configuration | [RFC 16](rfc-16-metadata-store.md) |
+| **front-end** | the node a client's call arrives at; when it is not the primary, it forwards the call there | [RFC 11 §5.1](rfc-11-ownership.md#5.1%20Front-ends%20forward%20to%20the%20primary) |
+
+**Owner** in these RFCs means only a file's owner — a user — never a server. The
+server that writes a shard is its primary.
+
 ---
 
 ## 1. Scope
@@ -75,7 +110,7 @@ Four layers, each calling only the one below:
 | Layer | What it does | Specified in |
 | --- | --- | --- |
 | **Adapters** | speak one wire protocol each: framing, compounds, replay, error codes | RFC 20–22 (planned) |
-| **Filesystem service** (`vfs.Service`) | the one protocol-neutral API adapters call; orders every client operation across the parts below and routes it to its owner | [RFC 17](rfc-17-vfs.md) |
+| **Filesystem service** (`vfs.Service`) | the one protocol-neutral API adapters call; orders every client operation across the parts below and routes it to the primary that serves it | [RFC 17](rfc-17-vfs.md) |
 | **Metadata store**, **open state**, **content subsystem** | the store holds every fact about files, content, identity and configuration ([RFC 6](rfc-6-block-metadata.md), [RFC 7](rfc-7-namespace-metadata.md), [RFC 16](rfc-16-metadata-store.md)); open state holds opens, locks and caching grants ([RFC 14](rfc-14-open-state.md)); the content subsystem is the content data path, made of the engine ([RFC 8](rfc-8-engine.md)), the journal, carver, syncer and GC ([RFC 1](rfc-1-journal.md)–[3](rfc-3-syncer.md), [RFC 9](rfc-9-gc.md)) | as named |
 | **Persistence** | a transactional KV (embedded on one node, replicated in a cluster), journal devices, the remote tier | [RFC 16](rfc-16-metadata-store.md), [RFC 1](rfc-1-journal.md), [RFC 4](rfc-4-remote-tier.md) |
 
@@ -83,20 +118,20 @@ One binary serves every deployment. Which layers a node composes is set by its
 **roles** ([RFC 15](rfc-15-topology.md)):
 
 - `protocol` — adapters and the filesystem service. It holds no state of its
-  own and forwards each call to the owner that serves it.
+  own and forwards each call to the primary that serves it.
 - `storage` — the metadata store's view, open state and the content subsystem
-  with its journals. A node with this role can own ownership units.
+  with its journals. Only a node with this role can be a shard's primary or replica.
 
 The default is both roles in one process, where every arrow in the picture is a
 local call; a split deployment runs protocol nodes in front of storage nodes
 over one replicated KV, and the same interfaces cross the network.
 
-**Each ownership unit has one owner** ([RFC 11](rfc-11-ownership.md)), with one epoch and one
-lease. That owner holds the unit's namespace records, its open state and its
+**Each shard has one primary** ([RFC 11](rfc-11-ownership.md)), with one epoch, live
+while its node's lease is. That primary holds the shard's namespace records, its open state and its
 content, so the conflict check for an I/O and the I/O itself run in one place,
-and no operation on one file is split across two owners. A file's byte ranges
-**MAY** be split into range units, each with its own owner, so a large file can be
-striped across nodes; each range unit still has exactly one owner.
+and no operation on one file is split across two primaries. A file is never split
+across shards; per-file and range shards, which would stripe one large file
+across nodes, are deferred ([RFC 11 Appendix C](rfc-11-ownership.md#Appendix%20C%20%E2%80%94%20later%3A%20per-file%20and%20range%20shards)).
 
 ## 2. Terminology
 
@@ -105,7 +140,7 @@ striped across nodes; each range unit still has exactly one owner.
 **File** — a namespace entry with an identity, attributes, and an ordered list
 of chunk references.
 
-**FileAttr** — a file's size, ownership, mode, timestamps and identifiers.
+**FileAttr** — a file's size, owner and group, mode, timestamps and identifiers.
 
 **Chunk** — a run of bytes identified by the BLAKE3-256 hash of its content.
 Chunks are content-addressed, reference-counted, and shared: one chunk MAY be
@@ -464,11 +499,12 @@ extended attributes, stream links — carry the cut they were born after and the
 cut they died after. An overwrite, removal or release that replaces
 a ref a snapshot can still see moves it into the file's history in the same
 transaction, instead of dropping it; a namespace record is superseded the same
-way. Content still dirty in the journal at the cut is pinned to that cut: the
-journal keeps the superseded version until it is offloaded under the cut. A history ref is counted
+way. Content still dirty in the journal at the cut is under a snapshot hold for
+that cut: the journal keeps the superseded version until it is offloaded under the
+cut. A history ref is counted
 like a live one; the chunk's count does not change when a ref moves. Which
-snapshots see a ref is decided by the share's cut number, recorded on the ref
-when it is committed and when it is superseded ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)), never by a
+snapshots see a ref is decided by the share's cut number, recorded on the ref as
+the cut its content's existence commit read and as its successor's ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)), never by a
 journal version: versions are per journal, and a share's files may live in
 several. Deleting a snapshot drops the history that no neighbouring cut still
 sees.

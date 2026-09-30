@@ -612,33 +612,49 @@ is the caller's error, not the journal's: a marker dropped before its removal is
 recorded is one a crash may leave metadata never learning of, until recovery
 rebuilds it.
 
-### 3.11 Snapshot pins
+### 3.11 Snapshot holds
 
 ```go
-Pin(share ShareID, cut SnapshotCut, marks map[FileID]Version) error // durable before it returns
-Unpin(share ShareID, cut SnapshotCut) error
-Pinned(share ShareID) (bytes int64)
+Hold(share ShareID, cut SnapshotCut, marks map[FileID]Version) error // durable before it returns
+Unhold(share ShareID, cut SnapshotCut) error
+Held(share ShareID) (bytes int64)
+Stamp(id FileID, through Version, cut SnapshotCut)
 ```
 
 A snapshot cut is taken without draining the journal ([RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)); the
-dirty content at the cut stays here, pinned to it. `Pin` records a **pin mark**
-per file for the cut: the version its existence has committed up to. Every
-write record stores the share's current cut with its version ([§4.3](#4.3%20Records)), so an
-offload commit can copy it as the ref's `born` ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)).
+dirty content at the cut stays here, held for it ([RFC 12 §2.4](rfc-12-snapshots.md#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history)). `Hold`
+records a **hold mark** per file for the cut: the version its existence has
+committed up to.
 
-- **A pinned version is kept until it is offloaded under the cut.** Content at
-  or below a pin mark whose offloaded bit is unset **MUST NOT** be released,
+`Stamp(id, through, cut)` records the cut an existence commit read, for every
+version of `id` it covered up to `through`. It is stored with those versions, not
+with each write record: a version's cut is the cut of the commit that made it
+exist, not of its append ([RFC 12 §2.2](rfc-12-snapshots.md#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree)). `Offload` offers each version with its
+stamp, and the offload commit copies it into the ref as `born`
+([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)). A stamp is a journal record made durable by the file's next `Sync`,
+which every existence commit takes first, so only the latest commit's stamp can be
+lost to a crash or be missing after a takeover. Recovery rebuilds it from metadata:
+the oldest version of the file's record, live or in history, whose `applied` covers
+the version carries the same cut as its `born`.
+
+- **A held version is kept until it is offloaded under the cut.** Content at
+  or below a hold mark whose offloaded bit is unset **MUST NOT** be released,
   compacted away or dropped when an overwrite, a truncate, a deallocate or a
   release supersedes it: it stays readable to `Offload` ([§3.3](#3.3%20Offload)), which offers it
   flagged as superseded, until its commit returns ([§5.3](#5.3%20Versions) precedence still
   governs every other read).
-- **Pins are durable.** A pin mark is a journal record, synced before `Pin`
-  returns; recovery rebuilds pins with the index ([§9.1](#9.1%20Rebuilding)), so a restart resumes them.
-- **Pinned bytes count against capacity** ([§7](#7.%20Capacity)) and are reported by `Pinned`,
-  from a maintained counter, for the cut's `pin_bound` refusal.
-- **A pin is released** for a version when that version's offload commits, and
-  for the whole cut by `Unpin` when the snapshot is deleted. Released pinned
-  content that nothing else holds is reclaimable like any superseded record
+- **Holds are durable and replicated.** A hold mark is a journal record, synced
+  before `Hold` returns; recovery rebuilds holds with the index ([§9.1](#9.1%20Rebuilding)), so a
+  restart resumes them. Where replication is composed, `Hold` and `Unhold` are
+  replicated operations, and `Hold` returns only once the marks are durable on
+  every replica ([RFC 10 §2.3](rfc-10-journal-replication.md#2.3%20The%20journal%20extension)).
+- **Held bytes count against capacity** ([§7](#7.%20Capacity)) and are reported by `Held`,
+  from a maintained counter, for the cut's `snapshots.hold_bound` and
+  `snapshots.hold_journal_fraction` refusals.
+- **A hold is released** for a version when that version's offload commits, and
+  for the whole cut by `Unhold` when the cut is aborted or the snapshot deleted,
+  keeping what another live cut's hold still covers. Released held content that
+  nothing else holds is reclaimable like any superseded record
   ([§8](#8.%20Reclamation%20mechanisms)).
 
 ## 4. On-disk format
@@ -712,8 +728,8 @@ it describes.
 Each record carries a header, and a write or fill record a payload. The header
 **MUST** identify:
 
-- the record's kind: write, fill, release, truncate, deallocate, delete or
-  durable
+- the record's kind: write, fill, release, truncate, deallocate, delete,
+  durable, hold, unhold or stamp ([§3.11](#3.11%20Snapshot%20holds))
 - the `FileID` it belongs to, and the tag of its share ([§3](#3.%20Interface))
 - the file offset it begins at, and its length, both 64-bit: a removal can cover
   any extent of a file
@@ -738,7 +754,7 @@ would be refused ([§9.3](#9.3%20Torn%20and%20corrupt%20records)).
 An unrecognised record kind fails the open like an unrecognised format ([§4.1](#4.1%20Layout)).
 **A kind added later is a new format version**: a newer binary opens a journal of
 the older version, and an older binary refuses the newer one. The replication
-kinds of [RFC 10](rfc-10-journal-replication.md#2.5%20The%20journal%20extension) are added this way.
+kinds of [RFC 10](rfc-10-journal-replication.md#2.3%20The%20journal%20extension) are added this way.
 
 A record whose payload checksum does not verify **MUST NOT** be used to serve a
 read. A record wholly covered by a release, truncate, deallocate or delete
@@ -974,10 +990,13 @@ unsigned number. The journal takes the counter from one monotonically increasing
 counter per journal. **In this format version the epoch half MUST be zero**, on
 every record and in the floor; a record or a floor with a non-zero epoch fails
 the open like an unrecognised kind ([§4.3](#4.3%20Records)). The width is fixed now so that a
-later format version can raise the epoch ([RFC 10](rfc-10-journal-replication.md#2.5%20The%20journal%20extension)) without changing the
+later format version can raise the epoch ([RFC 10](rfc-10-journal-replication.md#2.3%20The%20journal%20extension)) without changing the
 record layout or the metadata that stores versions. Every version the journal
 assigns **MUST** exceed every version on disk and the floor supplied at open
-([§9.1](#9.1%20Rebuilding)).
+([§9.1](#9.1%20Rebuilding)). Once the epoch half is raised, the floor is compared
+on the counter half only: epochs are ordered per file by the extension that
+raises them, and a floor compared as one 128-bit number would lift every file in
+the journal to the highest epoch any file in it has held.
 
 **Precedence.** Where two records cover the same byte, the one with the higher
 content version wins; where their versions are equal, the one with the higher
@@ -1853,7 +1872,7 @@ lost group commit, an index that stopped being `O(log n)` — are counted instea
    more streams spread writers across more syncs: a create-heavy load split over
    many streams shares fewer syncs, and measured slower as streams were added.
    Whether one leader may sync several streams at once, or streams should be
-   fewer than writers' natural sharding suggests, is unmeasured against the
+   fewer than writers' natural grouping suggests, is unmeasured against the
    contention more streams remove.
 7. **Headroom and seal threshold** ([§7](#7.%20Capacity), [§9.1](#9.1%20Rebuilding)). The reserved headroom's
    size and the 16 MiB idle-seal threshold are proposals; neither has been

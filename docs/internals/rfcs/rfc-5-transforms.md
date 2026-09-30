@@ -110,7 +110,7 @@ records that the transform was not applied ([§2.4](#2.4%20Every%20body%20record
 What does not fit, by design: a transform that loses information, one that needs
 another chunk (delta encoding against a neighbour), and one that turns a chunk
 into several bodies stored in different places (erasure coding across failure
-domains). The last belongs to the store layer, as a store that spreads shards
+domains). The last belongs to the store layer, as a store that spreads fragments
 over several backends, not to the chain.
 
 Nor does encryption meant to be computed on, such as homomorphic encryption. Its
@@ -920,13 +920,13 @@ What a bucket reader can still see:
 Not shipped. An example of a transform that makes bodies **larger**, written the
 way a custom transform would be ([§4](#4.%20Writing%20a%20custom%20transform)).
 
-**What it does.** Splits the body into `k` data shards, adds `m` Reed-Solomon
-parity shards, and stores all of them in the one body. `Decode` rebuilds the
-body from any `k` intact shards, so it can repair damage to up to `m` shards
-without fetching anything else. A per-shard CRC32C tells it which shards are
+**What it does.** Splits the body into `k` data fragments, adds `m` Reed-Solomon
+parity fragments, and stores all of them in the one body. `Decode` rebuilds the
+body from any `k` intact fragments, so it can repair damage to up to `m` fragments
+without fetching anything else. A per-fragment CRC32C tells it which fragments are
 damaged.
 
-**Its header.** Version, `k`, `m`, the original length, and one CRC per shard.
+**Its header.** Version, `k`, `m`, the original length, and one CRC per fragment.
 
 **Bound.** `MaxEncodedLen(n) = ceil(n / k) × (k + m) + header`: with `k = 4`,
 `m = 2`, a 16 MiB chunk encodes to about 24 MiB. The chain's bound grows with it,

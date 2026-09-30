@@ -34,7 +34,7 @@ the server made, and ask to be told when a directory changes. This document owns
 that state and answers:
 
 > **Who holds this file open, what may they do with it, what have we promised
-> them, and what happens to all of it when a client, a server or an owner goes
+> them, and what happens to all of it when a client, a server or a primary goes
 > away?**
 
 It is one component because every one of these kinds of state is consulted by
@@ -49,8 +49,8 @@ This component **MUST NOT**:
   tells RFC 7 that a file is open ([§9](#9.%20Open%20state%20and%20the%20life%20of%20a%20file)); RFC 7 decides the rest;
 - hold content or know where it is. A lock is a statement about who may act on
   a file, not about where its bytes are ([§9.3](#9.3%20Locks%20do%20not%20pin%20bytes));
-- define write tokens, ownership leases or owner epochs — [RFC 11](rfc-11-ownership.md)'s. Client
-  state and ownership share no records ([RFC 11 §7](rfc-11-ownership.md#7.%20Protocol%20state));
+- define shard records, node leases or primary epochs — [RFC 11](rfc-11-ownership.md)'s. Client
+  state and shard placement share no records ([RFC 11 §7](rfc-11-ownership.md#7.%20Protocol%20state));
 - encode a wire protocol: stateids, SMB FileIds, lease keys and replay caches
   are the adapters' ([RFC 17](rfc-17-vfs.md)).
 
@@ -69,7 +69,7 @@ type Client struct {
 	ID       ClientID
 	Protocol protocol.Kind
 	Expires  time.Time
-	Units    []OwnershipUnitID // units it has held state in; bounded (§8)
+	Shards   []ShardID // shards it has held state in; bounded (§8)
 }
 ```
 
@@ -78,9 +78,9 @@ ID from `EXCHANGE_ID` or `SETCLIENTID` (a machine plus a boot verifier), SMB's
 `ClientGuid`, the NLM host name for NFSv3 locks. A client that reboots is a new
 `ClientID`, which is how its stale state is recognised and released.
 
-`Units` lists every ownership unit the client has held state in. A reclaim in a
-unit the list does not name is refused ([§4.4](#4.4%20Grace%20is%20per%20ownership%20unit)): a client that held state
-only elsewhere cannot take state in this unit first.
+`Shards` lists every shard the client has held state in. A reclaim in a
+shard the list does not name is refused ([§4.4](#4.4%20Grace%20is%20per%20shard)): a client that held state
+only elsewhere cannot take state in this shard first.
 
 `protocol.Kind` comes from one small package that the adapters and the metadata
 layer both import. It **MUST NOT** come from an adapter package: the metadata
@@ -155,11 +155,11 @@ type Watch struct {
 A **layout** is a pNFS client's grant to send I/O for a byte range of a file
 straight to the data servers it names ([RFC 15 §5.1](rfc-15-topology.md#5.1%20pNFS)). It is open state like
 the others: held by the client under an open, in the file's table, released
-with the client's lease, recalled on conflict. It also records the epoch of
-every unit it names, and is recalled when any of them changes owner
-([§10](#10.%20Ownership)).
+with the client's lease, recalled on conflict. It also records the (shard,
+epoch) it was granted under, and is recalled when that shard changes primary or
+the file moves to another shard ([§10](#10.%20Shard%20placement)).
 
-## 3. One table per file, at one owner
+## 3. One table per file, at one primary
 
 | State | Granted by | Conflicts with | Lifetime |
 | --- | --- | --- | --- |
@@ -168,7 +168,7 @@ every unit it names, and is recalled when any of them changes owner
 | **byte-range lock** | a lock request | an overlapping lock on the same file; I/O across protocols ([§7](#7.%20Conflicts%20across%20protocols)) | until unlock, close, or lease expiry |
 | **caching grant** | the server, on an open | any conflicting access by another client ([§5](#5.%20Caching%20grants)) | until recalled, revoked, returned or expired |
 | **watch** | a watch request | nothing | until cancelled or lease expiry |
-| **layout** | a layout request, under an open | a conflicting open, lock or deny mode; an owner change of a unit it names | until returned, recalled, revoked or lease expiry |
+| **layout** | a layout request, under an open | a conflicting open, lock or deny mode; a primary change of its shard, or a move of its file | until returned, recalled, revoked or lease expiry |
 
 All of it is held against a **file**, never a name or a handle. A rename does
 not disturb it, and two hard links to one file are one lockable object. Keying
@@ -176,13 +176,13 @@ by handle is the subtler error: one client may hold several handles to one file,
 and a lock one handle can see and another cannot is a lock the same client can
 take twice.
 
-All of it is held **in one table per file, at the owner of the file's unit**
-([RFC 15 §3](rfc-15-topology.md#3.%20One%20owner%20per%20unit)) — the base unit, for a file striped into range units. That
-owner also runs the file's I/O, so a conflict check and the I/O it admits run
+All of it is held **in one table per file, at the primary of the file's shard**
+([RFC 15 §3](rfc-15-topology.md#3.%20One%20primary%20per%20shard)). A file is never split across shards. That
+primary also runs the file's I/O, so a conflict check and the I/O it admits run
 in one process under one epoch, and no grant lands between them. An implementation **MUST NOT** hold any of it in an adapter,
 where the other adapter cannot see it: a lock one protocol grants and the other
 does not observe is not a lock. Every adapter reaches the table through the
-filesystem service ([RFC 17](rfc-17-vfs.md)), which routes to the owner.
+filesystem service ([RFC 17](rfc-17-vfs.md)), which routes to the primary.
 
 ## 4. Client leases, grace and reclaim
 
@@ -196,16 +196,16 @@ holding a lock blocks every other client forever. SMB's durable-handle timeout
 plays the same part for SMB clients.
 
 "Lease" names two unrelated things in this set: the client lease, here, and the
-**ownership lease** of [RFC 11 §3.1](rfc-11-ownership.md#3.1%20A%20token%20is%20a%20lease%2C%20fenced%20by%20an%20epoch), which decides which node may serve a unit. SMB
+**node lease** of [RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch), which, with the shard record, decides which node may serve a shard. SMB
 also calls a caching grant a "lease" ([§5](#5.%20Caching%20grants)). The three share no records.
 
 ### 4.2 Grace makes volatile state safe
 
 Open state other than what [§8](#8.%20What%20is%20durable) makes durable **MAY** be held in memory and lost
-on restart or owner change. It **MUST NOT** be the reason an operation blocks on
+on restart or primary change. It **MUST NOT** be the reason an operation blocks on
 a holder that no longer exists.
 
-An owner that has lost open state **MUST** then run a **grace period** of at
+A primary that has lost open state **MUST** then run a **grace period** of at
 least one lease period. During it, it **MUST** refuse every request for open
 state that is not a reclaim — a new lock, a new open, a deny mode, a grant, a
 layout — whether or not it appears to conflict: the state it would be checked
@@ -226,7 +226,7 @@ be refused.
 
 The window **MUST** end on its own ([RFC 0 §10.2](rfc-0-data-lifecycle.md#10.2%20No%20state%20requires%20intervention%20to%20leave)). A server that will not leave a
 grace period until an operator acts has replaced one wedge with another. It
-**SHOULD** end early, once every client whose record names the unit has
+**SHOULD** end early, once every client whose record names the shard has
 finished reclaiming — sent `RECLAIM_COMPLETE`, or for SMB reconnected its durable
 opens — or has expired: nothing is left that a new request could take first.
 
@@ -238,34 +238,34 @@ it, in the same step. State one protocol dropped and another still counts
 refuses conflicting requests against a holder that no longer exists, until a
 restart.
 
-### 4.4 Grace is per ownership unit
+### 4.4 Grace is per shard
 
-Every open-state operation reaches the owner of the file's unit
-([§3](#3.%20One%20table%20per%20file%2C%20at%20one%20owner)), so a grace period is scoped to the units whose owner lost state, and
-the rest of the cluster keeps granting. Only a failover loses state: a planned
-move hands the table over and runs no grace ([§10](#10.%20Ownership)).
+Every open-state operation reaches the primary of the file's shard
+([§3](#3.%20One%20table%20per%20file%2C%20at%20one%20primary)), so a grace period is scoped to the shards whose primary lost state, and
+the rest of the cluster keeps granting. Only a failover loses state: a handover
+or a batch move of files hands the table over and runs no grace ([§10](#10.%20Shard%20placement)).
 
 **A client must be told to reclaim.** A client whose session survives a failover
 — its `protocol` node did not change — sees no server restart and would never
-reclaim. When a unit fails over, the owner **MUST** therefore signal every client
-whose record names the unit:
+reclaim. When a shard fails over, the primary **MUST** therefore signal every client
+whose record names the shard:
 
 - **NFSv4.1:** set `SEQ4_STATUS_RECALLABLE_STATE_REVOKED` or
   `SEQ4_STATUS_ADMIN_STATE_REVOKED` on the client's next `SEQUENCE` reply, or
   force the loss of its session so it reclaims everything; grace then covers
-  every unit the client's record names.
-- **NFSv4.0:** return `NFS4ERR_STALE_STATEID` for its stateids in the unit, which
+  every shard the client's record names.
+- **NFSv4.0:** return `NFS4ERR_STALE_STATEID` for its stateids in the shard, which
   makes it recover them.
 - **SMB:** break the connection, so the client reconnects and reclaims its
   durable opens; volatile opens are lost, as after any server failure.
 - **NLM:** notify it of a restart, so it reclaims its locks.
 
-A reclaim is accepted only in a unit the client's record names ([§2.1](#2.1%20Client)).
+A reclaim is accepted only in a shard the client's record names ([§2.1](#2.1%20Client)).
 
-**A former owner fences itself.** Grants are replies to clients, which no
-receiver can refuse by epoch, so an owner **MUST** stop serving open state at its
-lease expiry less the drift bound, and a new owner starts grace only after the
-old lease has lapsed plus the drift bound ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20A%20token%20is%20a%20lease%2C%20fenced%20by%20an%20epoch)).
+**A former primary fences itself.** Grants are replies to clients, which no
+receiver can refuse by epoch, so a primary **MUST** stop serving open state at its
+node lease expiry less the drift bound, and a new primary starts grace only after the
+old primary's node lease has lapsed plus the drift bound ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)).
 
 ## 5. Caching grants
 
@@ -360,7 +360,7 @@ writable.
 
 ## 7. Conflicts across protocols
 
-One table ([§3](#3.%20One%20table%20per%20file%2C%20at%20one%20owner)) makes every conflict decidable; these rules decide it.
+One table ([§3](#3.%20One%20table%20per%20file%2C%20at%20one%20primary)) makes every conflict decidable; these rules decide it.
 
 | Held | Requested | Rule |
 | --- | --- | --- |
@@ -376,7 +376,7 @@ A caching grant is recalled by the server in the holder's own protocol, whatever
 protocol caused the conflict ([RFC 17](rfc-17-vfs.md)'s callbacks).
 
 A layout is recalled when a mandatory lock or deny mode is granted over its
-range, so pNFS I/O, which bypasses the owner, never crosses one.
+range, so pNFS I/O, which bypasses the primary, never crosses one.
 
 ## 8. What is durable
 
@@ -385,17 +385,17 @@ the keys [RFC 16](rfc-16-metadata-store.md) lists; volatile state never is.
 
 | Entity | Rule | Why |
 | --- | --- | --- |
-| **Client** | **durable**, holding only what reclaim needs: the client's identity, the units it has held state in, and whether its state was revoked or its reclaim is incomplete | without it every reclaim after a loss must be refused ([§4.2](#4.2%20Grace%20makes%20volatile%20state%20safe)); one record per client, not per open |
+| **Client** | **durable**, holding only what reclaim needs: the client's identity, the shards it has held state in, and whether its state was revoked or its reclaim is incomplete | without it every reclaim after a loss must be refused ([§4.2](#4.2%20Grace%20makes%20volatile%20state%20safe)); one record per client, not per open |
 | **Open** | **volatile**, reclaimed in grace — except **durable** when it keeps an unlinked file alive ([§9.1](#9.1%20An%20open%20keeps%20a%20file%20alive)) or `Durability` is persistent | a durable record per open costs a write per open; only these two cases lose data or a promise without one |
 | **Lock** | **volatile**, reclaimed in grace — **durable** only when its open is persistent | reclaim restores it |
 | **CachingGrant** | **volatile**, never reclaimed; an SMB lease survives only inside a persistent open | a lost grant costs a client its cache, never correctness |
 | **Watch** | **volatile**, never reclaimed | the client re-registers; the NFSv4.1 specification does not allow reclaiming directory notifications |
-| **Layout** | **volatile**, reclaimed in grace; a planned move hands it over only if every unit it names kept its owner | a lost layout costs a `LAYOUTGET`; a stale one is refused by epoch |
+| **Layout** | **volatile**, reclaimed in grace; recalled, never handed over, when its shard's primary changes or its file moves | a lost layout costs a `LAYOUTGET`; a stale one is refused by epoch |
 
-Client records are held globally, not per unit, because one client's state spans
-many units; the unit list in each is what scopes its reclaims. The list is
-written when the client first takes state in a unit, not per open, and is
-bounded: a client past the bound is recorded as holding state in every unit of
+Client records are held globally, not per shard, because one client's state spans
+many shards; the shard list in each is what scopes its reclaims. The list is
+written when the client first takes state in a shard, not per open, and is
+bounded: a client past the bound is recorded as holding state in every shard of
 the share, which widens its grace and never loses a reclaim.
 
 ## 9. Open state and the life of a file
@@ -412,10 +412,10 @@ has open, drop its refs, and let sweep delete its content.
 
 Opening and closing a linked file **MUST NOT** write any record.
 
-### 9.2 A new owner releases nothing before grace ends
+### 9.2 A new primary releases nothing before grace ends
 
-Volatile opens held by a failed owner are gone with it. Until its
-grace period ends, a new owner **MUST** treat every file of the unit as possibly
+Volatile opens held by a failed primary are gone with it. Until its
+grace period ends, a new primary **MUST** treat every file of the shard as possibly
 open: an unlink that drops `nlink` to zero writes the pending release, and the
 release waits for grace and honours the opens clients reclaimed.
 
@@ -427,25 +427,32 @@ about who may act on a file, not where its bytes are. Coupling them is how a
 local tier fills up with content that is durable remotely and cannot be released
 because a client left a file open.
 
-## 10. Ownership
+## 10. Shard placement
 
-Open state is held by the **owner of the file's unit** ([RFC 15 §3](rfc-15-topology.md#3.%20One%20owner%20per%20unit)) and
-moves with it. It is fenced by that owner's epoch: an open-state change carried
-by a superseded owner is refused, and every open-state call carries the
-`ClientID` it acts for, which the owner checks owns the open, lock, grant, watch
+Open state is held by the **primary of the file's shard** ([RFC 15 §3](rfc-15-topology.md#3.%20One%20primary%20per%20shard)) and
+moves with it. It is fenced by that primary's epoch: an open-state change carried
+by a superseded primary is refused, and every open-state call carries the
+`ClientID` it acts for, which the primary checks owns the open, lock, grant, watch
 or layout named.
 
-- **A planned move** hands the unit's volatile table to the new owner under the
-  new epoch, after the old owner stops granting and before the new one serves
-  ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20ownership)). No state is lost, so no grace runs and no client is told.
-- **A failover** loses the volatile table, and starts grace for that unit
-  ([§4.4](#4.4%20Grace%20is%20per%20ownership%20unit)).
-- **A layout** is bound to the epoch of every unit it names. When any of them
-  changes owner, by move or failover, the layout **MUST** be recalled, and
+- **A handover** of a shard's primary hands the shard's volatile table, with its
+  dedup table, to the new primary under the new epoch, after the old primary
+  stops granting and before the new one serves ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)). No state
+  is lost, so no grace runs and no client is told.
+- **A batch move of files** to another shard hands over only those files' entries,
+  with their dedup entries, frozen with the batch. The receiving primary installs
+  them after the batch commits and adds its shard to each client record they
+  name ([§2.1](#2.1%20Client)), so a later failover of that shard asks those clients to
+  reclaim. No grace runs.
+- **A failover** loses the volatile table, and starts grace for that shard
+  ([§4.4](#4.4%20Grace%20is%20per%20shard)).
+- **A layout** is bound to the (shard, epoch) it was granted under. When that
+  shard changes primary, by handover or failover, or the file moves to another
+  shard, the layout **MUST** be recalled, and
   revoked at the recall deadline; a `LAYOUTCOMMIT` for it then fails with
   `NFS4ERR_BADLAYOUT` ([RFC 15 §5.1](rfc-15-topology.md#5.1%20pNFS)).
 
-When a unit's owner changes, the NFS write verifier **MUST** change, or clients
+When a shard's primary changes, the NFS write verifier **MUST** change, or clients
 never resend writes they sent unstable to the old one ([RFC 11 §7](rfc-11-ownership.md#7.%20Protocol%20state)).
 
 ## 11. Interface
@@ -460,7 +467,7 @@ type OpenState interface {
 	Renew(ctx context.Context, c ClientID) error
 	Expire(ctx context.Context, c ClientID) error // releases everything (§4.3)
 
-	// Opens and deny modes (§6). Every call names its client, and the owner
+	// Opens and deny modes (§6). Every call names its client, and the primary
 	// refuses one that names another client's state (§10).
 	Open(ctx context.Context, c ClientID, file FileID, want, deny Access, d Durability, reclaim bool) (Open, *CachingGrant, error)
 	Close(ctx context.Context, c ClientID, o OpenID) error // the last close may release (§9.1)
@@ -486,7 +493,7 @@ type OpenState interface {
 	// Grace (§4.2): the client has reclaimed everything it will.
 	ReclaimComplete(ctx context.Context, c ClientID) error
 
-	// Checks run at the owner, in the process that runs the I/O (§3, §7).
+	// Checks run at the primary, in the process that runs the I/O (§3, §7).
 	// ErrDelay while a recall is outstanding; ErrGrace in grace.
 	CheckIO(ctx context.Context, o OpenRef, r ByteRange, write bool) error
 	CheckChange(ctx context.Context, file FileID, by ClientID, what ChangeMask) error // recalls grants, never waits
@@ -508,18 +515,18 @@ var (
 
 | # | Invariant |
 | --- | --- |
-| L1 | All open state is keyed by file, held in one table per file at the owner of the file's unit, and visible to every adapter; that owner also runs the file's I/O. |
-| L2 | No operation blocks on a holder that no longer exists; after a loss of open state, every non-reclaim request and every I/O a lost lock or deny mode might forbid is refused for that unit until grace ends, and grace ends on its own — early once every recorded client has finished reclaiming. |
-| L3 | A reclaim is accepted only from a client whose durable record names the unit, and every client so named is told to reclaim. |
+| L1 | All open state is keyed by file, held in one table per file at the primary of the file's shard, and visible to every adapter; that primary also runs the file's I/O. |
+| L2 | No operation blocks on a holder that no longer exists; after a loss of open state, every non-reclaim request and every I/O a lost lock or deny mode might forbid is refused for that shard until grace ends, and grace ends on its own — early once every recorded client has finished reclaiming. |
+| L3 | A reclaim is accepted only from a client whose durable record names the shard, and every client so named is told to reclaim. |
 | L4 | An expired or revoked client's state is released in every view in one step. |
 | L5 | A recall ends within its deadline, by acknowledgement or revocation, and no worker waits on it. |
 | L6 | A deny mode is checked once, at open, for a granted open, and per operation for an anonymous one; a conflicting open is refused, never downgraded. |
 | L7 | An open that keeps an unlinked file alive is durable by the time the unlink commits; opening and closing a linked file writes nothing. |
-| L8 | After a failover, nothing is released before grace ends; a planned move hands the table over and runs no grace. |
+| L8 | After a failover, nothing is released before grace ends; a handover or a batch move of files hands the state over and runs no grace. |
 | L9 | Open state never makes an extent ineligible for eviction or reclamation. |
-| L10 | Open state and ownership share no records. |
-| L11 | An owner serves no open state past its lease expiry less the drift bound. |
-| L12 | A layout is bound to the epoch of every unit it names and is recalled when any changes owner. |
+| L10 | Open state and shard placement share no records. |
+| L11 | A primary serves no open state past its node lease expiry less the drift bound. |
+| L12 | A layout is bound to the (shard, epoch) it was granted under and is recalled when that shard changes primary or the file moves. |
 | L13 | Every open-state call names its client, and names only that client's state. |
 
 ## 13. Conformance
@@ -531,17 +538,17 @@ index's tiers.
 
 | Requirement | Check |
 | --- | --- |
-| [§3](#3.%20One%20table%20per%20file%2C%20at%20one%20owner) one table | Take a lock and a deny mode through one adapter, reach the same file through the other. Assert the other observes both. A single-adapter rig cannot fail this. |
+| [§3](#3.%20One%20table%20per%20file%2C%20at%20one%20primary) one table | Take a lock and a deny mode through one adapter, reach the same file through the other. Assert the other observes both. A single-adapter rig cannot fail this. |
 | [§4.2](#4.2%20Grace%20makes%20volatile%20state%20safe) grace | Grant a lock, restart, have a different client request the conflicting lock immediately. Assert refusal for the lease period. Request a lock on a file nobody held; assert it is refused too, and that a reclaim is granted. |
 | [§4.2](#4.2%20Grace%20makes%20volatile%20state%20safe) reclaim needs a record | Lose the client records, restart, reclaim. Assert refused. |
 | [§4.3](#4.3%20An%20expired%20lease%20releases%20everything%20it%20held%2C%20everywhere) lease expiry | Grant a grant through one adapter, let the lease expire, open the file conflictingly through the other. Assert the open is granted without a restart. |
-| [§4.4](#4.4%20Grace%20is%20per%20ownership%20unit) grace per unit | Fail one unit over. Assert only that unit refuses new state, and that a client whose session survived is told to reclaim and does. |
-| [§4.4](#4.4%20Grace%20is%20per%20ownership%20unit) reclaim scoped | Client C holds state only in unit U1, D holds a lock in U2; fail U2 over. Assert C's reclaim of D's lock is refused. |
-| [§4.4](#4.4%20Grace%20is%20per%20ownership%20unit) self-fence | Pause an owner past its lease, let a new owner finish grace, resume the old one. Assert it grants nothing. |
+| [§4.4](#4.4%20Grace%20is%20per%20shard) grace per shard | Fail one shard over. Assert only that shard refuses new state, and that a client whose session survived is told to reclaim and does. |
+| [§4.4](#4.4%20Grace%20is%20per%20shard) reclaim scoped | Client C holds state only in shard U1, D holds a lock in U2; fail U2 over. Assert C's reclaim of D's lock is refused. |
+| [§4.4](#4.4%20Grace%20is%20per%20shard) self-fence | Pause a primary past its node lease, let a new primary finish grace, resume the old one. Assert it grants nothing. |
 | [§4.2](#4.2%20Grace%20makes%20volatile%20state%20safe) I/O in grace | Hold an SMB mandatory lock, fail over, write the range through NFSv3 before the reclaim. Assert `ErrGrace`. |
 | [§4.2](#4.2%20Grace%20makes%20volatile%20state%20safe) early end | Fail over with two recorded clients; both reclaim and complete. Assert grace ends before the lease period. |
-| [§10](#10.%20Ownership) planned move | Hold opens, locks and a grant, move the unit. Assert no grace, and every holding intact at the new owner. |
-| [§10](#10.%20Ownership) stale layout | Write through a layout, fail its data server's unit over, `LAYOUTCOMMIT`. Assert `NFS4ERR_BADLAYOUT`. |
+| [§10](#10.%20Shard%20placement) planned move | Hold opens, locks and a grant, move the shard. Assert no grace, and every holding intact at the new primary. |
+| [§10](#10.%20Shard%20placement) stale layout | Write through a layout, fail its data server's shard over, `LAYOUTCOMMIT`. Assert `NFS4ERR_BADLAYOUT`. |
 | [§5.2](#5.2%20A%20recall%2C%20and%20why%20nothing%20is%20merged) no blocked worker | Hold grants on 10^4 files with a client that never answers; send conflicting opens from another. Assert each gets `ErrDelay` at once and unrelated operations keep their latency. |
 | [§6](#6.%20A%20deny%20mode%20is%20checked%20at%20open) anonymous I/O | Hold an SMB deny-write, write through NFSv3. Assert refused. |
 | [§11](#11.%20Interface) client check | Close, unlock and return a grant naming another client's state. Assert `ErrNotYours`. |
@@ -551,12 +558,12 @@ index's tiers.
 | [§7](#7.%20Conflicts%20across%20protocols) cross-protocol | For every row of the table, assert the stated outcome with one protocol holding and the other requesting. |
 | [§9.1](#9.1%20An%20open%20keeps%20a%20file%20alive) open-unlinked | Open, unlink, crash. Assert the content survives until grace ends, and is released after it unless the open was reclaimed. |
 | [§9.1](#9.1%20An%20open%20keeps%20a%20file%20alive) lazy | Open and close a linked file 10^4 times. Assert no record was written. |
-| [§9.2](#9.2%20A%20new%20owner%20releases%20nothing%20before%20grace%20ends) new owner | Open a file on one owner, move the unit, unlink through the new owner. Assert no release before grace ends. |
+| [§9.2](#9.2%20A%20new%20primary%20releases%20nothing%20before%20grace%20ends) new primary | Open a file on one primary, move the shard, unlink through the new primary. Assert no release before grace ends. |
 
 ### 13.2 What must not stand in
 
 - **A single-client rig MUST NOT stand in for [§4.2](#4.2%20Grace%20makes%20volatile%20state%20safe).** The failure needs two clients on one object.
-- **A single-adapter rig MUST NOT stand in for [§3](#3.%20One%20table%20per%20file%2C%20at%20one%20owner) or [§7](#7.%20Conflicts%20across%20protocols).** State only one protocol can see passes every test that only speaks that protocol.
+- **A single-adapter rig MUST NOT stand in for [§3](#3.%20One%20table%20per%20file%2C%20at%20one%20primary) or [§7](#7.%20Conflicts%20across%20protocols).** State only one protocol can see passes every test that only speaks that protocol.
 - **A test that never revokes MUST NOT stand in for [§5.3](#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time).** A recall that is always answered never exercises the deadline.
 
 ### 13.3 Benchmarks
@@ -565,9 +572,9 @@ index's tiers.
 | --- | --- | --- |
 | Open and close a linked file | p99 latency, records written | records written 0 |
 | Grace refusal and reclaim of 10^4 locks | time to leave grace | once every recorded client completes; one lease period at most |
-| Planned move of a unit holding 10^4 opens | time new opens are refused | 0: no grace |
+| Planned move of a shard holding 10^4 opens | time new opens are refused | 0: no grace |
 | Recall with a responsive holder | time from conflicting open to its grant | report |
-| 10^5 clients renewing | renewals/s at the owner | report |
+| 10^5 clients renewing | renewals/s at the primary | report |
 
 ## 14. Observability
 
@@ -578,10 +585,10 @@ index's tiers.
 | recall time | `dittofs_openstate_recall_seconds` | histogram |
 | recalls revoked at the deadline | `dittofs_openstate_recalls_revoked_total` | counter |
 | conflicts refused, by rule | `dittofs_openstate_conflicts_total{rule}` | counter |
-| units in grace | `dittofs_openstate_grace_units` | gauge |
+| shards in grace | `dittofs_openstate_grace_shards` | gauge |
 | grace periods ended, by `reason` = `complete` or `timeout` | `dittofs_openstate_grace_ended_total{reason}` | counter |
 | requests answered `ErrDelay` while a recall is outstanding | `dittofs_openstate_delays_total` | counter |
-| layouts recalled on an owner change | `dittofs_openstate_layout_recalls_total` | counter |
+| layouts recalled on a primary change | `dittofs_openstate_layout_recalls_total` | counter |
 | reclaims accepted and refused | `dittofs_openstate_reclaims_total{result}` | counter |
 | leases expired | `dittofs_openstate_expired_total` | counter |
 
@@ -608,5 +615,5 @@ with the client and file.
 | Linux kernel NFS server and its client-tracking daemon | client records durable, opens and locks rebuilt in grace |
 | NFS-Ganesha clustered recovery | a shared grace record; grace scoped to what lost state |
 | The SMB2 specification (opens, durable and persistent handles, leases) | durability as a property of an open; lease keys per file |
-| Multiprotocol NAS (a lock manager per volume owner; a distributed lock manager with protocol-shared lock domains) | one table per file; SMB deny modes and locks mandatory against NFS I/O |
+| Multiprotocol NAS (a lock manager per volume on its serving node; a distributed lock manager with protocol-shared lock domains) | one table per file; SMB deny modes and locks mandatory against NFS I/O |
 | Distributed file systems with client capabilities | caching grants recalled on conflict, rebuilt from clients on reconnect |

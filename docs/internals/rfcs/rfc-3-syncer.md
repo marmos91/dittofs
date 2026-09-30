@@ -923,7 +923,7 @@ one. The syncer
 `workers_busy` against throughput tells a slow store from a starved syncer,
 which the logs cannot ([§7.4](#7.4%20Benchmarks)).
 
-Verification is not counted here. Each event has one owner: the block codec
+Verification is not counted here. Each event is counted in one place: the block codec
 counts chunks verified and chunks that failed ([RFC 4 §4.12](rfc-4-remote-tier.md#4.12%20What%20a%20store%20makes%20observable)); the remote store
 counts requests, so gets against chunks fetched shows how well adjacent ranges
 merge; transforms count their own decode failures ([RFC 5 §6](rfc-5-transforms.md#6.%20Observability)).
@@ -1129,7 +1129,7 @@ keeps it from holding its share's flow at its cap while that share's reads wait.
 
 ## 5. What belongs elsewhere
 
-| Concern | Owner |
+| Concern | Specified in |
 | --- | --- |
 | A block's name | [RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block) |
 | Encoding, transforms, verification, the remote store's errors | [RFC 4 §3](rfc-4-remote-tier.md#3.%20The%20block%20format), [§3.4](rfc-4-remote-tier.md#3.4%20Every%20read%20is%20verified%20by%20the%20codec), [§4.8](rfc-4-remote-tier.md#4.8%20Errors%20are%20a%20closed%20set), [RFC 5](rfc-5-transforms.md) |
