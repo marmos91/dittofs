@@ -174,10 +174,6 @@ A snapshot is `pinned`, `complete`, `failed` or `deleting`; only a complete one 
 browsed, cloned, backed up or restored. A failed one's records are removed as a
 deletion removes them ([§2.8](#2.8%20Deleting)).
 
-> [!important] Pending review — snapshots are versioned records
-> Namespace records carry `born`/`died` like refs; a snapshot is one cut record;
-> no tree is copied. Replaces the whole-tree walker and its O(files) cost.
-
 ### 2.3 The cut is one transaction behind a brief gate
 
 Taking snapshot *k* is:
@@ -231,11 +227,6 @@ the refs they drop to history with `died` ≥ *k*, which the snapshot would see
 but its existence excludes. A removal whose phase 1 commits after the cut masks
 nothing for the snapshot, which reads the refs it has not yet dropped, or their
 history.
-
-> [!important] Pending review — no drain, no freeze
-> The cut is one transaction behind the cut gate. Dirty journal content is
-> pinned to the cut until offloaded, and the snapshot completes when no pin
-> remains. Heading renamed from "The cut is a drained, frozen instant".
 
 ### 2.4 Capture is copy on first write
 
@@ -437,11 +428,6 @@ each other through it:
   the operator's explicit statement that the previous owner is gone. It then writes
   the claim `owned`, at the next epoch.
 
-> [!important] Pending review — claim checked with every Recheck and delete batch
-> GC now reads the claim on its own `Recheck` period as well as before each
-> delete batch; a move carries retired blocks with their chunk records, so
-> resurrection works at B.
-
 > decision: the claim is a check, not a lock: the remote contract has no
 > conditional put, so two installations that both believe they own a namespace
 > can both write it. The order of [§4.2](#4.2%20The%20move%2C%20step%20by%20step) prevents that; the claim catches the
@@ -612,10 +598,6 @@ naming it, when B holds that ID for someone else or when an imported protocol ID
 — a UID, GID or SID — already maps to a different principal at B. It **MUST
 NOT** match principals by protocol ID: `u:1000` at A and at B are unrelated
 until an operator maps them.
-
-> [!important] Pending review — export scope and principals
-> A move exports the namespace-scoped content-addressed records and all history;
-> principals import by opaque ID and refuse on collision; secrets stay behind.
 
 ### 5.2 Import is staged and published atomically
 

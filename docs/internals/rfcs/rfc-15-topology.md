@@ -73,10 +73,6 @@ reaches the node owning its file pays no hop; one that does not pays one
 > owner node, or once separately scaled pNFS metadata and data servers are
 > committed to.
 
-> [!important] Pending review — roles are `protocol` and `storage`
-> The earlier owner-capable roles collapse into one `storage`
-> role; both roles by default. The three-role split is the `ponytail:` upgrade.
-
 ### 2.2 Startup refuses what cannot work
 
 A node **MUST** refuse to start when:
@@ -116,10 +112,6 @@ already closed; a `storage` node then hands its units over ([RFC 11 §4](rfc-11-
 before closing the content subsystem. [RFC 8 §2](rfc-8-engine.md#2.%20Composition) composes the content
 subsystem only; this section is the root above it.
 
-> [!important] Pending review — composition by role
-> The composition root moves here from RFC 8, which keeps the content
-> subsystem's own composition.
-
 ## 3. One owner per unit
 
 [RFC 11](rfc-11-ownership.md) gives each ownership unit **one owner**, held by a `storage` node, with
@@ -133,10 +125,6 @@ Because the conflict check of an I/O and the I/O itself run at one owner, no
 grant can land between them and no I/O pays a hop to be checked. `size`,
 write-time times, `LAYOUTCOMMIT`, truncate and release are all local to the
 owner: nothing crosses between owners of one unit.
-
-> [!important] Pending review — one owner per unit
-> Replaces the two owners per unit and the four handoffs between
-> them (release, truncate, size overlay, `LAYOUTCOMMIT`).
 
 ## 4. Where each call runs
 
@@ -209,10 +197,6 @@ Every call a node forwards to an owner carries one envelope:
 > create finds the file it made). Upgrade by recording the request ID in the
 > mutation's transaction when that outcome shows up in client-visible errors.
 
-> [!important] Pending review — route envelope
-> New: request ID plus owner epoch on every routed call, and a dedup table at
-> the owner, replacing "every operation safe to retry".
-
 ## 5. Clients
 
 ### 5.1 pNFS
@@ -249,10 +233,6 @@ range units need not be equal or evenly placed.
   writes a failed owner lost.
 - **Size** is the maximum of the ranges' committed ends ([RFC 11 §2.3](rfc-11-ownership.md#2.3%20Range%20units)).
 
-> [!important] Pending review — striped layouts
-> Replaces "striping is out of scope": a layout names each range unit's owner,
-> is fenced per range, and `LAYOUTCOMMIT` on a stale layout returns BADLAYOUT.
-
 ### 5.2 SMB and NFSv3
 
 These protocols have no data servers. Clients connect to a `protocol` node,
@@ -286,11 +266,6 @@ reclaims.
 A lost `protocol` node loses no open state: the owners hold it. A lost owner is
 a failover, and its clients reclaim their state in its units
 ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20ownership%20unit)); with both roles on one node, both happen at once.
-
-> [!important] Pending review — client addressing
-> New: floating addresses with reset acknowledgements for every protocol, the
-> SMB Witness protocol, NFSv4 locations for drains; continuous availability only
-> with persistent opens.
 
 ## 6. Learning owners
 

@@ -262,9 +262,6 @@ remote-tier credentials it cannot open. A deployment **MAY** split a role's key
 further by secret kind; it **MUST NOT** merge the two roles' keys unless every
 node runs both roles, which is the single-node default.
 
-> [!important] Pending review — wrapping keys per role
-> One wrapping key per role (`protocol`, `storage`), named in the bootstrap only
-> on nodes running that role; `Secret.KeyID` records which ([RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities)). A password is stored only as a slow hash; an NT hash exists only while
 NTLM is enabled. An external provider (a vault, a KMS) **MAY** replace the
 default, behind the same reference.
 
@@ -379,11 +376,6 @@ Descriptive, for the refactor.
 | C9 | Host fields not overridable, flags or otherwise | the documented order names command-line flags as the highest source; none binds to a setting |
 
 ## Appendix B — the settings
-
-> [!important] Pending review — GC settings trimmed
-> GC keeps four settings: interval, trash retention, space-amplification target
-> and audit period. The dead ratio, compaction and audit rates, delete batch
-> and deletes in flight become derived values or the scheduler's constants.
 
 Every setting the storage RFCs name, with its scope and class. "Proposed" marks a
 default this document suggests where the owning RFC states none.

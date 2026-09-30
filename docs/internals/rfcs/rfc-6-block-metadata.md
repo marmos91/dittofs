@@ -235,11 +235,6 @@ its reverse keys; both are kept materialised because they are what a
 transaction tests in O(1), and the block record is the one key resurrection and
 the deleter conflict on ([§7.1](#7.1%20Conditional%20retirement)).
 
-> [!important] Pending review — reverse ref index and carried list
-> A reverse ref key per ref makes "who references this chunk" a prefix read and
-> is the authority the counts cache; the block record carries its chunk list, so
-> no GC step scans chunk records or reads a remote header.
-
 ### 2.1 ChunkRef
 
 A ref says: *these bytes of this file are that range of that chunk.* It is
@@ -401,10 +396,6 @@ committed ([RFC 8](rfc-8-engine.md)). It also sets `Charged`, the file's logical
 excluding holes, and writes the change as a usage delta
 ([RFC 16 §4.4](rfc-16-metadata-store.md#4.4%20Counters%20that%20many%20writers%20change)); a removal's phase 1 lowers it the same way.
 
-> [!important] Pending review — Version and Charged in FileData
-> Existence commits advance `File.Version` and maintain `File.Charged`; the
-> overlay that reports uncommitted size and times reports `Version` too.
-
 `applied` is the newest journal version whose existence change this FileData
 records. A commit of pending existence advances it, which makes the commit
 idempotent and tells recovery where to resume ([§3.4](#3.4%20Ordering%20against%20the%20journal)).
@@ -447,10 +438,6 @@ GC pass spans two namespaces. A deduplication lookup ([§8.2](#8.2%20Deduplicati
 own namespace's partition.
 
 Two partitions that can name one key, each keeping its own count, are forbidden.
-
-> [!important] Pending review — one keyspace partition per namespace
-> Content-addressed keys carry the namespace (`C‖ns‖hash`, …); the key scope is
-> the namespace ID, no longer "the store's identity".
 
 **The absence of a record here MUST NOT be taken as evidence that a remote object
 is unreferenced.** It shows only that this store does not reference it. How an
@@ -904,10 +891,6 @@ The key layout that keeps one file's records together ([§1.2](#1.2%20Why%20it%2
 and GC index keys under their own prefixes, each scoped by
 namespace ([§2.6](#2.6%20The%20scope%20of%20a%20count)).
 
-> [!important] Pending review — shared guards and the one owner's fence
-> Gating reads are shared `Guard`s; namespace transactions guard the file's
-> `F_x`, which now carries the single owner epoch of the unit.
-
 ## 6. Reference counting
 
 ### 6.1 A refcount is exactly its refs
@@ -1132,11 +1115,6 @@ For example, a share takes cuts 1, 2 and 3, all live, so `klatest` is 3.
 After the deletion the live cuts are 1 and 3, and r1 and r3 are each still seen
 by one of them.
 
-> [!important] Pending review — versioned records, no drain
-> Namespace records carry `born`/`died` like refs and share one drop rule; a
-> ref's `born` is the cut at write time, so the cut pins dirty content instead
-> of draining it.
-
 A share with no live snapshot writes no history. `Cut(share)` changes only at a
 cut and at a snapshot deletion, each behind the cut gate, so reading it needs no
 conflict tracking and no lock: it is not a key every commit of the share
@@ -1234,11 +1212,6 @@ two leaves an unreferenced object recorded for deletion; the reverse order leave
 records naming an object that no longer exists, which is **Lost** for content
 that was durable. Pruning removes the block record together with every chunk
 record in its carried list that still names it.
-
-> [!important] Pending review — retirement in the count's transaction, verified delete
-> Retirement moves into the transaction that leaves `live` at zero and keeps the
-> chunk records; the irreversible move to `deleted` checks the reverse ref index
-> first. Adoption of a retired chunk resurrects its block.
 
 ### 7.2 Adoption is conditional on existence
 
@@ -1558,10 +1531,6 @@ var (
     ErrInconsistent = errors.New("blockmeta: count underflow")         // §6.3
 )
 ```
-
-> [!important] Pending review — one read path, one Refs
-> `Existence.Size/Times` and `Content.Refs` are removed: size and times come from
-> `Files.Get` plus the engine overlay, and refs from `Inspect.Refs`.
 
 A serialisation conflict is retried inside the call under the caller's deadline
 and never returned ([RFC 0 §9.2](rfc-0-data-lifecycle.md#9.2%20Conflicts%20and%20their%20retries)).

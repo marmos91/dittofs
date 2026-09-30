@@ -51,10 +51,6 @@ interface on one: the store holds its records and answers for them, and every
 join with content or open state — `GETATTR`'s overlay, the release, `SEEK_HOLE`
 — is made by the filesystem service ([RFC 17](rfc-17-vfs.md)) at the file's owner.
 
-> [!important] Pending review — the namespace store is a leaf
-> RFC 7's `Content` and `OpenHolders` interfaces are deleted. The filesystem
-> service joins `Files.Get` with the engine's overlay and performs the release.
-
 Every entity here is **protocol-neutral**. NFS and SMB vocabulary — uid, SID,
 DOS attributes, security descriptors, `fsid`, volume serials — is translated by
 the adapters and the filesystem service ([RFC 17](rfc-17-vfs.md)); nothing in this document is
@@ -195,9 +191,6 @@ through that index. So a file, an ACL entry or a quota never carries a number
 another installation may have given to someone else, and an import maps
 principals by ID and refuses one that collides ([RFC 12 §5.1](rfc-12-snapshots.md#5.1%20Layout)).
 
-> [!important] Pending review — opaque principals
-> Principals are minted opaque IDs, never reissued; UID, GID and SID live only in
-> the protocol-ID index. `Mode` stays as permission bits
 because both protocols expose it, but it is not the authority when an ACL
 exists ([§2.6](#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode)). SMB's DOS attributes are generic `Flags`, and `Birth` is SMB's
 creation time and NFSv4's `time_create`. SMB symlinks and junctions map to
@@ -318,10 +311,6 @@ the File record is the whole answer. This component never asks for the overlay:
 it is a leaf ([§1](#1.%20Purpose)), and one join, in one place, is the only read path for
 size.
 
-> [!important] Pending review — existence advances `Version`
-> Every existence commit advances `Version`, and the overlay carries it, so the
-> NFSv4 change attribute moves with size and mtime. `File` gains `Applied`.
-
 Three rules, in order of how much they cost to get wrong:
 
 1. **`size` and the hole set move together.** A write past EOF grows `size` *and*
@@ -386,10 +375,6 @@ on the other gets a permission it was never granted. A merge that rewrote only
 the owner, group and everyone entries would fail the same way: `chmod 600`
 would keep granting a named user access, and the ACL's implied mode would no
 longer equal `Mode`.
-
-> [!important] Pending review — `chmod` follows RFC 8881 §6.4.1.1
-> Named-principal allow entries are limited to the group bits; inherit-only
-> entries are untouched; effective-and-inheritable entries are split.
 
 ### 2.7 Extended attributes and named streams
 
@@ -503,11 +488,6 @@ measured from when it first rose above `Soft`, a time recorded with the usage
 expires, and every refusal emit a quota event through the event hook
 ([§7.6](#7.6%20Decisions%20are%20observable)), so an operator learns of a full tree before its users do.
 
-> [!important] Pending review — charging and soft quotas
-> `File.Charged` holds each file's full logical bytes, shared or not, maintained
-> by existence commits and moved by `chown`. `Quota` gains `Soft`, `Grace` and
-> `Advisory`; limit crossings emit events.
-
 ### 2.9 Methods on File and Entry
 
 Entities carry **pure** methods — no I/O, no context, no store — so that a rule
@@ -591,10 +571,6 @@ is one read, and a create of `readme` beside `README` conflicts on the key
 itself. A listing is ordered by the folded key and returns the stored names. On
 a case-sensitive share the key is the name.
 
-> [!important] Pending review — case-insensitive entries
-> The entry key is the folded name under the share's fold rule, recorded in the
-> store format record; the original bytes are in the value. No separate index.
-
 Two adapters disagreeing about case on one share is not a cosmetic difference.
 Under SMB semantics `README` and `readme` are one entry and the second create
 fails; under POSIX semantics they are two, and a client that made both then
@@ -657,10 +633,6 @@ on every backend, and one backend validates no reads at all ([RFC 6 §5.4](rfc-6
 it, a removal that only scanned for entries commits beside a create that only
 wrote one, and leaves an entry, and a file with `Nlink` 1, under a deleted
 directory.
-
-> [!important] Pending review — structural guards
-> Create, link and rename-into guard the parent; the loop check guards the
-> ancestors it reads; rmdir writes the directory. Guards are shared.
 
 ## 4. What keeps a file alive
 
@@ -738,10 +710,6 @@ written even when the release follows at once.
 
 A pending-release record is not a holder: it keeps nothing alive, it only
 remembers a release that has not yet run.
-
-> [!important] Pending review — pending release is unconditional
-> The last-entry removal always writes the record, with no holder list; holders
-> live only in durable opens; only the release transaction deletes it.
 
 ### 4.4 There is no third holder
 
@@ -979,10 +947,6 @@ replaced by one that does. A cached authorisation result is derived from the
 share grant too, so its key **MUST** include the grant's version: a changed or
 removed grant is a different key.
 
-> [!important] Pending review — share grant on every call
-> `Authorize` evaluates the `ShareGrant` on every call, with the grant in the
-> cache key; `Root` takes an identity; `FileID`s are unguessable.
-
 ### 7.6 Decisions are observable
 
 The chokepoint **MUST** emit an access-audit event for every decision an audit
@@ -998,10 +962,6 @@ log, an antivirus scanner or a ransomware detector — are a planned RFC's
 Because every decision is made here ([§7.1](#7.1%20One%20chokepoint)), one hook sees every access through
 every protocol; an audit emitted by an adapter would miss the others.
 
-> [!important] Pending review — audit and quota events
-> The chokepoint emits access-audit and quota events through one hook; the
-> stream's format is left to a planned RFC.
-
 ## 8. Open state, as the namespace sees it
 
 Opens, byte-range locks, deny modes, caching grants (delegations, oplocks,
@@ -1015,10 +975,6 @@ Open state is the second holder of a file ([§4.2](#4.2%20Open%20state%20is%20th
 ask open state anything: it writes the pending release when a file loses its last
 entry ([§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees)), and the filesystem service consults open state before running
 the release ([RFC 14 §9](rfc-14-open-state.md#9.%20Open%20state%20and%20the%20life%20of%20a%20file)).
-
-> [!important] Pending review — open-state rules live in RFC 14 only
-> §8.2, §8.3, N9 and N11 are deleted here; RFC 14 owns lock keying and
-> "locks do not pin bytes".
 
 ## 9. Attributes and what is not one
 

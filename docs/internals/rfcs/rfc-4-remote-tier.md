@@ -455,12 +455,6 @@ requests in batches of a thousand. A single delete is a batch of one.
   finds versioning drifted on, for the names deleted since the last good one
   ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)); on a service that never versioned it is `Delete`.
 
-> [!important] Pending review — delete replies are read name by name
-> Quiet multi-delete is forbidden and a name missing from a reply is a failure;
-> `DeleteVersions` repairs a versioning drift; `Recheck` runs on GC's own
-> period, reads the claim, and can accept a suspended bucket once no old
-> version remains.
-
 ### 4.6 List is a complete, resumable walk
 
 GC finds most blocks that no record names from their put intents: a put whose

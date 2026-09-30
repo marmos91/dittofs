@@ -200,13 +200,6 @@ Every open-state call names the `ClientID` it acts for, and the service
 nothing, and a client whose lease expires releases its watches with the rest of
 its state ([RFC 14 §4.3](rfc-14-open-state.md#4.3%20An%20expired%20lease%20releases%20everything%20it%20held%2C%20everywhere)).
 
-> [!important] Pending review — open-state calls name their client
-> `Close`, `ReturnGrant`, `AckBreak`, `Watch` and `Unwatch` gained a
-> `ClientID`, and `Root` an identity; a foreign ID is `ErrNotYours`, as in
-> RFC 14. `ReclaimComplete`, the three layout calls and `PreWarm` were added to
-> match RFC 14 and RFC 8, and `Read` may return verified bytes with an error
-> (§5.2). The six groups are unchanged.
-
 ### 3.2 Callbacks
 
 ```go
@@ -239,10 +232,6 @@ stale buffered write through them is refused.
 when the watch's identity may traverse every directory between the watched one
 and the change, evaluated through the chokepoint ([§4.6](#4.6%20One%20chokepoint)) at delivery. A recursive
 watch never reports names below a directory its holder cannot enter.
-
-> [!important] Pending review — recalls return ErrDelay
-> Replaces "the conflicting operation waits on the recall". Notification
-> filtering by traverse permission is new.
 
 ### 3.3 Event hooks
 
@@ -281,14 +270,6 @@ so no protocol can reach a file without appearing in the audit stream.
 - Delivery, retention and the export format of both streams belong to the
   planned observability RFC (RFC 25). This RFC fixes only where they are
   emitted and what an event carries.
-
-> [!important] Pending review — event hooks
-> New: soft-quota and access-audit event streams, emitted from the chokepoint
-> path. Delivery is deferred to RFC 25 (planned).
-
-> [!important] Pending review — the service and its callbacks
-> New RFC, folded from the metadata-model review draft. The interface groups,
-> the callback direction and the name `vfs` are that draft's, agreed in review.
 
 ## 4. Rules
 
@@ -365,10 +346,6 @@ with the open; the service evaluates it on the operations it gates.
   by others: a read under deny-read and a write under deny-write are refused
   with `ErrShareViolation`.
 
-> [!important] Pending review — share grant per call, deny per I/O for anonymous opens
-> The share grant moved from mount time to every call; `Root` takes an
-> identity. Settles the former open question on anonymous opens and deny-read.
-
 ### 4.7 Callable across the network
 
 A call may reach a node that does not own the file ([RFC 15](rfc-15-topology.md)). Every
@@ -382,10 +359,6 @@ by (request ID, epoch) that returns a mutation's original result to a retry.
 So a write whose reply was lost, retried after another write landed on the same
 extent, returns the first write's result instead of overwriting the second.
 Repeating a mutation with the same arguments is **not** assumed to be safe.
-
-> [!important] Pending review — route envelope
-> Replaces "a write repeated with the same arguments leaves the same content",
-> which loses an update when another write lands between the two.
 
 ### 4.8 One owner per file
 
@@ -402,10 +375,6 @@ is ordered wholly before the check, which then refuses, or wholly after the
 I/O. The service does no cross-owner orchestration for a single-file
 operation; the only operations that touch two owners are those RFC 15 names
 (a rename across units, a `Copy` between files of two units), and it orders them.
-
-> [!important] Pending review — one owner per unit
-> Removes the check at one owner and the I/O at another, and the handoffs
-> between them.
 
 ## 5. Orchestration
 
@@ -498,10 +467,6 @@ engine refuses a write for quota.
   and once the grace time has run from then the soft limit is enforced as the
   hard one. Falling back under it clears the record.
 
-> [!important] Pending review — quota reservation and soft limits
-> The quota check now reserves at write time and releases at commit, with the
-> overshoot bound stated. Soft limits, grace and advisory events are new.
-
 ### 5.7 GetAttr
 
 The metadata store is a leaf: it never calls the engine. `GetAttr` joins
@@ -518,11 +483,6 @@ derived from the owner's epoch and the process instance. The service passes it
 through unchanged. It therefore changes whenever the file's owner changes or
 restarts, which is what makes a client resend writes it sent unstable
 ([RFC 14 §10](rfc-14-open-state.md#10.%20Ownership)).
-
-> [!important] Pending review — orchestration orders
-> RFC 8's authorise step moved here; the engine stages and commits content
-> only. `GetAttr`'s overlay join and the verifier's source are new; the
-> service no longer calls the engine's `Release`.
 
 ## 6. Invariants
 

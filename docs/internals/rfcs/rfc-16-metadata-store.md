@@ -22,11 +22,6 @@ tags:
 **Audience:** anyone adding an entity, a record kind, a backend or a consumer
 of the metadata layer, and anyone debugging what it holds.
 
-> [!important] Pending review — folded from the metadata model
-> This RFC is the part of the reviewed metadata model that has no narrower
-> home. File and namespace entities moved to [RFC 7](rfc-7-namespace-metadata.md), content entities to [RFC 6](rfc-6-block-metadata.md),
-> open state to [RFC 14](rfc-14-open-state.md), roles and routing to [RFC 15](rfc-15-topology.md), the filesystem service to [RFC 17](rfc-17-vfs.md).
-
 Conventions, RFC 2119 keywords and test tiers are set once in the
 [index](rfc-index.md). Signatures are indicative; the rules in §1.2 are normative.
 
@@ -138,10 +133,6 @@ type Principal struct {
 Every other identity type sits beside the only entities that use it: the
 content identities (`ChunkHash`, `BlockName`, `JournalVersion`) and
 `SnapshotCut` with the content entities in [RFC 6](rfc-6-block-metadata.md#2.%20The%20records), which defines them once.
-
-> [!important] Pending review — opaque principal IDs
-> `Principal.ID` is a minted, never-reissued ID; UID, GID and SID appear only in
-> the `PX‖` index. An import maps principals by ID and refuses a collision (§4.2).
 
 ### 2.3 Server-wide and control-plane entities
 
@@ -261,10 +252,6 @@ credentials and key material; neither needs the other's. With one wrapping key,
 a compromised protocol node could unseal the bucket credential. The KV still
 lets any node read the sealed bytes; confidentiality rests on the key a node's
 bootstrap names, and restricting what a node may *write* is [RFC 15](rfc-15-topology.md)'s.
-
-> [!important] Pending review — wrapping key per role
-> `Secret.KeyID` names a wrapping key per role or secret kind, and a node's
-> bootstrap names only its own roles' keys ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)).
 
 Adapter settings, netgroups and identity-provider configuration follow the
 same pattern and are left out of this list; none of them changes a file or
@@ -390,10 +377,6 @@ filesystem service's `GetAttr` joins `Files.Get` with the engine's overlay of
 `Size`, `Times` and `Version` for bytes not yet committed ([RFC 8](rfc-8-engine.md)); nothing
 else answers size or times, and `Existence` offers no read of them.
 
-> [!important] Pending review — one read path, store is a leaf
-> The namespace no longer holds `Existence`'s read side; `GetAttr` joins
-> `Files.Get` with the engine's `Size/Times/Version` overlay in the filesystem service.
-
 `User` and `Share` here are entities, not wire types: `PutUser` receives a
 `User`, and the only field it writes that another entity reads is the name
 index. That is the one place in the model where a whole-entity put is
@@ -511,10 +494,6 @@ one-directory create rate of Appendix A again. On a backend that tracks point
 reads a guard is a tracked read; on one that validates no reads it is a
 shared (read) lock on the key, and a write takes the exclusive lock.
 
-> [!important] Pending review — shared Guard
-> `KV.Guard` is specified shared: guards conflict with writes, never with each
-> other. KV conformance gains the check (§6.1).
-
 **`Now` is store time.** Every time a record stores to be compared later — GC's
 `not_before`, a delete's completion, a `Recheck` — is taken from `Now` and
 compared with `Now` in a later transaction ([RFC 9 §1.2](rfc-9-gc.md#1.2%20Words%20this%20document%20uses)). It **MUST** be
@@ -580,17 +559,6 @@ the owner's in-memory tables (quota reservations, routed-request dedup) are
 never written to the KV and so have none. A file's unit and its owner epoch
 need no row of their own: the unit is a `File` field and the epoch is in the
 fences.
-
-> [!important] Pending review — key table
-> Content keys gain the namespace; rows added for history (`H‖`), durable
-> locks, the numeric-id allocator, the version-floor index, compaction
-> candidates, the GC lease and cursors, and client units. The reserved
-> reverse-name row and snapshot captures are gone.
-
-> [!important] Pending review — reverse ref index and GC keys
-> Adds the reverse ref index `CR‖` (about 1.1 TB raw at 2 PB) and store time on
-> `Txn`; the zero index, pass summary and audit scratch are gone; the GC lease is
-> sharded and gains `Recheck`, hold and lowering-state rows.
 
 Consequences:
 
@@ -688,10 +656,6 @@ covered, and replay re-reserves what it replays.
 > unit it is zero. Tighten it by leasing each owner a slice of the remaining
 > quota if a deployment shows overshoot past its slack.
 
-> [!important] Pending review — quota reservation and charging
-> Overshoot is bounded by per-owner reservation slack, not by concurrent commits;
-> a file is charged its logical bytes in `File.Charged`, moved by `chown`.
-
 **Directory times are the same problem.** Every create, unlink and rename in a
 directory updates its `Modify`, `Change` and `Version`; measured, that
 read-and-rewrite cut parallel creates in one directory from 111k/s to 28k/s,
@@ -712,10 +676,6 @@ rmdir) first folds, in the same transaction, the directory's deltas with
 `born` below the `k` it read; those committed before the current cut, so the
 scan that finds them races no writer. Usage deltas carry no cut: a snapshot
 reports no usage of its own.
-
-> [!important] Pending review — delta records carry their cut
-> Directory-time deltas record `born`; the fold runs in `born` order so
-> versioned directory records stay exact at every cut without a drain.
 
 > ponytail: one folder per unit, run by the unit's owner. Fold throughput
 > caps the sustained rate of charge-changing transactions per unit; shard the
@@ -750,10 +710,6 @@ Unicode version and case mapping it applies); a share's case setting names
 one ID and is bound ([RFC 13](rfc-13-configuration.md)); a binary that does not implement every
 recorded rule **MUST** refuse the store. The identity rule serves
 case-sensitive shares.
-
-> [!important] Pending review — one version mechanism; fold rule in the format record
-> The format record holds one format integer (no per-codec map) plus the fold
-> rules entry keys depend on.
 
 ## 5. Decisions and evidence
 
@@ -946,11 +902,6 @@ cold fetch per small random read and coarser deduplication ([RFC 2](rfc-2-carver
 `Target` is a namespace setting and bound ([RFC 13](rfc-13-configuration.md)), so it is chosen at
 creation. Deduplication lowers the chunk rows, never the ref rows.
 
-> [!important] Pending review — metadata sizing
-> About 4×10¹⁰ keys and 4–5 TB raw at 2 PB with the default `Target`, the
-> reverse ref index included; a 1 MiB `Target` is recommended for large-file
-> shares. Not yet measured on a backend.
-
 ## 8. Observability
 
 On fold, metric names follow RFC 25's conventions; until then they use
@@ -971,10 +922,6 @@ Every metric here is internal to the store. Per-operation latency is the
 filesystem service's `dittofs_vfs_op_seconds` ([RFC 17](rfc-17-vfs.md)); forwarding and epoch
 refusals are [RFC 15](rfc-15-topology.md)'s; open state, recalls and grace are [RFC 14](rfc-14-open-state.md)'s; quota
 refusals and overshoot are [RFC 17](rfc-17-vfs.md)'s. Each metric has one owning RFC.
-
-> [!important] Pending review — metrics trimmed to the store
-> Operation latency, routing, open-state, recall, grace and quota rows moved to
-> the RFC that owns each event.
 
 **No share label on per-operation metrics.** At 10⁴ shares, a share label on a
 histogram multiplies its series by 10⁴. Per-share figures — usage, quota,

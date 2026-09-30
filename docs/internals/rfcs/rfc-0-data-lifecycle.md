@@ -98,12 +98,6 @@ and no operation on one file is split across two owners. A file's byte ranges
 **MAY** be split into range units, each with its own owner, so a large file can be
 striped across nodes; each range unit still has exactly one owner.
 
-> [!important] Pending review — two roles, one owner per unit
-> The two owner-capable roles merged into `storage`, and a unit's two owners
-> into one. Splitting them again remains
-> a recorded upgrade path in RFC 11, not a design point. The engine box became
-> the content subsystem.
-
 ## 2. Terminology
 
 ### 2.1 Entities
@@ -479,10 +473,6 @@ journal version: versions are per journal, and a share's files may live in
 several. Deleting a snapshot drops the history that no neighbouring cut still
 sees.
 
-> [!important] Pending review — snapshots are versioned records
-> Snapshots no longer drain the journal or copy namespace records at the cut;
-> every record carries its cuts, as refs already did.
-
 ## 8. Reclamation
 
 Three operations recover space. They differ in what they may destroy, and
@@ -548,11 +538,6 @@ that drifted low cannot delete anything. It needs no fence against writers: a na
 ([§5.2](#5.2%20Offload)), so a remote object may be deleted once no block record and no put
 intent names it. That state is final: no later put can reach the name, and a
 delete that lands late can reach no committed block.
-
-> [!important] Pending review — sweep is retirement plus a verified delete
-> No component scans for blocks at zero: the count's own transaction retires a
-> block, a reference can resurrect it, and the delete checks the references
-> first.
 
 ## 9. Invariants
 

@@ -590,21 +590,12 @@ stored by one share is found by another only within one namespace.
 The scope is encoded in every name ever written, so changing how it is derived
 orphans every existing object at once ([§4.2](#4.2%20A%20block)).
 
-> [!important] Pending review — the key scope is the namespace ID
-> Replaces "one scope or a scope per share" with the namespace ID, matching the
-> namespace-partitioned keys of RFC 6 §2.6.
-
 ## 5. The block assembler
 
 *Blocks are packed by the block assembler, a pure fold over the chunks the carver
 emits. The engine's offload pipeline drives it, because the pipeline owns the
 dedup query ([RFC 8 §6.3](rfc-8-engine.md#6.3%20The%20offload%20pipeline)); its rules live here because they are
 properties of chunks.*
-
-> [!important] Pending review — block assembly is a module, specified here
-> Moved from RFC 8: the assembler's input, output, packing rules, target by
-> carried bytes, cross-file packing and short last block, with its own
-> invariants and checks. The dedup oracle stays in RFC 8 §6.5.
 
 ### 5.1 What it takes and what it returns
 
