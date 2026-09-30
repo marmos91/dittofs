@@ -91,7 +91,15 @@ func (s *Store) gcShard(ctx context.Context, sh *shard, opts gcOptions) (reclaim
 			continue
 		}
 		net, err := s.repackSegment(sh, victim, live)
-		victim.busy.Store(false)
+		// A victim the repack retired keeps its claim, as eviction and
+		// reclaimEmptied keep theirs: a claimer that read it before the retire
+		// would otherwise win the CAS and retire it a second time.
+		sh.mu.Lock()
+		_, kept := sh.sealed[victim.id]
+		sh.mu.Unlock()
+		if kept {
+			victim.busy.Store(false)
+		}
 		if err != nil {
 			return reclaimed, count, err
 		}
