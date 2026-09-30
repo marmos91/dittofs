@@ -63,8 +63,8 @@
 <text x="229" y="365" class="s">Commit</text>
 <text x="368" y="390" class="s">include only ops every replica holds</text>
 <path d="M362 412H801" class="arr"/>
-<text x="380" y="407" class="s">existence commit, fenced: store time + per-file fence</text>
-<text x="380" y="430" class="rt">refused if store time is past the primary's node-lease expiry</text>
+<text x="380" y="407" class="s">existence commit, fenced: node record + per-file fence</text>
+<text x="380" y="430" class="rt">refused if a takeover has marked the primary's node record</text>
 <path d="M803 450H364" class="arr"/>
 <text x="690" y="445" class="s">committed</text>
 <path d="M362 474H501" class="arr"/>

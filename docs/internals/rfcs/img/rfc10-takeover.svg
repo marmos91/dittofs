@@ -62,7 +62,7 @@
 <path d="M92 482H296" class="dash"/>
 <text x="108" y="477" class="rt">late commit (epoch e)</text>
 <rect x="306" y="472" width="196" height="20" rx="4" class="r"/>
-<text x="404" y="486" class="s" text-anchor="middle">refused: past A's lease expiry</text>
+<text x="404" y="486" class="s" text-anchor="middle">refused: A's node record lapsed</text>
 <path d="M526 516H304" class="arr"/>
 <text x="316" y="511" class="s">re-apply existence, fenced</text>
 <path d="M304 536H526" class="arr"/>
@@ -73,6 +73,6 @@
 <rect x="420" y="594" width="300" height="40" rx="4" class="a"/>
 <text x="432" y="611" class="h">B serves writes at epoch e+1</text>
 <text x="432" y="627" class="s">open-state grace starts</text>
-<text x="16" y="662" class="l">Nothing waits on the old primary: replicas refuse its epoch, the metadata store refuses its commits by store time.</text>
+<text x="16" y="662" class="l">Nothing waits on the old primary: replicas refuse its epoch, the metadata store refuses its commits by its node record.</text>
 <text x="16" y="680" class="s">Every acknowledged write sits on every kept replica, so the union of their ops above the max committed point holds it.</text>
 </svg>

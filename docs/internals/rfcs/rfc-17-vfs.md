@@ -353,9 +353,9 @@ operation **MUST** therefore take and return values and resume an iteration
 from a cursor the caller holds.
 
 A call the service forwards carries RFC 15's **route envelope**: a request ID,
-unique per originating node, the shard and epoch the sender expects, and a hop
+unique across the cluster, the shard and epoch the sender expects, and a hop
 count. The primary refuses a call whose epoch is not its own, and keeps a short
-dedup table keyed by (shard, request ID) — handed over with the shard or its
+dedup table keyed by request ID alone — handed over with the shard or its
 files ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)) — that returns a mutation's original result to a retry.
 So a write whose reply was lost, retried after another write landed on the same
 extent, returns the first write's result instead of overwriting the second.

@@ -632,11 +632,22 @@ with each write record: a version's cut is the cut of the commit that made it
 exist, not of its append ([RFC 12 §2.2](rfc-12-snapshots.md#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree)). `Offload` offers each version with its
 stamp, and the offload commit copies it into the ref as `born`
 ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)). A stamp is a journal record made durable by the file's next `Sync`,
-which every existence commit takes first, so only the latest commit's stamp can be
-lost to a crash or be missing after a takeover. Recovery rebuilds it from metadata:
-the oldest version of the file's record, live or in history, whose `applied` covers
-the version carries the same cut as its `born`.
+which every existence commit takes first, and where replication is composed it is
+a replicated operation like `Hold`. A file's existence commits are serialised, so
+at most the latest stamp — one not yet durable, or not yet replicated when its
+primary failed — is lost to a crash or missing after a takeover. Recovery rebuilds
+it from metadata: the oldest version of the file's record, live or in history,
+whose `applied` covers the version carries the same cut as its `born`. A version of
+that record the rebuild needs can have been dropped only if no live cut lies
+between the two candidate cuts, and then either gives the same visibility
+([RFC 12 §2.4](rfc-12-snapshots.md#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history)).
 
+- **An existence-committed version is superseded only once its successor's
+  existence commits.** Until then it **MUST NOT** be released, compacted away or
+  offered flagged as superseded, whatever newer version has been appended over it: it is
+  offloaded as the live version, and the successor's own offload later moves it
+  to history. So a hold mark, the version existence has committed up to, always
+  names content the journal still has ([RFC 12 §2.4](rfc-12-snapshots.md#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history)).
 - **A held version is kept until it is offloaded under the cut.** Content at
   or below a hold mark whose offloaded bit is unset **MUST NOT** be released,
   compacted away or dropped when an overwrite, a truncate, a deallocate or a
@@ -645,8 +656,8 @@ the version carries the same cut as its `born`.
   governs every other read).
 - **Holds are durable and replicated.** A hold mark is a journal record, synced
   before `Hold` returns; recovery rebuilds holds with the index ([§9.1](#9.1%20Rebuilding)), so a
-  restart resumes them. Where replication is composed, `Hold` and `Unhold` are
-  replicated operations, and `Hold` returns only once the marks are durable on
+  restart resumes them. Where replication is composed, `Hold`, `Unhold` and
+  `Stamp` are replicated operations, and `Hold` returns only once the marks are durable on
   every replica ([RFC 10 §2.3](rfc-10-journal-replication.md#2.3%20The%20journal%20extension)).
 - **Held bytes count against capacity** ([§7](#7.%20Capacity)) and are reported by `Held`,
   from a maintained counter, for the cut's `snapshots.hold_bound` and
@@ -665,7 +676,7 @@ One directory per journal, containing:
 
 | Name | Is |
 | --- | --- |
-| `format` | the format version and the **journal identity**: a random 128-bit value chosen when the journal is created and never changed, both covered by a checksum. An unrecognised version, or a checksum that does not verify, **MUST** fail the open, not be upgraded or repaired silently. |
+| `format` | the format version and the **journal identity**: a random 128-bit value chosen when the journal is created and never changed, both covered by a checksum. From the replication extension's version on it also holds the journal's **generation**, which only that extension changes ([RFC 10 §2.2](rfc-10-journal-replication.md#2.2%20One%20journal%20carries%20many%20shards)). An unrecognised version, or a checksum that does not verify, **MUST** fail the open, not be upgraded or repaired silently. |
 | `<id>.seg` | a segment, zero-padded fixed-width id, ascending |
 
 An implementation **MUST NOT** require any other file to reconstruct its state
@@ -1003,7 +1014,9 @@ content version wins; where their versions are equal, the one with the higher
 sequence number wins. That is what lets a repack copy succeed its original, a
 release record cover the content it released, and a fill succeed the release
 record of the content it replaces, while an operation that arrives late with an
-older version still loses.
+older version still loses. Precedence decides reads only: a version whose
+existence has committed stays live for release, compaction and offload until its
+successor's existence commits ([§3.11](#3.11%20Snapshot%20holds)).
 
 Sequence numbers **MUST** come from one monotonically increasing counter per
 journal, never per file or per segment.

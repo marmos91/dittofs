@@ -166,14 +166,21 @@ as [RFC 11 §8.1](rfc-11-ownership.md#8.1%20Operations%20across%20shards) gives 
   the target directory's.
 - **Prepare.** The coordinator asks the primary of every other shard involved to
   check the operation against its open state, recall the caching grants it
-  breaks, and hold the files until an outcome or a deadline in store time. Each
-  answers yes with its (shard, epoch), or no.
+  breaks, and hold the files until an outcome or a deadline in store time, no
+  later than its own node lease expiry less the drift bound, and first commit a
+  durable hold record for the operation. Each answers yes with its (shard,
+  epoch) and (node, node epoch), or no.
 - **Commit.** On every yes, the coordinator commits **one** metadata-store
   transaction that guards the fence records of every file and directory it
-  changes at the (shard, epoch) each primary answered with, and is refused if
-  the store's commit time is past the earliest hold deadline. On any no, it
-  aborts.
-- **Release.** The coordinator sends the outcome, and each primary drops its hold.
+  changes at the (shard, epoch) each primary answered with, guards each
+  participant's shard record and node record at what it answered, and guards
+  each participant's hold record, committing only if every one still exists.
+  No time check decides it. On any no, it aborts.
+- **Release.** The coordinator sends the outcome, and each primary drops its hold
+  and deletes its hold record. A participant whose deadline passes first
+  releases on its own by a transaction deleting its hold record, and grants
+  nothing the hold refused until that has committed, so a late commit conflicts
+  with the deletion or finds the record gone, and aborts.
 
 **The coordinator does not decide a release it cannot see.** Whether a file with
 no entries left may be released depends on its opens, which only the file's own
@@ -188,15 +195,16 @@ Every call a node forwards to a primary carries one envelope:
 
 | Field | Means |
 | --- | --- |
-| request ID | unique per originating node and never reused by it; a retry reuses the original's |
+| request ID | unique across the cluster — the originating node's ID and a number that node never reuses; a retry reuses the original's |
 | shard and epoch | the shard the sender routed by and the primary epoch it expects |
 | hop count | zero from the front-end; a node that is not the primary refuses a call whose hop count is not zero rather than forward it ([RFC 11 §5.1](rfc-11-ownership.md#5.1%20Front-ends%20forward%20to%20the%20primary)) |
 
 - The primary **MUST** refuse a call whose epoch is not its current one for the
   shard ([§6](#6.%20Learning%20primaries)).
-- The primary **MUST** keep a dedup table of recent mutations keyed by
-  (shard, request ID) — not by epoch, so a retry that straddles an epoch raise
-  is still recognised — holding each one's result for at least the sender's
+- The primary **MUST** keep a dedup table of recent mutations keyed by the
+  request ID alone — not by shard or epoch, so a retry that straddles an epoch
+  raise, or is re-routed to the shard its file moved to, is still recognised —
+  holding each one's result for at least the sender's
   retry window, and **MUST** answer a retry from it rather than apply it again.
   The table is handed over with every handover and with the files of every
   batch move ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)). A
@@ -310,7 +318,7 @@ store gives no high availability, whatever the roles.
 | --- | --- |
 | T1 | Every node runs one binary; its roles decide what it composes, one composition root builds it, and it holds no credentials a role of its does not need. |
 | T2 | Each shard has one primary fenced by one epoch; no operation on one shard crosses between two primaries. |
-| T3 | Every routed call carries a request ID and the shard and epoch it expects; a call under a stale epoch is refused, and a retried mutation returns its first result from a dedup table keyed by (shard, request ID). |
+| T3 | Every routed call carries a cluster-unique request ID and the shard and epoch it expects; a call under a stale epoch is refused, and a retried mutation returns its first result from a dedup table keyed by request ID alone. |
 | T4 | Every interface call is value-only and cursor-resumable, collocated or routed. |
 | T5 | A stale route costs a refusal and a retry, never a wrong result. |
 | T6 | A pNFS layout names one data server, the primary of the file's shard, is bound to its (shard, epoch), and is recalled when the shard changes primary or the file moves; `LAYOUTCOMMIT` on a stale layout fails with `NFS4ERR_BADLAYOUT`. |

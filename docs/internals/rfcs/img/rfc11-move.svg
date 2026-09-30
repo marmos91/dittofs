@@ -39,7 +39,7 @@
 <path d="M112 222H326" class="arr"/>
 <text x="114" y="217" class="s">2 ship: Export f1–f3 + open state + dedup</text>
 <path d="M332 246H546" class="arr"/>
-<text x="342" y="241" class="s">Apply as copy</text>
+<text x="342" y="241" class="s">re-version at e8</text>
 <path d="M548 270H334" class="arr"/>
 <text x="342" y="265" class="s">durable</text>
 <path d="M332 304H776" class="arr"/>
@@ -57,8 +57,8 @@
 <text x="40" y="462" class="s">A refuses f1–f3 from now on:</text>
 <text x="40" y="476" class="s">routing error, front-end re-routes</text>
 <rect x="30" y="492" width="250" height="34" rx="4" class="k"/>
-<text x="40" y="506" class="s">5 Discard only where not in R's set:</text>
-<text x="40" y="520" class="s">A discards; C (in both sets) keeps</text>
+<text x="40" y="506" class="s">5 Discard G's entries on G's set:</text>
+<text x="40" y="520" class="s">B, C (in both) keep R's entries</text>
 <text x="16" y="560" class="l">G = {A; B, C}   R = {B; C, D}. Every file is in exactly one shard between batches.</text>
-<text x="16" y="578" class="s">A crash resumes from the move record's cursor; a changed epoch re-freezes and re-ships the batch.</text>
+<text x="16" y="578" class="s">A crash resumes from the move record's cursor; a changed epoch discards R's copy, re-freezes, re-ships.</text>
 </svg>
