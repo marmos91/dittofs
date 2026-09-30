@@ -38,10 +38,10 @@ Conventions, RFC 2119 keywords and test tiers are set once in the
   operation across them.
 - Its operation set is the union of what the protocols need, not their
   intersection. Translation, framing and replay stay in the adapters.
-- It hides the topology: whether an owner is this process or another node
+- It hides the topology: whether a primary is this process or another node
   ([RFC 15](rfc-15-topology.md)) never reaches an adapter.
-- A file has one owner, which holds its namespace, open state and content. The
-  conflict check and the I/O it gates run at that owner, in one step.
+- A file has one primary, which holds its namespace, open state and content. The
+  conflict check and the I/O it gates run at that primary, in one step.
 - It is the one enforcer of quotas, the one emitter of quota and access-audit
   events, and the one place operation latency is measured.
 - It never blocks a worker on a client: a conflict that needs a recall returns
@@ -78,7 +78,7 @@ things:
    nobody audited.
 2. **Cross-protocol rules have one home.** An NFS lock against an SMB deny mode,
    or an NFS write against an SMB lease, is decided where both are visible.
-3. **The topology is invisible to adapters.** A call whose owner is another node
+3. **The topology is invisible to adapters.** A call whose primary is another node
    is forwarded by the service; an adapter never learns there was a hop.
 4. **It is testable without a protocol.** The service has its own conformance
    suite (§8), and the protocol suites then test translation only.
@@ -308,9 +308,9 @@ The service returns `ErrNotFound`, `ErrExist`, `ErrAccess`, `ErrStale`,
 `ErrShareViolation`, `ErrGrace`, `ErrDelay`, `ErrNotYours`, `ErrBadLayout`, and the content errors of
 [RFC 8](rfc-8-engine.md) (`ErrLost`, `ErrUnavailable`, `ErrCorrupt`). Each adapter maps them
 once. `ErrDelay` means "retry shortly": a recall is in progress (§3.2).
-`ErrGrace` means the file's unit is in grace and the request needs, or
-conflicts with, state that may still be reclaimed (§5.1). A routing refusal — wrong owner, stale epoch — **MUST NOT** reach an
-adapter: the service re-routes and retries within the caller's deadline ([RFC 15 §6](rfc-15-topology.md#6.%20Learning%20owners)).
+`ErrGrace` means the file's shard is in grace and the request needs, or
+conflicts with, state that may still be reclaimed (§5.1). A routing refusal — wrong primary, stale epoch — **MUST NOT** reach an
+adapter: the service re-routes and retries within the caller's deadline ([RFC 15 §6](rfc-15-topology.md#6.%20Learning%20primaries)).
 
 ### 4.4 Handles are opaque
 
@@ -353,28 +353,28 @@ operation **MUST** therefore take and return values and resume an iteration
 from a cursor the caller holds.
 
 A call the service forwards carries RFC 15's **route envelope**: a request ID,
-unique per originating node, and the owner epoch the sender expects. The owner
-refuses a call whose epoch is not its own, and keeps a short dedup table keyed
-by (request ID, epoch) that returns a mutation's original result to a retry.
+unique per originating node, the shard and epoch the sender expects, and a hop
+count. The primary refuses a call whose epoch is not its own, and keeps a short
+dedup table keyed by (shard, request ID) — handed over with the shard or its
+files ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)) — that returns a mutation's original result to a retry.
 So a write whose reply was lost, retried after another write landed on the same
 extent, returns the first write's result instead of overwriting the second.
 Repeating a mutation with the same arguments is **not** assumed to be safe.
 
-### 4.8 One owner per file
+### 4.8 One primary per file
 
-Every call on a file runs at the owner of the file's ownership unit
+Every call on a file runs at the primary of the file's shard
 ([RFC 11](rfc-11-ownership.md)), which holds the file's namespace records, its open state and
-its content; for a file striped into range units, the owner of the unit that
-holds the extent. A node with the `protocol` role only forwards
+its content. A node with the `protocol` role only forwards
 ([RFC 15](rfc-15-topology.md)).
 
-The conflict check and the I/O it gates therefore run at one owner, with no
-hop between them. The owner **MUST** order them so that no lock, deny mode or
+The conflict check and the I/O it gates therefore run at one primary, with no
+hop between them. The primary **MUST** order them so that no lock, deny mode or
 grant is granted between the check and the I/O it admits: a conflicting grant
 is ordered wholly before the check, which then refuses, or wholly after the
-I/O. The service does no cross-owner orchestration for a single-file
-operation; the only operations that touch two owners are those RFC 15 names
-(a rename across units, a `Copy` between files of two units), and it orders them.
+I/O. The service does no cross-primary orchestration for a single-file
+operation; the only operations that touch two primaries are those RFC 15 names
+(a rename across shards, a `Copy` between files of two shards), and it orders them.
 
 ## 5. Orchestration
 
@@ -383,11 +383,11 @@ Each order below is normative.
 
 ### 5.1 Write
 
-1. resolve the handle; refuse a stale one; route to the owner (§4.7, §4.8);
+1. resolve the handle; refuse a stale one; route to the primary (§4.7, §4.8);
 2. authorise against the file ([§4.6](#4.6%20One%20chokepoint)), or evaluate the open's stored grant;
    for an anonymous open, check deny modes held by others;
-3. if the unit is in grace, refuse with `ErrGrace` a write that overlaps a lock,
-   deny mode or grant that may still be reclaimed ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20ownership%20unit)); otherwise
+3. if the shard is in grace, refuse with `ErrGrace` a write that overlaps a lock,
+   deny mode or grant that may still be reclaimed ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)); otherwise
    check open state: the caller's open and byte-range locks held by others
    ([RFC 14 §7](rfc-14-open-state.md#7.%20Conflicts%20across%20protocols)). A conflicting caching grant starts a recall and the write
    returns `ErrDelay` (§3.2);
@@ -397,7 +397,7 @@ Each order below is normative.
 6. reply. Existence, usage and `mtime` are recorded at the next stability point
    by the engine, not here; that commit releases the reservation.
 
-Steps 3–5 run at the owner as one step (§4.8).
+Steps 3–5 run at the primary as one step (§4.8).
 
 ### 5.2 Read
 
@@ -421,7 +421,7 @@ A reply is never padded with zeros for the bytes that failed.
 
 `Open` resolves or creates the name, authorises, checks deny modes against the
 opens already held, offers a caching grant if no other client conflicts, and
-records the open — all at the file's owner, in one step as the protocol
+records the open — all at the file's primary, in one step as the protocol
 sees it. `Close` drops the open after checking that the named client holds it.
 The last close of an unlinked file deletes its durable open record; the
 content is then released by the release transaction that consumes the file's
@@ -439,7 +439,7 @@ rename that replaces a target applies the same rule to the target.
 ### 5.5 Size changes
 
 A `SetAttr` that changes size is authorised and checked like a write, then
-applied by the engine's `Truncate` at the file's owner; the other attributes in
+applied by the engine's `Truncate` at the file's primary; the other attributes in
 the same call are applied by the metadata store in the same service call.
 
 ### 5.6 Quota
@@ -447,19 +447,19 @@ the same call are applied by the metadata store in the same service call.
 The service is the one enforcer of quotas. Neither the metadata store nor the
 engine refuses a write for quota.
 
-- At step 4 of a write, the owner adds the charge the write would add to an
+- At step 4 of a write, the primary adds the charge the write would add to an
   in-memory **reservation** per principal and per project, and refuses with
   `ErrQuota` when committed usage plus unfolded deltas
   ([RFC 16 §4.4](rfc-16-metadata-store.md#4.4%20Counters%20that%20many%20writers%20change)) plus its reservations would exceed the hard limit.
   The existence commit that records the charge releases the reservation; so
   does a write that fails. A reservation is volatile: after a crash the journal
   re-applies the writes and their charge ([RFC 8](rfc-8-engine.md)).
-- **Overshoot bound.** An owner sees its own reservations, not other owners'.
-  Each owner lets a principal or project hold at most `S` bytes reserved and
+- **Overshoot bound.** A primary sees its own reservations, not other primaries'.
+  Each primary lets a principal or project hold at most `S` bytes reserved and
   uncommitted (the reservation slack, a setting); a write past it waits for a
-  commit or returns `ErrDelay`. A principal writing through `k` owners at once
+  commit or returns `ErrDelay`. A principal writing through `k` primaries at once
   can therefore exceed its hard limit by at most `(k − 1) × S`, plus what
-  transactions committing concurrently add. With one owner, only the latter.
+  transactions committing concurrently add. With one primary, only the latter.
 - **Soft limits.** A quota's soft limit and grace time
   ([RFC 16](rfc-16-metadata-store.md)) are enforced here too. Crossing the
   advisory threshold or the soft limit emits a quota event (§3.3) and refuses
@@ -471,18 +471,19 @@ engine refuses a write for quota.
 
 The metadata store is a leaf: it never calls the engine. `GetAttr` joins
 `Files.Get` with the engine's overlay — `Size`, `Times` and `Version` of writes
-staged but not yet committed — at the file's owner, where both are local. The
+staged but not yet committed — at the file's primary, where both are local. The
 overlay wins where it is newer. This is the only read path for a file's
 attributes; `ReadDir` with attributes does the same join per entry, batched
-per owner for entries whose files live in other units.
+per primary for entries whose files live in other shards.
 
 ### 5.8 The write verifier
 
 The NFS write verifier is returned by the engine's `Write` and `Commit` and
-derived from the owner's epoch and the process instance. The service passes it
-through unchanged. It therefore changes whenever the file's owner changes or
-restarts, which is what makes a client resend writes it sent unstable
-([RFC 14 §10](rfc-14-open-state.md#10.%20Ownership)).
+derived from the primary's node, its node epoch and the process instance — not
+from the shard epoch ([RFC 11 §7](rfc-11-ownership.md#7.%20Protocol%20state)). The service passes it through unchanged. It
+therefore changes whenever the node serving the file's shard as primary changes
+or restarts, and not when only the shard epoch is raised, which is what makes a client resend writes it sent unstable
+([RFC 14 §10](rfc-14-open-state.md#10.%20Shard%20placement)).
 
 ## 6. Invariants
 
@@ -494,7 +495,7 @@ restarts, which is what makes a client resend writes it sent unstable
 | V4 | A routing refusal never reaches an adapter. |
 | V5 | The service persists nothing and imports no adapter. |
 | V6 | A recall or break that is not acknowledged by its deadline revokes the grant; no worker waits on a recall — the conflicting operation returns `ErrDelay`. |
-| V7 | The conflict check and the I/O it admits run at one owner, and no conflicting state is granted between them. |
+| V7 | The conflict check and the I/O it admits run at one primary, and no conflicting state is granted between them. |
 | V8 | Every open-state call names its `ClientID`, and an ID the client does not hold is refused. |
 | V9 | The share grant is evaluated on every call. |
 | V10 | Quota is enforced only by the service, and overshoot stays within the bound of §5.6. |
@@ -530,13 +531,13 @@ engine's spans. No share label on per-operation metrics ([RFC 16 §8.1](rfc-16-m
     handle it already holds;
   - a recursive watch reports nothing below a directory its holder cannot
     traverse;
-  - during a unit's grace, a write overlapping a reclaimable lock returns
+  - during a shard's grace, a write overlapping a reclaimable lock returns
     `ErrGrace`;
   - a lock granted concurrently with a write is ordered wholly before or after
     it (V7), driven by a model test that interleaves the two;
   - a write retried after a dropped reply, with another write between, applies
     once (V11);
-  - writers through `k` owners overshoot a hard limit by no more than §5.6's
+  - writers through `k` primaries overshoot a hard limit by no more than §5.6's
     bound, counted per run;
   - an event sink that blocks does not slow an operation, and its drops are
     counted.
@@ -553,9 +554,9 @@ engine's spans. No share label on per-operation metrics ([RFC 16 §8.1](rfc-16-m
    a batch call (a `LOOKUP`-`GETATTR`-`OPEN` chain in one service call) pays for
    itself under a split deployment is unmeasured.
 2. **Where the pNFS layout operations live.** `LAYOUTGET` and `LAYOUTCOMMIT` are
-   protocol-specific but cross owners ([RFC 15](rfc-15-topology.md)); whether they are service
+   protocol-specific but cross primaries ([RFC 15](rfc-15-topology.md)); whether they are service
    operations or an adapter-side protocol over `Data` is open. Either way a
-   layout is bound to the owner's epoch ([RFC 14](rfc-14-open-state.md)).
+   layout is bound to the (shard, epoch) it was granted under ([RFC 14](rfc-14-open-state.md)).
 
 ## Appendix A — prior art
 

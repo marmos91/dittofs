@@ -49,7 +49,7 @@ decision, and nothing else may keep content alive behind this component's back
 **This component is a leaf.** It calls no other component and declares no
 interface on one: the store holds its records and answers for them, and every
 join with content or open state — `GETATTR`'s overlay, the release, `SEEK_HOLE`
-— is made by the filesystem service ([RFC 17](rfc-17-vfs.md)) at the file's owner.
+— is made by the filesystem service ([RFC 17](rfc-17-vfs.md)) at the file's primary.
 
 Every entity here is **protocol-neutral**. NFS and SMB vocabulary — uid, SID,
 DOS attributes, security descriptors, `fsid`, volume serials — is translated by
@@ -152,12 +152,12 @@ type File struct {
 
 	Parent FileID // Type Directory only: the directory holding its one entry, so ".." needs no search
 
-	// OwnershipUnit is the group of files one owner serves at a time
-	// (RFC 11). Zero, the default, means the whole share is one unit. Set at
-	// create; unchanged by rename; changed only by an ownership move (RFC 11
+	// Shard is the group of files one primary serves at a time
+	// (RFC 11). Zero, the default, means the whole share is one shard. Set at
+	// create; unchanged by rename; changed only by a move between shards (RFC 11
 	// §4), which rewrites it in bounded batches, never in one transaction. A
-	// per-child or range unit (RFC 11 §2.2, §2.3) is created the same way.
-	OwnershipUnit OwnershipUnitID
+	// per-child or range shard (RFC 11 §2.2, Appendix C) is created the same way.
+	Shard ShardID
 
 	// Project is the tree quota this file is charged to (§2.8): inherited
 	// from the parent at create. Zero: none.
@@ -304,7 +304,7 @@ the write fields alone.
 
 Until the journal's writes to a file are committed, the committed `Size` lags
 them. `GETATTR` is therefore the filesystem service's join ([RFC 17](rfc-17-vfs.md)), made at the
-file's owner: `Files.Get`, then, while the owner's engine holds uncommitted
+file's primary: `Files.Get`, then, while the primary's engine holds uncommitted
 writes to the file, the engine's overlay of their size, write times and
 `Version` applied over it. When the engine holds none, which is the usual case,
 the File record is the whole answer. This component never asks for the overlay:
@@ -475,10 +475,10 @@ in the transaction that changes the owner. A tree quota is carried by
 `Project`: inherited from the parent at create, and a rename or link into a
 different project **MUST** be refused (cross-device), so a tree's usage is one
 counter and never a walk of ancestors. How usage is counted without a hot key
-is [RFC 16](rfc-16-metadata-store.md)'s. Enforcement is the filesystem service's, at the file's owner
+is [RFC 16](rfc-16-metadata-store.md)'s. Enforcement is the filesystem service's, at the file's primary
 and at write time, against an in-memory reservation per principal and project
 released when the write's existence commits ([RFC 17](rfc-17-vfs.md)): a write is checked
-before the charge exists, so the overshoot is bounded by each owner's
+before the charge exists, so the overshoot is bounded by each primary's
 reservation slack, and that bound is stated, not hidden.
 
 **Soft and advisory limits.** Usage above `Soft` is allowed for `Grace`,
@@ -669,7 +669,7 @@ and the release condition is both:
 > A file is released when `Nlink` is zero **and** no open state references it.
 
 **Open state is recorded lazily**, and it is [RFC 14](rfc-14-open-state.md)'s: held in memory by the
-file's owner ([RFC 11 §7](rfc-11-ownership.md#7.%20Protocol%20state)), and made a durable open record only when it keeps
+file's primary ([RFC 11 §7](rfc-11-ownership.md#7.%20Protocol%20state)), and made a durable open record only when it keeps
 content alive — when an unlink removes the last entry of an open file, or when
 a file with no entry is opened ([RFC 14 §9.1](rfc-14-open-state.md#9.1%20An%20open%20keeps%20a%20file%20alive)). Opens and closes of linked files
 write nothing. The durable open records are the only record of who holds an
@@ -680,7 +680,7 @@ unlinked file; this component keeps no second list ([§4.3](#4.3%20Release%20is%
 Releasing a file drops its refs and decrements the chunks they name
 ([RFC 0 §7](rfc-0-data-lifecycle.md#7.%20Mutation%20and%20removal), [RFC 6 §6.4](rfc-6-block-metadata.md#6.4%20Delete)), drops the journal's copy of its content, and deletes
 its File, ACL, xattrs and named streams ([§2.7](#2.7%20Extended%20attributes%20and%20named%20streams)). It is the engine's `Release`
-([RFC 8 §12.1](rfc-8-engine.md#12.1%20One%20content%20facade%2C%20called%20by%20the%20filesystem%20service)), called by the filesystem service at the file's owner; this component
+([RFC 8 §12.1](rfc-8-engine.md#12.1%20One%20content%20facade%2C%20called%20by%20the%20filesystem%20service)), called by the filesystem service at the file's primary; this component
 never calls it ([§1](#1.%20Purpose)) and never drops a ref itself. A release that drops the
 refs and leaves the journal holding the file is half a release. Block metadata is
 never told the name that was removed ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)).
@@ -691,19 +691,19 @@ file's last name — whether or not the file is open. The record names the file
 and holds nothing else: no holder list and no lease. If the file is open, the
 same transaction makes its opens durable ([RFC 14 §9.1](rfc-14-open-state.md#9.1%20An%20open%20keeps%20a%20file%20alive)).
 
-When the entry's directory and the file are in different units, the transaction
-runs at the directory's owner, which cannot see the file's opens: it writes the
-pending release all the same and leaves the decision to the file's owner
-([RFC 15 §4.2](rfc-15-topology.md#4.2%20Calls%20that%20touch%20two%20owners)).
+When the entry's directory and the file are in different shards, the transaction
+runs at the directory's primary, which cannot see the file's opens: it writes the
+pending release all the same and leaves the decision to the file's primary
+([RFC 15 §4.2](rfc-15-topology.md#4.2%20Calls%20that%20touch%20two%20primaries)).
 
-**Only the release transaction deletes it.** The file's owner releases the file
+**Only the release transaction deletes it.** The file's primary releases the file
 once no open references it: at once when none does, at the last close, or when
-grace ends with no reclaimed open ([RFC 14 §9.2](rfc-14-open-state.md#9.2%20A%20new%20owner%20releases%20nothing%20before%20grace%20ends)). That transaction is the first transaction of the engine's `Release`
+grace ends with no reclaimed open ([RFC 14 §9.2](rfc-14-open-state.md#9.2%20A%20new%20primary%20releases%20nothing%20before%20grace%20ends)). That transaction is the first transaction of the engine's `Release`
 ([RFC 8 §8.1](rfc-8-engine.md#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)): it records the removal, deletes the namespace records and
 deletes the pending release `F‖id‖rel` ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)); the removal then masks
 the refs, and its batches drop them. A crash
 anywhere between the unlink and that transaction leaves the record, and the
-owner's recovery releases every recorded file that no open holds. An unlink
+primary's recovery releases every recorded file that no open holds. An unlink
 acknowledged with nothing recorded, and then forgotten, would leak every chunk
 of the file with nothing left to find them by — which is why the record is
 written even when the release follows at once.
@@ -794,7 +794,7 @@ A handle **MUST** encode:
 from a counter, a clock or its parent's ID. A handle is a bearer token for an
 NFSv3 client, and a guessable `FileID` lets a client that learned one handle
 reach its neighbours without ever looking a name up. Minting IDs near their
-parent's, to keep a create's records on one shard, is not adopted unless handles
+parent's, to keep a create's records in one key range, is not adopted unless handles
 are authenticated by a MAC the store keeps.
 
 Nothing else is needed to refuse a handle to a released file: a `FileID` is
@@ -1032,7 +1032,7 @@ existence ([RFC 6 §3.5](rfc-6-block-metadata.md#3.5%20Operations%20that%20make%
 | --- | --- |
 | N1 | A file's `Nlink` equals the number of entries naming it, changes in the transaction that changes them, and fails the transaction rather than going negative. |
 | N2 | A file is released when, and only when, `Nlink` is zero and no open state references it. Nothing else keeps a file alive. |
-| N3 | The transaction that removes a file's last entry writes its pending release, always, holding no holder list; only the release transaction — the engine's `Release`, which drops the refs — deletes it, so a restart or a new owner resumes it. Holders of an unlinked file are its durable opens ([RFC 14](rfc-14-open-state.md)); open state of a linked file is never written. |
+| N3 | The transaction that removes a file's last entry writes its pending release, always, holding no holder list; only the release transaction — the engine's `Release`, which drops the refs — deletes it, so a restart or a new primary resumes it. Holders of an unlinked file are its durable opens ([RFC 14](rfc-14-open-state.md)); open state of a linked file is never written. |
 | N4 | A rename applies wholly or not at all, and its loop check is evaluated inside its transaction and guards every ancestor it reads. Create, link and rename-into guard the parent; removing a directory writes it. |
 | N5 | A handle names a file and a share, is stable across restart, and resolves to stale — never to another file and never to "not found" — when its file is gone. A `FileID` is unguessable and never reissued; so is a principal's ID. |
 | N6 | No name, path or parent appears in a handle, a lock, a ref or a journal key. |

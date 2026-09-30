@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 530" width="900" height="530" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+<defs><style>
+.t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:12px;font-weight:700;fill:#1b1f24}
+.l{font-size:12px;fill:#3d444d}.s{font-size:11px;fill:#5b6472}
+.m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;fill:#1b1f24}
+.vfs{fill:#dce9f7;stroke:#4a7fb5;stroke-width:1.6}.meta{fill:#f3e8d4;stroke:#b08a3e;stroke-width:1.4}
+.data{fill:#d7ecd9;stroke:#4c8a58;stroke-width:1.4}.ext{fill:#f9fafb;stroke:#c3cad3;stroke-width:1}
+.p{fill:#ffffff;stroke:#1b1f24;stroke-width:1.1}.k{fill:#fbefd9;stroke:#a8741f;stroke-width:1.3}.r{fill:#f8e3e6;stroke:#a33a4d;stroke-width:1.3}
+.a{fill:#eaf4ec;stroke:#2f6f4f;stroke-width:1.3}
+.arr{stroke:#5b6472;stroke-width:1.3;fill:none;marker-end:url(#h)}.dash{stroke:#a33a4d;stroke-width:1.2;stroke-dasharray:5 3;fill:none;marker-end:url(#hr)}
+.lane{stroke:#c3cad3;stroke-width:1;stroke-dasharray:3 3}
+.garr{stroke:#2f6f4f;stroke-width:1.6;fill:none;marker-end:url(#hg)}.line{stroke:#5b6472;stroke-width:1.3;fill:none}
+.rt{font-size:11px;fill:#a33a4d}.gt{font-size:11px;fill:#2f6f4f}
+.tail{fill:#ffffff;stroke:#9aa4b2;stroke-width:1;stroke-dasharray:3 2}
+.cp{stroke:#1b1f24;stroke-width:2}.jp{stroke:#a8741f;stroke-width:1.6;stroke-dasharray:4 3}
+</style><marker id="h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#5b6472"/></marker><marker id="hr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#a33a4d"/></marker><marker id="hg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#2f6f4f"/></marker></defs>
+<rect width="900" height="530" fill="#ffffff"/>
+<text x="16" y="26" class="t">A rename across shards: prepare at each other primary, one transaction, then release.</text>
+<rect x="15" y="44" width="110" height="30" rx="4" class="ext"/>
+<text x="70" y="64" class="h" text-anchor="middle">client</text>
+<path d="M70 76V424" class="lane"/>
+<rect x="155" y="44" width="170" height="30" rx="4" class="vfs"/>
+<text x="240" y="64" class="h" text-anchor="middle">node A · S1 (d1)</text>
+<path d="M240 76V424" class="lane"/>
+<rect x="360" y="44" width="160" height="30" rx="4" class="data"/>
+<text x="440" y="64" class="h" text-anchor="middle">node B · S2 (f)</text>
+<path d="M440 76V424" class="lane"/>
+<rect x="540" y="44" width="160" height="30" rx="4" class="data"/>
+<text x="620" y="64" class="h" text-anchor="middle">node C · S3 (d2)</text>
+<path d="M620 76V424" class="lane"/>
+<rect x="730" y="44" width="140" height="30" rx="4" class="meta"/>
+<text x="800" y="64" class="h" text-anchor="middle">metadata store</text>
+<path d="M800 76V424" class="lane"/>
+<path d="M72 104H236" class="arr"/>
+<text x="80" y="99" class="s">RENAME d1/f → d2/g</text>
+<text x="248" y="124" class="s">coordinator: d1's primary</text>
+<path d="M242 148H436" class="arr"/>
+<text x="248" y="143" class="s">prepare: check deny, recall, hold f</text>
+<path d="M242 172H616" class="arr"/>
+<text x="460" y="167" class="s">prepare: recall grants on d2</text>
+<path d="M438 198H244" class="arr"/>
+<text x="256" y="193" class="s">yes (S2, e4), hold until T</text>
+<path d="M618 222H244" class="arr"/>
+<text x="460" y="217" class="s">yes (S3, e2)</text>
+<rect x="14" y="236" width="872" height="92" rx="4" fill="#eaf4ec" fill-opacity="0.45" stroke="none"/>
+<path d="M242 256H796" class="arr"/>
+<text x="640" y="251" class="s">one txn</text>
+<rect x="260" y="266" width="520" height="52" rx="4" class="p"/>
+<text x="270" y="282" class="s">guards fences d1 (S1, e6), d2 (S3, e2), f (S2, e4); loop check for directories</text>
+<text x="270" y="298" class="s">refused if commit time ≥ T: a hold that ended cannot be overridden</text>
+<text x="270" y="312" class="s">a replaced target gets a pending release, decided by its own primary</text>
+<path d="M798 344H244" class="arr"/>
+<text x="640" y="339" class="s">committed</text>
+<path d="M242 368H436" class="arr"/>
+<text x="248" y="363" class="s">outcome: release hold</text>
+<path d="M242 390H616" class="arr"/>
+<text x="460" y="385" class="s">outcome</text>
+<path d="M238 412H74" class="arr"/>
+<text x="80" y="407" class="s">ok</text>
+<rect x="20" y="432" width="860" height="58" rx="4" class="r"/>
+<text x="32" y="450" class="h">refusal: f open without delete sharing</text>
+<text x="32" y="466" class="s">B answers no → A sends abort, C drops its hold, nothing is committed → client gets a sharing-violation / file-open error.</text>
+<text x="32" y="482" class="s">A coordinator lost after prepare: every hold ends at T plus the drift bound; a late commit is refused by T.</text>
+<text x="16" y="516" class="l">Each primary checks its own open state; one metadata transaction commits the change.</text>
+</svg>

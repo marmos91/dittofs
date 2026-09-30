@@ -31,7 +31,7 @@ This document specifies behaviour, not the current code.
 ## In short
 
 - Configuration lives in the **control plane**. A host holds only what it needs
-  to reach it: its identity, where the configuration store is, and its local
+  to reach it: its identity, where the metadata store is, and its local
   devices.
 - Most quantities are **fixed**, not settings. A value becomes a setting only
   when an operator can name a workload the fixed value is wrong for.
@@ -61,20 +61,20 @@ This document **MUST NOT** be read as specifying:
 - the management API, its authentication or its resources: [RFC 23](rfc-index.md);
 - what each setting means inside its component: that stays in the component's
   RFC, which this document cites;
-- how the configuration store replicates: it is a store that runs consensus
-  ([RFC 11](rfc-11-ownership.md)); this document states only what it must hold and answer.
+- how the metadata store replicates: it is a store that runs consensus
+  ([RFC 16](rfc-16-metadata-store.md)); this document states only what it must hold and answer.
 
 ## 2. Where configuration lives
 
 ### 2.1 The control plane is the source
 
-Every setting is a field of a record in the **configuration store**, held by the
+Every setting is a field of a record in the **metadata store**, held by the
 control plane. Components receive records; they do not read files, and no
 component has a configuration source of its own. Two sources for one setting are
 two answers to one question, and the one that wins is whichever the code
 happened to read last.
 
-The configuration store is the metadata store's KV ([RFC 16](rfc-16-metadata-store.md)): each setting is a
+Settings live in the metadata store's KV ([RFC 16](rfc-16-metadata-store.md)): each setting is a
 `Setting` record at its scope, beside users, shares and the file metadata, so
 one database is run, backed up and replicated for all of it. The store's format
 record, read before anything else at open, covers these records as it covers
@@ -85,19 +85,21 @@ every other ([RFC 16 §4.6](rfc-16-metadata-store.md#4.6%20Store%20format)).
 A process needs a few facts before it can reach the control plane. These, and
 only these, come from the host — a file or the environment:
 
-| Bootstrap fact | Why it cannot come from the control plane |
-| --- | --- |
-| the node's identity | the control plane addresses the node by it |
-| how to reach the configuration store, and the credential for it | needed to read anything else |
-| the local devices the node may use, and their paths | a path means something only on its host ([§3](#3.%20Scopes)) |
-| listen addresses | a port conflict is a host's problem |
-| log destination and level | needed before the control plane answers, to say why it did not |
-| the node's **roles** — `protocol`, `storage`, both by default ([RFC 15](rfc-15-topology.md)) | they decide what the node composes, including whether it reaches the control plane's store as a writer; fixed for the life of the process |
-| the location of the wrapping key of each role the node runs, and no other, for `Secret` records ([§7](#7.%20Secrets)) | a key kept in the store it protects protects nothing, and a key for a role the node does not run is a key it can leak |
+| Bootstrap fact                                                                                                        | Why it cannot come from the control plane                                                                                                 |
+| --------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| the node's identity                                                                                                   | the control plane addresses the node by it                                                                                                |
+| how to reach the metadata store, and the credential for it                                                            | needed to read anything else                                                                                                              |
+| the local devices the node may use, and their paths                                                                   | a path means something only on its host ([§3](#3.%20Scopes))                                                                              |
+| listen addresses                                                                                                      | a port conflict is a host's problem                                                                                                       |
+| log destination and level                                                                                             | needed before the control plane answers, to say why it did not                                                                            |
+| the node's **roles** — `protocol`, `storage`, both by default ([RFC 15](rfc-15-topology.md))                          | they decide what the node composes, including whether it reaches the control plane's store as a writer; fixed for the life of the process |
+| the location of the wrapping key of each role the node runs, and no other, for `Secret` records ([§7](#7.%20Secrets)) | a key kept in the store it protects protects nothing, and a key for a role the node does not run is a key it can leak                     |
 
 A bootstrap fact **MUST NOT** also be a record field, and a record field
 **MUST NOT** be overridable from the host. An override from the host is a
 second source ([§2.1](#2.1%20The%20control%20plane%20is%20the%20source)): nodes of one installation then disagree, silently.
+A provisioning file ([§2.4](#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file)) is not an override: it writes records through the
+control plane, and the record then says it came from the file.
 
 ### 2.3 A record is versioned
 
@@ -106,6 +108,50 @@ version**. A component reports, per record, the generation it runs
 ([§8](#8.%20Observability)). A reader that meets a schema version it does not know refuses
 the record rather than reading the fields it recognises: a field it skipped may
 be the one that mattered.
+
+### 2.4 Records can be declared in a provisioning file
+
+An operator **MAY** declare records in a **provisioning file**, so a server or a
+test starts in a known state without a script of API calls, and the file can be
+kept under version control. Its path is a bootstrap fact. The file declares
+records by their API names — settings at any scope, remote stores, namespaces,
+shares, users, groups, grants, snapshot policies — in the same shape the
+management API accepts.
+
+**Applying is a merge through the API.** At start, and on every reload, the node
+validates the whole file with the API's validator ([§6](#6.%20Validation)) and then writes
+each declared record as the API would: created if absent, replaced if it
+differs. Records the file does not declare are left alone. A file that fails
+validation, or whose change the API would refuse — a bound setting with content
+behind it ([§5.1](#5.1%20A%20bound%20setting%20refuses%20change)), for instance — is refused whole: at start the node refuses to
+start, and on reload the running records stay as they were and the node reports
+a health condition naming the record and the reason. Nothing is half-applied.
+
+**A declared record has one source, the file.** Each record the file writes is
+marked **managed**, with the file's path and content hash. The API **MUST**
+refuse to change or delete a managed record, answering that it is declared in
+that file and must be changed there and reloaded. This keeps §2.1's rule: every
+record has exactly one source, and an operator can see which.
+
+| Event | Effect |
+| --- | --- |
+| a declared record differs from the store | the file's value is written |
+| a record is removed from the file | it stays, and stops being managed; with `prune: true` in the file it is deleted instead, subject to the same refusals as an API delete |
+| an API call edits a managed record | refused, naming the file |
+| two nodes apply files that declare the same record differently | the second is refused: a record managed by another file hash is changed only after the first file stops declaring it; health condition on the refused node |
+| reload | `dfsctl config reload`, a signal, or at start; the node reports the applied file hash ([§8](#8.%20Observability)) |
+
+**Secrets stay references.** A provisioning file **MUST NOT** hold a secret value.
+It names one by reference — an environment variable or a file on the host — and
+applying seals the value into a `Secret` record ([§7](#7.%20Secrets)) as the API would.
+
+**Node-scoped records** a file declares apply only to the node that reads it.
+Every other scope is installation-wide, so in a cluster one node, or an
+identical file on every node, provisions it.
+
+> ponytail: a node applies its file only at start and on an explicit reload; it
+> does not watch the file. Add a watch when operators edit files in place often
+> enough that a forgotten reload shows up as drift.
 
 ## 3. Scopes
 
@@ -192,7 +238,7 @@ Some fields name how to reach content, not where it is: a store's endpoint, and
 its credential. A new endpoint for the same bucket, or a rotated credential, is
 allowed, and is proven rather than trusted: the store's capability check
 ([RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)) **MUST** find, at the new location, the namespace claim the old
-one held ([RFC 12 §4.1](rfc-12-snapshots.md#4.1%20One%20owner%20per%20namespace%2C%20proven%20by%20a%20claim)). A location that answers but holds another claim, or
+one held ([RFC 12 §4.1](rfc-12-snapshots.md#4.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)). A location that answers but holds another claim, or
 none, is a different store, and the change is refused.
 
 ### 5.3 What content was written with is recorded with it
@@ -242,7 +288,7 @@ Configuration **MUST NOT** hold a secret value: not a credential, not a key, not
 a passphrase. It holds a **reference** — a secret's name in a secret provider —
 and the component resolves it when it is built.
 
-The default secret provider is the configuration store itself: a `Secret`
+The default secret provider is the metadata store itself: a `Secret`
 record ([RFC 16](rfc-16-metadata-store.md)) in the same KV, its value **envelope-encrypted** under a
 wrapping key held outside that KV — a host file or an external key service,
 named by the bootstrap ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)). A copy of the store alone reveals no
@@ -300,6 +346,7 @@ default, behind the same reference.
 | the generation of each record a node runs, against the store's current one | `dittofs_config_generation` | gauge, labelled by record |
 | records refused, by component and reason | `dittofs_config_refused_total` | counter |
 | changes refused because a setting is bound | `dittofs_config_bound_refusals_total` | counter |
+| the provisioning file hash each node applied, and applies refused by reason | `dittofs_config_provisioning_applied`, `dittofs_config_provisioning_refused_total` | gauge, counter |
 
 A node whose generation for a record stays behind the store's for longer than one
 propagation interval is a health condition of that node, not only a gauge.
@@ -321,6 +368,9 @@ Conventions and tiers are the index's ([Test tiers](rfc-index.md#Test%20tiers)).
 | [§7](#7.%20Secrets) no secret out | Configure every secret-bearing record; read every API, export and log produced by a full test run. Assert no secret value appears. |
 | [§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap) no host override | Set a record field in the host's environment. Assert it is refused at start, not applied. |
 | [§2.3](#2.3%20A%20record%20is%20versioned) schema | Present a record with a newer schema version. Assert refused. |
+| [§2.4](#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file) provisioning | Start a node with a file declaring a namespace, a share and a setting. Assert all three exist and are marked managed. Edit the share through the API; assert refused, naming the file. Change the file and reload; assert applied. Remove the share from the file; assert it stays, unmanaged; add `prune: true`; assert deleted. |
+| [§2.4](#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file) all or nothing | Reload a file with one valid change and one invalid record, then one changing a bound setting with content behind it. Assert nothing changed, the health condition names the record, and at start the node refuses to start. |
+| [§2.4](#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file) secrets | Declare a remote store whose credential is an environment variable. Assert the file holds no value, the record references a sealed `Secret`, and no API or log shows the value. |
 | [§5.4](#5.4%20A%20format%20version%20is%20written%20only%20once%20every%20reader%20reads%20it) format version | Run two nodes, one reading one format version fewer. Advance the namespace's version to write; assert refused. Upgrade the second node; assert accepted, and every block either node writes afterwards reads on both. |
 | [§7](#7.%20Secrets) namespace keys | Replace a namespace's chunking key under the same ID. Assert the provider refuses it by fingerprint and the namespace does not open. |
 
@@ -335,7 +385,8 @@ Proposed, for review with this document; none is applied yet.
 3. **RFC 4 §4.2 and Appendix C:** bucket and prefix are bound; endpoint and
    credential change under [§5.2](#5.2%20Reaching%20the%20same%20content%20another%20way%20is%20not%20a%20change).
 4. **RFC 12 §6.2:** the YAML example becomes the control-plane records it
-   describes: `snapshots.pin_bound` per share, `migration.freeze_timeout` per installation (Appendix B).
+   describes: `snapshots.hold_bound` and `snapshots.reserve` per share, `snapshots.hold_journal_fraction`
+   and `migration.freeze_timeout` per installation (Appendix B).
 5. **RFC 7 §3.3:** case sensitivity is bound, so a change is refused rather than
    left undefined.
 6. **RFC 9 §8:** GC's `Config` holds four namespace fields (interval, trash
@@ -348,7 +399,7 @@ Proposed, for review with this document; none is applied yet.
    anywhere; the block header's bound depends on it. Proposed: a store setting,
    next-write, default 4 MiB, the size current services handle best in one put
    ([RFC 4 Appendix B](rfc-4-remote-tier.md#Appendix%20B%20%E2%80%94%20measurements)). Settled by the block-size benchmark against each service.
-2. **Leases and durations.** Owner, read and open-state leases, the drift bound
+2. **Leases and durations.** Node and open-state leases, the drift bound
    and the filesystem service's default deadline ([RFC 17](rfc-17-vfs.md)) ([RFC 0 §10.3](rfc-0-data-lifecycle.md#10.3%20Every%20wait%20on%20a%20request%20ends%20at%20a%20deadline)) have no value. Fixed or
    settings, and which values, belongs to the RFC that owns each; this document
    only requires that none ship undefined.
@@ -380,7 +431,7 @@ Descriptive, for the refactor.
 Every setting the storage RFCs name, with its scope and class. "Proposed" marks a
 default this document suggests where the owning RFC states none.
 
-| Setting | Owner | Scope | Class | Default |
+| Setting | Defined in | Scope | Class | Default |
 | --- | --- | --- | --- | --- |
 | journal devices and paths | [RFC 1](rfc-1-journal.md) | node (bootstrap) | restart | required |
 | journal maximum footprint | [RFC 1 §7](rfc-1-journal.md#7.%20Capacity) | node, per journal | live | proposed: 80% of the device |
@@ -408,16 +459,18 @@ default this document suggests where the owning RFC states none.
 | `gc.trash_retention`: time a retired block with recoverable chunks waits before its delete | [RFC 9 §3.7](rfc-9-gc.md#3.7%20Trash) | namespace | live | 48 h |
 | `gc.space_amp_target`: stored over referenced bytes the compactor holds the namespace under; 0 turns compaction off | [RFC 9 §4.4](rfc-9-gc.md#4.4%20When%20to%20compact%20is%20policy) | namespace | live | proposed: 1.25 |
 | `gc.audit.period`: time within which the audit covers every chunk and block record; its rate is derived from it | [RFC 9 §6.1](rfc-9-gc.md#6.1%20Coverage) | namespace | live | 7 days |
-| replica count and floor, failure domain | [RFC 10 §7](rfc-10-journal-replication.md#7.%20Membership) | installation | live | open in RFC 10 |
-| ownership unit | [RFC 11 §2](rfc-11-ownership.md#2.%20Ownership%20units) | share | bound | the share |
+| replica count and floor, failure domain | [RFC 10 §7.1](rfc-10-journal-replication.md#7.1%20Count%2C%20floor%20and%20placement) | installation | live | open in RFC 10 |
+| shard | [RFC 11 §2](rfc-11-ownership.md#2.%20Shards) | share | bound | the whole share |
 | share's namespace | [RFC 12 §2.1](rfc-12-snapshots.md#2.1%20A%20namespace%20is%20the%20unit%20that%20moves) | share | bound | the share's own |
 | oldest unoffloaded extent alert | [RFC 8 §11.4](rfc-8-engine.md#11.4%20How%20far%20behind%20durability%20is%2C%20is%20observable) | share | live | proposed: 1 h |
 | snapshot policy, backup location and retention | [RFC 12 §6.2](rfc-12-snapshots.md#6.2%20Configuration) | share | live | none |
-| `snapshots.pin_bound`: pinned journal bytes per share before a cut is refused | [RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate) | share | live | 64 GiB |
-| `migration.freeze_timeout`: bound on a move's freeze and drain | [RFC 12 §4.2](rfc-12-snapshots.md#4.2%20The%20move%2C%20step%20by%20step) | installation | live | 30 s |
+| `snapshots.hold_bound`: held journal bytes per share before a cut is refused | [RFC 12 §2.4](rfc-12-snapshots.md#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history) | share | live | 64 GiB |
+| `snapshots.hold_journal_fraction`: held share of one journal's capacity, summed over every share it carries, before a cut is refused | [RFC 12 §2.4](rfc-12-snapshots.md#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history) | installation | live | 0.25 |
+| `snapshots.reserve`: history bytes per share before a new cut is refused | [RFC 12 §2.9](rfc-12-snapshots.md#2.9%20Space%20is%20reported%2C%20not%20charged) | share | live | none |
+| `migration.freeze_timeout`: bound on a move's freeze and drain | [RFC 12 §4.2](rfc-12-snapshots.md#4.2%20The%20move%2C%20step%20by%20step) | installation | live | 5 min |
 | group-commit bound `G`, files per existence batch | [RFC 8 §5.2](rfc-8-engine.md#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict) | node, per journal | live | proposed: 256 |
 | offload retry backoff caps, normal and under capacity pressure | [RFC 8 §6.3](rfc-8-engine.md#6.3%20The%20offload%20pipeline) | node | live | proposed: 1 s to 60 s; 5 s under pressure |
 | speculation budget, bytes in flight per share | [RFC 8 §7.4](rfc-8-engine.md#7.4%20The%20speculator) | share | live | open in RFC 8 |
 | read-ahead cap, window ahead of one reader | [RFC 8 §7.4](rfc-8-engine.md#7.4%20The%20speculator) | share | live | open in RFC 8 |
-| quota reservation slack `S`, per principal or project per owner | [RFC 17 §5.6](rfc-17-vfs.md#5.6%20Quota) | installation | live | open in RFC 17 |
+| quota reservation slack `S`, per principal or project per primary | [RFC 17 §5.6](rfc-17-vfs.md#5.6%20Quota) | installation | live | open in RFC 17 |
 | audit policy: which operations emit an access event | [RFC 17 §3.3](rfc-17-vfs.md#3.3%20Event%20hooks) | share | live | none: no access events |

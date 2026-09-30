@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 604" width="900" height="604" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+<defs><style>
+.t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:12px;font-weight:700;fill:#1b1f24}
+.l{font-size:12px;fill:#3d444d}.s{font-size:11px;fill:#5b6472}
+.m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;fill:#1b1f24}
+.vfs{fill:#dce9f7;stroke:#4a7fb5;stroke-width:1.6}.meta{fill:#f3e8d4;stroke:#b08a3e;stroke-width:1.4}
+.data{fill:#d7ecd9;stroke:#4c8a58;stroke-width:1.4}.ext{fill:#f9fafb;stroke:#c3cad3;stroke-width:1}
+.p{fill:#ffffff;stroke:#1b1f24;stroke-width:1.1}.k{fill:#fbefd9;stroke:#a8741f;stroke-width:1.3}.r{fill:#f8e3e6;stroke:#a33a4d;stroke-width:1.3}
+.a{fill:#eaf4ec;stroke:#2f6f4f;stroke-width:1.3}
+.arr{stroke:#5b6472;stroke-width:1.3;fill:none;marker-end:url(#h)}.dash{stroke:#a33a4d;stroke-width:1.2;stroke-dasharray:5 3;fill:none;marker-end:url(#hr)}
+.lane{stroke:#c3cad3;stroke-width:1;stroke-dasharray:3 3}
+.garr{stroke:#2f6f4f;stroke-width:1.6;fill:none;marker-end:url(#hg)}.line{stroke:#5b6472;stroke-width:1.3;fill:none}
+.rt{font-size:11px;fill:#a33a4d}.gt{font-size:11px;fill:#2f6f4f}
+.tail{fill:#ffffff;stroke:#9aa4b2;stroke-width:1;stroke-dasharray:3 2}
+.cp{stroke:#1b1f24;stroke-width:2}.jp{stroke:#a8741f;stroke-width:1.6;stroke-dasharray:4 3}
+</style><marker id="h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#5b6472"/></marker><marker id="hr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#a33a4d"/></marker><marker id="hg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#2f6f4f"/></marker></defs>
+<rect width="900" height="604" fill="#ffffff"/>
+<text x="16" y="26" class="t">A write is acknowledged when the whole replica set holds it; existence commits later, fenced.</text>
+<rect x="15" y="44" width="120" height="30" rx="4" class="ext"/>
+<text x="75" y="64" class="h" text-anchor="middle">client</text>
+<path d="M75 76V548" class="lane"/>
+<rect x="155" y="44" width="120" height="30" rx="4" class="vfs"/>
+<text x="215" y="64" class="h" text-anchor="middle">front-end</text>
+<path d="M215 76V548" class="lane"/>
+<rect x="300" y="44" width="120" height="30" rx="4" class="data"/>
+<text x="360" y="64" class="h" text-anchor="middle">primary journal</text>
+<path d="M360 76V548" class="lane"/>
+<rect x="445" y="44" width="120" height="30" rx="4" class="data"/>
+<text x="505" y="64" class="h" text-anchor="middle">replica A</text>
+<path d="M505 76V548" class="lane"/>
+<rect x="590" y="44" width="120" height="30" rx="4" class="data"/>
+<text x="650" y="64" class="h" text-anchor="middle">replica B</text>
+<path d="M650 76V548" class="lane"/>
+<rect x="735" y="44" width="140" height="30" rx="4" class="meta"/>
+<text x="805" y="64" class="h" text-anchor="middle">metadata store</text>
+<path d="M805 76V548" class="lane"/>
+<rect x="14" y="88" width="872" height="222" rx="4" fill="#eaf4ec" fill-opacity="0.45" stroke="none"/>
+<text x="24" y="106" class="h">write</text>
+<path d="M77 122H211" class="arr"/>
+<text x="89" y="117" class="s">WRITE</text>
+<path d="M217 140H356" class="arr"/>
+<text x="229" y="135" class="s">Write</text>
+<text x="368" y="160" class="s">assign v(e, n); append, sync</text>
+<path d="M362 184H501" class="arr"/>
+<path d="M362 192H646" class="arr"/>
+<text x="372" y="178" class="s">replicate, in parallel</text>
+<text x="511" y="212" class="s">Apply + sync</text>
+<text x="656" y="212" class="s">Apply + sync</text>
+<path d="M503 232H364" class="arr"/>
+<text x="420" y="227" class="s">ack</text>
+<path d="M648 252H364" class="arr"/>
+<text x="575" y="247" class="s">ack</text>
+<text x="368" y="272" class="s">all hold it</text>
+<path d="M358 284H219" class="arr"/>
+<text x="275" y="279" class="s">ok</text>
+<path d="M213 300H79" class="arr"/>
+<text x="89" y="295" class="s">UNSTABLE, ok</text>
+<rect x="14" y="318" width="872" height="226" rx="4" fill="#fbefd9" fill-opacity="0.45" stroke="none"/>
+<text x="24" y="334" class="h">commit: the stability point</text>
+<path d="M77 356H211" class="arr"/>
+<text x="89" y="351" class="s">COMMIT</text>
+<path d="M217 370H356" class="arr"/>
+<text x="229" y="365" class="s">Commit</text>
+<text x="368" y="390" class="s">include only ops every replica holds</text>
+<path d="M362 412H801" class="arr"/>
+<text x="380" y="407" class="s">existence commit, fenced: store time + per-file fence</text>
+<text x="380" y="430" class="rt">refused if store time is past the primary's node-lease expiry</text>
+<path d="M803 450H364" class="arr"/>
+<text x="690" y="445" class="s">committed</text>
+<path d="M362 474H501" class="arr"/>
+<path d="M362 482H646" class="arr"/>
+<text x="372" y="466" class="s">committed point, next batch</text>
+<text x="511" y="502" class="s">persist it</text>
+<text x="656" y="502" class="s">persist it</text>
+<path d="M358 516H219" class="arr"/>
+<text x="275" y="511" class="s">ok</text>
+<path d="M213 534H79" class="arr"/>
+<text x="89" y="529" class="s">stable</text>
+<text x="16" y="572" class="l">The primary acknowledges a write only when every journal in the replica set holds it durably.</text>
+<text x="16" y="590" class="s">A commit carries only operations the whole replica set holds; the committed point follows it to the replicas on the next batch.</text>
+</svg>

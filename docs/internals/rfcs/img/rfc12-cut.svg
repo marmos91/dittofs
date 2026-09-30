@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 646" width="900" height="646" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+<defs><style>
+.t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:12px;font-weight:700;fill:#1b1f24}
+.l{font-size:12px;fill:#3d444d}.s{font-size:11px;fill:#5b6472}
+.m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;fill:#1b1f24}
+.vfs{fill:#dce9f7;stroke:#4a7fb5;stroke-width:1.6}.meta{fill:#f3e8d4;stroke:#b08a3e;stroke-width:1.4}
+.data{fill:#d7ecd9;stroke:#4c8a58;stroke-width:1.4}.ext{fill:#f9fafb;stroke:#c3cad3;stroke-width:1}
+.p{fill:#ffffff;stroke:#1b1f24;stroke-width:1.1}.k{fill:#fbefd9;stroke:#a8741f;stroke-width:1.3}.r{fill:#f8e3e6;stroke:#a33a4d;stroke-width:1.3}
+.a{fill:#eaf4ec;stroke:#2f6f4f;stroke-width:1.3}
+.arr{stroke:#5b6472;stroke-width:1.3;fill:none;marker-end:url(#h)}.dash{stroke:#a33a4d;stroke-width:1.2;stroke-dasharray:5 3;fill:none;marker-end:url(#hr)}
+.lane{stroke:#c3cad3;stroke-width:1;stroke-dasharray:3 3}
+.garr{stroke:#2f6f4f;stroke-width:1.6;fill:none;marker-end:url(#hg)}.line{stroke:#5b6472;stroke-width:1.3;fill:none}
+.rt{font-size:11px;fill:#a33a4d}.gt{font-size:11px;fill:#2f6f4f}
+.tail{fill:#ffffff;stroke:#9aa4b2;stroke-width:1;stroke-dasharray:3 2}
+.cp{stroke:#1b1f24;stroke-width:2}.jp{stroke:#a8741f;stroke-width:1.6;stroke-dasharray:4 3}
+</style><marker id="h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#5b6472"/></marker><marker id="hr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#a33a4d"/></marker><marker id="hg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#2f6f4f"/></marker></defs>
+<rect width="900" height="646" fill="#ffffff"/>
+<text x="16" y="26" class="t">Taking snapshot 4 of a share with two shards: announce, close and hold, one cut transaction, open.</text>
+<rect x="25" y="44" width="150" height="30" rx="4" class="vfs"/>
+<text x="100" y="64" class="h" text-anchor="middle">coordinator</text>
+<path d="M100 76V440" class="lane"/>
+<rect x="225" y="44" width="190" height="30" rx="4" class="data"/>
+<text x="320" y="64" class="h" text-anchor="middle">node A · primary of S1</text>
+<path d="M320 76V440" class="lane"/>
+<rect x="445" y="44" width="190" height="30" rx="4" class="data"/>
+<text x="540" y="64" class="h" text-anchor="middle">node B · primary of S2</text>
+<path d="M540 76V440" class="lane"/>
+<rect x="700" y="44" width="150" height="30" rx="4" class="meta"/>
+<text x="775" y="64" class="h" text-anchor="middle">metadata store</text>
+<path d="M775 76V440" class="lane"/>
+<path d="M102 100H771" class="arr"/>
+<text x="112" y="95" class="s">1 announce: snapshot 4 in state cutting, with a deadline</text>
+<path d="M102 134H316" class="arr"/>
+<text x="112" y="129" class="s">2 close gate, hold cut 4</text>
+<path d="M102 154H536" class="arr"/>
+<text x="328" y="176" class="s">new writers wait at the gate;</text>
+<text x="328" y="190" class="s">admitted ones finish</text>
+<text x="548" y="176" class="s">Hold(4, marks) durable on</text>
+<text x="548" y="190" class="s">every replica, then reply</text>
+<path d="M318 214H104" class="arr"/>
+<text x="112" y="209" class="s">held · S1 at epoch 6</text>
+<path d="M538 236H104" class="arr"/>
+<text x="340" y="231" class="s">held · S2 at epoch 7</text>
+<rect x="14" y="250" width="872" height="116" rx="4" fill="#eaf4ec" fill-opacity="0.45" stroke="none"/>
+<path d="M102 272H771" class="arr"/>
+<text x="112" y="267" class="s">3 cut transaction</text>
+<rect x="300" y="282" width="440" height="58" rx="4" class="p"/>
+<text x="312" y="298" class="s">reads shard records S1 (e6) and S2 (e7) with conflict tracking</text>
+<text x="312" y="314" class="s">sets k = 4, klatest = 4; writes LiveCut 4 and one hold record per shard</text>
+<text x="312" y="330" class="s">snapshot 4: cutting → holding, with its UTC time</text>
+<path d="M773 358H104" class="arr"/>
+<text x="112" y="353" class="s">committed</text>
+<path d="M102 388H316" class="arr"/>
+<text x="112" y="383" class="s">4 open</text>
+<path d="M102 408H536" class="arr"/>
+<text x="328" y="430" class="s">every later transaction reads k = 4</text>
+<rect x="20" y="450" width="860" height="50" rx="4" class="r"/>
+<text x="32" y="468" class="s">If S2 changes primary before step 3 (B's lease lapses, C takes over at epoch 8): C starts with its gate closed, since snapshot 4</text>
+<text x="32" y="484" class="s">is cutting, and holds the replicated hold. The cut reads e8, not e7, and fails; the coordinator asks C, gets e8, and retries.</text>
+<text x="16" y="530" class="h">What a snapshot sees: the version with born &lt; k ≤ died</text>
+<path d="M60 580H870" class="line"/>
+<path d="M300 572V588" class="cp"/>
+<path d="M560 572V588" class="cp"/>
+<text x="300" y="604" class="s" text-anchor="middle">cut 3</text>
+<text x="560" y="604" class="s" text-anchor="middle">cut 4</text>
+<rect x="330" y="546" width="230" height="22" rx="2" class="k"/>
+<text x="340" y="561" class="s">v1 · born 3 · died 4 → history</text>
+<rect x="560" y="546" width="300" height="22" rx="2" class="data"/>
+<text x="570" y="561" class="s">v2 · born 4 · live (died = ∞)</text>
+<text x="16" y="630" class="l">Snapshot 4 reads v1, since 3 &lt; 4 ≤ 4; the live share and any later snapshot read v2. v2's born is v1's died.</text>
+</svg>

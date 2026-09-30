@@ -242,15 +242,19 @@ in its one partition, and GC reads only that partition.
 
 ### 2.4 A snapshot holds its blocks without a pin
 
-A snapshot needs no pin, hold or extra root, because it already holds counted
-refs. When a live ref that a snapshot sees is superseded or released, it moves to
+A snapshot needs no pin, hold list or extra root, because it already holds counted
+refs; its snapshot hold keeps journal bytes until they are offloaded, never a block
+([RFC 12 §2.4](rfc-12-snapshots.md#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history)). When a live ref that a snapshot sees is superseded or released, it moves to
 history in the same transaction instead of being dropped, and a history ref
 counts exactly as a live one and has its own reverse index key ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)).
 So every chunk a live snapshot can read has refcount ≥ 1, the block its record
 names has `live` > 0 and is never retired, and the deleter's verification would
 refuse it even if it were. Deleting the snapshot drops the history refs no other
-live snapshot sees; only then can their counts reach zero. A backup is an export
-of a snapshot ([RFC 12 §3.1](rfc-12-snapshots.md#3.1%20A%20backup%20is%20an%20export%20of%20one%20snapshot%27s%20metadata)) and is held the same way while the snapshot lives.
+live snapshot sees; only then can their counts reach zero. A catalog backup is an
+export of one snapshot's metadata ([RFC 12 §3.1](rfc-12-snapshots.md#3.1%20A%20backup%20is%20an%20export%20of%20one%20snapshot%27s%20metadata)), held by a use record on that
+snapshot until it expires ([RFC 12 §3.2](rfc-12-snapshots.md#3.2%20A%20backup%20holds%20its%20snapshot)): the use record refuses the
+snapshot's deletion, so the refs it sees keep every block the backup names
+counted, and GC needs no second liveness mechanism for it.
 
 **Tracing is not the delete authority.** A mark reads the live set at one instant
 and deletes at a later one; a ref committed in between names a chunk the mark did
@@ -369,7 +373,7 @@ names, and acts on that block's state:
 
 A commit that **carries** a chunk whose record names a `retired` or `deleted`
 block does not resurrect it: it repoints the chunk record to itself, as the
-first owner of fresh bytes. The old block stays retired, and its prune skips the
+first home of fresh bytes. The old block stays retired, and its prune skips the
 record because it no longer names it.
 
 Resurrection is what makes content that dies and comes back within the trash —
@@ -414,9 +418,9 @@ Block metadata rules it out by construction, not by a fence ([RFC 6 §7.6](rfc-6
   ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)). No two attempts, and no two writers, ever put one name, and a
   retry within the attempt writes the same bytes.
 - **Before any put** — an offload's or a compaction's — the writer durably records
-  a **put intent** for the name: `Intent = {domain, owner, epoch}`, where the
-  domain is an ownership unit or a GC lease shard, the owner is that unit's or
-  shard's ID, and the epoch is the one the writer runs under. One transaction
+  a **put intent** for the name: `Intent = {domain, id, epoch}`, where the
+  domain is a shard or a GC partition, the id is that shard's or
+  partition's ID, and the epoch is the one the writer runs under. One transaction
   **MAY** record every intent of a pass.
 - **The commit that creates the block record consumes the intent** in the same
   transaction, and fails if it is absent.
@@ -428,29 +432,29 @@ A name's state only moves forward:
 GC deletes an object only when its record is `deleted` and no intent names it.
 Nothing can put or commit that name again.
 
-**An intent is abandoned by reading its owner.** An intent is superseded when its
-owner's durable epoch — the unit record's for a unit ([RFC 11 §2](rfc-11-ownership.md#2.%20Ownership%20units)), the lease
-shard's for GC ([§7.3](#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20sharded%20by%20prefix)) — is greater than the intent's, or when the owner no longer
-exists. Abandonment is one transaction that guards the owner's epoch record,
+**An intent is abandoned by reading its domain.** An intent is superseded when its
+domain's durable epoch — the shard record's for a shard ([RFC 11 §2](rfc-11-ownership.md#2.%20Shards)), the lease
+partition's for GC ([§7.3](#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)) — is greater than the intent's, or when the domain no longer
+exists. Abandonment is one transaction that guards the domain's epoch record,
 reads and deletes the intent key, and writes the name's block record in state
 `retired`, with an empty chunk list and `not_before` = store time + the longest
 put deadline a writer may use ([RFC 8 §6.3](rfc-8-engine.md#6.3%20The%20offload%20pipeline), O1) + the clock bound ([§3.7](#3.7%20Trash)).
-A live owner that gives up an attempt abandons that intent itself, at once,
+A live writer that gives up an attempt abandons that intent itself, at once,
 through the same transaction; the offload pipeline does so ([RFC 8 §6.3](rfc-8-engine.md#6.3%20The%20offload%20pipeline), O4),
 and so does the compactor ([§4.2](#4.2%20Read%20verified%2C%20mint%2C%20put%2C%20then%20move)).
 
-**A commit racing an abandonment.** *W* puts *K* under owner *U*, epoch 7, and
-stalls before its commit; ownership of *U* moves to epoch 8.
+**A commit racing an abandonment.** *W* puts *K* under shard *U*, epoch 7, and
+stalls before its commit; the primary of *U* moves and the epoch becomes 8.
 
 | t | *W* (epoch 7) | GC | Result |
 | --- | --- | --- | --- |
-| 5 | — | reads `UT‖U` epoch 8 > 7; deletes `I(K)`, writes `B(K)` = `retired` | *K* is final |
+| 5 | — | reads `SH‖U` epoch 8 > 7; deletes `I(K)`, writes `B(K)` = `retired` | *K* is final |
 | 6 | commit reads `I(K)`: absent | — | commit fails; *W* re-offers under a new name |
 
 In the other order, *W*'s commit consumes `I(K)` first and the abandonment finds
 no intent and does nothing. Both transactions read and delete the intent key, so
 they conflict and at most one commits ([RFC 6 §5.4](rfc-6-block-metadata.md#5.4%20Reads%20that%20gate%20a%20commit)). The commit also guards its
-unit's fence, which the new owner wrote, so a stale commit fails on the fence
+shard's fence, which the new primary wrote, so a stale commit fails on the fence
 even before it reaches the intent.
 
 **Example: an abandoned intent and a put that lands late.** The put deadline is
@@ -643,7 +647,7 @@ two, two and three live chunks: about 1.7 MiB live of 12 MiB stored.
    only (P1), the target size (P2), and only the chunks whose bytes it carries
    (P3), placed by [§4.5](#4.5%20Where%20survivors%20are%20placed).
 4. **Mint** *T*'s name by [RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block), from a fresh nonce, and record its put
-   intent under the compactor's lease shard and epoch ([§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete), [RFC 6 §7.6](rfc-6-block-metadata.md#7.6%20Put%20intents)). A
+   intent under the compactor's lease partition and epoch ([§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete), [RFC 6 §7.6](rfc-6-block-metadata.md#7.6%20Put%20intents)). A
    nonce never equals a source's name, so no check against the sources is
    needed.
 5. **Put** *T* in one put, encoded under the store's current transform chain
@@ -669,7 +673,7 @@ records; nothing else is written.
 | Crash after | State | Outcome |
 | --- | --- | --- |
 | 1–3 | nothing written | no effect; the index still lists the sources |
-| 4 | an intent, no object | a re-run mints a new name; the intent is abandoned when the shard's epoch moves on, which a restart does ([§7.3](#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20sharded%20by%20prefix)) |
+| 4 | an intent, no object | a re-run mints a new name; the intent is abandoned when the partition's epoch moves on, which a restart does ([§7.3](#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)) |
 | 5 | an intent and an object no record names | the same; the object is deleted through its abandoned intent ([§5](#5.%20Unrecorded%20objects)) |
 | 6 | chunks moved, every source retired | ordinary `retired` blocks |
 
@@ -807,12 +811,12 @@ leak.
 
 Collection has two sources:
 
-- **Abandoned intents — the primary source.** An intent whose owner's epoch has
-  moved on, or whose owner no longer exists, names its object exactly. GC
+- **Abandoned intents — the primary source.** An intent whose domain's epoch has
+  moved on, or whose domain no longer exists, names its object exactly. GC
   abandons it ([§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete)): one transaction deletes the intent and writes the name's
   block record `retired`, due once the put-bound wait has passed, so that a put
-  still in flight has landed before the delete. A live owner that gives up an
-  attempt abandons its intent itself, so a long-lived owner leaves no intent for
+  still in flight has landed before the delete. A live writer that gives up an
+  attempt abandons its intent itself, so a long-lived writer leaves no intent for
   GC to wait on. This needs no listing and no proof of the namespace: the intent
   is this store's own record of the name.
 - **A listing — a rare backstop** for the last two cases of [§5.1](#5.1%20How%20they%20arise), which no
@@ -832,7 +836,7 @@ been read. GC **MUST NOT** delete an object found only by listing unless:
 - the deployment meets [RFC 6 §2.6](rfc-6-block-metadata.md#2.6%20The%20scope%20of%20a%20count) — one keyspace partition per namespace, and key
   derivation that includes the namespace ID — and GC can verify it from
   configuration, not assume it;
-- the namespace claim names this installation as its owner ([RFC 12 §4.1](rfc-12-snapshots.md#4.1%20One%20owner%20per%20namespace%2C%20proven%20by%20a%20claim));
+- the namespace claim names this installation as its holder ([RFC 12 §4.1](rfc-12-snapshots.md#4.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim));
 - every store in the counting domain ([§2.3](#2.3%20The%20absence%20of%20a%20record%20proves%20nothing)) was enumerated completely in this
   pass. A store that failed or was skipped **MUST** stop the backstop for the
   whole namespace.
@@ -844,7 +848,7 @@ its intent, not its age:
 
 - **An object named by an intent** is deleted only after the intent is abandoned,
   in a transaction that conflicts with the commit consuming it ([§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete)). GC
-  abandons only an intent whose owner's epoch has moved on or whose owner is
+  abandons only an intent whose domain's epoch has moved on or whose domain is
   gone; a live writer's intent is never touched by GC, however old.
 - **An object named by neither an intent nor a block record** is in the final
   state ([§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete)): no put of its name can ever commit. The backstop writes its
@@ -970,7 +974,7 @@ holders see the same hold.
 
 GC schedules through the shared work scheduler ([RFC 8 §6.1.1](rfc-8-engine.md#6.1.1%20The%20shared%20work%20scheduler)), one instance
 per process, with one source each for the deleter, the compactor, the audit and
-collection of every lease shard it holds. The scheduler supplies the bounds; GC
+collection of every lease partition it holds. The scheduler supplies the bounds; GC
 **MUST** configure and state them:
 
 - deletes in flight per process;
@@ -1026,37 +1030,37 @@ key column is that table's, repeated so a reader of this one need not switch.
 | retired index ([§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object)) | `BR‖ns‖not_before‖name` | derived | one per `retired` block | resurrection or the move to `deleted` |
 | deleted index ([§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object)) | `BD‖ns‖name` | derived | one per `deleted` block | pruning |
 | compaction index ([§4.4](#4.4%20When%20to%20compact%20is%20policy)) | `BC‖ns‖bucket‖name` | derived | one per `live` block with dead bytes, or small | the transaction that changes its bucket, or retirement |
-| GC lease shard ([§7.3](#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20sharded%20by%20prefix)) | `NS‖ns‖gc‖lease‖shard` | authoritative | one per shard, a fixed count | overwritten by each holder; the epoch only grows |
+| GC lease partition ([§7.3](#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)) | `NS‖ns‖gc‖lease‖partition` | authoritative | one per partition, a fixed count | overwritten by each holder; the epoch only grows |
 | `Recheck` result ([§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)) | `NS‖ns‖gc‖recheck` | authoritative | one per namespace | overwritten by each `Recheck` |
 | hold ([§6.4](#6.4%20A%20store-wide%20trip%20holds%20the%20deleter)) | `NS‖ns‖gc‖hold` | authoritative | one per namespace, listing its reasons | cleared when its last reason clears |
 | lowering suspect ([§6.2](#6.2%20Corrections)) | `NS‖ns‖gc‖suspect‖hash` | authoritative | one per hash found high by the last walk | the next walk over its range, which lowers or deletes it; a walk runs every period, so its removal is guaranteed |
-| walk cursor | `NS‖ns‖gc‖cursor‖walk‖shard` | derived | one per kind of walk (audit, block walk, index rebuild) per shard: the last key done | overwritten as the walk advances; deleted when it completes |
+| walk cursor | `NS‖ns‖gc‖cursor‖walk‖partition` | derived | one per kind of walk (audit, block walk, index rebuild) per partition: the last key done | overwritten as the walk advances; deleted when it completes |
 
 A record not in this table **MUST NOT** be added without a row. Where a pass
 leaves state on disk, what removes it after a crash is part of the row, and "the
 next pass" is an answer only if a pass is guaranteed to run.
 
-### 7.3 GC is one service per namespace, sharded by prefix
+### 7.3 GC is one service per namespace, partitioned by prefix
 
 GC is a service of the remote namespace ([§2.3](#2.3%20The%20absence%20of%20a%20record%20proves%20nothing)), not a policy of any share's
 engine: one namespace can hold the blocks of many shares, and GC covers all of
-them. Its work is split into a fixed number of **shards** by prefix — a shard
-owns a range of block names for the deleter, collection and the compactor's
+them. Its work is split into a fixed number of **partitions** by prefix — a partition
+covers a range of block names for the deleter, collection and the compactor's
 sources, and the same range of chunk hashes for the audit; names and hashes are
-both uniform, so shards are even. Each shard has a **lease**, a record in the
-metadata store (`NS‖ns‖gc‖lease‖shard`), held by a node with the `storage` role
+both uniform, so partitions are even. Each partition has a **lease**, a record in the
+metadata store (`NS‖ns‖gc‖lease‖partition`), held by a node with the `storage` role
 ([RFC 15](rfc-15-topology.md)) and spread across them; on one node every lease is local. Cadence,
 the trash retention, the space target and the audit period are GC's own
 configuration ([RFC 13](rfc-13-configuration.md)).
 
 **Each lease carries a monotonic epoch**, raised by every acquisition, a
 restart of the same holder included. The compactor's put intents carry their
-shard and its epoch ([§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete)), so a crashed compaction's intent is superseded as
-soon as the shard is taken again, and a shard that no longer exists supersedes
+partition and its epoch ([§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete)), so a crashed compaction's intent is superseded as
+soon as the partition is taken again, and a partition that no longer exists supersedes
 all of its intents.
 
 The lease is for efficiency, not safety. A holder can pause past its lease while
-a successor runs, so GC **MUST** be correct with two holders of one shard at
+a successor runs, so GC **MUST** be correct with two holders of one partition at
 once, from one process or two ([§2.1](#2.1%20References%20are%20the%20only%20authority)). Every decision GC makes is a conditional
 transaction on a record; removing the lease **MUST NOT** make GC unsafe.
 
@@ -1107,7 +1111,7 @@ increments `dittofs_gc_index_mismatches_total` and emits an event naming the key
 Some service settings can drift after a store opens: versioning, object lock,
 lifecycle rules ([RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)). GC runs `Recheck` on every store of the namespace on
 a fixed short period (proposed: 5 min), independent of any other GC work, and
-also reads the namespace claim ([RFC 12 §4.1](rfc-12-snapshots.md#4.1%20One%20owner%20per%20namespace%2C%20proven%20by%20a%20claim)). The holder of the first shard runs
+also reads the namespace claim ([RFC 12 §4.1](rfc-12-snapshots.md#4.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)). The holder of the first partition runs
 it and records `NS‖ns‖gc‖recheck` = {started, finished, passed, drift}.
 
 - **Before each batch of deletes**, the deleter reads the claim itself and reads
@@ -1115,6 +1119,11 @@ it and records `NS‖ns‖gc‖recheck` = {started, finished, passed, drift}.
   installation as `owned` and the last `Recheck` passed and finished within two
   periods. On drift the syncer refuses puts and deletes to that store until a
   later `Recheck` passes ([RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)).
+- **The GC process fences itself.** It **MUST NOT** issue a delete more than two
+  `Recheck` periods, by its own clock, after its last read of the claim naming this
+  installation `owned`, whatever batch it is in; a process paused or partitioned
+  past that bound stops before its next delete rather than acting on a claim it
+  can no longer see ([RFC 12 §4.1](rfc-12-snapshots.md#4.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)).
 - **Pruning waits for a later `Recheck`.** A `deleted` record is pruned only
   once a `Recheck` that started after its delete succeeded has passed
   ([§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object)). Until then the record still names the object.
@@ -1146,14 +1155,14 @@ interface for each dependency, named for the need ([RFC 0 §1.2](rfc-0-data-life
 type Blocks interface {
 	// Due yields retired blocks in a prefix range whose notBefore is at or
 	// before store time, in notBefore order.
-	Due(ctx context.Context, shard Shard) iter.Seq2[BlockName, error]
+	Due(ctx context.Context, part Partition) iter.Seq2[BlockName, error]
 	// MarkDeleted moves each still-retired, due block to deleted after the
 	// verification of §3.5, in one transaction per batch. One result per name:
 	// nil, ErrNotDue, ErrHeld, or ErrReferenced (the block was resurrected).
 	MarkDeleted(ctx context.Context, bs []BlockName) []error
 	// Deleting yields deleted blocks in a prefix range, with the store time
 	// their delete succeeded, zero if not yet.
-	Deleting(ctx context.Context, shard Shard) iter.Seq2[Deleting, error]
+	Deleting(ctx context.Context, part Partition) iter.Seq2[Deleting, error]
 	// Deleted records the success of each name's object delete.
 	Deleted(ctx context.Context, bs []BlockName) error
 	// Prune deletes deleted records whose delete succeeded before `before`,
@@ -1161,9 +1170,9 @@ type Blocks interface {
 	Prune(ctx context.Context, bs []BlockName, before time.Time) error
 	// Intend durably records put intents for freshly minted targets (§3.4).
 	Intend(ctx context.Context, intents []Intent) error
-	// AbandonedIntents yields intents whose owner's epoch moved on or whose
-	// owner is gone (§3.4).
-	AbandonedIntents(ctx context.Context, shard Shard) iter.Seq2[BlockName, error]
+	// AbandonedIntents yields intents whose domain's epoch moved on or whose
+	// domain is gone (§3.4).
+	AbandonedIntents(ctx context.Context, part Partition) iter.Seq2[BlockName, error]
 	// Abandon deletes an intent and writes its name's record retired, due after
 	// the put-bound wait, conflicting with a commit that consumes it (§3.4).
 	Abandon(ctx context.Context, names []BlockName) error
@@ -1180,14 +1189,14 @@ type Blocks interface {
 	Holders(ctx context.Context, h Hash) iter.Seq2[Holder, error]
 	// CompactionCandidates yields blocks from the compaction index, highest
 	// bucket first, with the fields the score needs (§4.4).
-	CompactionCandidates(ctx context.Context, shard Shard) iter.Seq2[Candidate, error]
+	CompactionCandidates(ctx context.Context, part Partition) iter.Seq2[Candidate, error]
 	// Relocate consumes dst's intent, moves chunk records from srcs to dst,
 	// moves live and retires emptied sources, in one transaction (§4.2).
 	Relocate(ctx context.Context, srcs []BlockName, dst NewBlock) error
 	// Audit merges chunk records with the reverse index over a hash range and
 	// walks block records over a name range, correcting and yielding every
 	// mismatch (§6).
-	Audit(ctx context.Context, shard Shard) iter.Seq2[Mismatch, error]
+	Audit(ctx context.Context, part Partition) iter.Seq2[Mismatch, error]
 	// Recount recounts one chunk from its reverse index, by the max rule (§6.2).
 	Recount(ctx context.Context, h Hash) error
 	// RebuildIndex rewrites the derived keys; RebuildReverse rewrites one
@@ -1213,10 +1222,10 @@ type Transfers interface {
 	Upload(ctx context.Context, name BlockName, size int64, src func() iter.Seq2[Chunk, error]) (Stored, error)
 }
 
-// Lease is one shard's GC lease, a metadata-store record (§7.3). Hold returns
-// the epoch this acquisition raised the shard to.
+// Lease is one partition's GC lease, a metadata-store record (§7.3). Hold returns
+// the epoch this acquisition raised the partition to.
 type Lease interface {
-	Hold(ctx context.Context, ns NamespaceID, shard Shard) (epoch uint64, held bool, err error)
+	Hold(ctx context.Context, ns NamespaceID, part Partition) (epoch uint64, held bool, err error)
 }
 
 // Config is GC's own configuration (§7.3, RFC 13).
@@ -1240,7 +1249,7 @@ func (g *GC) RebuildIndex(ctx context.Context, check bool) (IndexReport, error)
 func (g *GC) RebuildReverse(ctx context.Context, share ShareID, check bool) (IndexReport, error)
 ```
 
-The shard count, lease duration, `Recheck` period, clock bound and trip threshold
+The partition count, lease duration, `Recheck` period, clock bound and trip threshold
 are constants of the implementation, not settings.
 
 ## 9. Invariants
@@ -1252,7 +1261,7 @@ are constants of the implementation, not settings.
 | G3 | An object is deleted only when its record is `deleted` and no intent names it, which is final: every name is minted once, every put follows a durable intent, and a commit creates a block record only by consuming that intent. |
 | G4 | A block is `retired` exactly when its `live` is zero, from the transaction that took it there; it is resurrected by any transaction that raises it, and only while `retired`. |
 | G5 | The compactor deletes nothing. It moves chunk records and counts; retirement follows from the move, and only the deleter deletes. |
-| G6 | A block GC writes is named like any other: minted once from a fresh nonce, with an intent carrying its shard and epoch recorded before the put. |
+| G6 | A block GC writes is named like any other: minted once from a fresh nonce, with an intent carrying its partition and epoch recorded before the put. |
 | G7 | Collection takes abandoned intents first; its listing backstop deletes only objects with neither intent nor record, only in a namespace whose claim names this installation and whose every store was enumerated completely; correctness never depends on either. |
 | G8 | A conflict is retried under I8, and a failed delete never loses its `deleted` record. |
 | G9 | Every record GC stores has a named reclamation path at its maximum size. |
@@ -1290,7 +1299,7 @@ Logs: a verification refusal, a low count or a Lost ref logs the block or file a
 `Error`. The hold, a deletion backlog that stops draining and a clock outside the
 bound each raise a health condition and log once at `Warn` on entry and on exit.
 A collection refused because a store was not enumerated logs that store at `Warn`.
-Taking or losing a lease shard, an operator restore and a rebuild log at `Info`.
+Taking or losing a lease partition, an operator restore and a rebuild log at `Info`.
 
 ## 11. Test plan and benchmarks
 
@@ -1308,10 +1317,10 @@ the implementation, not by timing.
 | [§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block) resurrection against the deleter | Interleave an adopting commit and `MarkDeleted` on one retired block at every step boundary, in both orders. Assert either the block is `live` with the new ref and no delete is issued, or the block is `deleted`, the adopting ref is refused, and the re-offer uploads the chunk. Assert no ref ever names a chunk whose object is gone. |
 | [§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block) serialisation | Make the adoption's and the deleter's reads of the block record untracked, with neither writing it. Assert the check fails, so the rig can see the race it guards. |
 | [§3.5](#3.5%20The%20deleter%20verifies%20before%20it%20deletes) verification | Decrement a refcount without dropping its ref, let the block retire, run the deleter. Assert it refuses, resurrects the block, raises the count and counts the refusal. Commit a ref to a chunk of a due block while `MarkDeleted` is in flight; assert one of them retries. |
-| [§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete) intents | For each writer (an offload, a compaction) and each abandoner (epoch moved on, owner deleted, the writer itself), run the intent write, the put, the abandonment, the delete and the commit in every order. Assert no `live` block record ever names a deleted object and a commit whose intent was abandoned fails. |
+| [§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete) intents | For each writer (an offload, a compaction) and each abandoner (epoch moved on, domain deleted, the writer itself), run the intent write, the put, the abandonment, the delete and the commit in every order. Assert no `live` block record ever names a deleted object and a commit whose intent was abandoned fails. |
 | [§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete) late put | Abandon an intent while its put is in flight and land the put before the put-bound wait ends. Assert the object is deleted with no listing. Land it after the delete; assert only the backstop finds it. |
-| [§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete) epoch domain | Run offload intents under a unit at epoch 41 while the GC shard is at epoch 50. Assert no offload intent is abandoned. Restart a compactor on the same shard; assert its earlier intents are abandoned. |
-| [§2.1](#2.1%20References%20are%20the%20only%20authority) two holders | Run two deleters and two compactors on one shard from two processes that both believe they hold the lease, with adopting offloads in a third. Assert no referenced block is deleted. |
+| [§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete) epoch domain | Run offload intents under a shard at epoch 41 while the GC partition is at epoch 50. Assert no offload intent is abandoned. Restart a compactor on the same partition; assert its earlier intents are abandoned. |
+| [§2.1](#2.1%20References%20are%20the%20only%20authority) two holders | Run two deleters and two compactors on one partition from two processes that both believe they hold the lease, with adopting offloads in a third. Assert no referenced block is deleted. |
 | [§2.1](#2.1%20References%20are%20the%20only%20authority) time never permits | Set the retention to zero and stall an adopting commit past it. Assert the adoption resurrects or is refused; the clock changes only when the object goes. Skew a deleter's clock past the bound; assert it stops. |
 | [§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period) drift | Turn versioning on between two deletes. Assert the next batch waits for `Recheck`, the noncurrent versions of the deleted names are deleted by version ID, nothing is pruned before, and puts and deletes resume after, with no operator action. Change the claim to another installation; assert no further delete. |
 | [§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object) reply | Return a multi-delete reply that omits one requested name. Assert that name stays `deleted` and is retried. |
@@ -1395,7 +1404,7 @@ where a row names the scale tier.
 
 | Benchmark | Measures | Target |
 | --- | --- | --- |
-| Deleter throughput | objects verified, deleted and pruned per second, batches of 1,000 names | ≥ 1,000/s per shard |
+| Deleter throughput | objects verified, deleted and pruned per second, batches of 1,000 names | ≥ 1,000/s per partition |
 | Verification cost | reads per delete, against chunks per block | ≤ 2 per carried chunk |
 | GC cost against store size | records read per pass, fixed garbage, 10⁵ to 10⁸ recorded blocks | flat within 10% |
 | Backlog drain | time to empty 10⁶ due deletions after the remote returns | ≤ 10⁶ / deleter throughput, with no operator action |
@@ -1405,7 +1414,7 @@ where a row names the scale tier.
 | Compaction under load | offload MB/s and client p99 with the compactor at its share, against neither running | within 10% of offload's fair share; p99 within 20% |
 | Space amplification | stored over referenced bytes under a churn workload, per target, and bytes rewritten to hold it | report; feeds [§12](#12.%20Open%20questions) item 1 |
 | Audit coverage at scale | projected time to merge 2 PB's chunk records and reverse keys at measured throughput | ≤ `gc.audit.period` |
-| Shard scaling | deleter and audit throughput with 1, 4 and 16 storage nodes | report; near linear |
+| Partition scaling | deleter and audit throughput with 1, 4 and 16 storage nodes | report; near linear |
 | Index rebuild | seconds per 10⁶ block records | report |
 | Soak | 72 h of mixed writes, releases, snapshots, compaction and audit, with Group B's invariants checked hourly and Group C's faults on | zero invariant failures; memory and backlog flat |
 
@@ -1427,7 +1436,7 @@ where a row names the scale tier.
 5. **Trash retention per namespace or per store** ([§3.7](#3.7%20Trash)). 48 h is proposed for
    every namespace; whether a namespace on a costly store wants less, traded
    against resurrection and the second net, waits for measured resurrection rates.
-6. **The shard count** ([§7.3](#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20sharded%20by%20prefix)). A fixed count per namespace is proposed; how many
+6. **The partition count** ([§7.3](#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)). A fixed count per namespace is proposed; how many
    follows from the deleter and audit throughput per node at 10⁴ namespaces.
 
 ---
@@ -1452,7 +1461,7 @@ amending the requirement.
 | D10 | The compactor deletes nothing ([§4.1](#4.1%20A%20block%20that%20is%20mostly%20dead%20pins%20its%20dead%20bytes)) | relocation deletes the old object and its record itself |
 | D11 | Mint a name with its nonce in the header, and record its intent ([§4.2](#4.2%20Read%20verified%2C%20mint%2C%20put%2C%20then%20move)) | relocation generates a random name, carries no nonce in the header and records nothing before the put |
 | D12 | Ranged reads of live chunks through a flow, verified by the codec ([§4.2](#4.2%20Read%20verified%2C%20mint%2C%20put%2C%20then%20move)) | relocation fetches whole objects directly, verifies them and parses the format itself |
-| D13 | No lock or lease is a safety input ([§7.3](#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20sharded%20by%20prefix)) | the run lock and the per-remote lock are process-local; multi-server operation is unsafe |
+| D13 | No lock or lease is a safety input ([§7.3](#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)) | the run lock and the per-remote lock are process-local; multi-server operation is unsafe |
 | D14 | Declared, not asserted ([§8](#8.%20API%20surface)) | GC imports the metadata layer, takes the remote store's full interface, and finds its dependencies by type assertion |
 | D15 | I8 ([§3.6](#3.6%20Failures%20resolve%20on%20their%20own)) | the `live` retry is bounded by an attempt count, with jitter derived from the attempt number |
 | D16 | Every block at `live` zero retires ([§2.2](#2.2%20Retirement%20is%20decided%20where%20the%20count%20reaches%20zero)) | the carver can pack one hash into several blocks in flight; the chunk locator is written last-wins and sweep decrements only the block it names, so the other blocks keep a nonzero count with no locator. Only an operator-run reconcile finds them. Leak |

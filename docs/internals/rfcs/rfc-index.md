@@ -9,7 +9,7 @@ aliases:
 # DittoFS RFCs
 
 The specification of DittoFS, from the bytes a client writes to the objects in the remote tier,
-and the layers around them. [RFC 0](rfc-0-data-lifecycle.md) is the root: it defines the terms,
+and the layers around them. [RFC 0](rfc-0-data-lifecycle.md) is the root: it defines the terms ([Glossary](rfc-0-data-lifecycle.md#Glossary)),
 the residency function and the invariants every other RFC inherits. Start there, and read in
 order: each part builds on the ones before it.
 
@@ -27,15 +27,15 @@ order: each part builds on the ones before it.
 | [RFC 6](rfc-6-block-metadata.md) | block metadata | FileData, holes, refs, chunks, blocks, refcounts |
 | [RFC 16](rfc-16-metadata-store.md) | metadata store | *draft* — the entity model and its Go package, the rules that keep it honest, interfaces by consumer and how they are assembled, control-plane and identity entities, the KV contract, key layout, codecs, counters, store format; testing, benchmarks and observability of the store |
 | [RFC 7](rfc-7-namespace-metadata.md) | namespace metadata | files, directories, handles, permissions, what keeps a file alive |
-| [RFC 14](rfc-14-open-state.md) | open state and locks | *draft* — client leases, opens and deny modes, byte-range locks, caching grants (delegations, oplocks, leases), pNFS layouts, grace and per-unit reclaim, conflicts across protocols |
+| [RFC 14](rfc-14-open-state.md) | open state and locks | *draft* — client leases, opens and deny modes, byte-range locks, caching grants (delegations, oplocks, leases), pNFS layouts, grace and per-shard reclaim, conflicts across protocols |
 | **Composition** | | |
-| [RFC 17](rfc-17-vfs.md) | filesystem service (VFS) | *draft* — the one protocol-neutral API adapters call: operations, callbacks, errors, what stays in adapters; orchestration at one owner, quota enforcement by in-memory reservation, soft-quota and access-audit event hooks |
+| [RFC 17](rfc-17-vfs.md) | filesystem service (VFS) | *draft* — the one protocol-neutral API adapters call: operations, callbacks, errors, what stays in adapters; orchestration at one primary, quota enforcement by in-memory reservation, soft-quota and access-audit event hooks |
 | [RFC 8](rfc-8-engine.md) | engine | the content data path: the facade over journal, carver, syncer and block metadata, and its policy |
 | [RFC 9](rfc-9-gc.md) | GC | retirement and resurrection, trash, verified remote deletion, compaction policy, audit against the reverse ref index |
 | **Cluster** | | |
-| [RFC 10](rfc-10-journal-replication.md) | journal replication | *draft* — owner-driven replication, fencing, seal, catch-up, reads from replicas |
-| [RFC 11](rfc-11-ownership.md) | ownership | *draft* — ownership units (a share by default, automatic per-child units, byte-range units), leases, handover, failover, forwarding |
-| [RFC 15](rfc-15-topology.md) | topology and roles | *draft* — one binary, two roles chosen at deployment (`protocol` and `storage`, both by default), the composition root: what each role composes, one owner per unit, striping by range units, the route envelope, routing calls to the owner that serves them, split and collocated deployments, pNFS metadata and data servers |
+| [RFC 10](rfc-10-journal-replication.md) | journal replication | *draft* — a primary and its replicas, fencing, seal, joining learners, catch-up, reads |
+| [RFC 11](rfc-11-ownership.md) | shards | *draft* — shards (a share by default, subtree and automatic per-child shards; per-file and range shards deferred), the primary of each, node leases, handover, batched moves, cross-shard operations, failover, forwarding |
+| [RFC 15](rfc-15-topology.md) | topology and roles | *draft* — one binary, two roles chosen at deployment (`protocol` and `storage`, both by default), the composition root: what each role composes, one primary per shard, the route envelope, routing calls to the primary that serves them, split and collocated deployments, pNFS metadata and data servers |
 | **Data management** | | |
 | [RFC 12](rfc-12-snapshots.md) | snapshots, backups and share migration | *draft* — snapshots (a per-share cut number plus counted history refs; read-only, writable clones, scheduled with retention), metadata backup, restore to a new share, moving a share between installations on one bucket |
 | **Configuration** | | |
