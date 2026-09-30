@@ -183,6 +183,9 @@ func (h *Handler) handleOpenRootCreate(
 		IsDirectory:    true,
 		MetadataHandle: rootHandle,
 		OplockLevel:    grantedOplock,
+		// The share-mode gates read this; left out, every share-root open is
+		// recorded as deny-all and blocks renames in the root.
+		ShareAccess: req.ShareAccess,
 	}
 	if leaseResponse != nil && leaseResponse.LeaseState != lock.LeaseStateNone {
 		openFile.LeaseKey = leaseResponse.LeaseKey
