@@ -148,7 +148,10 @@ store of its own ([RFC 4](rfc-4-remote-tier.md)).
 its key scope ([RFC 2 §4.3](rfc-2-carver.md#4.3%20Key%20scope)): block names are minted under it ([§6.6](#6.6%20A%20block%27s%20name%20is%20minted%2C%20and%20its%20intent%20recorded%2C%20before%20the%20put)) and
 the dedup oracle answers within it ([§6.5](#6.5%20The%20dedup%20oracle)). Content-addressed records are
 partitioned by namespace ([RFC 6 §2.6](rfc-6-block-metadata.md#2.6%20The%20scope%20of%20a%20count)), so two shares of one namespace deduplicate
-against each other and shares of two namespaces never do.
+against each other and shares of two namespaces never do. During a re-home a
+share has two namespaces ([RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)); its **write namespace** is the one new
+blocks are minted and deduplicated in, and each ref names by its generation the
+one its chunk is read from.
 
 Composition **MUST** happen at construction. A capability **MUST NOT** be wired
 onto a serving engine by a setter: that makes "this capability is absent" a
@@ -756,7 +759,8 @@ type DedupOracle interface {
 ```
 
 It is built over block metadata's `Durable(hash)` ([RFC 6 §8.2](rfc-6-block-metadata.md#8.2%20Deduplication%20lookup)) in the
-namespace's partition, and nothing else.
+namespace's partition, and nothing else. The scope is the share's write
+namespace, the one the asking attempt fixed ([§6.6](#6.6%20A%20block%27s%20name%20is%20minted%2C%20and%20its%20intent%20recorded%2C%20before%20the%20put)).
 
 **Rules.**
 
@@ -809,7 +813,10 @@ against the production oracle and block metadata, and asserts the read.
 
 - The pipeline mints a block's name **once per put attempt**, by
   [RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)'s construction, before framing begins. The scope is the share's
-  namespace ID ([§2.1](#2.1%20Content%20composition)).
+  write namespace ID ([§2.1](#2.1%20Content%20composition)), fixed when the attempt starts: the attempt's
+  name, oracle answers and commit all stay in that namespace. When a re-home
+  switches the write namespace ([RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)), the primary joins every attempt
+  started under the old one before it acknowledges the switch.
 - Before the put, it durably records a **put intent** for the name, carrying the
   primary epoch ([RFC 6 §7.6](rfc-6-block-metadata.md#7.6%20Put%20intents)). Nothing else precedes the put.
 - The commit that creates the block record deletes the intent in the same
@@ -901,7 +908,8 @@ callback reports each file's share then.
 1. asks the journal, and receives the bytes it holds, the exact extents it does
    not, and the version `asOf` it answered at ([RFC 1 §3.2](rfc-1-journal.md#3.2%20Read));
 2. for each missing extent, asks block metadata which class covers it
-   ([RFC 6 §8.1](rfc-6-block-metadata.md#8.1%20Covering%20lookup));
+   ([RFC 6 §8.1](rfc-6-block-metadata.md#8.1%20Covering%20lookup)), resolving a carved ref's chunk in the namespace its
+   generation names ([RFC 6 §2.1](rfc-6-block-metadata.md#2.1%20ChunkRef));
 3. resolves each part by [RFC 0 §4.2](rfc-0-data-lifecycle.md#4.2%20The%20residency%20function):
 
 | Metadata | Residency | The engine |

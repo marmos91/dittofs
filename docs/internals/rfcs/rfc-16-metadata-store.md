@@ -182,6 +182,12 @@ type Share struct {
 	Root   FileID
 	State  ShareState // enabled, quiesced, frozen for a cut, being removed
 	Config SettingsRef
+	// Namespaces lists the block namespaces the share's refs are counted in,
+	// each a (generation, NamespaceID) pair: one outside a re-home, two during
+	// one. Write is the generation new put attempts carve under, the write
+	// namespace (RFC 12 §4.7).
+	Namespaces []NamespaceGen
+	Write      uint64
 }
 
 // ShareGrant is one principal's access to one share. Files.Authorize
@@ -568,7 +574,7 @@ Every key starts with a kind byte. The layout encodes the boundary
 | | `F‖id‖e‖key` | Entry, under its **parent** directory. `key` is the name folded by the share's fold rule (§4.6), the identity on a case-sensitive share; the name's original bytes are in the value ([RFC 7 §3.3](rfc-7-namespace-metadata.md#3.3%20Case)) |
 | | `F‖id‖t‖unique` | directory time delta, carrying the cut it was written after (§4.4) |
 | | `F‖id‖h‖start`, `F‖id‖rm‖version` | Hole, Removal |
-| | `F‖id‖r‖offset` | ChunkRef, live |
+| | `F‖id‖r‖offset` | ChunkRef, live; its value carries the generation of the share's namespace its chunk is counted in ([RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)) |
 | | `F‖id‖H‖died‖suffix` | **history** of a versioned per-file record: the value it had, under its live key's suffix — `r‖offset` (ChunkRef), empty (File), `acl`, `x‖name`, `s‖streamID`, `e‖key`, `h‖start` ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)) |
 | | `F‖id‖fx`, `F‖id‖fo` | fences: the (shard, epoch) the file's commits must carry ([RFC 6 §5.4](rfc-6-block-metadata.md#5.4%20Reads%20that%20gate%20a%20commit), [RFC 11 §8](rfc-11-ownership.md#8.%20Metadata%20consistency)). Per-file and range shards, and their records, are deferred ([RFC 11 Appendix C](rfc-11-ownership.md#Appendix%20C%20%E2%80%94%20later%3A%20per-file%20and%20range%20shards)) |
 | | `F‖id‖rel` | pending release: written by the final unlink, deleted only by the release transaction; holds no holder list, the holders are the `o‖` records ([RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)) |
@@ -577,10 +583,13 @@ Every key starts with a kind byte. The layout encodes the boundary
 | **Per share** — under `S‖ShareID` | `S‖id‖info` | Share |
 | | `S‖id‖g‖principal` | ShareGrant |
 | | `S‖id‖snap‖cut` | Snapshot; nothing else lives under this prefix, so listing snapshots reads only snapshots |
-| | `S‖id‖cut`, `S‖id‖live‖k` | Cut: `k`, `klatest`, the cut time of the share's latest cut, and `deleting`, the cut a running deletion removes; LiveCut, one per live snapshot ([RFC 12 §2.2](rfc-12-snapshots.md#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree), [§2.8](rfc-12-snapshots.md#2.8%20Deleting)) |
-| | `S‖id‖hd‖died‖FileID‖suffix` | died index: one empty-valued key per history record of the share, ref or namespace, `suffix` being the history key's, written and deleted with it; a snapshot deletion walks it from its cut ([RFC 12 §2.2](rfc-12-snapshots.md#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree), [§2.8](rfc-12-snapshots.md#2.8%20Deleting)) |
+| | `S‖id‖cut`, `S‖id‖live‖k` | Cut: `k`, `klatest`, the cut time of the share's latest cut, and `deleting`, the cut a running deletion removes; LiveCut, one per live snapshot, with its kind, share or subtree, and a subtree cut's covered set of shards ([RFC 12 §2.2](rfc-12-snapshots.md#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree), [§2.8](rfc-12-snapshots.md#2.8%20Deleting), [§2.10](rfc-12-snapshots.md#2.10%20Subtree%20snapshots)) |
+| | `S‖id‖sc‖shard` | SubCut: `klatest`, the newest live subtree cut covering that shard; raised only by a cut, behind the shard's gate, lowered only by a deletion ([RFC 12 §2.10](rfc-12-snapshots.md#2.10%20Subtree%20snapshots)) |
+| | `S‖id‖hd‖died‖FileID‖suffix` | died index: one key per history record of the share, ref or namespace, `suffix` being the history key's, its value the shard the version was superseded in, written and deleted with it; a snapshot deletion walks it from its cut ([RFC 12 §2.2](rfc-12-snapshots.md#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree), [§2.8](rfc-12-snapshots.md#2.8%20Deleting)) |
 | | `S‖id‖hr‖cut‖shard` | hold record: the shard's journals still hold content of that cut not yet offloaded; written by the cut, and for the receiving shard by a move's commit that ships held versions ([RFC 12 §2.4](rfc-12-snapshots.md#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history)) |
-| | `S‖id‖use‖cut‖useID` | use record: its kind — `clone`, `restore`, `backup` or `move` — reading that snapshot, and the deadline its reader renews, which a `move` record has none of; while one exists the snapshot cannot be deleted ([RFC 12 §3.2](rfc-12-snapshots.md#3.2%20A%20backup%20holds%20its%20snapshot)) |
+| | `S‖id‖use‖cut‖useID` | use record: its kind — `clone`, `restore`, `backup`, `copy` or `move` — reading that snapshot, and the deadline its reader renews, which a `move` record has none of; while one exists the snapshot cannot be deleted ([RFC 12 §3.2](rfc-12-snapshots.md#3.2%20A%20backup%20holds%20its%20snapshot)) |
+| | `S‖id‖rh` | re-home record: the new namespace, the cursor and the pass number of a running re-home; its existence refuses clones, snapshots, new backups and moves ([RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)) |
+| | `S‖id‖or` | `old_refs`: the share's refs still at the old generation during a re-home, folded like usage: a transaction that writes or drops such a ref writes the change in its usage delta (`S‖id‖ud‖…`), never to this key (§4.4) |
 | | `S‖id‖u`, `S‖id‖pu‖principal`, `S‖id‖pj‖project` | folded usage: share, with its `history_bytes`, principal, project (§4.4) |
 | | `S‖id‖ud‖shard‖unique` | usage delta, not yet folded, per shard (§4.4) |
 | | `S‖id‖q‖principal-or-project` | Quota: `Hard`, `Soft`, `Grace`, `Advisory` ([RFC 7](rfc-7-namespace-metadata.md)) |
@@ -594,6 +603,7 @@ Every key starts with a kind byte. The layout encodes the boundary
 | | `NS‖ns‖gc‖lease‖shard`, `NS‖ns‖gc‖recheck`, `NS‖ns‖gc‖hold`, `NS‖ns‖gc‖suspect‖hash` | GC lease per prefix shard with its epoch, last `Recheck` result, the deleter's hold, audit lowering state ([RFC 9 §7.3](rfc-9-gc.md#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)) |
 | | `NS‖ns‖gc‖pause` | GC pause record: while it exists the namespace gets no relocation, delete or collection; GC reads it before every pass and batch, and every relocation commit guards it ([RFC 12 §4.2](rfc-12-snapshots.md#4.2%20The%20move%2C%20step%20by%20step), [RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)) |
 | | `NS‖ns‖gc‖cursor‖walk‖shard` | walk cursor per kind of walk (audit, block walk, index rebuild) and shard, so a restarted walk resumes; derived |
+| | `NS‖ns‖bk‖location` | folder record: the copy or sweep holding the namespace's block folder at a backup location, its deadline, and the folder's census of (material ID, fingerprint) ([RFC 12 §3.4.1](rfc-12-snapshots.md#3.4.1%20Layout%20at%20the%20location)) |
 | **Server-wide** | `U‖principal`, `G‖principal` | User, Group, keyed by `PrincipalID` |
 | | `M‖group‖member`, `MR‖member‖group` | Membership, both directions |
 | | `NX‖kind‖name` | name index: user, group and share names → ID, unique |

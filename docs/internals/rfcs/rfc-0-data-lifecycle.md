@@ -48,6 +48,9 @@ definition; every other RFC uses the word in this sense and does not redefine it
 | **block** | the object the remote tier stores: a whole number of chunks, written by one put | [§2.1](#2.1%20Entities) |
 | **ref** | one file's use of one chunk at one offset; a chunk's refcount is the number of its refs | [§2.1](#2.1%20Entities), [RFC 6 §6.1](rfc-6-block-metadata.md#6.1%20A%20refcount%20is%20exactly%20its%20refs) |
 | **cut** / **snapshot** | a number marking one instant of a share / the share as it was at one cut, read-only | [RFC 12 §2.2](rfc-12-snapshots.md#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree) |
+| **catalog backup** | an export of one snapshot's metadata to a backup location; its content stays in the namespace, held by a use record on the snapshot | [RFC 12 §3.1](rfc-12-snapshots.md#3.1%20A%20backup%20is%20an%20export%20of%20one%20snapshot%27s%20metadata) |
+| **copying backup** | a catalog backup that also copies, byte for byte, every block its snapshot names into a block folder at the location, so it survives losing the namespace's bucket | [RFC 12 §3.4](rfc-12-snapshots.md#3.4%20Copying%20backups) |
+| **re-home** | moving one share out of a shared namespace into a new one of its own by copying its content, while the share serves | [RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace) |
 | **metadata store** | the transactional store holding every fact about files, content, identity and configuration | [RFC 16](rfc-16-metadata-store.md) |
 | **front-end** | the node a client's call arrives at; when it is not the primary, it forwards the call there | [RFC 11 §5.1](rfc-11-ownership.md#5.1%20Front-ends%20forward%20to%20the%20primary) |
 

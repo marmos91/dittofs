@@ -190,7 +190,9 @@ shard, and a directory renamed into it keeps its own.
   skips any file whose recorded shard is no longer the giving one, so a file
   hard-linked into two trees moves once. Each (giving, receiving) pair has its own
   move record, so child trees move in parallel. A move costs about three store
-  writes per file.
+  writes per file. Marking a directory in a shard that a live subtree snapshot
+  covers **MUST** be refused with `ErrSubtreeSnapshot` until those snapshots are
+  deleted, because it moves files ([§4](#4.%20Moving%20files%20and%20primaries)).
 - **Cost.** One shard record per child of a marked directory, and one slot
   table per installation, whose size is fixed by the slot count, not by nodes or
   shards. A rebalance touches the shards of the moved slots only.
@@ -330,6 +332,17 @@ transaction may write. A move from giving shard G to receiving shard R keeps its
 cursor in a **move record** of its own, keyed by the pair (G, R), so advancing it
 changes neither shard record and several moves out of G run at once.
 
+**A move into or out of a shard that a live subtree cut covers MUST be refused**
+with `ErrSubtreeSnapshot` ([RFC 12 §2.10](rfc-12-snapshots.md#2.10%20Subtree%20snapshots)). A file's history is kept by
+testing its shard's coverage, so a file moved out would drop history the
+snapshot reads, and a file moved in would bring records the cut never ordered. A
+handover of a covered shard's primary moves no files and is allowed.
+
+> ponytail: coverage is per shard, so one live subtree snapshot pins every file
+> of its covered shards in place until it is deleted. Upgrade to per-file
+> coverage, the cut recorded on each file it covers, when refused moves under
+> long-kept subtree snapshots block rebalancing or directory marking.
+
 Before the first batch, if R's epoch is not above G's, R's primary raises it to
 one above G's by an ordinary change of R's record and installs it on R's replicas
 ([RFC 10 §6](rfc-10-journal-replication.md#6.%20Fencing)). Then each batch runs these steps:
@@ -388,7 +401,9 @@ shard's cut gate ([RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%
 one, after a takeover, a handover or a move **MUST** start the shard's gate
 closed, so no transaction it admits commits after the cut under the old cut
 number. The holds the moved files carry follow their re-versioned content, and
-R's hold records keep the snapshot waiting until R has offloaded them.
+R's hold records keep the snapshot waiting until R has offloaded them. For a
+subtree cut, which closes only its covered shards' gates
+([RFC 12 §2.10](rfc-12-snapshots.md#2.10%20Subtree%20snapshots)), the rule applies to the covered shards only.
 
 ## 5. Routing
 

@@ -1293,6 +1293,10 @@ will sooner or later both retire the same one: a retire that finds the file
 already gone, or the segment already out of the set, **MUST** subtract nothing.
 A claim taken on a segment **MUST NOT** be released after the segment is retired,
 since a released claim on a retired segment is an invitation to retire it again.
+A retire that subtracts nothing **MUST** be counted and logged at `Warn`: it is
+harmless, but it means two paths selected one segment, which is the race this rule
+exists for. The accounted footprint **SHOULD** be checked against the sum of the
+segment set's sizes by verification ([§5.4](#5.4%20Inspection)), and a mismatch reported.
 
 ### 8.4 Open descriptors
 

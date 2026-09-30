@@ -161,7 +161,8 @@ type Store interface {
 // A throttling response is ErrThrottled, which wraps ErrTransient.
 
 Register(name string, store Store) (StoreID, error)
-// A background flow's fetches run in the background class (§2.9); GC opens one.
+// A background flow's fetches run in the background class (§2.9); GC, copying
+// backups and re-homes open one.
 OpenFlow(store StoreID, background bool) (*Flow, error)
 
 func (f *Flow) Upload(ctx context.Context, name BlockName, size int64, src func() iter.Seq2[Chunk, error]) (Stored, error)
@@ -226,7 +227,10 @@ per share, on that share's store, and closes it when the share is removed
 and puts get the same memory bound, retries and health refusal as any transfer,
 and run in the background class, behind every reader's demand and ahead of
 speculation ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows), [RFC 9 §4.2](rfc-9-gc.md#4.2%20Read%20verified%2C%20mint%2C%20put%2C%20then%20move)). GC's deletes do not go through
-the syncer ([§1.1](#1.1%20Non-goals)). Fairness per tenant, or a separate flow for pre-warm,
+the syncer ([§1.1](#1.1%20Non-goals)). A copying backup and a re-home open background flows
+the same way ([RFC 12 §3.4.3](rfc-12-snapshots.md#3.4.3%20Writing%20one%2C%20step%20by%20step), [RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)): a copy on the namespace's
+store and on the backup's block folder, a re-home on the old and new
+namespaces' stores. Fairness per tenant, or a separate flow for pre-warm,
 would change which flows are opened and nothing here.
 
 One syncer is what the bounds need: the memory bound is a property of the process
