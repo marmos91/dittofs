@@ -423,7 +423,10 @@ client must resend its unstable writes ([RFC 14 §10](rfc-14-open-state.md#10.%2
    primary epoch: `size`, holes, `mtime`, `ctime`, `applied` advanced to the newest
    version covered, and the file's version advanced ([RFC 6 §3.4](rfc-6-block-metadata.md#3.4%20Ordering%20against%20the%20journal)). It then
    stamps the covered versions in the journal with the cut the transaction read
-   ([RFC 1 §3.11](rfc-1-journal.md#3.11%20Snapshot%20holds)).
+   ([RFC 1 §3.11](rfc-1-journal.md#3.11%20Snapshot%20holds)), a replicated operation where replication is
+   composed ([RFC 12 §2.4](rfc-12-snapshots.md#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history)). A file's existence commits are serialised:
+   the next does not start until the previous one's stamp is recorded, so a
+   failure can leave at most the latest stamp to rebuild.
 3. Answer, with the verifier.
 
 This is the only acknowledgement policy: the journal is required to be durable
@@ -691,7 +694,9 @@ fault-injecting stub, and again as production composes it.
 **Snapshot holds.** Each existence commit hands the journal the cut it read
 ([RFC 1 §3.11](rfc-1-journal.md#3.11%20Snapshot%20holds)), and the commit step copies that cut, offered with the
 version, into every ref it writes as `born` — the cut of the existence commit, not
-of the write ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)). A version held for a cut and superseded before its
+of the write ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)). A version counts as superseded only once its
+successor's existence has committed; until then it is offered as a live version
+([RFC 12 §2.4](rfc-12-snapshots.md#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history)). A version held for a cut and superseded before its
 offload — by an overwrite, a truncate, a deallocate or a release — is still
 offered while its hold stands; its commit writes the ref straight to history, with
 `born` its own and `died` its successor's `born`, and never as a live ref

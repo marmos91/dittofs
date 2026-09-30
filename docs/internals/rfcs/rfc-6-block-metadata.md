@@ -201,7 +201,7 @@ ref is a `ChunkRef` with `Died` set.
 | | **Reverse ref** | `(namespace, chunk hash, share, file, offset, died)` | — | which refs name this chunk? Authoritative; the refcount is its cache ([§6.1](#6.1%20A%20refcount%20is%20exactly%20its%20refs)) |
 | Blocks ([§7](#7.%20What%20sweep%20needs%20from%20this%20component)) | **Block** | `(namespace, block name)` | GC state and `not_before`, live-chunk count, dead bytes and when they last grew, generation, size, encodings, carried chunk list | may this remote object be deleted, when, what does it carry, and how was it written? |
 | Placement ([§5.4](#5.4%20Reads%20that%20gate%20a%20commit)) | **Fence** `F_x`, `F_o` | `FileID` | the (shard, epoch) of the file's primary | is the writer on this path, or the namespace transaction guarding it, still the file's primary? |
-| Snapshots ([§6.5](#6.5%20Who%20owns%20a%20ref)) | **Cut** | `ShareID` | latest cut number `k`, newest live cut `klatest` | which cut does a commit fall after, and must a superseded ref move to history? |
+| Snapshots ([§6.5](#6.5%20Who%20owns%20a%20ref)) | **Cut** | `ShareID` | latest cut number `k`, newest live cut `klatest`, latest cut time, the cut a running deletion removes | which cut does a commit fall after, and must a superseded ref move to history? |
 | | **LiveCut** | `(ShareID, k)` | — | which cuts do live snapshots hold? |
 | | **Died index** | `(ShareID, died, FileID, suffix)` | — | which history must a snapshot deletion visit? One key per history record, ref or namespace ([RFC 12 §2.2](rfc-12-snapshots.md#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree)) |
 | Sweep ([§7](#7.%20What%20sweep%20needs%20from%20this%20component)) | **Put intent** | `(namespace, block name)` | domain, domain ID and epoch of the attempt | which minted names may still be put and committed? |
@@ -839,6 +839,7 @@ The gating reads in this document, and the key each conflicts on:
 | primary's epoch, existence path | `F_x(file)` | a new primary; removals and releases |
 | primary's epoch, namespace transactions ([RFC 7](rfc-7-namespace-metadata.md)) | `F_x(file)` for each file it changes, and the parent's for a create, link or rename-into | a new primary; removals and releases |
 | primary's epoch, offload path and pruning | `F_o(file)` | a new primary; removals and releases |
+| primary's node lease, every fenced commit | `Node(primary)`, guarded | the claim of a takeover, which marks it lapsed; the node acquiring a new lease |
 | removals an offload commit honours ([§4.1](#4.1%20What%20one%20commit%20records)) | the removals scan, covered by `F_o(file)` | every removal writes `F_o` |
 | put intent ([§7.6](#7.6%20Put%20intents)) | `Intent(name)` | the commit and an abandonment both delete it |
 | the deleter's move, resurrection by adoption ([§7.1](#7.1%20Conditional%20retirement), [§7.2](#7.2%20Adoption%20is%20conditional%20on%20existence)) | `Block(name)` | both transactions write it |
@@ -859,7 +860,10 @@ a commit matches only if both are equal, so a fence from another shard never
 matches whatever its number. Every namespace transaction
 guards `F_x` of the files it changes, so a former primary paused past its lease
 can commit no create, unlink, rename, ACL change or pending release once its
-successor has written the fences. A new primary writes both, before its first operation on
+successor has written the fences. Every fenced commit also guards its primary's
+node record, which the successor's claim marks lapsed, so such a commit is
+refused before then too, even for a file the successor never touches
+([RFC 11 §8](rfc-11-ownership.md#8.%20Metadata%20consistency)). A new primary writes both, before its first operation on
 the file under the new epoch ([RFC 11 §8](rfc-11-ownership.md#8.%20Metadata%20consistency)). An existence commit reads `F_x` with
 conflict tracking; an offload commit and removal pruning read `F_o`; a removal
 or release reads and writes both, so a removal and an offload commit conflict
@@ -1039,9 +1043,12 @@ A **snapshot** holds counted content through the refs its files had at its cut,
 and writes nothing per file when it is taken:
 
 - **A snapshot is its cut number** *k*. Each share keeps one record
-  `Cut(share) = { k, klatest }`: `k` is the number of the share's latest cut,
-  starting at 0 and raised by one each time a snapshot is taken, and `klatest`
-  is the newest cut a live snapshot still holds (0 when none does). Each live
+  `Cut(share) = { k, klatest, cut time, deleting }`: `k` is the number of the
+  share's latest cut, starting at 0 and raised by one each time a snapshot is
+  taken; `klatest` is the newest cut a live snapshot still holds (0 when none
+  does); `cut time` is the latest cut's, which the next cut exceeds by at least
+  one second; and `deleting` names the cut a running deletion removes, empty
+  when none runs, so a share's deletions run one at a time. Each live
   snapshot also has a `LiveCut(share, k)` record. The cut is one transaction behind the share's cut gate ([RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)) **without draining** the journal, and commits no
   existence: a write is in the cut only if its existence commit came before it,
   as a size change is. Content whose existence committed before the cut but is
@@ -1074,8 +1081,9 @@ and writes nothing per file when it is taken:
   one ([§6.1](#6.1%20A%20refcount%20is%20exactly%20its%20refs)). A narrowed ref moves its removed part. In the common case
   `died` is the current `k` and the test is `born < klatest`; when `died` is older
   — a held version offloaded late, a removal batch — the transaction reads the
-  `LiveCut` records in `(born, died]`, behind the gate, so a snapshot deleted
-  meanwhile leaves nothing behind. A held version that commits after a newer ref
+  `LiveCut` records in `(born, died]` with conflict tracking, so it conflicts
+  with a deletion's first transaction, which deletes the `LiveCut` it read, and a
+  snapshot deleted meanwhile leaves nothing behind that no walk visits. A held version that commits after a newer ref
   already replaced its range is recorded straight into history, with `born` its
   own and `died` the newer ref's `born`, rather than refused as older
   ([M10](#9.%20Invariants) governs live refs) — or dropped, when no live cut is left in its
@@ -1104,15 +1112,18 @@ and writes nothing per file when it is taken:
       kp ≤ born < k ≤ died < kn
 
   reading an absent *kp* as 0 and an absent *kn* as ∞. It runs as the batched
-  pattern of [§6.2](#6.2%20Truncation%20and%20deallocation): one transaction, through the cut gate, first deletes
-  `LiveCut(share, k)` and recomputes `klatest` in `Cut(share)` — so no ref-writing
-  transaction still running can move a ref to history for *k* alone after the
-  drop has passed it — then sub-transactions of K history records walk the
+  pattern of [§6.2](#6.2%20Truncation%20and%20deallocation): one transaction, through the cut gate, first requires
+  `deleting` empty and sets it to *k*, deletes `LiveCut(share, k)` and recomputes
+  `klatest` in `Cut(share)` — so no ref-writing transaction still running can
+  move a ref to history for *k* alone after the drop has passed it — then
+  sub-transactions of K history records walk the
   share's died index from `k`. Each re-reads the live cuts, stops at the next one
   above its cursor, and drops each record no live cut *c* sees
   (`born < c ≤ died`), decrementing a ref's chunk; so two deletions of neighbours
   running at once, or a deletion resumed after its neighbours changed, stay
-  correct.
+  correct. The final transaction recomputes `klatest` again and clears
+  `deleting` ([RFC 12 §2.8](rfc-12-snapshots.md#2.8%20Deleting)), so no deletion leaves `Cut(share)`
+  naming a cut that is gone.
 
 
 For example, a share takes cuts 1, 2 and 3, all live, so `klatest` is 3.
@@ -1130,7 +1141,8 @@ by one of them.
 
 A share with no live snapshot writes no history. `Cut(share)` changes only at a
 cut and at a snapshot deletion, each behind the cut gate, so reading it needs no
-conflict tracking and no lock: it is not a key every commit of the share
+conflict tracking and no lock — a deletion only lowers `klatest`, and the history
+path guards itself by its tracked `LiveCut` read: it is not a key every commit of the share
 contends on, on either kind of backend ([§5.4](#5.4%20Reads%20that%20gate%20a%20commit)).
 
 Journal versions keep only their per-file roles — ordering commits for one file

@@ -39,7 +39,7 @@
 <path d="M242 172H616" class="arr"/>
 <text x="460" y="167" class="s">prepare: recall grants on d2</text>
 <path d="M438 198H244" class="arr"/>
-<text x="256" y="193" class="s">yes (S2, e4), hold until T</text>
+<text x="256" y="193" class="s">yes (S2, e4), hold record until T</text>
 <path d="M618 222H244" class="arr"/>
 <text x="460" y="217" class="s">yes (S3, e2)</text>
 <rect x="14" y="236" width="872" height="92" rx="4" fill="#eaf4ec" fill-opacity="0.45" stroke="none"/>
@@ -47,12 +47,12 @@
 <text x="640" y="251" class="s">one txn</text>
 <rect x="260" y="266" width="520" height="52" rx="4" class="p"/>
 <text x="270" y="282" class="s">guards fences d1 (S1, e6), d2 (S3, e2), f (S2, e4); loop check for directories</text>
-<text x="270" y="298" class="s">refused if commit time ≥ T: a hold that ended cannot be overridden</text>
+<text x="270" y="298" class="s">guards each hold record: a released hold makes it abort</text>
 <text x="270" y="312" class="s">a replaced target gets a pending release, decided by its own primary</text>
 <path d="M798 344H244" class="arr"/>
 <text x="640" y="339" class="s">committed</text>
 <path d="M242 368H436" class="arr"/>
-<text x="248" y="363" class="s">outcome: release hold</text>
+<text x="248" y="363" class="s">outcome: release hold, delete record</text>
 <path d="M242 390H616" class="arr"/>
 <text x="460" y="385" class="s">outcome</text>
 <path d="M238 412H74" class="arr"/>
@@ -60,6 +60,6 @@
 <rect x="20" y="432" width="860" height="58" rx="4" class="r"/>
 <text x="32" y="450" class="h">refusal: f open without delete sharing</text>
 <text x="32" y="466" class="s">B answers no → A sends abort, C drops its hold, nothing is committed → client gets a sharing-violation / file-open error.</text>
-<text x="32" y="482" class="s">A coordinator lost after prepare: every hold ends at T plus the drift bound; a late commit is refused by T.</text>
+<text x="32" y="482" class="s">A coordinator lost after prepare: each hold ends at T by deleting its record; a late commit finds it gone.</text>
 <text x="16" y="516" class="l">Each primary checks its own open state; one metadata transaction commits the change.</text>
 </svg>

@@ -1124,6 +1124,13 @@ it and records `NS‖ns‖gc‖recheck` = {started, finished, passed, drift}.
   installation `owned`, whatever batch it is in; a process paused or partitioned
   past that bound stops before its next delete rather than acting on a claim it
   can no longer see ([RFC 12 §4.1](rfc-12-snapshots.md#4.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)).
+- **A paused namespace gets no relocation, delete or collection.** While the
+  namespace's GC pause record exists — written by a move between installations
+  ([RFC 12 §4.2](rfc-12-snapshots.md#4.2%20The%20move%2C%20step%20by%20step)) and kept across a restart — GC **MUST** read it before every
+  pass and before every batch, and start neither. Each relocation commit **MUST**
+  read it with conflict tracking, so writing it aborts every relocation not yet
+  committed. Retirement continues while paused: it is decided where a count
+  reaches zero ([§2.2](#2.2%20Retirement%20is%20decided%20where%20the%20count%20reaches%20zero)), and an adoption undoes it; only its delete waits.
 - **Pruning waits for a later `Recheck`.** A `deleted` record is pruned only
   once a `Recheck` that started after its delete succeeded has passed
   ([§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object)). Until then the record still names the object.

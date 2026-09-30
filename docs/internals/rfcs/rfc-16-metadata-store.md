@@ -147,7 +147,7 @@ what moves with a share:
 | Scope | Entities | Moves with a share export ([RFC 12](rfc-12-snapshots.md)) |
 | --- | --- | --- |
 | Per share | Share, ShareGrant, Snapshot | yes |
-| Server-wide | User, Group, Membership, Node, Shard, Setting | no — an export carries the principals its files and grants reference (§5, decision 8) |
+| Server-wide | User, Group, Membership, Node, NodeLease, Shard, Setting | no — an export carries the principals its files and grants reference (§5, decision 8) |
 
 ```go
 // User and Group are principals with a name. A file refers to them only by
@@ -209,27 +209,37 @@ type Snapshot struct {
 }
 
 // Node is one server process in a cluster; Shard is one shard and
-// its current primary (RFC 11).
+// its current primary (RFC 11). Every fenced commit guards its primary's Node
+// record (RFC 11 §8), so the record changes only when the node acquires a lease
+// or a takeover marks it lapsed; renewals write NodeLease instead.
 type Node struct {
-	ID       NodeID
-	Address  string
-	Roles    Roles     // protocol, storage; both by default (RFC 15)
+	ID      NodeID
+	Address string
+	Roles   Roles  // protocol, storage; both by default (RFC 15)
+	Epoch   uint64 // raised each time the node acquires its lease anew
+	Lapsed  bool   // marked by a takeover: the lease at Epoch no longer fences anything (RFC 10 §9.2)
+}
+
+// NodeLease is the node lease's expiry, one per node, not per shard
+// (RFC 11 §3.1). Renewals write only this record.
+type NodeLease struct {
+	Epoch    uint64    // the node epoch it extends
+	Expires  time.Time // in store time
 	LastSeen time.Time
-	Epoch    uint64    // raised each time the node acquires its lease anew
-	Expires  time.Time // the node lease, in store time: one per node, not per shard (RFC 11 §3.1)
 }
 
 // Shard is a shard record: one primary, one epoch and the primary's
 // replicas (RFC 11, RFC 10). It changes only by compare-and-swap. The epoch is
 // fenced per file, not here — each file's F_x and F_o records carry it (§4.2,
 // RFC 6 §5.4) — so content and namespace commits do not read this record; a
-// move between shards (RFC 11 §4) and a usage fold (§4.4) do. A move's cursor is
+// move between shards (RFC 11 §4), a cross-shard commit (RFC 11 §8.1) and a
+// usage fold (§4.4) do. A move's cursor is
 // in its own move record (§4.2), so advancing it changes no shard record.
 type Shard struct {
 	ID           ShardID
 	Share        ShareID
-	Primary      NodeID // primary while its node lease at PrimaryEpoch is live
-	PrimaryEpoch uint64 // node epoch Primary was named under; a node whose lease lapsed is primary of nothing (RFC 11 §3.1)
+	Primary      Replica // node, journal identity and incarnation (RFC 10 §2.2); JoinPoint and Learner unused
+	PrimaryEpoch uint64  // node epoch Primary was named under; a node whose lease lapsed is primary of nothing (RFC 11 §3.1)
 	Epoch        uint64
 	Replicas     []Replica
 	Count        int // configured size of the replica set, primary included
@@ -519,12 +529,25 @@ shared (read) lock on the key, and a write takes the exclusive lock.
 **`Now` is store time.** Every time a record stores to be compared later — GC's
 `not_before`, a delete's completion, a `Recheck`, a node lease's expiry — is taken
 from `Now` and compared with `Now` in a later transaction ([RFC 9 §1.2](rfc-9-gc.md#1.2%20Words%20this%20document%20uses)).
-**Every fenced commit carries its primary's node lease expiry**, and the store
-**MUST** refuse it when `Now` is past that expiry ([RFC 11 §8](rfc-11-ownership.md#8.%20Metadata%20consistency)), so a paused
-primary cannot commit in the window before its successor fences the file. It **MUST** be
+A lease's expiry is compared with `Now` only where a lease is decided — a renewal,
+an acquisition, a takeover's claim — never to fence a commit. **Every fenced
+commit guards its primary's node record** and is refused unless the record holds
+the node epoch the commit carries, unmarked ([RFC 11 §8](rfc-11-ownership.md#8.%20Metadata%20consistency)); a takeover marks it in
+the transaction that claims the shard, so a paused primary's commit in flight
+conflicts and aborts before its successor has fenced any file. The guard holds
+whenever the store chooses a commit's timestamp, which a check of `Now` against
+an expiry would not. `Now` **MUST** be
 monotonic across transactions that commit in order, and within a stated bound of
 real time; a backend with a timestamp oracle returns the transaction's
 timestamp, and one without returns a hybrid logical clock kept in the store.
+
+**Every committed write carries a change sequence.** Its source is the commit
+timestamp the store records with each key version, from the same oracle or
+store-kept clock as `Now`, so it orders writes like their commits and no
+transaction writes a counter to get it. `Scan` returns it in each `KeyValue`;
+nothing stores it in a value. A move's delta is the records whose change
+sequence is above its base cut's, under a share's prefixes and its namespace's
+content-addressed ones ([RFC 12 §4.2](rfc-12-snapshots.md#4.2%20The%20move%2C%20step%20by%20step)).
 
 Two backends with identical semantics differ only here, and one conformance
 suite over `KV` plus one over the entity layer covers both.
@@ -552,10 +575,10 @@ Every key starts with a kind byte. The layout encodes the boundary
 | **Per share** — under `S‖ShareID` | `S‖id‖info` | Share |
 | | `S‖id‖g‖principal` | ShareGrant |
 | | `S‖id‖snap‖cut` | Snapshot; nothing else lives under this prefix, so listing snapshots reads only snapshots |
-| | `S‖id‖cut`, `S‖id‖live‖k` | Cut, LiveCut |
+| | `S‖id‖cut`, `S‖id‖live‖k` | Cut: `k`, `klatest`, the cut time of the share's latest cut, and `deleting`, the cut a running deletion removes; LiveCut, one per live snapshot ([RFC 12 §2.2](rfc-12-snapshots.md#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree), [§2.8](rfc-12-snapshots.md#2.8%20Deleting)) |
 | | `S‖id‖hd‖died‖FileID‖suffix` | died index: one empty-valued key per history record of the share, ref or namespace, `suffix` being the history key's, written and deleted with it; a snapshot deletion walks it from its cut ([RFC 12 §2.2](rfc-12-snapshots.md#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree), [§2.8](rfc-12-snapshots.md#2.8%20Deleting)) |
-| | `S‖id‖hr‖cut‖shard` | hold record: the shard's journals still hold content of that cut not yet offloaded ([RFC 12 §2.4](rfc-12-snapshots.md#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history)) |
-| | `S‖id‖use‖cut‖useID` | use record: a clone, restore or catalog backup reading that snapshot; while one exists the snapshot cannot be deleted ([RFC 12 §3.2](rfc-12-snapshots.md#3.2%20A%20backup%20holds%20its%20snapshot)) |
+| | `S‖id‖hr‖cut‖shard` | hold record: the shard's journals still hold content of that cut not yet offloaded; written by the cut, and for the receiving shard by a move's commit that ships held versions ([RFC 12 §2.4](rfc-12-snapshots.md#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history)) |
+| | `S‖id‖use‖cut‖useID` | use record: its kind — `clone`, `restore`, `backup` or `move` — reading that snapshot, and the deadline its reader renews, which a `move` record has none of; while one exists the snapshot cannot be deleted ([RFC 12 §3.2](rfc-12-snapshots.md#3.2%20A%20backup%20holds%20its%20snapshot)) |
 | | `S‖id‖u`, `S‖id‖pu‖principal`, `S‖id‖pj‖project` | folded usage: share, with its `history_bytes`, principal, project (§4.4) |
 | | `S‖id‖ud‖shard‖unique` | usage delta, not yet folded, per shard (§4.4) |
 | | `S‖id‖q‖principal-or-project` | Quota: `Hard`, `Soft`, `Grace`, `Advisory` ([RFC 7](rfc-7-namespace-metadata.md)) |
@@ -567,12 +590,18 @@ Every key starts with a kind byte. The layout encodes the boundary
 | | `I‖ns‖name` | put intent: domain, domain ID, epoch ([RFC 9 §7.2](rfc-9-gc.md#7.2%20Every%20record%20GC%20stores%20names%20its%20reclamation)) |
 | | `BR‖ns‖not_before‖name`, `BD‖ns‖name`, `BC‖ns‖bucket‖name` | GC index: retired blocks by `not_before`, deleted blocks awaiting prune (value: when the delete succeeded), compaction candidates by dead-ratio bucket. Derived from block records; repairable and rebuildable ([RFC 9 §7.4](rfc-9-gc.md#7.4%20The%20index%20can%20be%20dropped%20and%20rebuilt)) |
 | | `NS‖ns‖gc‖lease‖shard`, `NS‖ns‖gc‖recheck`, `NS‖ns‖gc‖hold`, `NS‖ns‖gc‖suspect‖hash` | GC lease per prefix shard with its epoch, last `Recheck` result, the deleter's hold, audit lowering state ([RFC 9 §7.3](rfc-9-gc.md#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)) |
+| | `NS‖ns‖gc‖pause` | GC pause record: while it exists the namespace gets no relocation, delete or collection; GC reads it before every pass and batch, and every relocation commit guards it ([RFC 12 §4.2](rfc-12-snapshots.md#4.2%20The%20move%2C%20step%20by%20step), [RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)) |
 | | `NS‖ns‖gc‖cursor‖walk‖shard` | walk cursor per kind of walk (audit, block walk, index rebuild) and shard, so a restarted walk resumes; derived |
 | **Server-wide** | `U‖principal`, `G‖principal` | User, Group, keyed by `PrincipalID` |
 | | `M‖group‖member`, `MR‖member‖group` | Membership, both directions |
 | | `NX‖kind‖name` | name index: user, group and share names → ID, unique |
 | | `PX‖scheme‖id` | protocol-ID index: UID, GID, SID → `PrincipalID`; the only place a protocol spelling is stored (§2.2) |
-| | `N‖node`, `SH‖shard` | Node, with its node lease; Shard, with its primary as (node, node epoch) and its replicas ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)) |
+| | `N‖node`, `N‖node‖exp` | Node: its node epoch and whether a takeover marked it lapsed, guarded by every fenced commit; NodeLease: the lease's expiry, the only record a renewal writes ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)) |
+| | `SH‖shard` | Shard, with its primary as (node, node epoch, journal identity, incarnation) and its replicas ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)) |
+| | `SH‖shard‖xh‖opID` | cross-shard hold record: a participant's hold for one prepared operation, with its deadline; every commit of the operation guards it, and a release deletes it before the participant grants what it refused ([RFC 11 §8.1](rfc-11-ownership.md#8.1%20Operations%20across%20shards)) |
+| | `SH‖shard‖hw` | each replica's acknowledged committed-point mark, persisted by the primary on a period; never lowered, raises no epoch ([RFC 10 §7.2](rfc-10-journal-replication.md#7.2%20Removal)) |
+| | `J‖journal` | a journal's generation, keyed by journal identity; raised at every open, and by a primary that finds itself rolled back ([RFC 10 §2.2](rfc-10-journal-replication.md#2.2%20One%20journal%20carries%20many%20shards)) |
+| | `RS‖partition` | repair scheduler lease per partition of the shard-ID hash, with its epoch ([RFC 10 §7.4](rfc-10-journal-replication.md#7.4%20Repair)) |
 | | `MV‖giving‖receiving` | move record: the cursor of a move of files from the giving shard to the receiving one, one per pair, so a crashed move resumes and several moves out of one shard run at once ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)) |
 | | `CFG‖scope‖key` | Setting |
 | | `SEC‖id` | Secret (§2.3): envelope-encrypted, never dumped or exported |
