@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 400" width="900" height="400" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <style>
+      .t  { font-size: 15px; font-weight: 600; fill: #1b1f24 }
+      .rl { font-size: 12px; font-weight: 600; fill: #1b1f24 }
+      .l  { font-size: 12px; fill: #3d444d }
+      .s  { font-size: 11px; fill: #5b6472 }
+      .m  { font-family: ui-monospace,SFMono-Regular,Menlo,monospace; font-size: 11px; fill: #1b1f24 }
+      .why  { font-size: 11px; fill: #b04a4a }
+      .ok   { font-size: 11px; font-weight: 600; fill: #2f6f4f }
+      .bx { fill: #dce9f7; stroke: #4a7fb5; stroke-width: 1.4 }
+      .bg { fill: #eaf4ec; stroke: #2f6f4f; stroke-width: 1.4 }
+      .br { fill: #fbecec; stroke: #b04a4a; stroke-width: 1.4 }
+      .bn { fill: #f4f6f8; stroke: #8b95a3; stroke-width: 1.2 }
+    </style>
+    <marker id="a3j" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5b6472"/>
+    </marker>
+    <marker id="a3jr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b04a4a"/>
+    </marker>
+  </defs>
+  <rect width="900" height="400" fill="#ffffff"/>
+
+  <text x="16" y="26" class="t">A joined fetch serves every caller still attached, at the pace of the slowest.</text>
+  <text x="16" y="46" class="s">One cold block, six chunks, three readers arriving at different times.</text>
+  <text x="16" y="92" class="rl">the transfer</text>
+  <rect x="180" y="76" width="86" height="26" rx="3" class="bx"/>
+  <text x="210" y="93" class="m">c1</text>
+  <rect x="280" y="76" width="86" height="26" rx="3" class="bx"/>
+  <text x="310" y="93" class="m">c2</text>
+  <rect x="380" y="76" width="86" height="26" rx="3" class="bx"/>
+  <text x="410" y="93" class="m">c3</text>
+  <rect x="480" y="76" width="86" height="26" rx="3" class="bx"/>
+  <text x="510" y="93" class="m">c4</text>
+  <rect x="580" y="76" width="86" height="26" rx="3" class="bx"/>
+  <text x="610" y="93" class="m">c5</text>
+  <rect x="680" y="76" width="86" height="26" rx="3" class="bx"/>
+  <text x="710" y="93" class="m">c6</text>
+  <text x="16" y="112" class="s">one Get, verified per chunk</text>
+  <text x="16" y="148" class="rl">reader A</text>
+  <text x="16" y="162" class="s">first to ask</text>
+  <rect x="180" y="134" width="86" height="22" rx="3" class="bg"/>
+  <rect x="280" y="134" width="86" height="22" rx="3" class="bg"/>
+  <rect x="380" y="134" width="86" height="22" rx="3" class="bg"/>
+  <rect x="480" y="134" width="86" height="22" rx="3" class="bg"/>
+  <text x="188" y="149" class="m">c1</text>
+  <text x="288" y="149" class="m">c2</text>
+  <text x="388" y="149" class="m">c3</text>
+  <text x="488" y="149" class="m">c4</text>
+  <text x="586" y="149" class="s">leaves the loop —</text>
+  <text x="586" y="163" class="s">the fetch goes on</text>
+  <text x="16" y="200" class="rl">reader B</text>
+  <text x="16" y="214" class="s">joins after c2</text>
+  <rect x="380" y="186" width="86" height="22" rx="3" class="bg"/>
+  <rect x="480" y="186" width="86" height="22" rx="3" class="bg"/>
+  <rect x="580" y="186" width="86" height="22" rx="3" class="bg"/>
+  <rect x="680" y="186" width="86" height="22" rx="3" class="bg"/>
+  <text x="388" y="201" class="m">c3</text>
+  <text x="488" y="201" class="m">c4</text>
+  <text x="588" y="201" class="m">c5</text>
+  <text x="688" y="201" class="m">c6</text>
+  <text x="186" y="201" class="s">c1, c2 already</text>
+  <text x="186" y="214" class="s">handed out</text>
+  <text x="16" y="252" class="rl">reader C</text>
+  <text x="16" y="266" class="s">needs c1, arrives late</text>
+  <rect x="380" y="238" width="186" height="22" rx="3" class="br" stroke-dasharray="4 3"/>
+  <text x="388" y="253" class="why">c1 has gone past: it starts</text>
+  <text x="388" y="275" class="why">a new fetch instead of waiting for nothing</text>
+  <line x1="16" y1="296" x2="884" y2="296" stroke="#eef1f4"/>
+  <text x="16" y="320" class="l">A chunk is released once every attached reader has moved past it; nothing is buffered for a reader who is behind.</text>
+  <text x="16" y="340" class="l">A reader leaving, by breaking its loop or by its deadline, detaches only itself. A failure reaches every attached reader</text>
+  <text x="16" y="358" class="l">and is not remembered: the next demand starts a fresh fetch.</text>
+  <text x="16" y="386" class="why">The first reader's timeout is the first reader's. Running the fetch on its context would fail B for A's deadline.</text>
+</svg>

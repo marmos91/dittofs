@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 400" width="900" height="400" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+<defs><style>
+.t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:12px;font-weight:700;fill:#1b1f24}
+.l{font-size:12px;fill:#3d444d}.s{font-size:11px;fill:#5b6472}
+.m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;fill:#1b1f24}
+.vfs{fill:#dce9f7;stroke:#4a7fb5;stroke-width:1.6}.meta{fill:#f3e8d4;stroke:#b08a3e;stroke-width:1.4}
+.data{fill:#d7ecd9;stroke:#4c8a58;stroke-width:1.4}.ext{fill:#f9fafb;stroke:#c3cad3;stroke-width:1}
+.p{fill:#ffffff;stroke:#1b1f24;stroke-width:1.1}.k{fill:#fbefd9;stroke:#a8741f;stroke-width:1.3}.r{fill:#f8e3e6;stroke:#a33a4d;stroke-width:1.3}
+.a{fill:#eaf4ec;stroke:#2f6f4f;stroke-width:1.3}
+.arr{stroke:#5b6472;stroke-width:1.3;fill:none;marker-end:url(#h)}.dash{stroke:#a33a4d;stroke-width:1.2;stroke-dasharray:5 3;fill:none;marker-end:url(#h)}
+.lane{stroke:#c3cad3;stroke-width:1;stroke-dasharray:3 3}
+</style><marker id="h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#5b6472"/></marker></defs>
+<rect width="900" height="400" fill="#ffffff"/>
+<text x="16" y="26" class="t">A block's name is minted once per put attempt, from its chunk hashes and a fresh nonce.</text>
+<text x="16" y="56" class="m">name =</text>
+<rect x="70" y="40" width="96" height="26" rx="3" class="ext"/><text x="80" y="58" class="s">domain</text>
+<rect x="172" y="40" width="96" height="26" rx="3" class="meta"/><text x="182" y="58" class="s">scope: ns-7</text>
+<rect x="274" y="40" width="96" height="26" rx="3" class="k"/><text x="284" y="58" class="s">nonce n1</text>
+<rect x="376" y="40" width="96" height="26" rx="3" class="ext"/><text x="386" y="58" class="s">chain ID C</text>
+<rect x="478" y="40" width="70" height="26" rx="3" class="a"/><text x="490" y="58" class="m">h1</text>
+<rect x="554" y="40" width="70" height="26" rx="3" class="a"/><text x="566" y="58" class="m">h2</text>
+<rect x="630" y="40" width="70" height="26" rx="3" class="a"/><text x="642" y="58" class="m">h4</text>
+<text x="710" y="58" class="s">→ hashed = N1</text>
+<text x="70" y="86" class="s">namespace ID · 16 random bytes, written into the header · transforms and keys · carried chunks, in block order</text>
+<rect x="16" y="112" width="210" height="58" rx="3" class="p"/><text x="28" y="134" class="h">attempt 1: mint N1</text><text x="28" y="152" class="s">record Intent(N1) = {epoch 41}</text>
+<path d="M226 141H262" class="arr"/>
+<rect x="264" y="112" width="200" height="58" rx="3" class="p"/><text x="276" y="134" class="h">put N1</text><text x="276" y="152" class="s">response lost</text>
+<path d="M464 128C500 128 500 122 538 122" class="arr"/>
+<rect x="540" y="100" width="344" height="46" rx="3" class="a"/><text x="552" y="120" class="h">retry within the attempt: put N1 again</text><text x="552" y="137" class="s">same plan, same bytes: one object however many land</text>
+<path d="M712 146V168" class="arr"/>
+<rect x="540" y="170" width="344" height="46" rx="3" class="a"/><text x="552" y="190" class="h">commit: delete Intent(N1), create block N1</text><text x="552" y="207" class="s">chunk records h1, h2, h4; the file's refs</text>
+<path d="M464 156C500 156 500 268 538 268" class="arr"/>
+<rect x="540" y="246" width="344" height="46" rx="3" class="k"/><text x="552" y="266" class="h">abandoned or restarted: re-offer mints N2</text><text x="552" y="283" class="s">new nonce n2, same chunks: N2 ≠ N1</text>
+<path d="M712 292V314" class="arr"/>
+<rect x="540" y="316" width="344" height="46" rx="3" class="r"/><text x="552" y="336" class="h">Intent(N1) abandoned, N1 deleted</text><text x="552" y="353" class="s">by the pipeline, or by GC once epoch 41 is gone</text>
+<text x="16" y="220" class="l">N1 is put only by its one attempt.</text>
+<text x="16" y="240" class="l">A late delete of N1 can never reach</text>
+<text x="16" y="260" class="l">a committed block, and no name needs</text>
+<text x="16" y="280" class="l">defending against a second writer.</text>
+<text x="16" y="384" class="s">Deduplication is by chunk, through the dedup oracle, never by block name: no block is skipped as already stored.</text>
+</svg>

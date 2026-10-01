@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 500" width="900" height="500" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <style>
+      .t  { font-size: 15px; font-weight: 600; fill: #1b1f24 }
+      .h  { font-size: 12px; font-weight: 600; fill: #3d444d; letter-spacing: .04em }
+      .rl { font-size: 12px; font-weight: 600; fill: #1b1f24 }
+      .l  { font-size: 12px; fill: #3d444d }
+      .s  { font-size: 11px; fill: #5b6472 }
+      .m  { font-family: ui-monospace,SFMono-Regular,Menlo,monospace; font-size: 11px; fill: #1b1f24 }
+      .why { font-size: 11px; fill: #b04a4a }
+      .grp { fill: none; stroke: #c3cad3; stroke-width: 1; stroke-dasharray: 5 4 }
+      .bn { fill: #f4f6f8; stroke: #9aa4b2; stroke-width: 1.1 }
+      .bx { fill: #dce9f7; stroke: #4a7fb5; stroke-width: 1.4 }
+      .bg { fill: #eaf4ec; stroke: #2f6f4f; stroke-width: 1.4 }
+    </style>
+    <marker id="a4r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5b6472"/>
+    </marker>
+  </defs>
+  <rect width="900" height="500" fill="#ffffff"/>
+
+  <text x="16" y="26" class="t">Three concepts, six records, each keyed by one thing</text>
+  <text x="16" y="46" class="s">No record holds a list that grows with its file. Arrows point from a record to the one it names.</text>
+
+  <!-- Existence -->
+  <rect x="16" y="64" width="210" height="262" rx="6" class="grp"/>
+  <text x="28" y="84" class="h">EXISTENCE</text>
+  <text x="28" y="100" class="s">written by existence commits</text>
+  <rect x="28" y="112" width="186" height="54" rx="3" class="bn"/>
+  <text x="38" y="130" class="rl">FileData</text><text x="112" y="130" class="m">FileID</text>
+  <text x="38" y="152" class="m">size, applied, m/ctime</text>
+  <rect x="28" y="178" width="186" height="54" rx="3" class="bn"/>
+  <text x="38" y="196" class="rl">Hole</text><text x="80" y="196" class="m">(FileID, start)</text>
+  <text x="38" y="218" class="m">end</text>
+  <rect x="28" y="244" width="186" height="54" rx="3" class="bn"/>
+  <text x="38" y="262" class="rl">Removal</text><text x="96" y="262" class="m">(FileID, version)</text>
+  <text x="38" y="284" class="m">start, end</text>
+  <text x="28" y="316" class="s">removals: keyed by journal version</text>
+
+  <!-- Content map -->
+  <rect x="246" y="64" width="430" height="196" rx="6" class="grp"/>
+  <text x="258" y="84" class="h">CONTENT MAP</text>
+  <text x="258" y="100" class="s">written by the offload commit</text>
+  <rect x="258" y="112" width="190" height="120" rx="3" class="bx"/>
+  <text x="268" y="130" class="rl">ChunkRef</text><text x="330" y="130" class="m">(FileID, offset)</text>
+  <text x="268" y="156" class="m">chunk (hash)</text>
+  <text x="268" y="172" class="m">skip, length</text>
+  <text x="268" y="188" class="m">oldest, newest</text>
+  <rect x="474" y="112" width="190" height="120" rx="3" class="bx"/>
+  <text x="484" y="130" class="rl">Chunk</text><text x="530" y="130" class="m">hash</text>
+  <text x="484" y="156" class="m">block, position, length</text>
+  <text x="484" y="172" class="m">refcount</text>
+  <line x1="448" y1="158" x2="472" y2="158" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a4r)"/>
+  <text x="258" y="250" class="s">many refs, any files</text>
+  <text x="474" y="250" class="s">one per hash; refcount = refs naming it</text>
+
+  <!-- Blocks -->
+  <rect x="696" y="64" width="188" height="196" rx="6" class="grp"/>
+  <text x="708" y="84" class="h">BLOCKS</text>
+  <text x="708" y="100" class="s">created at offload, retired by sweep</text>
+  <rect x="708" y="112" width="164" height="120" rx="3" class="bg"/>
+  <text x="718" y="130" class="rl">Block</text><text x="764" y="130" class="m">name</text>
+  <text x="718" y="156" class="m">live, encodings</text>
+  <text x="718" y="196" class="s">exists only once durable</text>
+  <text x="718" y="212" class="s">live = chunks with</text>
+  <text x="718" y="226" class="s">refcount &gt; 0</text>
+  <line x1="664" y1="158" x2="706" y2="158" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a4r)"/>
+
+  <line x1="16" y1="342" x2="884" y2="342" stroke="#eef1f4"/>
+  <text x="16" y="376" class="rl">What each question reads</text>
+  <text x="16" y="398" class="l">Does content exist at this offset? — Hole, then Ref. A hole and uncarved content are both "no ref"; only the hole records tell them apart.</text>
+  <text x="16" y="416" class="l">Which chunk, which block? — ChunkRef, then Chunk. Is it durable? — a Chunk record exists, so yes.</text>
+  <text x="16" y="434" class="l">May this block be deleted? — Block.live, evaluated inside the transaction that deletes it.</text>
+  <text x="16" y="466" class="why">Not here: whether the bytes are on local disk. That is the journal's question, and residency joins the two answers rather than storing one.</text>
+</svg>

@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 530" width="900" height="530" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+<defs><style>
+.t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:12px;font-weight:700;fill:#1b1f24}
+.l{font-size:12px;fill:#3d444d}.s{font-size:11px;fill:#5b6472}
+.m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;fill:#1b1f24}
+.vfs{fill:#dce9f7;stroke:#4a7fb5;stroke-width:1.6}.meta{fill:#f3e8d4;stroke:#b08a3e;stroke-width:1.4}
+.data{fill:#d7ecd9;stroke:#4c8a58;stroke-width:1.4}.ext{fill:#f9fafb;stroke:#c3cad3;stroke-width:1}
+.p{fill:#ffffff;stroke:#1b1f24;stroke-width:1.1}.k{fill:#fbefd9;stroke:#a8741f;stroke-width:1.3}.r{fill:#f8e3e6;stroke:#a33a4d;stroke-width:1.3}
+.a{fill:#eaf4ec;stroke:#2f6f4f;stroke-width:1.3}
+.arr{stroke:#5b6472;stroke-width:1.3;fill:none;marker-end:url(#h)}.dash{stroke:#a33a4d;stroke-width:1.2;stroke-dasharray:5 3;fill:none;marker-end:url(#hr)}
+.lane{stroke:#c3cad3;stroke-width:1;stroke-dasharray:3 3}
+.garr{stroke:#2f6f4f;stroke-width:1.6;fill:none;marker-end:url(#hg)}.line{stroke:#5b6472;stroke-width:1.3;fill:none}
+.rt{font-size:11px;fill:#a33a4d}.gt{font-size:11px;fill:#2f6f4f}
+.tail{fill:#ffffff;stroke:#9aa4b2;stroke-width:1;stroke-dasharray:3 2}
+.cp{stroke:#1b1f24;stroke-width:2}.jp{stroke:#a8741f;stroke-width:1.6;stroke-dasharray:4 3}
+</style><marker id="h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#5b6472"/></marker><marker id="hr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#a33a4d"/></marker><marker id="hg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#2f6f4f"/></marker></defs>
+<rect width="900" height="530" fill="#ffffff"/>
+<text x="16" y="26" class="t">Routing: any node's front-end forwards to the primary; a stale route is refused and re-routed.</text>
+<rect x="15" y="44" width="110" height="30" rx="4" class="ext"/>
+<text x="70" y="64" class="h" text-anchor="middle">client</text>
+<path d="M70 76V462" class="lane"/>
+<rect x="160" y="44" width="160" height="30" rx="4" class="vfs"/>
+<text x="240" y="64" class="h" text-anchor="middle">front-end (node C)</text>
+<path d="M240 76V462" class="lane"/>
+<rect x="345" y="44" width="170" height="30" rx="4" class="ext"/>
+<text x="430" y="64" class="h" text-anchor="middle">node A (old primary)</text>
+<path d="M430 76V462" class="lane"/>
+<rect x="525" y="44" width="170" height="30" rx="4" class="data"/>
+<text x="610" y="64" class="h" text-anchor="middle">node B (primary, e6)</text>
+<path d="M610 76V462" class="lane"/>
+<rect x="730" y="44" width="140" height="30" rx="4" class="meta"/>
+<text x="800" y="64" class="h" text-anchor="middle">metadata store</text>
+<path d="M800 76V462" class="lane"/>
+<path d="M72 104H236" class="arr"/>
+<text x="80" y="99" class="s">WRITE f</text>
+<text x="248" y="126" class="s">cache: S → A, epoch 5</text>
+<path d="M242 150H426" class="arr"/>
+<text x="250" y="145" class="s">req 42, (S, e5), hop 0</text>
+<path d="M428 180H244" class="dash"/>
+<text x="250" y="175" class="rt">refused: S is at e6, not mine</text>
+<path d="M242 214H796" class="arr"/>
+<text x="390" y="209" class="s">re-read shard record S</text>
+<path d="M798 240H244" class="arr"/>
+<text x="390" y="235" class="s">S: e6, primary (B, 5)</text>
+<path d="M242 274H606" class="arr"/>
+<text x="390" y="269" class="s">req 42, (S, e6), hop 0</text>
+<text x="618" y="300" class="s">journal, replicate,</text>
+<text x="618" y="314" class="s">record req 42 in dedup</text>
+<path d="M608 336H244" class="arr"/>
+<text x="390" y="331" class="s">ok</text>
+<path d="M238 360H74" class="arr"/>
+<text x="80" y="355" class="s">ok</text>
+<rect x="14" y="380" width="872" height="76" rx="4" fill="#eaf4ec" fill-opacity="0.45" stroke="none"/>
+<path d="M242 406H606" class="arr"/>
+<text x="390" y="401" class="s">retry of req 42 (reply lost)</text>
+<path d="M608 432H244" class="arr"/>
+<text x="252" y="427" class="s">same result, from the dedup table — not applied twice</text>
+<text x="16" y="480" class="l">The cache may be stale: a stale entry costs one refusal and a retry, never a wrong write.</text>
+<text x="16" y="498" class="s">Node A refuses because the receiver checks the epoch; it never forwards on itself, so a call cannot loop.</text>
+<text x="16" y="516" class="s">A file that moved to another shard is refused the same way, by its recorded shard.</text>
+</svg>
