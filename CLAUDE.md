@@ -39,6 +39,9 @@ using the graph on a question it cannot answer.
 | Anything in `test/`, `docs/`, or non-Go files | `rg` / `Read` — not in the graph |
 | Anything in `.pi/`, `.claude/`, `.tokensave/` | `rg` / `Read` — excluded via `.graphifyignore` |
 
+`.md` files under source directories (`README.md`, `CLAUDE.md`, `docs/**`) *are*
+indexed as document nodes, so doc-adjacent questions can use the graph too.
+
 **The graph is AST-only.** `graphify update .` extracts symbols and edges; it
 runs no model and infers no intent. So a question phrased the way you'd ask a
 colleague — "why do cold reads return zeros after a restart" — is matched as the
@@ -50,12 +53,14 @@ Greps that stay cheap: scope to the package directory rather than the repo root,
 `rg -l` first when you only need the file set, `-g '!*_test.go'` when tests are
 drowning the signal, and `-B2 -A2` instead of reading the whole file afterwards.
 
-The graph rebuilds itself: a `graphify` post-commit hook re-extracts changed code
-files on every commit, and a post-checkout hook does a full rebuild on branch
-switch. You do not need to run `graphify update .` by hand. Dirty `graphify-out/`
-files are expected and are not a reason to skip the graph. Run `graphify update .`
-manually only after a merge that the hook could not see, or after deleting code
-(`--force` — a rebuild with fewer nodes is otherwise refused as a safety check).
+Rebuilding is opt-in per machine. `graphify hook install` writes a `post-commit`
+hook that re-extracts changed code files and a `post-checkout` hook that does a
+full rebuild on branch switch. They are **untracked local state** (`.git/hooks/`
+or a `.githooks/` checkout of it) — a clone has neither, so run `graphify update .`
+after changing code unless you have run that install once yourself. Dirty
+`graphify-out/` files are expected and are not a reason to skip the graph. If a
+rebuild is ever refused as an unexplained shrink, the hook reads `GRAPHIFY_FORCE`
+from the environment rather than taking a flag.
 
 `.pi/`, `.claude/` and `.tokensave/` are excluded in `.graphifyignore`: they are
 agent tooling, and walking them put tracked-but-non-code files into the graph.
