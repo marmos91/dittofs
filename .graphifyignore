@@ -1,0 +1,5 @@
+# graphify exclusions — paths not useful to a code graph.
+# Agent/tooling scratch (tracked subsets stay in git; they are not code).
+.pi/
+.claude/
+.tokensave/

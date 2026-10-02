@@ -36,7 +36,8 @@ using the graph on a question it cannot answer.
 | Who calls `X`? What breaks if I change it? How do `A` and `B` connect? | `graphify query` / `path` / `explain` |
 | Where is the identifier `X` — a symbol, error string, flag, `DITTOFS_*` key? | `rg` directly |
 | Something spanning many files whose names you don't know yet | an `Explore` / `Agent` subagent |
-| Anything in `test/`, `docs/`, `.planning/`, `.pi/`, `.claude/`, or non-Go files | `rg` / `Read` — not in the graph |
+| Anything in `test/`, `docs/`, or non-Go files | `rg` / `Read` — not in the graph |
+| Anything in `.pi/`, `.claude/`, `.tokensave/` | `rg` / `Read` — excluded via `.graphifyignore` |
 
 **The graph is AST-only.** `graphify update .` extracts symbols and edges; it
 runs no model and infers no intent. So a question phrased the way you'd ask a
@@ -49,8 +50,15 @@ Greps that stay cheap: scope to the package directory rather than the repo root,
 `rg -l` first when you only need the file set, `-g '!*_test.go'` when tests are
 drowning the signal, and `-B2 -A2` instead of reading the whole file afterwards.
 
-Run `graphify update .` after merging, from the main checkout on the merged
-code — see the `fix-issue` skill, step 10.
+The graph rebuilds itself: a `graphify` post-commit hook re-extracts changed code
+files on every commit, and a post-checkout hook does a full rebuild on branch
+switch. You do not need to run `graphify update .` by hand. Dirty `graphify-out/`
+files are expected and are not a reason to skip the graph. Run `graphify update .`
+manually only after a merge that the hook could not see, or after deleting code
+(`--force` — a rebuild with fewer nodes is otherwise refused as a safety check).
+
+`.pi/`, `.claude/` and `.tokensave/` are excluded in `.graphifyignore`: they are
+agent tooling, and walking them put tracked-but-non-code files into the graph.
 
 ## Frequent commands
 
