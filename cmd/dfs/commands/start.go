@@ -947,6 +947,32 @@ func createNFSAdapter(cfg *models.AdapterConfig, kerberosConfig *config.Kerberos
 	return adapter, nil
 }
 
+// applyParsedSMBConfig copies the adapter JSON fields this process honors.
+// Signing was already copied. encryption_mode is documented on the same
+// object and has to be copied too: without it, start stays on the preferred
+// default and there is no way to select required.
+func applyParsedSMBConfig(smbCfg *smb.Config, parsedConfig map[string]any) {
+	if parsedConfig == nil {
+		return
+	}
+	if bindAddr, ok := parsedConfig["bind_address"].(string); ok {
+		smbCfg.BindAddress = bindAddr
+	}
+	if signingCfg, ok := parsedConfig["signing"].(map[string]any); ok {
+		if enabled, ok := signingCfg["enabled"].(bool); ok {
+			smbCfg.Signing.Enabled = &enabled
+		}
+		if required, ok := signingCfg["required"].(bool); ok {
+			smbCfg.Signing.Required = required
+		}
+	}
+	if encCfg, ok := parsedConfig["encryption"].(map[string]any); ok {
+		if mode, ok := encCfg["encryption_mode"].(string); ok && mode != "" {
+			smbCfg.Encryption.Mode = mode
+		}
+	}
+}
+
 func createSMBAdapter(cfg *models.AdapterConfig, kerberosConfig *config.KerberosConfig, nlAuth *netlogon.Authenticator) (runtime.ProtocolAdapter, error) {
 	port := cfg.Port
 	if port == 0 {
@@ -960,19 +986,7 @@ func createSMBAdapter(cfg *models.AdapterConfig, kerberosConfig *config.Kerberos
 		return nil, fmt.Errorf("failed to parse adapter config: %w", err)
 	}
 
-	if parsedConfig != nil {
-		if bindAddr, ok := parsedConfig["bind_address"].(string); ok {
-			smbCfg.BindAddress = bindAddr
-		}
-		if signingCfg, ok := parsedConfig["signing"].(map[string]any); ok {
-			if enabled, ok := signingCfg["enabled"].(bool); ok {
-				smbCfg.Signing.Enabled = &enabled
-			}
-			if required, ok := signingCfg["required"].(bool); ok {
-				smbCfg.Signing.Required = required
-			}
-		}
-	}
+	applyParsedSMBConfig(&smbCfg, parsedConfig)
 
 	smbAdapter := smb.New(smbCfg)
 
