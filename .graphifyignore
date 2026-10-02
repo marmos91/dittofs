@@ -1,5 +1,6 @@
 # graphify exclusions — paths not useful to a code graph.
-# Agent/tooling scratch (tracked subsets stay in git; they are not code).
+# `.tokensave/` is already in .gitignore, which graphify merges.
+# `.claude/` is NOT gitignored (5 tracked files) but is agent tooling,
+# not code — the graph is for Go source, so exclude it here.
 .pi/
 .claude/
-.tokensave/
