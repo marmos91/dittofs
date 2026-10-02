@@ -324,6 +324,7 @@ func accumulateGCStats(total, stats *blockgc.GCStats) blockgc.GCStats {
 	total.BytesFreed += s.BytesFreed
 	total.ErrorCount += s.ErrorCount
 	total.StrandedRowsReaped += s.StrandedRowsReaped
+	total.KeptForOtherRemote += s.KeptForOtherRemote
 	total.OrphanFiles += s.OrphanFiles
 	total.OrphanBlocks += s.OrphanBlocks
 	total.BytesReclaimed += s.BytesReclaimed
@@ -447,16 +448,22 @@ func (r *Runtime) syncedHashStoreForShares(shares []string) blockgc.SyncedHashIn
 // (fail-toward-leak — never a premature free of a live dedup sibling).
 // handled=false from every share means no share resolves a block locator for
 // the hash; the sweep keeps the marker and records the drift rather than
-// guessing at a remote key.
+// guessing at a remote key. A share that reports ErrBlockOnOtherRemote left its
+// block for another remote's pass, so the union reports it too once every share
+// has run, and the sweep keeps the marker that pass needs.
 type unionBlockReclaimer []*blockgc.BlockGCReclaimer
 
 var _ blockgc.BlockReclaimer = unionBlockReclaimer(nil)
 
 func (u unionBlockReclaimer) ReclaimDeadChunk(ctx context.Context, hash block.ContentHash) (bool, int64, error) {
-	var anyHandled bool
+	var anyHandled, elsewhere bool
 	var totalFreed int64
 	for _, rec := range u {
 		handled, freed, err := rec.ReclaimDeadChunk(ctx, hash)
+		if errors.Is(err, blockgc.ErrBlockOnOtherRemote) {
+			elsewhere = true
+			continue
+		}
 		if err != nil {
 			return anyHandled, totalFreed, err
 		}
@@ -464,6 +471,9 @@ func (u unionBlockReclaimer) ReclaimDeadChunk(ctx context.Context, hash block.Co
 			anyHandled = true
 			totalFreed += freed
 		}
+	}
+	if elsewhere {
+		return anyHandled, totalFreed, blockgc.ErrBlockOnOtherRemote
 	}
 	return anyHandled, totalFreed, nil
 }
@@ -483,12 +493,29 @@ func (r *Runtime) compactRemoteForEntry(ctx context.Context, entry shares.Remote
 	if !ok {
 		return // remote cannot hold packed blocks — nothing to compact
 	}
+	shared := r.metadataStoresOnOtherRemotes(entry)
 	var views []blockgc.CompactMetaView
 	for _, shareName := range entry.Shares {
-		mds, err := r.GetMetadataStoreForShare(shareName)
+		sh, err := r.sharesSvc.GetShare(shareName)
+		var mds metadata.Store
+		if err == nil {
+			mds, err = r.storesSvc.GetMetadataStore(sh.MetadataStore)
+		}
 		if err != nil {
 			logger.Warn("GC compaction: metadata store unavailable for share — its blocks are not compacted this run",
 				"share", shareName, "err", err)
+			continue
+		}
+		// decision: a metadata store that also serves a share on another remote is
+		// not compacted. Its records include blocks this remote does not hold, and
+		// compaction takes a block missing here for the husk of an interrupted
+		// compaction and drops its record, which leaves the owner's object without
+		// one for the reconcile to delete. Its blocks are still freed once their
+		// last chunk dies. Withdraw this once records name the remote that holds
+		// their block.
+		if shared[sh.MetadataStore] {
+			logger.Debug("GC compaction: metadata store also serves another remote — share not compacted",
+				"share", shareName, "metadataStore", sh.MetadataStore)
 			continue
 		}
 		// EnumerateSynced is a concrete backend method, not on metadata.Store —
@@ -554,22 +581,46 @@ func (r *Runtime) blockReclaimerForEntry(entry shares.RemoteStoreEntry) blockgc.
 	if !ok {
 		return nil
 	}
+	shared := r.metadataStoresOnOtherRemotes(entry)
 	var u unionBlockReclaimer
 	for _, shareName := range entry.Shares {
-		mds, err := r.GetMetadataStoreForShare(shareName)
+		sh, err := r.sharesSvc.GetShare(shareName)
+		var mds metadata.Store
+		if err == nil {
+			mds, err = r.storesSvc.GetMetadataStore(sh.MetadataStore)
+		}
 		if err != nil {
 			logger.Warn("GC: block reclaimer unavailable for share — its packed blocks will not be reclaimed this sweep",
 				"share", shareName, "err", err)
 			continue
 		}
 		u = append(u, &blockgc.BlockGCReclaimer{
-			Locators:     mds,
-			Records:      mds,
-			RemoteBlocks: rbs,
+			Locators:      mds,
+			Records:       mds,
+			RemoteBlocks:  rbs,
+			SharedRecords: shared[sh.MetadataStore],
 		})
 	}
 	if len(u) == 0 {
 		return nil
 	}
 	return u
+}
+
+// metadataStoresOnOtherRemotes names the metadata stores that also serve a share
+// on a remote other than entry's. Their locators and records name blocks that
+// entry's remote does not hold.
+func (r *Runtime) metadataStoresOnOtherRemotes(entry shares.RemoteStoreEntry) map[string]bool {
+	shared := make(map[string]bool)
+	for _, other := range r.sharesSvc.DistinctRemoteStores() {
+		if other.ConfigID == entry.ConfigID {
+			continue
+		}
+		for _, name := range other.Shares {
+			if sh, err := r.sharesSvc.GetShare(name); err == nil {
+				shared[sh.MetadataStore] = true
+			}
+		}
+	}
+	return shared
 }

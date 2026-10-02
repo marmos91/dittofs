@@ -15,6 +15,7 @@ package gc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/marmos91/dittofs/pkg/block"
@@ -33,9 +34,17 @@ type BlockReclaimer interface {
 	// the caller treats that as metadata drift and keeps the
 	// marker (fail-closed); it never issues a per-hash remote delete.
 	// Idempotent: a hash whose block was already freed by a sibling chunk in
-	// the same sweep returns handled=true with zero bytes.
+	// the same sweep returns handled=true with zero bytes. ErrBlockOnOtherRemote
+	// means the block lives on a different remote: the caller keeps the marker
+	// for that remote's pass and records no drift.
 	ReclaimDeadChunk(ctx context.Context, hash block.ContentHash) (handled bool, bytesFreed int64, err error)
 }
+
+// ErrBlockOnOtherRemote reports a dead chunk whose block this reclaimer's remote
+// does not hold, because its metadata store also records blocks for other
+// remotes. Nothing was changed; the pass for the remote that holds the block
+// reclaims it.
+var ErrBlockOnOtherRemote = errors.New("block is held by another remote")
 
 // blockSyncedMarkerGC is the synced-marker surface the reclaimer needs: resolve
 // a chunk hash to its remote locator, then clear the marker. The marker doubles
@@ -63,6 +72,10 @@ type BlockGCReclaimer struct {
 	Locators     blockSyncedMarkerGC
 	Records      blockRecordGC
 	RemoteBlocks remote.RemoteBlockStore
+	// SharedRecords says Locators and Records also hold blocks that live on
+	// other remotes: one metadata store serves shares on several of them. A
+	// block RemoteBlocks does not hold then belongs to another remote's pass.
+	SharedRecords bool
 }
 
 // ReclaimDeadChunk implements BlockReclaimer. See the interface contract.
@@ -141,6 +154,23 @@ func (r *BlockGCReclaimer) ReclaimDeadChunk(ctx context.Context, hash block.Cont
 	// cannot change under us: it reliably tells the last-chunk case (marker
 	// cleared last, retryable) from a partial one (marker cleared first, gated).
 	lastChunk := rec.LiveChunkCount <= 1
+
+	// decision: with SharedRecords, the last chunk of a block that RemoteBlocks
+	// does not hold is left untouched for the remote that does, found with a
+	// one-byte read. Deleting it here would free nothing (a remote answers a
+	// delete of an absent key with success) and would drop the record and the
+	// marker the owning pass needs. A block that no remote holds is therefore
+	// never reclaimed on this path: its record and marker stay, fail-closed.
+	// Withdraw the probe once the marker records the remote that holds its
+	// block, so a pass can skip other remotes' candidates without a read.
+	if lastChunk && r.SharedRecords {
+		if _, perr := r.RemoteBlocks.GetBlockRange(ctx, blockID, 0, 1); perr != nil {
+			if errors.Is(perr, block.ErrChunkNotFound) {
+				return false, 0, ErrBlockOnOtherRemote
+			}
+			return false, 0, fmt.Errorf("block reclaim: probe block %s: %w", blockID, perr)
+		}
+	}
 
 	if !lastChunk {
 		// Partial: clear the marker BEFORE decrementing so a re-visit resolves
