@@ -110,7 +110,7 @@ func (s *BadgerMetadataStore) storeCapabilities(capabilities metadata.Filesystem
 // (maxStorageBytes / maxFiles) are store-wide configuration.
 //
 // Both figures are O(1) reads of the per-share usage bucket. Only regular files
-// contribute, matching the SQL backends' scoped aggregate: directories carry no
+// contribute: directories carry no
 // logical bytes and the share root would otherwise inflate UsedFiles.
 //
 // A handle that does not decode names no share and is rejected.

@@ -46,7 +46,7 @@ type MetadataCoordinator interface {
 	// BlockStatePending and never finalizes them, so RefCount stays 0 and
 	// GetByHash (Remote-gated) returns nil for them. A hash-resolved reap
 	// would pick an INDETERMINATE row when two files share the same content
-	// hash (memory hashIndex, badger scan order, postgres LIMIT 1) and could
+	// hash (whichever the hash index yields first) and could
 	// reap the wrong file's row — leaking the creator's row or over-reaping a
 	// still-referenced one (data loss). Removing THIS file's own row by ID
 	// is unambiguous; cross-file dedup keep-alive is provided by SIBLING rows
@@ -104,9 +104,8 @@ type MetadataCoordinator interface {
 	// PersistFileChunks, so a multi-pass rollup keeps FileAttr.Blocks
 	// complete instead of replacing it with only the latest pass.
 	//
-	// Reads the manifest source (file_block_refs on Postgres, encoded
-	// FileAttr.Blocks on Badger/Memory) — NOT the per-file FileChunk
-	// index, whose Pending rows carry a NULL hash on Postgres.
+	// Reads the manifest (the encoded FileAttr.Blocks) — NOT the per-file
+	// FileChunk index, whose Pending rows carry no content hash.
 	GetPersistedBlocks(ctx context.Context, payloadID string) ([]block.ChunkRef, error)
 
 	// FindByObjectID looks up a previously-quiesced file in the
@@ -153,18 +152,7 @@ var ErrMetadataCoordinatorNotWired = errors.New("engine: metadata coordinator no
 // just-incremented refcounts on the original target, re-fetches the
 // now-canonical target via FindByObjectID, and retries once.
 //
-// Wrapping: the runtime coordinator wraps three sources into this
-// sentinel via errors.Join
-//  1. Postgres pgconn.PgError with Code "23505" AND ConstraintName
-//     "files_object_id_idx".
-//  2. Postgres pgconn.PgError with Code "23505" AND empty
-//     ConstraintName whose Message text mentions "object_id"
-//     (defensive fallback — some pg drivers strip ConstraintName under
-//
-// certain configurations; detection MUST NOT rely solely on
-//
-//	   the constraint label).
-//	3. metadata.errors.StoreError with Code == errors.ErrConflict
-//
-// (Memory and Badger surface this from maintenance).
+// Wrapping: the runtime coordinator joins this sentinel via errors.Join
+// onto a metadata.errors.StoreError with Code == errors.ErrConflict
+// returned by the manifest write.
 var ErrObjectIDConflict = errors.New("engine: object_id already mapped to another file")

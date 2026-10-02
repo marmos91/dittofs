@@ -90,9 +90,6 @@ func TestDeferredSizeCommit_NeverOutrunsDurableData(t *testing.T) {
 	for _, bk := range byteVerifyBackends(t) {
 		bk := bk
 		t.Run(bk.name, func(t *testing.T) {
-			if bk.skip != "" {
-				t.Skip(bk.skip)
-			}
 
 			meta, metaType := bk.open(t)
 			fx := newByteVerifyFixture(t, meta, metaType)

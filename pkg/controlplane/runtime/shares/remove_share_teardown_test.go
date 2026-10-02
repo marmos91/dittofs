@@ -10,7 +10,8 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/block/local/memory"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // newLocalEngineStore builds a real local-only *engine.Store for the RemoveShare
@@ -21,7 +22,7 @@ func newLocalEngineStore(t *testing.T) *engine.Store {
 	local := memory.New()
 	// The in-memory metadata store satisfies EngineFileChunkStore (NewRemoteSync
 	// requires a non-nil one); the teardown path never exercises it.
-	fbs := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	fbs := badgertest.NewInMemory(t)
 	t.Cleanup(func() { _ = fbs.Close() })
 	syncer := engine.NewRemoteSync(local, nil, fbs, engine.DefaultConfig())
 	bs, err := engine.New(engine.BlockStoreConfig{

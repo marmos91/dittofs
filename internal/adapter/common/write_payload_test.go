@@ -7,7 +7,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // newTestEngine constructs an engine.Store backed by an on-disk
@@ -18,7 +19,7 @@ func newTestEngine(t *testing.T) *engine.Store {
 	t.Helper()
 
 	tmpDir := t.TempDir()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	localStore, err := journal.Open(tmpDir, journal.Config{MaxLocalBytes: 100 * 1024 * 1024})
 	if err != nil {
 		t.Fatalf("journal.Open failed: %v", err)

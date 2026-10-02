@@ -5,7 +5,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // TestAddShare_InvalidatesAuthCache covers the one caller of
@@ -17,7 +17,7 @@ import (
 // the root-ACL projection, which is best-effort.
 func TestAddShare_InvalidatesAuthCache(t *testing.T) {
 	rt, bsID := newRuntimeWithBlockStore(t)
-	metaStore := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	metaStore := badgertest.NewInMemory(t)
 	if err := rt.RegisterMetadataStore("meta", metaStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}

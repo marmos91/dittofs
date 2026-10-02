@@ -51,7 +51,7 @@ func TestGracePeriodRecovery(t *testing.T) {
 	blockStoreName := helpers.UniqueTestName("gracepayload")
 	shareName := "/export"
 
-	_, err := cli.CreateMetadataStore(metaStoreName, "memory")
+	_, err := cli.CreateInMemoryMetadataStore(metaStoreName)
 	require.NoError(t, err, "Should create metadata store")
 
 	_, err = cli.CreateBlockStore(blockStoreName, "memory")
@@ -111,7 +111,7 @@ func TestGracePeriodRecovery(t *testing.T) {
 	cli2 := helpers.LoginAsAdmin(t, sp2.APIURL())
 
 	// Recreate stores and share (memory stores don't persist)
-	_, err = cli2.CreateMetadataStore(metaStoreName, "memory")
+	_, err = cli2.CreateInMemoryMetadataStore(metaStoreName)
 	require.NoError(t, err, "Should create metadata store after restart")
 
 	_, err = cli2.CreateBlockStore(blockStoreName, "memory")
@@ -184,7 +184,7 @@ func TestGracePeriodUnclaimedLocks(t *testing.T) {
 	blockStoreName := helpers.UniqueTestName("unclaimedpayload")
 	shareName := "/export"
 
-	_, err := cli.CreateMetadataStore(metaStoreName, "memory")
+	_, err := cli.CreateInMemoryMetadataStore(metaStoreName)
 	require.NoError(t, err)
 
 	_, err = cli.CreateBlockStore(blockStoreName, "memory")
@@ -275,7 +275,7 @@ func TestCrossProtocolReclaim(t *testing.T) {
 	blockStoreName := helpers.UniqueTestName("xpreclaimpayload")
 	shareName := "/export"
 
-	_, err := cli.CreateMetadataStore(metaStoreName, "memory")
+	_, err := cli.CreateInMemoryMetadataStore(metaStoreName)
 	require.NoError(t, err)
 
 	_, err = cli.CreateBlockStore(blockStoreName, "memory")
@@ -365,7 +365,7 @@ func TestCrossProtocolReclaim(t *testing.T) {
 	cli2 := helpers.LoginAsAdmin(t, sp2.APIURL())
 
 	// Recreate stores and share
-	_, err = cli2.CreateMetadataStore(metaStoreName, "memory")
+	_, err = cli2.CreateInMemoryMetadataStore(metaStoreName)
 	require.NoError(t, err)
 
 	_, err = cli2.CreateBlockStore(blockStoreName, "memory")
@@ -455,7 +455,7 @@ func TestGracePeriodNewLockBlocked(t *testing.T) {
 	blockStoreName := helpers.UniqueTestName("graceblkpayload")
 	shareName := "/export"
 
-	_, err := cli.CreateMetadataStore(metaStoreName, "memory")
+	_, err := cli.CreateInMemoryMetadataStore(metaStoreName)
 	require.NoError(t, err)
 
 	_, err = cli.CreateBlockStore(blockStoreName, "memory")
@@ -525,7 +525,7 @@ func TestGracePeriodTiming(t *testing.T) {
 	blockStoreName := helpers.UniqueTestName("gracetimepayload")
 	shareName := "/export"
 
-	_, err := cli.CreateMetadataStore(metaStoreName, "memory")
+	_, err := cli.CreateInMemoryMetadataStore(metaStoreName)
 	require.NoError(t, err)
 
 	_, err = cli.CreateBlockStore(blockStoreName, "memory")
@@ -605,7 +605,7 @@ func TestGracePeriodEarlyExit(t *testing.T) {
 	blockStoreName := helpers.UniqueTestName("graceearlypayload")
 	shareName := "/export"
 
-	_, err := cli.CreateMetadataStore(metaStoreName, "memory")
+	_, err := cli.CreateInMemoryMetadataStore(metaStoreName)
 	require.NoError(t, err)
 
 	_, err = cli.CreateBlockStore(blockStoreName, "memory")
@@ -684,7 +684,7 @@ func TestGracePeriodWithSMBLeases(t *testing.T) {
 	blockStoreName := helpers.UniqueTestName("graceleasepayload")
 	shareName := "/export"
 
-	_, err := cli.CreateMetadataStore(metaStoreName, "memory")
+	_, err := cli.CreateInMemoryMetadataStore(metaStoreName)
 	require.NoError(t, err)
 
 	_, err = cli.CreateBlockStore(blockStoreName, "memory")
@@ -768,8 +768,8 @@ Grace Period Testing Notes:
 ---------------------------
 These tests verify the conceptual behavior of grace periods but have limitations:
 
-1. Memory stores don't persist locks across restarts
-   - Real grace period recovery requires persistent lock storage (BadgerDB/PostgreSQL)
+1. In-memory stores don't persist locks across restarts
+   - Real grace period recovery requires persistent lock storage (on-disk BadgerDB)
    - Tests simulate the behavior by verifying lock/unlock sequences
 
 2. Grace period timing is shortened for CI
@@ -781,7 +781,7 @@ These tests verify the conceptual behavior of grace periods but have limitations
    - Tests verify that locks work before/after simulated restarts
 
 For full grace period testing:
-- Use BadgerDB or PostgreSQL metadata stores
+- Use an on-disk BadgerDB metadata store
 - Test with actual NFS client disconnection/reconnection
 - Verify NLM4_DENIED_GRACE_PERIOD responses during grace period
 `

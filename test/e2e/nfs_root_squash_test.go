@@ -45,7 +45,7 @@ func TestNFSRootSquash(t *testing.T) {
 	blockStoreName := helpers.UniqueTestName("block")
 	shareName := "/export"
 
-	_, err := runner.CreateMetadataStore(metaStoreName, "memory")
+	_, err := runner.CreateInMemoryMetadataStore(metaStoreName)
 	require.NoError(t, err, "Should create metadata store")
 	t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaStoreName) })
 

@@ -12,7 +12,7 @@
 # regresses from unrelated work.
 #
 # The jobs differ in what they need around the suite — Docker Compose, a kernel
-# NFS mount and root, a postgres and a localstack service — because the suites
+# NFS mount and root, a localstack service — because the suites
 # genuinely differ there. What they share is the manifest, test/conformance/run.sh,
 # and the KNOWN_FAILURES grading contract.
 
@@ -284,22 +284,6 @@ jobs:
     # An empty image means the service is not started; the matrix profile
     # decides which services this cell gets.
     services:
-      postgres:
-        image: ${{ startsWith(matrix.profile, 'postgres') && 'postgres:16-alpine' || '' }}
-        env:
-          POSTGRES_USER: dittofs
-          POSTGRES_PASSWORD: dittofs
-          POSTGRES_DB: dittofs_test
-          POSTGRES_INITDB_ARGS: "--data-checksums"
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-          --shm-size=256mb
-
       localstack:
         image: ${{ endsWith(matrix.profile, '-s3') && 'localstack/localstack:4.13.1' || '' }}
         env:
@@ -350,14 +334,6 @@ jobs:
           PJDFSTEST=$(nix build .#pjdfstest --print-out-paths)
           echo "PJDFSTEST_DIR=$PJDFSTEST" >> $GITHUB_ENV
           echo "$PJDFSTEST/bin" >> $GITHUB_PATH
-
-      - name: Tune PostgreSQL for testing
-        if: startsWith(matrix.profile, 'postgres')
-        run: |
-          PGPASSWORD=dittofs psql -h localhost -U dittofs -d dittofs_test -c "ALTER SYSTEM SET synchronous_commit = 'off';"
-          PGPASSWORD=dittofs psql -h localhost -U dittofs -d dittofs_test -c "ALTER SYSTEM SET checkpoint_timeout = '30min';"
-          PGPASSWORD=dittofs psql -h localhost -U dittofs -d dittofs_test -c "ALTER SYSTEM SET work_mem = '64MB';"
-          PGPASSWORD=dittofs psql -h localhost -U dittofs -d dittofs_test -c "SELECT pg_reload_conf();"
 
       # setup-posix.sh builds both binaries from the checkout before starting
       # the server, so no prebuilt artifact is needed.

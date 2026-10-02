@@ -15,7 +15,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // setupTruncateTest builds a memory-backed runtime with a single share
@@ -35,10 +36,10 @@ func setupTruncateTest(t *testing.T) (*Handler, *metadata.AuthContext, *OpenFile
 	}
 	rt := newTestRuntime(t, cps)
 
-	if _, err := cps.CreateMetadataStore(ctx, &models.MetadataStoreConfig{Name: "trunc-meta", Type: "memory"}); err != nil {
+	if _, err := cps.CreateMetadataStore(ctx, &models.MetadataStoreConfig{Name: "trunc-meta", Type: "badger", Config: `{"in_memory":true}`}); err != nil {
 		t.Fatalf("CreateMetadataStore: %v", err)
 	}
-	if err := rt.RegisterMetadataStore("trunc-meta", metamemory.NewMemoryMetadataStoreWithDefaults()); err != nil {
+	if err := rt.RegisterMetadataStore("trunc-meta", badgertest.NewInMemory(t)); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
 	localBSID, err := cps.CreateBlockStore(ctx, &models.BlockStoreConfig{

@@ -115,8 +115,7 @@ var (
 	// opened safely must not leave the daemon looking healthy.
 	//
 	// The local and remote block tiers return it, and so does the metadata
-	// store (whose migrations in sqlite/postgres/badger wrap it for their
-	// side-log names), so the message carries no "blockstore:" prefix — unlike
+	// store (whose migrations wrap it for their side-log names), so the message carries no "blockstore:" prefix — unlike
 	// the sentinels above, it is not about blocks.
 	ErrFutureFormat = errors.New("store: on-disk format is newer than this build")
 )

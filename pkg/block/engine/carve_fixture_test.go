@@ -16,7 +16,9 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/middleware/encryption/keyprovider"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // newEncryptionProvider builds a local-keyfile KeyProvider for carve/seal tests.
@@ -50,7 +52,7 @@ const carveFixturePayload = "share/p1"
 // sizes the block target.
 type carveFixture struct {
 	local  *journal.Store
-	ms     *metadatamemory.MemoryMetadataStore
+	ms     *badger.BadgerMetadataStore
 	remote remote.RemoteBlockStore
 	syncer *RemoteSync
 	off    int64 // running write offset within carveFixturePayload
@@ -63,7 +65,7 @@ const defaultTestCarveBlockSize int64 = 4 << 20
 
 func newCarveFixture(t *testing.T, rbs remote.RemoteStore, carveBytes int64) *carveFixture {
 	t.Helper()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	// carveBytes reaches the carve loop through the local store: the journal owns
 	// the loop, so this is the only route to it.
 	local, err := journal.Open(t.TempDir(), journal.Config{CarveBlockSize: carveBytes})

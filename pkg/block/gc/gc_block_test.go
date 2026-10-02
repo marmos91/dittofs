@@ -10,7 +10,9 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // seedPackedBlock writes a block object to rbs and records, in st, the block
@@ -39,7 +41,7 @@ func seedPackedBlock(t *testing.T, st metadata.Store, rbs remote.RemoteBlockStor
 		}
 		// Backdate past grace so the steady-state index sweep treats it as
 		// eligible (the live-set check is then the only thing that can save it).
-		st.(*metadatamemory.MemoryMetadataStore).MarkSyncedAtForTest(h, time.Now().Add(-2*time.Hour))
+		st.(*badger.BadgerMetadataStore).MarkSyncedAtForTest(h, time.Now().Add(-2*time.Hour))
 	}
 }
 
@@ -56,7 +58,7 @@ func newBlockGCReclaimer(st metadata.Store, rbs remote.RemoteBlockStore) *BlockG
 // and keeps the marker fail-closed. No block bookkeeping is touched.
 func TestBlockReclaimer_NoLocatorNotHandled(t *testing.T) {
 	ctx := t.Context()
-	st := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	st := badgertest.NewInMemory(t)
 	rbs := remotememory.New()
 	defer func() { _ = rbs.Close() }()
 
@@ -82,7 +84,7 @@ func TestBlockReclaimer_NoLocatorNotHandled(t *testing.T) {
 // (the other chunk is still live).
 func TestBlockReclaimer_PartialDecrement(t *testing.T) {
 	ctx := t.Context()
-	st := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	st := badgertest.NewInMemory(t)
 	rbs := remotememory.New()
 	defer func() { _ = rbs.Close() }()
 
@@ -117,7 +119,7 @@ func TestBlockReclaimer_PartialDecrement(t *testing.T) {
 // frees the remote block object AND the record, reporting the block bytes freed.
 func TestBlockReclaimer_FreesBlockAtZero(t *testing.T) {
 	ctx := t.Context()
-	st := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	st := badgertest.NewInMemory(t)
 	rbs := remotememory.New()
 	defer func() { _ = rbs.Close() }()
 
@@ -148,7 +150,7 @@ func TestBlockReclaimer_FreesBlockAtZero(t *testing.T) {
 // remote — so the caller still skips the CAS delete.
 func TestBlockReclaimer_IdempotentAlreadyFreed(t *testing.T) {
 	ctx := t.Context()
-	st := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	st := badgertest.NewInMemory(t)
 	rbs := remotememory.New()
 	defer func() { _ = rbs.Close() }()
 
@@ -177,7 +179,7 @@ func TestBlockReclaimer_IdempotentAlreadyFreed(t *testing.T) {
 // blockGCEnv wires one memory metadata store (live-set + synced index + reclaim
 // surfaces) and one memory remote (CAS + block-keyed) for the index-sweep tests.
 type blockGCEnv struct {
-	st  *metadatamemory.MemoryMetadataStore
+	st  *badger.BadgerMetadataStore
 	rs  *remotememory.Store
 	rec *gcMSReconciler
 }
@@ -185,7 +187,7 @@ type blockGCEnv struct {
 func newBlockGCEnv(t *testing.T) *blockGCEnv {
 	t.Helper()
 	rec := newGCMSReconciler()
-	st := rec.addShare("share-a").(*metadatamemory.MemoryMetadataStore)
+	st := rec.addShare(t, "share-a").(*badger.BadgerMetadataStore)
 	rs := remotememory.New()
 	t.Cleanup(func() { _ = rs.Close() })
 	return &blockGCEnv{st: st, rs: rs, rec: rec}
@@ -344,7 +346,7 @@ func TestGCBlockSweep_LocatorlessMarkerFailsClosed(t *testing.T) {
 // EnumerateSynced, so it is never re-visited at all.)
 func TestBlockReclaimer_RerunAfterCrashNoDoubleDecrement(t *testing.T) {
 	ctx := t.Context()
-	st := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	st := badgertest.NewInMemory(t)
 	rbs := remotememory.New()
 	defer func() { _ = rbs.Close() }()
 
@@ -409,7 +411,7 @@ func TestBlockReclaimer_RerunAfterCrashNoDoubleDecrement(t *testing.T) {
 
 // compile-time: the memory metadata store satisfies the reclaimer surfaces.
 var (
-	_ blockSyncedMarkerGC = (*metadatamemory.MemoryMetadataStore)(nil)
-	_ blockRecordGC       = (*metadatamemory.MemoryMetadataStore)(nil)
+	_ blockSyncedMarkerGC = (*badger.BadgerMetadataStore)(nil)
+	_ blockRecordGC       = (*badger.BadgerMetadataStore)(nil)
 	_ context.Context     = nil
 )

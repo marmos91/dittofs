@@ -24,7 +24,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // setupStreamsDisabledShare wires a handler + runtime + memory store with a
@@ -50,13 +51,13 @@ func setupStreamsDisabledShare(t *testing.T, streamsDisabled bool) (*Handler, *S
 		t.Fatalf("cpstore.New: %v", err)
 	}
 	rt := newTestRuntime(t, cps)
-	memStore := memory.NewMemoryMetadataStoreWithDefaults()
+	memStore := badgertest.NewInMemory(t)
 	if err := rt.RegisterMetadataStore("streams-test-meta", memStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
 
 	if _, err := cps.CreateMetadataStore(context.Background(), &models.MetadataStoreConfig{
-		Name: "streams-test-meta", Type: "memory",
+		Name: "streams-test-meta", Type: "badger", Config: `{"in_memory":true}`,
 	}); err != nil {
 		t.Fatalf("CreateMetadataStore: %v", err)
 	}

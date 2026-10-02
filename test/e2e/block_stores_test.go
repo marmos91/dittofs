@@ -160,7 +160,7 @@ func TestBlockStoresCRUD(t *testing.T) {
 		})
 
 		// Create metadata store for the share
-		_, err := cli.CreateMetadataStore(metaStoreName, "memory")
+		_, err := cli.CreateInMemoryMetadataStore(metaStoreName)
 		require.NoError(t, err, "Should create metadata store")
 
 		// Create block store
@@ -222,7 +222,7 @@ func TestBlockStoresCRUD(t *testing.T) {
 		})
 
 		// Create metadata store
-		_, err := cli.CreateMetadataStore(metaStoreName, "memory")
+		_, err := cli.CreateInMemoryMetadataStore(metaStoreName)
 		require.NoError(t, err, "Should create metadata store")
 
 		// Try to create share with a non-existent block store

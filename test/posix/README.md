@@ -17,12 +17,11 @@ The setup script handles starting the server, configuring stores/shares via API,
 go build -o dfs ./cmd/dfs
 go build -o dfsctl ./cmd/dfsctl
 
-# Setup with memory metadata store (default)
+# Setup with an in-memory BadgerDB metadata store (default)
 sudo ./test/posix/setup-posix.sh
 
 # Or use a different store type
 sudo ./test/posix/setup-posix.sh badger
-sudo ./test/posix/setup-posix.sh postgres  # requires running postgres
 
 # Run POSIX tests
 cd /tmp/dittofs-test
@@ -41,11 +40,11 @@ The setup script supports different storage backend combinations:
 
 | Store Type | Metadata Store | Block Store | Requirements |
 |------------|----------------|---------------|--------------|
-| `memory` | In-memory | Filesystem | None (default) |
-| `badger` | BadgerDB | Filesystem | None |
-| `postgres` | PostgreSQL | Filesystem | Running PostgreSQL |
-| `memory-content` | In-memory | In-memory | None |
-| `cache-s3` | In-memory | S3 | Running Localstack |
+| `memory` | BadgerDB (in memory) | In-memory | None (default) |
+| `badger` | BadgerDB (on disk) | In-memory | None |
+| `memory-content` | BadgerDB (in memory) | In-memory | None |
+| `cache-s3` | BadgerDB (in memory) | S3 | Running Localstack |
+| `badger-s3` | BadgerDB (on disk) | S3 | Running Localstack |
 
 ### Manual Setup
 
@@ -63,7 +62,7 @@ ADMIN_PASSWORD="<from-server-output>"
 ./dfsctl login --server http://localhost:8080 --username admin --password "$ADMIN_PASSWORD"
 
 # Create stores
-./dfsctl store metadata add --name default --type memory
+./dfsctl store metadata add --name default --in-memory
 ./dfsctl store block add --name default --type memory
 
 # Create share

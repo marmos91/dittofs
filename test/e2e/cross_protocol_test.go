@@ -48,7 +48,7 @@ func TestCrossProtocolInterop(t *testing.T) {
 	blockStoreName := helpers.UniqueTestName("xppayload")
 	shareName := "/export"
 
-	_, err := cli.CreateMetadataStore(metaStoreName, "memory")
+	_, err := cli.CreateInMemoryMetadataStore(metaStoreName)
 	require.NoError(t, err, "Should create metadata store")
 
 	_, err = cli.CreateBlockStore(blockStoreName, "memory")
@@ -534,7 +534,7 @@ func setupErrorConformanceFixture(t *testing.T) *errorConformanceFixture {
 	rwMeta := helpers.UniqueTestName("confmeta")
 	rwBlock := helpers.UniqueTestName("confpayload")
 	rwShare := "/export"
-	_, err := cli.CreateMetadataStore(rwMeta, "memory")
+	_, err := cli.CreateInMemoryMetadataStore(rwMeta)
 	require.NoError(t, err)
 	_, err = cli.CreateBlockStore(rwBlock, "memory")
 	require.NoError(t, err)
@@ -546,7 +546,7 @@ func setupErrorConformanceFixture(t *testing.T) *errorConformanceFixture {
 	roMeta := helpers.UniqueTestName("confmetaro")
 	roBlock := helpers.UniqueTestName("confpayloadro")
 	roShare := "/archive"
-	_, err = cli.CreateMetadataStore(roMeta, "memory")
+	_, err = cli.CreateInMemoryMetadataStore(roMeta)
 	require.NoError(t, err)
 	_, err = cli.CreateBlockStore(roBlock, "memory")
 	require.NoError(t, err)

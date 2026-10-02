@@ -42,7 +42,7 @@ Traditional file servers are welded to one storage layer and one access protocol
 DittoFS separates the two. A single server process can:
 
 - Speak **NFSv3, NFSv4.0, NFSv4.1, NFSv4.2, and SMB2/3** at the same time, over the same data.
-- Store metadata in **memory, [BadgerDB](https://github.com/dgraph-io/badger), or [PostgreSQL](https://www.postgresql.org/docs/)** — chosen per share.
+- Store metadata in **[BadgerDB](https://github.com/dgraph-io/badger)**, on disk or fully in memory — one store per share.
 - Store file content in one **block store** ([S3](https://docs.aws.amazon.com/AmazonS3/latest/API/Welcome.html) or memory)
   per share, fronted by an on-disk **journal** that absorbs writes, with an async syncer between them.
 - Run **entirely in userspace** — no FUSE, no kernel modules, no special privileges.
@@ -72,7 +72,7 @@ Two binaries drive it:
 | **Authentication** | AUTH_UNIX + Kerberos (RPCSEC_GSS) for NFS; NTLM + Kerberos (SPNEGO) for SMB |
 | **Active Directory** | Kerberos service keytab for AD-issued tickets; optional machine account (offline or online domain join) for NTLM pass-through; LDAP idmap (`idmap_ad` / `idmap_rid`) maps AD users and nested groups to the same Unix UID/GID over SMB and NFS |
 | **Cross-protocol coordination** | Bidirectional lease/delegation breaks between SMB and NFS |
-| **Metadata stores** | Memory, BadgerDB, SQLite, PostgreSQL — pluggable per share |
+| **Metadata stores** | BadgerDB (on disk, or in memory for tests) — one per share. A distributed transactional KV store (TiKV preferred) is planned for multi-node, not yet implemented |
 | **Block stores** | S3, memory. One per share, fronted by an on-disk journal. Per-share isolation, async sync |
 | **Client-side encryption** | Per-remote envelope encryption (AES-256-GCM / ChaCha20-Poly1305 / XChaCha20-Poly1305) |
 | **Share snapshots** | Point-in-time reference holds (no data copy) with restore |
@@ -202,7 +202,8 @@ echo "Hello DittoFS!" > /mnt/nfs/hello.txt
 
 > This uses persistent storage (BadgerDB metadata, S3 durable backend). Writes land in the
 > share's on-disk journal first and sync to S3 in the background. For dependency-free
-> local testing, use `--type memory` for both the metadata and block stores instead.
+> local testing, use `--in-memory` for the metadata store and
+> `--type memory` for the block store instead.
 
 ### Mount an SMB share
 

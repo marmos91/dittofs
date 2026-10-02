@@ -96,7 +96,7 @@ sudo mount -t nfs -o tcp,port=12049,mountport=12049 $EXTERNAL_IP:/export /mnt/di
 |-------|-------------|
 | [Installation](docs/INSTALL.md) | kubectl and Helm installation methods |
 | [CRD Reference](docs/CRD_REFERENCE.md) | Complete field reference with examples |
-| [Percona Integration](docs/PERCONA.md) | PostgreSQL metadata store via Percona |
+| [Percona Integration](docs/PERCONA.md) | PostgreSQL control-plane database via Percona |
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | Common issues and solutions |
 
 ## Features
@@ -104,7 +104,7 @@ sudo mount -t nfs -o tcp,port=12049,mountport=12049 $EXTERNAL_IP:/export /mnt/di
 - **Declarative Management** - Define DittoFS configuration as Kubernetes resources
 - **Automatic Resource Management** - StatefulSets, Services, ConfigMaps, PVCs
 - **Protocol Support** - NFS and SMB with configurable ports
-- **Percona PostgreSQL Integration** - Production-grade metadata store
+- **Percona PostgreSQL Integration** - Production-grade control-plane database
 - **Status Conditions** - Ready, Available, ConfigReady, DatabaseReady
 - **Observability** - Prometheus metrics, events, structured logging
 - **Graceful Lifecycle** - Finalizers, probes, preStop hooks
@@ -114,7 +114,7 @@ sudo mount -t nfs -o tcp,port=12049,mountport=12049 $EXTERNAL_IP:/export /mnt/di
 - Kubernetes 1.26+
 - kubectl 1.26+
 - Storage provisioner (for PVCs)
-- Optional: Percona Operator (for PostgreSQL metadata store)
+- Optional: Percona Operator (for a PostgreSQL control-plane database)
 
 ## Sample Configurations
 

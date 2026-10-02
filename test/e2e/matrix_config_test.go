@@ -8,7 +8,7 @@ import (
 )
 
 // =============================================================================
-// Store Matrix Configuration (6 combos: 3 metadata x 2 block)
+// Store Matrix Configuration (4 combos: 2 metadata x 2 block)
 // =============================================================================
 // This file defines the shared store matrix used by NFSv3 and NFSv4 matrix
 // tests. The matrix covers all valid combinations of metadata and block store
@@ -16,7 +16,7 @@ import (
 
 // matrixStoreConfig defines a combination of metadata and block store types.
 type matrixStoreConfig struct {
-	metadataType string // "memory", "badger", "postgres"
+	metadataType string // "memory" (badger in RAM) or "badger" (badger on disk)
 	blockType    string // "memory", "s3"
 }
 
@@ -26,24 +26,17 @@ func (sc matrixStoreConfig) testName() string {
 	return fmt.Sprintf("%s/%s", sc.metadataType, sc.blockType)
 }
 
-// needsPostgres returns true if this config requires a PostgreSQL container.
-func (sc matrixStoreConfig) needsPostgres() bool {
-	return sc.metadataType == "postgres"
-}
-
 // needsS3 returns true if this config requires a Localstack S3 container.
 func (sc matrixStoreConfig) needsS3() bool {
 	return sc.blockType == "s3"
 }
 
-// storeMatrix defines all 6 combinations: 3 metadata types x 2 block types.
+// storeMatrix defines all 4 combinations: 2 metadata modes x 2 block types.
 var storeMatrix = []matrixStoreConfig{
-	{"memory", "memory"},   // MTX-01: fully in-memory, fastest
-	{"memory", "s3"},       // MTX-02: in-memory metadata + S3 blocks
-	{"badger", "memory"},   // MTX-03: persistent metadata, in-memory blocks
-	{"badger", "s3"},       // MTX-04: persistent metadata + S3 blocks
-	{"postgres", "memory"}, // MTX-05: distributed metadata, in-memory blocks
-	{"postgres", "s3"},     // MTX-06: full production stack
+	{"memory", "memory"}, // MTX-01: fully in-memory, fastest
+	{"memory", "s3"},     // MTX-02: in-memory metadata + S3 blocks
+	{"badger", "memory"}, // MTX-03: persistent metadata, in-memory blocks
+	{"badger", "s3"},     // MTX-04: persistent metadata + S3 blocks
 }
 
 // shortMatrix defines representative combos for testing.Short() mode.
@@ -51,7 +44,6 @@ var storeMatrix = []matrixStoreConfig{
 var shortMatrix = []matrixStoreConfig{
 	{"memory", "memory"}, // Fastest, no containers
 	{"badger", "s3"},     // Persistent metadata + S3
-	{"postgres", "s3"},   // Full production stack
 }
 
 // isContainerFreeOnly reports whether DITTOFS_E2E_LOCAL_ONLY is set, meaning

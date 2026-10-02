@@ -34,8 +34,7 @@ import (
 // dump and the returned hash set being read at different logical instants.
 // Implementations MUST therefore capture BOTH the serialized metadata
 // written to w AND the returned HashSet from a single consistent read-view
-// — e.g. a single MVCC/REPEATABLE READ transaction (postgres), one managed
-// read txn (badger), or a copy-on-read under the write lock (memory). The
+// — e.g. one managed read txn (badger). The
 // hash set MUST be derived from that same view (enumerating the captured
 // files' block refs), never from a later live re-read. Writes may proceed
 // concurrently; no global quiesce is required. The result is a true

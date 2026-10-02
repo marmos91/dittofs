@@ -12,7 +12,9 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // testHash derives a deterministic block.ContentHash from a seed string so the
@@ -54,7 +56,7 @@ func seedShareBlock(t *testing.T, st metadata.Store, rbs remote.RemoteBlockStore
 	if err := st.MarkSynced(ctx, h, block.ChunkLocator{BlockID: blockID, WireLength: 80}); err != nil {
 		t.Fatalf("MarkSynced: %v", err)
 	}
-	st.(*metadatamemory.MemoryMetadataStore).MarkSyncedAtForTest(h, time.Now().Add(-2*time.Hour))
+	st.(*badger.BadgerMetadataStore).MarkSyncedAtForTest(h, time.Now().Add(-2*time.Hour))
 	return int64(len(data))
 }
 
@@ -65,8 +67,8 @@ func seedShareBlock(t *testing.T, st metadata.Store, rbs remote.RemoteBlockStore
 // would leak the second share's block forever.
 func TestUnionBlockReclaimer_ReclaimsEveryShare(t *testing.T) {
 	ctx := context.Background()
-	stA := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	stB := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	stA := badgertest.NewInMemory(t)
+	stB := badgertest.NewInMemory(t)
 	rbs := remotememory.New()
 	defer func() { _ = rbs.Close() }()
 

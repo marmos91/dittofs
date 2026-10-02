@@ -6,7 +6,8 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	badgerstore "github.com/marmos91/dittofs/pkg/metadata/store/badger"
 )
 
 // TestGCIndexSweep_DeletesOrphansWithoutWalk proves the index-based remote
@@ -22,7 +23,7 @@ func TestGCIndexSweep_DeletesOrphansWithoutWalk(t *testing.T) {
 	defer func() { _ = rs.Close() }()
 
 	rec := newGCMSReconciler()
-	st := rec.addShare("share-a")
+	st := rec.addShare(t, "share-a")
 
 	live := hashFromString("lf-live-keep")      // in manifest → live
 	orphan := hashFromString("lf-orphan-sweep") // not in manifest, past grace → swept
@@ -34,7 +35,7 @@ func TestGCIndexSweep_DeletesOrphansWithoutWalk(t *testing.T) {
 	for _, h := range []block.ContentHash{live, orphan, fresh, legacy} {
 		seedRemoteChunk(t, st, rs, h) // marker backdated past grace
 	}
-	mm := st.(*metadatamemory.MemoryMetadataStore)
+	mm := st.(*badgerstore.BadgerMetadataStore)
 	// fresh marked just now — within the grace window.
 	mm.MarkSyncedAtForTest(fresh, time.Now())
 	// legacy marker carries no timestamp (pre-upgrade badger marker).
@@ -79,7 +80,7 @@ func TestGCIndexSweep_DryRunCountsWithoutDeleting(t *testing.T) {
 	defer func() { _ = rs.Close() }()
 
 	rec := newGCMSReconciler()
-	st := rec.addShare("share-a")
+	st := rec.addShare(t, "share-a")
 
 	orphan := hashFromString("lf-dryrun-orphan")
 	seedRemoteChunk(t, st, rs, orphan)
@@ -111,7 +112,7 @@ func TestGCIndexSweep_NoReclaimerFailsClosed(t *testing.T) {
 	defer func() { _ = rs.Close() }()
 
 	rec := newGCMSReconciler()
-	st := rec.addShare("share-a")
+	st := rec.addShare(t, "share-a")
 
 	orphan := hashFromString("lf-noreclaimer-orphan")
 	seedRemoteChunk(t, st, rs, orphan)

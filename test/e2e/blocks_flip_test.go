@@ -46,7 +46,7 @@ type blocksIO struct {
 	remove func(name string) error
 }
 
-// setupBlocksShare provisions a memory-metadata + s3-block-store share
+// setupBlocksShare provisions an in-memory-metadata + s3-block-store share
 // for a blocks-flip test and returns the CLI runner, the s3 bucket, and the
 // share name. It mirrors the setup used by the canonical CAS immutability
 // test so both exercise the same store topology.
@@ -64,7 +64,7 @@ func setupBlocksShare(t *testing.T, shareName string) (*helpers.CLIRunner, *fram
 	setup := helpers.SetupStoreMatrix(t, cli, shareName, helpers.MatrixSetupConfig{
 		MetadataType: "memory",
 		BlockType:    "s3",
-	}, nil, lsHelper)
+	}, lsHelper)
 	require.NotNil(t, setup, "store-matrix setup")
 
 	require.NotEmpty(t, lsHelper.Buckets, "Localstack helper should track at least one bucket")

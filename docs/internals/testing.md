@@ -134,7 +134,7 @@ go build -o dfsctl cmd/dfsctl/main.go
 ./dfs start
 
 # 4. Create test stores
-./dfsctl store metadata add --name test-meta --type memory
+./dfsctl store metadata add --name test-meta --in-memory
 ./dfsctl store block add --name test-blocks --type memory
 
 # 5. Create a test share
@@ -399,11 +399,11 @@ in `test/conformance/suites.json`:
 
 | Suite | Protocol | Profiles | Variants | Presubmit | Known failures |
 |---|---|---|---|---|---|
-| `wpts` | SMB | `memory`, `badger`, `badger-s3`, `postgres-s3` | — | `memory`, `postgres-s3` | [`test/smb-conformance/KNOWN_FAILURES.md`](../../test/smb-conformance/KNOWN_FAILURES.md) |
-| `smbtorture` | SMB | `memory`, `badger`, `sqlite`, `postgres` | — | `memory`, `badger` | [`test/smb-conformance/smbtorture/KNOWN_FAILURES.md`](../../test/smb-conformance/smbtorture/KNOWN_FAILURES.md) |
-| `pjdfstest` | NFS | `memory`, `badger`, `postgres`, `postgres-s3` | `3`, `4`, `4.1` | `memory`, `postgres-s3` | [`test/posix/KNOWN_FAILURES.md`](../../test/posix/KNOWN_FAILURES.md), [`test/posix/KNOWN_FAILURES_V4.md`](../../test/posix/KNOWN_FAILURES_V4.md) |
+| `wpts` | SMB | `memory`, `badger`, `badger-s3` | — | `memory`, `badger-s3` | [`test/smb-conformance/KNOWN_FAILURES.md`](../../test/smb-conformance/KNOWN_FAILURES.md) |
+| `smbtorture` | SMB | `memory`, `badger` | — | `memory`, `badger` | [`test/smb-conformance/smbtorture/KNOWN_FAILURES.md`](../../test/smb-conformance/smbtorture/KNOWN_FAILURES.md) |
+| `pjdfstest` | NFS | `memory`, `badger`, `badger-s3` | `3`, `4`, `4.1` | `memory`, `badger-s3` | [`test/posix/KNOWN_FAILURES.md`](../../test/posix/KNOWN_FAILURES.md), [`test/posix/KNOWN_FAILURES_V4.md`](../../test/posix/KNOWN_FAILURES_V4.md) |
 | `nfs-kerberos` | NFS | `memory-kerberos` | — | `memory-kerberos` | — |
-| `pynfs` | NFS | `memory`, `badger`, `postgres`, `postgres-s3` | `4.0`, `4.1` | `memory`, `postgres-s3` | [`test/nfs-conformance/pynfs/KNOWN_FAILURES_V40.md`](../../test/nfs-conformance/pynfs/KNOWN_FAILURES_V40.md), [`test/nfs-conformance/pynfs/KNOWN_FAILURES_V41.md`](../../test/nfs-conformance/pynfs/KNOWN_FAILURES_V41.md) |
+| `pynfs` | NFS | `memory`, `badger`, `badger-s3` | `4.0`, `4.1` | `memory`, `badger-s3` | [`test/nfs-conformance/pynfs/KNOWN_FAILURES_V40.md`](../../test/nfs-conformance/pynfs/KNOWN_FAILURES_V40.md), [`test/nfs-conformance/pynfs/KNOWN_FAILURES_V41.md`](../../test/nfs-conformance/pynfs/KNOWN_FAILURES_V41.md) |
 
 Tiering, profiles and blacklists come from
 [`test/conformance/suites.json`](../../test/conformance/suites.json); every suite runs through

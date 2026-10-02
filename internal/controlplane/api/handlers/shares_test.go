@@ -47,7 +47,7 @@ func seedShare(t *testing.T, cpStore store.Store, name string) string {
 	ctx := context.Background()
 
 	metaStore := &models.MetadataStoreConfig{
-		ID: uuid.New().String(), Name: "m-" + name, Type: "memory",
+		ID: uuid.New().String(), Name: "m-" + name, Type: "badger", Config: `{"in_memory":true}`,
 		CreatedAt: time.Now(),
 	}
 	if _, err := cpStore.CreateMetadataStore(ctx, metaStore); err != nil {
@@ -340,7 +340,7 @@ func seedStores(t *testing.T, cpStore store.Store, name string) (metaName, block
 	ctx := context.Background()
 
 	metaStore := &models.MetadataStoreConfig{
-		ID: uuid.New().String(), Name: "m-" + name, Type: "memory", CreatedAt: time.Now(),
+		ID: uuid.New().String(), Name: "m-" + name, Type: "badger", Config: `{"in_memory":true}`, CreatedAt: time.Now(),
 	}
 	if _, err := cpStore.CreateMetadataStore(ctx, metaStore); err != nil {
 		t.Fatalf("CreateMetadataStore: %v", err)

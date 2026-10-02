@@ -6,9 +6,8 @@ import (
 	"testing"
 	"time"
 
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
-
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // TestRestoreRollback_QuiescesRollupBeforeReset is the #8 H3 regression. The
@@ -25,7 +24,7 @@ import (
 // safety snapshot and its FileAttr.Blocks are the snapshot's blocks, not the
 // discarded post-snapshot state.
 func TestRestoreRollback_QuiescesRollupBeforeReset(t *testing.T) {
-	meta := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	meta := badgertest.NewInMemory(t)
 	fx := newByteVerifyFixture(t, meta, "memory")
 	defer fx.close()
 

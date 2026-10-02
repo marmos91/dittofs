@@ -14,7 +14,9 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // ---------------------------------------------------------------------------
@@ -32,8 +34,8 @@ func newGCMSReconciler() *gcMSReconciler {
 	return &gcMSReconciler{stores: make(map[string]metadata.Store)}
 }
 
-func (r *gcMSReconciler) addShare(name string) metadata.Store {
-	st := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+func (r *gcMSReconciler) addShare(t testing.TB, name string) metadata.Store {
+	st := badgertest.NewInMemory(t)
 	r.stores[name] = st
 	r.order = append(r.order, name)
 	return st
@@ -185,7 +187,7 @@ func seedPackedBlock(t *testing.T, st metadata.Store, rbs remote.RemoteBlockStor
 		}
 		// Backdate past grace so the steady-state index sweep treats it as
 		// eligible (the live-set check is then the only thing that can save it).
-		st.(*metadatamemory.MemoryMetadataStore).MarkSyncedAtForTest(h, time.Now().Add(-2*time.Hour))
+		st.(*badger.BadgerMetadataStore).MarkSyncedAtForTest(h, time.Now().Add(-2*time.Hour))
 	}
 }
 
@@ -289,7 +291,7 @@ func TestGCMarkSweep_TruncateReclaimsRemoteChunk(t *testing.T) {
 	defer func() { _ = rs.Close() }()
 
 	rec := newGCMSReconciler()
-	st := rec.addShare("share-a")
+	st := rec.addShare(t, "share-a")
 	bs := newReapEngine(t, st)
 
 	const mib = uint64(1 << 20)
@@ -346,7 +348,7 @@ func TestGCMarkSweep_TruncateDedupSafety(t *testing.T) {
 	defer func() { _ = rs.Close() }()
 
 	rec := newGCMSReconciler()
-	st := rec.addShare("share-a")
+	st := rec.addShare(t, "share-a")
 	bs := newReapEngine(t, st)
 
 	const mib = uint64(1 << 20)
@@ -398,7 +400,7 @@ func TestGCMarkSweep_DeleteDuplicateHashNoOverReap(t *testing.T) {
 	defer func() { _ = rs.Close() }()
 
 	rec := newGCMSReconciler()
-	st := rec.addShare("share-a")
+	st := rec.addShare(t, "share-a")
 	bs := newReapEngine(t, st)
 
 	const mib = uint64(1 << 20)
@@ -448,7 +450,7 @@ func TestGCMarkSweep_TruncateStraddleHashNoOverReap(t *testing.T) {
 	defer func() { _ = rs.Close() }()
 
 	rec := newGCMSReconciler()
-	st := rec.addShare("share-a")
+	st := rec.addShare(t, "share-a")
 	bs := newReapEngine(t, st)
 
 	const mib = uint64(1 << 20)
@@ -503,7 +505,7 @@ func TestGCMarkSweep_PendingReclaimsRemoteChunk(t *testing.T) {
 	defer func() { _ = rs.Close() }()
 
 	rec := newGCMSReconciler()
-	st := rec.addShare("share-a")
+	st := rec.addShare(t, "share-a")
 	bs := newReapEngine(t, st)
 
 	const mib = uint64(1 << 20)
@@ -569,7 +571,7 @@ func TestGCMarkSweep_CrossFileDedupKeepAlive(t *testing.T) {
 	defer func() { _ = rs.Close() }()
 
 	rec := newGCMSReconciler()
-	st := rec.addShare("share-a")
+	st := rec.addShare(t, "share-a")
 	bs := newReapEngine(t, st)
 
 	const mib = uint64(1 << 20)
@@ -640,7 +642,7 @@ func TestGCMarkSweep_SameHashTwoOffsetsBothReaped(t *testing.T) {
 	defer func() { _ = rs.Close() }()
 
 	rec := newGCMSReconciler()
-	st := rec.addShare("share-a")
+	st := rec.addShare(t, "share-a")
 	bs := newReapEngine(t, st)
 
 	const mib = uint64(1 << 20)

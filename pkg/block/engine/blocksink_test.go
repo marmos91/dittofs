@@ -11,7 +11,9 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/chunker"
 	"github.com/marmos91/dittofs/pkg/block/journal"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // seamFixture wires a live journal.Store to the production engineDeduper +
@@ -19,13 +21,13 @@ import (
 // memory block-keyed remote.
 type seamFixture struct {
 	dir     string
-	ms      *metadatamemory.MemoryMetadataStore
+	ms      *badger.BadgerMetadataStore
 	mem     *remotememory.Store
 	jrnl    *journal.Store
 	flushFn func() (journal.FlushFunc, func(context.Context, journal.FileID) error)
 }
 
-func newSeamFixture(t *testing.T, dir string, ms *metadatamemory.MemoryMetadataStore, mem *remotememory.Store, sink BlockSink) *seamFixture {
+func newSeamFixture(t *testing.T, dir string, ms *badger.BadgerMetadataStore, mem *remotememory.Store, sink BlockSink) *seamFixture {
 	t.Helper()
 	j, err := journal.Open(dir, journal.Config{CarveBlockSize: 1 << 20})
 	if err != nil {
@@ -41,7 +43,7 @@ func newSeamFixture(t *testing.T, dir string, ms *metadatamemory.MemoryMetadataS
 	return f
 }
 
-func realSink(ms *metadatamemory.MemoryMetadataStore, mem *remotememory.Store) engineBlockSink {
+func realSink(ms *badger.BadgerMetadataStore, mem *remotememory.Store) engineBlockSink {
 	return engineBlockSink{sealer: nil, rbs: mem, committer: ms}
 }
 
@@ -78,7 +80,7 @@ func seamRandBytes(n int, seed int64) []byte {
 
 func TestJournalCarveSeam_CommitsBlocksAndFileChunkRows(t *testing.T) {
 	ctx := context.Background()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	mem := remotememory.New()
 	f := newSeamFixture(t, t.TempDir(), ms, mem, realSink(ms, mem))
 
@@ -121,7 +123,7 @@ func TestJournalCarveSeam_CommitsBlocksAndFileChunkRows(t *testing.T) {
 
 func TestJournalCarveSeam_DuplicateIsNoOp(t *testing.T) {
 	ctx := context.Background()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	mem := remotememory.New()
 	f := newSeamFixture(t, t.TempDir(), ms, mem, realSink(ms, mem))
 
@@ -171,7 +173,7 @@ func (s *failOnceSink) CommitBlock(ctx context.Context, chunks []CarveChunk) err
 func TestJournalCarveSeam_CrashMidCommitReCarveIsNoOp(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	mem := remotememory.New()
 
 	// First carve: the sink commits (block + rows + synced markers) then errors,
@@ -222,7 +224,7 @@ func TestJournalCarveSeam_CrashMidCommitReCarveIsNoOp(t *testing.T) {
 // count that only moves when the call returns gets a working drain aborted.
 func TestJournalCarveSeam_ReportsEachBlockAsItLands(t *testing.T) {
 	ctx := context.Background()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	mem := remotememory.New()
 
 	sink := realSink(ms, mem)
@@ -280,7 +282,7 @@ func TestJournalCarveSeam_ScatteredRunsAllFlipSynced(t *testing.T) {
 		blockSize = 64 << 10 // several runs per block, so blocks straddle them
 	)
 	ctx := context.Background()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	mem := remotememory.New()
 
 	j, err := journal.Open(t.TempDir(),

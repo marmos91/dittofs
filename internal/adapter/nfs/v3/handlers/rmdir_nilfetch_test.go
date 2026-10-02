@@ -10,18 +10,19 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers"
 	handlertesting "github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers/testing"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// nilOnNthParentFetchStore wraps a memory store and returns (nil, nil) from
+// nilOnNthParentFetchStore wraps a Badger store and returns (nil, nil) from
 // GetFile for a specific handle once a configured number of GetFile calls for
 // that handle have occurred. It reproduces the production condition the RMDIR
 // nil-deref finding describes: the post-operation parent re-fetch returning nil
 // after RemoveDirectory has run.
 type nilOnNthParentFetchStore struct {
-	*metadatamemory.MemoryMetadataStore
+	*badger.BadgerMetadataStore
 
 	targetHandle metadata.FileHandle
 	failAfter    int64 // start returning nil once the call count exceeds this
@@ -40,7 +41,7 @@ func (s *nilOnNthParentFetchStore) GetFile(ctx context.Context, h metadata.FileH
 			return nil, nil
 		}
 	}
-	return s.MemoryMetadataStore.GetFile(ctx, h)
+	return s.BadgerMetadataStore.GetFile(ctx, h)
 }
 
 // TestRmdir_StoreErrorReFetchNil_NoPanic is a negative control for the RMDIR
@@ -52,15 +53,15 @@ func (s *nilOnNthParentFetchStore) GetFile(ctx context.Context, h metadata.FileH
 func TestRmdir_StoreErrorReFetchNil_NoPanic(t *testing.T) {
 	var wrapped *nilOnNthParentFetchStore
 
-	fx := handlertesting.NewHandlerFixtureWithStore(t, func(inner *metadatamemory.MemoryMetadataStore) metadata.Store {
+	fx := handlertesting.NewHandlerFixtureWithStore(t, func(inner *badger.BadgerMetadataStore) metadata.Store {
 		wrapped = &nilOnNthParentFetchStore{
-			MemoryMetadataStore: inner,
-			// The parent handle is fetched several times before the handler's
-			// post-failure re-fetch (handler pre-op fetch, the service's parent
-			// lookup, and the delete-permission check). Only the final re-fetch
+			BadgerMetadataStore: inner,
+			// The parent handle is fetched through GetFile twice before the
+			// handler's post-failure re-fetch (Badger serves the remaining
+			// parent reads from its GetFileForRead fast path). Only the final re-fetch
 			// at rmdir.go:167 returns nil; the `triggered` assertion below
 			// guards against this count drifting and making the test vacuous.
-			failAfter: 3,
+			failAfter: 2,
 		}
 		return wrapped
 	})

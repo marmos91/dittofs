@@ -253,7 +253,6 @@ stack is usable the moment it is healthy. Clone the repository and run it from t
 ```bash
 docker compose up -d                                       # BadgerDB + memory block store
 COMPOSE_PROFILES=s3-backend docker compose up -d           # S3 content via Localstack
-COMPOSE_PROFILES=postgres-backend docker compose up -d     # PostgreSQL metadata
 docker compose logs -f dittofs bootstrap
 ```
 
@@ -265,7 +264,6 @@ the extra container without provisioning against it.
 |---------|----------|-------------|
 | default | BadgerDB | `memory` |
 | `s3-backend` | BadgerDB | `s3` (Localstack) |
-| `postgres-backend` | PostgreSQL | `memory` |
 
 There is no filesystem block store: a share's durable home is `s3` or `memory`, always
 fronted by an on-disk journal. The journal, the metadata store and the control-plane
@@ -285,7 +283,7 @@ Localstack holds its bucket for the life of its container, so `docker compose do
 followed by `up` comes back to an **empty bucket** while the metadata, which is on a volume,
 still names the objects that were in it. That destroys every already-offloaded payload
 outright; the journal is not a fallback for them, it has merely not been asked for the
-space yet. The two `memory` profiles are the same story with the block store in RAM.
+space yet. The default profile is the same story with the block store in RAM.
 Localstack is an S3 stand-in for exercising the S3 path, not a place to keep bytes — point
 the block store at a real bucket (`dfsctl store block add --type s3 …`) for anything you
 care about.
@@ -310,9 +308,8 @@ with root kept as root, so a client claiming root over NFS writes as root withou
 password. Every published port is therefore bound to `127.0.0.1`; reaching the stack from
 another host means removing that prefix in `docker-compose.yml`, and an unattended export
 on a shared network is not what these defaults are for. Override
-`DITTOFS_ADMIN_INITIAL_PASSWORD` and `DITTOFS_CONTROLPLANE_SECRET` first. Localstack and
-PostgreSQL publish no host port at all, so the stack cannot collide with a PostgreSQL you
-already run.
+`DITTOFS_ADMIN_INITIAL_PASSWORD` and `DITTOFS_CONTROLPLANE_SECRET` first. Localstack
+publishes no host port at all.
 
 `docker compose down` stops the stack and keeps the volumes; `docker compose down -v`
 discards them too. Running `up` again re-runs the provisioning, which skips whatever is

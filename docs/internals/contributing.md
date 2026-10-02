@@ -178,7 +178,7 @@ go test -cover ./...
 go test -race ./...
 
 # Run specific package
-go test ./pkg/metadata/store/memory/
+go test ./pkg/metadata/store/badger/
 ```
 
 ### Integration Tests
@@ -490,7 +490,7 @@ reintroduce the import cycle the `any` parameter exists to avoid.
 - Documentation improvements
 - Example applications and tutorials
 - Monitoring and observability
-- Distributed PostgreSQL testing
+- A distributed metadata backend for multi-node deployments (TiKV preferred)
 
 ### Future Work
 
@@ -601,7 +601,7 @@ These workflows gate pull request merges and should complete in under 5 minutes:
 - **unit-tests.yml** -- All unit tests with race detection
 - **windows-build.yml** -- Windows cross-compilation verification
 - **conformance.yml** -- The presubmit profiles of each suite (see the table above)
-- **nfs-pynfs.yml** -- NFSv4.0 + NFSv4.1 protocol conformance (memory + postgres-s3)
+- **nfs-pynfs.yml** -- NFSv4.0 + NFSv4.1 protocol conformance (memory + badger-s3)
 - **e2e-tests.yml** -- Full E2E suite including SMB3, cross-protocol, and Kerberos tests
 
 ### What Runs on Push to Develop (Comprehensive)

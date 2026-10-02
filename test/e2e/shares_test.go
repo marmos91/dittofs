@@ -38,7 +38,7 @@ func TestSharesCRUD(t *testing.T) {
 	metaStoreName := helpers.UniqueTestName("share_meta")
 	blockStoreName := helpers.UniqueTestName("share_local")
 
-	_, err := cli.CreateMetadataStore(metaStoreName, "memory")
+	_, err := cli.CreateInMemoryMetadataStore(metaStoreName)
 	require.NoError(t, err, "Should create shared metadata store")
 
 	_, err = cli.CreateBlockStore(blockStoreName, "memory")

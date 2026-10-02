@@ -13,7 +13,9 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // seedRealPackedBlock writes a real codec-framed block (nil Sealer, so each
@@ -62,7 +64,7 @@ func seedRealPackedBlock(t *testing.T, st metadata.Store, rbs remote.RemoteBlock
 		if err := st.MarkSynced(ctx, h, locs[i]); err != nil {
 			t.Fatalf("MarkSynced(%s): %v", h, err)
 		}
-		st.(*metadatamemory.MemoryMetadataStore).MarkSyncedAtForTest(h, time.Now().Add(-2*time.Hour))
+		st.(*badger.BadgerMetadataStore).MarkSyncedAtForTest(h, time.Now().Add(-2*time.Hour))
 	}
 	return hashes
 }
@@ -104,7 +106,7 @@ func liveChunkBytes(t *testing.T, st metadata.Store, rbs remote.RemoteBlockStore
 // (object + record) is gone.
 func TestCompactBlocks_PartiallyDeadBlock(t *testing.T) {
 	ctx := t.Context()
-	st := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	st := badgertest.NewInMemory(t)
 	rbs := remotememory.New()
 	defer func() { _ = rbs.Close() }()
 
@@ -186,7 +188,7 @@ func TestCompactBlocks_PartiallyDeadBlock(t *testing.T) {
 // threshold is left untouched.
 func TestCompactBlocks_SkipsHealthyBlock(t *testing.T) {
 	ctx := t.Context()
-	st := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	st := badgertest.NewInMemory(t)
 	rbs := remotememory.New()
 	defer func() { _ = rbs.Close() }()
 
@@ -214,7 +216,7 @@ func TestCompactBlocks_SkipsHealthyBlock(t *testing.T) {
 // is disabled (ratio <= 0) or the remote cannot hold blocks.
 func TestCompactBlocks_DisabledAndNilRemote(t *testing.T) {
 	ctx := t.Context()
-	st := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	st := badgertest.NewInMemory(t)
 	rbs := remotememory.New()
 	defer func() { _ = rbs.Close() }()
 

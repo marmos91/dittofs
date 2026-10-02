@@ -149,9 +149,8 @@ func Reconcile(
 		// record against it.
 		//
 		// Single scan: EnumerateSynced yields each marker's locator alongside its
-		// hash (same row), so no GetLocator round trip per hash — the O(N) serial
-		// cost on the sqlite MaxOpenConns(1) pool. Folding the locator in
-		// also removes the nested-query deadlock class structurally.
+		// hash (same row), so no GetLocator round trip per hash, and fn never
+		// issues a nested store query while the scan is open.
 		refSet := make(map[string]struct{})
 		if err := v.EnumerateSynced(ctx, func(_ block.ContentHash, loc block.ChunkLocator, _ time.Time) error {
 			if loc.BlockID != "" {

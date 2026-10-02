@@ -26,7 +26,8 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
-	metamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // republishingMetaStore delegates to a real metadata store and, on the first
@@ -60,7 +61,7 @@ func TestClose_ReleasesLocksAndLeaseOnTheSnapshotHandle(t *testing.T) {
 	// The wrapper is registered as the share's metadata store, so it must be
 	// usable from AddShare onward; only its callback is armed once the handle
 	// under test exists.
-	store := &republishingMetaStore{Store: metamemory.NewMemoryMetadataStoreWithDefaults()}
+	store := &republishingMetaStore{Store: badgertest.NewInMemory(t)}
 
 	h, smbCtx, fileHandle, fileID := setupWriteTestShare(t, store)
 	ctx := context.Background()

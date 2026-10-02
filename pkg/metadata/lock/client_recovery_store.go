@@ -25,13 +25,13 @@ type V4ClientRecoveryRecord struct {
 	ClientID uint64
 
 	// ClientIDString is nfs_client_id4.id, the stable client identity. This
-	// is the primary key for the record across all backends.
+	// is the primary key for the record.
 	ClientIDString string
 
 	// BootVerifier is the client boot verifier captured at confirm time.
 	// A reclaiming client whose verifier changed rebooted and must NOT
 	// reclaim old state (SETCLIENTID Case-3 path). Round-trips byte-exact
-	// through every backend.
+	// through the store.
 	BootVerifier [8]byte
 
 	// Principal is the RPCSEC_GSS / AUTH_SYS principal that confirmed the
@@ -56,7 +56,7 @@ type V4ClientRecoveryRecord struct {
 
 // ClientRecoveryStore provides server-global persistence for confirmed NFSv4
 // client identities, enabling grace/reclaim after a server restart.
-// Implementations exist in memory, badger, and postgres stores.
+// The badger metadata store implements it.
 //
 // Recovery flow:
 //  1. On SETCLIENTID_CONFIRM (v4.0) / EXCHANGE_ID-confirm (v4.1):

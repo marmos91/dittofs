@@ -137,6 +137,10 @@ create regardless of tier.
 
 ### Does the choice of metadata engine matter?
 
+> The DittoFS SQLite and PostgreSQL metadata backends measured on this page have since
+> been removed; badger is DittoFS's only metadata store. Their rows are kept as the
+> record of this run.
+
 DittoFS can keep its metadata in an embedded engine (badger) or in an external SQL
 database (SQLite or PostgreSQL); JuiceFS can use SQLite, PostgreSQL, or Redis. A
 natural question is whether that choice changes the numbers above. We ran the whole
@@ -332,10 +336,9 @@ multi-gigabyte-per-second figure is un-persisted buffering that has not yet reac
 storage. DittoFS's number is bandwidth that is already durable; theirs is bandwidth still
 in flight.
 
-**Backend choice matters most for random writes.** Across the SMB3 grid, badger is the
-performant backend for write-heavy workloads, sustaining 7,300+ random-write IOPS. The
-SQLite backend is single-writer and lands roughly 19× slower on random writes (tracked as
-issue #1819); PostgreSQL sits in between. Choose badger for write-heavy use.
+**Backend choice matters most for random writes.** Across the SMB3 grid, badger
+sustains 7,300+ random-write IOPS. The since-removed SQLite backend was single-writer and
+landed roughly 19× slower on random writes; PostgreSQL sat in between.
 
 **Metadata (create + write + close)** runs at 48–79 ops/s over SMB3 — competitive with
 JuiceFS's default (53), below rclone (122) and a Redis-backed JuiceFS (258).

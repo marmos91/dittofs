@@ -8,12 +8,14 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // putZeroRefRecord seeds a class-1 orphan: a remote object plus a block record
 // with LiveChunkCount==0 and no synced locator pointing at it.
-func putZeroRefRecord(t *testing.T, st *metadatamemory.MemoryMetadataStore, rbs *remotememory.Store, blockID string, length int64) {
+func putZeroRefRecord(t *testing.T, st *badger.BadgerMetadataStore, rbs *remotememory.Store, blockID string, length int64) {
 	t.Helper()
 	ctx := t.Context()
 	if err := rbs.PutBlock(ctx, blockID, bytes.NewReader([]byte(blockID))); err != nil {
@@ -29,7 +31,7 @@ func putZeroRefRecord(t *testing.T, st *metadatamemory.MemoryMetadataStore, rbs 
 	}
 }
 
-func recordExists(t *testing.T, st *metadatamemory.MemoryMetadataStore, blockID string) bool {
+func recordExists(t *testing.T, st *badger.BadgerMetadataStore, blockID string) bool {
 	t.Helper()
 	_, ok, err := st.GetBlockRecord(t.Context(), blockID)
 	if err != nil {
@@ -58,7 +60,7 @@ func remoteHasBlock(t *testing.T, rbs *remotememory.Store, blockID string) bool 
 // idempotent on a second pass.
 func TestReclaimRecords_DeletesUnreferencedRecords(t *testing.T) {
 	ctx := t.Context()
-	st := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	st := badgertest.NewInMemory(t)
 	rbs := remotememory.New()
 	defer func() { _ = rbs.Close() }()
 
@@ -171,7 +173,7 @@ func TestReclaimOrphanObjects_GraceWindow(t *testing.T) {
 // deletes nothing.
 func TestReclaimRecords_DryRun(t *testing.T) {
 	ctx := t.Context()
-	st := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	st := badgertest.NewInMemory(t)
 	rbs := remotememory.New()
 	defer func() { _ = rbs.Close() }()
 

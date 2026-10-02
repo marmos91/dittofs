@@ -9,34 +9,31 @@ the exact config keys and CLI flags, see [Configuration](configuration.md).
 > | Layer | What it holds | Choices | Configured by |
 > |-------|---------------|---------|---------------|
 > | Control-plane database | Users, shares, permissions, policies | `sqlite`, `postgres` | `database.*` in config |
-> | Metadata store (per share) | Inodes, names, attrs, ACLs, dedup index | `memory`, `badger`, `sqlite`, `postgres` | `dfsctl store metadata add` |
+> | Metadata store (per share) | Inodes, names, attrs, ACLs, dedup index | `badger` (on disk or `in_memory`) | `dfsctl store metadata add` |
 > | Block store (per share) | File content (chunks) | `s3`, `memory` | `dfsctl store block …` |
 > | Journal (per share) | Writes not yet offloaded to the block store | none — always on disk | `blockstore.journal.path` in config |
 
 ## Metadata store (per share)
 
-This is the hot path for every `lookup`, `getattr`, `readdir`, and `create`. Pick by
-durability needs and how many server processes must share it.
+This is the hot path for every `lookup`, `getattr`, `readdir`, and `create`. `badger` is
+the only metadata store type. It is the backend for single-node deployments, and in
+in-memory mode for tests. A distributed transactional key-value store — TiKV is the
+preferred one — is the planned backend for multi-node deployments; it is not implemented
+yet.
 
-| Store | Durable? | Concurrency | Ops overhead | When to choose |
-|-------|----------|-------------|--------------|----------------|
-| `memory` | ❌ lost on restart | in-process | none | Tests, throwaway demos, caching-only workloads |
-| `badger` | ✅ embedded LSM | single process | none (embedded) | **Default.** Single-node servers wanting durability with zero external deps |
-| `sqlite` | ✅ single file (WAL) | single writer | minimal (one file) | Edge / appliance / single-binary deploys; easy to back up (copy the file) |
-| `postgres` | ✅ external RDBMS | multi-writer (MVCC) | run/operate a DB | Multiple server processes, HA, or horizontal scale |
+| Mode | Durable? | Concurrency | When to choose |
+|------|----------|-------------|----------------|
+| `badger` with `path` | ✅ embedded LSM on disk | single process | **Default.** Single-node servers |
+| `badger` with `in_memory: true` | ❌ lost on restart | single process | Tests and throwaway servers |
 
 **Best practices**
 
 - **Badger** auto-sizes its block/index caches from available RAM (cgroup-aware in
   containers). For large metadata sets, watch the cache hit ratio and set
-  `metadata.badger.block_cache_mb` / `index_cache_mb` explicitly if it drops. Each
+  `block_cache_mb` / `index_cache_mb` explicitly if it drops. Each
   isolated share can run its own Badger instance.
-- **SQLite** is pure-Go (no cgo) and reuses the PostgreSQL data model (hard links via
-  `parent_child_map`, `nlink`, recursive-CTE path reconstruction, `object_id` dedup index).
-  It is **single-writer** — fine for one server, not for multi-process HA.
-- **PostgreSQL** is the only option that supports multiple server processes against the
-  same metadata. Size the connection pool (`MaxConns`, default 10) to your concurrency.
-- **Memory** keeps nothing across restarts. Never use it for data you want back.
+- **In-memory** mode (`--in-memory`, no path) keeps nothing across
+  restarts. Never use it for data you want back.
 
 ## Block store (per share)
 

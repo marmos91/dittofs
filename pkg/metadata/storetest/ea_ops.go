@@ -14,9 +14,8 @@ import (
 // return-to-caller paths.
 //
 // EAs (SMB FILE_FULL_EA_INFORMATION, MS-FSCC §2.4.16 ("FileFullEaInformation")) ride on FileAttr the
-// same way ACL does. The memory backend holds the map directly and must
-// deep-copy it; Badger/Postgres round-trip through JSON. This suite pins that
-// behaviour identically for every backend.
+// same way ACL does: the store must never alias the caller's map or hand
+// back its own.
 func runEAOpsTests(t *testing.T, factory StoreFactory) {
 	t.Run("RoundTrip", func(t *testing.T) { testEARoundTrip(t, factory) })
 	t.Run("ZeroLengthValue", func(t *testing.T) { testEAZeroLengthValue(t, factory) })

@@ -6,7 +6,8 @@ import (
 	"testing"
 
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // TestCarveDedupedChunk_KeepsManifestRow: a carve run whose chunks all dedup
@@ -16,7 +17,7 @@ import (
 // straddler or a gap.
 func TestCarveDedupedChunk_KeepsManifestRow(t *testing.T) {
 	ctx := context.Background()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	bs := newEngineWithRemote(t, ms, remotememory.New())
 	root := createShare(t, ms, "dedup")
 	pid, _ := createRealFile(t, ms, "dedup", "dup.bin", root)
@@ -55,7 +56,7 @@ func TestCarveDedupedChunk_KeepsManifestRow(t *testing.T) {
 // back as zeros after eviction (RFC 7862 DEALLOCATE).
 func TestPunchHole_RepunchReadsBackZerosCold(t *testing.T) {
 	ctx := context.Background()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	bs := newEngineWithRemote(t, ms, remotememory.New())
 	root := createShare(t, ms, "punch2")
 	pid, _ := createRealFile(t, ms, "punch2", "p.bin", root)

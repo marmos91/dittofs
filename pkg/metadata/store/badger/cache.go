@@ -201,7 +201,7 @@ func buildBadgerOptions(config BadgerMetadataStoreConfig, availMem uint64) badge
 		return *config.BadgerOptions
 	}
 
-	opts := badger.DefaultOptions(config.DBPath)
+	opts := badger.DefaultOptions(config.DBPath).WithInMemory(config.InMemory)
 
 	// Optimize for metadata workload:
 	// - Frequent small reads/writes (file attributes, directory entries)
@@ -237,5 +237,17 @@ func buildBadgerOptions(config BadgerMetadataStoreConfig, availMem uint64) badge
 		opts = opts.WithNumCompactors(2)           // default 4 (Badger min 2)
 	}
 
+	// An in-memory store holds its memtables in RAM for its whole life, and
+	// tests open hundreds of them in one process: keep each one small rather
+	// than paying Badger's 64 MiB memtable default per store. Badger caps a
+	// batch at 15% of the memtable, and that must exceed its 1 MiB value
+	// threshold, so 8 MiB is about the floor.
+	if config.InMemory {
+		opts = opts.WithMemTableSize(inMemoryMemTableSize)
+	}
+
 	return opts
 }
+
+// inMemoryMemTableSize is the memtable size of an in-memory store.
+const inMemoryMemTableSize = 8 << 20

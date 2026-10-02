@@ -16,9 +16,8 @@ import (
 // per-share usage, GetFileByPayloadID, filesystem meta/stats/caps, server config,
 // and Healthcheck. These surfaces are production-consumed (share removal,
 // statfs/quota, the background flusher) yet each backend implemented them
-// independently, so divergence or regression could pass the full suite green
-// — the exact CI-blind class that hid the postgres #853 bugs. Each scenario
-// runs identically against memory, badger, and postgres via the factory.
+// independently of the core file operations, so a regression could pass the
+// rest of the suite green. Each scenario runs via the factory.
 func runStoreSurfaceTests(t *testing.T, factory StoreFactory) {
 	t.Run("DeleteShare", func(t *testing.T) { testDeleteShare(t, factory) })
 	t.Run("DeleteShareViaTransaction", func(t *testing.T) { testDeleteShareViaTransaction(t, factory) })
@@ -321,7 +320,7 @@ func testDeleteShare(t *testing.T, factory StoreFactory) {
 // testDeleteShareViaTransaction exercises DeleteShare through WithTransaction.
 // The transaction-path and pool-path are independent implementations, so the
 // tx path must tear down all file metadata too — dropping only the share row
-// orphans every file inode (the bug this pins for the badger/postgres tx path).
+// orphans every file inode (the bug this pins for the tx path).
 func testDeleteShareViaTransaction(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
@@ -645,9 +644,9 @@ func assertPayloadBlocks(t *testing.T, variant string, got *metadata.File, want 
 // testFilesystemMetaStatsCaps verifies the filesystem metadata / statistics /
 // capabilities surfaces.
 //
-// Note: only the capabilities half of FilesystemMeta round-trips on every
-// backend — memory and badger recompute statistics on demand rather than
-// reading back a persisted blob — so the cross-backend contract asserted here
+// Note: only the capabilities half of FilesystemMeta round-trips — badger
+// recomputes statistics on demand rather than reading back a persisted blob —
+// so the contract asserted here
 // is that capabilities written by PutFilesystemMeta come back out of
 // GetFilesystemMeta, and that SetFilesystemCapabilities is observable via
 // GetFilesystemCapabilities. Both capabilities and statistics resolve against
@@ -814,8 +813,8 @@ func testHealthcheck(t *testing.T, factory StoreFactory) {
 	}
 }
 
-// testListChildrenPagination exercises the backend-divergent pagination path
-// (postgres keyset vs badger iterator-prefix vs memory map). It creates more
+// testListChildrenPagination exercises the pagination path (badger's
+// iterator-prefix cursor). It creates more
 // children than the page limit, threads nextCursor with a small limit until
 // exhausted, and asserts the union equals the full set with no duplicates and
 // no missing entries. It also asserts limit==0 selects the default page size

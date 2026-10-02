@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -17,8 +16,8 @@ import (
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatabadger "github.com/marmos91/dittofs/pkg/metadata/store/badger"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
-	metadatasqlite "github.com/marmos91/dittofs/pkg/metadata/store/sqlite"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // byteVerifyFixture wires a Runtime over the REAL production write path: a
@@ -47,8 +46,8 @@ type byteVerifyFixture struct {
 }
 
 // newByteVerifyFixture builds the fixture for the given metadata store. The
-// metaType is the engine label recorded in the cpstore ("memory" | "badger" |
-// "postgres") — it drives snapshot/restore's per-engine Restoreable dispatch.
+// metaType is the engine label recorded in the cpstore — it drives
+// snapshot/restore's per-engine Restoreable dispatch.
 // Every share carries a block store, so the default fixture gets a plaintext
 // memory one rather than standing up a share with a journal alone.
 func newByteVerifyFixture(t *testing.T, meta metadata.Store, metaType string) *byteVerifyFixture {
@@ -207,8 +206,8 @@ func (f *byteVerifyFixture) simulateRestart(reopen func(*testing.T) metadata.Sto
 	// an exclusive lock on its directory, so the reopen would fail until the
 	// prior handle is released. The first open()'s t.Cleanup will later call
 	// Close() again on this now-closed handle at test teardown — harmless: the
-	// error is ignored here and there, and neither badger nor postgres
-	// corrupts state on a double Close.
+	// error is ignored here and there, and badger does not corrupt state on a
+	// double Close.
 	_ = f.meta.Close()
 
 	meta := reopen(f.t)
@@ -446,7 +445,7 @@ func distinctBytes(n int, seed uint64) []byte {
 // small file round-trips byte-identical through the REAL write/flush/read path
 // on the memory backend before layering on snapshot/restore.
 func TestSnapshotByteVerify_MinimalProof(t *testing.T) {
-	meta := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	meta := badgertest.NewInMemory(t)
 	fx := newByteVerifyFixture(t, meta, "memory")
 	defer fx.close()
 
@@ -568,17 +567,12 @@ func runByteVerifyCycle(t *testing.T, fx *byteVerifyFixture) {
 	}
 }
 
-// TestSnapshotByteVerify_Matrix is the table-driven matrix over metadata-store
-// backends. memory + badger always run; postgres runs only when
-// DITTOFS_TEST_POSTGRES_DSN is set (the integration-tagged file supplies the
-// postgres case constructor).
+// TestSnapshotByteVerify_Matrix is the table-driven matrix over the Badger
+// metadata store's in-memory and on-disk modes.
 func TestSnapshotByteVerify_Matrix(t *testing.T) {
 	for _, bk := range byteVerifyBackends(t) {
 		bk := bk
 		t.Run(bk.name, func(t *testing.T) {
-			if bk.skip != "" {
-				t.Skip(bk.skip)
-			}
 			meta, metaType := bk.open(t)
 			fx := newByteVerifyFixture(t, meta, metaType)
 			defer fx.close()
@@ -608,9 +602,6 @@ func TestSnapshotByteVerify_RemoteColdSeed_Matrix(t *testing.T) {
 	for _, bk := range byteVerifyBackends(t) {
 		bk := bk
 		t.Run(bk.name, func(t *testing.T) {
-			if bk.skip != "" {
-				t.Skip(bk.skip)
-			}
 			meta, metaType := bk.open(t)
 			fx := newByteVerifyFixtureOpts(t, meta, metaType, plaintextRemoteCfg())
 			defer fx.close()
@@ -624,43 +615,24 @@ type byteVerifyBackend struct {
 	name string
 	// open constructs the metadata store and returns it + its engine label.
 	open func(t *testing.T) (metadata.Store, string)
-	// reopen re-opens the SAME durable store (badger dir / postgres DSN)
-	// after a simulated restart. nil for backends that cannot survive a
-	// restart (memory) — the crash-recovery-reopen test skips those.
+	// reopen re-opens the SAME durable store (badger dir) after a simulated
+	// restart. nil for a store that cannot survive a restart (in-memory) —
+	// the crash-recovery-reopen test skips those.
 	reopen func(t *testing.T) metadata.Store
-	// skip, when non-empty, marks the case as skipped with this reason.
-	skip string
 }
 
-// postgresByteVerifyBackend is installed by the integration-tagged
-// companion file's init(). Under plain `go test` it stays nil and the
-// postgres matrix row is skipped with a build-tag hint.
-var postgresByteVerifyBackend *byteVerifyBackend
-
-// byteVerifyBackends returns the backend matrix: memory + badger always,
-// postgres only when the integration-tagged companion installed it (and the
-// DSN env is set, checked inside its open()).
+// byteVerifyBackends returns the backend matrix: Badger in memory and on disk.
 func byteVerifyBackends(t *testing.T) []byteVerifyBackend {
 	t.Helper()
-	backends := []byteVerifyBackend{
+	return []byteVerifyBackend{
 		{
 			name: "memory",
 			open: func(t *testing.T) (metadata.Store, string) {
-				return metadatamemory.NewMemoryMetadataStoreWithDefaults(), "memory"
+				return badgertest.NewInMemory(t), "badger"
 			},
 		},
 		newBadgerByteVerifyBackend(t),
-		newSQLiteByteVerifyBackend(t),
 	}
-	if postgresByteVerifyBackend != nil {
-		backends = append(backends, *postgresByteVerifyBackend)
-	} else {
-		backends = append(backends, byteVerifyBackend{
-			name: "postgres",
-			skip: "postgres case requires -tags=integration and DITTOFS_TEST_POSTGRES_DSN",
-		})
-	}
-	return backends
 }
 
 // newBadgerByteVerifyBackend builds the badger matrix entry with reopen
@@ -681,30 +653,6 @@ func newBadgerByteVerifyBackend(t *testing.T) byteVerifyBackend {
 	return byteVerifyBackend{
 		name:   "badger",
 		open:   func(t *testing.T) (metadata.Store, string) { return openAt(t), "badger" },
-		reopen: openAt,
-	}
-}
-
-// newSQLiteByteVerifyBackend backs the byte-verify matrix with an on-disk sqlite
-// metadata store. reopen re-opens the SAME db file so the restore cycle proves
-// on-disk persistence (including the synced_hashes locator columns the flip
-// relies on for block-resident restore).
-func newSQLiteByteVerifyBackend(t *testing.T) byteVerifyBackend {
-	t.Helper()
-	dbPath := filepath.Join(t.TempDir(), "byteverify.db")
-	openAt := func(t *testing.T) metadata.Store {
-		store, err := metadatasqlite.NewSQLiteMetadataStore(context.Background(),
-			&metadatasqlite.SQLiteMetadataStoreConfig{Path: dbPath, AutoMigrate: true},
-			flipTestCapabilities())
-		if err != nil {
-			t.Fatalf("NewSQLiteMetadataStore: %v", err)
-		}
-		t.Cleanup(func() { _ = store.Close() })
-		return store
-	}
-	return byteVerifyBackend{
-		name:   "sqlite",
-		open:   func(t *testing.T) (metadata.Store, string) { return openAt(t), "sqlite" },
 		reopen: openAt,
 	}
 }

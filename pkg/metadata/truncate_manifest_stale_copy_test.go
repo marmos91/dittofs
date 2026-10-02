@@ -6,7 +6,9 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // gapInjectingStore commits a manifest write into the window between
@@ -19,7 +21,7 @@ import (
 // Only the first call injects, and only once, so the transaction's own read sees
 // the concurrent writer's row.
 type gapInjectingStore struct {
-	*memory.MemoryMetadataStore
+	*badger.BadgerMetadataStore
 	handle    metadata.FileHandle
 	injected  []block.ChunkRef
 	didInject bool
@@ -30,7 +32,7 @@ func (s *gapInjectingStore) GetFile(ctx context.Context, handle metadata.FileHan
 		s.didInject = true
 		// Commit the concurrent writer's manifest straight to the store, so
 		// the transaction below reads a row the caller's snapshot never saw.
-		cur, err := s.MemoryMetadataStore.GetFile(ctx, s.handle)
+		cur, err := s.BadgerMetadataStore.GetFile(ctx, s.handle)
 		if err != nil {
 			return nil, err
 		}
@@ -39,11 +41,11 @@ func (s *gapInjectingStore) GetFile(ctx context.Context, handle metadata.FileHan
 		next.Size = 1 << 20
 		// Qualified deliberately: this type overrides GetFile, and the
 		// unqualified form reads as if it re-entered that override.
-		if err := s.MemoryMetadataStore.SetManifest(ctx, &next); err != nil { //nolint:staticcheck // QF1008: the qualifier names the embedded call explicitly
+		if err := s.BadgerMetadataStore.SetManifest(ctx, &next); err != nil { //nolint:staticcheck // QF1008: the qualifier names the embedded call explicitly
 			return nil, err
 		}
 	}
-	return s.MemoryMetadataStore.GetFile(ctx, handle)
+	return s.BadgerMetadataStore.GetFile(ctx, handle)
 }
 
 // A truncate must prune the block list the committed row holds, not the one the
@@ -57,7 +59,7 @@ func (s *gapInjectingStore) GetFile(ctx context.Context, handle metadata.FileHan
 // written back, never because the window was missed.
 func TestSetFileAttributes_TruncatePrunesTheCommittedManifestNotTheStaleCopy(t *testing.T) {
 	const share = "/prune"
-	base := memory.NewMemoryMetadataStoreWithDefaults()
+	base := badgertest.NewInMemory(t)
 
 	rootFile, err := base.CreateRootDirectory(context.Background(), share, &metadata.FileAttr{
 		Type: metadata.FileTypeDirectory, Mode: 0o777,
@@ -108,7 +110,7 @@ func TestSetFileAttributes_TruncatePrunesTheCommittedManifestNotTheStaleCopy(t *
 		{Offset: 4096, Size: 512},
 	}
 	store := &gapInjectingStore{
-		MemoryMetadataStore: base,
+		BadgerMetadataStore: base,
 		handle:              handle,
 		injected:            concurrent,
 	}

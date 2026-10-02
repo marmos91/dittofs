@@ -49,7 +49,7 @@ func TestCrossProtocol_LeaseBreaks(t *testing.T) {
 	blockStoreName := helpers.UniqueTestName("leasepayload")
 	shareName := "/export"
 
-	_, err := cli.CreateMetadataStore(metaStoreName, "memory")
+	_, err := cli.CreateInMemoryMetadataStore(metaStoreName)
 	require.NoError(t, err, "Should create metadata store")
 
 	_, err = cli.CreateBlockStore(blockStoreName, "memory")

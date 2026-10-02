@@ -12,7 +12,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/journal"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
 )
 
 // fakeCoordinator records IncrementRefCount/DecrementRefCount/PersistFileChunks
@@ -135,9 +136,9 @@ func putTestFile(t *testing.T, ms metadata.Store, path string, payloadID metadat
 }
 
 // newCloneTestEngineWithMS constructs an engine wired against a caller-
-// supplied MemoryMetadataStore so the test can both seed files and observe
+// supplied BadgerMetadataStore so the test can both seed files and observe
 // post-txn state via the same store.
-func newCloneTestEngineWithMS(t *testing.T, coord *fakeCoordinator, ms *metadatamemory.MemoryMetadataStore) *engine.Store {
+func newCloneTestEngineWithMS(t *testing.T, coord *fakeCoordinator, ms *badger.BadgerMetadataStore) *engine.Store {
 	t.Helper()
 	bs, _ := newCloneTestEngineWithLocal(t, coord, ms)
 	return bs
@@ -146,7 +147,7 @@ func newCloneTestEngineWithMS(t *testing.T, coord *fakeCoordinator, ms *metadata
 // newCloneTestEngineWithLocal is newCloneTestEngineWithMS with the journal-backed
 // local tier handed back too, for the assertions that are about what the index
 // describes rather than what the manifest holds.
-func newCloneTestEngineWithLocal(t *testing.T, coord *fakeCoordinator, ms *metadatamemory.MemoryMetadataStore) (*engine.Store, *journal.Store) {
+func newCloneTestEngineWithLocal(t *testing.T, coord *fakeCoordinator, ms *badger.BadgerMetadataStore) (*engine.Store, *journal.Store) {
 	t.Helper()
 
 	tmpDir := t.TempDir()

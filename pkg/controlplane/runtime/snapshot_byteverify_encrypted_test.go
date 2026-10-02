@@ -52,8 +52,7 @@ func encryptedRemoteCfg(t *testing.T) *models.BlockStoreConfig {
 // TestSnapshotByteVerify_EncryptedRemote_Matrix is the encrypted-remote edge
 // case: a full write → durable snapshot → mutate → ResetLocalState → restore →
 // byte-compare cycle, but with an encryption-enabled remote block store, run
-// across every metadata backend (memory + badger always; postgres when the
-// integration companion installed it).
+// across the Badger metadata store's in-memory and on-disk modes.
 //
 // This pins the intersection that the existing tests cover only separately:
 //   - TestSnapshot_EncryptionInteraction proves the encrypted verify/decrypt
@@ -69,9 +68,6 @@ func TestSnapshotByteVerify_EncryptedRemote_Matrix(t *testing.T) {
 	for _, bk := range byteVerifyBackends(t) {
 		bk := bk
 		t.Run(bk.name, func(t *testing.T) {
-			if bk.skip != "" {
-				t.Skip(bk.skip)
-			}
 			meta, metaType := bk.open(t)
 			fx := newByteVerifyFixtureOpts(t, meta, metaType, encryptedRemoteCfg(t))
 			defer fx.close()

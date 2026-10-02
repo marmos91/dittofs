@@ -21,7 +21,7 @@ Examples:
   dfsctl store metadata list
 
   # Add a new metadata store
-  dfsctl store metadata add --name new-meta --type memory
+  dfsctl store metadata add --name new-meta --db-path /data/meta
 
   # List block stores
   dfsctl store block list

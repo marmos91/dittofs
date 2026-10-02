@@ -7,7 +7,9 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -15,7 +17,7 @@ import (
 // signal is received, widening the recovery window deterministically. It
 // satisfies both MetadataStore and lock.LockStore via embedding.
 type blockingRecoveryStore struct {
-	*memory.MemoryMetadataStore
+	*badger.BadgerMetadataStore
 	listEntered chan struct{} // closed when ListLocks is entered
 	release     chan struct{} // ListLocks returns once this is closed
 }
@@ -23,7 +25,7 @@ type blockingRecoveryStore struct {
 func (s *blockingRecoveryStore) ListLocks(ctx context.Context, query lock.LockQuery) ([]*lock.PersistedLock, error) {
 	close(s.listEntered)
 	<-s.release
-	return s.MemoryMetadataStore.ListLocks(ctx, query)
+	return s.BadgerMetadataStore.ListLocks(ctx, query)
 }
 
 // TestRegisterStoreForShare_RecoversPersistedLocks verifies the end-to-end
@@ -32,7 +34,7 @@ func (s *blockingRecoveryStore) ListLocks(ctx context.Context, query lock.LockQu
 // (simulating a server restart against the same durable store).
 func TestRegisterStoreForShare_RecoversPersistedLocks(t *testing.T) {
 	const shareName = "/recover"
-	store := memory.NewMemoryMetadataStoreWithDefaults()
+	store := badgertest.NewInMemory(t)
 
 	// First server: register and acquire a unified lock.
 	svc1 := metadata.New()
@@ -74,7 +76,7 @@ func TestRegisterStoreForShare_RecoversPersistedLocks(t *testing.T) {
 // restart. Without the stamp, NFSv4 byte-range locks are silently dropped.
 func TestRegisterStoreForShare_RecoversEmptyShareNameLocks(t *testing.T) {
 	const shareName = "/recover-empty"
-	store := memory.NewMemoryMetadataStoreWithDefaults()
+	store := badgertest.NewInMemory(t)
 
 	svc1 := metadata.New()
 	require.NoError(t, svc1.RegisterStoreForShare(shareName, store))
@@ -112,7 +114,7 @@ func TestRegisterStoreForShare_RecoversEmptyShareNameLocks(t *testing.T) {
 // server: every non-nil manager observed must already carry the recovered lock.
 func TestRegisterStoreForShare_ManagerObservableOnlyAfterRecovery(t *testing.T) {
 	const shareName = "/recover-race"
-	store := memory.NewMemoryMetadataStoreWithDefaults()
+	store := badgertest.NewInMemory(t)
 
 	svc1 := metadata.New()
 	require.NoError(t, svc1.RegisterStoreForShare(shareName, store))
@@ -135,7 +137,7 @@ func TestRegisterStoreForShare_ManagerObservableOnlyAfterRecovery(t *testing.T) 
 	// Fresh server over a store whose ListLocks blocks mid-recovery, so the
 	// recovery window is wide and deterministic.
 	blocking := &blockingRecoveryStore{
-		MemoryMetadataStore: store,
+		BadgerMetadataStore: store,
 		listEntered:         make(chan struct{}),
 		release:             make(chan struct{}),
 	}

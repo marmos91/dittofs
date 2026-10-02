@@ -264,8 +264,7 @@ type SyncedHashIndex interface {
 	// EnumerateSynced calls fn once per synced marker with its content hash,
 	// remote locator, and first-mirror timestamp. The locator is read from the
 	// same marker row, so callers that need it resolve every hash in a single
-	// scan instead of a GetLocator round trip per hash — the O(N)-serial cost on
-	// the sqlite MaxOpenConns(1) pool behind the slow cold-start. A zero
+	// scan instead of a GetLocator round trip per hash. A zero
 	// syncedAt means the backend has no recorded time (legacy marker) — the
 	// sweep treats it as fail-closed. A marker may also yield the zero
 	// ChunkLocator; the reclaimer refuses to act on one, and states why at the

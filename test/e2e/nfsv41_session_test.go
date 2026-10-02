@@ -484,7 +484,7 @@ func TestNFSv41SessionRecoveryAfterRestart(t *testing.T) {
 	metaStore := helpers.UniqueTestName("recoverymeta")
 	blockStore := helpers.UniqueTestName("recoverypayload")
 
-	_, err := runner1.CreateMetadataStore(metaStore, "memory")
+	_, err := runner1.CreateInMemoryMetadataStore(metaStore)
 	require.NoError(t, err)
 
 	_, err = runner1.CreateBlockStore(blockStore, "memory")
@@ -520,7 +520,7 @@ func TestNFSv41SessionRecoveryAfterRestart(t *testing.T) {
 	metaStore2 := helpers.UniqueTestName("recoverymeta2")
 	blockStore2 := helpers.UniqueTestName("recoverypayload2")
 
-	_, err = runner2.CreateMetadataStore(metaStore2, "memory")
+	_, err = runner2.CreateInMemoryMetadataStore(metaStore2)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner2.DeleteMetadataStore(metaStore2) })
 

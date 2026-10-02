@@ -36,9 +36,9 @@
     "wpts": {
       "description": "Windows Protocol Test Suites FileServer BVT",
       "protocol": "SMB",
-      "profiles": ["memory", "badger", "badger-s3", "postgres-s3"],
+      "profiles": ["memory", "badger", "badger-s3"],
       "known_failures": "smb-conformance/KNOWN_FAILURES.md",
-      "tiers": { "pull_request": ["memory", "postgres-s3"] },
+      "tiers": { "pull_request": ["memory", "badger-s3"] },
       "timeout_minutes": 30,
       "steps": [
         {
@@ -53,7 +53,7 @@
     "smbtorture": {
       "description": "Samba smbtorture SMB2/3 protocol suite",
       "protocol": "SMB",
-      "profiles": ["memory", "badger", "sqlite", "postgres"],
+      "profiles": ["memory", "badger"],
       "known_failures": "smb-conformance/smbtorture/KNOWN_FAILURES.md",
       "tiers": { "pull_request": ["memory", "badger"] },
       "timeout_minutes": 45,
@@ -71,7 +71,7 @@
       "description": "pjdfstest POSIX filesystem semantics over NFS",
       "host_adapter": true,
       "protocol": "NFS",
-      "profiles": ["memory", "badger", "postgres", "postgres-s3"],
+      "profiles": ["memory", "badger", "badger-s3"],
       "variant": {
         "name": "nfs-version",
         "values": ["3", "4", "4.1"]
@@ -81,7 +81,7 @@
         "4": "posix/KNOWN_FAILURES_V4.md",
         "4.1": "posix/KNOWN_FAILURES_V4.md"
       },
-      "tiers": { "pull_request": ["memory", "postgres-s3"] },
+      "tiers": { "pull_request": ["memory", "badger-s3"] },
       "timeout_minutes": 60,
       "steps": [
         {
@@ -126,7 +126,7 @@
       "description": "pynfs NFSv4.0/4.1 protocol conformance",
       "host_adapter": true,
       "protocol": "NFS",
-      "profiles": ["memory", "badger", "postgres", "postgres-s3"],
+      "profiles": ["memory", "badger", "badger-s3"],
       "variant": {
         "name": "minor-version",
         "values": ["4.0", "4.1"]
@@ -135,7 +135,7 @@
         "4.0": "nfs-conformance/pynfs/KNOWN_FAILURES_V40.md",
         "4.1": "nfs-conformance/pynfs/KNOWN_FAILURES_V41.md"
       },
-      "tiers": { "pull_request": ["memory", "postgres-s3"] },
+      "tiers": { "pull_request": ["memory", "badger-s3"] },
       "timeout_minutes": 45,
       "steps": [
         {

@@ -19,7 +19,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	memorymeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // ============================================================================
@@ -45,7 +46,7 @@ func newIOTestFixture(t *testing.T, shareName string) *ioTestFixture {
 	t.Helper()
 
 	// Create in-memory metadata store
-	metaStore := memorymeta.NewMemoryMetadataStoreWithDefaults()
+	metaStore := badgertest.NewInMemory(t)
 
 	// Create local store, syncer, and block store engine
 	tmpDir := t.TempDir()

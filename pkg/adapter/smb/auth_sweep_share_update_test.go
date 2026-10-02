@@ -16,7 +16,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // TestDefaultPermissionUpdateSchedulesOneSweep counts the sweeps a single
@@ -67,11 +68,11 @@ func TestDefaultPermissionUpdateSchedulesOneSweep(t *testing.T) {
 		}
 	})
 
-	metaID, err := cpStore.CreateMetadataStore(ctx, &models.MetadataStoreConfig{Name: "test-meta", Type: "memory"})
+	metaID, err := cpStore.CreateMetadataStore(ctx, &models.MetadataStoreConfig{Name: "test-meta", Type: "badger", Config: `{"in_memory":true}`})
 	if err != nil {
 		t.Fatalf("create metadata store config: %v", err)
 	}
-	if err := rt.RegisterMetadataStore("test-meta", memory.NewMemoryMetadataStoreWithDefaults()); err != nil {
+	if err := rt.RegisterMetadataStore("test-meta", badgertest.NewInMemory(t)); err != nil {
 		t.Fatalf("register metadata store: %v", err)
 	}
 	blockID, err := cpStore.CreateBlockStore(ctx, &models.BlockStoreConfig{Name: "test-block", Type: "memory"})

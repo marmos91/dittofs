@@ -57,19 +57,15 @@ underlying storage.
 
 ### Metadata backend at scale
 
-Snapshot create and restore stream the metadata dump backend-by-backend.
-**Use the badger metadata engine for large (TB / millions-of-files)
-shares:** badger streams the dump KV-by-KV on create and applies it via
-bounded `WriteBatch` on restore, so its snapshot RAM is governed by the
-resident hash manifest (~25 MB per 1 M unique blocks), not by share size.
+Snapshot create and restore stream the metadata dump: badger streams it
+KV-by-KV on create and applies it via bounded `WriteBatch` on restore, so
+snapshot RAM is governed by the resident hash manifest (~25 MB per 1 M
+unique blocks), not by share size.
 
-The **memory metadata engine is for development and small shares only.**
-It holds the entire filesystem resident by design and serializes the
-whole snapshot into a single buffer during create, so snapshotting a
-multi-GB memory-engine share can exhaust RAM. This is an inherent
-property of an in-RAM store, not a tunable; pick badger before a share
-grows large. See `test/e2e/BENCHMARKS.md` for measured dump sizes and
-the per-backend RAM budget.
+An **in-memory badger store** (`in_memory: true`) is for development and
+small shares only: it holds the entire filesystem resident by design, so a
+large share exhausts RAM whether or not it is snapshotted. Use an on-disk
+store before a share grows large.
 
 ## 2. Snapshot model
 
@@ -256,13 +252,9 @@ be torn.
 To prevent this, the metadata store captures the dump and the manifest from
 **a single consistent read-view**:
 
-- **postgres** — one `REPEATABLE READ` transaction; all table `COPY`s and
-  the block-hash query observe the same MVCC snapshot.
 - **badger** — one managed read transaction (`db.View`); the whole
-  key-space iteration and hash extraction share that snapshot.
-- **memory** — the in-memory maps are read under the store write lock,
-  which every mutation also takes, so the dump and manifest reflect the
-  same instant.
+  key-space iteration and hash extraction share that snapshot. The same
+  holds on disk and in memory.
 
 Client writes are **not** quiesced or stalled during create: they proceed
 concurrently and are simply ordered relative to the snapshot's read-view. A
@@ -788,10 +780,9 @@ for this subsystem).
 `backend does not support reset`. REST: `ErrMetadataStoreNotResetable`.
 
 **Cause.** The metadata store backend in use does not implement the
-`Resetable` interface required for in-place wipe-and-replay. As of
-this release, all production backends (BadgerDB, PostgreSQL)
-implement `Resetable`; the in-memory backend used for tests
-implements it too. This error should not occur in production.
+`Resetable` interface required for in-place wipe-and-replay. The
+BadgerDB store implements `Resetable`, on disk and in memory, so this
+error should not occur in production.
 
 **Recovery.** File an issue with the backend name and version. If
 the backend is correctly configured, this is a packaging bug.

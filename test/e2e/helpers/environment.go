@@ -2,7 +2,7 @@
 
 // Package helpers provides test environment and scope management for E2E tests.
 // It wraps the existing framework package to provide container management and
-// per-test isolation through unique Postgres schemas and S3 prefixes.
+// per-test isolation through unique S3 prefixes.
 package helpers
 
 import (
@@ -23,7 +23,6 @@ import (
 // - Containers are terminated by Cleanup() called from TestMain
 type TestEnvironment struct {
 	ctx      context.Context
-	pgHelper *framework.PostgresHelper
 	lsHelper *framework.LocalstackHelper
 }
 
@@ -31,7 +30,7 @@ type TestEnvironment struct {
 var globalEnv *TestEnvironment
 
 // NewTestEnvironment creates a new TestEnvironment using framework helpers.
-// It starts or reuses shared Postgres and Localstack containers.
+// It starts or reuses the shared Localstack container.
 // Failures are reported via t.Fatal for fail-fast behavior.
 //
 // It is idempotent - calling it multiple times returns environments
@@ -41,15 +40,11 @@ func NewTestEnvironment(t *testing.T) *TestEnvironment {
 
 	ctx := context.Background()
 
-	// Start or reuse shared Postgres container via framework singleton
-	pgHelper := framework.NewPostgresHelper(t)
-
 	// Start or reuse shared Localstack container via framework singleton
 	lsHelper := framework.NewLocalstackHelper(t)
 
 	env := &TestEnvironment{
 		ctx:      ctx,
-		pgHelper: pgHelper,
 		lsHelper: lsHelper,
 	}
 
@@ -64,7 +59,7 @@ func NewTestEnvironment(t *testing.T) *TestEnvironment {
 // Containers are started lazily when individual tests call NewTestEnvironment(t).
 //
 // This design is necessary because:
-// 1. framework.NewPostgresHelper/NewLocalstackHelper require *testing.T
+// 1. framework.NewLocalstackHelper requires *testing.T
 // 2. TestMain doesn't have a *testing.T
 // 3. The framework already uses singleton pattern for container reuse
 //
@@ -72,7 +67,7 @@ func NewTestEnvironment(t *testing.T) *TestEnvironment {
 func NewTestEnvironmentForMain(ctx context.Context) *TestEnvironment {
 	env := &TestEnvironment{
 		ctx: ctx,
-		// pgHelper and lsHelper are nil - will be populated by first NewTestEnvironment call
+		// lsHelper is nil - populated by the first NewTestEnvironment call
 	}
 	globalEnv = env
 	return env
@@ -85,28 +80,15 @@ func (env *TestEnvironment) Cleanup() {
 }
 
 // NewScope creates a new TestScope for per-test isolation.
-// Each scope gets a unique Postgres schema and S3 prefix.
+// Each scope gets a unique S3 prefix.
 func (env *TestEnvironment) NewScope(t *testing.T) *TestScope {
 	t.Helper()
 	return newScope(t, env)
 }
 
-// PostgresHelper returns the underlying Postgres helper.
-func (env *TestEnvironment) PostgresHelper() *framework.PostgresHelper {
-	return env.pgHelper
-}
-
 // LocalstackHelper returns the underlying Localstack helper.
 func (env *TestEnvironment) LocalstackHelper() *framework.LocalstackHelper {
 	return env.lsHelper
-}
-
-// PostgresConnectionString returns the Postgres connection string.
-func (env *TestEnvironment) PostgresConnectionString() string {
-	if env.pgHelper == nil {
-		return ""
-	}
-	return env.pgHelper.ConnectionString()
 }
 
 // S3Client returns the S3 client from the Localstack helper.

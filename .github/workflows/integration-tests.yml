@@ -43,7 +43,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v7
 
-      # PostgreSQL for the metadata-store integration + conformance suites.
+      # PostgreSQL for the control-plane store's PostgreSQL integration tests.
       # Started as a step-managed container (not a `services:` block) so the
       # image pull can be retried — GitHub Actions cannot retry a service
       # container's pull, and a transient Docker Hub hiccup there fails the
@@ -146,10 +146,8 @@ jobs:
       # push to develop alone. Widen this back to ./... if a defect ever
       # reaches develop that the full PR-time run would have caught.
       #
-      # -p 1 serializes package test binaries: several packages (metadata
-      # store conformance, blockstore engine drain) share the single
-      # dittofs_test database, and the conformance suite truncates it
-      # between subtests — running their binaries concurrently would race.
+      # -p 1 serializes package test binaries: packages that use the
+      # dittofs_test database must not run their binaries concurrently.
       - name: Run the integration tests
         env:
           DITTOFS_TEST_POSTGRES_DSN: "host=localhost port=5432 dbname=dittofs_test user=postgres password=postgres sslmode=disable"

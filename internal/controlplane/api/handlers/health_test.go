@@ -14,7 +14,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/health"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	memoryMeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // mockAdapter implements runtime.ProtocolAdapter for testing
@@ -243,7 +244,7 @@ func TestReadiness_WithSharesNoAdapters_ReturnsOK(t *testing.T) {
 	reg, bsID := newReadinessRuntime(t)
 
 	// Register metadata store
-	metaStore := memoryMeta.NewMemoryMetadataStoreWithDefaults()
+	metaStore := badgertest.NewInMemory(t)
 	if err := reg.RegisterMetadataStore("test-meta", metaStore); err != nil {
 		t.Fatalf("Failed to register metadata store: %v", err)
 	}
@@ -296,7 +297,7 @@ func TestReadiness_WithSharesAndAdapters_ReturnsOK(t *testing.T) {
 	reg, bsID := newReadinessRuntime(t)
 
 	// Register metadata store
-	metaStore := memoryMeta.NewMemoryMetadataStoreWithDefaults()
+	metaStore := badgertest.NewInMemory(t)
 	if err := reg.RegisterMetadataStore("test-meta", metaStore); err != nil {
 		t.Fatalf("Failed to register metadata store: %v", err)
 	}

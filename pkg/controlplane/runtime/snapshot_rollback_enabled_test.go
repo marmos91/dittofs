@@ -6,9 +6,8 @@ import (
 	"testing"
 	"time"
 
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
-
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // TestRestoreRollback_ProceedsWhenShareEnabledAtBoot is the #8 R-L1 regression.
@@ -25,7 +24,7 @@ import (
 // disabled (matching the operator-restore contract), and the file is restored
 // to the safety-snapshot bytes.
 func TestRestoreRollback_ProceedsWhenShareEnabledAtBoot(t *testing.T) {
-	meta := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	meta := badgertest.NewInMemory(t)
 	fx := newByteVerifyFixture(t, meta, "memory")
 	defer fx.close()
 

@@ -15,7 +15,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/chunker"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // The two constants the dfsbench cold barrier's worst-case bound is built from
@@ -80,7 +81,7 @@ func probeEnvInt(key string, def int) int {
 func TestDrainPinProbe(t *testing.T) {
 	prefix := fmt.Sprintf("drainpin/%d/", time.Now().UnixNano())
 	remoteCfg := probeRemoteConfig(t, prefix)
-	meta := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	meta := badgertest.NewInMemory(t)
 	fx := newByteVerifyFixtureOpts(t, meta, "memory", remoteCfg)
 	defer fx.close()
 

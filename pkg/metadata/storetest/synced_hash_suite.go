@@ -1,6 +1,6 @@
-// Shared conformance suite for the metadata.SyncedHashStore interface. Each
-// metadata backend (memory, badger, postgres, sqlite) invokes this suite to
-// prove it upholds the idempotency + isolation + concurrency contract.
+// Shared conformance suite for the metadata.SyncedHashStore interface. The
+// metadata store invokes this suite to prove it upholds the idempotency +
+// isolation + concurrency contract.
 // Backend test files call RunSyncedHashStoreSuite(t, store) from a per-backend
 // Test*_Suite function.
 package storetest

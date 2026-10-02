@@ -10,7 +10,8 @@ import (
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatabadger "github.com/marmos91/dittofs/pkg/metadata/store/badger"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // pickInteriorStraddle chooses an overwrite window [d0, d1) over an already
@@ -118,7 +119,7 @@ func runInteriorStraddleColdRead(t *testing.T, ms metadata.Store) {
 }
 
 func TestMemoryColdRead_InteriorStraddler(t *testing.T) {
-	runInteriorStraddleColdRead(t, metadatamemory.NewMemoryMetadataStoreWithDefaults())
+	runInteriorStraddleColdRead(t, badgertest.NewInMemory(t))
 }
 
 func TestBadgerColdRead_InteriorStraddler(t *testing.T) {

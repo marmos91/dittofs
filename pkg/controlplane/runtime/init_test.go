@@ -11,7 +11,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // setupTestRuntime creates a runtime with SQLite in-memory store and a registered metadata store.
@@ -32,12 +33,12 @@ func setupTestRuntime(t *testing.T) (*Runtime, cpstore.Store) {
 	// Register a metadata store in the DB and runtime.
 	metaStoreCfg := &models.MetadataStoreConfig{
 		Name: "test-meta",
-		Type: "memory",
+		Type: "badger", Config: `{"in_memory":true}`,
 	}
 	if _, err := s.CreateMetadataStore(ctx, metaStoreCfg); err != nil {
 		t.Fatalf("failed to create metadata store config: %v", err)
 	}
-	metaStore := memory.NewMemoryMetadataStoreWithDefaults()
+	metaStore := badgertest.NewInMemory(t)
 	if err := rt.RegisterMetadataStore("test-meta", metaStore); err != nil {
 		t.Fatalf("failed to register metadata store: %v", err)
 	}

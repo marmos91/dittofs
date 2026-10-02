@@ -15,24 +15,22 @@ func TestMetadataCmd_RegistersExistingVerbs(t *testing.T) {
 	}
 }
 
-// TestBuildMetadataConfig_AcceptsServerSupportedTypes pins the CLI's accepted
-// store types to the server's. The switch in
-// pkg/controlplane/runtime.CreateMetadataStoreFromConfig is what actually
-// decides whether a store can be built; a type missing here is one an operator
-// cannot create or edit interactively even though the server would take it.
-//
-// postgres is absent because its branch prompts for connection settings and
-// would block on stdin. The types below all take their config from flags.
-func TestBuildMetadataConfig_AcceptsServerSupportedTypes(t *testing.T) {
-	for _, storeType := range []string{"memory", "badger", "sqlite"} {
-		t.Run(storeType, func(t *testing.T) {
-			if _, err := buildMetadataConfig(storeType, "", t.TempDir()); err != nil {
-				t.Errorf("server supports %q but the CLI rejects it: %v", storeType, err)
-			}
-		})
+// TestBuildMetadataConfig pins the CLI's accepted store type to the server's
+// (pkg/controlplane/runtime.CreateMetadataStoreFromConfig): badger only.
+func TestBuildMetadataConfig(t *testing.T) {
+	if _, err := buildMetadataConfig("badger", "", t.TempDir(), false); err != nil {
+		t.Errorf("badger with a path rejected: %v", err)
 	}
-
-	if _, err := buildMetadataConfig("nonesuch", "", ""); err == nil {
-		t.Error("an unsupported type should be rejected, got nil error")
+	cfg, err := buildMetadataConfig("badger", "", "", true)
+	if err != nil {
+		t.Fatalf("badger in memory rejected: %v", err)
+	}
+	if m, _ := cfg.(map[string]any); m["in_memory"] != true {
+		t.Errorf("--in-memory config = %v, want in_memory: true", cfg)
+	}
+	for _, removed := range []string{"memory", "sqlite", "postgres", "nonesuch"} {
+		if _, err := buildMetadataConfig(removed, "", "", false); err == nil {
+			t.Errorf("type %q should be rejected, got nil error", removed)
+		}
 	}
 }

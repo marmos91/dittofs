@@ -9,7 +9,8 @@ import (
 	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	"github.com/marmos91/dittofs/pkg/health"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // ---- Fakes ----
@@ -78,7 +79,7 @@ func newRuntimeForGC(t *testing.T, shareRemotes map[string]remote.RemoteStore) *
 
 	// Real memory metadata store keeps AddShare happy without needing a fake
 	// with the full MetadataStore surface.
-	metaStore := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	metaStore := badgertest.NewInMemory(t)
 	if err := rt.RegisterMetadataStore("meta", metaStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}

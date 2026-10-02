@@ -59,7 +59,7 @@ const redactedSecret = "********"
 // redactSecretJSON parses a stored store-config JSON object and replaces the
 // values of secret-bearing keys with a fixed sentinel, returning the
 // re-serialized blob. It is applied on READ paths only (GET/List/Create/Update
-// responses) so the S3 secret_access_key and postgres password never leave the
+// responses) so secrets such as the S3 secret_access_key never leave the
 // process; Create/Update still accept plaintext input.
 //
 // A key is considered secret if it is exactly "secret_access_key"/"password"

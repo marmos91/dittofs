@@ -657,7 +657,7 @@ spec:
                 type: object
               percona:
                 description: |-
-                  Percona configures auto-creation of PerconaPGCluster for PostgreSQL metadata store
+                  Percona configures auto-creation of PerconaPGCluster for the PostgreSQL control-plane database
                   When enabled, the operator creates a PerconaPGCluster owned by this DittoServer
                 properties:
                   backup:
@@ -1317,7 +1317,7 @@ spec:
                   metadataSize:
                     description: |-
                       Size for the metadata store PVC (mounted at /data/store/metadata)
-                      Used by BadgerDB or other metadata backends
+                      Used by the BadgerDB metadata store
                     example: 10Gi
                     pattern: ^[0-9]+(Gi|Mi|Ti)$
                     type: string

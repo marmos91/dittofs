@@ -12,9 +12,7 @@ import (
 )
 
 var (
-	editType   string
 	editConfig string
-	// BadgerDB specific
 	editDBPath string
 )
 
@@ -33,9 +31,6 @@ Examples:
   # Update config with JSON
   dfsctl store metadata edit default --config '{"path":"/new/path"}'
 
-  # Update type
-  dfsctl store metadata edit default --type badger
-
   # Update BadgerDB path
   dfsctl store metadata edit default --db-path /new/path`,
 	Args: cobra.ExactArgs(1),
@@ -43,9 +38,8 @@ Examples:
 }
 
 func init() {
-	editCmd.Flags().StringVar(&editType, "type", "", "Store type: memory, badger, sqlite, postgres")
 	editCmd.Flags().StringVar(&editConfig, "config", "", "Store configuration as JSON")
-	editCmd.Flags().StringVar(&editDBPath, "db-path", "", "Database path (for badger and sqlite)")
+	editCmd.Flags().StringVar(&editDBPath, "db-path", "", "BadgerDB directory path")
 }
 
 func runEdit(cmd *cobra.Command, args []string) error {
@@ -63,7 +57,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	}
 
 	// Check if any flags were provided
-	hasFlags := cmd.Flags().Changed("type") || cmd.Flags().Changed("config") || cmd.Flags().Changed("db-path")
+	hasFlags := cmd.Flags().Changed("config") || cmd.Flags().Changed("db-path")
 
 	// If no flags provided, run interactive mode
 	if !hasFlags {
@@ -86,13 +80,8 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		hasUpdate = true
 	}
 
-	if editType != "" {
-		req.Type = &editType
-		hasUpdate = true
-	}
-
 	if !hasUpdate {
-		return fmt.Errorf("no update fields specified. Use --type, --config, or --db-path")
+		return fmt.Errorf("no update fields specified. Use --config or --db-path")
 	}
 
 	store, err := client.UpdateMetadataStore(name, req)
@@ -117,80 +106,22 @@ func runEditInteractive(client *apiclient.Client, name string, current *apiclien
 	req := &apiclient.UpdateStoreRequest{}
 	hasUpdate := false
 
-	// Based on store type, prompt for relevant fields
-	switch current.Type {
-	case "badger", "sqlite":
-		currentPath := ""
-		if currentConfig != nil {
-			if p, ok := currentConfig["path"].(string); ok {
-				currentPath = p
-			}
-		}
-
-		newPath, err := prompt.Input("Database path", currentPath)
-		if err != nil {
-			return cmdutil.HandleAbort(err)
-		}
-		if newPath != currentPath {
-			req.Config = map[string]any{"path": newPath}
-			hasUpdate = true
-		}
-
-	case "postgres":
-		// For postgres, allow editing connection settings
-		host := cmdutil.GetConfigString(currentConfig, "host", "localhost")
-		port := cmdutil.GetConfigString(currentConfig, "port", "5432")
-		dbname := cmdutil.GetConfigString(currentConfig, "dbname", "")
-		user := cmdutil.GetConfigString(currentConfig, "user", "postgres")
-		sslmode := cmdutil.GetConfigString(currentConfig, "sslmode", "disable")
-
-		newHost, err := prompt.Input("PostgreSQL host", host)
-		if err != nil {
-			return cmdutil.HandleAbort(err)
-		}
-		newPort, err := prompt.Input("PostgreSQL port", port)
-		if err != nil {
-			return cmdutil.HandleAbort(err)
-		}
-		newDbname, err := prompt.Input("Database name", dbname)
-		if err != nil {
-			return cmdutil.HandleAbort(err)
-		}
-		newUser, err := prompt.Input("Username", user)
-		if err != nil {
-			return cmdutil.HandleAbort(err)
-		}
-		newPassword, err := prompt.Password("Password (leave empty to keep current)")
-		if err != nil {
-			return cmdutil.HandleAbort(err)
-		}
-		newSslmode, err := prompt.Input("SSL mode", sslmode)
-		if err != nil {
-			return cmdutil.HandleAbort(err)
-		}
-
-		newConfig := map[string]any{
-			"host":    newHost,
-			"port":    newPort,
-			"dbname":  newDbname,
-			"user":    newUser,
-			"sslmode": newSslmode,
-		}
-		if newPassword != "" {
-			newConfig["password"] = newPassword
-		} else if p, ok := currentConfig["password"].(string); ok {
-			newConfig["password"] = p
-		}
-
-		req.Config = newConfig
-		hasUpdate = true
-
-	case "memory":
-		fmt.Println("Memory stores have no configurable settings.")
-		return nil
-
-	default:
+	if current.Type != "badger" {
 		return fmt.Errorf("unknown store type: %s", current.Type)
+	}
+	if inMemory, _ := currentConfig["in_memory"].(bool); inMemory {
+		fmt.Println("In-memory stores have no configurable settings.")
+		return nil
+	}
+
+	currentPath := cmdutil.GetConfigString(currentConfig, "path", "")
+	newPath, err := prompt.Input("Database path", currentPath)
+	if err != nil {
+		return cmdutil.HandleAbort(err)
+	}
+	if newPath != currentPath {
+		req.Config = map[string]any{"path": newPath}
+		hasUpdate = true
 	}
 
 	if !hasUpdate {

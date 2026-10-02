@@ -912,7 +912,7 @@ PR #920 persists the live lease-V2 epoch (`OpLock.Lease.Epoch`, the
 protocol-agnostic lock layer) across a durable disconnect — previously it was
 discarded, so reconnect re-registered the lease at epoch 0 and the response
 reported `Epoch=0`, failing the `lease_epoch==1` assertion. The epoch is now a
-durable field on `lock.PersistedDurableHandle` (memory/badger/postgres), and
+durable field on `lock.PersistedDurableHandle` (badger), and
 the SMB adapter restores it on reconnect and pushes it back via the existing
 `SetLeaseEpoch`. CI smbtorture confirmed `success:` for:
 
@@ -940,7 +940,7 @@ require the share to advertise `SMB2_SHARE_CAP_CONTINUOUS_AVAILABILITY`, a
 per-share CA config knob, and a CA-share CI harness — threading a CA flag through
 the full share stack (CLI → API → models → store → runtime → bootstrap) is
 disproportionate plumbing for 2 conformance tests. The persisted-handle storage
-(badger/postgres) that persistent handles would reuse already exists; only the
+(badger) that persistent handles would reuse already exists; only the
 CA-share surface is missing. Reason documented inline; rows stay suppressed.
 
 ### 2026-05-31 — #739 lock-oplock: 1 row flipped
@@ -1003,7 +1003,7 @@ had echoed the requested allocation on the initial-CREATE and post-break paths,
 but the reconnect branch rebuilt its response from `calculateAllocationSize(file
 size)` (→ 0 for an empty file) and the in-memory reservation was lost on
 disconnect. The reservation is now persisted in `PersistedDurableHandle`
-(memory/badger/postgres + migration `000021`), restored on reconnect, and echoed
+(badger), restored on reconnect, and echoed
 via `effectiveAllocationSize`. CI smbtorture confirmed `success:` for:
 
 - `smb2.durable-open.alloc-size`

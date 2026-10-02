@@ -6,7 +6,8 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -24,7 +25,7 @@ import (
 func TestSetByteRangeReleaseHook_FiresOnSMBUnlock(t *testing.T) {
 	t.Parallel()
 
-	store := memory.NewMemoryMetadataStoreWithDefaults()
+	store := badgertest.NewInMemory(t)
 	ctx := context.Background()
 	const shareName = "/xproto"
 

@@ -10,7 +10,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // newLocalOnlyEngine builds an engine over a real journal-backed local store
@@ -72,7 +73,7 @@ func readWhole(t *testing.T, bs *engine.Store, payloadID string, size int) []byt
 // destination's own journal, so the clone reads back byte-identical.
 func TestCloneWholeFile_LocalOnly_MaterializesContent(t *testing.T) {
 	ctx := context.Background()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	bs := newLocalOnlyEngine(t, ms)
 
 	root := createShare(t, ms, "clone")

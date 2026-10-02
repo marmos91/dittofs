@@ -164,7 +164,7 @@ func TestDeleteNetgroup_InUse(t *testing.T) {
 
 	// Create required stores and share that references the netgroup
 	metaStore := &models.MetadataStoreConfig{
-		ID: uuid.New().String(), Name: "m-store", Type: "memory",
+		ID: uuid.New().String(), Name: "m-store", Type: "badger", Config: `{"in_memory":true}`,
 	}
 	cpStore.CreateMetadataStore(ctx, metaStore)
 

@@ -11,7 +11,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/health"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // fakeRemoteStore wraps a memory remote store with a controllable health check.
@@ -62,7 +63,7 @@ func buildHealthTestEngine(t *testing.T) (*Store, *fakeRemoteStore) {
 	t.Helper()
 
 	tmpDir := t.TempDir()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	localStore, err := journal.Open(tmpDir, journal.Config{MaxLocalBytes: 100 * 1024 * 1024,
 		MaxLogBytes: 128 * 1024 * 1024,
 	})

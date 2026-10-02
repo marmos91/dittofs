@@ -16,7 +16,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/health"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	memoryMeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // newRuntimeForChecks returns a Runtime wired to an in-memory SQLite
@@ -45,9 +46,9 @@ type countingMetaStore struct {
 	calls int64
 }
 
-func newCountingMetaStore() *countingMetaStore {
+func newCountingMetaStore(t testing.TB) *countingMetaStore {
 	return &countingMetaStore{
-		Store: memoryMeta.NewMemoryMetadataStoreWithDefaults(),
+		Store: badgertest.NewInMemory(t),
 	}
 }
 
@@ -104,7 +105,7 @@ func TestStatusCheckers_MetadataStore_CachedAcrossCalls(t *testing.T) {
 	rt, _ := newRuntimeForChecks(t)
 	rt.statusCheckers = newCheckerCache(5 * time.Second)
 
-	meta := newCountingMetaStore()
+	meta := newCountingMetaStore(t)
 	if err := rt.RegisterMetadataStore("m1", meta); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
@@ -121,7 +122,7 @@ func TestStatusCheckers_MetadataStore_CachedAcrossCalls(t *testing.T) {
 
 func TestStatusCheckers_MetadataStore_WrapperIsCached(t *testing.T) {
 	rt, _ := newRuntimeForChecks(t)
-	meta := newCountingMetaStore()
+	meta := newCountingMetaStore(t)
 	_ = rt.RegisterMetadataStore("m1", meta)
 
 	first := rt.MetadataStoreChecker("m1")
@@ -181,7 +182,7 @@ func TestStatusCheckers_ShareChecker_CachesWorstOfProbe(t *testing.T) {
 	rt, _ := newRuntimeForChecks(t)
 	rt.statusCheckers = newCheckerCache(5 * time.Second)
 
-	meta := newCountingMetaStore()
+	meta := newCountingMetaStore(t)
 	if err := rt.RegisterMetadataStore("share-meta", meta); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
@@ -329,7 +330,7 @@ func TestStatusCheckers_TTLExpiry(t *testing.T) {
 
 func TestStatusCheckers_CanceledContextDoesNotPanic(t *testing.T) {
 	rt, _ := newRuntimeForChecks(t)
-	meta := newCountingMetaStore()
+	meta := newCountingMetaStore(t)
 	_ = rt.RegisterMetadataStore("m1", meta)
 
 	ctx, cancel := context.WithCancel(context.Background())

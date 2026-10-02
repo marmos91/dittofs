@@ -7,7 +7,7 @@
 # codes.
 #
 # The server is provisioned by test/posix/setup-posix.sh --no-mount, which owns
-# the backend profiles (memory, badger, postgres, postgres-s3). This suite
+# the backend profiles (memory, badger, badger-s3). This suite
 # deliberately reuses it rather than growing a second copy that would drift.
 #
 # Usage:
@@ -65,7 +65,7 @@ result against the version's KNOWN_FAILURES table.
 
 Options:
   --profile PROFILE        Storage profile (default: memory)
-                           Valid: memory badger postgres postgres-s3
+                           Valid: memory badger badger-s3
                            Passed through to test/posix/setup-posix.sh.
   --minor-version VERSION  NFSv4 minor version (default: 4.0)
                            Valid: 4.0, 4.1

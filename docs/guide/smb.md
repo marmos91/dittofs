@@ -425,7 +425,7 @@ After a successful reconnect, the client must re-request durability — the `IsD
 not automatically set on the restored handle.
 
 **Ephemeral state caveat**: Durable handles survive disconnection but not server restart. The
-handle metadata is persisted in the configured store (BadgerDB/PostgreSQL), but in-memory state
+handle metadata is persisted in the metadata store, but in-memory state
 is lost on restart.
 
 ### Configuration
@@ -678,7 +678,7 @@ See [Troubleshooting › Cross-Protocol Issues](troubleshooting.md#cross-protoco
 10. **No blocking locks**: Lock requests fail immediately if a conflicting lock exists
 11. **Single-node only**: No clustering or high availability for SMB state
 12. **Durable handle state is in-memory**: Durable handles survive disconnection but not server
-    restart (BadgerDB/PostgreSQL stores persist handle metadata but in-memory state is lost)
+    restart (the metadata store persists handle metadata but in-memory state is lost)
 
 ### SMB3 Feature Gaps
 

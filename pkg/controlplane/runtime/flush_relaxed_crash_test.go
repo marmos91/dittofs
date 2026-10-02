@@ -31,13 +31,10 @@ import (
 // piece-1-without-piece-2, which is what makes it a real safety proof rather than a
 // hollow green.
 func TestFlushRelaxed_CrashBeforeMetadataFsync_SizeReconciled(t *testing.T) {
-	const n = 256 * 1024 // multi-interval, small enough for the postgres row
+	const n = 256 * 1024 // multi-interval
 	for _, bk := range byteVerifyBackends(t) {
 		bk := bk
 		t.Run(bk.name, func(t *testing.T) {
-			if bk.skip != "" {
-				t.Skip(bk.skip)
-			}
 			if bk.reopen == nil {
 				t.Skipf("%s cannot survive a restart (no durable reopen)", bk.name)
 			}

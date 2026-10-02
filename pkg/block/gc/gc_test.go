@@ -17,7 +17,9 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	badgerstore "github.com/marmos91/dittofs/pkg/metadata/store/badger"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // ---------------------------------------------------------------------------
@@ -33,8 +35,8 @@ func newGCMSReconciler() *gcMSReconciler {
 	return &gcMSReconciler{stores: make(map[string]metadata.Store)}
 }
 
-func (r *gcMSReconciler) addShare(name string) metadata.Store {
-	st := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+func (r *gcMSReconciler) addShare(t testing.TB, name string) metadata.Store {
+	st := badgertest.NewInMemory(t)
 	r.stores[name] = st
 	r.order = append(r.order, name)
 	return st
@@ -153,7 +155,7 @@ func TestGCMarkSweep_MarkPopulatesLiveSet(t *testing.T) {
 	defer func() { _ = rs.Close() }()
 
 	rec := newGCMSReconciler()
-	st := rec.addShare("share-a")
+	st := rec.addShare(t, "share-a")
 
 	// 3 distinct hashes referenced by 100 blocks (dedup) + a zero-hash legacy row.
 	hashes := []block.ContentHash{
@@ -216,7 +218,7 @@ func TestGCMarkSweep_SweepHappyPath(t *testing.T) {
 	defer func() { _ = rs.Close() }()
 
 	rec := newGCMSReconciler()
-	st := rec.addShare("share-a")
+	st := rec.addShare(t, "share-a")
 
 	live := []block.ContentHash{
 		hashFromString("live-1"),
@@ -286,12 +288,12 @@ func TestGCMarkSweep_GraceTTLPreserves(t *testing.T) {
 	defer func() { _ = rs.Close() }()
 
 	rec := newGCMSReconciler()
-	st := rec.addShare("empty")
+	st := rec.addShare(t, "empty")
 
 	// Seed an orphan, then re-stamp its marker to now (within any grace window).
 	orphan := hashFromString("recent-orphan")
 	seedRemoteChunk(t, st, rs, orphan)
-	st.(*metadatamemory.MemoryMetadataStore).MarkSyncedAtForTest(orphan, time.Now())
+	st.(*badgerstore.BadgerMetadataStore).MarkSyncedAtForTest(orphan, time.Now())
 
 	stats := collectGarbageBlocks(t, rec, st, rs, &Options{
 		GCStateRoot: t.TempDir(),
@@ -313,7 +315,7 @@ func TestGCMarkSweep_FailClosed(t *testing.T) {
 	defer func() { _ = rs.Close() }()
 
 	innerRec := newGCMSReconciler()
-	innerStore := innerRec.addShare("share-x")
+	innerStore := innerRec.addShare(t, "share-x")
 
 	// Seed an orphan that, absent the mark failure, the sweep would reclaim.
 	orphan := hashFromString("would-be-orphan")
@@ -354,7 +356,7 @@ func TestGCMarkSweep_SweepErrorsContinueAndCapture(t *testing.T) {
 	defer func() { _ = inner.Close() }()
 
 	rec := newGCMSReconciler()
-	st := rec.addShare("share-empty")
+	st := rec.addShare(t, "share-empty")
 
 	// Two orphans in distinct blocks: one whose block delete fails, one ok.
 	failHash := mustHashWithPrefix(t, "ab")
@@ -393,7 +395,7 @@ func TestGCMarkSweep_DryRun(t *testing.T) {
 	defer func() { _ = rs.Close() }()
 
 	rec := newGCMSReconciler()
-	st := rec.addShare("share-empty")
+	st := rec.addShare(t, "share-empty")
 
 	for i := 0; i < 5; i++ {
 		seedRemoteChunk(t, st, rs, hashFromString(fmt.Sprintf("orphan-%d", i)))
@@ -457,7 +459,7 @@ func TestGCMarkSweep_NoSnapshotHoldProvider(t *testing.T) {
 	// Force LastModified into the past so the orphan is sweep-eligible.
 
 	rec := newGCMSReconciler()
-	st := rec.addShare("share-a")
+	st := rec.addShare(t, "share-a")
 
 	liveHash := hashFromString("nil-hold-live")
 	orphanHash := hashFromString("nil-hold-orphan")
@@ -496,7 +498,7 @@ func TestGCMarkSweep_SnapshotHoldProvider(t *testing.T) {
 	defer func() { _ = rs.Close() }()
 
 	rec := newGCMSReconciler()
-	st := rec.addShare("share-a")
+	st := rec.addShare(t, "share-a")
 
 	hashA := hashFromString("ref-A")  // referenced by a FileChunk
 	hashB := hashFromString("held-B") // held by the provider, no FileChunk
@@ -544,7 +546,7 @@ func TestGCMarkSweep_HoldProvider_ErrorFailsClosed(t *testing.T) {
 	defer func() { _ = rs.Close() }()
 
 	rec := newGCMSReconciler()
-	st := rec.addShare("share-a")
+	st := rec.addShare(t, "share-a")
 	putBlock(t, st, "file-live/0", hashFromString("hp-live"))
 
 	orphanHash := hashFromString("hp-orphan")
@@ -582,7 +584,7 @@ func TestGCMarkSweep_LastRunJSON(t *testing.T) {
 	defer func() { _ = rs.Close() }()
 
 	rec := newGCMSReconciler()
-	st := rec.addShare("share-empty")
+	st := rec.addShare(t, "share-empty")
 
 	root := t.TempDir()
 	stats := collectGarbageBlocks(t, rec, st, rs, &Options{GCStateRoot: root})
@@ -624,7 +626,7 @@ func TestGCMarkSweep_StaleDirCleanup(t *testing.T) {
 	defer func() { _ = rs.Close() }()
 
 	rec := newGCMSReconciler()
-	st := rec.addShare("share-empty")
+	st := rec.addShare(t, "share-empty")
 	_ = collectGarbageBlocks(t, rec, st, rs, &Options{GCStateRoot: root})
 
 	if _, err := os.Stat(filepath.Join(root, "stale-prior-run")); !os.IsNotExist(err) {
@@ -753,7 +755,7 @@ func TestGCMarkSweep_FirstErrorsDiversifyAcrossClasses(t *testing.T) {
 	defer func() { _ = inner.Close() }()
 
 	rec := newGCMSReconciler()
-	st := rec.addShare("share-empty")
+	st := rec.addShare(t, "share-empty")
 
 	// Seed 20 orphans whose hashes land in the failing "blk-ab" block-ID
 	// shard so DeleteBlock fires for each and they all fail identically.
@@ -805,7 +807,7 @@ func TestGCMarkSweep_ConcurrentRunsAgainstSharedRoot(t *testing.T) {
 			rs := remotememory.New()
 			defer func() { _ = rs.Close() }()
 			rec := newGCMSReconciler()
-			st := rec.addShare(fmt.Sprintf("share-%d", idx))
+			st := rec.addShare(t, fmt.Sprintf("share-%d", idx))
 
 			// Seed one live block + one orphan CAS object. With the live
 			// set intact the orphan is swept; if a concurrent run trashes
@@ -885,7 +887,7 @@ func TestGCMarkSweep_ClearsSyncedMarkerForSweptHash(t *testing.T) {
 	defer func() { _ = rs.Close() }()
 
 	rec := newGCMSReconciler()
-	st := rec.addShare("share-a")
+	st := rec.addShare(t, "share-a")
 
 	live := hashFromString("live-keep")
 	orphan := hashFromString("orphan-sweep")

@@ -600,8 +600,7 @@ func (bs *Store) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID str
 	// — AddRef and a store-level IncrementRefCount — but nothing in production
 	// calls AddRef, and the coordinator this loop goes through is the only
 	// caller of the other. That coordinator resolves the hash with GetByHash,
-	// which every backend scopes to rows in the Remote state (memory checks
-	// IsRemote, sqlite and postgres both spell it `state = 2`), and no
+	// which the store scopes to rows in the Remote state, and no
 	// production path ever puts a row in that state — the carve records its
 	// sync markers through SyncedHashStore and leaves FileChunk.State at
 	// Pending for the life of the payload. So every call here is the tolerated
@@ -654,10 +653,7 @@ func (bs *Store) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID str
 	//
 	// Route the Put through the txn bound in ctx when present. The clone
 	// caller (common.CloneWholeFile) invokes us inside
-	// metadataStore.WithTransaction, which on the memory backend holds the
-	// store mutex for the life of fn; the store-level fileChunkStore.Put would
-	// re-acquire that same (non-reentrant) mutex and self-deadlock. The
-	// tx-bound Put writes under the already-held lock and commits/rolls back
+	// metadataStore.WithTransaction; the tx-bound Put commits/rolls back
 	// atomically with the caller's dst FileAttr.Blocks UpdateAttrs — so the per-file
 	// rows and the FileAttr.Blocks manifest stay consistent. With no bound txn
 	// (e.g. unit tests wiring the engine directly) fall back to the store-level

@@ -5,7 +5,8 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -14,7 +15,7 @@ import (
 // Root creates file with mode 04777, non-owner (uid 65534) sends
 // SETATTR(mode=0777) to clear SUID bits (Linux NFS client file_remove_privs).
 func TestSUIDClearingViaSetAttr(t *testing.T) {
-	store := memory.NewMemoryMetadataStoreWithDefaults()
+	store := badgertest.NewInMemory(t)
 	ctx := context.Background()
 	shareName := "/test"
 

@@ -222,8 +222,7 @@ func (s *Service) ReadSymlink(ctx *AuthContext, handle FileHandle) (string, *Fil
 // overwritten by a value newer than its own, or wins it and is left alone.
 // Comparing outside the transaction would only move the window rather than
 // narrow it. What makes this safe is the store's isolation, not the shape of
-// this function — and every backend now provides it, postgres because its
-// transactions run at REPEATABLE READ.
+// this function — Badger's SSI transactions provide it.
 //
 // On the losing path nothing is written at all. On the winning path the row
 // read in this transaction is written back with nothing but ChangeTime changed,
@@ -900,22 +899,6 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 		// recreated carrying the stale state, which is a worse outcome than
 		// refusing the attribute change.
 		writeRow := func(tx Transaction) error {
-			// Before the read, so the fold below runs against the committed map
-			// on a backend that refuses the second writer only once its update
-			// is reached — the same reason xattr.go's own EA path takes it.
-			// Scoped to an EA write rather than taken unconditionally: every
-			// other field here is either replaced outright or recomputed from
-			// the row on each attempt, so the store's conflict-and-retry is
-			// what orders those and a lock on every chmod and utimes would buy
-			// nothing.
-			if len(attrs.EAMutations) > 0 {
-				if locker, ok := tx.(FileRowLocker); ok {
-					if err := locker.LockFileRow(ctx.Context, handle); err != nil {
-						return err
-					}
-				}
-			}
-
 			row, err := tx.GetFile(ctx.Context, handle)
 			if err != nil {
 				return err
@@ -1543,8 +1526,8 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 
 		// Bump ctime on the renamed inode. The namespace edge has already been
 		// relinked above (DeleteChild/SetChild/SetParent); File.Path is no
-		// longer stored — every backend derives it on read from the
-		// parent_child_map / parent edges (#1166), so a rename just moves the
+		// longer stored — the store derives it on read from the parent
+		// edges (#1166), so a rename just moves the
 		// edge and the new path is reconstructed fresh on the next GetFile.
 		// This is what makes hard links correct: renaming one name can never
 		// stale another name's path. UpdateAttrs is tx-critical: a failed ctime
@@ -1557,19 +1540,19 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 		// Before, because srcFile was read outside this transaction: anything
 		// that advanced the inode's ChangeTime since then is already committed,
 		// and restoring the outside-tx value would erase it. After, because the
-		// SQL backends store timestamps as FILETIME ticks and truncate; an
-		// in-memory time.Time would not compare equal to what was written, so a
-		// conditional restore keyed on it would silently never fire.
+		// stored timestamp is an encoded round-trip (no monotonic reading, no
+		// location); an in-memory time.Time need not compare equal to what was
+		// written, so a conditional restore keyed on it could silently never
+		// fire.
 		//
 		// Neither read may be discarded on error: a failed "before" with a
 		// successful "after" leaves a zero SourcePreCtime that still matches,
 		// and the restore would then write a zero ChangeTime.
 		//
-		// The "before" read covers the window only on backends whose
-		// transaction serialises it against concurrent writers, which is all of
-		// them: postgres runs this transaction at REPEATABLE READ, so a write
-		// that commits between this read and the row lock the update takes
-		// aborts the update rather than being erased by it.
+		// The "before" read covers the window because the transaction
+		// serialises it against concurrent writers: under Badger's SSI a write
+		// that commits between this read and the update aborts the update
+		// rather than being erased by it.
 		pre, err := tx.GetFile(ctx.Context, srcHandle)
 		if err != nil {
 			return err
@@ -1651,18 +1634,13 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 // re-resolution above cannot see it, because it compares only the two edges
 // this rename names.
 //
-// decision: three of the four backends cannot serve the walk a stale answer at
-// all — memory holds a store-wide mutex for the whole closure, sqlite admits one
-// transaction at a time, and badger alone actually detects the conflict, by SSI
-// over the keys the walk read. Postgres runs at REPEATABLE READ, which is
-// snapshot isolation: two renames writing disjoint parent edges are not a
-// write-write conflict, so there the walk can be stale. Composing a cycle needs
-// two cross-parent directory renames racing whose four parent handles all miss
-// each other's lockParentLinks shards; a single rename, which is all one client
-// can drive, is refused on every backend. Lock the walked rows (SELECT ... FOR
-// SHARE) or run rename at SERIALIZABLE if a cycle is ever observed on postgres.
-// Badger's guarantee is the operator's to keep: its options are passed through
-// verbatim, so disabling conflict detection voids it silently.
+// decision: the guarantee rests on Badger detecting the conflict by SSI over the
+// keys the walk read. It is the operator's to keep: Badger's options are passed
+// through verbatim, so disabling conflict detection voids it silently, and the
+// walk can then be stale. Composing a cycle then needs two cross-parent
+// directory renames racing whose four parent handles all miss each other's
+// lockParentLinks shards; a single rename, which is all one client can drive,
+// is refused regardless.
 func refuseDirectoryLoop(ctx context.Context, tx Transaction, srcHandle, dstDir FileHandle) error {
 	_, srcID, err := DecodeFileHandle(srcHandle)
 	if err != nil {

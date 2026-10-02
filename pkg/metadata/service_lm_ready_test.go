@@ -6,7 +6,9 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -20,7 +22,7 @@ import (
 // published). After the fix: both return their zero/error value because neither
 // is published until the final atomic block.
 type observeDuringRecoveryStore struct {
-	*memory.MemoryMetadataStore
+	*badger.BadgerMetadataStore
 	svc                     *metadata.Service
 	shareName               string
 	storeSeenDuringRecovery bool
@@ -35,7 +37,7 @@ func (s *observeDuringRecoveryStore) ListLocks(ctx context.Context, q lock.LockQ
 		s.storeSeenDuringRecovery = (err == nil)
 		s.lmSeenDuringRecovery = (s.svc.GetLockManagerForShare(s.shareName) != nil)
 	}
-	return s.MemoryMetadataStore.ListLocks(ctx, q)
+	return s.BadgerMetadataStore.ListLocks(ctx, q)
 }
 
 // TestRegisterStoreForShare_LockManagerReadyWhenStoreVisible asserts that the
@@ -49,11 +51,11 @@ func (s *observeDuringRecoveryStore) ListLocks(ctx context.Context, q lock.LockQ
 //	(neither is visible during the recovery window).
 func TestRegisterStoreForShare_LockManagerReadyWhenStoreVisible(t *testing.T) {
 	const shareName = "/atomic-publish"
-	base := memory.NewMemoryMetadataStoreWithDefaults()
+	base := badgertest.NewInMemory(t)
 
 	svc := metadata.New()
 	spy := &observeDuringRecoveryStore{
-		MemoryMetadataStore: base,
+		BadgerMetadataStore: base,
 		svc:                 svc,
 		shareName:           shareName,
 	}

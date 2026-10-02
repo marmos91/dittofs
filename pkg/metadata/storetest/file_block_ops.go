@@ -158,17 +158,6 @@ func runFileChunkOpsTests(t *testing.T, factory StoreFactory) {
 		testEnumerateFileChunks_ZeroHashEmitted(t, factory)
 	})
 
-	// (mark fail-closed): backends that store the
-	// ContentHash as text (Postgres) MUST surface a parse error when a
-	// row's hash column holds a malformed value. Coercing the row to the
-	// zero hash would let GC reap a still-live CAS object once the grace
-	// TTL lapses. Backends that physically cannot represent a malformed
-	// hash (memory/badger store [32]byte directly) skip via the optional
-	// CorruptHashInjector capability.
-	t.Run("EnumerateFileChunks_CorruptHashFailsClosed", func(t *testing.T) {
-		testEnumerateFileChunks_CorruptHashFailsClosed(t, factory)
-	})
-
 	// `share warm` and block-store stats enumerate payloads from the
 	// authoritative metadata (EnumeratePayloads) rather than the local block
 	// store's ListFiles, which goes empty after rollup. Every backend MUST
@@ -183,7 +172,7 @@ func runFileChunkOpsTests(t *testing.T, factory StoreFactory) {
 	})
 
 	// EnumerateLivePayloadIDs reads the namespace (inodes), so the difference
-	// against EnumeratePayloads (which reads file_blocks) is exactly the
+	// against EnumeratePayloads (which reads the FileChunk rows) is exactly the
 	// stranded-payload set the GC reconcile reaps (#1433).
 	t.Run("EnumerateLivePayloadIDs", func(t *testing.T) {
 		testEnumerateLivePayloadIDs(t, factory)
@@ -204,9 +193,8 @@ func runFileChunkOpsTests(t *testing.T, factory StoreFactory) {
 
 	// IncrementRefCount / DecrementRefCount called via a
 	// metadata.Transaction MUST roll back when the wrapping WithTransaction
-	// returns an error. All backends — memory, badger, postgres — honor the
-	// unconditional all-or-nothing contract (interface.go: error → roll
-	// back); memory does so via a snapshot/restore buffer.
+	// returns an error — the unconditional all-or-nothing contract
+	// (interface.go: error → roll back).
 	t.Run("Tx_IncrementRefCount_RollsBack", func(t *testing.T) {
 		testTx_IncrementRefCount_RollsBack(t, factory)
 	})
@@ -337,15 +325,15 @@ func testDecrementRefCountAndReapMany(t *testing.T, factory StoreFactory) {
 		}
 	})
 
-	// A set larger than one statement's bound-parameter ceiling still reaps
-	// every row. The SQL backends split it into several IN-list batches, so an
-	// off-by-one in the split leaves a tail of rows alive.
+	// A large set still reaps every row: a backend that splits the set into
+	// batches must not leave a tail of rows alive through an off-by-one in the
+	// split.
 	t.Run("SpansBatchBoundary", func(t *testing.T) {
 		store := factory(t)
 		ctx := t.Context()
 
-		// Comfortably past the 900-parameter ceiling the SQL backends batch at,
-		// and not a multiple of it, so the last batch is a partial one.
+		// Large and not a round number, so a batched split ends on a partial
+		// batch.
 		ids := make([]string, 1201)
 		for i := range ids {
 			ids[i] = fmt.Sprintf("batch/%d", i*4096)
@@ -1208,8 +1196,7 @@ func testPutGet_LastSyncAttemptAt_Zero(t *testing.T, factory StoreFactory) {
 // RefCount.
 //
 // The contract permits FindFileChunkByHash to return either of the
-// colliding rows (memory + badger overwrite the hash→id map; postgres
-// returns one of the two rows non-deterministically). The assertion
+// colliding rows (badger overwrites the hash→id map). The assertion
 // scope is therefore: both PutFileChunk calls return nil AND
 // FindFileChunkByHash returns one of the two IDs (no error, no nil).
 func testPut_TwoIDsSameHash(t *testing.T, factory StoreFactory) {
@@ -1264,8 +1251,8 @@ func testPut_TwoIDsSameHash(t *testing.T, factory StoreFactory) {
 	}
 
 	// FindFileChunkByHash must return one of the two — exact identity is
-	// implementation-defined (memory + badger return whichever wrote the
-	// hash→id map last; postgres returns whichever row the planner picks).
+	// implementation-defined (badger returns whichever wrote the hash→id map
+	// last).
 	found, err := store.GetByHash(ctx, hash)
 	if err != nil {
 		t.Fatalf("FindFileChunkByHash failed: %v", err)
@@ -1493,7 +1480,7 @@ func testEnumerateFileChunks_SingleFile(t *testing.T, factory StoreFactory) {
 
 // testEnumerateFileChunks_LargeFanout: 50 files * 20 blocks = 1000 blocks; fn
 // invoked exactly 1000 times; no duplicates, no omissions; iteration completes
-// within 5s on the memory backend (sanity bound).
+// within 5s on an in-memory store (sanity bound).
 func testEnumerateFileChunks_LargeFanout(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
@@ -1694,64 +1681,6 @@ func testEnumerateFileChunks_ZeroHashEmitted(t *testing.T, factory StoreFactory)
 	}
 }
 
-// CorruptHashInjector is an optional capability backends implement when their
-// physical row format admits malformed hashes (e.g., Postgres stores the hash
-// as TEXT). Backends whose row format is type-safe (`[32]byte` directly, e.g.
-// memory and badger) cannot represent corruption and skip the test.
-type CorruptHashInjector interface {
-	// InjectCorruptHashRow stores a file_blocks row whose hash column holds
-	// a syntactically malformed value (e.g., truncated, wrong charset, wrong
-	// length). The row is otherwise well-formed; only the hash is bad.
-	InjectCorruptHashRow(ctx context.Context, blockID string, badHash string) error
-}
-
-// testEnumerateFileChunks_CorruptHashFailsClosed asserts that a malformed CAS
-// hash on disk surfaces as an error from EnumerateFileChunks rather than being
-// silently coerced to the zero ContentHash. mark fail-closed: the GC
-// mark phase MUST abort on enumeration error so the sweep cannot reap a live
-// CAS object whose live-set hash was lost in transit.
-func testEnumerateFileChunks_CorruptHashFailsClosed(t *testing.T, factory StoreFactory) {
-	store := factory(t)
-	ctx := t.Context()
-
-	injector, ok := store.(CorruptHashInjector)
-	if !ok {
-		t.Skip("backend does not implement CorruptHashInjector — type-safe row format cannot represent a malformed hash")
-	}
-
-	// Seed one well-formed Remote block so enumeration has something to walk
-	// past before reaching the corrupt row.
-	good := &block.FileChunk{
-		ID:         "file-corrupt/0",
-		Hash:       hashOfSeed("good"),
-		State:      block.BlockStateRemote,
-		DataSize:   64,
-		RefCount:   1,
-		LastAccess: time.Now(),
-		CreatedAt:  time.Now(),
-	}
-	if err := store.Put(ctx, good); err != nil {
-		t.Fatalf("Put(good) failed: %v", err)
-	}
-
-	// Inject a corrupt-hash row directly. The exact "malformed" payload is
-	// backend-defined; truncated hex is a representative case.
-	if err := injector.InjectCorruptHashRow(ctx, "file-corrupt/1", "deadbeef"); err != nil {
-		t.Fatalf("InjectCorruptHashRow failed: %v", err)
-	}
-
-	calls := 0
-	err := store.EnumerateFileChunks(ctx, func(_ block.ContentHash) error {
-		calls++
-		return nil
-	})
-	if err == nil {
-		t.Fatalf("EnumerateFileChunks returned nil; expected parse error from corrupt-hash row (INV-04 fail-closed)")
-	}
-	// We do not constrain how many rows are emitted before the failure —
-	// only that an error is returned so the GC mark phase aborts.
-}
-
 // ============================================================================
 // Tx Rollback Tests (review iteration 1)
 // ============================================================================
@@ -1763,9 +1692,8 @@ func testEnumerateFileChunks_CorruptHashFailsClosed(t *testing.T, factory StoreF
 // the same property that pkg/controlplane/runtime/shares/coordinator_test
 // exercises at the coordinator layer.
 //
-// All backends are held to the same all-or-nothing contract: memory rolls
-// back via a snapshot/restore buffer in WithTransaction, badger and postgres
-// via native transaction rollback.
+// The store is held to the all-or-nothing contract via native transaction
+// rollback.
 func testTx_IncrementRefCount_RollsBack(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
@@ -2069,7 +1997,7 @@ func testAddRef_Concurrent_With_DecrementRefCountCascade(t *testing.T, factory S
 }
 
 // testEnumerateLivePayloadIDs verifies the namespace-derived live set used by
-// the GC reconcile (#1433). A "stranded" payload — file_blocks rows whose
+// the GC reconcile (#1433). A "stranded" payload — FileChunk rows whose
 // owning inode is gone (the historical leak) — must appear in EnumeratePayloads
 // but NOT in EnumerateLivePayloadIDs, so the reconcile can reap it. A live
 // file's payload must appear in both.
@@ -2079,7 +2007,7 @@ func testEnumerateLivePayloadIDs(t *testing.T, factory StoreFactory) {
 
 	root := createTestShare(t, store, "myshare")
 
-	// A live file carrying a PayloadID, plus its file_blocks rows.
+	// A live file carrying a PayloadID, plus its FileChunk rows.
 	const livePID = "myshare/live.bin"
 	h := createTestFile(t, store, "myshare", root, "live.bin", 0o644)
 	f, err := store.GetFile(ctx, h)
@@ -2092,7 +2020,7 @@ func testEnumerateLivePayloadIDs(t *testing.T, factory StoreFactory) {
 	}
 	seedStrandedBlocks(t, ctx, store, livePID, 2)
 
-	// A STRANDED payload: file_blocks rows exist with no inode referencing them
+	// A STRANDED payload: FileChunk rows exist with no inode referencing them
 	// (owning file deleted without reaping — the pre-fix leak).
 	const strandedPID = "myshare/ghost.bin"
 	seedStrandedBlocks(t, ctx, store, strandedPID, 3)
@@ -2112,7 +2040,7 @@ func testEnumerateLivePayloadIDs(t *testing.T, factory StoreFactory) {
 		t.Errorf("stranded payload %q reported live — reconcile would never reap it", strandedPID)
 	}
 
-	// EnumeratePayloads reads file_blocks: BOTH present (stranded-inclusive).
+	// EnumeratePayloads reads the FileChunk rows: BOTH present (stranded-inclusive).
 	all := make(map[string]int)
 	if err := store.EnumeratePayloads(ctx, func(p string) error {
 		all[p]++
@@ -2128,7 +2056,7 @@ func testEnumerateLivePayloadIDs(t *testing.T, factory StoreFactory) {
 	}
 }
 
-// seedStrandedBlocks puts n file_blocks rows for payloadID without requiring an
+// seedStrandedBlocks puts n FileChunk rows for payloadID without requiring an
 // inode — the exact shape of a leaked/stranded manifest.
 func seedStrandedBlocks(t *testing.T, ctx context.Context, store metadata.Store, payloadID string, n int) {
 	t.Helper()
@@ -2150,7 +2078,7 @@ func seedStrandedBlocks(t *testing.T, ctx context.Context, store metadata.Store,
 // testEnumerateFileChunks_UnlinkedFileExcludesManifest proves that once a file
 // is unlinked (nlink=0) its manifest blocks leave the GC mark live set, so the
 // sweep can reclaim the orphaned chunks. This is the core of the #1433 fix: the
-// manifest (file_block_refs / f: File.Blocks) lingers on the nlink=0 inode, but
+// manifest (File.Blocks) lingers on the nlink=0 inode, but
 // the file is dead and must not pin its chunks live.
 func testEnumerateFileChunks_UnlinkedFileExcludesManifest(t *testing.T, factory StoreFactory) {
 	store := factory(t)
@@ -2176,8 +2104,8 @@ func testEnumerateFileChunks_UnlinkedFileExcludesManifest(t *testing.T, factory 
 
 	// Unlink: drop the dir edge and set nlink=0 (what RemoveFile does on the last
 	// link). The embedded File.Nlink is not the authoritative link count (#1166):
-	// SetLinkCount is the only API that updates the source of truth (SQL
-	// inodes.nlink, badger l: key, memory linkCounts), so it is the faithful
+	// SetLinkCount is the only API that updates the source of truth (badger's
+	// l: key), so it is the faithful
 	// simulation — mutating File.Nlink + UpdateAttrs would not move it.
 	if err := store.DeleteChild(ctx, root, "dead.bin"); err != nil {
 		t.Fatalf("DeleteChild: %v", err)
@@ -2230,7 +2158,7 @@ func testEnumerateFileChunks_HardLinkSurvivesOneRemoval(t *testing.T, factory St
 
 // testEnumerateLivePayloadIDs_ExcludesNlinkZero proves the reconcile live-set
 // query also excludes nlink=0 inodes, so their payload is classified stranded
-// (and its pre-fix file_blocks rows get reaped on upgrade).
+// (and its pre-fix FileChunk rows get reaped on upgrade).
 func testEnumerateLivePayloadIDs_ExcludesNlinkZero(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
@@ -2305,10 +2233,6 @@ func livePayloadContains(t *testing.T, store metadata.Store, payloadID string) b
 // answers with a plain string-prefix match returns the nested payload's rows
 // too, and every consumer then reads the trailing component as an offset —
 // crediting another file's chunk to this file at that offset.
-//
-// The same over-match reaches backends that translate the prefix into a SQL
-// LIKE pattern, where "_" matches any single character and "%" matches any
-// sequence, so a payloadID containing either slurps in unrelated siblings.
 //
 // The predicate is the component boundary, not the component being numeric.
 // A backend that additionally requires a decimal suffix under-returns instead:
