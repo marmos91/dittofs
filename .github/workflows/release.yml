@@ -225,9 +225,9 @@ jobs:
           GH_TOKEN: ${{ secrets.DOCS_SYNC_TOKEN }}
         run: |
           VERSION="${GITHUB_REF#refs/tags/}"
-          # Docs "latest" tracks develop; skip pre-release (rc) tags.
+          # Docs "Latest" tracks the newest stable tag; skip pre-release (rc) tags.
           if [[ "${VERSION}" == *-* ]]; then
             echo "Pre-release ${VERSION}; skipping docs sync."
             exit 0
           fi
-          gh workflow run refresh-docs.yml --repo marmos91/dittofs-web
+          gh workflow run refresh-docs.yml --repo marmos91/dittofs-web -f ref="${VERSION}"
