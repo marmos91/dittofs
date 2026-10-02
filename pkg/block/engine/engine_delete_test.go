@@ -9,7 +9,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
-	"github.com/marmos91/dittofs/pkg/block/local/memory"
+	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -228,7 +228,7 @@ var (
 // is benign because the cascade cleans it up post-race.
 func buildCascadeFixture(t *testing.T, coord MetadataCoordinator, syncedStore metadata.SyncedHashStore) *Store {
 	t.Helper()
-	localStore := memory.New()
+	localStore := journaltest.New(t)
 	fbs := newStubFileChunkStore()
 	syncer := NewRemoteSync(localStore, nil, fbs, DefaultConfig())
 

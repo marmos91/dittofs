@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/block"
-	memorylocal "github.com/marmos91/dittofs/pkg/block/local/memory"
+	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	metastore "github.com/marmos91/dittofs/pkg/metadata/store/memory"
@@ -52,7 +52,7 @@ var (
 // EnsureAvailable would run unbounded and the hang would return.
 func TestNewRemoteSync_DefaultsDemandFetchTimeout(t *testing.T) {
 	fbs := newStubFileChunkStore()
-	m := NewRemoteSync(memorylocal.New(), remotememory.New(), fbs, RemoteSyncConfig{})
+	m := NewRemoteSync(journaltest.New(t), remotememory.New(), fbs, RemoteSyncConfig{})
 	if m.config.DemandFetchTimeout != DefaultDemandFetchTimeout {
 		t.Fatalf("NewRemoteSync left DemandFetchTimeout = %v; want default %v",
 			m.config.DemandFetchTimeout, DefaultDemandFetchTimeout)
@@ -70,7 +70,7 @@ func TestNewRemoteSync_DefaultsDemandFetchTimeout(t *testing.T) {
 func TestColdRead_DemandFetchFailsFastWhenRemoteStalls(t *testing.T) {
 	ctx := context.Background() // a protocol read's context carries no sub-deadline
 
-	loc := memorylocal.New()
+	loc := journaltest.New(t)
 	rs := newBlockingRemote()
 	fbs := newStubFileChunkStore()
 	mds := metastore.NewMemoryMetadataStoreWithDefaults()

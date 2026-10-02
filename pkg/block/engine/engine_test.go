@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/local/memory"
+	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
 )
 
 // stubFileChunkStore is an in-memory block.EngineFileChunkStore
@@ -128,7 +128,7 @@ func (s *stubFileChunkStore) EnumeratePayloads(ctx context.Context, fn func(payl
 // with non-empty ChunkRef list) should use newTestEngineWithCoordinator.
 func newTestEngine(t *testing.T, readBufferBytes int64, prefetchWorkers int) *Store {
 	t.Helper()
-	localStore := memory.New()
+	localStore := journaltest.New(t)
 	fbs := newStubFileChunkStore()
 	syncer := NewRemoteSync(localStore, nil, fbs, DefaultConfig())
 
@@ -156,7 +156,7 @@ func newTestEngine(t *testing.T, readBufferBytes int64, prefetchWorkers int) *St
 // touching the heavier RemoteSync/Remote setup.
 func newTestEngineWithCoordinator(t *testing.T, c MetadataCoordinator) *Store {
 	t.Helper()
-	localStore := memory.New()
+	localStore := journaltest.New(t)
 	fbs := newStubFileChunkStore()
 	syncer := NewRemoteSync(localStore, nil, fbs, DefaultConfig())
 
@@ -362,7 +362,7 @@ func (r *recordingCache) Close() error      { r.closed.Store(true); return nil }
 // TestClose_ClosesCache verifies Store.Close calls the cache's
 // Close. Uses a recording fake so we can observe it.
 func TestClose_ClosesCache(t *testing.T) {
-	localStore := memory.New()
+	localStore := journaltest.New(t)
 	fbs := newStubFileChunkStore()
 	syncer := NewRemoteSync(localStore, nil, fbs, DefaultConfig())
 

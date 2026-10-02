@@ -10,7 +10,6 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/journal"
-	"github.com/marmos91/dittofs/pkg/block/local"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -18,7 +17,7 @@ import (
 // BlockStoreConfig holds the components that make up a Store.
 type BlockStoreConfig struct {
 	// Local is the on-node block store (required).
-	Local local.LocalStore
+	Local journal.LocalStore
 
 	// Remote is the durable backend store (nil for local-only mode).
 	Remote remote.RemoteStore
@@ -67,7 +66,7 @@ type BlockStoreConfig struct {
 // directly to the local store and invalidate the read buffer; the syncer
 // handles background upload to remote.
 type Store struct {
-	local  local.LocalStore
+	local  journal.LocalStore
 	remote remote.RemoteStore
 	syncer *RemoteSync
 
@@ -366,7 +365,7 @@ func (bs *Store) SetMetrics(rec journal.MetricsRecorder) {
 // Local returns the engine's underlying local store (the journal-backed tier).
 // Never nil: New refuses a config without one. Used by share startup to
 // reconcile metadata file sizes against the tier's durable high-water mark.
-func (bs *Store) Local() local.LocalStore { return bs.local }
+func (bs *Store) Local() journal.LocalStore { return bs.local }
 
 // DurableExtent reports how far a payload's bytes are on stable storage: bytes
 // below the returned offset survive an unclean shutdown, bytes above it were

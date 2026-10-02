@@ -7,7 +7,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/journal"
-	memorylocal "github.com/marmos91/dittofs/pkg/block/local/memory"
+	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 )
 
@@ -58,7 +58,7 @@ func TestEnsureAvailable_StraddlerDoesNotShadowLaterRow(t *testing.T) {
 				straddler := bytes.Repeat([]byte{0x5A}, straddlerSize)
 				later := bytes.Repeat([]byte{0xC3}, shape.laterSize)
 
-				loc := memorylocal.New()
+				loc := journaltest.New(t)
 				rs := remotememory.New()
 				fbs, shs := backend.build(t)
 

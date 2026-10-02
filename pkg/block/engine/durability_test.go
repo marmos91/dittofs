@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	localmemory "github.com/marmos91/dittofs/pkg/block/local/memory"
+	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 )
 
@@ -55,27 +55,8 @@ func TestEngine_Flush_DurableLocalDefault_NoSyncRemote(t *testing.T) {
 	}
 }
 
-func TestEngine_LocalDurable_MemoryDefaultsFalse(t *testing.T) {
-	localStore := localmemory.New()
-	fbs := newStubFileChunkStore()
-	syncer := NewRemoteSync(localStore, nil, fbs, DefaultConfig())
-	bs, err := New(BlockStoreConfig{Local: localStore, RemoteSync: syncer, FileChunkStore: fbs})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	t.Cleanup(func() { _ = bs.Close() })
-
-	if bs.LocalDurable() {
-		t.Fatal("memory local store should report NOT durable by default")
-	}
-	if bs.RemoteDurable() {
-		t.Fatal("nil remote must report NOT durable")
-	}
-}
-
-func TestEngine_LocalDurable_OverrideTrue(t *testing.T) {
-	localStore := localmemory.New()
-	localStore.SetDurable(true) // operator override
+func TestEngine_LocalDurable_JournalDefaultsTrue(t *testing.T) {
+	localStore := journaltest.New(t)
 	fbs := newStubFileChunkStore()
 	syncer := NewRemoteSync(localStore, nil, fbs, DefaultConfig())
 	bs, err := New(BlockStoreConfig{Local: localStore, RemoteSync: syncer, FileChunkStore: fbs})
@@ -85,12 +66,31 @@ func TestEngine_LocalDurable_OverrideTrue(t *testing.T) {
 	t.Cleanup(func() { _ = bs.Close() })
 
 	if !bs.LocalDurable() {
-		t.Fatal("memory local store with SetDurable(true) should report durable")
+		t.Fatal("journal local store fsyncs its segments, so it must report durable by default")
+	}
+	if bs.RemoteDurable() {
+		t.Fatal("nil remote must report NOT durable")
+	}
+}
+
+func TestEngine_LocalDurable_OverrideFalse(t *testing.T) {
+	localStore := journaltest.New(t)
+	localStore.SetDurable(false) // operator override for a store on volatile media
+	fbs := newStubFileChunkStore()
+	syncer := NewRemoteSync(localStore, nil, fbs, DefaultConfig())
+	bs, err := New(BlockStoreConfig{Local: localStore, RemoteSync: syncer, FileChunkStore: fbs})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = bs.Close() })
+
+	if bs.LocalDurable() {
+		t.Fatal("journal local store with SetDurable(false) should report NOT durable")
 	}
 }
 
 func TestEngine_RemoteDurable_MemoryDefaultsFalse(t *testing.T) {
-	localStore := localmemory.New()
+	localStore := journaltest.New(t)
 	remoteStore := remotememory.New()
 	fbs := newStubFileChunkStore()
 	syncer := NewRemoteSync(localStore, remoteStore, fbs, DefaultConfig())
@@ -106,7 +106,7 @@ func TestEngine_RemoteDurable_MemoryDefaultsFalse(t *testing.T) {
 }
 
 func TestEngine_RemoteDurable_OverrideTrue(t *testing.T) {
-	localStore := localmemory.New()
+	localStore := journaltest.New(t)
 	remoteStore := remotememory.New()
 	remoteStore.SetDurable(true) // simulate a durable remote (s3 type-default)
 	fbs := newStubFileChunkStore()
@@ -123,7 +123,7 @@ func TestEngine_RemoteDurable_OverrideTrue(t *testing.T) {
 }
 
 func TestEngine_RequireDurableCommit_DefaultsFalse(t *testing.T) {
-	localStore := localmemory.New()
+	localStore := journaltest.New(t)
 	fbs := newStubFileChunkStore()
 	syncer := NewRemoteSync(localStore, nil, fbs, DefaultConfig())
 	bs, err := New(BlockStoreConfig{Local: localStore, RemoteSync: syncer, FileChunkStore: fbs})

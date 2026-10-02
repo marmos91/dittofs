@@ -11,8 +11,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/journal"
-	"github.com/marmos91/dittofs/pkg/block/local"
-	memorylocal "github.com/marmos91/dittofs/pkg/block/local/memory"
+	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -22,24 +21,25 @@ import (
 // errBoomLocalPut is the sentinel error returned by failingPutLocal.
 var errBoomLocalPut = errors.New("boom local put")
 
-// failingPutLocal wraps a memory LocalStore and overrides Put so
+// failingPutLocal wraps a journal store and overrides Put so
 // inlineFetchOrWait observes a persist-failure on the inline path.
 // The release channel gates Put so a concurrent waiter can enter the
 // in-flight map BEFORE the first caller's Put returns; this proves the
 // waiter receives the same error the inline caller does.
 type failingPutLocal struct {
-	*memorylocal.MemoryStore
+	*journal.Store
 	release chan struct{} // closed by the test to let Put proceed
 	puts    atomic.Int32  // number of times Put was called
 	entered chan struct{} // closed on the first Put entry (oneShot via sync.Once)
 	once    sync.Once
 }
 
-func newFailingPutLocal() *failingPutLocal {
+func newFailingPutLocal(t *testing.T) *failingPutLocal {
+	t.Helper()
 	return &failingPutLocal{
-		MemoryStore: memorylocal.New(),
-		release:     make(chan struct{}),
-		entered:     make(chan struct{}),
+		Store:   journaltest.New(t),
+		release: make(chan struct{}),
+		entered: make(chan struct{}),
 	}
 }
 
@@ -62,7 +62,7 @@ func (f *failingPutLocal) Hydrate(_ context.Context, _ journal.FileID, _ int64, 
 // post-#1493 fetch path resolves block locators from, the inFlight map, and a
 // nil HealthMonitor (so IsRemoteHealthy returns true). Coordinator is unused
 // on this path.
-func newFetchSyncer(localStore local.LocalStore, rs remote.RemoteStore, fbs block.EngineFileChunkStore, shs metadata.SyncedHashStore) *RemoteSync {
+func newFetchSyncer(localStore journal.LocalStore, rs remote.RemoteStore, fbs block.EngineFileChunkStore, shs metadata.SyncedHashStore) *RemoteSync {
 	return &RemoteSync{
 		local:           localStore,
 		remoteStore:     rs,
@@ -96,7 +96,7 @@ func TestInlineFetchOrWait_LocalPutError_PropagatesToCaller(t *testing.T) {
 	payloadID := "payload-inline-err"
 	data := []byte("inline-fetch-payload-bytes-for-persist-failure-test")
 
-	loc := newFailingPutLocal()
+	loc := newFailingPutLocal(t)
 	close(loc.release) // no waiter — let Put fail immediately
 	rs := remotememory.New()
 	fbs := newStubFileChunkStore()
@@ -145,7 +145,7 @@ func TestInlineFetchOrWait_LocalPutError_PropagatesToWaiter(t *testing.T) {
 	payloadID := "payload-waiter-err"
 	data := []byte("inline-fetch-waiter-payload-bytes-for-persist-failure-test")
 
-	loc := newFailingPutLocal()
+	loc := newFailingPutLocal(t)
 	rs := remotememory.New()
 	fbs := newStubFileChunkStore()
 	mds := metadatamemory.NewMemoryMetadataStoreWithDefaults()
@@ -256,7 +256,7 @@ func TestHydrateChunk_WritesOnlyWhatTheRowClaims(t *testing.T) {
 		{"row claims nothing", 0, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ls := memorylocal.New()
+			ls := journaltest.New(t)
 			m := newFetchSyncer(ls, nil, nil, nil)
 			row := &block.FileChunk{ID: "share/file/0", DataSize: tc.claims}
 			if err := m.hydrateChunk(ctx, row, chunk, hydrateSpan{}); err != nil {

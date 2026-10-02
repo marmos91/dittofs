@@ -11,7 +11,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
-	bsmemory "github.com/marmos91/dittofs/pkg/block/local/memory"
+	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
@@ -605,7 +605,7 @@ func newRestoreFixture(t *testing.T, opts restoreFixtureOpts) *restoreFixture {
 	localStoreDir := t.TempDir()
 	shareName := "restore-data"
 
-	localStore := bsmemory.New()
+	localStore := journaltest.New(t)
 	var wrappedRemote *restoreRemote
 	var engineRemote remote.RemoteStore
 	if !opts.localOnly {
