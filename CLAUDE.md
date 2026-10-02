@@ -36,11 +36,14 @@ using the graph on a question it cannot answer.
 | Who calls `X`? What breaks if I change it? How do `A` and `B` connect? | `graphify query` / `path` / `explain` |
 | Where is the identifier `X` — a symbol, error string, flag, `DITTOFS_*` key? | `rg` directly |
 | Something spanning many files whose names you don't know yet | an `Explore` / `Agent` subagent |
-| Anything in `test/`, `docs/`, or non-Go files | `rg` / `Read` — not in the graph |
-| Anything in `.pi/`, `.claude/`, `.tokensave/` | `rg` / `Read` — excluded via `.graphifyignore` |
+| Exact line numbers, or verbatim source | `rg` / `Read` — the graph stores no text |
 
-`.md` files under source directories (`README.md`, `CLAUDE.md`, `docs/**`) *are*
-indexed as document nodes, so doc-adjacent questions can use the graph too.
+The graph indexes Go source, shell scripts, and `.md` files (the latter as
+*document* nodes, so `README.md`, `CLAUDE.md`, `docs/**` and `.planning/**` are
+reachable through it). What is **not** in it: `.pi/` and `.claude/`, excluded via
+`.graphifyignore` because they are agent tooling rather than project content;
+`.tokensave/` and `graphify-out/`, which are already in `.gitignore` (graphify
+merges that file, so they need no `.graphifyignore` entry).
 
 **The graph is AST-only.** `graphify update .` extracts symbols and edges; it
 runs no model and infers no intent. So a question phrased the way you'd ask a
@@ -53,17 +56,12 @@ Greps that stay cheap: scope to the package directory rather than the repo root,
 `rg -l` first when you only need the file set, `-g '!*_test.go'` when tests are
 drowning the signal, and `-B2 -A2` instead of reading the whole file afterwards.
 
-Rebuilding is opt-in per machine. `graphify hook install` writes a `post-commit`
-hook that re-extracts changed code files and a `post-checkout` hook that does a
-full rebuild on branch switch. They are **untracked local state** (`.git/hooks/`
-or a `.githooks/` checkout of it) — a clone has neither, so run `graphify update .`
-after changing code unless you have run that install once yourself. Dirty
-`graphify-out/` files are expected and are not a reason to skip the graph. If a
-rebuild is ever refused as an unexplained shrink, the hook reads `GRAPHIFY_FORCE`
-from the environment rather than taking a flag.
+Rebuilding is opt-in per machine: run `graphify update .` after changing code.
+`graphify hook install` can automate it with a `post-commit` and a `post-checkout`
+hook, but those are untracked local state, so a fresh clone has neither.
 
-`.pi/`, `.claude/` and `.tokensave/` are excluded in `.graphifyignore`: they are
-agent tooling, and walking them put tracked-but-non-code files into the graph.
+`.pi/` and `.claude/` are excluded in `.graphifyignore`; `.tokensave/` is already
+in `.gitignore`, which graphify merges.
 
 ## Frequent commands
 
