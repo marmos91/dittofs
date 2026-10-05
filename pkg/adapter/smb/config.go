@@ -225,13 +225,21 @@ func (c *EncryptionConfig) applyDefaults() {
 	}
 }
 
+// ValidateEncryptionMode accepts the modes New keeps after defaults.
+// Empty is not one of them: New fills preferred before it validates.
+func ValidateEncryptionMode(mode string) error {
+	switch mode {
+	case "disabled", "preferred", "required":
+		return nil
+	default:
+		return fmt.Errorf("invalid encryption_mode %q: must be one of disabled, preferred, required", mode)
+	}
+}
+
 // validate checks that the encryption configuration is valid.
 func (c *EncryptionConfig) validate() error {
-	switch c.Mode {
-	case "disabled", "preferred", "required":
-		// valid
-	default:
-		return fmt.Errorf("invalid encryption_mode %q: must be one of disabled, preferred, required", c.Mode)
+	if err := ValidateEncryptionMode(c.Mode); err != nil {
+		return err
 	}
 
 	validCiphers := map[uint16]bool{
