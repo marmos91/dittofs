@@ -177,7 +177,9 @@ func (s *KerberosService) authenticate(apReqBytes []byte, servicePrincipal, clie
 	// caddr for an address matching the OS-reported client. A TCP
 	// acceptor reports an IP.
 	ok, creds, err := service.VerifyAPREQ(&apReq, settings)
-	if err != nil && isBadAddressError(err) {
+	// Authenticate passes no client address. Leave that path alone: a retry
+	// here would accept a non-IP caddr that previously failed the check.
+	if clientAddr != "" && err != nil && isBadAddressError(err) {
 		caddr := apReq.Ticket.DecryptedEncPart.CAddr
 		if ticketAllowsClientIP(clientHost, caddr) {
 			if workaround, apply := gokrb5CAddrTypeWorkaround(caddr); apply {
@@ -341,10 +343,15 @@ func ticketAllowsClientIP(peer types.HostAddress, caddr []types.HostAddress) boo
 }
 
 func gokrb5CAddrTypeWorkaround(caddr []types.HostAddress) (types.HostAddress, bool) {
-	if len(caddr) == 0 || len(ticketIPAddresses(caddr)) > 0 {
+	if len(ticketIPAddresses(caddr)) > 0 {
 		return types.HostAddress{}, false
 	}
-	return caddr[0], true
+	for _, address := range caddr {
+		if address.AddrType == addrtype.NetBios {
+			return address, true
+		}
+	}
+	return types.HostAddress{}, false
 }
 
 // decodePACBestEffort decodes the MS-PAC carried in a verified AP-REQ ticket

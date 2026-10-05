@@ -15,11 +15,11 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 )
 
-// TestSendMessage_EncryptedShareLeavesTreeConnectClear pins the Windows
-// failure: with session encryption off and the share flag on, the
-// TREE_CONNECT response must stay readable. It is the message that carries
-// the share encryption flag. Later commands on that tree stay encrypted,
-// and a session that already requires encryption still encrypts the open.
+// TestSendMessage_EncryptedShareLeavesTreeConnectClear checks that, with
+// session encryption off and the share flag on, the TREE_CONNECT response
+// stays readable. It carries the share encryption flag. Later commands on
+// that tree stay encrypted, and a session that already requires encryption
+// still encrypts TREE_CONNECT.
 func TestSendMessage_EncryptedShareLeavesTreeConnectClear(t *testing.T) {
 	server, client := net.Pipe()
 	t.Cleanup(func() {

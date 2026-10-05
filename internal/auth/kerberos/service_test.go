@@ -300,6 +300,18 @@ func TestAuthenticateFromClient_AddressBind(t *testing.T) {
 			t.Fatalf("error = %v, want KRB_AP_ERR_BADADDR", err)
 		}
 	})
+
+	t.Run("no client address", func(t *testing.T) {
+		raw := marshalAPReq(t, kt, []types.HostAddress{{
+			AddrType: addrtype.NetBios,
+			Address:  []byte("WINCLIENT       "),
+		}})
+		_, err := svc.Authenticate(raw, spn)
+		var krbErr messages.KRBError
+		if !errors.As(err, &krbErr) || krbErr.ErrorCode != errorcode.KRB_AP_ERR_BADADDR {
+			t.Fatalf("error = %v, want KRB_AP_ERR_BADADDR", err)
+		}
+	})
 }
 
 func serviceFromKeytab(t *testing.T, kt *keytab.Keytab, spn string) *KerberosService {

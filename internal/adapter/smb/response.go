@@ -1122,9 +1122,8 @@ func sendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo, respon
 			// SMB2_SHAREFLAG_ENCRYPT_DATA, which is how a client learns the
 			// share requires encryption. In preferred mode the session flag
 			// is still off, so the client is not decrypting yet. Encrypting
-			// this response hides the flag: Windows retries the open and
-			// then drops the connection. Commands after the tree is up still
-			// follow the share flag.
+			// this response hides the flag. Commands after the tree is up
+			// still follow the share flag.
 			shouldEncrypt := sess.ShouldEncrypt() || responseEncrypted
 			if cs := sess.GetCryptoState(); !shouldEncrypt && hdr.Command != types.SMB2TreeConnect &&
 				hdr.TreeID != 0 && cs != nil && cs.Encryptor != nil {
