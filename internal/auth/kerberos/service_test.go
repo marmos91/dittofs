@@ -1,10 +1,12 @@
 package kerberos
 
 import (
+	"net"
 	"testing"
 	"time"
 
 	"github.com/jcmturner/gokrb5/v8/crypto"
+	"github.com/jcmturner/gokrb5/v8/iana/addrtype"
 	"github.com/jcmturner/gokrb5/v8/iana/etypeID"
 	"github.com/jcmturner/gokrb5/v8/messages"
 	"github.com/jcmturner/gokrb5/v8/types"
@@ -149,6 +151,70 @@ func TestKerberosService_Provider(t *testing.T) {
 	svc := NewKerberosService(nil)
 	if svc.Provider() != nil {
 		t.Fatal("expected nil provider")
+	}
+}
+
+func TestKerberosHostAddress(t *testing.T) {
+	tests := []struct {
+		name       string
+		clientAddr string
+		want       string
+	}{
+		{name: "IPv4 remote address", clientAddr: "192.168.1.10:445", want: "192.168.1.10"},
+		{name: "bare IPv4", clientAddr: "10.0.0.5", want: "10.0.0.5"},
+		{name: "IPv6 remote address", clientAddr: "[2001:db8::1]:445", want: "2001:db8::1"},
+		{name: "scoped IPv6 remote address", clientAddr: "[fe80::1%lo0]:445", want: "fe80::1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := kerberosHostAddress(tt.clientAddr)
+			if err != nil {
+				t.Fatalf("kerberosHostAddress: %v", err)
+			}
+			if net.IP(got.Address).String() != tt.want {
+				t.Fatalf("address = %v, want %s", net.IP(got.Address), tt.want)
+			}
+		})
+	}
+	if _, err := kerberosHostAddress("not-an-ip"); err == nil {
+		t.Fatal("expected invalid client address to be rejected")
+	}
+}
+
+func TestTicketAllowsClientIP(t *testing.T) {
+	netBIOS := types.HostAddress{AddrType: addrtype.NetBios, Address: []byte("WINCLIENT       ")}
+	peer := types.HostAddressFromNetIP(net.ParseIP("192.168.1.10"))
+	other := types.HostAddressFromNetIP(net.ParseIP("10.0.0.5"))
+	tests := []struct {
+		name   string
+		caddr  []types.HostAddress
+		wantOK bool
+	}{
+		{name: "NetBIOS only", caddr: []types.HostAddress{netBIOS}, wantOK: true},
+		{name: "empty", caddr: nil, wantOK: true},
+		{name: "matching IPv4", caddr: []types.HostAddress{peer}, wantOK: true},
+		{name: "mismatched IPv4", caddr: []types.HostAddress{other}, wantOK: false},
+		{name: "NetBIOS and matching IPv4", caddr: []types.HostAddress{netBIOS, peer}, wantOK: true},
+		{name: "NetBIOS and mismatched IPv4", caddr: []types.HostAddress{netBIOS, other}, wantOK: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ticketAllowsClientIP(peer, tt.caddr)
+			if got != tt.wantOK {
+				t.Fatalf("ticketAllowsClientIP = %v, want %v", got, tt.wantOK)
+			}
+		})
+	}
+}
+
+func TestFormatKerberosHostAddresses(t *testing.T) {
+	addresses := []types.HostAddress{
+		{AddrType: addrtype.NetBios, Address: []byte("WINCLIENT       ")},
+		types.HostAddressFromNetIP(net.ParseIP("192.168.1.10")),
+	}
+	got := formatKerberosHostAddresses(addresses)
+	if len(got) != 2 || got[0] != "NETBIOS:WINCLIENT" || got[1] != "192.168.1.10" {
+		t.Fatalf("formatted addresses = %v", got)
 	}
 }
 
