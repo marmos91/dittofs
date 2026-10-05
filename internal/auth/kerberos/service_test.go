@@ -1,15 +1,29 @@
 package kerberos
 
 import (
+	"errors"
 	"net"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/jcmturner/gofork/encoding/asn1"
+	"github.com/jcmturner/gokrb5/v8/asn1tools"
 	"github.com/jcmturner/gokrb5/v8/crypto"
+	"github.com/jcmturner/gokrb5/v8/iana"
 	"github.com/jcmturner/gokrb5/v8/iana/addrtype"
+	"github.com/jcmturner/gokrb5/v8/iana/asnAppTag"
+	"github.com/jcmturner/gokrb5/v8/iana/errorcode"
 	"github.com/jcmturner/gokrb5/v8/iana/etypeID"
+	"github.com/jcmturner/gokrb5/v8/iana/keyusage"
+	"github.com/jcmturner/gokrb5/v8/iana/nametype"
+	"github.com/jcmturner/gokrb5/v8/keytab"
 	"github.com/jcmturner/gokrb5/v8/messages"
 	"github.com/jcmturner/gokrb5/v8/types"
+
+	pkgkerberos "github.com/marmos91/dittofs/pkg/auth/kerberos"
+	"github.com/marmos91/dittofs/pkg/config"
 )
 
 func TestAuthResult_SessionKeyPreference(t *testing.T) {
@@ -240,4 +254,143 @@ func TestHasSubkey(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAuthenticateFromClient_AddressBind runs a real AP-REQ through
+// VerifyAPREQ. A NetBIOS-only caddr makes the first check return
+// KRB_AP_ERR_BADADDR; authentication still succeeds only if that error is
+// recognized and the second verify runs. A ticket that lists a different IP
+// must still be rejected.
+func TestAuthenticateFromClient_AddressBind(t *testing.T) {
+	const (
+		realm    = "EXAMPLE.COM"
+		svcName  = "cifs/fileserver.example.com"
+		spn      = svcName + "@" + realm
+		password = "test-password"
+		kvno     = 1
+		client   = "192.168.1.10:445"
+	)
+	kt := keytab.New()
+	if err := kt.AddEntry(svcName, realm, password, time.Now(), kvno, etypeID.AES128_CTS_HMAC_SHA1_96); err != nil {
+		t.Fatal(err)
+	}
+	svc := serviceFromKeytab(t, kt, spn)
+
+	t.Run("NetBIOS only", func(t *testing.T) {
+		raw := marshalAPReq(t, kt, []types.HostAddress{{
+			AddrType: addrtype.NetBios,
+			Address:  []byte("WINCLIENT       "),
+		}})
+		res, err := svc.AuthenticateFromClient(raw, spn, client)
+		if err != nil {
+			t.Fatalf("AuthenticateFromClient: %v", err)
+		}
+		if res.Principal != "alice" {
+			t.Fatalf("principal = %q, want alice", res.Principal)
+		}
+	})
+
+	t.Run("mismatched IP", func(t *testing.T) {
+		raw := marshalAPReq(t, kt, []types.HostAddress{
+			types.HostAddressFromNetIP(net.ParseIP("10.0.0.5")),
+		})
+		_, err := svc.AuthenticateFromClient(raw, spn, client)
+		var krbErr messages.KRBError
+		if !errors.As(err, &krbErr) || krbErr.ErrorCode != errorcode.KRB_AP_ERR_BADADDR {
+			t.Fatalf("error = %v, want KRB_AP_ERR_BADADDR", err)
+		}
+	})
+}
+
+func serviceFromKeytab(t *testing.T, kt *keytab.Keytab, spn string) *KerberosService {
+	t.Helper()
+	dir := t.TempDir()
+	data, err := kt.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	keytabPath := filepath.Join(dir, "svc.keytab")
+	if err := os.WriteFile(keytabPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	confPath := filepath.Join(dir, "krb5.conf")
+	conf := "[libdefaults]\n default_realm = EXAMPLE.COM\n dns_lookup_kdc = false\n"
+	if err := os.WriteFile(confPath, []byte(conf), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	provider, err := pkgkerberos.NewProvider(&config.KerberosConfig{
+		Enabled:          true,
+		KeytabPath:       keytabPath,
+		ServicePrincipal: spn,
+		Krb5Conf:         confPath,
+		MaxClockSkew:     5 * time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = provider.Close() })
+	return NewKerberosService(provider)
+}
+
+func marshalAPReq(t *testing.T, kt *keytab.Keytab, caddr []types.HostAddress) []byte {
+	t.Helper()
+	const (
+		realm   = "EXAMPLE.COM"
+		svcName = "cifs/fileserver.example.com"
+		kvno    = 1
+	)
+	etype := etypeID.AES128_CTS_HMAC_SHA1_96
+	sname := types.NewPrincipalName(nametype.KRB_NT_PRINCIPAL, svcName)
+	cname := types.NewPrincipalName(nametype.KRB_NT_PRINCIPAL, "alice")
+	now := time.Now().UTC()
+
+	impl, err := crypto.GetEtype(etype)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionKey, err := types.GenerateEncryptionKey(impl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	part := messages.EncTicketPart{
+		Flags:     types.NewKrbFlags(),
+		Key:       sessionKey,
+		CRealm:    realm,
+		CName:     cname,
+		AuthTime:  now,
+		StartTime: now,
+		EndTime:   now.Add(time.Hour),
+		CAddr:     caddr,
+	}
+	rawPart, err := asn1.Marshal(part)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawPart = asn1tools.AddASNAppTag(rawPart, asnAppTag.EncTicketPart)
+	skey, _, err := kt.GetEncryptionKey(sname, realm, kvno, etype)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encPart, err := crypto.GetEncryptedData(rawPart, skey, keyusage.KDC_REP_TICKET, kvno)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth, err := types.NewAuthenticator(realm, cname)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apReq, err := messages.NewAPReq(messages.Ticket{
+		TktVNO:  iana.PVNO,
+		Realm:   realm,
+		SName:   sname,
+		EncPart: encPart,
+	}, sessionKey, auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := apReq.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
 }

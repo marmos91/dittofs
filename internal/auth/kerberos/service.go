@@ -180,7 +180,7 @@ func (s *KerberosService) authenticate(apReqBytes []byte, servicePrincipal, clie
 	if err != nil && isBadAddressError(err) {
 		caddr := apReq.Ticket.DecryptedEncPart.CAddr
 		if ticketAllowsClientIP(clientHost, caddr) {
-			if workaround, ok := gokrb5CAddrTypeWorkaround(caddr); ok {
+			if workaround, apply := gokrb5CAddrTypeWorkaround(caddr); apply {
 				// decision: gokrb5 HostAddress.Equal requires the same
 				// address type, so a NetBIOS-only caddr never matches a
 				// TCP IP and VerifyAPREQ returns KRB_AP_ERR_BADADDR.
