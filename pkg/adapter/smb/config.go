@@ -7,6 +7,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
 	"github.com/marmos91/dittofs/internal/adapter/smb/signing"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
 // DefaultMaxMessageSize is the default maximum allowed size for a single SMB2 message (64MB).
@@ -228,12 +229,7 @@ func (c *EncryptionConfig) applyDefaults() {
 // ValidateEncryptionMode accepts the modes New keeps after defaults.
 // Empty is not one of them: New fills preferred before it validates.
 func ValidateEncryptionMode(mode string) error {
-	switch mode {
-	case "disabled", "preferred", "required":
-		return nil
-	default:
-		return fmt.Errorf("invalid encryption_mode %q: must be one of disabled, preferred, required", mode)
-	}
+	return models.ValidateSMBEncryptionMode(mode)
 }
 
 // validate checks that the encryption configuration is valid.

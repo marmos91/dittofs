@@ -232,6 +232,138 @@ func TestUpdateAdapter_PreservesListenerWhenBindUnchanged(t *testing.T) {
 	}
 }
 
+func smbConfigWithEncryptionMode(port int, mode string) *models.AdapterConfig {
+	cfg := &models.AdapterConfig{Type: "smb", Enabled: true, Port: port}
+	if err := cfg.SetConfig(map[string]any{
+		"encryption": map[string]any{"encryption_mode": mode},
+	}); err != nil {
+		panic(err)
+	}
+	return cfg
+}
+
+// TestUpdateAdapter_RejectsInvalidSMBEncryptionModeBeforePersist is the update
+// that keeps the listen address. The factory is what refuses an unknown mode,
+// and this path returns before calling it, so the bad row would be stored and
+// the next boot would be unable to start SMB.
+func TestUpdateAdapter_RejectsInvalidSMBEncryptionModeBeforePersist(t *testing.T) {
+	const port = 14447
+	st := newFakeAdapterStore()
+	svc := New(st, time.Second)
+
+	var calls atomic.Int32
+	svc.SetAdapterFactory(func(cfg *models.AdapterConfig) (ProtocolAdapter, error) {
+		calls.Add(1)
+		return newFakeListenerAdapter(cfg.Type, cfg.Port), nil
+	})
+
+	ctx := context.Background()
+	if err := svc.CreateAdapter(ctx, &models.AdapterConfig{Type: "smb", Enabled: true, Port: port}); err != nil {
+		t.Fatalf("CreateAdapter: %v", err)
+	}
+
+	err := svc.UpdateAdapter(ctx, smbConfigWithEncryptionMode(port, "require"))
+	if err == nil {
+		t.Fatal("invalid encryption_mode was accepted")
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("factory calls = %d, want 1 (rejected before a rebuild)", calls.Load())
+	}
+	if !svc.IsAdapterRunning("smb") {
+		t.Fatal("running adapter was torn down for a rejected update")
+	}
+
+	got, getErr := st.GetAdapter(ctx, "smb")
+	if getErr != nil {
+		t.Fatalf("GetAdapter: %v", getErr)
+	}
+	parsed, parseErr := got.GetConfig()
+	if parseErr != nil {
+		t.Fatalf("GetConfig: %v", parseErr)
+	}
+	if enc, ok := parsed["encryption"].(map[string]any); ok {
+		if mode, _ := enc["encryption_mode"].(string); mode == "require" {
+			t.Fatalf("invalid encryption_mode was persisted: %#v", parsed)
+		}
+	}
+}
+
+// TestUpdateAdapter_RestartsWhenSMBEncryptionModeChanges proves a same-address
+// edit that only changes encryption_mode still goes through the factory, which
+// is what copies the mode onto the live adapter. An explicit "preferred"
+// matching the unset default must not.
+func TestUpdateAdapter_RestartsWhenSMBEncryptionModeChanges(t *testing.T) {
+	const port = 14448
+
+	var created []*fakeListenerAdapter
+	var modes []string
+	var mu sync.Mutex
+
+	svc := New(newFakeAdapterStore(), time.Second)
+	svc.SetAdapterFactory(func(cfg *models.AdapterConfig) (ProtocolAdapter, error) {
+		parsed, err := cfg.GetConfig()
+		if err != nil {
+			return nil, err
+		}
+		mode := ""
+		if enc, ok := parsed["encryption"].(map[string]any); ok {
+			mode, _ = enc["encryption_mode"].(string)
+		}
+		a := newFakeListenerAdapter(cfg.Type, cfg.Port)
+		mu.Lock()
+		created = append(created, a)
+		modes = append(modes, mode)
+		mu.Unlock()
+		return a, nil
+	})
+
+	ctx := context.Background()
+	if err := svc.CreateAdapter(ctx, &models.AdapterConfig{Type: "smb", Enabled: true, Port: port}); err != nil {
+		t.Fatalf("CreateAdapter: %v", err)
+	}
+	mu.Lock()
+	first := created[0]
+	mu.Unlock()
+	waitReady(t, first)
+
+	// Unset and explicit "preferred" are the same effective mode.
+	if err := svc.UpdateAdapter(ctx, smbConfigWithEncryptionMode(port, "preferred")); err != nil {
+		t.Fatalf("UpdateAdapter (preferred): %v", err)
+	}
+	mu.Lock()
+	n := len(created)
+	mu.Unlock()
+	if n != 1 || first.stopCount.Load() != 0 {
+		t.Fatalf("preferred rewrite rebuilt the adapter: created=%d stop=%d", n, first.stopCount.Load())
+	}
+
+	if err := svc.UpdateAdapter(ctx, smbConfigWithEncryptionMode(port, "required")); err != nil {
+		t.Fatalf("UpdateAdapter (required): %v", err)
+	}
+	if first.stopCount.Load() != 1 {
+		t.Fatalf("old adapter not stopped on encryption mode change: stopCount=%d", first.stopCount.Load())
+	}
+	mu.Lock()
+	n = len(created)
+	second := created[len(created)-1]
+	gotModes := append([]string(nil), modes...)
+	mu.Unlock()
+	if n != 2 {
+		t.Fatalf("encryption mode change did not rebuild: created %d, want 2", n)
+	}
+	if len(gotModes) != 2 || gotModes[1] != "required" {
+		t.Fatalf("factory modes = %q, want [\"\", \"required\"]", gotModes)
+	}
+	waitReady(t, second)
+	if svc.GetAdapter("smb") != second {
+		t.Fatal("encryption mode change did not swap to the new adapter")
+	}
+
+	if err := svc.StopAllAdapters(); err != nil {
+		t.Fatalf("StopAllAdapters: %v", err)
+	}
+}
+
 // TestUpdateAdapter_ZeroPortRebindsFromNonDefault proves that updating an
 // adapter bound to a non-default port with an explicit port 0 ("use the
 // default") rebinds to the default port instead of silently preserving the old
