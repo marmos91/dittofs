@@ -725,8 +725,11 @@ cmd_e2e() {
     acquire_lock "e2e"
     docker_ok; svc_pg_up; svc_localstack_up
     # Ask for the password now: the suite's output goes to a file, so a prompt
-    # printed later would be easy to miss.
-    if ((${#sudo_cmd[@]})); then sudo -v || die "sudo authentication failed"; fi
+    # printed later would be easy to miss. Passwordless sudo skips it: `sudo -v`
+    # prompts unless every sudoers entry is NOPASSWD (verifypw=all), so one
+    # password entry beside a NOPASSWD one makes it ask a locked account for a
+    # password it does not have.
+    if ((${#sudo_cmd[@]})); then sudo -n true 2>/dev/null || sudo -v || die "sudo authentication failed"; fi
     local log
     log="$LOGS/e2e-$(ts).log"
     # Root's t.TempDir() directories are 0700 and root-owned. Docker Desktop's file
