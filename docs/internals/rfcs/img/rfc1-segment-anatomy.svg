@@ -29,7 +29,7 @@
   <text x="820" y="76" class="s">EOF</text>
 
   <path d="M815,150 C815,190 640,180 625,150" class="a"/>
-  <text x="640" y="205" class="s" fill="#b04a4a">2. read entryCount × 44 bytes at footerOffset, verify its CRC</text>
+  <text x="640" y="205" class="s" fill="#b04a4a">2. read entryCount × 72 bytes at footerOffset, verify its CRC</text>
   <text x="640" y="223" class="s" fill="#b04a4a">1. read last 32 bytes, verify trailer CRC, take footerOffset</text>
 
   <rect x="40" y="248" width="560" height="74" rx="4" fill="#fbfcfd" stroke="#c3cad3"/>
