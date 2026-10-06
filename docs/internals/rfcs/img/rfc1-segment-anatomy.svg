@@ -20,7 +20,7 @@
   <text x="56" y="106" class="m">record  record  record  …</text>
   <text x="56" y="125" class="s">header + payload, each checksummed over both</text>
   <rect x="480" y="82" width="290" height="52" class="cat"/>
-  <text x="496" y="106" class="m">catalog — 44 bytes per record</text>
+  <text x="496" y="106" class="m">catalog — 72 bytes per record</text>
   <text x="496" y="125" class="s">FileID, file offset, recordOffset, length, version</text>
   <rect x="770" y="82" width="90" height="52" class="tr"/>
   <text x="782" y="106" class="m">trailer</text><text x="782" y="125" class="s">32 bytes</text>
