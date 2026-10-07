@@ -13,7 +13,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
 )
 
 // newCappedEngine is newTestEngine with a small local-store cap and a short
@@ -22,11 +22,15 @@ import (
 func newCappedEngine(t *testing.T, cfg journal.Config) *engine.Store {
 	t.Helper()
 
+	ms, err := badger.NewBadgerMetadataStoreWithDefaults(context.Background(), t.TempDir())
+	if err != nil {
+		t.Fatalf("open badger metadata store: %v", err)
+	}
+	t.Cleanup(func() { _ = ms.Close() })
 	localStore, err := journal.Open(t.TempDir(), cfg)
 	if err != nil {
 		t.Fatalf("journal.Open failed: %v", err)
 	}
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:          localStore,
 		RemoteSync:     engine.NewRemoteSync(localStore, nil, ms, engine.DefaultConfig()),
