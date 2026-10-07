@@ -48,8 +48,8 @@ order: each part builds on the ones before it.
 | RFC 19 | authorization | planned | one abstract ACL model, its protocol mappings, evaluation |
 | **Protocols** | | | |
 | RFC 20 | adapter model | planned | the protocol handler contract, auth context, error mapping, dispatch |
-| RFC 21 | NFS | planned | decisions the NFS standards leave open; drafted on the `docs/rfc-21-22-protocols` branch and not yet rebased on this set, so its error table, stable-write and grace rules still predate RFC 8, RFC 14 and RFC 17 |
-| RFC 22 | SMB | planned | decisions the SMB standards leave open; drafted beside RFC 21 on the same branch, with the same rebase pending |
+| RFC 21 | NFS | draft | decisions the NFS standards leave open; drafted on the `docs/rfc-21-22-protocols` branch and not yet rebased on this set, so its error table, stable-write and grace rules still predate RFC 8, RFC 14 and RFC 17 |
+| RFC 22 | SMB | draft | decisions the SMB standards leave open; drafted beside RFC 21 on the same branch, with the same rebase pending |
 | **Operations** | | | |
 | RFC 23 | control plane | planned | runtime, share lifecycle, management API; applies RFC 13's configuration |
 | RFC 24 | resources and concurrency | planned | memory budgets, buffer pools, admission, backpressure |
@@ -88,6 +88,8 @@ graph LR
   R15["15 topology"] --> R8 & R10 & R11 & R14 & R16 & R17
   R16["16 metadata store"] --> R6 & R7 & R13 & R14 & R15
   R17["17 vfs"] --> R7 & R8 & R11 & R13 & R14 & R15 & R16
+  R21["21 nfs"] --> R7 & R8 & R11 & R13 & R14 & R15 & R16 & R17 & R22
+  R22["22 smb"] --> R5 & R6 & R7 & R8 & R12 & R14 & R15 & R16 & R17 & R21
   R26["26 backups"] --> R1 & R2 & R3 & R4 & R5 & R6 & R7 & R9 & R12 & R13 & R16 & R27 & R28
   R27["27 migration"] --> R1 & R2 & R4 & R5 & R6 & R7 & R8 & R9 & R10 & R11 & R12 & R13 & R16 & R17 & R26 & R28
   R28["28 journal format"] --> R1 & R2 & R3 & R6 & R8 & R10 & R14
@@ -96,7 +98,7 @@ graph LR
   style R15 stroke-dasharray: 5 5
 ```
 
-Cycles: RFC 1 ↔ RFC 28, RFC 3 ↔ RFC 4, RFC 4 ↔ RFC 5, RFC 4 ↔ RFC 6, RFC 4 ↔ RFC 8, RFC 4 ↔ RFC 9, RFC 4 ↔ RFC 12, RFC 4 ↔ RFC 13, RFC 4 ↔ RFC 26, RFC 4 ↔ RFC 27, RFC 6 ↔ RFC 28, RFC 7 ↔ RFC 16, RFC 8 ↔ RFC 9, RFC 8 ↔ RFC 15, RFC 8 ↔ RFC 28, RFC 10 ↔ RFC 11, RFC 10 ↔ RFC 28, RFC 11 ↔ RFC 14, RFC 11 ↔ RFC 15, RFC 12 ↔ RFC 13, RFC 13 ↔ RFC 16, RFC 13 ↔ RFC 26, RFC 13 ↔ RFC 27, RFC 14 ↔ RFC 15, RFC 14 ↔ RFC 16, RFC 15 ↔ RFC 16, RFC 15 ↔ RFC 17, RFC 26 ↔ RFC 27.
+Cycles: RFC 1 ↔ RFC 28, RFC 3 ↔ RFC 4, RFC 4 ↔ RFC 5, RFC 4 ↔ RFC 6, RFC 4 ↔ RFC 8, RFC 4 ↔ RFC 9, RFC 4 ↔ RFC 12, RFC 4 ↔ RFC 13, RFC 4 ↔ RFC 26, RFC 4 ↔ RFC 27, RFC 6 ↔ RFC 28, RFC 7 ↔ RFC 16, RFC 8 ↔ RFC 9, RFC 8 ↔ RFC 15, RFC 8 ↔ RFC 28, RFC 10 ↔ RFC 11, RFC 10 ↔ RFC 28, RFC 11 ↔ RFC 14, RFC 11 ↔ RFC 15, RFC 12 ↔ RFC 13, RFC 13 ↔ RFC 16, RFC 13 ↔ RFC 26, RFC 13 ↔ RFC 27, RFC 14 ↔ RFC 15, RFC 14 ↔ RFC 16, RFC 15 ↔ RFC 16, RFC 15 ↔ RFC 17, RFC 21 ↔ RFC 22, RFC 26 ↔ RFC 27.
 
 ## Conventions
 
