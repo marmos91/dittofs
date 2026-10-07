@@ -64,6 +64,8 @@ absorbs writes, and hands them to an async syncer that offloads them to the bloc
   COMMIT or SMB Flush is acknowledged.
 - To migrate a legacy block layout to the content-addressed layout, see
   [Block store migration](block-store-migration.md).
+- To move a share off a removed metadata store type (`postgres`, `sqlite`,
+  `memory`), see [Metadata store migration](metadata-store-migration.md).
 
 ## Control-plane database
 

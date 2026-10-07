@@ -289,6 +289,7 @@ Full docs live in [`docs/`](docs/), split by audience.
 - [Snapshots](docs/guide/snapshots.md) · [Quotas](docs/guide/quotas.md) · [Encryption](docs/guide/encryption.md)
 - [Security](docs/guide/security.md) — hardening checklist and secure configuration
 - [Block Store Migration](docs/guide/block-store-migration.md) — migrating legacy block layouts to CAS
+- [Metadata Store Migration](docs/guide/metadata-store-migration.md) — moving shares off the removed SQL and memory metadata stores
 - [Troubleshooting](docs/guide/troubleshooting.md) · [FAQ](docs/guide/faq.md) · [Glossary](docs/guide/glossary.md)
 
 ### For contributors — [`docs/internals/`](docs/internals/)
