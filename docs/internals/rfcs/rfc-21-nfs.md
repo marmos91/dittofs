@@ -28,6 +28,121 @@ Conventions, RFC 2119 keywords and test tiers are set once in the
 
 ---
 
+## Start here
+
+*Explanatory. The rules are in §1 onward; where this section and a rule differ, the rule wins.*
+
+**What this is.** NFS (Network File System) is the protocol Linux and Unix
+machines use to mount a remote directory as if it were a local disk. The client
+sends remote procedure calls over TCP — look up a name, open, read, write,
+lock, close — and the server answers each one. This RFC is the NFS adapter: the
+part of DittoFS that speaks those calls and translates each into a call on the
+filesystem service ([RFC 17](rfc-17-vfs.md)). It makes every choice the NFS
+specifications leave to the server — versions, session sizes, lease time, what
+survives a node failure — and says which record elsewhere each NFS object stands
+for. It owns no durable state of its own: names, file handles and attributes
+are [RFC 7](rfc-7-namespace-metadata.md)'s; client records, opens, locks and
+delegations are [RFC 14](rfc-14-open-state.md)'s; which shares exist, who may
+mount them and the NFSv4 pseudo-filesystem (the read-only tree of directories
+that leads a client to each share) are [RFC 17](rfc-17-vfs.md)'s. Behind the
+service, writes land in a local journal and move to an object store in the
+background ([RFC 0](rfc-0-data-lifecycle.md)); NFS sees none of that.
+
+**How a client talks to the server, and what goes wrong.** Take the cluster:
+`protocol` nodes **P1** and **P2** hold client connections, and a storage node
+**S1** is the primary for `builds` — the one node that orders every change to
+its files. The Linux build server **build01** mounts `builds` over NFSv4.1 and
+untars a source tree of 40,000 small files.
+
+1. **Mount.** build01 connects to the cluster's floating address, which P1
+   holds. It identifies itself (`EXCHANGE_ID`), gets a **client ID**, and opens a
+   **session** (`CREATE_SESSION`) with a table of up to 64 **slots**: each
+   request goes in a slot with a sequence number, and the server keeps the last
+   reply per slot so a resent request gets the stored answer instead of running
+   twice. It walks the pseudo-filesystem to `builds` and receives the share's
+   root **file handle**, an opaque name for the directory.
+2. **Untar.** Every file is an `OPEN` that creates it, then `WRITE`s of up to
+   1 MiB each, then `CLOSE`. P1 forwards each call to S1, which records the open
+   and its state. Each request renews build01's 90 s **lease**; a client silent for
+   90 s loses everything it held.
+3. **P1 dies.** Requests for three files are in flight; their replies never
+   reach build01. P2 takes over the floating address and resets build01's
+   connection, so build01 reconnects at once — now to P2.
+4. **What build01 sees.** P2 does not know the session, which lived in P1's
+   memory: it answers `NFS4ERR_BADSESSION`. build01 opens a new session under
+   the same client ID, which every node accepts because the client record is
+   stored, and resends the three requests in new slots. Its opens, locks and
+   delegations are untouched: they were at S1, not P1, so no grace period runs.
+   But the reply cache went with P1, so the resent requests run again. A
+   rewrite of the same 1 MiB is harmless; an exclusive create succeeds, because
+   the stored create verifier matches; a `MKDIR` answers "already exists" for a
+   directory build01 did in fact make.
+
+Two other designs were possible. If the session held the opens and locks, P1's
+loss would lose them too, and every client would have to reclaim its state in a
+grace period of at least 90 s, during which no new open or lock is granted. If the reply
+cache were stored and replicated, the retry would be exact, at the cost of one
+replicated write per create and rename — about 40,000 extra for this untar —
+to cover an event whose visible result matches an NFSv3 server reboot, which
+clients already tolerate. This RFC takes neither: state at the primary, reply
+cache in memory.
+
+```text
+ build01 (Linux, NFSv4.1)  ── mounts dittofs:/builds via a floating address
+     │
+     ▼
+ ┌──────────── P1 ────────────┐  dies   ┌──────────── P2 ────────────┐
+ │ session, 64 slots          │ ──────► │ session 2, same client ID  │
+ │ reply cache (memory only)  │ address │ reply cache starts empty   │
+ └─────────────┬──────────────┘  moves  └─────────────┬──────────────┘
+               │      every call is forwarded to the file's primary
+               ▼                                      ▼
+ ┌────────────────────── S1, primary of builds ──────────────────────┐
+ │ RFC 14: client record, opens, locks, delegations, stateids        │
+ │ RFC 7:  names, file handles, attributes, directory cookies        │
+ └───────────────────────────────────────────────────────────────────┘
+```
+
+**The words you need.**
+
+- **`protocol` node / primary** — a node that holds client connections / the one
+  storage node that orders a shard's writes ([RFC 0 glossary](rfc-0-data-lifecycle.md#Glossary)).
+- **File handle** — an opaque name for a file, the same on every node and after
+  restart ([RFC 7 §6.1](rfc-7-namespace-metadata.md#6.1%20A%20handle%20names%20a%20file%2C%20never%20a%20path)).
+- **Session, slot, reply cache** — NFSv4.1's way to run each request exactly
+  once: a resend in the same slot gets the stored reply.
+- **Client ID and lease** — who the client is, and how long its state is kept
+  while it is silent: 90 s ([RFC 14 §4.1](rfc-14-open-state.md#4.1%20A%20client%20lease)).
+- **Stateid** — the token naming an open, a lock or a delegation on the wire.
+- **Delegation** — a promise that no other client is using a file, so the client
+  may cache it; recalled on conflict ([RFC 14 §5.1](rfc-14-open-state.md#5.1%20What%20a%20grant%20is)).
+- **Grace period** — a window after a primary loses state in which only
+  reclaims of held state are accepted ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)).
+
+**What this RFC promises.**
+
+- Losing a `protocol` node loses no open, lock or delegation and starts no grace
+  period; the client opens a new session and carries on.
+- It does lose exactly-once for the requests in flight: a resent create, remove
+  or rename may answer "exists" or "not found" for work that was done.
+- A file handle, a stateid and a directory listing position are valid on every
+  node, so a client moved between nodes keeps using them.
+- A file's `change` attribute moves on every write, and never on an operation
+  that changed nothing, so when one client closes a file and another opens it
+  through a different node, the second sees the new data.
+- A client silent for 90 s loses all its state at once; nothing is kept for it.
+  Every NFS program is served over TCP only.
+
+**How the rest is organised.** §2 sets versions, transport and transfer sizes.
+§3 (sessions) and §5 (lease, stateids, delegations, grace) carry the failure
+story above; read them first. §4 covers NFSv4.0 clients, §6 NFSv3 locking
+(NLM, the Network Lock Manager, and NSM, its status monitor) and MOUNT. §7 fits
+handles, directory cookies and names on the wire; §8 lists attributes and §9
+data operations, which a first read can skim. §10 covers Kerberos on the wire;
+§11–§13 hold the invariants, the conformance checks and the metrics.
+
+---
+
 ## In short
 
 - NFSv3, NFSv4.0, NFSv4.1 and a subset of NFSv4.2 are served, over TCP only.
