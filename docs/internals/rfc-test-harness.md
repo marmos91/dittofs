@@ -5,8 +5,9 @@
 **Builds on:** the `dt` harness on `dev/test-harness` (`1b9d49b9`), `test/conformance/suites.json`
 and `run.sh` with their graders, the system scenarios in `test/scenarios/`, and `dfsbench`
 (`cmd/bench`).
-**Checked against:** `develop` at `d0efaa75` and `dev/test-harness` at `1b9d49b9`, on 2026-10-07.
-§10 lists what was checked and what turned out different from what was assumed.
+**Checked against:** `develop` at `d0efaa75` (at `e33edad6` for #2955) and `dev/test-harness` at
+`1b9d49b9`, on 2026-10-07. §10 lists what was checked and what turned out different from what was
+assumed.
 
 Read this before adding a test suite, changing a test workflow, or touching `test/harness/`. It
 describes the harness we want to end up with, and how to get there from what exists without
@@ -19,7 +20,8 @@ rewriting the suites.
 Every suite has its own entry point, its own setup and its own way of saying how it went:
 
 - **Many entry points.** Unit, integration and e2e tests run as inline `go test` lines in their
-  workflows. Conformance runs through `test/conformance/run.sh`. Scenarios run through
+  workflows, and lint as inline steps in `lint.yml`. Conformance runs through
+  `test/conformance/run.sh`. Scenarios run through
   `test/scenarios/setup.sh`, and `dfsbench` through `cmd/bench`. `dt` wraps most of them, but it
   lives on an unmerged branch. The repository has 16 workflows, and a non-docs PR starts about 30
   jobs across them.
@@ -90,7 +92,8 @@ neither) and can't be unit-tested in any reasonable way. In Go:
 
 - the dependencies are already direct ones in `go.mod`: `gopkg.in/yaml.v3` and `cobra`;
 - every piece is a package with `go test` tests, which the repository already expects of its code;
-- it runs natively on Linux, macOS and Windows, where the SMB client-compatibility job runs.
+- it runs natively on Linux, macOS and Windows, where the Windows unit tests and the SMB
+  client-compatibility job run.
 
 The environment glue stays in shell, where it belongs: starting services, the `dtc` container,
 mounts, the scenario host. The Go runner calls those scripts the way it calls a suite.
@@ -146,16 +149,35 @@ suites:
   # The one-line form, for a hypothetical suite: a name and a command. Exit status 0 is a pass.
   nfs-mount-smoke: { cmd: test/nfs/mount-smoke.sh, tier: pr, needs: [linux, root, nfs-client] }
 
+  # Lint. `job` keeps the check names the develop ruleset requires; each job runs `dt run NAME`.
+  # The scripts hold what lint.yml runs inline today, so a laptop and CI run the same steps.
+  lint-go:    { cmd: test/lint/go-checks.sh, tier: pr, job: Go Checks }      # gofmt, vet, citations, required tests, golangci-lint
+  lint-repo:  { cmd: "test/lint/repo-checks.sh {base}", tier: pr, job: Repo Checks }
+  shellcheck: { cmd: test/lint/shellcheck.sh, tier: pr, job: ShellCheck }
+
   unit:
     kind: go
     cmd: go test -race {args} -timeout=25m ./pkg/... ./internal/... ./cmd/... ./test/...
     args: { pr: "-short" }              # pull requests run the short suite, as today
     tier: pr
-  integration:
+  unit-windows:
+    kind: go
+    cmd: go test -short -race -p 2 -timeout=25m ./...
+    tier: pr
+    needs: [windows]                    # dt plan gives the cell a Windows runner
+  integration:                          # includes the KMIP interop tests since #2955
     kind: go
     cmd: test/integration/packages.sh | xargs go test -tags=integration -p 1 -timeout=20m
     tier: pr
     needs: [docker, service:postgres, service:kmip]
+  integration-portmap:                  # the tests skip without rpcbind; `needs` makes that a refusal
+    kind: go
+    cmd: go test -tags=portmap_system -timeout=2m ./test/integration/portmap/...
+    tier: pr
+    needs: [linux, rpcbind]
+  operator:                             # its own Go module; the kustomize render check becomes a make target
+    cmd: make -C k8s/dittofs-operator test lint manifests-verify
+    tier: pr
   e2e:
     kind: go
     cmd: .github/scripts/run-e2e.sh go test -tags=e2e -timeout=30m ./test/e2e/...
@@ -190,7 +212,7 @@ suites:
 
 | Field | Meaning | Default |
 |---|---|---|
-| `cmd` | Shell command, run from the repository root. `{test}` is one matched file, `{args}` the tier's `args` | required, unless the kind provides one |
+| `cmd` | Shell command, run from the repository root. `{test}` is one matched file, `{args}` the tier's `args`, `{base}` the ref a change is compared against (the PR's base in CI, `origin/develop` locally) | required, unless the kind provides one |
 | `kind` | How results are read: `cmd`, `go`, `conformance`, `scenarios`, `fio`, `dfsbench` (§4.5) | `cmd` |
 | `tier` | The smallest tier that runs the suite (§4.2) | `full` |
 | `timeout` | A duration, for the suite, or for each test when `tests` is set | `30m` |
@@ -201,6 +223,7 @@ suites:
 | `known` | A known-failure list, in the Markdown format `test/common/known-failures.sh` reads | none; conformance suites use `suites.json` |
 | `gate` | `false`: results are recorded but never fail a run (benchmarks) | `true` |
 | `shards` | Split `tests` over this many CI jobs | `1` |
+| `job` | Run in a CI job of this fixed name, outside the matrix: for checks the branch ruleset requires by name | none: a matrix cell |
 
 Rules `dt` enforces when it loads the file: names are `[a-z0-9-]+`; unknown fields are refused, so
 a misspelt field fails rather than being ignored; `version` newer than `dt` knows is refused; every
@@ -271,11 +294,13 @@ differently, which is the main defence against another flood.
 
 ### 4.4 Where a suite runs
 
-`needs` names what a suite requires: `linux`, `root` (passwordless sudo), `docker`, `podman`,
-`nfs-client`, `smb-client`, `kerberos`, `dm-flakey`, `disk:<GB>`, and `service:<name>` for the
-services `dt services` starts (`localstack`, `postgres`, `kmip`). `dt doctor` reports which are met.
-For an unmet need, `dt run` either moves to the `dtc` container (when it provides it and `--in`
-allows), or reports the suite as not runnable with the reason. It is never reported as passed.
+`needs` names what a suite requires: `linux`, `windows`, `macos`, `root` (passwordless sudo),
+`docker`, `podman`, `rpcbind`, `nfs-client`, `smb-client`, `kerberos`, `dm-flakey`, `disk:<GB>`,
+and `service:<name>` for the services `dt services` starts (`localstack`, `postgres`, `kmip`).
+`dt doctor` reports which are met. For an unmet need, `dt run` either moves to the `dtc` container
+(when it provides it and `--in` allows), or reports the suite as not runnable with the reason. It is
+never reported as passed. In CI, `dt plan` gives each cell its runner from the same list:
+`windows` and `macos` get those hosted runners, everything else Ubuntu.
 
 There are three places to run:
 
@@ -379,8 +404,11 @@ One workflow, `tests.yml`, runs every registered suite:
 - **Triggers:** `pull_request` runs tier `pr`, a push to develop `full`, the schedule `nightly`,
   and `workflow_dispatch` the tier it's given.
 - **Jobs:** `plan` runs `dt plan --tier T --json`. `run` is a matrix over its cells, each
-  `dt run CELL --ci --retry 1`. `gate` needs `run`, always runs, merges the summaries into one
-  report, and fails unless every cell exited 0.
+  `dt run CELL --ci --retry 1`, on the runner `dt plan` named. `gate` needs `run`, always runs,
+  merges the summaries into one report, and fails unless every cell exited 0.
+- **Lint:** the suites with a `job` run as fixed jobs of that name: `Go Checks`, `Repo Checks` and
+  `ShellCheck`, each `dt run NAME --ci`. They move here from `lint.yml` with their names, so the
+  develop ruleset's required checks don't change.
 - **Docs-only PRs:** `dt plan` returns no cells, and `gate` passes.
 
 `Tests / gate` becomes the one required test check, once the `pr` tier has been green on develop for
@@ -444,7 +472,9 @@ use the same result format, so runs compare over time.
 - **The suites themselves.** pjdfstest, pynfs, WPTS, smbtorture, the scenarios and the Go tests
   keep their scripts, graders and known-failure files.
 - **`setup.sh`.** The scenarios kind reads what it already writes.
-- **The lint and security checks.** They stay as they are, and stay required.
+- **The required check names.** Go Checks, Repo Checks and ShellCheck keep their names and their
+  steps, which run through `dt` from scripts instead of inline YAML. The security scans, gitleaks
+  and CodeQL (Analyze (go)), stay GitHub actions as they are.
 - **The workflows with special hosts.** As listed in §4.7, until the main workflow is stable.
 
 ## 6. Alternatives considered
@@ -478,19 +508,33 @@ use the same result format, so runs compare over time.
 
 Each step ships on its own and has an exit criterion.
 
-1. **Land the harness branch.** Rebase `dev/test-harness` on develop. Its Postgres tuning and
-   services predate #2914, which removed them. Restore the repository's pre-push hook: the branch
-   replaces it, and stops testing `k8s/dittofs-operator/` packages on push. Then add `dt`'s steps
-   to it. Fix the references to `LOCAL-DEV-SETUP.md` and `TEST-HARNESS.md`, which don't exist.
+1. **Land the harness branch.** Rebase `dev/test-harness` on develop, and fix what has gone stale
+   or wrong on it:
+   - its Postgres tuning and services, and the `postgres` and `postgres-s3` profiles, predate
+     #2914, which removed them; `dt-batch container`'s `pjdfstest v4.1 / postgres-s3` run becomes
+     `badger-s3`;
+   - its separate KMIP interop step repeats tests that CI's integration list includes since #2955;
+   - `dt-batch` exits 0 whatever its runs did; it exits non-zero when any run failed;
+   - its pre-push replaces the repository's hook, and stops testing `k8s/dittofs-operator/`
+     packages on push: restore the repository hook, then add `dt`'s steps to it;
+   - the references to `LOCAL-DEV-SETUP.md` and `TEST-HARNESS.md` point at files that don't exist.
+
+   Until step 2, add a `dt lint` command and a `dt-batch full` set as the one command for a
+   complete run: unit (`--full --fresh`), integration, lint, then the `container` set, with the
+   three e2e failures the README expects inside `dtc` (no `rpcsec_gss_krb5`, no veth pairs)
+   counted as expected. Roughly 90 minutes on the README's reference machine, from its times; the
+   unit run without `-short` wasn't measured there.
    *Exit:* CI's unit, integration and e2e jobs call `dt`, and stay green for a week.
 2. **Registry and runner.** `test/suites.yaml`, and `dt list`, `plan` and `run` in Go, for the
-   `go`, `conformance` and `cmd` kinds. Today's commands become aliases.
+   `go`, `conformance` and `cmd` kinds. `lint.yml`'s inline steps move into `test/lint/`, run by
+   the `lint-go`, `lint-repo` and `shellcheck` suites. Today's commands become aliases.
    *Exit:* `dt plan --tier pr --json` yields the same cells as today's PR matrix.
 3. **Results.** `summary.json`, JUnit and `dt report`. The graders write `results.tsv`, and `run.sh`
    passes the known-failure path on. One report step replaces the inline summaries.
    *Exit:* every CI test job publishes through `dt report`.
 4. **One workflow and a gate.** `tests.yml` with plan, run and gate. Move `nfs-pynfs.yml` first,
-   as the smallest, then `conformance.yml`. Make the gate required.
+   as the smallest, then `conformance.yml`, then the unit, Windows, integration, operator and lint
+   jobs, the lint jobs keeping their names. Make the gate required.
    *Exit:* PR p90 ≤ 20 min over a week, and the gate required.
 5. **Scenarios and fio.** The scenarios kind, its known-failure list, and the podman-in-container
    path on runners. Groups 0x–8x run in the full tier, sharded over runners; the 9x long runs run
@@ -509,6 +553,9 @@ fio (R8).
 - Which conformance profiles stay on PRs? Today wpts, pjdfstest and pynfs run two of their three;
   smbtorture runs both of its two.
 - Should `nfs-kerberos` drop its PR path filter and run only in `full`?
+- The operator, Windows, unit and integration jobs only run on PRs that touch their paths today.
+  With no selection by layer they run on every PR, adding about 3 min of operator and 17 min of
+  Windows runner time per PR, in parallel. Keep them in `pr`, or move them to `full`?
 - Who runs the dedicated host, and holds its issue-writing token?
 - When does the gate become required: after two green weeks, or on a flake-rate figure?
 - Does history stay in artifacts, or move to a data branch once benchmarks need longer than 90
@@ -523,6 +570,10 @@ Where the assumption was wrong, the design follows what was found.
 |---|---|---|
 | `dt` covers every tier, on `dev/test-harness` | True: 48 files, +4,445 lines; `test/harness/bin/dt` is 1,270 lines. No `wpts` or `smbtorture` command; they are `dt smb wpts\|smbtorture` | `test/harness/bin/dt` |
 | CI's unit, integration and e2e jobs call `dt` | True on the branch only; develop calls `go test` inline | branch `unit-tests.yml:75`, `integration-tests.yml:71`, `e2e-tests.yml:117` |
+| `dt` runs unit, integration and lint | Unit and integration yes. Lint only as `dt quick` (vet and golangci-lint); CI's gofmt, citation, required-test, repo and ShellCheck steps aren't in `dt`, nor are the portmap, Windows and operator tests | branch `dt:1127-1131`; `lint.yml`, `integration-tests.yml:178-182`, `windows-build.yml:76-79`, `operator-tests.yml` |
+| One command runs everything | None does. The closest, `dt-batch container`, runs 8 protocol and e2e runs (about 72 min) without unit, integration or lint, and exits 0 whatever they did | branch `dt-batch:79-94`, README reference results |
+| `dt-batch matrix` is 28 runs | 28 with the branch's profiles; 20 on develop, where #2914 removed `postgres`, `postgres-s3` and `sqlite`. `dt-batch container`'s `postgres-s3` run no longer has a profile | `suites.json` on each |
+| KMIP interop runs only in the harness | Since #2955 CI's integration list includes it, so `dt`'s separate step would run it twice | `e33edad6` |
 | `dt` grades conformance results | No: `run.sh` and the per-suite graders do; `dt` calls them | `run.sh:18-20`, `test/common/known-failures.sh` |
 | `suites.json` covers 5 suites, with per-event tiers | True for 5 suites. Only `pull_request` is ever narrowed, and smbtorture's PR set is both its profiles | `suites.json:31-33, 39, 56` |
 | A suite entry is about 10 lines | No: 15 to 38 lines | `suites.json:36-148` |
