@@ -117,3 +117,7 @@ rig-*/
 
 # Local port/credential overrides for the root compose stack.
 docker-compose.override.yml
+
+# graphify hook copies are machine-local (they embed an absolute interpreter path)
+.githooks/post-commit
+.githooks/post-checkout

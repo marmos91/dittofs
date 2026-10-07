@@ -174,6 +174,9 @@ func (h *Handler) buildReadPlusContents(ctx *types.CompoundContext, file *metada
 	if len(segs) == 0 {
 		segs = block.Segments(file.Blocks, file.Size)
 	}
+	// One deadline for every data-run read of the reply, not one per run.
+	readCtx, cancel := common.WithRequestDeadline(ctx.Context)
+	defer cancel()
 	var contents []readPlusContent
 
 	for _, seg := range segs {
@@ -207,7 +210,7 @@ func (h *Handler) buildReadPlusContents(ctx *types.CompoundContext, file *metada
 			}
 			blockStore = bs
 		}
-		res, err := common.ReadFromBlockStore(ctx.Context, blockStore, file.PayloadID, segStart, uint32(segEnd-segStart))
+		res, err := common.ReadFromBlockStore(readCtx, blockStore, file.PayloadID, segStart, uint32(segEnd-segStart))
 		if err != nil {
 			return nil, err
 		}

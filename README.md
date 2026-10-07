@@ -110,9 +110,8 @@ more at [dittofs.io/pro](https://dittofs.io/pro).
 ### Install
 
 ```bash
-# Nix (runs without installing)
-nix run github:marmos91/dittofs -- init
-nix run github:marmos91/dittofs -- start
+# Nix (temporary shell with dfs and dfsctl; no permanent install)
+nix shell github:marmos91/dittofs
 
 # Homebrew
 brew tap marmos91/tap
@@ -132,9 +131,10 @@ git clone https://github.com/marmos91/dittofs.git
 cd dittofs
 go build -o dfs    cmd/dfs/main.go
 go build -o dfsctl cmd/dfsctl/main.go
-./dfs init     # writes ~/.config/dittofs/config.yaml
-./dfs start
 ```
+
+The commands below use the source-built binaries. With Nix, Homebrew, or the install
+script, use `dfs` and `dfsctl` without the `./` prefix.
 
 ### First run & admin password
 
@@ -143,7 +143,9 @@ On first start, DittoFS creates an `admin` user. **Pre-set the password** via th
 every deployment, and the only reliable one for Docker/Kubernetes/CI and systemd:
 
 ```bash
-# Choose your own password (also skips the forced password change on first login)
+./dfs init     # writes ~/.config/dittofs/config.yaml
+# Replace the example with your own password before the first start.
+# A supplied password also skips the forced password change on first login.
 DITTOFS_ADMIN_INITIAL_PASSWORD=my-secure-password ./dfs start
 ```
 
@@ -164,7 +166,7 @@ stores, mounts and other users. So: **set it before the very first start.**
 # 1. Start the server (see above), then log in
 ./dfsctl login --server http://localhost:8080 --username admin
 
-# 1a. REQUIRED on first login: change the admin password.
+# 1a. Only if the admin password was generated: change it on first login.
 # The bootstrap admin starts with a forced-password-change flag — until you
 # clear it here, every other command (including `user create` below) is
 # rejected with HTTP 403:

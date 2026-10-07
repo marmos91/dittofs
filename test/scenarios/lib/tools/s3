@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# s3 start | stop | pause | resume: the local S3 (SeaweedFS), with its data in /tmp/seaweedfs.
+#   start   runs it and waits until it answers; the data survives a stop
+#   stop    kills it (SIGKILL), like an outage, so requests are refused
+#   pause   freezes it (SIGSTOP): connections stay open and requests hang, until resume
+set -euo pipefail
+case "$1" in
+start)
+    # Each bucket is a collection that takes up to 7 volumes on its first write. Left to itself the
+    # volume count is free disk / 30 GB, a handful on a small disk, and a second bucket gets none:
+    # every PutObject to it fails with 500. 1 GB volumes, at most 200 (the 125 GB scenario needs
+    # about 130), are made only as data arrives. A single master need not wait out the 10 s default
+    # election timeout before it leads again after a stop.
+    /opt/seaweedfs/usr/bin/weed server -ip=127.0.0.1 -dir=/tmp/seaweedfs -volume.port=18080 \
+        -volume.max=200 -master.volumeSizeLimitMB=1024 -master.electionTimeout=1s \
+        -s3 -s3.port=9000 -s3.config=/tmp/seaweedfs-identities.json >>/logs/weed.log 2>&1 &
+    for _ in $(seq 1 120); do rclone lsf s3: --retries 1 --low-level-retries 1 >/dev/null 2>&1 && exit 0; sleep 0.5; done
+    rclone lsf s3:
+    ;;
+stop)
+    pkill -KILL -x weed
+    while pgrep -x weed >/dev/null; do sleep 0.2; done
+    ;;
+pause) pkill -STOP -x weed ;;
+resume) pkill -CONT -x weed ;;
+*) echo "usage: s3 start | stop | pause | resume" >&2 && exit 2 ;;
+esac

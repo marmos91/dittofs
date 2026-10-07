@@ -433,6 +433,8 @@ sudo umount /mnt/nfs   # Linux
 umount /tmp/nfs        # macOS
 ```
 
+To mount a share automatically at boot, see [Mount at boot](persistent-mounts.md).
+
 ---
 
 ## Identity Squashing (root_squash and friends)

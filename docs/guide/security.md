@@ -24,7 +24,7 @@ For the internal mechanism design and threat model, see
   - [NFSv4 ACLs](#nfsv4-acls)
   - [POSIX file permissions](#posix-file-permissions)
   - [Export-level access control](#export-level-access-control)
-  - [IP-based restrictions](#ip-based-restrictions)
+  - [IP-based restrictions](#export-level-access-control)
   - [Identity mapping](#identity-mapping)
   - [Read-only shares](#read-only-shares)
 - [Network security](#network-security)

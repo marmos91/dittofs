@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# dfs-server start [VAR=value ...] | stop | kill: the DittoFS server.
+#   start   runs it with setup's flags, plus the given environment (an encryption passphrase, say),
+#           and waits until dfsctl is logged in again. Its log goes to /logs/dfs.log: --log-file
+#           only takes the process's output, so the log is sent there too (logging.output=stdout).
+#   stop    shuts it down cleanly (SIGTERM); kill ends it at once (SIGKILL), like a crash. Both
+#           wait until it is gone.
+# Resume a paused S3 before a start: startup checks the bucket.
+set -euo pipefail
+case "$1" in
+start)
+    shift
+    env DITTOFS_LOGGING_OUTPUT=stdout DITTOFS_ADMIN_INITIAL_PASSWORD=admin-secret "$@" dfs start --log-file /logs/dfs.log
+    for _ in $(seq 1 60); do
+        dfsctl login --server http://127.0.0.1:8080 --username admin --password admin-secret >/dev/null 2>&1 && exit 0
+        sleep 1
+    done
+    dfsctl login --server http://127.0.0.1:8080 --username admin --password admin-secret
+    ;;
+stop | kill)
+    if test "$1" = kill; then dfs stop --force; else dfs stop; fi
+    while pgrep -x dfs >/dev/null; do sleep 0.2; done
+    ;;
+*) echo "usage: dfs-server start [VAR=value ...] | stop | kill" >&2 && exit 2 ;;
+esac

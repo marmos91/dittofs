@@ -16,13 +16,12 @@ SMB.
 Pick one:
 
 ```bash
-# Nix (runs without installing)
-nix run github:marmos91/dittofs -- init
-nix run github:marmos91/dittofs -- start
+# Nix (temporary shell with dfs and dfsctl; no permanent install)
+nix shell github:marmos91/dittofs
 
 # Homebrew (macOS / Linux)
 brew tap marmos91/tap
-brew install marmos91/tap/dfs marmos91/tap/dfsctl
+brew install --cask marmos91/tap/dfs marmos91/tap/dfsctl
 
 # Quick install script (macOS / Linux)
 curl -fsSL https://github.com/marmos91/dittofs/releases/latest/download/install.sh | sh
@@ -40,19 +39,18 @@ go build -o dfs    cmd/dfs/main.go
 go build -o dfsctl cmd/dfsctl/main.go
 ```
 
+If you built from source, use `./dfs` and `./dfsctl` in the commands below.
+
 ## 2. Initialize and start the server
+
+On first start DittoFS creates an `admin` user. **Choose and pre-set the password before
+that first start** with `DITTOFS_ADMIN_INITIAL_PASSWORD`. This is the recommended path
+for every deployment and the only reliable one for Docker/Kubernetes/CI and systemd:
 
 ```bash
 dfs init      # writes ~/.config/dittofs/config.yaml
-dfs start
-```
-
-On first start DittoFS creates an `admin` user. **Pre-set the password** with
-`DITTOFS_ADMIN_INITIAL_PASSWORD` — this is the recommended path for every deployment and
-the only reliable one for Docker/Kubernetes/CI and systemd:
-
-```bash
-# Choose your own password (also skips the forced first-login password change)
+# Replace the example with your own password before running this command.
+# A supplied password also skips the forced first-login password change.
 DITTOFS_ADMIN_INITIAL_PASSWORD=my-secure-password dfs start
 ```
 
@@ -82,16 +80,18 @@ By default the server listens on these ports:
 dfsctl login --server http://localhost:8080 --username admin
 ```
 
-On first login you **must** change the admin password before any other command will
-work — until you do, the rest are rejected with HTTP 403:
+If you used `DITTOFS_ADMIN_INITIAL_PASSWORD` above, log in with that password and
+continue to step 4. If you let DittoFS generate the password instead, you **must**
+change it on first login before any other command will work — until you do, the rest
+are rejected with HTTP 403:
 
 ```bash
 dfsctl user change-password
 ```
 
-(If you set `DITTOFS_ADMIN_INITIAL_PASSWORD` yourself, this forced change is already
-cleared. You can disable it entirely with `controlplane.require_initial_password_change:
-false` — see [Configuration](configuration.md).)
+You can disable the forced change entirely with
+`controlplane.require_initial_password_change: false` — see
+[Configuration](configuration.md).
 
 ## 4. Create a user
 
@@ -130,16 +130,30 @@ dfsctl share permission grant /export --user $(whoami) --level read-write
 
 ## 7. Mount over NFS
 
+<details>
+<summary><strong>Client prerequisites (Linux)</strong></summary>
+
+macOS includes the NFS and SMB clients. On Linux, install them before mounting:
+
+```bash
+sudo apt install -y nfs-common cifs-utils   # Debian / Ubuntu
+sudo dnf install -y nfs-utils cifs-utils    # RHEL / Fedora
+```
+
+</details>
+
 ```bash
 dfsctl adapter enable nfs
 
 # Linux
+sudo mkdir -p /mnt/nfs
 sudo mount -t nfs -o tcp,port=12049,mountport=12049 localhost:/export /mnt/nfs
+echo "Hello DittoFS!" > /mnt/nfs/hello.txt
 
 # macOS
+mkdir -p /tmp/nfs
 sudo mount -t nfs -o tcp,port=12049,mountport=12049,resvport,nolock localhost:/export /tmp/nfs
-
-echo "Hello DittoFS!" > /mnt/nfs/hello.txt
+echo "Hello DittoFS!" > /tmp/nfs/hello.txt
 ```
 
 Writes land in the share's journal first and sync to S3 in the background. More mount
@@ -154,11 +168,17 @@ dfsctl adapter enable smb
 dfsctl user create --username alice          # password prompted
 dfsctl share permission grant /export --user alice --level read-write
 
-# Linux (use a credentials file — never put passwords on the command line)
+# Linux: keep alice's password in a private credentials file, never on the command line
+printf 'username=alice\npassword=ALICE_PASSWORD\n' > ~/.smbcredentials
+chmod 600 ~/.smbcredentials
+sudo mkdir -p /mnt/smb
+
+# uid/gid make the mounted files yours locally, so you can write as a regular user
 sudo mount -t cifs //localhost/export /mnt/smb \
-  -o port=12445,credentials=$HOME/.smbcredentials,vers=3.1.1
+  -o port=12445,credentials=$HOME/.smbcredentials,vers=3.1.1,uid=$(id -u),gid=$(id -g)
 
 # macOS (prompts for the password)
+mkdir -p /tmp/smb
 mount -t smbfs //alice@localhost:12445/export /tmp/smb
 ```
 
@@ -167,9 +187,10 @@ signing are in the [SMB guide](smb.md).
 
 ## Next steps
 
-- [Configuration](configuration.md) — every config key and flag, with defaults.
-- [CLI reference](cli.md) — every `dfs` and `dfsctl` command.
-- [Choosing stores](choosing-stores.md) — metadata and block store trade-offs.
-- [Identity: AD / LDAP / Kerberos](identity.md) — connect to a directory service.
+- [Configuration](configuration.md): every config key and flag, with defaults.
+- [CLI reference](cli.md): every `dfs` and `dfsctl` command.
+- [Choosing stores](choosing-stores.md): metadata and block store trade-offs.
+- [Identity: AD / LDAP / Kerberos](identity.md): connect to a directory service.
 - [Snapshots](snapshots.md), [Quotas](quotas.md), [Encryption](encryption.md).
-- [Troubleshooting](troubleshooting.md) — when a mount or permission won't cooperate.
+- [Mount at boot](persistent-mounts.md): make NFS and SMB mounts survive a reboot.
+- [Troubleshooting](troubleshooting.md): when a mount or permission won't cooperate.

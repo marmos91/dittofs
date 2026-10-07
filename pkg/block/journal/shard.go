@@ -85,6 +85,11 @@ type shard struct {
 	// mu, which serializes appends and index mutation — a flush holds flushMu
 	// across its whole pass but only grabs mu briefly to snapshot and flip.
 	flushMu sync.Mutex
+	// reclaimQueued is true while a background reclaim for this shard waits for
+	// flushMu (reclaimAfterDelete). It clears once that reclaim holds flushMu,
+	// so the deletes that land while a flush pass runs share one queued
+	// reclaim, and a delete after its scan has started queues the next.
+	reclaimQueued atomic.Bool
 
 	// Group-commit state (all under commitMu). Coalesces the burst of concurrent
 	// Commits a high-iodepth durable-write workload issues (fio rand-write-4k runs

@@ -182,19 +182,40 @@ dfsctl share mount --protocol smb /export ~/mnt/dittofs
 
 #### Windows
 
-From Command Prompt or PowerShell:
+The Windows SMB client connects to port 445 unless told otherwise. Connecting to a non-default
+port (such as the default `12445`) requires **Windows 11 24H2 / Windows Server 2025 or later**.
+Older Windows clients can only reach DittoFS when it serves the standard port 445 — see
+[Running on standard ports (production)](install.md#running-on-standard-ports-production).
+
+From Command Prompt:
 
 ```cmd
+:: Standard port 445
 net use Z: \\server\export /user:username password
-# Explicit port:
-net use Z: \\server@12445\export /user:username password
 
-# Disconnect
+:: Non-default port (Windows 11 24H2 / Windows Server 2025+)
+net use Z: \\server\export /user:username /tcpport:12445 password
+
+:: Disconnect
 net use Z: /delete
 ```
 
-From Explorer: right-click "This PC" > "Map network drive", set path to
-`\\server@12445\export`.
+From PowerShell:
+
+```powershell
+# Non-default port (Windows 11 24H2 / Windows Server 2025+)
+New-SmbMapping -LocalPath Z: -RemotePath \\server\export -UserName username -Password 'password' -Persistent $true -TcpPort 12445
+
+# Disconnect
+Remove-SmbMapping -LocalPath Z:
+```
+
+> **Note:** do not use the `\\server@12445\export` form. That is WebDAV (WebClient) syntax,
+> not SMB — Windows will try WebDAV over HTTP and never reach the SMB listener.
+
+From Explorer: right-click "This PC" > "Map network drive", set path to `\\server\export`.
+Explorer cannot set a custom port, so this only works when DittoFS serves port 445; for a
+non-default port, map the drive with `net use` or `New-SmbMapping` as above.
 
 #### macOS (native commands)
 
@@ -244,6 +265,8 @@ smbclient //localhost/export -p 12445 -U testuser -c "get file.txt"
 smbclient //localhost/export -p 12445 -U testuser -c "put localfile.txt"
 ```
 
+To mount a share automatically at boot, see [Mount at boot](persistent-mounts.md).
+
 ---
 
 ## Encryption
@@ -264,7 +287,7 @@ Cipher suites supported:
 | AES-256-GCM | -- | 256-bit |
 
 SMB confidentiality is provided by **SMB3 in-protocol encryption**, not TLS or QUIC. See
-[./security.md](./security.md#smb3-security-model) for details.
+[./security.md](./security.md#smb-encryption) for details.
 
 ### Encryption Modes
 
@@ -518,7 +541,7 @@ Permission levels: `none`, `read`, `read-write`, `admin`.
 Resolution order: user explicit permission → group permission → share default.
 
 For the full user management reference (LDAP/AD idmap, password hash format, per-share
-defaults), see [./configuration.md#user-management](./configuration.md#user-management).
+defaults), see [./configuration.md#9-user-management](./configuration.md#9-user-management).
 
 ---
 

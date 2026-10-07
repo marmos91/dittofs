@@ -46,6 +46,8 @@ func ReadFromBlockStore(
 	offset uint64,
 	count uint32,
 ) (BlockReadResult, error) {
+	ctx, cancel := WithRequestDeadline(ctx)
+	defer cancel()
 	data := pool.Get(int(count))
 	n, readErr := blockStore.ReadAt(ctx, string(payloadID), data, offset)
 

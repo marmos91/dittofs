@@ -28,7 +28,7 @@
     }:
     let
       # Version configuration - update this for releases
-      version = "0.34.0";
+      version = "0.34.1";
     in
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -495,7 +495,7 @@
 
               # Auto-updated by .github/workflows/nix-update-hash.yml on go.mod/go.sum changes.
               # Manual: go run scripts/update-nix-hash.go
-              vendorHash = "sha256-31XoRKiE/nt7bOYjgo6/+AE9HShymH1c0i5C4A1E70o=";
+              vendorHash = "sha256-mQ3Mos2ufyefGPUBt7zDFMnGgUDU/KgIG7E/EkjDFsw=";
 
               ldflags = [
                 "-s"

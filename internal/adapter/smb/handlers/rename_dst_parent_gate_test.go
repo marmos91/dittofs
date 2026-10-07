@@ -9,6 +9,7 @@
 package handlers
 
 import (
+	"context"
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
@@ -146,5 +147,41 @@ func TestParentDirRenameConflict_SameSessionHolderStillConflicts(t *testing.T) {
 
 	if !h.checkParentDirRenameConflict(renamer, dstParent) {
 		t.Fatal("same-session DELETE-access holder did not refuse the rename")
+	}
+}
+
+// A share-root open made through CREATE must record the client's
+// ShareAccess, so the gate judges a rename into the root by what that open
+// really allows. The holder is Explorer's view of the root:
+// SYNCHRONIZE|FILE_READ_ATTRIBUTES|FILE_LIST_DIRECTORY, not a stat-only open.
+func TestParentDirRenameConflict_ShareRootHolderFromCreate(t *testing.T) {
+	tests := []struct {
+		name     string
+		share    uint32
+		conflict bool
+	}{
+		{"root open shares read, write and delete", smbShareRead | smbShareWrite | smbShareDelete, false},
+		{"root open denies write sharing", smbShareRead | smbShareDelete, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, authCtx, rootHandle := setupWalkPathTest(t)
+			req := &CreateRequest{
+				DesiredAccess:     0x00100081,
+				ShareAccess:       tt.share,
+				CreateDisposition: types.FileOpen,
+			}
+			ctx := &SMBHandlerContext{Context: context.Background(), SessionID: 25, TreeID: 25}
+			resp, err := h.handleOpenRootCreate(ctx, req, authCtx, rootHandle, &TreeConnection{ShareName: "/test"})
+			if err != nil {
+				t.Fatalf("handleOpenRootCreate: %v", err)
+			}
+			if resp.Status != types.StatusSuccess {
+				t.Fatalf("share-root open: status 0x%08x, want STATUS_SUCCESS", resp.Status)
+			}
+			if got := h.checkParentDirRenameConflict(storeRenamer(h), rootHandle); got != tt.conflict {
+				t.Fatalf("rename into the share root: conflict = %v, want %v", got, tt.conflict)
+			}
+		})
 	}
 }
