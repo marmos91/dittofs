@@ -5,16 +5,6 @@ on:
     branches: [develop]
   pull_request:
     branches: [develop, main]
-    paths:
-      - 'cmd/**/*.go'
-      - 'pkg/**/*.go'
-      - 'pkg/metadata/store/*/migrations/*.sql'
-      - 'internal/**/*.go'
-      - 'go.mod'
-      - 'go.sum'
-      - 'test/integration/**'
-      - 'test/kmip/**'
-      - '.github/workflows/integration-tests.yml'
 
 permissions:
   contents: read
@@ -42,6 +32,36 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          # Full history so dorny/paths-filter can resolve the previous commit
+          # on push events; a shallow clone can miss it on a multi-commit push.
+          fetch-depth: 0
+
+      # decision: the integration-change filter lives inside the job rather
+      # than in the workflow's `paths:`. A workflow skipped by path filtering
+      # leaves its check in "Pending" forever, so requiring this check would
+      # block every pull request that touches no integration-relevant file — a
+      # job whose steps are skipped reports "Success" instead. The filter is not
+      # allowed to fail quietly: a failure fails this job, so the check can
+      # never go green having run nothing. Overturn this if the check stops
+      # being required, or if the workflow gains a merge_group trigger, which
+      # needs the filter's answer for a base the merge queue supplies rather
+      # than a pull request.
+      - name: Check for integration-relevant changes
+        uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            go:
+              - 'cmd/**/*.go'
+              - 'pkg/**/*.go'
+              - 'pkg/metadata/store/*/migrations/*.sql'
+              - 'internal/**/*.go'
+              - 'go.mod'
+              - 'go.sum'
+              - 'test/integration/**'
+              - 'test/kmip/**'
+              - '.github/workflows/integration-tests.yml'
 
       # PostgreSQL for the metadata-store integration + conformance suites.
       # Started as a step-managed container (not a `services:` block) so the
@@ -50,6 +70,7 @@ jobs:
       # whole job before any step runs. The test factory connects to
       # localhost:5432, database dittofs_test, postgres/postgres.
       - name: Start PostgreSQL (with pull retry)
+        if: github.event_name != 'pull_request' || steps.filter.outputs.go == 'true'
         run: |
           pulled=false
           for attempt in 1 2 3 4 5; do
@@ -96,15 +117,18 @@ jobs:
       # the provider reacts to, and exports the DITTOFS_TEST_KMIP_* vars
       # those tests read.
       - name: Start PyKMIP
+        if: github.event_name != 'pull_request' || steps.filter.outputs.go == 'true'
         run: ./test/kmip/start-pykmip.sh "${{ runner.temp }}/kmip-certs" "$GITHUB_ENV"
 
       - name: Set up Go
+        if: github.event_name != 'pull_request' || steps.filter.outputs.go == 'true'
         uses: actions/setup-go@v7
         with:
           go-version: ${{ matrix.go-version }}
           cache: true  # Built-in caching (replaces actions/cache)
 
       - name: Download dependencies
+        if: github.event_name != 'pull_request' || steps.filter.outputs.go == 'true'
         run: go mod download
 
       # Which packages the integration tag actually changes, derived here and
@@ -116,6 +140,7 @@ jobs:
       # count, so a tag that swaps one file for another is caught as well as
       # one that adds.
       - name: Resolve the integration-tagged packages
+        if: github.event_name != 'pull_request' || steps.filter.outputs.go == 'true'
         id: pkgs
         run: |
           set -euo pipefail
@@ -151,6 +176,7 @@ jobs:
       # dittofs_test database, and the conformance suite truncates it
       # between subtests — running their binaries concurrently would race.
       - name: Run the integration tests
+        if: github.event_name != 'pull_request' || steps.filter.outputs.go == 'true'
         env:
           DITTOFS_TEST_POSTGRES_DSN: "host=localhost port=5432 dbname=dittofs_test user=postgres password=postgres sslmode=disable"
         run: |
@@ -158,6 +184,7 @@ jobs:
           xargs go test -tags=integration -v -timeout=20m -p 1 < /tmp/integration-pkgs.txt
 
       - name: Install and start rpcbind
+        if: github.event_name != 'pull_request' || steps.filter.outputs.go == 'true'
         env:
           # apt and needrestart both prompt on a tty-less runner if left to
           # their defaults, and a prompt here blocks with no output until the
@@ -170,6 +197,7 @@ jobs:
           sudo systemctl start rpcbind || sudo rpcbind
 
       - name: Run portmap system integration tests
+        if: github.event_name != 'pull_request' || steps.filter.outputs.go == 'true'
         run: |
           # Tests RPC client against system rpcbind
           # Skips automatically if rpcbind unavailable or NFS already registered
