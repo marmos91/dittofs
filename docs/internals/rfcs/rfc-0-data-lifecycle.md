@@ -19,6 +19,195 @@ can enforce alone. Every other RFC in the set inherits these and does not
 redefine them. Conventions, including the RFC 2119 key words, are in
 [the RFC index](rfc-index.md#Conventions).
 
+## Start here
+
+*Explanatory. The rules are in §1 onward; where this section and a rule differ, the rule wins.*
+
+DittoFS is a file server that runs as an ordinary program, with no kernel
+module. Clients mount it over NFS (Network File System) or SMB (Server Message
+Block), as they would mount a NAS (network-attached storage) box. Behind the
+protocols, file content lives in a remote object store — an S3 (Simple Storage
+Service) compatible bucket — with a fast local journal in front of it.
+
+This RFC is the root of the set. It defines the words every other RFC uses, the
+path content takes from a client's write to the bucket and back, and the rules
+that no single component can keep on its own.
+
+### The problem
+
+An object store is cheap, durable and close to bottomless, but it has the wrong
+shape for files:
+
+- an object is written whole and never changed in place, so changing 64 KiB of a
+  30 GB file means writing a new object;
+- every request takes tens of milliseconds and is billed;
+- it has no rename, no links, no locks and no permissions.
+
+A file server has to acknowledge small random overwrites at local-disk speed,
+keep every acknowledged write across a crash, honour a client's flush (NFS
+`COMMIT`, SMB `FLUSH`, `fsync`), and give POSIX and Windows semantics: rename,
+hard links, byte-range locks, deny modes, access-control lists.
+
+DittoFS splits the work. A **journal** on a local NVMe disk takes every write
+and acknowledges it. Later, in the background, the written bytes are cut into
+**chunks**, packed into large **blocks** and uploaded, one object per block. A
+**metadata store** records which file holds which chunks at which offsets, and
+which block holds each chunk. Once a block is safely uploaded, the local copy
+can be dropped, and a later read fetches it back.
+
+### One write, followed end to end
+
+The installation runs on one node, N1. alice's Windows desktop, alice-pc, holds
+her profile disk `profiles/alice/ODFC_alice.vhdx` open all day: a 30 GB virtual
+disk file that receives 64 KiB random overwrites.
+
+1. **09:00, the write.** alice-pc writes 64 KiB at offset 4 GiB. N1 checks that
+   alice may write the file, appends one **record** to the journal, and replies.
+   Nothing is hashed, chunked or uploaded on this path. Only the journal holds
+   the new bytes: the range is **Dirty**.
+2. **09:00, the flush.** alice-pc sends an SMB flush. The journal makes the
+   record durable on its disk, and the metadata store records that the write
+   happened — the file's size, holes and modification time — in one commit
+   shared with other files' writes. The bucket is not involved.
+3. **09:04, the offload.** The journal offers its dirty ranges. The bytes are
+   cut into chunks of about 256 KiB, each named by the hash of its content;
+   chunks from many files are packed into a block of about 4 MiB; the block is
+   put to the bucket `dfs-data`. Once the bucket reports it durable, one
+   metadata transaction records the chunks and the block, and only then is the
+   journal told which ranges are safe. Those ranges are now **Resident**: held
+   locally and durable remotely.
+4. **18:00, eviction.** The journal is filling. It drops local copies of ranges
+   it was told are durable, and only those. The 4 GiB range is now **Remote**.
+5. **Next morning, the read.** alice signs in and Windows reads the range. The
+   journal answers "not held"; the metadata store answers "chunk C, inside block
+   K1". N1 gets those bytes from the bucket, checks their hash and serves them.
+
+Now suppose the NVMe disk damaged the record at 09:02, after the flush and
+before the offload. A design with one source of truth sees only "nothing held
+locally" and cannot tell *never written* from *lost*: it returns zeros, or the
+older bytes still in the bucket, and reports success. Here the two sources
+answer different questions. The metadata store says the range was written and
+no current chunk covers it; the journal says it holds nothing. That combination
+is **Lost**, and the read fails with an error. Zeros are returned only for a
+range that was never written.
+
+```text
+ alice-pc (SMB)                    build01 (NFS)
+   │ write 64 KiB, flush             │ untar, compile, rm -rf
+   ▼                                 ▼
+ ┌─────────────────────────── node N1 ───────────────────────────┐
+ │ protocol adapters ──► filesystem service ──► metadata store   │
+ │                              │               2 flush records  │
+ │                              ▼                 the write      │
+ │   journal (local NVMe) ◄── engine            files, refs,     │
+ │   1 append, acknowledge      │               chunks, blocks   │
+ │   4 evict once durable       │ 3 offload           ▲ record   │
+ │                              └─► cut chunks ─► pack block ─┐  │
+ └────────────────────────────────────────────────────────────│──┘
+                                                   put block  ▼
+ 5 a read of an evicted range ◄── get, verify ── bucket dfs-data
+```
+
+The layers, and which node runs which, are drawn in [§1.3](#1.3%20The%20layers).
+
+### The words you need
+
+The [Glossary](#Glossary) below defines every shared term in one line. These
+seven carry this document:
+
+- **Journal**: the local tier, one per disk, holding recent writes until they
+  are offloaded ([§1](#1.%20Scope)).
+- **Offload**: the background pass that uploads a journal's dirty ranges and
+  records them in metadata ([§5.2](#5.2%20Offload)).
+- **Chunk**: a run of a file's bytes, about 256 KiB, named by the hash of its
+  content and shared by every file that holds it ([§2.1](#2.1%20Entities)).
+- **Block**: one object in the bucket, a whole number of chunks written by one
+  put; a chunk never spans two blocks ([§2.2](#2.2%20How%20a%20file%20relates%20to%20its%20chunks)).
+- **Ref** and **refcount**: one file's use of one chunk at one offset; a chunk's
+  refcount is how many refs name it ([§2.1](#2.1%20Entities)).
+- **Residency**: where a range's bytes are, computed on every read from the
+  journal's answer and the metadata store's — Absent, Dirty, Resident, Remote
+  or Lost — and never stored ([§4.2](#4.2%20The%20residency%20function)).
+- **Evict**, **reclaim**, **sweep**: drop a local copy that is durable remotely;
+  recover local space without losing anything; delete a block from the bucket
+  that nothing references. Only sweep destroys a last copy ([§8](#8.%20Reclamation)).
+
+### What this RFC promises
+
+- A write is acknowledged only once the journal can recover it.
+- A range that was written never reads as zeros, nor as older content a
+  committed overwrite replaced. If its bytes are gone, the read fails.
+- A local copy is dropped only after the bucket holds it, and that is learnt
+  from a report by whoever observed the upload, never assumed from a transfer
+  finishing or time passing.
+- A block is deleted from the bucket only when no file, snapshot or clone
+  references any chunk in it.
+- Every failure — bucket down, journal full, metadata unwritable, crash — has
+  one specified behaviour, and clears on its own once the cause is gone.
+
+### A guided tour of the set
+
+[The index](rfc-index.md) lists every RFC; this is which one to open for what.
+
+| To learn | Read |
+| --- | --- |
+| how writes are stored on local disk, survive a crash, and fill it | [RFC 1](rfc-1-journal.md), journal |
+| how bytes become chunks, and chunks become blocks | [RFC 2](rfc-2-carver.md), carver |
+| how blocks are uploaded and fetched, retried and paced | [RFC 3](rfc-3-syncer.md), syncer |
+| what an object in the bucket looks like, and what a backend must offer | [RFC 4](rfc-4-remote-tier.md), remote tier |
+| compression, encryption and the threat model | [RFC 5](rfc-5-transforms.md), transforms |
+| which chunk holds each byte of a file, and how chunks are counted | [RFC 6](rfc-6-block-metadata.md), block metadata |
+| how all metadata sits in one database: entities, keys, counters | [RFC 16](rfc-16-metadata-store.md), metadata store |
+| names, directories, handles, permissions, when a file stops existing | [RFC 7](rfc-7-namespace-metadata.md), namespace |
+| opens, locks, deny modes, leases and delegations | [RFC 14](rfc-14-open-state.md), open state |
+| the one interface NFS and SMB call | [RFC 17](rfc-17-vfs.md), filesystem service |
+| the content path that ties the journal, carver, syncer and metadata together | [RFC 8](rfc-8-engine.md), engine |
+| deleting blocks nothing references, safely | [RFC 9](rfc-9-gc.md), GC (garbage collection) |
+| snapshots, backups, moving a share | [RFC 12](rfc-12-snapshots.md), snapshots |
+| what is a setting and what is fixed | [RFC 13](rfc-13-configuration.md), configuration |
+| more than one node: replicated journals, shards, roles | [RFC 10](rfc-10-journal-replication.md), [RFC 11](rfc-11-ownership.md), [RFC 15](rfc-15-topology.md) |
+
+Identity, authorization, the protocol adapters and operations are RFC 18–25,
+planned. A first pass can follow the write path: this RFC, then 1, 2, 3, 6 and
+8; then 7 and 14 for what clients see; then 15 for how it spreads over nodes.
+
+### The shared cast
+
+Every RFC tells its examples with the same installation, so a story started in
+one continues in the next.
+
+- **The installation** `dittofs` serves two shares:
+  - `profiles`, over SMB, for Windows desktops: one profile container per user,
+    such as `profiles/alice/ODFC_alice.vhdx`, a 30 GB virtual disk with about
+    10.5 GB used, held open all day by one read/write handle and written by
+    64 KiB random overwrites; bob has the same;
+  - `builds`, over NFS, where a Linux build server untars and compiles many
+    small files, then removes them all with `rm -rf`.
+- **Users** alice and bob. **Clients** alice-pc (Windows, SMB) and build01
+  (Linux, NFS).
+- **Single node**: node N1, its journal on an NVMe disk, its remote tier the S3
+  bucket `dfs-data`.
+- **Cluster**, only where an RFC is about several nodes: protocol nodes P1 and
+  P2; storage nodes S1, S2 and S3; shard A is `profiles/alice/` with primary S1,
+  shard B is `profiles/bob/` with primary S2.
+- **Units**, smallest to largest: a **write** (what a client sends); a journal
+  **record** (one write as stored locally); a **segment** (a local file of
+  records, about 256 MiB); a **chunk** (about 256 KiB of one file's content,
+  named by its hash); a **block** (an object of about 4 MiB in the bucket,
+  packing many chunks); a **namespace** (a prefix in the bucket); a **shard**
+  (a set of files owned by one node at a time).
+
+### How the rest is organised
+
+[§1](#1.%20Scope) sets the scope and draws the layers. [§2](#2.%20Terminology)
+defines the entities and operations; [§3](#3.%20Identity) is file identity and
+why deduplication is off. [§4](#4.%20Residency) is the heart: the two sources
+and the residency function. [§5](#5.%20The%20write%20path) to
+[§8](#8.%20Reclamation) follow content through writes, reads, overwrites and
+deletes, and space recovery. [§9](#9.%20Invariants) lists the ten invariants
+and [§10](#10.%20Failure%20model) the failure model. On a first read, skip
+§3.1, §9.1–§9.3 and §10.3.
+
 ## Glossary
 
 The words the whole set shares, one line each. The linked section is the
@@ -621,7 +810,7 @@ chunks — a clone, a copy or a restore; offload never does ([§3.1](#3.1%20Dedu
 it back, and the irreversible step — deleting it — is taken in a
 transaction that first checks an index of the references themselves, so a count
 that drifted low cannot delete anything. It needs no fence against writers: a name is never put twice
-([§5.2](#5.2%20Offload)), so a remote object may be deleted once no block record and no put
+([§5.2](#5.2%20Offload)), so a remote object may be deleted once no live block record and no put
 intent names it. That state is final: no later put can reach the name, and a
 delete that lands late can reach no committed block.
 
@@ -639,7 +828,7 @@ These hold across components. No component can enforce any of them alone.
 | **I6** | No component imports another component in this set, except the composition root, which composes them ([§1.2](#1.2%20Component%20autonomy)). Adapters import only the filesystem service ([RFC 17](rfc-17-vfs.md)). |
 | **I7** | Every stored record has a named reclamation path that holds at the record's maximum size. |
 | **I8** | A serialization conflict is retried within the caller's deadline, never surfaced as an I/O error. |
-| **I9** | A block name is minted by one put attempt and put by no other; a remote object is deleted only when no block record and no put intent names it. |
+| **I9** | A block name is minted by one put attempt and put by no other; a remote object is deleted only when no live block record and no put intent names it. |
 | **I10** | A removal masks every ref it has not yet dropped from the moment it is recorded, and a ref stays counted until the transaction that deletes it. |
 
 An implementation is conformant when all ten hold under concurrent operation,

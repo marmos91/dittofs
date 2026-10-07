@@ -21,6 +21,116 @@ and the remote tier. Conventions and test tiers are in [the RFC index](rfc-index
 
 ---
 
+## Start here
+
+*Explanatory. The rules are in §1 onward; where this section and a rule differ, the rule wins.*
+
+Clients write to DittoFS over NFS (Network File System) or SMB (Server Message
+Block). Writes land first in a local **journal** ([RFC 1](rfc-1-journal.md)); in the background
+the bytes are cut into **chunks** and packed into **blocks** ([RFC 2](rfc-2-carver.md)) and
+uploaded to a remote object store (an S3 bucket). Evicted data is fetched back
+when read. [RFC 0](rfc-0-data-lifecycle.md) tells the whole story.
+
+The syncer does the moving. Blocks go out whole, one upload (a *put*) each;
+chunks come back as reads need them, each checked against its hash. It decides
+nothing about what to move or when: it runs the transfers it is handed, under a
+fixed bound on memory and concurrency, serves waiting readers first, and reports
+how each transfer ended.
+
+### The problem, in one example
+
+The installation runs on one node, N1; both shares, `profiles` and `builds`,
+store their blocks in the S3 bucket `dfs-data`. The fetch side has 128 workers,
+and a 4 MiB block takes about 200 ms to fetch.
+
+1. **08:55.** An operator pre-warms `builds/` so the morning compile reads
+   locally: 50 GB, about 12,800 blocks. The engine, which decides what to
+   transfer, turns that into 12,800 whole-block prefetches. Nobody is waiting
+   for them.
+2. **09:00.** alice signs in on alice-pc. Windows reads the header of
+   `profiles/alice/ODFC_alice.vhdx`, which was evicted overnight. The engine
+   asks the syncer to fetch the one 256 KiB chunk it needs.
+
+With one first-come queue, alice's fetch waits behind every prefetch:
+12,800 ÷ 128 = 100 rounds of 200 ms, about 20 seconds of a frozen sign-in.
+
+The syncer serves work by class instead: a waiting reader (**demand**) first,
+then offload and relocation (**background**), then guesses such as pre-warm
+(**speculation**), whichever share asked. alice's fetch takes the next worker
+that frees, about 200 ms away. It asks only for her chunk, as one ranged get,
+not the whole block; checks it against its hash; and hands it to the engine,
+which answers Windows and may store it back in the journal (a *fill*). Were the
+queues full of prefetches, her fetch would push out the youngest one rather than
+be refused.
+
+Uploads have their own 128 workers, so offloading `profiles` and `builds` goes on
+meanwhile. Had `dfs-data` started refusing writes — a quota reached — the store
+would turn unhealthy for puts only: uploads refused at once, reads untouched, and
+new writes still landing in the journal until it fills.
+
+```text
+   engine, profiles share           engine, builds share
+   alice's cold read: fetch         pre-warm: 12,800 prefetches
+   (demand, one chunk)              (speculation, whole blocks)
+            │                                │
+            ▼                                ▼
+ ┌─────────────────── syncer, one per process ───────────────────┐
+ │ fetcher   a queue per share and class; demand first, then     │
+ │           background (relocation), then speculation;          │
+ │           128 workers, each holding one chunk, not a block    │
+ │ uploader  128 workers; one put per block (offload, relocation)│
+ │ health    probed per store, for puts and gets separately      │
+ └───────────────────────────────────────────────────────────────┘
+            │ ranged get, verified chunk by chunk   │ put, whole block
+            ▼                                       ▼
+                    remote tier: S3 bucket dfs-data
+```
+
+### The words you need
+
+- **uploader**, **fetcher** — the two halves: one puts whole blocks, the other
+  gets chunks, or whole blocks, back ([§1.2](#1.2%20Two%20halves%2C%20one%20component)).
+- **flow** — a handle bound to one store and one queue in the scheduler; the
+  engine opens one per share, and GC (garbage collection) one to relocate blocks
+  ([§1.3](#1.3%20Interface)).
+- **worker pool** — per half, the only limit on transfers in flight, and so the
+  memory bound; 128 by default ([§2.1](#2.1%20A%20worker%20pool%20is%20the%20only%20concurrency%20control), [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)).
+- **demand**, **background**, **speculation** — the three classes, served in that
+  order, fairly by bytes among flows within a class ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)).
+- **put attempt** — one upload of one block under a name minted for it; every
+  retry reuses that name and those bytes ([§2.5](#2.5%20An%20unknown%20outcome%20is%20not%20a%20success)).
+- **health** — kept per store and per direction, put or get, from probes and
+  recent failures; an unhealthy direction refuses calls at once ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)).
+- **fill** — the engine placing fetched chunks into the journal
+  ([RFC 0 §6.2](rfc-0-data-lifecycle.md#6.2%20Fill)); the syncer only hands them over.
+
+### What this RFC promises
+
+- An upload reports success only on the store's durable acknowledgement. A lost
+  response is a failure, and a retry within the same attempt puts the same name
+  with the same bytes.
+- No byte of a fetched chunk reaches a caller before the chunk is checked
+  against its hash.
+- Every transfer ends, in success or a reported failure, in bounded time:
+  a store moving less than 64 KiB/s over 30 s, or no first byte in 10 s, fails it.
+- Memory is bounded by the two pool sizes. When a pool is full, callers wait or
+  are refused; nothing queues without bound.
+- A waiting reader goes before offload and relocation, which go before
+  speculation; many readers of one cold chunk share one fetch; a store that
+  refuses writes still serves reads.
+
+### How the rest is organised
+
+- §1: purpose, the two halves and the interface; §1.4: how it is tested alone.
+- §2: rules both halves obey. §2.1–§2.3 the pool and memory bound;
+  §2.4–§2.6 termination, retries and unknown outcomes; §2.8 health; §2.9 fair
+  scheduling; §2.10 the two settings. §2.11–§2.12 (the sizing tool, metrics)
+  can wait.
+- §3: the uploader; §4: the fetcher.
+- §5: what belongs to other components; §6: invariants S1–S21.
+- §7–§8: checks, benchmarks and targets; §9: settled questions; §10: where the
+  current code differs.
+
 ## In short
 
 - The syncer moves chunks between the journal and the remote tier: out as whole
@@ -751,8 +861,13 @@ Each half runs its own scheduler over its own pool:
   stated as a fraction of the pool. Fair turns only
   decide who gets the *next* free worker: without the cap, a flow or a store that is
   slow but healthy can hold every worker for as long as its puts take, and no
-  turn comes round. The cap is not a reservation. A flow alone on the system uses
-  up to the cap, and no worker sits idle waiting for a flow that has no work.
+  turn comes round. The cap is not a reservation, and it binds only where there
+  is someone to leave room for: the per-store cap applies only when more than one
+  store is configured, and the per-flow cap only while more than one flow is open
+  on that store. So a single-store, single-share install uses the whole pool, as
+  [§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed) needs to fill the link; a flow or store that arrives while another
+  holds every worker gets the next free one by the round robin, and the cap
+  binds from then on. No worker sits idle waiting for a flow that has no work.
 - **No store gets a worker beyond its fair share while another store with work
   waiting holds none.** A store's fair share is the pool divided by the number of
   stores holding or waiting for workers. The cap alone lets one slow store keep
@@ -827,7 +942,7 @@ setting:
 | Value | Is | Because |
 | --- | --- | --- |
 | DRR quantum | the largest encoded block ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)) | [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) needs it to be at least that, and nothing is gained above it |
-| per-store and per-flow cap | three quarters of the pool, rounded down, at least one worker; with a pool of more than one, at most the pool less one | leaves a quarter for every other flow while letting a flow alone use most of the pool |
+| per-store and per-flow cap | three quarters of the pool, rounded down, at least one worker; with a pool of more than one, at most the pool less one. The per-store cap applies only when more than one store is configured, the per-flow cap only while more than one flow is open on the store ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) | leaves a quarter for every other flow and store while one exists, and lets a lone flow on a lone store use the whole pool the link needs |
 | per-flow queue length | four times the pool, per class | a waiting transfer holds a reference, not bytes ([§3.2](#3.2%20It%20holds%20a%20reference%2C%20not%20a%20copy)), so the length bounds bookkeeping, not memory |
 | waiter bound | eight times the pool per half, queued transfers and joined callers together, shared by every flow | bounds bookkeeping, and the detached buffers of [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound), whatever the number of flows ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) |
 | class order | demand, then background, then speculation | [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) |
@@ -1169,7 +1284,7 @@ keeps it from holding its share's flow at its cap while that share's reads wait.
 | S14 | A call in a direction in which its store is unhealthy fails without taking a worker or calling the backend; a put failure never refuses a get. |
 | S15 | An unhealthy direction is probed until it is healthy; one made unhealthy by the failure window is cleared only by its own evidence. |
 | S16 | Log volume while a store is unhealthy does not grow with traffic. |
-| S17 | No store and no flow holds more workers of a half than its cap, and no store gets a worker beyond its fair share while another store with work waiting holds none. |
+| S17 | No store holds more workers of a half than its cap while more than one store is configured, no flow more than its cap while more than one flow is open on its store, and no store gets a worker beyond its fair share while another store with work waiting holds none. |
 | S18 | A transfer at the head of its flow's queue is dispatched within one round of the other waiting flows of its class, once no higher class has work waiting. |
 | S19 | Every `Store` error is one of the closed set; only `ErrTransient`, `ErrDenied` and a put's `ErrCorrupt` count toward health, `ErrThrottled` never does, and a floor trip only when the store's aggregate is below the floor. |
 | S20 | Waiters per half — queued transfers and joined callers — never exceed the waiter bound, whatever the number of flows. |
@@ -1220,6 +1335,7 @@ half-complete. A backend that always succeeds asserts nothing about any of them.
 | [§1.3](#1.3%20Interface) lifecycle | Call on a closed flow and after `Close`; assert both fail. Assert `Close` returns only when transfers have ended, and that `src` is never called after `Upload` returns. |
 | [§1.3](#1.3%20Interface) stream rules | Assert an error is yielded once and ends the stream, and that leaving the loop stops the store's read. |
 | [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) store level | Run eight flows on a slow store and one on a healthy one; assert the healthy store's flow starts within one round and the slow store never holds more than its cap. Let the slow store hold its cap while the healthy store has work and holds no worker; assert the next free worker goes to the healthy store. |
+| [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) lone flow | With one store configured and one flow open, saturate uploads; assert the flow holds the whole pool. Open a second flow; assert it starts on the next free worker and that from then on neither flow holds more than its cap. Repeat with a second store configured and idle; assert the busy store holds no more than its cap. |
 | [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) classes | Queue uploads, relocation fetches on a background flow and prefetches on many flows, then one demand on another flow; assert the demand is dispatched first, background before any speculation. |
 | [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) eviction | Fill a flow's queue, and then the waiter bound, with speculation; issue a demand; assert it is accepted, the youngest speculative entry is refused with `evicted`, and with no speculation queued a demand is refused. |
 | [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) waiter bound | Open a thousand flows and queue on all of them; assert waiters never exceed the bound. |

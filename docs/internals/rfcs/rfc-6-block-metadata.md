@@ -27,6 +27,121 @@ rules to build around.
 
 ---
 
+## Start here
+
+*Explanatory. The rules are in §1 onward; where this section and a rule differ, the rule wins.*
+
+Block metadata is the ledger of what each file's content is made of. For every
+byte offset of every file it answers: was anything ever written here, which
+chunk holds it, which block in the remote store holds that chunk, and how many
+files still use that chunk. The read path asks it where bytes are; GC (garbage
+collection) asks it what is safe to delete. It lives in the metadata store, the
+same transactional database as the names and directories ([RFC 7](rfc-7-namespace-metadata.md)).
+
+In outline: clients write over NFS (Network File System) or SMB (Server Message
+Block) into a local journal and are acknowledged from there; later the bytes
+are cut into chunks of about 256 KiB, each named by the hash of its content,
+packed into blocks of about 4 MiB and uploaded to an S3 (Simple Storage Service)
+bucket; then the local copy may be dropped ([RFC 0](rfc-0-data-lifecycle.md)).
+Block metadata records each step only once it has happened.
+
+### The problem, in one example
+
+alice's profile disk is `profiles/alice/ODFC_alice.vhdx`, a 30 GB virtual hard
+disk file on node N1. Its journal is on one NVMe disk; its blocks go to the
+bucket `dfs-data`. Every write the journal stages gets a **version**, higher
+than any before it for that file.
+
+1. **09:00.** alice-pc writes 1 MiB at offset 4 GiB, version v1, then sends an
+   SMB flush. At the flush, metadata records that the range exists. Only the
+   journal holds the bytes.
+2. **09:02.** The range is uploaded. Chunk `A` goes into block `K1`, and once
+   the store reports `K1` durable, one transaction records: a **ref** saying
+   "these bytes are chunk `A`, from version v1"; a chunk record saying `A` sits
+   in `K1` at a given offset, used once; a block record saying `K1` holds one
+   used chunk.
+3. **09:05.** Her mail client rewrites 64 KiB at 4 GiB + 128 KiB, version v2,
+   and flushes. The file's size does not change, and the ref still says `A`,
+   v1. So the flush also writes an **overwrite record**: this 64 KiB was
+   replaced at v2.
+4. **09:06.** Before v2 is uploaded, the NVMe disk fails. v2 is gone.
+5. **09:10.** The mail client reads those 64 KiB back.
+   - **Without the overwrite record**, a ref covers the range and the journal
+     has nothing, so the read fetches `A` from `K1` and returns the 09:00 bytes
+     as current. The mailbox database gets a page five minutes old, and nothing
+     reports it.
+   - **With it**, the overwrite's v2 is newer than the ref's v1, so the range
+     counts as *uncarved*: written, with no current chunk. With no journal copy
+     that is **Lost**, and the read fails with an error. The rest of the 1 MiB
+     is still fetched from `K1`.
+6. **Had the disk survived**, the next upload would write a ref with version v2
+   over the range, which makes it current again, and N1 would later delete the
+   overwrite record. The upload itself never touches that record, so uploads
+   and alice's writes never contend for one record.
+
+```text
+ ODFC_alice.vhdx  4 GiB ─────────────────────────────── 4 GiB + 1 MiB
+ refs             [ chunk A, from v1 .......................... ]
+ overwrite set           [ 64 KiB, v2 ]
+                               │ v2 newer than v1: uncarved
+                   journal has it ──► serve it locally
+                   journal lost it ─► fail as Lost, never A's old bytes
+
+ ref ──by hash──► Chunk(A) ──by name──► Block(K1) ──► object in dfs-data
+                  where A sits,          chunks still in use,
+                  refcount 1             retired at zero, then deleted
+```
+
+### The words you need
+
+- **[Ref](rfc-0-data-lifecycle.md#Glossary)**: "these bytes of this file are
+  that range of that chunk", with the versions they came from. It names the
+  chunk by hash, never the block ([§2.1](#2.1%20ChunkRef)).
+- **Chunk record** and **block record**: where a chunk's bytes sit and how many
+  refs name it; how many of a block's chunks are still in use, and its state on
+  the way to deletion ([§2.2](#2.2%20Chunk), [§2.3](#2.3%20Block)).
+- **Hole, uncarved, carved**: the three answers for an offset inside the file —
+  never written; written but with no current chunk; covered by a current chunk
+  ([§3.2](#3.2%20Every%20offset%20is%20in%20exactly%20one%20class)).
+- **Overwrite set**: the ranges rewritten since their chunk was cut, each with
+  the version that rewrote it ([§3.3](#3.3%20Holes%2C%20not%20written%20extents)).
+- **[Version](rfc-0-data-lifecycle.md#2.1%20Entities)**: the number the journal
+  gives each write and removal of one file; where two cover the same byte, the
+  higher wins.
+- **Refcount**: the number of refs naming a chunk, live or kept for a snapshot;
+  an index of those refs is the authority it is checked against
+  ([§6.1](#6.1%20A%20refcount%20is%20exactly%20its%20refs)).
+- **Removal**: a truncate, deallocate, delete or clone target, recorded in one
+  small transaction and then applied to refs in batches
+  ([§6.2](#6.2%20Truncation%20and%20deallocation)).
+
+### What this RFC promises
+
+- A flushed write whose local copy is lost before upload reads back as an
+  error, never as zeros and never as older content.
+- A range never written reads as zeros with no fetch.
+- No chunk or block is recorded until its block is durable in the remote store.
+- A chunk's refcount is exactly the refs naming it, changed in the same
+  transaction; a block is deleted only after a check finds no ref to any chunk it
+  holds.
+- Uploads and client writes never write the same record, and a commit costs what
+  it changed, not the size of the file, so a 30 GB disk rewritten all day stays
+  cheap to commit; a truncate or delete returns after one small transaction.
+
+### How the rest is organised
+
+[§2](#2.%20The%20records) lists the records, and
+[§2.7](#2.7%20A%20file%27s%20life%2C%20record%20by%20record) follows one file
+through them from create to delete: read it first.
+[§3](#3.%20Existence) is existence, holes and the overwrite set;
+[§4](#4.%20The%20offload%20commit) the commit after an upload;
+[§5](#5.%20Write%20sets) why uploads and writes never collide, and cost bounds;
+[§6](#6.%20Reference%20counting) counting, removals, snapshots and clones;
+[§7](#7.%20What%20sweep%20needs%20from%20this%20component) what GC relies on;
+[§8](#8.%20Queries) the read-side queries. [§9](#9.%20Invariants) lists the
+invariants and [§11](#11.%20Conformance) the checks. On a first read, skip
+[§6.5](#6.5%20Who%20owns%20a%20ref) (snapshots), §7, §10 and the appendices.
+
 ## 1. Purpose
 
 Block metadata is the source of truth for file content: which chunks make up each
@@ -188,7 +303,7 @@ func (b Block) Retired() bool                   // Live == 0; its state is retir
 "Ref" in the rest of this document is shorthand for `ChunkRef`, and a history
 ref is a `ChunkRef` with `Died` set.
 
-![Three concepts in six records: existence (FileData, holes and removals, written by the write path and removals), the content map (refs pointing at chunks by hash, written by the offload commit), and blocks (a live count per remote object, retired when it reaches zero), with the direction each one points](img/rfc4-records.svg)
+![Three concepts in seven records: existence (FileData, holes, overwrites and removals, written by the write path and removals), the content map (refs pointing at chunks by hash, written by the offload commit), and blocks (a live count per remote object, retired when it reaches zero), with the direction each one points](img/rfc4-records.svg)
 
 | Concept | Record | Keyed by | Holds | Answers |
 | --- | --- | --- | --- | --- |
@@ -358,8 +473,8 @@ weight here and is not counted ([§4.1](#4.1%20What%20one%20commit%20records)). 
 `live` is zero ([§7.1](#7.1%20Conditional%20retirement), [RFC 0 §8.3](rfc-0-data-lifecycle.md#8.3%20Sweep)).
 
 The name is minted per put attempt from a fresh nonce ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block),
-[§7.6](#7.6%20Put%20intents)), so nothing about a later name needs deriving from this record: a block
-records no generation.
+[§7.6](#7.6%20Put%20intents)), so nothing about a later name needs deriving from this record:
+`generation` is the block's compaction depth and is never an input to a name.
 
 `encodings` lists the transform IDs and versions the block's bodies use, and the
 material each used as (material ID, fingerprint), as the store reported them at
@@ -379,7 +494,7 @@ tiering, or moving between buckets — `Block` gains a `Store` field then.
 
     FileData(file)         = { size, applied, Version, Charged, Modify, Change }   // fields of RFC 7's File value
     Hole(file, start)      = { end }
-    Overwrite(file, start) = { end, version }
+    Overwrite(file, start) = { end, version, born }
     Removal(file, version) = { start, end, kind, cursor, done }
 
 **FileData is not a record of its own.** It names the fields of the one `File`
@@ -395,7 +510,8 @@ or was deallocated. A file's holes never overlap or touch — adjacent holes mer
 
 An overwrite record is one extent `[start, end)` whose existing content a
 committed write replaced, and `version`, the journal version of the newest write
-that did. The file's overwrite records are its **overwrite set**; they never
+that did; `born` versions it for snapshots like every namespace record
+([§6.5](#6.5%20Who%20owns%20a%20ref)). The file's overwrite records are its **overwrite set**; they never
 overlap one another, and a dense file that is only appended to has none. An
 offset in the overwrite set whose covering ref's `newest` is below the record's
 `version` is uncarved, whatever that ref says ([§3.3](#3.3%20Holes%2C%20not%20written%20extents)).
@@ -1482,7 +1598,8 @@ only moves forward:
 
     absent → intended → recorded | abandoned
 
-**An object may be deleted only when no block record and no intent names it.**
+**An object may be deleted only when no live block record and no intent names it.**
+Here a live block record is one not yet in state `deleted`: a `retired` record still holds the name ([§7.1](#7.1%20Conditional%20retirement)).
 That state is final: nothing can put or commit that name again. So a delete needs
 no fence and no delay, and a delete that lands late — after a retry, after a
 crash — can reach no committed block.
@@ -1600,7 +1717,7 @@ supersedes, so an offload commit writes up to two more records per ref.
 | M13 | Content records are counted in one keyspace partition per remote key namespace; no two partitions that can name one remote key keep separate counts, and the absence of a record is never evidence that an object is unreferenced. |
 | M14 | Refs name hashes, never blocks. |
 | M15 | A restore or clone is an adoption, and never copies a count or a location. |
-| M16 | A name is minted once, put only by its attempt, and committed only by the transaction that consumes its put intent, which names its domain and epoch. An object is deleted only when neither a live block record nor an intent names it. |
+| M16 | A name is minted once, put only by its attempt, and committed only by the transaction that consumes its put intent, which names its domain and epoch. An object is deleted only when no live block record and no intent names it. |
 | M17 | No zero chunk is stored or counted. |
 | M18 | A removal drops only refs whose `newest` is below its version, masks what it has not yet dropped, and `applied` never moves backwards. |
 | M19 | Every read that gates a commit conflicts with every concurrent write that would change it; no gate depends on a range scan or on an in-process guard. |
@@ -1880,7 +1997,7 @@ within a namespace they spread evenly and no key is sequential.
 | **ChunkRef** (history) | the ref's fields as they were, `died` set | a transaction superseding a ref a live snapshot sees |
 | **Namespace history** (RFC 7's records) | the record's value as it was, `died` in the key | a transaction superseding a record a live snapshot sees ([§6.5](#6.5%20Who%20owns%20a%20ref)) |
 | **Fence F_x / F_o** | `shard` ShardID and `epoch` u64: the (shard, epoch) of the file's primary | new primary; removals and releases; guarded by namespace transactions |
-| **Cut** | `k` u64 · `klatest` u64 | snapshot cut, snapshot deletion (behind the cut gate) |
+| **Cut** | `k` u64 · `klatest` u64 · `cut time` (i64 ns) · `deleting` cut u64 (zero when none runs) | snapshot cut, snapshot deletion (behind the cut gate) |
 | **LiveCut** | — | snapshot cut creates, deletion removes |
 | **Chunk** | `block` name · `position` u64 · `length` u32 · `refcount` u64 · `stamp` u64 | offload commit creates; every ref change counts and stamps; relocation and a carrying commit repoint; prune of its block deletes |
 | **Reverse ref** | — (the key is `hash‖share‖file‖offset‖died`) | every transaction that writes or deletes a ChunkRef or History record, in the same transaction |

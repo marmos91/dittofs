@@ -35,6 +35,123 @@ loss of the node that accepted it.
 
 ---
 
+## Start here
+
+*Explanatory. The rules are in §1 onward; where this section and a rule differ, the rule wins.*
+
+**What this is.** When several DittoFS servers serve one share, a write must
+survive the loss of the server that accepted it. This layer copies every write
+into the local journals of a small group of servers before the client is told
+it succeeded, and decides which copies still count after a server fails or is
+replaced.
+
+**The problem.** DittoFS answers a write as soon as it is in the **journal** — a
+log of recent writes on a fast local disk — and uploads it to the object store
+(the S3 bucket `dfs-data`) later, in the background
+([RFC 0 §5](rfc-0-data-lifecycle.md#5.%20The%20write%20path)). On a single node that is the design: if
+its disk dies, the server is gone too. In a cluster it is not enough.
+
+Take a cluster with storage nodes S1, S2 and S3. Shard A is the set of files
+under `profiles/alice/`; its **primary**, the one node allowed to write them, is
+S1 ([RFC 11](rfc-11-ownership.md) says how that is decided).
+
+1. alice-pc writes 64 KiB into `profiles/alice/ODFC_alice.vhdx` over SMB. The
+   call reaches S1.
+2. Without this layer, S1 puts the write in its journal and answers OK. Until the
+   background upload, the bytes exist only on S1's disk.
+3. S1's disk fails. Windows believes the write is saved; it is gone, alice's
+   profile disk is corrupt, and no other node can even tell which writes were lost.
+
+With this layer, step 2 changes:
+
+1. S1 gives the write a version number and stores it in its own journal.
+2. S1 sends it to S2 and S3, the shard's **replicas**. Each makes it durable in
+   its own journal and answers.
+3. Only when S1, S2 and S3 all hold it does alice-pc get OK. The price is one
+   network round trip and one disk sync on a replica.
+4. Later S1 alone uploads the bytes to the bucket, then tells S2 and S3 they may
+   release their copies.
+
+Now S1 crashes. S1 renews one lease in the metadata store every 3 s, valid for
+10 s. Once it has lapsed, plus 0.5 s allowed for clock drift, S2 and S3 compare
+how much each is sure the whole group holds. The one ahead claims shard A in one
+metadata-store transaction, which raises the shard's **epoch** from 5 to 6.
+Before serving, it pulls from the other anything it lacks and re-issues the
+uncertain writes under epoch 6. alice's write is on both, so nothing that was
+acknowledged is lost. Writes to shard A stall for about 10.5 s plus that short
+comparison, then resume. No operator acts.
+
+If S1 had only paused — a frozen VM, a long stall — and woke up still believing
+it was primary, everything it sends carries epoch 5. S2 and S3 refuse it, and
+the metadata store refuses its commits, because the takeover marked S1's lease
+lapsed. The fence is enforced by every receiver, never by S1's own check.
+
+```text
+  alice-pc ── SMB ──► protocol node ── forwards ──┐
+                                                  ▼
+ ┌─────────────────────── shard A, epoch 5 ───────────────────────┐
+ │  S1 (primary)                                                  │
+ │  1 version v(5,100), into S1's journal                         │
+ │  2 send to every replica ──────┬─────────────────────┐         │
+ │                                ▼                     ▼         │
+ │                         S2 (replica)          S3 (replica)     │
+ │                         3 journal, sync,      3 journal, sync, │
+ │                           answer "held"         answer "held"  │
+ │  4 all three hold it ──► OK to alice-pc                        │
+ └────────────────────────────────────────────────────────────────┘
+   later: S1 alone uploads to the bucket `dfs-data`, then tells
+   S2 and S3 they may release their copies
+
+ metadata store: shard record "A: epoch 5, primary S1, replicas S2, S3"
+ changed only by compare-and-swap, never per write
+```
+
+**The words you need.**
+
+- **primary** — the one storage node that orders and accepts a shard's writes
+  ([glossary](rfc-0-data-lifecycle.md#Glossary)); which node it is, and how it
+  moves, is [RFC 11](rfc-11-ownership.md)'s.
+- **replica** / **replica set** — a storage node whose journal receives every
+  write of the shard / the primary and its replicas. The default is three
+  copies in all, and writes stop below two ([§7.1](#7.1%20Count%2C%20floor%20and%20placement)).
+- **epoch** — a number in the shard's record in the metadata store, raised by
+  every change of primary or replicas. Every message carries it, and a receiver
+  refuses an older one ([§6](#6.%20Fencing)).
+- **committed point** — per shard, the newest version the whole replica set
+  durably holds. Only content at or below it is uploaded, and a late message at
+  or below it is refused ([§2.1](#2.1%20Terms)).
+- **learner** — a replica that has just joined: it receives every new write at
+  once, but not yet the older content still waiting for upload, so it cannot
+  take over ([§7.3](#7.3%20Joining)).
+- **node lease** — one lease per storage node, renewed in the metadata store; a
+  node whose lease has lapsed serves nothing ([§3](#3.%20What%20it%20assumes%20of%20shard%20placement)).
+- **takeover** / **handover** — a replica becoming primary after the primary's
+  lease lapsed ([§9.2](#9.2%20Takeover)) / a planned change of primary that waits
+  for no lease ([§9.4](#9.4%20Handover)).
+
+**What this RFC promises.**
+
+- An acknowledged write is in the journal of every member of its replica set
+  until it is uploaded, so it survives the loss of all of them but one that is
+  not a learner.
+- A shard whose primary is lost becomes writable again on its own, as soon as
+  one replica that is not a learner is alive. No quorum, no operator.
+- Nothing a replaced primary sends or commits takes effect after the takeover.
+- A read never returns bytes older than the last acknowledged write, nor bytes a
+  takeover later takes back: the primary serves only what the whole replica set
+  holds, and any other node confirms the version with the primary or forwards
+  the read.
+- Adding a replica never pauses writes, and a single node runs the same code
+  with a replica set of one.
+
+**How the rest is organised.** §1–§3 give the purpose, the terms, the journal
+extension replication needs and what it takes from [RFC 11](rfc-11-ownership.md);
+§2.2–§2.3 can be skipped on a first read. §4–§6 are the core: the write path,
+upload and release, fencing. §7 adds and removes replicas, §8 serves reads on
+any node, §9 is failover and handover, and §10 the single node. §11 replays
+each case of §9 as a step-by-step table and is best read beside it. §12–§16 —
+API, invariants, metrics, tests, open questions — are for implementers.
+
 ## 1. Purpose
 
 A write is acknowledged once the journal holds it ([RFC 8 §4.1](rfc-8-engine.md#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)), and until it is
@@ -531,8 +648,10 @@ When the primary's node lease lapses, a replica takes over:
 1. **Claim.** The claimant asks the shard's replicas that are not learners for
    their committed points for a configured **gather interval**. A point below the
    mark the primary persisted for that replica ([§7.2](#7.2%20Removal)) is not counted, and its
-   replica is dropped; of the rest, the one with the highest point claims. The
-   claim is one transaction. It marks the old primary's node record lapsed at the
+   replica is dropped; of the rest, the one with the highest point claims, and
+   among equal points the one with the lowest node ID. So replicas that gathered
+   the same points agree on one claimant; where their gathers differ, the
+   conditional claim below still lets only one win. The claim is one transaction. It marks the old primary's node record lapsed at the
    node epoch the shard record names, unless that node epoch is already
    superseded, and writes the shard record naming the claimant primary — as
    (node, node epoch, journal identity, incarnation) — at the next epoch, with
@@ -1014,6 +1133,7 @@ set and an epoch, and every message is fenced by it.
 | `S-seal-of-seal` | a claimant dies mid-seal; the next claimant's union includes its partial re-issues |
 | `S-claimant-crash-<step>` | the claimant crashes after each of [§9.2](#9.2%20Takeover)'s six steps, and after each replica's install |
 | `S-simultaneous-claims` | two replicas claim at once; one wins, the other installs and stays a replica |
+| `S-tied-gather` | two replicas gather equal committed points; only the one with the lower node ID claims, and if both claim on differing gathers the conditional claim lets one win |
 | `S-cas-unknown-<kind>` | a claim, join, removal, learner clear and handover each get an unknown outcome, once landed and once not |
 | `S-partition-primary-store` | the primary reaches its replicas but not the store: it self-fences at half its lease; a replica claims |
 | `S-partition-primary-replica` | the primary reaches the store but not a replica: it removes the replica; the replica cannot claim |

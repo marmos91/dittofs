@@ -39,6 +39,125 @@ Conventions, RFC 2119 keywords and test tiers are set once in the
 
 ---
 
+## Start here
+
+*Explanatory. The rules are in §1 onward; where this section and a rule differ, the rule wins.*
+
+One node can run all of DittoFS. Several nodes need to agree on three things:
+what each node runs, which node is in charge of each file, and which node a
+client's call goes to. This RFC answers them. It gives every node one or both
+of two **roles** — `protocol`, which talks to clients, and `storage`, which
+holds the data — and says how calls travel between them and how clients follow
+when a node is lost.
+
+In outline: clients reach DittoFS over NFS (Network File System) or SMB (Server
+Message Block); writes land in a local journal and are later uploaded to an
+S3 (Simple Storage Service) bucket; a metadata store records where everything
+is ([RFC 0](rfc-0-data-lifecycle.md)). The first release is one node with both
+roles, where everything here is a function call and costs nothing; this is the
+design for adding nodes after it.
+
+### The problem, in one example
+
+The installation runs as a cluster: protocol nodes P1 and P2, storage nodes S1,
+S2 and S3, one replicated metadata store. Files are grouped into **shards**,
+each with one **primary**: shard A, `profiles/alice/`, has primary S1; shard B,
+`profiles/bob/`, has primary S2. alice-pc maps `\\10.0.0.50\profiles`, an
+address that belongs to the cluster and is held, for now, by P1.
+
+1. **A write.** alice-pc writes 64 KiB into `ODFC_alice.vhdx`. P1 holds no
+   state of its own: it looks the file's shard up in its cached copy of the
+   shard records, and forwards the write to S1 with an **envelope** — a request
+   ID unique in the cluster, the shard and the epoch P1 expects, and a hop
+   count of zero. S1 checks the epoch, applies the write and replies.
+2. **A lost reply.** The reply is lost and P1 sends the write again under the
+   same request ID. Meanwhile another write has landed on the same bytes.
+   Applying the retry would overwrite it; S1 instead answers from its table of
+   recent results, keyed by request ID.
+3. **P1 dies.** Without help, alice-pc would wait for its connection to time
+   out, long after the window in which it could reclaim its opens. Instead P2
+   takes over `10.0.0.50`, announces it on the network, and sends alice-pc a
+   TCP acknowledgement that makes it reset and reconnect at once. On a share
+   offering continuous availability, the SMB Witness protocol also tells
+   alice-pc that the address moved and where to go. alice-pc reconnects to P2
+   and finds its durable open, which S1 held all along: losing a protocol node
+   loses no open state.
+4. **S1 dies.** A storage node is lost instead. Shard A fails over to another
+   storage node at a higher epoch ([RFC 11](rfc-11-ownership.md)), and its
+   clients reclaim their opens in a grace period
+   ([RFC 14](rfc-14-open-state.md)). P2's next call still names S1's epoch; it
+   is refused, P2 re-reads the shard record and retries. A stale route costs
+   one refusal, never a write applied by a node that is no longer in charge.
+
+```text
+                      alice-pc (SMB)  \\10.0.0.50\profiles
+                          │
+           10.0.0.50 held by P1 ── P1 lost ──► P2 takes 10.0.0.50,
+                          │                    resets alice-pc's TCP,
+                          │                    Witness says where to go
+                          ▼
+  ┌ protocol: P1, P2 ─────────────────────────────────────────────┐
+  │ adapters, filesystem service, cached shard records; no state, │
+  │ no bucket credentials                                         │
+  └───────┬───────────────────────────────────────────────────────┘
+          │ envelope: request P1#4711, shard A, epoch 7, hop 0
+          ▼
+  ┌ storage: S1 ─────────────┐ ┌ S2 ─────────────┐ ┌ S3 ──────────┐
+  │ primary of shard A       │ │ primary of B    │ │ replica of A │
+  │ profiles/alice/: open    │ │ profiles/bob/   │ │              │
+  │ state, journal, writes,  │ │                 │ │              │
+  │ results by request ID    │ │                 │ │              │
+  └──────────────────────────┘ └─────────────────┘ └──────────────┘
+          shard records: A ─► S1 at epoch 7 (replicated metadata store)
+```
+
+### The words you need
+
+- **[Node](rfc-0-data-lifecycle.md#Glossary)** and
+  **[role](rfc-0-data-lifecycle.md#Glossary)**: one DittoFS server process;
+  `protocol` runs the adapters and the filesystem service, `storage` runs the
+  journals, open state and content path. Both, by default
+  ([§2.1](#2.1%20One%20binary%2C%20roles%20chosen%20at%20deployment)).
+- **[Shard](rfc-0-data-lifecycle.md#Glossary)** and
+  **[primary](rfc-0-data-lifecycle.md#Glossary)**: a set of files, a share by
+  default, and the one storage node that accepts its writes at a time
+  ([§3](#3.%20One%20primary%20per%20shard)).
+- **[Epoch](rfc-0-data-lifecycle.md#Glossary)**: a number raised whenever a
+  shard's primary changes; a call carrying an older one is refused.
+- **Route envelope**: what every forwarded call carries: request ID, shard and
+  epoch, hop count ([§4.3](#4.3%20The%20route%20envelope)).
+- **Floating address**: a client-facing address owned by the cluster, taken
+  over by a surviving protocol node ([§5.3](#5.3%20Client%20addressing)).
+- **SMB Witness**: the SMB protocol by which a cluster tells a client that an
+  address moved or a node is draining, and where to go
+  ([§5.3](#5.3%20Client%20addressing)).
+
+### What this RFC promises
+
+- Every node runs the same binary; its roles decide what it builds, and a node
+  without `storage` holds no bucket credentials.
+- Each shard has one primary at a time. Every change to its files, their open
+  state and their writes runs there, so a conflict check and the I/O it admits
+  are never on two nodes.
+- A call that reaches a node no longer in charge is refused, never applied; a
+  retried change returns its first result instead of applying twice.
+- When a protocol node is lost, a survivor takes its client addresses and
+  makes its clients reconnect at once.
+- A cluster of nodes with both roles is highly available; splitting the roles
+  buys isolation and separate scaling, not availability.
+
+### How the rest is organised
+
+[§2](#2.%20Roles) defines the roles, what each composes, and the start-up
+checks. [§3](#3.%20One%20primary%20per%20shard) is the one-primary rule.
+[§4](#4.%20Where%20each%20call%20runs) says which node serves each call, what
+makes a call safe to route, how calls spanning two shards run, and the
+envelope. [§5](#5.%20Clients) covers clients: pNFS (parallel NFS), SMB and
+NFSv3, and client addressing. [§6](#6.%20Learning%20primaries) is how protocol
+nodes learn primaries, [§7](#7.%20High%20availability%20needs%20no%20split)
+why availability needs no split, and [§8](#8.%20Invariants) the invariants. On
+a first read, skip §2.4, §4.2 and §5.1.
+
 ## 1. Purpose
 
 One node runs everything. Several nodes need to know which of them run what,

@@ -34,14 +34,120 @@ labelled **proposal** and names the measurement that would overturn it.
 
 ---
 
+## Start here
+
+*Explanatory. The rules are in §1 onward; where this section and a rule differ, the rule wins.*
+
+**What this is.** The engine is the coordinator of file content on a storage
+node. When the filesystem service asks to write, flush or read a file's bytes,
+the engine decides what happens next — acknowledge from the local journal,
+upload to the remote object store (S3) later, fetch on a cold read, evict when
+space runs short — and calls the components that do the work. It holds no bytes
+and records no facts of its own, so a crash costs it time, never content.
+
+**The problem, with one example.** Single-node install N1: a local journal on
+NVMe, remote tier the S3 bucket `dfs-data`. On the `profiles` share, alice-pc
+writes 64 KiB at offset 2 GiB of `profiles/alice/ODFC_alice.vhdx` over SMB.
+
+1. **Write.** The engine admits the write, the journal stores it and gives it a
+   version, and the engine acknowledges. No metadata transaction, no S3 request.
+2. **Flush.** Windows sends an SMB `FLUSH`. The engine has the journal sync the
+   file to disk, then commits the file's new size and times in one metadata
+   transaction shared with every other file flushing on that journal, and
+   answers. Still no S3 request: an S3 outage never turns into a write error.
+3. **Offload, seconds later.** The work queue hands the file to an offload
+   pass. The pass cuts the dirty bytes into chunks (~256 KiB pieces named by the
+   hash of their content), packs them into a block (~4 MiB object), records the
+   block's name, puts it into `dfs-data`, and commits the refs (file offset →
+   chunk → block) in one metadata transaction. Only then does it tell the
+   journal the 64 KiB is durable, which makes the local copy evictable.
+4. **Evict, days later.** The journal fills; the eviction policy picks the
+   coldest durable extents, alice's included, and the journal releases them.
+5. **Read.** alice signs in and Windows reads offset 2 GiB. The engine asks the
+   journal first (not held any more), then metadata (a ref to a block in S3),
+   fetches the chunk, verifies its hash, and streams it to alice-pc.
+
+The ordering is the engine's whole job. Take step 5 the other way round: the
+engine asks metadata first and hears "written but not yet uploaded"; before it
+asks the journal, the offload commits and eviction releases the extent; the
+journal then says "not held". Metadata says the bytes exist only locally, the
+journal no longer has them, and the read fails as **Lost** — for content sitting
+safely in S3. Asking the journal first closes that window
+([§7.1](#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata)). The same care runs through every step: the journal hears
+"durable" only after the metadata commit lands, so eviction can never drop the
+only copy ([§6.8](#6.8%20The%20callback%20returns%20only%20what%20committed)).
+
+```text
+ alice-pc ──SMB──► filesystem service
+                         │  Write · Commit · Read
+                         ▼
+ ┌──────────────────── engine on N1 ────────────────────┐
+ │ policy decides · modules sequence · holds no bytes   │
+ └─┬────────────┬─────────────┬───────────────┬─────────┘
+   │1 stage     │2 sync, then │3 offload pass │5 read:
+   │  and ack   │  commit     │  (seconds     │  journal
+   ▼            ▼  size, times▼  later)       ▼  first
+ journal    metadata      carve → pack ──► syncer ──► S3 dfs-data
+ (NVMe)     store         commit refs, then mark the journal
+   ▲                      copy durable; 4 evict it later
+   └──────────────── release, fill ◄─────────────────────────
+```
+
+**The words you need.**
+
+- **Journal** — the fast local store of recent writes, one per device; a write
+  is acknowledged once it is there ([RFC 0 glossary](rfc-0-data-lifecycle.md#Glossary)).
+- **Stability point** — a client's flush (NFS `COMMIT`, SMB `FLUSH`, `fsync`):
+  the journal syncs and the file's size and times are committed in metadata
+  ([§5](#5.%20Commit%3A%20the%20stability%20point)).
+- **Offload** — the background pass that carves dirty bytes into chunks, packs
+  blocks, uploads them and commits the refs ([RFC 0 §5.2](rfc-0-data-lifecycle.md#5.2%20Offload)).
+- **Dirty / durable** — a held extent is dirty until its block's metadata
+  commit lands, then durable and only then evictable ([§10](#10.%20Local%20space)).
+- **Residency** — what a missing extent resolves to: **Absent** (a hole, reads
+  as zeros), **Remote** (fetch it), **Lost** (should exist, is nowhere)
+  ([RFC 0 §4.2](rfc-0-data-lifecycle.md#4.2%20The%20residency%20function)).
+- **Policy component** — a small decision function (when to offload, whether
+  to fill, what to evict); the mechanism it picks is safe on its own
+  ([§3](#3.%20Policy)).
+- **Share context** — the little the engine keeps per share: settings, policy
+  state, health, budgets; one engine serves every share on the node
+  ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20context)).
+
+**What this RFC promises.**
+
+- A write is acknowledged once the journal holds it, and a flush once the
+  journal has synced and one metadata transaction has committed; neither waits
+  for S3.
+- An extent becomes evictable only after the metadata commit naming its block
+  has landed. A failed upload leaves it dirty, and it is retried for as long as
+  this node serves the shard.
+- A read returns zeros only for a real hole. Content that should exist and
+  cannot be found fails as lost; an unreachable S3 fails with a different,
+  transient error; no byte of a chunk reaches the client before the chunk
+  verifies.
+- Nothing is persisted by the engine: after a crash it rebuilds its queue and
+  plans from the journal and metadata, and re-offers what was not durable.
+- One share cannot stall another: nothing on the request path is shared across
+  files or shares, and background work is shared fairly per journal.
+
+**How the rest is organised.** §1–§3 say what the engine is, how a node
+composes it and how policy is split from mechanism. Then one section per
+operation, rules first: write (§4), flush (§5), offload (§6 — the longest; §6.5
+on deduplication is deferred and can be skipped), read (§7), truncate and
+deallocate (§8), clone (§9). §10–§11 cover local space and health, §12 the
+facade the filesystem service calls, §13 the invariants in one table. §14–§15
+(metrics, tests, benchmarks) and Appendix A (where today's code differs) can
+wait for a second reading.
+
 ## In short
 
 - The engine holds no bytes and no facts. Every byte is the journal's or the
   remote tier's; every fact is block metadata's or the namespace's.
 - It is the content data path, one per node with the storage role, serving every
   share whose shards that node is primary of. It decides policy through five small policy
-  components, runs three modules — the work queue, the offload pipeline and the
-  speculator — and is the content **facade** the filesystem service calls
+  components, runs four modules — the work queue, the offload pipeline, the
+  speculator and, deferred, the dedup oracle — and is the content **facade** the filesystem service calls
   ([RFC 17](rfc-17-vfs.md)). Adapters never call it.
 - Offload always carries its chunks. Cross-file deduplication is not in the
   first release; its module, the dedup oracle, is specified and deferred
@@ -221,9 +327,10 @@ pacing draw on its own budgets and the queue serves shares fairly
 removing or quiescing a share changes one context and never restarts the
 engine.
 
-Per-file state is keyed by file within its shard. A file whose byte
-ranges are separate shards ([RFC 11](rfc-11-ownership.md)) has that state per range, at each range's
-primary, and each range's primary offloads its own range.
+Per-file state is keyed by file within its shard, and held at that shard's
+primary, which offloads the whole file. A file is never split across shards
+([RFC 0 §1.3](rfc-0-data-lifecycle.md#1.3%20The%20layers)); range shards are deferred
+([RFC 11 Appendix C](rfc-11-ownership.md#Appendix%20C%20%E2%80%94%20later%3A%20per-file%20and%20range%20shards)).
 
 ### 2.4 Settings are validated once, and refused rather than replaced
 
@@ -1555,7 +1662,7 @@ applied again. A retry under a different epoch finds no entry and is refused as
 stale by the epoch check, which makes the caller re-route it.
 
 A replica's `Apply` recognises a repetition by its version instead
-([RFC 10 §2.5](rfc-10-journal-replication.md#2.3%20The%20journal%20extension)); that is the journal's retry rule, not the facade's.
+([RFC 10 §2.3](rfc-10-journal-replication.md#2.3%20The%20journal%20extension)); that is the journal's retry rule, not the facade's.
 
 ### 12.3 The facade writes no residency
 

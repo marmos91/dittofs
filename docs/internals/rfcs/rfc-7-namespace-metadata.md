@@ -29,6 +29,124 @@ build around.
 
 ---
 
+## Start here
+
+*Explanatory. The rules are in §1 onward; where this section and a rule differ, the rule wins.*
+
+This RFC specifies the part of the metadata that clients see as a filesystem:
+names, directories, files and their attributes, the handles clients hold, and
+who may do what. It also decides the moment a file stops existing, which is the
+moment its content may start to be destroyed.
+
+In outline: clients write to DittoFS over NFS (Network File System) or SMB
+(Server Message Block); writes land in a local journal and are later cut into
+chunks, packed into blocks and uploaded to an S3 (Simple Storage Service)
+bucket; a metadata store records which file holds which chunks
+([RFC 0](rfc-0-data-lifecycle.md)). Content is keyed by a file's identity,
+never by its name. This RFC owns the mapping from names to that identity.
+
+### The problem, in one example
+
+The `profiles` share is served over SMB to Windows desktops and is configured
+case-insensitive, as Windows expects. alice's folder `profiles/alice/` holds
+her profile disk `ODFC_alice.vhdx`, 30 GB.
+
+1. **Sign-in.** alice-pc opens `alice\odfc_alice.VHDX`. The name is resolved
+   one directory at a time, with a permission check at each. In the share's
+   root, the name `alice` is folded to one case and looked up: one read finds
+   the entry, a second reads the directory it names. In that directory,
+   `odfc_alice.VHDX` folds to the same key as the stored `ODFC_alice.vhdx`, so
+   one more lookup finds the entry and the file it names. The name is not
+   changed: a listing still shows `ODFC_alice.vhdx`.
+2. **The handle.** alice-pc is given a handle naming the share and the file's
+   identity, a random 128-bit ID that is never reused. All day, every 64 KiB
+   write goes by handle, and resolving it reads the file directly: no name, no
+   directory.
+3. **A rename.** At noon an administrator renames the folder to `alice.old`.
+   That moves one entry, in one transaction, and nothing else. A handle built
+   from the path would now point at nothing, and alice's open disk would fail
+   mid-session. The handle names the file, so alice-pc keeps writing.
+4. **A temporary file.** alice-pc opens `~tmp1.dat` twice, the first time with
+   delete-on-close, and closes that open first. The file becomes *delete
+   pending*: its name still shows in a listing, but new opens are refused. When
+   the second open closes, the name is removed by an ordinary unlink. That unlink drops the file's link count to
+   zero and, in the same transaction, writes a **pending release**. No open
+   holds the file, so the release runs: its content references are dropped and
+   its records deleted.
+5. **A crash.** Had N1 crashed between that unlink and the release, nothing
+   would be leaked: recovery finds the pending release and runs it once no
+   open can still claim the file.
+
+Without these rules the same day goes wrong quietly: a path inside the handle
+breaks alice's disk on the rename; case folded differently by two protocols
+shows one file as two; an unlink acknowledged but recorded nowhere leaks
+every chunk of the file, because nothing is left to find them by.
+
+```text
+ alice-pc ── open "alice\odfc_alice.VHDX" on share profiles
+   │
+   │  Lookup(root, "alice")              entry  root / alice ──► dir d1
+   │  Lookup(d1, "odfc_alice.VHDX")
+   │      key fold("odfc_alice.VHDX")    entry  d1 / odfc_alice.vhdx
+   │      value "ODFC_alice.vhdx"               │
+   ▼                                            ▼
+ handle = (profiles, f7) ───────────────► File f7: regular, Nlink 1,
+   every write resolves f7 directly        Size 30 GB, owner alice
+   no name, no directory read
+
+ rename alice → alice.old: one entry moves; f7 and its handle do not
+ last name of a file removed: Nlink 0 + pending release, same transaction
+   no open holds it ──► release: refs dropped, records deleted
+```
+
+### The words you need
+
+- **[File](rfc-0-data-lifecycle.md#Glossary)**: one object a name can resolve
+  to, with its attributes; its identity is a random ID, never reused, that
+  survives rename ([§2.1](#2.1%20File)).
+- **Entry**: one name in one directory, pointing at a file. A file with two hard
+  links has two entries ([§2.2](#2.2%20Entry)).
+- **Handle**: what a client holds to name a file: the share and the file's ID,
+  never a path ([§6.1](#6.1%20A%20handle%20names%20a%20file%2C%20never%20a%20path)).
+- **Nlink**: the number of entries naming a file, kept exact in the same
+  transaction as every entry change ([§4.1](#4.1%20%60nlink%60%20is%20exactly%20its%20entries)).
+- **Open state**: who holds a file open, owned by
+  [RFC 14](rfc-14-open-state.md). It is the only other thing that keeps a file
+  alive ([§4.2](#4.2%20Open%20state%20is%20the%20second%20holder)).
+- **Pending release**: a record saying a file has lost its last name and its
+  content is still to be released. It keeps nothing alive
+  ([§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees)).
+- **Folded name**: on a case-insensitive share, an entry is keyed by its name
+  folded to one case, and stores the name as given ([§3.3](#3.3%20Case)).
+
+### What this RFC promises
+
+- A handle keeps working across rename and restart. Once its file is gone it
+  resolves as stale, never as another file and never as "not found".
+- A file is released when, and only when, no name and no open refer to it. The
+  release is recorded before it runs, so a crash resumes it.
+- A rename happens wholly or not at all, and no directory can end up inside
+  itself, even when two renames race.
+- A name comes back exactly as it was given. On a case-insensitive share, names
+  that differ only in case are one entry, found with one read.
+- Every permission decision, for every protocol, is made in this component,
+  against the file the operation will act on.
+
+### How the rest is organised
+
+[§1](#1.%20Purpose) states what this component answers and what it must not
+hold. [§2](#2.%20The%20entities) defines the entities: file, entry, ACL
+(access-control list), extended attributes and streams, the share as one
+filesystem with its quotas. [§3](#3.%20Names) covers names: lookup, validation,
+case and listings. [§4](#4.%20What%20keeps%20a%20file%20alive) is what keeps a
+file alive and how it is released; [§5](#5.%20Rename) is rename;
+[§6](#6.%20Handles) handles; [§7](#7.%20Permissions) permissions.
+[§8](#8.%20Open%20state%2C%20as%20the%20namespace%20sees%20it) and
+[§9](#9.%20Attributes%20and%20what%20is%20not%20one) cover open state and
+attributes as this component sees them; [§10](#10.%20Invariants) lists the
+invariants. On a first read, skip §2.8–§2.10, §3.5–§3.7, §6.5, §7.5–§7.6 and
+§11 onward.
+
 ## 1. Purpose
 
 Namespace metadata answers, for any client operation:
@@ -200,7 +318,7 @@ through that index. So a file, an ACL entry or a quota never carries a number
 another installation may have given to someone else, and an import maps
 principals by ID and refuses one that collides ([RFC 12 §5.1](rfc-12-snapshots.md#5.1%20Layout)).
 
-because both protocols expose it, but it is not the authority when an ACL
+`Mode` stays as permission bits because both protocols expose it, but it is not the authority when an ACL
 exists ([§2.6](#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode)). SMB's DOS attributes are generic `Flags`, and `Birth` is SMB's
 creation time and NFSv4's `time_create`. SMB symlinks and junctions map to
 `Symlink`; other SMB reparse points are out of scope, and an adapter refuses to
@@ -296,13 +414,18 @@ path does not.
 | `Change`, `Version` on attribute change | chmod, chown, link, unlink, rename | its own operation |
 | `Nlink` | link, unlink, rename over an existing entry | the entry change that caused it ([§4.1](#4.1%20%60nlink%60%20is%20exactly%20its%20entries)) |
 | a directory's `Modify`, `Change`, `Version` | create, unlink, rename in it | the entry change, as a delta ([§9.2](#9.2%20Timestamps)) |
-| `Number` | create only; never changed ([§6.5](#6.5%20A%20protocol%27s%20numeric%20file%20id%20is%20derived%2C%20and%20collisions%20are%20its%20problem)) | the create |
+| `Number` | create only; never changed ([§6.5](#6.5%20A%20protocol%27s%20numeric%20file%20id%20is%20a%20stored%20number%2C%20never%20reused)) | the create |
 | `CreateVerifier` | set by an exclusive create; cleared by the first `SetAttrs` ([§2.10](#2.10%20Exclusive%20create)) | the create; the `SetAttrs` |
 
 The offload commit appears nowhere in that table, and **MUST NOT** ([RFC 6 §5.1](rfc-6-block-metadata.md#5.1%20No%20record%20is%20written%20by%20both%20paths)).
 Offloading changes where content is, not what it is, and a File it could write
 would be a record the client path and a background pass share, which
 [RFC 6 §5](rfc-6-block-metadata.md#5.%20Write%20sets) forbids.
+
+The table names where `Version` is stored, not when a client first sees it move.
+A write advances the `Version` that `GETATTR` returns when the primary accepts
+it, through the engine's overlay, before the existence commit stores it
+([RFC 17 §5.7](rfc-17-vfs.md#5.7%20GetAttr)).
 
 ### 2.5 Where `size` lives
 
@@ -901,7 +1024,7 @@ Every operation on an open file resolves a handle first. A resolution that walks
 the namespace makes the cost of reading a file depend on how deep it was put and
 how large the directories above it are, for the whole time it is open.
 
-### 6.5 A protocol's numeric file id is derived, and collisions are its problem
+### 6.5 A protocol's numeric file id is a stored number, never reused
 
 Some protocols report a fixed-width integer identifying a file, narrower than
 the handle. It is never derived from the handle or the `FileID`: a truncated
@@ -1286,7 +1409,7 @@ interfaces of [§11.1](#11.1%20Interface) and never read a key.
 | [§7.4](#7.4%20The%20identity%20arrives%20resolved) share grant | Remove a principal's grant while it holds cached handles and a cached authorisation. Assert its next call on each handle is refused. |
 | [§3.3](#3.3%20Case) case | On a case-insensitive share, create `README`, then `readme`. Assert the second conflicts, a lookup of `ReadMe` reads one key, and a listing returns `README` as given. |
 | [§3.5](#3.5%20A%20cookie%20survives%20concurrent%20mutation) cookie | Delete an entry before the cursor mid-listing. Assert no untouched entry is skipped or repeated. Then evict every cached cookie and assert the listing resumes rather than restarting. |
-| [§6.5](#6.5%20A%20protocol%27s%20numeric%20file%20id%20is%20derived%2C%20and%20collisions%20are%20its%20problem) file id | Create and release 10⁶ files across two shards, failing one primary over mid-range and restarting. Assert no number was issued twice, released ones included, and that a surviving file reports the same NFS and SMB ids after the restart, the failover and a move to another shard. A derivation from the `FileID` or the handle fails the first assertion; a counter held in memory fails the second. |
+| [§6.5](#6.5%20A%20protocol%27s%20numeric%20file%20id%20is%20a%20stored%20number%2C%20never%20reused) file id | Create and release 10⁶ files across two shards, failing one primary over mid-range and restarting. Assert no number was issued twice, released ones included, and that a surviving file reports the same NFS and SMB ids after the restart, the failover and a move to another shard. A derivation from the `FileID` or the handle fails the first assertion; a counter held in memory fails the second. |
 | [§2.10](#2.10%20Exclusive%20create) exclusive create | Create exclusively, drop the reply, retry with the same verifier: assert success and the same file. Retry with another verifier: assert "exists". `SETATTR`, retry with the first: assert "exists". Assert no time attribute ever read back as the verifier. Repeat the first retry across a failover. |
 | [§3.7](#3.7%20No%20short%20names) short names | Create a long name over SMB; query its alternate name and open its 8.3 form. Assert not supported, and not found. |
 | [§9.2](#9.2%20Timestamps) change info | 64 clients create in one directory. Assert every reply's change info has `atomic` false and `after` greater than `before`. |
@@ -1377,7 +1500,7 @@ stored path, cursor-paged listing.
 | [§5.2](#5.2%20The%20loop%20check%20is%20inside%20the%20transaction) loop check | inside the transaction, but not serialisable on one backend's isolation level |
 | [§6.1](#6.1%20A%20handle%20names%20a%20file%2C%20never%20a%20path) opaque, one spelling | a plaintext share-and-UUID string, accepting several spellings of one UUID |
 | [§6.3](#6.3%20Staleness%20is%20reported%2C%20never%20guessed) stale, not missing | a released file resolves as not found |
-| [§6.5](#6.5%20A%20protocol%27s%20numeric%20file%20id%20is%20derived%2C%20and%20collisions%20are%20its%20problem) numeric file id | a truncated hash of the handle, no collision check |
+| [§6.5](#6.5%20A%20protocol%27s%20numeric%20file%20id%20is%20a%20stored%20number%2C%20never%20reused) numeric file id | a truncated hash of the handle, no collision check |
 | [§3.2](#3.2%20A%20name%20is%20bytes%2C%20and%20it%20is%20validated%20at%20the%20boundary) validation at the boundary | duplicated in protocol handlers; the share's maximum is not consulted |
 | [§3.3](#3.3%20Case) case | the unique key is byte-exact on a case-insensitive share |
 | [§3.1](#3.1%20Lookup%20resolves%20a%20name%20to%20a%20file%2C%20and%20that%20is%20all%20it%20does) lookup is not an enumeration | a case-insensitive miss scans the directory |

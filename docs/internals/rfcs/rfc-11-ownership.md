@@ -37,6 +37,156 @@ tags:
 
 ---
 
+## Start here
+
+*Explanatory. The rules are in §1 onward; where this section and a rule differ, the rule wins.*
+
+**What this is.** In a cluster, every file has exactly one server allowed to
+change it at any moment. This RFC groups files into shards, says which server is
+in charge of each shard, how a request arriving at any server reaches it, and
+how that charge moves: after a crash, in a rebalance, or to follow the client
+doing the writing.
+
+**The pieces.**
+
+- A **node** is one running DittoFS server process, with one or both of two
+  roles. A `protocol` node holds client connections (SMB, NFS): it translates
+  each call and forwards it, and keeps no file state of its own. A `storage`
+  node holds **journals** — logs of recent writes on a local disk — and does
+  the work. A single-node install runs both roles in one process.
+- A **shard** is a set of files that move together. By default a whole share is
+  one shard. A directory can be marked so that each child directory created in
+  it gets its own: with `profiles/` marked, `profiles/alice/` is shard A and
+  `profiles/bob/` is shard B.
+- The **primary** of a shard is the one storage node that owns it right now. It
+  orders every write and holds every open, lock and lease (caching grant) on the
+  shard's files; reads go to it, or are checked with it first ([§6](#6.%20Reads%20on%20other%20nodes)).
+  The shard's replicas hold copies of its journal, ready to take over
+  ([RFC 10](rfc-10-journal-replication.md)).
+
+**One write, followed.**
+
+```text
+   alice-pc (SMB)                      build01 (NFS)
+        │                                   │
+   ┌────▼────┐                         ┌────▼────┐   protocol nodes: hold
+   │   P1    │                         │   P2    │   connections, translate,
+   └────┬────┘                         └─────────┘   forward
+        │ 1  ODFC_alice.vhdx → shard A → primary S1
+        ▼
+   ┌─────────────┐   ┌─────────────┐   ┌─────────────┐   storage nodes:
+   │     S1      │   │     S2      │   │     S3      │   hold journals,
+   │ primary   A │   │ primary   B │   │ primary   C │   do the work
+   │ replica B,C │   │ replica A,C │   │ replica A,B │
+   └──────┬──────┘   └──────▲──────┘   └──────▲──────┘
+          │ 2  journal it, copy to A's replicas │
+          └─────────────────┴───────────────────┘
+          3  S2 and S3 hold it → OK → P1 → alice-pc
+
+   shard A = profiles/alice/   shard B = profiles/bob/   shard C = builds
+```
+
+1. alice-pc is connected to P1 and writes 64 KiB into
+   `profiles/alice/ODFC_alice.vhdx`.
+2. P1 looks up the file's shard (A) and A's primary (S1) in its cache of shard
+   records, and forwards the write, stamped with the shard and epoch it expects.
+3. S1 checks it is still A's primary at that epoch, checks alice's open and the
+   locks others hold, stages the write in its journal and copies it to S2 and
+   S3 ([RFC 10](rfc-10-journal-replication.md)).
+4. When all three hold it, S1 answers OK, and P1 passes it to alice-pc.
+
+Had P1's cache been stale — A moved to S2 a moment ago — S1 would refuse,
+naming the primary it knows, and P1 would re-read the record and retry. A
+stale cache costs a retry, never a write in the wrong place.
+
+**When the primary changes: the epoch.** Each shard's record in the metadata
+store carries an **epoch**, a number raised by every change to the record.
+
+- *S1 crashes.* S1 renews one lease for all its shards every 3 s, valid for
+  10 s. Once it has lapsed, plus 0.5 s allowed for clock drift, S2 — a replica —
+  takes A over: one metadata-store transaction names S2 primary and raises A's
+  epoch from 5 to 6. Writes to A stall for about 10.5 s, then resume at S2. The
+  node serving A changed, so the NFS **write verifier** for A's files changes —
+  the signal that makes an NFS client resend writes it had not yet flushed — and
+  clients reclaim their opens and locks during a grace period; alice-pc
+  reclaims its handle on the container. If S1 had only paused and then wakes up,
+  everything it sends carries epoch 5: the replicas refuse it, and the metadata
+  store refuses its commits, because the takeover marked its lease lapsed.
+- *A move started and called off.* Before a batch of files moves into shard A,
+  A's epoch is raised above that of the shard they come from — say from 6 to 7.
+  If the move then goes no further, no node changed: S2 still serves A. The
+  write verifier is derived from the serving node, not from the shard epoch, so
+  it stays the same and no client resends anything.
+
+**Moving a shard moves no bytes in the remote tier.** Uploaded content lives in
+the bucket and is described in the metadata store, and every storage node
+reaches both. A handover ships only the shard's journal content not yet
+uploaded, with its open-state table; a rebalance moves primaries and replicas,
+never files.
+
+**How a very big share scales.** A share is one shard by default, so one node,
+its primary, orders all its writes, opens and locks: any number of clients can
+write through any protocol node, but the share gets at most one node's
+throughput, and replicas add durability, not write throughput
+([§1.1](#1.1%20What%20scaling%20is%20being%20designed%20for), [§2.1](#2.1%20One%20primary%20per%20shard)). Marking a directory
+gives each child directory created in it its own shard, and moves existing
+children over in batches; each such shard hashes to one of 4096 fixed slots,
+and a slot table assigns slots to storage nodes in proportion to their
+capacity, so alice's and bob's shards land on different nodes
+([§2.2](#2.2%20Automatic%20per-child%20shards)). An operator can also split chosen subtrees by hand.
+One shard stays the unit of parallelism: a directory's entries are never split
+across shards and neither is a file, so one huge flat directory or one hot file
+— alice's 30 GB container — is still bounded by one node; per-file and range
+shards are deferred ([Appendix C](#Appendix%20C%20%E2%80%94%20later%3A%20per-file%20and%20range%20shards)). Reads spread further:
+any storage node may serve a range, from its journal or by fetching from the
+bucket, after one round trip asking the primary for the newest version, which
+carries no bytes ([§6](#6.%20Reads%20on%20other%20nodes)). Placing whole shares on separate nodes
+behind a balancer, without shards that move, is an open question, and its
+proposed size cap does not fit profile shares ([§15](#15.%20Open%20questions)).
+
+**The words you need.**
+
+- **node**, **role** — one server process / what it runs, `protocol` or
+  `storage` ([glossary](rfc-0-data-lifecycle.md#Glossary)).
+- **shard** — a set of files with one primary at a time; a share by default,
+  a subtree, or a child of a marked directory ([§2](#2.%20Shards)).
+- **primary** — the storage node that runs a shard's writes, open state and
+  locks now ([§3](#3.%20The%20primary)).
+- **replica** — a storage node holding a copy of the shard's journal content,
+  ready to take over ([RFC 10](rfc-10-journal-replication.md)).
+- **epoch** — the shard record's number, raised by every change; every receiver
+  refuses an older one ([§3.1](#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)).
+- **node lease** — the one lease each storage node renews for all its shards; a
+  node whose lease lapsed is primary of nothing ([§3.1](#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)).
+- **slot table** — the record that assigns each of a fixed number of slots to
+  nodes, placing per-child shards ([§2.2](#2.2%20Automatic%20per-child%20shards)).
+
+**What this RFC promises.**
+
+- At most one node's writes to any byte count at a time: a replaced primary's
+  writes and commits are refused, and it stops granting opens and locks by
+  itself before its lease runs out.
+- A file's shard is set when it is created and never changes on rename; only a
+  batched move changes it, and between batches every file is in exactly one
+  shard.
+- A stale route costs a refusal and a retry, never a wrong write, and a retried
+  write is applied once.
+- A failover runs a grace period for open state; a planned handover or move
+  hands open state over and runs none. The write verifier changes when the node
+  serving a shard changes, and not when only the epoch is raised.
+- No planned change moves a shard's primary sooner than the dwell time, 30
+  minutes by default, after the last one, so two writers cannot bounce it back
+  and forth.
+
+**How the rest is organised.** §1 states the three shapes of scaling and the
+non-goals. §2 defines shards and their policies, §3 the primary, its lease and
+when it follows the writer, §4 how primaries and files move. §5 is routing, §6
+reads on other nodes, §7 protocol state. §8 is how the metadata store fences
+commits, with operations spanning shards in §8.1; §5.2 (pNFS) and the backend
+notes in §8 can be skipped on a first read. §9 tabulates failures and §10 walks
+through them step by step. §11–§15 are API, invariants, metrics, tests and open
+questions.
+
 ## 1. Purpose
 
 A **node** is one DittoFS server process, whatever roles it runs ([RFC 15 §2](rfc-15-topology.md#2.%20Roles)).

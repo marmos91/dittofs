@@ -17,6 +17,120 @@ tags:
 
 ---
 
+## Start here
+
+*Explanatory. The rules are in §1 onward; where this section and a rule differ, the rule wins.*
+
+DittoFS is a file server. Clients write to it over NFS (Network File System) or
+SMB (Server Message Block); each write lands first in a fast local **journal**
+and is acknowledged from there. In the background the bytes are cut into
+chunks, packed into blocks and uploaded to a remote object store (an S3
+bucket). Once uploaded, local copies can be evicted, and a read of evicted data
+fetches it back. [RFC 0](rfc-0-data-lifecycle.md) tells the whole story.
+
+The journal is the local half. It keeps recent writes on a local disk so a
+client is answered at disk speed, keeps them through a crash, and serves reads
+of whatever it still holds. There is one journal per disk, shared by every share
+placed on it. It knows nothing about chunks, blocks or the remote store: it holds
+byte ranges of files, and it says exactly which ones.
+
+### The problem, in one example
+
+The installation runs on one node, N1, with its journal on an NVMe disk and the
+remote tier in the S3 bucket `dfs-data`. Alice's Windows desktop, alice-pc,
+keeps her profile in `profiles/alice/ODFC_alice.vhdx`, a 30 GB virtual disk
+with one handle open all day.
+
+1. **09:00.** alice-pc writes 64 KiB at offset 2 GiB. The journal appends it as
+   one record at the end of its current segment, a 256 MiB file on the NVMe
+   disk, gives it content version v41, and the write is acknowledged. When
+   alice-pc flushes, the journal forces the segment to the device (fsync)
+   before the flush is answered.
+2. **09:01.** The engine, which drives the journal and the upload path, asks for
+   an **offer**: a frozen view of the file's dirty bytes, here
+   `[2 GiB, +64 KiB)` at v41. It cuts them into chunks, uploads a block and
+   records it in metadata.
+3. While that block uploads, alice-pc overwrites the same 64 KiB. The journal
+   now serves v42 for that range; the offer still reads v41, because the upload
+   must send the bytes that were hashed.
+4. The block commits and the engine reports `[2 GiB, +64 KiB)` durable.
+
+A careless journal loses data here. Marking the range durable by position would
+let eviction drop v42, the only copy anywhere: the bucket holds v41. The journal
+marks only content no newer than what it offered, so v42 stays dirty, the next
+offer picks it up, and a release of it is refused until then.
+
+5. **Overnight** the disk fills and the engine evicts the durable parts of the
+   file. **Tuesday** alice signs in and Windows reads offset 0. The journal no
+   longer holds it, and says so: the read reports the range as **missing** and
+   leaves the caller's buffer untouched. Zeros would hand Windows a corrupt disk
+   that looks valid. The engine finds the range in metadata, fetches it from
+   `dfs-data`, and gives it back with a **fill**, which writes only where the
+   journal still holds nothing, so it can never cover a newer write.
+
+```text
+   alice-pc                                  S3 bucket dfs-data
+      │ SMB write, read                          ▲          │
+      ▼                                          │ upload   │ fetch
+   ┌─────────────────────── engine ─────────────────────────────┐
+   │  carve, pack, upload (RFC 2, RFC 3)                        │
+   └──┬──────────┬────────────┬─────────────┬─────────────┬─────┘
+      │ write    │ read:      │ offload:    │ report:     │ release,
+      │          │ bytes, or  │ frozen      │ ranges now  │ fill
+      ▼          │ "missing"  │ offer       │ durable     ▼
+   ┌───────────── journal, N1's NVMe disk ──────────────────────┐
+   │ index in memory, ODFC_alice.vhdx:                          │
+   │   [0, 2 GiB)          v17   offloaded                      │
+   │   [2 GiB, +64 KiB)    v42   dirty                          │
+   │ segments on disk, append only:                             │
+   │   0041.seg sealed    0042.seg active  ◄── new records      │
+   └────────────────────────────────────────────────────────────┘
+```
+
+### The words you need
+
+- **held extent** — a byte range of one file the journal can produce, with its
+  content version and its offloaded bit ([§2](#2.%20The%20model%20it%20presents)); *extent* is defined in
+  [RFC 0 §2.1](rfc-0-data-lifecycle.md#2.1%20Entities).
+- **record**, **segment** — one write as stored on disk; an append-only file of
+  records, sealed when full. Space comes back only when a whole segment is
+  deleted ([§8.1](#8.1%20Releasing%20storage)).
+- **content version** — the number ordering a file's writes and removals; where
+  two cover one byte, the higher wins ([§5.3](#5.3%20Versions)).
+- **offloaded bit** — set only when the engine reports the bytes durable in the
+  remote tier; eviction needs it ([§2](#2.%20The%20model%20it%20presents)).
+- **offer**, **report** — the frozen view of dirty bytes the engine uploads, and
+  its statement of which of them are now durable ([§3.3](#3.3%20Offload)).
+- **release**, **fill** — dropping durable bytes to free space (eviction), and
+  placing fetched remote bytes back ([§3.5](#3.5%20Release), [§3.4](#3.4%20Fill)).
+
+### What this RFC promises
+
+- An acknowledged write survives the process dying at once, and a host crash or
+  power loss once synced: by the client's flush, or within a fixed time bound
+  (1 s proposed).
+- A read never returns zeros for a range the journal does not hold. It names
+  that range as missing, exactly, and leaves the bytes untouched.
+- Bytes not reported durable remotely are never released: such a release is
+  refused, whole.
+- A fill never overwrites held bytes, and is refused if the file changed since
+  the read that found the gap.
+- At its limit a write is refused at once with a named error; it never waits and
+  never overruns. Truncates, deletes and releases still go through. After a
+  crash the journal rebuilds itself from its own files alone.
+
+### How the rest is organised
+
+- §1–§2: what the journal is for, and the model of held ranges it presents.
+  Read these first.
+- §3: the interface. §3.1–§3.6 are the core; §3.7–§3.11 (statistics, loss
+  events, metrics, settling removals, snapshot holds) can wait.
+- §4: the on-disk format; §4.5's byte layout is for implementers.
+- §5: the in-memory index and versions; §6: durability and sync; §7: capacity.
+- §8: freeing space (release, repack); §9: recovery; §10: locking.
+- §11: tests and benchmarks; §12: open questions; Appendix A: how sync works on
+  each platform.
+
 ## 1. Purpose
 
 The journal holds bytes on this machine, durably against
@@ -737,7 +851,9 @@ segment, the journal **MUST** close every descriptor it caches for it
 ([§8.4](#8.4%20Open%20descriptors)); on platforms where an open file cannot be unlinked, segments **MUST** be
 opened with sharing that permits deletion.
 
-Sealing writes a **seal marker** after the last record, and the marker **MUST**
+Sealing writes a **seal marker** after the last record. The marker is not a
+record and has no kind in [§4.3](#4.3%20Records): it carries no file, extent or version, and the
+index never holds it. It **MUST**
 be durable before a successor naming the segment is created. Bytes after a seal
 marker belong to the footer, never to records. A segment named as another's
 predecessor is therefore known to have been sealed, which is how recovery tells a
@@ -1183,7 +1299,7 @@ freed only by the engine's own calls (`Release`, repack), so a journal that wait
 for space would be waiting on its caller. A refusal performs no I/O.
 
 **Records without bytes are never refused by the journal's own limit.** Release,
-truncate, deallocate, delete, durable and seal records, and footers, are what
+truncate, deallocate, delete and durable records, seal markers and footers are what
 frees space or keeps it accounted; refusing them at the limit would wedge a full
 journal. They draw on a **reserved headroom** the journal sets aside at open,
 outside every share's limit, sized to the bound on such records a journal can
@@ -1370,14 +1486,14 @@ require the process that wrote the segments to have exited cleanly.
 
 **A segment from another journal is not attached.** A segment whose header
 names a journal identity other than the one in `format` **MUST NOT** contribute
-to the index; it is reported and left alone ([§9.5](#9.5%20Unattachable%20files)). Content from another journal
+to the index; it is reported and left alone ([§9.4](#9.4%20Unattachable%20files)). Content from another journal
 never enters this format version's journal.
 
 A header that does not verify is damage, not evidence of a foreign segment: the
 segment is reported as damaged, its records are attached on their own checksums
 ([§4.3](#4.3%20Records)), and with its predecessor unknown it is treated as one that could have
 been open at a crash ([§9.3](#9.3%20Torn%20and%20corrupt%20records)). A torn header with no record is an orphan
-([§9.5](#9.5%20Unattachable%20files)).
+([§9.4](#9.4%20Unattachable%20files)).
 
 **The version floor.** The journal is opened with a floor supplied by its
 caller: the highest content version recorded as durable for any file the journal
@@ -1516,7 +1632,7 @@ above, the segment holds only extents it can produce, and repack **MAY** proceed
 normally — carrying forward what is still live and unlinking the rest.
 
 
-### 9.5 Unattachable files
+### 9.4 Unattachable files
 
 A `.seg` file that recovery cannot attach — no readable records, or a name it
 did not write — is an orphan. An implementation **MAY** unlink an orphan it is
@@ -1784,7 +1900,7 @@ A check here fails by **coming back up describing something other than what is o
 | [§5.3](#5.3%20Versions) epoch half is zero | Write a record whose version has a non-zero epoch half into a segment; assert the open fails, as for an unknown kind. |
 | [§9.1](#9.1%20Rebuilding) version floor | Reopen with a floor above every version on disk; assert the next write's version exceeds the floor, and that `MarkDurable` with the floor as `newest` leaves that write unmarked. |
 | [§9.2](#9.2%20Offload%20state%20after%20recovery) stale extent | Write A into one segment and offload it; write B over it into a later segment, offload and release it, and let reclamation unlink B's segment; restore A's segment from a copy taken before; reopen and `MarkDurable` at B's versions; assert A is dropped, reported as stale, and the read reports the extent missing. |
-| [§9.5](#9.5%20Unattachable%20files) unidentified directory | Open a directory holding segments and no `format` file, and separately one holding only unrelated files; assert both fail to open, nothing in either is modified or deleted, and an empty directory opens as a new journal. |
+| [§9.4](#9.4%20Unattachable%20files) unidentified directory | Open a directory holding segments and no `format` file, and separately one holding only unrelated files; assert both fail to open, nothing in either is modified or deleted, and an empty directory opens as a new journal. |
 | [§4.5](#4.5%20Catalog%20layout) unknown version | Write a trailer with a future format version; assert the segment is scanned and the open succeeds. |
 | [§5.3](#5.3%20Versions) monotonicity | Reopen after a crash; assert the next sequence number and the next assigned content version each exceed every one on disk, and that recovery in shuffled segment order yields an identical index. |
 | [§9.3](#9.3%20Torn%20and%20corrupt%20records) neighbours survive | With a catalog present, corrupt one record; assert every other record in that segment still reads. |
@@ -1879,7 +1995,7 @@ assert *when* the journal notices, not *whether*:
 | --- | --- | --- |
 | bytes of a record changed | on the read that serves it; not at open when a catalog is used ([§4.4](#4.4%20The%20segment%20catalog)) | the extent is dropped and reported ([§9.3](#9.3%20Torn%20and%20corrupt%20records)) |
 | a segment deleted | not by the journal | its extents are no longer held, and dirty ones resolve as **Lost** at the engine on read ([RFC 0 §6.1](rfc-0-data-lifecycle.md#6.1%20Resolution)) |
-| the `format` file removed or changed | at open | open fails ([§4.1](#4.1%20Layout), [§9.5](#9.5%20Unattachable%20files)) |
+| the `format` file removed or changed | at open | open fails ([§4.1](#4.1%20Layout), [§9.4](#9.4%20Unattachable%20files)) |
 | a file the journal did not name added | at open | left alone ([§4.1](#4.1%20Layout)) |
 | a sealed segment truncated | at open, when a later segment names it as predecessor ([§9.3](#9.3%20Torn%20and%20corrupt%20records)) | reported as corruption; the newest segment of a stream is indistinguishable from a crash and is treated as one |
 | a valid segment copied in from another journal | at open, by its journal identity | not attached, reported, left alone ([§9.1](#9.1%20Rebuilding)) |

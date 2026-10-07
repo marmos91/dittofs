@@ -27,6 +27,136 @@ Conventions, RFC 2119 keywords and test tiers are set once in the
 
 ---
 
+## Start here
+
+*Explanatory. The rules are in §1 onward; where this section and a rule differ, the rule wins.*
+
+DittoFS keeps every fact it must remember, other than file content, in one
+transactional database: files and directories, which chunks hold each file's
+bytes, the open state that must survive a restart, users, shares, nodes and
+settings. This RFC specifies that database as a whole: the **entities** callers
+read, the narrow **views** each caller is handed, and how entities are laid out
+as keys and values in a transactional key-value store (a **KV**) that one small
+interface hides.
+
+In outline: clients write over NFS (Network File System) or SMB (Server Message
+Block); writes land in a local journal and are later cut into chunks, packed
+into blocks and uploaded to an S3 (Simple Storage Service) bucket
+([RFC 0](rfc-0-data-lifecycle.md)). The metadata store records what exists and
+where it went. What each record *means* is owned elsewhere — files and names by
+[RFC 7](rfc-7-namespace-metadata.md), content by
+[RFC 6](rfc-6-block-metadata.md), opens and locks by
+[RFC 14](rfc-14-open-state.md); this RFC owns how they are stored together.
+
+### The problem, in one example
+
+On node N1, alice's folder `profiles/alice/` is directory `d1`, and her profile
+disk `ODFC_alice.vhdx` is file `f7`. Follow two operations into the database.
+
+1. **alice-pc overwrites 64 KiB at 4 GiB, then flushes.** The write itself
+   touches no metadata: only the journal holds it. The flush runs one
+   transaction that rewrites `f7`'s one File record (times, change counter;
+   the size is unchanged) and adds an overwrite record saying "this 64 KiB was
+   replaced", because older content there was already uploaded. It also
+   *guards* `f7`'s fence record and N1's node record: claims on keys it does
+   not write, which fail the transaction if another node has taken the file
+   over.
+2. **Minutes later the range is uploaded.** A put intent naming the new block
+   is recorded before the put. After the put, the offload commit writes a ref
+   ("these bytes are chunk C"), the chunk record, the block record and the
+   index entries beside them. It never touches `f7`'s File
+   record or its overwrite record, so uploads and alice's writes never contend
+   for one key.
+3. **alice-pc creates the folder `Downloads`.** One transaction writes the new
+   directory's File record, one Entry under `d1` keyed by the folded name
+   `downloads` and holding `Downloads`, a small *delta* record for `d1`'s
+   times, and a usage delta for the new file. It guards `d1`'s record rather than rewriting it.
+
+Two designs this avoids, both measured. Rewriting `d1`'s times in place makes
+every create in the folder write one key, and parallel creates in one directory
+fell from 111k/s to 28k/s; a delta per transaction, folded in later, kept the
+full rate. Keeping a file's refs as a list inside its record makes each upload
+re-read and re-write the whole list, which is how a long sequential write
+slowed down as the file grew; one key per ref keeps each commit's cost to what
+changed.
+
+```text
+ filesystem service      engine          GC        management API
+ Namespace, Files,       Existence,      Blocks    ControlPlane
+ Capacity, OpenState     Content
+       └──────────────────────┴────────────┴────────────┘
+              one store: entities, codecs, key layout
+                              │  Update, View, Guard, Now
+                              ▼
+          KV: embedded on one node, or replicated in a cluster
+
+ key (first part = kind)       holds                     written by
+ F‖profiles‖f7                 File: size, times, …      flush
+ F‖profiles‖f7‖ow‖4GiB         overwrite record          flush
+ F‖profiles‖f7‖r‖…             ref to chunk C            offload
+ C‖ns‖C, B‖ns‖K1, CR‖ns‖C‖…    chunk, block, ref index   offload
+ F‖profiles‖d9                 File: new directory       mkdir
+ F‖profiles‖d1‖e‖downloads     Entry, value "Downloads"  mkdir
+ F‖profiles‖d1‖t‖…             time delta for d1         mkdir
+ S‖profiles‖ud‖…               usage delta               mkdir
+ U‖…, SH‖A, CFG‖…              users, shards, settings   control plane
+ (shares and files shown by name; keys hold their 16-byte IDs)
+```
+
+Everything about one file sits under `F‖` with the share's ID and the file's
+ID, so a client operation stays inside one or two such prefixes and deleting a
+share is one range drop. Per-share records sit under `S‖`; content records
+under the bucket namespace they are counted in (`C‖`, `B‖`, `CR‖`);
+installation-wide records under their own kinds. [§4.2](#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)
+lists every key.
+
+### The words you need
+
+- **Entity**: a plain value a read returns, such as a File, an Entry or a Share
+  ([§2.1](#2.1%20The%20entity%20map)). One entity is not one record: what a
+  write touches is decided by the operation, never by the struct.
+- **Record**: one key and its value in the KV; every key has a row in the key
+  table ([§4.2](#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)).
+- **KV**: the small interface a backend implements — run a transaction, read,
+  scan, set, delete, guard ([§4.1](#4.1%20One%20small%20interface%20per%20backend)).
+- **Guard**: a transaction's claim on a key it does not write. It conflicts
+  with a concurrent write of that key, never with another guard.
+- **Delta and fold**: a counter changed by many writers is never read and
+  rewritten; each transaction adds a delta record and the shard's primary folds
+  them in later ([§4.4](#4.4%20Counters%20that%20many%20writers%20change)).
+- **View**: the narrow interface one consumer is handed — the engine, GC and
+  the filesystem service each hold different ones ([§3](#3.%20Interfaces%2C%20by%20consumer)).
+- **Format record**: the one record read first, naming the store format and
+  the case-folding rules; a binary that does not know them refuses to open the
+  store ([§4.6](#4.6%20Store%20format)).
+
+### What this RFC promises
+
+- One database holds every kind of metadata, so there is one thing to run, back
+  up, replicate and test.
+- Reading a file's attributes is one read of one key; no record holds a list
+  that grows with a file or a directory.
+- No counter is a hot key: usage and directory times are written as deltas, so
+  parallel creates in one directory do not serialise.
+- A serialisation conflict is retried within the caller's deadline, never
+  returned as an error.
+- A store opens only under a binary that understands its format and fold
+  rules, and a value written in an unknown codec version is refused, never
+  guessed.
+
+### How the rest is organised
+
+[§1](#1.%20Purpose) states the three rules that keep the model honest.
+[§2](#2.%20Entities) maps every entity to the RFC that defines it and defines
+the identity, control-plane and cluster entities. [§3](#3.%20Interfaces%2C%20by%20consumer)
+lists the views by consumer and how one store is assembled.
+[§4](#4.%20Persistence%20pattern) is the persistence pattern: the KV contract,
+the key layout, codecs, counters, debugging and the store format.
+[§5](#5.%20Decisions%20and%20evidence) records the decisions and their evidence;
+[§6](#6.%20Testing) to [§8](#8.%20Observability) cover testing, benchmarks with
+the metadata footprint at 2 PB, and observability. On a first read, skip the
+code in §2.3, §5, §7.4 and the appendices.
+
 ## 1. Purpose
 
 The metadata layer used to be specified as records: what is stored under which
@@ -698,7 +828,7 @@ Every key starts with a kind byte. The layout encodes the boundary
 | | `S‖id‖q‖principal-or-project` | Quota: `Hard`, `Soft`, `Grace`, `Advisory` ([RFC 7](rfc-7-namespace-metadata.md)) |
 | | `S‖id‖qx‖principal-or-project` | when usage first exceeded the soft limit; deleted when it falls back under ([RFC 17 §5.6](rfc-17-vfs.md#5.6%20Quota)) |
 | | `S‖id‖vf‖version‖FileID‖offset` | version-floor index ([RFC 6 §8.3](rfc-6-block-metadata.md#8.3%20A%20file%27s%20refs%20and%20the%20version%20floor)) |
-| | `S‖id‖fnc` | numeric file-id allocator: the next unreserved number, reserved in ranges by shard primaries, so the protocol's numeric id is injective ([RFC 7 §6.5](rfc-7-namespace-metadata.md#6.5%20A%20protocol%27s%20numeric%20file%20id%20is%20derived%2C%20and%20collisions%20are%20its%20problem)); the number itself is a File field |
+| | `S‖id‖fnc` | numeric file-id allocator: the next unreserved number, reserved in ranges by shard primaries, so the protocol's numeric id is injective ([RFC 7 §6.5](rfc-7-namespace-metadata.md#6.5%20A%20protocol%27s%20numeric%20file%20id%20is%20a%20stored%20number%2C%20never%20reused)); the number itself is a File field |
 | **Per namespace** — content-addressed, one partition per remote key namespace ([RFC 6 §2.6](rfc-6-block-metadata.md#2.6%20The%20scope%20of%20a%20count)) | `C‖ns‖hash`, `B‖ns‖name` | Chunk, Block (with its GC state: `live`, `retired`, `deleted`, and its carried chunk list) |
 | | `CR‖ns‖hash‖ShareID‖FileID‖offset‖died` | reverse ref index: one empty-valued key per live (`died` zero) or history ref, written in the ref's transaction; authoritative for "which refs name this chunk", and the refcount is its cache ([RFC 6 §6.1](rfc-6-block-metadata.md#6.1%20A%20refcount%20is%20exactly%20its%20refs)) |
 | | `I‖ns‖name` | put intent: domain, domain ID, epoch ([RFC 9 §7.2](rfc-9-gc.md#7.2%20Every%20record%20GC%20stores%20names%20its%20reclamation)) |

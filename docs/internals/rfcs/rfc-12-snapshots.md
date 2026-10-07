@@ -34,6 +34,114 @@ where the code differs.
 
 ---
 
+## Start here
+
+*Explanatory. The rules are in §1 onward; where this section and a rule differ, the rule wins.*
+
+**What this is.** A snapshot is a read-only view of a share as it was at one
+instant, kept as long as it is wanted and browsable from the client. This RFC
+also builds on snapshots the other ways of protecting and moving data: writable
+clones, backups of the metadata (and optionally of the data), restore into a new
+share, and moving a whole tenant to another DittoFS installation that uses the
+same bucket.
+
+**The problem, with one example.** Single-node install N1; clients write to a
+fast local journal, and in the background the bytes are cut into **chunks**
+(~256 KiB, named by the hash of their content), packed into **blocks** (~4 MiB
+objects) and uploaded to the S3 bucket `dfs-data`. The metadata store keeps a
+**ref** for each use of a chunk by a file, and a block is deleted by GC
+(garbage collection) once no ref reaches its chunks.
+
+The `profiles` share takes a snapshot every hour. Four have been taken, so the
+share's **cut number** is 4. In alice's 30 GB profile disk
+`profiles/alice/ODFC_alice.vhdx`, offset 2 GiB holds chunk `c` through ref `r`,
+committed while the cut number was 3 (`born` 3).
+
+1. **10:00 — the cut.** The snapshot service briefly closes a gate in front of
+   the share's metadata writes, raises the cut number to 5 in one transaction,
+   and reopens it; the gate's target is 50 ms. Nothing is copied, whatever the
+   share's size.
+2. **10:20 — the overwrite.** Malware on alice-pc encrypts the disk in place,
+   64 KiB at a time. When the new bytes at 2 GiB are uploaded, the commit finds
+   that `r` was born before cut 5. Instead of replacing `r`, it moves it to
+   **history** with `died` 5 and writes the new ref with `born` 5. History refs
+   count like live ones, so `c` keeps its count and GC keeps its block.
+   Without the snapshot, `r` would simply be replaced, `c`'s count would reach
+   zero, and its block would be deleted once GC's 48-hour trash ran out.
+3. **Dirty content at the cut.** At 09:59:58 alice-pc wrote 64 KiB at 3 GiB and
+   flushed it; at 10:00 it was still only in the journal. At 10:00:02 the
+   malware overwrote it. Normally the journal would keep only the newer bytes
+   and upload those. The **snapshot hold** makes it keep the 09:59:58 version
+   until it is uploaded, straight into history. Snapshot 5 stays `holding` until
+   that upload lands, then becomes `complete` and browsable. A write whose
+   size and times were not yet committed to metadata by 10:00 (typically one
+   not yet flushed) is not in snapshot 5.
+4. **10:45 — the undo.** alice opens Previous Versions in Explorer, picks
+   10:00, and reads her disk as it was: every ref with `born` < 5 ≤ `died`. The
+   operator can also clone snapshot 5 into a new writable share.
+
+```text
+               cut 5 (10:00)
+                     │
+ r → c      ─────────┼──── live until 10:20 ─┐ moved to history,
+ (born 3)            │                       │ died 5; c still counted
+                     │                       ▼
+ r' → c'             │  written 10:20 ──────────► live, born 5
+                     │
+ snapshot 5 reads every ref with born < 5 ≤ died  →  r → c
+ the live share reads the current refs            →  r' → c'
+
+ journal: v@09:59:58 (flushed, not yet uploaded) ─ held at 10:00 ─┐
+          v@10:00:02 overwrites it                                │
+          upload carries v@09:59:58 straight into history ◄───────┘
+          then snapshot 5: holding → complete
+```
+
+**The words you need.**
+
+- **Cut number** — a per-share counter raised by one at each snapshot;
+  snapshot *k* is the share as of the instant the counter became *k*
+  ([§2.2](#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree), [RFC 0 glossary](rfc-0-data-lifecycle.md#Glossary)).
+- **`born`, `died`** — the cut number a version was committed under, and the one
+  its replacement was committed under; snapshot *k* sees a version when
+  `born` < *k* ≤ `died` ([§2.2](#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree)).
+- **History** — versions a live snapshot can still see after the share replaced
+  them; their refs are counted, which is all that keeps their blocks.
+- **Snapshot hold** — the journal keeping a flushed but not yet uploaded version
+  that a cut sees until it is uploaded ([§2.4](#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history)).
+- **Use record** — a mark on a snapshot while a clone, restore, backup or move
+  reads it; the snapshot cannot be deleted meanwhile ([§3.2](#3.2%20A%20backup%20holds%20its%20snapshot)).
+- **Catalog backup / copying backup** — an export of one snapshot's metadata
+  to a location outside the metadata store / the same plus a copy of every block
+  it names, outside the share's bucket ([§3](#3.%20Catalog%20backups), [§3.4](#3.4%20Copying%20backups)).
+- **Namespace** — the folder in the bucket a share's blocks live in; chunks are
+  counted within one namespace, and a namespace is what moves between
+  installations ([§2.1](#2.1%20A%20namespace%20is%20the%20unit%20that%20moves)).
+
+**What this RFC promises.**
+
+- Taking a snapshot copies nothing and writes a few records, whatever the
+  share's size; writes wait only behind a brief per-shard gate.
+- A complete snapshot reads back exactly the share's bytes, attributes, ACLs and
+  extended attributes as of its cut, whatever the share does afterwards.
+- A snapshot keeps its content alive only through counted refs, and deleting it
+  drops only the history no other live snapshot sees. A locked snapshot cannot
+  be deleted through DittoFS, by anyone, until the lock expires.
+- Writes are never refused because of a snapshot; when too much content is not
+  yet uploaded, the new snapshot is refused instead.
+- A catalog backup survives losing the metadata store but not the bucket; a
+  copying backup survives losing the bucket too. Moving a namespace to another
+  installation on the same bucket copies no block.
+
+**How the rest is organised.** §1 lists the four questions operators ask. §2 is
+the core: §2.2–§2.4 how a cut, history and the hold work (read these), then
+browsing, clones, schedules and locks, deleting, space reporting, and subtree
+snapshots (§2.10, skippable at first). §3 covers catalog backups and restore;
+§3.4 on copying backups is long and self-contained. §4 moves a namespace
+between installations and re-homes a share out of a shared one. §5 is the
+export format, §6 the API and configuration, §7 the invariants, §8–§9 tests and
+metrics, §10 the open questions.
+
 ## In short
 
 - **A snapshot** is a read-only view of a share as it was at one moment. Taking
@@ -556,7 +664,7 @@ share's root, configurable and hidden from listings. What protocols rely on:
   SMB the snapshot keeps the share's volume serial, because Previous Versions
   addresses it by token, not as a separate volume;
 - a snapshot file's numeric file id differs from the live file's
-  ([RFC 7 §6.5](rfc-7-namespace-metadata.md#6.5%20A%20protocol%27s%20numeric%20file%20id%20is%20derived%2C%20and%20collisions%20are%20its%20problem)), so tools do not take the two for one file;
+  ([RFC 7 §6.5](rfc-7-namespace-metadata.md#6.5%20A%20protocol%27s%20numeric%20file%20id%20is%20a%20stored%20number%2C%20never%20reused)), so tools do not take the two for one file;
 - **SMB Previous Versions** names each complete snapshot by the token
   `@GMT-YYYY.MM.DD-HH.MM.SS` of its cut time in UTC. The cut transaction sets
   each cut time at least one second past the share's previous one

@@ -29,6 +29,121 @@ where the code differs.
 
 ---
 
+## Start here
+
+*Explanatory. The rules are in §1 onward; where this section and a rule differ, the rule wins.*
+
+**What this is.** GC (garbage collection) deletes objects from the remote
+object store (S3) once no file and no snapshot can read them any more, and
+rewrites half-empty objects so their dead bytes can go too. It is the only part
+of DittoFS that destroys the last copy of content, so its one job is to make
+every delete provably safe; reclaiming space comes second.
+
+**The problem, with one example.** Single-node install N1, remote tier the S3
+bucket `dfs-data`. Clients write to a fast local journal; in the background the
+bytes are cut into **chunks** (~256 KiB, each named by the hash of its content),
+packed into **blocks** (~4 MiB S3 objects, ~16 chunks each), and uploaded. The
+metadata store records a **ref** for each use of a chunk by a file, and every
+chunk keeps a count of its refs.
+
+On the `builds` share, build01 runs `rm -rf out/` over NFS: 12,000 object
+files, 3 GiB, spread over about 770 blocks.
+
+1. **Refs drop.** Releasing the files drops their refs in batches. Each batch,
+   in one metadata transaction, deletes the refs and their entries in the
+   **reverse ref index** (one key per ref, listed by chunk hash) and lowers each
+   chunk's count. When a chunk's count reaches zero, its block's count of live
+   chunks goes down too.
+2. **Retire.** About 760 blocks held only `out/` content; the transaction that
+   takes each one's live count to zero marks it **retired**, with a not-before
+   time 48 hours away. The object stays in S3. The other ~10 blocks still hold a
+   chunk some live file uses, so they stay live with dead bytes inside.
+3. **Wait out the trash.** For 48 hours a retired block can still be repaired:
+   if the audit finds a count that was too low, raising it brings the block back
+   to live with one record write.
+4. **Verify, record, delete.** After 48 hours the **deleter** takes each due
+   block and, for every chunk it holds, checks the reverse ref index: no ref may
+   name the chunk. Only then does it mark the block `deleted` in metadata, and
+   only after that does it send the batch delete to S3. The block's records are
+   pruned later, once the bucket's settings have been rechecked.
+5. **Compact.** A live block holding one 256 KiB live chunk and 15 dead ones
+   still costs 4 MiB. The **compactor** copies live chunks into a fresh block and
+   moves their records; the old block's count reaches zero, and it retires like
+   any other.
+
+What goes wrong without the rules. Suppose a defect in step 1 lowered a chunk's
+count but left the ref behind, so a file still names the chunk. A delete
+decided by counts alone removes the object, and that file's next read fails as
+**Lost**: the content is gone and nothing can bring it back. Step 4's check
+finds the ref, refuses the delete, raises the count and brings the block back
+to live. The order in step 4 matters as well: deleting the object first and
+crashing before the metadata write would leave records that name an object that
+no longer exists. Had `builds` kept a snapshot, none of this would start: the
+dropped refs move to history, still counted, and no block retires until the
+snapshot is deleted.
+
+```text
+ build01: rm -rf out/      metadata store (one transaction per batch)
+      │                    drop refs + reverse-index keys, lower counts
+      ▼                                 │
+ filesystem service ──────────────────► │ block's live count hits 0
+                                        ▼
+                     live ──retire──► retired (not before +48 h)
+                      ▲                  │            │
+                      └── count raised ──┘            │ deleter: reverse
+                          (audit, refused delete)     │ index finds no ref
+                                                      ▼
+                                       deleted (recorded) ──► S3 delete
+                                                      │       on dfs-data
+                                                      ▼
+                                         pruned, after a later Recheck
+ compactor: copies live chunks out of mostly-dead blocks; the old ones retire
+```
+
+**The words you need.**
+
+- **Ref** — one file's (or one snapshot's) use of one chunk at one offset; the
+  only thing that keeps content alive ([RFC 0 glossary](rfc-0-data-lifecycle.md#Glossary)).
+- **Reverse ref index** — one key per ref, ordered by chunk hash; the deleter
+  reads it before every delete, and the counts are a cache of it
+  ([§2.1](#2.1%20References%20are%20the%20only%20authority)).
+- **Retired** — a block no ref reaches any more; its object waits in the trash
+  until its not-before time ([§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object)).
+- **Trash** — the wait between retirement and deletion, 48 hours by default. It
+  postpones a delete the refs already allow; it never allows one
+  ([§3.7](#3.7%20Trash)).
+- **Deleter** — moves a due retired block to `deleted` after checking the
+  reverse index, then deletes its object ([§3.5](#3.5%20The%20deleter%20verifies%20before%20it%20deletes)).
+- **Compactor** — rewrites the live chunks of mostly-dead or small blocks into
+  new blocks; it deletes nothing itself ([§4](#4.%20Compactor)).
+- **Put intent** — a record written before every upload naming the object about
+  to be put, so an upload that never commits is still found and removed
+  without listing the bucket ([§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete)).
+
+**What this RFC promises.**
+
+- An object is deleted only after its block was marked `deleted` in a metadata
+  transaction that found no ref, live or snapshot history, naming any chunk the
+  block still holds.
+- Nothing but refs keeps content alive or allows a delete: no pin list, no
+  in-memory state, no lock. Time only postpones a delete.
+- Metadata is written before the object is deleted, so a crash at any point
+  leaves an object still named by a record, never a record naming a missing
+  object.
+- GC needs no pause in service, and two GC runners on the same blocks at once
+  are as safe as one.
+- Objects left by failed uploads are reclaimed through their put intents; a
+  bucket listing deletes only where the namespace is proven to belong to this
+  installation, and nothing's correctness depends on it.
+
+**How the rest is organised.** §1–§2 say what GC owns and why refs are the only
+authority. §3 is a block's life — retire, trash, verify, delete, prune — and the
+core of the RFC; §3.3 and §3.4 (resurrection by adoption) are mostly deferred
+with deduplication and can be skipped on a first read. §4 is the compactor, §5
+objects no record names, §6 the audit that keeps counts honest. §7 covers
+scheduling, records and service-setting rechecks; §8–§10 the API, invariants and
+metrics; §11 the tests. Appendix A lists where today's code differs.
+
 ## 1. Purpose
 
 GC answers one question about the remote tier:
@@ -99,7 +214,7 @@ GC **MUST NOT**:
 
 ### 1.2 Words this document uses
 
-[RFC 0 §1.1](rfc-0-data-lifecycle.md#1.1%20The%20component%20set) assigns this component "mark/sweep". **Sweep** keeps its [RFC 0 §2.3](rfc-0-data-lifecycle.md#2.3%20Operations)
+This component reclaims remote blocks. **Sweep** keeps its [RFC 0 §2.3](rfc-0-data-lifecycle.md#2.3%20Operations)
 meaning — deleting a remote block nothing references — and is carried out here
 by retirement and the deleter together; no component of that name remains.
 **Mark** survives only as the audit of [§6](#6.%20Audit), which recomputes counts and never
