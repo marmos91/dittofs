@@ -153,7 +153,15 @@ jobs:
           DITTOFS_TEST_POSTGRES_DSN: "host=localhost port=5432 dbname=dittofs_test user=postgres password=postgres sslmode=disable"
         run: |
           set -euo pipefail
-          xargs go test -tags=integration -v -timeout=20m -p 1 < /tmp/integration-pkgs.txt
+          if [ "${DITTOFS_TEST_KMIP:-}" != "1" ]; then
+            echo "::error::PyKMIP setup did not enable the live KMIP tests."
+            exit 1
+          fi
+          if ! grep -Fxq 'github.com/marmos91/dittofs/pkg/block/middleware/encryption/keyprovider' /tmp/integration-pkgs.txt; then
+            echo "::error::Live KMIP tests are missing from the integration package selection."
+            exit 1
+          fi
+          xargs go test -tags=integration -count=1 -v -timeout=20m -p 1 < /tmp/integration-pkgs.txt
 
       - name: Install and start rpcbind
         env:
