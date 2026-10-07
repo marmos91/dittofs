@@ -224,6 +224,32 @@ Held extents are **disjoint and need not be adjacent**: an implementation **MUST
 NOT** assume a file's held content is contiguous, nor that it begins at offset
 zero.
 
+**What an extent is, by example.** An extent is a byte range of one file:
+a `FileID`, a start offset and a length, nothing more. When alice-pc writes
+64 KiB at offset 1 GiB into `ODFC_alice.vhdx`, that write is the extent
+*(alice.vhdx, 1 GiB, 64 KiB)*. An extent says *which bytes of the file*, never
+*where on disk* they sit and never *what content* they hold; the record that
+stores them says where, and its content version says which bytes these are.
+
+Extents split and shrink as later writes land on them:
+
+```text
+ file offset   0        4K       8K       12K
+               ├────────┴────────┤                  write v7: extent (0, 8K)
+                        ├────────┴────────┤         write v8: extent (4K, 8K)
+
+ held extents  ├── v7 ──┼────── v8 ───────┤
+ afterwards    (0, 4K)   (4K, 8K)
+```
+
+The first write's extent was (0, 8K). The second overwrote its upper half, so
+the journal now holds two extents for the file: (0, 4K) at version 7 and
+(4K, 8K) at version 8. The bytes of v7 between 4K and 8K are still inside the
+first record on disk, but they are no longer *held*: a read of 4K–8K gets v8.
+An extent is not a chunk either — chunk boundaries are cut later from content
+([§1.2](#1.2%20What%20it%20knows%20about%20content)) — and not a record: one record
+may end up as several held extents, or none.
+
 ![One file's held extents with gaps between them, the missing extents a read reports, and the three different causes a gap can have](img/rfc1-file-extents.svg)
 
 The gaps carry no explanation. An extent never written, an extent released by
@@ -900,6 +926,28 @@ An unrecognised record kind fails the open like an unrecognised format ([§4.1](
 the older version, and an older binary refuses the newer one. The replication
 kinds of [RFC 10](rfc-10-journal-replication.md#2.3%20The%20journal%20extension) are added this way.
 
+**A record, field by field.** The header's byte layout is the
+implementation's; its catalog entry ([§4.5](#4.5%20Catalog%20layout)) carries the same fields
+at fixed sizes. For alice-pc's 64 KiB write at 1 GiB:
+
+| Field | Example | What it is for |
+| --- | --- | --- |
+| kind | `write` | what the record does: stage bytes (`write`, `fill`) or remove or mark them (`release`, `truncate`, `deallocate`, `delete`, `durable`, `hold`, `unhold`, `stamp`) |
+| `FileID` | `7c1e…` (alice.vhdx) | which file the bytes belong to |
+| share tag | `profiles` | which share's limits the bytes count against ([§3](#3.%20Interface)) |
+| file offset | 1 073 741 824 | where in the file the bytes start |
+| length | 65 536 | how many bytes; for a removal, how far it reaches |
+| sequence number | 51 207 | the order this journal appended records in |
+| content version | (0, 9 314) | which bytes these are, and which of two overlapping records is newer ([§5.3](#5.3%20Versions)) |
+| synced-through offset | 183 500 800 | how far this segment was synced when the record was written; lets recovery tell a torn tail from corruption ([§9.3](#9.3%20Torn%20and%20corrupt%20records)) |
+| payload checksum | CRC32C | detects damage to the bytes |
+| header checksum | CRC32C | detects damage to every field above, payload checksum included |
+| payload | 64 KiB of data | the bytes themselves; only `write` and `fill` carry one |
+
+Only `write` and `fill` carry bytes. Every other kind is a header alone that
+changes what the earlier records mean: a `release` stops holding an extent, a
+`durable` marks it offloaded, a `truncate` drops everything past an offset.
+
 A record whose payload checksum does not verify **MUST NOT** be used to serve a
 read. A record wholly covered by a release, truncate, deallocate or delete
 record that outranks it ([§5.3](#5.3%20Versions)) is not held, and recovery **MUST NOT** verify or report
@@ -1208,6 +1256,80 @@ Verification **MUST** report, rather than repair: the extents the index claims
 that the segments do not support, the records the segments hold that the index
 does not reference, and the footers ([§4.4](#4.4%20The%20segment%20catalog)) that did not verify. Repair is a
 separate, explicit action.
+
+### 5.5 Rebuilding one file from its records, by example
+
+*Explanatory: the rules are [§5.3](#5.3%20Versions) and [§9.1](#9.1%20Rebuilding).*
+
+These are every record of `alice.vhdx` in the journal, in the order they were
+appended, with another file's record in between. Offsets are in KiB.
+
+| seq | segment | kind | file offset | length | version | meaning |
+| --- | --- | --- | --- | --- | --- | --- |
+| 101 | 12 | write | 0 | 8 | 7 | alice-pc writes `AAAAAAAA` |
+| 102 | 12 | write | — | — | — | a record of `bob.vhdx`: ignored here |
+| 103 | 12 | write | 4 | 8 | 8 | alice-pc overwrites with `BBBBBBBB` from 4 KiB |
+| 104 | 12 | durable | 0 | 8 | 7 | the engine reports version 7 offloaded |
+| 105 | 13 | release | 0 | 4 | 7 | eviction: stop holding 0–4 KiB of version 7 |
+| 110 | 13 | write | 20 | 4 | 9 | alice-pc writes `CCCC` at 20 KiB |
+| 120 | 14 | fill | 0 | 4 | 7 | a cold read fetched 0–4 KiB back from the remote tier |
+
+**Step 1 — collect.** The placement index, or on recovery a scan of every
+segment's catalog, yields the records for this `FileID`. Their order on disk is
+irrelevant: segments may be read in any order, even concurrently, because
+everything below is decided by the two numbers in each record, not by position.
+
+**Step 2 — decide each byte by precedence.** For every byte, among the records
+that cover it, the one with the **higher content version** wins; between equal
+versions, the **higher sequence number** wins.
+
+```text
+ KiB      0        4        8        12       16       20       24
+          ┌────────┬────────┐
+ 101 v7   │AAAA    │AAAA    │          write
+          └────────┼────────┼────────┐
+ 103 v8            │BBBB    │BBBB    │ write: beats 101 on 4–8 (v8 > v7)
+                   └────────┴────────┘
+ 105 v7   ░release░                    beats 101 on 0–4 (v7 = v7, seq 105 > 101)
+ 120 v7   │AAAA    │                   fill: beats 105 (v7 = v7, seq 120 > 105)
+                                                         ┌────────┐
+ 110 v9                                                  │CCCC    │ write
+                                                         └────────┘
+ result   │AAAA    │BBBB    │BBBB    │   (not held)     │CCCC    │
+          v7 fill   v8       v8        12–20 missing     v9
+          offloaded dirty    dirty                       dirty
+```
+
+- **0–4 KiB.** Three records cover it, all version 7: the write (101), the
+  release (105) and the fill (120). The fill has the highest sequence number,
+  so it wins: the bytes are held again, read from record 120. They are
+  offloaded, because the `durable` record (104) covers version 7 here.
+- **4–8 KiB.** The write at version 7 (101) and the write at version 8 (103).
+  Version 8 wins. It is **dirty**: the `durable` record names version 7, and
+  never marks newer content offloaded ([§9.2](#9.2%20Offload%20state%20after%20recovery)).
+- **8–12 KiB.** Only record 103: version 8, dirty.
+- **12–20 KiB.** No record. The journal reports it **missing** and does not say
+  why: never written, evicted, or lost look the same here
+  ([§2](#2.%20The%20model%20it%20presents)). The engine asks the metadata store.
+- **20–24 KiB.** Only record 110: version 9, dirty.
+
+**Step 3 — the result is the held extents.** Adjacent bytes with the same
+record, version and offload bit merge into one extent:
+
+| Held extent | Version | Offloaded | Read from |
+| --- | --- | --- | --- |
+| (0, 4 KiB) | 7 | yes | record 120, segment 14 |
+| (4 KiB, 8 KiB) | 8 | no | record 103, segment 12 |
+| (20 KiB, 4 KiB) | 9 | no | record 110, segment 13 |
+
+That set is exactly what the placement index holds for the file. A read of
+0–24 KiB returns the three held extents and reports 12–20 KiB as missing; the
+engine fills that gap from the remote tier or reports it lost.
+
+What happens to the records later ([§8.2](#8.2%20Repack)): record 101 backs no held byte, so
+when repack rewrites segment 12 it carries 103 and 104 forward and leaves 101
+behind. Record 105 then outranks nothing left on disk and is dropped too.
+Record 104 stays as long as the version-7 bytes it marks offloaded are held.
 
 ## 6. Durability and ordering
 
