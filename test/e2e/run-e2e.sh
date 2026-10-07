@@ -27,6 +27,10 @@
 #   --with-remote        Only run store matrix combos backed by an S3 block store
 #   --help               Show this help message
 #
+# Environment: E2E_LOG names the log (default /tmp/dittofs-e2e.log), printed when
+# the run ends; E2E_WALL bounds the run (default 45m). It runs from the repo root
+# whatever the current directory.
+#
 # Examples:
 #   sudo ./run-e2e.sh                                  # Run all E2E tests
 #   sudo ./run-e2e.sh --verbose                        # Run with verbose output
@@ -205,6 +209,11 @@ if ! command -v go &>/dev/null; then
     log_error "'go' command not found. Please install Go or activate your environment."
     exit 1
 fi
+
+# The package path below is ./test/e2e/... from the repo root, so run from there
+# whatever the caller's directory: `cd test/e2e && sudo ./run-e2e.sh` failed every
+# time with "lstat ./test/e2e/: no such file or directory".
+cd "$REPO_ROOT"
 
 # =============================================================================
 # Build go test command
@@ -403,9 +412,16 @@ fi
 log_step "Running: ${GO_TEST_ARGS[*]}"
 echo ""
 
+# Through CI's runner, as e2e-tests.yml runs it: the output goes to a file, never a
+# pipe (a process the suite leaks would hold a pipe open and hang this script),
+# the run is bounded by E2E_WALL, and the verdict reads the log as well as the
+# exit status. The log is printed once the run ends.
+E2E_LOG="${E2E_LOG:-/tmp/dittofs-e2e.log}"
+export E2E_LOG
+log_info "Log: ${E2E_LOG} (printed when the run ends)"
 START_TIME=$(date +%s)
 TEST_EXIT_CODE=0
-"${GO_TEST_ARGS[@]}" || TEST_EXIT_CODE=$?
+"$REPO_ROOT/.github/scripts/run-e2e.sh" "${GO_TEST_ARGS[@]}" || TEST_EXIT_CODE=$?
 END_TIME=$(date +%s)
 
 DURATION=$((END_TIME - START_TIME))

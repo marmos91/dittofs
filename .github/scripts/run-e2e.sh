@@ -37,6 +37,13 @@ fi
 mkdir -p "$(dirname "$LOG")"
 : >"$LOG"
 
+# The processes the leak check below looks for, and those already running before
+# the suite starts. A host that runs its own DittoFS (a shared test server) is
+# not the suite's leak, and naming it on every run would teach readers to skip
+# the warning.
+leak_pattern='(^|/)(dfs|dfsctl|mount\.nfs|mount\.cifs)( |$)'
+preexisting=" $(pgrep -f "$leak_pattern" 2>/dev/null | tr '\n' ' ') "
+
 # TERM first so the suite can dump state, SIGKILL after GRACE for anything that
 # ignores it.
 started=$SECONDS
@@ -59,7 +66,10 @@ cat "$LOG"
 # Only processes the suite itself starts. rpcbind and rpc.statd are deliberately
 # left out: the runner installs and starts them, so matching them would warn on
 # every run, and a warning that always fires is read as background noise.
-survivors=$(pgrep -a -f '(^|/)(dfs|dfsctl|mount\.nfs|mount\.cifs)( |$)' 2>/dev/null)
+survivors=$(pgrep -a -f "$leak_pattern" 2>/dev/null |
+    while read -r pid rest; do
+        [[ "$preexisting" == *" $pid "* ]] || printf '%s %s\n' "$pid" "$rest"
+    done)
 if [ -n "$survivors" ]; then
     echo "::warning title=Leaked processes::the suite left processes running"
     printf '%s\n' "$survivors"
