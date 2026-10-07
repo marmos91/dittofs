@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# scenario NAME: runs /src/test/scenarios/NAME(.sh) the way a batch run does, traced and stopping
+# at the first failing command, in its own bash, so a failure leaves the shell running.
+PS4='+ $EPOCHREALTIME $LINENO '
+set -euxo pipefail
+# shellcheck source=/dev/null
+. "/src/test/scenarios/${1%.sh}.sh"

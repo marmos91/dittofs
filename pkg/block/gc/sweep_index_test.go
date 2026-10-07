@@ -1,6 +1,7 @@
 package gc
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -139,5 +140,56 @@ func TestGCIndexSweep_NoReclaimerFailsClosed(t *testing.T) {
 	}
 	if !chunkOnRemote(t, st, orphan) {
 		t.Errorf("chunk reclaimed despite missing reclaimer")
+	}
+}
+
+// elsewhereReclaimer answers like a union reclaimer whose shares freed a dead
+// chunk's blocks through some metadata stores and left one for another remote.
+type elsewhereReclaimer struct{ freed int64 }
+
+func (r elsewhereReclaimer) ReclaimDeadChunk(context.Context, block.ContentHash) (bool, int64, error) {
+	return true, r.freed, ErrBlockOnOtherRemote
+}
+
+// TestGCIndexSweep_KeptForOtherRemote proves the sweep's handling of
+// ErrBlockOnOtherRemote: the marker stays for the owning remote's pass, nothing
+// counts as swept or as an error, the chunk counts as kept for another remote,
+// and the bytes already freed through other metadata stores count as freed.
+func TestGCIndexSweep_KeptForOtherRemote(t *testing.T) {
+	ctx := t.Context()
+	rs := remotememory.New()
+	defer func() { _ = rs.Close() }()
+
+	rec := newGCMSReconciler()
+	st := rec.addShare("share-a")
+
+	orphan := hashFromString("lf-kept-for-other-remote")
+	seedRemoteChunk(t, st, rs, orphan)
+
+	idx, ok := st.(SyncedHashIndex)
+	if !ok {
+		t.Fatalf("metadata store %T does not implement SyncedHashIndex", st)
+	}
+	stats := CollectGarbage(ctx, rec, &Options{
+		GCStateRoot:     t.TempDir(),
+		GracePeriod:     time.Minute,
+		SyncedHashIndex: idx,
+		BlockReclaimer:  elsewhereReclaimer{freed: 123},
+	})
+
+	if stats.ErrorCount != 0 {
+		t.Fatalf("ErrorCount = %d, want 0 (FirstErrors=%v)", stats.ErrorCount, stats.FirstErrors)
+	}
+	if stats.ObjectsSwept != 0 {
+		t.Errorf("ObjectsSwept = %d, want 0 (the marker stays)", stats.ObjectsSwept)
+	}
+	if stats.KeptForOtherRemote != 1 {
+		t.Errorf("KeptForOtherRemote = %d, want 1", stats.KeptForOtherRemote)
+	}
+	if stats.BytesFreed != 123 {
+		t.Errorf("BytesFreed = %d, want 123 (freed through other metadata stores)", stats.BytesFreed)
+	}
+	if ok, _ := st.IsSynced(ctx, orphan); !ok {
+		t.Errorf("marker cleared; the owning remote's pass can no longer find the chunk")
 	}
 }

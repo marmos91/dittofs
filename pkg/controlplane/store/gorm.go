@@ -340,6 +340,49 @@ func New(config *Config) (*GORMStore, error) {
 		return nil, err
 	}
 
+	// Pre-migration: refuse a table that already holds both the old and the
+	// new spelling of a renamed column. That is what an earlier upgrade that
+	// renamed and then was rolled back leaves: the older release recreated
+	// its column empty beside the renamed one. Which one is authoritative is
+	// not recoverable from the schema, and choosing wrong silently changes
+	// every share's size ceiling or store binding. It runs before the refusals
+	// below, which would otherwise read the recreated, empty column.
+	if hasColumn(db, &models.Share{}, "local_store_size") && hasColumn(db, &models.Share{}, "journal_size") {
+		return nil, fmt.Errorf("shares table has both local_store_size and journal_size; " +
+			"copy the intended values into journal_size, drop local_store_size, and restart")
+	}
+	if hasColumn(db, &models.Share{}, "remote_block_store_id") && hasColumn(db, &models.Share{}, "block_store_id") {
+		return nil, fmt.Errorf("shares table has both remote_block_store_id and block_store_id; " +
+			"copy the intended values into block_store_id, drop the old column, and restart")
+	}
+
+	// Pre-migration: refuse an upgrade that would lose where a share's data is,
+	// before any of it happens.
+	//
+	// Both checks read local_block_store_id, which the post-migration step
+	// drops. They run before AutoMigrate because it adds the foreign key on
+	// the share's block store and validates it against the existing rows: a
+	// share holding an empty reference fails that constraint first, and the
+	// operator gets the database's message instead of the one naming the
+	// share and the fix. They also run before the column renames and index
+	// drops below, so a refusal leaves the schema exactly as the previous
+	// release wrote it: rolling back to that release to fix the shares must
+	// not find its columns renamed away and recreate them empty.
+	if hasColumn(db, &models.Share{}, "local_block_store_id") {
+		// A local-only share's only binding lives in that column; refuse
+		// rather than drop it out from under them.
+		if err := checkLocalOnlyShares(db); err != nil {
+			return nil, err
+		}
+		// The column is also the only surviving record of where a share's
+		// bytes sit. A journal root that names somewhere else would open an
+		// empty journal beside them and read back zeros, so compare while the
+		// comparison is still possible.
+		if err := checkShareJournalRoots(db, config.JournalRoot); err != nil {
+			return nil, err
+		}
+	}
+
 	// Pre-migration: drop legacy single-column unique index on block_store_configs.name.
 	// AutoMigrate creates the new composite index idx_block_store_name_kind on (name, kind)
 	// but does not drop pre-existing ones, which would prevent having a local and remote
@@ -372,14 +415,6 @@ func New(config *Config) (*GORMStore, error) {
 	// operator's configured ceiling in the old column with a fresh empty one
 	// beside it, reading back as "never set".
 	if hasColumn(db, &models.Share{}, "local_store_size") {
-		if hasColumn(db, &models.Share{}, "journal_size") {
-			// Both columns present means an earlier upgrade added the new one
-			// without moving the values across. Which one is authoritative is
-			// not recoverable from the schema, and choosing wrong silently
-			// changes every share's size ceiling.
-			return nil, fmt.Errorf("shares table has both local_store_size and journal_size; " +
-				"copy the intended values into journal_size, drop local_store_size, and restart")
-		}
 		if err := db.Migrator().RenameColumn(&models.Share{}, "local_store_size", "journal_size"); err != nil {
 			return nil, fmt.Errorf("failed to rename local_store_size column: %w", err)
 		}
@@ -389,38 +424,8 @@ func New(config *Config) (*GORMStore, error) {
 	// precede AutoMigrate for the same reason as journal_size — otherwise the
 	// new column arrives empty and every share loses its store reference.
 	if hasColumn(db, &models.Share{}, "remote_block_store_id") {
-		if hasColumn(db, &models.Share{}, "block_store_id") {
-			return nil, fmt.Errorf("shares table has both remote_block_store_id and block_store_id; " +
-				"copy the intended values into block_store_id, drop the old column, and restart")
-		}
 		if err := db.Migrator().RenameColumn(&models.Share{}, "remote_block_store_id", "block_store_id"); err != nil {
 			return nil, fmt.Errorf("failed to rename remote_block_store_id column: %w", err)
-		}
-	}
-
-	// Pre-migration: refuse an upgrade that would lose where a share's data is,
-	// before any of it happens.
-	//
-	// Both checks read local_block_store_id, which the post-migration step
-	// below drops. They run here rather than beside that drop because
-	// AutoMigrate adds the foreign key on the share's block store and
-	// validates it against the existing rows: a share holding an empty
-	// reference fails that constraint first, and the operator gets the
-	// database's message about it instead of the one naming the share and the
-	// fix. Running first also means a refusal leaves the schema untouched
-	// rather than partly upgraded.
-	if hasColumn(db, &models.Share{}, "local_block_store_id") {
-		// A local-only share's only binding lives in that column; refuse
-		// rather than drop it out from under them.
-		if err := checkLocalOnlyShares(db); err != nil {
-			return nil, err
-		}
-		// The column is also the only surviving record of where a share's
-		// bytes sit. A journal root that names somewhere else would open an
-		// empty journal beside them and read back zeros, so compare while the
-		// comparison is still possible.
-		if err := checkShareJournalRoots(db, config.JournalRoot); err != nil {
-			return nil, err
 		}
 	}
 

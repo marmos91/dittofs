@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"gorm.io/gorm"
+
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
 // ErrLocalOnlyShareUnbound reports shares that reached the new model with no
@@ -27,11 +29,20 @@ var ErrLocalOnlyShareUnbound = errors.New("share has no block store after upgrad
 // to a block store that cannot be built. The operator has to choose a real one,
 // which is a decision no migration can make. Refuse, name the shares, and leave
 // the column in place so the choice is still recorded when they come back.
+//
+// It runs before the remote_block_store_id rename, so it reads whichever
+// column the table has: the old name on an upgrade that has not renamed yet,
+// the new one on a database a partial earlier upgrade already renamed. A table
+// holding both is refused before this runs.
 func checkLocalOnlyShares(db *gorm.DB) error {
+	column := "block_store_id"
+	if hasColumn(db, &models.Share{}, "remote_block_store_id") {
+		column = "remote_block_store_id"
+	}
 	var names []string
 	if err := db.Raw(`
 		SELECT name FROM shares
-		WHERE (block_store_id IS NULL OR block_store_id = '')
+		WHERE (` + column + ` IS NULL OR ` + column + ` = '')
 		  AND local_block_store_id IS NOT NULL
 		  AND local_block_store_id != ''
 	`).Scan(&names).Error; err != nil {
@@ -50,7 +61,8 @@ func checkLocalOnlyShares(db *gorm.DB) error {
 	b.WriteString("\nThese shares kept their data in a local block store and never had a\n")
 	b.WriteString("remote one. Every share now needs a block store, and the local store\n")
 	b.WriteString("they used cannot become one — pick an s3 or memory block store for\n")
-	b.WriteString("each, with the server stopped:\n")
-	b.WriteString("  UPDATE shares SET block_store_id = '<block store id>' WHERE name = '<share>';")
+	b.WriteString("each, either by starting the previous release and giving the share a\n")
+	b.WriteString("remote block store, or with the server stopped:\n")
+	fmt.Fprintf(&b, "  UPDATE shares SET %s = '<block store id>' WHERE name = '<share>';", column)
 	return fmt.Errorf("%w%s", ErrLocalOnlyShareUnbound, b.String())
 }

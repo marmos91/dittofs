@@ -2,6 +2,8 @@ package gc
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -109,6 +111,17 @@ func sweepFromSyncedIndex(
 			return nil
 		}
 		handled, freed, rerr := options.BlockReclaimer.ReclaimDeadChunk(ctx, h)
+		if errors.Is(rerr, ErrBlockOnOtherRemote) {
+			// Keep the marker: the pass for the block's remote reclaims it. Bytes the
+			// reclaimer already freed through other metadata stores are gone and
+			// their markers cleared, so they are counted now or never.
+			slog.Debug("GC: dead chunk kept for another remote's pass", "hash", key)
+			statsMu.Lock()
+			stats.KeptForOtherRemote++
+			stats.BytesFreed += freed
+			statsMu.Unlock()
+			return nil
+		}
 		if rerr != nil {
 			addError("block-reclaim " + key + ": " + rerr.Error())
 			return nil

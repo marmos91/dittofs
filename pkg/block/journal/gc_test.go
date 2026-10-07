@@ -235,6 +235,59 @@ func TestGCRepackDirtyTargetNotEvictable(t *testing.T) {
 	}
 }
 
+// A victim the repack retired must stay claimed. An eviction scan that read it
+// as evictable before the repack takes its claim with a CAS afterwards; if GC has
+// released the claim, that CAS wins and evictSegment retires the segment a second
+// time, subtracting its bytes from DiskBytes again.
+func TestGCRetiredVictimStaysClaimed(t *testing.T) {
+	dir := t.TempDir()
+	s, err := openJournal(dir, Config{SegmentSize: minSegmentSize, ShardCount: 1, GCInterval: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	ctx := context.Background()
+
+	// keep and gone share one sealed segment, all of it synced, so an eviction
+	// scan can pick it; deleting gone leaves it 70% dead, so GC repacks it.
+	rng := rand.New(rand.NewSource(4))
+	for _, w := range []struct {
+		id   FileID
+		size int
+	}{{"keep", 300 << 10}, {"gone", 700 << 10}, {"roll", 200 << 10}} {
+		data := make([]byte, w.size)
+		rng.Read(data)
+		if err := s.Hydrate(ctx, w.id, 0, data, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Delete(ctx, "gone"); err != nil {
+		t.Fatal(err)
+	}
+	victim := onlySealed(t, s, "keep")
+	if !evictable(victim) {
+		t.Fatal("victim is not evictable before the repack")
+	}
+
+	res, err := s.gc(ctx, gcOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SegmentsRepacked != 1 {
+		t.Fatalf("SegmentsRepacked = %d, want 1", res.SegmentsRepacked)
+	}
+
+	// The eviction scan's CAS, taken with the pointer it read before the repack.
+	if victim.busy.CompareAndSwap(false, true) {
+		if _, err := s.evictSegment(s.shardFor("keep"), victim); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, want := s.Stats().DiskBytes, segFileBytes(t, dir); got != want {
+		t.Fatalf("DiskBytes = %d, segment files hold %d: the retired victim was subtracted twice", got, want)
+	}
+}
+
 func TestGCBelowThresholdNeedsForce(t *testing.T) {
 	s := testStore(t, Config{SegmentSize: minSegmentSize, ShardCount: 1})
 	ctx := context.Background()

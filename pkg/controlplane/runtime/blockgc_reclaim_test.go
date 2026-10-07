@@ -3,6 +3,8 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -11,6 +13,7 @@ import (
 	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/metadata"
 
 	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
@@ -166,4 +169,112 @@ func TestBlockGC_SerializesPerRemote(t *testing.T) {
 			t.Errorf("remote %s swept by %d concurrent GC passes; per-remote lock must serialize to 1", cid, p)
 		}
 	}
+}
+
+// TestBlockGCForShare_SharedMetadataStoreFreesOwningRemote runs GC for two
+// shares on one metadata store, each on its own remote. First, /cubbit's
+// reclaimer is called directly: it must leave the dead block on /export's
+// remote for /export's pass. That check does not depend on the pass order, so a
+// regression fails it on the first run. Then the real per-share GC must free the
+// block, with no error recorded, whichever remote's pass runs first. The pass
+// order follows map iteration, so that check repeats on fresh runtimes until
+// both orders have almost surely run.
+func TestBlockGCForShare_SharedMetadataStoreFreesOwningRemote(t *testing.T) {
+	ctx := context.Background()
+	for run := range 24 {
+		exportRemote := remotememory.New()
+		cubbitRemote := remotememory.New()
+		rt := newRuntimeForGC(t, map[string]remote.RemoteStore{
+			"/export": exportRemote,
+			"/cubbit": cubbitRemote,
+		})
+		mds, err := rt.GetMetadataStoreForShare("/export")
+		if err != nil {
+			t.Fatalf("GetMetadataStoreForShare: %v", err)
+		}
+		h := testHash("export-dead-chunk")
+		seedShareBlock(t, mds, exportRemote, "blk-export", h)
+
+		reclaimer := rt.blockReclaimerForEntry(remoteEntryForShare(t, rt, "/cubbit"))
+		if _, _, err := reclaimer.ReclaimDeadChunk(ctx, h); !errors.Is(err, blockgc.ErrBlockOnOtherRemote) {
+			t.Fatalf("run %d: /cubbit's reclaimer: err = %v, want ErrBlockOnOtherRemote", run, err)
+		}
+		if _, err := exportRemote.GetBlock(ctx, "blk-export"); err != nil {
+			t.Fatalf("run %d: /cubbit's reclaimer touched /export's block: %v", run, err)
+		}
+		if _, synced, _ := mds.GetLocator(ctx, h); !synced {
+			t.Fatalf("run %d: /cubbit's reclaimer cleared the marker /export's pass needs", run)
+		}
+
+		stats, err := rt.RunBlockGCForShare(ctx, "/export", false)
+		if err != nil {
+			t.Fatalf("run %d: RunBlockGCForShare: %v", run, err)
+		}
+		if _, err := exportRemote.GetBlock(ctx, "blk-export"); !errors.Is(err, block.ErrChunkNotFound) {
+			t.Fatalf("run %d: dead block still on /export's remote after GC (swept %d, errors %d: %v)",
+				run, stats.ObjectsSwept, stats.ErrorCount, stats.FirstErrors)
+		}
+		if stats.ErrorCount != 0 {
+			t.Fatalf("run %d: GC recorded %d errors: %v", run, stats.ErrorCount, stats.FirstErrors)
+		}
+		_ = exportRemote.Close()
+		_ = cubbitRemote.Close()
+	}
+}
+
+// TestCompactRemoteForEntry_LeavesOtherRemotesRecords runs compaction for
+// /cubbit's remote while the metadata store it shares with /export holds a
+// compaction candidate on /export's remote: one 80-byte live chunk in a 4 KiB
+// block. /cubbit's remote does not hold that block, and compaction must not
+// take it for the husk of an interrupted compaction and drop its record.
+func TestCompactRemoteForEntry_LeavesOtherRemotesRecords(t *testing.T) {
+	ctx := context.Background()
+	exportRemote := remotememory.New()
+	cubbitRemote := remotememory.New()
+	defer func() { _ = exportRemote.Close(); _ = cubbitRemote.Close() }()
+	rt := newRuntimeForGC(t, map[string]remote.RemoteStore{
+		"/export": exportRemote,
+		"/cubbit": cubbitRemote,
+	})
+	mds, err := rt.GetMetadataStoreForShare("/export")
+	if err != nil {
+		t.Fatalf("GetMetadataStoreForShare: %v", err)
+	}
+	data := bytes.Repeat([]byte("x"), 4096)
+	if err := exportRemote.PutBlock(ctx, "blk-sparse", bytes.NewReader(data)); err != nil {
+		t.Fatalf("PutBlock: %v", err)
+	}
+	if err := mds.PutBlockRecord(ctx, block.BlockRecord{
+		BlockID:        "blk-sparse",
+		Length:         int64(len(data)),
+		LiveChunkCount: 1,
+		SyncState:      block.BlockStateRemote,
+	}); err != nil {
+		t.Fatalf("PutBlockRecord: %v", err)
+	}
+	if err := mds.MarkSynced(ctx, testHash("sparse-live-chunk"), block.ChunkLocator{BlockID: "blk-sparse", WireLength: 80}); err != nil {
+		t.Fatalf("MarkSynced: %v", err)
+	}
+
+	var total blockgc.GCStats
+	rt.compactRemoteForEntry(ctx, remoteEntryForShare(t, rt, "/cubbit"), false, &GCDefaults{CompactionLiveRatio: 0.5}, &total)
+
+	if _, ok, err := mds.GetBlockRecord(ctx, "blk-sparse"); err != nil || !ok {
+		t.Fatalf("/cubbit's compaction dropped the record of /export's block: ok = %v, err = %v", ok, err)
+	}
+	if _, err := exportRemote.GetBlock(ctx, "blk-sparse"); err != nil {
+		t.Fatalf("/export's block gone after /cubbit's compaction: %v", err)
+	}
+}
+
+// remoteEntryForShare returns the remote-store entry that serves share.
+func remoteEntryForShare(t *testing.T, rt *Runtime, share string) shares.RemoteStoreEntry {
+	t.Helper()
+	for _, entry := range rt.sharesSvc.DistinctRemoteStores() {
+		if slices.Contains(entry.Shares, share) {
+			return entry
+		}
+	}
+	t.Fatalf("no remote store serves %s", share)
+	return shares.RemoteStoreEntry{}
 }
