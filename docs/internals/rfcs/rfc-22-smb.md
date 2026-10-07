@@ -266,10 +266,16 @@ rule. Assume `profiles` requires encryption and is continuously available.
    worker, while alice-pc is asked to give up handle caching; then alice-pc's
    deny mode refuses it ([§6.3](#6.3%20Breaks)). If instead the profile software
    re-attaches the disk from the new machine with the same app instance id, the
-   new open closes alice-pc's first ([§6.1](#6.1%20Opening%20a%20file)).
-8. **Sign-out.** alice-pc closes the handle: the open, its lease and its deny
-   mode end at the primary ([RFC 14](rfc-14-open-state.md)), and the session
-   ends on its `protocol` node.
+   new open — from another client, by a user who may read the disk — closes
+   alice-pc's first
+   ([§6.4](#6.4%20Durable%20and%20persistent%20handles)).
+8. **Sign-out.** Before letting go, the profile software compacts the disk:
+   through the same handle it shrinks the container's end of file, by
+   gigabytes at a time (30 GB to 24 GB in one test), with the lease and the
+   persistent handle still held ([§9.3](#9.3%20Timestamps%2C%20allocation%20and%20sparse%20files)).
+   Then alice-pc closes the handle: the open, its lease and its deny mode end
+   at the primary ([RFC 14](rfc-14-open-state.md)), and the session ends on
+   its `protocol` node.
 
 The conformance check for this walk is the profile-container row of
 [§17](#17.%20Conformance).
@@ -359,13 +365,19 @@ one `protocol` node's memory; a client that loses the node signs in again.
   authentication method) with Kerberos or NTLMv2 (NT LAN Manager version 2).
   NTLMv1 and LM (LAN Manager) are refused. Which identity results, guest and anonymous
   access, and whether NTLM is allowed at all are RFC 18's.
+- A Kerberos ticket may list the client addresses it is valid from. Only its
+  IPv4 and IPv6 entries restrict which client may use it: a ticket with none
+  is accepted from any address, and a ticket with any **MUST** be refused
+  unless the connection's address is one of them. Entries of other types,
+  such as NetBIOS names, are ignored.
 - The session key, signing key, encryption and decryption keys and the
   preauthentication hash are held in the memory of the `protocol` node, and
   **MUST NOT** be stored or sent to another node.
 - A share's signing and encryption flags ([§5.1](#5.1%20Share%20flags)) are
-  enforced per share connection, not per session: a session that is not
-  encrypted may reach an unencrypted share, and is refused at tree connect to
-  an encrypted one.
+  enforced per share connection, not per session: a session that does not
+  encrypt may connect to an encrypting share, and every request on that tree
+  is then encrypted. Only a client that cannot encrypt at all is refused at
+  tree connect.
 
 ### 4.2 Multichannel only within one node
 
@@ -419,8 +431,24 @@ remote procedure calls (DCE/RPC) over named pipes. Admission is
 Its response carries the share's `ExportPolicy.SMB`:
 
 - **Encrypt.** The share is marked as encrypting data
-  (`SMB2_SHAREFLAG_ENCRYPT_DATA`); an unencrypted request on it is
-  `STATUS_ACCESS_DENIED`.
+  (`SMB2_SHAREFLAG_ENCRYPT_DATA`). A session that does not itself encrypt
+  **MAY** connect to it. The tree connect reply that carries the flag **MUST**
+  go unencrypted unless the session encrypts, since the client learns from that
+  reply that it must encrypt; every later request on the tree **MUST** be
+  encrypted, and an unencrypted one is `STATUS_ACCESS_DENIED`. Only a client
+  that cannot encrypt at all — a 2.1 client, a 3.0 or 3.0.2 client that does
+  not advertise encryption (`SMB2_GLOBAL_CAP_ENCRYPTION`), or a 3.1.1 client
+  that shares no cipher with the server ([§3.2](#3.2%20Algorithms%2C%20and%20what%20is%20not%20offered))
+  — is refused at tree connect, with `STATUS_ACCESS_DENIED`.
+
+  > decision: encryption is enforced per tree, not per session, as Windows
+  > servers do (MS-SMB2 3.3.5.7). Refusing an unencrypted session at tree
+  > connect would refuse every client that signs in without session
+  > encryption and expects the share flag to switch it on, which is how
+  > Windows clients reach an encrypting share. Nothing travels in clear but
+  > the tree connect reply itself, which carries no file data. Revisit if a
+  > deployment must refuse any session that does not encrypt from its first
+  > message; that is a session-level setting, not this share flag.
 - **Require signing.** An unsigned request on it is `STATUS_ACCESS_DENIED`.
 - **Continuously available.** The share is marked continuously available and
   clustered (`SMB2_SHARE_CAP_CONTINUOUS_AVAILABILITY`,
@@ -472,7 +500,9 @@ up its cache, and how a reconnect finds its open.
   is refused, as [Appendix D](#Appendix%20D%20%E2%80%94%20create%20options%20and%20contexts)
   lists. Three are worth knowing: opening by numeric id is refused, because
   nothing indexes files by id; a create carrying an app instance id closes an
-  earlier open with the same id; virtual-disk sharing is refused.
+  earlier open with the same id, from another client and only for a caller
+  that may read the file ([§6.4](#6.4%20Durable%20and%20persistent%20handles));
+  virtual-disk sharing is refused.
 - The FileId's persistent half **MUST** be derived from the RFC 14 open, so any
   node finds the open from it.
 - Its volatile half names the entry in the `protocol` node's table and is
@@ -569,6 +599,28 @@ is a stored record and reconnects with its lease
 Example: after a 10 s blip alice-pc reconnects within its 60 s timeout; a
 reconnect by bob's session naming alice's FileId is refused, because the
 principal differs.
+
+**App instance takeover.** A `CREATE` carrying an app instance id
+(`AppInstanceId`) that an open of the same file already holds closes that open
+first ([RFC 14 §8.1](rfc-14-open-state.md) holds the record rule, including
+the version check). The adapter **MUST** apply it only when both hold:
+
+- the matching open belongs to a different client (its `ClientGuid` differs
+  from the connection's); and
+- the caller's maximal access to the target includes read
+  (`FILE_READ_DATA`).
+
+Otherwise the create **MUST** proceed as if no open matched: it neither closes
+the earlier open nor is refused for it, and meets that open's deny mode and
+lease like any other create.
+
+> decision: takeover is gated on a different client and on read access, as
+> Windows servers gate it. A same-client match is that client's own open,
+> which it can close itself; a caller that cannot read the file gains, by
+> closing another's open, a denial of service it could not otherwise cause.
+> RFC 14 states the rule "from any client"; this narrows it at the adapter,
+> where `ClientGuid` and maximal access are known. Revisit if a failover
+> cluster is shown re-attaching from the same `ClientGuid`.
 
 ### 6.5 Replay
 
@@ -882,9 +934,12 @@ restore; here they are the share's read-only snapshots
 | Requirement | Check | Fails without the rule |
 | --- | --- | --- |
 | §3.1 dialects | An SMB1-only and a 2.0.2-only negotiate are refused; a 3.1.1 client gets SHA-512 and its first shared cipher. | an SMB1 fallback left in |
+| §4.1, §5.1 encryption | A 3.1.1 session that does not encrypt connects to an encrypting share: assert the tree connect reply is unencrypted and carries `SMB2_SHAREFLAG_ENCRYPT_DATA`, the next request is accepted only encrypted, and an unencrypted one is `STATUS_ACCESS_DENIED`. A 3.1.1 client sharing no cipher, and a 2.1 client, are refused at tree connect. | a session refused at tree connect for not encrypting, or an unencrypted request accepted on an encrypting share |
+| §4.1 ticket addresses | Sign in with Kerberos tickets carrying no addresses, a NetBIOS address only, the connection's IPv4 address, and another IPv4 address only: assert the first three accepted and the last refused. | addresses ignored, or a NetBIOS entry treated as a restriction |
 | §4.2 multichannel | smbtorture `smb2.multichannel`; then bind a channel to a session on another node and assert `STATUS_USER_SESSION_DELETED`. | channels accepted across nodes |
 | §4.3, §6.4 reconnect | smbtorture `smb2.durable-open`, `smb2.durable-v2-open`; a Windows client copying a large file while its `protocol` node is killed finishes the copy; repeat killing the primary. | sessions assumed durable; reconnect matched on FileId alone |
 | §6.4 matching | Reconnect with another user, another share, another `CreateGuid`; assert each refused. | |
+| §6.4 app instance | Open a file with an app instance id from client A. Then, with the same id: from client B with read access, assert A's open is closed and B's granted; from client A again (same `ClientGuid`), and from client B as a user without read access, assert A's open survives and the create meets its deny mode as an ordinary create. | takeover from any client, or by a caller who cannot read the file |
 | §6.2, §6.3 leases | smbtorture `smb2.lease`, `smb2.oplock`; an NFS open against an SMB RWH lease breaks it and completes; a holder that never acks is revoked at the deadline and its next write fails. | breaks waited on by a worker |
 | §6.5 replay | smbtorture `smb2.replay`; replay a `CREATE` with the same `CreateGuid` through another node. | |
 | §7 locks | smbtorture `smb2.lock`; an SMB lock refuses an NFSv3 write across it. | locks held in the adapter |
@@ -898,7 +953,7 @@ restore; here they are the share's read-only snapshots
 | §14 Witness | smbtorture `rpc.witness`; drain a node and assert a registered client receives `CLIENT_MOVE` and moves. | |
 | §15 snapshots | smbtorture `smb2.twrp`; Explorer's Previous Versions tab lists and restores a file. | |
 | §5.2 IPC$ | smbtorture `rpc.srvsvc`, `rpc.wkssvc`; a hidden share is absent from `NetShareEnumAll`. | |
-| §2 profile containers | The reference workload's sign-in storm and an hour of random 64 KiB overwrites, with a `protocol` node and then a primary failed mid-run: every container mounts again without a repair prompt. | |
+| §2 profile containers | The reference workload's sign-in storm and an hour of random 64 KiB overwrites, with a `protocol` node and then a primary failed mid-run: every container mounts again without a repair prompt. Then truncate a container by 20% through the session's own handle, as sign-out compaction does, and read it back cold (no cache on the reading node): byte-for-byte equal to the expected prefix. | a truncate through a held handle that leaves stale data past the new end, or loses data before it |
 
 **What must not stand in.** A single-node run cannot fail §4.2, §4.3, §6.4 or
 §6.5. A test client that never lets a break time out cannot fail §6.3.

@@ -421,8 +421,8 @@ it; afterwards the registration names P2 and the recall arrives there.
 
 ## 4. NFSv4.0 clients
 
-NFSv4.0 has no sessions. The client identifies itself with `SETCLIENTID`; the
-server opens its own connection back for callbacks; and instead of slots, each
+NFSv4.0 has no sessions. The client identifies itself with `SETCLIENTID`, which
+also names an address where the server could call it back; and instead of slots, each
 **open owner** and **lock owner** (an identity on the client holding opens or
 locks) numbers its requests, and the server replays its last reply to a resend.
 All of it maps onto the same records as NFSv4.1. The replay lives in a
@@ -434,12 +434,11 @@ All of it maps onto the same records as NFSv4.1. The replay lives in a
   `EXCHANGE_ID` and `CREATE_SESSION` do: the client's `nfs_client_id4` is its
   identity, its verifier tells a reboot, and the confirm verifier is held with
   the client record so that any node can confirm ([RFC 14](rfc-14-open-state.md)).
-- The callback connection goes to the client's address (`r_addr`). It is opened
-  by the `protocol` node that confirmed the client, or that most recently
-  received a `RENEW` or stateful operation from it after a loss, and that node
-  registers itself for the client's callbacks (§3.4).
-- A callback connection that cannot be opened makes the client's callback path
-  down: `RENEW` answers `NFS4ERR_CB_PATH_DOWN`, and no delegation is offered.
+- The callback address (`r_addr`) is recorded with the client, but no callback
+  connection is opened. The NFSv4.0 callback program carries only delegation
+  calls (`CB_GETATTR`, `CB_RECALL`), and delegations are not offered to
+  NFSv4.0 clients (§5.3), so the server never has a call to make. `RENEW`
+  therefore never answers `NFS4ERR_CB_PATH_DOWN`.
 
 ### 4.2 Owner sequence IDs
 
@@ -519,9 +518,23 @@ adapter's ([RFC 17 §4.2](rfc-17-vfs.md#4.2%20Translation%20stays%20in%20adapter
    changes it (`OPEN` upgrade, `OPEN_DOWNGRADE`, `LOCK`, `LOCKU`, `LAYOUTGET`).
    A request with an older `seqid` is `NFS4ERR_OLD_STATEID`, a newer one
    `NFS4ERR_BAD_STATEID`. NFSv4.1's `seqid` 0 means "current" (RFC 8881 §8.2.2).
-3. **A stateid is checked against its client** — the client ID of the session,
-   or for NFSv4.0 the owner's client — and one belonging to another client is
-   `NFS4ERR_BAD_STATEID` (`ErrNotYours`).
+3. **A stateid is checked against its client** wherever the request names one
+   — the client ID of the session, or for NFSv4.0 the client ID in the open or
+   lock owner of a sequenced operation (`OPEN`, `CLOSE`, `OPEN_DOWNGRADE`,
+   `LOCK`, `LOCKU`) — and one belonging to another client is
+   `NFS4ERR_BAD_STATEID` (`ErrNotYours`). An NFSv4.0 `READ`, `WRITE`,
+   `SETATTR` or `DELEGRETURN` carries no client ID and no session, so the
+   check cannot run there.
+
+> decision: over NFSv4.0 a stateid used outside its owner's sequenced
+> operations is a bearer token: whoever quotes it may read or write under it.
+> The client check applies only where the request carries a client ID or a
+> session; inventing one from the connection would refuse a client that
+> reconnects from a new address. What a v4.0 bearer can reach is an open's
+> access and deny mode, never a delegation, since none is granted to v4.0
+> clients (§5.3); guessing a stateid means guessing 12 bytes of `other`.
+> Withdraw the exemption if delegations or share reservations granted to
+> v4.0 clients prove exploitable through it.
 
 Three stateid values are special:
 
@@ -543,16 +556,27 @@ A **delegation** is the server's promise that no other client is using a file,
 so the client may cache it without asking. Delegations are RFC 14's caching
 grants: a read delegation is a read grant, a write delegation a read, write
 and handle grant ([RFC 14 §5.1](rfc-14-open-state.md#5.1%20What%20a%20grant%20is)). Offering
-them at all is the server's choice; this one offers both file kinds and no
-directory ones.
+them at all is the server's choice; this one offers both file kinds to NFSv4.1
+and later, none to NFSv4.0, and no directory ones.
 
-- Both are offered, under [RFC 14 §5.4](rfc-14-open-state.md#5.4%20How%20a%20grant%20is%20obtained%2C%20and%20where%20it%20pays),
+- Both are offered to NFSv4.1 and NFSv4.2 clients, under [RFC 14 §5.4](rfc-14-open-state.md#5.4%20How%20a%20grant%20is%20obtained%2C%20and%20where%20it%20pays),
   and the client's stated wishes (`OPEN4_SHARE_ACCESS_WANT_*` flags) are honoured.
+- **NFSv4.0 clients are offered none**: every v4.0 `OPEN` returns
+  `OPEN_DELEGATE_NONE`.
 - `CB_RECALL` is the recall, `DELEGRETURN` the client handing it back. A recall
   not answered by its deadline is revoked; the client is told by
   `SEQ4_STATUS_RECALLABLE_STATE_REVOKED`, and its delegation stateid is
   `NFS4ERR_DELEG_REVOKED` until freed.
 - `CB_RECALL_ANY` is sent when the primary's grant table is over its budget.
+
+> decision: no delegations for NFSv4.0 clients. A v4.0 recall needs the
+> separate callback connection of §4.1, opened from the node that last heard
+> from the client to an address the client chose, with none of §3.4's
+> rebinding after a node loss; and a v4.0 delegation stateid is a bearer token
+> (§5.2), so a write delegation would be the widest grant a stateid could
+> carry. The cost is local caching for clients pinned to v4.0. Revisit if
+> §2.1's pinned clients show the extra round trips in a benchmark, together
+> with the bearer-token exemption of §5.2.
 
 Example: build01 holds a write delegation on `builds/Makefile` and edits it
 locally. A second NFS client opens the same file for writing; S1 recalls the
@@ -590,6 +614,23 @@ wire:
 A client told to reclaim by a failover of one shard reclaims through the same
 calls; the signals are RFC 14 §4.4's.
 
+### 5.5 Lock conflicts on the wire
+
+A refused NFSv4 `LOCK` or `LOCKT` is `NFS4ERR_DENIED` with a `LOCK4denied`
+naming the conflicting range, its type and its holder: a client ID and an
+opaque owner. The holder is RFC 14's lock owner, whose owner bytes are each
+protocol's own ([RFC 14](rfc-14-open-state.md)).
+
+- When the holder is an NFSv4 lock owner, `LOCK4denied` carries its client ID
+  and the owner bytes that client sent.
+- When the holder is anything else — an NLM host (§6.1) or an SMB open
+  ([RFC 22 §7](rfc-22-smb.md#7.%20Byte-range%20locks)) — `LOCK4denied`
+  **MUST** carry client ID 0 and an empty owner.
+- An internal owner identity **MUST NOT** reach the wire. It is not an NFSv4
+  owner, can exceed the protocol's 1024-byte owner limit (`NFS4_OPAQUE_LIMIT`),
+  and a reply carrying an over-long owner fails to decode, so the client fails
+  the call instead of seeing a conflict.
+
 ## 6. NFSv3 locking: NLM and NSM
 
 NFSv3 holds no state, so locking lives in two side protocols. **NLM** (Network
@@ -618,6 +659,11 @@ NSM needs to notify a client, are RFC 14's.
 - **Share reservations** (`NLM4_SHARE`), which DOS-era clients use, map to an
   open with a deny mode, so they conflict with SMB and NFSv4 deny modes like
   any other.
+- **Who holds a conflict.** An NLM lock refusing an NFSv4 `LOCK` or `LOCKT`
+  is reported with client ID 0 and an empty owner (§5.5). In the other
+  direction, an `NLM4_TEST` refused by an NFSv4 or SMB lock reports a holder
+  with `svid` 0 and an empty `oh`, for the same reason: an internal owner
+  never reaches the wire.
 - `NLM4_FREE_ALL` expires the client.
 - The asynchronous procedures (`*_MSG` / `*_RES`) are accepted over TCP and
   answered on the client's NLM callback service.
@@ -870,8 +916,11 @@ otherwise; the protocol suites test translation, and the service suite
 | §4.2 v4.0 owners | pynfs `nfs4.0` open-owner and lock replay tests; then move the client to another node mid-sequence and assert the next sequenced `OPEN` is accepted. | seqids held in the `protocol` node |
 | §5.1 no courtesy | Let a client's lease expire with no conflict; assert its lock is gone and a new client takes it. | |
 | §5.2 stateids | pynfs `TEST_STATEID`, `FREE_STATEID`, bad- and old-stateid tests; present another client's stateid and assert `NFS4ERR_BAD_STATEID`. | |
+| §5.2 v4.0 stateids | Over NFSv4.0, `LOCK` with an open stateid of another client's open owner; assert `NFS4ERR_BAD_STATEID`. A v4.0 `READ` quoting another client's open stateid is served, as the documented exemption. | a client check claimed for v4.0 I/O that carries no client ID |
+| §5.3 no v4.0 delegations | An NFSv4.0 client with a reachable callback address opens a file no one else uses, read-only and then for write; assert `OPEN_DELEGATE_NONE` both times and no connection to `r_addr`. | delegations offered over the v4.0 callback path |
 | §5.4 grace | pynfs reboot/reclaim tests against a shard failover, not a whole-server restart. | grace tested only by restarting everything |
 | §6 NLM | cthon04 lock tests over NFSv3; an NLM lock against an SMB byte-range lock and an SMB deny mode against `NLM4_SHARE`. Fail a shard over and assert `SM_NOTIFY` reaches the client's statd and it reclaims. | NLM state held in the adapter |
+| §5.5, §6.1 conflict holder | Hold a range by NLM, then by an SMB byte-range lock; from an NFSv4 client send `LOCK` and `LOCKT` over it. Decode the reply bytes: `NFS4ERR_DENIED`, client ID 0, owner length 0, for all four. Then `NLM4_TEST` against an NFSv4 lock: `svid` 0, `oh` length 0. | an internal owner identity encoded as the holder |
 | §7.2 cookies | List a 10^5-entry directory from one node, resume each page on another node, while a third client creates and removes. Assert every untouched entry exactly once. | positional or node-local cookies |
 | §8 attributes | pynfs attribute tests (`supported_attrs`, `GETATTR`, `SETATTR`); assert `sec_label` and `named_attr` absent. | |
 | §9.1 stability | Write `DATA_SYNC`, crash the primary, read back. Assert the data and its `size` and `mtime`. | |
