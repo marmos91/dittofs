@@ -257,10 +257,10 @@ type Service interface {
 // Clients: who is talking to us, and how to call them back (RFC 14).
 type Clients interface {
 	Connect(ctx context.Context, c ClientInfo, cb Callbacks) (metadata.ClientID, error)
-	Renew(ctx context.Context, c metadata.ClientID) error
-		Disconnect(ctx context.Context, c metadata.ClientID) error
-	ReclaimComplete(ctx context.Context, c metadata.ClientID) error // RECLAIM_COMPLETE; may end grace early (RFC 14)
-
+	Rebind(ctx context.Context, c metadata.ClientID, cb Callbacks) error // the client's callback path is now through this node; the latest bind wins (§3.2)
+	Renew(ctx context.Context, c metadata.ClientID) (ClientStatus, error) // ClientStatus.ReclaimNeeded: a shard of the client's state restarted its grace
+	Disconnect(ctx context.Context, c metadata.ClientID) error
+	ReclaimComplete(ctx context.Context, c metadata.ClientID) error // RECLAIM_COMPLETE, recorded per (client, shard, grace instance) (RFC 14)
 }
 
 // Names: the namespace, by handle. Every method also takes a handle of the
@@ -294,13 +294,12 @@ type Attributes interface {
 type Data interface {
 	Open(ctx context.Context, id Identity, req OpenRequest) (OpenResult, error) // disposition, access, deny, grant wanted, durability; req names the ClientID
 	Close(ctx context.Context, c metadata.ClientID, o metadata.OpenID) error
-		Read(ctx context.Context, o OpenRef, off int64, dst []byte) (n int, eof bool, err error) // n verified bytes may come with err (§5.2)
+	Read(ctx context.Context, o OpenRef, off int64, dst []byte) (n int, eof bool, err error) // n verified bytes may come with err (§5.2)
 	Write(ctx context.Context, o OpenRef, off int64, src []byte, stable Stability) (n int, v WriteVerifier, err error)
 	Commit(ctx context.Context, o OpenRef, off, length int64) (WriteVerifier, error)
-	Allocate(ctx context.Context, o OpenRef, off, length int64) error
 	Deallocate(ctx context.Context, o OpenRef, off, length int64) error // punch a hole
 	Seek(ctx context.Context, o OpenRef, off int64, what SeekWhat) (int64, error) // SEEK_DATA, SEEK_HOLE
-		Copy(ctx context.Context, src OpenRef, srcOff int64, dst OpenRef, dstOff, length int64) (int64, error) // server-side copy and clone
+	Copy(ctx context.Context, src OpenRef, srcOff int64, dst OpenRef, dstOff, length int64) (int64, error) // server-side copy and clone
 	PreWarm(ctx context.Context, id Identity, dir Handle, recursive bool) (Progress, error) // the service enumerates the files it may read, the engine fetches them
 }
 
@@ -312,7 +311,7 @@ type Locking interface {
 	ReturnGrant(ctx context.Context, c metadata.ClientID, g metadata.GrantID) error
 	AckBreak(ctx context.Context, c metadata.ClientID, g metadata.GrantID, to GrantKind) error
 	Watch(ctx context.Context, c metadata.ClientID, id Identity, dir Handle, recursive bool, filter metadata.ChangeMask) (metadata.WatchID, error)
-		Unwatch(ctx context.Context, c metadata.ClientID, w metadata.WatchID) error
+	Unwatch(ctx context.Context, c metadata.ClientID, w metadata.WatchID) error
 	LayoutGet(ctx context.Context, o OpenRef, r metadata.ByteRange, write, reclaim bool) (metadata.Layout, error) // pNFS
 	LayoutCommit(ctx context.Context, c metadata.ClientID, l metadata.LayoutID, end int64, mtime time.Time) error // ErrBadLayout on a stale epoch
 	LayoutReturn(ctx context.Context, c metadata.ClientID, l metadata.LayoutID) error
@@ -341,6 +340,21 @@ Every open-state call names the `ClientID` it acts for, and the service
 nothing, and a client whose lease expires releases its watches with the rest of
 its state ([RFC 14 §4.3](rfc-14-open-state.md#4.3%20An%20expired%20lease%20releases%20everything%20it%20held%2C%20everywhere)).
 
+**Naming the right client is not enough.** Where a protocol names the client
+only through the state it presents, as an NFSv4.0 stateid does, anyone who
+learns that state could present it. An `OpenRef`'s open-time grant
+([§4.6](#4.6%20One%20chokepoint)) therefore authorises a call only when the call's principal is the
+principal the open was granted to; a call by any other principal through the
+same open is authorised afresh, against the file, as the anonymous open of an
+NFSv3 call is.
+
+> decision: there is no space reservation, so `Allocate` is not offered. NFS
+> `ALLOCATE` is answered not supported, and an SMB allocation size is accepted
+> and changes nothing but what the adapter reports. A reservation would promise
+> that a later write cannot fail for space, which a journal shared by many shares
+> and drained by offload cannot keep. Add one, as a per-share charge against the
+> journal's capacity, if a workload is shown to need `ALLOCATE`'s guarantee.
+
 ### 3.2 Callbacks
 
 ```go
@@ -365,7 +379,10 @@ and the client retries. Where the protocol has none, as for SMB, whose client
 does not retry a request answered with an interim (pending) response, the
 adapter sends the interim response and re-drives the call itself, within the
 call's deadline, answering the client once the call completes or the deadline
-passes. Either way no service worker waits: the retry is the client's or the
+passes. A request the adapter holds pending this way **MAY** carry a deadline
+longer than the 30 s default of [§4.3](#4.3%20Errors%20are%20neutral%20values), up to 60 s, so that it outlives a
+recall's own deadline (35 s for an SMB break) and completes when the break
+resolves rather than failing just before it does. Either way no service worker waits: the retry is the client's or the
 adapter's, and holds no state at the primary. A client that holds grants on many files and never
 acknowledges therefore costs each conflicting operation one retry interval,
 never a pinned worker. After one of a client's recalls is revoked, the service
@@ -373,6 +390,15 @@ never a pinned worker. After one of a client's recalls is revoked, the service
 ([RFC 14](rfc-14-open-state.md)). For SMB, whose writes name a FileId rather
 than a lease, revoking a lease **MUST** invalidate the opens it covered, so a
 stale buffered write through them is refused.
+
+**A callback path can move between nodes** (cluster, [single-node profile](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)). A client's
+callbacks go out through the protocol node that holds its back channel. When the
+client binds its callback path through another node — after an address takeover,
+or a lost connection — that node calls `Rebind`, and the service records it in the
+client's record ([RFC 14](rfc-14-open-state.md)); the latest bind wins, and a recall in flight is
+retried through it. Without the record, every recall after the client moved
+would go out through a path the client no longer listens on and end in
+revocation.
 
 **Notifications honour traverse permission.** `Notify` delivers a change only
 when the watch's identity may traverse every directory between the watched one
@@ -455,7 +481,11 @@ The service returns `ErrNotFound`, `ErrExist`, `ErrAccess`, `ErrStale`,
 `ErrNotEmpty`, `ErrNotDir`, `ErrIsDir`, `ErrNoSpace`, `ErrQuota`, `ErrLocked`,
 `ErrShareViolation`, `ErrGrace`, `ErrDelay`, `ErrNotYours`, `ErrBadLayout`, `ErrWrongSecurity`, and the content errors of
 [RFC 8](rfc-8-engine.md) (`ErrLost`, `ErrUnavailable`, `ErrCorrupt`). Each adapter maps them
-once. `ErrDelay` means "retry shortly": a recall is in progress (§3.2).
+once. `ErrDelay` means "retry shortly": a recall is in progress (§3.2), or the
+journal is full and offload or repack is freeing space ([RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)). Adapters map
+it to `NFS4ERR_DELAY` or `NFS3ERR_JUKEBOX`; SMB holds the request pending and
+re-drives it (§3.2). `ErrNoSpace` means no space will come without operator
+action, and `ErrQuota` that a quota refused; both are answered at once.
 `ErrGrace` means the file's shard is in grace and the request needs, or
 conflicts with, state that may still be reclaimed (§5.1). `ErrWrongSecurity`
 means the share's policy does not admit the call's flavour (§4.9); NFSv4 maps it
@@ -463,7 +493,8 @@ to `NFS4ERR_WRONGSEC`, NFSv3 and SMB to an access error. A routing refusal — w
 adapter: the service re-routes and retries within the caller's deadline ([RFC 15 §6](rfc-15-topology.md#6.%20Learning%20primaries)).
 
 An operation that arrives with no deadline is given one of 30 s from its
-arrival at the service, fixed rather than a setting ([RFC 13](rfc-13-configuration.md)), so every wait below
+arrival at the service — up to 60 s for a request an adapter holds pending (§3.2) —
+fixed rather than a setting ([RFC 13](rfc-13-configuration.md)), so every wait below
 it ends ([RFC 0 §10.3](rfc-0-data-lifecycle.md#10.3%20Every%20wait%20on%20a%20request%20ends%20at%20a%20deadline)).
 
 ### 4.4 Handles are opaque
@@ -506,7 +537,7 @@ A call may reach a node that does not own the file ([RFC 15](rfc-15-topology.md)
 operation **MUST** therefore take and return values and resume an iteration
 from a cursor the caller holds.
 
-A call the service forwards carries RFC 15's **route envelope**: a request ID,
+A call the service forwards (cluster, [single-node profile](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)) carries RFC 15's **route envelope**: a request ID,
 unique across the cluster, the shard and epoch the sender expects, and a hop
 count. The primary refuses a call whose epoch is not its own, and keeps a short
 dedup table keyed by request ID alone — handed over with the shard or its
@@ -625,7 +656,8 @@ Each order below is normative.
 
 1. resolve the handle; refuse a stale one; admit the call to its share (§4.9);
    route to the primary (§4.7, §4.8);
-2. authorise against the file ([§4.6](#4.6%20One%20chokepoint)), or evaluate the open's stored grant;
+2. authorise against the file ([§4.6](#4.6%20One%20chokepoint)), or evaluate the open's stored grant
+   when the caller is the principal it was granted to (§3.1);
    for an anonymous open, check deny modes held by others;
 3. if the shard is in grace, refuse with `ErrGrace` a write that overlaps a lock,
    deny mode or grant that may still be reclaimed ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)); otherwise
@@ -633,14 +665,30 @@ Each order below is normative.
    ([RFC 14 §7](rfc-14-open-state.md#7.%20Conflicts%20across%20protocols)). A conflicting caching grant starts a recall and the write
    returns `ErrDelay` (§3.2);
 4. reserve the charge the write adds, if it extends the file (§5.6);
-5. call the engine's `Write`, which stages the bytes in the journal and returns
-   the write verifier ([RFC 8](rfc-8-engine.md)), passing the times the caller's open has suspended
-   ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)), which neither the overlay nor the existence commit then
-   advances for this write; `Version` advances regardless (§5.7);
-6. reply. Existence, usage and `mtime` are recorded at the next stability point
-   by the engine, not here; that commit releases the reservation.
+5. if the caller is not the file's owner and the file is setuid, or setgid with
+   group execute, clear those bits in a committed mode change first
+   ([RFC 7 §9.6](rfc-7-namespace-metadata.md#9.6%20setuid%20and%20setgid%20are%20cleared%20when%20another%20principal%20changes%20the%20file));
+6. call the engine's `Write`, which stages the bytes in the journal and returns
+   the write verifier ([RFC 8](rfc-8-engine.md)), passing the stability the write needs and the times
+   the caller's open has suspended ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)). A suspended `Modify` or
+   `Access` is not advanced for this write, by the overlay, the existence commit or
+   a replay; `Change` and `Version` advance regardless ([RFC 7 §9.4](rfc-7-namespace-metadata.md#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward));
+7. reply. A stable write is answered once the journal has synced it; existence,
+   usage and `mtime` are committed lazily by the engine, not here, and a replay
+   after a crash restores them ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)); that commit releases the reservation.
 
-Steps 3–5 run at the primary as one step (§4.8).
+**Which writes are stable.** A write is stable when the client asks for it (NFS
+`FILE_SYNC` or `DATA_SYNC`, SMB write-through), and every write through a
+persistent open, or through any open on a continuously available share, is
+stable whatever the client asked: those opens survive a restart, and an
+acknowledged write they carry must survive it too. A durable open that is not
+persistent is not reclaimable across a restart of the primary
+([RFC 14](rfc-14-open-state.md)), so its writes need not be.
+
+A write the journal cannot take because it is full returns `ErrDelay`, not
+`ErrNoSpace`, while offload or repack can free space ([RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)).
+
+Steps 3–6 run at the primary as one step (§4.8).
 
 ### 5.2 Read
 
@@ -660,30 +708,52 @@ return `n` verified bytes and then an error (`ErrLost`, `ErrUnavailable`,
 
 A reply is never padded with zeros for the bytes that failed.
 
+`SEEK_DATA`, `SEEK_HOLE` and the allocated ranges of `READ_PLUS` and SMB's
+allocated-range query come from the engine's `Allocation`
+([RFC 8 §7.6](rfc-8-engine.md#7.6%20Allocation%20answers%20from%20the%20hole%20set)), which counts a zero ref under a newer overwrite record as data;
+no adapter derives them from reads.
+
 ### 5.3 Open and close
 
 `Open` resolves or creates the name, authorises, checks deny modes against the
 opens already held, offers a caching grant if no other client conflicts, and
 records the open — all at the file's primary, in one step as the protocol
 sees it. `Close` drops the open after checking that the named client holds it.
-The last close of an unlinked file deletes its durable open record; the
-content is then released by the release transaction that consumes the file's
-pending-release record ([RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)). The service never calls a release itself.
+
+**A sharing violation is decided after handle caching is broken.** An open whose
+deny-mode check fails against opens that a handle-caching grant covers — an SMB
+lease with handle caching keeps handles open that its client has already closed
+— **MUST NOT** be refused yet: it starts a break of those grants and returns
+`ErrDelay` (§3.2), and on its retry re-checks the deny modes against the opens that
+remain. Refused at once, it fails against handles nobody is using.
+
+**The service runs every release.** It calls the engine's `Release`
+([RFC 8 §8.1](rfc-8-engine.md#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)) at the file's primary, at three moments: when `Unlink` or `Rename`
+reports a file left with no entry and no open holds it; at the last close of a
+file with no entry, after deleting the durable open record; and in recovery, for
+every pending release, once the shard's grace has ended. The release transaction
+re-checks its holders itself ([RFC 7 §4.5](rfc-7-namespace-metadata.md#4.5%20A%20release%20re-checks%20its%20holders%20inside%20its%20own%20transaction)), so a release begun on a stale view aborts
+and loses nothing. A delete on close runs as the principal of the open that set
+it ([RFC 7 §8.2](rfc-7-namespace-metadata.md#8.2%20A%20delete%20on%20close%20is%20an%20ordinary%20unlink%2C%20later)).
 
 ### 5.4 Remove and rename
 
 The metadata store applies the namespace change. The final unlink always writes
 the file's pending-release record in the same transaction, and holders are only
 the durable open records; the release transaction deletes the record once no
-open remains ([RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)). A crash between the unlink and the release
-leaks nothing, because the record, not a call from the service, drives it. A
-rename that replaces a target applies the same rule to the target.
+open remains ([RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)), and the service runs it (§5.3). A crash between the
+unlink and the release leaks nothing, because the record survives it and
+recovery runs the release. A rename that replaces a target applies the same rule
+to the target.
 
 ### 5.5 Size changes
 
-A `SetAttr` that changes size is authorised and checked like a write, then
-applied by the engine's `Truncate` at the file's primary; the other attributes in
-the same call are applied by the metadata store in the same service call.
+A `SetAttr` that changes size is authorised and checked like a write, clears
+setuid and setgid as a write does (§5.1), then is applied by the engine's
+`Truncate` at the file's primary; the other attributes in the same call are
+applied by the metadata store in the same service call. A `SetAttr` that sets
+`mtime` or `atime` to a given time is applied through an existence commit after
+every write staged before it ([RFC 7 §9.5](rfc-7-namespace-metadata.md#9.5%20An%20explicit%20time%20outlives%20the%20writes%20staged%20before%20it)).
 
 ### 5.6 Quota
 
@@ -715,10 +785,14 @@ engine refuses a write for quota.
 The metadata store is a leaf: it never calls the engine. `GetAttr` joins
 `Files.Get` with the engine's overlay — `Size`, `Times` and `Version` of writes
 staged but not yet committed — at the file's primary, where both are local. The
-overlay wins where it is newer.
+overlay wins where it is newer. The two are read under the file's commit
+serialisation, retried as a sequence lock, so a commit between them never yields
+a lower size or `Version` than one already returned ([RFC 7 §2.5](rfc-7-namespace-metadata.md#2.5%20Where%20%60size%60%20lives)).
 
 **The overlay's `Version` advances on every write the primary accepts**, at
-acceptance, not at the existence commit that later records it: a `GetAttr`
+acceptance, not at the existence commit that later records it. Each change draws
+its `Version` from the journal's version counter, so it rises across restarts
+and primaries too ([RFC 7 §9.4](rfc-7-namespace-metadata.md#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward)). A `GetAttr`
 after a write is acknowledged returns a `Version` greater than any returned
 before it. The existence commit **MUST** leave the committed `Version` no lower
 than any the overlay reported for the writes it records, so the change attribute
@@ -728,18 +802,24 @@ committed.
 
 This is the only read path for a file's
 attributes; `ReadDir` with attributes does the same join per entry, batched
-per primary for entries whose files live in other shards.
+per primary for entries whose files live in other shards, and so do `Lookup`,
+`Create` and `SetAttr` before they return a File. NFSv3 pre-operation attributes
+are returned only when captured with the operation under that serialisation,
+and never for a directory ([RFC 7 §9.2](rfc-7-namespace-metadata.md#9.2%20Timestamps)).
 
 ### 5.8 The write verifier
 
 The NFS write verifier is returned by the engine's `Write` and `Commit` and
-derived from the primary's node, its node epoch, the process instance and the
-loss generation of the journal holding the file — not from the shard epoch
-([RFC 11 §7](rfc-11-ownership.md#7.%20Protocol%20state), [RFC 8 §4.1](rfc-8-engine.md#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)). The service passes it through unchanged. It
-therefore changes whenever the node serving the file's shard as primary changes
-or restarts, and whenever the running primary's journal loses writes it had
-acknowledged as unstable ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)), and not when only the shard epoch
-is raised. A change is what makes a client resend writes it sent unstable
+derived from the primary's node, its node epoch, the process instance, the
+shard's incarnation — raised each time a journal begins serving the shard
+([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)) —
+and the loss generation of the journal holding the file, sampled before the write
+is staged; not from the shard epoch ([RFC 11 §7](rfc-11-ownership.md#7.%20Protocol%20state), [RFC 8 §4.1](rfc-8-engine.md#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)). The service
+passes it through unchanged. It therefore changes whenever the node serving the
+file's shard as primary changes or restarts, whenever a shard comes back to a node
+that served it before, and whenever the running primary's journal loses
+unoffloaded writes it had acknowledged as unstable or fails a sync window
+([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)); and not when only the shard epoch is raised. A change is what makes a client resend writes it sent unstable
 ([RFC 14 §10](rfc-14-open-state.md#10.%20Shard%20placement)); on the normal path none of the inputs moves, and the
 verifier is constant.
 
@@ -762,7 +842,13 @@ verifier is constant.
 | V13 | No mount, tree connect or session is stored; a reconnecting client is admitted afresh. |
 | V14 | Every node builds the same pseudo-filesystem from the same share list: the same handles, numeric ids, `fsid` and change attribute. |
 | V15 | No adapter resolves a share name or path, admits a call, or builds or interprets any part of the pseudo-filesystem; all of it is behind `Shares` and `Names`. |
-| V16 | The `Version` `GetAttr` returns advances on every write the primary accepts, and never moves backward when the write is committed. |
+| V16 | The `Version` `GetAttr` returns advances on every write the primary accepts, and never moves backward when the write is committed, across restarts or across primaries; `GetAttr` reads the File and the overlay under the file's commit serialisation. |
+| V17 | Every release is run by the service, at the file's primary, after an orphaning unlink or rename, at the last close of a file with no entry, and in recovery after grace. |
+| V18 | An open's grant authorises a call only for the principal it was granted to. |
+| V19 | A write through a persistent open, or any open on a continuously available share, is stable; a stable write is answered after the journal sync, not after a metadata transaction. |
+| V20 | A full journal returns `ErrDelay` while offload or repack can free space; `ErrNoSpace` and `ErrQuota` are answered at once. |
+| V21 | A deny-mode refusal is decided only after the handle-caching grants covering the conflicting opens are broken. |
+| V22 | A non-owner's write or truncate of a setuid or setgid file clears the bits in a committed change before the write is staged. |
 
 ## 7. Observability
 
@@ -809,9 +895,9 @@ engine's spans. No share label on per-operation metrics ([RFC 16 §8.1](rfc-16-m
     once (V11);
   - the verifier `Write` and `Commit` return through the service changes after
     the primary's journal drops an unstable write as lost, in the same process
-    and epoch, and is unchanged across a shard-epoch raise that moves nothing
-    (§5.8); a service that caches the verifier per process passes the second
-    half and fails the first;
+    and epoch, and when a shard is handed away and back to the same process, and
+    is unchanged across a shard-epoch raise that moves nothing (§5.8); a service
+    that caches the verifier per process passes the last and fails the others;
   - writers through `k` primaries overshoot a hard limit by no more than §5.6's
     bound, counted per run;
   - an event sink that blocks does not slow an operation, and its drops are
@@ -827,7 +913,28 @@ engine's spans. No share label on per-operation metrics ([RFC 16 §8.1](rfc-16-m
     and a new tree connect needs the new name;
   - two services built from the same share list return byte-identical pseudo
     handles, numeric ids and change attributes, and a share added on one is
-    seen on the other with a raised change attribute (V14).
+    seen on the other with a raised change attribute (V14);
+  - an unlinked file whose last open closes is released, and so, after a
+    restart, is a file whose pending release was written before the crash; a
+    service that never calls `Release` leaks both (V17);
+  - bob presents alice's open to write a file alice may write and bob may not;
+    assert `ErrAccess`. A service that trusts the open's grant for any presenter
+    accepts the write (V18);
+  - a write on a persistent open, asked unstable, survives a crash injected right
+    after its reply; a stable write's reply waits for the journal sync and for no
+    metadata transaction, counted by the store's transaction counter (V19);
+  - with the journal full of dirty bytes and the remote reachable, a write
+    returns `ErrDelay`, and succeeds on retry once offload and repack have freed
+    space (V20);
+  - an SMB open that conflicts on deny mode with an open a handle-caching lease
+    covers gets a break of that lease first; when the lease's client closes the
+    handle, the open succeeds without the client resending it (V21);
+  - bob writes alice's setuid file; `GetAttr` read between the write's reply and
+    any commit shows the bit clear (V22);
+  - a pending SMB request whose recall takes 35 s completes rather than failing
+    at 30 s (§3.2);
+  - 16 readers `GetAttr` a file while its writes commit in a loop; none sees a
+    `Version` lower than one it saw before (V16).
 - **Import test:** no adapter package imports the metadata store, open state or
   the engine; the service imports no adapter (V1, V5). The `Shares` calls and
   pseudo handles are driven in the service suite with no adapter at all, and

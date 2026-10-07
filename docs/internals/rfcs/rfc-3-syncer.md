@@ -96,7 +96,7 @@ new writes still landing in the journal until it fills.
 - **worker pool** — per half, the only limit on transfers in flight, and so the
   memory bound; 128 by default ([§2.1](#2.1%20A%20worker%20pool%20is%20the%20only%20concurrency%20control), [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)).
 - **demand**, **background**, **speculation** — the three classes, served in that
-  order, fairly by bytes among flows within a class ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)).
+  order, fairly by worker-time among flows within a class ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)).
 - **put attempt** — one upload of one block under a name minted for it; every
   retry reuses that name and those bytes ([§2.5](#2.5%20An%20unknown%20outcome%20is%20not%20a%20success)).
 - **health** — kept per store and per direction, put or get, from probes and
@@ -112,7 +112,8 @@ new writes still landing in the journal until it fills.
 - No byte of a fetched chunk reaches a caller before the chunk is checked
   against its hash.
 - Every transfer ends, in success or a reported failure, in bounded time:
-  a store moving less than 64 KiB/s over 30 s, or no first byte in 10 s, fails it.
+  a store moving less than 64 KiB/s over 30 s, a transfer far slower than its
+  peers on the same store, or no first byte in 10 s, fails it.
 - Memory is bounded by the two pool sizes. When a pool is full, callers wait or
   are refused; nothing queues without bound.
 - A waiting reader goes before offload and relocation, which go before
@@ -266,18 +267,24 @@ type Store interface {
     Health(ctx context.Context, d Direction) error
 }
 
-// Every Store error wraps one error of RFC 4's closed set (§4.8) or RFC 5's
-// ErrMaterialUnavailable (§2.7), or is a local error returned as itself.
-// A throttling response is ErrThrottled, which wraps ErrTransient.
+// Every Store error wraps one of the syncer's own error values below, or is a
+// local error returned as itself. The engine's Store maps RFC 4's closed set
+// (§4.8) and RFC 5's ErrMaterialUnavailable (§2.7) onto them.
+var (
+    ErrNotFound, ErrInvalid, ErrDenied, ErrTransient, ErrCorrupt, ErrMaterialUnavailable error
+    ErrThrottled error // wraps ErrTransient
+)
 
-Register(name string, store Store) (StoreID, error)
+// probe names the probe this store shares with every store registered under the
+// same value (§2.8); the engine derives it from endpoint, credential and bucket.
+Register(name string, store Store, probe ProbeKey) (StoreID, error)
 // A background flow's fetches run in the background class (§2.9); GC, copying
 // backups and re-homes open one.
 OpenFlow(store StoreID, background bool) (*Flow, error)
 
 func (f *Flow) Upload(ctx context.Context, name BlockName, size int64, src func() iter.Seq2[Chunk, error]) (Stored, error)
 func (f *Flow) Fetch(ctx context.Context, name BlockName, want []ChunkRange) iter.Seq2[Chunk, error]
-func (f *Flow) Prefetch(ctx context.Context, name BlockName) iter.Seq2[Chunk, error]
+func (f *Flow) Prefetch(ctx context.Context, name BlockName, want []ChunkRange) iter.Seq2[Chunk, error]
 func (f *Flow) Healthy(d Direction) bool
 func (f *Flow) Close() error
 
@@ -297,12 +304,14 @@ and has no file offset. The engine converts one
 into the other. `Hash` is a plain `[32]byte`, so not even the hash type is
 shared. `Store` has no delete: the syncer never deletes ([§1.1](#1.1%20Non-goals)).
 
-**The error set is closed.** The syncer uses the remote store's set
-([RFC 4 §4.8](rfc-4-remote-tier.md#4.8%20Errors%20are%20a%20closed%20set)) as it is, plus `ErrMaterialUnavailable` from the transforms
-([RFC 5 §2.7](rfc-5-transforms.md#2.7%20Failures)); the codec reports every other transform failure as `ErrCorrupt`.
-Neither the syncer nor its callers interpret a service's or a transform's own
-errors. The error values are all the syncer shares with those components; they
-belong to neither, so the syncer still depends on no component's code:
+**The error set is closed, and the syncer declares it.** Its values mirror the
+remote store's set ([RFC 4 §4.8](rfc-4-remote-tier.md#4.8%20Errors%20are%20a%20closed%20set)) and `ErrMaterialUnavailable` from the transforms
+([RFC 5 §2.7](rfc-5-transforms.md#2.7%20Failures)), but they are the syncer's own values, declared beside `Store`; the
+engine's `Store` wraps each remote-store or transform error in the matching one,
+and the codec reports every other transform failure as `ErrCorrupt`. So the
+syncer imports neither component to recognise an error, which sentinels shared
+by identity would force it to. Neither the syncer nor its callers interpret a
+service's or a transform's own errors:
 
 | Error | The syncer | Counts toward health ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) |
 | --- | --- | --- |
@@ -389,9 +398,10 @@ it was not handed, and never puts a name again after `Upload` returns.
 
 **`Fetch`** is a demand: a reader is waiting. **`Prefetch`** is speculation
 ([§4.4](#4.4%20Speculation%20does%20not%20delay%20demand)): nobody is waiting yet. They are separate methods, not one method with
-a priority parameter, so each call site shows which it means. `Prefetch` always
-fetches the whole block: speculation is read-ahead or pre-warm, and both want
-whole blocks ([RFC 8 §7.8](rfc-8-engine.md#7.8%20A%20cold%20read%20asks%20for%20chunks%2C%20or%20for%20the%20block)).
+a priority parameter, so each call site shows which it means. Both take `want`
+the same way: `Prefetch` with an empty `want` fetches the whole block, and with
+ranges fetches only those chunks, so speculation can skip the chunks the journal
+already holds ([RFC 8 §7.8](rfc-8-engine.md#7.8%20A%20cold%20read%20asks%20for%20chunks%2C%20or%20for%20the%20block)) rather than fetch a whole block to refill a part.
 
 **A fetch is a set of whole-chunk ranges of one block.** `want` names the chunks
 the caller needs, each by its hash and the `Range` block metadata recorded for it
@@ -429,7 +439,10 @@ from the configuration is dropped at the next start.
 
 `Store` keeps no health state; `Health` is one probe call ([RFC 4 §4.7](rfc-4-remote-tier.md#4.7%20Health%20is%20one%20probe%20call)). The syncer
 probes each store itself, per direction, and refuses work in a direction that is unhealthy, and `Flow.Healthy` reports the result
-([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)).
+([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)). `Register`'s `probe` is how the syncer learns which stores share a probe: it
+cannot see an endpoint, a credential or a bucket, so the engine, which can, names
+the group, and stores registered under one `ProbeKey` share their outage probe.
+A zero key shares with nothing.
 
 ### 1.4 It is testable on its own
 
@@ -495,23 +508,31 @@ each is a fixed fraction of the pool ([§2.10](#2.10%20Two%20settings%2C%20and%2
 it. Nor is a queue's length, or the half's waiter bound, which bound how many
 transfers wait, not how many run.
 
-One token bucket is permitted, with its interaction stated: the process-wide
-**retry budget** of [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports). It limits only attempts beyond the first, never
-first attempts, so it can never be the reason a transfer does not start; it
-decides only whether a failed attempt is tried again or reported.
+Two further limits are permitted, each with its interaction stated:
+
+- the **retry budget** of [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports), one per store. It limits only attempts beyond the
+  first, never first attempts, so it can never be the reason a transfer does not
+  start; it decides only whether a failed attempt is tried again or reported;
+- the **throttle limit** of [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports), one per store and direction. It is never above
+  the store's cap, is lowered only by a throttling response and raised only by
+  successes, and binds only on a store that has throttled; on a store that has
+  not, it equals the cap and the pool and caps decide as before.
 
 ### 2.2 The pool size is a memory bound
 
 Each worker runs one transfer at a time, and a streaming transfer holds only
 one chunk in plaintext, the same chunk encoded, and the block's header ([§1.3](#1.3%20Interface)).
-A chunk is at most `Max` ([RFC 2](rfc-2-carver.md), B3) before encoding, and at most
+A chunk is at most `Max` before encoding, and `Max` here is the largest `Max` of
+any namespace the process serves: no namespace admits a chunk longer than its
+own ([RFC 2 §3.6](rfc-2-carver.md#3.6%20Changing%20any%20of%20this%20is%20a%20migration)), wherever it was cut. It is at most
 `MaxEncodedLen(Max)` after ([RFC 5 §3.1](rfc-5-transforms.md#3.1%20Interfaces)) for the chain that writes it, and at most
 `MaxDecodeLen(Max)` for any chain a stored block may have been written under, so:
 
 `per worker = Max + encoded bound + header cap`, where the encoded bound is
 `Chain.MaxEncodedLen(Max)` for the uploader and `MaxDecodeLen(Max)` for the fetcher
 
-`peak memory of a half = pool size × per worker + detached buffers`
+`peak memory of a half = pool size × per worker + detached buffers`, with at most
+`pool size` detached buffers, so at most twice `pool size × per worker`
 
 - **The encoded bound is taken per direction.** An upload encodes under the
   current chain, so the uploader uses that chain's `MaxEncodedLen`. A fetch
@@ -530,8 +551,13 @@ A chunk is at most `Max` ([RFC 2](rfc-2-carver.md), B3) before encoding, and at 
 - **Detached buffers** are the chunks a detached caller still holds
   ([§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch)): at most one per detached caller, each at most the fetcher's per-worker
   figure, released at that caller's next iteration or when its `ctx` ends. Their
-  count is bounded by the waiter bound of [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows), so the term is bounded too; it
-  is zero for the uploader, which has no joined callers.
+  count **MUST NOT** exceed the fetch pool's size. The waiter bound would allow
+  eight times that, and memory with it, so the count has its own cap: a fetch
+  that would detach a caller while the half holds that many detached buffers
+  takes no fresh buffer; it waits for the oldest detached buffer to be released,
+  which its caller's next iteration or the end of its `ctx` does, and every `ctx`
+  ends at a deadline ([RFC 0 §10.3](rfc-0-data-lifecycle.md#10.3%20Every%20wait%20on%20a%20request%20ends%20at%20a%20deadline)). The term is zero for the uploader, which has
+  no joined callers.
 
 Nothing on the path holds the whole block: not the store, whose put takes a
 stream ([RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success)), and not a file on disk. A measuring pass encodes each
@@ -573,23 +599,34 @@ Every transfer **MUST** complete in bounded time with either success or a failur
 reported to its caller. No transfer retries indefinitely.
 
 The syncer retries only `ErrTransient` ([§1.3](#1.3%20Interface)), and `ErrThrottled`, which wraps
-it, within a stated bound per transfer. Misclassification either way is
-recoverable, because both paths end in a report.
+it, within a bound per transfer: **at most four attempts**, the first and three
+retries ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)). Misclassification either way is recoverable, because both
+paths end in a report. A put calls `src` at most twice per attempt, once to
+measure and once to send ([§3.4](#3.4%20One%20put%20per%20block)), so at most eight times per `Upload`, each pass
+reading the offered bytes again, usually from page cache.
 
-**Retries draw on one process-wide budget.** Every attempt beyond the first takes
-a token from a bucket shared by every store and flow; every first attempt that
-succeeds returns a fraction of one ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)). An empty bucket means the failed
-attempt is reported, not retried. Without it, a store that fails every request
-turns each transfer into its full per-transfer retry bound, and the retries
-arrive exactly when the store can least take them. Each retry waits a backoff
-with **full jitter** — a uniform draw between zero and an exponentially growing
-ceiling — so transfers that failed together do not retry together.
+**Retries draw on a budget per store.** Every attempt beyond the first takes a
+token from its store's bucket; every first attempt on that store that succeeds
+returns a fraction of one ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)). An empty bucket means the failed attempt is
+reported, not retried. Without it, a store that fails every request turns each
+transfer into its full per-transfer retry bound, and the retries arrive exactly
+when the store can least take them. The budget is per store, not per process,
+because a failing store would otherwise drain the one bucket and leave every
+healthy store's occasional transient failure reported instead of retried. Each
+retry waits a backoff with **full jitter** — a uniform draw between zero and an
+exponentially growing ceiling — so transfers that failed together do not retry
+together.
 
-**A throttled flow is held, not failed.** On `ErrThrottled` the flow's queue is
-dispatched nothing new until that transfer's backoff has run, and the transfer
-then retries. The store asked to be sent less; the syncer sends less on that flow
-and says nothing about the store's health ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)). Other flows on the store carry
-on; if they are throttled too, each is held in turn.
+**A throttled store gets fewer workers, not only a pause.** On `ErrThrottled` the
+flow's queue is dispatched nothing new until that transfer's backoff has run,
+and the transfer then retries. The store asked to be sent less, so the syncer
+also lowers the store's **throttle limit** in that direction — the most workers
+it may hold — to half of what it holds, never below one; each transfer that then
+completes without throttling raises the limit by one, up to the store's cap.
+Holding a flow alone pauses it and then resumes at the same concurrency that
+was throttled, so a store that throttles at 40 concurrent requests is sent 40
+again after every backoff. Throttling says nothing about the store's health
+([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)). Other flows on the store carry on within the limit.
 
 **Bounded time is enforced by throughput, not by a fixed deadline.** A fixed
 per-transfer timeout is too short for a maximum-size block on a slow link and far
@@ -602,11 +639,21 @@ workers sharing a 1 MiB/s uplink get 32 KiB/s each; judging each transfer alone
 would fail all of them on a link that works. So a transfer below the floor
 **MUST** fail on it only when the store's aggregate throughput in that direction,
 summed over every transfer to it, is also below the floor over the interval; and
-only such a failure counts toward the store's health. One exception: a transfer
-that moves no byte at all for the interval has stalled, whatever the aggregate,
-and fails; it counts toward health only when the aggregate is below the floor
-too. A floor of a few bytes per second catches a stalled connection but not a
-crawling one; the aggregate test catches the crawl without punishing sharing.
+only such a failure counts toward the store's health. Two exceptions, neither
+counting toward health unless the aggregate is below the floor too:
+
+- a transfer that moves no byte at all for the interval has stalled, whatever
+  the aggregate, and fails;
+- **a transfer that trickles fails too.** One moving less than a quarter of its
+  store's mean per-transfer rate in that direction — the aggregate divided by the
+  transfers in flight — over the interval, while the aggregate is above the
+  floor, is a connection gone bad among healthy ones, and fails. Without it, a
+  transfer moving a few bytes a second never stalls and never meets the aggregate
+  test, and holds its worker for as long as its block takes at that rate.
+
+Transfers that share a link evenly are all near the mean, so the rule punishes
+no sharing; a floor of a few bytes per second catches a stalled connection but
+not a crawling one, and the aggregate test catches the crawl.
 
 **Time to the first byte is bounded per direction**, since a request can stall
 before any byte moves. For a get it is from dispatch to the first body byte
@@ -639,9 +686,14 @@ Sending a second request alongside the first and taking whichever answers
 at a few percent more requests; it is deferred until a measurement of cold-read
 latency asks for it.
 
-**The syncer is the only layer that retries** ([RFC 4 §4.9](rfc-4-remote-tier.md#4.9%20No%20state%20across%20calls)). A streamed body cannot
-be rewound by a client that has already sent part of it; only the syncer, which
-can call `src` again ([§1.3](#1.3%20Interface)), can retry one.
+**The syncer is the only layer that retries a transfer** ([RFC 4 §4.9](rfc-4-remote-tier.md#4.9%20No%20state%20across%20calls)). A streamed
+body cannot be rewound by a client that has already sent part of it; only the
+syncer, which can call `src` again ([§1.3](#1.3%20Interface)), can retry one. That is transport:
+the same attempt, the same name, the same bytes. What happens after an
+`Upload` reports failure is the engine's, and it is not a retry of the put: the
+engine re-offers the content later as a new put attempt under a new name
+([RFC 8 §6.6](rfc-8-engine.md#6.6%20A%20block's%20name%20is%20minted%2C%20and%20its%20intent%20recorded%2C%20before%20the%20put)), a decision about content, made with what it knows about the
+journal and metadata ([§2.5](#2.5%20An%20unknown%20outcome%20is%20not%20a%20success)).
 
 ### 2.5 An unknown outcome is not a success
 
@@ -721,15 +773,22 @@ each direction on its own:
   probe proves — reachable, credentials accepted, namespace writable — so the
   syncer **MUST NOT** put-probe it that interval; a completed fetch likewise
   stands in for the get probe. Neither stands in for the other;
-- stores that share an endpoint, credential and bucket **SHOULD** share one
-  probe per direction for detecting an outage. A permission that differs by
-  prefix is not seen by the shared probe, and is caught by the failure window
-  below;
-- two consecutive failed probes make the direction unhealthy; a successful one
-  makes it healthy, except as the failure window below restricts. After a failed
-  probe the syncer probes again at once rather than waiting an interval, so one
-  spurious failure costs a round trip, not an interval of refused work, and a
-  dead store is still detected within about one interval;
+- stores registered under one `ProbeKey` ([§1.3](#1.3%20Interface)) — the engine gives one key to
+  stores that share an endpoint, credential and bucket — **MUST** share one probe
+  per direction for detecting an outage. A permission that differs by prefix is
+  not seen by the shared probe, and is caught by the failure window below;
+- two consecutive failed probes make the direction unhealthy, and two
+  consecutive successful ones make it healthy again, except as the failure
+  window below restricts. After a failed probe, and after a first success while
+  unhealthy, the syncer probes again at once rather than waiting an interval, so
+  one spurious result costs a round trip, not an interval, and a dead or
+  recovered store is still seen within about one interval;
+- **a direction that flaps is held down.** One that turns unhealthy again within
+  60 s of turning healthy stays unhealthy for a hold-down before its probes may
+  clear it: one probe interval the first time, doubling on each further flap
+  within the minute, up to 60 s, and reset once it has stayed healthy for 60 s.
+  Without it, a store whose probe passes and fails alternately admits a burst of
+  transfers each time, and each burst fails;
 - a direction also turns unhealthy when every transfer in it over a stated
   window ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)) failed with an error that counts toward health ([§1.3](#1.3%20Interface)),
   although its probe passed — a store that answers the probe but refuses puts
@@ -842,17 +901,24 @@ Each half runs its own scheduler over its own pool:
   only among equals.
 - **One queue per flow and class.** A transfer waits in its flow's queue for its
   class, never in a global one.
-- **Turns are in bytes, not requests.** When a worker frees, the scheduler visits
-  the next flow with work waiting, adds a **quantum** of bytes to that flow's
-  **deficit**, and dispatches from the head of its queue while the head's size
-  fits within the deficit, subtracting each one's size. A flow whose queue
-  empties has its deficit reset to zero. A transfer is charged its encoded size:
-  an upload the `size` it declares, a fetch the sum of its `want` ranges' lengths,
-  and a whole-block fetch the largest encoded block ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)), since its size is
-  unknown. A flow sending large blocks therefore gets no more bandwidth than one
-  sending small ones.
-- **The quantum is at least the largest encoded block**, so every flow with work
-  waiting dispatches at least once per round. Each dispatch costs O(1).
+- **Turns are in worker-time, not requests or bytes.** What a flow takes from
+  the others is the time it holds workers, and on one store a slow transfer holds
+  a worker as long as several fast ones. When a worker frees, the scheduler
+  visits the next flow with work waiting, adds a **quantum** to that flow's
+  **deficit**, and dispatches from the head of its queue while the head's charge
+  fits within the deficit, subtracting each one's charge. A transfer is charged
+  at dispatch an **estimate** — its encoded size divided by its store's recent
+  per-worker throughput in that direction — and when it ends, the difference
+  between the worker-time it actually held and the estimate is subtracted from
+  or returned to its flow's deficit. The size is the `size` an upload declares,
+  the sum of a fetch's `want` ranges' lengths, and for a whole-block fetch the
+  largest encoded block ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)). A flow whose queue empties has its deficit reset
+  to zero, after its running transfers' corrections. A flow sending large blocks
+  therefore gets no more worker-time than one sending small ones, and a flow
+  whose transfers run slow pays for the workers they hold.
+- **The quantum is at least the estimate of the largest encoded block** on the
+  slowest store with work waiting, so every flow with work waiting dispatches at
+  least once per round. Each dispatch costs O(1).
 - **Two levels: stores, then flows.** The scheduler first picks a store, by the
   same round robin over stores with work waiting, then a flow on that store.
   Without the store level, eight shares on one slow store hold eight flows' caps
@@ -862,12 +928,16 @@ Each half runs its own scheduler over its own pool:
   decide who gets the *next* free worker: without the cap, a flow or a store that is
   slow but healthy can hold every worker for as long as its puts take, and no
   turn comes round. The cap is not a reservation, and it binds only where there
-  is someone to leave room for: the per-store cap applies only when more than one
-  store is configured, and the per-flow cap only while more than one flow is open
-  on that store. So a single-store, single-share install uses the whole pool, as
+  is someone to leave room for: the per-store cap applies only while another
+  store has work waiting in this half or holds a worker of it, and the per-flow
+  cap only while another flow on the same store does. A store merely configured,
+  such as an idle backup's block folder, leaves no room it would not use. So an
+  install with one busy store and one busy share uses the whole pool, as
   [§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed) needs to fill the link; a flow or store that arrives while another
   holds every worker gets the next free one by the round robin, and the cap
   binds from then on. No worker sits idle waiting for a flow that has no work.
+- **A throttled store holds no more than its throttle limit** ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)), which
+  is never above its cap.
 - **No store gets a worker beyond its fair share while another store with work
   waiting holds none.** A store's fair share is the pool divided by the number of
   stores holding or waiting for workers. The cap alone lets one slow store keep
@@ -876,10 +946,16 @@ Each half runs its own scheduler over its own pool:
 - **Each queue has a fixed length, and the half has one waiter bound shared by
   every flow.** The waiter bound counts queued transfers and joined callers
   together ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)), so a thousand flows cannot hold a thousand queues' worth of
-  waiters. A call that finds its flow's queue full, or the half at its waiter
-  bound, **MUST** be refused — with one exception: a demand that finds either
-  full evicts the **youngest queued speculative** entry, of any flow, and takes
-  its place; that entry's caller gets a refusal, as a speculative caller can
+  waiters. A call that finds its flow's queue full **MUST** be refused. **A
+  call that finds the half at its waiter bound is refused only if its own flow
+  holds at least its fair share of the bound** — the bound divided by the number
+  of flows holding waiters, this one included. Otherwise the youngest queued
+  transfer of the flow holding the most waiters, of the same class or a lower
+  one, is refused in its place (`displaced`), and the call takes its slot. A
+  shared bound with no share in it lets two busy flows fill it and refuse a
+  third flow's first call. Above both rules, a demand that would be refused
+  evicts the **youngest queued speculative** entry, of any flow, and takes its
+  place; that entry's caller gets a refusal, as a speculative caller can
   ([§4.4](#4.4%20Speculation%20does%20not%20delay%20demand)). Only when no speculation is queued is a demand refused. Waiting
   outside the queue would be an unbounded queue under another name
   ([§2.3](#2.3%20Backpressure%20propagates%3B%20it%20does%20not%20buffer)). The refusal travels back to whoever opened the flow — for a share's
@@ -891,7 +967,8 @@ Each half runs its own scheduler over its own pool:
 A *round* is one visit to every flow with work waiting in the class being
 served. A transfer at the head of its flow's queue is therefore dispatched within
 one round of its class — at most one turn for each other flow with work waiting
-in it — unless its own flow is at its cap or a higher class has work waiting.
+in it — unless its own flow is at its cap, its store at its cap or throttle limit,
+or a higher class has work waiting.
 
 **How long an offload upload can wait.** The uploader serves only background
 work, so nothing outranks an upload. An upload with *k* transfers ahead of it in
@@ -906,6 +983,9 @@ wait as long as demand keeps the pool busy: relocation is deferrable, and a
 reader is not.
 
 ![One DRR round with a 5 MiB quantum: a flow of 4 MiB blocks sends one and carries 1 MiB over, a flow of 1 MiB blocks sends five, a flow with one 5 MiB block sends it; below, the cap skipping a flow that already holds six of eight workers on a slow store](img/rfc3-drr-round.svg)
+
+*The figure counts in bytes, which is what worker-time reduces to among flows of
+one store whose transfers run at the store's usual rate.*
 
 All flows have equal weight. Weighting one flow over another is DRR's
 per-flow quantum and needs no other change; it is left out until an operator
@@ -923,7 +1003,7 @@ The syncer exposes exactly two settings, both process-wide:
 Neither default follows the CPU count. A transfer spends its time waiting on the
 network, so the count that keeps a link busy follows latency and bandwidth: by
 Little's law, workers ≈ throughput × time per transfer ÷ block size. A request
-for a block of the 4 MiB default target ([RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)) is bound by latency,
+for a block of the 4 MiB default block target ([RFC 2 §5.2](rfc-2-carver.md#5.2%20Packing%20rules)) is bound by latency,
 not bandwidth, so it still takes about 200 ms: each worker moves about 20 MiB/s,
 and about 2.5 GiB/s, beyond most links, needs 128 workers. Smaller blocks
 need more workers for the same throughput, and more pool memory with them, but
@@ -932,8 +1012,8 @@ Deriving it from cores would also scale memory with cores, and give a small VM
 on a fast link too few.
 
 Each is a memory budget as much as a concurrency limit ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)), and the
-documentation of each **MUST** state the memory it implies at the configured
-chunk `Max`: under the current chain for uploads, and under the costliest
+documentation of each **MUST** state the memory it implies at the largest chunk
+`Max` of any namespace the process serves ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)): under the current chain for uploads, and under the costliest
 registered chain for fetches ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)). Both are fixed for the life of the process ([§2.11](#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)).
 
 Everything else the syncer needs is derived or fixed, and **MUST NOT** be a
@@ -941,20 +1021,23 @@ setting:
 
 | Value | Is | Because |
 | --- | --- | --- |
-| DRR quantum | the largest encoded block ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)) | [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) needs it to be at least that, and nothing is gained above it |
-| per-store and per-flow cap | three quarters of the pool, rounded down, at least one worker; with a pool of more than one, at most the pool less one. The per-store cap applies only when more than one store is configured, the per-flow cap only while more than one flow is open on the store ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) | leaves a quarter for every other flow and store while one exists, and lets a lone flow on a lone store use the whole pool the link needs |
+| DRR quantum | the worker-time estimate of the largest encoded block on the slowest store with work waiting ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound), [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) | [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) needs it to be at least that, and nothing is gained above it |
+| per-store and per-flow cap | three quarters of the pool, rounded down, at least one worker; with a pool of more than one, at most the pool less one. The per-store cap applies only while another store has work waiting or holds a worker of the half, the per-flow cap only while another flow on the store does ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) | leaves a quarter for every other busy flow and store, and lets a lone busy flow on a lone busy store use the whole pool the link needs |
+| throttle limit | per store and direction; starts at the cap, halves (not below one) on each throttling response, rises by one per transfer completed without one, up to the cap | a throttled store is sent fewer requests at once, not the same number later ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
+| detached-buffer cap | the fetch pool's size | bounds [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)'s detached term at one per worker |
 | per-flow queue length | four times the pool, per class | a waiting transfer holds a reference, not bytes ([§3.2](#3.2%20It%20holds%20a%20reference%2C%20not%20a%20copy)), so the length bounds bookkeeping, not memory |
-| waiter bound | eight times the pool per half, queued transfers and joined callers together, shared by every flow | bounds bookkeeping, and the detached buffers of [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound), whatever the number of flows ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) |
+| waiter bound | eight times the pool per half, queued transfers and joined callers together, shared by every flow, each flow entitled to an equal share of it ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) | bounds bookkeeping whatever the number of flows; memory for detached callers has the detached-buffer cap |
 | class order | demand, then background, then speculation | [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) |
 | header cap | fixed header fields plus one index entry per chunk, at the format's chunk-count cap | [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound); a constant of the block format version ([RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler), P4) |
-| probe interval | 5 s per direction, healthy or not; skipped while transfers in that direction succeed | about one interval: two consecutive failed probes, the second at once, are unhealthy; one success is healthy ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) |
+| probe interval | 5 s per direction, healthy or not; skipped while transfers in that direction succeed | about one interval: two consecutive failed probes, the second at once, are unhealthy; two consecutive successes, the second at once, are healthy ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) |
+| flap hold-down | one probe interval after a direction turns unhealthy within 60 s of recovering, doubling per further flap up to 60 s, reset after 60 s healthy | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) |
 | failure window | 30 s | a direction whose every transfer failed for this long, with its probe passing, turns unhealthy, and recovers only on its own evidence ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) |
-| throughput floor | 64 KiB/s over 30 s, judged on the store's aggregate per direction; a transfer moving no byte for 30 s fails regardless | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) |
+| throughput floor | 64 KiB/s over 30 s, judged on the store's aggregate per direction; a transfer moving no byte for 30 s, or under a quarter of its store's mean per-transfer rate over 30 s, fails regardless | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) |
 | first-byte bound | 10 s: to the first body byte of a get; to the first body byte accepted of a put, and from its last byte sent to the acknowledgement | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) |
 | detach bound | 5 s without taking the next chunk | a joined caller that falls behind is detached ([§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch)) |
 | unhealthy log interval | 60 s | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)'s summary line |
-| retry bound | the syncer's own per transfer, stated by the implementation | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) |
-| retry budget | a process-wide bucket holding the larger pool's size in tokens; a retry takes one, a successful first attempt returns 0.1 | retries stay near a tenth of traffic when a store fails everything ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
+| retry bound | four attempts per transfer: the first and three retries | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) |
+| retry budget | a bucket per store holding the larger pool's size in tokens; a retry on the store takes one, a successful first attempt on it returns 0.1 | retries stay near a tenth of a store's traffic when it fails everything, and one failing store cannot spend another's ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
 | retry backoff | full jitter: uniform in [0, min(5 s, 100 ms × 2^attempt)] | transfers that failed together do not retry together ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
 
 Each fixed value becomes a setting only when a measurement shows the fixed value
@@ -1009,7 +1092,8 @@ one. The syncer
 | `dittofs_syncer_inflight_bytes` | gauge | bytes held by transfers in flight, against the bound of [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound) |
 | `dittofs_syncer_queue_depth` | gauge | transfers waiting, per flow and in total ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) |
 | `dittofs_syncer_queue_wait_seconds` | histogram | time from call to dispatch; a flow whose wait exceeds one round is being starved (S18) |
-| `dittofs_syncer_refused_total` | counter | calls refused, labelled `reason` = `unhealthy`, `queue_full`, `waiters_full`, `evicted` (speculation evicted for a demand) or `closed` |
+| `dittofs_syncer_refused_total` | counter | calls refused, labelled `reason` = `unhealthy`, `queue_full`, `waiters_full`, `displaced` (a queued transfer refused for a flow below its share of the waiter bound), `evicted` (speculation evicted for a demand) or `closed` |
+| `dittofs_syncer_detached_buffers` | gauge | chunk buffers held by detached callers, against the detached-buffer cap ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)) |
 | `dittofs_syncer_waiters` | gauge | queued transfers plus joined callers, against the half's waiter bound ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) |
 
 **Transfers** — what moved, and how it ended?
@@ -1020,8 +1104,9 @@ one. The syncer
 | `dittofs_syncer_bytes_total` | counter | encoded bytes transferred |
 | `dittofs_syncer_transfer_duration_seconds` | histogram | time from dispatch to end |
 | `dittofs_syncer_first_byte_seconds` | histogram | time to the first byte; the tail that slow-tail retries and hedging aim at ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
-| `dittofs_syncer_retries_total` | counter | attempts beyond the first, labelled `reason` = `transient`, `throttled`, `slow_tail`, `floor` or `stalled` ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
-| `dittofs_syncer_retry_budget_exhausted_total` | counter | failed attempts reported rather than retried because the process-wide budget was empty ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
+| `dittofs_syncer_retries_total` | counter | attempts beyond the first, labelled `reason` = `transient`, `throttled`, `slow_tail`, `floor`, `stalled` or `trickle` ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
+| `dittofs_syncer_retry_budget_exhausted_total` | counter | failed attempts reported rather than retried because the store's budget was empty ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
+| `dittofs_syncer_throttle_limit` | gauge | the store's throttle limit per direction, against its cap ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
 | `dittofs_syncer_throttled_seconds_total` | counter | time flows spent held after a throttling response, per flow; a store asking to be sent less ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
 | `dittofs_syncer_store_throughput_bytes` | gauge | the store's aggregate throughput per direction, the figure the floor is judged on ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
 
@@ -1040,7 +1125,7 @@ one. The syncer
 | --- | --- | --- |
 | `dittofs_syncer_store_healthy` | gauge (0/1) | the direction's current state ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) |
 | `dittofs_syncer_store_unhealthy_seconds_total` | counter | time spent unhealthy |
-| `dittofs_syncer_store_transitions_total` | counter | changes of state; a high rate is flapping ([§9](#9.%20Open%20questions), question 2) |
+| `dittofs_syncer_store_transitions_total` | counter | changes of state; a high rate is flapping, which the hold-down damps ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) |
 | `dittofs_syncer_probe_duration_seconds` | histogram | time per probe |
 
 `workers_busy` against throughput tells a slow store from a starved syncer,
@@ -1269,7 +1354,7 @@ keeps it from holding its share's flow at its cap while that share's reads wait.
 | # | Invariant |
 | --- | --- |
 | S1 | In-flight transfers per half never exceed that half's configured pool size. |
-| S2 | Peak memory per half is at most the pool size times the per-worker figure [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound) states, plus the detached buffers it bounds; the fetcher's figure is the maximum over every registered chain. |
+| S2 | Peak memory per half is at most the pool size times the per-worker figure [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound) states, plus at most pool-size detached buffers; the fetcher's figure is the maximum over every registered chain, at the largest `Max` of any namespace served. |
 | S3 | Backpressure reaches the caller; no unbounded queue exists. |
 | S4 | Every transfer ends in a success or a reported failure, in bounded time. |
 | S5 | An unknown outcome is reported as not durable, and every retry within one `Upload` puts the same name with the same bytes. |
@@ -1282,13 +1367,15 @@ keeps it from holding its share's flow at its cap while that share's reads wait.
 | S12 | Concurrent demand for one chunk produces one fetch of it. |
 | S13 | No transfer is dispatched while a higher class has work waiting: demand before background, background before speculation. |
 | S14 | A call in a direction in which its store is unhealthy fails without taking a worker or calling the backend; a put failure never refuses a get. |
-| S15 | An unhealthy direction is probed until it is healthy; one made unhealthy by the failure window is cleared only by its own evidence. |
+| S15 | An unhealthy direction is probed until it is healthy; it turns healthy only on two consecutive successes and not within its hold-down; one made unhealthy by the failure window is cleared only by its own evidence. |
 | S16 | Log volume while a store is unhealthy does not grow with traffic. |
-| S17 | No store holds more workers of a half than its cap while more than one store is configured, no flow more than its cap while more than one flow is open on its store, and no store gets a worker beyond its fair share while another store with work waiting holds none. |
+| S17 | No store holds more workers of a half than its cap while another store has work waiting or holds a worker of the half, nor more than its throttle limit; no flow more than its cap while another flow on its store does; and no store gets a worker beyond its fair share while another store with work waiting holds none. |
 | S18 | A transfer at the head of its flow's queue is dispatched within one round of the other waiting flows of its class, once no higher class has work waiting. |
 | S19 | Every `Store` error is one of the closed set; only `ErrTransient`, `ErrDenied` and a put's `ErrCorrupt` count toward health, `ErrThrottled` never does, and a floor trip only when the store's aggregate is below the floor. |
-| S20 | Waiters per half — queued transfers and joined callers — never exceed the waiter bound, whatever the number of flows. |
-| S21 | Retries across the process never exceed what the retry budget holds. |
+| S20 | Waiters per half — queued transfers and joined callers — never exceed the waiter bound, whatever the number of flows, and a flow below its share of the bound is never refused for the bound being full. |
+| S21 | Retries on a store never exceed what that store's retry budget holds, and no transfer makes more than four attempts. |
+| S22 | Turns are charged in worker-time: over a round, flows of one class with work waiting hold workers for times within one quantum of each other. |
+| S23 | No transfer holds a worker while moving under a quarter of its store's mean per-transfer rate for the floor's interval. |
 
 ## 7. Conformance
 
@@ -1318,13 +1405,19 @@ half-complete. A backend that always succeeds asserts nothing about any of them.
 | [§2.3](#2.3%20Backpressure%20propagates%3B%20it%20does%20not%20buffer) backpressure | Stall the backend and keep submitting; assert callers block or are refused rather than queue. |
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) termination | Present a permanently unavailable backend; assert every transfer returns within its bound. |
 | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) refusal contained | Fail one store's probe under load; assert calls to it fail at once without a backend call, and transfers to a second store still start. |
-| [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) recovery | Fail a store's probe, then restore the backend; assert it turns healthy and accepts calls without any other action. |
+| [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) recovery | Fail a store's probe, then restore the backend; assert it turns healthy after two consecutive successful probes and accepts calls without any other action. |
 | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) one spurious failure | Fail one probe and pass the next. Assert the store never turns unhealthy and no call is refused; fail two in a row and assert it turns unhealthy before the next interval. |
 | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) traffic stands in | Keep uploads succeeding for ten intervals; assert no probe is sent. Stop uploads; assert probing resumes within one interval. Keep only fetches succeeding; assert put probing continues and get probing does not. |
-| [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) shared probe | Register 100 stores on one endpoint, credential and bucket; assert one probe per interval, and that denying one store's prefix turns only that store unhealthy, through the failure window. |
+| [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) shared probe | Register 100 stores under one `ProbeKey`; assert one probe per interval, and that denying one store's prefix turns only that store unhealthy, through the failure window. Register two stores with the zero key; assert each is probed on its own. |
 | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) logging | Keep a store unhealthy under heavy load for several intervals; assert exactly one unhealthy line, one healthy line and one line per interval at info or above, and that a refused call's error names the store. |
 | [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) no starvation | Saturate flow A with uploads to a store whose puts take seconds; issue one fetch on flow B; assert it starts within one round and flow A never holds more than its cap. |
-| [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) fair by bytes | Run two flows, one uploading maximum-size blocks and one small blocks; assert bytes transferred per flow stay within one quantum of each other. |
+| [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) fair by worker-time | Run two flows on one store, one uploading maximum-size blocks and one small blocks; assert bytes per flow stay within one quantum of each other. Then make one flow's transfers take four times as long per byte; assert worker-time per flow, not bytes, stays within one quantum. A scheduler charging bytes gives the slow flow four times the workers. |
+| [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) waiter share | Fill the half's waiter bound from two flows; issue one call on a third flow with an empty queue; assert it is accepted and the youngest waiter of the flow holding the most is refused as `displaced`. A shared bound with no share refuses the third flow. |
+| [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) throttling lowers concurrency | Answer puts with `ErrThrottled` whenever more than 8 are in flight on a store with a cap of 96; assert the store's in-flight count falls to 8 or below within a few responses, stays near it, and climbs back toward the cap once throttling stops. A design that only holds the flow returns to 96 after each backoff. |
+| [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) budget per store | Fail every call on store A until its budget is empty; assert a transient failure on store B is still retried. |
+| [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) trickle fails | Run 32 uploads sharing a healthy link, one of them trickling at 1 KiB/s; assert it fails within the interval as `trickle`, does not count toward health, and the other 31 complete. |
+| [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound) detached-buffer cap | With a fetch pool of 4, join 40 callers to fetches and stall them all past the detach bound; assert detached buffers never exceed 4 and the fetches wait rather than take a fifth. |
+| [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) flap hold-down | Alternate a store's probe between pass and fail; assert it turns healthy only after two consecutive passes, and that after it flaps within a minute its hold-down doubles and its transitions per minute fall. |
 | [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) bounded queue | Fill flow A's queue; assert A's next call is refused while flow B's calls are still accepted. |
 | [§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch) single flight | Demand one cold chunk from N readers at once, at different offsets within it; assert one `Get`. |
 | [§4.4](#4.4%20Speculation%20does%20not%20delay%20demand) priority | Saturate the fetch pool with speculation, then demand a block; assert the demand is not queued behind it. |
@@ -1335,12 +1428,14 @@ half-complete. A backend that always succeeds asserts nothing about any of them.
 | [§1.3](#1.3%20Interface) lifecycle | Call on a closed flow and after `Close`; assert both fail. Assert `Close` returns only when transfers have ended, and that `src` is never called after `Upload` returns. |
 | [§1.3](#1.3%20Interface) stream rules | Assert an error is yielded once and ends the stream, and that leaving the loop stops the store's read. |
 | [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) store level | Run eight flows on a slow store and one on a healthy one; assert the healthy store's flow starts within one round and the slow store never holds more than its cap. Let the slow store hold its cap while the healthy store has work and holds no worker; assert the next free worker goes to the healthy store. |
-| [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) lone flow | With one store configured and one flow open, saturate uploads; assert the flow holds the whole pool. Open a second flow; assert it starts on the next free worker and that from then on neither flow holds more than its cap. Repeat with a second store configured and idle; assert the busy store holds no more than its cap. |
+| [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) lone flow | With one store configured and one flow open, saturate uploads; assert the flow holds the whole pool. Open a second, idle flow; assert the first still holds the whole pool. Give the second flow work; assert it starts on the next free worker and that from then on neither flow holds more than its cap. Repeat with a second store configured and idle; assert the busy store still holds the whole pool until the second store has work. A cap keyed on configured stores leaves a quarter of the pool idle. |
 | [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) classes | Queue uploads, relocation fetches on a background flow and prefetches on many flows, then one demand on another flow; assert the demand is dispatched first, background before any speculation. |
 | [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) eviction | Fill a flow's queue, and then the waiter bound, with speculation; issue a demand; assert it is accepted, the youngest speculative entry is refused with `evicted`, and with no speculation queued a demand is refused. |
 | [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) waiter bound | Open a thousand flows and queue on all of them; assert waiters never exceed the bound. |
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) throttling | Answer puts with `ErrThrottled`; assert the flow is held for the backoff, the transfer retries, other flows are dispatched meanwhile, and the store's health is unchanged. |
-| [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) retry budget | Fail every call on one store; assert retries across the process stay within the budget, exhausted attempts are reported with the last error, and the backoffs of transfers that failed together are spread. |
+| [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) retry budget | Fail every call on one store; assert retries on it stay within its budget, no transfer makes more than four attempts, exhausted attempts are reported with the last error, and the backoffs of transfers that failed together are spread. |
+| [§1.3](#1.3%20Interface) partial prefetch | `Prefetch` two non-adjacent chunks of a block; assert the store is asked for those ranges only, and that an empty `want` asks for the whole block. |
+| [§1.3](#1.3%20Interface) error values are the syncer's | Build the syncer with an import test; assert it imports neither the remote tier nor the transforms, and that a fake store returning each of the syncer's own error values gets the row of [§1.3](#1.3%20Interface)'s table it names. |
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) first byte, per direction | Hold a get before its first body byte, and a put after its last body byte sent; assert both fail at the first-byte bound. |
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) fetch resume | Fail a whole-block fetch transiently after three chunks; assert the retry requests only the rest and no chunk is yielded twice. |
 | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) per direction | Fail every put probe and put; assert fetches from the store still run. Fail every get; assert uploads still run. |
@@ -1435,7 +1530,9 @@ The conformance, model and fault tests **MUST** reach these.
 
 **Retries**
 
-- the retry budget empty at the first failure after start, and refilled by a single success.
+- the retry budget of one store empty at the first failure after start, and refilled by a single success on it;
+- a throttle limit at one, throttled again;
+- the detached-buffer cap reached with a demand waiting on a fresh buffer.
 
 ### 8.3 Faults and outside interference
 
@@ -1475,7 +1572,8 @@ benchmark:
   store above its cap (B3);
 - **single flight**: one `Get` for N readers of one cold chunk (B4);
 - **peak in flight** never above the pool size (S1);
-- **retries** across a scripted all-failing run never above the budget (S21);
+- **retries** on a store in a scripted all-failing run never above its budget, and never more than four attempts per transfer (S21);
+- **waiters displaced** rather than refused for a flow below its share (S20);
 - **waiters** never above the waiter bound (S20).
 
 ### 8.5 Performance targets
@@ -1504,7 +1602,12 @@ tool's raw figures; for B1–B4, the fake's simulated latency and per-byte time.
 
 ## 9. Open questions
 
-None. Settled:
+1. **The fixed values** ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)) are proposals until the benchmarks of [§8.5](#8.5%20Performance%20targets)
+   measure them; the throttle limit's halving and the trickle rule's quarter are
+   the least measured. None is a setting, so changing one is a release, not a
+   migration.
+
+Settled:
 
 1. **No joint cap for the two pools.** Uploads and fetches already share the
    store's connection pool ([RFC 4 §4.10](rfc-4-remote-tier.md#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)), which bounds what they put on the link
@@ -1512,13 +1615,12 @@ None. Settled:
    third bound would be a third setting with nothing measured to size it.
    Overturned by a cold-read benchmark ([§8.5](#8.5%20Performance%20targets)) whose latency under full upload
    load misses its target while the store's pool is not full.
-2. **Probe flapping:** two consecutive failures, the second probed at once
+2. **Probe flapping:** two consecutive failures turn a direction unhealthy and
+   two consecutive successes turn it healthy, each second probe sent at once;
+   a direction that flaps within a minute is held down for a doubling interval
    ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)). A healthy direction with traffic is not probed at all. A direction
    made unhealthy by the failure window is cleared only by its own evidence, so
    a passing shared probe cannot flip it back once per interval.
-3. **The fixed values** ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)) are proposals, each overturned by the benchmark in
-   [§8.5](#8.5%20Performance%20targets) that measures it. None is a setting, so changing one is a release, not a
-   migration.
 
 **Deferred**, each until a measurement asks for it: hedged cold reads
 ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)); a bandwidth cap per direction, which [§2.1](#2.1%20A%20worker%20pool%20is%20the%20only%20concurrency%20control) permits only with its
@@ -1553,5 +1655,5 @@ integrity) are listed once, in [RFC 4 Appendix A](rfc-4-remote-tier.md#Appendix%
 | D20 | classes, then fair scheduling across stores and flows ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) | no class order across flows, per-flow queue, round robin, cap or waiter bound |
 | D21 | a closed `Store` error set, a streamed put, and the census returned by `Put` ([§1.3](#1.3%20Interface)) | none of these exists; callers interpret service errors |
 | D22 | GC relocates through a background syncer flow ([§1.3](#1.3%20Interface)) | relocation calls the remote store directly |
-| D23 | one process-wide retry budget with full jitter; throttling holds the flow and is not failure ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) | retries live in the remote client, with no shared budget; throttling is an ordinary error |
+| D23 | a retry budget per store with full jitter; throttling holds the flow, lowers the store's throttle limit and is not failure ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) | retries live in the remote client, with no shared budget; throttling is an ordinary error |
 | D24 | a throughput floor judged on the store's aggregate ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) | per-request timeouts; no throughput floor |

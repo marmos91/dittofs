@@ -138,8 +138,9 @@ snapshot is deleted.
 
 **How the rest is organised.** §1–§2 say what GC owns and why refs are the only
 authority. §3 is a block's life — retire, trash, verify, delete, prune — and the
-core of the RFC; §3.3 and §3.4 (resurrection by adoption) are mostly deferred
-with deduplication and can be skipped on a first read. §4 is the compactor, §5
+core of the RFC. Of §3.3 (resurrection by adoption) only the offload commit's
+adoption waits for deduplication; a clone, a restore, a re-home and a count
+correction resurrect a retired block in the first release. §4 is the compactor, §5
 objects no record names, §6 the audit that keeps counts honest. §7 covers
 scheduling, records and service-setting rechecks; §8–§10 the API, invariants and
 metrics; §11 the tests. Appendix A lists where today's code differs.
@@ -160,7 +161,7 @@ another's:
 
 | Space | Reclaimed by | When | Destroys |
 | --- | --- | --- | --- |
-| **Local journal space** | the journal's release and repack ([RFC 1 §8.1](rfc-1-journal.md#8.1%20Releasing%20storage), [§8.2](rfc-1-journal.md#8.2%20Repack)) | when the engine's `EvictionPolicy` and `CapacityGovernor` decide ([RFC 8 §10](rfc-8-engine.md#10.%20Local%20space)) | only local copies of content already durable remotely ([RFC 8 §10.4](rfc-8-engine.md#10.4%20Nothing%20but%20durability%20makes%20an%20extent%20unevictable)) |
+| **Local journal space** | the journal's release and repack ([RFC 1 §8.1](rfc-1-journal.md#8.1%20Releasing%20storage), [§8.2](rfc-1-journal.md#8.2%20Repack)) | when the engine's `EvictionPolicy` and `CapacityGovernor` decide ([RFC 8 §10](rfc-8-engine.md#10.%20Local%20space)) | only local copies of content already remote-durable ([RFC 8 §10.4](rfc-8-engine.md#10.4%20Nothing%20but%20durability%20makes%20an%20extent%20unevictable)) |
 | **Metadata records** | removals, releases and snapshot deletion ([RFC 6 §6](rfc-6-block-metadata.md#6.%20Reference%20counting)) | when a file is truncated or released or a snapshot deleted, in batches of at most K refs; the batch that leaves a block unreferenced also retires it ([§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object)) | refs and counts; never an object |
 | **Remote objects** | this RFC | once a block is retired, its trash delay has passed, and a check of the reverse ref index finds no ref to any chunk it still holds | the object |
 
@@ -404,13 +405,15 @@ evaluated on its own, and one block's refusal does not fail the others.
 
 1. **Retire** (live → retired). In the transaction that leaves `live` at zero
    ([§2.2](#2.2%20Retirement%20is%20decided%20where%20the%20count%20reaches%20zero)): set the state to `retired` and `not_before` to store time plus the
-   trash retention, or to store time if **no chunk record names the block**
-   ([§3.7](#3.7%20Trash)); delete its `BC` key; write its `BR` key. Chunk records are not
+   trash retention, or to store time if **no chunk record names the block** and
+   the transaction is not a relocation that emptied it ([§3.7](#3.7%20Trash)); delete its `BC` key; write its `BR` key. Chunk records are not
    touched: each still names the block, and a chunk is retired because the block
    its record names is.
 2. **Resurrect** (retired → live). Any transaction that takes the refcount of a
-   chunk whose record names a `retired` block from zero to nonzero also sets that
-   block's `live` to one, its state to `live`, clears `not_before`, deletes its
+   chunk whose record names a `retired` block from zero to nonzero also raises
+   that block's `live` by one for each chunk record naming it whose count leaves
+   zero in the transaction — a clone batch or an audit correction can raise
+   several at once — sets its state to `live`, clears `not_before`, deletes its
    `BR` key, and writes its `BC` key ([§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block)).
 3. **Mark deleted** (retired → deleted). The deleter reads the `BR` prefix in
    `not_before` order up to store time and, per batch, in one transaction, moves
@@ -434,7 +437,7 @@ leaves an object that a `retired` or `deleted` record still names, which the
 deleter resumes. Deleting first means a crash, or a failed metadata write, leaves
 records that name an object that no longer exists. Every read of those chunks then
 fails, and every adoption of them succeeds, so new files acquire refs to content
-that is gone. That is **Lost** for content that was durable.
+that is gone. That is **Lost** for content that was remote-durable.
 
 `deleted` is final. Resurrection acts only on `retired`, and step 3 is
 conditional on `retired`; both write the block record, so at most one commits. A
@@ -479,16 +482,19 @@ committed again ([§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20unde
 
 ### 3.3 Adoption resurrects a retired block
 
-> [!note] Deferred with dedup
-> Dedup is off in the first release. Resurrection exists to make adoption by an
-> offload commit — a dedup hit — cheap and safe, so it is deferred with dedup and
-> this section stays as the design for re-adding it. Without the dedup oracle no
-> offload commit adopts. A clone adopts only from a counted snapshot, whose refs
-> hold its chunks, so it never meets a `retired` block ([RFC 6 §7.4](rfc-6-block-metadata.md#7.4%20Restore)). Whether a
-> restore from a catalog backup can meet one is open ([§12](#12.%20Open%20questions)); if it can,
-> resurrection stays for that path only. Resurrection by a count correction —
-> the audit's raise or the deleter's refused verification ([§3.5](#3.5%20The%20deleter%20verifies%20before%20it%20deletes), [§6.2](#6.2%20Corrections)) — is
-> not deferred: it repairs a count, not an adoption, and G4 holds as written.
+> [!note] Only the offload path is deferred
+> Dedup is off in the first release, so no offload commit adopts a chunk it did
+> not carry ([RFC 6 §7.2](rfc-6-block-metadata.md#7.2%20Adoption%20is%20conditional%20on%20existence)); that one adoption path, and the cheap re-save it
+> buys, return with dedup. **Everything else in this section is normative now.**
+> A clone, a copying restore and a re-home's switch adopt chunks from refs or
+> exported records that already exist, and each can meet a `retired` block: a
+> clone batch after a removal on its source dropped the last ref, a re-home after
+> the source namespace dropped its own, a restore of a copy taken before a
+> release ([RFC 6 §7.2](rfc-6-block-metadata.md#7.2%20Adoption%20is%20conditional%20on%20existence), [RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)). Each resurrects the block, or fails
+> where it is `deleted`, by the table below; an implementation that drops
+> resurrection loses that content when the deleter reaches the block. Resurrection
+> by a count correction — the audit's raise or the deleter's refused
+> verification ([§3.5](#3.5%20The%20deleter%20verifies%20before%20it%20deletes), [§6.2](#6.2%20Corrections)) — is normative too.
 
 Adoption is an offload commit, a clone or a restore referencing a chunk it did
 not carry ([RFC 6 §7.2](rfc-6-block-metadata.md#7.2%20Adoption%20is%20conditional%20on%20existence)). It reads the chunk record and the block the record
@@ -498,18 +504,18 @@ names, and acts on that block's state:
 | --- | --- | --- |
 | `live` | refcount +1; `live` +1 if the refcount left zero | one record each |
 | `retired` | refcount 0→1; the block is resurrected: `live` 0→1, state `live`, `BR` key deleted | one record each, no upload |
-| `deleted` | the adopting refs are refused and re-offered carrying the chunk ([RFC 8 §6.5](rfc-8-engine.md#6.5%20The%20dedup%20oracle)) | one upload |
+| `deleted` | the adopting refs are refused: an offload re-offers them carrying the chunk ([RFC 8 §6.5](rfc-8-engine.md#6.5%20The%20dedup%20oracle)); a clone, restore or re-home fails its batch and is undone | one upload, or a failed operation |
 
 A commit that **carries** a chunk whose record names a `retired` or `deleted`
 block does not resurrect it: it repoints the chunk record to itself, as the
 first home of fresh bytes. The old block stays retired, and its prune skips the
 record because it no longer names it.
 
-Resurrection is what makes content that dies and comes back within the trash —
-an atomic save that writes a temporary file and renames it over the old one, a
-rewrite in place, a copy made just after a delete — cost a record write instead
-of an upload. Without it, every such write would upload again while the old
-copy sat in the trash.
+Once dedup returns, resurrection is also what makes content that dies and comes
+back within the trash — an atomic save that writes a temporary file and renames
+it over the old one, a rewrite in place, a copy made just after a delete — cost
+a record write instead of an upload. Until then such a write carries its bytes,
+and its commit repoints the chunk record to its own block.
 
 **The race with the deleter is closed by transactions, not by time.** An
 adoption and the deleter's transition both write the block record, so the store
@@ -532,18 +538,16 @@ In the other order *D* commits first: *B* is `deleted`. *W*'s transaction
 conflicts, retries, reads `B‖B` = `deleted`, and refuses its adopting ref to *h*.
 *W*'s pass re-offers *h* carrying its bytes, which the journal still holds: the
 extent was offered because it is **Dirty** ([RFC 0 §5.2](rfc-0-data-lifecycle.md#5.2%20Offload)), and nothing reports it
-durable until a commit succeeds ([RFC 6 §4.3](rfc-6-block-metadata.md#4.3%20The%20commit%20is%20the%20report%27s%20return%20edge)). Losing the race costs one upload,
+remote-durable until a commit succeeds ([RFC 6 §4.3](rfc-6-block-metadata.md#4.3%20The%20commit%20is%20the%20report%27s%20return%20edge)). Losing the race costs one upload,
 never a client-visible error.
 
 ### 3.4 A retired key is not re-created underneath its delete
 
-> [!note] Deferred with dedup
+> [!note] Normative in the first release
 > The danger below — content coming back to a name GC has retired — is reached
-> through adoption ([§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block)), so the guarantee is deferred with dedup and stays
-> as the design for re-adding it, with the same open exception for restore from
-> a catalog backup. The put-intent rules are not deferred: they also order a put
-> that lands late against its own abandonment (the examples below), which
-> happens with dedup off.
+> through adoption ([§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block)), which a clone, a restore and a re-home perform now,
+> and through a put that lands late against its own abandonment (the examples
+> below). Both happen with dedup off.
 
 The danger this section rules out: GC deletes object *K*, and at the same moment,
 or later, something puts a new object under the same name *K* and commits a block
@@ -572,7 +576,16 @@ Nothing can put or commit that name again.
 **An intent is abandoned by reading its domain.** An intent is superseded when its
 domain's durable epoch — the shard record's for a shard ([RFC 11 §2](rfc-11-ownership.md#2.%20Shards)), the lease
 partition's for GC ([§7.3](#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)) — is greater than the intent's, or when the domain no longer
-exists. Abandonment is one transaction that guards the domain's epoch record,
+exists. Supersession by a shard's epoch is a **(cluster)** rule ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)): on a
+single node a restart need not raise any shard's epoch, and an intent waiting for
+one leaks its object for good. There the node **MUST** abandon every intent
+recorded under its own shards at every start, before its first offload
+([RFC 6 §7.6](rfc-6-block-metadata.md#7.6%20Put%20intents)): no writer of the earlier process survives the restart, so none
+of those intents can still be committed. A GC partition's intents are superseded
+on one node as in a cluster, because every acquisition of a partition raises its
+epoch, a restart included ([§7.3](#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)).
+
+Abandonment is one transaction that guards the domain's epoch record,
 reads and deletes the intent key, and writes the name's block record in state
 `retired`, with an empty chunk list and `not_before` = store time + the longest
 put deadline a writer may use ([RFC 8 §6.3](rfc-8-engine.md#6.3%20The%20offload%20pipeline), O1) + the clock bound ([§3.7](#3.7%20Trash)).
@@ -580,7 +593,7 @@ A live writer that gives up an attempt abandons that intent itself, at once,
 through the same transaction; the offload pipeline does so ([RFC 8 §6.3](rfc-8-engine.md#6.3%20The%20offload%20pipeline), O4),
 and so does the compactor ([§4.2](#4.2%20Read%20verified%2C%20mint%2C%20put%2C%20then%20move)).
 
-**A commit racing an abandonment.** *W* puts *K* under shard *U*, epoch 7, and
+**A commit racing an abandonment (cluster).** *W* puts *K* under shard *U*, epoch 7, and
 stalls before its commit; the primary of *U* moves and the epoch becomes 8.
 
 | t | *W* (epoch 7) | GC | Result |
@@ -698,17 +711,137 @@ this table requires an operator to clear it.
 
 Retirement sets `not_before` = store time + `gc.trash_retention` (default
 **48 h**, [RFC 13](rfc-13-configuration.md)), and the deleter leaves the object until then. The trash serves
-two purposes:
+three purposes, none of which needs dedup:
 
-- **resurrection** ([§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block)): content that comes back within the retention costs a
-  record write, not an upload;
-- **a second net under the verification.** A defect that the reverse index
-  cannot see — one that dropped a ref and its reverse key together while
-  something still needed them — is found by the audit or by a failed read within
-  the retention, and repaired by raising the count ([§6.3](#6.3%20A%20ref%20with%20no%20live%20chunk%20record%20is%20found%20by%20one%20read)).
+- **resurrection by a racing adoption** ([§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block)): a clone, restore or re-home
+  that references a chunk shortly after its last ref was dropped finds the
+  block `retired`, not `deleted`, and completes instead of failing;
+- **repair of a low count**: a count that drifted low while its refs and
+  reverse keys stayed is raised by the audit or a targeted recount, and the
+  block comes back with one record write ([§6.2](#6.2%20Corrections)). The deleter's verification
+  refuses such a block anyway ([§3.5](#3.5%20The%20deleter%20verifies%20before%20it%20deletes)); the trash only makes the repair
+  happen before the deleter is the one to find it;
+- **recovery of the metadata store to an earlier state.** A metadata store
+  restored from its own backup or a replica up to one retention old still finds
+  every object that state names: a block it records as `live` was at most
+  retired since, and a retired block's object outlives the retention. Without
+  the trash, such a recovery names objects already deleted, which is **Lost**
+  for every file that read them.
+
+The trash does **not** catch a defect that dropped a ref together with its
+reverse key while something still needed it: the count and the index then agree,
+no check sees a mismatch, and nothing can recreate the ref. That defect is
+caught only by the rules that keep the ref ([RFC 6 §6](rfc-6-block-metadata.md#6.%20Reference%20counting)) and by recovering
+metadata within the retention, as above.
 
 It is not a safety input — the refs and the conditional transactions are
-([§2.1](#2.1%20References%20are%20the%20only%20authority)) — and a deployment that sets it to zero loses only these two.
+([§2.1](#2.1%20References%20are%20the%20only%20authority)) — and a deployment that sets it to zero loses only these three.
+
+> decision: the trash stays on by default at 48 h with dedup off. Its cost is
+> churn × retention of remote space, about 2 % at 1 % daily churn; what it buys
+> is that a metadata recovery up to two days old, and a clone racing a release,
+> lose nothing. Overturn it when the metadata store keeps point-in-time recovery
+> of its own that GC can read — then deletes can wait on that instead — or when
+> measured churn makes the space cost exceed what an operator would pay for that
+> recovery window.
+
+**Store time.** `not_before` is stamped from store time and compared with store
+time inside the deleter's transaction ([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)), so no node's clock can
+shorten the trash. The deleter still computes durations locally — the freshness
+of the last `Recheck`, the put-bound wait — so it **MUST** refuse to run while
+its local clock differs from store time by more than a fixed **clock bound**
+(proposed: 1 min).
+
+**Restoring is recounting.** There is no restore that rebuilds a block from its
+header. A `retired` block comes back to `live` exactly when some chunk it still
+owns gains a count: an adoption, the audit's correction of a low count
+([§6.2](#6.2%20Corrections)), a refused verification ([§3.5](#3.5%20The%20deleter%20verifies%20before%20it%20deletes)), or an operator's targeted recount of the
+block's hashes. A block whose chunks no ref names stays retired, because there is
+nothing to restore it for. Every path is one metadata transaction, needs no remote
+read and no key material, and conflicts with the deleter on the block record.
+
+**What skips the trash.** A block that no chunk record names at retirement, and
+that no relocation emptied, has nothing to resurrect and nothing a recovered
+metadata store could name, so it is retired with `not_before` = store time:
+
+- a born-dead block whose chunks were all adopted from earlier blocks;
+- an object found only by listing ([§5.4](#5.4%20Age%20is%20not%20the%20guard)).
+
+An abandoned intent's object waits only the put bound ([§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete)). Without this rule a
+dedup storm of *n* writers of the same content would hold *n* copies for the
+whole retention. A **compaction source** does not skip the trash, although the
+move left no chunk record naming it: a metadata store recovered to a state from
+before the move still names the source for every moved chunk. So a compaction
+holds its sources' space for one retention, reported as trash bytes
+([§10](#10.%20Observability)), not counted against the space-amplification target ([§4.4](#4.4%20When%20to%20compact%20is%20policy)).
+
+**What it costs.** One point read of `C‖h` per hash the block carries, and one
+seek of a short prefix for each chunk the block still owns: for a 4 MiB block of
+256 KiB chunks, sixteen of each, per delete. No remote read and no key material.
+
+### 3.6 Failures resolve on their own
+
+| Condition | Behaviour |
+| --- | --- |
+| Delete reports the object absent | Success. A delete is idempotent ([RFC 4 §4.5](rfc-4-remote-tier.md#4.5%20Delete%20is%20batched%20and%20idempotent)), and a deleter resuming after a crash will see this. |
+| Some names in a batch fail, or are missing from the reply | Each name's result is its own: the successes are recorded, the failures stay `deleted` and are retried by the scheduler with backoff. |
+| Delete refused or throttled | The records stay `deleted`; the scheduler backs off, with jitter, and lowers the rate for that store. |
+| Remote tier unavailable | Retirements continue, `deleted` and due `retired` records accumulate, and nothing is lost. A backlog that does not drain **MUST** be reported as a health condition, not only logged ([RFC 0 §10.2](rfc-0-data-lifecycle.md#10.2%20No%20state%20requires%20intervention%20to%20leave)). |
+| `Recheck` failing or stale, or the claim not naming this installation | No delete is issued and nothing is pruned; the records wait ([§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)). |
+| Metadata unwritable | Nothing retires or moves to `deleted`, so nothing is deleted. |
+| A conflict on a transition | Retried under I8: bounded by a deadline, not an attempt count, with randomised backoff ([RFC 0 §9.2](rfc-0-data-lifecycle.md#9.2%20Conflicts%20and%20their%20retries)). The retry re-reads the record; it **MUST NOT** re-propose a decision taken on the pre-conflict state. |
+| The local clock differs from store time by more than the clock bound | The deleter stops and raises a health condition until it is back within the bound ([§3.7](#3.7%20Trash)). |
+| Crash anywhere | Every step is either inside a transaction or recorded by a block state and its index key, so a restart resumes and does not re-decide. |
+
+**Absent is success only because the record and the delete name one store.** A
+block record lives under its namespace, a namespace has exactly one remote store
+([RFC 13 §3](rfc-13-configuration.md#3.%20Scopes)), and the deleter deletes only through that store. So an object reported
+absent is absent from the only place the record could name. A deployment where
+one metadata store serves several remote stores **MUST** give each its own
+namespace, and a GC pass **MUST** act only on its own namespace's records: a pass
+that deletes a record's object through another store is told "absent", drops the
+record, and leaks the real object for good.
+
+A failure in one block **MUST NOT** stop the deleter for others. No failure in
+this table requires an operator to clear it.
+
+### 3.7 Trash
+
+Retirement sets `not_before` = store time + `gc.trash_retention` (default
+**48 h**, [RFC 13](rfc-13-configuration.md)), and the deleter leaves the object until then. The trash serves
+three purposes, none of which needs dedup:
+
+- **resurrection by a racing adoption** ([§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block)): a clone, restore or re-home
+  that references a chunk shortly after its last ref was dropped finds the
+  block `retired`, not `deleted`, and completes instead of failing;
+- **repair of a low count**: a count that drifted low while its refs and
+  reverse keys stayed is raised by the audit or a targeted recount, and the
+  block comes back with one record write ([§6.2](#6.2%20Corrections)). The deleter's verification
+  refuses such a block anyway ([§3.5](#3.5%20The%20deleter%20verifies%20before%20it%20deletes)); the trash only makes the repair
+  happen before the deleter is the one to find it;
+- **recovery of the metadata store to an earlier state.** A metadata store
+  restored from its own backup or a replica up to one retention old still finds
+  every object that state names: a block it records as `live` was at most
+  retired since, and a retired block's object outlives the retention. Without
+  the trash, such a recovery names objects already deleted, which is **Lost**
+  for every file that read them.
+
+The trash does **not** catch a defect that dropped a ref together with its
+reverse key while something still needed it: the count and the index then agree,
+no check sees a mismatch, and nothing can recreate the ref. That defect is
+caught only by the rules that keep the ref ([RFC 6 §6](rfc-6-block-metadata.md#6.%20Reference%20counting)) and by recovering
+metadata within the retention, as above.
+
+It is not a safety input — the refs and the conditional transactions are
+([§2.1](#2.1%20References%20are%20the%20only%20authority)) — and a deployment that sets it to zero loses only these three.
+
+> decision: the trash stays on by default at 48 h with dedup off. Its cost is
+> churn × retention of remote space, about 2 % at 1 % daily churn; what it buys
+> is that a metadata recovery up to two days old, and a clone racing a release,
+> lose nothing. Overturn it when the metadata store keeps point-in-time recovery
+> of its own that GC can read — then deletes can wait on that instead — or when
+> measured churn makes the space cost exceed what an operator would pay for that
+> recovery window.
 
 **Store time.** `not_before` is stamped from store time and compared with store
 time inside the deleter's transaction ([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)), so no node's clock can
@@ -799,14 +932,14 @@ two, two and three live chunks: about 1.7 MiB live of 12 MiB stored.
 5. **Put** *T* in one put, encoded under the store's current transform chain
    ([RFC 5 §5.2](rfc-5-transforms.md#5.2%20Relocation%20re-encodes)). A retry within this attempt reuses the name and the plan. A
    compactor that gives the attempt up abandons its intent at once ([§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete)).
-6. **Move**, after the put is reported durable, in one transaction
+6. **Move**, after the put is reported remote-durable, in one transaction
    ([RFC 6 §7.3](rfc-6-block-metadata.md#7.3%20Relocation)) that consumes *T*'s intent and fails if it is absent, points each
    moved chunk record that still names a source at *T*, creates *T*'s block
    record with its carried list, and moves `live` from each source to *T* by the
    number of its moved chunk records whose refcount is nonzero, counted inside
    the transaction. Here `live`(T) = 7 and *B1*–*B3* reach 0, so the same
-   transaction retires them ([§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object)): into the trash if a dead chunk record still
-   names them, straight to due if none does.
+   transaction retires them into the trash ([§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object), [§3.7](#3.7%20Trash)), where a
+   metadata store recovered to a state from before the move still finds them.
 7. **Delete.** The deleter takes *B1*–*B3* once due. Remote bytes fall from
    12 MiB to 1.7 MiB.
 
@@ -1043,7 +1176,8 @@ Each walk checks:
 | refcount against the `CR` keys of the hash | the merge | low: a count defect, corrected at once; high: a leak, lowered by [§6.2](#6.2%20Corrections)'s path |
 | chunk → block: the record names a block that is missing, or `deleted` while `CR` keys remain | one point read per chunk | **Lost** ([§6.3](#6.3%20A%20ref%20with%20no%20live%20chunk%20record%20is%20found%20by%20one%20read)) |
 | `CR` keys for a hash with no chunk record | the merge | **Lost** ([§6.3](#6.3%20A%20ref%20with%20no%20live%20chunk%20record%20is%20found%20by%20one%20read)) |
-| a history `CR` key visible to no live cut of its share | the share's `LiveCut` keys, read once per share per walk | an orphan history ref: a leak, reported |
+| a history `CR` key visible to no live cut of its share | the share's `LiveCut` keys, read once per share per walk | an orphan history ref: dropped, with its key, in a transaction that reads the share's `LiveCut` records in its `(born, died]` with conflict tracking as a snapshot deletion's batch does ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)), decrementing its chunk; reported |
+| a live ref of a file with no `File` record and no release removal not done | the forward walk, one point read of the file's record per file | an orphan live ref: a release removal is recorded for the file, whose phase 2 drops it ([RFC 6 §6.4](rfc-6-block-metadata.md#6.4%20Delete)); reported |
 | each block's `live` and `dead` against its chunk records | the block walk | corrected like a count |
 | index keys against the block records | the block walk | an index mismatch, repaired in place ([§7.4](#7.4%20The%20index%20can%20be%20dropped%20and%20rebuilt)) |
 | a ref or history ref with no `CR` key | the forward walk, one point read per ref | a **reverse-index defect**: the key is written in a transaction that re-reads the ref, the chunk's count is recounted, a block retired or `deleted` meanwhile is resurrected or reported **Lost**, and the defect is reported at `Error` |
@@ -1057,13 +1191,21 @@ Each walk checks:
   left alone. A raise that takes a refcount off zero resurrects the block its
   record names if that block is `retired` ([§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object)). Raising a count that was right
   only leaks.
-- **Lowering has one path.** A count is lowered only when two consecutive walks
-  computed the same lower value and the correcting transaction finds the chunk
-  record's `stamp` unchanged since before the second walk counted it
-  ([RFC 6 §2.2](rfc-6-block-metadata.md#2.2%20Chunk)). The first walk's value is recorded durably in
-  `NS‖ns‖gc‖suspect‖hash` = {computed, stamp}; the second walk reads it, and
-  lowers or deletes it. No other transaction lowers a count on the audit's
-  behalf.
+- **Lowering has one path, and it never trusts the reverse index alone.** A
+  count is lowered only when two consecutive walks computed the same lower
+  value, the correcting transaction finds the chunk record's `stamp` unchanged
+  since before the second walk counted it ([RFC 6 §2.2](rfc-6-block-metadata.md#2.2%20Chunk)), **and a complete
+  forward walk of every share in the namespace ran between the two**: it
+  started after the first walk recorded its value and finished before the second
+  counted. Two walks of the index agree with each other when a ref was written
+  without its key, and lowering to their count would retire a block that ref
+  still reads; the forward walk is the one check that reads refs, and it writes
+  any missing key ([§6.1](#6.1%20Coverage)), so the second walk then counts it. The first
+  walk's value is recorded durably in `NS‖ns‖gc‖suspect‖hash` = {computed,
+  stamp, forward pass}, the forward pass being the number of the last forward
+  walk completed when it was recorded; the second walk reads it, and lowers only
+  if `NS‖ns‖gc‖forward` shows a later pass completed, or deletes it. No other
+  transaction lowers a count on the audit's behalf.
 - **Every correcting transaction maintains the dependents.** A refcount change
   that crosses zero changes the block's `live`, `dead` and `dead_at`, its
   compaction key, and its state — retiring it if `live` reaches zero, resurrecting
@@ -1180,6 +1322,7 @@ key column is that table's, repeated so a reader of this one need not switch.
 | `Recheck` result ([§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)) | `NS‖ns‖gc‖recheck` | authoritative | one per namespace | overwritten by each `Recheck` |
 | hold ([§6.4](#6.4%20A%20store-wide%20trip%20holds%20the%20deleter)) | `NS‖ns‖gc‖hold` | authoritative | one per namespace, listing its reasons | cleared when its last reason clears |
 | lowering suspect ([§6.2](#6.2%20Corrections)) | `NS‖ns‖gc‖suspect‖hash` | authoritative | one per hash found high by the last walk | the next walk over its range, which lowers or deletes it; a walk runs every period, so its removal is guaranteed |
+| forward pass ([§6.2](#6.2%20Corrections)) | `NS‖ns‖gc‖forward` | authoritative | one per namespace: the number of the last forward walk completed over every share, and when | overwritten as each pass completes |
 | walk cursor | `NS‖ns‖gc‖cursor‖walk‖partition` | derived | one per kind of walk (audit, block walk, index rebuild) per partition: the last key done | overwritten as the walk advances; deleted when it completes |
 
 A record not in this table **MUST NOT** be added without a row. Where a pass
@@ -1265,17 +1408,38 @@ it and records `NS‖ns‖gc‖recheck` = {started, finished, passed, drift}.
   installation as `owned` and the last `Recheck` passed and finished within two
   periods. On drift the syncer refuses puts and deletes to that store until a
   later `Recheck` passes ([RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)).
-- **The GC process fences itself.** It **MUST NOT** issue a delete more than two
-  `Recheck` periods, by its own clock, after its last read of the claim naming this
-  installation `owned`, whatever batch it is in; a process paused or partitioned
-  past that bound stops before its next delete rather than acting on a claim it
-  can no longer see ([RFC 12 §4.1](rfc-12-snapshots.md#4.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)).
 - **A paused namespace gets no relocation, delete or collection.** While the
   namespace's GC pause record exists — written by a move between installations
   ([RFC 12 §4.2](rfc-12-snapshots.md#4.2%20The%20move%2C%20step%20by%20step)) and kept across a restart — GC **MUST** read it before every
-  pass and before every batch, and start neither. Each relocation commit **MUST**
-  read it with conflict tracking, so writing it aborts every relocation not yet
-  committed. Retirement continues while paused: it is decided where a count
+  pass and before every batch, and start neither. Each relocation commit, each
+  move to `deleted` ([§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object) step 3) and each listing retirement ([§5.4](#5.4%20Age%20is%20not%20the%20guard))
+  **MUST** read it with conflict tracking, so writing it aborts every one of them
+  not yet committed.
+- **That pause, not a clock, is what makes a cooperative move safe.** After the
+  pause commits, the old installation can make no new `deleted` record and no
+  new relocation. A delete it issues later — from a paused or slow process,
+  however late — is for a name already `deleted` before the pause: no ref of the
+  old installation named it then, the export carries it as `deleted`, and the new
+  installation can neither adopt it ([RFC 6 §7.2](rfc-6-block-metadata.md#7.2%20Adoption%20is%20conditional%20on%20existence)) nor mint it again
+  ([§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete)). Objects the new installation puts carry names the old one never
+  recorded, and the old one's listing backstop, gated by the pause, retires
+  none of them. No step of this depends on how long a process was paused.
+- **The GC process also fences itself (backstop).** It **MUST NOT** issue a
+  delete more than two `Recheck` periods, by its own clock, after its last read
+  of the claim naming this installation `owned`, whatever batch it is in; a
+  process paused or partitioned past that bound stops before its next delete
+  rather than acting on a claim it can no longer see
+  ([RFC 12 §4.1](rfc-12-snapshots.md#4.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)). It is the only guard where no pause was written: a claim
+  taken over from an installation whose metadata store could not be reached.
+
+> decision: across installations the clock bound is kept only for a takeover
+> that could not write the pause record. A cooperative move is made safe by the
+> pause record, read with conflict tracking by every transaction that leads to a
+> delete; a takeover has no such record to read, and the remote contract offers
+> no delete conditioned on another object, so the claim check and its clock
+> bound are all that remain. Overturn it if the remote store gains a delete
+> conditional on the claim object's version, which would let every delete carry
+> the claim it was decided under. Retirement continues while paused: it is decided where a count
   reaches zero ([§2.2](#2.2%20Retirement%20is%20decided%20where%20the%20count%20reaches%20zero)), and an adoption undoes it; only its delete waits.
 - **Pruning waits for a later `Recheck`.** A `deleted` record is pruned only
   once a `Recheck` that started after its delete succeeded has passed
@@ -1412,7 +1576,7 @@ are constants of the implementation, not settings.
 | G1 | A remote object is deleted only once its block record is `deleted`, reached from `retired` after `not_before` by a transaction that found, for every chunk whose record names the block, no reverse ref key. |
 | G2 | Nothing but refs keeps content alive or permits a delete: no hold list, no state in process memory, no lease. Elapsed time only postpones a permitted delete. |
 | G3 | An object is deleted only when its record is `deleted` and no intent names it, which is final: every name is minted once, every put follows a durable intent, and a commit creates a block record only by consuming that intent. |
-| G4 | A block is `retired` exactly when its `live` is zero, from the transaction that took it there; it is resurrected by any transaction that raises it, and only while `retired`. |
+| G4 | A block is `retired` exactly when its `live` is zero, from the transaction that took it there; it is resurrected by any transaction that raises it, and only while `retired`, with `live` raised by every chunk record whose count left zero. Resurrection by a clone, a restore, a re-home or a count correction binds the first release; only the offload commit's adoption waits for dedup. |
 | G5 | The compactor deletes nothing. It moves chunk records and counts; retirement follows from the move, and only the deleter deletes. |
 | G6 | A block GC writes is named like any other: minted once from a fresh nonce, with an intent carrying its partition and epoch recorded before the put. |
 | G7 | Collection takes abandoned intents first; its listing backstop deletes only objects with neither intent nor record, only in a namespace whose claim names this installation and whose every store was enumerated completely; correctness never depends on either. |
@@ -1421,8 +1585,10 @@ are constants of the implementation, not settings.
 | G10 | Deferred work is bounded per conflict domain: one sub-transaction in flight per file, per (namespace, source, prefix), within a per-node transaction-time budget. |
 | G11 | Every time GC stores or compares is store time; the deleter does not run while its clock is outside the clock bound. |
 | G12 | Derived index keys are functions of block records, and repairing or rebuilding them changes no block record and deletes nothing early. The reverse index is authoritative, and is rebuilt only under the hold. |
-| G13 | The audit covers every chunk and block record within its period; it corrects by the maximum, lowers only by two agreeing walks with an unchanged stamp, and reports a ref with no live chunk record as Lost. |
+| G13 | The audit covers every chunk and block record within its period; it corrects by the maximum, lowers only by two agreeing walks with an unchanged stamp and a complete forward walk between them, reports a ref with no live chunk record as Lost, and drops orphan refs through the paths that drop any ref. |
 | G14 | No delete batch is issued, and no `deleted` record is pruned, unless the claim names this installation and a `Recheck` passed recently enough; a prune waits for a `Recheck` that began after its delete. |
+| G15 | On a single node, every start abandons the put intents of the node's own shards before its first offload. |
+| G16 | No move to `deleted`, relocation or listing retirement commits after a namespace's GC pause record; a cooperative move between installations depends on no clock. A compaction source waits the full trash retention. |
 
 ## 10. Observability
 
@@ -1467,18 +1633,24 @@ the implementation, not by timing.
 
 | Requirement | Check |
 | --- | --- |
-| [§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block) resurrection against the deleter (deferred with dedup) | Interleave an adopting commit and `MarkDeleted` on one retired block at every step boundary, in both orders. Assert either the block is `live` with the new ref and no delete is issued, or the block is `deleted`, the adopting ref is refused, and the re-offer uploads the chunk. Assert no ref ever names a chunk whose object is gone. |
-| [§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block) serialisation (deferred with dedup) | Make the adoption's and the deleter's reads of the block record untracked, with neither writing it. Assert the check fails, so the rig can see the race it guards. |
+| [§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block) resurrection against the deleter | Interleave an adopting clone batch, restore batch and re-home switch — and, once dedup returns, an adopting offload commit — with `MarkDeleted` on one retired block, at every step boundary, in both orders. Assert either the block is `live` with the new ref and no delete is issued, or the block is `deleted`, the adopting ref is refused, and the clone or restore fails and is undone (an offload re-offer uploads the chunk). Assert no ref ever names a chunk whose object is gone. |
+| [§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block) serialisation | Make the adoption's and the deleter's reads of the block record untracked, with neither writing it. Assert the check fails, so the rig can see the race it guards. |
+| [§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block) resurrection counts every chunk | Release a file so its block retires, then clone a file naming two of the block's chunks in one batch. Assert the block's `live` is 2 and that dropping one of the two refs leaves it `live`. |
 | [§3.5](#3.5%20The%20deleter%20verifies%20before%20it%20deletes) verification | Decrement a refcount without dropping its ref, let the block retire, run the deleter. Assert it refuses, resurrects the block, raises the count and counts the refusal. Commit a ref to a chunk of a due block while `MarkDeleted` is in flight; assert one of them retries. |
 | [§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete) intents | For each writer (an offload, a compaction) and each abandoner (epoch moved on, domain deleted, the writer itself), run the intent write, the put, the abandonment, the delete and the commit in every order. Assert no `live` block record ever names a deleted object and a commit whose intent was abandoned fails. |
 | [§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete) late put | Abandon an intent while its put is in flight and land the put before the put-bound wait ends. Assert the object is deleted with no listing. Land it after the delete; assert only the backstop finds it. |
 | [§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete) epoch domain | Run offload intents under a shard at epoch 41 while the GC partition is at epoch 50. Assert no offload intent is abandoned. Restart a compactor on the same partition; assert its earlier intents are abandoned. |
+| [§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete) single-node restart | On one node, record offload intents, kill the process mid-put and restart it with no shard epoch raised. Assert every intent of the node's shards is abandoned before the first offload and each object is deleted after the put bound. A design that waits for the shard's epoch leaks them. |
 | [§2.1](#2.1%20References%20are%20the%20only%20authority) two holders | Run two deleters and two compactors on one partition from two processes that both believe they hold the lease, with adopting offloads in a third. Assert no referenced block is deleted. |
 | [§2.1](#2.1%20References%20are%20the%20only%20authority) time never permits | Set the retention to zero and stall an adopting commit past it. Assert the adoption resurrects or is refused; the clock changes only when the object goes. Skew a deleter's clock past the bound; assert it stops. |
 | [§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period) drift | Turn versioning on between two deletes. Assert the next batch waits for `Recheck`, the noncurrent versions of the deleted names are deleted by version ID, nothing is pruned before, and puts and deletes resume after, with no operator action. Change the claim to another installation; assert no further delete. |
+| [§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period) move without a clock | Hold a deleter's batch between its read of the claim and its `MarkDeleted`; write the GC pause record; release the batch with its clock frozen so the self-fence never fires. Assert `MarkDeleted` aborts on the pause, no delete is issued for any name not `deleted` before the pause, and a listing pass after the pause retires nothing. |
+| [§3.7](#3.7%20Trash) metadata recovery within the trash | Snapshot the metadata store; then release files, compact blocks and run the deleter for less than one retention; restore the metadata store from the snapshot. Assert every ref resolves and reads, including those whose blocks were compaction sources. Let compaction sources skip the trash; assert the check fails. |
 | [§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object) reply | Return a multi-delete reply that omits one requested name. Assert that name stays `deleted` and is retried. |
 | [§5.3](#5.3%20It%20runs%20only%20where%20the%20namespace%20is%20proven) namespace | Point two stores at one bucket and prefix, run collection from one. Assert it refuses. |
 | [§6.2](#6.2%20Corrections) raise never lowers | Let a count rise between the walk's read and its correction. Assert the correction leaves it. Change a ref under the first of two lowering walks; assert no lowering. |
+| [§6.2](#6.2%20Corrections) lowering needs the forward walk | Write a ref without its reverse key and raise its chunk's count by one. Run two index walks with no forward walk between them; assert no lowering. Let a forward walk complete; assert it writes the key, and the second walk then finds the count right and lowers nothing. A lowering on two index walks alone retires a block the ref still reads. |
+| [§6.1](#6.1%20Coverage) orphan refs | Leave a history ref no live cut sees, and a live ref of a file with no `File` record and no removal. Run the audit. Assert the history ref is dropped and counted down, the live ref dropped by a release removal, and both reported. |
 
 ### 11.2 Group B — model-based, with crashes
 
@@ -1526,7 +1698,7 @@ The emulator of [RFC 4 §7.1](rfc-4-remote-tier.md#7.1%20Conformance%20suite) in
 | --- | --- |
 | [§2.2](#2.2%20Retirement%20is%20decided%20where%20the%20count%20reaches%20zero) no scan | Grow the store with no garbage and run every GC source. Assert records read per pass do not grow with the store. |
 | [§2.2](#2.2%20Retirement%20is%20decided%20where%20the%20count%20reaches%20zero) born dead | Through the real carver, not hand-built records: write content that repeats one chunk, write one file from two writers, release a file while its pass is in flight. Delete everything. Assert every block is deleted and remote bytes return to zero, and that fully adopted blocks skip the trash. |
-| [§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block) atomic save | Save a file by writing a temporary copy and renaming it over the original, 1,000 times. Assert uploads equal the changed chunks, not the file, and resurrections count the rest. |
+| [§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block) atomic save (once dedup returns) | Save a file by writing a temporary copy and renaming it over the original, 1,000 times. Assert uploads equal the changed chunks, not the file, and resurrections count the rest. |
 | [§5.2](#5.2%20Collection%20is%20housekeeping) intents collect crashes | Crash offloads and compactions after their puts, many times, with listing disabled. Assert every orphan is deleted from its abandoned intent. |
 | [§3.6](#3.6%20Failures%20resolve%20on%20their%20own) no intervention | Fail every delete until the backlog is reported, then restore the remote; trip the hold, then let a clean period pass. Assert both clear with no operator action. |
 | [§4.4](#4.4%20When%20to%20compact%20is%20policy) default | With default configuration, churn files until amplification passes the target. Assert it returns under the target with no configuration change, and small blocks are merged. |
@@ -1589,21 +1761,13 @@ where a row names the scale tier.
    is [RFC 2 §4.3](rfc-2-carver.md#4.3%20Key%20scope)'s to settle, and GC's scope follows from it.
 5. **Trash retention per namespace or per store** ([§3.7](#3.7%20Trash)). 48 h is proposed for
    every namespace; whether a namespace on a costly store wants less, traded
-   against resurrection and the second net, waits for measured resurrection rates.
+   against the metadata-recovery window it buys, waits for measured churn.
 6. **The partition count** ([§7.3](#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)). A fixed count per namespace is proposed; how many
    follows from the deleter and audit throughput per node at 10⁴ namespaces.
-7. **Does restore from a catalog backup need resurrection?** Resurrection
-   ([§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block)) and the retired-name guarantee ([§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete)) are deferred with dedup. A
-   recovery import ([RFC 12 §3.3](rfc-12-snapshots.md#3.3%20Restore)) rebuilds a lost metadata store and
-   recomputes every count from the imported refs, so it finds no `retired`
-   record to resurrect, and the backup's hold kept every block it names counted
-   until the store was lost ([RFC 12 §3.2](rfc-12-snapshots.md#3.2%20A%20backup%20holds%20its%20snapshot)). A restore into a store that still
-   exists adopts through [RFC 6 §7.4](rfc-6-block-metadata.md#7.4%20Restore), and its chunks are held by the
-   snapshot's refs. Neither path is shown to meet a `retired` block, but RFC 6
-   §7.4 still names resurrection for restore. The proposal on the table: if any
-   restore can reference a block retired after its backup was taken, resurrection
-   stays for that path only; otherwise it is removed from restore with dedup.
-
+7. **Restore and resurrection — settled.** A copying restore, a clone and a
+   re-home can each meet a `retired` block, so resurrection stays normative for
+   them in the first release ([§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block)); only the offload commit's adoption waits
+   for dedup.
 ---
 
 ## Appendix A — where the current code differs
@@ -1629,12 +1793,12 @@ amending the requirement.
 | D13 | No lock or lease is a safety input ([§7.3](#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)) | the run lock and the per-remote lock are process-local; multi-server operation is unsafe |
 | D14 | Declared, not asserted ([§8](#8.%20API%20surface)) | GC imports the metadata layer, takes the remote store's full interface, and finds its dependencies by type assertion |
 | D15 | One namespace, one store ([§3.6](#3.6%20Failures%20resolve%20on%20their%20own)) | durable markers and block records carry no remote, so shares on several remotes behind one metadata store see each other's records: a pass for the wrong remote deletes an absent object as success and drops the record, and the durability check answers for content another remote holds. An interim one-byte probe of the pass's own remote avoids the leak; the fix is namespace-scoped records |
-| D15 | I8 ([§3.6](#3.6%20Failures%20resolve%20on%20their%20own)) | the `live` retry is bounded by an attempt count, with jitter derived from the attempt number |
-| D16 | Every block at `live` zero retires ([§2.2](#2.2%20Retirement%20is%20decided%20where%20the%20count%20reaches%20zero)) | the carver can pack one hash into several blocks in flight; the chunk locator is written last-wins and sweep decrements only the block it names, so the other blocks keep a nonzero count with no locator. Only an operator-run reconcile finds them. Leak |
-| D17 | Reclamation is reported ([§10](#10.%20Observability)) | a hash held by the in-memory adoption guard is skipped silently; a pass reports nothing swept and no reason |
-| D18 | The audit merges counts with a reverse index ([§6](#6.%20Audit)) | no reverse index; the audit checks only that every ref has a chunk record |
-| D19 | Concurrency per conflict domain ([§7.1](#7.1%20GC%20bounds%20its%20own%20work)) | no bound; a pass runs until done |
-| D20 | Trash with resurrection ([§3.7](#3.7%20Trash)) | none; a retired object is deleted in the same pass, and a later write of the same content uploads again |
-| D21 | Verify before delete ([§3.5](#3.5%20The%20deleter%20verifies%20before%20it%20deletes)) | none; the count alone decides |
-| D22 | Space-amplification target and cost-benefit ranking ([§4.4](#4.4%20When%20to%20compact%20is%20policy)) | relocation is run by an operator, per block |
-| D23 | `Recheck` on its own period, gating deletes and prunes ([§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)) | bucket settings are checked only when the store opens |
+| D16 | I8 ([§3.6](#3.6%20Failures%20resolve%20on%20their%20own)) | the `live` retry is bounded by an attempt count, with jitter derived from the attempt number |
+| D17 | Every block at `live` zero retires ([§2.2](#2.2%20Retirement%20is%20decided%20where%20the%20count%20reaches%20zero)) | the carver can pack one hash into several blocks in flight; the chunk locator is written last-wins and sweep decrements only the block it names, so the other blocks keep a nonzero count with no locator. Only an operator-run reconcile finds them. Leak |
+| D18 | Reclamation is reported ([§10](#10.%20Observability)) | a hash held by the in-memory adoption guard is skipped silently; a pass reports nothing swept and no reason |
+| D19 | The audit merges counts with a reverse index ([§6](#6.%20Audit)) | no reverse index; the audit checks only that every ref has a chunk record |
+| D20 | Concurrency per conflict domain ([§7.1](#7.1%20GC%20bounds%20its%20own%20work)) | no bound; a pass runs until done |
+| D21 | Trash with resurrection ([§3.7](#3.7%20Trash)) | none; a retired object is deleted in the same pass, and a later write of the same content uploads again |
+| D22 | Verify before delete ([§3.5](#3.5%20The%20deleter%20verifies%20before%20it%20deletes)) | none; the count alone decides |
+| D23 | Space-amplification target and cost-benefit ranking ([§4.4](#4.4%20When%20to%20compact%20is%20policy)) | relocation is run by an operator, per block |
+| D24 | `Recheck` on its own period, gating deletes and prunes ([§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)) | bucket settings are checked only when the store opens |
