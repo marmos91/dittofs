@@ -23,6 +23,110 @@ This document specifies behaviour, not the current code. Where the code differs,
 
 ---
 
+## Start here
+
+*Explanatory. The rules are in §1 onward; where this section and a rule differ, the rule wins.*
+
+Before a chunk of file content leaves the machine for the remote object store,
+it may be compressed, encrypted, or both. A **transform** is one such step,
+applied to one chunk at a time; a store's **chain** is the transforms its
+operator turned on. This RFC specifies what any transform must guarantee, how a
+chain is configured and changed over time, and what encryption does and does not
+protect against.
+
+In outline: clients write over NFS (Network File System) or SMB (Server Message
+Block) into a local journal; in the background the bytes are cut into chunks of
+about 256 KiB, each named by the hash of its content, packed into blocks of
+about 4 MiB and uploaded to an S3 (Simple Storage Service) bucket
+([RFC 0](rfc-0-data-lifecycle.md)). Transforms run in the middle of that, per
+chunk, as the block is encoded ([RFC 4](rfc-4-remote-tier.md)).
+
+### The problem, in one example
+
+The `profiles` share stores its blocks in the bucket `dfs-data`, with a chain of
+compression (zstd) then encryption (AES-256-GCM-SIV, under a key belonging to
+the share's namespace in the bucket).
+
+1. **February.** alice-pc writes part of her mailbox into
+   `profiles/alice/ODFC_alice.vhdx`. One 256 KiB chunk of it, `X`, is hashed
+   first, over its plain bytes: that hash names `X` and never changes.
+   Compression shrinks it to 150 KiB; encryption seals that. The stored body
+   begins with a 6-byte **envelope** listing what was applied: compression,
+   then encryption. A chunk of an already-compressed photo in the same profile
+   would not shrink by 1/16, so compression declines it and its envelope lists
+   only encryption.
+2. **March.** The operator turns compression off for this store, because
+   compressed sizes can leak content on a share whose writers do not all trust
+   each other ([Appendix A](#Appendix%20A%20%E2%80%94%20compression)). This
+   governs new writes only.
+3. **April.** alice's laptop asks for the range holding `X`, which is no longer
+   local. If the reader followed the current configuration, it would only
+   decrypt, hand back compressed bytes, fail the hash check, and every chunk
+   written before March would be unreadable: a configuration change would have
+   destroyed data. Instead the reader follows `X`'s own envelope: it decrypts,
+   decompresses, and checks the result against `X`'s hash. That check, not any
+   transform's own, decides whether the bytes are correct.
+4. **If the key service is unreachable** in April, the read fails as the remote
+   tier being unavailable and is retried; it never returns zeros. If the key had
+   been destroyed for good, `X` would be reported **Lost**.
+
+```text
+ chunk X of alice's VHDX, 256 KiB plain
+   │
+   ├──► hash of the plain bytes: names X, checked again on read
+   ▼
+ stage 1  compress (zstd)        declines if it saves less than 1/16
+ stage 2  encrypt (namespace key)
+ stage 3  redundancy             not configured here
+   ▼
+ body = envelope [compress, encrypt] + encrypted bytes  ──►  block in dfs-data
+   │
+ read: undo what the envelope lists, in reverse ──► check hash ──► alice
+```
+
+### The words you need
+
+- **Transform**: an invertible step over one chunk's bytes, which may decline a
+  chunk it cannot help ([§2.1](#2.1%20A%20transform%20acts%20on%20one%20chunk)).
+- **Chain** and **stage**: the configured transforms, at most one per stage, in
+  the fixed order compress, encrypt, redundancy ([§2.3](#2.3%20The%20chain%20order%20is%20fixed)).
+- **Envelope**: the few bytes at the head of each stored body listing which
+  transforms were applied ([§2.4](#2.4%20Every%20body%20records%20what%20was%20applied)).
+- **Material**: what a transform needs from outside the body, such as a key,
+  held by a provider by ID with a fingerprint of its content
+  ([§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material)).
+- **Chain ID**: a hash of everything in the chain that decides a body's bytes,
+  part of every [block](rfc-0-data-lifecycle.md#Glossary) name ([§2.8](#2.8%20The%20chain%20ID)).
+- **Census**: the record, kept with each block, of which transforms and which
+  material its bodies used; it says when a key can be retired
+  ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)).
+
+### What this RFC promises
+
+- A chunk's hash is always taken over its plain bytes, so turning compression
+  on or off, or changing a key, never changes which chunk is which.
+- Changing the chain changes only what is written next; every stored body stays
+  readable as long as its key is held.
+- No byte is returned unless the fully decoded chunk matches its hash.
+- A store whose chain cannot be built does not open: it never writes plain bytes
+  because encryption failed to load.
+- A missing key is an outage, retried, never zeros; a key lost for good makes
+  exactly the chunks it covered **Lost**, and says so.
+
+### How the rest is organised
+
+[§2](#2.%20The%20model) is the model: what a transform is, the fixed order, the
+envelope, material, failures and the chain ID. [§3](#3.%20API%20surface) is the
+interface and configuration; [§4](#4.%20Writing%20a%20custom%20transform) is the
+checklist for writing a new transform; [§5](#5.%20Changing%20a%20chain%20over%20time)
+covers change over time, including retiring a key. [§7](#7.%20Invariants) and
+[§8](#8.%20Test%20plan%20and%20benchmarks) are invariants and tests. The
+shipped transforms are [Appendix A](#Appendix%20A%20%E2%80%94%20compression)
+and [Appendix B](#Appendix%20B%20%E2%80%94%20encryption);
+[Appendix B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns) says what
+someone who can read the bucket still learns. On a first read, skip §3, §4 and
+[Appendix C](#Appendix%20C%20%E2%80%94%20example%2C%20a%20parity%20transform).
+
 ## In short
 
 - A **transform** is an invertible function over one chunk's bytes: compression
@@ -459,6 +563,7 @@ type Config struct {
 
 var (
 	ErrMalformed           = errors.New("transform: malformed body")
+	ErrUnknownMaterial     = errors.New("transform: unknown material")
 	ErrMaterialUnavailable = errors.New("transform: material unavailable")
 	ErrMaterialDestroyed   = errors.New("transform: material destroyed")
 	ErrTooLarge            = errors.New("transform: output exceeds its bound")
@@ -974,11 +1079,11 @@ Descriptive, for the refactor.
 | D7 | No transform error crosses the codec (T8) | encryption and compression errors reach callers as their own types |
 | D8 | The hash is checked once, in the codec (T6) | each consumer re-hashes; relocation does not |
 | D9 | A chain that cannot be built stops the store (T5) | the offload finds its encryptor by type assertion, and a missing one writes unencrypted bodies |
-| D11 | A key failure is the remote being unavailable, and recovers ([Appendix B.4](#B.4%20Losing%20a%20key%20loses%20the%20data)) | a provider failure at start fails the share's whole block store, journal included; a retired key that fails to load is logged and skipped, with no health condition |
-| D12 | Material lost for good is told apart and makes a chunk Lost ([§2.7](#2.7%20Failures)) | no such outcome exists |
-| D13 | Retirement relocates through a census ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)) | no census is recorded |
-| D14 | Encoding is deterministic within a put attempt and pinned by encoder fixtures, and the chain ID is in the block name ([§2.1](#2.1%20A%20transform%20acts%20on%20one%20chunk), [§2.8](#2.8%20The%20chain%20ID)) | a random data key per chunk (D5), so re-encoding one block for a retry writes different bytes, and no fixture pins an encoder |
-| D15 | Material carries a fingerprint, and a read asks only for material its block record lists ([§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material)) | not yet checked against the code; to verify during the refactor |
-| D16 | Header hashes are sealed when encryption is on ([Appendix B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns)) | not yet checked against the code; to verify during the refactor |
-| D17 | Read-side bounds come from every registered transform ([§3.1](#3.1%20Interfaces)) | not yet checked against the code; to verify during the refactor |
-| D18 | Material removal is fenced against in-flight encodes ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)) | not yet checked against the code; to verify during the refactor |
+| D10 | A key failure is the remote being unavailable, and recovers ([Appendix B.4](#B.4%20Losing%20a%20key%20loses%20the%20data)) | a provider failure at start fails the share's whole block store, journal included; a retired key that fails to load is logged and skipped, with no health condition |
+| D11 | Material lost for good is told apart and makes a chunk Lost ([§2.7](#2.7%20Failures)) | no such outcome exists |
+| D12 | Retirement relocates through a census ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)) | no census is recorded |
+| D13 | Encoding is deterministic within a put attempt and pinned by encoder fixtures, and the chain ID is in the block name ([§2.1](#2.1%20A%20transform%20acts%20on%20one%20chunk), [§2.8](#2.8%20The%20chain%20ID)) | a random data key per chunk (D5), so re-encoding one block for a retry writes different bytes, and no fixture pins an encoder |
+| D14 | Material carries a fingerprint, and a read asks only for material its block record lists ([§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material)) | not yet checked against the code; to verify during the refactor |
+| D15 | Header hashes are sealed when encryption is on ([Appendix B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns)) | not yet checked against the code; to verify during the refactor |
+| D16 | Read-side bounds come from every registered transform ([§3.1](#3.1%20Interfaces)) | not yet checked against the code; to verify during the refactor |
+| D17 | Material removal is fenced against in-flight encodes ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)) | not yet checked against the code; to verify during the refactor |

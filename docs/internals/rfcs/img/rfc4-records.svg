@@ -19,23 +19,26 @@
   </defs>
   <rect width="900" height="500" fill="#ffffff"/>
 
-  <text x="16" y="26" class="t">Three concepts, six records, each keyed by one thing</text>
+  <text x="16" y="26" class="t">Three concepts, seven records, each keyed by one thing</text>
   <text x="16" y="46" class="s">No record holds a list that grows with its file. Arrows point from a record to the one it names.</text>
 
   <!-- Existence -->
-  <rect x="16" y="64" width="210" height="262" rx="6" class="grp"/>
+  <rect x="16" y="64" width="210" height="278" rx="6" class="grp"/>
   <text x="28" y="84" class="h">EXISTENCE</text>
   <text x="28" y="100" class="s">written by existence commits</text>
-  <rect x="28" y="112" width="186" height="54" rx="3" class="bn"/>
-  <text x="38" y="130" class="rl">FileData</text><text x="112" y="130" class="m">FileID</text>
-  <text x="38" y="152" class="m">size, applied, m/ctime</text>
-  <rect x="28" y="178" width="186" height="54" rx="3" class="bn"/>
-  <text x="38" y="196" class="rl">Hole</text><text x="80" y="196" class="m">(FileID, start)</text>
-  <text x="38" y="218" class="m">end</text>
-  <rect x="28" y="244" width="186" height="54" rx="3" class="bn"/>
-  <text x="38" y="262" class="rl">Removal</text><text x="96" y="262" class="m">(FileID, version)</text>
-  <text x="38" y="284" class="m">start, end</text>
-  <text x="28" y="316" class="s">removals: keyed by journal version</text>
+  <rect x="28" y="112" width="186" height="44" rx="3" class="bn"/>
+  <text x="38" y="129" class="rl">FileData</text><text x="112" y="129" class="m">FileID</text>
+  <text x="38" y="147" class="m">size, applied, m/ctime</text>
+  <rect x="28" y="164" width="186" height="44" rx="3" class="bn"/>
+  <text x="38" y="181" class="rl">Hole</text><text x="80" y="181" class="m">(FileID, start)</text>
+  <text x="38" y="199" class="m">end</text>
+  <rect x="28" y="216" width="186" height="44" rx="3" class="bn"/>
+  <text x="38" y="233" class="rl">Overwrite</text><text x="106" y="233" class="m">(FileID, start)</text>
+  <text x="38" y="251" class="m">end, version</text>
+  <rect x="28" y="268" width="186" height="44" rx="3" class="bn"/>
+  <text x="38" y="285" class="rl">Removal</text><text x="96" y="285" class="m">(FileID, version)</text>
+  <text x="38" y="303" class="m">start, end</text>
+  <text x="28" y="334" class="s">overwrites, removals: by journal version</text>
 
   <!-- Content map -->
   <rect x="246" y="64" width="430" height="196" rx="6" class="grp"/>
@@ -66,7 +69,7 @@
   <text x="718" y="226" class="s">refcount &gt; 0</text>
   <line x1="664" y1="158" x2="706" y2="158" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a4r)"/>
 
-  <line x1="16" y1="342" x2="884" y2="342" stroke="#eef1f4"/>
+  <line x1="16" y1="354" x2="884" y2="354" stroke="#eef1f4"/>
   <text x="16" y="376" class="rl">What each question reads</text>
   <text x="16" y="398" class="l">Does content exist at this offset? — Hole, then Ref. A hole and uncarved content are both "no ref"; only the hole records tell them apart.</text>
   <text x="16" y="416" class="l">Which chunk, which block? — ChunkRef, then Chunk. Is it durable? — a Chunk record exists, so yes.</text>

@@ -22,6 +22,112 @@ This document specifies behaviour, not the current code. Where the code differs,
 
 ---
 
+## Start here
+
+*Explanatory. The rules are in §1 onward; where this section and a rule differ, the rule wins.*
+
+DittoFS keeps recent writes on a fast local disk and copies them, in the
+background, to an object store such as an S3 (Amazon Simple Storage Service)
+compatible bucket, which is the durable home of all file content. This RFC
+specifies the two things on either side of that copy: the **block**, the one
+kind of object DittoFS stores there, and the **remote block store**, the thin
+adapter that puts, gets, lists and deletes blocks on one particular service.
+
+In outline: clients write over NFS (Network File System) or SMB (Server Message
+Block); writes land in a local journal and are acknowledged from there; later
+the bytes are cut into chunks of about 256 KiB, packed into blocks of about
+4 MiB, and uploaded; once the upload is recorded, the local copy may be dropped,
+and a later read fetches it back ([RFC 0](rfc-0-data-lifecycle.md)).
+
+### The problem, in one example
+
+The installation runs on node N1, and its remote tier is the bucket `dfs-data`.
+alice's profile disk, `profiles/alice/ODFC_alice.vhdx` (a 30 GB virtual hard
+disk file), receives 64 KiB overwrites all day.
+
+1. **N1 starts.** Before it serves anything, the store checks the real service:
+   it puts a small object with a deliberately wrong checksum and expects the
+   service to refuse it, reads the bucket's versioning and expiry settings, and
+   lists what it just wrote. Services that speak the same protocol differ here:
+   some accept a wrong checksum and store the bytes anyway. If the service
+   neither checks a checksum nor reports a trustworthy digest of what it stored,
+   the store refuses to open, naming what is missing.
+2. **The syncer uploads block `K1`**: 4 MiB holding 16 chunks of alice's disk.
+   The store sends one put: the block's size and checksum first, then the
+   header, then each chunk body, encoded as it is read from the journal. One bit
+   flips on the way.
+3. **Without the in-transit check**, the service stores the damaged block and
+   answers success. The journal, told the block is durable, lets its copy go.
+   Days later alice signs in, her disk is read back, the chunk fails its hash
+   check, and the only good copy is gone.
+4. **With it**, the service refuses the put (or its reported digest does not
+   match), and the store returns "corrupt in transit". The store does not
+   retry: it remembers nothing between calls. The syncer retries, streaming the
+   same bytes from the journal under the same name. The second put succeeds,
+   and success means the block survives the loss of N1.
+5. **The next morning** alice signs in and her disk's header is no longer local.
+   The engine asks for one chunk by the offset and length metadata recorded for
+   it. The store returns exactly those bytes or an error, never fewer; the block
+   codec undoes compression and encryption and checks the chunk's hash before
+   any byte reaches alice.
+
+```text
+ N1                                                  remote tier
+ journal (NVMe) ──► block codec ──► syncer ──► store ──► bucket dfs-data
+ alice's bytes     header + 32     retries,    one       blocks/<K1 in hex>
+                   chunk bodies    pools,      attempt   control/claim
+                   (RFC 5 per      health      per call  control/health
+                   chunk)            ▲            │
+                                     └────────────┘
+                                 nil = durable, or one of six errors
+ read: store ──► exact byte range ──► codec: decode, check hash ──► engine
+```
+
+### The words you need
+
+- **[Block](rfc-0-data-lifecycle.md#Glossary)**: one object in the bucket, a
+  header indexing its chunks followed by one body per chunk, written by one put
+  ([§3.2](#3.2%20Layout)).
+- **Block name**: the block's 32-byte identity, minted afresh for each put
+  attempt and never reused, so one name is always one byte sequence
+  ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success)).
+- **Block codec**: the code above the store that encodes blocks, decodes them
+  and verifies every chunk it returns ([§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec)).
+- **Remote block store**: one backend's adapter. It maps names to keys and makes
+  one attempt per call ([§2](#2.%20The%20dividing%20line)).
+- **Capability check**: the test against the real service, run every time a
+  store opens ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)).
+- **Control object**: a small fixed-role object beside the blocks, such as the
+  namespace claim, never listed as a block ([§4.13](#4.13%20Control%20objects)).
+- **Backend profile**: what one service must offer and how the contract maps
+  onto it; S3 is [Appendix C](#Appendix%20C%20%E2%80%94%20the%20S3-compatible%20block%20store).
+
+### What this RFC promises
+
+- A put that succeeds means the whole block arrived intact and survives the loss
+  of this machine; there is no partial put.
+- A get returns exactly the bytes asked for, or an error. A short or clamped
+  answer is an error, never data.
+- No chunk leaves the codec unless its hash matches; damaged bytes are an error,
+  never content.
+- Where metadata says a chunk sits inside a block stays right for the block's
+  life, because a name is never written with different bytes.
+- A store does not open on a service missing a feature it relies on, or on a
+  bucket whose versioning or expiry rules would keep or delete blocks behind its
+  back; a setting that drifts later stops puts and deletes until it is fixed.
+
+### How the rest is organised
+
+[§2](#2.%20The%20dividing%20line) draws the line between the store and the syncer
+above it. [§3](#3.%20The%20block%20format) is the block format and the codec;
+[§4](#4.%20The%20store%20contract) is the contract, one operation per
+subsection. [§5](#5.%20Backend%20profiles) and
+[Appendix C](#Appendix%20C%20%E2%80%94%20the%20S3-compatible%20block%20store)
+map it onto S3. [§6](#6.%20Invariants) lists the invariants and
+[§7](#7.%20Test%20plan%20and%20benchmarks) the tests. On a first read, skip
+§4.10, §4.12, §7 and the appendices; [Appendix B](#Appendix%20B%20%E2%80%94%20measurements)
+holds the measurements behind the decisions in [§8](#8.%20Decisions%20and%20open%20questions).
+
 ## In short
 
 - A **block** is the unit the remote tier stores: a header that indexes its
@@ -117,7 +223,7 @@ A block is a **header** followed by the **chunk bodies**, in order.
 | Chunk index | header | at most `N` entries ([RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler), P4), one per chunk: its hash, and the offset and length of its body. The hash is the plaintext hash, or its sealed form — keyed under a namespace secret — when the namespace encrypts ([RFC 5](rfc-5-transforms.md)). One chunk can then be read with one ranged request, without reading the others. |
 | Chunk bodies | after the header | each chunk's bytes, transformed if a chain is configured ([§3.3](#3.3%20Transforms)) |
 
-Four requirements on the layout:
+Five requirements on the layout:
 
 - Each body **MUST** be decodable on its own, so one corrupt body loses one chunk,
   not the block.

@@ -18,6 +18,111 @@ tags:
 
 ---
 
+## Start here
+
+*Explanatory. The rules are in §1 onward; where this section and a rule differ, the rule wins.*
+
+Clients write to DittoFS over NFS (Network File System) or SMB (Server Message
+Block). Writes land first in a local **journal** ([RFC 1](rfc-1-journal.md)); in the background
+the bytes are cut into **chunks**, packed into **blocks** and uploaded to a
+remote object store (an S3 bucket). [RFC 0](rfc-0-data-lifecycle.md) tells the whole story.
+
+This RFC is the cutting and the packing. The **carver** decides where a file's
+bytes are cut into chunks, choosing each cut from the content itself, and names
+each chunk by a hash of its bytes. The **block assembler** groups those chunks
+into blocks, the objects the remote store holds. Both are pure functions: bytes
+in, cut positions and names out. They read no disk, call no network and keep
+nothing between calls.
+
+### The problem, in one example
+
+build01, a Linux build server, untars a source tree into the `builds` share over
+NFS: 2,000 small files of about 30 KiB each, 60 MB in all, and one 40 MiB
+library archive. The journal holds all of it, and the engine, which drives the
+upload path, offers the dirty bytes of many files in one pass.
+
+1. **Cut.** A 30 KiB file is shorter than the 64 KiB minimum chunk, so it is
+   one chunk. The 40 MiB archive is cut where its content says — a rolling
+   fingerprint over the last 64 bytes picks each boundary — into about 160
+   chunks between 64 KiB and 1 MiB, 256 KiB on average.
+2. **Name.** Each chunk is named by its BLAKE3 hash, a 32-byte cryptographic
+   hash of its bytes and nothing else.
+3. **Pack.** The assembler takes the chunks file after file and closes a block
+   each time it reaches the 4 MiB block target. About 100 MB becomes about 25
+   blocks, so 25 uploads rather than 2,001 objects; object stores are slow on
+   small objects.
+4. **Whole chunks only.** Where a block's total crosses 4 MiB, the chunk that
+   crossed stays whole, and that block is, say, 4.2 MiB. Cut at exactly 4 MiB,
+   that chunk would live in two objects: its hash would no longer say where it
+   is, reading it would take two requests, and a reference count would describe
+   half a chunk.
+
+Why cut by content rather than every 256 KiB? Next week build01 untars the same
+archive with 100 bytes inserted near its start. Fixed-size pieces would all
+shift, and every one of the 160 names after the insert would change. Cut by
+content, only the one or two chunks around the insert change; the rest keep
+their names.
+Matching stored chunks by name (deduplication) is off in the first release, but
+the cutting is fixed now, because changing it later re-cuts all stored content.
+
+```text
+ offer from the journal: builds/ files, one unbroken stretch each
+   a.c 30K │ b.h 28K │ ... │ libfoo.a 40 MiB
+        │
+        ▼  chunker: where does each chunk end?   (chosen by content)
+        ▼  carver:  hash each chunk, BLAKE3      (pure: no I/O, no state)
+ chunks: [a.c] [b.h] ... [lib 1: 250K] [lib 2: 310K] ... [lib 160]
+        │
+        ▼  block assembler: whole chunks, 4 MiB target, ≤ 1,024 chunks
+ plans:  block 1 = a.c b.h ... (4.1 MiB)    block 2 = ... (4.2 MiB)
+        │  name = hash(namespace, fresh nonce, encoding, chunk hashes)
+        ▼
+ the engine puts each block through the syncer (RFC 3) ──► dfs-data
+```
+
+### The words you need
+
+- **chunk** — a run of one file's bytes named by the hash of its content
+  ([RFC 0 Glossary](rfc-0-data-lifecycle.md#Glossary)).
+- **chunker**, **carver** — the chunker says where a chunk ends; the carver runs
+  it over a stretch and hashes each chunk ([§1.2](#1.2%20Two%20layers%3A%20the%20chunker%20and%20the%20carver)).
+- **stretch** — one unbroken run of a file's bytes handed to one call. Its end is
+  *real* (a hole, the file's end) or *artificial* (the offer stopped there); an
+  artificial end leaves its tail uncut for the next offer ([§2.4](#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut)).
+- **Target**, **Min**, **Max** — the one chunking setting, default 256 KiB, and
+  the bounds derived from it, Target ÷ 4 and 4 × Target ([§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)).
+- **block**, **block plan** — the remote object, a whole number of chunks
+  ([RFC 0 §2.1](rfc-0-data-lifecycle.md#2.1%20Entities)); and the assembler's list of chunk hashes and where their
+  bytes sit, from which the block is streamed ([§5](#5.%20The%20block%20assembler)).
+- **put attempt** — one decision to store one plan. Its block name is derived
+  from the namespace, a fresh random nonce, the encoding and the chunk hashes,
+  and is never minted twice ([§4.2](#4.2%20A%20block)).
+
+### What this RFC promises
+
+- The same bytes under the same settings give the same boundaries and hashes on
+  any machine and any version. Changing the settings is a migration, never a
+  quiet configuration change.
+- Every chunk is between Min and Max, except the last of a stretch that really
+  ends. Max always ends a chunk, so repetitive data cannot become one huge
+  chunk. An all-zero chunk is a hole and is never stored.
+- A block holds whole chunks only, at most 1,024, and passes its target by at
+  most one chunk.
+- A block name is minted once, for one put attempt, and put by no other.
+- A failed cut hands over no shortened chunk, and a retry produces the same
+  chunks. Boundaries are public unless the namespace encrypts, and even then
+  hidden only from someone who can read the bucket but not write to it.
+
+### How the rest is organised
+
+- §1–§2: what the carver is, its two layers, and what one call covers.
+- §3: the boundary function. §3.3, §3.4 and §3.8 explain why the rules are as
+  they are, and can be skipped on a first read.
+- §4: how chunks and blocks are named; §5: the block assembler.
+- §6: what boundaries reveal about stored files; §7: errors; §8: invariants.
+- §9–§10: checks, benchmarks and targets; §11: open questions. Appendix A lists
+  where the current code differs, B the prior art, C how 256 KiB was chosen.
+
 ## In short
 
 - The **chunker** says where a chunk ends; the **carver** runs it over one

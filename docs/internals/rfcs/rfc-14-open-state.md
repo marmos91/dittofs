@@ -26,6 +26,139 @@ Conventions, RFC 2119 keywords and test tiers are set once in the
 
 ---
 
+## Start here
+
+*Explanatory. The rules are in §1 onward; where this section and a rule differ, the rule wins.*
+
+File protocols do more than name files and move bytes. A client opens a file
+and may forbid others to open it while it does; it locks byte ranges; it caches
+reads and writes under a promise from the server that nobody else is using the
+file; it asks to hear when a directory changes. This RFC owns all of that
+state: who holds each file open, what each holder may do, what the server has
+promised, and what happens to it when a client, a server or a node goes away.
+
+In outline: clients reach DittoFS over NFS (Network File System) or SMB (Server
+Message Block); writes land in a local journal and are later uploaded to an
+S3 (Simple Storage Service) bucket ([RFC 0](rfc-0-data-lifecycle.md)). Every
+file has one node that serves it, its **primary** — on a single-node install,
+N1. Open state lives there, in one table per file, beside the file's I/O.
+
+### The problem, in one example
+
+alice-pc holds `profiles/alice/ODFC_alice.vhdx` open all day. In this example
+its open asks for read and write, denies other writers, and carries an SMB
+lease — a caching grant — for read, write and handle caching under a lease key
+alice-pc chose.
+
+1. **08:30, sign-in.** N1 records the open, its deny mode and the lease in the
+   file's table, in memory. An open of a file that has a name is not written to
+   the metadata store. Under the lease, alice-pc caches reads, buffers writes and
+   takes byte-range locks locally.
+2. **10:15, a network blip.** alice-pc's connection drops. A plain open would
+   close; this one was opened durable, so it stays, with its deny mode and its
+   lease, for the timeout its create negotiated. alice-pc reconnects within it.
+   The reconnect must match on client, user, the create's ID where it has one,
+   and the lease key; anything else is refused as if the open did not exist.
+3. **14:00, a second sign-in.** alice signs in on a second desktop, which opens
+   the same file for writing. The deny mode held by alice-pc refuses it with a
+   sharing violation. It is never downgraded to a read-only open the client did
+   not ask for.
+4. **The take-over case.** Profile software re-attaching a disk from another
+   machine sends the same *app instance* ID as the first open. Then alice-pc's
+   open is closed first — its locks, deny mode and lease released — and the new
+   one granted, unless its app-instance version is not higher.
+5. **Had the first open shared write access**, the second open would still
+   conflict with alice-pc's write lease. The server breaks the lease: alice-pc
+   sends its buffered writes as ordinary writes and acknowledges. Meanwhile the
+   second desktop is told to retry rather than holding a server thread, and if
+   alice-pc never answers, the lease is revoked at a deadline.
+6. **N1 restarts.** The in-memory table is gone. Without a rule, the second
+   desktop could open the file before alice-pc comes back, and both would think
+   they hold it. Instead N1 runs a **grace period**: for at least one lease
+   period it refuses every new open, lock or grant, and lets clients its durable
+   records name reclaim what they held. alice-pc reclaims its durable open;
+   grace then ends on its own, early once every recorded client has reclaimed.
+
+Without locks, a deny mode or a lease, two clients writing one file get exactly
+this and nothing more: each write request is applied whole; where two overlap,
+the one that reached the primary later wins, byte by byte; a caching client
+sees the other's writes only through NFS close-to-open checks and SMB lease
+breaks.
+
+```text
+ alice-pc (SMB)          second desktop (SMB)          build01 (NFS)
+ open: read+write,       open: write, same file        READ, WRITE, LOCK
+ deny write, lease L1         │                            │
+      └──────────────────────►│◄───────────────────────────┘
+                              ▼
+              filesystem service routes to the file's primary
+                              ▼
+ ┌──── N1, primary: the table for ODFC_alice.vhdx (in memory) ────┐
+ │ client alice-pc     open o1: read+write, deny write, durable   │
+ │ grant  L1: read+write+handle, epoch 3          locks: none     │
+ │ second desktop's open vs o1's deny mode ──► sharing violation  │
+ │ same app instance? ──► close o1 and its lease, then grant      │
+ │ the same process runs the file's I/O: nothing lands between    │
+ │ a conflict check and the write it admits                       │
+ └────────────────────────────────────────────────────────────────┘
+   restart ──► grace: only reclaims until holders are back
+```
+
+### The words you need
+
+- **Open** and **deny mode**: one open of one file, with the access it was
+  granted and the access it denies to later opens; a deny mode is checked once,
+  when an open is granted ([§2.2](#2.2%20Open), [§6](#6.%20A%20deny%20mode%20is%20checked%20at%20open)).
+- **Byte-range lock**: a lock on a range of a file, held by a lock owner.
+  SMB locks are mandatory, NFS locks advisory ([§2.3](#2.3%20Lock)).
+- **Caching grant**: the server's promise that nobody else is using the file —
+  an NFS delegation, an SMB oplock or lease — taken back by a recall within a
+  deadline ([§5](#5.%20Caching%20grants)).
+- **Client lease**: how long the server keeps a silent client's state. "Lease"
+  also names SMB's caching grant and a node's lease
+  ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch));
+  the three are unrelated ([§4.1](#4.1%20A%20client%20lease)).
+- **Grace period** and **reclaim**: after a primary loses open state, the
+  window in which only former holders may take state, by reclaiming it
+  ([§4.2](#4.2%20Grace%20makes%20volatile%20state%20safe)).
+- **Durable** and **persistent open**: an SMB open kept across a disconnect for
+  its timeout; a persistent one also survives a failover, because it is written
+  down ([§8.1](#8.1%20SMB%20durable%20and%20persistent%20opens)).
+- **Delete pending**: SMB's delete on close. The name stays until the last
+  open closes; new opens are refused meanwhile ([§9.4](#9.4%20Delete%20on%20close)).
+
+### What this RFC promises
+
+- One table per file, at the file's primary, seen by both protocols: an SMB
+  deny mode or lock refuses an NFS request it forbids, and the reverse where
+  [§7](#7.%20Conflicts%20across%20protocols) says so.
+- No client waits forever on another: a recall ends at its deadline, by
+  acknowledgement or revocation, and a client silent for its whole lease loses
+  all its state at once.
+- After open state is lost, nobody takes what another client held: grace admits
+  only reclaims, and grace ends without an operator.
+- An unlinked file that is still open stays readable until its last close, and
+  a crash does not release it early. Opening and closing a file that has a name
+  writes no open record, unless the open is persistent.
+- Writers that do not coordinate get whole writes, ordered byte by byte by
+  arrival at the primary, and nothing more; applications that need more lock.
+
+### How the rest is organised
+
+[§2](#2.%20The%20entities) defines the entities: client, open, lock, caching
+grant, watch, layout and copy. [§3](#3.%20One%20table%20per%20file%2C%20at%20one%20primary)
+is the one rule everything rests on: one table per file, at one primary.
+[§4](#4.%20Client%20leases%2C%20grace%20and%20reclaim) covers client leases,
+grace and reclaim, NLM (Network Lock Manager) locks included;
+[§5](#5.%20Caching%20grants) caching grants; [§6](#6.%20A%20deny%20mode%20is%20checked%20at%20open)
+deny modes; [§7](#7.%20Conflicts%20across%20protocols) conflicts across
+protocols and writers that do not coordinate. [§8](#8.%20What%20is%20durable)
+says what is written down; [§9](#9.%20Open%20state%20and%20the%20life%20of%20a%20file)
+how open state keeps a file alive and how delete on close works;
+[§10](#10.%20Shard%20placement) what happens when a file's primary changes.
+[§12](#12.%20Invariants) lists the invariants. On a first read, skip §2.5–§2.7,
+§4.4–§4.5, §10, §11 and §13 onward.
+
 ## 1. Purpose
 
 A file protocol does not only name files and move bytes. Clients open files,
@@ -118,6 +251,8 @@ type Open struct {
 	Durability    Durability // none, durable, persistent (§8)
 	DeleteOnClose bool       // its close makes the file delete pending (§9.4)
 	Grant         GrantID    // the SMB lease or oplock covering it; zero for NFS (§2.4)
+	Suspended     TimeMask   // times a write through this open leaves alone (§2.2); zero: none
+	Via           FileID     // the directory it was opened through (§9.5)
 
 	// SMB durable, resilient and persistent opens (§8.1); zero for NFS.
 	CreateGUID  [16]byte      // identifies the CREATE: replay and reconnect matching
@@ -138,6 +273,18 @@ nothing alive.
 `OpenID` is unique across the installation, so an SMB adapter can carry it as
 the persistent half of the SMB FileId and find the open again after a
 reconnect to another node.
+
+**A time can be suspended per open.** SMB lets a client set a time, in a
+set-information request on an open, to a sentinel: -1 suspends the automatic
+update of that time for I/O through this open, -2 resumes it. `Suspended` holds
+the times so suspended — `Modify`, `Change`, `Access`. A write or read through
+an open **MUST NOT** advance a time its `Suspended` names; the same I/O through
+any other open, and every explicit set, still does. The filesystem service
+reads `Suspended` when it admits the write and passes the times to leave alone
+with it, so the existence commit that records the write leaves them unchanged
+([RFC 17 §5.1](rfc-17-vfs.md#5.1%20Write)). `Suspended` is volatile with the open, and durable only
+when the open is persistent ([§8](#8.%20What%20is%20durable)); a lost suspension costs only a time
+the client asked not to move.
 
 ### 2.3 Lock
 
@@ -265,6 +412,41 @@ same place twice is harmless, so a partial copy left behind needs no cleanup.
 > after a failover or restart that landed mid-copy; the client already recovers
 > from it. Persist it, with its progress, if copies in a workload run long
 > enough that failovers routinely land inside them.
+
+### 2.8 NFSv4.0 owner sequences
+
+```go
+// OwnerSeq is the next sequence number an NFSv4.0 open-owner or lock-owner
+// must send. NFSv4.1 and later use sessions and have none.
+type OwnerSeq struct {
+	Owner LockOwner // client ID and the opaque owner the client names
+	Kind  OwnerKind // open-owner or lock-owner
+	Next  uint32    // the seqid the owner's next sequenced request must carry
+}
+```
+
+An NFSv4.0 owner numbers its sequenced requests — `OPEN`, `OPEN_CONFIRM`,
+`OPEN_DOWNGRADE`, `CLOSE` for an open-owner; `LOCK` and `LOCKU` for a
+lock-owner — and the server refuses one out of sequence. The primary that holds
+the owner's `OwnerSeq` checks and advances it in the step that applies the
+request, so a sequence check and the state change it admits never separate.
+
+**Where it is held.** An owner's `OwnerSeq` is held at the primary of its
+**home shard**: the shard of the file of its first sequenced request. A
+sequenced request on a file in another shard checks and advances the sequence
+at the home primary first, as one call, and only then runs at its file's
+primary. A lock-owner's locks are almost always on one file, so its home shard
+is that file's and the extra call does not arise.
+
+**What is the adapter's.** The reply to the owner's last request, which
+NFSv4.0 replays when the same seqid arrives again, is cached by the adapter
+that answered it, not here. It is best-effort: after the loss of that protocol
+node a replayed request finds no cached reply and is answered
+`NFS4ERR_BAD_SEQID` if it does not advance the sequence.
+
+`OwnerSeq` is volatile, like the opens and locks it sequences. A home primary
+that is lost loses it; in the grace that follows, an owner with no `OwnerSeq`
+is new, and its first sequenced request sets `Next`, as for any new owner.
 
 ## 3. One table per file, at one primary
 
@@ -626,7 +808,11 @@ list of them. The last close releases the file. Held only in
 one process past that point, another node could release a file a client still
 has open, drop its refs, and let sweep delete its content.
 
-Opening and closing a linked file **MUST NOT** write any record.
+Opening and closing a linked file **MUST NOT** write a record for the open
+itself unless the open is persistent ([§8.1](#8.1%20SMB%20durable%20and%20persistent%20opens)). The only other write an open may
+cause is the client record's shard list, once, when the client first takes state
+in that shard ([§8](#8.%20What%20is%20durable)); an open of a linked file by a client already listed
+for its shard writes nothing.
 
 ### 9.2 A new primary releases nothing before grace ends
 
@@ -684,6 +870,28 @@ it, and deleted by the unlink's transaction or by the clear.
 > open elsewhere. Persist it for every open if a workload depends on a delete
 > outliving a failover without persistent opens.
 
+### 9.5 Open children refuse an SMB rename or delete of their directory
+
+SMB refuses to rename a directory, or to delete it, while a file below it is
+open. A rename or delete of a directory that comes from SMB therefore checks the
+opens whose `Via` — the directory the open was made through — is that
+directory. Each primary keeps, in memory, a count of its opens per `Via`,
+changed by every open and close; the check is one lookup. A child that starts
+its own shard ([RFC 11 §2](rfc-11-ownership.md#2.%20Shards)) has its count at that shard's primary, which the
+rename's prepare already asks ([RFC 11 §8.1](rfc-11-ownership.md#8.1%20Operations%20across%20shards)). A nonzero count refuses the
+request with `ErrShareViolation`. An NFS rename or remove is not refused: POSIX
+allows both.
+
+> decision: only direct children are counted, not every descendant. Counting
+> descendants means walking an open's ancestors on every open and close, across
+> shards wherever a subtree starts one, to serve a check whose only failure is
+> letting a rename succeed that Windows would refuse: the open keeps working,
+> since opens hold files, not names ([§3](#3.%20One%20table%20per%20file%2C%20at%20one%20primary)). A delete needs no more, because a
+> directory with any child is not empty and is refused anyway. An open counts
+> only under the directory it was opened through, not under the file's other
+> links. Count every ancestor, per shard, if a workload is shown to depend on
+> the refusal of a rename above an open grandchild.
+
 ## 10. Shard placement
 
 Open state is held by the **primary of the file's shard** ([RFC 15 §3](rfc-15-topology.md#3.%20One%20primary%20per%20shard)) and
@@ -732,10 +940,13 @@ type OpenState interface {
 	Reconnect(ctx context.Context, c ClientID, id Identity, o OpenID, m ReconnectMatch) (Open, error) // §8.1
 	Disconnect(ctx context.Context, c ClientID) error                                                // closes volatile opens, times the rest (§8.1)
 	SetDisposition(ctx context.Context, c ClientID, o OpenID, delete bool) error                   // §9.4
+	SuspendTimes(ctx context.Context, c ClientID, o OpenID, suspend, resume TimeMask) error         // §2.2
 	Close(ctx context.Context, c ClientID, o OpenID) error // the last close may unlink (§9.4) and release (§9.1)
 
 	// Byte-range locks. o is zero for an NLM lock (§2.3); seq is SMB's lock
-	// sequence, nil when the request carries none (§8.1).
+	// sequence, nil when the request carries none (§8.1). An NFSv4.0 request's
+	// owner seqid travels in OpenRequest and in Lock, Unlock and Close options,
+	// and is checked at the owner's home primary (§2.8): ErrBadSeqID.
 	Lock(ctx context.Context, c ClientID, file FileID, owner LockOwner, o OpenID, r ByteRange, exclusive, reclaim bool, seq *LockSequence) error
 	TestLock(ctx context.Context, c ClientID, file FileID, owner LockOwner, r ByteRange, exclusive bool) (*Lock, error)
 	Unlock(ctx context.Context, c ClientID, file FileID, owner LockOwner, r ByteRange) error
@@ -771,7 +982,9 @@ type OpenState interface {
 	CheckIO(ctx context.Context, o OpenRef, r ByteRange, write bool) error
 	// CheckChange recalls grants and never waits. On a remove or rename it also
 	// refuses with ErrShareViolation against a deny-delete, and a rename of a
-	// delete-pending file with ErrDeletePending (§7, §9.4).
+	// delete-pending file with ErrDeletePending (§7, §9.4). On an SMB rename or
+	// delete of a directory it refuses with ErrShareViolation while any open was
+	// made through that directory (§9.5).
 	CheckChange(ctx context.Context, file FileID, by ClientID, what ChangeMask) error
 }
 
@@ -786,6 +999,7 @@ var (
 	ErrNotYours       = errors.New("openstate: state held by another client")
 	ErrDeletePending  = errors.New("openstate: file is delete pending")
 	ErrNoCopy         = errors.New("openstate: copy unknown or lost")
+	ErrBadSeqID       = errors.New("openstate: owner sequence out of order")
 )
 ```
 
@@ -799,7 +1013,7 @@ var (
 | L4 | An expired or revoked client's state is released in every view in one step. |
 | L5 | A recall ends within its deadline, by acknowledgement or revocation, and no worker waits on it. |
 | L6 | A deny mode is checked once, at open, for a granted open, and per operation for an anonymous one; a conflicting open is refused, never downgraded. |
-| L7 | An open that keeps an unlinked file alive is durable by the time the unlink commits; opening and closing a linked file writes nothing. |
+| L7 | An open that keeps an unlinked file alive is durable by the time the unlink commits. Opening and closing a linked file writes no open record unless the open is persistent, and otherwise writes at most the client record's shard list, once per client and shard. |
 | L8 | After a failover, nothing is released before grace ends; a handover or a batch move of files hands the state over and runs no grace. |
 | L9 | Open state never makes an extent ineligible for eviction or reclamation. |
 | L10 | Open state and shard placement share no records. |
@@ -813,6 +1027,9 @@ var (
 | L18 | A lost asynchronous copy is reported unknown, never done. |
 | L19 | The NFSv4.1 server owner's major ID and server scope are the installation's identity on every node; the minor ID is the node's. |
 | L20 | Each write request is applied whole under one version at the file's primary; overlapping writes resolve byte by byte in the primary's arrival order. |
+| L21 | A write or read through an open never advances a time that open has suspended; through any other open it does. |
+| L22 | An NFSv4.0 owner's sequence is checked and advanced at its home primary in the step that applies the request; no out-of-sequence request changes state. |
+| L23 | An SMB rename or delete of a directory is refused while an open made through that directory exists; an NFS one is not. |
 
 ## 13. Conformance
 
@@ -842,7 +1059,7 @@ index's tiers.
 | [§6](#6.%20A%20deny%20mode%20is%20checked%20at%20open) no downgrade | Request write against a deny-write. Assert refusal, never a read-only open. |
 | [§7](#7.%20Conflicts%20across%20protocols) cross-protocol | For every row of the table, assert the stated outcome with one protocol holding and the other requesting. |
 | [§9.1](#9.1%20An%20open%20keeps%20a%20file%20alive) open-unlinked | Open, unlink, crash. Assert the content survives until grace ends, and is released after it unless the open was reclaimed. |
-| [§9.1](#9.1%20An%20open%20keeps%20a%20file%20alive) lazy | Open and close a linked file 10^4 times. Assert no record was written. |
+| [§9.1](#9.1%20An%20open%20keeps%20a%20file%20alive) lazy | From one client, open and close a linked file 10^4 times with volatile opens. Assert exactly one write, the client record's shard list on the first open, and none after. Repeat with persistent opens; assert each open writes its record. |
 | [§9.2](#9.2%20A%20new%20primary%20releases%20nothing%20before%20grace%20ends) new primary | Open a file on one primary, move the shard, unlink through the new primary. Assert no release before grace ends. |
 | [§9.4](#9.4%20Delete%20on%20close) delete pending | Open a file twice over SMB, the first with delete-on-close; close the first. Assert the name still resolves, a third open through each protocol and a rename are refused `ErrDeletePending`; close the second and assert the name is gone and the file released. Repeat with a second hard link: assert only the opened name goes. |
 | [§9.4](#9.4%20Delete%20on%20close) persistent | Set delete pending on a file held by a persistent open, fail the shard over, reconnect. Assert a new open is refused and the last close removes the name. |
@@ -858,6 +1075,9 @@ index's tiers.
 | [§2.7](#2.7%20Copy) lost copy | Start an asynchronous copy, fail the destination's shard over mid-copy, ask its status. Assert `ErrNoCopy`, never done. |
 | [§2.1](#2.1%20Client) server owner | Send `EXCHANGE_ID` through two `protocol` nodes. Assert one major ID and one scope, two minor IDs, and that the client ID from one is accepted by the other. |
 | [§7.1](#7.1%20Writers%20that%20do%20not%20coordinate) unlocked writers | Two clients, one per protocol, write overlapping 1 MiB ranges of distinct patterns concurrently, 10⁴ times, with commits and offloads between. Assert after each round the overlap holds exactly one writer's pattern, whole, and that it is the one the primary acknowledged last. A design that splits one request across versions fails this. |
+| [§2.2](#2.2%20Open) suspended time | Open a file twice over SMB; set `Modify` to -1 on the first. Write through the first; assert `Modify` unchanged after the existence commit. Write through the second; assert it advanced. Set -2 on the first, write through it; assert it advanced. Repeat on a persistent open across a failover. |
+| [§2.8](#2.8%20NFSv4.0%20owner%20sequences) owner sequence | Over NFSv4.0, one open-owner opens files in two shards with consecutive seqids; assert both accepted. Send a stale seqid to the second shard's file; assert `ErrBadSeqID` and no state change. Fail the home shard over; assert the owner's next sequenced request is accepted in grace as a new owner's. |
+| [§9.5](#9.5%20Open%20children%20refuse%20an%20SMB%20rename%20or%20delete%20of%20their%20directory) open children | Open a file in directory D over SMB; rename D over SMB: assert `ErrShareViolation`. Rename D over NFS: assert it succeeds and the open still reads. Open a file two levels below D; assert an SMB rename of D succeeds. |
 
 ### 13.2 What must not stand in
 
@@ -869,7 +1089,7 @@ index's tiers.
 
 | Benchmark | Measures | Target |
 | --- | --- | --- |
-| Open and close a linked file | p99 latency, records written | records written 0 |
+| Open and close a linked file | p99 latency, records written | records written 0 once the client is listed for the shard, volatile opens |
 | Grace refusal and reclaim of 10^4 locks | time to leave grace | once every recorded client completes; one lease period at most |
 | Planned move of a shard holding 10^4 opens | time new opens are refused | 0: no grace |
 | Recall with a responsive holder | time from conflicting open to its grant | report |

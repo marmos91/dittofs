@@ -28,6 +28,117 @@ in [the RFC index](rfc-index.md).
 This document specifies behaviour, not the current code.
 [Appendix A](#Appendix%20A%20%E2%80%94%20where%20the%20current%20code%20differs) lists where the code differs.
 
+## Start here
+
+*Explanatory. The rules are in §1 onward; where this section and a rule differ, the rule wins.*
+
+**What this is.** Every DittoFS component takes a few settings. This RFC says
+where all of them live — in one place, the control plane, kept in the metadata
+store — which quantities are settings at all, how far each one reaches, and
+above all what happens when one is changed while data is already stored.
+
+**The problem, with one example.** The `profiles` share keeps its content in a
+**namespace**, a prefix in the S3 bucket `dfs-data`. Its content is cut into
+chunks of about 256 KiB — the setting is called `Target` — and each chunk is
+named by the hash of its bytes, so identical chunks are stored once.
+
+An operator who wants fewer, larger chunks edits `Target` to 1 MiB in a
+configuration file on one node and restarts it. Nothing fails, and:
+
+1. every write from then on is cut at different boundaries, so the parts of
+   alice's 10.5 GB container that she rewrites no longer match any chunk already
+   stored. Space use grows as if deduplication were off, and nothing says why;
+2. in a cluster, a node still reading 256 KiB from its own file cuts the same
+   bytes differently again, and the two never deduplicate each other;
+3. had the operator "fixed" the bucket prefix the same way, every stored block
+   would be unreachable, because a block's location follows from its name and
+   the prefix.
+
+Under this RFC:
+
+1. `Target` is one record of the namespace in the metadata store, read by every
+   node. No host file can override it.
+2. It is **bound**: it decides the identity of stored content. While the
+   namespace holds any, the control plane refuses the change and names the
+   field and the rule. alice's data stays readable and keeps deduplicating.
+3. What the operator wants is a migration — moving the share into a new
+   namespace created with the new value ([RFC 12](rfc-12-snapshots.md)) — not an edit.
+
+Other settings of the same share change differently:
+
+- turning on compression, part of the remote store's transform chain, governs
+  the **next write**: new blocks are compressed, old ones stay as they were
+  written and remain readable, because each block's name records how it was
+  written;
+- the `atime` policy is **live**: every node applies a change within 5 s;
+- the node lease (10 s) needs a **restart**: every node must agree on it at
+  every instant, so it changes only through a planned restart of every node;
+- the S3 credential is never in configuration at all. The record holds a
+  reference to a sealed secret, and rotating the credential changes no record.
+
+```text
+ on each host (a file or the environment)
+ ┌─────────────────────────────────────┐
+ │ bootstrap only: node identity and   │
+ │ roles, how to reach the metadata    │
+ │ store, journal devices, listen      │
+ │ addresses, logging, where the       │
+ │ wrapping keys are                   │
+ └──────────────────┬──────────────────┘
+                    │ reach
+                    ▼
+ ┌──────────────── control plane, in the metadata store ────────────────┐
+ │ every setting is a record at one scope:                              │
+ │   installation · node · namespace · remote store · share             │
+ │ each with a binding class: live · restart · next write · bound       │
+ │ secrets: sealed records, referenced by name                          │
+ └───▲──────────────────────────────────────────────────┬───────────────┘
+     │ written through the API, validated               │ watched; a live
+     │ (operator, or an optional provisioning file)     │ change in ≤ 5 s
+                                                        ▼
+                         each component validates again when it is built:
+                         an invalid value is refused, never defaulted
+```
+
+**The words you need.**
+
+- **control plane** — the records in the metadata store that hold every
+  setting; the one source ([§2.1](#2.1%20The%20control%20plane%20is%20the%20source)).
+- **bootstrap** — the few facts a host must hold to reach the control plane, and
+  nothing else ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)).
+- **fixed** — a quantity that is not a setting, because no operator can name a
+  workload its value is wrong for; a wrong one is changed in a release
+  ([§4.1](#4.1%20Fixed%20by%20default)).
+- **scope** — what a setting must be the same across: the
+  [installation](rfc-0-data-lifecycle.md#Glossary), a node, a namespace, a remote
+  store or a share ([§3](#3.%20Scopes)).
+- **binding class** — what a change does: live, restart, next write, or bound
+  (refused while content exists) ([§5](#5.%20Binding%20classes)).
+- **secret reference** — the name of a secret sealed under the wrapping key of
+  the role that uses it; configuration never holds the value ([§7](#7.%20Secrets)).
+- **provisioning file** — an optional file of records, applied through the API;
+  the API then refuses to edit what it declares ([§2.4](#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file)).
+
+**What this RFC promises.**
+
+- Each setting has one source, the control plane; a host cannot override it.
+- An invalid or unknown value is refused, naming the field, when it is written
+  and again when the component is built. It is never clamped or replaced by a
+  default, and it stops only what it configures.
+- A bound setting never changes while content depends on it, and that content
+  stays readable.
+- A live change reaches every node within 5 s; a node that lags is reported as
+  unhealthy.
+- No secret value appears in any record, API answer, export, log or metric, and
+  a node without the `storage` role cannot unseal the remote store's credentials.
+
+**How the rest is organised.** §2 says where configuration lives, §3 the
+scopes, §4 what is fixed and what is a setting. §5, the binding classes, is the
+core. §6 is validation and §7 secrets. §8–§9 are metrics and tests, §10 the
+edits this RFC asks of others. Appendix A lists where today's code differs, and
+Appendix B every setting the RFCs name, with its scope, class and default —
+the table to look a setting up in.
+
 ## In short
 
 - Configuration lives in the **control plane**. A host holds only what it needs
@@ -484,11 +595,20 @@ default this document suggests where the owning RFC states none.
 | node lease duration | [RFC 10 §3](rfc-10-journal-replication.md#3.%20What%20it%20assumes%20of%20shard%20placement) | installation | restart ([§5](#5.%20Binding%20classes)) | 10 s; confirm by the takeover-time benchmark ([RFC 10 §15](rfc-10-journal-replication.md#15.%20Test%20plan%20and%20benchmarks)) |
 | node lease renewal interval | [RFC 10 §3](rfc-10-journal-replication.md#3.%20What%20it%20assumes%20of%20shard%20placement) | installation | restart | 3 s; confirm by the takeover-time benchmark ([RFC 10 §15](rfc-10-journal-replication.md#15.%20Test%20plan%20and%20benchmarks)) |
 | drift bound | [RFC 10 §3](rfc-10-journal-replication.md#3.%20What%20it%20assumes%20of%20shard%20placement) | installation | restart | 500 ms; confirm by the takeover-time benchmark ([RFC 10 §15](rfc-10-journal-replication.md#15.%20Test%20plan%20and%20benchmarks)) |
+| gather interval: how long a claimant waits for replicas' committed points | [RFC 10 §9.2](rfc-10-journal-replication.md#9.2%20Takeover) | installation | live | open in [RFC 10 open question 4](rfc-10-journal-replication.md#16.%20Open%20questions) |
+| replica removal triggers: answer bound, lag in bytes, lag in time | [RFC 10 §7.2](rfc-10-journal-replication.md#7.2%20Removal) | installation | live | open in [RFC 10 open question 4](rfc-10-journal-replication.md#16.%20Open%20questions) |
+| replica mark persistence period | [RFC 10 §7.2](rfc-10-journal-replication.md#7.2%20Removal) | installation | live | open in [RFC 10 open question 4](rfc-10-journal-replication.md#16.%20Open%20questions) |
+| removed-replica re-read period: how often a replica re-reads the shard records it holds content for | [RFC 10 §6](rfc-10-journal-replication.md#6.%20Fencing) | installation | live | open in [RFC 10 open question 4](rfc-10-journal-replication.md#16.%20Open%20questions) |
+| repair pacing: joins in flight per node and per cluster | [RFC 10 §7.4](rfc-10-journal-replication.md#7.4%20Repair) | installation | live | open in [RFC 10 open question 4](rfc-10-journal-replication.md#16.%20Open%20questions) |
+| repair scheduler enabled | [RFC 10 §7.4](rfc-10-journal-replication.md#7.4%20Repair) | installation | live | on |
 | open-state lease: NFSv4 lease period, SMB durable-handle timeout | [RFC 14 §4.1](rfc-14-open-state.md#4.1%20A%20client%20lease) | fixed | — | NFSv4 90 s; SMB per the protocol |
 | default request deadline, for an operation that arrives with none | [RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values) | fixed | — | 30 s |
 | per-child shard slot count | [RFC 11 §2.2](rfc-11-ownership.md#2.2%20Automatic%20per-child%20shards) | installation, fixed at its creation | bound | 4096 |
 | capacity weight | [RFC 11 §2.2](rfc-11-ownership.md#2.2%20Automatic%20per-child%20shards) | node | live | proposed: 1, every node equal |
-| shard | [RFC 11 §2](rfc-11-ownership.md#2.%20Shards) | share | bound | the whole share |
+| shard policy: per share, subtree or per child, and the directories that start a shard | [RFC 11 §2](rfc-11-ownership.md#2.%20Shards) | share | live: a change applies to files created from then on, and existing files change shard only by a batched move ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)) | per share: the whole share |
+| `shard.follow_writer`, `.window`, `.share` | [RFC 11 §3.3](rfc-11-ownership.md#3.3%20The%20primary%20follows%20the%20writer) | installation | live | on; 5 min; 0.9 |
+| `shard.dwell` | [RFC 11 §3.3](rfc-11-ownership.md#3.3%20The%20primary%20follows%20the%20writer) | installation | live | 30 min |
+| `shard.replace_delay`: the re-placement delay | [RFC 11 §2.2](rfc-11-ownership.md#2.2%20Automatic%20per-child%20shards) | installation | live | 10 min |
 | share's namespace | [RFC 12 §2.1](rfc-12-snapshots.md#2.1%20A%20namespace%20is%20the%20unit%20that%20moves) | share | bound | the share's own |
 | oldest unoffloaded extent alert | [RFC 8 §11.4](rfc-8-engine.md#11.4%20How%20far%20behind%20durability%20is%2C%20is%20observable) | share | live | proposed: 1 h |
 | snapshot policy, backup location and retention | [RFC 12 §6.2](rfc-12-snapshots.md#6.2%20Configuration) | share | live | none |
