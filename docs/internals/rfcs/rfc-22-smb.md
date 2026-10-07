@@ -643,8 +643,9 @@ primary:
 - with `ReplaceIfExists`, a target that is open by anyone is
   `STATUS_ACCESS_DENIED`; without it, an existing target is
   `STATUS_OBJECT_NAME_COLLISION`;
-- a directory with an open file or directory anywhere below it cannot be
-  renamed: `STATUS_ACCESS_DENIED`.
+- a directory with an open file or directory directly inside it cannot be
+  renamed or deleted: `STATUS_ACCESS_DENIED` ([RFC 14 §9.5](rfc-14-open-state.md#9.5%20Open%20children%20refuse%20an%20SMB%20rename%20or%20delete%20of%20their%20directory)). Opens deeper in the tree
+  are not checked; RFC 14 names that ceiling and its upgrade.
 
 A delete is a pending delete set by disposition or `FILE_DELETE_ON_CLOSE`, and
 is RFC 14's; a later `CREATE` of the name is `STATUS_DELETE_PENDING`.
@@ -750,8 +751,10 @@ or client label.
 1. **Lease after a reclaim.** Whether Windows clients accept a durable reconnect
    that returns no lease caching after a primary failover (§5.4), or treat it as
    a failed reconnect, is unmeasured.
-2. **Open-below-directory check** (§12) needs RFC 14 to answer whether any open
-   lies under a directory without walking the tree; how is RFC 14's.
+2. **Opens deeper than direct children** (§12): Windows refuses a directory
+   rename when any descendant is open; this server checks direct children only
+   ([RFC 14 §9.5](rfc-14-open-state.md#9.5%20Open%20children%20refuse%20an%20SMB%20rename%20or%20delete%20of%20their%20directory)). Whether an application in the target workload depends on the deeper
+   check is unmeasured.
 3. **SMB 3.1.1 POSIX extensions** for Linux clients over SMB.
 4. **Directory leases**, with NFS directory delegations and RFC 14's open
    question 4.
