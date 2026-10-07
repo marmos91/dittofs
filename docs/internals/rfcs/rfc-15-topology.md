@@ -111,6 +111,10 @@ address that belongs to the cluster and is held, for now, by P1.
           shard records: A ─► S1 at epoch 7 (replicated metadata store)
 ```
 
+The whole cluster, with every role and what it shares:
+
+![A cluster: protocol nodes P1 and P2 behind floating addresses forward each call to the primary of the file's shard; storage nodes S1, S2, S3 are each primary of one shard and replica of the others, shipping journal records between them; all share a replicated metadata store and one S3 bucket](img/rfc0-cluster.svg)
+
 ### The words you need
 
 - **[Node](rfc-0-data-lifecycle.md#Glossary)** and
@@ -509,6 +513,11 @@ table.
    and how that is bounded ([RFC 24](rfc-index.md)).
 2. **Striping one file across data servers** waits on per-file and range shards
    ([RFC 11 Appendix C](rfc-11-ownership.md#Appendix%20C%20%E2%80%94%20later%3A%20per-file%20and%20range%20shards)).
+3. **The node-to-node wire format.** [§4.3](#4.3%20The%20route%20envelope) fixes what a forwarded call carries —
+   the route envelope — but not how it travels: the encoding and transport of
+   forwarded calls and of replication traffic ([RFC 10](rfc-10-journal-replication.md)) are unspecified,
+   and so are their versioning across a rolling upgrade and how they are
+   authenticated between nodes.
 
 ## Appendix A — prior art
 

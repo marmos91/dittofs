@@ -108,6 +108,18 @@ range that was never written.
  5 a read of an evicted range ◄── get, verify ── bucket dfs-data
 ```
 
+**The whole system on one machine.** Every layer a client operation passes
+through, with the three paths numbered: write, offload, read.
+
+![A single node: NFS and SMB adapters translate only; the filesystem service admits, authorises and orders every operation; below it the metadata store, open state and the engine with journal, carver, transforms, syncer and GC; backed by an embedded transactional database, a local journal device and an S3 bucket](img/rfc0-single-node.svg)
+
+**The same system as a cluster.** The binary is the same; roles split across
+machines. `protocol` nodes hold client connections and forward each call;
+`storage` nodes each own some shards and replicate their journals to each other;
+every node shares one replicated metadata store and one bucket.
+
+![A cluster: protocol nodes P1 and P2 behind floating addresses forward each call to the primary of the file's shard; storage nodes S1, S2, S3 are each primary of one shard and replica of the others, shipping journal records between them; all share a replicated metadata store and one S3 bucket](img/rfc0-cluster.svg)
+
 The layers, and which node runs which, are drawn in [§1.3](#1.3%20The%20layers).
 
 ### The words you need

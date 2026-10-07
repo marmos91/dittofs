@@ -774,6 +774,7 @@ alike. A new transform gets it by registering.
 | [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | Every derivation label of Appendix B.1 is distinct, and each is pinned by a golden vector. |
 | [§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material) | Replace a key under its ID with different bytes: the provider refuses it (`ErrMaterialUnavailable`, availability gauge 0), and no body is decoded or written with it. |
 | [§3.1](#3.1%20Interfaces) | A transform that enlarges its input (a test transform adding 50%) before another: a chunk of exactly the maximum round-trips. |
+| [Appendix B.2](#B.2%20Keys) | In the daily tier, against a real key-management server, not a stand-in: fetching the keys at start succeeds and a body round-trips. A missing key, an unreachable server and an invalid certificate each return the provider's error — the store does not open, or the decode returns `ErrMaterialUnavailable` — and none falls back to another provider or to writing without encryption. A stand-in server cannot fail the certificate case. |
 
 ### 8.2 Chain tests
 

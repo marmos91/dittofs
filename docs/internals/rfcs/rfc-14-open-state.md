@@ -520,6 +520,14 @@ A reclaim is accepted only from a client the durable client record ([§8](#8.%20
 shows held state before the loss. Without that record, every reclaim **MUST**
 be refused.
 
+**A reclaim never grants more than the client held.** It **MUST** restore only
+the access and deny modes — and the locks and grants — the client claims to
+have held, and only after authorising them like a new open against the file as
+it is now: its current ACL and mode, and the caller's current share grant. A
+reclaim that asks for more access than its claimed open had, or whose principal
+may no longer open the file that way, is refused. Grace suspends conflict
+checks against lost state; it does not suspend permission checks.
+
 The window **MUST** end on its own ([RFC 0 §10.2](rfc-0-data-lifecycle.md#10.2%20No%20state%20requires%20intervention%20to%20leave)). A server that will not leave a
 grace period until an operator acts has replaced one wedge with another. It
 **SHOULD** end early, once every client whose record names the shard has
@@ -788,13 +796,20 @@ survives a failover. Without it, a lock re-sent after a lost reply conflicts
 with itself.
 
 **An app instance replaces its predecessor.** A create carrying an
-`AppInstance` that an open of the same file already holds, from any client,
-closes that open first, releasing its locks, deny mode and lease, and then
-proceeds — unless both carry an `AppVersion` and the new one is not higher,
-when the create is refused. This is how a failover cluster, or a desktop session
+`AppInstance` that an open of the same file already holds closes that open
+first, releasing its locks, deny mode and lease, and then proceeds — unless
+both carry an `AppVersion` and the new one is not higher, when the create is
+refused. This is how a failover cluster, or a desktop session
 re-attaching a profile container from another machine, takes over a file its
 earlier instance still holds open. The check runs in the open's own step at the
 file's primary, so no other open lands between the close and the grant.
+
+The matching open is closed only if it belongs to a **different client
+identity** and the caller's maximal access to the file being created includes
+read; otherwise the create proceeds as if no instance matched, and meets the
+existing open's deny mode like any other create. Without the access condition,
+any principal that learns an app instance ID can close another's open; without
+the client condition, a client closes its own open by reusing its own ID.
 
 ## 9. Open state and the life of a file
 
@@ -1021,7 +1036,7 @@ var (
 | L12 | A layout is bound to the (shard, epoch) it was granted under and is recalled when that shard changes primary or the file moves. |
 | L13 | Every open-state call names its client, and names only that client's state. |
 | L14 | A delete-pending file refuses every new open and every rename, keeps its name until its last open closes, and then loses that name through the ordinary unlink; it is durable while the file has a persistent open. |
-| L15 | A reconnect matches an open only on client, principal, create GUID (v2) and lease key; a replayed create or lock returns its first result; a create with a held app instance closes the earlier open first. A persistent open's record holds all of it. |
+| L15 | A reconnect matches an open only on client, principal, create GUID (v2) and lease key; a replayed create or lock returns its first result; a create with a held app instance closes the earlier open first only when that open is another client's and the caller may read the file. A persistent open's record holds all of it. |
 | L16 | One grant per (client, lease key, file); opens under one key never break their own lease; a v2 lease's epoch rises with every change of its kind; an NFS delegation is never a handle grant. |
 | L17 | A lock names an owner, and an NFSv4 or NLM owner's locks never conflict with each other; an NLM lock needs no open. A loss of NLM locks raises the durable NSM state number and notifies every recorded host before grace. |
 | L18 | A lost asynchronous copy is reported unknown, never done. |
@@ -1030,6 +1045,7 @@ var (
 | L21 | A write or read through an open never advances a time that open has suspended; through any other open it does. |
 | L22 | An NFSv4.0 owner's sequence is checked and advanced at its home primary in the step that applies the request; no out-of-sequence request changes state. |
 | L23 | An SMB rename or delete of a directory is refused while an open made through that directory exists; an NFS one is not. |
+| L24 | A reclaim restores only modes, locks and grants the client held, authorised like a new open against the file as it is now; it never grants more. |
 
 ## 13. Conformance
 
@@ -1043,6 +1059,7 @@ index's tiers.
 | [§3](#3.%20One%20table%20per%20file%2C%20at%20one%20primary) one table | Take a lock and a deny mode through one adapter, reach the same file through the other. Assert the other observes both. A single-adapter rig cannot fail this. |
 | [§4.2](#4.2%20Grace%20makes%20volatile%20state%20safe) grace | Grant a lock, restart, have a different client request the conflicting lock immediately. Assert refusal for the lease period. Request a lock on a file nobody held; assert it is refused too, and that a reclaim is granted. |
 | [§4.2](#4.2%20Grace%20makes%20volatile%20state%20safe) reclaim needs a record | Lose the client records, restart, reclaim. Assert refused. |
+| [§4.2](#4.2%20Grace%20makes%20volatile%20state%20safe) reclaim grants no more | Open a file read-only with deny-none; fail over. Reclaim it read-write with deny-write: assert refused. Remove the principal's read access, fail over, reclaim the original open: assert refused. Reclaim exactly what was held with access intact: assert granted. A reclaim that trusts the claimed modes passes the third and fails neither of the first two. |
 | [§4.3](#4.3%20An%20expired%20lease%20releases%20everything%20it%20held%2C%20everywhere) lease expiry | Grant a grant through one adapter, let the lease expire, open the file conflictingly through the other. Assert the open is granted without a restart. |
 | [§4.4](#4.4%20Grace%20is%20per%20shard) grace per shard | Fail one shard over. Assert only that shard refuses new state, and that a client whose session survived is told to reclaim and does. |
 | [§4.4](#4.4%20Grace%20is%20per%20shard) reclaim scoped | Client C holds state only in shard U1, D holds a lock in U2; fail U2 over. Assert C's reclaim of D's lock is refused. |
@@ -1059,6 +1076,7 @@ index's tiers.
 | [§6](#6.%20A%20deny%20mode%20is%20checked%20at%20open) no downgrade | Request write against a deny-write. Assert refusal, never a read-only open. |
 | [§7](#7.%20Conflicts%20across%20protocols) cross-protocol | For every row of the table, assert the stated outcome with one protocol holding and the other requesting. |
 | [§9.1](#9.1%20An%20open%20keeps%20a%20file%20alive) open-unlinked | Open, unlink, crash. Assert the content survives until grace ends, and is released after it unless the open was reclaimed. |
+| [§9.1](#9.1%20An%20open%20keeps%20a%20file%20alive) open-unlinked across protocols | Open a file over NFSv4, unlink it over SMB, evict its content from the journal, read through the NFSv4 handle. Assert the exact bytes, fetched from the remote. Close; assert the release runs and the refs are dropped. A single-protocol rig, or one that never evicts, cannot fail this. |
 | [§9.1](#9.1%20An%20open%20keeps%20a%20file%20alive) lazy | From one client, open and close a linked file 10^4 times with volatile opens. Assert exactly one write, the client record's shard list on the first open, and none after. Repeat with persistent opens; assert each open writes its record. |
 | [§9.2](#9.2%20A%20new%20primary%20releases%20nothing%20before%20grace%20ends) new primary | Open a file on one primary, move the shard, unlink through the new primary. Assert no release before grace ends. |
 | [§9.4](#9.4%20Delete%20on%20close) delete pending | Open a file twice over SMB, the first with delete-on-close; close the first. Assert the name still resolves, a third open through each protocol and a rename are refused `ErrDeletePending`; close the second and assert the name is gone and the file released. Repeat with a second hard link: assert only the opened name goes. |
@@ -1068,7 +1086,7 @@ index's tiers.
 | [§8.1](#8.1%20SMB%20durable%20and%20persistent%20opens) timeout | Disconnect a durable open holding a deny-write; open for write from another client before and after `Timeout`. Assert refused, then granted. |
 | [§8.1](#8.1%20SMB%20durable%20and%20persistent%20opens) create replay | Send a `CREATE` with a create GUID, drop the reply, replay it. Assert one open exists and the replay returns its `OpenID`. |
 | [§8.1](#8.1%20SMB%20durable%20and%20persistent%20opens) lock replay | On a persistent open, take an exclusive lock with a sequence, drop the reply, fail the shard over, replay. Assert success, not `ErrLocked`, and one lock held. |
-| [§8.1](#8.1%20SMB%20durable%20and%20persistent%20opens) app instance | Client A opens a file with an app instance and deny-all; client B opens it with the same app instance. Assert A's open, locks and lease are gone and B is granted; repeat with B's version not higher, assert B refused and A intact. |
+| [§8.1](#8.1%20SMB%20durable%20and%20persistent%20opens) app instance | Client A opens a file with an app instance and deny-all; client B opens it with the same app instance. Assert A's open, locks and lease are gone and B is granted; repeat with B's version not higher, assert B refused and A intact. A principal without read access to the file sends the same app instance; assert A's open is untouched and the create meets A's deny mode. A sends a second create with its own app instance; assert its first open is not closed. |
 | [§2.4](#2.4%20CachingGrant) lease key | Open a file twice from one client under one key, then under a second key. Assert the second open does not break the first's read-write-handle lease, the third does, and each break carries a higher epoch. Assert an NFS write delegation is never offered with the handle kind. |
 | [§2.3](#2.3%20Lock) owners | Two NFSv4 lock-owners of one client lock one range exclusively: assert the second refused. One owner locks overlapping ranges: assert they merge, not conflict. Take an NLM lock: assert it is held with no open and refuses an overlapping NFSv4 lock. |
 | [§4.5](#4.5%20NLM%20locks%20and%20restart%20notification) NLM restart | Hold NLM locks from two hosts, fail the shard over. Assert the NSM state number rose before grace, both hosts were notified, their reclaims are granted and a non-reclaim lock is refused `ErrGrace`. Then send a restart notification from one host: assert its locks are released at once. |

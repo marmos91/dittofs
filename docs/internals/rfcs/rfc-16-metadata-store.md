@@ -288,6 +288,7 @@ type User struct {
 	Principal Principal
 	Name      string
 	IDs       ProtocolIDs   // UID, SID, Kerberos principal: the mapping RFC 18 owns
+	Primary   Principal     // the group a new file gets (RFC 7 §2.4, RFC 18); zero: none
 	Disabled  bool
 	Secret    SecretRef     // by reference, never the credential itself (RFC 13)
 }
@@ -850,7 +851,7 @@ Every key starts with a kind byte. The layout encodes the boundary
 | | `SH‖shard` | Shard, with its primary as (node, node epoch, journal identity, incarnation) and its replicas ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)) |
 | | `SH‖shard‖xh‖opID` | cross-shard hold record: a participant's hold for one prepared operation, with its deadline; every commit of the operation guards it, and a release deletes it before the participant grants what it refused ([RFC 11 §8.1](rfc-11-ownership.md#8.1%20Operations%20across%20shards)) |
 | | `SH‖shard‖hw` | each replica's acknowledged committed-point mark, persisted by the primary on a period; never lowered, raises no epoch ([RFC 10 §7.2](rfc-10-journal-replication.md#7.2%20Removal)) |
-| | `J‖journal` | a journal's generation, keyed by journal identity; raised at every open, lease acquisition and lease renewal, and by a primary that finds itself rolled back ([RFC 10 §2.2](rfc-10-journal-replication.md#2.2%20One%20journal%20carries%20many%20shards)) |
+| | `J‖journal` | a journal, keyed by journal identity: the node and device it lives on, written when the journal is created and before anything in it is acknowledged, so a start that finds no journal or another one there refuses its shares ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)); and, from the replication extension on, its generation, raised at every open, lease acquisition and lease renewal, and by a primary that finds itself rolled back ([RFC 10 §2.2](rfc-10-journal-replication.md#2.2%20One%20journal%20carries%20many%20shards)) |
 | | `RS‖partition` | repair scheduler lease per partition of the shard-ID hash, with its epoch ([RFC 10 §7.4](rfc-10-journal-replication.md#7.4%20Repair)) |
 | | `MV‖giving‖receiving` | move record: the cursor of a move of files from the giving shard to the receiving one, one per pair, so a crashed move resumes and several moves out of one shard run at once ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)) |
 | | `SLOT` | slot table: the fixed slot count and each slot's ordered nodes, primary first, weighted by node capacity; one per installation, changed only by compare-and-swap ([RFC 11 §2.2](rfc-11-ownership.md#2.2%20Automatic%20per-child%20shards)) |
@@ -1048,7 +1049,11 @@ handles are not MACed, so an ID that can be guessed from its parent's is a
 handle a client could forge ([RFC 7 §6](rfc-7-namespace-metadata.md#6.%20Handles)).
 
 Still open: the isolation level a backend must provide (the open question at
-the end of §4.1). Still open, for measurement on the replicated store:
+the end of §4.1). Still open, for RFC 18: what group a file gets when its
+creator has no primary group. It **MUST NOT** be one shared default group,
+which would hand every such user's files to every other; whether the create is
+refused or the user's own principal stands in is undecided. Still open, for
+measurement on the replicated store:
 
 - the fold's sustained throughput per share (§4.4's ponytail);
 - whether `EntriesPlus` batching closes enough of the `READDIRPLUS` gap.
