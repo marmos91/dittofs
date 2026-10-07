@@ -58,12 +58,12 @@ func setUnprivilegedIdentity(authCtx *metadata.AuthContext) {
 // This bridges the SMB authentication model to the protocol-agnostic
 // metadata store authentication context. It maps:
 //   - SMB session user → Unix UID (from User.UID field)
-//   - SMB session user → Unix GID (from user's Group membership)
+//   - SMB session user → Unix GID (User.GID, else the first group with a GID)
 //   - SMB share permission → metadata store permission checks
 //
 // Identity Resolution:
-// For authenticated users, UID comes from the User model and GID comes from
-// the user's group membership (lowest GID is used for best permission matching).
+// For authenticated users, UID and GID come from the User model, as in
+// uidGIDFromSessionUser; the groups' GIDs are the supplementary set.
 // If not configured, falls back to default values (1000/1000).
 func BuildAuthContext(ctx *SMBHandlerContext) (*metadata.AuthContext, error) {
 	// Authenticated user - delegate to BuildAuthContextFromUser
@@ -96,8 +96,10 @@ func BuildAuthContext(ctx *SMBHandlerContext) (*metadata.AuthContext, error) {
 }
 
 // uidGIDFromSessionUser returns the UID/GID a *models.User-derived identity
-// carries. UID comes from user.UID; GID comes from the user's group membership
-// (first group with a GID). Falls back to defaults if not configured.
+// carries. UID comes from user.UID. GID is the user's own primary GID
+// (user.GID) when set, as the NFS identity resolver uses it; otherwise the
+// first group membership with a GID. Falls back to defaults if neither is
+// configured.
 func uidGIDFromSessionUser(user *models.User) (uid, gid uint32) {
 	uid = defaultUID
 	gid = defaultGID
@@ -114,19 +116,26 @@ func uidGIDFromSessionUser(user *models.User) (uid, gid uint32) {
 			"username", user.Username, "uid", uid)
 	}
 
-	// Get GID from user's primary group (first group with a GID).
-	// This follows Unix semantics where the primary group is used for new file creation.
+	// The primary GID owns the files the user creates (Unix semantics), so
+	// it must be the same one NFS uses: the user's own GID first, then the
+	// first group with a GID. The groups' GIDs are the supplementary set
+	// either way (buildIdentity).
 	gidFound := false
-	for _, group := range user.Groups {
-		if group.GID != nil {
-			gid = *group.GID
-			gidFound = true
-			break
+	if user.GID != nil {
+		gid = *user.GID
+		gidFound = true
+	} else {
+		for _, group := range user.Groups {
+			if group.GID != nil {
+				gid = *group.GID
+				gidFound = true
+				break
+			}
 		}
 	}
 
 	if !gidFound {
-		logger.Debug("User has no group with GID configured, using default",
+		logger.Debug("User has no GID and no group with one, using default",
 			"username", user.Username, "gid", gid)
 	}
 
@@ -137,8 +146,9 @@ func uidGIDFromSessionUser(user *models.User) (uid, gid uint32) {
 // This is useful when the handler has direct access to a User object.
 //
 // Identity Resolution:
-// UID comes from User.UID, GID comes from user's group membership.
-// Falls back to defaults (1000/1000) if not configured.
+// UID comes from User.UID. GID is User.GID when set, otherwise the first group
+// with a GID (uidGIDFromSessionUser); the groups' GIDs are the supplementary
+// set. Falls back to defaults (1000/1000) if not configured.
 //
 // Share Permission:
 // ShareReadOnly is set from the SMB context's share permission (the read-only
