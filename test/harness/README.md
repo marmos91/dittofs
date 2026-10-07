@@ -47,6 +47,7 @@ dtc quick                        # vet + lint + unit tests of changed packages
 dtc pynfs --minor 4.0            # NFSv4.0 conformance, graded vs KNOWN_FAILURES_V40.md
 dtc pynfs --minor 4.1 --profile postgres-s3
 dtc posix --nfs 4.1              # pjdfstest, CI's own command
+dt scenarios test/scenarios/*-xs.sh # system scenarios on rootless podman (host only)
 dtc e2e [--test P] [--nightly] [--require-nlm]
 dtc smb wpts|smbtorture --profile memory
 dtc stack up                     # dfs + Localstack S3 in Compose; then `dt stack mount` on the host
@@ -330,6 +331,25 @@ lookup disabled by GOPROXY=off".
 `--minio` is refused because its pinned image can no longer be pulled.
 
 `dt e2e --list` lists the tests runnable on the current OS, by package.
+
+### Scenarios: `dt scenarios`
+
+The system scenarios in `test/scenarios`, through their own runner, `setup.sh` (see its
+README): each scenario in a throwaway rootless podman container that builds DittoFS from
+the checkout. `dt` accepts paths as well as names, so a glob from the repo root works, and
+names a scenario that does not exist instead of exiting silently.
+
+```bash
+dt scenarios 43-smb-nfs-open-unlinked-gc-xs.sh
+dt scenarios test/scenarios/*-xs.sh        # every scenario under 10 s
+dt scenarios all                           # every scenario, the hour-long 9x ones included
+dt scenarios                               # setup.sh's shell in a set-up container
+```
+
+They run on the host only (rootless podman, not the dtc container), and take no suite
+lock: a scenario binds no host port, so it can run beside a `dt` suite, though on a shared
+host it competes for CPU and disk. Their kept logs, timing record and Slack reports stay in
+`/var/tmp/dittofs-scenarios`; `dt` keeps the run's output in `logs/scenarios-<ts>.log`.
 
 ### Compose stack (manual NFS + SMB): `dt stack`
 

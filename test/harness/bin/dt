@@ -17,6 +17,8 @@
 #   dt e2e-linux [--test P] [--nightly] [--require-nlm] ...   e2e in a privileged Linux container (no sudo)
 #   dt smb wpts|smbtorture [--profile P]
 #   dt posix [--profile P] [--nfs 3|4.0|4.1] [TEST...]   pjdfstest via a Linux NFS client
+#   dt scenarios [NAME.sh... | all]   the system scenarios (test/scenarios), on rootless podman;
+#                           no NAME: a shell in a set-up container   (host only, not dtc)
 #   dt quick                vet + lint + unit tests of changed packages
 #   dt teardown             stop a host dfs left by a suite, clear /tmp/dittofs-*
 #   dt cleanup [--volumes]  stop ALL harness containers (Localstack, 2x Postgres, PyKMIP, stack, SMB, e2e-linux)
@@ -954,6 +956,32 @@ cmd_e2e_linux() {
     return "$rc"
 }
 
+# --- scenarios (test/scenarios) ---------------------------------------------------------
+# The system scenarios, through their own runner, test/scenarios/setup.sh: each in a
+# throwaway rootless podman container that builds DittoFS from this checkout, with its own
+# lock, kept logs, timing record and Slack reports in /var/tmp/dittofs-scenarios. No suite
+# lock here: a scenario binds no host port and no /tmp/dittofs-* state, so it can run
+# beside a dt suite (on a shared host it still competes for CPU and disk).
+cmd_scenarios() {
+    $IN_CONTAINER && die "the scenarios run on rootless podman on the host: run 'dt scenarios' there, not dtc"
+    local dir="$REPO/test/scenarios"
+    [[ -x "$dir/setup.sh" ]] || die "no test/scenarios/setup.sh in $REPO"
+    command -v podman >/dev/null 2>&1 || die "the scenarios need rootless podman"
+    in_repo
+    # No name: setup.sh's interactive shell, which needs the terminal rather than a log.
+    (($#)) || exec "$dir/setup.sh"
+    # setup.sh takes bare names and exits silently on an unknown one: accept paths (a glob
+    # from the repo root), and name what is missing.
+    local a args=()
+    for a in "$@"; do
+        if [[ "$a" == all ]]; then args+=(all); continue; fi
+        a="${a##*/}"
+        [[ -f "$dir/$a" ]] || die "no scenario $a in test/scenarios (ls test/scenarios/*.sh)"
+        args+=("$a")
+    done
+    run_logged scenarios "$dir/setup.sh" "${args[@]}"
+}
+
 # --- compose stack (dfs + Localstack S3, NFS + SMB) ------------------------------------
 STACK_ADMIN_PW=dittofs-compose-dev-password
 STACK_USER=dev
@@ -1226,6 +1254,7 @@ main() {
         e2e) cmd_e2e "$@" ;;
         e2e-linux) cmd_e2e_linux "$@" ;;
         posix) cmd_posix "$@" ;;
+        scenarios) cmd_scenarios "$@" ;;
         stack) cmd_stack "$@" ;;
         quick) cmd_quick ;;
         teardown) host_teardown ;;
