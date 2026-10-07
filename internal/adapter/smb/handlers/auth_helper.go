@@ -135,7 +135,7 @@ func uidGIDFromSessionUser(user *models.User) (uid, gid uint32) {
 	}
 
 	if !gidFound {
-		logger.Debug("User has no group with GID configured, using default",
+		logger.Debug("User has no GID and no group with one, using default",
 			"username", user.Username, "gid", gid)
 	}
 
@@ -146,8 +146,9 @@ func uidGIDFromSessionUser(user *models.User) (uid, gid uint32) {
 // This is useful when the handler has direct access to a User object.
 //
 // Identity Resolution:
-// UID comes from User.UID, GID comes from user's group membership.
-// Falls back to defaults (1000/1000) if not configured.
+// UID comes from User.UID. GID is User.GID when set, otherwise the first group
+// with a GID (uidGIDFromSessionUser); the groups' GIDs are the supplementary
+// set. Falls back to defaults (1000/1000) if not configured.
 //
 // Share Permission:
 // ShareReadOnly is set from the SMB context's share permission (the read-only
