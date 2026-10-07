@@ -345,8 +345,16 @@ and **MUST** report a change to them as a migration rather than apply it
 **Start.** Each step completes before the next begins.
 
 1. **Open the journal.** Read the version floor for every share the device
-   journal may serve ([RFC 6 §8.3](rfc-6-block-metadata.md#8.3%20A%20file%27s%20refs%20and%20the%20version%20floor)), and open the journal with it ([RFC 1 §9.1](rfc-1-journal.md#9.1%20Rebuilding)). The
-   journal recovers its index and its offloaded-bit ledger alone.
+   journal may serve ([RFC 6 §8.3](rfc-6-block-metadata.md#8.3%20A%20file%27s%20refs%20and%20the%20version%20floor)), and the journal identity the metadata store
+   records for the device ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)), and open the journal with both
+   ([RFC 1 §9.1](rfc-1-journal.md#9.1%20Rebuilding), [§9.4](rfc-1-journal.md#9.4%20Unattachable%20files)). The journal recovers its index and its
+   offloaded-bit ledger alone. A new journal's identity is recorded before
+   anything written to it is acknowledged. If the open finds no journal where
+   one is recorded, or a different one, the engine **MUST** refuse every share
+   on that device, naming each, and **MUST NOT** open the directory as a new
+   journal until an operator acknowledges the loss. After that, the shares'
+   content that was never offloaded resolves **Lost**, never zeros
+   ([§7.1](#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata)).
 2. **Re-apply existence.** For each file the journal lists ([RFC 1 §3.7](rfc-1-journal.md#3.7%20State%20introspection)), read
    the operations above the file's `applied` version with `Since(id, applied)` —
    held extents and removal markers, each with its version ([RFC 1 §3.10](rfc-1-journal.md#3.10%20Settle%20and%20Since)) —
@@ -1203,7 +1211,11 @@ type Speculator interface {
   its window.
 - **S4 — it is memory only.** A frontier lost to a restart is relearnt from the
   next reads; a pre-warm reports how far it got and is re-issuable.
-- **S5 — speculative fetches ask for whole blocks** ([§7.8](#7.8%20A%20cold%20read%20asks%20for%20chunks%2C%20or%20for%20the%20block)).
+- **S5 — speculation fetches only what the journal does not hold.** A
+  speculative fetch **MUST NOT** be issued for a block whose every byte the
+  journal holds. For a block it holds in part, the fetch asks only for the
+  chunks it does not hold, unless asking for the whole block costs fewer round
+  trips ([§7.8](#7.8%20A%20cold%20read%20asks%20for%20chunks%2C%20or%20for%20the%20block)).
 
 **Read-ahead.** The speculator keeps, per open file, the end of the last read and
 a window.
@@ -1247,6 +1259,7 @@ churns less.
 | S2 | Pre-warm more than free capacity while writing. Assert no write is refused, and the pre-warm pauses at the low-water mark. |
 | S3 | Read 10³ files sequentially at once. Assert speculative bytes in flight never exceed the share's budget. |
 | read-ahead | Replay a sequential read, a random read and a strided read. Assert the window opens only for the sequential one, and a random read cancels queued hints. |
+| S5 | Write a file larger than the read-ahead window and keep it held; read it sequentially twice, then pre-warm it. Assert the remote sees zero requests. Release one block's extents; read again; assert exactly that block's chunks are fetched. A speculator that always asks for whole blocks refetches the held file. |
 | pre-warm resume | Restart during a pre-warm; re-issue it. Assert it skips files already held and completes. |
 
 ### 7.5 An unreachable remote fails the read, distinguishably
@@ -1307,8 +1320,9 @@ spent for nothing.
 **Proposal:** a read asks for **only the chunks it covers** when its missing bytes
 are at most a quarter of the block **and** it is not sequential — it neither
 starts at the block's beginning nor continues where the file's previous read
-ended. Otherwise it asks for **the whole block**. Read-ahead and pre-warm always
-ask for whole blocks. The quarter is borrowed from prior art; overturned by
+ended. Otherwise it asks for **the whole block**. Read-ahead and pre-warm follow
+the same rule over the bytes the journal does not hold, and skip a block it holds
+whole (S5, [§7.4](#7.4%20The%20speculator)). The quarter is borrowed from prior art; overturned by
 comparing bytes fetched and read latency across a few thresholds.
 
 ## 8. Truncate, deallocate and release
@@ -1437,6 +1451,14 @@ source's refs ([RFC 6 §6.6](rfc-6-block-metadata.md#6.6%20Clone%20and%20server-
 - The source's guard is held until the clone is done, and the destination range
   is not served until then. An unfinished clone resumes at startup before the
   destination is served ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)).
+- **A clone removes exactly the destination range.** A write to the destination
+  outside that range, acknowledged at any point during the clone — before
+  phase 1, between the phases or between batches — **MUST** survive it, in the
+  journal and in the refs. Phase 2 drops only refs inside the range.
+- A fill of the destination range — by a demand read or by speculation
+  ([§7.4](#7.4%20The%20speculator)) — whose fetch resolved before phase 1 **MUST NOT** install: the
+  removal at *v* excludes it as it excludes any older content
+  ([RFC 1 §3.6](rfc-1-journal.md#3.6%20Truncate%2C%20deallocate%20and%20delete)).
 
 **Proposal:** offload first rather than copy bytes, so clone has one path and the
 destination shares content from its first byte.
@@ -1697,9 +1719,10 @@ remote, cold, or pinned. Residency is computed ([RFC 0 §4.2](rfc-0-data-lifecyc
 | E22 | Every offload failure ends with the extent reported durable or Dirty and re-queued; no step waits without a deadline, and retries never stop while this node is the shard's primary. |
 | E23 | The work queue is rebuilt from durable state; a lost event delays an offer by at most the maximum age. |
 | E24 | A group-commit conflict delays only the conflicting files. |
-| E25 | Speculation never delays a demand read and never causes a write to be refused. |
+| E25 | Speculation never delays a demand read, never causes a write to be refused, and never fetches a block whose every byte the journal holds. |
 | E26 | A routed mutation retried with the same request ID and epoch is answered with its original result, never applied twice. |
 | E27 | The write verifier changes on a restart, on a change of the node serving the shard as primary, and on every rise of the file's journal's loss generation, and on nothing else. |
+| E28 | A clone changes only its destination range; every acknowledged write outside it survives, and no fill resolved before the clone installs inside it. |
 
 ## 14. Observability
 
@@ -1758,10 +1781,13 @@ the work queue [§6.1](#6.1%20The%20work%20queue), the offload pipeline [§6.3](
 | [§6.4](#6.4%20The%20offload%20guard%20is%20narrow) guard across a removal | Stall a truncate between its journal step and its transaction; trigger an offload. Assert the offer waits, and no ref lies past `size` after both finish. |
 | [§8.3](#8.3%20A%20pass%20in%20flight%20survives%20a%20removal%20under%20it) transfer survives a removal | Stall a pass's upload; truncate the file below the offered range; release the upload. Assert the upload completes, the commit drops the refs past the new size, drops a straddler whole and re-offers its outside part, applies the rest, and the truncated range reads as past end of file. Run both commit orders. Repeat with deallocate, release and a clone onto the file. |
 | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) restart re-offer | Crash after a put and before its commit; restart. Assert the extents are offered again under a new name, the first object stays unrecorded with its intent, collection removes both once the epoch is superseded, and reads are correct. Crash after a commit, before `report`; assert the re-offer carries every chunk, its commit finds every ref already committed and writes none, its block is born dead, and the extents become evictable. |
+| [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) journal gone | Write to two shares on one device journal without offloading; stop; delete the journal directory; start. Assert both shares are refused, each named, and no journal is created. Acknowledge the loss; assert the shares serve, and a read of the unoffloaded range fails as **Lost**, never zeros. |
 | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) recovery through `Since` | Crash after a truncate's journal step, before its removal record. Restart; assert `Since` yields the marker, existence applies it before the file is served, and `Settle` drops it. Crash a removal between batches; assert it resumes and the range reads as removed throughout. |
 | [§6.6](#6.6%20A%20block%27s%20name%20is%20minted%2C%20and%20its%20intent%20recorded%2C%20before%20the%20put) minted names and intents | Retry a put with an unknown outcome; assert the same name and bytes. Re-offer the same content in a new pass; assert a new name. Remove the intent before the commit; assert the commit fails and the content is re-offered. Delete an object once record and intent are gone, then land a delayed delete of it; assert no committed block is touched. |
 | [§6.7](#6.7%20A%20run%20is%20what%20the%20journal%20offers%2C%20widened%20only%20to%20re-tile) widening | Widen a run over a durable neighbour and release the neighbour mid-pass; assert the release waits for the pass and the new refs read correctly. |
 | [§6.7](#6.7%20A%20run%20is%20what%20the%20journal%20offers%2C%20widened%20only%20to%20re-tile) stretch ends | Stream a file across passes cut by `limit`. Assert no pass reports bytes past `consumed`, the next pass starts at a content boundary, and the chunking equals one pass over the whole file. Stop writing: assert the tail is cut and durable within the age ceiling. |
+| [§9.1](#9.1%20Clone%20adopts%20refs%2C%20and%20offloads%20uncarved%20content%20first) clone keeps writes outside its range | Clone a range onto `F` while a writer writes `F` past the cloned range; stall the clone before phase 1, between the phases and between two batches, writing at each stall. Assert every acknowledged write outside the range reads back from the journal, and again after it is offloaded and evicted. A clone that drops refs by file rather than by range loses them cold. |
+| [§9.1](#9.1%20Clone%20adopts%20refs%2C%20and%20offloads%20uncarved%20content%20first) no pre-clone fill | Evict `F`; pre-warm it and stall the fetches; clone onto `F`; release the fetches. Assert no fill installs, and the range reads the source's bytes. |
 | [§6.4](#6.4%20The%20offload%20guard%20is%20narrow) guard is not a fence | Run two engines, each believing it is primary for one file, with separate guards. Assert the store refuses the stale primary's commits on both paths. |
 | [§7.1](#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata) the join | Drive every row of [§7.1](#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata), including an uncarved extent the journal lost. Assert **Lost** fails — a check of the other rows passes a build that serves zeros. |
 | [§7.1](#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata) stale ref | Offload `[0, 4 MiB)`, overwrite `[1, 2 MiB)` and `Commit`, then drop the journal's extent before the overwrite is offloaded. Assert the read of `[1, 2 MiB)` fails as **Lost**, no get is issued for it, and the rest reads the first write. A design whose metadata records only holes serves the old chunk here as **Remote**. |
@@ -1849,7 +1875,7 @@ One line per requirement.
 | [§3.1](#3.1%20Policy%20is%20decided%20here%20and%20executed%20below), [§6.2](#6.2%20When%20a%20file%20is%20offered) offload policy here | thresholds are journal configuration |
 | [§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more) the facade orders a write; existence at the stability point | adapters call authorise and existence around a stage-only write |
 | [§6.2](#6.2%20When%20a%20file%20is%20offered), [§11.1](#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included) offload never stopped | passes skipped while the remote is unhealthy, cleared only by the probe |
-| [§6.4](#6.4%20The%20offload%20guard%20is%20narrow) narrow per-file guard | a striped journal lock and a striped engine lock; removals do not take it |
+| [§6.4](#6.4%20The%20offload%20guard%20is%20narrow) narrow per-file guard | a striped journal lock and a striped engine lock; removals do not take it; the partition's offload lock is held for the whole pass, upload included |
 | [§8.3](#8.3%20A%20pass%20in%20flight%20survives%20a%20removal%20under%20it) transfers survive removals | no removal is checked at commit |
 | [RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler) assembly streamed | assembly in the carver; chunks copied through three buffers; adopted chunks count toward the target |
 | [§6.5](#6.5%20The%20dedup%20oracle) V1 offload always carries | offload looks chunks up and adopts them across files, behind an in-process adoption guard |

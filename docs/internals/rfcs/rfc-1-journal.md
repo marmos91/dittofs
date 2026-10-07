@@ -279,7 +279,7 @@ derived from its identifier.
 ## 3. Interface
 
 ```go
-Open(dir string, floor Version) (*Journal, error)
+Open(dir string, floor Version, expect JournalID) (*Journal, error)
 (*Journal) Share(tag ShareTag, limit int64) *Handle
 ```
 
@@ -287,7 +287,8 @@ One journal serves several shares. Each share's engine works through its own
 `Handle`, and every operation below is a method of it. The handle's tag is
 written into every record the share appends ([§4.3](#4.3%20Records)), so recovery rebuilds each
 share's accounting ([§7](#7.%20Capacity)); a file belongs to one share for its life. `floor` is
-the version floor of [§9.1](#9.1%20Rebuilding).
+the version floor of [§9.1](#9.1%20Rebuilding); `expect` is the identity the caller has recorded for
+this directory, zero when it has none ([§9.4](#9.4%20Unattachable%20files)).
 
 ### 3.1 Write
 
@@ -1768,13 +1769,28 @@ turns data it cannot read into data it silently no longer holds, and the first
 write then mixes its own segments into the unknown ones. A directory with neither opens as a new journal; any other files in it,
 such as `lost+found`, are left alone.
 
+**A journal that has gone is not replaced silently.** The journal is opened
+with the identity its caller has recorded for the directory (`expect`), as it
+is opened with a floor; it consults nothing else. When `expect` is not zero,
+open **MUST** fail if the directory holds no journal — empty, or missing — or
+one with a different identity, and **MUST NOT** create a new journal there. An
+empty directory where a journal was recorded is a lost device, a wrong mount or
+a deleted directory: opening it as new would answer every unoffloaded extent of
+every share on it as never written, and the shares would then serve stale
+remote content or zeros where acknowledged writes were. Only the caller, once
+an operator has acknowledged the loss, opens it again with `expect` zero
+([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)).
+
 ## 10. Concurrency
 
 ### 10.1 What must not block what
 
 A read of one file never waits on a write to another file, on a sync, or on
 reclamation of a segment it does not read. A write waits only for its own file's
-append and for capacity. The rest of this section is how.
+append and for capacity. A truncate, deallocate or delete never waits on an
+offload pass — its callback or the upload inside it — of its own file or of
+another; the pass keeps the bytes it was offered ([§3.3](#3.3%20Offload)), and the storage they
+occupy is reclaimed once the pass ends. The rest of this section is how.
 
 ### 10.2 Lock domains
 
@@ -1996,6 +2012,7 @@ A check here fails by **reaching a state it cannot leave**, or by consuming with
 | [§9.3](#9.3%20Torn%20and%20corrupt%20records) segment reclaimable | After the dropped extents, assert repack can select the segment and that its storage is recovered. |
 | [§8.1](#8.1%20Releasing%20storage) storage returned | Release every held extent of a sealed segment; assert it is unlinked and accounted footprint falls by its size. Release part of another; assert `freed` is zero and `UnreclaimedBytes` grows, and that footprint falls only once repack has retired the segment. |
 | [§10.6](#10.6%20Progress) reclaim not starved | Hold sustained read load on one segment; assert reclamation still acquires it within a bounded time. |
+| [§10.1](#10.1%20What%20must%20not%20block%20what) removals do not wait on offload | Stall an offload pass inside `fn`, mid-upload; delete another file whose records share a segment with the offered ones, then truncate and deallocate the offered file itself. Assert each call returns without waiting for `fn`, and that the deleted file's storage is reclaimed once the pass returns. A design that holds a lock across the pass blocks the delete until the upload ends. |
 | [§10.3](#10.3%20Lock%20ordering%2C%20and%20what%20may%20never%20be%20held) no deadlock | Run readers, writers, repack and release concurrently on the same segments under a deadlock detector; assert no cycle and no lock held across the offload callback. |
 | [§10.7](#10.7%20Shutdown) background joined | Close the store with a repack in flight; assert it stops before any segment is closed and no work continues afterwards. |
 
@@ -2023,6 +2040,7 @@ A check here fails by **coming back up describing something other than what is o
 | [§9.1](#9.1%20Rebuilding) version floor | Reopen with a floor above every version on disk; assert the next write's version exceeds the floor, and that `MarkDurable` with the floor as `newest` leaves that write unmarked. |
 | [§9.2](#9.2%20Offload%20state%20after%20recovery) stale extent | Write A into one segment and offload it; write B over it into a later segment, offload and release it, and let reclamation unlink B's segment; restore A's segment from a copy taken before; reopen and `MarkDurable` at B's versions; assert A is dropped, reported as stale, and the read reports the extent missing. |
 | [§9.4](#9.4%20Unattachable%20files) unidentified directory | Open a directory holding segments and no `format` file, and separately one holding only unrelated files; assert both fail to open, nothing in either is modified or deleted, and an empty directory opens as a new journal. |
+| [§9.4](#9.4%20Unattachable%20files) journal gone | Create a journal, record its identity, write and close; delete the directory's contents, then separately the directory itself, then replace it with another journal. Open each with the recorded identity; assert every open fails, nothing is created in the directory, and opening with `expect` zero then creates a new journal. A design that opens an empty directory as new passes the last step and fails the first. |
 | [§4.5](#4.5%20Catalog%20layout) unknown version | Write a trailer with a future format version; assert the segment is scanned and the open succeeds. |
 | [§5.3](#5.3%20Versions) monotonicity | Reopen after a crash; assert the next sequence number and the next assigned content version each exceed every one on disk, and that recovery in shuffled segment order yields an identical index. |
 | [§9.3](#9.3%20Torn%20and%20corrupt%20records) neighbours survive | With a catalog present, corrupt one record; assert every other record in that segment still reads. |
@@ -2118,6 +2136,7 @@ assert *when* the journal notices, not *whether*:
 | bytes of a record changed | on the read that serves it; not at open when a catalog is used ([§4.4](#4.4%20The%20segment%20catalog)) | the extent is dropped and reported ([§9.3](#9.3%20Torn%20and%20corrupt%20records)) |
 | a segment deleted | not by the journal | its extents are no longer held, and dirty ones resolve as **Lost** at the engine on read ([RFC 0 §6.1](rfc-0-data-lifecycle.md#6.1%20Resolution)) |
 | the `format` file removed or changed | at open | open fails ([§4.1](#4.1%20Layout), [§9.4](#9.4%20Unattachable%20files)) |
+| the whole directory deleted, emptied or replaced | at open, by the identity the caller expects ([§9.4](#9.4%20Unattachable%20files)) | open fails; no new journal is created until an operator acknowledges the loss |
 | a file the journal did not name added | at open | left alone ([§4.1](#4.1%20Layout)) |
 | a sealed segment truncated | at open, when a later segment names it as predecessor ([§9.3](#9.3%20Torn%20and%20corrupt%20records)) | reported as corruption; the newest segment of a stream is indistinguishable from a crash and is treated as one |
 | a valid segment copied in from another journal | at open, by its journal identity | not attached, reported, left alone ([§9.1](#9.1%20Rebuilding)) |

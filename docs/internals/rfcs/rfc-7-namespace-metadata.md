@@ -408,6 +408,7 @@ path does not.
 
 | Attribute | Changed by | Written in the transaction of |
 | --- | --- | --- |
+| `Owner`, `Group` at create | the create: the caller's principal and its primary group, or the parent's group where the share's inheritance rule says so | the create |
 | `Mode`, `Owner`, `Group`, `Flags` | chmod, chown, set-flags, ACL change | its own operation |
 | `Access` | read, and only if the policy records it ([§9.2](#9.2%20Timestamps)) | its own operation |
 | `Size`, `Charged`, `Applied`, `Modify`, and `Change` and `Version` on write, and an explicit set of size or `Modify` | a client write, truncate, deallocate, a set-attribute | **existence** ([§2.5](#2.5%20Where%20%60size%60%20lives)) |
@@ -416,6 +417,14 @@ path does not.
 | a directory's `Modify`, `Change`, `Version` | create, unlink, rename in it | the entry change, as a delta ([§9.2](#9.2%20Timestamps)) |
 | `Number` | create only; never changed ([§6.5](#6.5%20A%20protocol%27s%20numeric%20file%20id%20is%20a%20stored%20number%2C%20never%20reused)) | the create |
 | `CreateVerifier` | set by an exclusive create; cleared by the first `SetAttrs` ([§2.10](#2.10%20Exclusive%20create)) | the create; the `SetAttrs` |
+
+**A new file's owner and group come from the caller.** A create **MUST** set
+`Owner` to the caller's principal and `Group` to that principal's primary group
+([RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities)), or to the parent directory's `Group` where the share's
+inheritance rule says so, and **MUST** do so identically for every protocol. A
+fixed default group **MUST NOT** be used: it hands every file to whoever else
+holds that group, and makes the same user's file differ by the protocol that
+created it.
 
 The offload commit appears nowhere in that table, and **MUST NOT** ([RFC 6 §5.1](rfc-6-block-metadata.md#5.1%20No%20record%20is%20written%20by%20both%20paths)).
 Offloading changes where content is, not what it is, and a File it could write
@@ -1273,6 +1282,7 @@ existence ([RFC 6 §3.5](rfc-6-block-metadata.md#3.5%20Operations%20that%20make%
 | N19 | An exclusive create stores its verifier in `CreateVerifier`, never in a time; a retry with the same verifier succeeds until the first `SetAttrs` clears it. |
 | N20 | A file has only the names its entries hold: no short name is generated. |
 | N21 | A directory's change info is reported with `atomic` false. |
+| N22 | A create sets `Owner` to the caller's principal and `Group` to its primary group, or to the parent's group by the share's inheritance rule, the same for every protocol; no fixed default group is ever assigned. |
 
 ## 11. API surface and observability
 
@@ -1401,6 +1411,7 @@ interfaces of [§11.1](#11.1%20Interface) and never read a key.
 | [§2.5](#2.5%20Where%20%60size%60%20lives) `Change` | `chmod` a file, then write it; then write it and `chmod` it. Assert `GETATTR`'s `Change` is the later change both times. |
 | [§2.5](#2.5%20Where%20%60size%60%20lives) overlay | Write past EOF without committing, `GETATTR` through the filesystem service, crash, recover. Assert `GETATTR` showed the new size before the crash and the committed size and holes agree after it. |
 | [§2.5](#2.5%20Where%20%60size%60%20lives) `Version` on write | Write and commit a file with no attribute change. Assert `Version` advanced, both through the overlay before the commit and in the File after it. |
+| [§2.4](#2.4%20Attributes%2C%20and%20who%20writes%20them) owner and group at create | Give a user a primary group and one other membership; create a file as that user over NFS and another over SMB. Assert both files' `Owner` is the user and `Group` is the primary group, not the other membership and not a fixed default. Repeat in a directory whose share inherits the parent's group; assert both take the parent's. A single-protocol rig cannot fail the first assertion. |
 | [§2.6](#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode) `chmod` merge | Set an ACL holding a named-user allow entry granting write, an inherit-only entry, and an entry both effective and inheritable; `chmod 600`. Assert the named user is granted nothing, the inherit-only entry is unchanged, the other is split into an unchanged inherit-only copy and a limited effective one, and `Mode` equals the ACL's implied mode. |
 | [§2.7](#2.7%20Extended%20attributes%20and%20named%20streams) stream identity | Create a stream, `chown` its base file, release the base. Assert the stream is checked against the new owner, reports the base's file id, and is released with it. |
 | [§2.8](#2.8%20A%20share%20is%20one%20filesystem) root | Resolve `..` at a share's root. Assert it is the root. |
@@ -1472,6 +1483,13 @@ interfaces of [§11.1](#11.1%20Interface) and never read a key.
    stamping a deletion time, an original path and a deleting user. Nothing below
    the namespace has to know a file is in it, so it is not engine policy
    ([RFC 8 §1.1](rfc-8-engine.md#1.2%20Non-goals)); whether it belongs here or above this component is open.
+   Wherever it sits, three constraints hold: a bin directory **MUST NOT** be
+   owned by whichever user deletes first, so one user's deletion never decides
+   who may read another's; a move into the bin that fails **MUST** surface the
+   underlying refusal (access denied, not an I/O error), so the client keeps
+   the file and says why; and an option restricting the bin to administrators
+   **MUST** be enforced by the namespace's permission check
+   ([§7.1](#7.1%20One%20chokepoint)), or not offered.
 5. **A reverse-name index** — a file's names, for repair and auditing — is not
    written and no key is reserved for it; add one, at one write per create, link
    and rename, when a consumer needs it.
@@ -1498,6 +1516,7 @@ stored path, cursor-paged listing.
 | [§4.4](#4.4%20There%20is%20no%20third%20holder) no third holder | open-but-unlinked files are protected by a hold list read by GC |
 | [§5.1](#5.1%20One%20transaction), [§9.2](#9.2%20Timestamps) directory times in the transaction | parent directories' timestamps are coalesced outside the transaction and can be lost |
 | [§5.2](#5.2%20The%20loop%20check%20is%20inside%20the%20transaction) loop check | inside the transaction, but not serialisable on one backend's isolation level |
+| [§3.6](#3.6%20A%20structural%20change%20guards%20the%20directory%20it%20depends%20on) directory guards across nodes | a directory's removal and a create, link or rename into it are kept apart by a lock inside one metadata service instance, so the guarantee holds within one instance only, not across nodes |
 | [§6.1](#6.1%20A%20handle%20names%20a%20file%2C%20never%20a%20path) opaque, one spelling | a plaintext share-and-UUID string, accepting several spellings of one UUID |
 | [§6.3](#6.3%20Staleness%20is%20reported%2C%20never%20guessed) stale, not missing | a released file resolves as not found |
 | [§6.5](#6.5%20A%20protocol%27s%20numeric%20file%20id%20is%20a%20stored%20number%2C%20never%20reused) numeric file id | a truncated hash of the handle, no collision check |

@@ -137,7 +137,10 @@ was meant to run and fails when it ran fewer: a filter that matches nothing, a
 package no job includes, a check gated on an environment variable nothing sets,
 or a skip because a service was absent all report green otherwise. A skip is
 reported with its reason, and a check skipped in every tier is deleted or moved
-to a tier that runs it.
+to a tier that runs it. A check that timed out or was aborted is a failure,
+never a skip. A known-failure list names checks, not outcomes: an entry excuses
+one named check, and a check that fails in a way it does not name still fails
+the tier.
 
 **When tests run.**
 
@@ -216,6 +219,23 @@ What follows from it:
   blips and the session lasts hours.
 - 30 GB per file is the test size; larger files are a stretch target.
 - Many users, and many shares.
+- At sign-out the product may compact the container, ending in one truncate
+  that drops gigabytes (30 GB to 24 GB in one test). The truncate returns at
+  once; the dropped tail is left for GC.
+
+**Read-mostly ingestion for a retrieval and indexing pipeline.** A pipeline
+reads a share of documents to build a search or embedding index, and rereads
+what changed. On one install: about 7,000 files totalling 1.1 GB, read at about
+67 MB/s cold and 122 MB/s warm.
+
+- Many small files, read whole, mostly once per pass: cold-read latency per file
+  and pre-warm decide the pass time, not write throughput.
+- A read that returned zeros instead of failing would poison the index with no
+  error anywhere downstream. The reader cannot tell, so **Lost** must fail the
+  read ([RFC 0 §9](rfc-0-data-lifecycle.md#9.%20Invariants), I1).
+- Open question: whether a share-wide change feed, so the pipeline reads only
+  what changed without walking the tree, is in scope — beyond per-directory
+  watches ([RFC 14 §2.5](rfc-14-open-state.md#2.5%20Watch)).
 
 ## Reading them in Obsidian
 
