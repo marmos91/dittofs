@@ -81,6 +81,14 @@ every RFC of this set are to be interpreted as in RFC 2119.
 - Normative text names no product, package, file or function. Products appear
   only in appendices labelled as a profile, an example, prior art, a measurement
   or where the current code differs.
+- **Every RFC opens with `## Start here`**, written for a reader who knows
+  neither the codebase nor the problem: what the component is for, the problem
+  shown through one worked example, one drawing, the few terms needed, what it
+  promises, and how the rest is organised. It is explanatory; the numbered
+  sections hold the rules, and where the two differ the rule wins. Examples
+  across RFCs use one cast — the `profiles` share of per-user profile
+  containers over SMB, the `builds` share over NFS, users alice and bob — so a
+  story started in one RFC continues in the next.
 - Signatures are indicative; the obligations around them are normative.
 - `ponytail:` notes mark a deliberately simple design and name what would justify
   replacing it; `decision:` notes mark a deliberately narrow rule and name what
