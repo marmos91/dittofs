@@ -408,9 +408,10 @@ stays at the root. Each share reports its own filesystem identity — NFS's
 `fsid`, SMB's volume serial — derived from its `ShareID`. SMB's several shares
 are several tree connects, one share each. NFSv4's pseudo-filesystem, the
 synthetic tree joining every export, is **not stored**: the adapter builds it
-from the share list, and a `LOOKUP` that crosses from it into a share lands on
+from the share list ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)), and a `LOOKUP` that crosses from it into a share lands on
 that share's root. Shares are disjoint trees; one share is never an entry in
-another.
+another, and no share's path is an ancestor of another's
+([RFC 16 §2.3.1](rfc-16-metadata-store.md#2.3.1%20Share%20names%2C%20paths%20and%20state)).
 
 ```go
 // FilesystemInfo is what a share reports about itself: statfs, FSSTAT,
@@ -807,6 +808,15 @@ A handle **MUST NOT** encode a path, a name, a parent, or an offset into a
 directory. All four change while the file does not, so a handle carrying one is
 a handle that breaks on an operation that was supposed to be invisible to it.
 
+**Pseudo-filesystem handles are the one other kind.** A directory of the NFSv4
+pseudo-filesystem ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)) is not a `File`: it has no `FileID`, no
+share and no existence apart from its path, so its path *is* its identity and
+the rule above does not reach it. Its handle is a distinct kind carrying a
+digest of the installation's identity and the path, minted and resolved here
+like any other; it resolves by finding a share path under that path, and is
+stale when none remains. No handle of this kind names a file, so routing never
+looks for a share in it.
+
 **A handle has one spelling.** Decoding a handle **MUST** accept exactly one
 byte form for each file, or canonicalise before the handle is used, and handles
 **MUST** be compared by what they decode to. A parser that accepts several
@@ -915,8 +925,9 @@ however the leaf's own mode reads.
 
 This component receives a resolved identity and applies it. It **MUST NOT** know
 about export policy, squashing, authentication flavours or netgroups. Those are
-adapter concerns, applied before the call, and the identity that arrives here is
-what the caller already is.
+applied by the filesystem service on every call, before this one
+([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)), and the identity that arrives here is
+what the caller already is on this share.
 
 **The share grant is not export policy.** A `ShareGrant` ([RFC 16](rfc-16-metadata-store.md)) is a record
 of this store naming a principal's access to a share, and `Authorize` **MUST**

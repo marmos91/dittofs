@@ -549,6 +549,12 @@ share's root, configurable and hidden from listings. What protocols rely on:
   them — the ACL versioned with the file ([§2.2](#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree)), the grant as it is now,
   so a principal removed from the share reaches none of its snapshots;
 - every mutating operation fails with the read-only error;
+- over NFS, each snapshot is its own filesystem: the browse directory's entry
+  for a snapshot reports an `fsid` derived from the share and the cut, and the
+  `mounted_on_fileid` of the browse directory, so `find -xdev`, `du` and backup
+  tools that stay on one filesystem do not descend into every snapshot. Over
+  SMB the snapshot keeps the share's volume serial, because Previous Versions
+  addresses it by token, not as a separate volume;
 - a snapshot file's numeric file id differs from the live file's
   ([RFC 7 §6.5](rfc-7-namespace-metadata.md#6.5%20A%20protocol%27s%20numeric%20file%20id%20is%20derived%2C%20and%20collisions%20are%20its%20problem)), so tools do not take the two for one file;
 - **SMB Previous Versions** names each complete snapshot by the token

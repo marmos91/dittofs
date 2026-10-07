@@ -146,8 +146,8 @@ what moves with a share:
 
 | Scope | Entities | Moves with a share export ([RFC 12](rfc-12-snapshots.md)) |
 | --- | --- | --- |
-| Per share | Share, ShareGrant, Snapshot | yes |
-| Server-wide | User, Group, Membership, Node, NodeLease, Shard, Setting | no — an export carries the principals its files and grants reference (§5, decision 8) |
+| Per share | Share, ShareGrant, ExportPolicy, Snapshot | yes |
+| Server-wide | User, Group, Membership, Netgroup, Node, NodeLease, Shard, Setting, ShareList | no — an export carries the principals its files and grants reference (§5, decision 8), and the names of the netgroups its policy references |
 
 ```go
 // User and Group are principals with a name. A file refers to them only by
@@ -175,12 +175,16 @@ type Membership struct {
 	Member Principal // a user or a nested group
 }
 
-// Share is one exported filesystem.
+// Share is one exported filesystem. Name is what an SMB client tree-connects
+// to; Path is where it sits in the NFS namespace, the MOUNT argument and the
+// NFSv4 pseudo-filesystem path. Both are indexed and unique, both may change
+// (§2.3.1), and neither appears in a handle, which carries ID.
 type Share struct {
 	ID     ShareID
 	Name   string
+	Path   string // absolute, normalised: "/photos", "/home/alice"
 	Root   FileID
-	State  ShareState // enabled, quiesced, frozen for a cut, being removed
+	State  ShareState // enabled, quiesced, frozen for a cut, being removed (§2.3.1)
 	Config SettingsRef
 	// Namespaces lists the block namespaces the share's refs are counted in,
 	// each a (generation, NamespaceID) pair: one outside a re-home, two during
@@ -199,6 +203,42 @@ type ShareGrant struct {
 	Principal Principal
 	Access    ShareAccess // none, read, read-write, admin
 	Version   uint64      // raised by every change; the authorisation cache key carries it
+}
+
+// ExportPolicy is the share's admission and identity-mapping rule, one per
+// share. The filesystem service applies it on every call (RFC 17 §4.9); the
+// file checks behind Files.Authorize never see it (RFC 7 §7.4).
+type ExportPolicy struct {
+	Share       ShareID
+	Flavors     []AuthFlavor  // admitted, in preference order: SECINFO's answer
+	MinKerberos KerberosLevel // krb5, krb5i, krb5p; zero when Kerberos is not required
+	Clients     []ClientRule  // first match decides; no match refuses. Empty admits every client
+	Squash      Squash        // none, root, all
+	Anonymous   Principal     // what a squashed caller becomes
+	SMB         SMBShareFlags // encrypt, require signing, hidden from enumeration, continuously available
+	Version     uint64        // raised by every change; the authorisation cache key carries it
+}
+
+// ClientRule admits or refuses clients by address range or netgroup, and may
+// narrow the share grant for them to read-only.
+type ClientRule struct {
+	Match  ClientMatch // CIDR or netgroup name
+	Access ShareAccess // none, read, read-write: never wider than the grant
+}
+
+// Netgroup is a named set of hosts, server-wide, referenced by name from
+// client rules. A rule naming a netgroup that does not exist matches nothing.
+type Netgroup struct {
+	Name    string
+	Members []string // host names, addresses or CIDRs
+	Version uint64
+}
+
+// ShareList is one record per installation, raised in the transaction of
+// every share create, delete, rename, path change and state change. It is the
+// NFSv4 pseudo-filesystem's change attribute (RFC 17 §4.9).
+type ShareList struct {
+	Version uint64
 }
 
 // Snapshot is a named, user-visible cut of a share. SnapshotCut, and the
@@ -293,9 +333,31 @@ a compromised protocol node could unseal the bucket credential. The KV still
 lets any node read the sealed bytes; confidentiality rests on the key a node's
 bootstrap names, and restricting what a node may *write* is [RFC 15](rfc-15-topology.md)'s.
 
-Adapter settings, netgroups and identity-provider configuration follow the
-same pattern and are left out of this list; none of them changes a file or
-content key.
+Adapter settings and identity-provider configuration follow the same pattern
+and are left out of this list; neither changes a file or content key.
+
+#### 2.3.1 Share names, paths and state
+
+- **Names** are compared case-insensitively and are unique under that fold,
+  because SMB clients compare them so. A name is at most 80 characters, has no
+  `\ / : * ? " < > |` or control character, and is not `IPC$`. A name ending in
+  `$` is still reachable by name but left out of share enumeration.
+- **Paths** are absolute, with no empty, `.` or `..` component, each component a
+  valid file name. **No share's path is an ancestor of another's**: shares are
+  disjoint trees ([RFC 7 §2.8](rfc-7-namespace-metadata.md#2.8%20A%20share%20is%20one%20filesystem)),
+  so `/home` and `/home/alice` cannot both be shares. The components above a
+  share's path exist only in the pseudo-filesystem.
+- **Rename and re-path** change the index rows and raise `ShareList`, in one
+  transaction. Handles, open state and established tree connects name the
+  `ShareID` and keep working; only a client that connects or mounts afresh
+  needs the new name or path. A durable or persistent SMB open reclaimed after
+  a rename is reclaimed through a tree connect to the new name.
+- **State** gates every call, evaluated with the grant (RFC 17 §4.9). `enabled`
+  and `frozen for a cut` admit: a cut's own gate holds writes briefly and never
+  reads ([RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)), so the share state adds nothing. `quiesced`, an
+  administrator's pause, refuses with `ErrDelay`, which the client retries.
+  `being removed` refuses with `ErrStale`, so handles into a removed share go
+  stale rather than turn into an access error.
 
 ### 2.4 Methods on entities
 
@@ -406,7 +468,7 @@ What each consumer holds:
 | Filesystem service ([RFC 17](rfc-17-vfs.md)) | `Namespace`, `Files`, `Capacity`, `OpenState`, and the engine's content facade |
 | Engine | `Existence`, `Content` |
 | GC | `Blocks` |
-| Authentication, tree connect, mount | `Principals` |
+| Authentication (session setup, Kerberos contexts) | `Principals`; tree connect and mount go through the filesystem service's `Root` ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)) |
 | Management API | `ControlPlane` |
 | Shard placement (RFC 11) | `Node` and `Shard` records through its own view, fenced by epoch |
 | Debug tooling | `Dump` (§4.5) |
@@ -582,6 +644,7 @@ Every key starts with a kind byte. The layout encodes the boundary
 | | `F‖id‖o‖openID‖l‖start` | durable Lock, only under a persistent open, so closing the open drops one prefix ([RFC 14](rfc-14-open-state.md)) |
 | **Per share** — under `S‖ShareID` | `S‖id‖info` | Share |
 | | `S‖id‖g‖principal` | ShareGrant |
+| | `S‖id‖xp` | ExportPolicy |
 | | `S‖id‖snap‖cut` | Snapshot; nothing else lives under this prefix, so listing snapshots reads only snapshots |
 | | `S‖id‖cut`, `S‖id‖live‖k` | Cut: `k`, `klatest`, the cut time of the share's latest cut, and `deleting`, the cut a running deletion removes; LiveCut, one per live snapshot, with its kind, share or subtree, and a subtree cut's covered set of shards ([RFC 12 §2.2](rfc-12-snapshots.md#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree), [§2.8](rfc-12-snapshots.md#2.8%20Deleting), [§2.10](rfc-12-snapshots.md#2.10%20Subtree%20snapshots)) |
 | | `S‖id‖sc‖shard` | SubCut: `klatest`, the newest live subtree cut covering that shard; raised only by a cut, behind the shard's gate, lowered only by a deletion ([RFC 12 §2.10](rfc-12-snapshots.md#2.10%20Subtree%20snapshots)) |
@@ -606,7 +669,10 @@ Every key starts with a kind byte. The layout encodes the boundary
 | | `NS‖ns‖bk‖location` | folder record: the copy or sweep holding the namespace's block folder at a backup location, its deadline, and the folder's census of (material ID, fingerprint) ([RFC 12 §3.4.1](rfc-12-snapshots.md#3.4.1%20Layout%20at%20the%20location)) |
 | **Server-wide** | `U‖principal`, `G‖principal` | User, Group, keyed by `PrincipalID` |
 | | `M‖group‖member`, `MR‖member‖group` | Membership, both directions |
-| | `NX‖kind‖name` | name index: user, group and share names → ID, unique |
+| | `NX‖kind‖name` | name index: user, group and share names → ID, unique; a share name is keyed by its case fold (§2.3.1) |
+| | `NP‖path` | share path index: path → `ShareID`, unique; the pseudo-filesystem is built by listing it (RFC 17 §4.9) |
+| | `NG‖name` | Netgroup |
+| | `SL` | ShareList: one version per installation |
 | | `PX‖scheme‖id` | protocol-ID index: UID, GID, SID → `PrincipalID`; the only place a protocol spelling is stored (§2.2) |
 | | `N‖node`, `N‖node‖exp` | Node: its node epoch and whether a takeover marked it lapsed, guarded by every fenced commit; NodeLease: the lease's expiry, which a renewal writes with its journals' generations and nothing else ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)) |
 | | `SH‖shard` | Shard, with its primary as (node, node epoch, journal identity, incarnation) and its replicas ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)) |
