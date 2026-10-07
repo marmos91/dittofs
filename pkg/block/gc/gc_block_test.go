@@ -3,6 +3,7 @@ package gc
 import (
 	"bytes"
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -139,6 +140,45 @@ func TestBlockReclaimer_FreesBlockAtZero(t *testing.T) {
 	}
 	if _, err := rbs.GetBlock(ctx, "blk-solo"); err == nil {
 		t.Errorf("block object still present on remote after last chunk freed")
+	}
+}
+
+// TestBlockReclaimer_SharedRecordsLeaveOtherRemotesBlock proves that when one
+// metadata store records blocks for two remotes, the reclaimer for the remote
+// that does not hold a dead chunk's block leaves the block, its record and its
+// marker alone, and the reclaimer for the remote that holds it frees it.
+func TestBlockReclaimer_SharedRecordsLeaveOtherRemotesBlock(t *testing.T) {
+	ctx := t.Context()
+	st := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	owner := remotememory.New()
+	other := remotememory.New()
+	defer func() { _ = owner.Close(); _ = other.Close() }()
+
+	h := hashFromString("chunk-on-owner")
+	seedPackedBlock(t, st, owner, "blk-owner", []block.ContentHash{h})
+
+	wrong := &BlockGCReclaimer{Locators: st, Records: st, RemoteBlocks: other, SharedRecords: true}
+	handled, freed, err := wrong.ReclaimDeadChunk(ctx, h)
+	if !errors.Is(err, ErrBlockOnOtherRemote) {
+		t.Fatalf("other remote's reclaimer: err = %v, want ErrBlockOnOtherRemote", err)
+	}
+	if handled || freed != 0 {
+		t.Fatalf("other remote's reclaimer: handled = %v, freed = %d, want false, 0", handled, freed)
+	}
+	if rec, ok, _ := st.GetBlockRecord(ctx, "blk-owner"); !ok || rec.LiveChunkCount != 1 {
+		t.Fatalf("block record after the other remote's pass: ok = %v, LiveChunkCount = %d, want true, 1", ok, rec.LiveChunkCount)
+	}
+	if _, synced, _ := st.GetLocator(ctx, h); !synced {
+		t.Fatal("marker cleared by the other remote's pass; the owner's pass can no longer find the chunk")
+	}
+
+	right := &BlockGCReclaimer{Locators: st, Records: st, RemoteBlocks: owner, SharedRecords: true}
+	handled, freed, err = right.ReclaimDeadChunk(ctx, h)
+	if err != nil || !handled || freed <= 0 {
+		t.Fatalf("owner's reclaimer: handled = %v, freed = %d, err = %v, want true, > 0, nil", handled, freed, err)
+	}
+	if _, err := owner.GetBlock(ctx, "blk-owner"); !errors.Is(err, block.ErrChunkNotFound) {
+		t.Fatalf("block still on its remote after the owner's pass: %v", err)
 	}
 }
 

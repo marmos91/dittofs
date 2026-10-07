@@ -146,6 +146,13 @@ type GCStats struct {
 	// closes). Zero for a plain GC run; only the reconcile sets it.
 	StrandedRowsReaped int64 `json:"stranded_rows_reaped,omitempty"`
 
+	// KeptForOtherRemote counts dead chunks a pass left for another remote's
+	// pass (ErrBlockOnOtherRemote): their metadata store also serves shares on
+	// other remotes, and the block was not on this one. The owning remote's pass
+	// frees such a block in the same run, so a hash that is kept again run after
+	// run (each one is logged at Debug) is a block no remote holds: drift.
+	KeptForOtherRemote int64 `json:"kept_for_other_remote,omitempty"`
+
 	// Legacy aggregator fields (compat aliases — see finalizeStats).
 
 	OrphanFiles    int   // = ObjectsSwept.
@@ -472,6 +479,7 @@ func collectGarbage(
 		"objects_scanned", stats.ObjectsScanned,
 		"objects_swept", stats.ObjectsSwept,
 		"bytes_freed", stats.BytesFreed,
+		"kept_for_other_remote", stats.KeptForOtherRemote,
 		"duration_ms", stats.DurationMs,
 		"error_count", stats.ErrorCount,
 		"dry_run", options.DryRun,

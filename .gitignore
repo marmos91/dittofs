@@ -122,3 +122,7 @@ docker-compose.override.yml
 test/harness/logs
 test/harness/state
 test/harness/tools
+
+# graphify hook copies are machine-local (they embed an absolute interpreter path)
+.githooks/post-commit
+.githooks/post-checkout

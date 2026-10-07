@@ -265,6 +265,8 @@ smbclient //localhost/export -p 12445 -U testuser -c "get file.txt"
 smbclient //localhost/export -p 12445 -U testuser -c "put localfile.txt"
 ```
 
+To mount a share automatically at boot, see [Mount at boot](persistent-mounts.md).
+
 ---
 
 ## Encryption
