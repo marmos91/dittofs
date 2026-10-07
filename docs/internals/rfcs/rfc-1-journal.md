@@ -919,9 +919,14 @@ B is one file per dirty slice, not a single log.
 > for a client COMMIT; one large sequential stream; and random in-place
 > overwrites inside one large file behind one long-lived handle — a 30 GiB file
 > taking 64 KiB random overwrites, then read cold. COMMIT latency and small-file
-> throughput are the gate, and the gap that would justify switching is fixed
-> before the run, not after. If B comes within that gap of A on both gate
-> measures, B is adopted for what it removes; otherwise A stands.
+> throughput are the gate, on the hottest path the system has, so the gap is
+> narrow: **B is adopted only if it is within 5% of A on both gate measures, at
+> the median and at p99, on every workload.** Otherwise A stands. A is expected
+> to win: a group commit makes one sync cover many files' writes, where B pays
+> a sync per slice file plus a directory sync for each new one, and random
+> overwrites append to one segment where B creates or rewrites a file per
+> slice. B's case is code it removes and repack it never pays, which J8
+> measures for A.
 
 ## 5. The placement index
 
