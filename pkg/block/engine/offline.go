@@ -52,7 +52,7 @@ type OfflineReadiness struct {
 // remote. An indeterminate readiness is never safe.
 func (o OfflineReadiness) Safe() bool { return o.Known && o.RemoteOnlyBytes == 0 }
 
-// coldRangeReporter is the slice of local.LocalStore the gating rules read:
+// coldRangeReporter is the slice of journal.LocalStore the gating rules read:
 // which of a tier's ranges are remote-only, which ranges it describes for one
 // file, and whether its account of the first can be trusted yet. Every local
 // tier answers all three, so this narrows what the rules below may reach for

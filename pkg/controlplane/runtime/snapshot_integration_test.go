@@ -13,7 +13,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
-	bsmemory "github.com/marmos91/dittofs/pkg/block/local/memory"
+	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
@@ -479,7 +479,7 @@ func newOrchestrationFixture(t *testing.T) *orchestrationFixture {
 	// mirrorOnce short-circuits — exactly what the orchestration
 	// integration test wants (we are testing the orchestration
 	// machinery, not the syncer).
-	localStore := bsmemory.New()
+	localStore := journaltest.New(t)
 	innerRemote := remotememory.New()
 	t.Cleanup(func() { _ = innerRemote.Close() })
 	wrappedRemote := newInterceptingRemote(innerRemote)

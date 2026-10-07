@@ -65,9 +65,9 @@ Implement a custom block store when you need:
 **Reference implementation**: `pkg/block/remote/s3/` (S3-backed block store)
 
 There is no "local store use case" row any more. The journal is the only local
-tier and it is not pluggable by configuration; `pkg/block/local` remains as an
-internal interface with exactly two implementations (`*journal.Store` in
-production, `local/memory` for tests).
+tier and it is not pluggable by configuration; `pkg/block/journal` remains as an
+internal interface with exactly one implementation (`*journal.Store`; tests open
+it through `journal/journaltest`).
 
 ## Understanding the Architecture
 
@@ -476,9 +476,9 @@ journal — gets the contract right.
 
 ### The LocalStore interface
 
-`pkg/block/local.LocalStore` is the internal contract the journal satisfies. It
+`pkg/block/journal.LocalStore` is the internal contract the journal satisfies. It
 is the journal's own vocabulary — the surface is keyed by `(FileID, offset)`,
-**not** by content hash. See `pkg/block/local/local.go` for the authoritative
+**not** by content hash. See `pkg/block/journal/localstore.go` for the authoritative
 definition and per-method contract; the representative methods are:
 
 ```go
@@ -547,8 +547,8 @@ error. Callers must not tight-loop retry on it — surface it and let the client
 re-drive on its own schedule.
 
 What changed is what the COMMIT seam does with that soft result when the local
-tier is **volatile** (a journal explicitly marked `{"durable": false}`, or the
-in-memory store used by tests) and the share asks for `commit_ack: block-store`.
+tier is **volatile** (a journal explicitly marked `{"durable": false}`) and the
+share asks for `commit_ack: block-store`.
 It used to acknowledge anyway; it now returns a hard error (`ErrNotDurableYet`,
 normalized to the I/O-class wire code). That is deliberate and more honest: with a
 volatile local tier and an unreachable block store, nothing holding the bytes
@@ -559,8 +559,7 @@ survive a restart, and the syncer keeps retrying.
 ### Reference implementations
 
 `*journal.Store` (`pkg/block/journal/`) IS the per-file byte cache the
-composition layer holds directly — no adapter between them. The in-memory store
-(`pkg/block/local/memory/`) is the other implementation, for tests. There is no
+composition layer holds directly — no adapter between them. There is no
 separate append-log or rollup tier and no `metadata.RollupStore` contract — those
 were removed when the journal replaced the two-tier local design.
 
@@ -570,8 +569,8 @@ The journal-native `LocalStore` surface is `(FileID, offset)`-keyed, so the one
 `blockstoretest` suite (`RemoteBlockStoreConformance`) does **not** apply to it — that
 suite targets the block-keyed `remote.RemoteBlockStore` surface (see
 [Implementing a Remote Block Store](#implementing-a-remote-block-store-block-keyed)).
-The journal and the in-memory local store are exercised by their own package tests under
-`pkg/block/journal/` and `pkg/block/local/`.
+The journal is exercised by its own package tests under
+`pkg/block/journal/`.
 
 ## Implementing a Remote Store
 
@@ -820,9 +819,9 @@ each share's from `blockstore.journal.*` in the server config.
 
 ## Additional Resources
 
-- **Interface Definitions**: `pkg/block/local/local.go`, `pkg/block/remote/remote.go`
+- **Interface Definitions**: `pkg/block/journal/localstore.go`, `pkg/block/remote/remote.go`
 - **Reference Implementations**:
-  - Journal (local tier): `pkg/block/journal/`, `pkg/block/local/memory/`
+  - Journal (local tier): `pkg/block/journal/`
   - Block stores: `pkg/block/remote/s3/`, `pkg/block/remote/memory/`
   - Metadata: `pkg/metadata/store/memory/`, `pkg/metadata/store/badger/`, `pkg/metadata/store/sqlite/`, `pkg/metadata/store/postgres/` (the SQL pair share `pkg/metadata/store/sql/`)
 - **Conformance Tests**: `pkg/block/blockstoretest/` (block stores), `pkg/metadata/storetest/` (metadata stores)

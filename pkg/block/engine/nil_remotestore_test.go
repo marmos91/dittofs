@@ -6,12 +6,11 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/block/journal"
-	"github.com/marmos91/dittofs/pkg/block/local"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
 // newNilRemoteStoreEnv creates a test environment with nil remoteStore (local-only mode).
-func newNilRemoteStoreEnv(t *testing.T) (*RemoteSync, local.LocalStore, func()) {
+func newNilRemoteStoreEnv(t *testing.T) (*RemoteSync, journal.LocalStore, func()) {
 	t.Helper()
 	tmpDir := t.TempDir()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()

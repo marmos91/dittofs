@@ -7,23 +7,27 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/block/engine"
-	localmemory "github.com/marmos91/dittofs/pkg/block/local/memory"
+	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
-// newMemoryEngine builds an engine with an in-memory local store (NOT durable)
-// and the given remote (may be nil). The metadata memory store provides both
-// the FileChunkStore and SyncedHashStore so the syncer's mirror loop can run
-// and report Finalized=true after a write+flush.
+// newMemoryEngine builds an engine with a volatile local store and the given
+// remote (may be nil). The journal store fsyncs its segments, so it is durable
+// by default; SetDurable(false) is what stands in for the in-memory double's
+// volatile local tier here, and durableLocalOverride replaces it. The metadata
+// memory store provides both the FileChunkStore and SyncedHashStore so the
+// syncer's mirror loop can run and report Finalized=true after a write+flush.
 func newMemoryEngine(t *testing.T, remote *remotememory.Store, durableLocalOverride *bool) *engine.Store {
 	t.Helper()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	localStore := localmemory.New()
+	localStore := journaltest.New(t)
+	durable := false
 	if durableLocalOverride != nil {
-		localStore.SetDurable(*durableLocalOverride)
+		durable = *durableLocalOverride
 	}
+	localStore.SetDurable(durable)
 
 	cfg := engine.BlockStoreConfig{
 		Local:           localStore,

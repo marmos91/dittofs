@@ -7,7 +7,7 @@ import (
 
 	badgerdb "github.com/dgraph-io/badger/v4"
 	"github.com/marmos91/dittofs/pkg/block"
-	memorylocal "github.com/marmos91/dittofs/pkg/block/local/memory"
+	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatabadger "github.com/marmos91/dittofs/pkg/metadata/store/badger"
@@ -91,7 +91,7 @@ func TestDataExtents_UndecodableManifestRowIsNotAHole(t *testing.T) {
 	ms = openChunkStoreAt(t, dir)
 	t.Cleanup(func() { _ = ms.Close() })
 
-	localStore := memorylocal.New()
+	localStore := journaltest.New(t)
 	rs := remotememory.New()
 	syncer := NewRemoteSync(localStore, rs, ms, DefaultConfig())
 	syncer.SetSyncedHashStore(ms)
