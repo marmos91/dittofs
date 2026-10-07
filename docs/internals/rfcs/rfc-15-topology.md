@@ -18,7 +18,7 @@ tags:
 ---
 # RFC 15 — topology and roles
 
-**Status:** draft. [§11](#11.%20Open%20questions) lists what is known to be undecided.
+**Status:** deferred. [§11](#11.%20Open%20questions) lists what is known to be undecided.
 **Audience:** anyone deploying more than one node, adding a component that must
 run on a particular kind of node, or deciding where a call is served.
 

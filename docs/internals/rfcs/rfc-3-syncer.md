@@ -2,7 +2,7 @@
 rfc: 3
 title: "RFC 3 — the syncer"
 component: syncer
-status: reviewed
+status: draft
 depends_on:
   - "[[rfc-0-data-lifecycle]]"
   - "[[rfc-1-journal]]"
@@ -16,6 +16,7 @@ tags:
 ---
 # RFC 3 — the syncer
 
+**Status:** draft.
 **Audience:** anyone changing the component that moves chunks between the journal
 and the remote tier. Conventions and test tiers are in [the RFC index](rfc-index.md).
 
@@ -809,7 +810,14 @@ each direction on its own:
   would be a latch (below);
 - a probe **MUST** be bounded in time like any call, and one that does not
   return within its bound is a failed probe. A hung probe that left the store
-  healthy would keep sending traffic to a dead store.
+  healthy would keep sending traffic to a dead store;
+- **a store's drift condition makes its put direction unhealthy.** GC raises the
+  condition when its `Recheck` finds a service setting drifted — versioning,
+  object lock, a lifecycle rule — and clears it when a later `Recheck` passes
+  ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period), [RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)). While it stands the syncer **MUST** treat the
+  put direction as unhealthy whatever its probes say, since a put into a drifted
+  store may be expired or kept as a version nothing deletes; the get direction
+  is untouched, and no probe clears it.
 
 **An unhealthy direction refuses work.** `Upload` to a put-unhealthy store, and
 `Fetch` or `Prefetch` from a get-unhealthy one, **MUST** fail at once, before
@@ -1439,6 +1447,7 @@ half-complete. A backend that always succeeds asserts nothing about any of them.
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) first byte, per direction | Hold a get before its first body byte, and a put after its last body byte sent; assert both fail at the first-byte bound. |
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) fetch resume | Fail a whole-block fetch transiently after three chunks; assert the retry requests only the rest and no chunk is yielded twice. |
 | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) per direction | Fail every put probe and put; assert fetches from the store still run. Fail every get; assert uploads still run. |
+| [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) drift condition | Raise a store's drift condition with both probes passing; assert uploads to it are refused at once and fetches still run. Clear it; assert uploads resume without waiting for a probe transition. A syncer that reads only its probes keeps putting into the drifted store. |
 | [§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch) re-home and close | Join a queued speculative fetch with a demand from another flow; assert it moves to the demanding flow in the demand class. Close the flow that owns a running joined fetch; assert the other flows' callers are detached, not failed. Detach a caller holding its chunk; assert its bytes are unchanged until its next iteration while the fetch continues. |
 
 ### 7.3 What must not stand in

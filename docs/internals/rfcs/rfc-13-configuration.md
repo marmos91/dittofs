@@ -293,14 +293,19 @@ validated once and shared by every policy that names it. It holds:
 | store | endpoint, bucket and prefix, as a remote store's | bound while any backup is held there |
 | credential reference | a `Secret` ([§7](#7.%20Secrets)), sealed under the `storage` key | live, under [§5.2](#5.2%20Reaching%20the%20same%20content%20another%20way%20is%20not%20a%20change) |
 | **mode** | `mutable` or `immutable`; required, no default | bound while any backup is held there |
-| lifecycle age | the age at which the service expires an object, as its expiry rule is configured | live, within the checks below |
-| retention | for `immutable`, the object-lock retention each copy is given | live, within the checks below |
+| lifecycle age | the age at which the service expires an object, as its expiry rule is configured; for `immutable`, the current-version expiry rule's age is at least this ([RFC 4 §4.14](rfc-4-remote-tier.md#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)) | live, within the checks below |
+| retention | for `immutable`, the object-lock retention each copy is given, at least the longest retention of any backup written there | live, within the checks below |
+| put-integrity outcome | for `immutable`, the result of the capability check's integrity step, run once when the record is created and whenever its store or credential changes, since check objects there cannot be deleted | written by the control plane, never configured |
 
 **An immutable location is proven, not trusted.** The control plane **MUST**
 refuse an `immutable` record, and the store **MUST** refuse to open it, unless
 its open-time probe finds versioning on, compliance-mode object lock with a
 default retention at least the record's retention, a noncurrent-version expiry
-rule, and a delete refused for its credential; it issues no put as a probe. A
+rule, no current-version rule younger than the lifecycle age, no transition to an
+archive class, and a delete
+refused for its credential — of the health object and of one of its recorded
+versions; it issues no put as a probe
+([RFC 4 §4.14](rfc-4-remote-tier.md#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)). A
 `mutable` location takes the ordinary capability check
 ([RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)).
 
@@ -374,7 +379,9 @@ Required, because no default is safe:
 - a namespace's key scope ([RFC 2 §4.3](rfc-2-carver.md#4.3%20Key%20scope)), and whether its chain encrypts;
 - a backup location's mode ([§2.5](#2.5%20A%20backup%20location%20is%20its%20own%20record));
 - a node's journal devices;
-- the material provider, when the chain encrypts ([RFC 5 §2.7](rfc-5-transforms.md#2.7%20Failures)).
+- every store configuration's material provider, whether or not its chain
+  encrypts, since every namespace holds a chunk-ID key and an export key
+  ([RFC 5 §3.2](rfc-5-transforms.md#3.2%20Configuration)).
 
 Everything else takes a default. [Appendix B](#Appendix%20B%20%E2%80%94%20the%20settings) lists the settings the RFCs
 name, with the default each states or, where none does, the one proposed here.
@@ -720,13 +727,14 @@ default this document suggests where the owning RFC states none.
 | journal maximum footprint | [RFC 1 §7](rfc-1-journal.md#7.%20Capacity) | node, per journal | live | proposed: 80% of the device |
 | per-share journal limit | [RFC 1 §7](rfc-1-journal.md#7.%20Capacity) | share | live | proposed: the journal's maximum |
 | segment size | [RFC 1 §4.2](rfc-1-journal.md#4.2%20Segments) | — | fixed | open in RFC 1 |
-| headroom for records without bytes (count of removal and durable records reserved) | [RFC 1 §7](rfc-1-journal.md#7.%20Capacity) | node, per journal | restart | a proposal ([RFC 1 §12](rfc-1-journal.md#12.%20Open%20questions), the headroom and seal-threshold question) |
+| headroom for records without bytes (count of removal and offloaded records reserved) | [RFC 1 §7](rfc-1-journal.md#7.%20Capacity) | node, per journal | restart | a proposal ([RFC 1 §12](rfc-1-journal.md#12.%20Open%20questions), the headroom and seal-threshold question) |
 | idle-seal threshold | [RFC 1 §9.1](rfc-1-journal.md#9.1%20Rebuilding) | node, per journal | restart | proposed: 16 MiB ([RFC 1 §12](rfc-1-journal.md#12.%20Open%20questions), the headroom and seal-threshold question) |
 | repack reserve: journal space outside every share's limit for repack's copies | [RFC 1 §8.2](rfc-1-journal.md#8.2%20Repack) | — | fixed | at least one segment's live payload ([RFC 0 §8.2](rfc-0-data-lifecycle.md#8.2%20Reclaim)) |
 | `Target` | [RFC 2 §3.2](rfc-2-carver.md#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it) | namespace | bound | 256 KiB |
 | key scope | [RFC 2 §4.3](rfc-2-carver.md#4.3%20Key%20scope) | namespace | bound | required |
-| chunk-ID key | [RFC 0 §2.1](rfc-0-data-lifecycle.md#2.1%20Entities) | namespace | bound | created with the namespace, never configured; wrapped, by (ID, fingerprint) ([§7](#7.%20Secrets)) |
-| whether the chain encrypts | [RFC 5 §3.2](rfc-5-transforms.md#3.2%20Configuration) | namespace | bound | required |
+| chunk-ID key (material kind `chunk-id-key`) | [RFC 0 §2.1](rfc-0-data-lifecycle.md#2.1%20Entities), [RFC 5 §2.5](rfc-5-transforms.md#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material) | namespace | bound | created with the namespace, never configured; wrapped, by (ID, fingerprint) ([§7](#7.%20Secrets)) |
+| export key (material kind `export-key`): seals and authenticates the namespace's catalog exports | [RFC 5 §2.5](rfc-5-transforms.md#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material), [RFC 12 §5.1](rfc-12-snapshots.md#5.1%20Layout) | namespace | bound | created with the namespace, never configured; wrapped, by (ID, fingerprint) ([§7](#7.%20Secrets)) |
+| `encrypts`: whether the namespace's chain has an encrypt stage, recorded at creation | [RFC 5 §3.2](rfc-5-transforms.md#3.2%20Configuration) | namespace | bound | required |
 | chunking key | [RFC 2 §6](rfc-2-carver.md#6.%20Boundaries%20are%20public) | namespace | bound | derived at creation when the chain encrypts; a secret, by reference ([§7](#7.%20Secrets)) |
 | header key | [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys) | namespace | bound | derived at creation when the chain encrypts; wrapped, by (ID, fingerprint) ([§7](#7.%20Secrets)) |
 | data key, current | [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys) | namespace | next write | created with the namespace when the chain encrypts; wrapped, by (ID, fingerprint) ([§7](#7.%20Secrets)) |
@@ -738,7 +746,8 @@ default this document suggests where the owning RFC states none.
 | storage class | [RFC 4 §8](rfc-4-remote-tier.md#8.%20Decisions%20and%20open%20questions) | remote store | next write | the service's default |
 | block target | [RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler) | remote store | next write | 4 MiB; settable from 1 MiB to 64 MiB, and a value outside is refused; confirm the default by the block-size benchmark against each service before release ([RFC 4 Appendix B](rfc-4-remote-tier.md#Appendix%20B%20%E2%80%94%20measurements)) |
 | transform chain but its encrypt stage: compression and its settings, `require` | [RFC 5 §3.2](rfc-5-transforms.md#3.2%20Configuration) | remote store | next write | empty |
-| material provider | [RFC 5 §2.5](rfc-5-transforms.md#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material) | remote store | live | required when the chain encrypts |
+| material provider | [RFC 5 §2.5](rfc-5-transforms.md#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material) | remote store | live | required on every store configuration |
+| compress stage `with_encryption: accept`: compression in a chain that encrypts | [RFC 5 §3.2](rfc-5-transforms.md#3.2%20Configuration) | remote store | next write | absent: a chain with an encrypt stage and a compress stage without it is refused |
 | case sensitivity: the share's fold rule, by ID from the store format record ([RFC 16 §4.6](rfc-16-metadata-store.md#4.6%20Store%20format)) | [RFC 7 §3.3](rfc-7-namespace-metadata.md#3.3%20Case) | share | bound | sensitive (identity rule) |
 | `atime` policy | [RFC 7 §9.2](rfc-7-namespace-metadata.md#9.2%20Timestamps) | share | live | proposed: relative |
 | `gc.interval`: between compaction and collection passes | [RFC 9 §8](rfc-9-gc.md#8.%20API%20surface) | namespace | live | open in RFC 9 |
@@ -747,7 +756,9 @@ default this document suggests where the owning RFC states none.
 | `gc.audit.period`: time within which the audit covers every chunk and block record; its rate is derived from it | [RFC 9 §6.1](rfc-9-gc.md#6.1%20Coverage) | namespace | live | 7 days |
 | replica count **(cluster)** | [RFC 10 §7.1](rfc-10-journal-replication.md#7.1%20Count%2C%20floor%20and%20placement) | installation default, shard override (in its shard record) | live | 3 |
 | replica floor **(cluster)** | [RFC 10 §7.1](rfc-10-journal-replication.md#7.1%20Count%2C%20floor%20and%20placement) | installation default, shard override (in its shard record) | live | 2 |
-| failure domain **(cluster)** | [RFC 10 §7.1](rfc-10-journal-replication.md#7.1%20Count%2C%20floor%20and%20placement) | installation | live | open in RFC 10 |
+| failure domain **(cluster)**: the host, rack or zone a node lies in | [RFC 10 §7.1](rfc-10-journal-replication.md#7.1%20Count%2C%20floor%20and%20placement), [RFC 11 §2.2](rfc-11-ownership.md#2.2%20Automatic%20per-child%20shards) | node | live | the node itself |
+| replication gate **(cluster)**: opened by an operator once every node runs a binary that knows the journal extension | [RFC 10 §2.3](rfc-10-journal-replication.md#2.3%20The%20journal%20extension) | installation | live, opened only under [§5.5](#5.5%20A%20node%20joins%20only%20where%20its%20versions%20overlap)'s rule; never closed again | closed |
+| stall bound **(cluster)**: how long a sync, the serving loop or replication may make no progress before a node stops renewing | [RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch) | installation | live | 5 s |
 | node lease duration **(cluster)** | [RFC 10 §3](rfc-10-journal-replication.md#3.%20What%20it%20assumes%20of%20shard%20placement) | installation | restart ([§5](#5.%20Binding%20classes)) | 10 s; confirm by the takeover-time benchmark ([RFC 10 §15](rfc-10-journal-replication.md#15.%20Test%20plan%20and%20benchmarks)) |
 | node lease renewal interval **(cluster)** | [RFC 10 §3](rfc-10-journal-replication.md#3.%20What%20it%20assumes%20of%20shard%20placement) | installation | restart | 3 s; confirm by the takeover-time benchmark ([RFC 10 §15](rfc-10-journal-replication.md#15.%20Test%20plan%20and%20benchmarks)) |
 | drift bound **(cluster)** | [RFC 10 §3](rfc-10-journal-replication.md#3.%20What%20it%20assumes%20of%20shard%20placement) | installation | restart | 500 ms; confirm by the takeover-time benchmark ([RFC 10 §15](rfc-10-journal-replication.md#15.%20Test%20plan%20and%20benchmarks)) |

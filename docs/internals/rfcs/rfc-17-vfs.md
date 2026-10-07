@@ -811,7 +811,8 @@ and never for a directory ([RFC 7 §9.2](rfc-7-namespace-metadata.md#9.2%20Times
 
 The NFS write verifier is returned by the engine's `Write` and `Commit` and
 derived from the primary's node, its node epoch, the process instance, the
-shard's incarnation — raised each time a journal begins serving the shard
+shard's incarnation — raised each time a node or journal begins serving the
+shard as primary
 ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)) —
 and the loss generation of the journal holding the file, sampled before the write
 is staged; not from the shard epoch ([RFC 11 §7](rfc-11-ownership.md#7.%20Protocol%20state), [RFC 8 §4.1](rfc-8-engine.md#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)). The service

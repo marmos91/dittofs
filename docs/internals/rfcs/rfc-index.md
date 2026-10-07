@@ -16,12 +16,12 @@ order: each part builds on the ones before it.
 | RFC | Component | Status | Owns |
 | --- | --- | --- | --- |
 | **Foundations** | | | |
-| [RFC 0](rfc-0-data-lifecycle.md) | data lifecycle | frozen | terms, data model, residency, invariants, failure model |
+| [RFC 0](rfc-0-data-lifecycle.md) | data lifecycle | draft | terms, data model, residency, invariants, failure model |
 | **Content**, in write-path order | | | |
 | [RFC 1](rfc-1-journal.md) | journal | draft | local bytes, one journal per device: on-disk format, placement, crash safety, capacity |
-| [RFC 2](rfc-2-carver.md) | carver | reviewed | bytes → chunks → blocks: boundaries, identity, packing |
-| [RFC 3](rfc-3-syncer.md) | syncer | reviewed | transferring blocks to and from the remote tier |
-| [RFC 4](rfc-4-remote-tier.md) | remote tier | reviewed | object format and backend contract |
+| [RFC 2](rfc-2-carver.md) | carver | draft | bytes → chunks → blocks: boundaries, identity, packing |
+| [RFC 3](rfc-3-syncer.md) | syncer | draft | transferring blocks to and from the remote tier |
+| [RFC 4](rfc-4-remote-tier.md) | remote tier | draft | object format and backend contract |
 | [RFC 5](rfc-5-transforms.md) | transforms | draft | compression, encryption, threat model |
 | **Metadata** | | | |
 | [RFC 6](rfc-6-block-metadata.md) | block metadata | draft | FileData, holes, refs, chunks, blocks, refcounts |
@@ -72,7 +72,7 @@ graph LR
   R6["6 block metadata"] --> R2 & R3 & R4 & R5
   R7["7 namespace metadata"] --> R6 & R16
   R8["8 engine"] --> R1 & R2 & R3 & R4 & R5 & R6 & R7 & R9 & R15 & R16
-  R9["9 GC"] --> R2 & R3 & R4 & R5 & R6 & R8 & R10
+  R9["9 GC"] --> R2 & R3 & R4 & R5 & R6 & R8
   R10["10 journal replication"] --> R1 & R6 & R8 & R11 & R16
   R11["11 shards"] --> R1 & R6 & R7 & R8 & R10 & R14 & R15 & R16
   R12["12 snapshots"] --> R1 & R2 & R4 & R5 & R6 & R7 & R8 & R9 & R10 & R11 & R13 & R16

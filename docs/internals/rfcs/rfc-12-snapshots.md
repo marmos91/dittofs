@@ -273,7 +273,7 @@ A namespace is a folder — one prefix — inside a bucket of the remote tier, w
 one key scope ([RFC 2 §4.3](rfc-2-carver.md#4.3%20Key%20scope)). Several namespaces **MAY** share a bucket, and a
 catalog backup location ([§3.1](#3.1%20A%20backup%20is%20an%20export%20of%20one%20snapshot%27s%20metadata)) **MAY** be another folder of that same
 bucket: each has its own prefix, so their object names never collide. Within a
-namespace chunks are deduplicated and counted; across two, never
+namespace chunks are shared by refs and counted; across two, never
 ([RFC 6 §2.6](rfc-6-block-metadata.md#2.6%20The%20scope%20of%20a%20count)), and GC runs one service per namespace.
 
 Which shares share a namespace:
@@ -1976,7 +1976,8 @@ two namespaces.
    `ErrRehoming` too. Snapshots and copying backups go on ([§3.4](#3.4%20Copying%20backups)). A clone or
    catalog backup that is already running finishes first.
 2. **Switch writes.** Each primary of the share's shards is told of the change. It
-   carves every new put attempt under N', and deduplicates against N' only. An
+   carves every new put attempt under N', and adopts — once deduplication is
+  added — only from N'. An
    attempt fixes its namespace when it starts ([RFC 2 §4.3](rfc-2-carver.md#4.3%20Key%20scope)), so the primary
    joins every attempt started under N before it acknowledges. From then on,
    offload commits write refs at *g* + 1.
@@ -1995,7 +1996,7 @@ two namespaces.
      N''s scope and chain. Each put has a put intent
      and runs through a background flow of the syncer. This is relocation's read,
      mint and put ([RFC 9 §4.2](rfc-9-gc.md#4.2%20Read%20verified%2C%20mint%2C%20put%2C%20then%20move)), with the target in another namespace.
-   - **Switch.** Once those puts are durable, one transaction:
+   - **Switch.** Once those puts are remote-durable, one transaction:
      - consumes their intents and creates their block and chunk records in N';
      - reads each ref of the batch with conflict tracking, and requires it
        unchanged;
@@ -2091,7 +2092,7 @@ snapshot 4 of `vm2` sees.
 | 0 | start: `ns-vm2` created, generation 2 added to `vm2`; clones and backups of `vm2` refused | c1 2, c2 1, c3 1 | empty | 3 |
 | 1 | `vm2`'s primary joins its attempts under `ns-vms` and acknowledges | — | — | 3 |
 | 2 | a client writes `f`; its offload carves c4 into `ns-vm2`, ref r4 at generation 2 | — | c4 1 | 3 |
-| 3 | batch 1: ranged gets of c1, c2, c3 from `ns-vms`; b9 put in `ns-vm2` under an intent | — | b9 durable, unrecorded | 3 |
+| 3 | batch 1: ranged gets of c1, c2, c3 from `ns-vms`; b9 put in `ns-vm2` under an intent | — | b9 stored, unrecorded | 3 |
 | 4 | switch: b9 recorded; r1, r2, h3 adopt in `ns-vm2`, drop from `ns-vms`, rewritten at generation 2 with their `born` and `died` | c1 1, c2 0, c3 0: their blocks retire if nothing else is live in them | c1, c2, c3, c4 1 | 0 |
 | 5 | `vm1` server-side copies a file into `vm2` by reference: ref r5 → c5 at generation 1 | c5 +1 | — | 1 |
 | 6 | pass 2 scans records above pass 1's change sequence and switches r5 | c5 −1 | c5 1 | 0 |

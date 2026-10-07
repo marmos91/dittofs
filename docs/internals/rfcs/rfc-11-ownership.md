@@ -20,7 +20,7 @@ tags:
 ---
 # RFC 11 — shards
 
-**Status:** draft. [§15](#15.%20Open%20questions) lists what is known to be undecided.
+**Status:** deferred. [§15](#15.%20Open%20questions) lists what is known to be undecided.
 **Audience:** anyone designing how several nodes serve one share.
 
 > [!note] Built after the single-node release

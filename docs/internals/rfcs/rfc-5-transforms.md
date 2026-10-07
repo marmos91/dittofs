@@ -14,6 +14,7 @@ tags:
 ---
 # RFC 5 — transforms
 
+**Status:** draft.
 **Audience:** anyone writing a transform, configuring a store's transforms, or
 deciding what a deployment that enables one is protected against. Conventions
 and test tiers are in [the RFC index](rfc-index.md).

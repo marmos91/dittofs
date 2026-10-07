@@ -2,7 +2,7 @@
 rfc: 2
 title: "RFC 2 — the carver"
 component: carver
-status: reviewed
+status: draft
 depends_on:
   - "[[rfc-0-data-lifecycle]]"
   - "[[rfc-1-journal]]"
@@ -13,7 +13,7 @@ tags:
 ---
 # RFC 2 — the carver
 
-**Status:** reviewed.
+**Status:** draft.
 **Audience:** anyone implementing or reviewing chunking or block naming.
 
 ---
@@ -722,8 +722,9 @@ Five things follow, and none of them is optional:
   orphaned target of the first run is found by its intent ([RFC 9](rfc-9-gc.md)). No
   generation counter is needed.
 
-Two writers carrying the same chunks produce two objects; the dedup oracle
-([RFC 8 §6.5](rfc-8-engine.md#6.5%20The%20dedup%20oracle)) keeps that rare, and the second is born dead and swept. That one
+Two writers carrying the same chunks produce two objects. In the first release,
+which deduplicates nothing, both stay; once the deferred dedup oracle
+([RFC 8 §6.5](rfc-8-engine.md#6.5%20The%20dedup%20oracle)) is added it keeps that rare, and the second is born dead and swept. That one
 extra put is the price of never having to defend a name against a second writer,
 a late delete or a service without conditional puts; why a retried put is safe is
 [RFC 3 §2.5](rfc-3-syncer.md#2.5%20An%20unknown%20outcome%20is%20not%20a%20success).
@@ -847,8 +848,9 @@ sequence `Cut` produced.
 > exactly that separation to swap sequential assembly for a randomised one with
 > no migration.
 
-**Where the dangerous rule went.** Assembly asks a dedup oracle whether a chunk is
-already stored. If that oracle could see the block currently being built, it would
+**Where the dangerous rule went.** Once deduplication is added, assembly asks a
+dedup oracle whether a chunk is already stored; in the first release it asks
+nothing. If that oracle could see the block currently being built, it would
 call a chunk stored before it has been uploaded — so an identical chunk later in
 the same pass carries no bytes, and if the upload then fails the content exists
 nowhere while metadata records two references to it. That hazard belongs to the

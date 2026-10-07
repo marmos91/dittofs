@@ -2,7 +2,7 @@
 rfc: 4
 title: "RFC 4 — the remote block store: block format and store contract"
 component: remote tier
-status: reviewed
+status: draft
 depends_on:
   - "[[rfc-0-data-lifecycle]]"
   - "[[rfc-2-carver]]"
@@ -13,6 +13,7 @@ tags:
 ---
 # RFC 4 — the remote block store: block format and store contract
 
+**Status:** draft.
 **Audience:** anyone implementing a remote block store, or reading or writing
 blocks. Conventions and test tiers are in [the RFC index](rfc-index.md).
 
@@ -56,7 +57,7 @@ disk file), receives 64 KiB overwrites all day.
    header, then each chunk body, encoded as it is read from the journal. One bit
    flips on the way.
 3. **Without the in-transit check**, the service stores the damaged block and
-   answers success. The journal, told the block is durable, lets its copy go.
+   answers success. The journal, told the block is remote-durable, lets its copy go.
    Days later alice signs in, her disk is read back, the chunk fails its hash
    check, and the only good copy is gone.
 4. **With it**, the service refuses the put (or its reported digest does not
@@ -553,8 +554,8 @@ No rule of this contract depends on a conditional put (put-if-absent), and a
 store **MUST NOT** issue one: services that claim the same protocol differ on it
 ([Appendix B](#Appendix%20B%20%E2%80%94%20measurements)), and a store that relied on it would be correct only on some of them.
 Doing without it rests on names minted once per attempt: no two attempts put one
-name, and GC deletes an object only once neither a block record nor a put intent
-names it — a final state, since the name is never minted again — so no put can
+name, and GC deletes an object only once no block record not yet `deleted` and no
+put intent names it — a final state, since the name is never minted again — so no put can
 re-create a block underneath its delete ([RFC 9](rfc-9-gc.md)). The capability check still
 provokes it and reports whether the service honours it
 ([§4.12](#4.12%20What%20a%20store%20makes%20observable), `conditional_put`), so a deployment knows which of its services could
