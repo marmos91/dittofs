@@ -228,8 +228,10 @@ Every call a node forwards to a primary carries one envelope:
 
 > ponytail: the dedup table is memory at the primary, so a namespace mutation
 > whose reply was lost across a failover is applied again on retry, and a
-> non-idempotent one answers as it would after any server restart (an exclusive
-> create finds the file it made). Upgrade by recording the request ID in the
+> non-idempotent one answers as it would after any server restart. An exclusive
+> create is the exception that matters, and is made safe by its stored verifier
+> ([RFC 7 §2.10](rfc-7-namespace-metadata.md#2.10%20Exclusive%20create)), not by this table; an SMB create or lock replayed on a persistent open by
+> the open's stored create GUID and lock sequences ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)). Upgrade by recording the request ID in the
 > mutation's transaction when that outcome shows up in client-visible errors.
 
 ## 5. Clients

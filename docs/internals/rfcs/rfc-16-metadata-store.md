@@ -98,7 +98,7 @@ behaviour beyond pure methods (§2.4), and each renders as JSON for debugging
 | named streams | a `File` of type `Stream` with `StreamOf` set | [RFC 7](rfc-7-namespace-metadata.md) |
 | `FilesystemInfo`, `Capabilities`, `Usage`, `PrincipalUsage`, `Quota` | what a share reports about itself, and its limits | [RFC 7](rfc-7-namespace-metadata.md) |
 | `Attrs` | the fields a `SetAttrs` changes | [RFC 7](rfc-7-namespace-metadata.md) |
-| `Client`, `Open`, `Lock`, `CachingGrant`, `Watch` | open state | [RFC 14](rfc-14-open-state.md) |
+| `Client`, `Open`, `Lock`, `CachingGrant`, `Watch`, `Layout`, `Copy` | open state | [RFC 14](rfc-14-open-state.md) |
 | `ChunkRef`, `Chunk`, `Block`, `ChunkHash`, `BlockName`, `JournalVersion`, `SnapshotCut` | the content map, the blocks it lives in, and the cut numbering snapshots | [RFC 6](rfc-6-block-metadata.md) |
 | `FileID`, `ShareID`, `Principal`, `PrincipalID` | identity | §2.2 |
 | `User`, `Group`, `Membership` | principals with names | §2.3 |
@@ -147,7 +147,7 @@ what moves with a share:
 | Scope | Entities | Moves with a share export ([RFC 12](rfc-12-snapshots.md)) |
 | --- | --- | --- |
 | Per share | Share, ShareGrant, ExportPolicy, Snapshot | yes |
-| Server-wide | User, Group, Membership, Netgroup, Node, NodeLease, Shard, Setting, ShareList | no — an export carries the principals its files and grants reference (§5, decision 8), and the names of the netgroups its policy references |
+| Server-wide | Installation, User, Group, Membership, Netgroup, Node, NodeLease, Shard, Setting, ShareList | no — an export carries the principals its files and grants reference (§5, decision 8), and the names of the netgroups its policy references |
 
 ```go
 // User and Group are principals with a name. A file refers to them only by
@@ -232,6 +232,16 @@ type Netgroup struct {
 	Name    string
 	Members []string // host names, addresses or CIDRs
 	Version uint64
+}
+
+// Installation is the installation's identity: one record, minted at random
+// when the store is created and never changed. It is the NFSv4.1 server owner's
+// major ID and the server scope on every node (RFC 14 §2.1), and the input the
+// pseudo-filesystem's handles digest (RFC 7 §6.1). A store copied to make a
+// second installation MUST be given a new one, or two installations answer
+// clients as one server.
+type Installation struct {
+	ID [16]byte
 }
 
 // ShareList is one record per installation, raised in the transaction of
@@ -468,7 +478,7 @@ What each consumer holds:
 | Filesystem service ([RFC 17](rfc-17-vfs.md)) | `Namespace`, `Files`, `Capacity`, `OpenState`, and the engine's content facade |
 | Engine | `Existence`, `Content` |
 | GC | `Blocks` |
-| Authentication (session setup, Kerberos contexts) | `Principals`; tree connect and mount go through the filesystem service's `Root` ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)) |
+| Authentication (session setup, Kerberos contexts) | `Principals`; tree connect and mount go through the filesystem service's `Shares` calls ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)) |
 | Management API | `ControlPlane` |
 | Shard placement (RFC 11) | `Node` and `Shard` records through its own view, fenced by epoch |
 | Debug tooling | `Dump` (§4.5) |
@@ -669,8 +679,9 @@ Every key starts with a kind byte. The layout encodes the boundary
 | | `F‖id‖H‖died‖suffix` | **history** of a versioned per-file record: the value it had, under its live key's suffix — `r‖offset` (ChunkRef), empty (File), `acl`, `x‖name`, `s‖streamID`, `e‖key`, `h‖start`, `ow‖start` ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)) |
 | | `F‖id‖fx`, `F‖id‖fo` | fences: the (shard, epoch) the file's commits must carry ([RFC 6 §5.4](rfc-6-block-metadata.md#5.4%20Reads%20that%20gate%20a%20commit), [RFC 11 §8](rfc-11-ownership.md#8.%20Metadata%20consistency)). Per-file and range shards, and their records, are deferred ([RFC 11 Appendix C](rfc-11-ownership.md#Appendix%20C%20%E2%80%94%20later%3A%20per-file%20and%20range%20shards)) |
 | | `F‖id‖rel` | pending release: written by the final unlink, deleted only by the release transaction; holds no holder list, the holders are the `o‖` records ([RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)) |
-| | `F‖id‖o‖openID` | durable Open (only the cases RFC 14 makes durable: keeps an unlinked file alive, SMB persistent handle) |
+| | `F‖id‖o‖openID` | durable Open (only the cases RFC 14 makes durable: keeps an unlinked file alive, SMB persistent handle); a persistent open's value holds every field, its create GUID, app instance, timeout and lock sequences included, and the lease covering it with its key, parent key, kind and epoch ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)) |
 | | `F‖id‖o‖openID‖l‖start` | durable Lock, only under a persistent open, so closing the open drops one prefix ([RFC 14](rfc-14-open-state.md)) |
+| | `F‖id‖dp` | delete pending, with the entry it will remove; written only while the file has a persistent open, deleted by that entry's unlink or by a clear ([RFC 14 §9.4](rfc-14-open-state.md#9.4%20Delete%20on%20close)) |
 | **Per share** — under `S‖ShareID` | `S‖id‖info` | Share |
 | | `S‖id‖g‖principal` | ShareGrant |
 | | `S‖id‖xp` | ExportPolicy |
@@ -702,6 +713,8 @@ Every key starts with a kind byte. The layout encodes the boundary
 | | `NP‖path` | share path index: path → `ShareID`, unique; the pseudo-filesystem is built by listing it (RFC 17 §4.9) |
 | | `NG‖name` | Netgroup |
 | | `SL` | ShareList: one version per installation |
+| | `IN` | Installation: the installation's identity, written once at store creation (§2.3) |
+| | `NSM` | the NSM state number, one per installation; raised durably before the grace of any failover that lost NLM locks ([RFC 14 §4.5](rfc-14-open-state.md#4.5%20NLM%20locks%20and%20restart%20notification)) |
 | | `PX‖scheme‖id` | protocol-ID index: UID, GID, SID → `PrincipalID`; the only place a protocol spelling is stored (§2.2) |
 | | `N‖node`, `N‖node‖exp` | Node: its node epoch and whether a takeover marked it lapsed, guarded by every fenced commit; NodeLease: the lease's expiry, which a renewal writes with its journals' generations and nothing else ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)) |
 | | `SH‖shard` | Shard, with its primary as (node, node epoch, journal identity, incarnation) and its replicas ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)) |
@@ -713,12 +726,12 @@ Every key starts with a kind byte. The layout encodes the boundary
 | | `SLOT` | slot table: the fixed slot count and each slot's ordered nodes, primary first, weighted by node capacity; one per installation, changed only by compare-and-swap ([RFC 11 §2.2](rfc-11-ownership.md#2.2%20Automatic%20per-child%20shards)) |
 | | `CFG‖scope‖key` | Setting |
 | | `SEC‖id` | Secret (§2.3): envelope-encrypted, never dumped or exported |
-| | `CL‖clientID`, `CL‖clientID‖sh‖shard` | durable Client record: only what reclaim needs, and the shards the client held state in (`Client.Shards`), checked on reclaim ([RFC 14](rfc-14-open-state.md)) |
+| | `CL‖clientID`, `CL‖clientID‖sh‖shard` | durable Client record: only what reclaim needs, and the shards the client held state in (`Client.Shards`), checked on reclaim ([RFC 14](rfc-14-open-state.md)); for an NLM host also its notification address, so these records are the NSM monitor list ([RFC 14 §4.5](rfc-14-open-state.md#4.5%20NLM%20locks%20and%20restart%20notification)) |
 | **Store** | `\x00format` | store format record (§4.6) |
 
 The table is **exhaustive**: every key the store writes has a row. A new
 record kind is a format bump (§4.6) and gets its row in the same change;
-volatile open state (locks, caching grants, watches, non-durable opens) and
+volatile open state (locks, caching grants, watches, layouts, asynchronous copies, non-durable opens, delete pending without a persistent open) and
 the primary's in-memory tables (quota reservations, routed-request dedup) are
 never written to the KV and so have none. A file's shard and its primary's epoch
 need no row of their own: the shard is a `File` field and the epoch is in the
