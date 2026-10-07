@@ -568,11 +568,15 @@ per primary for entries whose files live in other shards.
 ### 5.8 The write verifier
 
 The NFS write verifier is returned by the engine's `Write` and `Commit` and
-derived from the primary's node, its node epoch and the process instance — not
-from the shard epoch ([RFC 11 §7](rfc-11-ownership.md#7.%20Protocol%20state)). The service passes it through unchanged. It
+derived from the primary's node, its node epoch, the process instance and the
+loss generation of the journal holding the file — not from the shard epoch
+([RFC 11 §7](rfc-11-ownership.md#7.%20Protocol%20state), [RFC 8 §4.1](rfc-8-engine.md#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)). The service passes it through unchanged. It
 therefore changes whenever the node serving the file's shard as primary changes
-or restarts, and not when only the shard epoch is raised, which is what makes a client resend writes it sent unstable
-([RFC 14 §10](rfc-14-open-state.md#10.%20Shard%20placement)).
+or restarts, and whenever the running primary's journal loses writes it had
+acknowledged as unstable ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)), and not when only the shard epoch
+is raised. A change is what makes a client resend writes it sent unstable
+([RFC 14 §10](rfc-14-open-state.md#10.%20Shard%20placement)); on the normal path none of the inputs moves, and the
+verifier is constant.
 
 ## 6. Invariants
 
@@ -629,6 +633,11 @@ engine's spans. No share label on per-operation metrics ([RFC 16 §8.1](rfc-16-m
     it (V7), driven by a model test that interleaves the two;
   - a write retried after a dropped reply, with another write between, applies
     once (V11);
+  - the verifier `Write` and `Commit` return through the service changes after
+    the primary's journal drops an unstable write as lost, in the same process
+    and epoch, and is unchanged across a shard-epoch raise that moves nothing
+    (§5.8); a service that caches the verifier per process passes the second
+    half and fails the first;
   - writers through `k` primaries overshoot a hard limit by no more than §5.6's
     bound, counted per run;
   - an event sink that blocks does not slow an operation, and its drops are

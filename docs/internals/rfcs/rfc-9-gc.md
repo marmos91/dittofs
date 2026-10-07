@@ -364,6 +364,17 @@ committed again ([§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20unde
 
 ### 3.3 Adoption resurrects a retired block
 
+> [!note] Deferred with dedup
+> Dedup is off in the first release. Resurrection exists to make adoption by an
+> offload commit — a dedup hit — cheap and safe, so it is deferred with dedup and
+> this section stays as the design for re-adding it. Without the dedup oracle no
+> offload commit adopts. A clone adopts only from a counted snapshot, whose refs
+> hold its chunks, so it never meets a `retired` block ([RFC 6 §7.4](rfc-6-block-metadata.md#7.4%20Restore)). Whether a
+> restore from a catalog backup can meet one is open ([§12](#12.%20Open%20questions)); if it can,
+> resurrection stays for that path only. Resurrection by a count correction —
+> the audit's raise or the deleter's refused verification ([§3.5](#3.5%20The%20deleter%20verifies%20before%20it%20deletes), [§6.2](#6.2%20Corrections)) — is
+> not deferred: it repairs a count, not an adoption, and G4 holds as written.
+
 Adoption is an offload commit, a clone or a restore referencing a chunk it did
 not carry ([RFC 6 §7.2](rfc-6-block-metadata.md#7.2%20Adoption%20is%20conditional%20on%20existence)). It reads the chunk record and the block the record
 names, and acts on that block's state:
@@ -410,6 +421,14 @@ durable until a commit succeeds ([RFC 6 §4.3](rfc-6-block-metadata.md#4.3%20The
 never a client-visible error.
 
 ### 3.4 A retired key is not re-created underneath its delete
+
+> [!note] Deferred with dedup
+> The danger below — content coming back to a name GC has retired — is reached
+> through adoption ([§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block)), so the guarantee is deferred with dedup and stays
+> as the design for re-adding it, with the same open exception for restore from
+> a catalog backup. The put-intent rules are not deferred: they also order a put
+> that lands late against its own abandonment (the examples below), which
+> happens with dedup off.
 
 The danger this section rules out: GC deletes object *K*, and at the same moment,
 or later, something puts a new object under the same name *K* and commits a block
@@ -1333,8 +1352,8 @@ the implementation, not by timing.
 
 | Requirement | Check |
 | --- | --- |
-| [§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block) resurrection against the deleter | Interleave an adopting commit and `MarkDeleted` on one retired block at every step boundary, in both orders. Assert either the block is `live` with the new ref and no delete is issued, or the block is `deleted`, the adopting ref is refused, and the re-offer uploads the chunk. Assert no ref ever names a chunk whose object is gone. |
-| [§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block) serialisation | Make the adoption's and the deleter's reads of the block record untracked, with neither writing it. Assert the check fails, so the rig can see the race it guards. |
+| [§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block) resurrection against the deleter (deferred with dedup) | Interleave an adopting commit and `MarkDeleted` on one retired block at every step boundary, in both orders. Assert either the block is `live` with the new ref and no delete is issued, or the block is `deleted`, the adopting ref is refused, and the re-offer uploads the chunk. Assert no ref ever names a chunk whose object is gone. |
+| [§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block) serialisation (deferred with dedup) | Make the adoption's and the deleter's reads of the block record untracked, with neither writing it. Assert the check fails, so the rig can see the race it guards. |
 | [§3.5](#3.5%20The%20deleter%20verifies%20before%20it%20deletes) verification | Decrement a refcount without dropping its ref, let the block retire, run the deleter. Assert it refuses, resurrects the block, raises the count and counts the refusal. Commit a ref to a chunk of a due block while `MarkDeleted` is in flight; assert one of them retries. |
 | [§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete) intents | For each writer (an offload, a compaction) and each abandoner (epoch moved on, domain deleted, the writer itself), run the intent write, the put, the abandonment, the delete and the commit in every order. Assert no `live` block record ever names a deleted object and a commit whose intent was abandoned fails. |
 | [§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete) late put | Abandon an intent while its put is in flight and land the put before the put-bound wait ends. Assert the object is deleted with no listing. Land it after the delete; assert only the backstop finds it. |
@@ -1458,6 +1477,17 @@ where a row names the scale tier.
    against resurrection and the second net, waits for measured resurrection rates.
 6. **The partition count** ([§7.3](#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)). A fixed count per namespace is proposed; how many
    follows from the deleter and audit throughput per node at 10⁴ namespaces.
+7. **Does restore from a catalog backup need resurrection?** Resurrection
+   ([§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block)) and the retired-name guarantee ([§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete)) are deferred with dedup. A
+   recovery import ([RFC 12 §3.3](rfc-12-snapshots.md#3.3%20Restore)) rebuilds a lost metadata store and
+   recomputes every count from the imported refs, so it finds no `retired`
+   record to resurrect, and the backup's hold kept every block it names counted
+   until the store was lost ([RFC 12 §3.2](rfc-12-snapshots.md#3.2%20A%20backup%20holds%20its%20snapshot)). A restore into a store that still
+   exists adopts through [RFC 6 §7.4](rfc-6-block-metadata.md#7.4%20Restore), and its chunks are held by the
+   snapshot's refs. Neither path is shown to meet a `retired` block, but RFC 6
+   §7.4 still names resurrection for restore. The proposal on the table: if any
+   restore can reference a block retired after its backup was taken, resurrection
+   stays for that path only; otherwise it is removed from restore with dedup.
 
 ---
 

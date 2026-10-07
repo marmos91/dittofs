@@ -33,6 +33,8 @@ tags:
   output that the engine's offload pipeline drives ([§5](#5.%20The%20block%20assembler)).
 - The settings are public, so this layer does not hide which files you have
   ([§6](#6.%20Boundaries%20are%20public)).
+- Dedup is off in the first release; the key-scope matching rules of [§4.3](#4.3%20Key%20scope)
+  are kept as the design for re-adding it.
 
 ## Background
 
@@ -590,6 +592,23 @@ stored by one share is found by another only within one namespace.
 The scope is encoded in every name ever written, so changing how it is derived
 orphans every existing object at once ([§4.2](#4.2%20A%20block)).
 
+> [!note] Deferred with dedup
+> Dedup is off in the first release and can be added back without a format
+> change. Of this section, only the part about matching is deferred with it:
+> which chunks the dedup oracle may match, and the table above, decide who may
+> share a chunk across files, and with no oracle nobody does. They stay here as
+> the design for re-adding dedup. The scope in the name is **not** deferred: it
+> is written into every name from the first block, so a block still cannot
+> verify under another namespace's name, and adding dedup later changes no name.
+>
+> When dedup returns, consider keying chunk IDs per namespace — a keyed hash
+> such as an HMAC under a namespace key — rather than the unkeyed hash of
+> [§4.1](#4.1%20A%20chunk). An unkeyed hash of plaintext lets anyone who can read the
+> bucket and the dedup index confirm that a namespace holds a known file by
+> hashing that file, which is what sealing the header hashes was meant to
+> prevent ([§6](#6.%20Boundaries%20are%20public)). Changing the chunk ID is a migration ([§3.6](#3.6%20Changing%20any%20of%20this%20is%20a%20migration)), so it is decided
+> before dedup is re-enabled, not after.
+
 ## 5. The block assembler
 
 *Blocks are packed by the block assembler, a pure fold over the chunks the carver
@@ -1044,7 +1063,8 @@ the same box differs by more across those than across commits.
 
 ## 11. Open questions
 
-None. The three this document carried are settled:
+One, deferred with dedup: whether chunk IDs are keyed per namespace when dedup
+is re-added ([§4.3](#4.3%20Key%20scope)). The three this document carried before are settled:
 
 1. **Which way out of Appendix A.1:** the masks are computed from `Target` ([§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)),
    default 256 KiB. Measured in [Appendix C](#Appendix%20C%20%E2%80%94%20choosing%20the%20target).

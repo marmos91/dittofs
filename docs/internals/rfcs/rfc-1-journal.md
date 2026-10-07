@@ -68,12 +68,12 @@ No metadata store, no carver, no syncer, no block store. A check **MUST** be
 writable as: open a journal on a temporary directory, drive the interface of
 [§3](#3.%20Interface), assert on what comes back and what is on disk.
 
-**The filesystem is real, never faked.** Hole-punch alignment, torn tails and
-whether a write survived are properties of real storage.
+**The filesystem is real, never faked.** Torn tails, directory-entry
+durability and whether a write survived are properties of real storage.
 
 **Storage loss is simulated beneath the journal, not by killing it.** The journal
 reaches its segment files through a narrow, package-internal seam — open, write
-at an offset, sync, punch, close. A test wraps the real file and remembers every
+at an offset, sync, close, unlink. A test wraps the real file and remembers every
 write since the last sync; a simulated crash discards exactly those and reopens
 the journal on the same directory. Killing the process instead leaves unsynced
 writes in the page cache, and proves a durability the journal does not have.
@@ -119,8 +119,9 @@ Resolving which is which is [RFC 0 §6.1](rfc-0-data-lifecycle.md#6.1%20Resoluti
 
 A gap is a gap in the file, not in storage. The journal never writes into space
 freed inside a segment: every record is appended at the end of its stream
-([§4.2](#4.2%20Segments)), and freed space goes back to the filesystem by punching ([§8.1](#8.1%20Releasing%20storage)) or by
-repack ([§8.2](#8.2%20Repack)). A write that fills a gap in a file lands wherever its stream
+([§4.2](#4.2%20Segments)), and space goes back to the filesystem only when a whole segment is
+unlinked ([§8.1](#8.1%20Releasing%20storage)), after repack has carried its live records forward
+([§8.2](#8.2%20Repack)). A write that fills a gap in a file lands wherever its stream
 stands, like any other write.
 
 ![The same held extents mapped to records scattered across three segments in append order, interleaved with another file](img/rfc1-placement.svg)
@@ -333,7 +334,7 @@ ones.
 
 **A removal does not interrupt an offer.** A `Truncate`, `Deallocate` or `Delete`
 while `fn` runs takes effect at once for `ReadAt`, and **MUST NOT**
-change what `offered` returns: the offered records stay on disk, unpunched, until
+change what `offered` returns: the offered records stay on disk, unmoved, until
 `fn` returns. A report naming an extent removed meanwhile marks nothing, because
 nothing is held there. The engine drops the removed refs at commit
 ([RFC 8](rfc-8-engine.md)).
@@ -391,8 +392,9 @@ make undurable content evictable, and nothing would fail at the time.
 Release(id FileID, extents []Extent) (freed int64, err error)
 ```
 
-Stops holding `extents` and frees the underlying local storage. This is the
-mechanism of eviction; the policy is the engine's ([RFC 0 §8.1](rfc-0-data-lifecycle.md#8.1%20Evict)).
+Stops holding `extents`. This is the mechanism of eviction; the policy is the
+engine's ([RFC 0 §8.1](rfc-0-data-lifecycle.md#8.1%20Evict)). It frees no storage inside a record: storage returns
+only when a segment is unlinked ([§8.1](#8.1%20Releasing%20storage)).
 
 `Release` **MUST** refuse an extent whose offloaded bit is unset, and **MUST** make
 no partial progress on a refused call: the journal's enforcement of [RFC 0](rfc-0-data-lifecycle.md)'s
@@ -402,11 +404,14 @@ The caller **MUST NOT** call `Release` before the offload commit that made the
 content durable is itself durable ([RFC 0 §8.1](rfc-0-data-lifecycle.md#8.1%20Evict)). Eviction records nothing
 elsewhere; the journal cannot verify this ordering and does not try.
 
-`freed` is the local storage actually returned to the filesystem, which **MAY** be
-less than the extent length ([§8.3](#8.3%20Accounting)). It **MUST NOT** count storage still waiting
-for a punch or an unlink: a `Release` either syncs its release records (grouped
-with any other pending sync) and punches before it returns, or returns
-a completion the engine waits on, which reports `freed` once the storage is back.
+`freed` is the local storage actually returned to the filesystem: the size of
+each segment the release left not **held** ([§8.2](#8.2%20Repack)), which is then unlinked. It is
+zero when every segment touched still backs a held extent, whatever the extent
+length; that storage returns when repack retires the segment. It **MUST NOT**
+count storage still waiting for an unlink: a `Release` either syncs its release
+records (grouped with any other pending sync) and unlinks before it returns, or
+returns a completion the engine waits on, which reports `freed` once the storage
+is back.
 `UsedBytes` falls at the same moment, never earlier. An engine that sees space
 reported free and retries a refused write before it is free gets the refusal
 again ([§7](#7.%20Capacity)).
@@ -417,10 +422,10 @@ new sequence number ([§5.3](#5.3%20Versions)). Recovery applies it like any rec
 record still on disk is not held again after a restart. A release leaves no
 removal marker: eviction removes nothing from the file.
 
-The release record **MUST** be durable before any storage it frees is punched or
-its segment unlinked ([§6.1](#6.1%20Ordering%20rules)). If a crash loses the record, it loses the punch
-too, and the released record is still whole on disk: held again after recovery,
-as it was before the release. A release record draws on the reserved headroom of
+The release record **MUST** be durable before the segment holding the released
+record is unlinked ([§6.1](#6.1%20Ordering%20rules)). If a crash loses the record, the segment is still
+on disk and the released record still whole: held again after recovery, as it
+was before the release. A release record draws on the reserved headroom of
 [§7](#7.%20Capacity), so a full journal can always release.
 
 ### 3.6 Truncate, deallocate and delete
@@ -502,10 +507,8 @@ walk can produce is omitted.
 | `Files` | gauge | files with at least one held extent |
 | `ExtentCount` | gauge | held extents |
 | `Segments` / `Sealed` | gauge | segments in total, and sealed |
-| `SparseBytes` | gauge | storage released inside segments not yet unlinked |
+| `UnreclaimedBytes` | gauge | storage in segments not yet unlinked that backs no held extent and no live record; what repack can recover ([§8.2](#8.2%20Repack)) |
 | `OpenDescriptors` / `DescriptorLimit` | gauge | open segment descriptors, and the bound they are held under ([§8.4](#8.4%20Open%20descriptors)) |
-| `PunchSupported` | bool | whether this journal directory's filesystem supports hole punching ([§8.1](#8.1%20Releasing%20storage)) |
-| `FilesystemBlockSize` | gauge | the punch granularity ([§8.1](#8.1%20Releasing%20storage)) |
 | `DamagedSegments` | gauge | segments holding records that do not verify ([§9.3](#9.3%20Torn%20and%20corrupt%20records)) |
 | `LastSyncError` | value | the most recent sync failure, and when ([§6.2](#6.2%20Sync%20policy)) |
 | `SyncDuration` | histogram | time per sync; the one operation only the journal can time |
@@ -515,12 +518,12 @@ walk can produce is omitted.
 | `RejectedSegments` | gauge | segments not attached ([§9.1](#9.1%20Rebuilding)) |
 | `Recovery` | value | how many segments the last open read by catalog and by scan, and how long it took ([§9.1](#9.1%20Rebuilding)) |
 | `Losses` | value | the most recent loss events, each with a sequence number ([§3.8](#3.8%20Loss%20events)) |
+| `LossGeneration` | value | raised on every loss event and every failed sync resolved by failing its window; in memory, zero at open ([§3.8](#3.8%20Loss%20events)) |
 | `Shares` | per share | `Limit`, `UsedBytes`, `ReservedBytes`, `HeldBytes` and `DirtyBytes` for each share ([§7](#7.%20Capacity)) |
 
 `DirtyBytes` against `HeldBytes` says whether anything is evictable at all, and
 `HeldBytes` against `UsedBytes` whether a full journal is full of content or of
-storage no repack has recovered. `PunchSupported` and `FilesystemBlockSize` tell a
-release that frees nothing because it spanned no whole block from one that failed.
+storage no repack has recovered, which `UnreclaimedBytes` names.
 `OldestDirty` says how long content has waited to reach the remote tier: a
 backlog that grows old is content one device failure away from loss, whatever
 its size ([RFC 8 §14](rfc-8-engine.md#14.%20Observability)). The journal keeps it without a walk, from the
@@ -534,7 +537,7 @@ order in which the counters are updated:
 - `DirtyBytes` ≤ `HeldBytes`: a write raises `HeldBytes` before `DirtyBytes`,
   and a removal lowers `DirtyBytes` before `HeldBytes`;
 - `UsedBytes` ≥ what the segments allocate: an allocation raises `UsedBytes`
-  before it happens, and a punch or unlink lowers it only after it has happened;
+  before it happens, and an unlink lowers it only after it has happened;
 - `ReservedBytes` ≥ 0: a reservation is released only after the bytes it
   covered are counted in `UsedBytes`.
 
@@ -549,6 +552,17 @@ extent, the reason, and whether its offloaded bit was set. `Stats` keeps the mos
 recent ones in a bounded ring, each with a sequence number, and counts them all
 ([§3.9](#3.9%20Metrics)), so a poller sees every new event or knows how many it missed. The
 engine logs each one.
+
+**A loss raises the loss generation.** The journal keeps a **loss generation**,
+a counter it **MUST** raise by one on every loss event and on every failed sync
+resolved by failing its window ([§6.3](#6.3%20A%20failed%20sync)), and exposes as `Stats.LossGeneration`
+([§3.7](#3.7%20State%20introspection)). It is raised before the event is published and before any `Sync` the
+failure fails returns. It is kept in memory only and starts at zero on open: a
+restart already changes the process instance the engine's write verifier
+carries. The engine folds the loss generation into that verifier
+([RFC 8 §4.1](rfc-8-engine.md#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)), so a client holding unstable writes acknowledged before the
+loss sees the verifier change and sends them again. A failed sync resolved by
+re-appending loses nothing and **MUST NOT** raise it.
 
 The journal calls out to nothing to report. Everything an operator needs to tell
 a wedged journal from a slow one — at capacity, nothing evictable, syncing
@@ -569,7 +583,7 @@ times `WriteAt` and counts read hits and misses itself. The counters live in
 | `filled_bytes` | remote bytes placed by `Fill`; with written, the cold-read share of local writes |
 | `fill_refused` | fills refused as older than the file ([§3.4](#3.4%20Fill)) |
 | `offered_bytes`, `marked_bytes` | bytes offered at offload and bytes marked durable; the lag between them is offload falling behind |
-| `released_bytes`, `freed_bytes` | bytes released, and storage actually returned by punching and unlinking ([§8.1](#8.1%20Releasing%20storage)) |
+| `released_bytes`, `freed_bytes` | bytes released, and storage actually returned by unlinking segments ([§8.1](#8.1%20Releasing%20storage)) |
 | `repacked_bytes` | bytes moved by repack; the write amplification reclamation adds |
 | `reservation_refused` | writes refused at capacity ([§7](#7.%20Capacity)) |
 | `syncs`, `sync_failures` | syncs issued, and failed ([§6.2](#6.2%20Sync%20policy)); syncs against writes shows whether group commit works |
@@ -756,11 +770,14 @@ The header checksum **MUST** cover every other header field, the payload
 checksum included, so between them the two cover the whole record. An
 implementation **MUST NOT** exclude any header field from coverage.
 
-They are separate so that a record's boundaries survive a punch. Releasing an
-extent punches its payload ([§8.1](#8.1%20Releasing%20storage)) and leaves its header, which still verifies;
-a scan reads the length from it and steps over. With one checksum over both, a
-punched record would look corrupt, and in a scanned segment every record after it
-would be refused ([§9.3](#9.3%20Torn%20and%20corrupt%20records)).
+They are separate so that a scan can trust a record's boundaries without reading
+its payload: the header verifies on its own, and a scan reads the length from it
+and steps over a payload it has no reason to check, such as one wholly covered by
+a later record (below).
+
+**One payload checksum covers the whole payload**, so a record verifies only
+while every byte of its payload is intact. No operation frees or alters part of
+a record's payload; storage is freed in whole segments only ([§8.1](#8.1%20Releasing%20storage)).
 
 An unrecognised record kind fails the open like an unrecognised format ([§4.1](#4.1%20Layout)).
 **A kind added later is a new format version**: a newer binary opens a journal of
@@ -879,6 +896,32 @@ understand it loses speed and nothing else.
 make those durable. The trailer **MUST NOT** be written before the entries it
 describes are durable: a valid trailer over unwritten entries is the one failure
 this layout cannot detect.
+
+### 4.6 Segments or staging files, chosen by benchmark
+
+Two shapes can sit behind the interface of [§3](#3.%20Interface) — `WriteAt`, `Sync`, `ReadAt`,
+`Offload`, `Fill`, `Release` and the rest unchanged — and both keep content
+versions ([§5.3](#5.3%20Versions)) and the offloaded bit ([§2](#2.%20The%20model%20it%20presents)), so [RFC 2](rfc-2-carver.md), [RFC 3](rfc-3-syncer.md) and [RFC 8](rfc-8-engine.md) do
+not change with the choice:
+
+| | **A: segments** (this RFC) | **B: staging files** |
+| --- | --- | --- |
+| Unit on disk | records appended to shared segments ([§4.2](#4.2%20Segments)) | one small file per dirty slice on a local filesystem, written then synced; its header carries `FileID`, file offset and content version |
+| Eviction | `Release` stops holding; storage returns when repack retires a segment ([§8](#8.%20Reclamation%20mechanisms)) | an unlink of the slice's file |
+| Removes | — | the segment format, the catalog, the index rebuild from catalogs, and repack |
+| Costs | repack's copies; catalog and recovery machinery | many small files; one sync per file plus a directory sync for each new one |
+
+B is one file per dirty slice, not a single log.
+
+> [!note] decision
+> Segments are the specified shape until a benchmark says otherwise. Both shapes
+> are measured on three workloads: many small files, each followed by a `Sync`
+> for a client COMMIT; one large sequential stream; and random in-place
+> overwrites inside one large file behind one long-lived handle — a 30 GiB file
+> taking 64 KiB random overwrites, then read cold. COMMIT latency and small-file
+> throughput are the gate, and the gap that would justify switching is fixed
+> before the run, not after. If B comes within that gap of A on both gate
+> measures, B is adopted for what it removes; otherwise A stands.
 
 ## 5. The placement index
 
@@ -1053,7 +1096,7 @@ separate, explicit action.
 | --- | --- |
 | A record **MUST** be written before `WriteAt` returns, and synced by a `Sync` or within the sync bound ([§6.2](#6.2%20Sync%20policy)). `Sync` returns only once synced. | The acknowledgement is a promise, of exactly the durability the policy states. |
 | `Release` **MUST NOT** precede the durable offload commit the offloaded bit reflects. | Otherwise a crash can leave content whose only copy is gone ([RFC 0 §8.1](rfc-0-data-lifecycle.md#8.1%20Evict)). |
-| A release record **MUST** be durable before any storage it frees is punched or unlinked. | Otherwise a crash can lose the record and keep the punch, and an older record the release covered is held again ([§3.5](#3.5%20Release)). |
+| A release record **MUST** be durable before the segment holding the record it released is unlinked. | Otherwise a crash can lose the record and keep the unlink, and an older record the release covered is held again ([§3.5](#3.5%20Release)). |
 | A segment's records **MUST** be durable before the segment is unlinked by reclamation. | A reclaim pass **MUST** be content-preserving ([RFC 0 §8.2](rfc-0-data-lifecycle.md#8.2%20Reclaim)). |
 | Marking an offloaded bit **MUST NOT** precede the report that justifies it. | [RFC 0](rfc-0-data-lifecycle.md) invariant I5. |
 | A directory sync **MUST** follow the creation of a segment or the `format` file before any `Sync` covering its records returns. | Otherwise power loss can drop a synced segment's directory entry, and the segment with it ([§4.2](#4.2%20Segments)). |
@@ -1104,7 +1147,10 @@ not durable**, and the journal **MUST** do one of two things for it:
   then sync that one. The writes' `Sync` calls wait for the new sync;
 - **fail it.** Return the error from `Sync` for every file with a write in that
   window, and treat those writes' records as lost at the next open unless
-  recovery finds them whole.
+  recovery finds them whole. Failing a window raises the loss generation
+  ([§3.8](#3.8%20Loss%20events)) before any of those `Sync` calls returns, and the engine folds it
+  into its write verifier ([RFC 8 §4.1](rfc-8-engine.md#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)), so a client resends the unstable
+  writes the window held. Re-appending loses nothing and does not raise it.
 
 A later successful sync of the same segment **MUST NOT** satisfy a `Sync` for a
 write made before the failure. The journal keeps syncing the stream: a failure
@@ -1163,61 +1209,46 @@ The journal provides mechanisms. The policy that drives them is the engine's.
 
 ### 8.1 Releasing storage
 
-`Release` frees the storage backing specific extents. Where the filesystem
-supports punching a hole in a file, an implementation **SHOULD** use it, so that
-released storage is returned without moving the records that survive in the
-same segment.
+`Release` stops holding extents; it frees no storage itself. **Storage is freed
+in whole segments only**: a segment's storage returns to the filesystem when the
+segment is unlinked, which happens once it is no longer **held** ([§8.2](#8.2%20Repack)) — because
+releases and supersession left it nothing live, or because repack carried its
+live records forward.
 
-Where hole punching is unavailable, the implementation **MUST** still stop
-holding the extents, and **MAY** defer the actual storage recovery to a repack
-([§8.2](#8.2%20Repack)). `Release` **MUST NOT** silently retain the content in a readable state:
-a released extent is absent, whatever the filesystem did.
+An implementation **MUST NOT** free, zero or deallocate any byte range inside a
+segment while the segment remains. One checksum covers a record's whole payload
+([§4.3](#4.3%20Records)), so freeing part of a record would leave its remaining bytes
+unverifiable: recovery would drop the record ([§9.3](#9.3%20Torn%20and%20corrupt%20records)), and a remainder still dirty
+would resolve as **Lost**. A record partly released keeps all its bytes on disk
+until repack copies its held part forward, with its content version unchanged
+([§5.3](#5.3%20Versions)), and the segment holding the original is unlinked.
 
-#### Punching frees whole blocks only
+`Release` **MUST NOT** silently retain the content in a readable state: a released
+extent is absent from reads at once, whatever is still on disk.
 
-A punch does not free an arbitrary byte range. **Whole filesystem blocks lying
-entirely inside the range are deallocated; the partial blocks at either end are
-zeroed but stay allocated.** Zeroing is confined to the requested range, so a
-punch never damages a neighbouring record, whatever its alignment.
+> [!note] ponytail
+> Released bytes stay allocated until repack retires their segment, so every
+> reclaimed byte costs a copy of the live records sharing its segment, and the
+> journal sits fuller for longer than one that frees storage at release; the
+> engine's capacity pacing ([RFC 8 §10.2.1](rfc-8-engine.md#10.2.1%20Writes%20are%20paced%20before%20the%20limit%2C%20not%20stopped%20at%20it)) may need retuning for that
+> longer hold. Measured by J8 ([§11.6](#11.6%20Benchmarks)). If repack's write amplification
+> under an eviction-heavy load is too high, the upgrade is to free storage at
+> release for **whole records only** — never part of one — leaving partly
+> released records to repack as now.
 
-![A released extent across filesystem blocks: whole interior blocks deallocated, the partial ends zeroed but still allocated, and nothing outside the range touched](img/rfc1-punch-blocks.svg)
-
-An implementation **MUST NOT** infer freed storage from the length of the extent
-it released. `Release` reports `freed` separately ([§3.5](#3.5%20Release)) for exactly this reason,
-and for a small or badly aligned extent the honest answer is zero.
-
-Some platforms reject an unaligned punch outright and do nothing ([Appendix A](#Appendix%20A%20%E2%80%94%20platform%20profile)).
-An implementation **MUST** therefore round the start up and the end down to the
-filesystem's block size, obtained from the filesystem rather than assumed. The
-zeroed edges are recovered by repack ([§8.2](#8.2%20Repack)).
-
-An implementation **MUST** detect punch support at runtime, per journal
-directory, rather than infer it from the platform: a filesystem that supports
-punching may still refuse it. A refusal **MUST** fall back to repack rather than
-fail the release. Where a platform's punch zero-fills without deallocating unless
-the file is first marked sparse, each segment **MUST** be marked sparse at
-creation; otherwise `Release` consumes the space it exists to recover, while
-reporting success.
-
-Without punch support the journal is correct but every reclaimed byte costs a
-copy of live records; deployments **SHOULD** use a filesystem that punches
-([Appendix A](#Appendix%20A%20%E2%80%94%20platform%20profile)).
-
-![A segment before and after releasing one extent: the released extents are freed while every other record keeps its offset and the file length is unchanged](img/rfc1-release-punch.svg)
-
-No surviving record moves, so a release rewrites no index entry and copies no
-bytes; the segment becomes sparse, which is why [§8.3](#8.3%20Accounting) accounts allocated storage.
+No surviving record moves at release, so a release rewrites no index entry and
+copies no bytes.
 
 A segment that is not **held** ([§8.2](#8.2%20Repack)) **MUST** be unlinked.
 
 ### 8.2 Repack
 
 Repack is the principal mechanism of *reclaim* ([RFC 0 §8.2](rfc-0-data-lifecycle.md#8.2%20Reclaim)). It copies the
-still-live records of a sparse segment into another segment, repoints the
+still-live records of a segment into another segment, repoints the
 placement index, and unlinks the original. It is local and discards nothing; it
 is unrelated to the remote relocation of [RFC 9](rfc-9-gc.md).
 
-It recovers storage punching cannot ([§8.1](#8.1%20Releasing%20storage)), retires fragmented segments that still
+It is how released storage returns to the filesystem ([§8.1](#8.1%20Releasing%20storage)), retires fragmented segments that still
 cost a descriptor ([§8.4](#8.4%20Open%20descriptors)), and coalesces index entries ([§5.2](#5.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)).
 
 **Selection.** Candidacy is decided from held bytes per segment against the
@@ -1233,6 +1264,11 @@ undurable content evictable.
 **A copy gets a new sequence number and keeps its content version** ([§5.3](#5.3%20Versions)).
 The new sequence number makes the copy the successor if a crash leaves both on
 disk; the kept version keeps it recognisable to its ref at reseed.
+
+**A partly released record is copied in part.** Repack copies only the held
+extents of a record, each as a new record with its own payload checksum, and
+never the released part. The original stays whole on disk until its segment is
+unlinked ([§8.1](#8.1%20Releasing%20storage)).
 
 **Records without content are carried forward.** A release record is live while
 it still outranks a record of its file in another segment ([§5.3](#5.3%20Versions)). A truncate,
@@ -1275,8 +1311,9 @@ target.
 
 ### 8.3 Accounting
 
-Accounted local footprint **MUST** reflect storage actually allocated, not the
-sum of file lengths, or punching frees nothing the limit can see.
+Accounted local footprint **MUST** reflect storage the journal's files actually
+allocate, not the sum of held extents: a release frees nothing until its
+segment is unlinked ([§8.1](#8.1%20Releasing%20storage)), and the limit must see that.
 
 Every file the journal creates **MUST** be accounted, including each segment's
 catalog ([§4.4](#4.4%20The%20segment%20catalog)). Storage that is not accounted is storage no limit bounds and
@@ -1558,8 +1595,9 @@ existence ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the
 
 ### 10.5 Protecting readers from reclamation
 
-Between resolving an extent and reading it, `Release` may punch the storage or
-repack move the record, and a punched region **reads as zeros**, not an error.
+Between resolving an extent and reading it, repack may move the record and the
+segment holding it may be unlinked, whether by repack or because a release left
+it not held ([§8.1](#8.1%20Releasing%20storage)).
 
 An implementation **MUST** guarantee that a read either observes the location it
 resolved, intact, or discovers that it must retry or report the extent missing.
@@ -1567,8 +1605,8 @@ It **MUST NOT** be possible for a read to return bytes from storage that has bee
 freed or reused.
 
 The mechanism is a **shared/exclusive guard per segment**: readers hold it
-shared; release and repack take it exclusively, which waits for in-flight reads
-of that segment only, and punch or unlink only then. An implementation **MAY**
+shared; an unlink takes it exclusively, which waits for in-flight reads of that
+segment only, and unlinks only then. An implementation **MAY**
 use another mechanism with the same guarantee, provided freeing storage is still
 the last step, after no reader can hold the old resolution.
 
@@ -1606,12 +1644,12 @@ section is the journal's plan.
 | --- | --- | --- |
 | Unit | pure logic with no storage: the placement index, coalescing, overlap splitting, the record and catalog codecs | table-driven, in memory; the only place an in-memory stand-in is allowed |
 | Conformance | every check in [§11.4](#11.4%20The%20checks) | real filesystem in a temporary directory, virtual time, on every supported platform ([§11.3](#11.3%20Environments%20a%20check%20set%20must%20cover)) |
-| Fault injection | lost, torn and reordered writes, flipped bits, outside edits ([§11.7](#11.7%20Corruption%2C%20crashes%20and%20edits%20from%20outside)); `EIO` and `ENOSPC` from sync, write and punch | the storage seam of [§1.3](#1.3%20It%20is%20testable%20on%20its%20own), which drops or fails exactly the operations named |
+| Fault injection | lost, torn and reordered writes, flipped bits, outside edits ([§11.7](#11.7%20Corruption%2C%20crashes%20and%20edits%20from%20outside)); `EIO` and `ENOSPC` from sync, write and unlink | the storage seam of [§1.3](#1.3%20It%20is%20testable%20on%20its%20own), which drops or fails exactly the operations named |
 | Model-based | sequences no hand-written case thinks of | random sequences of `WriteAt`, `Fill`, `Offload`, `Release`, `Truncate`, `Deallocate`, `Delete`, `Settle`, repack, crash and reopen, compared after every step against a reference model: each file's bytes, each extent's offloaded bit, and the removal markers `Since` yields. A failing sequence is shrunk to the shortest that still fails and kept as a regression case |
 | Fuzz | parsers of bytes the journal did not just write: records, segment headers and trailers, catalogs | coverage-guided fuzzing; the property is that any input is either accepted as valid or rejected, never panics and never yields an extent the bytes do not contain |
 | Concurrency | [§10](#10.%20Concurrency): lock order, readers against reclamation, progress | data-race detector, at least two files on two streams, virtual time for the waits |
 | Structure | the dependency set of [§1.1](#1.1%20Non-goals) | an import test |
-| Benchmark | [§11.6](#11.6%20Benchmarks), J1–J7 | real time, real device; after merge and daily, never per change ([§11.8](#11.8%20What%20CI%20checks%20instead%20of%20timing)) |
+| Benchmark | [§11.6](#11.6%20Benchmarks), J1–J9 | real time, real device; after merge and daily, never per change ([§11.8](#11.8%20What%20CI%20checks%20instead%20of%20timing)) |
 | Soak | what only appears after hours: index growth, descriptor leaks, footprint drift | mixed write, offload, release and repack load for hours against a capacity smaller than the data written, asserting that the [§5.1](#5.1%20What%20it%20must%20answer) counters, open descriptors and footprint stay flat |
 
 The model-based test finds the interleavings no hand-picked case imagined — a
@@ -1636,6 +1674,7 @@ Beyond the named checks, the unit, model and fault tests **MUST** reach these.
 - `Fill` over an extent that is partly held, partly dirty and partly absent ([§3.4](#3.4%20Fill));
 - `Offload` where `fn` reports extents it was not offered, or reports none ([§3.3](#3.3%20Offload));
 - `Release` of an extent only part of which carries an offloaded bit ([§3.5](#3.5%20Release));
+- `Release` of the middle of one record, of one end, and of every part of it in separate calls ([§8.1](#8.1%20Releasing%20storage));
 - a segment in which every record has been released, which must become reclaimable without a read.
 
 **Capacity and storage**
@@ -1653,7 +1692,7 @@ Beyond the named checks, the unit, model and fault tests **MUST** reach these.
 
 | Dimension | Requirement |
 | --- | --- |
-| Filesystems | at least one **with** hole-punch support and one **without** ([§8.1](#8.1%20Releasing%20storage)). Alignment and sparse-file behaviour differ by platform ([Appendix A](#Appendix%20A%20%E2%80%94%20platform%20profile)), so the [§8.1](#8.1%20Releasing%20storage) checks **MUST** run on every platform the deployment supports, not one representative |
+| Filesystems | every filesystem the deployment supports, not one representative: sync and unlink semantics differ by platform ([Appendix A](#Appendix%20A%20%E2%80%94%20platform%20profile)) |
 | Files and streams | at least two files across at least two append streams. A single-file rig maps to one stream and **structurally cannot** observe [§10](#10.%20Concurrency) |
 | Shares | at least two shares on one journal, so per-share accounting and limits ([§7](#7.%20Capacity)) are exercised |
 | Storage loss | by dropping writes at the seam ([§1.3](#1.3%20It%20is%20testable%20on%20its%20own)), never by terminating the process |
@@ -1675,12 +1714,14 @@ A check here fails by **serving or destroying the wrong bytes without an error**
 | [§3.4](#3.4%20Fill) fill safety | Hold a `Fill` at the storage seam after it has found the extent absent, `WriteAt` the same extent, then let the fill continue; assert the written bytes survive. |
 | [§3.4](#3.4%20Fill) fill sets the bit | Fill an absent extent; assert `Release` then permits it. `WriteAt` the same extent; assert `Release` refuses it again. |
 | [§3.5](#3.5%20Release) refusal | Ask to release an extent with no offloaded bit; assert refusal and no partial progress. |
-| [§8.1](#8.1%20Releasing%20storage) neighbours survive a punch | Place two records so they share a filesystem block; release one; assert the other still reads its exact bytes. The check guards against an implementation that widens the punched range beyond what was released. |
+| [§8.1](#8.1%20Releasing%20storage) partial release keeps the record whole | Write one 1 MiB record; report only its first half durable; release that half; crash and reopen, once by catalog and once by scan. Assert the second half reads its exact bytes, is still dirty, and no loss event or corruption is reported. A design that frees part of a record fails: the record no longer verifies, and the dirty half resolves as **Lost**. |
+| [§8.1](#8.1%20Releasing%20storage) release frees nothing inside a segment | Release extents of every shape against segments that stay held; assert the storage seam sees no operation on those segments but appends, and that their allocated size is unchanged. |
+| [§8.2](#8.2%20Repack) repack copies the live part | Release the middle of an offloaded record; repack its segment; reopen. Assert both ends read their exact bytes, `MarkDurable` at the original versions marks them, the middle reads `missing`, and the original segment is unlinked. |
 | [§8.2](#8.2%20Repack) crash mid-repack | Simulate a crash ([§1.3](#1.3%20It%20is%20testable%20on%20its%20own)) between the copy and the unlink; assert recovery selects the copies, every held extent still reads, and no extent is duplicated in the placement index. |
 | [§9.3](#9.3%20Torn%20and%20corrupt%20records) corrupt, dirty | After reseed, corrupt a record whose extent is dirty; assert the read reports the extent `missing`, the sentinel in `p` is untouched, and the event names the file and extent as data loss. |
 | [§9.3](#9.3%20Torn%20and%20corrupt%20records) corrupt, durable | After reseed, corrupt a record whose extent's offloaded bit is set; assert the read reports the extent `missing` and the event is reported as repairable. |
-| [§10.5](#10.5%20Protecting%20readers%20from%20reclamation) punch under read | Write a non-zero pattern, start a read of it, punch its storage mid-read; assert the read either returns the pattern or reports the extent missing with the sentinel in `p` untouched. |
-| [§10.5](#10.5%20Protecting%20readers%20from%20reclamation) repack under read | Same, with a repack copy instead of punching; assert the read sees the old or the new location, never neither. |
+| [§10.5](#10.5%20Protecting%20readers%20from%20reclamation) unlink under read | Write a non-zero pattern into a segment holding nothing else, start a read of it, release the extent mid-read so the segment is unlinked; assert the read either returns the pattern or reports the extent missing with the sentinel in `p` untouched. |
+| [§10.5](#10.5%20Protecting%20readers%20from%20reclamation) repack under read | Same, with a repack copy and unlink instead; assert the read sees the old or the new location, never neither. |
 | [§3.10](#3.10%20Settle%20and%20Since) removals survive to `Since` | Write, then truncate, deallocate and delete across three files; crash before any `Settle`; reopen; assert `Since(id, 0)` yields each held extent and each removal marker at its version. `Settle` each file at its removal's version; assert `Since` no longer yields the marker and `RemovalMarkers` is zero. Crash and reopen again; assert the markers are back, unsettled. |
 | [§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete) no resurrection | Write at v2, deallocate at v3 over it, then `Fill` the range with a current `asOf` and version v2; assert the range reads `missing`, and still does after reopen. Repeat with version v3: assert the fill is held, since only content below the marker's version is excluded. |
 | [§8.2](#8.2%20Repack) removal outlives its segment | Write a file, overwrite it, delete it, then reclaim until the segment holding the delete is the only one selected; crash and reopen. Assert the file does not exist. A reclaim gate that counts only content records treats a segment holding just a removal as empty. |
@@ -1688,6 +1729,7 @@ A check here fails by **serving or destroying the wrong bytes without an error**
 | [§3.3](#3.3%20Offload) neighbours are frozen | Hold durable content either side of a dirty extent; offload with `widen`; while `fn` runs, overwrite one neighbour and release the other; assert `Offered` still returns the neighbours' original bytes, `Oldest` covers their versions, and a report naming them changes no bit. |
 | [§8.2](#8.2%20Repack) removal records carried forward | Write A, offload; truncate it away; let every segment holding A's records but the oldest be repacked; reopen; assert the extent reads `missing`, not A. Repeat with a delete and a deallocate. Then truncate a file whose older records are all gone, leave the marker unsettled, repack the truncate's segment, reopen; assert `Since` still yields the marker. |
 | [§8.2](#8.2%20Repack) copy loses to a newer write | Hold a repack after it has read a record and before it appends the copy; overwrite the extent; let the repack continue; assert the new bytes are served, before and after reopen, and no copy of the old record was appended. |
+| [§3.8](#3.8%20Loss%20events) loss raises the loss generation | Read `LossGeneration`; drop a corrupt dirty extent and assert it rose by one; fail a sync and resolve it by failing its window, and assert it rose again before the failing `Sync` returned; fail another and resolve it by re-appending, and assert it did not move. A design without the generation leaves the write verifier unchanged, and a client never resends the writes the loss took. |
 | [§6.3](#6.3%20A%20failed%20sync) failed sync window | Write A and B to one segment; fail the sync at the seam and drop the unsynced writes; let a later sync of the segment succeed; assert `Sync` for A and B either failed or returned only after A and B were synced in another segment, and that after a crash both read back or `Sync` reported the failure. |
 | [§4.2](#4.2%20Segments) directory entry survives | Create a segment, write and `Sync`; crash at the seam dropping every directory change not synced; assert the segment and its record survive. |
 | [§4.4](#4.4%20The%20segment%20catalog) footer is not authoritative | Corrupt a sealed segment's footer; assert recovery scans that segment and reaches the same index. Then write a verifying footer whose entry disagrees with its record's header; assert the read through that entry is refused as corruption. |
@@ -1707,13 +1749,9 @@ A check here fails by **reaching a state it cannot leave**, or by consuming with
 | [§5.1](#5.1%20What%20it%20must%20answer) bounds | Build a file index of 10^6 extents; assert point lookup and span query cost does not grow linearly with extent count. |
 | [§6.3](#6.3%20A%20failed%20sync) sync failure | Fail a sync; assert the caller sees it and that subsequent writes to the same stream still attempt to sync. |
 | [§7](#7.%20Capacity) records without bytes at the limit | Fill the journal to its maximum; assert truncate, deallocate, delete, release, `MarkDurable`, a seal and its footer all succeed without `ErrNoSpace`, and `headroom_draws` counts them. Make the filesystem return `ENOSPC`; assert that failure is reported as `ENOSPC`, not `ErrNoSpace`. |
-| [§3.5](#3.5%20Release) freed means freed | Release extents whose punch the seam holds back; assert `freed` and `UsedBytes` do not move until the punch completes. |
+| [§3.5](#3.5%20Release) freed means freed | Release the last held extents of a segment whose unlink the seam holds back; assert `freed` and `UsedBytes` do not move until the unlink completes. |
 | [§9.3](#9.3%20Torn%20and%20corrupt%20records) segment reclaimable | After the dropped extents, assert repack can select the segment and that its storage is recovered. |
-| [§8.1](#8.1%20Releasing%20storage) no punch support | Force the punch path to fail; assert the extent is still absent and reclamation falls back to repack. |
-| [§8.1](#8.1%20Releasing%20storage) release never grows | Release an extent and assert accounted footprint never *increases*. On a platform that needs segments marked sparse ([§8.1](#8.1%20Releasing%20storage)), this fails outright if they were not. |
-| [§8.1](#8.1%20Releasing%20storage) sub-block release | Release an extent smaller than a filesystem block; assert it is absent from reads and that `freed` reports **zero**, not the extent length. |
-| [§8.1](#8.1%20Releasing%20storage) alignment is portable | Release an unaligned extent; assert it succeeds on every supported platform. An implementation that passes the range through unaligned fails where unaligned punches are rejected. |
-| [§8.1](#8.1%20Releasing%20storage) storage returned | Release an extent, assert accounted footprint decreases. |
+| [§8.1](#8.1%20Releasing%20storage) storage returned | Release every held extent of a sealed segment; assert it is unlinked and accounted footprint falls by its size. Release part of another; assert `freed` is zero and `UnreclaimedBytes` grows, and that footprint falls only once repack has retired the segment. |
 | [§10.6](#10.6%20Progress) reclaim not starved | Hold sustained read load on one segment; assert reclamation still acquires it within a bounded time. |
 | [§10.3](#10.3%20Lock%20ordering%2C%20and%20what%20may%20never%20be%20held) no deadlock | Run readers, writers, repack and release concurrently on the same segments under a deadlock detector; assert no cycle and no lock held across the offload callback. |
 | [§10.7](#10.7%20Shutdown) background joined | Close the store with a repack in flight; assert it stops before any segment is closed and no work continues afterwards. |
@@ -1730,9 +1768,8 @@ A check here fails by **coming back up describing something other than what is o
 | [§9.2](#9.2%20Offload%20state%20after%20recovery) bits survive restart | Offload and mark an extent, write another and leave it dirty, crash and reopen; before any `MarkDurable`, assert `Release` permits the first and refuses the second. Crash before the durable record syncs; assert the extent comes back unmarked, never the reverse. |
 | [§9.2](#9.2%20Offload%20state%20after%20recovery) reseed by version | Offload A, overwrite with B, crash before B is offloaded; `MarkDurable` the extent at A's versions; assert B stays unmarked and `Release` refuses it. |
 | [§8.2](#8.2%20Repack) reseed after repack | Offload an extent, repack its segment, crash; `MarkDurable` at the offload's versions; assert the extent is marked and `Release` permits it. |
-| [§3.5](#3.5%20Release) release survives restart | Write A, offload; write B over it into another segment, offload, release and punch B; reopen; assert the extent reads `missing`, not A. |
-| [§3.5](#3.5%20Release) release record lost | Release an extent and crash before the release record syncs; assert the punch did not happen and the extent is held with its original bytes. |
-| [§4.3](#4.3%20Records) punched record in a scan | Punch a record in the active segment and reopen by scan; assert no corruption is reported and every record after it is held. |
+| [§3.5](#3.5%20Release) release survives restart | Write A, offload; write B over it into another segment, offload and release B; reopen; assert the extent reads `missing`, not A. |
+| [§3.5](#3.5%20Release) release record lost | Release the last held extent of a segment and crash before the release record syncs; assert the segment was not unlinked and the extent is held with its original bytes. |
 | [§3.4](#3.4%20Fill) fill beats an older write | Write A, offload, write B, offload, release B; `Fill` the extent with B's bytes; crash and reopen; assert the extent reads B, not A. |
 | [§3.4](#3.4%20Fill) stale Fill | Read an extent missing; write, offload and release it; then `Fill` with the first read's `asOf`; assert nothing is written. Repeat with a truncate down and up in place of the write. |
 | [§3.3](#3.3%20Offload) incremental report | Report one block's extents mid-callback, then fail the callback; assert the reported extents are marked and releasable and the rest are not. |
@@ -1757,7 +1794,6 @@ A check here fails by **leaving an operator unable to tell which of two opposite
 | [§3.7](#3.7%20State%20introspection) stats are cheap | Poll `Stats` under concurrent write load; assert it takes no lock a write needs and its cost does not grow with held extents. |
 | [§3.7](#3.7%20State%20introspection) named inequalities hold | Poll `Stats` in a tight loop under concurrent writes, releases, truncates and repack; assert every sample keeps `DirtyBytes` ≤ `HeldBytes`, `ReservedBytes` ≥ 0 and `UsedBytes` ≥ the storage the seam reports allocated. |
 | [§3.7](#3.7%20State%20introspection) backlog age | Write, advance the virtual clock, offload part; assert `OldestDirty` is the write time of the oldest extent still dirty. |
-| [§3.7](#3.7%20State%20introspection) punch visibility | Run on a filesystem without punch support; assert `PunchSupported` is false and that a release reporting `freed == 0` is distinguishable from a failed one. |
 | [§3.9](#3.9%20Metrics) metrics are reachable | Drive every condition a metric names — a refused reservation, a failed sync, a corrupt dirty extent, a rejected segment, a torn tail — and assert each moves its metric through `Stats`. |
 | [§3.8](#3.8%20Loss%20events) loss events | Drop a corrupt dirty extent and a stale one; assert each appears in `Losses` with its file, extent, reason and bit, and that a poller that missed events can tell how many. |
 | [§5.1](#5.1%20What%20it%20must%20answer) segment held-bytes | Write, release and repack across several segments; assert the per-segment counter matches a recomputed walk at every step. |
@@ -1767,7 +1803,7 @@ A check here fails by **leaving an operator unable to tell which of two opposite
 
 The index's rules apply ([test tiers](rfc-index.md#Test%20tiers)). For the journal in particular, an
 in-memory segment implementation **MUST NOT** stand in for the filesystem in
-[§8.1](#8.1%20Releasing%20storage), [§9.1](#9.1%20Rebuilding) or [§9.3](#9.3%20Torn%20and%20corrupt%20records): hole-punch alignment, torn tails and bit corruption are
+[§8.1](#8.1%20Releasing%20storage), [§9.1](#9.1%20Rebuilding) or [§9.3](#9.3%20Torn%20and%20corrupt%20records): unlink durability, torn tails and bit corruption are
 properties of real storage.
 
 ### 11.6 Benchmarks
@@ -1788,6 +1824,8 @@ sync pattern. The targets are proposed, to be confirmed once J1 has run.
 | J5 | reclamation under load | release and repack ([§8](#8.%20Reclamation%20mechanisms)) while J1 runs | J1's p99 ≤ 1.5× J1 alone |
 | J6 | recovery | reopen after 1 GiB, 100 GiB and 1 TiB held, from catalogs and by scan | from catalogs at 1 TiB: first read within 30 s. A scan, about 17 minutes at 1 GB/s, is reported with no target |
 | J7 | reseed | `MarkDurable` every held extent after reopen ([§9.2](#9.2%20Offload%20state%20after%20recovery)), 10^4 to 10^7 extents | ≤ 1 µs per extent, journal side, with reads, writes and eviction served throughout |
+| J8 | repack write amplification | eviction-heavy load: J1 against a capacity well below the data written, the engine releasing durable content continuously; report `repacked_bytes` per `released_bytes` and J1's throughput against J1 alone | none yet; the gate of [§8.1](#8.1%20Releasing%20storage)'s marker |
+| J9 | journal shape | the three workloads of [§4.6](#4.6%20Segments%20or%20staging%20files%2C%20chosen%20by%20benchmark), on segments and on staging files | COMMIT latency and small-file throughput within the gap agreed before the run |
 | — | `Stats` | polled under write load | O(1), ≤ 1 µs |
 
 Method: run J1 and J5 long enough to exhaust the device's write cache and report
@@ -1870,9 +1908,10 @@ lost group commit, an index that stopped being `O(log n)` — are counted instea
 1. **Scrub.** Verification on read never checks content that is never read, so
    long-held dirty content can decay unnoticed; whether a paced background pass,
    taking the [§9.3](#9.3%20Torn%20and%20corrupt%20records) action on a failure, earns its disk bandwidth is undecided.
-2. **Hole-punch behaviour** ([§8.1](#8.1%20Releasing%20storage)). Whether repeated per-extent punching degrades a
-   segment's extent map at scale is unmeasured, and one platform's edge-zeroing
-   rule rests on documentation rather than a run ([Appendix A](#Appendix%20A%20%E2%80%94%20platform%20profile)).
+2. **Repack write amplification** ([§8.1](#8.1%20Releasing%20storage)). Freeing storage only in whole
+   segments makes every reclaimed byte cost a copy of its live neighbours; how
+   much under an eviction-heavy load is unmeasured (J8), and decides whether
+   whole-record freeing at release is worth adding.
 3. **Segment size** ([§4.2](#4.2%20Segments)). With descriptors bounded separately ([§8.4](#8.4%20Open%20descriptors)), segment
    size has two remaining effects, and both push the same way: it sets
    reclamation granularity, and it bounds the worst-case active-segment scan at
@@ -1891,7 +1930,9 @@ lost group commit, an index that stopped being `O(log n)` — are counted instea
    Whether one leader may sync several streams at once, or streams should be
    fewer than writers' natural grouping suggests, is unmeasured against the
    contention more streams remove.
-7. **Headroom and seal threshold** ([§7](#7.%20Capacity), [§9.1](#9.1%20Rebuilding)). The reserved headroom's
+7. **Journal shape** ([§4.6](#4.6%20Segments%20or%20staging%20files%2C%20chosen%20by%20benchmark)). Segments or one staging file per dirty slice,
+   decided by J9.
+8. **Headroom and seal threshold** ([§7](#7.%20Capacity), [§9.1](#9.1%20Rebuilding)). The reserved headroom's
    size and the 16 MiB idle-seal threshold are proposals; neither has been
    measured against a journal held at its limit or against recovery time.
 
@@ -1899,31 +1940,10 @@ lost group commit, an index that stopped being `O(log n)` — are counted instea
 
 ## Appendix A — platform profile
 
-Punch support and semantics on common platforms, as measured or documented. This
-is a profile, not a requirement: [§8.1](#8.1%20Releasing%20storage) states the rules, and an implementation
-detects support at runtime.
-
-| Platform | Filesystem | Mechanism | Since |
-| --- | --- | --- | --- |
-| Linux | XFS | `fallocate`, `FALLOC_FL_PUNCH_HOLE \| FALLOC_FL_KEEP_SIZE` | kernel 2.6.38 |
-| Linux | ext4 | same | kernel 3.0 |
-| Linux | tmpfs | same | kernel 3.5 |
-| Linux | Btrfs | same | kernel 3.7 |
-| Linux | gfs2 | same | kernel 4.16 |
-| Linux | OpenZFS | same; mimics ext4 semantics | ZFS 0.6.4 |
-| Linux | NFS | `DEALLOCATE`, v4.2 only | — |
-| macOS | APFS | `fcntl` `F_PUNCHHOLE`, block-aligned ranges only | 10.13 |
-| macOS | HFS+ | none | — |
-| Windows | NTFS, ReFS | `FSCTL_SET_ZERO_DATA`; requires `FSCTL_SET_SPARSE` first | XP / Server 2003 |
-| any | FAT, exFAT | none | — |
-
-- **ext4, XFS, btrfs** (measured, 4 KiB blocks): an unaligned punch frees only
-  the whole blocks inside it, a sub-block one nothing; all zero exactly the range.
-  Partial edge blocks are zeroed (documented, not run).
-- **APFS** rejects an unaligned `F_PUNCHHOLE` with `EINVAL` and does nothing (measured).
-- **Windows**: without `FSCTL_SET_SPARSE`, `FSCTL_SET_ZERO_DATA` writes zeros and
-  allocates the whole range — the reason for [§8.1](#8.1%20Releasing%20storage)'s sparse rule.
-- Suitable journal filesystems: ext4, XFS or Btrfs on Linux; APFS on macOS.
+The journal frees storage only by unlinking whole segments ([§8.1](#8.1%20Releasing%20storage)), so it needs
+no hole punching or sparse files from the filesystem; what differs by platform
+is how a sync reaches the device and how an open file is unlinked. Suitable
+journal filesystems: ext4, XFS or Btrfs on Linux; APFS on macOS; NTFS on Windows.
 
 Sync and unlink, per platform ([§4.2](#4.2%20Segments), [§6.2](#6.2%20Sync%20policy)):
 

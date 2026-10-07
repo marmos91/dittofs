@@ -30,7 +30,7 @@ definition; every other RFC uses the word in this sense and does not redefine it
 | **role** | what a node runs: `protocol` (adapters and the filesystem service, no state of its own) or `storage` (the metadata store's view, open state, the content subsystem and journals) | [RFC 15 §2](rfc-15-topology.md#2.%20Roles) |
 | **installation** | all the nodes that share one metadata store and control plane; the widest scope a setting has | [RFC 13 §3](rfc-13-configuration.md#3.%20Scopes) |
 | **share** | one exported file tree, with its own settings, snapshots and journal limits | [RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities) |
-| **namespace** | one prefix, like a folder, inside a bucket of the remote tier; chunks are deduplicated and counted within one namespace, never across two | [RFC 6 §2.6](rfc-6-block-metadata.md#2.6%20The%20scope%20of%20a%20count) |
+| **namespace** | one prefix, like a folder, inside a bucket of the remote tier; chunks are counted (and, once deduplication is added, deduplicated) within one namespace, never across two | [RFC 6 §2.6](rfc-6-block-metadata.md#2.6%20The%20scope%20of%20a%20count) |
 | **remote tier** / **remote store** | the durable object storage behind the journals / one configured backend of it | [RFC 4](rfc-4-remote-tier.md) |
 | **journal** | the local tier: one per device on a storage node, holding recent writes until they are offloaded | [RFC 1](rfc-1-journal.md) |
 | **offload** | the pass that copies a journal's dirty extents to the remote tier and records them in metadata | [§5.2](#5.2%20Offload) |
@@ -199,9 +199,10 @@ chunks, and the chunks are shared.
 
 The refs are ordered and belong to the file. The chunks are content-addressed and
 belong to nobody: the same chunk is named by every ref whose content hashes to
-it, and its refcount is how many refs those are. This is the whole of
-deduplication — there is no copying step and no second representation, only a
-second ref naming a chunk that already exists.
+it, and its refcount is how many refs those are. This is the whole of sharing —
+a clone, a snapshot and, once it is added, deduplication ([§3.1](#3.1%20Deduplication)) all
+work the same way: no copying step and no second representation, only a second
+ref naming a chunk that already exists.
 
 Because boundaries are content-defined, an edit disturbs only the chunks it
 falls inside. Editing the middle of a file re-cuts the middle chunk; the chunks
@@ -282,10 +283,40 @@ is looked up, never derived from the identifier.
 
 ### 3.1 Deduplication
 
-Deduplication is per chunk. A chunk whose hash is already known is referenced
-rather than stored or transferred again, and its refcount increases. It catches
-any overlap between files, whole or partial; there is no second, whole-file
-mechanism.
+**The first release does not deduplicate across files.** Offload always carries
+the chunks it cuts: it never asks whether a chunk is already stored and never
+references one in place of uploading it. A chunk is therefore referenced only by
+the file whose offload carried it, that file's snapshot history, and clones and
+server-side copies made from an existing ref ([RFC 6 §6.6](rfc-6-block-metadata.md#6.6%20Clone%20and%20server-side%20copy)). Chunks stay
+content-addressed and named by their hash, which is still verified on every
+read, and refcounts stay, because clones and snapshots share chunks.
+
+Two consequences follow. Offload never resurrects a block: a commit that
+carries a chunk whose record names a retired block repoints the record to its
+own block instead ([RFC 6 §7.2](rfc-6-block-metadata.md#7.2%20Adoption%20is%20conditional%20on%20existence)), so once a block's count has reached zero
+no offload raises it again, and sweep never races a reference arriving through
+offload. Clones,
+copies and restores still raise counts from existing refs, and the
+retire-and-resurrect protocol stays for them ([§8.3](#8.3%20Sweep)). And two files that
+carry identical bytes still name one chunk record, because a record is keyed by
+its hash alone ([RFC 6 §4.1](rfc-6-block-metadata.md#4.1%20What%20one%20commit%20records)); each commit carried the bytes, so neither
+depends on a lookup having been right.
+
+> decision: cross-file deduplication is off in the first release. Its oracle is
+> the one component where a single wrong answer — a chunk reported stored that
+> is stored nowhere — loses data rather than costing bytes
+> ([RFC 8 §6.5](rfc-8-engine.md#6.5%20The%20dedup%20oracle)). Content-addressed chunks and refcounts keep it
+> re-addable without a format or record change; the deferred design is
+> [RFC 6 §8.2](rfc-6-block-metadata.md#8.2%20Deduplication%20lookup) and RFC 8 §6.5. Overturned by a deduplication ratio
+> measured on a real customer corpus that pays for the risk, or by customer
+> demand for it.
+
+**Deduplication, when added, is per chunk.** A chunk whose hash is already known
+is referenced rather than stored or transferred again, and its refcount
+increases. It catches any overlap between files, whole or partial; there is no
+second, whole-file mechanism. Nothing in the first release may close this
+path: no record may bind a chunk to one file, and no rule may assume a chunk
+record is reached only through its own file's refs.
 
 ## 4. Residency
 
@@ -319,25 +350,40 @@ oracle this section exists to remove.
 ### 4.2 The residency function
 
 An extent's residency is not stored. It is computed from the two answers. For an
-offset, metadata answers one of three classes ([RFC 6](rfc-6-block-metadata.md)): a **hole**
-(or past the end of the file), **uncarved** (written, no chunk yet), or **carved**
-(a chunk covers it; a chunk is recorded only once its block is durable).
+offset, metadata answers one of three classes ([RFC 6 §3.2](rfc-6-block-metadata.md#3.2%20Every%20offset%20is%20in%20exactly%20one%20class)): a **hole**
+(or past the end of the file), **uncarved** (written, no current chunk yet), or
+**carved** (a chunk covers it; a chunk is recorded only once its block is
+durable). Metadata's answer has one input beyond the refs: the file's
+**overwrite set**, the ranges overwritten since content there was last
+offloaded, each with its overwriting version ([RFC 6 §3.3](rfc-6-block-metadata.md#3.3%20Holes%2C%20not%20written%20extents)). An offset
+a chunk covers is carved only if no overwrite newer than that chunk's content
+covers it; otherwise the chunk is stale, and the offset is uncarved.
 
-| metadata | journal | residency | read behaviour |
-| --- | --- | --- | --- |
-| hole | absent | **Absent** | zeros |
-| hole | present | **Dirty** | serve locally: a write whose existence is not yet committed ([§5.1](#5.1%20Write)) |
-| uncarved | present | **Dirty** | serve locally |
-| uncarved | absent | **Lost** | fail |
-| carved | present | **Resident** | serve locally |
-| carved | absent | **Remote** | get, fill, serve |
+| metadata | journal | residency | read behaviour | check |
+| --- | --- | --- | --- | --- |
+| hole | absent | **Absent** | zeros | a never-written range reads zeros with no fetch |
+| hole | present | **Dirty** | serve locally: a write whose existence is not yet committed ([§5.1](#5.1%20Write)) | an unstable write past EOF reads back before its stability point |
+| uncarved, no chunk | present | **Dirty** | serve locally | a stabilised, unoffloaded write reads back |
+| uncarved, no chunk | absent | **Lost** | fail | the same write, its journal extent dropped, fails rather than reading zeros |
+| uncarved, stale chunk | present | **Dirty** | serve locally | an overwrite of offloaded content reads the new bytes before its offload |
+| uncarved, stale chunk | absent | **Lost** | fail; never the stale chunk | the same overwrite, stabilised and its journal extent dropped, fails rather than reading the older chunk |
+| carved | present | **Resident** | serve locally | an offloaded, unevicted extent reads with no fetch |
+| carved | absent | **Remote** | get, fill, serve | an evicted extent is fetched and verified |
 
-Until a write's existence is committed, metadata still calls its range a hole.
-If the journal loses those bytes to local corruption before the next stability
-point, the range reads as **Absent** — the one way I1 can fail, accepted as the
-price of group-committing existence ([§5.1](#5.1%20Write)). A crash alone cannot cause it,
-because the journal's record survives a crash; the journal reports the
-corruption as a loss event ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)).
+Each row's check is driven at the component that consumes the answer
+([RFC 8 §7.1](rfc-8-engine.md#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata)), and each fails on a design that merges that row into
+another: without the overwrite set, the stale-chunk rows are classed carved,
+and the last of them serves old data as **Remote**.
+
+Until a write's existence is committed, metadata still calls its range a hole,
+or, for an overwrite of offloaded content, carved. If the journal loses those
+bytes to local corruption before the next stability point, the range reads as
+**Absent**, or as the older content — the one way I1 can fail, accepted as the
+price of group-committing existence ([§5.1](#5.1%20Write)), since the write was never
+stable. A crash alone cannot cause it, because the journal's record survives a
+crash; the journal reports the corruption as a loss event and raises its loss
+generation, which changes the write verifier so the client resends
+([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events), [RFC 8 §4.1](rfc-8-engine.md#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)).
 
 ![The two oracles and the five states their answers imply, with journal silence shown as the ambiguity a single source cannot resolve](img/rfc0-residency-join.svg)
 
@@ -571,7 +617,8 @@ implementation **MUST** ensure that content created or referenced after a sweep
 began cannot be deleted by that sweep, even when every individual observation
 was correct when made. [RFC 9](rfc-9-gc.md) specifies the protocol: a block is retired in
 the transaction that leaves its count at zero, a later reference to one of its
-chunks brings it back, and the irreversible step — deleting it — is taken in a
+chunks — a clone, a copy or a restore; offload never does ([§3.1](#3.1%20Deduplication)) — brings
+it back, and the irreversible step — deleting it — is taken in a
 transaction that first checks an index of the references themselves, so a count
 that drifted low cannot delete anything. It needs no fence against writers: a name is never put twice
 ([§5.2](#5.2%20Offload)), so a remote object may be deleted once no block record and no put
@@ -584,7 +631,7 @@ These hold across components. No component can enforce any of them alone.
 
 | # | Invariant |
 | --- | --- |
-| **I1** | An extent that exists is never read as zeros. Zeros are returned only for **Absent**. |
+| **I1** | An extent that exists is never read as zeros, nor as older content a committed overwrite replaced. Zeros are returned only for **Absent**. |
 | **I2** | A **Dirty** extent is never evicted. |
 | **I3** | A remote block is never deleted while any chunk it contains is referenced. |
 | **I4** | Fill never overwrites content the journal holds. |
@@ -642,7 +689,7 @@ it break.
 
 | # | Test owned by | Signal owned by |
 | --- | --- | --- |
-| **I1** | [RFC 8](rfc-8-engine.md): reads of **Lost** and **Remote** extents | RFC 8: reads failed as **Lost**, reads failed because the remote tier is unavailable |
+| **I1** | [RFC 8](rfc-8-engine.md): reads of **Lost** and **Remote** extents, including an overwrite of offloaded content whose journal copy is lost | RFC 8: reads failed as **Lost**, reads failed because the remote tier is unavailable |
 | **I2** | [RFC 1](rfc-1-journal.md): `Release` refuses unmarked extents; RFC 8: eviction choice | RFC 1: dirty bytes against held bytes |
 | **I3** | [RFC 9](rfc-9-gc.md): sweep against concurrent reference, including history refs a snapshot still sees | RFC 9: blocks swept, deletions refused; [RFC 6](rfc-6-block-metadata.md): count audit mismatches |
 | **I4** | RFC 1: `Fill` against a concurrent write | RFC 1: fills refused as older than the file |
@@ -732,5 +779,5 @@ wait longer, under its own stated bound.
    policy. Which one is right on real workloads is unmeasured.
 3. **Eviction granularity** ([§8.1](#8.1%20Evict)) — this document constrains eviction by
    durability, not by unit; the unit is [RFC 1](rfc-1-journal.md)'s to choose. The right segment size
-   is unmeasured, as is whether per-extent hole punching degrades at scale
+   is unmeasured, as is repack's write amplification now that storage is freed only in whole segments
    ([RFC 1 §12](rfc-1-journal.md#12.%20Open%20questions)).

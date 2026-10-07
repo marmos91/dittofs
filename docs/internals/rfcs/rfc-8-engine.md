@@ -40,9 +40,14 @@ labelled **proposal** and names the measurement that would overturn it.
   remote tier's; every fact is block metadata's or the namespace's.
 - It is the content data path, one per node with the storage role, serving every
   share whose shards that node is primary of. It decides policy through five small policy
-  components, runs four modules — the work queue, the offload pipeline, the
-  dedup oracle and the speculator — and is the content **facade** the filesystem
-  service calls ([RFC 17](rfc-17-vfs.md)). Adapters never call it.
+  components, runs three modules — the work queue, the offload pipeline and the
+  speculator — and is the content **facade** the filesystem service calls
+  ([RFC 17](rfc-17-vfs.md)). Adapters never call it.
+- Offload always carries its chunks. Cross-file deduplication is not in the
+  first release; its module, the dedup oracle, is specified and deferred
+  ([§6.5](#6.5%20The%20dedup%20oracle)).
+- The write verifier changes on restart, on a change of primary node, and when
+  the journal loses unstable writes; never otherwise ([§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)).
 - It is a library in the process, not a service, and never on the byte path.
 - It owns the joins no component can own alone: residency resolution on read, the
   offload pipeline, and the ordering of a write and its stability point. Blocks
@@ -146,11 +151,12 @@ store of its own ([RFC 4](rfc-4-remote-tier.md)).
 
 **The key scope is the namespace.** Each share context carries its namespace ID as
 its key scope ([RFC 2 §4.3](rfc-2-carver.md#4.3%20Key%20scope)): block names are minted under it ([§6.6](#6.6%20A%20block%27s%20name%20is%20minted%2C%20and%20its%20intent%20recorded%2C%20before%20the%20put)) and
-the dedup oracle answers within it ([§6.5](#6.5%20The%20dedup%20oracle)). Content-addressed records are
-partitioned by namespace ([RFC 6 §2.6](rfc-6-block-metadata.md#2.6%20The%20scope%20of%20a%20count)), so two shares of one namespace deduplicate
-against each other and shares of two namespaces never do. During a re-home a
+the deferred dedup oracle would answer within it ([§6.5](#6.5%20The%20dedup%20oracle)). Content-addressed
+records are partitioned by namespace ([RFC 6 §2.6](rfc-6-block-metadata.md#2.6%20The%20scope%20of%20a%20count)), so two shares of one namespace
+count shared chunks on one record, and, once deduplication is added, deduplicate
+against each other; shares of two namespaces never do. During a re-home a
 share has two namespaces ([RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)); its **write namespace** is the one new
-blocks are minted and deduplicated in, and each ref names by its generation the
+blocks are minted and counted in, and each ref names by its generation the
 one its chunk is read from.
 
 Composition **MUST** happen at construction. A capability **MUST NOT** be wired
@@ -260,8 +266,10 @@ in memory only ([§6.3](#6.3%20The%20offload%20pipeline)). After a restart, ever
 offloaded bit is offered again:
 
 - a re-offer is a new attempt and mints a new name ([§6.6](#6.6%20A%20block%27s%20name%20is%20minted%2C%20and%20its%20intent%20recorded%2C%20before%20the%20put)). Chunks a block
-  committed before the crash are found by the dedup oracle and adopted; the rest
-  are carried again;
+  committed before the crash are carried again, and the commit finds their refs
+  already committed ([RFC 6 §4.4](rfc-6-block-metadata.md#4.4%20Commits%20for%20one%20file%20apply%20in%20order)): it writes nothing for them and reports
+  them durable, and the new block, every chunk of which already has a record, is
+  born dead and retired in its own commit;
 - a block that was put and never committed is named by an intent under the
   previous epoch and by no block record. Its name is never used again, and the
   object is an **orphan: leaked space, not lost content**, which collection
@@ -321,7 +329,7 @@ the engine passes it in.
 A threshold that lives in a component's configuration is engine policy absorbed
 by that component.
 
-**Policy components decide; modules act.** Four modules carry work the policy
+**Policy components decide; modules act.** Four modules, one of them deferred, carry work the policy
 components only decide on. Each is specified where its operation is, with its
 inputs, outputs, invariants and checks:
 
@@ -329,7 +337,7 @@ inputs, outputs, invariants and checks:
 | --- | --- | --- |
 | work queue | turns events into offload passes, removal batches and retries, per journal | [§6.1](#6.1%20The%20work%20queue) |
 | offload pipeline | runs a pass as an explicit state machine, with per-step retries | [§6.3](#6.3%20The%20offload%20pipeline) |
-| dedup oracle | says whether a chunk may be adopted instead of carried | [§6.5](#6.5%20The%20dedup%20oracle) |
+| dedup oracle | says whether a chunk may be adopted instead of carried; not in the first release | [§6.5](#6.5%20The%20dedup%20oracle) |
 | speculator | plans read-ahead and pre-warm fetches | [§7.4](#7.4%20The%20speculator) |
 
 A module **MAY** hold memory state and call mechanisms. It **MUST NOT** persist
@@ -391,13 +399,26 @@ state.
 > and `applied = 7` in one transaction. If the node crashes before that, recovery
 > re-applies version 7 from the journal before `f` is served ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)).
 
-**The write verifier.** `Write` and `Commit` return a verifier derived from the
-primary epoch of the file's shard and a **process instance ID** drawn at random when
-the process starts. It changes whenever an acknowledged but unstable write might
-have been lost — a restart, or the shard moving to another primary — which is when a
-client must resend its unstable writes ([RFC 14 §10](rfc-14-open-state.md#10.%20Shard%20placement), [RFC 11](rfc-11-ownership.md)). The engine
-**MUST** return one verifier for every call under one epoch in one process, and
-**MUST NOT** derive it from the clock alone.
+**The write verifier.** `Write` and `Commit` return a verifier derived from three
+inputs:
+
+- the primary's node and node epoch ([RFC 11 §7](rfc-11-ownership.md#7.%20Protocol%20state)), not the shard epoch, so a
+  raise of the shard epoch that does not move the shard makes no client resend;
+- a **process instance ID**, drawn at random when the process starts;
+- the **loss generation** of the journal holding the file ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)),
+  which the journal raises on every loss event and on every failed sync it
+  resolves by failing its window ([RFC 1 §6.3](rfc-1-journal.md#6.3%20A%20failed%20sync)).
+
+It changes whenever an acknowledged but unstable write might have been lost —
+a restart, the shard moving to another node, or the running process losing
+unstable writes it still holds the shard for — which is when a client must
+resend its unstable writes ([RFC 14 §10](rfc-14-open-state.md#10.%20Shard%20placement)). The loss generation is held in
+memory only: a restart already changes the instance ID. The engine **MUST**
+read the loss generation for every verifier it returns, **MUST** return one
+verifier for every call between two changes of those inputs, and **MUST NOT**
+derive it from the clock alone. On the normal path no input changes, so the
+verifier never does; after a loss, each client resends its recent unstable
+writes once.
 
 ## 5. Commit: the stability point
 
@@ -479,7 +500,7 @@ evictable**, and a journal that cannot evict fills and refuses writes. So:
 
 Five parts carry this out: the work queue decides when to look ([§6.1](#6.1%20The%20work%20queue)),
 `OffloadScheduler` which files ([§6.2](#6.2%20When%20a%20file%20is%20offered)), the pipeline runs a pass
-([§6.3](#6.3%20The%20offload%20pipeline)), the dedup oracle decides what to carry ([§6.5](#6.5%20The%20dedup%20oracle)), and the guard
+([§6.3](#6.3%20The%20offload%20pipeline)), every chunk cut is carried ([§6.5](#6.5%20The%20dedup%20oracle)), and the guard
 and the fences order the commits ([§6.4](#6.4%20The%20offload%20guard%20is%20narrow)).
 
 ### 6.1 The work queue
@@ -499,8 +520,11 @@ queue per device journal**: events in, work handed to the journal's workers out.
 | `RetryDue(step)` | the queue's own timer | re-runs a failed step once its backoff expires |
 | `RemovalPending(file, v)` | a removal's first transaction ([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)), recovery | runs the removal's next batch |
 
-**Outputs.** Offload passes handed to the pipeline, removal batches, and eviction
-and repack requests from `EvictionPolicy`.
+**Outputs.** Offload passes handed to the pipeline, removal batches, eviction
+and repack requests from `EvictionPolicy`, and, after a `CommitDone` for a file
+whose writes replaced committed content, a pruning of that file's superseded
+overwrite records ([RFC 6 §3.3](rfc-6-block-metadata.md#3.3%20Holes%2C%20not%20written%20extents)). Pruning is housekeeping: a lost one
+costs lookup work, never a wrong read.
 
 **Rules.**
 
@@ -617,8 +641,9 @@ with one sub-machine per block from the intent on. It is the one place bytes
 become durable, so every transition names what happens when it fails.
 
 **Inputs:** a pass from `OffloadScheduler` (files, `limit`, `widen`), the share
-context, and the components it drives — journal, carver, block assembler, dedup
-oracle, syncer flow, block metadata. **Outputs:** per block, a report of the
+context, and the components it drives — journal, carver, block assembler,
+syncer flow, block metadata; the dedup oracle joins them only once deduplication
+is added ([§6.5](#6.5%20The%20dedup%20oracle)). **Outputs:** per block, a report of the
 extents it made durable; per pass, an outcome for `HealthTracker`; `RetryDue`
 events for what failed.
 
@@ -626,11 +651,11 @@ events for what failed.
 | --- | --- | --- | --- |
 | **Capture** | under the files' guards ([§6.4](#6.4%20The%20offload%20guard%20is%20narrow)), syncs the files and commits their pending existence ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal)), then opens the offer with `OffloadMany` | guards, briefly; then the offer | nothing was offered; the pass is retried after backoff |
 | **Carve** | runs the carver over each run of the offer ([§6.7](#6.7%20A%20run%20is%20what%20the%20journal%20offers%2C%20widened%20only%20to%20re-tile)) | the offer | the pass ends; blocks already reported stay reported, the rest stay **Dirty**; retried |
-| **Assemble** | folds the chunks into block plans with the block assembler ([RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler)), asking the dedup oracle ([§6.5](#6.5%20The%20dedup%20oracle)) | plans: hashes and positions, no bytes | pure; an oracle error carries the chunk, which costs bytes and never correctness |
+| **Assemble** | folds the chunks into block plans with the block assembler ([RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler)), every chunk carried ([§6.5](#6.5%20The%20dedup%20oracle), V1) | plans: hashes and positions, no bytes | pure; cannot fail |
 | **Intent** | mints the block's name and durably records its put intent ([§6.6](#6.6%20A%20block%27s%20name%20is%20minted%2C%20and%20its%20intent%20recorded%2C%20before%20the%20put)) | the intent | retried in place; past the step bound, the block's attempt is abandoned |
 | **Put** | streams the block from the offer through the syncer ([RFC 3 §3.4](rfc-3-syncer.md#3.4%20One%20put%20per%20block)) | one chunk per worker | retried under the same name within the attempt; past the bound, abandoned |
-| **Commit** | under the guard, one metadata transaction per block ([RFC 6 §4.1](rfc-6-block-metadata.md#4.1%20What%20one%20commit%20records)) | guard, briefly | conflict: retried; intent missing: abandoned and re-offered; adoption refused: the rest applies and the adopting refs are re-offered; stale epoch: the shard's pipeline stops |
-| **Mark durable** | reports the block's committed extents through `report` ([§6.8](#6.8%20The%20callback%20returns%20only%20what%20committed)) | — | cannot fail inside the pass; a crash here is recovered by a re-offer that adopts every chunk |
+| **Commit** | under the guard, one metadata transaction per block ([RFC 6 §4.1](rfc-6-block-metadata.md#4.1%20What%20one%20commit%20records)) | guard, briefly | conflict: retried; intent missing: abandoned and re-offered; stale epoch: the shard's pipeline stops. Adoption refused cannot occur while every chunk is carried; with deduplication, the rest applies and the adopting refs are re-offered |
+| **Mark durable** | reports the block's committed extents through `report` ([§6.8](#6.8%20The%20callback%20returns%20only%20what%20committed)) | — | cannot fail inside the pass; a crash here is recovered by a re-offer whose commit finds every ref already committed ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)) |
 
 A pass is done when every block has been reported or abandoned. What was not
 reported stays **Dirty**, and the file is re-queued with a `RetryDue`.
@@ -744,6 +769,22 @@ is the metadata store's conflict on the file's fence records ([RFC 11 §8](rfc-1
 
 ### 6.5 The dedup oracle
 
+**Not in the first release.** Cross-file deduplication is deferred
+([RFC 0 §3.1](rfc-0-data-lifecycle.md#3.1%20Deduplication)): the engine composes no dedup oracle, and the assembler
+plans every chunk it is given as carried. In the first release:
+
+- **V1 — offload always carries.** Every chunk a pass cuts is put in the pass's
+  blocks, except an all-zero chunk, which becomes a zero ref
+  ([RFC 6 §3.5](rfc-6-block-metadata.md#3.5%20Operations%20that%20make%20holes)). No pass references a chunk it did not carry. The commit
+  still finds a chunk record that already exists for a carried hash — the same
+  bytes carried by an earlier block or another file — and counts on it, or
+  repoints it when its block is retired or deleted ([RFC 6 §7.2](rfc-6-block-metadata.md#7.2%20Adoption%20is%20conditional%20on%20existence)); no
+  answer it relies on came from a lookup, so none can be wrong.
+
+The rest of this section is the design for re-adding deduplication. Nothing in
+the first release may close it off: chunks stay content-addressed and counted,
+and the adoption rules of [RFC 6 §7.2](rfc-6-block-metadata.md#7.2%20Adoption%20is%20conditional%20on%20existence) stay in force for clones and restores.
+
 The dedup oracle says whether a chunk may be **adopted** — referenced where it is
 already stored — instead of carried again. It is the one place where a wrong
 answer loses data: a ref to a chunk that is stored nowhere reads as **Lost**. So
@@ -795,6 +836,7 @@ against the production oracle and block metadata, and asserts the read.
 
 | Requirement | Check |
 | --- | --- |
+| V1 always carries | Offload file A, release it, then offload file B with the same bytes. Assert B's pass put every non-zero chunk it cut, A's retired block was not resurrected, and the chunk records name B's block. Offload file C with the same bytes while B lives; assert C's pass put every chunk too, and reads of B and C succeed. A build that still asks an oracle puts nothing for B and C. |
 | D1, D2 in flight | Carve one chunk into two blocks in flight; fail the first put after the second commits. Assert the second block carried the chunk and a read succeeds. |
 | D1 abandoned | Abandon an attempt whose block carried chunk X, after its put and before its commit. Assert a later lookup of X returns none, the next pass carries X, and a read succeeds. |
 | D3 resurrected | Answer a chunk of a retired block. Assert the commit resurrects the block, uploads nothing for the chunk, and a read succeeds. |
@@ -825,13 +867,13 @@ against the production oracle and block metadata, and asserts the read.
 - A retry within the attempt reuses the name, the plan and the bytes; nothing
   else ever puts that name. A new attempt — after abandonment, after a restart —
   mints a new name, even over identical chunks.
-- No block is skipped as already stored: deduplication is by chunk, through the
-  oracle ([§6.5](#6.5%20The%20dedup%20oracle)), never by block name.
+- No block is skipped as already stored. Deduplication, once added, is by
+  chunk, through the oracle ([§6.5](#6.5%20The%20dedup%20oracle)), never by block name.
 
 > **Example.** A pass offers `[0, 8 MiB)` of file `f` in namespace `ns-7`. The
 > assembler returns one block plan carrying chunks with hashes `h1`, `h2` and
-> `h4`; `h3` was adopted and an all-zero chunk became a zero ref, so neither is in
-> the block.
+> `h4`; the all-zero chunk between `h2` and `h4` became a zero ref, so it is not
+> in the block.
 >
 > 1. **Mint.** Draw a 16-byte nonce `n1`. The name is
 >    `N1 = H(domain ‖ ns-7 ‖ n1 ‖ C ‖ h1 ‖ h2 ‖ h4)`, where `C` is the chain ID,
@@ -854,8 +896,11 @@ against the production oracle and block metadata, and asserts the read.
 **Why a fresh name per attempt.** A name nobody else can put needs no defence: not
 against a second writer, a late delete, or a service without conditional puts.
 The price is that two passes carrying the same chunks put two objects; the second
-to commit adopts every chunk and is born dead, retired in its own commit and
-deleted without waiting out the trash ([RFC 9 §2.2](rfc-9-gc.md#2.2%20Retirement%20is%20decided%20where%20the%20count%20reaches%20zero)), and the oracle keeps that rare.
+to commit finds a record for every chunk and is born dead, retired in its own
+commit and deleted without waiting out the trash ([RFC 9 §2.2](rfc-9-gc.md#2.2%20Retirement%20is%20decided%20where%20the%20count%20reaches%20zero)). Without
+deduplication that takes a re-offer of content already committed, or identical
+content offloaded twice; a block that shares only some chunks commits live, its
+shared copies dead weight.
 
 ### 6.7 A run is what the journal offers, widened only to re-tile
 
@@ -915,12 +960,15 @@ callback reports each file's share then.
 | Metadata | Residency | The engine |
 | --- | --- | --- |
 | hole, or a zero ref | **Absent** | returns zeros |
-| uncarved | **Lost** | fails the read, and reports data loss naming the file and extent |
+| uncarved, including a ref made stale by a newer overwrite ([RFC 6 §3.3](rfc-6-block-metadata.md#3.3%20Holes%2C%20not%20written%20extents)) | **Lost** | fails the read, and reports data loss naming the file and extent; it **MUST NOT** fetch the stale ref's chunk |
 | carved | **Remote** | gets the chunk, verified ([RFC 3 §4.1](rfc-3-syncer.md#4.1%20One%20fetch%2C%20two%20consumers)) |
 | past end of file | — | returns a short read |
 
 "Uncarved" and "past end of file" are judged against existence with the
-journal's uncommitted operations applied ([§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)).
+journal's uncommitted operations applied ([§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)). The covering lookup already
+applies the file's overwrite set: a ref older than an overwrite committed over
+it comes back as uncarved, never as carved, so the engine needs no version check
+of its own and **MUST NOT** add one that could disagree.
 
 **Why the journal first.** Three reasons, and the third decides it:
 
@@ -1524,9 +1572,9 @@ remote, cold, or pinned. Residency is computed ([RFC 0 §4.2](rfc-0-data-lifecyc
 | E4 | An offload reports exactly the extents whose commits succeeded, block by block, in any order. |
 | E5 | Every share has a remote block store; a share without one is refused at composition. |
 | E6 | The offload guard is held only to capture an offer and to commit; removals hold it across their journal step and first metadata transaction, and a clone holds its source's until done; every commit carries the primary epoch. |
-| E7 | The dedup oracle answers only from committed chunk records in the share's namespace; a chunk repeated across blocks in flight is carried in each; an error never adopts. |
+| E7 | In the first release offload carries every chunk it cuts and adopts none. Once deduplication is added, the dedup oracle answers only from committed chunk records in the share's namespace; a chunk repeated across blocks in flight is carried in each; an error never adopts. |
 | E8 | A block's name is minted once per put attempt from domain, namespace scope, a fresh nonce, chain ID and ordered chunk hashes; no other put ever uses it, and a durable intent carrying the primary epoch precedes the put. |
-| E9 | A read returns zeros only for a hole or a zero ref, and fails distinguishably for **Lost**, corruption and an unreachable remote. |
+| E9 | A read returns zeros only for a hole or a zero ref, never fetches a ref an overwrite committed over, and fails distinguishably for **Lost**, corruption and an unreachable remote. |
 | E10 | A read's reply never depends on the fill, and never contains a byte of a chunk that has not verified. |
 | E11 | Only durability decides whether an extent may be evicted. |
 | E12 | Sustained offload failure is a health condition, distinct from an unreachable remote. |
@@ -1544,6 +1592,7 @@ remote, cold, or pinned. Residency is computed ([RFC 0 §4.2](rfc-0-data-lifecyc
 | E24 | A group-commit conflict delays only the conflicting files. |
 | E25 | Speculation never delays a demand read and never causes a write to be refused. |
 | E26 | A routed mutation retried with the same request ID and epoch is answered with its original result, never applied twice. |
+| E27 | The write verifier changes on a restart, on a change of the node serving the shard as primary, and on every rise of the file's journal's loss generation, and on nothing else. |
 
 ## 14. Observability
 
@@ -1565,7 +1614,7 @@ health — are gauges exported for the shares a stated rule selects (the worst
 | files backed off as failing ([§6.3](#6.3%20The%20offload%20pipeline), O6) | `dittofs_engine_failing_files` | gauge |
 | passes aborted as wholly removed; commits that found their intent gone | `dittofs_engine_passes_aborted_total`, `dittofs_engine_intent_missing_total` | counter |
 | busy time of each stage — carve, assemble, put, commit ([§15.4](#15.4%20Benchmarks)) | `dittofs_engine_stage_busy_ratio` | gauge |
-| dedup lookups, labelled `result` = `adopted`, `carried` or `error`; adoptions refused at commit ([§6.5](#6.5%20The%20dedup%20oracle)) | `dittofs_engine_dedup_lookups_total`, `dittofs_engine_adoptions_refused_total` | counter |
+| dedup lookups, labelled `result` = `adopted`, `carried` or `error`; adoptions refused at commit ([§6.5](#6.5%20The%20dedup%20oracle)); exported once deduplication is added | `dittofs_engine_dedup_lookups_total`, `dittofs_engine_adoptions_refused_total` | counter |
 | stability points, the operations each committed, and group-commit splits ([§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)) | `dittofs_engine_stability_points_total`, `dittofs_engine_pending_existence_ops`, `dittofs_engine_group_commit_splits_total` | counter, histogram, counter |
 | reads, labelled `class` = `journal`, `hole`, `remote`, `lost`, `corrupt` or `unavailable`; time to first byte ([§7.2](#7.2%20The%20reply%20streams%2C%20one%20verified%20chunk%20at%20a%20time)) | `dittofs_engine_reads_total`, `dittofs_engine_read_first_byte_seconds` | counter, histogram |
 | fetches, labelled `shape` = `chunks` or `block` ([§7.8](#7.8%20A%20cold%20read%20asks%20for%20chunks%2C%20or%20for%20the%20block)), and bytes fetched against bytes read | `dittofs_engine_fetches_total`, `dittofs_engine_fetch_bytes_total` | counter |
@@ -1597,16 +1646,18 @@ the work queue [§6.1](#6.1%20The%20work%20queue), the offload pipeline [§6.3](
 | [§2.1](#2.1%20Content%20composition) remote required | Add a share whose configuration names no remote block store. Assert the add fails naming the share, and no context is created. |
 | [§6.8](#6.8%20The%20callback%20returns%20only%20what%20committed) per-block reporting | Fail the second of three block commits. Assert the journal marks exactly the first and third blocks' extents. |
 | [§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more) journal authority | Write without a stability point; assert `Overlay`, `Allocation` and reads reflect the write. Crash; assert recovery re-applies it before the file is served. |
-| [§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more) verifier | Write, restart the process, write again. Assert the verifiers differ. Move the shard; assert they differ. Two writes in one process and epoch; assert they match. |
+| [§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more) verifier | Write, restart the process, write again. Assert the verifiers differ. Move the shard to another node; assert they differ. Raise the shard epoch without moving it; assert they match. Two writes in one process and epoch; assert they match. |
+| [§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more) verifier after a loss | Write unstable, then, in the same process and epoch, drop the extent as corrupt before its stability point; write again. Assert the verifiers differ. Repeat with a failed sync resolved by failing its window. Resolve a failed sync by re-appending; assert the verifier did not change. A verifier built from epoch and instance alone keeps the first two equal, and the client never resends the lost write. |
 | [§6.4](#6.4%20The%20offload%20guard%20is%20narrow) guard across a removal | Stall a truncate between its journal step and its transaction; trigger an offload. Assert the offer waits, and no ref lies past `size` after both finish. |
 | [§8.3](#8.3%20A%20pass%20in%20flight%20survives%20a%20removal%20under%20it) transfer survives a removal | Stall a pass's upload; truncate the file below the offered range; release the upload. Assert the upload completes, the commit drops the refs past the new size, drops a straddler whole and re-offers its outside part, applies the rest, and the truncated range reads as past end of file. Run both commit orders. Repeat with deallocate, release and a clone onto the file. |
-| [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) restart re-offer | Crash after a put and before its commit; restart. Assert the extents are offered again under a new name, the first object stays unrecorded with its intent, collection removes both once the epoch is superseded, and reads are correct. Crash after a commit, before `report`; assert the re-offer adopts every chunk and the extents become evictable. |
+| [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) restart re-offer | Crash after a put and before its commit; restart. Assert the extents are offered again under a new name, the first object stays unrecorded with its intent, collection removes both once the epoch is superseded, and reads are correct. Crash after a commit, before `report`; assert the re-offer carries every chunk, its commit finds every ref already committed and writes none, its block is born dead, and the extents become evictable. |
 | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) recovery through `Since` | Crash after a truncate's journal step, before its removal record. Restart; assert `Since` yields the marker, existence applies it before the file is served, and `Settle` drops it. Crash a removal between batches; assert it resumes and the range reads as removed throughout. |
 | [§6.6](#6.6%20A%20block%27s%20name%20is%20minted%2C%20and%20its%20intent%20recorded%2C%20before%20the%20put) minted names and intents | Retry a put with an unknown outcome; assert the same name and bytes. Re-offer the same content in a new pass; assert a new name. Remove the intent before the commit; assert the commit fails and the content is re-offered. Delete an object once record and intent are gone, then land a delayed delete of it; assert no committed block is touched. |
 | [§6.7](#6.7%20A%20run%20is%20what%20the%20journal%20offers%2C%20widened%20only%20to%20re-tile) widening | Widen a run over a durable neighbour and release the neighbour mid-pass; assert the release waits for the pass and the new refs read correctly. |
 | [§6.7](#6.7%20A%20run%20is%20what%20the%20journal%20offers%2C%20widened%20only%20to%20re-tile) stretch ends | Stream a file across passes cut by `limit`. Assert no pass reports bytes past `consumed`, the next pass starts at a content boundary, and the chunking equals one pass over the whole file. Stop writing: assert the tail is cut and durable within the age ceiling. |
 | [§6.4](#6.4%20The%20offload%20guard%20is%20narrow) guard is not a fence | Run two engines, each believing it is primary for one file, with separate guards. Assert the store refuses the stale primary's commits on both paths. |
 | [§7.1](#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata) the join | Drive every row of [§7.1](#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata), including an uncarved extent the journal lost. Assert **Lost** fails — a check of the other rows passes a build that serves zeros. |
+| [§7.1](#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata) stale ref | Offload `[0, 4 MiB)`, overwrite `[1, 2 MiB)` and `Commit`, then drop the journal's extent before the overwrite is offloaded. Assert the read of `[1, 2 MiB)` fails as **Lost**, no get is issued for it, and the rest reads the first write. A design whose metadata records only holes serves the old chunk here as **Remote**. |
 | [§7.1](#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata) the order | Between the journal step and the metadata step of a read, commit, report and release the extent. Assert the read returns the bytes, not **Lost**. Swap the two steps in a test build; assert the check fails. |
 | [§7.2](#7.2%20The%20reply%20streams%2C%20one%20verified%20chunk%20at%20a%20time) streaming, verified | Corrupt the fifth chunk of a cold read. Assert the first four chunks' bytes reach the writer, no byte of the fifth does, and the read fails as corrupt. |
 | [§7.2](#7.2%20The%20reply%20streams%2C%20one%20verified%20chunk%20at%20a%20time) fill cannot fail a read | Make `Fill` fail. Assert the read returns the fetched bytes. |
@@ -1694,7 +1745,7 @@ One line per requirement.
 | [§6.4](#6.4%20The%20offload%20guard%20is%20narrow) narrow per-file guard | a striped journal lock and a striped engine lock; removals do not take it |
 | [§8.3](#8.3%20A%20pass%20in%20flight%20survives%20a%20removal%20under%20it) transfers survive removals | no removal is checked at commit |
 | [RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler) assembly streamed | assembly in the carver; chunks copied through three buffers; adopted chunks count toward the target |
-| [§6.5](#6.5%20The%20dedup%20oracle) no binding guard | an in-process adoption guard |
+| [§6.5](#6.5%20The%20dedup%20oracle) V1 offload always carries | offload looks chunks up and adopts them across files, behind an in-process adoption guard |
 | [§6.6](#6.6%20A%20block%27s%20name%20is%20minted%2C%20and%20its%20intent%20recorded%2C%20before%20the%20put) minted name, intent before put | random names, no intent; the name is not recomputable from the header |
 | [§7.1](#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata) per missing extent, hole vs uncarved | the whole window fetched; an uncovered extent reads as zeros |
 | [§7.2](#7.2%20The%20reply%20streams%2C%20one%20verified%20chunk%20at%20a%20time), [§7.3](#7.3%20Filling%20is%20a%20decision) reply independent of fill | every fetch fills and the read re-reads the journal |

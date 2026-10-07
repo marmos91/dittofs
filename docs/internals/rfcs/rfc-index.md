@@ -136,7 +136,7 @@ to a tier that runs it.
 | Tier | Runs | Contains |
 | --- | --- | --- |
 | **Per change** | on every proposed change | unit, conformance, property and fuzz seeds, model-based tests at a fixed budget, and each RFC's counted checks; minutes, no timing, no external service |
-| **After merge** | after each merge to the integration branch | benchmarks on the reference box, recorded; a result more than 10% worse than the last is reported, not blocking |
+| **After merge** | after each merge to the integration branch | benchmarks on the reference box, recorded; a result more than 10% worse than the last is reported and blocks the next change to that path until explained (below) |
 | **Daily** | once a day on the integration branch | benchmarks that need space or hours, soaks, longer fuzz and model runs, and tests against real backends |
 
 **The model test covers batching and masking.** The metadata model test
@@ -158,6 +158,55 @@ time, so a change between two commits reads as a change in the code and not in
 the hardware; results from other boxes are compared only with themselves. A
 target is stated against something measured on the same box (the filesystem,
 the hash, the link), so it holds on any hardware.
+
+**The reference box.** The reference box is the pair of machines set aside for
+the benchmark series. Before any decision that depends on numbers, three
+measurements **MUST** be recorded there:
+
+1. **Raw stage costs**: hash, compression, encryption, journal append with its
+   fsync, and remote put and get at rising concurrency, the last measured with
+   the sizing tool of [RFC 3 §2.11](rfc-3-syncer.md#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool).
+2. **The dedup ratio** on a real customer corpus.
+3. **The journal-shape benchmark** on three workloads: many small files, each
+   closed by a COMMIT; one large sequential stream; random in-place overwrites
+   inside a large file behind one long-lived handle. The acceptable gap between
+   the shapes compared is stated before the run, not after it.
+
+**A regression blocks until explained.** A row more than 10% worse on a measured
+path, against the last recorded result on the reference box, blocks the change
+that caused it — or, where only the after-merge run sees it, the next change to
+that path — until the regression is explained: fixed, or accepted with its reason
+recorded beside the result. The after-merge run does not undo a merge; the
+explanation is what it waits for.
+
+## Reference workloads
+
+*Non-normative.* The workloads below are what the benchmarks and capacity
+targets are sized against. They describe deployments, not requirements; an RFC
+that cites one states the property it derives from it.
+
+**Per-user profile containers on an SMB share.** The first enterprise
+deployment stores each user's profile as a virtual disk inside one file (a
+profile-container product such as FSLogix). Per user:
+
+- one container file, about 10.5 GB on the share in steady state for a 5 GB
+  mailbox (to be confirmed), presented to Windows as a 30 GB logical disk —
+  the product's default cap, which can be grown;
+- one read/write handle on it, held open for the whole desktop session;
+- a small metadata file (under 1 MB), read at sign-in and at sign-out and then
+  released, with no handle held.
+
+What follows from it:
+
+- Few large files, written by random in-place overwrites behind a long-lived
+  handle — not many small files closed after each write.
+- Sign-in storms: many users open their containers at once, each a cold read of
+  the container's header and its hot blocks. The journal must hold the active
+  users' working sets.
+- SMB durable handles and leases matter, because the handle outlives network
+  blips and the session lasts hours.
+- 30 GB per file is the test size; larger files are a stretch target.
+- Many users, and many shares.
 
 ## Reading them in Obsidian
 
