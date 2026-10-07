@@ -151,7 +151,7 @@ func TestBlockReclaimer_FreesBlockAtZero(t *testing.T) {
 // marker alone, and the reclaimer for the remote that holds it frees it.
 func TestBlockReclaimer_SharedRecordsLeaveOtherRemotesBlock(t *testing.T) {
 	ctx := t.Context()
-	st := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	st := badgertest.NewInMemory(t)
 	owner := remotememory.New()
 	other := remotememory.New()
 	defer func() { _ = owner.Close(); _ = other.Close() }()

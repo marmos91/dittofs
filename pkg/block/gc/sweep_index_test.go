@@ -161,7 +161,7 @@ func TestGCIndexSweep_KeptForOtherRemote(t *testing.T) {
 	defer func() { _ = rs.Close() }()
 
 	rec := newGCMSReconciler()
-	st := rec.addShare("share-a")
+	st := rec.addShare(t, "share-a")
 
 	orphan := hashFromString("lf-kept-for-other-remote")
 	seedRemoteChunk(t, st, rs, orphan)
