@@ -305,7 +305,8 @@ type Data interface {
 
 // Locking: byte-range locks, caching grants, watches (RFC 14).
 type Locking interface {
-	Lock(ctx context.Context, o OpenRef, r metadata.ByteRange, exclusive, wait, reclaim bool) error
+	Lock(ctx context.Context, o OpenRef, r metadata.ByteRange, exclusive, wait, reclaim bool) error // wait: a conflict leaves a waiter (RFC 14), answered ErrLocked (NFSv4 polls) or ErrBlocked (NLM, SMB)
+	CancelLock(ctx context.Context, o OpenRef, r metadata.ByteRange) error                        // NLM_CANCEL, SMB CANCEL of a waiting lock
 	TestLock(ctx context.Context, o OpenRef, r metadata.ByteRange, exclusive bool) (*metadata.Lock, error)
 	Unlock(ctx context.Context, o OpenRef, r metadata.ByteRange) error
 	ReturnGrant(ctx context.Context, c metadata.ClientID, g metadata.GrantID) error
@@ -344,9 +345,13 @@ its state ([RFC 14 §4.3](rfc-14-open-state.md#4.3%20An%20expired%20lease%20rele
 only through the state it presents, as an NFSv4.0 stateid does, anyone who
 learns that state could present it. An `OpenRef`'s open-time grant
 ([§4.6](#4.6%20One%20chokepoint)) therefore authorises a call only when the call's principal is the
-principal the open was granted to; a call by any other principal through the
-same open is authorised afresh, against the file, as the anonymous open of an
-NFSv3 call is.
+principal the open was granted to, or, for an NFSv4.1 client under
+machine-credential state protection, the client's machine principal for the
+operations it protects. A call by any other principal through the same open,
+lock state or layout **MUST** be refused with `ErrNotYours`
+([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)), whatever that principal could
+do to the file on its own: the state is the opener's, and a principal that wants
+its own access opens the file itself.
 
 > decision: there is no space reservation, so `Allocate` is not offered. NFS
 > `ALLOCATE` is answered not supported, and an SMB allocation size is accepted
@@ -364,6 +369,7 @@ type Callbacks interface {
 	RecallGrant(ctx context.Context, g metadata.CachingGrant, to GrantKind) error // NFS CB_RECALL, SMB lease or oplock break
 	Notify(ctx context.Context, w metadata.WatchID, changes []Change) error      // SMB CHANGE_NOTIFY, NFS directory notifications
 	Revoked(ctx context.Context, what Revocation)                                // lease expiry, administrative revoke
+	LockWaitOver(ctx context.Context, w metadata.LockWaiter, granted bool)       // NLM_GRANTED, SMB lock completion (granted); NFSv4.1 CB_NOTIFY_LOCK, optional (reserved, not granted)
 }
 ```
 
@@ -386,10 +392,11 @@ resolves rather than failing just before it does. Either way no service worker w
 adapter's, and holds no state at the primary. A client that holds grants on many files and never
 acknowledges therefore costs each conflicting operation one retry interval,
 never a pinned worker. After one of a client's recalls is revoked, the service
-**MUST** stop offering that client grants and revoke the others it holds
-([RFC 14](rfc-14-open-state.md)). For SMB, whose writes name a FileId rather
-than a lease, revoking a lease **MUST** invalidate the opens it covered, so a
-stale buffered write through them is refused.
+**MUST** stop offering that client grants and recall the others it holds
+([RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)).
+An SMB break that times out downgrades the lease to none and keeps the opens it
+covered, with their locks and deny modes, so the holder may keep writing through
+them; a revoked NFS delegation's later writes are refused (the same section).
 
 **A callback path can move between nodes** (cluster, [single-node profile](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)). A client's
 callbacks go out through the protocol node that holds its back channel. When the
@@ -479,12 +486,14 @@ Adapters own, and the service never sees:
 
 The service returns `ErrNotFound`, `ErrExist`, `ErrAccess`, `ErrStale`,
 `ErrNotEmpty`, `ErrNotDir`, `ErrIsDir`, `ErrNoSpace`, `ErrQuota`, `ErrLocked`,
-`ErrShareViolation`, `ErrGrace`, `ErrDelay`, `ErrNotYours`, `ErrBadLayout`, `ErrWrongSecurity`, and the content errors of
+`ErrShareViolation`, `ErrGrace`, `ErrDelay`, `ErrBlocked`, `ErrNotYours`, `ErrBadLayout`, `ErrWrongSecurity`, and the content errors of
 [RFC 8](rfc-8-engine.md) (`ErrLost`, `ErrUnavailable`, `ErrCorrupt`). Each adapter maps them
 once. `ErrDelay` means "retry shortly": a recall is in progress (§3.2), or the
 journal is full and offload or repack is freeing space ([RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)). Adapters map
 it to `NFS4ERR_DELAY` or `NFS3ERR_JUKEBOX`; SMB holds the request pending and
-re-drives it (§3.2). `ErrNoSpace` means no space will come without operator
+re-drives it (§3.2). `ErrBlocked` means a lock request waits and will be granted
+through `LockWaitOver` (§3.2); NLM maps it to `NLM_BLOCKED`, SMB to a pending
+response. `ErrNoSpace` means no space will come without operator
 action, and `ErrQuota` that a quota refused; both are answered at once.
 `ErrGrace` means the file's shard is in grace and the request needs, or
 conflicts with, state that may still be reclaimed (§5.1). `ErrWrongSecurity`
@@ -656,9 +665,10 @@ Each order below is normative.
 
 1. resolve the handle; refuse a stale one; admit the call to its share (§4.9);
    route to the primary (§4.7, §4.8);
-2. authorise against the file ([§4.6](#4.6%20One%20chokepoint)), or evaluate the open's stored grant
-   when the caller is the principal it was granted to (§3.1);
-   for an anonymous open, check deny modes held by others;
+2. through an open, refuse with `ErrNotYours` a caller that is not the
+   principal it was granted to (§3.1), and evaluate the open's stored grant;
+   for an anonymous open, authorise against the file ([§4.6](#4.6%20One%20chokepoint))
+   and check deny modes held by others;
 3. if the shard is in grace, refuse with `ErrGrace` a write that overlaps a lock,
    deny mode or grant that may still be reclaimed ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)); otherwise
    check open state: the caller's open and byte-range locks held by others
@@ -845,11 +855,12 @@ verifier is constant.
 | V15 | No adapter resolves a share name or path, admits a call, or builds or interprets any part of the pseudo-filesystem; all of it is behind `Shares` and `Names`. |
 | V16 | The `Version` `GetAttr` returns advances on every write the primary accepts, and never moves backward when the write is committed, across restarts or across primaries; `GetAttr` reads the File and the overlay under the file's commit serialisation. |
 | V17 | Every release is run by the service, at the file's primary, after an orphaning unlink or rename, at the last close of a file with no entry, and in recovery after grace. |
-| V18 | An open's grant authorises a call only for the principal it was granted to. |
+| V18 | An open's grant authorises a call only for the principal it was granted to; a call through an open, lock state or layout by any other principal is refused with `ErrNotYours`. |
 | V19 | A write through a persistent open, or any open on a continuously available share, is stable; a stable write is answered after the journal sync, not after a metadata transaction. |
 | V20 | A full journal returns `ErrDelay` while offload or repack can free space; `ErrNoSpace` and `ErrQuota` are answered at once. |
 | V21 | A deny-mode refusal is decided only after the handle-caching grants covering the conflicting opens are broken. |
 | V22 | A non-owner's write or truncate of a setuid or setgid file clears the bits in a committed change before the write is staged. |
+| V23 | A blocked lock holds no worker: NFSv4 waiters are polled, NLM and SMB waiters are answered through `LockWaitOver`. |
 
 ## 7. Observability
 
@@ -918,9 +929,17 @@ engine's spans. No share label on per-operation metrics ([RFC 16 §8.1](rfc-16-m
   - an unlinked file whose last open closes is released, and so, after a
     restart, is a file whose pending release was written before the crash; a
     service that never calls `Release` leaks both (V17);
-  - bob presents alice's open to write a file alice may write and bob may not;
-    assert `ErrAccess`. A service that trusts the open's grant for any presenter
-    accepts the write (V18);
+  - bob presents alice's open to write a file alice may write and bob may not,
+    and again to write a file both may write; assert `ErrNotYours` both times
+    and alice's open intact. A service that trusts the open's grant for any
+    presenter accepts the first write; one that re-authorises bob afresh accepts
+    the second (V18);
+  - an NLM and an SMB lock that wait are answered `ErrBlocked` at once and later
+    granted through `LockWaitOver` when the holder unlocks, with no service
+    worker held between; an NFSv4 one is answered `ErrLocked`, and its next poll
+    after the unlock is granted (V23);
+  - an SMB lease whose break times out leaves its open usable: the holder's next
+    write through it is accepted (§3.2);
   - a write on a persistent open, asked unstable, survives a crash injected right
     after its reply; a stable write's reply waits for the journal sync and for no
     metadata transaction, counted by the store's transaction counter (V19);

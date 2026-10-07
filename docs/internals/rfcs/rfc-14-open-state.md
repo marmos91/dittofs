@@ -159,7 +159,7 @@ breaks.
 ### How the rest is organised
 
 [§2](#2.%20The%20entities) defines the entities: client, open, lock, caching
-grant, watch, layout and copy. [§3](#3.%20One%20table%20per%20file%2C%20at%20one%20primary)
+grant, watch, layout, copy, NFSv4.0 owner sequences and unconfirmed clients, and lock waiters. [§3](#3.%20One%20table%20per%20file%2C%20at%20one%20primary)
 is the one rule everything rests on: one table per file, at one primary.
 [§4](#4.%20Client%20leases%2C%20grace%20and%20reclaim) covers client leases,
 grace and reclaim, NLM (Network Lock Manager) locks included;
@@ -169,7 +169,7 @@ protocols and writers that do not coordinate. [§8](#8.%20What%20is%20durable)
 says what is written down; [§9](#9.%20Open%20state%20and%20the%20life%20of%20a%20file)
 how open state keeps a file alive and how delete on close works;
 [§10](#10.%20Shard%20placement) what happens when a file's primary changes.
-[§12](#12.%20Invariants) lists the invariants. On a first read, skip §2.5–§2.7,
+[§12](#12.%20Invariants) lists the invariants. On a first read, skip §2.5–§2.10,
 §4.4–§4.5, §10, §11 and §13 onward.
 
 ## 1. Purpose
@@ -250,7 +250,8 @@ principal may later destroy the client or bind a connection to it, on any node
 and after a restart. Every field above is durable with the record (§8).
 
 **Every state ID is unguessable.** `ClientID`, `OpenID`, `GrantID`, a lock
-state's ID and `CopyID` each carry at least 64 random bits beside whatever part
+state's ID, `LayoutID`, `CopyID` and an NFSv4.0 confirm verifier (§2.9) each
+carry at least 64 random bits beside whatever part
 makes them unique, so a client that sees one cannot derive another's; every call
 naming one is also checked against its holder and the caller's principal
 (§10).
@@ -464,6 +465,28 @@ with the client's lease, recalled on conflict. It also records the (shard,
 epoch) it was granted under, and is recalled when that shard changes primary or
 the file moves to another shard ([§10](#10.%20Shard%20placement)).
 
+```go
+// Layout is what an NFSv4.1 layout stateid names: one client's layouts of one
+// file, granted under one open.
+type Layout struct {
+	ID     LayoutID // at least 64 random bits (§2.1)
+	Client ClientID
+	Open   OpenID
+	Ranges []LayoutRange // byte ranges held, each read or read-write
+	Shard  ShardID
+	Epoch  uint64 // the shard's primary epoch it was granted under (§10)
+	Seq    uint32 // the layout stateid's seqid
+}
+```
+
+**The layout stateid's seqid is state.** `Seq` rises by one with every
+`LAYOUTGET` that grants, every `LAYOUTRETURN` and every layout recall, in the
+step that applies it, and the new value goes out with the reply or the recall.
+A recall carries it so the client can tell whether a `LAYOUTGET` reply it holds
+was sent before or after the recall, and so never uses a range the recall took
+back. A request naming a seqid above the current one is refused as bad. Like an
+open's, the layout is used only by its opener's principal (§2.2).
+
 ### 2.7 Copy
 
 ```go
@@ -529,6 +552,115 @@ node a replayed request finds no cached reply and is answered
 `OwnerSeq` is volatile, like the opens and locks it sequences. A home primary
 that is lost loses it; in the grace that follows, an owner with no `OwnerSeq`
 is new, and its first sequenced request sets `Next`, as for any new owner.
+
+### 2.9 NFSv4.0 unconfirmed clients
+
+```go
+// Unconfirmed is an NFSv4.0 SETCLIENTID not yet confirmed. Volatile, held by
+// the protocol node that answered it; never written to the metadata store.
+type Unconfirmed struct {
+	Owner     []byte    // the SETCLIENTID id string
+	Verifier  [8]byte   // the client's boot verifier
+	Principal Principal // who sent SETCLIENTID; only it may confirm
+	Callback  []byte    // the callback address and program it named; opaque here
+	ClientID  ClientID  // the ID answered: an existing client's, or a new one
+	Confirm   [8]byte   // the confirm verifier answered: at least 64 random bits (§2.1)
+	Expires   time.Time // one lease period after SETCLIENTID
+}
+```
+
+An NFSv4.0 client establishes itself in two steps: `SETCLIENTID` proposes an
+owner, verifier and callback, and `SETCLIENTID_CONFIRM`, naming the answered
+client ID and confirm verifier, makes them current. Until the confirm, nothing
+of the proposal is state:
+
+- the `protocol` node that answered `SETCLIENTID` holds the `Unconfirmed`
+  record in memory, at most one per owner — a second `SETCLIENTID` for the same
+  owner replaces it — and drops it at `Expires`;
+- no `Client` record is written and no existing client's state changes: a
+  proposal with a new verifier under a known owner does not yet expire the old
+  client ID, and a proposal of a new callback does not yet rewrite `Callback`;
+- the confirm is accepted only from the proposal's principal, with its client
+  ID and confirm verifier, before `Expires`. It then does, in one step, what
+  `Connect` does for any client ([§2.1](#2.1%20Client)) — writes the record,
+  expires the old client ID on a reboot, records the callback ([§4.1](#4.1%20A%20client%20lease))
+  — and drops the `Unconfirmed` record;
+- a confirm that finds no matching record — expired, replaced, sent to another
+  node, or after that node's restart — is answered `NFS4ERR_STALE_CLIENTID`,
+  and the client sends `SETCLIENTID` again.
+
+> decision: an unconfirmed client is volatile and held only by the node that
+> answered `SETCLIENTID`. Writing it would cost a metadata write per mount
+> attempt, including the attempts that never confirm, to spare a client one
+> repeated `SETCLIENTID` when a node restarts or its address moves between the
+> two calls; NFSv4.0 clients already repeat it on `NFS4ERR_STALE_CLIENTID`.
+> Write it, or route the confirm to the answering node, if mounts are seen
+> failing because confirms routinely land on another node.
+
+### 2.10 Lock waiters
+
+```go
+// LockWaiter is a lock request that conflicted and asked to wait. Volatile,
+// held in the file's table at its primary; never reclaimed (§8).
+type LockWaiter struct {
+	Owner     LockOwner
+	Open      OpenID // zero for NLM
+	Range     ByteRange
+	Exclusive bool
+	Arrived   time.Time // orders the waiters (FIFO)
+	Deadline  time.Time // NFSv4 only: one lease period after the owner's last poll; zero otherwise
+	Reserved  bool      // NFSv4 only: the range is free and held for this owner until Deadline
+}
+```
+
+A lock request that asks to wait and conflicts **MUST NOT** hold a worker
+([§5.2](#5.2%20A%20recall%2C%20and%20why%20nothing%20is%20merged)). The
+primary records a `LockWaiter` and answers at once: `ErrLocked` for NFSv4, whose
+client polls by sending the request again, and `ErrBlocked` for NLM and SMB,
+whose client is answered later through the adapter's callback. A request
+without `wait` that conflicts is answered `ErrLocked` and leaves no waiter. One
+owner holds at most one waiter per file: its next request replaces it.
+
+How each protocol waits:
+
+- **NFSv4:** a blocking lock type (`READW_LT`, `WRITEW_LT`) asks to wait. The
+  client polls; the server never grants on the client's behalf. When the range
+  frees, the waiter is `Reserved`: a conflicting request from anyone else is
+  refused until the owner's next poll takes the lock or `Deadline` passes. An
+  NFSv4.1 client that asked to be notified is sent `CB_NOTIFY_LOCK`; the
+  notification is optional and the poll decides.
+- **NLM:** a blocking `NLM_LOCK` asks to wait, answered `NLM_BLOCKED`. When the
+  range frees, the primary grants the lock in the step that frees it and sends
+  `NLM_GRANTED`. If the host does not acknowledge by the callback's deadline,
+  the lock is released and the next waiter considered.
+- **SMB:** a lock request without the fail-immediately flag asks to wait; with
+  it, a conflict is refused at once. The waiter is answered pending, and when
+  the range frees the primary grants it in the step that frees it and completes
+  the request.
+
+**First in, first out per range.** When an unlock, close, expiry or revocation
+frees a range, the primary considers the waiters whose ranges overlap it in
+`Arrived` order and grants, or for NFSv4 reserves, the earliest whose request no
+longer conflicts, then the next, until one conflicts. While a waiter waits, no
+later waiter and no new request from another owner is granted a lock that
+conflicts with the waiter's request, so a stream of shared locks cannot starve
+an exclusive waiter. Waiters whose ranges do not overlap are independent.
+
+**A waiter ends.** It is dropped when it is granted; when its owner cancels it
+(`NLM_CANCEL`, SMB `CANCEL`) or, for NFSv4, has not polled by `Deadline`; when
+its open closes; and with everything else its client holds when the client's
+lease expires or its state is revoked
+([§4.3](#4.3%20An%20expired%20lease%20releases%20everything%20it%20held%2C%20everywhere)),
+or, for NLM, when its host restarts ([§4.5](#4.5%20NLM%20locks%20and%20restart%20notification)).
+A waiter is lost with its primary's table; the client's own retry, reclaim or
+reconnect replaces it, and in grace a waiting request is refused like any new
+lock.
+
+> decision: an NLM or SMB waiter has no time limit of its own; it ends on cancel,
+> close, restart, disconnect or expiry, because both protocols' clients wait for
+> a blocking lock indefinitely and the waiter holds no worker, only a record in
+> one file's table, bounded at one per owner per file. Add a limit if waiter
+> counts are seen growing without bound.
 
 ## 3. One table per file, at one primary
 
@@ -651,7 +783,7 @@ new request could take first.
 ### 4.3 An expired lease releases everything it held, everywhere
 
 When a client's lease expires or its state is revoked, every open, deny mode,
-lock, grant and watch it held **MUST** be released, in every view that records
+lock, lock waiter ([§2.10](#2.10%20Lock%20waiters)), grant, layout and watch it held **MUST** be released, in every view that records
 it, in the same step. State one protocol dropped and another still counts
 refuses conflicting requests against a holder that no longer exists, until a
 restart.
@@ -814,6 +946,37 @@ browse does), builds and version control in a home directory, single-user
 shares. They are never offered for files many clients share, and a client that
 never gets one still works.
 
+### 5.5 A client's grants are bounded
+
+Every grant is a table entry at a primary and a recall the primary may one day
+have to send. Each primary therefore counts the caching grants each client holds
+on its files and keeps the count within a **grant budget** of 4096 per client:
+
+- a client at its budget **MUST NOT** be offered another grant; its opens are
+  answered without one ([§5.4](#5.4%20How%20a%20grant%20is%20obtained%2C%20and%20where%20it%20pays));
+- when a client reaches its budget, the primary **MUST** ask it to return grants
+  down to half the budget, 2048: an NFSv4.1 client by `CB_RECALL_ANY` naming
+  2048 as the number to keep, of the kinds it holds; an NFSv4.0 or SMB client,
+  whose protocol has no such request, by recalling or breaking its oldest grants
+  one by one;
+- an NFSv4.1 client still above 2048 one lease period after `CB_RECALL_ANY` has
+  its oldest grants recalled one by one down to 2048. Each of these recalls ends
+  by [§5.3](#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)'s
+  deadline like any other.
+
+The count is the primary's alone and volatile: a client may hold up to the
+budget at each primary it reaches, and a new primary starts every count at zero.
+
+> decision: the budget is 4096 grants per client per primary, and a client at it
+> is asked to keep 2048. Grants pay on files one user works on (§5.4), and a
+> working set beyond a few thousand files is served nearly as well without them,
+> while every grant held is memory at the primary and a recall a conflicting
+> client may wait on. Halving, rather than returning one, leaves room for a
+> working set to turn over before the next request. Counting per primary needs
+> no traffic between nodes. Make the values settings
+> ([RFC 13](rfc-13-configuration.md)) if a workload is shown to lose throughput
+> at the budget, or a primary's memory is shown to be pressed below it.
+
 ## 6. A deny mode is checked at open
 
 A deny mode is evaluated once, when an open is granted, against the opens
@@ -904,6 +1067,9 @@ the keys [RFC 16](rfc-16-metadata-store.md) lists; volatile state never is.
 | **Watch** | **volatile**, never reclaimed | the client re-registers; the NFSv4.1 specification does not allow reclaiming directory notifications |
 | **Layout** | **volatile**, reclaimed in grace; recalled, never handed over, when its shard's primary changes or its file moves | a lost layout costs a `LAYOUTGET`; a stale one is refused by epoch |
 | **Copy** | **volatile**, never reclaimed ([§2.7](#2.7%20Copy)) | the client runs a lost copy again |
+| **Unconfirmed** | **volatile**, at the `protocol` node that answered `SETCLIENTID`, for one lease period ([§2.9](#2.9%20NFSv4.0%20unconfirmed%20clients)) | a lost one costs the client a repeated `SETCLIENTID` |
+| **LockWaiter** | **volatile**, never reclaimed ([§2.10](#2.10%20Lock%20waiters)) | the client's poll, reclaim or reconnect asks again |
+| **grant budget count** | **volatile**, per primary, starting at zero ([§5.5](#5.5%20A%20client%27s%20grants%20are%20bounded)) | grants are volatile too; the count is rebuilt as they are offered |
 | **NSM state number** | **durable**, one per installation ([§4.5](#4.5%20NLM%20locks%20and%20restart%20notification)) | an NLM host recognises a server restart only by a higher number |
 
 Client records are held globally, not per shard, because one client's state spans
@@ -1125,7 +1291,7 @@ service ([RFC 17](rfc-17-vfs.md)) is this interface's only caller.
 ```go
 type OpenState interface {
 	// Clients.
-	Connect(ctx context.Context, c Client) (ClientID, error) // found by (protocol, owner): same verifier returns the ID, a new one is a reboot, another principal is refused (§2.1)
+	Connect(ctx context.Context, c Client) (ClientID, error) // found by (protocol, owner): same verifier returns the ID, a new one is a reboot, another principal is refused (§2.1); an NFSv4.0 client calls it at SETCLIENTID_CONFIRM, never at SETCLIENTID (§2.9)
 	Renew(ctx context.Context, c ClientID) error             // reaches the lease owner (§4.1)
 	Expire(ctx context.Context, c ClientID) error            // releases everything (§4.3)
 	Destroy(ctx context.Context, c ClientID, by Principal) error // DESTROY_CLIENTID, last SMB logoff; refused while a session remains or by a principal state protection excludes
@@ -1146,7 +1312,10 @@ type OpenState interface {
 	// sequence, nil when the request carries none (§8.1). An NFSv4.0 request's
 	// owner seqid travels in OpenRequest and in Lock, Unlock and Close options,
 	// and is checked at the owner's home primary (§2.8): ErrBadSeqID.
-	Lock(ctx context.Context, c ClientID, file FileID, owner LockOwner, o OpenID, r ByteRange, exclusive, reclaim bool, seq *LockSequence) error
+	// wait: the request may wait (§2.10); a conflict then records a waiter and
+	// answers ErrLocked (NFSv4) or ErrBlocked (NLM, SMB).
+	Lock(ctx context.Context, c ClientID, file FileID, owner LockOwner, o OpenID, r ByteRange, exclusive, wait, reclaim bool, seq *LockSequence) error
+	CancelLock(ctx context.Context, c ClientID, file FileID, owner LockOwner, r ByteRange) error // NLM_CANCEL, SMB CANCEL: drops the waiter (§2.10)
 	TestLock(ctx context.Context, c ClientID, file FileID, owner LockOwner, r ByteRange, exclusive bool) (*Lock, error)
 	Unlock(ctx context.Context, c ClientID, file FileID, owner LockOwner, r ByteRange) error
 
@@ -1199,6 +1368,7 @@ var (
 	ErrDeletePending  = errors.New("openstate: file is delete pending")
 	ErrNoCopy         = errors.New("openstate: copy unknown or lost")
 	ErrBadSeqID       = errors.New("openstate: owner sequence out of order")
+	ErrBlocked        = errors.New("openstate: lock waits; granted later through the callback")
 )
 ```
 
@@ -1242,6 +1412,10 @@ var (
 | L34 | A deferred delete runs as the principal that marked the file, never as the last closer. |
 | L35 | (cluster) A recursive watch whose subtree crosses into another shard is completed with enumerate-directory when a change there matches it. |
 | L36 | An open of a named stream is an open of its base file for deny modes, delete and keeping the file alive; no open suspends the change time. |
+| L37 | A layout stateid's seqid rises with every grant, return and recall of the layout, in the step that applies it, and a recall carries it. |
+| L38 | An NFSv4.0 `SETCLIENTID` changes no state until its `SETCLIENTID_CONFIRM`; the unconfirmed proposal is volatile at the answering node and confirmed only by its principal, with its confirm verifier, within one lease period. |
+| L39 | No worker waits on a blocked lock: a waiting request leaves a volatile waiter, waiters overlapping one range are served first in, first out, and every waiter ends on grant, cancel, close, its client's expiry, or for NFSv4 a missed poll. |
+| L40 | Each primary holds at most 4096 caching grants per client; a client at the budget is offered none and is asked to return down to 2048. |
 
 ## 13. Conformance
 
@@ -1305,6 +1479,10 @@ index's tiers.
 | [§3](#3.%20One%20table%20per%20file%2C%20at%20one%20primary) streams | Open a named stream with deny-write over SMB; open the base file for write over NFS. Assert refused. Unlink the base file's name; assert the stream open keeps the file alive. |
 | [§2.2](#2.2%20Open) change time never frozen | Set ChangeTime to -1 on an SMB open, write through it, `GETATTR` over NFS. Assert the change attribute advanced. |
 | [§9.5](#9.5%20Open%20children%20refuse%20an%20SMB%20rename%20or%20delete%20of%20their%20directory) open children | Open a file in directory D over SMB; rename D over SMB: assert `ErrShareViolation`. Rename D over NFS: assert it succeeds and the open still reads. Open a file two levels below D; assert an SMB rename of D succeeds. |
+| [§2.6](#2.6%20Layout) layout seqid | `LAYOUTGET` a range, then recall the layout while a second `LAYOUTGET` reply is in flight. Assert the recall's seqid is above the first reply's and below or equal to the second's, so the client can order them, and that a `LAYOUTRETURN` naming a seqid above the current one is refused. A layout without a seqid gives the client nothing to order by. Guess a layout ID by changing one bit; assert it names nothing. |
+| [§2.9](#2.9%20NFSv4.0%20unconfirmed%20clients) unconfirmed client | A confirmed NFSv4.0 client holds a lock. Send `SETCLIENTID` with its owner and a new verifier; assert the lock still held and no client record written. Confirm from another principal, with a wrong confirm verifier, and after one lease period: assert each `NFS4ERR_STALE_CLIENTID`. Repeat and confirm correctly within the period: assert the old client ID expired and its lock released. Restart the answering node between the two calls: assert the confirm is `NFS4ERR_STALE_CLIENTID` and a new `SETCLIENTID` succeeds. A design that acts at `SETCLIENTID` releases the lock at the first step. |
+| [§2.10](#2.10%20Lock%20waiters) lock waiters | Hold an exclusive lock; from three owners request overlapping blocking locks in order exclusive A, shared B, exclusive C, while a fourth owner keeps taking and releasing non-waiting shared locks. Release the holder. Assert A is granted (NLM, SMB) or reserved (NFSv4) first, B only after A, C last, that the fourth owner is refused while A waits, and that no worker was held during the wait. Over NFSv4, stop polling for A: assert its reservation ends after one lease period and B proceeds. Expire a waiting client's lease: assert its waiter is gone. Over NLM, assert `NLM_BLOCKED` then `NLM_GRANTED`; over SMB with the fail-immediately flag, assert refusal at once. |
+| [§5.5](#5.5%20A%20client%27s%20grants%20are%20bounded) grant budget | One NFSv4.1 client opens 5000 files at one primary with no other client. Assert grants stop at 4096, a `CB_RECALL_ANY` names 2048 to keep, and a client that ignores it is recalled one by one down to 2048 within one lease period plus the recall deadline. Repeat over SMB: assert breaks of the oldest leases down to 2048. A design with no budget grants all 5000. |
 
 ### 13.2 What must not stand in
 
